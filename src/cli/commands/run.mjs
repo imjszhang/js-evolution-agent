@@ -1,0 +1,29 @@
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { getProjectRoot, loadProjectEnv } from '../utils/project.mjs';
+import { runNode } from '../utils/process.mjs';
+
+export async function runCommand({ flags = {} } = {}) {
+  const root = getProjectRoot();
+  loadProjectEnv(root);
+  const env = { ...process.env };
+
+  if (flags.mock) {
+    delete env.DEEPSEEK_API_KEY;
+    env.JEA_FORCE_MOCK = '1';
+    console.log('Running with MockAIClient (DEEPSEEK_API_KEY hidden for this process).');
+  }
+  if (flags.deepseek && !env.DEEPSEEK_API_KEY) {
+    console.error('DEEPSEEK_API_KEY is required for --deepseek.');
+    return 1;
+  }
+
+  const runner = join(root, 'run.mjs');
+  if (!existsSync(runner)) {
+    console.error(`run.mjs not found: ${runner}`);
+    return 1;
+  }
+
+  return runNode(['--preserve-symlinks', runner], { cwd: root, env });
+}
+
