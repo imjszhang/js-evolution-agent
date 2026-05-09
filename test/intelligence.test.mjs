@@ -31,6 +31,7 @@ describe('intelligence specs', () => {
       'latest_review',
       'action_receipts',
       'probe_threads',
+      'probe_results',
     ]);
   });
 });
@@ -52,11 +53,20 @@ describe('IntelligenceStore', () => {
       summary: 'reviewed bootstrap',
       outcome: 'ok',
     })).toBe(1);
+    expect(store.recordProbeResult({
+      probe_id: 'probe-1',
+      probe_type: 'file_exists',
+      target: 'README.md',
+      status: 'succeeded',
+      summary: 'README exists',
+    })).toBe(1);
 
     expect(store.readRecentIntel({ days: 1, limit: 5 })).toHaveLength(1);
     expect(store.readEvolutionEvents({ limit: 5 })).toHaveLength(1);
+    expect(store.readProbeResults({ limit: 5 })).toHaveLength(1);
     expect(store.readLatestReview().summary).toBe('reviewed bootstrap');
     expect(store.buildContextSummary()).toContain('hello intelligence');
+    expect(store.buildContextSummary()).toContain('README exists');
   });
 });
 

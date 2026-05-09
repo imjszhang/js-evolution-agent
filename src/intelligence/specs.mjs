@@ -39,5 +39,11 @@ export const INTELLIGENCE_SPECS = [
     storageType: 'entity_jsonl',
     dedupKey: 'id',
   }),
+  new DataSourceSpec({
+    name: 'probe_results',
+    description: 'Append-only results from deterministic read-only probe execution.',
+    storageType: 'append_jsonl',
+    filename: 'probe-results.jsonl',
+  }),
 ];
 

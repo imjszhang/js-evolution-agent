@@ -93,12 +93,23 @@ export class IntelligenceStore {
     }, 'probe-event'));
   }
 
+  recordProbeResult(result) {
+    return this.engine.ingest('probe_results', withId({
+      recorded_at: new Date().toISOString(),
+      ...result,
+    }, 'probe-result'));
+  }
+
   readRecentIntel({ days = 7, limit = 20 } = {}) {
     return this.engine.readSource('intel_observations', { days }).slice(0, limit);
   }
 
   readEvolutionEvents({ limit = 20 } = {}) {
     return this.engine.readSource('evolution_events', { limit });
+  }
+
+  readProbeResults({ limit = 8 } = {}) {
+    return this.engine.readSource('probe_results', { limit });
   }
 
   readRetrospectives({ limit = 10 } = {}) {
@@ -116,12 +127,14 @@ export class IntelligenceStore {
   buildContextSummary() {
     const observations = this.readRecentIntel({ days: 7, limit: 8 });
     const events = this.readEvolutionEvents({ limit: 8 });
+    const probeResults = this.readProbeResults({ limit: 8 });
     const latestReview = this.readLatestReview();
 
     return [
       '# js-evolution-agent intelligence summary',
       formatList('Recent observations', observations, (r) => `- [${r.kind ?? 'observation'}] ${r.subject ?? r.source ?? 'unknown'}: ${r.content ?? r.summary ?? ''}`),
       formatList('Recent evolution events', events, (r) => `- [${r.type ?? 'event'}] ${r.action_type ?? r.target ?? 'unknown'}: ${r.result?.status ?? r.status ?? r.summary ?? ''}`),
+      formatList('Recent probe results', probeResults, (r) => `- [${r.status ?? 'unknown'}] ${r.probe_type ?? 'probe'} ${r.target ?? ''}: ${r.summary ?? ''}`),
       `Latest review: ${latestReview?.summary ?? latestReview?.outcome ?? 'none'}`,
     ].join('\n\n');
   }

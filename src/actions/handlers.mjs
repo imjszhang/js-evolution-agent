@@ -1,3 +1,5 @@
+import { runReadOnlyProbe } from './probe-runner.mjs';
+
 function requireParams(action, fields) {
   const missing = fields.filter((field) => action?.params?.[field] == null && action?.[field] == null);
   if (missing.length) {
@@ -54,6 +56,36 @@ export const actionHandlers = {
       message: `probe proposal recorded: ${probeId}`,
       probe_id: probeId,
       status: 'proposed_only',
+    };
+    store.recordActionReceipt(action, result, ctx);
+    return result;
+  },
+
+  run_probe(action, ctx) {
+    requireParams(action, ['probe_type', 'target', 'hypothesis', 'success_signal', 'failure_signal', 'death_boundary']);
+    const store = storeFrom(ctx);
+    const probeResult = runReadOnlyProbe(action, ctx);
+    const event = {
+      type: `probe_${probeResult.status}`,
+      action_type: action.type,
+      probe_id: probeResult.probe_id,
+      probe_type: probeResult.probe_type,
+      target: probeResult.target,
+      status: probeResult.status,
+      summary: probeResult.summary,
+    };
+
+    store.recordProbeEvent(probeResult.probe_id, event);
+    store.recordProbeResult(probeResult);
+    store.recordEvolutionEvent(event);
+
+    const result = {
+      success: true,
+      message: probeResult.summary,
+      probe_id: probeResult.probe_id,
+      status: probeResult.status,
+      probe_type: probeResult.probe_type,
+      outcome_success: probeResult.success,
     };
     store.recordActionReceipt(action, result, ctx);
     return result;

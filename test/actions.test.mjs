@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -17,10 +17,16 @@ let tempDir = null;
 
 function makeCtx() {
   tempDir = mkdtempSync(join(tmpdir(), 'js-evolution-agent-actions-'));
+  const projectRoot = join(tempDir, 'project');
+  const dataRoot = join(projectRoot, 'runtime', 'subjects', 'test', 'data');
+  mkdirSync(dataRoot, { recursive: true });
   return {
     cycleId: 'test-cycle',
+    projectRoot,
     host: {
-      intelligenceStore: createIntelligenceStore({ baseDir: tempDir }),
+      sourceRoot: projectRoot,
+      dataRoot,
+      intelligenceStore: createIntelligenceStore({ baseDir: join(tempDir, 'intelligence') }),
     },
   };
 }
@@ -71,6 +77,53 @@ describe('controlled action handlers', () => {
     expect(result.success).toBe(true);
     expect(result.requires_approval).toBe(true);
     expect(verification.status).toBe('improved');
+  });
+
+  it('runs read-only JSONL probes and records structured results', () => {
+    const ctx = makeCtx();
+    const target = join(ctx.host.dataRoot, 'events.jsonl');
+    writeFileSync(target, '{"type":"event","status":"ok"}\n', 'utf-8');
+
+    const result = actionHandlers.run_probe({
+      type: 'run_probe',
+      params: {
+        probe_type: 'jsonl_validate',
+        target,
+        required_fields: ['type', 'status'],
+        hypothesis: 'events are valid JSONL',
+        success_signal: 'all lines parse and include required fields',
+        failure_signal: 'invalid JSONL or missing fields',
+        death_boundary: 'read-only inspection only',
+      },
+    }, ctx);
+
+    expect(result.success).toBe(true);
+    expect(result.status).toBe('succeeded');
+    expect(ctx.host.intelligenceStore.readProbeResults({ limit: 5 })[0].probe_type)
+      .toBe('jsonl_validate');
+  });
+
+  it('blocks probes against sensitive files while still recording the outcome', () => {
+    const ctx = makeCtx();
+    const target = join(ctx.projectRoot, '.env');
+    writeFileSync(target, 'SECRET=hidden\n', 'utf-8');
+
+    const result = actionHandlers.run_probe({
+      type: 'run_probe',
+      params: {
+        probe_type: 'file_exists',
+        target,
+        hypothesis: 'sensitive file exists',
+        success_signal: 'file exists',
+        failure_signal: 'file missing',
+        death_boundary: 'do not read sensitive files',
+      },
+    }, ctx);
+
+    expect(result.success).toBe(true);
+    expect(result.status).toBe('blocked');
+    expect(ctx.host.intelligenceStore.readProbeResults({ limit: 5 })[0].reason)
+      .toMatch(/sensitive/);
   });
 });
 
