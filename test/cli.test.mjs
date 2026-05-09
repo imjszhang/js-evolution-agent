@@ -11,7 +11,10 @@ import { parseArgv } from '../src/cli/utils/args.mjs';
 import { readJsonSafe, removeProjectDir } from '../src/cli/utils/files.mjs';
 import { extractMarkdownSection } from '../src/cli/commands/subject.mjs';
 import { findUnknownActions } from '../src/cli/commands/actions.mjs';
-import { buildDefaultGoals, dataStatus, initData } from '../src/cli/commands/data.mjs';
+import { auditQueue } from '../src/cli/commands/audit.mjs';
+import { buildDefaultGoals, backupData, dataStatus, initData } from '../src/cli/commands/data.mjs';
+import { buildIntelSummary } from '../src/cli/commands/intel.mjs';
+import { checkPolicy } from '../src/cli/commands/policy.mjs';
 
 let tempDir = null;
 
@@ -54,6 +57,36 @@ describe('action checks', () => {
     expect(findUnknownActions(decisions, new Set(['record_observation']))).toEqual([
       { id: 'bad', type: 'custom' },
     ]);
+  });
+});
+
+describe('queue audit', () => {
+  it('summarizes queue health and unknown actions', () => {
+    const result = auditQueue({
+      decisions: [
+        { id: 'a', status: 'pending', action: { type: 'record_observation' }, created_at: '2026-01-01T00:00:00Z' },
+        { id: 'b', status: 'in_progress', action: { type: 'custom' } },
+      ],
+    }, new Set(['record_observation']), { staleMinutes: 1 });
+
+    expect(result.total).toBe(2);
+    expect(result.counts.pending).toBe(1);
+    expect(result.unknownActions).toEqual([{ id: 'b', type: 'custom' }]);
+    expect(result.healthy).toBe(false);
+  });
+});
+
+describe('policy check', () => {
+  it('detects missing required sections', () => {
+    const result = checkPolicy([
+      '## Subject',
+      'agent',
+      '',
+      '## Core Layer',
+      '- Trust',
+    ].join('\n'));
+    expect(result.ok).toBe(false);
+    expect(result.missing).toContain('Probe Requirements');
   });
 });
 
@@ -135,6 +168,35 @@ describe('data initialization', () => {
     expect(() => JSON.stringify(result)).not.toThrow();
     expect(result.goals.written).toBe(true);
     expect(result.seed.observationCount).toBe(1);
+  });
+
+  it('backs up data without overwriting by default', () => {
+    const root = makeProjectRoot();
+    initData(root, { all: true });
+
+    const first = backupData(root, { name: 'snapshot' });
+    expect(first.copied).toBe(true);
+    expect(first.files).toBeGreaterThan(0);
+
+    const second = backupData(root, { name: 'snapshot' });
+    expect(second.copied).toBe(false);
+    expect(second.reason).toBe('destination_exists');
+    expect(second.files).toBeGreaterThan(0);
+  });
+});
+
+describe('intel summary', () => {
+  it('reads seeded intelligence summary', () => {
+    const root = mkdtempSync(join(tmpdir(), 'jea-intel-'));
+    tempDir = root;
+    mkdirSync(join(root, 'policies'), { recursive: true });
+    writeFileSync(join(root, 'policies', 'project-guidance.md'), '## Subject\nagent\n');
+    initData(root, { seed: true });
+
+    const summary = buildIntelSummary(root, { days: 1, limit: 5 });
+    expect(summary.observations).toHaveLength(1);
+    expect(summary.events).toHaveLength(1);
+    expect(summary.contextSummary).toContain('js-evolution-agent intelligence summary');
   });
 });
 

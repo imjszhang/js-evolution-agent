@@ -46,6 +46,7 @@ Desktop.ini
 *.sln
 *.sw?
 
-# User archive folder (not part of source)
+# User archive / backup folders (not part of source)
 archives/
+backups/
 data/

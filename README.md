@@ -1,6 +1,6 @@
 # js-evolution-agent
 
-Updated: 2026-05-09 15:19:44 +08:00
+Updated: 2026-05-09 15:37:14 +08:00
 
 `js-evolution-agent` is a controlled self-evolution host instance. It reuses `js-evolution-engine` as the OADA runtime, reads Cyber-Taoist documents as authoritative context, and stores local intelligence through `js-intel-store`.
 
@@ -46,7 +46,12 @@ First-version commands:
 - `jea data status --json`: show runtime data status as machine-readable JSON.
 - `jea data init`: create runtime data directories without deleting history.
 - `jea data init --all`: create the default goals template and append seed intelligence.
+- `jea data backup [--name NAME]`: copy `data/` to `backups/`.
 - `jea data reset [--yes]`: remove local runtime data.
+- `jea intel summary [--days N] [--limit N]`: show recent intelligence memory.
+- `jea audit queue`: check decision queue health, unknown actions, and stale in-progress work.
+- `jea llm ping [--mock]`: test DeepSeek or local MockAIClient connectivity.
+- `jea policy check`: verify required local policy sections.
 - `jea subject show`: show the current Subject and Core Layer from `policies/project-guidance.md`.
 - `jea actions list`: list registered action types.
 - `jea actions check`: check queued decisions for unknown action types.
@@ -122,6 +127,7 @@ jea data init
 jea data init --goals
 jea data init --seed
 jea data init --all --json
+jea data backup --name before-subject-change
 ```
 
 `init` does not delete history and does not overwrite existing files by default. Use `--force` only if you want to overwrite the default goals template.
@@ -142,6 +148,21 @@ This deletes `data/evolution`, `data/intelligence`, and `data/goals` if present.
 - `latest_review`: latest review JSON.
 - `action_receipts`: receipts from controlled handlers.
 - `probe_threads`: per-probe event streams.
+
+## Inspection And Audit
+
+Use these commands to inspect runtime state without mutating it:
+
+```powershell
+jea intel summary
+jea intel summary --json
+jea audit queue
+jea audit queue --json
+jea policy check
+jea llm ping --mock
+```
+
+`jea llm ping` without `--mock` sends one short request to DeepSeek and never prints your API key.
 
 ## Safety Boundary
 

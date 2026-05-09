@@ -1,5 +1,6 @@
 import {
   existsSync,
+  cpSync,
   mkdirSync,
   renameSync,
   readdirSync,
@@ -97,5 +98,22 @@ export function removeProjectDir(root, relativeDir) {
   if (!existsSync(full)) return false;
   rmSync(full, { recursive: true, force: true });
   return true;
+}
+
+export function copyProjectDir(root, relativeSource, relativeDestination, { force = false } = {}) {
+  const normalizedRoot = resolve(root);
+  const source = resolve(root, relativeSource);
+  const destination = resolve(root, relativeDestination);
+  if (!source.startsWith(normalizedRoot) || !destination.startsWith(normalizedRoot)) {
+    throw new Error(`Refusing to copy outside project root: ${source} -> ${destination}`);
+  }
+  if (!existsSync(source)) {
+    return { source, destination, copied: false, reason: 'source_missing' };
+  }
+  if (existsSync(destination) && !force) {
+    return { source, destination, copied: false, reason: 'destination_exists' };
+  }
+  cpSync(source, destination, { recursive: true, force });
+  return { source, destination, copied: true };
 }
 

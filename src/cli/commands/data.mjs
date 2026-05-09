@@ -4,6 +4,7 @@ import { getProjectRoot } from '../utils/project.mjs';
 import { confirm } from '../utils/prompt.mjs';
 import {
   countFiles,
+  copyProjectDir,
   ensureProjectDir,
   latestFile,
   readTextSafe,
@@ -21,6 +22,10 @@ const DATA_DIRS = [
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function timestampForPath() {
+  return new Date().toISOString().replace(/[:.]/g, '-');
 }
 
 export function buildDefaultGoals() {
@@ -118,6 +123,19 @@ export function initData(root, flags = {}) {
   return result;
 }
 
+export function backupData(root, flags = {}) {
+  const name = String(flags.name || `data-${timestampForPath()}`)
+    .replace(/[\\/]/g, '-')
+    .replace(/\s+/g, '-');
+  const destination = join('backups', name);
+  const result = copyProjectDir(root, 'data', destination, { force: !!flags.force });
+  return {
+    ...result,
+    name,
+    files: existsSync(result.destination) ? countFiles(result.destination) : 0,
+  };
+}
+
 function printInitResult(result) {
   console.log('Initialized runtime data:');
   for (const dir of result.directories) {
@@ -151,6 +169,20 @@ export async function dataCommand({ subcommand, flags = {} } = {}) {
     return 0;
   }
 
+  if (subcommand === 'backup') {
+    const result = backupData(root, flags);
+    if (flags.json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else if (result.copied) {
+      console.log(`Backup created: ${relative(root, result.destination)}`);
+      console.log(`files: ${result.files}`);
+    } else {
+      console.log(`Backup skipped: ${result.reason}`);
+      console.log(`destination: ${relative(root, result.destination)}`);
+    }
+    return result.copied || result.reason === 'destination_exists' ? 0 : 1;
+  }
+
   if (subcommand === 'reset') {
     console.log('Will remove local runtime data:');
     for (const target of DATA_DIRS) console.log(`  - ${join(root, target)}`);
@@ -172,7 +204,7 @@ export async function dataCommand({ subcommand, flags = {} } = {}) {
     return 0;
   }
 
-  console.error('Usage: jea data <status|init|reset> [--goals] [--seed] [--all] [--force] [--json] [--yes]');
+  console.error('Usage: jea data <status|init|backup|reset> [--goals] [--seed] [--all] [--force] [--json] [--yes]');
   return 2;
 }
 
