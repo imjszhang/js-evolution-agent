@@ -250,6 +250,9 @@ describe('data initialization', () => {
     expect(() => JSON.stringify(result)).not.toThrow();
     expect(result.goals.written).toBe(true);
     expect(result.seed.observationCount).toBe(1);
+    expect(result.policies).not.toBeNull();
+    expect(existsSync(join(root, 'policies', 'active-subject.json'))).toBe(true);
+    expect(existsSync(join(root, 'policies', 'subjects', 'js-evolution-agent.md'))).toBe(true);
   });
 
   it('backs up data without overwriting by default', () => {

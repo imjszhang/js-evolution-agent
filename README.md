@@ -161,6 +161,8 @@ jea data init --all
 
 This creates:
 
+- `policies/subjects/` layout if needed and, when `--all` only: `policies/active-subject.json` plus `policies/subjects/js-evolution-agent.md` copied from `project-guidance.md` when that subject file is missing (same rules as `jea subject list`)
+
 - `runtime/subjects/<data_namespace>/data/evolution`
 - `runtime/subjects/<data_namespace>/data/intelligence`
 - `runtime/subjects/<data_namespace>/data/goals`

@@ -13,6 +13,7 @@ import {
 import { extractMarkdownSection } from './subject.mjs';
 import { createIntelligenceStore } from '../../intelligence/store.mjs';
 import {
+  ensureDefaultSubject,
   getActiveSubjectRuntimeInfo,
   readActiveSubjectPolicy,
 } from '../utils/subjects.mjs';
@@ -81,11 +82,13 @@ export function dataStatus(root) {
 }
 
 export function initData(root, flags = {}) {
-  const runtime = getActiveSubjectRuntimeInfo(root);
   const withGoals = !!(flags.goals || flags.all);
   const withSeed = !!(flags.seed || flags.all);
+  const policies = flags.all ? ensureDefaultSubject(root) : null;
+  const runtime = getActiveSubjectRuntimeInfo(root);
   const result = {
     runtime,
+    policies,
     directories: DATA_DIRS.map((dir) => ({ dir, ...ensureProjectDir(runtime.runtimeRoot, dir) })),
     goals: null,
     seed: null,
@@ -145,11 +148,20 @@ export function backupData(root, flags = {}) {
   };
 }
 
-function printInitResult(result) {
+function printInitResult(result, root) {
   console.log('Initialized runtime data:');
   console.log(`  subject: ${result.runtime.subject}`);
   console.log(`  namespace: ${result.runtime.dataNamespace}`);
   console.log(`  runtime: ${result.runtime.runtimeRoot}`);
+  if (result.policies) {
+    const { active, subject } = result.policies;
+    const activeLabel = active?.skipped ? 'exists' : 'created';
+    const subjectLabel = subject?.written ? 'created' : 'exists';
+    const policyRel = relative(root, subject.file);
+    console.log('  policies:');
+    console.log(`    - policies/active-subject.json: ${activeLabel}`);
+    console.log(`    - ${policyRel}: ${subjectLabel}`);
+  }
   for (const dir of result.directories) {
     console.log(`  - ${dir.dir}: ${dir.created ? 'created' : 'exists'}`);
   }
@@ -183,7 +195,7 @@ export async function dataCommand({ subcommand, flags = {} } = {}) {
   if (subcommand === 'init') {
     const result = initData(root, flags);
     if (flags.json) console.log(JSON.stringify(result, null, 2));
-    else printInitResult(result);
+    else printInitResult(result, root);
     return 0;
   }
 
