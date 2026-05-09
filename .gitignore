@@ -50,3 +50,8 @@ Desktop.ini
 archives/
 backups/
 data/
+runtime/
+
+# Local subject selection and subject policies
+policies/active-subject.json
+policies/subjects/

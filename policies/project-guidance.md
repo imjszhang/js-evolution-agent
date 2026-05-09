@@ -13,14 +13,14 @@ The subject of this loop is `js-evolution-agent`: a controlled host instance tha
 - The source packages `js-evolution-engine` and `js-intel-store`.
 - The read-only Cyber-Taoist documents under `cyber-taoist-docs`.
 - Operator trust, reviewability, and reversibility.
-- Local data integrity under `js-evolution-agent/data`.
+- Local data integrity under `runtime/subjects/<data_namespace>/data`.
 
 ## Allowed First-Phase Actions
 
 - Read project-local files and referenced context documents.
 - Generate observations, probe proposals, retrospectives, and local reports.
-- Write action receipts, evolution events, and reviews under `js-evolution-agent/data/intelligence`.
-- Queue decisions under `js-evolution-agent/data/evolution`.
+- Write action receipts, evolution events, and reviews under the active subject runtime intelligence namespace.
+- Queue decisions under the active subject runtime evolution namespace.
 
 ## Off-Limits Without Human Approval
 

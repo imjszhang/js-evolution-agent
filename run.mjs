@@ -9,6 +9,7 @@ import {
   verifyActions,
 } from 'js-evolution-engine';
 import loadConfig from './oada.config.mjs';
+import { getActiveSubjectRuntimeInfo } from './src/cli/utils/subjects.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -16,8 +17,8 @@ function previewDoc(doc) {
   return doc.text.split('\n').slice(0, 2).join(' | ').slice(0, 100);
 }
 
-function inspectQueue() {
-  const queueFile = join(__dirname, 'data', 'evolution', 'pending_decisions.json');
+function inspectQueue(runtimeRoot) {
+  const queueFile = join(runtimeRoot, 'data', 'evolution', 'pending_decisions.json');
   if (!existsSync(queueFile)) return [];
   const raw = JSON.parse(readFileSync(queueFile, 'utf-8'));
   return raw.decisions ?? [];
@@ -25,8 +26,15 @@ function inspectQueue() {
 
 async function main() {
   process.chdir(__dirname);
+  const runtime = getActiveSubjectRuntimeInfo(__dirname);
+  mkdirSync(runtime.runtimeRoot, { recursive: true });
   const cfg = await loadConfig({ cwd: __dirname });
   const store = cfg.host.intelligenceStore;
+
+  console.log('\n=== active subject runtime ===');
+  console.log('  subject:', runtime.subject);
+  console.log('  namespace:', runtime.dataNamespace);
+  console.log('  runtimeRoot:', runtime.runtimeRoot);
 
   console.log('\n=== agentContextDocs loaded ===');
   for (const doc of cfg.agentContextDocs || []) {
@@ -36,7 +44,7 @@ async function main() {
   const engine = new EvolutionEngine({
     aiClient: cfg.aiClient,
     host: cfg.host,
-    projectRoot: __dirname,
+    projectRoot: runtime.runtimeRoot,
     goalId: 'bootstrap',
     actionRegistry: cfg.actionRegistry,
     agentContextDocs: cfg.agentContextDocs,
@@ -46,7 +54,7 @@ async function main() {
   const intel = new IntelligencePipeline({
     aiClient: cfg.aiClient,
     host: cfg.host,
-    projectRoot: __dirname,
+    projectRoot: runtime.runtimeRoot,
     goalId: 'bootstrap',
     mode: 'local',
     engine,
@@ -67,7 +75,7 @@ async function main() {
   }
 
   console.log('\n=== queued decisions ===');
-  for (const decision of inspectQueue()) {
+  for (const decision of inspectQueue(runtime.runtimeRoot)) {
     const action = decision.action || {};
     console.log(`  - ${decision.id}: ${action.type} layer=${action.layer ?? 'n/a'}`);
   }
@@ -75,7 +83,7 @@ async function main() {
   console.log('\n=== Phase 2: exec pipeline ===');
   const exec = new ExecutionPipeline({
     host: cfg.host,
-    projectRoot: __dirname,
+    projectRoot: runtime.runtimeRoot,
     aiClient: cfg.aiClient,
     source: 'queue',
   });
@@ -99,11 +107,11 @@ async function main() {
   console.log('\n=== Phase 3: verify receipts ===');
   const verification = verifyActions(
     execResult,
-    __dirname,
+    runtime.runtimeRoot,
     cfg.host,
     (msg, level = 'info') => cfg.host.logger?.[level]?.(`[verify] ${msg}`),
   );
-  const reportDir = join(__dirname, 'data', 'evolution', 'verify_reports');
+  const reportDir = join(runtime.runtimeRoot, 'data', 'evolution', 'verify_reports');
   mkdirSync(reportDir, { recursive: true });
   const reportPath = join(reportDir, `${execResult.cycle_id}.json`);
   writeFileSync(reportPath, JSON.stringify(verification, null, 2), 'utf-8');
@@ -120,8 +128,8 @@ async function main() {
   console.log('  report:', reportPath);
 
   console.log('\n=== Done ===');
-  console.log(`Evolution data: ${join(__dirname, 'data', 'evolution')}`);
-  console.log(`Intelligence data: ${join(__dirname, 'data', 'intelligence')}`);
+  console.log(`Evolution data: ${runtime.evolutionDir}`);
+  console.log(`Intelligence data: ${runtime.intelligenceDir}`);
 }
 
 main().catch((err) => {

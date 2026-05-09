@@ -1,7 +1,8 @@
-import { join } from 'node:path';
 import { getProjectRoot } from '../utils/project.mjs';
-import { readJsonSafe } from '../utils/files.mjs';
-import { findUnknownActions } from './actions.mjs';
+import {
+  findUnknownActions,
+  readActiveDecisionQueue,
+} from './actions.mjs';
 
 const KNOWN_STATUSES = ['pending', 'in_progress', 'completed', 'failed', 'expired'];
 
@@ -85,11 +86,16 @@ export async function auditCommand({ subcommand, flags = {} } = {}) {
     return 2;
   }
   const root = getProjectRoot();
-  const queue = readJsonSafe(join(root, 'data', 'evolution', 'pending_decisions.json'), { decisions: [] });
+  const { runtime, queue } = readActiveDecisionQueue(root);
   const staleMinutes = Number(flags['stale-minutes']) || 60;
   const audit = auditQueue(queue, await loadValidActionNames(), { staleMinutes });
-  if (flags.json) console.log(JSON.stringify(audit, null, 2));
-  else printQueueAudit(audit);
+  if (flags.json) console.log(JSON.stringify({ runtime, ...audit }, null, 2));
+  else {
+    console.log(`subject: ${runtime.subject}`);
+    console.log(`namespace: ${runtime.dataNamespace}`);
+    console.log(`runtime: ${runtime.runtimeRoot}`);
+    printQueueAudit(audit);
+  }
   return audit.healthy ? 0 : 1;
 }
 

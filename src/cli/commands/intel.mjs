@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import { getProjectRoot } from '../utils/project.mjs';
 import { createIntelligenceStore } from '../../intelligence/store.mjs';
+import { getActiveSubjectRuntimeInfo } from '../utils/subjects.mjs';
 
 function numberFlag(flags, name, fallback) {
   const n = Number(flags[name]);
@@ -8,10 +9,11 @@ function numberFlag(flags, name, fallback) {
 }
 
 export function buildIntelSummary(root, flags = {}) {
+  const runtime = getActiveSubjectRuntimeInfo(root);
   const days = numberFlag(flags, 'days', 7);
   const limit = numberFlag(flags, 'limit', 8);
   const store = createIntelligenceStore({
-    baseDir: join(root, 'data', 'intelligence'),
+    baseDir: join(runtime.runtimeRoot, 'data', 'intelligence'),
     timezone: 'Asia/Shanghai',
   });
   const observations = store.readRecentIntel({ days, limit });
@@ -19,6 +21,7 @@ export function buildIntelSummary(root, flags = {}) {
   const retrospectives = store.readRetrospectives({ limit });
   const latestReview = store.readLatestReview();
   return {
+    runtime,
     days,
     limit,
     observations,
@@ -31,6 +34,9 @@ export function buildIntelSummary(root, flags = {}) {
 
 function printIntelSummary(summary) {
   console.log(`# Intelligence Summary (${summary.days}d, limit ${summary.limit})`);
+  console.log(`subject: ${summary.runtime.subject}`);
+  console.log(`namespace: ${summary.runtime.dataNamespace}`);
+  console.log(`runtime: ${summary.runtime.runtimeRoot}`);
   console.log('');
   console.log(summary.contextSummary);
   console.log('');

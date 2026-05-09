@@ -1,7 +1,6 @@
-import { join } from 'node:path';
 import { getProjectRoot } from '../utils/project.mjs';
-import { readTextSafe } from '../utils/files.mjs';
 import { extractMarkdownSection } from './subject.mjs';
+import { readActiveSubjectPolicy } from '../utils/subjects.mjs';
 
 export const REQUIRED_POLICY_SECTIONS = [
   'Subject',
@@ -31,9 +30,9 @@ export async function policyCommand({ subcommand, flags = {} } = {}) {
     return 2;
   }
   const root = getProjectRoot();
-  const file = join(root, 'policies', 'project-guidance.md');
-  const text = readTextSafe(file);
+  const { active, file, text } = readActiveSubjectPolicy(root);
   const result = {
+    active: active.active,
     file,
     ...checkPolicy(text),
   };

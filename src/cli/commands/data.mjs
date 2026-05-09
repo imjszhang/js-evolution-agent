@@ -7,12 +7,15 @@ import {
   copyProjectDir,
   ensureProjectDir,
   latestFile,
-  readTextSafe,
   removeProjectDir,
   writeJsonIfMissing,
 } from '../utils/files.mjs';
 import { extractMarkdownSection } from './subject.mjs';
 import { createIntelligenceStore } from '../../intelligence/store.mjs';
+import {
+  getActiveSubjectRuntimeInfo,
+  readActiveSubjectPolicy,
+} from '../utils/subjects.mjs';
 
 const DATA_DIRS = [
   join('data', 'evolution'),
@@ -40,7 +43,7 @@ export function buildDefaultGoals() {
         id: 'safe-runtime',
         name: 'Safe Runtime',
         intent: 'Keep data operations bounded to js-evolution-agent and preserve operator trust.',
-        good_signal: 'Data commands only touch data/evolution, data/intelligence, and data/goals.',
+        good_signal: 'Data commands only touch the active subject runtime data namespace.',
         bad_signal: 'Any command attempts to modify engine packages, docs snapshots, or secrets.',
         children: [],
       },
@@ -49,8 +52,8 @@ export function buildDefaultGoals() {
 }
 
 function getSubject(root) {
-  const text = readTextSafe(join(root, 'policies', 'project-guidance.md'));
-  return extractMarkdownSection(text, 'Subject') || 'js-evolution-agent';
+  const { text, active } = readActiveSubjectPolicy(root);
+  return extractMarkdownSection(text, 'Subject') || active.active || 'js-evolution-agent';
 }
 
 function statusObject(root, relativeDir) {
@@ -73,21 +76,24 @@ function printDirStatus(root, relativeDir) {
 }
 
 export function dataStatus(root) {
-  return DATA_DIRS.map((dir) => statusObject(root, dir));
+  const runtime = getActiveSubjectRuntimeInfo(root);
+  return DATA_DIRS.map((dir) => statusObject(runtime.runtimeRoot, dir));
 }
 
 export function initData(root, flags = {}) {
+  const runtime = getActiveSubjectRuntimeInfo(root);
   const withGoals = !!(flags.goals || flags.all);
   const withSeed = !!(flags.seed || flags.all);
   const result = {
-    directories: DATA_DIRS.map((dir) => ({ dir, ...ensureProjectDir(root, dir) })),
+    runtime,
+    directories: DATA_DIRS.map((dir) => ({ dir, ...ensureProjectDir(runtime.runtimeRoot, dir) })),
     goals: null,
     seed: null,
   };
 
   if (withGoals) {
     result.goals = writeJsonIfMissing(
-      root,
+      runtime.runtimeRoot,
       join('data', 'goals', 'active_goals.json'),
       buildDefaultGoals(),
       { force: !!flags.force },
@@ -96,7 +102,7 @@ export function initData(root, flags = {}) {
 
   if (withSeed) {
     const store = createIntelligenceStore({
-      baseDir: join(root, 'data', 'intelligence'),
+      baseDir: runtime.intelligenceDir,
       timezone: 'Asia/Shanghai',
     });
     const initializedAt = nowIso();
@@ -124,13 +130,16 @@ export function initData(root, flags = {}) {
 }
 
 export function backupData(root, flags = {}) {
+  const runtime = getActiveSubjectRuntimeInfo(root);
   const name = String(flags.name || `data-${timestampForPath()}`)
     .replace(/[\\/]/g, '-')
     .replace(/\s+/g, '-');
-  const destination = join('backups', name);
-  const result = copyProjectDir(root, 'data', destination, { force: !!flags.force });
+  const source = relative(root, runtime.dataRoot);
+  const destination = join('backups', 'subjects', runtime.dataNamespace, name);
+  const result = copyProjectDir(root, source, destination, { force: !!flags.force });
   return {
     ...result,
+    runtime,
     name,
     files: existsSync(result.destination) ? countFiles(result.destination) : 0,
   };
@@ -138,6 +147,9 @@ export function backupData(root, flags = {}) {
 
 function printInitResult(result) {
   console.log('Initialized runtime data:');
+  console.log(`  subject: ${result.runtime.subject}`);
+  console.log(`  namespace: ${result.runtime.dataNamespace}`);
+  console.log(`  runtime: ${result.runtime.runtimeRoot}`);
   for (const dir of result.directories) {
     console.log(`  - ${dir.dir}: ${dir.created ? 'created' : 'exists'}`);
   }
@@ -155,10 +167,16 @@ function printInitResult(result) {
 
 export async function dataCommand({ subcommand, flags = {} } = {}) {
   const root = getProjectRoot();
+  const runtime = getActiveSubjectRuntimeInfo(root);
   if (subcommand === 'status') {
     const status = dataStatus(root);
-    if (flags.json) console.log(JSON.stringify({ status }, null, 2));
-    else for (const item of status) printDirStatus(root, item.dir);
+    if (flags.json) console.log(JSON.stringify({ runtime, status }, null, 2));
+    else {
+      console.log(`active subject: ${runtime.subject}`);
+      console.log(`data namespace: ${runtime.dataNamespace}`);
+      console.log(`runtime root: ${runtime.runtimeRoot}`);
+      for (const item of status) printDirStatus(runtime.runtimeRoot, item.dir);
+    }
     return 0;
   }
 
@@ -185,7 +203,7 @@ export async function dataCommand({ subcommand, flags = {} } = {}) {
 
   if (subcommand === 'reset') {
     console.log('Will remove local runtime data:');
-    for (const target of DATA_DIRS) console.log(`  - ${join(root, target)}`);
+    for (const target of DATA_DIRS) console.log(`  - ${join(runtime.runtimeRoot, target)}`);
     if (!flags.yes) {
       const ok = await confirm('This cannot be undone.');
       if (!ok) {
@@ -195,9 +213,10 @@ export async function dataCommand({ subcommand, flags = {} } = {}) {
     }
     let removed = 0;
     for (const target of DATA_DIRS) {
-      if (removeProjectDir(root, target)) {
+      const relativeTarget = relative(root, join(runtime.runtimeRoot, target));
+      if (removeProjectDir(root, relativeTarget)) {
         removed++;
-        console.log(`removed: ${join(root, target)}`);
+        console.log(`removed: ${join(runtime.runtimeRoot, target)}`);
       }
     }
     console.log(`Reset complete. Removed ${removed} director${removed === 1 ? 'y' : 'ies'}.`);

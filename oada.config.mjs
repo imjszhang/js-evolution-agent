@@ -15,6 +15,10 @@ import {
 } from './src/actions/handlers.mjs';
 import { createIntelligenceStore } from './src/intelligence/store.mjs';
 import { getDefaultCyberTaoistDocsDir } from './src/cli/utils/project.mjs';
+import {
+  getActiveSubjectRuntimeInfo,
+  readActiveSubjectPolicy,
+} from './src/cli/utils/subjects.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -34,6 +38,7 @@ function readRequiredFile(fullPath, hint) {
 
 function buildAgentContextDocs() {
   const docsDir = resolveDocsDir();
+  const subjectPolicy = readActiveSubjectPolicy(__dirname);
   return [
     {
       id: 'cyber-taoist:constitution',
@@ -46,9 +51,9 @@ function buildAgentContextDocs() {
       text: readRequiredFile(resolve(docsDir, 'SKILL.md'), 'Cyber-Taoist skill guide'),
     },
     {
-      id: 'js-evolution-agent:project-guidance',
-      source: resolve(__dirname, 'policies', 'project-guidance.md'),
-      text: readRequiredFile(resolve(__dirname, 'policies', 'project-guidance.md'), 'Project guidance'),
+      id: `js-evolution-agent:subject:${subjectPolicy.active.active}`,
+      source: subjectPolicy.file,
+      text: subjectPolicy.text,
     },
   ];
 }
@@ -113,9 +118,9 @@ const cannedAnalyzeDecide = {
       params: {
         target: 'self-evolution workflow',
         hypothesis: 'A record-only first cycle proves the integration path before any mutation is allowed.',
-        success_signal: 'Decision queue executes and receipts appear under data/intelligence.',
+        success_signal: 'Decision queue executes and receipts appear under the active subject runtime data namespace.',
         failure_signal: 'Any action tries to modify js-evolution-engine or cyber-taoist-docs.',
-        death_boundary: 'Do not write outside js-evolution-agent/data during the first cycle.',
+        death_boundary: 'Do not write outside the active subject runtime during the first cycle.',
       },
       expected_impact: 'One decisive integration signal with no external side effects.',
       risk: 'low',
@@ -178,9 +183,10 @@ function createMockAiClient() {
 
 export default async function ({ cwd }) {
   registerGlobalActionTypes();
+  const runtime = getActiveSubjectRuntimeInfo(cwd);
 
   const intelligenceStore = createIntelligenceStore({
-    baseDir: resolve(cwd, 'data', 'intelligence'),
+    baseDir: runtime.intelligenceDir,
     timezone: 'Asia/Shanghai',
     logger: consoleLogger,
   });
@@ -192,7 +198,11 @@ export default async function ({ cwd }) {
     actionRegistry,
     agentContextDocs: buildAgentContextDocs(),
     host: {
-      basePath: cwd,
+      basePath: runtime.runtimeRoot,
+      sourceRoot: cwd,
+      runtimeRoot: runtime.runtimeRoot,
+      dataRoot: runtime.dataRoot,
+      dataNamespace: runtime.dataNamespace,
       appName: 'js-evolution-agent',
       logger: consoleLogger,
       intelligenceStore,

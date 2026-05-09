@@ -24,14 +24,18 @@ Commands:
   data status --json     Show runtime data status as JSON
   data init              Create runtime data directories
   data init --all        Create goals template and seed intelligence
-  data backup            Copy data/ to backups/
+  data backup            Back up active subject runtime data
   data reset [--yes]     Remove local runtime data
   intel summary          Show recent intelligence memory
   audit queue            Check decision queue health
   llm ping               Test DeepSeek connectivity
   llm ping --mock        Test local mock AI path
   policy check           Check required policy sections
-  subject show           Show Subject and Core Layer policy
+  subject list           List configured subjects
+  subject show           Show policy, namespace, and runtime paths
+  subject init <name>    Create a subject policy from a template
+  subject use <name>     Switch the active subject and runtime namespace
+  subject check          Validate the active subject policy
   actions list           List registered action types
   actions check          Check pending decisions for unknown action types
   help                   Show this help
@@ -44,6 +48,8 @@ Examples:
   jea audit queue
   jea llm ping --mock
   jea data backup --name before-reset
+  jea subject list
+  jea subject init my-product --use
   jea data reset --yes
   jea actions check`;
 }
@@ -51,7 +57,7 @@ Examples:
 export async function main(argv = process.argv.slice(2)) {
   loadProjectEnv(getProjectRoot());
   const { positionals, flags } = parseArgv(argv);
-  const [command, subcommand] = positionals;
+  const [command, subcommand, ...args] = positionals;
 
   if (!command || command === 'help' || flags.help) {
     console.log(helpText());
@@ -64,7 +70,7 @@ export async function main(argv = process.argv.slice(2)) {
   if (command === 'audit') return auditCommand({ subcommand, flags });
   if (command === 'llm') return llmCommand({ subcommand, flags });
   if (command === 'policy') return policyCommand({ subcommand, flags });
-  if (command === 'subject') return subjectCommand({ subcommand, flags });
+  if (command === 'subject') return subjectCommand({ subcommand, flags, args });
   if (command === 'actions') return actionsCommand({ subcommand, flags });
 
   console.error(`Unknown command: ${command}`);

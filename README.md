@@ -1,6 +1,6 @@
 # js-evolution-agent
 
-Updated: 2026-05-09 15:37:14 +08:00
+Updated: 2026-05-09 16:08:56 +08:00
 
 `js-evolution-agent` is a controlled self-evolution host instance. It reuses `js-evolution-engine` as the OADA runtime, reads Cyber-Taoist documents as authoritative context, and stores local intelligence through `js-intel-store`.
 
@@ -8,7 +8,7 @@ Updated: 2026-05-09 15:37:14 +08:00
 
 - `js-evolution-engine`: engine, pipelines, action registry, decision queue, verification helpers.
 - `examples/cyber-taoist-demo/cyber-taoist-docs`: read-only `CONSTITUTION.md` and `SKILL.md` context.
-- `js-intel-store`: file-backed intelligence memory under `data/intelligence`.
+- `js-intel-store`: file-backed intelligence memory under `runtime/subjects/<data_namespace>/data/intelligence`.
 - `js-evolution-agent`: host adapter, local policy, controlled action handlers, CLI, reports, and runtime data.
 
 ## Install
@@ -46,13 +46,17 @@ First-version commands:
 - `jea data status --json`: show runtime data status as machine-readable JSON.
 - `jea data init`: create runtime data directories without deleting history.
 - `jea data init --all`: create the default goals template and append seed intelligence.
-- `jea data backup [--name NAME]`: copy `data/` to `backups/`.
+- `jea data backup [--name NAME]`: back up the active subject runtime data to `backups/subjects/<data_namespace>/`.
 - `jea data reset [--yes]`: remove local runtime data.
 - `jea intel summary [--days N] [--limit N]`: show recent intelligence memory.
 - `jea audit queue`: check decision queue health, unknown actions, and stale in-progress work.
 - `jea llm ping [--mock]`: test DeepSeek or local MockAIClient connectivity.
-- `jea policy check`: verify required local policy sections.
-- `jea subject show`: show the current Subject and Core Layer from `policies/project-guidance.md`.
+- `jea policy check`: verify required active subject policy sections.
+- `jea subject list`: list configured subject policies.
+- `jea subject show`: show the active Subject, Core Layer, namespace, and runtime paths.
+- `jea subject init <name> [--use]`: create a new subject policy from the project template.
+- `jea subject use <name>`: switch the active subject policy.
+- `jea subject check`: validate the active subject policy.
 - `jea actions list`: list registered action types.
 - `jea actions check`: check queued decisions for unknown action types.
 
@@ -93,7 +97,9 @@ This project uses [DeepSeek's OpenAI-compatible Chat Completions API](https://ap
 
 By default, `oada.config.mjs` reads Cyber-Taoist Markdown from the installed `js-evolution-engine` package (`examples/cyber-taoist-demo/cyber-taoist-docs/`), plus:
 
-- `policies/project-guidance.md`
+- the active subject policy configured by `policies/active-subject.json`
+
+`policies/project-guidance.md` is kept as a compatibility entry. New subject policies live under `policies/subjects/`.
 
 To use a different Cyber-Taoist docs directory:
 
@@ -102,9 +108,50 @@ $env:CYBER_TAOIST_DOCS_DIR = 'D:\path\to\cyber-taoist-docs'
 jea run
 ```
 
+## Subjects
+
+Cyber-Taoist analysis requires a defined subject. `js-evolution-agent` manages subjects as policy files:
+
+```text
+policies/
+  active-subject.json
+  subjects/
+    js-evolution-agent.md
+  templates/
+    project.md
+```
+
+`policies/active-subject.json` and `policies/subjects/` are local state and are ignored by Git by default. Commit templates and stable project defaults, not operator-specific active subject files. `policies/project-guidance.md` remains the committed compatibility/default policy.
+
+Common commands:
+
+```powershell
+jea subject list
+jea subject show
+jea subject init my-product
+jea subject use my-product
+jea subject check
+```
+
+Each active subject owns a separate data namespace under `runtime/subjects/<data_namespace>/`. After switching subjects, initialize that subject runtime before running:
+
+```powershell
+jea data init --all
+```
+
 ## Runtime Data
 
-`data/evolution`, `data/intelligence`, and `data/goals` are local runtime state.
+Runtime data is isolated by active subject:
+
+```text
+runtime/subjects/<data_namespace>/
+  data/
+    evolution/
+    intelligence/
+    goals/
+```
+
+`policies/active-subject.json` decides the current subject and `data_namespace`. `jea run`, `jea data status/init/reset/backup`, `jea intel summary`, `jea audit queue`, and `jea actions check` all use the current namespace by default.
 
 Use `init` for a non-destructive first setup:
 
@@ -114,10 +161,10 @@ jea data init --all
 
 This creates:
 
-- `data/evolution`
-- `data/intelligence`
-- `data/goals`
-- `data/goals/active_goals.json` when missing
+- `runtime/subjects/<data_namespace>/data/evolution`
+- `runtime/subjects/<data_namespace>/data/intelligence`
+- `runtime/subjects/<data_namespace>/data/goals`
+- `runtime/subjects/<data_namespace>/data/goals/active_goals.json` when missing
 - one initialization observation and one evolution event when `--seed` or `--all` is used
 
 Useful variants:
@@ -132,15 +179,17 @@ jea data backup --name before-subject-change
 
 `init` does not delete history and does not overwrite existing files by default. Use `--force` only if you want to overwrite the default goals template.
 
-If you change the evolution subject in `policies/project-guidance.md`, reset data so the next cycle does not reuse old memory:
+If you change the active evolution subject, the next commands automatically read and write that subject namespace. `reset` only removes the current subject runtime data:
 
 ```powershell
 jea data reset --yes
 ```
 
-This deletes `data/evolution`, `data/intelligence`, and `data/goals` if present. It does not delete `.env` or source files.
+This deletes the current subject's `data/evolution`, `data/intelligence`, and `data/goals` if present. It does not delete `.env`, source files, or other subject namespaces.
 
-`js-intel-store` writes these sources under `data/intelligence`:
+The legacy top-level `data/` directory is still ignored for compatibility with older local runs, but it is no longer the default write target.
+
+`js-intel-store` writes these sources under the current subject's `data/intelligence`:
 
 - `intel_observations`: daily JSONL observations.
 - `evolution_events`: append-only evolution event log.

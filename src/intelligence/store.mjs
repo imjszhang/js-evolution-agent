@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
 import {
   DataSourceRegistry,
   StorageEngine,
@@ -32,10 +31,13 @@ function formatList(title, records, render) {
 
 export class IntelligenceStore {
   constructor({
-    baseDir = join(process.cwd(), 'data', 'intelligence'),
+    baseDir,
     timezone = DEFAULT_TIMEZONE,
     logger = null,
   } = {}) {
+    if (!baseDir) {
+      throw new Error('IntelligenceStore requires an explicit baseDir. Use the active subject runtime data path.');
+    }
     this.registry = new DataSourceRegistry().registerAll(INTELLIGENCE_SPECS);
     this.engine = new StorageEngine({
       baseDir,

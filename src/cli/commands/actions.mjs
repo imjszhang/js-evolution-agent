@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import { getProjectRoot } from '../utils/project.mjs';
 import { readJsonSafe } from '../utils/files.mjs';
+import { getActiveSubjectRuntimeInfo } from '../utils/subjects.mjs';
 
 export function findUnknownActions(decisions, validNames) {
   const valid = validNames instanceof Set ? validNames : new Set(validNames);
@@ -10,6 +11,12 @@ export function findUnknownActions(decisions, validNames) {
     if (type && !valid.has(type)) unknown.push({ id: decision.id, type });
   }
   return unknown;
+}
+
+export function readActiveDecisionQueue(root) {
+  const runtime = getActiveSubjectRuntimeInfo(root);
+  const queue = readJsonSafe(join(runtime.runtimeRoot, 'data', 'evolution', 'pending_decisions.json'), { decisions: [] });
+  return { runtime, queue };
 }
 
 async function loadActionRegistry() {
@@ -33,10 +40,10 @@ export async function actionsCommand({ subcommand } = {}) {
   if (subcommand === 'check') {
     const actionRegistry = await loadActionRegistry();
     const root = getProjectRoot();
-    const queue = readJsonSafe(join(root, 'data', 'evolution', 'pending_decisions.json'), { decisions: [] });
+    const { runtime, queue } = readActiveDecisionQueue(root);
     const unknown = findUnknownActions(queue.decisions, actionRegistry.validNames());
     if (!unknown.length) {
-      console.log('All queued action types are registered.');
+      console.log(`All queued action types are registered for ${runtime.subject} (${runtime.dataNamespace}).`);
       return 0;
     }
     console.log('Unknown queued action types:');
