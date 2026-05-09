@@ -1,6 +1,6 @@
 # js-evolution-agent
 
-Updated: 2026-05-09 15:06:43 +08:00
+Updated: 2026-05-09 15:19:44 +08:00
 
 `js-evolution-agent` is a controlled self-evolution host instance. It reuses `js-evolution-engine` as the OADA runtime, reads Cyber-Taoist documents as authoritative context, and stores local intelligence through `js-intel-store`.
 
@@ -43,6 +43,9 @@ First-version commands:
 - `jea doctor`: check Node, dependencies, `.env`, DeepSeek config, docs, and config files.
 - `jea run [--mock] [--deepseek]`: run the full `intel -> exec -> verify -> intelligence receipts` loop.
 - `jea data status`: show runtime data file counts and latest files.
+- `jea data status --json`: show runtime data status as machine-readable JSON.
+- `jea data init`: create runtime data directories without deleting history.
+- `jea data init --all`: create the default goals template and append seed intelligence.
 - `jea data reset [--yes]`: remove local runtime data.
 - `jea subject show`: show the current Subject and Core Layer from `policies/project-guidance.md`.
 - `jea actions list`: list registered action types.
@@ -96,7 +99,34 @@ jea run
 
 ## Runtime Data
 
-`data/evolution` and `data/intelligence` are local runtime state. If you change the evolution subject in `policies/project-guidance.md`, reset data so the next cycle does not reuse old memory:
+`data/evolution`, `data/intelligence`, and `data/goals` are local runtime state.
+
+Use `init` for a non-destructive first setup:
+
+```powershell
+jea data init --all
+```
+
+This creates:
+
+- `data/evolution`
+- `data/intelligence`
+- `data/goals`
+- `data/goals/active_goals.json` when missing
+- one initialization observation and one evolution event when `--seed` or `--all` is used
+
+Useful variants:
+
+```powershell
+jea data init
+jea data init --goals
+jea data init --seed
+jea data init --all --json
+```
+
+`init` does not delete history and does not overwrite existing files by default. Use `--force` only if you want to overwrite the default goals template.
+
+If you change the evolution subject in `policies/project-guidance.md`, reset data so the next cycle does not reuse old memory:
 
 ```powershell
 jea data reset --yes
@@ -122,4 +152,3 @@ The first phase only records observations, probe proposals, retrospectives, rece
 ```powershell
 npm test
 ```
-

@@ -1,5 +1,14 @@
-import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import {
+  existsSync,
+  mkdirSync,
+  renameSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 
 export function readJsonSafe(filePath, fallback = null) {
   try {
@@ -17,6 +26,37 @@ export function readTextSafe(filePath, fallback = '') {
   } catch {
     return fallback;
   }
+}
+
+export function ensureProjectDir(root, relativeDir) {
+  const full = resolve(root, relativeDir);
+  const normalizedRoot = resolve(root);
+  if (!full.startsWith(normalizedRoot)) {
+    throw new Error(`Refusing to create outside project root: ${full}`);
+  }
+  const existed = existsSync(full);
+  mkdirSync(full, { recursive: true });
+  return { path: full, created: !existed };
+}
+
+export function writeJsonFile(filePath, data) {
+  mkdirSync(dirname(filePath), { recursive: true });
+  writeFileSync(`${filePath}.tmp`, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+  renameSync(`${filePath}.tmp`, filePath);
+}
+
+export function writeJsonIfMissing(root, relativeFile, data, { force = false } = {}) {
+  const full = resolve(root, relativeFile);
+  const normalizedRoot = resolve(root);
+  if (!full.startsWith(normalizedRoot)) {
+    throw new Error(`Refusing to write outside project root: ${full}`);
+  }
+  const existed = existsSync(full);
+  if (existed && !force) {
+    return { path: full, written: false, skipped: true, existed: true };
+  }
+  writeJsonFile(full, data);
+  return { path: full, written: true, skipped: false, existed };
 }
 
 export function countFiles(dirPath) {

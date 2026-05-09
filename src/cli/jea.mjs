@@ -17,6 +17,9 @@ Commands:
   run [--mock]           Run the full intel -> exec -> verify loop
   run --deepseek         Require DeepSeek API configuration
   data status            Show runtime data status
+  data status --json     Show runtime data status as JSON
+  data init              Create runtime data directories
+  data init --all        Create goals template and seed intelligence
   data reset [--yes]     Remove local runtime data
   subject show           Show Subject and Core Layer policy
   actions list           List registered action types
@@ -26,6 +29,7 @@ Commands:
 Examples:
   jea doctor
   jea run --mock
+  jea data init --all
   jea data reset --yes
   jea actions check`;
 }
