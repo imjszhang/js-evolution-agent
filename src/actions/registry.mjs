@@ -27,8 +27,8 @@ actionRegistry.register(new ActionTypeSpec({
 
 actionRegistry.register(new ActionTypeSpec({
   name: 'run_probe',
-  description: 'Execute an approved read-only probe and persist structured evidence.',
-  promptHint: 'Run a read-only probe (params: probe_type=file_exists|jsonl_validate|keyword_search, target, hypothesis, success_signal, failure_signal, death_boundary, optional keywords/required_fields)',
+  description: 'Run a sandboxed read-only probe or investigation and persist structured evidence.',
+  promptHint: 'Run a read-only probe/investigation (prefer params: objective, plan, targets/initial_targets; optional probe_type=file_exists|jsonl_validate|keyword_search|investigation, keywords, required_fields, budget). The runner may inspect project-local non-sensitive text files and records evidence.',
   defaultRisk: 'low',
   defaultPriority: 'medium',
   autoExecutable: true,

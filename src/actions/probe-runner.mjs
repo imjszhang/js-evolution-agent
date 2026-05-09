@@ -4,7 +4,7 @@ import {
   readdirSync,
   statSync,
 } from 'node:fs';
-import { basename, extname, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 
 const TEXT_EXTENSIONS = new Set([
   '.js',
@@ -20,6 +20,8 @@ const TEXT_EXTENSIONS = new Set([
 const DEFAULT_MAX_FILES = 100;
 const DEFAULT_MAX_BYTES = 256 * 1024;
 const DEFAULT_MAX_MATCHES = 20;
+const DEFAULT_MAX_STEPS = 12;
+const RECENT_FILE_LIMIT = 10;
 
 function asArray(value) {
   if (value == null) return [];
@@ -35,72 +37,68 @@ function isInside(child, parent) {
   return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
 }
 
-function defaultDocsDir(sourceRoot) {
-  return join(
-    sourceRoot,
-    'node_modules',
-    'js-evolution-engine',
-    'examples',
-    'cyber-taoist-demo',
-    'cyber-taoist-docs',
-  );
-}
-
-function allowedRoots(ctx) {
+function sandbox(ctx) {
   const sourceRoot = resolve(ctx?.host?.sourceRoot ?? ctx?.projectRoot ?? process.cwd());
-  const roots = [
-    ctx?.host?.dataRoot,
-    join(sourceRoot, 'policies'),
-    defaultDocsDir(sourceRoot),
-  ].filter(Boolean).map((root) => resolve(root));
+  const externalReadRoots = [];
 
   if (process.env.CYBER_TAOIST_DOCS_DIR) {
-    roots.push(resolve(process.env.CYBER_TAOIST_DOCS_DIR));
+    externalReadRoots.push(resolve(process.env.CYBER_TAOIST_DOCS_DIR));
   }
 
   return {
     sourceRoot,
-    roots,
-    files: [join(sourceRoot, 'README.md')],
+    externalReadRoots,
   };
 }
 
 function blockedReason(fullPath, ctx) {
-  const { roots, files } = allowedRoots(ctx);
+  const { sourceRoot, externalReadRoots } = sandbox(ctx);
   const resolvedPath = resolve(fullPath);
   const segments = pathSegments(resolvedPath);
   const base = basename(resolvedPath).toLowerCase();
 
   if (segments.includes('archives')) return 'archives directory is off-limits';
-  if (base === '.env' || base.includes('credential') || base.includes('secret') || base.includes('token')) {
+  if (segments.includes('.git')) return '.git directory is off-limits';
+  if (base === '.env'
+    || base.endsWith('.pem')
+    || base.endsWith('.key')
+    || base.includes('credential')
+    || base.includes('secret')
+    || base.includes('token')) {
     return 'sensitive files are off-limits';
   }
 
-  const allowed = roots.some((root) => isInside(resolvedPath, root))
-    || files.some((file) => resolvedPath === resolve(file));
+  if (segments.includes('node_modules')
+    && !segments.includes('js-evolution-engine')
+    && !segments.includes('js-intel-store')) {
+    return 'node_modules is off-limits except known local evolution packages';
+  }
 
-  return allowed ? null : 'target is outside the phase-2 read whitelist';
+  const allowed = isInside(resolvedPath, sourceRoot)
+    || externalReadRoots.some((root) => isInside(resolvedPath, root));
+
+  return allowed ? null : 'target is outside the read-only sandbox';
 }
 
 function resolveTarget(target, ctx) {
-  const { sourceRoot } = allowedRoots(ctx);
+  const { sourceRoot } = sandbox(ctx);
   const text = String(target ?? '').trim();
   if (!text) throw new Error('missing target');
   return resolve(sourceRoot, text);
 }
 
 function relPath(fullPath, ctx) {
-  const { sourceRoot } = allowedRoots(ctx);
+  const { sourceRoot } = sandbox(ctx);
   const rel = relative(sourceRoot, fullPath);
   return rel && !rel.startsWith('..') ? rel : fullPath;
 }
 
 function blockedResult(action, ctx, reason, extra = {}) {
   const probeId = action?.params?.probe_id ?? action?.probe_id ?? action?.id ?? `probe-${Date.now()}`;
-  const target = action?.params?.target ?? action?.target ?? 'unspecified';
+  const target = action?.params?.target ?? action?.params?.targets ?? action?.params?.initial_targets ?? action?.target ?? 'unspecified';
   return {
     probe_id: probeId,
-    probe_type: action?.params?.probe_type ?? action?.probe_type ?? 'unknown',
+    probe_type: action?.params?.probe_type ?? action?.probe_type ?? 'investigation',
     target,
     status: 'blocked',
     success: false,
@@ -112,6 +110,49 @@ function blockedResult(action, ctx, reason, extra = {}) {
     reason,
     ...extra,
   };
+}
+
+function safeStat(fullPath) {
+  try {
+    return statSync(fullPath);
+  } catch {
+    return null;
+  }
+}
+
+function canReadTextFile(fullPath) {
+  const stats = safeStat(fullPath);
+  if (!stats || stats.isDirectory()) return false;
+  return TEXT_EXTENSIONS.has(extname(fullPath).toLowerCase()) && stats.size <= DEFAULT_MAX_BYTES;
+}
+
+function nearbyFiles(fullPath, ctx) {
+  const parent = dirname(fullPath);
+  const reason = blockedReason(parent, ctx);
+  if (reason || !existsSync(parent)) return [];
+
+  const targetBase = basename(fullPath).toLowerCase();
+  const targetExt = extname(targetBase);
+  const prefix = targetBase.split(/[-_.]/).filter(Boolean)[0] ?? '';
+  return readdirSync(parent, { withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => {
+      const candidate = join(parent, entry.name);
+      const stats = safeStat(candidate);
+      return {
+        name: entry.name,
+        path: relPath(candidate, ctx),
+        size: stats?.size ?? null,
+        mtime_ms: stats?.mtimeMs ?? 0,
+      };
+    })
+    .filter((entry) => {
+      const name = entry.name.toLowerCase();
+      return (targetExt && name.endsWith(targetExt)) || (prefix && name.includes(prefix));
+    })
+    .sort((a, b) => b.mtime_ms - a.mtime_ms)
+    .slice(0, RECENT_FILE_LIMIT)
+    .map(({ mtime_ms, ...entry }) => entry);
 }
 
 function fileExistsProbe(action, ctx) {
@@ -140,6 +181,7 @@ function fileExistsProbe(action, ctx) {
       exists,
       kind,
       size,
+      nearby: exists ? [] : nearbyFiles(fullPath, ctx),
     },
     success_signal_matched: exists,
     failure_signal_matched: !exists,
@@ -247,14 +289,41 @@ function collectTextFiles(root, ctx, limit, files = []) {
   return files;
 }
 
+function tokenize(text) {
+  return String(text ?? '')
+    .match(/[A-Za-z0-9_.-]{4,}/g)
+    ?.filter((token) => !/^(this|that|with|from|probe|target|read|file|check|whether)$/i.test(token))
+    .slice(0, 8) ?? [];
+}
+
+function inferKeywords(action) {
+  const params = action.params ?? {};
+  return [
+    ...asArray(params.keywords ?? params.keyword).map(String),
+    ...tokenize(params.objective),
+    ...tokenize(params.plan),
+    ...tokenize(params.questions),
+    ...tokenize(action.description),
+  ].filter(Boolean).filter((value, index, arr) => arr.indexOf(value) === index).slice(0, 8);
+}
+
 function keywordSearchProbe(action, ctx) {
   const target = action.params.target;
-  const keywords = asArray(action.params.keywords ?? action.params.keyword).map(String).filter(Boolean);
-  if (!keywords.length) return blockedResult(action, ctx, 'keyword_search requires keywords');
+  const keywords = inferKeywords(action);
 
   const fullPath = resolveTarget(target, ctx);
   const reason = blockedReason(fullPath, ctx);
   if (reason) return blockedResult(action, ctx, reason);
+  if (!keywords.length) {
+    return {
+      status: 'inconclusive',
+      success: false,
+      summary: 'Keyword search had no explicit or inferred keywords',
+      evidence: { target: relPath(fullPath, ctx), keywords: [], matches: [] },
+      success_signal_matched: false,
+      failure_signal_matched: false,
+    };
+  }
 
   const maxFiles = Number(action.params.max_files ?? DEFAULT_MAX_FILES);
   const maxMatches = Number(action.params.max_matches ?? DEFAULT_MAX_MATCHES);
@@ -301,29 +370,258 @@ function keywordSearchProbe(action, ctx) {
   };
 }
 
+function directoryInventory(fullPath, ctx, budget) {
+  const reason = blockedReason(fullPath, ctx);
+  if (reason) return { blocked: reason };
+  if (!existsSync(fullPath)) {
+    return {
+      exists: false,
+      path: relPath(fullPath, ctx),
+      nearby: nearbyFiles(fullPath, ctx),
+    };
+  }
+
+  const stats = statSync(fullPath);
+  if (!stats.isDirectory()) {
+    return {
+      exists: true,
+      kind: 'file',
+      path: relPath(fullPath, ctx),
+      size: stats.size,
+      extension: extname(fullPath).toLowerCase(),
+      readable_text: canReadTextFile(fullPath),
+    };
+  }
+
+  const entries = readdirSync(fullPath, { withFileTypes: true })
+    .map((entry) => {
+      const entryPath = join(fullPath, entry.name);
+      const entryStats = safeStat(entryPath);
+      return {
+        name: entry.name,
+        path: relPath(entryPath, ctx),
+        kind: entry.isDirectory() ? 'directory' : 'file',
+        size: entryStats?.size ?? null,
+        mtime_ms: entryStats?.mtimeMs ?? 0,
+      };
+    })
+    .filter((entry) => !blockedReason(resolve(ctx?.host?.sourceRoot ?? ctx?.projectRoot ?? process.cwd(), entry.path), ctx))
+    .sort((a, b) => b.mtime_ms - a.mtime_ms)
+    .slice(0, budget.max_files)
+    .map(({ mtime_ms, ...entry }) => entry);
+
+  return {
+    exists: true,
+    kind: 'directory',
+    path: relPath(fullPath, ctx),
+    entries,
+  };
+}
+
+function readTextSummary(fullPath, ctx, budget) {
+  const reason = blockedReason(fullPath, ctx);
+  if (reason) return { blocked: reason };
+  if (!existsSync(fullPath)) return { exists: false, path: relPath(fullPath, ctx), nearby: nearbyFiles(fullPath, ctx) };
+  if (!canReadTextFile(fullPath)) {
+    return {
+      exists: true,
+      path: relPath(fullPath, ctx),
+      readable_text: false,
+      reason: 'file is not a supported text file or exceeds read budget',
+    };
+  }
+
+  const text = readFileSync(fullPath, 'utf-8').slice(0, budget.max_bytes);
+  const lines = text.split(/\r?\n/);
+  let parsed_json_keys = null;
+  let jsonl_valid_lines = null;
+
+  if (extname(fullPath).toLowerCase() === '.json') {
+    try {
+      const parsed = JSON.parse(text);
+      parsed_json_keys = parsed && typeof parsed === 'object' ? Object.keys(parsed).slice(0, 20) : [];
+    } catch {
+      parsed_json_keys = null;
+    }
+  }
+
+  if (extname(fullPath).toLowerCase() === '.jsonl') {
+    jsonl_valid_lines = lines.filter((line) => line.trim()).reduce((count, line) => {
+      try {
+        JSON.parse(line);
+        return count + 1;
+      } catch {
+        return count;
+      }
+    }, 0);
+  }
+
+  return {
+    exists: true,
+    path: relPath(fullPath, ctx),
+    size: statSync(fullPath).size,
+    lines: lines.length,
+    preview: lines.slice(0, 20).map((line) => line.slice(0, 240)),
+    parsed_json_keys,
+    jsonl_valid_lines,
+  };
+}
+
+function budgetFrom(params) {
+  const budget = params.budget && typeof params.budget === 'object' ? params.budget : {};
+  return {
+    max_steps: Number(budget.max_steps ?? params.max_steps ?? DEFAULT_MAX_STEPS),
+    max_files: Number(budget.max_files ?? params.max_files ?? 30),
+    max_bytes: Number(budget.max_bytes ?? params.max_bytes ?? DEFAULT_MAX_BYTES),
+    max_matches: Number(budget.max_matches ?? params.max_matches ?? DEFAULT_MAX_MATCHES),
+  };
+}
+
+function targetsFrom(params, ctx) {
+  const targets = [
+    ...asArray(params.target),
+    ...asArray(params.targets),
+    ...asArray(params.initial_targets),
+  ].filter(Boolean);
+  if (targets.length) return targets;
+  const { sourceRoot } = sandbox(ctx);
+  return [params.default_target ?? sourceRoot];
+}
+
+function investigationProbe(action, ctx) {
+  const params = action.params ?? {};
+  const budget = budgetFrom(params);
+  const keywords = inferKeywords(action);
+  const steps = [];
+  let filesRead = 0;
+  let filesListed = 0;
+  let matchesFound = 0;
+  let blocked = 0;
+
+  for (const target of targetsFrom(params, ctx)) {
+    if (steps.length >= budget.max_steps) break;
+    let fullPath;
+    try {
+      fullPath = resolveTarget(target, ctx);
+    } catch (e) {
+      steps.push({ tool: 'resolve_target', target, status: 'blocked', summary: e.message });
+      blocked += 1;
+      continue;
+    }
+
+    const inventory = directoryInventory(fullPath, ctx, budget);
+    steps.push({
+      tool: 'inspect_target',
+      target: String(target),
+      status: inventory.blocked ? 'blocked' : inventory.exists === false ? 'missing' : 'ok',
+      summary: inventory.blocked
+        ? inventory.blocked
+        : inventory.exists === false
+          ? 'target does not exist'
+          : `${inventory.kind ?? 'target'} inspected`,
+      evidence: inventory,
+    });
+    if (inventory.blocked) blocked += 1;
+    if (inventory.kind === 'directory') filesListed += inventory.entries?.length ?? 0;
+
+    if (steps.length >= budget.max_steps || inventory.blocked || inventory.exists === false) continue;
+
+    if (inventory.kind === 'file') {
+      const summary = readTextSummary(fullPath, ctx, budget);
+      steps.push({
+        tool: 'read_text_summary',
+        target: relPath(fullPath, ctx),
+        status: summary.blocked ? 'blocked' : summary.readable_text === false ? 'inconclusive' : 'ok',
+        summary: summary.blocked ?? summary.reason ?? `read ${summary.lines ?? 0} line(s)`,
+        evidence: summary,
+      });
+      if (summary.exists && summary.readable_text !== false && !summary.blocked) filesRead += 1;
+    } else if (keywords.length) {
+      const search = keywordSearchProbe({
+        ...action,
+        params: {
+          ...params,
+          target,
+          keywords,
+          max_files: budget.max_files,
+          max_matches: budget.max_matches,
+        },
+      }, ctx);
+      steps.push({
+        tool: 'keyword_search',
+        target: String(target),
+        status: search.status,
+        summary: search.summary,
+        evidence: search.evidence,
+      });
+      matchesFound += search.evidence?.matches?.length ?? 0;
+    }
+  }
+
+  const usefulEvidence = steps.some((step) => ['ok', 'succeeded'].includes(step.status)
+    || step.evidence?.entries?.length
+    || step.evidence?.matches?.length
+    || step.evidence?.preview?.length);
+  const status = usefulEvidence ? 'succeeded' : blocked && blocked === steps.length ? 'blocked' : 'inconclusive';
+
+  return {
+    status,
+    success: status === 'succeeded',
+    summary: `Read-only investigation ${status}: ${steps.length} step(s), ${filesRead} file(s) read, ${matchesFound} match(es)`,
+    evidence: {
+      objective: params.objective ?? action.description ?? null,
+      plan: params.plan ?? null,
+      questions: asArray(params.questions),
+      inferred_keywords: keywords,
+      steps,
+      files_read: filesRead,
+      files_listed: filesListed,
+      matches_found: matchesFound,
+      budget,
+    },
+    success_signal_matched: status === 'succeeded',
+    failure_signal_matched: status === 'inconclusive',
+  };
+}
+
 export function runReadOnlyProbe(action, ctx) {
   const params = action?.params ?? {};
   const probeId = params.probe_id ?? action?.probe_id ?? action?.id ?? `probe-${Date.now()}`;
-  const probeType = params.probe_type ?? action?.probe_type;
-
-  if (!probeType) return blockedResult(action, ctx, 'missing probe_type');
-  if (!params.target) return blockedResult(action, ctx, 'missing target');
+  const probeType = params.probe_type ?? action?.probe_type ?? 'investigation';
 
   let result;
   if (probeType === 'file_exists') {
+    if (!params.target) return blockedResult(action, ctx, 'missing target');
     result = fileExistsProbe({ ...action, params }, ctx);
   } else if (probeType === 'jsonl_validate') {
+    if (!params.target) return blockedResult(action, ctx, 'missing target');
     result = jsonlValidateProbe({ ...action, params }, ctx);
   } else if (probeType === 'keyword_search') {
-    result = keywordSearchProbe({ ...action, params }, ctx);
+    if (!params.target) {
+      result = investigationProbe({ ...action, params: { ...params, probe_type: 'investigation' } }, ctx);
+    } else {
+      result = keywordSearchProbe({ ...action, params }, ctx);
+    }
+  } else if (probeType === 'investigation') {
+    result = investigationProbe({ ...action, params }, ctx);
+  } else if (params.objective || params.plan || params.targets || params.initial_targets) {
+    result = investigationProbe({ ...action, params: { ...params, probe_type: 'investigation' } }, ctx);
+    result.summary = `Unsupported probe_type '${probeType}' handled as investigation. ${result.summary}`;
   } else {
     result = blockedResult(action, ctx, `unsupported probe_type: ${probeType}`);
   }
 
+  if (probeType === 'keyword_search' && !params.keywords && !params.keyword && result.status === 'failed') {
+    result.status = 'inconclusive';
+    result.success = false;
+    result.summary = `${result.summary}; keywords were inferred, provide explicit keywords for stricter matching`;
+  }
+
   return {
     probe_id: probeId,
-    probe_type: probeType,
-    target: params.target,
+    probe_type: result.probe_type ?? probeType,
+    target: params.target ?? params.targets ?? params.initial_targets ?? null,
+    objective: params.objective ?? action.description ?? null,
     hypothesis: params.hypothesis ?? null,
     success_signal: params.success_signal ?? null,
     failure_signal: params.failure_signal ?? null,

@@ -62,7 +62,6 @@ export const actionHandlers = {
   },
 
   run_probe(action, ctx) {
-    requireParams(action, ['probe_type', 'target', 'hypothesis', 'success_signal', 'failure_signal', 'death_boundary']);
     const store = storeFrom(ctx);
     const probeResult = runReadOnlyProbe(action, ctx);
     const event = {

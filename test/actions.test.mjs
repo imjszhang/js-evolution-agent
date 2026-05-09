@@ -103,6 +103,45 @@ describe('controlled action handlers', () => {
       .toBe('jsonl_validate');
   });
 
+  it('runs open-ended investigations without requiring a probe_type', () => {
+    const ctx = makeCtx();
+    writeFileSync(join(ctx.projectRoot, 'README.md'), '# Test Project\n\nEvolution runner evidence.\n', 'utf-8');
+
+    const result = actionHandlers.run_probe({
+      type: 'run_probe',
+      description: 'Investigate evolution runner evidence in the project',
+      params: {
+        objective: 'Find evolution runner evidence',
+        targets: [ctx.projectRoot],
+        budget: { max_files: 10, max_steps: 5 },
+      },
+    }, ctx);
+
+    const probeResult = ctx.host.intelligenceStore.readProbeResults({ limit: 5 })[0];
+    expect(result.success).toBe(true);
+    expect(result.status).toBe('succeeded');
+    expect(probeResult.probe_type).toBe('investigation');
+    expect(probeResult.evidence.steps.some((step) => step.tool === 'keyword_search')).toBe(true);
+  });
+
+  it('infers keyword_search keywords from probe context', () => {
+    const ctx = makeCtx();
+    const target = join(ctx.projectRoot, 'README.md');
+    writeFileSync(target, '# Test Project\n\nPending decisions are visible.\n', 'utf-8');
+
+    const result = actionHandlers.run_probe({
+      type: 'run_probe',
+      description: 'Search for pending decisions',
+      params: {
+        probe_type: 'keyword_search',
+        target,
+      },
+    }, ctx);
+
+    expect(result.success).toBe(true);
+    expect(result.status).toBe('succeeded');
+  });
+
   it('blocks probes against sensitive files while still recording the outcome', () => {
     const ctx = makeCtx();
     const target = join(ctx.projectRoot, '.env');
