@@ -1,6 +1,6 @@
 # js-evolution-agent
 
-Updated: 2026-05-09 14:52:30 +08:00
+Updated: 2026-05-09 15:06:43 +08:00
 
 `js-evolution-agent` is a controlled self-evolution host instance. It reuses `js-evolution-engine` as the OADA runtime, reads Cyber-Taoist documents as authoritative context, and stores local intelligence through `js-intel-store`.
 
@@ -18,10 +18,7 @@ cd D:\github\My\js-evolution-agent
 npm install
 ```
 
-The local dependencies are declared with `file:` links:
-
-- `file:../js-evolution-engine`
-- `file:../js-intel-store`
+Runtime libraries are consumed from npm (`js-evolution-engine`, `js-intel-store`); `npm install` is enough after cloning.
 
 ## CLI
 
@@ -86,10 +83,8 @@ This project uses [DeepSeek's OpenAI-compatible Chat Completions API](https://ap
 
 ## Context Documents
 
-By default, `oada.config.mjs` reads:
+By default, `oada.config.mjs` reads Cyber-Taoist Markdown from the installed `js-evolution-engine` package (`examples/cyber-taoist-demo/cyber-taoist-docs/`), plus:
 
-- `../js-evolution-engine/examples/cyber-taoist-demo/cyber-taoist-docs/CONSTITUTION.md`
-- `../js-evolution-engine/examples/cyber-taoist-demo/cyber-taoist-docs/SKILL.md`
 - `policies/project-guidance.md`
 
 To use a different Cyber-Taoist docs directory:

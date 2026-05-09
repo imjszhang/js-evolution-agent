@@ -14,6 +14,7 @@ import {
   actionVerifiers,
 } from './src/actions/handlers.mjs';
 import { createIntelligenceStore } from './src/intelligence/store.mjs';
+import { getDefaultCyberTaoistDocsDir } from './src/cli/utils/project.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -21,7 +22,7 @@ function resolveDocsDir() {
   if (process.env.CYBER_TAOIST_DOCS_DIR) {
     return resolve(process.env.CYBER_TAOIST_DOCS_DIR);
   }
-  return resolve(__dirname, '..', 'js-evolution-engine', 'examples', 'cyber-taoist-demo', 'cyber-taoist-docs');
+  return getDefaultCyberTaoistDocsDir();
 }
 
 function readRequiredFile(fullPath, hint) {

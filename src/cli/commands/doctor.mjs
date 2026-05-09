@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { getProjectRoot, loadProjectEnv } from '../utils/project.mjs';
+import { getDefaultCyberTaoistDocsDir, getProjectRoot, loadProjectEnv } from '../utils/project.mjs';
 
 function statusLine(ok, label, detail = '') {
   const mark = ok ? 'OK ' : 'WARN';
@@ -22,8 +22,7 @@ export async function doctorCommand() {
   ok = statusLine(!!process.env.DEEPSEEK_API_KEY, 'DEEPSEEK_API_KEY', process.env.DEEPSEEK_API_KEY ? 'set' : 'missing') && ok;
   statusLine(!!process.env.DEEPSEEK_MODEL, 'DEEPSEEK_MODEL', process.env.DEEPSEEK_MODEL || 'default: deepseek-v4-flash');
 
-  const docsDir = process.env.CYBER_TAOIST_DOCS_DIR
-    || join(root, '..', 'js-evolution-engine', 'examples', 'cyber-taoist-demo', 'cyber-taoist-docs');
+  const docsDir = process.env.CYBER_TAOIST_DOCS_DIR || getDefaultCyberTaoistDocsDir();
   ok = statusLine(existsSync(join(docsDir, 'CONSTITUTION.md')), 'Cyber-Taoist CONSTITUTION.md', docsDir) && ok;
   ok = statusLine(existsSync(join(docsDir, 'SKILL.md')), 'Cyber-Taoist SKILL.md', docsDir) && ok;
   ok = statusLine(existsSync(join(root, 'oada.config.mjs')), 'oada.config.mjs') && ok;
