@@ -27,6 +27,11 @@ Commands:
   data backup            Back up active subject runtime data
   data reset [--yes]     Remove local runtime data
   intel summary          Show recent intelligence memory
+  intel report           Print the latest intel report (Markdown)
+  intel report list      List recent intel reports
+  intel report --cycle X Print intel report for cycle X
+  intel report --open    Open the latest intel report in your default viewer
+  intel report --json    Print the report index record as JSON
   audit queue            Check decision queue health
   llm ping               Test DeepSeek connectivity
   llm ping --mock        Test local mock AI path
@@ -66,7 +71,7 @@ export async function main(argv = process.argv.slice(2)) {
   if (command === 'doctor') return doctorCommand({ flags });
   if (command === 'run') return runCommand({ flags });
   if (command === 'data') return dataCommand({ subcommand, flags });
-  if (command === 'intel') return intelCommand({ subcommand, flags });
+  if (command === 'intel') return intelCommand({ subcommand, flags, args });
   if (command === 'audit') return auditCommand({ subcommand, flags });
   if (command === 'llm') return llmCommand({ subcommand, flags });
   if (command === 'policy') return policyCommand({ subcommand, flags });

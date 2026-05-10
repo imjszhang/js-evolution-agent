@@ -45,5 +45,12 @@ export const INTELLIGENCE_SPECS = [
     storageType: 'append_jsonl',
     filename: 'probe-results.jsonl',
   }),
+  new DataSourceSpec({
+    name: 'intel_reports',
+    description: 'Index of human-readable intel reports (one MD file per cycle, summary in this jsonl).',
+    storageType: 'append_jsonl',
+    subdir: 'reports',
+    filename: 'index.jsonl',
+  }),
 ];
 

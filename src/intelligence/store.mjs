@@ -100,6 +100,22 @@ export class IntelligenceStore {
     }, 'probe-result'));
   }
 
+  recordIntelReport(record) {
+    return this.engine.ingest('intel_reports', withId({
+      recorded_at: new Date().toISOString(),
+      ...record,
+    }, 'report'));
+  }
+
+  readIntelReports({ limit = 20 } = {}) {
+    return this.engine.readSource('intel_reports', { limit });
+  }
+
+  readLatestIntelReport() {
+    const records = this.readIntelReports({ limit: 1 });
+    return records?.[0] ?? null;
+  }
+
   readRecentIntel({ days = 7, limit = 20 } = {}) {
     return this.engine.readSource('intel_observations', { days }).slice(0, limit);
   }

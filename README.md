@@ -1,6 +1,6 @@
 # js-evolution-agent
 
-Updated: 2026-05-09 16:08:56 +08:00
+Updated: 2026-05-10 21:21:36 +08:00
 
 `js-evolution-agent` is a controlled self-evolution host instance. It reuses `js-evolution-engine` as the OADA runtime, reads Cyber-Taoist documents as authoritative context, and stores local intelligence through `js-intel-store`.
 
@@ -49,6 +49,11 @@ First-version commands:
 - `jea data backup [--name NAME]`: back up the active subject runtime data to `backups/subjects/<data_namespace>/`.
 - `jea data reset [--yes]`: remove local runtime data.
 - `jea intel summary [--days N] [--limit N]`: show recent intelligence memory.
+- `jea intel report`: print the latest human-readable intel report (Markdown) for the active subject.
+- `jea intel report list [--limit N]`: list recent intel reports with cycle id, time, and TL;DR.
+- `jea intel report --cycle <id>`: print the report for a specific cycle.
+- `jea intel report --open`: open the latest report in the OS default viewer (`open` on macOS, `xdg-open` on Linux, `start` on Windows).
+- `jea intel report --json`: print the index record (not the MD body) as JSON.
 - `jea audit queue`: check decision queue health, unknown actions, and stale in-progress work.
 - `jea llm ping [--mock]`: test DeepSeek or local MockAIClient connectivity.
 - `jea policy check`: verify required active subject policy sections.
@@ -199,6 +204,9 @@ The legacy top-level `data/` directory is still ignored for compatibility with o
 - `latest_review`: latest review JSON.
 - `action_receipts`: receipts from controlled handlers.
 - `probe_threads`: per-probe event streams.
+- `intel_reports`: index of human-readable intel reports. Each cycle's report is written as Markdown under `data/intelligence/reports/<cycle_id>.md`; this jsonl stores the index (cycle_id, generated_at, md_path, tldr, source, counts).
+
+After every successful Phase 1 (intel pipeline), a Phase 1.5 build step writes one Markdown report per cycle. The report aims to be human-readable first; a constrained `## Proposed Goal Revisions` section keeps it parseable for later automation. Generation prefers the configured AI client and falls back to a deterministic template when no AI is available or output fails the schema check (so `jea run --mock` works offline).
 
 ## Inspection And Audit
 

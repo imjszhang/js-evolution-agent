@@ -13,7 +13,9 @@ import { extractMarkdownSection } from '../src/cli/commands/subject.mjs';
 import { findUnknownActions, readActiveDecisionQueue } from '../src/cli/commands/actions.mjs';
 import { auditQueue } from '../src/cli/commands/audit.mjs';
 import { buildDefaultGoals, backupData, dataStatus, initData } from '../src/cli/commands/data.mjs';
-import { buildIntelSummary } from '../src/cli/commands/intel.mjs';
+import { buildIntelSummary, findReportRecord } from '../src/cli/commands/intel.mjs';
+import { buildIntelReport } from '../src/intelligence/report-builder.mjs';
+import { createIntelligenceStore } from '../src/intelligence/store.mjs';
 import { checkPolicy } from '../src/cli/commands/policy.mjs';
 import {
   createSubject,
@@ -305,6 +307,56 @@ describe('intel summary', () => {
     const activeSummary = buildIntelSummary(root, { days: 1, limit: 5 });
     expect(activeSummary.observations).toHaveLength(1);
     expect(activeSummary.events).toHaveLength(1);
+  });
+});
+
+describe('intel report cli helpers', () => {
+  it('returns no record when index is empty', () => {
+    const root = mkdtempSync(join(tmpdir(), 'jea-report-cli-'));
+    tempDir = root;
+    mkdirSync(join(root, 'policies'), { recursive: true });
+    writeFileSync(join(root, 'policies', 'project-guidance.md'), '## Subject\nagent\n');
+    initData(root);
+    const { record } = findReportRecord(root, {});
+    expect(record).toBeNull();
+  });
+
+  it('finds latest and by-cycle records after a report is written', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'jea-report-cli-'));
+    tempDir = root;
+    mkdirSync(join(root, 'policies'), { recursive: true });
+    writeFileSync(join(root, 'policies', 'project-guidance.md'), '## Subject\nagent\n');
+    initData(root, { all: true });
+
+    const runtime = getActiveSubjectRuntimeInfo(root);
+    const store = createIntelligenceStore({
+      baseDir: join(runtime.runtimeRoot, 'data', 'intelligence'),
+      timezone: 'Asia/Shanghai',
+    });
+    await buildIntelReport({
+      intelResult: { cycle_id: 'cycle-A', success: true, actions: [], decisions_queued: [] },
+      runtime,
+      store,
+      aiClient: null,
+      useAi: false,
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    await buildIntelReport({
+      intelResult: { cycle_id: 'cycle-B', success: true, actions: [], decisions_queued: [] },
+      runtime,
+      store,
+      aiClient: null,
+      useAi: false,
+    });
+
+    const latest = findReportRecord(root, {});
+    expect(latest.record.cycle_id).toBe('cycle-B');
+
+    const byCycle = findReportRecord(root, { cycle: 'cycle-A' });
+    expect(byCycle.record.cycle_id).toBe('cycle-A');
+
+    const missing = findReportRecord(root, { cycle: 'cycle-Z' });
+    expect(missing.record).toBeNull();
   });
 });
 

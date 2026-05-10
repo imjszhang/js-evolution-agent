@@ -10,6 +10,7 @@ import {
 } from 'js-evolution-engine';
 import loadConfig from './oada.config.mjs';
 import { getActiveSubjectRuntimeInfo } from './src/cli/utils/subjects.mjs';
+import { buildIntelReport } from './src/intelligence/report-builder.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -72,6 +73,40 @@ async function main() {
   });
   if (!intelResult.success) {
     throw new Error(intelResult.error || 'intel pipeline failed');
+  }
+
+  console.log('\n=== Phase 1.5: build intel report ===');
+  try {
+    const report = await buildIntelReport({
+      intelResult,
+      runtime,
+      store,
+      aiClient: cfg.aiClient,
+      logger: cfg.host?.logger,
+      useAi: true,
+    });
+    console.log(`  source: ${report.source}`);
+    console.log(`  report: ${report.mdPath}`);
+    if (report.indexRecord.tldr) {
+      console.log(`  tldr: ${report.indexRecord.tldr.slice(0, 200)}`);
+    }
+    store.recordEvolutionEvent({
+      type: 'intel_report',
+      status: 'ok',
+      cycle_id: intelResult.cycle_id,
+      report_path: report.mdPath,
+      source: report.source,
+      proposed_revision_count: report.indexRecord.proposed_revision_count,
+    });
+  } catch (e) {
+    const msg = e?.message || String(e);
+    console.warn(`  report generation failed (non-fatal): ${msg}`);
+    store.recordEvolutionEvent({
+      type: 'intel_report',
+      status: 'failed',
+      cycle_id: intelResult.cycle_id,
+      error: msg,
+    });
   }
 
   console.log('\n=== queued decisions ===');
