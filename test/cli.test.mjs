@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -14,6 +14,19 @@ import { findUnknownActions, readActiveDecisionQueue } from '../src/cli/commands
 import { auditQueue } from '../src/cli/commands/audit.mjs';
 import { buildDefaultGoals, backupData, dataStatus, initData } from '../src/cli/commands/data.mjs';
 import { buildIntelSummary, findReportRecord } from '../src/cli/commands/intel.mjs';
+import {
+  isValidSource,
+  listValidSources,
+  parseRecordsInput,
+  runIntelIngest,
+  validateRecordsForSource,
+} from '../src/cli/commands/intel-ingest.mjs';
+import {
+  defaultInboxDir,
+  drainInboxDir,
+  inboxDrain,
+  inboxPut,
+} from '../src/cli/commands/intel-inbox.mjs';
 import { buildIntelReport } from '../src/intelligence/report-builder.mjs';
 import { createIntelligenceStore } from '../src/intelligence/store.mjs';
 import { checkPolicy } from '../src/cli/commands/policy.mjs';
@@ -393,3 +406,145 @@ describe('active decision queue', () => {
   });
 });
 
+function makeIntelRoot(prefix) {
+  const root = mkdtempSync(join(tmpdir(), prefix));
+  tempDir = root;
+  mkdirSync(join(root, 'policies'), { recursive: true });
+  writeFileSync(join(root, 'policies', 'project-guidance.md'), '## Subject\nagent\n');
+  ensureDefaultSubject(root);
+  initData(root);
+  return root;
+}
+
+describe('intel ingest helpers', () => {
+  it('exposes valid sources from specs', () => {
+    const sources = listValidSources();
+    expect(sources).toContain('intel_observations');
+    expect(sources).toContain('probe_threads');
+    expect(isValidSource('intel_observations')).toBe(true);
+    expect(isValidSource('not_a_source')).toBe(false);
+  });
+
+  it('requires _entity_id for probe_threads', () => {
+    expect(() => validateRecordsForSource('probe_threads', [{ note: 'no entity' }])).toThrow(/_entity_id/);
+    expect(() => validateRecordsForSource('probe_threads', [{ _entity_id: 'p1', note: 'ok' }])).not.toThrow();
+    expect(() => validateRecordsForSource('intel_observations', [{ note: 'no entity' }])).not.toThrow();
+  });
+
+  it('parses records from a JSON file (object or array)', async () => {
+    const root = makeIntelRoot('jea-ingest-parse-');
+    const objPath = join(root, 'one.json');
+    writeFileSync(objPath, JSON.stringify({ id: 'o1', content: 'hello' }));
+    const arrPath = join(root, 'arr.json');
+    writeFileSync(arrPath, JSON.stringify([{ id: 'a1' }, { id: 'a2' }]));
+
+    expect(await parseRecordsInput({ file: objPath })).toEqual([{ id: 'o1', content: 'hello' }]);
+    expect(await parseRecordsInput({ file: arrPath })).toHaveLength(2);
+  });
+});
+
+describe('intel ingest command', () => {
+  it('writes records into intel_observations and is visible via summary', async () => {
+    const root = makeIntelRoot('jea-ingest-ok-');
+    const filePath = join(root, 'records.json');
+    writeFileSync(filePath, JSON.stringify([
+      { id: 'obs-cli-1', content: 'manual note 1', source: 'cli-test' },
+      { id: 'obs-cli-2', content: 'manual note 2', source: 'cli-test' },
+    ]));
+
+    const code = await runIntelIngest({ root, flags: { source: 'intel_observations', file: filePath, json: true } });
+    expect(code).toBe(0);
+
+    const summary = buildIntelSummary(root, { days: 1, limit: 10 });
+    const ids = summary.observations.map((o) => o.id);
+    expect(ids).toContain('obs-cli-1');
+    expect(ids).toContain('obs-cli-2');
+  });
+
+  it('rejects unknown source with usage exit code', async () => {
+    const root = makeIntelRoot('jea-ingest-bad-source-');
+    const filePath = join(root, 'records.json');
+    writeFileSync(filePath, JSON.stringify({ id: 'x' }));
+
+    const code = await runIntelIngest({ root, flags: { source: 'nope', file: filePath } });
+    expect(code).toBe(2);
+  });
+
+  it('rejects probe_threads records missing _entity_id', async () => {
+    const root = makeIntelRoot('jea-ingest-probe-');
+    const filePath = join(root, 'records.json');
+    writeFileSync(filePath, JSON.stringify([{ id: 'evt-1', note: 'missing entity' }]));
+
+    const code = await runIntelIngest({ root, flags: { source: 'probe_threads', file: filePath } });
+    expect(code).toBe(2);
+  });
+});
+
+describe('intel inbox', () => {
+  it('inboxPut writes a JSON file under _inbox with source in filename', async () => {
+    const root = makeIntelRoot('jea-inbox-put-');
+    const filePath = join(root, 'records.json');
+    writeFileSync(filePath, JSON.stringify([{ id: 'q1', content: 'queued' }]));
+
+    const code = await inboxPut({
+      root,
+      flags: { source: 'intel_observations', file: filePath, name: 'unit-test' },
+    });
+    expect(code).toBe(0);
+
+    const runtime = getActiveSubjectRuntimeInfo(root);
+    const dir = defaultInboxDir(runtime);
+    const list = readdirSync(dir);
+    expect(list.length).toBe(1);
+    expect(list[0]).toContain('intel_observations');
+    expect(list[0]).toContain('unit-test');
+  });
+
+  it('inboxDrain processes known, removes empty, keeps unknown source files', async () => {
+    const root = makeIntelRoot('jea-inbox-drain-');
+    const runtime = getActiveSubjectRuntimeInfo(root);
+    const dir = defaultInboxDir(runtime);
+    mkdirSync(dir, { recursive: true });
+
+    writeFileSync(join(dir, '01-known.json'), JSON.stringify({
+      source_type: 'intel_observations',
+      records: [{ id: 'drain-1', content: 'from drain' }],
+    }));
+    writeFileSync(join(dir, '02-empty.json'), JSON.stringify({
+      source_type: 'intel_observations',
+      records: [],
+    }));
+    writeFileSync(join(dir, '03-unknown.json'), JSON.stringify({
+      source_type: 'no_such_source',
+      records: [{ id: 'x' }],
+    }));
+
+    const store = createIntelligenceStore({
+      baseDir: join(runtime.runtimeRoot, 'data', 'intelligence'),
+      timezone: 'Asia/Shanghai',
+    });
+    const result = drainInboxDir({ inboxDir: dir, store });
+
+    expect(result.processed.intel_observations).toBe(1);
+    expect(result.removed).toEqual(expect.arrayContaining(['01-known.json', '02-empty.json']));
+    expect(result.failed).toHaveLength(1);
+    expect(result.failed[0].file).toBe('03-unknown.json');
+
+    const remaining = readdirSync(dir);
+    expect(remaining).toEqual(['03-unknown.json']);
+
+    const summary = buildIntelSummary(root, { days: 1, limit: 10 });
+    expect(summary.observations.map((o) => o.id)).toContain('drain-1');
+  });
+
+  it('inboxDrain returns exit code 1 when failures exist', async () => {
+    const root = makeIntelRoot('jea-inbox-drain-fail-');
+    const runtime = getActiveSubjectRuntimeInfo(root);
+    const dir = defaultInboxDir(runtime);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'bad.json'), JSON.stringify({ records: [{}] }));
+
+    const code = await inboxDrain({ root, flags: { json: true } });
+    expect(code).toBe(1);
+  });
+});

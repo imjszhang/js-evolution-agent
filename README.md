@@ -54,6 +54,9 @@ First-version commands:
 - `jea intel report --cycle <id>`: print the report for a specific cycle.
 - `jea intel report --open`: open the latest report in the OS default viewer (`open` on macOS, `xdg-open` on Linux, `start` on Windows).
 - `jea intel report --json`: print the index record (not the MD body) as JSON.
+- `jea intel ingest --source NAME [--file PATH | --stdin] [--json]`: ingest one or more JSON records directly into the active subject intelligence store. `entity_jsonl` sources (e.g. `probe_threads`) require `_entity_id` on every record.
+- `jea intel inbox put --source NAME [--file PATH | --stdin] [--name LABEL]`: queue records as a JSON payload under `runtime/subjects/<ns>/data/intelligence/_inbox/` for later draining; useful when external collectors drop files for the agent to pick up.
+- `jea intel inbox drain [--dir PATH] [--json]`: drain queued `_inbox` files into the intelligence store; unknown source or invalid files are kept and reported as failures (exit code 1).
 - `jea audit queue`: check decision queue health, unknown actions, and stale in-progress work.
 - `jea llm ping [--mock]`: test DeepSeek or local MockAIClient connectivity.
 - `jea policy check`: verify required active subject policy sections.

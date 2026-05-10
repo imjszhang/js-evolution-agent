@@ -32,6 +32,12 @@ Commands:
   intel report --cycle X Print intel report for cycle X
   intel report --open    Open the latest intel report in your default viewer
   intel report --json    Print the report index record as JSON
+  intel ingest --source NAME [--file PATH | --stdin] [--json]
+                         Ingest JSON record(s) directly into the active subject store
+  intel inbox put --source NAME [--file PATH | --stdin] [--name LABEL]
+                         Queue records as a JSON file under runtime _inbox for later drain
+  intel inbox drain [--dir PATH] [--json]
+                         Drain queued _inbox files into the intelligence store
   audit queue            Check decision queue health
   llm ping               Test DeepSeek connectivity
   llm ping --mock        Test local mock AI path
@@ -56,7 +62,9 @@ Examples:
   jea subject list
   jea subject init my-product --use
   jea data reset --yes
-  jea actions check`;
+  jea actions check
+  echo '{"content":"manual note"}' | jea intel ingest --source intel_observations
+  jea intel inbox drain --json`;
 }
 
 export async function main(argv = process.argv.slice(2)) {

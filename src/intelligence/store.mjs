@@ -100,6 +100,14 @@ export class IntelligenceStore {
     }, 'probe-result'));
   }
 
+  ingest(source, records) {
+    return this.engine.ingest(source, asArray(records));
+  }
+
+  listSourceNames() {
+    return INTELLIGENCE_SPECS.map((spec) => spec.name);
+  }
+
   recordIntelReport(record) {
     return this.engine.ingest('intel_reports', withId({
       recorded_at: new Date().toISOString(),

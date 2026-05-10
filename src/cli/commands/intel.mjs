@@ -4,6 +4,8 @@ import { spawn } from 'node:child_process';
 import { getProjectRoot } from '../utils/project.mjs';
 import { createIntelligenceStore } from '../../intelligence/store.mjs';
 import { getActiveSubjectRuntimeInfo } from '../utils/subjects.mjs';
+import { runIntelIngest } from './intel-ingest.mjs';
+import { inboxDrain, inboxPut } from './intel-inbox.mjs';
 
 function numberFlag(flags, name, fallback) {
   const n = Number(flags[name]);
@@ -174,9 +176,26 @@ export async function intelCommand({ subcommand, flags = {}, args = [] } = {}) {
     return intelReportCommand(root, flags, args);
   }
 
-  console.error('Usage: jea intel <summary|report> [...]\n' +
+  if (subcommand === 'ingest') {
+    return runIntelIngest({ root, flags });
+  }
+
+  if (subcommand === 'inbox') {
+    const action = args[0];
+    if (action === 'put') return inboxPut({ root, flags });
+    if (action === 'drain') return inboxDrain({ root, flags });
+    console.error('Usage: jea intel inbox <put|drain> [...]\n' +
+      '  jea intel inbox put --source NAME [--file PATH | --stdin] [--name LABEL] [--json]\n' +
+      '  jea intel inbox drain [--dir PATH] [--json]');
+    return 2;
+  }
+
+  console.error('Usage: jea intel <summary|report|ingest|inbox> [...]\n' +
     '  jea intel summary [--days N] [--limit N] [--json]\n' +
     '  jea intel report [--latest] [--cycle <id>] [--json] [--open]\n' +
-    '  jea intel report list [--limit N] [--json]');
+    '  jea intel report list [--limit N] [--json]\n' +
+    '  jea intel ingest --source NAME [--file PATH | --stdin] [--json]\n' +
+    '  jea intel inbox put --source NAME [--file PATH | --stdin] [--name LABEL]\n' +
+    '  jea intel inbox drain [--dir PATH] [--json]');
   return 2;
 }
