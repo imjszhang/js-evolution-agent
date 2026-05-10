@@ -1,6 +1,6 @@
 # js-evolution-agent
 
-Updated: 2026-05-10 21:21:36 +08:00
+Updated: 2026-05-10 22:44:39 +08:00
 
 `js-evolution-agent` is a controlled self-evolution host instance. It reuses `js-evolution-engine` as the OADA runtime, reads Cyber-Taoist documents as authoritative context, and stores local intelligence through `js-intel-store`.
 
@@ -204,9 +204,16 @@ The legacy top-level `data/` directory is still ignored for compatibility with o
 - `latest_review`: latest review JSON.
 - `action_receipts`: receipts from controlled handlers.
 - `probe_threads`: per-probe event streams.
-- `intel_reports`: index of human-readable intel reports. Each cycle's report is written as Markdown under `data/intelligence/reports/<cycle_id>.md`; this jsonl stores the index (cycle_id, generated_at, md_path, tldr, source, counts).
+- `intel_reports`: index of human-readable intel reports. Each cycle's report is written as Markdown under `data/intelligence/reports/<cycle_id>.md`; this jsonl stores the index (cycle_id, generated_at, md_path, tldr, source, language, action_count, evidence_obs_count, evidence_probe_count, evidence_retro_count).
 
-After every successful Phase 1 (intel pipeline), a Phase 1.5 build step writes one Markdown report per cycle. The report aims to be human-readable first; a constrained `## Proposed Goal Revisions` section keeps it parseable for later automation. Generation prefers the configured AI client and falls back to a deterministic template when no AI is available or output fails the schema check (so `jea run --mock` works offline).
+After every successful Phase 1 (intel pipeline), a Phase 1.5 build step writes one free-form Markdown report per cycle. The report is intentionally **unconstrained**:
+
+- The full text of `CONSTITUTION.md`, `SKILL.md`, and the active subject policy is injected into the AI prompt. The model is free to choose structure, voice, length, and section names — it is asked only to be human-readable, faithful to Cyber-Taoist evolutionary thinking, and to not invent ids/counts beyond the cycle facts JSON.
+- Output language is detected from the active subject policy (CJK ratio): primarily Chinese policies produce Chinese reports; otherwise English. The default is Chinese.
+- `gatherEvidence` (recent `intel_observations` / `probe_results` / `retrospectives` / `evolution_events`) and `assessGoals` (deterministic bad-signal / good-signal token match) are still computed and passed to the prompt as auxiliary signals; the AI may use, override, or ignore them.
+- When the AI client is missing or throws, the builder writes a minimal placeholder Markdown listing only mechanical facts (cycle id, action count, evidence counts) so `jea intel report` always has something to display. `source: 'fallback'` marks these.
+- **Token cost**: injecting the full Cyber-Taoist documents materially increases prompt length; `jea run --deepseek` cycles take noticeably longer than before. The Phase 1.5 step is wrapped in try/catch and never blocks the main loop.
+- There is currently **no machine-side schema enforcement** on the report body. Tools that previously parsed structured sections (`countProposedRevisions`, `extractEvidenceRefs`, `jea intel report doctor`) have been removed. Re-introducing a parseable channel for downstream goal-refinement is intentionally deferred.
 
 ## Inspection And Audit
 

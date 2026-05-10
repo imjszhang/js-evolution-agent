@@ -102,7 +102,8 @@ function printReportList(records, limit) {
   console.log(`# Intel Reports (showing ${Math.min(records.length, limit)} of ${records.length})`);
   for (const r of records.slice(0, limit)) {
     const when = r.generated_at || r.timestamp || '?';
-    console.log(`- ${r.cycle_id}  [${when}]  source=${r.source ?? '?'}  revisions=${r.proposed_revision_count ?? 0}`);
+    const lang = r.language ?? '?';
+    console.log(`- ${r.cycle_id}  [${when}]  source=${r.source ?? '?'}  lang=${lang}  actions=${r.action_count ?? r.finding_count ?? 0}`);
     if (r.tldr) console.log(`    ${r.tldr}`);
   }
 }

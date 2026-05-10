@@ -81,11 +81,13 @@ async function main() {
       intelResult,
       runtime,
       store,
+      agentContextDocs: cfg.agentContextDocs,
       aiClient: cfg.aiClient,
       logger: cfg.host?.logger,
       useAi: true,
     });
     console.log(`  source: ${report.source}`);
+    console.log(`  language: ${report.indexRecord.language}`);
     console.log(`  report: ${report.mdPath}`);
     if (report.indexRecord.tldr) {
       console.log(`  tldr: ${report.indexRecord.tldr.slice(0, 200)}`);
@@ -96,7 +98,7 @@ async function main() {
       cycle_id: intelResult.cycle_id,
       report_path: report.mdPath,
       source: report.source,
-      proposed_revision_count: report.indexRecord.proposed_revision_count,
+      language: report.indexRecord.language,
     });
   } catch (e) {
     const msg = e?.message || String(e);
