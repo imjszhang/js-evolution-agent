@@ -13,6 +13,10 @@ export async function runCommand({ flags = {} } = {}) {
     env.JEA_FORCE_MOCK = '1';
     console.log('Running with MockAIClient (DEEPSEEK_API_KEY hidden for this process).');
   }
+  if (flags['skip-goals-assess']) {
+    env.JEA_SKIP_GOALS_ASSESS = '1';
+    console.log('Goals assess will be skipped (--skip-goals-assess).');
+  }
   if (flags.deepseek && !env.DEEPSEEK_API_KEY) {
     console.error('DEEPSEEK_API_KEY is required for --deepseek.');
     return 1;

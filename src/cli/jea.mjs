@@ -19,7 +19,9 @@ export function helpText() {
 
 Commands:
   doctor                 Check env, dependencies, docs, and config
-  run [--mock]           Run the full intel -> exec -> verify loop
+  run [--mock] [--skip-goals-assess]
+                         Run the full intel -> exec -> verify loop; by default
+                         also records a goals assess event for the same cycle
   run --deepseek         Require DeepSeek API configuration
   data status            Show runtime data status
   data status --json     Show runtime data status as JSON
@@ -61,6 +63,7 @@ Commands:
 Examples:
   jea doctor
   jea run --mock
+  jea run --skip-goals-assess
   jea data init --all
   jea intel summary
   jea audit queue

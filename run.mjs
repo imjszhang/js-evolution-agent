@@ -9,10 +9,17 @@ import {
   verifyActions,
 } from 'js-evolution-engine';
 import loadConfig from './oada.config.mjs';
+import { assessActiveGoals } from './src/cli/commands/goals.mjs';
 import { getActiveSubjectRuntimeInfo } from './src/cli/utils/subjects.mjs';
 import { buildIntelReport } from './src/intelligence/report-builder.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+function skipGoalsAssess() {
+  const v = process.env.JEA_SKIP_GOALS_ASSESS;
+  if (!v) return false;
+  return v === '1' || String(v).toLowerCase() === 'true';
+}
 
 function previewDoc(doc) {
   return doc.text.split('\n').slice(0, 2).join(' | ').slice(0, 100);
@@ -76,6 +83,7 @@ async function main() {
   }
 
   console.log('\n=== Phase 1.5: build intel report ===');
+  let intelReportReady = false;
   try {
     const report = await buildIntelReport({
       intelResult,
@@ -100,6 +108,10 @@ async function main() {
       source: report.source,
       language: report.indexRecord.language,
     });
+    intelReportReady = Boolean(report.mdPath && existsSync(report.mdPath));
+    if (!intelReportReady) {
+      console.warn('  report path missing on disk after build; goals assess will be skipped.');
+    }
   } catch (e) {
     const msg = e?.message || String(e);
     console.warn(`  report generation failed (non-fatal): ${msg}`);
@@ -163,6 +175,37 @@ async function main() {
   console.log('  verified:', verification.verified.length);
   console.log('  pending:', verification.pending.length);
   console.log('  report:', reportPath);
+
+  if (skipGoalsAssess()) {
+    console.log('\n=== Phase 4: goals assess (skipped) ===');
+  } else if (!intelReportReady) {
+    console.log('\n=== Phase 4: goals assess (skipped) ===');
+    console.log('  reason: intel report was not generated for this cycle');
+  } else {
+    console.log('\n=== Phase 4: goals assess ===');
+    try {
+      const assessResult = await assessActiveGoals(__dirname, { cycle: intelResult.cycle_id });
+      console.log('  cycle:', assessResult.report.cycle_id);
+      console.log('  status:', assessResult.assessment.status);
+      console.log('  confidence:', assessResult.assessment.confidence);
+      console.log('  recorded:', assessResult.written);
+      store.recordEvolutionEvent({
+        type: 'goals_assess',
+        status: 'ok',
+        cycle_id: intelResult.cycle_id,
+        assessment_status: assessResult.assessment.status,
+      });
+    } catch (e) {
+      const msg = e?.message || String(e);
+      console.warn(`  goals assess failed (non-fatal): ${msg}`);
+      store.recordEvolutionEvent({
+        type: 'goals_assess',
+        status: 'failed',
+        cycle_id: intelResult.cycle_id,
+        error: msg,
+      });
+    }
+  }
 
   console.log('\n=== Done ===');
   console.log(`Evolution data: ${runtime.evolutionDir}`);
