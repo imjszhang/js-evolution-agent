@@ -1,33 +1,32 @@
 # {{subject}} Project Guidance
 
-Generated: 2026-05-09 15:55:29 +08:00
+Generated: 2026-05-11T11:19:33.3122219+08:00
 
-This file contains project-local clauses for `{{subject}}`. Universal Cyber-Taoist principles are read from `CONSTITUTION.md` and `SKILL.md`; do not copy or rewrite them here.
+This policy defines only the active local subject. Universal Cyber-Taoist principles are read from `CONSTITUTION.md` and `SKILL.md`.
 
 ## Subject
 
-The subject of this loop is `{{subject}}`: define what is treated as the entity that survives, trades, fails, and evolves.
+`{{subject}}` is the entity whose survival, boundary, failure, and evolution this loop observes.
 
 ## Core Layer
 
-- Operator trust, reviewability, and reversibility.
-- Legal, identity, and access continuity.
-- Data integrity for this subject.
-- Replace this list with the minimum functions that must not die.
+- operator trust, reviewability, and rollback
+- legal, identity, and access continuity
+- data integrity for this subject
+- replace this list with the minimum functions that must not die
 
 ## Allowed First-Phase Actions
 
-- Read project-local files and referenced context documents.
-- Generate observations, probe proposals, retrospectives, and local reports.
-- Write action receipts, evolution events, and reviews under subject runtime data.
-- Queue decisions for explicit execution through registered handlers.
+- Read project files and referenced context.
+- Write observations, receipts, reviews, and evolution events under subject runtime data.
+- Queue bounded decisions or probes.
 
 ## Off-Limits Without Human Approval
 
 - Creating commits, pushing branches, or opening pull requests.
-- Running destructive shell commands or large cross-project rewrites.
+- Running destructive shell commands or broad rewrites.
 - Writing outside the configured project tree.
-- Executing a `core` layer action beyond recording a review request.
+- Executing a `core` layer action unless it only records a review request.
 
 ## Probe Requirements
 
@@ -38,4 +37,4 @@ Every probe must state:
 - `failure_signal`
 - `death_boundary`
 
-If any field is missing, the action should fail early and write no external side effects.
+Missing fields must fail before external side effects.

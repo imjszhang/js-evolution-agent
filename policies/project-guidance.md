@@ -1,34 +1,34 @@
 # js-evolution-agent Project Guidance
 
-Generated: 2026-05-09 13:57:06 +08:00
+Generated: 2026-05-11T11:19:33.3122219+08:00
 
-This file contains project-local clauses for `js-evolution-agent`. Universal Cyber-Taoist principles are read from `CONSTITUTION.md` and `SKILL.md`; do not copy or rewrite them here.
+This policy defines only the active local subject. Universal Cyber-Taoist principles are read from `CONSTITUTION.md` and `SKILL.md`.
 
 ## Subject
 
-The subject of this loop is `js-evolution-agent`: a controlled host instance that reuses `js-evolution-engine`, reads Cyber-Taoist context, and persists intelligence through `js-intel-store`.
+`js-evolution-agent` is a controlled host instance that runs `js-evolution-engine` with Cyber-Taoist context and stores local memory through `js-intel-store`.
 
 ## Core Layer
 
-- The source packages `js-evolution-engine` and `js-intel-store`.
-- The read-only Cyber-Taoist documents under `cyber-taoist-docs`.
-- Operator trust, reviewability, and reversibility.
-- Local data integrity under `runtime/subjects/<data_namespace>/data`.
+- `js-evolution-engine`
+- `js-intel-store`
+- read-only Cyber-Taoist documents
+- operator trust, reviewability, and rollback
+- `runtime/subjects/<data_namespace>/data`
 
 ## Allowed First-Phase Actions
 
-- Read project-local files and referenced context documents.
-- Generate observations, probe proposals, retrospectives, and local reports.
-- Write action receipts, evolution events, and reviews under the active subject runtime intelligence namespace.
-- Queue decisions under the active subject runtime evolution namespace.
+- Read project files and referenced context.
+- Write observations, receipts, reviews, and evolution events under the active subject runtime data namespace.
+- Queue bounded decisions or probes under the active subject runtime data namespace.
 
 ## Off-Limits Without Human Approval
 
-- Modifying `js-evolution-engine`, `js-intel-store`, or `cyber-taoist-docs`.
+- Modifying `js-evolution-engine`, `js-intel-store`, or Cyber-Taoist documents.
 - Creating commits, pushing branches, or opening pull requests.
-- Running destructive shell commands or large cross-project rewrites.
+- Running destructive shell commands or broad rewrites.
 - Writing outside the `js-evolution-agent` project tree.
-- Executing a `core` layer action beyond recording a review request.
+- Executing a `core` layer action unless it only records a review request.
 
 ## Probe Requirements
 
@@ -39,5 +39,4 @@ Every probe must state:
 - `failure_signal`
 - `death_boundary`
 
-If any field is missing, the action should fail early and write no external side effects.
-
+Missing fields must fail before external side effects.
