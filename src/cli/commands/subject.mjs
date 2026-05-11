@@ -1,4 +1,5 @@
 import { getProjectRoot } from '../utils/project.mjs';
+import { REQUIRED_POLICY_SECTIONS } from '../utils/policy-sections.mjs';
 import {
   createSubject,
   ensureDefaultSubject,
@@ -7,14 +8,6 @@ import {
   readActiveSubjectPolicy,
   setActiveSubject,
 } from '../utils/subjects.mjs';
-
-const REQUIRED_POLICY_SECTIONS = [
-  'Subject',
-  'Core Layer',
-  'Allowed First-Phase Actions',
-  'Off-Limits Without Human Approval',
-  'Probe Requirements',
-];
 
 export function extractMarkdownSection(text, heading) {
   const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

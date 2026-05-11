@@ -184,16 +184,23 @@ describe('queue audit', () => {
 });
 
 describe('policy check', () => {
-  it('detects missing required sections', () => {
-    const result = checkPolicy([
+  it('requires Subject section only', () => {
+    const missingSubject = checkPolicy([
+      '## Core Layer',
+      '- Trust',
+    ].join('\n'));
+    expect(missingSubject.ok).toBe(false);
+    expect(missingSubject.missing).toEqual(['Subject']);
+
+    const ok = checkPolicy([
       '## Subject',
       'agent',
       '',
       '## Core Layer',
       '- Trust',
     ].join('\n'));
-    expect(result.ok).toBe(false);
-    expect(result.missing).toContain('Probe Requirements');
+    expect(ok.ok).toBe(true);
+    expect(ok.missing).toEqual([]);
   });
 });
 

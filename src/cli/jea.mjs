@@ -46,7 +46,7 @@ Commands:
   audit queue            Check decision queue health
   llm ping               Test DeepSeek connectivity
   llm ping --mock        Test local mock AI path
-  policy check           Check required policy sections
+  policy check           Verify active policy has Subject section
   subject list           List configured subjects
   subject show           Show policy, namespace, and runtime paths
   subject init <name>    Create a subject policy from a template

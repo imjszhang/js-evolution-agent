@@ -1,14 +1,9 @@
 import { getProjectRoot } from '../utils/project.mjs';
+import { REQUIRED_POLICY_SECTIONS } from '../utils/policy-sections.mjs';
 import { extractMarkdownSection } from './subject.mjs';
 import { readActiveSubjectPolicy } from '../utils/subjects.mjs';
 
-export const REQUIRED_POLICY_SECTIONS = [
-  'Subject',
-  'Core Layer',
-  'Allowed First-Phase Actions',
-  'Off-Limits Without Human Approval',
-  'Probe Requirements',
-];
+export { REQUIRED_POLICY_SECTIONS };
 
 export function checkPolicy(text, sections = REQUIRED_POLICY_SECTIONS) {
   const missing = [];
