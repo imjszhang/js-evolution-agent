@@ -43,6 +43,8 @@ Commands:
   goals history          Show recent goal change events
   goals update --file PATH --reason TEXT [--evidence REF] [--cycle ID]
                          Replace active goals and record a goal event
+  goals assess [--cycle ID]
+                         Ask AI to assess goal calibration and record an assessment event
   audit queue            Check decision queue health
   llm ping               Test DeepSeek connectivity
   llm ping --mock        Test local mock AI path
@@ -70,7 +72,8 @@ Examples:
   jea actions check
   echo '{"content":"manual note"}' | jea intel ingest --source intel_observations
   jea intel inbox drain --json
-  jea goals history`;
+  jea goals history
+  jea goals assess --cycle cycle-20260511-123237`;
 }
 
 export async function main(argv = process.argv.slice(2)) {

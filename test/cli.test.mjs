@@ -14,6 +14,7 @@ import { findUnknownActions, readActiveDecisionQueue } from '../src/cli/commands
 import { auditQueue } from '../src/cli/commands/audit.mjs';
 import { buildDefaultGoals, backupData, dataStatus, initData } from '../src/cli/commands/data.mjs';
 import {
+  assessActiveGoals,
   buildGoalUpdate,
   getActiveGoals,
   getGoalHistory,
@@ -424,6 +425,115 @@ describe('goals command helpers', () => {
 
     expect(readJsonSafe(join(runtime.goalsDir, 'active_goals.json'))).toEqual(before);
     expect(getGoalHistory(root, { limit: 5 }).events).toHaveLength(0);
+  });
+
+  it('assesses latest report and records an assessment event without changing active goals', async () => {
+    const root = makeGoalsRoot();
+    const runtime = getActiveSubjectRuntimeInfo(root);
+    const store = createIntelligenceStore({
+      baseDir: runtime.intelligenceDir,
+      timezone: 'Asia/Shanghai',
+    });
+    const before = readJsonSafe(join(runtime.goalsDir, 'active_goals.json'));
+    await buildIntelReport({
+      intelResult: { cycle_id: 'cycle-goal-assess', success: true, actions: [], decisions_queued: [] },
+      runtime,
+      store,
+      aiClient: null,
+      useAi: false,
+    });
+
+    const result = await assessActiveGoals(root, { json: true }, {
+      aiClient: {
+        chat: async () => JSON.stringify({
+          status: 'keep',
+          confidence: 'medium',
+          reason: 'The latest report only establishes a baseline.',
+          evidence_refs: [{ type: 'intel_report', id: 'cycle-goal-assess', ref: 'intel_report:cycle-goal-assess' }],
+          proposed_goal: null,
+          risk: 'Changing the goal too early would lose the baseline.',
+        }),
+      },
+      agentContextDocs: [],
+    });
+
+    expect(result.written).toBe(1);
+    expect(result.event).toMatchObject({
+      type: 'assessment',
+      goal_id: 'bootstrap',
+      cycle_id: 'cycle-goal-assess',
+      source: 'ai',
+    });
+    expect(result.assessment.status).toBe('keep');
+    expect(readJsonSafe(join(runtime.goalsDir, 'active_goals.json'))).toEqual(before);
+
+    const history = getGoalHistory(root, { limit: 5 });
+    expect(history.events).toHaveLength(1);
+    expect(history.events[0].assessment.status).toBe('keep');
+  });
+
+  it('assesses a specific report cycle', async () => {
+    const root = makeGoalsRoot('jea-goals-cycle-');
+    const runtime = getActiveSubjectRuntimeInfo(root);
+    const store = createIntelligenceStore({
+      baseDir: runtime.intelligenceDir,
+      timezone: 'Asia/Shanghai',
+    });
+    await buildIntelReport({
+      intelResult: { cycle_id: 'cycle-first', success: true, actions: [], decisions_queued: [] },
+      runtime,
+      store,
+      aiClient: null,
+      useAi: false,
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    await buildIntelReport({
+      intelResult: { cycle_id: 'cycle-second', success: true, actions: [], decisions_queued: [] },
+      runtime,
+      store,
+      aiClient: null,
+      useAi: false,
+    });
+
+    const result = await assessActiveGoals(root, { cycle: 'cycle-first' }, {
+      aiClient: {
+        chat: async () => JSON.stringify({
+          status: 'insufficient_evidence',
+          confidence: 'low',
+          reason: 'The selected report has too little evidence.',
+          evidence_refs: [{ type: 'intel_report', id: 'cycle-first', ref: 'intel_report:cycle-first' }],
+          proposed_goal: null,
+          risk: 'Need more evidence before changing goals.',
+        }),
+      },
+      agentContextDocs: [],
+    });
+
+    expect(result.report.cycle_id).toBe('cycle-first');
+    expect(result.event.cycle_id).toBe('cycle-first');
+  });
+
+  it('does not write assessment events when goals or reports are missing', async () => {
+    const rootWithoutGoals = mkdtempSync(join(tmpdir(), 'jea-goals-no-active-'));
+    tempDir = rootWithoutGoals;
+    mkdirSync(join(rootWithoutGoals, 'policies'), { recursive: true });
+    writeFileSync(join(rootWithoutGoals, 'policies', 'project-guidance.md'), '## Subject\nagent\n');
+    initData(rootWithoutGoals);
+
+    await expect(assessActiveGoals(rootWithoutGoals, {}, {
+      aiClient: { chat: async () => '{}' },
+      agentContextDocs: [],
+    })).rejects.toThrow(/No active goals/);
+    expect(getGoalHistory(rootWithoutGoals, { limit: 5 }).events).toHaveLength(0);
+    rmSync(rootWithoutGoals, { recursive: true, force: true });
+    tempDir = null;
+
+    const rootWithoutReports = makeGoalsRoot('jea-goals-no-report-');
+    await expect(assessActiveGoals(rootWithoutReports, {}, {
+      aiClient: { chat: async () => '{}' },
+      agentContextDocs: [],
+    })).rejects.toThrow(/No intel reports/);
+    expect(getGoalHistory(rootWithoutReports, { limit: 5 }).events).toHaveLength(0);
   });
 });
 

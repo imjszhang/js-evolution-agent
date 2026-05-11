@@ -17,6 +17,13 @@ import {
   extractTldr,
   gatherEvidence,
 } from '../src/intelligence/report-builder.mjs';
+import {
+  assessGoalsWithAi,
+  buildGoalAssessmentContext,
+  buildGoalAssessmentPrompt,
+  formatAgentContextDocs,
+  parseGoalAssessment,
+} from '../src/intelligence/goal-assessor.mjs';
 
 let tempDir = null;
 
@@ -196,6 +203,90 @@ describe('assessGoals (auxiliary signal)', () => {
     const goals = [{ id: 'g1', name: 'G1', intent: 'i', good_signal: 'success', bad_signal: 'failure' }];
     const evidence = { observations: [], probes: [], retrospectives: [], events: [] };
     expect(assessGoals(goals, evidence)[0].status).toBe('needs-assessment');
+  });
+});
+
+describe('goal assessment', () => {
+  it('builds context and prompt with goals, report, evidence, and recent goal events', () => {
+    const { store } = makeReportFixture();
+    const activeGoals = {
+      id: 'bootstrap',
+      name: 'Bootstrap',
+      intent: 'Verify goal calibration',
+      good_signal: 'assessment recorded',
+      bad_signal: 'untracked change',
+      children: [],
+    };
+    store.ingestObservation({ id: 'obs-assess', source: 'test', subject: 'goal', content: 'assessment recorded' });
+    store.recordRetrospective({ id: 'retro-assess', outcome: 'ok', summary: 'assessment recorded' });
+    store.recordGoalEvent({ id: 'goal-event-old', type: 'updated', goal_id: 'bootstrap', reason: 'previous update' });
+
+    const context = buildGoalAssessmentContext({
+      activeGoals,
+      reportRecord: {
+        id: 'report-1',
+        cycle_id: 'cycle-assess',
+        md_path: 'missing-report.md',
+        tldr: 'report summary',
+        source: 'ai',
+      },
+      reportMarkdown: '# Report\n\nGoal evidence.',
+      store,
+    });
+    const prompt = buildGoalAssessmentPrompt({ context, agentContextDocs: [{ id: 'subject:test', text: '中文主体策略。' }] });
+
+    expect(context.active_goals.id).toBe('bootstrap');
+    expect(context.report.cycle_id).toBe('cycle-assess');
+    expect(context.evidence.observations.map((o) => o.id)).toContain('obs-assess');
+    expect(context.recent_goal_events.map((e) => e.id)).toContain('goal-event-old');
+    expect(context.machine_assessment[0].status).toBe('progressing');
+    expect(prompt).toContain('权威文献 agentContextDocs');
+    expect(prompt).toContain('Agent context document 1');
+    expect(prompt).toContain('中文主体策略');
+    expect(prompt).toContain('必须以 agentContextDocs 为最高层级约束');
+    expect(prompt).toContain('只返回一个 JSON 对象');
+    expect(prompt).toContain('cycle-assess');
+  });
+
+  it('injects every agentContextDocs entry in load order', () => {
+    const block = formatAgentContextDocs([
+      { id: 'doc-a', source: '/a.md', text: 'alpha body' },
+      { id: 'doc-b', text: 'beta body' },
+    ]);
+    expect(block).toContain('doc-a');
+    expect(block).toContain('alpha body');
+    expect(block).toContain('doc-b');
+    expect(block).toContain('beta body');
+    expect(block.indexOf('alpha')).toBeLessThan(block.indexOf('beta'));
+  });
+
+  it('parses JSON assessments and lowers confidence without evidence', () => {
+    const parsed = parseGoalAssessment(JSON.stringify({
+      status: 'keep',
+      confidence: 'high',
+      reason: 'Evidence supports keeping the goal.',
+      evidence_refs: [],
+      proposed_goal: null,
+      risk: 'none',
+    }));
+
+    expect(parsed.status).toBe('keep');
+    expect(parsed.confidence).toBe('low');
+  });
+
+  it('falls back when AI output is not parseable', async () => {
+    const { store } = makeReportFixture();
+    const result = await assessGoalsWithAi({
+      aiClient: { chat: async () => 'not json' },
+      activeGoals: { id: 'bootstrap', children: [] },
+      reportRecord: { cycle_id: 'cycle-fallback', md_path: 'missing.md' },
+      reportMarkdown: '# Report',
+      store,
+    });
+
+    expect(result.source).toBe('fallback');
+    expect(result.assessment.status).toBe('insufficient_evidence');
+    expect(result.assessment.confidence).toBe('low');
   });
 });
 
