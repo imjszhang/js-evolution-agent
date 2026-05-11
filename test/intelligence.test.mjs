@@ -41,6 +41,7 @@ describe('intelligence specs', () => {
       'probe_threads',
       'probe_results',
       'intel_reports',
+      'goal_events',
     ]);
   });
 });
@@ -76,6 +77,27 @@ describe('IntelligenceStore', () => {
     expect(store.readLatestReview().summary).toBe('reviewed bootstrap');
     expect(store.buildContextSummary()).toContain('hello intelligence');
     expect(store.buildContextSummary()).toContain('README exists');
+  });
+
+  it('records and reads goal events', () => {
+    const store = makeStore();
+
+    expect(store.recordGoalEvent({
+      type: 'updated',
+      goal_id: 'bootstrap',
+      reason: 'tighten the hypothesis',
+      evidence_refs: [{ type: 'intel_report', id: 'cycle-1', ref: 'intel_report:cycle-1' }],
+    })).toBe(1);
+
+    const events = store.readGoalEvents({ limit: 5 });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: 'updated',
+      goal_id: 'bootstrap',
+      reason: 'tighten the hypothesis',
+    });
+    expect(events[0].id).toMatch(/^goal-event-/);
+    expect(events[0].recorded_at).toBeTruthy();
   });
 });
 

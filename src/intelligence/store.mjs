@@ -124,6 +124,17 @@ export class IntelligenceStore {
     return records?.[0] ?? null;
   }
 
+  recordGoalEvent(event) {
+    return this.engine.ingest('goal_events', withId({
+      recorded_at: new Date().toISOString(),
+      ...event,
+    }, 'goal-event'));
+  }
+
+  readGoalEvents({ limit = 20 } = {}) {
+    return this.engine.readSource('goal_events', { limit });
+  }
+
   readRecentIntel({ days = 7, limit = 20 } = {}) {
     return this.engine.readSource('intel_observations', { days }).slice(0, limit);
   }

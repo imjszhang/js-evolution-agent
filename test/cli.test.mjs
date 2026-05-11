@@ -13,6 +13,13 @@ import { extractMarkdownSection } from '../src/cli/commands/subject.mjs';
 import { findUnknownActions, readActiveDecisionQueue } from '../src/cli/commands/actions.mjs';
 import { auditQueue } from '../src/cli/commands/audit.mjs';
 import { buildDefaultGoals, backupData, dataStatus, initData } from '../src/cli/commands/data.mjs';
+import {
+  buildGoalUpdate,
+  getActiveGoals,
+  getGoalHistory,
+  parseEvidenceRefs,
+  updateGoals,
+} from '../src/cli/commands/goals.mjs';
 import { buildIntelSummary, findReportRecord } from '../src/cli/commands/intel.mjs';
 import {
   isValidSource,
@@ -283,6 +290,96 @@ describe('data initialization', () => {
     expect(second.copied).toBe(false);
     expect(second.reason).toBe('destination_exists');
     expect(second.files).toBeGreaterThan(0);
+  });
+});
+
+describe('goals command helpers', () => {
+  function makeGoalsRoot(prefix = 'jea-goals-') {
+    const root = mkdtempSync(join(tmpdir(), prefix));
+    tempDir = root;
+    mkdirSync(join(root, 'policies'), { recursive: true });
+    writeFileSync(join(root, 'policies', 'project-guidance.md'), '## Subject\nagent\n');
+    initData(root, { goals: true });
+    return root;
+  }
+
+  it('reads active goals for the active subject', () => {
+    const root = makeGoalsRoot();
+    const result = getActiveGoals(root);
+
+    expect(result.runtime.dataNamespace).toBe('js-evolution-agent');
+    expect(result.path).toBe(join(result.runtime.goalsDir, 'active_goals.json'));
+    expect(result.goals.id).toBe('bootstrap');
+  });
+
+  it('parses evidence references into structured refs', () => {
+    expect(parseEvidenceRefs('intel_report:cycle-1, obs-plain')).toEqual([
+      { type: 'intel_report', id: 'cycle-1', ref: 'intel_report:cycle-1' },
+      { ref: 'obs-plain' },
+    ]);
+  });
+
+  it('updates active goals and records a goal event', () => {
+    const root = makeGoalsRoot();
+    const runtime = getActiveSubjectRuntimeInfo(root);
+    const nextPath = join(root, 'next-goals.json');
+    const nextGoal = {
+      id: 'bootstrap',
+      name: 'Bootstrap refined',
+      intent: 'Treat the goal as a testable hypothesis.',
+      good_signal: 'goal event is recorded',
+      bad_signal: 'goal changes without a reason',
+      children: [],
+    };
+    writeFileSync(nextPath, JSON.stringify(nextGoal));
+
+    const result = updateGoals(root, {
+      file: nextPath,
+      reason: 'latest report narrowed the hypothesis',
+      evidence: 'intel_report:cycle-1',
+      cycle: 'cycle-1',
+    });
+
+    expect(result.written).toBe(1);
+    expect(readJsonSafe(join(runtime.goalsDir, 'active_goals.json'))).toEqual(nextGoal);
+
+    const history = getGoalHistory(root, { limit: 5 });
+    expect(history.events).toHaveLength(1);
+    expect(history.events[0]).toMatchObject({
+      type: 'updated',
+      goal_id: 'bootstrap',
+      reason: 'latest report narrowed the hypothesis',
+      cycle_id: 'cycle-1',
+      next_goal: nextGoal,
+    });
+    expect(history.events[0].previous_goal.id).toBe('bootstrap');
+    expect(history.events[0].evidence_refs).toEqual([
+      { type: 'intel_report', id: 'cycle-1', ref: 'intel_report:cycle-1' },
+    ]);
+  });
+
+  it('rejects missing required update inputs before writing history', () => {
+    const root = makeGoalsRoot();
+
+    expect(() => buildGoalUpdate(root, { reason: 'missing file' })).toThrow(/--file/);
+    expect(() => buildGoalUpdate(root, { file: join(root, 'missing.json') })).toThrow(/--reason/);
+    expect(getGoalHistory(root, { limit: 5 }).events).toHaveLength(0);
+  });
+
+  it('rejects invalid goal JSON without changing active goals or history', () => {
+    const root = makeGoalsRoot();
+    const runtime = getActiveSubjectRuntimeInfo(root);
+    const before = readJsonSafe(join(runtime.goalsDir, 'active_goals.json'));
+    const badPath = join(root, 'bad-goals.json');
+    writeFileSync(badPath, '{not-json');
+
+    expect(() => updateGoals(root, {
+      file: badPath,
+      reason: 'bad update should fail',
+    })).toThrow();
+
+    expect(readJsonSafe(join(runtime.goalsDir, 'active_goals.json'))).toEqual(before);
+    expect(getGoalHistory(root, { limit: 5 }).events).toHaveLength(0);
   });
 });
 

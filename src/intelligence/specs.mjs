@@ -52,5 +52,11 @@ export const INTELLIGENCE_SPECS = [
     subdir: 'reports',
     filename: 'index.jsonl',
   }),
+  new DataSourceSpec({
+    name: 'goal_events',
+    description: 'Append-only history of goal hypothesis changes and their evidence.',
+    storageType: 'append_jsonl',
+    filename: 'goal-events.jsonl',
+  }),
 ];
 

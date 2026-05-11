@@ -12,6 +12,7 @@ import { intelCommand } from './commands/intel.mjs';
 import { auditCommand } from './commands/audit.mjs';
 import { llmCommand } from './commands/llm.mjs';
 import { policyCommand } from './commands/policy.mjs';
+import { goalsCommand } from './commands/goals.mjs';
 
 export function helpText() {
   return `Usage: jea <command> [options]
@@ -38,6 +39,10 @@ Commands:
                          Queue records as a JSON file under runtime _inbox for later drain
   intel inbox drain [--dir PATH] [--json]
                          Drain queued _inbox files into the intelligence store
+  goals show             Show the active goal hypothesis
+  goals history          Show recent goal change events
+  goals update --file PATH --reason TEXT [--evidence REF] [--cycle ID]
+                         Replace active goals and record a goal event
   audit queue            Check decision queue health
   llm ping               Test DeepSeek connectivity
   llm ping --mock        Test local mock AI path
@@ -64,7 +69,8 @@ Examples:
   jea data reset --yes
   jea actions check
   echo '{"content":"manual note"}' | jea intel ingest --source intel_observations
-  jea intel inbox drain --json`;
+  jea intel inbox drain --json
+  jea goals history`;
 }
 
 export async function main(argv = process.argv.slice(2)) {
@@ -80,6 +86,7 @@ export async function main(argv = process.argv.slice(2)) {
   if (command === 'run') return runCommand({ flags });
   if (command === 'data') return dataCommand({ subcommand, flags });
   if (command === 'intel') return intelCommand({ subcommand, flags, args });
+  if (command === 'goals') return goalsCommand({ subcommand, flags, args });
   if (command === 'audit') return auditCommand({ subcommand, flags });
   if (command === 'llm') return llmCommand({ subcommand, flags });
   if (command === 'policy') return policyCommand({ subcommand, flags });
