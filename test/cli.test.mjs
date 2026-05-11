@@ -113,7 +113,7 @@ describe('subject management', () => {
     expect(result.subject.written).toBe(true);
     expect(listSubjects(root)).toEqual(['js-evolution-agent']);
     expect(readActiveSubjectPolicy(root).active.active).toBe('js-evolution-agent');
-    expect(readActiveSubjectPolicy(root).text).toContain('`js-evolution-agent` 是受控宿主实例');
+    expect(readActiveSubjectPolicy(root).text).toContain('`js-evolution-agent` 是本项目的受控自演化宿主');
     expect(readActiveSubjectPolicy(root).text).toContain('## Probe Requirements');
   });
 
@@ -124,9 +124,9 @@ describe('subject management', () => {
     const result = ensureDefaultSubject(root);
 
     expect(result.subject.written).toBe(true);
-    expect(readActiveSubjectPolicy(root).text).toContain('`js-evolution-agent` is a controlled host instance');
+    expect(readActiveSubjectPolicy(root).text).toContain("`js-evolution-agent` is this project's controlled self-evolution host");
     expect(readActiveSubjectPolicy(root).text).toContain('## Probe Requirements');
-    expect(buildDefaultSubjectPolicy('en-US')).toContain('`js-evolution-agent` is a controlled host instance');
+    expect(buildDefaultSubjectPolicy('en-US')).toContain("`js-evolution-agent` is this project's controlled self-evolution host");
   });
 
   it('creates and switches active subjects', () => {

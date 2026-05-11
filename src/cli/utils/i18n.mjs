@@ -45,50 +45,39 @@ const CATALOG = {
 
 Generated: {generatedAt}
 
-本策略只定义当前本地主体；通用 Cyber-Taoist 原则从 \`CONSTITUTION.md\` 和 \`SKILL.md\` 读取。
-
 ## Subject
 
-\`js-evolution-agent\` 是受控宿主实例，用 Cyber-Taoist 上下文运行 \`js-evolution-engine\`，并通过 \`js-intel-store\` 保存本地记忆。
+\`js-evolution-agent\` 是本项目的受控自演化宿主。
 
 ## Core Layer
 
-- \`js-evolution-engine\`
-- \`js-intel-store\`
-- 只读 Cyber-Taoist 文档
 - 操作者信任、可审查性与可回滚性
-- \`runtime/subjects/<data_namespace>/data\`
+- 本地主体数据完整性
+- 外部核心包与 Cyber-Taoist 文档不在本阶段修改范围内
 
 ## Allowed First-Phase Actions
 
-- 读取项目文件和引用的上下文。
-- 在当前主体运行时数据命名空间下写入观测、回执、评审和演化事件。
-- 在当前主体运行时数据命名空间下排队有边界的决策或探针。
+- 读取和分析上下文。
+- 记录观测、评审、回执和探针提案。
+- 排队有边界的后续决策。
 
 ## Off-Limits Without Human Approval
 
-- 修改 \`js-evolution-engine\`、\`js-intel-store\` 或 Cyber-Taoist 文档。
+- 修改核心包或外部文档。
 - 创建提交、推送分支或打开拉取请求。
-- 运行破坏性 shell 命令或大规模重写。
-- 写入 \`js-evolution-agent\` 项目树之外的位置。
-- 执行 \`core\` 层动作，除非只是记录评审请求。
+- 运行破坏性命令、大规模重写或项目树外写入。
+- 执行非记录性质的 \`core\` 层动作。
 
 ## Probe Requirements
-
-每个探针必须声明：
 
 - \`hypothesis\`
 - \`success_signal\`
 - \`failure_signal\`
 - \`death_boundary\`
-
-缺少字段时，动作必须在产生外部副作用前失败。
 `,
       subjectTemplate: `# {subject} 项目指导
 
 Generated: {generatedAt}
-
-本策略只定义当前本地主体；通用 Cyber-Taoist 原则从 \`CONSTITUTION.md\` 和 \`SKILL.md\` 读取。
 
 Template: {template}
 
@@ -105,27 +94,22 @@ Template: {template}
 
 ## Allowed First-Phase Actions
 
-- 读取项目文件和引用的上下文。
-- 在主体运行时数据下写入观测、回执、评审和演化事件。
-- 排队有边界的决策或探针。
+- 读取和分析上下文。
+- 记录观测、评审、回执和探针提案。
+- 排队有边界的后续决策。
 
 ## Off-Limits Without Human Approval
 
 - 创建提交、推送分支或打开拉取请求。
-- 运行破坏性 shell 命令或大规模重写。
-- 写入配置的项目树之外的位置。
-- 执行 \`core\` 层动作，除非只是记录评审请求。
+- 运行破坏性命令、大规模重写或项目树外写入。
+- 执行非记录性质的 \`core\` 层动作。
 
 ## Probe Requirements
-
-每个探针必须声明：
 
 - \`hypothesis\`
 - \`success_signal\`
 - \`failure_signal\`
 - \`death_boundary\`
-
-缺少字段时，动作必须在产生外部副作用前失败。
 `,
     },
   },
@@ -168,50 +152,39 @@ Template: {template}
 
 Generated: {generatedAt}
 
-This policy defines only the active local subject. Universal Cyber-Taoist principles are read from \`CONSTITUTION.md\` and \`SKILL.md\`.
-
 ## Subject
 
-\`js-evolution-agent\` is a controlled host instance that runs \`js-evolution-engine\` with Cyber-Taoist context and stores local memory through \`js-intel-store\`.
+\`js-evolution-agent\` is this project's controlled self-evolution host.
 
 ## Core Layer
 
-- \`js-evolution-engine\`
-- \`js-intel-store\`
-- read-only Cyber-Taoist documents
 - operator trust, reviewability, and rollback
-- \`runtime/subjects/<data_namespace>/data\`
+- local subject data integrity
+- external core packages and Cyber-Taoist documents are out of scope for this phase
 
 ## Allowed First-Phase Actions
 
-- Read project files and referenced context.
-- Write observations, receipts, reviews, and evolution events under the active subject runtime data namespace.
-- Queue bounded decisions or probes under the active subject runtime data namespace.
+- Read and analyze context.
+- Record observations, reviews, receipts, and probe proposals.
+- Queue bounded follow-up decisions.
 
 ## Off-Limits Without Human Approval
 
-- Modifying \`js-evolution-engine\`, \`js-intel-store\`, or Cyber-Taoist documents.
+- Modifying core packages or external documents.
 - Creating commits, pushing branches, or opening pull requests.
-- Running destructive shell commands or broad rewrites.
-- Writing outside the \`js-evolution-agent\` project tree.
-- Executing a \`core\` layer action unless it only records a review request.
+- Running destructive commands, broad rewrites, or writing outside the project tree.
+- Executing non-record \`core\` layer actions.
 
 ## Probe Requirements
-
-Every probe must state:
 
 - \`hypothesis\`
 - \`success_signal\`
 - \`failure_signal\`
 - \`death_boundary\`
-
-Missing fields must fail before external side effects.
 `,
       subjectTemplate: `# {subject} Project Guidance
 
 Generated: {generatedAt}
-
-This policy defines only the active local subject. Universal Cyber-Taoist principles are read from \`CONSTITUTION.md\` and \`SKILL.md\`.
 
 Template: {template}
 
@@ -228,27 +201,22 @@ Template: {template}
 
 ## Allowed First-Phase Actions
 
-- Read project files and referenced context.
-- Write observations, receipts, reviews, and evolution events under subject runtime data.
-- Queue bounded decisions or probes.
+- Read and analyze context.
+- Record observations, reviews, receipts, and probe proposals.
+- Queue bounded follow-up decisions.
 
 ## Off-Limits Without Human Approval
 
 - Creating commits, pushing branches, or opening pull requests.
-- Running destructive shell commands or broad rewrites.
-- Writing outside the configured project tree.
-- Executing a \`core\` layer action unless it only records a review request.
+- Running destructive commands, broad rewrites, or writing outside the configured project tree.
+- Executing non-record \`core\` layer actions.
 
 ## Probe Requirements
-
-Every probe must state:
 
 - \`hypothesis\`
 - \`success_signal\`
 - \`failure_signal\`
 - \`death_boundary\`
-
-Missing fields must fail before external side effects.
 `,
     },
   },
