@@ -17,6 +17,7 @@ import {
   getActiveSubjectRuntimeInfo,
   readActiveSubjectPolicy,
 } from '../utils/subjects.mjs';
+import { getLanguage, t, tObject } from '../utils/i18n.mjs';
 
 const DATA_DIRS = [
   join('data', 'evolution'),
@@ -32,24 +33,8 @@ function timestampForPath() {
   return new Date().toISOString().replace(/[:.]/g, '-');
 }
 
-export function buildDefaultGoals() {
-  return {
-    id: 'bootstrap',
-    name: 'Bootstrap js-evolution-agent',
-    intent: 'Verify the controlled evolution loop, context documents, and intelligence persistence.',
-    good_signal: 'Mock and DeepSeek runs complete with verified actions and persisted intelligence.',
-    bad_signal: 'The loop cannot load context, queue actions, execute handlers, or write intelligence.',
-    children: [
-      {
-        id: 'safe-runtime',
-        name: 'Safe Runtime',
-        intent: 'Keep data operations bounded to js-evolution-agent and preserve operator trust.',
-        good_signal: 'Data commands only touch the active subject runtime data namespace.',
-        bad_signal: 'Any command attempts to modify engine packages, docs snapshots, or secrets.',
-        children: [],
-      },
-    ],
-  };
+export function buildDefaultGoals(language = getLanguage()) {
+  return tObject('data.defaultGoals', language);
 }
 
 function getSubject(root) {
@@ -82,6 +67,7 @@ export function dataStatus(root) {
 }
 
 export function initData(root, flags = {}) {
+  const language = flags.language || getLanguage();
   const withGoals = !!(flags.goals || flags.all);
   const withSeed = !!(flags.seed || flags.all);
   const policies = flags.all ? ensureDefaultSubject(root) : null;
@@ -98,7 +84,7 @@ export function initData(root, flags = {}) {
     result.goals = writeJsonIfMissing(
       runtime.runtimeRoot,
       join('data', 'goals', 'active_goals.json'),
-      buildDefaultGoals(),
+      buildDefaultGoals(language),
       { force: !!flags.force },
     );
   }
@@ -114,7 +100,7 @@ export function initData(root, flags = {}) {
       source: 'jea data init',
       subject: 'js-evolution-agent',
       kind: 'initialization',
-      content: `Initialized runtime data for subject: ${subject}`,
+      content: t('data.init.seedContent', { subject }, language),
       confidence: 'high',
       tags: ['init', 'bootstrap'],
       initialized_at: initializedAt,
@@ -148,32 +134,41 @@ export function backupData(root, flags = {}) {
   };
 }
 
-function printInitResult(result, root) {
-  console.log('Initialized runtime data:');
-  console.log(`  subject: ${result.runtime.subject}`);
-  console.log(`  namespace: ${result.runtime.dataNamespace}`);
-  console.log(`  runtime: ${result.runtime.runtimeRoot}`);
+function printInitResult(result, root, language = getLanguage()) {
+  console.log(t('data.init.heading', {}, language));
+  console.log(`  ${t('data.init.subject', {}, language)}: ${result.runtime.subject}`);
+  console.log(`  ${t('data.init.namespace', {}, language)}: ${result.runtime.dataNamespace}`);
+  console.log(`  ${t('data.init.runtime', {}, language)}: ${result.runtime.runtimeRoot}`);
   if (result.policies) {
     const { active, subject } = result.policies;
-    const activeLabel = active?.skipped ? 'exists' : 'created';
-    const subjectLabel = subject?.written ? 'created' : 'exists';
+    const activeLabel = active?.skipped
+      ? t('data.init.exists', {}, language)
+      : t('data.init.created', {}, language);
+    const subjectLabel = subject?.written
+      ? t('data.init.created', {}, language)
+      : t('data.init.exists', {}, language);
     const policyRel = relative(root, subject.file);
-    console.log('  policies:');
+    console.log(`  ${t('data.init.policies', {}, language)}:`);
     console.log(`    - policies/active-subject.json: ${activeLabel}`);
     console.log(`    - ${policyRel}: ${subjectLabel}`);
   }
   for (const dir of result.directories) {
-    console.log(`  - ${dir.dir}: ${dir.created ? 'created' : 'exists'}`);
+    const label = dir.created
+      ? t('data.init.created', {}, language)
+      : t('data.init.exists', {}, language);
+    console.log(`  - ${dir.dir}: ${label}`);
   }
   if (result.goals) {
     const action = result.goals.written
-      ? (result.goals.existed ? 'overwritten' : 'created')
-      : 'skipped';
+      ? (result.goals.existed
+        ? t('data.init.overwritten', {}, language)
+        : t('data.init.created', {}, language))
+      : t('data.init.skipped', {}, language);
     console.log(`  - data/goals/active_goals.json: ${action}`);
   }
   if (result.seed) {
-    console.log(`  - seed observations: ${result.seed.observationCount}`);
-    console.log(`  - seed events: ${result.seed.eventCount}`);
+    console.log(`  - ${t('data.init.seedObservations', {}, language)}: ${result.seed.observationCount}`);
+    console.log(`  - ${t('data.init.seedEvents', {}, language)}: ${result.seed.eventCount}`);
   }
 }
 

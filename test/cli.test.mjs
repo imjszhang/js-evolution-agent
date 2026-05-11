@@ -47,10 +47,13 @@ import {
 } from '../src/cli/utils/subjects.mjs';
 
 let tempDir = null;
+const originalJeaLanguage = process.env.JEA_LANGUAGE;
 
 afterEach(() => {
   if (tempDir) rmSync(tempDir, { recursive: true, force: true });
   tempDir = null;
+  if (originalJeaLanguage === undefined) delete process.env.JEA_LANGUAGE;
+  else process.env.JEA_LANGUAGE = originalJeaLanguage;
 });
 
 describe('CLI argument parsing', () => {
@@ -228,6 +231,7 @@ describe('data initialization', () => {
     const first = initData(root, { goals: true });
     expect(first.goals.written).toBe(true);
     expect(readJsonSafe(goalsPath).id).toBe('bootstrap');
+    expect(readJsonSafe(goalsPath).name).toBe('引导启动 js-evolution-agent');
 
     writeFileSync(goalsPath, JSON.stringify({ active: 'custom' }, null, 2));
     const second = initData(root, { goals: true });
@@ -237,6 +241,18 @@ describe('data initialization', () => {
     const forced = initData(root, { goals: true, force: true });
     expect(forced.goals.written).toBe(true);
     expect(readJsonSafe(goalsPath)).toEqual(buildDefaultGoals());
+  });
+
+  it('writes English default goals when requested by env language', () => {
+    const root = makeProjectRoot();
+    const goalsPath = join(getActiveSubjectRuntimeInfo(root).goalsDir, 'active_goals.json');
+    process.env.JEA_LANGUAGE = 'en-US';
+
+    const result = initData(root, { goals: true });
+
+    expect(result.goals.written).toBe(true);
+    expect(readJsonSafe(goalsPath)).toEqual(buildDefaultGoals('en-US'));
+    expect(readJsonSafe(goalsPath).name).toBe('Bootstrap js-evolution-agent');
   });
 
   it('appends seed intelligence without overwriting history', () => {
@@ -252,6 +268,12 @@ describe('data initialization', () => {
     const intelFile = join(getActiveSubjectRuntimeInfo(root).intelligenceDir, 'evolution_events', 'evolution-events.jsonl');
     const lines = readFileSync(intelFile, 'utf-8').trim().split('\n');
     expect(lines).toHaveLength(2);
+    const store = createIntelligenceStore({
+      baseDir: getActiveSubjectRuntimeInfo(root).intelligenceDir,
+    });
+    expect(store.readRecentIntel({ limit: 5 }).some((record) => (
+      record.content === '已为主体初始化运行时数据：The subject is test-agent.'
+    ))).toBe(true);
   });
 
   it('isolates data status by active subject namespace', () => {
