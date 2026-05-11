@@ -40,6 +40,7 @@ import { checkPolicy } from '../src/cli/commands/policy.mjs';
 import {
   createSubject,
   ensureDefaultSubject,
+  buildDefaultSubjectPolicy,
   getActiveSubjectRuntimeInfo,
   listSubjects,
   readActiveSubjectPolicy,
@@ -106,12 +107,26 @@ describe('subject management', () => {
     return tempDir;
   }
 
-  it('creates default subject layout from compatibility guidance', () => {
+  it('creates default subject layout from localized policy template', () => {
     const root = makeProjectRoot();
     const result = ensureDefaultSubject(root);
     expect(result.subject.written).toBe(true);
     expect(listSubjects(root)).toEqual(['js-evolution-agent']);
     expect(readActiveSubjectPolicy(root).active.active).toBe('js-evolution-agent');
+    expect(readActiveSubjectPolicy(root).text).toContain('此循环的主体是 `js-evolution-agent`');
+    expect(readActiveSubjectPolicy(root).text).toContain('## Probe Requirements');
+  });
+
+  it('creates English default subject policy when requested by env language', () => {
+    const root = makeProjectRoot();
+    process.env.JEA_LANGUAGE = 'en-US';
+
+    const result = ensureDefaultSubject(root);
+
+    expect(result.subject.written).toBe(true);
+    expect(readActiveSubjectPolicy(root).text).toContain('The subject of this loop is `js-evolution-agent`');
+    expect(readActiveSubjectPolicy(root).text).toContain('## Probe Requirements');
+    expect(buildDefaultSubjectPolicy('en-US')).toContain('The subject of this loop is `js-evolution-agent`');
   });
 
   it('creates and switches active subjects', () => {

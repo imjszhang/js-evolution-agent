@@ -2,11 +2,11 @@ import {
   existsSync,
   mkdirSync,
   readdirSync,
-  readFileSync,
   writeFileSync,
 } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { readJsonSafe, readTextSafe, writeJsonIfMissing } from './files.mjs';
+import { getLanguage, t } from './i18n.mjs';
 
 export const DEFAULT_SUBJECT = 'js-evolution-agent';
 
@@ -111,52 +111,21 @@ export function listSubjects(root) {
     .sort();
 }
 
-export function buildSubjectPolicyTemplate(name, { template = 'project' } = {}) {
+function generatedAt() {
+  return new Date().toISOString();
+}
+
+export function buildSubjectPolicyTemplate(name, { template = 'project', language = getLanguage() } = {}) {
   const subject = sanitizeSubjectName(name);
-  return `# ${subject} Project Guidance
+  return t('policy.subjectTemplate', {
+    generatedAt: generatedAt(),
+    subject,
+    template,
+  }, language);
+}
 
-Generated: 2026-05-09 15:55:29 +08:00
-
-This file contains project-local clauses for \`${subject}\`. Universal Cyber-Taoist principles are read from \`CONSTITUTION.md\` and \`SKILL.md\`; do not copy or rewrite them here.
-
-Template: ${template}
-
-## Subject
-
-The subject of this loop is \`${subject}\`: define what is treated as the entity that survives, trades, fails, and evolves.
-
-## Core Layer
-
-- Operator trust, reviewability, and reversibility.
-- Legal, identity, and access continuity.
-- Data integrity for this subject.
-- Replace this list with the minimum functions that must not die.
-
-## Allowed First-Phase Actions
-
-- Read project-local files and referenced context documents.
-- Generate observations, probe proposals, retrospectives, and local reports.
-- Write action receipts, evolution events, and reviews under subject runtime data.
-- Queue decisions for explicit execution through registered handlers.
-
-## Off-Limits Without Human Approval
-
-- Creating commits, pushing branches, or opening pull requests.
-- Running destructive shell commands or large cross-project rewrites.
-- Writing outside the configured project tree.
-- Executing a \`core\` layer action beyond recording a review request.
-
-## Probe Requirements
-
-Every probe must state:
-
-- \`hypothesis\`
-- \`success_signal\`
-- \`failure_signal\`
-- \`death_boundary\`
-
-If any field is missing, the action should fail early and write no external side effects.
-`;
+export function buildDefaultSubjectPolicy(language = getLanguage()) {
+  return t('policy.defaultSubjectTemplate', { generatedAt: generatedAt() }, language);
 }
 
 export function ensureSubjectLayout(root) {
@@ -168,7 +137,7 @@ export function ensureSubjectLayout(root) {
   };
 }
 
-export function createSubject(root, name, { template = 'project', force = false } = {}) {
+export function createSubject(root, name, { template = 'project', force = false, language = getLanguage() } = {}) {
   const subject = sanitizeSubjectName(name);
   ensureSubjectLayout(root);
   const file = subjectFile(root, subject);
@@ -176,7 +145,7 @@ export function createSubject(root, name, { template = 'project', force = false 
   if (existed && !force) {
     return { name: subject, file, written: false, skipped: true, existed };
   }
-  writeFileSync(file, buildSubjectPolicyTemplate(subject, { template }), 'utf-8');
+  writeFileSync(file, buildSubjectPolicyTemplate(subject, { template, language }), 'utf-8');
   return { name: subject, file, written: true, skipped: false, existed };
 }
 
@@ -191,14 +160,13 @@ export function setActiveSubject(root, name) {
   return { active, file };
 }
 
-export function ensureDefaultSubject(root) {
+export function ensureDefaultSubject(root, { language = getLanguage() } = {}) {
   ensureSubjectLayout(root);
   const active = defaultActiveSubject();
   const activeResult = writeJsonIfMissing(root, join('policies', 'active-subject.json'), active);
-  const source = join(root, 'policies', 'project-guidance.md');
   const destination = subjectFile(root, DEFAULT_SUBJECT);
-  if (!existsSync(destination) && existsSync(source)) {
-    writeFileSync(destination, readFileSync(source, 'utf-8'), 'utf-8');
+  if (!existsSync(destination)) {
+    writeFileSync(destination, buildDefaultSubjectPolicy(language), 'utf-8');
     return { active: activeResult, subject: { file: destination, written: true } };
   }
   return { active: activeResult, subject: { file: destination, written: false } };

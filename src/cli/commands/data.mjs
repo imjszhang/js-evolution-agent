@@ -70,7 +70,7 @@ export function initData(root, flags = {}) {
   const language = flags.language || getLanguage();
   const withGoals = !!(flags.goals || flags.all);
   const withSeed = !!(flags.seed || flags.all);
-  const policies = flags.all ? ensureDefaultSubject(root) : null;
+  const policies = flags.all ? ensureDefaultSubject(root, { language }) : null;
   const runtime = getActiveSubjectRuntimeInfo(root);
   const result = {
     runtime,
