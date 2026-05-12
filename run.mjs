@@ -184,7 +184,9 @@ async function main() {
   } else {
     console.log('\n=== Phase 4: goals assess ===');
     try {
-      const assessResult = await assessActiveGoals(__dirname, { cycle: intelResult.cycle_id });
+      const assessResult = await assessActiveGoals(__dirname, { cycle: intelResult.cycle_id }, {
+        verificationReportPath: reportPath,
+      });
       console.log('  cycle:', assessResult.report.cycle_id);
       console.log('  status:', assessResult.assessment.status);
       console.log('  confidence:', assessResult.assessment.confidence);

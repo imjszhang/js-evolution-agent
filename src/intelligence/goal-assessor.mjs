@@ -56,6 +56,73 @@ function clip(value, max = 6000) {
   return text.length > max ? `${text.slice(0, max)}\n...(truncated)` : text;
 }
 
+function readVerificationReport(reportPath) {
+  if (!reportPath) return { verification: null, error: null };
+  try {
+    return {
+      verification: JSON.parse(readFileSync(reportPath, 'utf-8')),
+      error: null,
+    };
+  } catch (e) {
+    return {
+      verification: null,
+      error: e?.message || String(e),
+    };
+  }
+}
+
+function verifyReportId(reportPath) {
+  if (!reportPath) return null;
+  const filename = String(reportPath).split(/[\\/]/).pop() || '';
+  return filename.replace(/\.json$/i, '') || null;
+}
+
+function summarizeVerificationItem(item) {
+  const action = item?.action ?? {};
+  const value = item?.value ?? item?.result ?? {};
+  return {
+    action_type: action.type ?? item?.action_type ?? null,
+    description: clip(action.description ?? '', 240),
+    priority: action.priority ?? null,
+    metric: item?.metric ?? null,
+    verification_status: item?.status ?? null,
+    result_success: value?.success ?? null,
+    result_status: value?.status ?? null,
+    result_message: clip(value?.message ?? value?.error ?? '', 240),
+  };
+}
+
+function summarizeVerificationReport(reportPath) {
+  if (!reportPath) return null;
+  const { verification, error } = readVerificationReport(reportPath);
+  const reportId = verifyReportId(reportPath);
+  if (!verification) {
+    return {
+      report_id: reportId,
+      ref: reportId ? `verify_report:${reportId}` : null,
+      report_path: reportPath,
+      read_error: error,
+      verified_count: 0,
+      pending_count: 0,
+      verified: [],
+      pending: [],
+    };
+  }
+  const verified = Array.isArray(verification?.verified) ? verification.verified : [];
+  const pending = Array.isArray(verification?.pending) ? verification.pending : [];
+
+  return {
+    report_id: reportId,
+    ref: reportId ? `verify_report:${reportId}` : null,
+    report_path: reportPath ?? null,
+    timestamp: verification?.timestamp ?? null,
+    verified_count: verified.length,
+    pending_count: pending.length,
+    verified: verified.map(summarizeVerificationItem),
+    pending: pending.map(summarizeVerificationItem),
+  };
+}
+
 export function fallbackGoalAssessment(reason = 'AI goal assessment unavailable') {
   return {
     status: 'insufficient_evidence',
@@ -71,6 +138,7 @@ export function buildGoalAssessmentContext({
   activeGoals,
   reportRecord,
   reportMarkdown = null,
+  verificationReportPath = null,
   store,
   goalEventsLimit = 10,
 } = {}) {
@@ -97,6 +165,7 @@ export function buildGoalAssessmentContext({
       evidence_retro_count: reportRecord.evidence_retro_count ?? null,
     } : null,
     report_markdown: clip(markdown),
+    verification: summarizeVerificationReport(verificationReportPath),
     evidence,
     recent_goal_events: recentGoalEvents,
     machine_assessment: machineAssessment,
@@ -128,7 +197,7 @@ export function buildGoalAssessmentPrompt({
 - 必须以 agentContextDocs 为最高层级约束来判断目标是否合理、可验证、是否偏离主体边界。
 - 没有来自情报侧的可用证据（观察、回顾、报告、事件等）支撑具体结论时：不得轻易建议 replace/split；若仅能依据文献得出「尚需等待证据」，则用 insufficient_evidence，且 confidence 为 low。
 - 能收敛，不扩展；目标越可验证越好；proposed_goal 必须仍符合文献与主体策略。
-- evidence_refs：须引用支持你结论的情报条目（intel_report / observation / probe_result / retrospective / goal_event / evolution_event）。若某项判断主要依据某一权威文献中的原则，也请用 type 为 agent_context、id 为该文档 id、ref 为该文档 id 前加前缀 agent_context: 一并列出，使理由可追溯。
+- evidence_refs：须引用支持你结论的情报条目（intel_report / verify_report / observation / probe_result / retrospective / goal_event / evolution_event）。若某项判断主要依据某一权威文献中的原则，也请用 type 为 agent_context、id 为该文档 id、ref 为该文档 id 前加前缀 agent_context: 一并列出，使理由可追溯。
 - 没有可用的 evidence_refs（含 agent_context）时 confidence 必须为 low。
 - reason 必须用中文简述：结合了哪些文献要点 + 哪些情报事实。
 - 只返回一个 JSON 对象，不要 Markdown，不要代码块。
@@ -138,7 +207,7 @@ JSON schema:
   "status": "keep | refine | split | replace | retire | insufficient_evidence",
   "confidence": "low | medium | high",
   "reason": "string",
-  "evidence_refs": [{ "type": "intel_report|observation|probe_result|retrospective|goal_event|evolution_event|agent_context", "id": "string", "ref": "string" }],
+  "evidence_refs": [{ "type": "intel_report|verify_report|observation|probe_result|retrospective|goal_event|evolution_event|agent_context", "id": "string", "ref": "string" }],
   "proposed_goal": null,
   "risk": "string"
 }
@@ -163,7 +232,7 @@ Hard constraints:
 - You MUST ground your judgment in agentContextDocs; intelligence is evidence about the world, not a substitute for doctrinal boundaries.
 - Do not recommend broad replace/split without concrete intelligence support; prefer insufficient_evidence with low confidence when facts are thin.
 - Prefer narrowing over expanding; proposed_goal must remain compliant with doctrine and subject policy.
-- evidence_refs MUST cite intelligence items you rely on (intel_report / observation / probe_result / retrospective / goal_event / evolution_event). When a key norm comes from authority text, also include agent_context with id = doc id and ref = the string "agent_context:" plus the same doc id.
+- evidence_refs MUST cite intelligence items you rely on (intel_report / verify_report / observation / probe_result / retrospective / goal_event / evolution_event). When a key norm comes from authority text, also include agent_context with id = doc id and ref = the string "agent_context:" plus the same doc id.
 - If evidence_refs would be empty, confidence MUST be low.
 - reason MUST briefly name which authority points plus which factual evidence you used (English).
 
@@ -174,7 +243,7 @@ JSON schema:
   "status": "keep | refine | split | replace | retire | insufficient_evidence",
   "confidence": "low | medium | high",
   "reason": "string",
-  "evidence_refs": [{ "type": "intel_report|observation|probe_result|retrospective|goal_event|evolution_event|agent_context", "id": "string", "ref": "string" }],
+  "evidence_refs": [{ "type": "intel_report|verify_report|observation|probe_result|retrospective|goal_event|evolution_event|agent_context", "id": "string", "ref": "string" }],
   "proposed_goal": null,
   "risk": "string"
 }
@@ -228,6 +297,7 @@ export async function assessGoalsWithAi({
   activeGoals,
   reportRecord,
   reportMarkdown = null,
+  verificationReportPath = null,
   store,
   agentContextDocs = [],
   logger = null,
@@ -236,6 +306,7 @@ export async function assessGoalsWithAi({
     activeGoals,
     reportRecord,
     reportMarkdown,
+    verificationReportPath,
     store,
   });
   const prompt = buildGoalAssessmentPrompt({ context, agentContextDocs });

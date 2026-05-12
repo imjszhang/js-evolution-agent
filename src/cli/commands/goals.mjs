@@ -150,6 +150,7 @@ export async function assessActiveGoals(root = getProjectRoot(), flags = {}, opt
     activeGoals: active.goals,
     reportRecord,
     reportMarkdown,
+    verificationReportPath: opts.verificationReportPath,
     store,
     agentContextDocs: cfg.agentContextDocs ?? [],
     logger: cfg.host?.logger,
