@@ -58,5 +58,12 @@ export const INTELLIGENCE_SPECS = [
     storageType: 'append_jsonl',
     filename: 'goal-events.jsonl',
   }),
+  new DataSourceSpec({
+    name: 'standing_memory',
+    description: 'Fixed-capacity rolling summary of the subject state for report generation.',
+    storageType: 'single_json',
+    subdir: 'memory',
+    filename: 'standing-memory.json',
+  }),
 ];
 

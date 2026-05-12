@@ -8,6 +8,20 @@ const DEFAULT_EVIDENCE_LIMITS = {
   eventLimit: 5,
 };
 
+const DEFAULT_REPORT_CONTEXT_LIMITS = {
+  observationDays: 90,
+  observationLimit: 500,
+  probeLimit: 300,
+  retroLimit: 100,
+  eventLimit: 500,
+  receiptLimit: 500,
+  goalEventLimit: 200,
+  reportIndexLimit: 50,
+  reportMarkdownLimit: 3,
+  reportMarkdownCharLimit: 60000,
+  standingMemoryCharLimit: 12000,
+};
+
 function safeReadGoals(runtime) {
   const goalsPath = join(runtime.runtimeRoot, 'data', 'goals', 'active_goals.json');
   if (!existsSync(goalsPath)) return null;
@@ -40,6 +54,25 @@ function shortText(value, max = 200) {
   if (value == null) return '';
   const s = String(value).replace(/\s+/g, ' ').trim();
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+}
+
+function clipText(value, max) {
+  const text = String(value ?? '');
+  if (!max || text.length <= max) return text;
+  return `${text.slice(0, max)}\n...(truncated)`;
+}
+
+function safeRead(fn, fallback) {
+  try {
+    const value = fn();
+    return value ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function asRecords(value) {
+  return Array.isArray(value) ? value : [];
 }
 
 /**
@@ -105,6 +138,149 @@ export function gatherEvidence(store, opts = {}) {
     .filter((r) => r.id);
 
   return { observations, probes, retrospectives, events };
+}
+
+function readRecentReportMarkdowns(reportRecords, { limit, charLimit } = {}) {
+  return asRecords(reportRecords)
+    .slice(-limit)
+    .map((record) => {
+      const mdPath = record?.md_path ?? null;
+      if (!mdPath || !existsSync(mdPath)) return null;
+      return {
+        id: record.id ?? null,
+        cycle_id: record.cycle_id ?? null,
+        md_path: mdPath,
+        generated_at: record.generated_at ?? record.recorded_at ?? null,
+        tldr: record.tldr ?? '',
+        markdown: clipText(safeRead(() => readFileSync(mdPath, 'utf-8'), ''), charLimit),
+      };
+    })
+    .filter(Boolean);
+}
+
+function normalizeStandingMemory(memory, charLimit) {
+  if (!memory) {
+    return {
+      exists: false,
+      updated_at: null,
+      source_cycle_id: null,
+      text: '(no standing memory yet)',
+      evidence_refs: [],
+    };
+  }
+  return {
+    exists: true,
+    updated_at: memory.updated_at ?? null,
+    source_cycle_id: memory.source_cycle_id ?? null,
+    text: clipText(memory.text ?? '', charLimit),
+    evidence_refs: Array.isArray(memory.evidence_refs) ? memory.evidence_refs : [],
+  };
+}
+
+export function gatherReportContext({
+  store,
+  runtime,
+  intelResult,
+  generatedAt,
+  limits: limitOverrides = {},
+} = {}) {
+  const limits = { ...DEFAULT_REPORT_CONTEXT_LIMITS, ...limitOverrides };
+  const activeGoals = safeReadGoals(runtime);
+  const reportIndex = store?.readIntelReports
+    ? safeRead(() => store.readIntelReports({ limit: limits.reportIndexLimit }), [])
+    : [];
+
+  const context = {
+    generated_at: generatedAt,
+    subject: runtime?.subject ?? null,
+    namespace: runtime?.dataNamespace ?? null,
+    current_cycle: {
+      cycle_id: intelResult?.cycle_id ?? null,
+      mode: intelResult?.mode ?? null,
+      success: intelResult?.success ?? null,
+      actions: (intelResult?.actions || []).map((a) => ({
+        type: a.type,
+        description: a.description,
+        serves_goal: a.serves_goal,
+        expected_impact: a.expected_impact,
+        priority: a.priority,
+      })),
+      decisions_queued: intelResult?.decisions_queued || [],
+    },
+    standing_memory: normalizeStandingMemory(
+      store?.readStandingMemory ? safeRead(() => store.readStandingMemory(), null) : null,
+      limits.standingMemoryCharLimit,
+    ),
+    active_goals: activeGoals,
+    active_goals_flat: flattenGoals(activeGoals),
+    goal_events: store?.readGoalEvents
+      ? safeRead(() => store.readGoalEvents({ limit: limits.goalEventLimit }), [])
+      : [],
+    observations: store?.readRecentIntel
+      ? safeRead(() => store.readRecentIntel({ days: limits.observationDays, limit: limits.observationLimit }), [])
+      : [],
+    probe_results: store?.readProbeResults
+      ? safeRead(() => store.readProbeResults({ limit: limits.probeLimit }), [])
+      : [],
+    retrospectives: store?.readRetrospectives
+      ? safeRead(() => store.readRetrospectives({ limit: limits.retroLimit }), [])
+      : [],
+    evolution_events: store?.readEvolutionEvents
+      ? safeRead(() => store.readEvolutionEvents({ limit: limits.eventLimit }), [])
+      : [],
+    action_receipts: store?.readActionReceipts
+      ? safeRead(() => store.readActionReceipts({ limit: limits.receiptLimit }), [])
+      : [],
+    latest_review: store?.readLatestReview ? safeRead(() => store.readLatestReview(), null) : null,
+    intel_reports_index: reportIndex,
+    recent_report_markdowns: readRecentReportMarkdowns(reportIndex, {
+      limit: limits.reportMarkdownLimit,
+      charLimit: limits.reportMarkdownCharLimit,
+    }),
+  };
+
+  context.evidence = {
+    observations: asRecords(context.observations).map((r) => ({
+      id: r.id,
+      kind: r.kind ?? 'observation',
+      subject: r.subject ?? r.source ?? null,
+      summary: shortText(r.content ?? r.summary ?? '', 240),
+      tags: r.tags ?? [],
+    })).filter((r) => r.id),
+    probes: asRecords(context.probe_results).map((r) => ({
+      id: r.id,
+      probe_type: r.probe_type ?? null,
+      target: r.target ?? null,
+      status: r.status ?? null,
+      summary: shortText(r.summary ?? '', 240),
+    })).filter((r) => r.id),
+    retrospectives: asRecords(context.retrospectives).map((r) => ({
+      id: r.id,
+      outcome: r.outcome ?? null,
+      summary: shortText(r.summary ?? '', 240),
+    })).filter((r) => r.id),
+    events: asRecords(context.evolution_events).map((r) => ({
+      id: r.id,
+      type: r.type ?? null,
+      status: r.status ?? null,
+      cycle_id: r.cycle_id ?? null,
+    })).filter((r) => r.id),
+  };
+
+  context.source_counts = {
+    observations: context.observations.length,
+    probe_results: context.probe_results.length,
+    retrospectives: context.retrospectives.length,
+    evolution_events: context.evolution_events.length,
+    action_receipts: context.action_receipts.length,
+    goal_events: context.goal_events.length,
+    intel_reports_index: context.intel_reports_index.length,
+    recent_report_markdowns: context.recent_report_markdowns.length,
+    latest_review: context.latest_review ? 1 : 0,
+    standing_memory: context.standing_memory.exists ? 1 : 0,
+  };
+
+  return context;
 }
 
 function tokenize(text) {
@@ -201,10 +377,18 @@ function buildPromptZh({ constitution, skill, subject, contextJson }) {
 
 形式完全自由：章节、文体、长度、详略由你决定——只要它对人类操作者可读、对主体的演化有用、忠于 Cyber-Taoist 进化学的立场。
 
-基本约束（仅此而已）：
+阅读顺序与约束：
+1. 先读权威文献，它们高于所有情报材料。
+2. 再读 standing_memory，它是固定容量的整体态势记忆；它可以帮助你保持连续性，但不能覆盖新的证据。
+3. 再读当前目标、目标历史、本轮事实、近期完整情报和历史报告索引。
+4. 若新证据推翻或削弱 standing_memory 中的旧判断，请在报告中指出。
+
+输出约束：
 1. 输出纯 Markdown，不要在最外层用代码围栏包裹。
 2. 不要捏造下方"本轮事实"中没有的 id、计数或事件。
 3. 用中文写作。
+4. 尽量引用可追溯的 id（如 observation、probe_result、goal_event、action_receipt、intel_report、evolution_event）。
+5. 报告应覆盖：本轮事实、长期趋势、证据不足处、风险、下一轮建议，以及 standing_memory 应如何更新的要点。
 
 === 文献 1：Cyber-Taoist 宪章（CONSTITUTION.md，全文） ===
 ${constitution || '(missing)'}
@@ -215,7 +399,7 @@ ${skill || '(missing)'}
 === 文献 3：本主体策略（active subject policy，全文） ===
 ${subject || '(missing)'}
 
-=== 本轮事实（机器汇集，仅供参考，不必逐项罗列） ===
+=== 本轮事实与情报上下文（机器汇集，仅供参考，不必逐项罗列） ===
 ${contextJson}
 
 请开始写你的札记。`;
@@ -226,10 +410,18 @@ function buildPromptEn({ constitution, skill, subject, contextJson }) {
 
 Form is fully open — sections, voice, length, depth are yours. The only requirements are that it be readable to a human operator, useful to the subject's evolution, and faithful to the Cyber-Taoist evolutionary stance.
 
-Hard constraints (these only):
+Reading order and constraints:
+1. Read the authority documents first. They outrank all intelligence material.
+2. Then read standing_memory. It is the fixed-capacity global situation memory; use it for continuity, but do not let it override new evidence.
+3. Then read the active goals, goal history, current cycle facts, recent intelligence, and report history.
+4. If new evidence weakens or overturns standing_memory, say so in the report.
+
+Output constraints:
 1. Output pure Markdown; do not wrap the whole document in code fences.
-2. Do not invent ids, counts, or events not present in "This cycle's facts" below.
+2. Do not invent ids, counts, or events not present in the machine-collected context below.
 3. Write in English.
+4. Prefer traceable ids where relevant (observation, probe_result, goal_event, action_receipt, intel_report, evolution_event).
+5. Cover current cycle facts, long-term trends, evidence gaps, risks, next-cycle recommendations, and how standing_memory should be updated.
 
 === Document 1: Cyber-Taoist Constitution (CONSTITUTION.md, full text) ===
 ${constitution || '(missing)'}
@@ -240,13 +432,19 @@ ${skill || '(missing)'}
 === Document 3: Active Subject Policy (full text) ===
 ${subject || '(missing)'}
 
-=== This cycle's facts (machine-collected, for reference) ===
+=== Current Cycle Facts and Intelligence Context (machine-collected, for reference) ===
 ${contextJson}
 
 Now write the journal.`;
 }
 
-function buildAiContext({ intelResult, runtime, goals, evidence, assessment, generatedAt }) {
+function buildAiContext({ intelResult, runtime, goals, evidence, assessment, generatedAt, reportContext = null }) {
+  if (reportContext) {
+    return JSON.stringify({
+      ...reportContext,
+      precomputed_assessment: assessment,
+    }, null, 2);
+  }
   return JSON.stringify({
     cycle_id: intelResult.cycle_id,
     generated_at: generatedAt,
@@ -268,14 +466,14 @@ function buildAiContext({ intelResult, runtime, goals, evidence, assessment, gen
   }, null, 2);
 }
 
-export function buildPrompt({ language, agentContextDocs, intelResult, runtime, goals, evidence, assessment, generatedAt }) {
+export function buildPrompt({ language, agentContextDocs, intelResult, runtime, goals, evidence, assessment, generatedAt, reportContext = null }) {
   const constitutionDoc = pickDoc(agentContextDocs, 'cyber-taoist:constitution');
   const skillDoc = pickDoc(agentContextDocs, 'cyber-taoist:skill');
   const subjectDoc = pickDoc(agentContextDocs, 'js-evolution-agent:subject:')
     || pickDoc(agentContextDocs, 'subject:')
     || (Array.isArray(agentContextDocs) ? agentContextDocs.find((d) => d?.id?.includes(':subject:')) : null);
 
-  const contextJson = buildAiContext({ intelResult, runtime, goals, evidence, assessment, generatedAt });
+  const contextJson = buildAiContext({ intelResult, runtime, goals, evidence, assessment, generatedAt, reportContext });
   const args = {
     constitution: constitutionDoc?.text,
     skill: skillDoc?.text,
@@ -324,11 +522,11 @@ function renderFallbackMd({ intelResult, runtime, generatedAt, evidence, assessm
   return lines.join('\n');
 }
 
-async function tryAiRender({ aiClient, language, agentContextDocs, intelResult, runtime, goals, evidence, assessment, generatedAt, logger }) {
+async function tryAiRender({ aiClient, language, agentContextDocs, intelResult, runtime, goals, evidence, assessment, generatedAt, reportContext, logger }) {
   if (!aiClient || typeof aiClient.chat !== 'function') {
     return { md: null, reason: 'no-ai-client' };
   }
-  const prompt = buildPrompt({ language, agentContextDocs, intelResult, runtime, goals, evidence, assessment, generatedAt });
+  const prompt = buildPrompt({ language, agentContextDocs, intelResult, runtime, goals, evidence, assessment, generatedAt, reportContext });
   try {
     const md = await aiClient.chat(prompt);
     if (typeof md !== 'string' || !md.trim()) {
@@ -339,6 +537,116 @@ async function tryAiRender({ aiClient, language, agentContextDocs, intelResult, 
     const msg = e?.message || String(e);
     logger?.warn?.(`[report] AI generation failed: ${msg}; using fallback placeholder`);
     return { md: null, reason: msg };
+  }
+}
+
+function stripCodeFence(text) {
+  const trimmed = String(text || '').trim();
+  const fenced = trimmed.match(/^```(?:markdown|md|text)?\s*([\s\S]*?)\s*```$/i);
+  return fenced ? fenced[1].trim() : trimmed;
+}
+
+function buildStandingMemoryUpdatePrompt({ language, oldMemory, reportMarkdown, reportContext, maxChars }) {
+  const contextJson = clipText(JSON.stringify({
+    current_cycle: reportContext.current_cycle,
+    source_counts: reportContext.source_counts,
+    active_goals: reportContext.active_goals,
+    goal_events: reportContext.goal_events,
+    observations: reportContext.observations,
+    probe_results: reportContext.probe_results,
+    retrospectives: reportContext.retrospectives,
+    evolution_events: reportContext.evolution_events,
+    action_receipts: reportContext.action_receipts,
+    latest_review: reportContext.latest_review,
+    intel_reports_index: reportContext.intel_reports_index,
+  }, null, 2), 500000);
+
+  if (language === 'en') {
+    return `You maintain the fixed-capacity standing memory for js-evolution-agent.
+
+Update the memory so the next cycle can understand the global situation quickly.
+
+Rules:
+- Return only the new standing memory text. No code fences.
+- Keep it under ${maxChars} characters.
+- Preserve stable conclusions that are still supported.
+- Downgrade or remove stale claims when the new report or evidence weakens them.
+- Track active goal rationale, durable trends, risks, unresolved hypotheses, and useful evidence refs.
+
+=== Previous Standing Memory ===
+${oldMemory?.text || '(none)'}
+
+=== New Cycle Report ===
+${reportMarkdown}
+
+=== Machine Context ===
+${contextJson}`;
+  }
+
+  return `你维护 js-evolution-agent 的固定容量 standing memory。
+
+请把它更新为下一轮可快速理解整体态势的概要记忆。
+
+规则：
+- 只返回新版 standing memory 正文，不要代码围栏。
+- 总长度必须控制在 ${maxChars} 字符以内。
+- 保留仍被证据支持的稳定结论。
+- 如果新报告或新证据削弱了旧判断，请降级或删除旧判断。
+- 记录当前目标理由、长期趋势、风险、未验证假设，以及有用的 evidence refs。
+
+=== 旧 Standing Memory ===
+${oldMemory?.text || '(none)'}
+
+=== 新周期报告 ===
+${reportMarkdown}
+
+=== 机器上下文 ===
+${contextJson}`;
+}
+
+async function updateStandingMemoryWithAi({
+  aiClient,
+  store,
+  language,
+  reportContext,
+  reportMarkdown,
+  cycleId,
+  generatedAt,
+  logger,
+  maxChars,
+} = {}) {
+  if (!store || typeof store.recordStandingMemory !== 'function') {
+    return { status: 'skipped', reason: 'store-unavailable' };
+  }
+  if (!aiClient || typeof aiClient.chat !== 'function') {
+    return { status: 'skipped', reason: 'no-ai-client' };
+  }
+
+  const prompt = buildStandingMemoryUpdatePrompt({
+    language,
+    oldMemory: reportContext.standing_memory,
+    reportMarkdown,
+    reportContext,
+    maxChars,
+  });
+
+  try {
+    const raw = await aiClient.chat(prompt);
+    const text = clipText(stripCodeFence(raw), maxChars).trim();
+    if (!text) return { status: 'failed', reason: 'empty-output' };
+    const written = store.recordStandingMemory({
+      source_cycle_id: cycleId,
+      generated_at: generatedAt,
+      char_limit: maxChars,
+      token_budget_hint: `fixed prompt region, max ${maxChars} characters`,
+      text,
+      evidence_refs: [],
+    });
+    return { status: written > 0 ? 'updated' : 'failed', reason: written > 0 ? null : 'write-failed' };
+  } catch (e) {
+    const msg = e?.message || String(e);
+    logger?.warn?.(`[report] standing memory update failed: ${msg}`);
+    return { status: 'failed', reason: msg };
   }
 }
 
@@ -373,8 +681,9 @@ export async function buildIntelReport({
   }
   const generatedAt = new Date().toISOString();
   const cycleId = intelResult.cycle_id;
-  const goals = flattenGoals(safeReadGoals(runtime));
-  const evidence = gatherEvidence(store);
+  const reportContext = gatherReportContext({ store, runtime, intelResult, generatedAt });
+  const goals = reportContext.active_goals_flat;
+  const evidence = reportContext.evidence;
   const assessment = assessGoals(goals, evidence);
 
   const subjectDoc = pickDoc(agentContextDocs, 'js-evolution-agent:subject:')
@@ -386,7 +695,7 @@ export async function buildIntelReport({
   let fallbackReason = null;
   if (useAi) {
     const { md: aiMd, reason } = await tryAiRender({
-      aiClient, language, agentContextDocs, intelResult, runtime, goals, evidence, assessment, generatedAt, logger,
+      aiClient, language, agentContextDocs, intelResult, runtime, goals, evidence, assessment, generatedAt, reportContext, logger,
     });
     if (aiMd) {
       md = aiMd;
@@ -406,6 +715,18 @@ export async function buildIntelReport({
   const mdPath = join(reportsDir, `${cycleId}.md`);
   writeFileSync(mdPath, md, 'utf-8');
 
+  const memoryUpdate = await updateStandingMemoryWithAi({
+    aiClient: useAi ? aiClient : null,
+    store,
+    language,
+    reportContext,
+    reportMarkdown: md,
+    cycleId,
+    generatedAt,
+    logger,
+    maxChars: DEFAULT_REPORT_CONTEXT_LIMITS.standingMemoryCharLimit,
+  });
+
   const indexRecord = {
     cycle_id: cycleId,
     generated_at: generatedAt,
@@ -415,6 +736,14 @@ export async function buildIntelReport({
     evidence_obs_count: evidence.observations.length,
     evidence_probe_count: evidence.probes.length,
     evidence_retro_count: evidence.retrospectives.length,
+    context_source_counts: reportContext.source_counts,
+    standing_memory_used: reportContext.standing_memory.exists,
+    standing_memory_updated: memoryUpdate.status === 'updated',
+    standing_memory_update_status: memoryUpdate.status,
+    standing_memory_update_error: memoryUpdate.reason,
+    recent_report_count: reportContext.recent_report_markdowns.length,
+    action_receipt_count: reportContext.action_receipts.length,
+    goal_event_count: reportContext.goal_events.length,
     subject: runtime.subject,
     namespace: runtime.dataNamespace,
     language,
@@ -422,5 +751,5 @@ export async function buildIntelReport({
   };
   store.recordIntelReport(indexRecord);
 
-  return { mdPath, indexRecord, source };
+  return { mdPath, indexRecord, source, memoryUpdate };
 }

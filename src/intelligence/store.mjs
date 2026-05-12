@@ -135,6 +135,27 @@ export class IntelligenceStore {
     return this.engine.readSource('goal_events', { limit });
   }
 
+  readActionReceipts({ limit = 20 } = {}) {
+    return this.engine.readSource('action_receipts', { limit });
+  }
+
+  readProbeThreads({ entity_id = null } = {}) {
+    return entity_id
+      ? this.engine.readSource('probe_threads', { entity_id })
+      : this.engine.readSource('probe_threads');
+  }
+
+  readStandingMemory() {
+    return this.engine.readSource('standing_memory');
+  }
+
+  recordStandingMemory(memory) {
+    return this.engine.ingest('standing_memory', {
+      source: 'report_builder',
+      ...memory,
+    });
+  }
+
   readRecentIntel({ days = 7, limit = 20 } = {}) {
     return this.engine.readSource('intel_observations', { days }).slice(0, limit);
   }

@@ -16,6 +16,7 @@ import {
   detectLanguage,
   extractTldr,
   gatherEvidence,
+  gatherReportContext,
 } from '../src/intelligence/report-builder.mjs';
 import {
   assessGoalsWithAi,
@@ -49,6 +50,7 @@ describe('intelligence specs', () => {
       'probe_results',
       'intel_reports',
       'goal_events',
+      'standing_memory',
     ]);
   });
 });
@@ -105,6 +107,29 @@ describe('IntelligenceStore', () => {
     });
     expect(events[0].id).toMatch(/^goal-event-/);
     expect(events[0].recorded_at).toBeTruthy();
+  });
+
+  it('records action receipts and standing memory', () => {
+    const store = makeStore();
+
+    expect(store.recordActionReceipt(
+      { type: 'record_observation', description: 'record test fact' },
+      { success: true, message: 'ok' },
+      { cycleId: 'cycle-1' },
+    )).toBe(1);
+    expect(store.recordStandingMemory({
+      source_cycle_id: 'cycle-1',
+      char_limit: 12000,
+      text: '主体整体态势稳定。',
+      evidence_refs: [{ type: 'intel_report', id: 'cycle-1', ref: 'intel_report:cycle-1' }],
+    })).toBe(1);
+
+    const receipts = store.readActionReceipts({ limit: 5 });
+    expect(receipts[0]).toMatchObject({ cycle_id: 'cycle-1', action_type: 'record_observation' });
+    expect(store.readStandingMemory()).toMatchObject({
+      source_cycle_id: 'cycle-1',
+      text: '主体整体态势稳定。',
+    });
   });
 });
 
@@ -174,6 +199,50 @@ describe('gatherEvidence', () => {
     const ev = gatherEvidence(store);
     expect(ev.observations[0]).toMatchObject({ id: 'obs-x', subject: 'a' });
     expect(ev.retrospectives[0]).toMatchObject({ id: 'retro-y', outcome: 'ok' });
+  });
+});
+
+describe('gatherReportContext', () => {
+  it('builds a broad report context with goal history, receipts, reports, and standing memory', () => {
+    const { store, runtime, intelResult } = makeReportFixture();
+    const previousReportPath = join(runtime.runtimeRoot, 'data', 'intelligence', 'reports', 'cycle-old.md');
+    mkdirSync(join(runtime.runtimeRoot, 'data', 'intelligence', 'reports'), { recursive: true });
+    writeFileSync(previousReportPath, '# Previous Report\n\n旧报告摘要。');
+
+    store.ingestObservation({ id: 'obs-context', source: 'test', subject: 'context', content: 'wiring verified' });
+    store.recordProbeResult({ id: 'probe-context', probe_type: 'file_exists', status: 'succeeded', summary: 'ok' });
+    store.recordRetrospective({ id: 'retro-context', outcome: 'ok', summary: 'wiring verified' });
+    store.recordEvolutionEvent({ id: 'evt-context', type: 'intel_pipeline', status: 'ok', cycle_id: 'cycle-old' });
+    store.recordActionReceipt({ type: 'record_observation' }, { success: true }, { cycleId: 'cycle-old' });
+    store.recordGoalEvent({ id: 'goal-context', type: 'assessment', goal_id: 'bootstrap', reason: 'kept' });
+    store.recordIntelReport({ id: 'report-context', cycle_id: 'cycle-old', md_path: previousReportPath, tldr: '旧报告摘要' });
+    store.recordStandingMemory({ source_cycle_id: 'cycle-old', text: '长期态势：循环已接通。', evidence_refs: [] });
+
+    const context = gatherReportContext({
+      store,
+      runtime,
+      intelResult,
+      generatedAt: '2026-05-12T00:00:00.000Z',
+    });
+
+    expect(context.standing_memory.text).toContain('长期态势');
+    expect(context.goal_events.map((r) => r.id)).toContain('goal-context');
+    expect(context.action_receipts).toHaveLength(1);
+    expect(context.latest_review.id).toBe('retro-context');
+    expect(context.intel_reports_index.map((r) => r.id)).toContain('report-context');
+    expect(context.recent_report_markdowns[0].markdown).toContain('Previous Report');
+    expect(context.source_counts).toMatchObject({
+      observations: 1,
+      probe_results: 1,
+      retrospectives: 1,
+      evolution_events: 1,
+      action_receipts: 1,
+      goal_events: 1,
+      intel_reports_index: 1,
+      recent_report_markdowns: 1,
+      latest_review: 1,
+      standing_memory: 1,
+    });
   });
 });
 
@@ -339,6 +408,28 @@ describe('buildPrompt', () => {
     expect(prompt).toMatch(/practice journal/i);
     expect(prompt).toMatch(/Write in English/i);
   });
+
+  it('includes standing memory when a report context is supplied', () => {
+    const prompt = buildPrompt({
+      language: 'zh',
+      agentContextDocs: [],
+      intelResult: { cycle_id: 'c1', actions: [], decisions_queued: [] },
+      runtime: { subject: 't', dataNamespace: 'n' },
+      goals: [],
+      evidence: { observations: [], probes: [], retrospectives: [], events: [] },
+      assessment: [],
+      generatedAt: '2026-05-10T00:00:00.000Z',
+      reportContext: {
+        current_cycle: { cycle_id: 'c1' },
+        standing_memory: { exists: true, text: '整体态势概要记忆。' },
+        source_counts: { standing_memory: 1 },
+      },
+    });
+
+    expect(prompt).toContain('standing_memory');
+    expect(prompt).toContain('整体态势概要记忆');
+    expect(prompt).toContain('固定容量');
+  });
 });
 
 describe('buildIntelReport', () => {
@@ -362,12 +453,15 @@ describe('buildIntelReport', () => {
   it('uses AI output verbatim when AI returns non-empty text (no schema check)', async () => {
     const { store, runtime, intelResult } = makeReportFixture();
     const aiText = '# 修行札记\n\n本轮观测到主体的呼吸节律稳定，buffer 层无溢出。\n';
-    const fakeAi = { chat: async () => aiText };
+    const outputs = [aiText, '新版 standing memory'];
+    const fakeAi = { chat: async () => outputs.shift() };
     const result = await buildIntelReport({
       intelResult, runtime, store, aiClient: fakeAi, useAi: true,
     });
     expect(result.source).toBe('ai');
     expect(readFileSync(result.mdPath, 'utf-8')).toContain('呼吸节律稳定');
+    expect(result.memoryUpdate.status).toBe('updated');
+    expect(store.readStandingMemory().text).toContain('新版 standing memory');
   });
 
   it('falls back to placeholder when AI throws', async () => {
@@ -384,11 +478,11 @@ describe('buildIntelReport', () => {
 
   it('passes full agentContextDocs through to the AI prompt', async () => {
     const { store, runtime, intelResult } = makeReportFixture();
-    let captured = '';
+    const captured = [];
     const fakeAi = {
       chat: async (prompt) => {
-        captured = prompt;
-        return '# ok\n';
+        captured.push(prompt);
+        return captured.length === 1 ? '# ok\n' : 'memory ok';
       },
     };
     const docs = [
@@ -399,8 +493,53 @@ describe('buildIntelReport', () => {
     await buildIntelReport({
       intelResult, runtime, store, agentContextDocs: docs, aiClient: fakeAi, useAi: true,
     });
-    expect(captured).toContain('FULL_CONSTITUTION_BODY');
-    expect(captured).toContain('FULL_SKILL_BODY');
-    expect(captured).toContain('FULL_SUBJECT_BODY');
+    expect(captured[0]).toContain('FULL_CONSTITUTION_BODY');
+    expect(captured[0]).toContain('FULL_SKILL_BODY');
+    expect(captured[0]).toContain('FULL_SUBJECT_BODY');
+  });
+
+  it('records expanded context counts in the report index', async () => {
+    const { store, runtime, intelResult } = makeReportFixture();
+    store.recordGoalEvent({ id: 'goal-index', type: 'assessment', goal_id: 'bootstrap' });
+    store.recordActionReceipt({ type: 'record_observation' }, { success: true }, { cycleId: 'cycle-test-1' });
+    const result = await buildIntelReport({
+      intelResult,
+      runtime,
+      store,
+      aiClient: null,
+      useAi: false,
+    });
+
+    expect(result.indexRecord.context_source_counts.goal_events).toBe(1);
+    expect(result.indexRecord.context_source_counts.action_receipts).toBe(1);
+    expect(result.indexRecord.goal_event_count).toBe(1);
+    expect(result.indexRecord.action_receipt_count).toBe(1);
+    expect(result.indexRecord.standing_memory_update_status).toBe('skipped');
+  });
+
+  it('does not block report writing when standing memory update fails', async () => {
+    const { store, runtime, intelResult } = makeReportFixture();
+    let calls = 0;
+    const fakeAi = {
+      chat: async () => {
+        calls += 1;
+        if (calls === 1) return '# 修行札记\n\n报告已生成。';
+        throw new Error('memory timeout');
+      },
+    };
+
+    const result = await buildIntelReport({
+      intelResult,
+      runtime,
+      store,
+      aiClient: fakeAi,
+      useAi: true,
+    });
+
+    expect(result.source).toBe('ai');
+    expect(existsSync(result.mdPath)).toBe(true);
+    expect(result.memoryUpdate.status).toBe('failed');
+    expect(result.indexRecord.standing_memory_updated).toBe(false);
+    expect(result.indexRecord.standing_memory_update_error).toContain('memory timeout');
   });
 });
