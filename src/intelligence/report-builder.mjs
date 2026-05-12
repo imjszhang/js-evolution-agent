@@ -373,9 +373,9 @@ function pickDoc(docs, idPrefix) {
 }
 
 function buildPromptZh({ constitution, skill, subject, contextJson }) {
-  return `你是 \`js-evolution-agent\` 主体的情报员。请先研读以下三份文献的全文，然后用其中的视角、术语与方法，为本轮（cycle）写一份"修行札记"性质的 Markdown 报告。
+  return `你是 \`js-evolution-agent\` 主体的情报员。请先研读以下三份文献的全文，然后用其中的视角、术语与方法，为本轮（cycle）写一份 Markdown 「情报报告」。
 
-形式完全自由：章节、文体、长度、详略由你决定——只要它对人类操作者可读、对主体的演化有用、忠于 Cyber-Taoist 进化学的立场。
+章节结构与篇幅可适当发挥，但必须同时满足：(1) 对人类操作者可读、对主体的演化有用、忠于 Cyber-Taoist 进化学立场；(2) 全文使用现代汉语书面语（白话），禁止使用文言文、骈俪、「修行札记」式杂文口吻，以及堆砌典故作主标题或过长的玄学隐喻；(3) Cyber-Taoist 专有名词可按文献原样使用，用事实与可追溯 id 陈述，少用比喻替代证据。
 
 阅读顺序与约束：
 1. 先读权威文献，它们高于所有情报材料。
@@ -389,6 +389,7 @@ function buildPromptZh({ constitution, skill, subject, contextJson }) {
 3. 用中文写作。
 4. 尽量引用可追溯的 id（如 observation、probe_result、goal_event、action_receipt、intel_report、evolution_event）。
 5. 报告应覆盖：本轮事实、长期趋势、证据不足处、风险、下一轮建议，以及 standing_memory 应如何更新的要点。
+6. 标题与小节标题用简明主题短语（例如「本轮结论」「证据缺口」），禁止使用文言对联式或隐喻式标题。
 
 === 文献 1：Cyber-Taoist 宪章（CONSTITUTION.md，全文） ===
 ${constitution || '(missing)'}
@@ -402,13 +403,13 @@ ${subject || '(missing)'}
 === 本轮事实与情报上下文（机器汇集，仅供参考，不必逐项罗列） ===
 ${contextJson}
 
-请开始写你的札记。`;
+请开始撰写报告。`;
 }
 
 function buildPromptEn({ constitution, skill, subject, contextJson }) {
-  return `You are the intel writer for the \`js-evolution-agent\` subject. First, study the three documents below in full, then write a Markdown "practice journal" for this cycle using their lens, vocabulary, and methods.
+  return `You are the intel writer for the \`js-evolution-agent\` subject. First, study the three documents below in full, then write a Markdown intelligence report for this cycle using their lens, vocabulary, and methods.
 
-Form is fully open — sections, voice, length, depth are yours. The only requirements are that it be readable to a human operator, useful to the subject's evolution, and faithful to the Cyber-Taoist evolutionary stance.
+Sectioning and depth are yours, but voice must stay modern, plain, and technical-ops flavored: readable to a human operator, useful to evolution, faithful to Cyber-Taoist evolutionary thinking. Avoid archaic/literary register, ornate metaphors as section titles, or "meditation journal" tone unless you are quoting the constitution verbatim.
 
 Reading order and constraints:
 1. Read the authority documents first. They outrank all intelligence material.
@@ -422,6 +423,7 @@ Output constraints:
 3. Write in English.
 4. Prefer traceable ids where relevant (observation, probe_result, goal_event, action_receipt, intel_report, evolution_event).
 5. Cover current cycle facts, long-term trends, evidence gaps, risks, next-cycle recommendations, and how standing_memory should be updated.
+6. Use concise, literal section headings (for example “Cycle conclusion”, “Evidence gaps”); avoid purple prose titles.
 
 === Document 1: Cyber-Taoist Constitution (CONSTITUTION.md, full text) ===
 ${constitution || '(missing)'}
@@ -435,7 +437,7 @@ ${subject || '(missing)'}
 === Current Cycle Facts and Intelligence Context (machine-collected, for reference) ===
 ${contextJson}
 
-Now write the journal.`;
+Now write the report.`;
 }
 
 function buildAiContext({ intelResult, runtime, goals, evidence, assessment, generatedAt, reportContext = null }) {
@@ -493,8 +495,8 @@ function renderFallbackMd({ intelResult, runtime, generatedAt, evidence, assessm
     `> Generated: ${generatedAt}  Subject: ${runtime.subject}  Namespace: ${runtime.dataNamespace}`,
     '',
     `> ${t(
-      `**AI 生成失败，回退为占位札记**${reason ? `（原因：${reason}）` : ''}。下面只列出本轮的机器事实，未做哲学解读。`,
-      `**AI generation failed; this is a placeholder journal**${reason ? ` (reason: ${reason})` : ''}. Only mechanical facts are listed below; no philosophical reading was performed.`,
+      `**AI 生成失败，回退为占位报告**${reason ? `（原因：${reason}）` : ''}。下面只列出本轮的机器事实，未做模型诠释。`,
+      `**AI generation failed; this is a placeholder report**${reason ? ` (reason: ${reason})` : ''}. Only mechanical facts are listed below; no model interpretation was performed.`,
     )}`,
     '',
     `## ${t('本轮事实', 'Cycle Facts')}`,
@@ -650,6 +652,125 @@ async function updateStandingMemoryWithAi({
   }
 }
 
+export function prepareIntelReport({
+  intelResult,
+  runtime,
+  store,
+  agentContextDocs = [],
+  generatedAt = new Date().toISOString(),
+}) {
+  if (!intelResult?.cycle_id) {
+    throw new Error('prepareIntelReport requires intelResult.cycle_id');
+  }
+  const reportContext = gatherReportContext({ store, runtime, intelResult, generatedAt });
+  const goals = reportContext.active_goals_flat;
+  const evidence = reportContext.evidence;
+  const assessment = assessGoals(goals, evidence);
+
+  const subjectDoc = pickDoc(agentContextDocs, 'js-evolution-agent:subject:')
+    || (Array.isArray(agentContextDocs) ? agentContextDocs.find((d) => d?.id?.includes(':subject:')) : null);
+  const language = detectLanguage(subjectDoc?.text);
+
+  return {
+    generatedAt,
+    reportContext,
+    goals,
+    evidence,
+    assessment,
+    language,
+  };
+}
+
+export async function persistIntelReport({
+  intelResult,
+  runtime,
+  store,
+  agentContextDocs = [],
+  aiClient = null,
+  logger = null,
+  md = null,
+  source = 'ai',
+  fallbackReason = null,
+  generatedAt = null,
+  reportContext = null,
+  goals = null,
+  evidence = null,
+  assessment = null,
+  language = null,
+  updateStandingMemory = true,
+} = {}) {
+  const prepared = reportContext && evidence && assessment && language
+    ? { generatedAt: generatedAt || new Date().toISOString(), reportContext, goals, evidence, assessment, language }
+    : prepareIntelReport({ intelResult, runtime, store, agentContextDocs, generatedAt: generatedAt || new Date().toISOString() });
+
+  const cycleId = intelResult.cycle_id;
+  const finalGeneratedAt = prepared.generatedAt;
+  const finalReportContext = prepared.reportContext;
+  const finalEvidence = prepared.evidence;
+  const finalAssessment = prepared.assessment;
+  const finalLanguage = prepared.language;
+  let finalMd = md;
+  let finalSource = source || 'ai';
+
+  if (!finalMd) {
+    finalSource = 'fallback';
+    finalMd = renderFallbackMd({
+      intelResult,
+      runtime,
+      generatedAt: finalGeneratedAt,
+      evidence: finalEvidence,
+      assessment: finalAssessment,
+      language: finalLanguage,
+      reason: fallbackReason,
+    });
+  }
+
+  const reportsDir = join(runtime.runtimeRoot, 'data', 'intelligence', 'reports');
+  mkdirSync(reportsDir, { recursive: true });
+  const mdPath = join(reportsDir, `${cycleId}.md`);
+  writeFileSync(mdPath, finalMd, 'utf-8');
+
+  const memoryUpdate = updateStandingMemory
+    ? await updateStandingMemoryWithAi({
+      aiClient,
+      store,
+      language: finalLanguage,
+      reportContext: finalReportContext,
+      reportMarkdown: finalMd,
+      cycleId,
+      generatedAt: finalGeneratedAt,
+      logger,
+      maxChars: DEFAULT_REPORT_CONTEXT_LIMITS.standingMemoryCharLimit,
+    })
+    : { status: 'skipped', reason: 'disabled' };
+
+  const indexRecord = {
+    cycle_id: cycleId,
+    generated_at: finalGeneratedAt,
+    md_path: mdPath,
+    tldr: extractTldr(finalMd),
+    action_count: (intelResult.actions || []).length,
+    evidence_obs_count: finalEvidence.observations.length,
+    evidence_probe_count: finalEvidence.probes.length,
+    evidence_retro_count: finalEvidence.retrospectives.length,
+    context_source_counts: finalReportContext.source_counts,
+    standing_memory_used: finalReportContext.standing_memory.exists,
+    standing_memory_updated: memoryUpdate.status === 'updated',
+    standing_memory_update_status: memoryUpdate.status,
+    standing_memory_update_error: memoryUpdate.reason,
+    recent_report_count: finalReportContext.recent_report_markdowns.length,
+    action_receipt_count: finalReportContext.action_receipts.length,
+    goal_event_count: finalReportContext.goal_events.length,
+    subject: runtime.subject,
+    namespace: runtime.dataNamespace,
+    language: finalLanguage,
+    source: finalSource,
+  };
+  store.recordIntelReport(indexRecord);
+
+  return { mdPath, indexRecord, source: finalSource, memoryUpdate, markdown: finalMd };
+}
+
 /**
  * Build a free-form, human-readable intel report for the given cycle.
  *
@@ -676,26 +797,24 @@ export async function buildIntelReport({
   logger = null,
   useAi = true,
 }) {
-  if (!intelResult?.cycle_id) {
-    throw new Error('buildIntelReport requires intelResult.cycle_id');
-  }
-  const generatedAt = new Date().toISOString();
-  const cycleId = intelResult.cycle_id;
-  const reportContext = gatherReportContext({ store, runtime, intelResult, generatedAt });
-  const goals = reportContext.active_goals_flat;
-  const evidence = reportContext.evidence;
-  const assessment = assessGoals(goals, evidence);
-
-  const subjectDoc = pickDoc(agentContextDocs, 'js-evolution-agent:subject:')
-    || (Array.isArray(agentContextDocs) ? agentContextDocs.find((d) => d?.id?.includes(':subject:')) : null);
-  const language = detectLanguage(subjectDoc?.text);
+  const prepared = prepareIntelReport({ intelResult, runtime, store, agentContextDocs });
 
   let md = null;
   let source = 'fallback';
   let fallbackReason = null;
   if (useAi) {
     const { md: aiMd, reason } = await tryAiRender({
-      aiClient, language, agentContextDocs, intelResult, runtime, goals, evidence, assessment, generatedAt, reportContext, logger,
+      aiClient,
+      language: prepared.language,
+      agentContextDocs,
+      intelResult,
+      runtime,
+      goals: prepared.goals,
+      evidence: prepared.evidence,
+      assessment: prepared.assessment,
+      generatedAt: prepared.generatedAt,
+      reportContext: prepared.reportContext,
+      logger,
     });
     if (aiMd) {
       md = aiMd;
@@ -706,50 +825,17 @@ export async function buildIntelReport({
   } else {
     fallbackReason = 'use-ai-disabled';
   }
-  if (!md) {
-    md = renderFallbackMd({ intelResult, runtime, generatedAt, evidence, assessment, language, reason: fallbackReason });
-  }
 
-  const reportsDir = join(runtime.runtimeRoot, 'data', 'intelligence', 'reports');
-  mkdirSync(reportsDir, { recursive: true });
-  const mdPath = join(reportsDir, `${cycleId}.md`);
-  writeFileSync(mdPath, md, 'utf-8');
-
-  const memoryUpdate = await updateStandingMemoryWithAi({
-    aiClient: useAi ? aiClient : null,
+  return persistIntelReport({
+    intelResult,
+    runtime,
     store,
-    language,
-    reportContext,
-    reportMarkdown: md,
-    cycleId,
-    generatedAt,
+    agentContextDocs,
+    aiClient: useAi ? aiClient : null,
     logger,
-    maxChars: DEFAULT_REPORT_CONTEXT_LIMITS.standingMemoryCharLimit,
-  });
-
-  const indexRecord = {
-    cycle_id: cycleId,
-    generated_at: generatedAt,
-    md_path: mdPath,
-    tldr: extractTldr(md),
-    action_count: (intelResult.actions || []).length,
-    evidence_obs_count: evidence.observations.length,
-    evidence_probe_count: evidence.probes.length,
-    evidence_retro_count: evidence.retrospectives.length,
-    context_source_counts: reportContext.source_counts,
-    standing_memory_used: reportContext.standing_memory.exists,
-    standing_memory_updated: memoryUpdate.status === 'updated',
-    standing_memory_update_status: memoryUpdate.status,
-    standing_memory_update_error: memoryUpdate.reason,
-    recent_report_count: reportContext.recent_report_markdowns.length,
-    action_receipt_count: reportContext.action_receipts.length,
-    goal_event_count: reportContext.goal_events.length,
-    subject: runtime.subject,
-    namespace: runtime.dataNamespace,
-    language,
+    md,
     source,
-  };
-  store.recordIntelReport(indexRecord);
-
-  return { mdPath, indexRecord, source, memoryUpdate };
+    fallbackReason,
+    ...prepared,
+  });
 }

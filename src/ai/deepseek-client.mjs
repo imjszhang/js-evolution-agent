@@ -46,9 +46,17 @@ export class DeepSeekOpenAIClient extends BaseAIClient {
    * @param {{ thinking?: string, timeout?: number }} [opts]
    */
   async _chatRaw(message, opts = {}) {
+    return this.chatMessages([{ role: 'user', content: message }], opts);
+  }
+
+  /**
+   * @param {Array<{ role: 'system'|'user'|'assistant', content: string }>} messages
+   * @param {{ thinking?: string, timeout?: number }} [opts]
+   */
+  async chatMessages(messages, opts = {}) {
     const body = {
       model: this.model,
-      messages: [{ role: 'user', content: message }],
+      messages,
       stream: false,
     };
     if (this.thinkingEnabled) {

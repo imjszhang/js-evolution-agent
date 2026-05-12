@@ -5,13 +5,12 @@ import { fileURLToPath } from 'node:url';
 import {
   EvolutionEngine,
   ExecutionPipeline,
-  IntelligencePipeline,
   verifyActions,
 } from 'js-evolution-engine';
 import loadConfig from './oada.config.mjs';
 import { assessActiveGoals } from './src/cli/commands/goals.mjs';
 import { getActiveSubjectRuntimeInfo } from './src/cli/utils/subjects.mjs';
-import { buildIntelReport } from './src/intelligence/report-builder.mjs';
+import { ConversationalIntelligencePipeline } from './src/intelligence/conversational-intel-pipeline.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -59,7 +58,7 @@ async function main() {
   });
 
   console.log('\n=== Phase 1: intel pipeline ===');
-  const intel = new IntelligencePipeline({
+  const intel = new ConversationalIntelligencePipeline({
     aiClient: cfg.aiClient,
     host: cfg.host,
     projectRoot: runtime.runtimeRoot,
@@ -67,6 +66,8 @@ async function main() {
     mode: 'local',
     engine,
     agentContextDocs: cfg.agentContextDocs,
+    actionRegistry: cfg.actionRegistry,
+    runtime,
   });
   const intelResult = await intel.run();
   console.log('  success:', intelResult.success);
@@ -82,18 +83,13 @@ async function main() {
     throw new Error(intelResult.error || 'intel pipeline failed');
   }
 
-  console.log('\n=== Phase 1.5: build intel report ===');
+  console.log('\n=== Phase 1.5: intel report ===');
   let intelReportReady = false;
   try {
-    const report = await buildIntelReport({
-      intelResult,
-      runtime,
-      store,
-      agentContextDocs: cfg.agentContextDocs,
-      aiClient: cfg.aiClient,
-      logger: cfg.host?.logger,
-      useAi: true,
-    });
+    const report = intelResult.report;
+    if (!report) {
+      throw new Error('conversational intel pipeline did not return a report');
+    }
     console.log(`  source: ${report.source}`);
     console.log(`  language: ${report.indexRecord.language}`);
     console.log(`  report: ${report.mdPath}`);

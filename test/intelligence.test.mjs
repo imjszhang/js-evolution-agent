@@ -365,7 +365,7 @@ describe('extractTldr (best-effort)', () => {
     expect(extractTldr(md)).toContain('Short summary.');
   });
   it('falls back to first lines under top heading', () => {
-    const md = '# 修行札记\n\n本轮主体观测到三件事。\n\n## 详情\n更多';
+    const md = '# 情报报告\n\n本轮主体观测到三件事。\n\n## 详情\n更多';
     expect(extractTldr(md)).toContain('本轮主体观测到三件事');
   });
   it('returns empty when no content', () => {
@@ -393,7 +393,7 @@ describe('buildPrompt', () => {
     expect(prompt).toContain('CONSTITUTION_FULL_TEXT_MARKER');
     expect(prompt).toContain('SKILL_FULL_TEXT_MARKER');
     expect(prompt).toContain('主体策略全文标记');
-    expect(prompt).toContain('修行札记');
+    expect(prompt).toContain('情报报告');
   });
 
   it('uses English wording when language is en', () => {
@@ -405,7 +405,7 @@ describe('buildPrompt', () => {
       goals: [], evidence: { observations: [], probes: [], retrospectives: [], events: [] },
       assessment: [], generatedAt: '2026-05-10T00:00:00.000Z',
     });
-    expect(prompt).toMatch(/practice journal/i);
+    expect(prompt).toMatch(/intelligence report/i);
     expect(prompt).toMatch(/Write in English/i);
   });
 
@@ -452,7 +452,7 @@ describe('buildIntelReport', () => {
 
   it('uses AI output verbatim when AI returns non-empty text (no schema check)', async () => {
     const { store, runtime, intelResult } = makeReportFixture();
-    const aiText = '# 修行札记\n\n本轮观测到主体的呼吸节律稳定，buffer 层无溢出。\n';
+    const aiText = '# 情报报告\n\n本轮观测到主体的呼吸节律稳定，buffer 层无溢出。\n';
     const outputs = [aiText, '新版 standing memory'];
     const fakeAi = { chat: async () => outputs.shift() };
     const result = await buildIntelReport({
@@ -523,7 +523,7 @@ describe('buildIntelReport', () => {
     const fakeAi = {
       chat: async () => {
         calls += 1;
-        if (calls === 1) return '# 修行札记\n\n报告已生成。';
+        if (calls === 1) return '# 情报报告\n\n报告已生成。';
         throw new Error('memory timeout');
       },
     };

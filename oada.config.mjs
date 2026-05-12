@@ -166,19 +166,19 @@ function createAiClient() {
 
 function createMockAiClient() {
   const mockJournalZh =
-    '# 修行札记（mock 输出）\n\n' +
-    '本轮处于无 AI 网络调用的兜底模式。机器仅记录主体当前的呼吸节律：\n\n' +
-    '- buffer 层：观测被收纳，未触动核心。\n' +
-    '- probe 层：尚未产生新的探针结果。\n' +
-    '- core 层：保持只读，符合主体策略对边界的约束。\n\n' +
-    '本札记不替代 DeepSeek 真实生成；切换到 `--deepseek` 即可获得完整的 Cyber-Taoist 视角解读。\n';
+    '# 情报报告（mock 输出）\n\n' +
+    '本轮处于无 AI 网络调用的兜底模式。机器仅汇总当前运行时状态要点：\n\n' +
+    '- buffer：观测已落盘，未触及核心。\n' +
+    '- probe：尚无新的探针结果。\n' +
+    '- core：只读，符合主体策略边界。\n\n' +
+    '本段为占位输出，不代表 DeepSeek 真实生成；切换到 `--deepseek` 可获得完整分析报告。\n';
   const mockJournalEn =
-    '# Practice Journal (mock output)\n\n' +
-    'This cycle ran without a real AI call. The machine merely notes the subject\'s breath rhythm:\n\n' +
+    '# Intelligence Report (mock output)\n\n' +
+    'This cycle ran without a real AI call. The machine only summarizes baseline runtime posture:\n\n' +
     '- buffer layer: observations absorbed, core untouched.\n' +
     '- probe layer: no new probe results.\n' +
     '- core layer: read-only, consistent with the subject policy boundary.\n\n' +
-    'This journal does not replace a DeepSeek run; switch to `--deepseek` for a full Cyber-Taoist reading.\n';
+    'This placeholder text does not replace a DeepSeek run; switch to `--deepseek` for a full Cyber-Taoist-aligned reading.\n';
 
   return new MockAIClient({
     canned: [
@@ -191,8 +191,8 @@ function createMockAiClient() {
           '## Signals\nNo production mutations are allowed in the first cycle.\n\n' +
           '## Recommended Focus\nConfirm docs injection, local decision queue, and intelligence receipts.\n',
       },
-      { match: /修行札记/, response: mockJournalZh },
-      { match: /practice journal/i, response: mockJournalEn },
+      { match: /情报报告/, response: mockJournalZh },
+      { match: /intelligence report/i, response: mockJournalEn },
     ],
     defaultResponse: cannedAnalyzeDecide,
   });
