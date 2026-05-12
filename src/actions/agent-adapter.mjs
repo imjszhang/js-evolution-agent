@@ -1,6 +1,7 @@
 import { chatMessages, parseJsonFromText } from '../ai/messages.mjs';
 
 const DEFAULT_PROVIDER = 'llm_only';
+const CLAUDE_PROVIDER = 'claude_code_sdk';
 const MODE_GUIDANCE = {
   observe: 'Read and synthesize available context. Do not propose source mutations as completed work.',
   propose: 'Produce a concrete proposal, investigation result, or decision-ready recommendation.',
@@ -8,9 +9,46 @@ const MODE_GUIDANCE = {
   sandbox_patch: 'Work as if changes belong in an isolated sandbox/worktree and report the expected diff and verification.',
   core_apply: 'Treat this as core-layer work. Require human approval unless the boundary explicitly says approval has already been granted.',
 };
+const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob'];
+const EDITING_TOOLS = ['Read', 'Edit', 'Write', 'Bash', 'Grep', 'Glob'];
 
 function getField(action, field) {
   return action?.params?.[field] ?? action?.[field] ?? null;
+}
+
+function normalizeProvider(provider) {
+  const value = String(provider ?? DEFAULT_PROVIDER).trim().toLowerCase();
+  if (value === 'claude_code' || value === 'claude_agent_sdk') return CLAUDE_PROVIDER;
+  return value || DEFAULT_PROVIDER;
+}
+
+function asObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function asList(value, fallback = []) {
+  if (value == null || value === '') return fallback;
+  if (Array.isArray(value)) return value.map(String).filter(Boolean);
+  const text = String(value).trim();
+  if (!text) return fallback;
+  if (text.toLowerCase() === 'none' || text === '[]') return [];
+  return text.split(',').map((item) => item.trim()).filter(Boolean);
+}
+
+function asNumber(value, fallback = null) {
+  if (value == null || value === '') return fallback;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function explicitApproval(action) {
+  const boundary = asObject(getField(action, 'boundary'));
+  return Boolean(
+    getField(action, 'approval_granted')
+      || getField(action, 'approved')
+      || boundary.approval_granted
+      || boundary.approved,
+  );
 }
 
 function compactJson(value) {
@@ -130,6 +168,221 @@ function normalizeAgentResult(parsed, rawText, provider) {
   };
 }
 
+function defaultClaudeModeOptions(mode) {
+  if (mode === 'sandbox_patch') {
+    return {
+      permissionMode: 'bypassPermissions',
+      allowedTools: EDITING_TOOLS,
+      maxTurns: 12,
+    };
+  }
+  if (mode === 'core_apply') {
+    return {
+      permissionMode: 'bypassPermissions',
+      allowedTools: EDITING_TOOLS,
+      maxTurns: 12,
+    };
+  }
+  return {
+    permissionMode: 'bypassPermissions',
+    allowedTools: READ_ONLY_TOOLS,
+    maxTurns: 6,
+  };
+}
+
+function buildClaudeOptions(action, ctx) {
+  const mode = getField(action, 'mode') ?? 'propose';
+  const boundary = asObject(getField(action, 'boundary'));
+  const defaults = defaultClaudeModeOptions(mode);
+  const configuredCwd = getField(action, 'cwd')
+    ?? boundary.cwd
+    ?? boundary.sandbox
+    ?? boundary.worktree
+    ?? null;
+  const settingSources = asList(
+    getField(action, 'settingSources')
+      ?? getField(action, 'setting_sources')
+      ?? process.env.CLAUDE_AGENT_SETTING_SOURCES,
+    ['user', 'project', 'local'],
+  );
+
+  const permissionMode = getField(action, 'permissionMode')
+    ?? getField(action, 'permission_mode')
+    ?? process.env.CLAUDE_AGENT_PERMISSION_MODE
+    ?? defaults.permissionMode;
+
+  const options = {
+    cwd: configuredCwd ?? ctx?.host?.sourceRoot ?? ctx?.projectRoot ?? process.cwd(),
+    allowedTools: asList(getField(action, 'allowedTools') ?? getField(action, 'allowed_tools'), defaults.allowedTools),
+    disallowedTools: asList(getField(action, 'disallowedTools') ?? getField(action, 'disallowed_tools'), []),
+    permissionMode,
+    maxTurns: asNumber(
+      getField(action, 'maxTurns') ?? getField(action, 'max_turns') ?? process.env.CLAUDE_AGENT_MAX_TURNS,
+      defaults.maxTurns,
+    ),
+    settingSources,
+    persistSession: false,
+    systemPrompt: {
+      type: 'preset',
+      preset: 'claude_code',
+      append: [
+        'You are executing inside js-evolution-agent as an agent_execute provider.',
+        'Honor the requested objective and return a concise final JSON receipt matching the requested output contract.',
+      ].join('\n'),
+    },
+  };
+
+  if (permissionMode === 'bypassPermissions') {
+    options.allowDangerouslySkipPermissions = true;
+  }
+
+  const model = getField(action, 'model') ?? process.env.CLAUDE_AGENT_MODEL;
+  if (model) options.model = String(model);
+
+  return {
+    options,
+    cwdWasConfigured: Boolean(configuredCwd),
+  };
+}
+
+function textFromAssistantMessage(message) {
+  const content = message?.message?.content;
+  if (!Array.isArray(content)) return [];
+  return content
+    .filter((block) => block?.type === 'text' || typeof block?.text === 'string')
+    .map((block) => String(block.text ?? ''))
+    .filter(Boolean);
+}
+
+function toolUsesFromAssistantMessage(message) {
+  const content = message?.message?.content;
+  if (!Array.isArray(content)) return [];
+  return content
+    .filter((block) => block?.type === 'tool_use' || block?.name)
+    .map((block) => ({
+      name: block.name ?? block.type ?? 'tool',
+      input: block.input ?? null,
+    }));
+}
+
+function parseAgentJson(ai, text) {
+  try {
+    return parseJsonFromText(ai, text);
+  } catch {
+    return { status: 'completed', summary: text };
+  }
+}
+
+async function runClaudeCodeSdk(action, ctx) {
+  const hasAnthropicCreds = Boolean(
+    process.env.ANTHROPIC_API_KEY?.trim()
+      || process.env.ANTHROPIC_AUTH_TOKEN?.trim(),
+  );
+  if (!hasAnthropicCreds && !getField(action, 'allow_missing_api_key')) {
+    return {
+      success: false,
+      deferred: true,
+      provider: CLAUDE_PROVIDER,
+      error: 'claude_code_sdk requires ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN',
+    };
+  }
+
+  const mode = getField(action, 'mode') ?? 'propose';
+  if (mode === 'core_apply' && !explicitApproval(action)) {
+    const summary = 'core_apply requires explicit approval before Claude SDK execution';
+    return {
+      success: true,
+      message: summary,
+      agent: normalizeAgentResult({
+        status: 'requires_human_review',
+        summary,
+        requires_approval: true,
+        verification_hints: ['grant explicit approval before running core_apply'],
+      }, summary, CLAUDE_PROVIDER),
+    };
+  }
+
+  let query;
+  try {
+    ({ query } = await import('@anthropic-ai/claude-agent-sdk'));
+  } catch (e) {
+    return {
+      success: false,
+      deferred: true,
+      provider: CLAUDE_PROVIDER,
+      error: `unable to load Claude Agent SDK: ${e?.message || e}`,
+    };
+  }
+
+  const promptParts = buildPrompt(action, ctx);
+  const prompt = [
+    promptParts.system,
+    '',
+    promptParts.user,
+    '',
+    'When you finish, emit the final answer as a single JSON object matching the Output contract.',
+  ].join('\n');
+  const { options, cwdWasConfigured } = buildClaudeOptions(action, ctx);
+  const assistantTexts = [];
+  const toolUses = [];
+  const messages = [];
+  let resultMessage = null;
+
+  try {
+    for await (const message of query({ prompt, options })) {
+      messages.push(message);
+      if (message?.type === 'assistant') {
+        assistantTexts.push(...textFromAssistantMessage(message));
+        toolUses.push(...toolUsesFromAssistantMessage(message));
+      }
+      if (message?.type === 'result') resultMessage = message;
+    }
+  } catch (e) {
+    return {
+      success: false,
+      provider: CLAUDE_PROVIDER,
+      error: `Claude SDK execution failed: ${e?.message || e}`,
+    };
+  }
+
+  const rawText = String(resultMessage?.result ?? assistantTexts.join('\n\n') ?? '').trim();
+  const parsed = parseAgentJson(ctx?.ai, rawText || assistantTexts.join('\n\n'));
+  const agent = normalizeAgentResult(parsed, rawText || assistantTexts.join('\n\n'), CLAUDE_PROVIDER);
+  agent.outputs = {
+    ...agent.outputs,
+    claude: {
+      session_id: resultMessage?.session_id ?? resultMessage?.sessionId ?? null,
+      sdk_result_subtype: resultMessage?.subtype ?? null,
+      tool_uses: toolUses,
+      message_count: messages.length,
+      options: {
+        cwd: options.cwd,
+        permissionMode: options.permissionMode,
+        allowDangerouslySkipPermissions: options.allowDangerouslySkipPermissions ?? false,
+        allowedTools: options.allowedTools,
+        disallowedTools: options.disallowedTools,
+        maxTurns: options.maxTurns,
+        settingSources: options.settingSources,
+      },
+    },
+  };
+
+  if (mode === 'sandbox_patch' && !cwdWasConfigured) {
+    agent.requires_approval = true;
+    agent.status = agent.status === 'completed' ? 'partial' : agent.status;
+    agent.verification_hints = [
+      ...agent.verification_hints,
+      'sandbox_patch ran without an explicit sandbox/worktree cwd',
+    ];
+  }
+
+  return {
+    success: resultMessage ? resultMessage.subtype !== 'error' : true,
+    message: agent.summary,
+    agent,
+  };
+}
+
 async function runLlmOnly(action, ctx) {
   const ai = ctx?.ai;
   if (!ai) {
@@ -162,8 +415,9 @@ async function runLlmOnly(action, ctx) {
 }
 
 export async function runAgenticAction(action, ctx) {
-  const provider = getField(action, 'provider') ?? DEFAULT_PROVIDER;
+  const provider = normalizeProvider(getField(action, 'provider') ?? DEFAULT_PROVIDER);
   if (provider === DEFAULT_PROVIDER) return runLlmOnly(action, ctx);
+  if (provider === CLAUDE_PROVIDER) return runClaudeCodeSdk(action, ctx);
 
   if (provider === 'cursor_sdk' || provider === 'cli_agent') {
     return {

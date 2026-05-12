@@ -38,7 +38,7 @@ actionRegistry.register(new ActionTypeSpec({
 actionRegistry.register(new ActionTypeSpec({
   name: 'agent_execute',
   description: 'Delegate an open-ended execution task to an LLM/agent with minimal structured boundaries and auditable receipts.',
-  promptHint: 'Delegate to an agent (params: objective, context, mode=observe|propose|patch_proposal|sandbox_patch|core_apply, boundary, acceptance; optional provider=llm_only|cursor_sdk|cli_agent). Keep instructions high-level so the agent can choose its own approach.',
+  promptHint: 'Delegate to an agent (params: objective, context, mode=observe|propose|patch_proposal|sandbox_patch|core_apply, boundary, acceptance; optional provider=llm_only|claude_code_sdk|cursor_sdk|cli_agent; for Claude SDK optional settingSources=user|project|local, default user+project+local). Keep instructions high-level so the agent can choose its own approach.',
   defaultRisk: 'medium',
   defaultPriority: 'medium',
   autoExecutable: true,
