@@ -209,11 +209,12 @@ export default async function ({ cwd }) {
   });
 
   const aiClient = createAiClient();
+  const agentContextDocs = buildAgentContextDocs();
 
   return {
     aiClient,
     actionRegistry,
-    agentContextDocs: buildAgentContextDocs(),
+    agentContextDocs,
     host: {
       basePath: runtime.runtimeRoot,
       sourceRoot: cwd,
@@ -224,6 +225,7 @@ export default async function ({ cwd }) {
       logger: consoleLogger,
       intelligenceStore,
       knowledgeWriter: intelligenceStore,
+      agentContextDocs,
       actionHandlers,
       actionVerifiers,
     },

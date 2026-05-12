@@ -1,4 +1,5 @@
 import { runReadOnlyProbe } from './probe-runner.mjs';
+import { runAgenticAction } from './agent-adapter.mjs';
 
 function requireParams(action, fields) {
   const missing = fields.filter((field) => action?.params?.[field] == null && action?.[field] == null);
@@ -90,6 +91,41 @@ export const actionHandlers = {
     return result;
   },
 
+  async agent_execute(action, ctx) {
+    requireParams(action, ['objective']);
+    const store = storeFrom(ctx);
+    const agentResult = await runAgenticAction(action, ctx);
+    const agent = agentResult.agent ?? {};
+    const result = {
+      success: !!agentResult.success,
+      deferred: !!agentResult.deferred,
+      message: agentResult.message ?? agentResult.error ?? agent.summary ?? 'agent execution completed',
+      provider: agentResult.provider ?? agent.provider ?? (action?.params?.provider ?? 'llm_only'),
+      status: agent.status ?? (agentResult.deferred ? 'deferred' : (agentResult.success ? 'completed' : 'failed')),
+      requires_approval: !!agent.requires_approval,
+      created_files: agent.created_files ?? [],
+      modified_files: agent.modified_files ?? [],
+      test_results: agent.test_results ?? [],
+      verification_hints: agent.verification_hints ?? [],
+      next_actions: agent.next_actions ?? [],
+      agent,
+      error: agentResult.error,
+    };
+
+    store.recordEvolutionEvent({
+      type: 'agent_execute',
+      action_type: action.type,
+      provider: result.provider,
+      status: result.status,
+      objective: getField(action, 'objective') ?? action.description ?? 'unspecified',
+      mode: getField(action, 'mode') ?? 'propose',
+      requires_approval: result.requires_approval,
+      summary: result.message,
+    });
+    store.recordActionReceipt(action, result, ctx);
+    return result;
+  },
+
   write_retrospective(action, ctx) {
     requireParams(action, ['summary']);
     const store = storeFrom(ctx);
@@ -129,7 +165,7 @@ export const actionHandlers = {
   },
 };
 
-export const actionVerifiers = Object.fromEntries(
+const baseActionVerifiers = Object.fromEntries(
   Object.keys(actionHandlers).map((type) => [
     type,
     {
@@ -148,4 +184,32 @@ export const actionVerifiers = Object.fromEntries(
     },
   ]),
 );
+
+export const actionVerifiers = {
+  ...baseActionVerifiers,
+  agent_execute: {
+    verify(action, result) {
+      const hasReceipt = Boolean(result?.provider && result?.status && result?.agent);
+      const needsHuman = Boolean(result?.requires_approval);
+      return {
+        action,
+        metric: 'agent_receipt',
+        value: {
+          success: !!result?.success,
+          provider: result?.provider ?? null,
+          status: result?.status ?? 'unknown',
+          requires_approval: needsHuman,
+          message: result?.message ?? '',
+          modified_files: result?.modified_files ?? [],
+          created_files: result?.created_files ?? [],
+          test_results: result?.test_results ?? [],
+          verification_hints: result?.verification_hints ?? [],
+        },
+        status: result?.success && hasReceipt && !needsHuman
+          ? 'improved'
+          : (hasReceipt ? 'partial' : 'blocked'),
+      };
+    },
+  },
+};
 

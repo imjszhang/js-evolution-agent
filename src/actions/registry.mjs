@@ -36,6 +36,16 @@ actionRegistry.register(new ActionTypeSpec({
 }));
 
 actionRegistry.register(new ActionTypeSpec({
+  name: 'agent_execute',
+  description: 'Delegate an open-ended execution task to an LLM/agent with minimal structured boundaries and auditable receipts.',
+  promptHint: 'Delegate to an agent (params: objective, context, mode=observe|propose|patch_proposal|sandbox_patch|core_apply, boundary, acceptance; optional provider=llm_only|cursor_sdk|cli_agent). Keep instructions high-level so the agent can choose its own approach.',
+  defaultRisk: 'medium',
+  defaultPriority: 'medium',
+  autoExecutable: true,
+  layer: 'probe',
+}));
+
+actionRegistry.register(new ActionTypeSpec({
   name: 'write_retrospective',
   description: 'Write a review for a completed or failed evolution attempt.',
   promptHint: 'Write a retrospective (params: summary, outcome, lessons, next_actions)',

@@ -79,6 +79,64 @@ describe('controlled action handlers', () => {
     expect(verification.status).toBe('improved');
   });
 
+  it('delegates open-ended work to the configured AI agent and records a receipt', async () => {
+    const ctx = {
+      ...makeCtx(),
+      ai: {
+        async chatMessages(messages) {
+          expect(messages[0].content).toContain('autonomous execution agent');
+          expect(messages[1].content).toContain('Find the strongest next probe');
+          return JSON.stringify({
+            status: 'completed',
+            summary: 'recommended a focused probe',
+            outputs: { recommendation: 'inspect queue receipts' },
+            verification_hints: ['check action receipt'],
+            next_actions: ['queue a run_probe action'],
+            confidence: 0.82,
+          });
+        },
+        parseJsonFromText(text) {
+          return JSON.parse(text);
+        },
+      },
+    };
+
+    const action = {
+      type: 'agent_execute',
+      description: 'Let the agent decide the next useful probe',
+      params: {
+        objective: 'Find the strongest next probe',
+        mode: 'propose',
+        context: 'Use recent intelligence and receipts.',
+        acceptance: 'Return a concrete recommendation.',
+      },
+    };
+    const result = await actionHandlers.agent_execute(action, ctx);
+    const verification = actionVerifiers.agent_execute.verify(action, result);
+
+    expect(result.success).toBe(true);
+    expect(result.provider).toBe('llm_only');
+    expect(result.agent.outputs.recommendation).toBe('inspect queue receipts');
+    expect(verification.status).toBe('improved');
+    expect(ctx.host.intelligenceStore.readActionReceipts({ limit: 5 })[0].action_type)
+      .toBe('agent_execute');
+  });
+
+  it('defers reserved agent providers until they are configured', async () => {
+    const ctx = makeCtx();
+    const result = await actionHandlers.agent_execute({
+      type: 'agent_execute',
+      params: {
+        objective: 'Try a Cursor-backed execution',
+        provider: 'cursor_sdk',
+      },
+    }, ctx);
+
+    expect(result.success).toBe(false);
+    expect(result.deferred).toBe(true);
+    expect(result.error).toMatch(/reserved but not configured/);
+  });
+
   it('runs read-only JSONL probes and records structured results', () => {
     const ctx = makeCtx();
     const target = join(ctx.host.dataRoot, 'events.jsonl');
