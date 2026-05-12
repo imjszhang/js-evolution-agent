@@ -24,6 +24,14 @@ function normalizeProvider(provider) {
   return value || DEFAULT_PROVIDER;
 }
 
+function resolveProvider(action) {
+  return normalizeProvider(
+    getField(action, 'provider')
+      ?? process.env.JEA_AGENT_PROVIDER
+      ?? DEFAULT_PROVIDER,
+  );
+}
+
 function asObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
@@ -581,7 +589,7 @@ async function runLlmOnly(action, ctx) {
 }
 
 export async function runAgenticAction(action, ctx) {
-  const provider = normalizeProvider(getField(action, 'provider') ?? DEFAULT_PROVIDER);
+  const provider = resolveProvider(action);
   if (provider === DEFAULT_PROVIDER) return runLlmOnly(action, ctx);
   if (provider === CLAUDE_PROVIDER) return runClaudeCodeSdk(action, ctx);
   if (provider === CURSOR_PROVIDER) return runCursorSdk(action, ctx);

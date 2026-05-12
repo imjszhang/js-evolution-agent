@@ -38,7 +38,7 @@ actionRegistry.register(new ActionTypeSpec({
 actionRegistry.register(new ActionTypeSpec({
   name: 'agent_execute',
   description: 'Delegate an open-ended execution task to an LLM/agent with minimal structured boundaries and auditable receipts.',
-  promptHint: 'Delegate to an agent (params: objective, context, mode=observe|propose|patch_proposal|sandbox_patch|core_apply, boundary, acceptance; optional provider=llm_only|claude_code_sdk|cursor_sdk|cli_agent. Claude SDK supports settingSources=user|project|local. Cursor SDK currently supports local runtime with CURSOR_API_KEY, optional model and settingSources, and requires explicit cwd/sandbox/worktree for sandbox_patch). Keep instructions high-level so the agent can choose its own approach.',
+  promptHint: 'Delegate to an agent (params: objective, context, mode=observe|propose|patch_proposal|sandbox_patch|core_apply, boundary, acceptance). Do not set params.provider unless a specific action must override the host default; the default provider is configured by JEA_AGENT_PROVIDER. Provider overrides may be llm_only|claude_code_sdk|cursor_sdk|cli_agent. Claude SDK supports settingSources=user|project|local. Cursor SDK currently supports local runtime with CURSOR_API_KEY, optional model and settingSources, and requires explicit cwd/sandbox/worktree for sandbox_patch). Keep instructions high-level so the agent can choose its own approach.',
   defaultRisk: 'medium',
   defaultPriority: 'medium',
   autoExecutable: true,

@@ -40,6 +40,7 @@ let tempDir = null;
 const ORIGINAL_ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const ORIGINAL_ANTHROPIC_AUTH_TOKEN = process.env.ANTHROPIC_AUTH_TOKEN;
 const ORIGINAL_CURSOR_API_KEY = process.env.CURSOR_API_KEY;
+const ORIGINAL_JEA_AGENT_PROVIDER = process.env.JEA_AGENT_PROVIDER;
 
 async function* streamMessages(messages) {
   for (const message of messages) yield message;
@@ -84,6 +85,11 @@ afterEach(() => {
   }
   delete process.env.CURSOR_AGENT_MODEL;
   delete process.env.CURSOR_AGENT_SETTING_SOURCES;
+  if (ORIGINAL_JEA_AGENT_PROVIDER) {
+    process.env.JEA_AGENT_PROVIDER = ORIGINAL_JEA_AGENT_PROVIDER;
+  } else {
+    delete process.env.JEA_AGENT_PROVIDER;
+  }
   vi.clearAllMocks();
 });
 
@@ -232,6 +238,90 @@ describe('controlled action handlers', () => {
     expect(capturedOptions.local.cwd).toBe(ctx.projectRoot);
     expect(capturedOptions.local.settingSources).toEqual(['project', 'user']);
     expect(verification.status).toBe('improved');
+  });
+
+  it('uses JEA_AGENT_PROVIDER as the default agent provider', async () => {
+    process.env.JEA_AGENT_PROVIDER = 'cursor_sdk';
+    process.env.CURSOR_API_KEY = 'cursor-test-key';
+    vi.mocked(Agent.prompt).mockResolvedValue({
+      id: 'cursor-run-default',
+      status: 'finished',
+      result: JSON.stringify({
+        status: 'completed',
+        summary: 'Cursor default provider completed.',
+      }),
+    });
+
+    const result = await actionHandlers.agent_execute({
+      type: 'agent_execute',
+      params: {
+        objective: 'Use the configured default provider',
+      },
+    }, makeCtx());
+
+    expect(result.success).toBe(true);
+    expect(result.provider).toBe('cursor_sdk');
+    expect(result.agent.outputs.cursor.run_id).toBe('cursor-run-default');
+    expect(Agent.prompt).toHaveBeenCalledOnce();
+  });
+
+  it('allows action provider to override JEA_AGENT_PROVIDER', async () => {
+    process.env.JEA_AGENT_PROVIDER = 'cursor_sdk';
+    const ctx = {
+      ...makeCtx(),
+      ai: {
+        async chatMessages() {
+          return JSON.stringify({
+            status: 'completed',
+            summary: 'LLM override completed.',
+          });
+        },
+        parseJsonFromText(text) {
+          return JSON.parse(text);
+        },
+      },
+    };
+
+    const result = await actionHandlers.agent_execute({
+      type: 'agent_execute',
+      params: {
+        provider: 'llm_only',
+        objective: 'Override the configured default provider',
+      },
+    }, ctx);
+
+    expect(result.success).toBe(true);
+    expect(result.provider).toBe('llm_only');
+    expect(result.agent.summary).toBe('LLM override completed.');
+    expect(Agent.prompt).not.toHaveBeenCalled();
+  });
+
+  it('supports Claude SDK as the configured default provider', async () => {
+    process.env.JEA_AGENT_PROVIDER = 'claude_code_sdk';
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    vi.mocked(claudeQuery).mockImplementation(() => streamMessages([
+      {
+        type: 'result',
+        subtype: 'success',
+        session_id: 'claude-default-session',
+        result: JSON.stringify({
+          status: 'completed',
+          summary: 'Claude default provider completed.',
+        }),
+      },
+    ]));
+
+    const result = await actionHandlers.agent_execute({
+      type: 'agent_execute',
+      params: {
+        objective: 'Use Claude as the configured default provider',
+      },
+    }, makeCtx());
+
+    expect(result.success).toBe(true);
+    expect(result.provider).toBe('claude_code_sdk');
+    expect(result.agent.outputs.claude.session_id).toBe('claude-default-session');
+    expect(claudeQuery).toHaveBeenCalledOnce();
   });
 
   it('requires Cursor SDK credentials before execution', async () => {
