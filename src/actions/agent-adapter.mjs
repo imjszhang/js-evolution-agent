@@ -2,6 +2,7 @@ import { chatMessages, parseJsonFromText } from '../ai/messages.mjs';
 
 const DEFAULT_PROVIDER = 'llm_only';
 const CLAUDE_PROVIDER = 'claude_code_sdk';
+const CURSOR_PROVIDER = 'cursor_sdk';
 const MODE_GUIDANCE = {
   observe: 'Read and synthesize available context. Do not propose source mutations as completed work.',
   propose: 'Produce a concrete proposal, investigation result, or decision-ready recommendation.',
@@ -19,6 +20,7 @@ function getField(action, field) {
 function normalizeProvider(provider) {
   const value = String(provider ?? DEFAULT_PROVIDER).trim().toLowerCase();
   if (value === 'claude_code' || value === 'claude_agent_sdk') return CLAUDE_PROVIDER;
+  if (value === 'cursor' || value === 'cursor_agent') return CURSOR_PROVIDER;
   return value || DEFAULT_PROVIDER;
 }
 
@@ -245,6 +247,60 @@ function buildClaudeOptions(action, ctx) {
   };
 }
 
+function buildCursorPrompt(promptParts) {
+  return [
+    promptParts.system,
+    '',
+    promptParts.user,
+    '',
+    'Cursor SDK local runtime note:',
+    '- For observe/propose/patch_proposal modes, do not modify files; return proposed changes only.',
+    '- For sandbox_patch, only modify files inside the explicitly configured cwd/sandbox/worktree.',
+    '- When you finish, emit the final answer as a single JSON object matching the Output contract.',
+  ].join('\n');
+}
+
+function buildCursorOptions(action, ctx) {
+  const boundary = asObject(getField(action, 'boundary'));
+  const configuredCwd = getField(action, 'cwd')
+    ?? boundary.cwd
+    ?? boundary.sandbox
+    ?? boundary.worktree
+    ?? null;
+  const settingSources = asList(
+    getField(action, 'settingSources')
+      ?? getField(action, 'setting_sources')
+      ?? process.env.CURSOR_AGENT_SETTING_SOURCES,
+    [],
+  );
+  const model = String(getField(action, 'model') ?? process.env.CURSOR_AGENT_MODEL ?? 'composer-2');
+  const options = {
+    apiKey: process.env.CURSOR_API_KEY,
+    model: { id: model },
+    local: {
+      cwd: configuredCwd ?? ctx?.host?.sourceRoot ?? ctx?.projectRoot ?? process.cwd(),
+      settingSources,
+    },
+  };
+
+  return {
+    options,
+    cwdWasConfigured: Boolean(configuredCwd),
+    model,
+  };
+}
+
+function cursorStartupFailure(e, CursorAgentError) {
+  return Boolean(
+    (CursorAgentError && e instanceof CursorAgentError)
+      || e?.name === 'CursorAgentError'
+      || e?.name === 'AuthenticationError'
+      || e?.name === 'ConfigurationError'
+      || e?.name === 'NetworkError'
+      || e?.name === 'RateLimitError',
+  );
+}
+
 function textFromAssistantMessage(message) {
   const content = message?.message?.content;
   if (!Array.isArray(content)) return [];
@@ -383,6 +439,116 @@ async function runClaudeCodeSdk(action, ctx) {
   };
 }
 
+async function runCursorSdk(action, ctx) {
+  if (!process.env.CURSOR_API_KEY?.trim() && !getField(action, 'allow_missing_api_key')) {
+    return {
+      success: false,
+      deferred: true,
+      provider: CURSOR_PROVIDER,
+      error: 'cursor_sdk requires CURSOR_API_KEY',
+    };
+  }
+
+  const runtime = String(getField(action, 'runtime') ?? 'local').trim().toLowerCase();
+  if (runtime !== 'local') {
+    return {
+      success: false,
+      deferred: true,
+      provider: CURSOR_PROVIDER,
+      error: `cursor_sdk runtime '${runtime}' is reserved but not configured`,
+    };
+  }
+
+  const mode = getField(action, 'mode') ?? 'propose';
+  if (mode === 'core_apply' && !explicitApproval(action)) {
+    const summary = 'core_apply requires explicit approval before Cursor SDK execution';
+    return {
+      success: true,
+      message: summary,
+      agent: normalizeAgentResult({
+        status: 'requires_human_review',
+        summary,
+        requires_approval: true,
+        verification_hints: ['grant explicit approval before running core_apply'],
+      }, summary, CURSOR_PROVIDER),
+    };
+  }
+
+  const promptParts = buildPrompt(action, ctx);
+  const prompt = buildCursorPrompt(promptParts);
+  const { options, cwdWasConfigured, model } = buildCursorOptions(action, ctx);
+
+  if (mode === 'sandbox_patch' && !cwdWasConfigured) {
+    const summary = 'sandbox_patch requires an explicit cwd, sandbox, or worktree before Cursor SDK execution';
+    return {
+      success: true,
+      message: summary,
+      agent: normalizeAgentResult({
+        status: 'requires_human_review',
+        summary,
+        requires_approval: true,
+        verification_hints: ['configure boundary.sandbox, boundary.worktree, or cwd before running sandbox_patch'],
+      }, summary, CURSOR_PROVIDER),
+    };
+  }
+
+  let Agent;
+  let CursorAgentError;
+  try {
+    ({ Agent, CursorAgentError } = await import('@cursor/sdk'));
+  } catch (e) {
+    return {
+      success: false,
+      deferred: true,
+      provider: CURSOR_PROVIDER,
+      error: `unable to load Cursor SDK: ${e?.message || e}`,
+    };
+  }
+
+  let runResult;
+  try {
+    runResult = await Agent.prompt(prompt, options);
+  } catch (e) {
+    const deferred = cursorStartupFailure(e, CursorAgentError);
+    return {
+      success: false,
+      deferred,
+      provider: CURSOR_PROVIDER,
+      error: `Cursor SDK execution failed: ${e?.message || e}`,
+      retryable: Boolean(e?.isRetryable),
+    };
+  }
+
+  const rawText = String(runResult?.result ?? '').trim();
+  const parsed = parseAgentJson(ctx?.ai, rawText);
+  const agent = normalizeAgentResult(parsed, rawText, CURSOR_PROVIDER);
+  if (runResult?.status && runResult.status !== 'finished' && agent.status === 'completed') {
+    agent.status = runResult.status === 'error' ? 'blocked' : runResult.status;
+  }
+  agent.outputs = {
+    ...agent.outputs,
+    cursor: {
+      runtime,
+      run_id: runResult?.id ?? null,
+      run_status: runResult?.status ?? null,
+      duration_ms: runResult?.durationMs ?? null,
+      model: runResult?.model ?? { id: model },
+      git: runResult?.git ?? null,
+      options: {
+        cwd: options.local.cwd,
+        settingSources: options.local.settingSources,
+        model,
+      },
+    },
+  };
+
+  return {
+    success: runResult?.status ? runResult.status === 'finished' : true,
+    message: agent.summary,
+    agent,
+  };
+}
+
 async function runLlmOnly(action, ctx) {
   const ai = ctx?.ai;
   if (!ai) {
@@ -418,8 +584,9 @@ export async function runAgenticAction(action, ctx) {
   const provider = normalizeProvider(getField(action, 'provider') ?? DEFAULT_PROVIDER);
   if (provider === DEFAULT_PROVIDER) return runLlmOnly(action, ctx);
   if (provider === CLAUDE_PROVIDER) return runClaudeCodeSdk(action, ctx);
+  if (provider === CURSOR_PROVIDER) return runCursorSdk(action, ctx);
 
-  if (provider === 'cursor_sdk' || provider === 'cli_agent') {
+  if (provider === 'cli_agent') {
     return {
       success: false,
       deferred: true,

@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.139",
+    "@cursor/sdk": "^1.0.12",
     "dotenv": "^16.4.5",
     "js-evolution-engine": "^0.2.0",
     "js-intel-store": "^0.1.0",

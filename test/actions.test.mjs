@@ -9,6 +9,7 @@ import {
   vi,
 } from 'vitest';
 import { query as claudeQuery } from '@anthropic-ai/claude-agent-sdk';
+import { Agent, CursorAgentError } from '@cursor/sdk';
 import {
   actionHandlers,
   actionVerifiers,
@@ -19,9 +20,26 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   query: vi.fn(),
 }));
 
+vi.mock('@cursor/sdk', () => {
+  class MockCursorAgentError extends Error {
+    constructor(message, options = {}) {
+      super(message);
+      this.name = 'CursorAgentError';
+      this.isRetryable = !!options.isRetryable;
+    }
+  }
+  return {
+    Agent: {
+      prompt: vi.fn(),
+    },
+    CursorAgentError: MockCursorAgentError,
+  };
+});
+
 let tempDir = null;
 const ORIGINAL_ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const ORIGINAL_ANTHROPIC_AUTH_TOKEN = process.env.ANTHROPIC_AUTH_TOKEN;
+const ORIGINAL_CURSOR_API_KEY = process.env.CURSOR_API_KEY;
 
 async function* streamMessages(messages) {
   for (const message of messages) yield message;
@@ -59,6 +77,13 @@ afterEach(() => {
   delete process.env.CLAUDE_AGENT_MAX_TURNS;
   delete process.env.CLAUDE_AGENT_PERMISSION_MODE;
   delete process.env.CLAUDE_AGENT_SETTING_SOURCES;
+  if (ORIGINAL_CURSOR_API_KEY) {
+    process.env.CURSOR_API_KEY = ORIGINAL_CURSOR_API_KEY;
+  } else {
+    delete process.env.CURSOR_API_KEY;
+  }
+  delete process.env.CURSOR_AGENT_MODEL;
+  delete process.env.CURSOR_AGENT_SETTING_SOURCES;
   vi.clearAllMocks();
 });
 
@@ -153,14 +178,112 @@ describe('controlled action handlers', () => {
     const result = await actionHandlers.agent_execute({
       type: 'agent_execute',
       params: {
-        objective: 'Try a Cursor-backed execution',
-        provider: 'cursor_sdk',
+        objective: 'Try a reserved CLI-backed execution',
+        provider: 'cli_agent',
       },
     }, ctx);
 
     expect(result.success).toBe(false);
     expect(result.deferred).toBe(true);
     expect(result.error).toMatch(/reserved but not configured/);
+  });
+
+  it('delegates execution to Cursor SDK local runtime and normalizes the receipt', async () => {
+    process.env.CURSOR_API_KEY = 'cursor-test-key';
+    process.env.CURSOR_AGENT_SETTING_SOURCES = 'project,user';
+    let capturedPrompt = null;
+    let capturedOptions = null;
+    vi.mocked(Agent.prompt).mockImplementation(async (prompt, options) => {
+      capturedPrompt = prompt;
+      capturedOptions = options;
+      return {
+        id: 'cursor-run-1',
+        status: 'finished',
+        result: JSON.stringify({
+          status: 'completed',
+          summary: 'Cursor recommended a focused execution path.',
+          outputs: { recommendation: 'inspect Cursor receipt' },
+          verification_hints: ['inspect Cursor SDK run id'],
+          confidence: 0.88,
+        }),
+        model: { id: 'composer-2' },
+        durationMs: 1200,
+      };
+    });
+
+    const ctx = makeCtx();
+    const result = await actionHandlers.agent_execute({
+      type: 'agent_execute',
+      params: {
+        provider: 'cursor_sdk',
+        objective: 'Use Cursor SDK to recommend execution',
+        mode: 'observe',
+      },
+    }, ctx);
+    const verification = actionVerifiers.agent_execute.verify(null, result);
+
+    expect(result.success).toBe(true);
+    expect(result.provider).toBe('cursor_sdk');
+    expect(result.agent.outputs.recommendation).toBe('inspect Cursor receipt');
+    expect(result.agent.outputs.cursor.run_id).toBe('cursor-run-1');
+    expect(capturedPrompt).toContain('Cursor SDK local runtime note');
+    expect(capturedOptions.apiKey).toBe('cursor-test-key');
+    expect(capturedOptions.model).toEqual({ id: 'composer-2' });
+    expect(capturedOptions.local.cwd).toBe(ctx.projectRoot);
+    expect(capturedOptions.local.settingSources).toEqual(['project', 'user']);
+    expect(verification.status).toBe('improved');
+  });
+
+  it('requires Cursor SDK credentials before execution', async () => {
+    delete process.env.CURSOR_API_KEY;
+    const result = await actionHandlers.agent_execute({
+      type: 'agent_execute',
+      params: {
+        provider: 'cursor',
+        objective: 'Try Cursor without credentials',
+      },
+    }, makeCtx());
+
+    expect(result.success).toBe(false);
+    expect(result.deferred).toBe(true);
+    expect(result.provider).toBe('cursor_sdk');
+    expect(result.error).toMatch(/CURSOR_API_KEY/);
+    expect(Agent.prompt).not.toHaveBeenCalled();
+  });
+
+  it('defers Cursor SDK startup failures with retry metadata', async () => {
+    process.env.CURSOR_API_KEY = 'cursor-test-key';
+    vi.mocked(Agent.prompt).mockRejectedValue(new CursorAgentError('temporary outage', { isRetryable: true }));
+
+    const result = await actionHandlers.agent_execute({
+      type: 'agent_execute',
+      params: {
+        provider: 'cursor_sdk',
+        objective: 'Run Cursor despite a startup failure',
+      },
+    }, makeCtx());
+
+    expect(result.success).toBe(false);
+    expect(result.deferred).toBe(true);
+    expect(result.provider).toBe('cursor_sdk');
+    expect(result.error).toMatch(/temporary outage/);
+  });
+
+  it('requires an explicit sandbox before Cursor SDK sandbox_patch execution', async () => {
+    process.env.CURSOR_API_KEY = 'cursor-test-key';
+    const result = await actionHandlers.agent_execute({
+      type: 'agent_execute',
+      params: {
+        provider: 'cursor_sdk',
+        objective: 'Patch without a sandbox',
+        mode: 'sandbox_patch',
+      },
+    }, makeCtx());
+
+    expect(result.success).toBe(true);
+    expect(result.requires_approval).toBe(true);
+    expect(result.status).toBe('requires_human_review');
+    expect(Agent.prompt).not.toHaveBeenCalled();
   });
 
   it('delegates execution to Claude Code SDK and normalizes the receipt', async () => {
