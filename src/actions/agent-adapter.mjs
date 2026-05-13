@@ -207,20 +207,20 @@ function defaultClaudeModeOptions(mode) {
     return {
       permissionMode: 'bypassPermissions',
       allowedTools: EDITING_TOOLS,
-      maxTurns: 12,
+      maxTurns: 99,
     };
   }
   if (mode === 'core_apply') {
     return {
       permissionMode: 'bypassPermissions',
       allowedTools: EDITING_TOOLS,
-      maxTurns: 12,
+      maxTurns: 99,
     };
   }
   return {
     permissionMode: 'bypassPermissions',
     allowedTools: READ_ONLY_TOOLS,
-    maxTurns: 6,
+    maxTurns: 99,
   };
 }
 
