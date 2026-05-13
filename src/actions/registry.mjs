@@ -8,7 +8,7 @@ export const actionRegistry = new ActionTypeRegistry({ includeBuiltins: false })
 actionRegistry.register(new ActionTypeSpec({
   name: 'record_observation',
   description: 'Record a low-risk intelligence observation.',
-  promptHint: 'Record an observation (params: source, subject, kind, content, confidence, tags)',
+  promptHint: 'Record an observation (params: source, subject, kind, content, confidence, tags). Phase 2 first asks the execution agent to review the action, then the host persists the observation through the controlled local finalizer.',
   defaultRisk: 'low',
   defaultPriority: 'medium',
   autoExecutable: true,
@@ -18,7 +18,7 @@ actionRegistry.register(new ActionTypeSpec({
 actionRegistry.register(new ActionTypeSpec({
   name: 'propose_probe',
   description: 'Create a bounded experiment proposal without executing external side effects.',
-  promptHint: 'Propose a probe (params: target, hypothesis, success_signal, failure_signal, death_boundary)',
+  promptHint: 'Propose a probe (params: target, hypothesis, success_signal, failure_signal, death_boundary). Phase 2 first asks the execution agent to review the proposal, then the host persists the bounded proposal through the controlled local finalizer.',
   defaultRisk: 'low',
   defaultPriority: 'medium',
   autoExecutable: true,
@@ -28,7 +28,7 @@ actionRegistry.register(new ActionTypeSpec({
 actionRegistry.register(new ActionTypeSpec({
   name: 'run_probe',
   description: 'Run a sandboxed read-only probe or investigation and persist structured evidence.',
-  promptHint: 'Run a read-only probe/investigation (prefer params: objective, plan, targets/initial_targets; optional probe_type=file_exists|jsonl_validate|keyword_search|investigation, keywords, required_fields, budget). The runner may inspect project-local non-sensitive text files and records evidence.',
+  promptHint: 'Run an agent-reviewed read-only probe/investigation (prefer params: objective, plan, targets/initial_targets; optional probe_type=file_exists|jsonl_validate|keyword_search|investigation, keywords, required_fields, budget). Phase 2 first asks the execution agent to interpret the action and path/evidence intent, then the host runs the controlled read-only probe finalizer and records evidence. Use agent_execute only when the action itself should be delegated as an open-ended agent task rather than finalized by the probe tool.',
   defaultRisk: 'low',
   defaultPriority: 'medium',
   autoExecutable: true,
@@ -48,7 +48,7 @@ actionRegistry.register(new ActionTypeSpec({
 actionRegistry.register(new ActionTypeSpec({
   name: 'write_retrospective',
   description: 'Write a review for a completed or failed evolution attempt.',
-  promptHint: 'Write a retrospective (params: summary, outcome, lessons, next_actions)',
+  promptHint: 'Write a retrospective (params: summary, outcome, lessons, next_actions). Phase 2 first asks the execution agent to review the learning value, then the host persists the retrospective through the controlled local finalizer.',
   defaultRisk: 'low',
   defaultPriority: 'medium',
   autoExecutable: true,

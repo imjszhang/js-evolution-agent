@@ -62,6 +62,29 @@ function makeCtx() {
   };
 }
 
+function makeAgenticCtx() {
+  const ctx = makeCtx();
+  const agentCalls = [];
+  return {
+    ...ctx,
+    ai: {
+      agentCalls,
+      async chatMessages(messages) {
+        agentCalls.push(messages);
+        return JSON.stringify({
+          status: 'completed',
+          summary: 'Phase 2 agent approved local finalization.',
+          outputs: { approved: true },
+          confidence: 0.8,
+        });
+      },
+      parseJsonFromText(text) {
+        return JSON.parse(text);
+      },
+    },
+  };
+}
+
 afterEach(() => {
   if (tempDir) rmSync(tempDir, { recursive: true, force: true });
   tempDir = null;
@@ -94,9 +117,9 @@ afterEach(() => {
 });
 
 describe('controlled action handlers', () => {
-  it('records observations through the intelligence store', () => {
-    const ctx = makeCtx();
-    const result = actionHandlers.record_observation({
+  it('records observations through the intelligence store', async () => {
+    const ctx = makeAgenticCtx();
+    const result = await actionHandlers.record_observation({
       type: 'record_observation',
       params: {
         source: 'test',
@@ -106,20 +129,22 @@ describe('controlled action handlers', () => {
     }, ctx);
 
     expect(result.success).toBe(true);
+    expect(result.agentic_execution.provider).toBe('llm_only');
+    expect(ctx.ai.agentCalls).toHaveLength(1);
     expect(ctx.host.intelligenceStore.readRecentIntel({ days: 1, limit: 5 })[0].content)
       .toBe('handler wrote an observation');
   });
 
-  it('requires bounded probe fields before recording a probe', () => {
-    const ctx = makeCtx();
-    expect(() => actionHandlers.propose_probe({
+  it('requires bounded probe fields before recording a probe', async () => {
+    const ctx = makeAgenticCtx();
+    await expect(actionHandlers.propose_probe({
       type: 'propose_probe',
       params: { hypothesis: 'too little data' },
-    }, ctx)).toThrow(/missing required field/);
+    }, ctx)).rejects.toThrow(/missing required field/);
   });
 
-  it('records core requests without executing mutation', () => {
-    const ctx = makeCtx();
+  it('records core requests without executing mutation', async () => {
+    const ctx = makeAgenticCtx();
     const action = {
       type: 'request_core_review',
       params: {
@@ -128,11 +153,12 @@ describe('controlled action handlers', () => {
         risks: ['mutation'],
       },
     };
-    const result = actionHandlers.request_core_review(action, ctx);
+    const result = await actionHandlers.request_core_review(action, ctx);
     const verification = actionVerifiers.request_core_review.verify(action, result);
 
     expect(result.success).toBe(true);
     expect(result.requires_approval).toBe(true);
+    expect(result.agentic_execution.provider).toBe('llm_only');
     expect(verification.status).toBe('improved');
   });
 
@@ -491,12 +517,12 @@ describe('controlled action handlers', () => {
     expect(claudeQuery).not.toHaveBeenCalled();
   });
 
-  it('runs read-only JSONL probes and records structured results', () => {
-    const ctx = makeCtx();
+  it('runs read-only JSONL probes and records structured results', async () => {
+    const ctx = makeAgenticCtx();
     const target = join(ctx.host.dataRoot, 'events.jsonl');
     writeFileSync(target, '{"type":"event","status":"ok"}\n', 'utf-8');
 
-    const result = actionHandlers.run_probe({
+    const result = await actionHandlers.run_probe({
       type: 'run_probe',
       params: {
         probe_type: 'jsonl_validate',
@@ -511,15 +537,17 @@ describe('controlled action handlers', () => {
 
     expect(result.success).toBe(true);
     expect(result.status).toBe('succeeded');
+    expect(result.agentic_execution.provider).toBe('llm_only');
+    expect(ctx.ai.agentCalls[0][1].content).toContain('Agentic execution task');
     expect(ctx.host.intelligenceStore.readProbeResults({ limit: 5 })[0].probe_type)
       .toBe('jsonl_validate');
   });
 
-  it('runs open-ended investigations without requiring a probe_type', () => {
-    const ctx = makeCtx();
+  it('runs open-ended investigations without requiring a probe_type', async () => {
+    const ctx = makeAgenticCtx();
     writeFileSync(join(ctx.projectRoot, 'README.md'), '# Test Project\n\nEvolution runner evidence.\n', 'utf-8');
 
-    const result = actionHandlers.run_probe({
+    const result = await actionHandlers.run_probe({
       type: 'run_probe',
       description: 'Investigate evolution runner evidence in the project',
       params: {
@@ -536,12 +564,12 @@ describe('controlled action handlers', () => {
     expect(probeResult.evidence.steps.some((step) => step.tool === 'keyword_search')).toBe(true);
   });
 
-  it('infers keyword_search keywords from probe context', () => {
-    const ctx = makeCtx();
+  it('infers keyword_search keywords from probe context', async () => {
+    const ctx = makeAgenticCtx();
     const target = join(ctx.projectRoot, 'README.md');
     writeFileSync(target, '# Test Project\n\nPending decisions are visible.\n', 'utf-8');
 
-    const result = actionHandlers.run_probe({
+    const result = await actionHandlers.run_probe({
       type: 'run_probe',
       description: 'Search for pending decisions',
       params: {
@@ -554,12 +582,12 @@ describe('controlled action handlers', () => {
     expect(result.status).toBe('succeeded');
   });
 
-  it('blocks probes against sensitive files while still recording the outcome', () => {
-    const ctx = makeCtx();
+  it('blocks probes against sensitive files while still recording the outcome', async () => {
+    const ctx = makeAgenticCtx();
     const target = join(ctx.projectRoot, '.env');
     writeFileSync(target, 'SECRET=hidden\n', 'utf-8');
 
-    const result = actionHandlers.run_probe({
+    const result = await actionHandlers.run_probe({
       type: 'run_probe',
       params: {
         probe_type: 'file_exists',
