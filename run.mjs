@@ -11,6 +11,7 @@ import loadConfig from './oada.config.mjs';
 import { assessActiveGoals } from './src/cli/commands/goals.mjs';
 import { getActiveSubjectRuntimeInfo } from './src/cli/utils/subjects.mjs';
 import { ConversationalIntelligencePipeline } from './src/intelligence/conversational-intel-pipeline.mjs';
+import { verifyWithRestoredConversation } from './src/intelligence/conversation-context.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -156,6 +157,15 @@ async function main() {
     cfg.host,
     (msg, level = 'info') => cfg.host.logger?.[level]?.(`[verify] ${msg}`),
   );
+  const semanticVerification = await verifyWithRestoredConversation({
+    aiClient: cfg.aiClient,
+    runtimeRoot: runtime.runtimeRoot,
+    cycleId: intelResult.cycle_id,
+    execResult,
+    mechanicalVerification: verification,
+    logger: cfg.host.logger,
+  });
+  verification.semantic = semanticVerification;
   const reportDir = join(runtime.runtimeRoot, 'data', 'evolution', 'verify_reports');
   mkdirSync(reportDir, { recursive: true });
   const reportPath = join(reportDir, `${execResult.cycle_id}.json`);
@@ -166,10 +176,12 @@ async function main() {
     cycle_id: execResult.cycle_id,
     verified_count: verification.verified.length,
     pending_count: verification.pending.length,
+    semantic_status: semanticVerification.status,
     report_path: reportPath,
   });
   console.log('  verified:', verification.verified.length);
   console.log('  pending:', verification.pending.length);
+  console.log('  semantic:', semanticVerification.status);
   console.log('  report:', reportPath);
 
   if (skipGoalsAssess()) {

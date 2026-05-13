@@ -18,6 +18,7 @@ import {
   buildDecideUserPrompt,
   buildReportUserPrompt,
 } from './conversation-prompts.mjs';
+import { persistPhase1ConversationContext } from './conversation-context.mjs';
 
 function summarizeAnalysis(analysis) {
   if (!analysis) return '';
@@ -268,10 +269,27 @@ export class ConversationalIntelligencePipeline {
       const analysis = parseJsonFromText(this.aiClient, rawDecision);
       result.analysis = analysis;
       result.actions = Array.isArray(analysis?.actions) ? analysis.actions : [];
+      result.conversation_context_path = persistPhase1ConversationContext({
+        runtimeRoot: this.runtime.runtimeRoot,
+        cycleId,
+        timestamp: result.timestamp,
+        goalId: this.goalId,
+        runtime: this.runtime,
+        observation,
+        reportMessages,
+        reportMarkdown,
+        reportSource: persistedReport.source,
+        reportPath: persistedReport.mdPath,
+        decideMessages,
+        rawDecision,
+        analysis,
+        actions: result.actions,
+      });
       logger.logPhase('analyze_decide', {
         outputs: {
           decision: analysis?.decision,
           actions_count: result.actions.length,
+          conversation_context_path: result.conversation_context_path,
         },
         prompt: serializeMessages(decideMessages),
         aiResponse: rawDecision,

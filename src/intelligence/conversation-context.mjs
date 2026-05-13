@@ -1,0 +1,204 @@
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { chatMessages, parseJsonFromText } from '../ai/messages.mjs';
+
+const CONTEXT_FILENAME = 'conversation_context.json';
+
+function cycleRecordsDir(runtimeRoot, cycleId) {
+  return join(runtimeRoot, 'data', 'evolution', 'records', cycleId);
+}
+
+function contextPath(runtimeRoot, cycleId) {
+  return join(cycleRecordsDir(runtimeRoot, cycleId), CONTEXT_FILENAME);
+}
+
+function normalizeMessages(messages) {
+  return Array.isArray(messages)
+    ? messages.map((msg) => ({
+      role: msg?.role || 'user',
+      content: String(msg?.content ?? ''),
+    }))
+    : [];
+}
+
+function clip(value, max = 120000) {
+  const text = typeof value === 'string' ? value : JSON.stringify(value ?? null, null, 2);
+  return text.length > max ? `${text.slice(0, max)}\n...(truncated)` : text;
+}
+
+export function persistPhase1ConversationContext({
+  runtimeRoot,
+  cycleId,
+  timestamp,
+  goalId = null,
+  runtime = null,
+  observation = null,
+  reportMessages = [],
+  reportMarkdown = '',
+  reportSource = null,
+  reportPath = null,
+  decideMessages = [],
+  rawDecision = '',
+  analysis = null,
+  actions = [],
+} = {}) {
+  if (!runtimeRoot) throw new Error('runtimeRoot is required');
+  if (!cycleId) throw new Error('cycleId is required');
+
+  const dir = cycleRecordsDir(runtimeRoot, cycleId);
+  mkdirSync(dir, { recursive: true });
+
+  const restoredConversation = [
+    ...normalizeMessages(reportMessages),
+    { role: 'assistant', content: String(reportMarkdown ?? '') },
+    ...(normalizeMessages(decideMessages).slice(normalizeMessages(reportMessages).length + 1)),
+    { role: 'assistant', content: String(rawDecision ?? '') },
+  ].filter((msg) => msg.content);
+
+  const record = {
+    schema_version: 1,
+    kind: 'phase1_conversation_context',
+    cycle_id: cycleId,
+    timestamp,
+    goal_id: goalId,
+    runtime,
+    files: {
+      self: contextPath(runtimeRoot, cycleId),
+      report: reportPath ?? null,
+    },
+    observation: {
+      prompt: observation?._prompt ?? null,
+      response: observation?.observation_report ?? null,
+      ai_driven: Boolean(observation?.ai_driven),
+    },
+    report_turn: {
+      messages: normalizeMessages(reportMessages),
+      response: String(reportMarkdown ?? ''),
+      source: reportSource,
+    },
+    analyze_decide_turn: {
+      messages: normalizeMessages(decideMessages),
+      response: String(rawDecision ?? ''),
+      parsed: analysis,
+      actions,
+    },
+    restored_conversation: restoredConversation,
+  };
+
+  const path = contextPath(runtimeRoot, cycleId);
+  writeFileSync(path, JSON.stringify(record, null, 2), 'utf-8');
+  return path;
+}
+
+export function loadPhase1ConversationContext({ runtimeRoot, cycleId, path = null } = {}) {
+  const fullPath = path ?? contextPath(runtimeRoot, cycleId);
+  if (!fullPath || !existsSync(fullPath)) {
+    return { path: fullPath, context: null, error: `conversation context not found: ${fullPath}` };
+  }
+  try {
+    const context = JSON.parse(readFileSync(fullPath, 'utf-8'));
+    return { path: fullPath, context, error: null };
+  } catch (e) {
+    return { path: fullPath, context: null, error: e?.message || String(e) };
+  }
+}
+
+function buildVerificationPrompt({ execResult, mechanicalVerification }) {
+  return [
+    '# Reflective Phase 3 Verification',
+    '',
+    'Continue the same Phase 1 conversation. You previously wrote the intelligence report and produced the Analyze+Decide JSON.',
+    'Now verify the execution receipts semantically. Do not re-execute actions, do not solve target hit-rate problems, and do not invent evidence.',
+    '',
+    'Judge only whether each executed action result provides evidence for its original objective and whether it advances the stated goal.',
+    '',
+    'Return exactly one JSON object with this shape:',
+    JSON.stringify({
+      semantic_verified: [
+        {
+          action_type: 'run_probe',
+          final_status: 'improved | partial | neutral | regressed | blocked',
+          confidence: 'high | medium | low',
+          evidence_summary: 'what the receipt proves',
+          reasoning_summary: 'why this status follows from the receipt and original intent',
+          goal_impact: 'how this affects the served goal',
+          issues: [],
+          next_verification_hints: [],
+        },
+      ],
+      overall_summary: 'short summary',
+      next_cycle_focus: [],
+    }, null, 2),
+    '',
+    '## Execution Result',
+    '',
+    '```json',
+    clip(execResult, 400000),
+    '```',
+    '',
+    '## Mechanical Verification',
+    '',
+    '```json',
+    clip(mechanicalVerification, 400000),
+    '```',
+  ].join('\n');
+}
+
+export async function verifyWithRestoredConversation({
+  aiClient,
+  runtimeRoot,
+  cycleId,
+  execResult,
+  mechanicalVerification,
+  logger = null,
+} = {}) {
+  const loaded = loadPhase1ConversationContext({ runtimeRoot, cycleId });
+  const base = normalizeMessages(loaded.context?.restored_conversation);
+
+  if (loaded.error || !base.length) {
+    return {
+      enabled: true,
+      source: 'phase1_conversation_context',
+      context_path: loaded.path,
+      status: 'unavailable',
+      error: loaded.error || 'restored conversation is empty',
+    };
+  }
+  if (!aiClient) {
+    return {
+      enabled: true,
+      source: 'phase1_conversation_context',
+      context_path: loaded.path,
+      status: 'unavailable',
+      error: 'aiClient is required',
+    };
+  }
+
+  const messages = [
+    ...base,
+    { role: 'user', content: buildVerificationPrompt({ execResult, mechanicalVerification }) },
+  ];
+
+  try {
+    const raw = await chatMessages(aiClient, messages, { thinking: 'low', timeout: 180 });
+    const parsed = parseJsonFromText(aiClient, raw);
+    return {
+      enabled: true,
+      source: 'phase1_conversation_context',
+      context_path: loaded.path,
+      status: 'ok',
+      raw_response: raw,
+      result: parsed,
+    };
+  } catch (e) {
+    const error = e?.message || String(e);
+    logger?.warning?.(`[verify] conversational semantic verification failed: ${error}`);
+    return {
+      enabled: true,
+      source: 'phase1_conversation_context',
+      context_path: loaded.path,
+      status: 'failed',
+      error,
+    };
+  }
+}

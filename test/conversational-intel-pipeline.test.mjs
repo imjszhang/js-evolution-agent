@@ -10,6 +10,7 @@ import {
 import { chatMessages } from '../src/ai/messages.mjs';
 import { createIntelligenceStore } from '../src/intelligence/store.mjs';
 import { ConversationalIntelligencePipeline } from '../src/intelligence/conversational-intel-pipeline.mjs';
+import { verifyWithRestoredConversation } from '../src/intelligence/conversation-context.mjs';
 
 let tempDir = null;
 
@@ -171,11 +172,19 @@ describe('ConversationalIntelligencePipeline', () => {
     expect(result.success).toBe(true);
     expect(result.decisions_queued).toHaveLength(1);
     expect(result.report.mdPath).toBeTruthy();
+    expect(result.conversation_context_path).toBeTruthy();
     expect(messageCalls).toHaveLength(2);
     expect(messageCalls[0][1].content).toContain('pre_analyze_decide_report');
     expect(messageCalls[0][1].content).not.toContain('decisions_queued');
     expect(messageCalls[1].map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user']);
     expect(messageCalls[1][2].content).toContain('情报报告');
+
+    const context = JSON.parse(readFileSync(result.conversation_context_path, 'utf-8'));
+    expect(context.kind).toBe('phase1_conversation_context');
+    expect(context.observation.response).toContain('Observation Report');
+    expect(context.restored_conversation.map((m) => m.role))
+      .toEqual(['system', 'user', 'assistant', 'user', 'assistant']);
+    expect(context.restored_conversation.at(-1).content).toContain('"decision":"execute"');
 
     const queue = JSON.parse(readFileSync(
       join(runtimeRoot, 'data', 'evolution', 'pending_decisions.json'),
@@ -186,5 +195,92 @@ describe('ConversationalIntelligencePipeline', () => {
       status: 'pending',
       action: { type: 'record_observation' },
     });
+  });
+
+  it('restores Phase 1 conversation from disk for semantic verification', async () => {
+    const { runtimeRoot, runtime, host } = makeFixture();
+    const semanticCalls = [];
+    const client = {
+      async chat() {
+        return longObservation();
+      },
+      async chatMessages(messages) {
+        const last = messages.at(-1).content;
+        if (last.includes('Reflective Phase 3 Verification')) {
+          semanticCalls.push(messages);
+          return JSON.stringify({
+            semantic_verified: [{
+              action_type: 'record_observation',
+              final_status: 'improved',
+              confidence: 'high',
+              evidence_summary: 'receipt exists',
+              reasoning_summary: 'the action wrote the intended observation',
+              goal_impact: 'bootstrap gained an execution receipt',
+              issues: [],
+              next_verification_hints: [],
+            }],
+            overall_summary: 'semantic verifier continued the prior conversation',
+            next_cycle_focus: [],
+          });
+        }
+        if (last.includes('Strategic Analysis & Decision')) {
+          return JSON.stringify({
+            analysis: {
+              key_patterns: ['context persists'],
+              root_causes: {},
+              opportunities: [],
+            },
+            decision: 'execute',
+            rationale: 'queue one action',
+            actions: [{
+              type: 'record_observation',
+              description: 'Record persisted conversation',
+              serves_goal: 'bootstrap',
+              params: { content: 'persisted conversation' },
+              expected_impact: 'conversation can be restored',
+              risk: 'low',
+            }],
+            goal_coverage: { covered: ['bootstrap'], not_covered: {} },
+            deferred: [],
+            risk_mitigation: [],
+            goal_suggestions: [],
+            confidence_score: 0.8,
+          });
+        }
+        return '# 情报报告\n\n用于后续语义校验。\n';
+      },
+    };
+
+    const pipeline = new ConversationalIntelligencePipeline({
+      aiClient: client,
+      host,
+      projectRoot: runtimeRoot,
+      goalId: 'bootstrap',
+      actionRegistry: {
+        toPromptSection: () => '- `record_observation`: Record an observation',
+      },
+      runtime,
+    });
+    const result = await pipeline.run();
+    const semantic = await verifyWithRestoredConversation({
+      aiClient: client,
+      runtimeRoot,
+      cycleId: result.cycle_id,
+      execResult: {
+        cycle_id: result.cycle_id,
+        executed: [{ action: result.actions[0], result: { success: true, status: 'recorded' } }],
+      },
+      mechanicalVerification: {
+        verified: [{ action: result.actions[0], status: 'improved' }],
+        pending: [],
+      },
+    });
+
+    expect(semantic.status).toBe('ok');
+    expect(semantic.result.semantic_verified[0].final_status).toBe('improved');
+    expect(semanticCalls).toHaveLength(1);
+    expect(semanticCalls[0].map((m) => m.role))
+      .toEqual(['system', 'user', 'assistant', 'user', 'assistant', 'user']);
+    expect(semanticCalls[0].at(-1).content).toContain('Mechanical Verification');
   });
 });
