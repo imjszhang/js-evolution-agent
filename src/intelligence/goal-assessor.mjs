@@ -89,6 +89,34 @@ function summarizeVerificationItem(item) {
     result_success: value?.success ?? null,
     result_status: value?.status ?? null,
     result_message: clip(value?.message ?? value?.error ?? '', 240),
+    provider: value?.provider ?? null,
+    fallback_used: value?.fallback_used ?? null,
+    evidence_count: value?.evidence_count ?? null,
+    writes_count: value?.writes_count ?? null,
+  };
+}
+
+function summarizeSemanticVerification(semantic) {
+  if (!semantic) return null;
+  const result = semantic.result ?? {};
+  return {
+    status: semantic.status ?? null,
+    source: semantic.source ?? null,
+    overall_summary: clip(result.overall_summary ?? semantic.error ?? '', 800),
+    next_cycle_focus: Array.isArray(result.next_cycle_focus)
+      ? result.next_cycle_focus.slice(0, 8).map((item) => clip(item, 240))
+      : [],
+    verified: Array.isArray(result.semantic_verified)
+      ? result.semantic_verified.slice(0, 8).map((item) => ({
+        action_type: item.action_type ?? null,
+        final_status: item.final_status ?? null,
+        confidence: item.confidence ?? null,
+        evidence_summary: clip(item.evidence_summary ?? '', 360),
+        evidence_count: item.evidence_count ?? null,
+        writes_count: item.writes_count ?? null,
+        fallback_used: item.fallback_used ?? null,
+      }))
+      : [],
   };
 }
 
@@ -110,6 +138,7 @@ function summarizeVerificationReport(reportPath) {
   }
   const verified = Array.isArray(verification?.verified) ? verification.verified : [];
   const pending = Array.isArray(verification?.pending) ? verification.pending : [];
+  const semantic = summarizeSemanticVerification(verification?.semantic);
 
   return {
     report_id: reportId,
@@ -118,6 +147,7 @@ function summarizeVerificationReport(reportPath) {
     timestamp: verification?.timestamp ?? null,
     verified_count: verified.length,
     pending_count: pending.length,
+    semantic,
     verified: verified.map(summarizeVerificationItem),
     pending: pending.map(summarizeVerificationItem),
   };

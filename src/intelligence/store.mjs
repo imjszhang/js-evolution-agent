@@ -79,6 +79,10 @@ export class IntelligenceStore {
     return this.engine.ingest('action_receipts', withId({
       recorded_at: new Date().toISOString(),
       cycle_id: ctx.cycleId ?? null,
+      exec_cycle_id: ctx.execCycleId ?? ctx.cycleId ?? null,
+      intel_cycle_id: ctx.intelCycleId ?? action?.intel_cycle_id ?? action?.cycle_id ?? action?.cycleId ?? null,
+      decision_id: ctx.decisionId ?? action?.decision_id ?? action?.id ?? null,
+      action_id: action?.id ?? ctx.actionId ?? null,
       action_type: action?.type ?? 'unknown',
       action,
       result,

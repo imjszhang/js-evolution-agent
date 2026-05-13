@@ -62,7 +62,7 @@ function makeCtx() {
   };
 }
 
-function makeAgenticCtx() {
+function makeAgenticCtx(agentResponse = null) {
   const ctx = makeCtx();
   const agentCalls = [];
   return {
@@ -71,12 +71,15 @@ function makeAgenticCtx() {
       agentCalls,
       async chatMessages(messages) {
         agentCalls.push(messages);
-        return JSON.stringify({
-          status: 'completed',
-          summary: 'Phase 2 agent approved local finalization.',
-          outputs: { approved: true },
-          confidence: 0.8,
-        });
+        const response = typeof agentResponse === 'function'
+          ? agentResponse(messages)
+          : (agentResponse ?? {
+            status: 'completed',
+            summary: 'Phase 2 agent approved local finalization.',
+            outputs: { approved: true },
+            confidence: 0.8,
+          });
+        return JSON.stringify(response);
       },
       parseJsonFromText(text) {
         return JSON.parse(text);
@@ -125,6 +128,7 @@ describe('controlled action handlers', () => {
         source: 'test',
         subject: 'handler',
         content: 'handler wrote an observation',
+        allow_legacy_fallback: true,
       },
     }, ctx);
 
@@ -133,6 +137,65 @@ describe('controlled action handlers', () => {
     expect(ctx.ai.agentCalls).toHaveLength(1);
     expect(ctx.host.intelligenceStore.readRecentIntel({ days: 1, limit: 5 })[0].content)
       .toBe('handler wrote an observation');
+  });
+
+  it('prefers agent observation writes over the legacy observation finalizer', async () => {
+    const ctx = makeAgenticCtx({
+      status: 'completed',
+      summary: 'Agent produced an observation write.',
+      writes: {
+        observations: [{
+          source: 'agent',
+          subject: 'phase2',
+          kind: 'agent_write',
+          content: 'agent-first observation',
+          confidence: 'high',
+        }],
+      },
+      evidence: { observations: ['agent selected the persisted observation'] },
+      confidence: 0.9,
+    });
+
+    const result = await actionHandlers.record_observation({
+      type: 'record_observation',
+      params: {
+        source: 'legacy',
+        subject: 'handler',
+        content: 'legacy observation',
+      },
+    }, ctx);
+
+    const observations = ctx.host.intelligenceStore.readRecentIntel({ days: 1, limit: 5 });
+    expect(result.success).toBe(true);
+    expect(result.fallback_used).toBe(false);
+    expect(result.writes_applied.observations).toBe(1);
+    expect(observations[0].content).toBe('agent-first observation');
+  });
+
+  it('does not persist agent writes when approval is required', async () => {
+    const ctx = makeAgenticCtx({
+      status: 'requires_human_review',
+      summary: 'Needs approval before writing.',
+      requires_approval: true,
+      writes: {
+        observations: [{
+          content: 'should not be written',
+        }],
+      },
+    });
+
+    const result = await actionHandlers.record_observation({
+      type: 'record_observation',
+      params: {
+        source: 'test',
+        subject: 'approval',
+        content: 'fallback should not run either',
+      },
+    }, ctx);
+
+    expect(result.success).toBe(false);
+    expect(result.requires_approval).toBe(true);
+    expect(ctx.host.intelligenceStore.readRecentIntel({ days: 1, limit: 5 })).toEqual([]);
   });
 
   it('requires bounded probe fields before recording a probe', async () => {
@@ -151,6 +214,7 @@ describe('controlled action handlers', () => {
         target: 'engine core',
         rationale: 'needs approval',
         risks: ['mutation'],
+        allow_legacy_fallback: true,
       },
     };
     const result = await actionHandlers.request_core_review(action, ctx);
@@ -527,6 +591,7 @@ describe('controlled action handlers', () => {
       params: {
         probe_type: 'jsonl_validate',
         target,
+        allow_legacy_fallback: true,
         required_fields: ['type', 'status'],
         hypothesis: 'events are valid JSONL',
         success_signal: 'all lines parse and include required fields',
@@ -543,6 +608,74 @@ describe('controlled action handlers', () => {
       .toBe('jsonl_validate');
   });
 
+  it('records agent probe evidence without using the read-only finalizer', async () => {
+    const ctx = makeAgenticCtx({
+      status: 'completed',
+      summary: 'Agent verified runtime evidence directly.',
+      evidence: {
+        files_read: ['runtime/subjects/test/data/goals/active_goals.json'],
+        observations: ['safe-runtime goal exists'],
+        matches: [{ path: 'runtime/subjects/test/data/goals/active_goals.json', text: 'safe-runtime' }],
+      },
+      confidence: 0.85,
+    });
+
+    const result = await actionHandlers.run_probe({
+      type: 'run_probe',
+      description: 'Investigate safe-runtime goal evidence',
+      params: {
+        probe_type: 'file_exists',
+        target: join(ctx.projectRoot, 'does-not-exist.json'),
+      },
+    }, ctx);
+
+    const probeResult = ctx.host.intelligenceStore.readProbeResults({ limit: 5 })[0];
+    expect(result.success).toBe(true);
+    expect(result.status).toBe('succeeded');
+    expect(result.fallback_used).toBe(false);
+    expect(result.synthesized_probe_result).toBe(true);
+    expect(probeResult.probe_type).toBe('file_exists');
+    expect(probeResult.evidence.observations).toEqual(['safe-runtime goal exists']);
+  });
+
+  it('does not use the legacy probe finalizer unless explicitly requested', async () => {
+    const ctx = makeAgenticCtx();
+    const target = join(ctx.projectRoot, 'README.md');
+    writeFileSync(target, '# Test Project\n\nPending decisions are visible.\n', 'utf-8');
+
+    const result = await actionHandlers.run_probe({
+      type: 'run_probe',
+      description: 'Search for pending decisions',
+      params: {
+        probe_type: 'keyword_search',
+        target,
+      },
+    }, ctx);
+
+    expect(result.success).toBe(false);
+    expect(result.status).toBe('blocked');
+    expect(result.fallback_used).toBe(false);
+    expect(result.missing_agent_artifacts).toBe('evidence or writes.probe_results');
+    expect(ctx.host.intelligenceStore.readProbeResults({ limit: 5 })).toEqual([]);
+  });
+
+  it('marks empty agent investigation receipts as partial in mechanical verification', () => {
+    const verification = actionVerifiers.run_probe.verify({ type: 'run_probe' }, {
+      success: true,
+      status: 'completed',
+      message: 'agent completed without evidence',
+      provider: 'llm_only',
+      evidence: {},
+      writes: {},
+      fallback_used: false,
+      agentic_execution: { provider: 'llm_only' },
+    });
+
+    expect(verification.metric).toBe('agent_action_result');
+    expect(verification.status).toBe('partial');
+    expect(verification.value.evidence_count).toBe(0);
+  });
+
   it('runs open-ended investigations without requiring a probe_type', async () => {
     const ctx = makeAgenticCtx();
     writeFileSync(join(ctx.projectRoot, 'README.md'), '# Test Project\n\nEvolution runner evidence.\n', 'utf-8');
@@ -553,6 +686,7 @@ describe('controlled action handlers', () => {
       params: {
         objective: 'Find evolution runner evidence',
         targets: [ctx.projectRoot],
+        allow_legacy_fallback: true,
         budget: { max_files: 10, max_steps: 5 },
       },
     }, ctx);
@@ -575,6 +709,7 @@ describe('controlled action handlers', () => {
       params: {
         probe_type: 'keyword_search',
         target,
+        allow_legacy_fallback: true,
       },
     }, ctx);
 
@@ -592,6 +727,7 @@ describe('controlled action handlers', () => {
       params: {
         probe_type: 'file_exists',
         target,
+        allow_legacy_fallback: true,
         hypothesis: 'sensitive file exists',
         success_signal: 'file exists',
         failure_signal: 'file missing',

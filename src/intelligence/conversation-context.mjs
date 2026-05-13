@@ -111,15 +111,20 @@ function buildVerificationPrompt({ execResult, mechanicalVerification }) {
     'Now verify the execution receipts semantically. Do not re-execute actions, do not solve target hit-rate problems, and do not invent evidence.',
     '',
     'Judge only whether each executed action result provides evidence for its original objective and whether it advances the stated goal.',
+    'For agent-first Phase 2 results, inspect result.evidence, result.writes, result.provider, result.requires_approval, result.fallback_used, and result.agentic_execution. A successful handler receipt with empty evidence is not enough to mark an investigation improved.',
     '',
     'Return exactly one JSON object with this shape:',
     JSON.stringify({
       semantic_verified: [
         {
           action_type: 'run_probe',
+          provider: 'llm_only | claude_code_sdk | cursor_sdk | unknown',
+          fallback_used: false,
           final_status: 'improved | partial | neutral | regressed | blocked',
           confidence: 'high | medium | low',
           evidence_summary: 'what the receipt proves',
+          evidence_count: 0,
+          writes_count: 0,
           reasoning_summary: 'why this status follows from the receipt and original intent',
           goal_impact: 'how this affects the served goal',
           issues: [],

@@ -8,7 +8,7 @@ export const actionRegistry = new ActionTypeRegistry({ includeBuiltins: false })
 actionRegistry.register(new ActionTypeSpec({
   name: 'record_observation',
   description: 'Record a low-risk intelligence observation.',
-  promptHint: 'Record an observation (params: source, subject, kind, content, confidence, tags). Phase 2 first asks the execution agent to review the action, then the host persists the observation through the controlled local finalizer.',
+  promptHint: 'Record an observation through the Phase 2 execution agent. Prefer intent-level params (content/source/subject/kind/tags are accepted for compatibility). The agent should return writes.observations; the host validates and persists those records.',
   defaultRisk: 'low',
   defaultPriority: 'medium',
   autoExecutable: true,
@@ -18,7 +18,7 @@ actionRegistry.register(new ActionTypeSpec({
 actionRegistry.register(new ActionTypeSpec({
   name: 'propose_probe',
   description: 'Create a bounded experiment proposal without executing external side effects.',
-  promptHint: 'Propose a probe (params: target, hypothesis, success_signal, failure_signal, death_boundary). Phase 2 first asks the execution agent to review the proposal, then the host persists the bounded proposal through the controlled local finalizer.',
+  promptHint: 'Propose a bounded probe through the Phase 2 execution agent (params: target or resource intent, hypothesis, success_signal, failure_signal, death_boundary). The agent should return writes.probe_proposals; avoid guessing physical data/... paths when a runtime/data resource intent is enough.',
   defaultRisk: 'low',
   defaultPriority: 'medium',
   autoExecutable: true,
@@ -28,7 +28,7 @@ actionRegistry.register(new ActionTypeSpec({
 actionRegistry.register(new ActionTypeSpec({
   name: 'run_probe',
   description: 'Run a sandboxed read-only probe or investigation and persist structured evidence.',
-  promptHint: 'Run an agent-reviewed read-only probe/investigation (prefer params: objective, plan, targets/initial_targets; optional probe_type=file_exists|jsonl_validate|keyword_search|investigation, keywords, required_fields, budget). Phase 2 first asks the execution agent to interpret the action and path/evidence intent, then the host runs the controlled read-only probe finalizer and records evidence. Use agent_execute only when the action itself should be delegated as an open-ended agent task rather than finalized by the probe tool.',
+  promptHint: 'Run an agent-executed read-only investigation (prefer params: objective, acceptance, boundary, resource intent, optional targets/initial_targets). The Phase 2 agent returns evidence and optional writes.probe_results. Legacy host-controlled probe fallback is disabled by default and requires explicit allow_legacy_fallback or diagnostic_fallback. Avoid hard-coding data/... paths unless the resource root is explicit.',
   defaultRisk: 'low',
   defaultPriority: 'medium',
   autoExecutable: true,
@@ -38,7 +38,7 @@ actionRegistry.register(new ActionTypeSpec({
 actionRegistry.register(new ActionTypeSpec({
   name: 'agent_execute',
   description: 'Delegate an open-ended execution task to an LLM/agent with minimal structured boundaries and auditable receipts.',
-  promptHint: 'Delegate to an agent (params: objective, context, mode=observe|propose|patch_proposal|sandbox_patch|core_apply, boundary, acceptance). Do not set params.provider unless a specific action must override the host default; the default provider is configured by JEA_AGENT_PROVIDER. Provider overrides may be llm_only|claude_code_sdk|cursor_sdk|cli_agent. Claude SDK supports settingSources=user|project|local. Cursor SDK currently supports local runtime with CURSOR_API_KEY, optional model and settingSources, and requires explicit cwd/sandbox/worktree for sandbox_patch). Keep instructions high-level so the agent can choose its own approach.',
+  promptHint: 'Delegate directly to an agent (params: objective, context, mode=observe|propose|patch_proposal|sandbox_patch|core_apply, boundary, acceptance). Return the standard agent action result with evidence/writes/verification_hints. Do not set params.provider unless a specific action must override JEA_AGENT_PROVIDER. Provider overrides may be llm_only|claude_code_sdk|cursor_sdk|cli_agent.',
   defaultRisk: 'medium',
   defaultPriority: 'medium',
   autoExecutable: true,
@@ -48,7 +48,7 @@ actionRegistry.register(new ActionTypeSpec({
 actionRegistry.register(new ActionTypeSpec({
   name: 'write_retrospective',
   description: 'Write a review for a completed or failed evolution attempt.',
-  promptHint: 'Write a retrospective (params: summary, outcome, lessons, next_actions). Phase 2 first asks the execution agent to review the learning value, then the host persists the retrospective through the controlled local finalizer.',
+  promptHint: 'Write a retrospective through the Phase 2 execution agent (params: summary, outcome, lessons, next_actions accepted for compatibility). The agent should return writes.retrospectives; the host validates and persists those learning records.',
   defaultRisk: 'low',
   defaultPriority: 'medium',
   autoExecutable: true,

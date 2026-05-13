@@ -18,8 +18,44 @@ function storeFrom(ctx) {
   return store;
 }
 
+function asObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function asArray(value) {
+  if (value == null) return [];
+  return Array.isArray(value) ? value : [value];
+}
+
+function objectHasContent(value) {
+  const obj = asObject(value);
+  return Object.values(obj).some((item) => {
+    if (Array.isArray(item)) return item.length > 0;
+    if (item && typeof item === 'object') return Object.keys(item).length > 0;
+    return item != null && item !== '';
+  });
+}
+
+function listCount(value) {
+  const obj = asObject(value);
+  return Object.values(obj).reduce((sum, item) => {
+    if (Array.isArray(item)) return sum + item.length;
+    if (item && typeof item === 'object') return sum + Object.keys(item).length;
+    return sum + (item == null || item === '' ? 0 : 1);
+  }, 0);
+}
+
+function agentStatusToProbeStatus(status) {
+  if (status === 'completed') return 'succeeded';
+  if (status === 'requires_human_review') return 'blocked';
+  return status || 'inconclusive';
+}
+
 function summarizeAgenticExecution(agentResult = {}) {
   const agent = agentResult.agent ?? {};
+  const outputs = asObject(agent.outputs);
+  const evidence = asObject(agent.evidence ?? outputs.evidence);
+  const writes = asObject(agent.writes ?? outputs.writes);
   return {
     success: !!agentResult.success,
     deferred: !!agentResult.deferred,
@@ -27,9 +63,15 @@ function summarizeAgenticExecution(agentResult = {}) {
     status: agent.status ?? (agentResult.deferred ? 'deferred' : (agentResult.success ? 'completed' : 'failed')),
     message: agentResult.message ?? agentResult.error ?? agent.summary ?? '',
     requires_approval: !!agent.requires_approval,
+    action_type: agent.action_type ?? null,
+    action_id: agent.action_id ?? null,
+    served_goal: agent.served_goal ?? null,
+    evidence,
+    writes,
     verification_hints: agent.verification_hints ?? [],
     next_actions: agent.next_actions ?? [],
-    outputs: agent.outputs ?? {},
+    outputs,
+    agent,
     error: agentResult.error ?? null,
   };
 }
@@ -52,13 +94,14 @@ async function runPhase2Agent(action, ctx, {
       context: {
         phase: 'exec',
         contract: [
-          'Interpret the action intent and decide whether the local finalizer/tool should proceed.',
+          'Execute the action intent and return the final auditable action result.',
           'Do not mutate project files unless the action boundary explicitly permits it.',
-          'For tool-backed actions, return execution guidance; the host will perform the controlled final write/read step.',
+          'For host-backed writes, return explicit writes.* records; the host will validate and persist only those records.',
+          'For investigations, return explicit evidence.* records. Do not rely on a hard-coded local finalizer to decide the final outcome.',
         ],
         action,
       },
-      acceptance: acceptance ?? 'Return a JSON receipt stating whether the action is safe and useful to execute, plus concise guidance for the local finalizer.',
+      acceptance: acceptance ?? 'Return a JSON action result with status, summary, evidence, writes, verification_hints, and next_actions.',
     },
   };
 
@@ -73,9 +116,175 @@ function agentBlockedResult(agenticExecution) {
     message: agenticExecution.message || agenticExecution.error || 'agentic Phase 2 execution did not approve local finalization',
     status: agenticExecution.status,
     provider: agenticExecution.provider,
+    requires_approval: !!agenticExecution.requires_approval,
+    evidence: agenticExecution.evidence ?? {},
+    writes: agenticExecution.writes ?? {},
+    verification_hints: agenticExecution.verification_hints ?? [],
+    next_actions: agenticExecution.next_actions ?? [],
     agentic_execution: agenticExecution,
     error: agenticExecution.error,
   };
+}
+
+function agentActionResult(action, agenticExecution, overrides = {}) {
+  return {
+    success: agenticExecution.success && !agenticExecution.requires_approval,
+    provider: agenticExecution.provider,
+    status: agenticExecution.status,
+    requires_approval: agenticExecution.requires_approval,
+    message: agenticExecution.message,
+    action_type: agenticExecution.action_type ?? action?.type ?? 'unknown',
+    action_id: agenticExecution.action_id ?? action?.id ?? null,
+    served_goal: agenticExecution.served_goal ?? action?.serves_goal ?? null,
+    evidence: agenticExecution.evidence ?? {},
+    writes: agenticExecution.writes ?? {},
+    verification_hints: agenticExecution.verification_hints ?? [],
+    next_actions: agenticExecution.next_actions ?? [],
+    agent: agenticExecution.agent ?? null,
+    agentic_execution: agenticExecution,
+    fallback_used: false,
+    ...overrides,
+  };
+}
+
+function legacyFallbackAllowed(action) {
+  return Boolean(getField(action, 'allow_legacy_fallback') || getField(action, 'diagnostic_fallback'));
+}
+
+function missingAgentArtifactsResult(action, agenticExecution, artifactKind) {
+  return agentActionResult(action, agenticExecution, {
+    success: false,
+    status: agenticExecution.status === 'completed' ? 'blocked' : agenticExecution.status,
+    message: `agent-first execution returned no ${artifactKind}; legacy finalizer is disabled unless allow_legacy_fallback is set`,
+    missing_agent_artifacts: artifactKind,
+    fallback_available: true,
+  });
+}
+
+function persistObservationWrites(store, action, agenticExecution) {
+  const observations = asArray(agenticExecution.writes?.observations);
+  if (!observations.length) return 0;
+  return store.ingestObservation(observations.map((observation) => ({
+    source: observation.source ?? 'agent_phase2',
+    subject: observation.subject ?? action.description ?? action.type ?? 'unspecified',
+    kind: observation.kind ?? 'evolution_signal',
+    content: observation.content ?? observation.summary ?? agenticExecution.message,
+    confidence: observation.confidence ?? 'medium',
+    tags: observation.tags ?? ['agent-first'],
+    ...observation,
+  })));
+}
+
+function persistRetrospectiveWrites(store, action, agenticExecution) {
+  const retrospectives = asArray(agenticExecution.writes?.retrospectives);
+  if (!retrospectives.length) return 0;
+  let written = 0;
+  for (const review of retrospectives) {
+    written += store.recordRetrospective({
+      summary: review.summary ?? agenticExecution.message,
+      outcome: review.outcome ?? agenticExecution.status ?? 'reviewed',
+      lessons: review.lessons ?? [],
+      next_actions: review.next_actions ?? agenticExecution.next_actions ?? [],
+      action_type: action.type,
+      ...review,
+    });
+  }
+  return written;
+}
+
+function persistProbeProposalWrites(store, action, agenticExecution) {
+  const proposals = asArray(
+    agenticExecution.writes?.probe_proposals
+      ?? agenticExecution.writes?.proposals
+      ?? agenticExecution.writes?.probe_events,
+  );
+  if (!proposals.length) return { written: 0, probeId: null };
+  let written = 0;
+  let firstProbeId = null;
+  for (const proposal of proposals) {
+    const probeId = proposal.probe_id ?? action.id ?? `probe-${Date.now()}`;
+    firstProbeId ??= probeId;
+    const event = {
+      type: proposal.type ?? 'probe_proposed',
+      action_type: action.type,
+      target: proposal.target ?? getField(action, 'target') ?? action.description ?? 'unspecified',
+      hypothesis: proposal.hypothesis ?? getField(action, 'hypothesis'),
+      success_signal: proposal.success_signal ?? getField(action, 'success_signal'),
+      failure_signal: proposal.failure_signal ?? getField(action, 'failure_signal'),
+      death_boundary: proposal.death_boundary ?? getField(action, 'death_boundary'),
+      status: proposal.status ?? 'proposed_only',
+      ...proposal,
+    };
+    written += store.recordProbeEvent(probeId, event);
+    written += store.recordEvolutionEvent({ ...event, probe_id: probeId });
+  }
+  return { written, probeId: firstProbeId };
+}
+
+function persistProbeResultWrites(store, action, agenticExecution) {
+  const explicitResults = asArray(agenticExecution.writes?.probe_results);
+  const shouldSynthesize = !explicitResults.length && objectHasContent(agenticExecution.evidence);
+  const probeResults = shouldSynthesize
+    ? [{
+      probe_id: action.probe_id ?? action.id ?? `probe-${Date.now()}`,
+      probe_type: getField(action, 'probe_type') ?? 'agent_investigation',
+      target: getField(action, 'target') ?? getField(action, 'targets') ?? action.description ?? 'agent-evidence',
+      status: agentStatusToProbeStatus(agenticExecution.status),
+      success: agenticExecution.success && !agenticExecution.requires_approval,
+      summary: agenticExecution.message,
+      evidence: agenticExecution.evidence,
+    }]
+    : explicitResults;
+  if (!probeResults.length) return { written: 0, probeId: null, synthesized: false };
+
+  let written = 0;
+  let firstProbeId = null;
+  for (const raw of probeResults) {
+    const probeId = raw.probe_id ?? raw.id ?? action.probe_id ?? action.id ?? `probe-${Date.now()}`;
+    firstProbeId ??= probeId;
+    const probeResult = {
+      probe_id: probeId,
+      probe_type: raw.probe_type ?? getField(action, 'probe_type') ?? 'agent_investigation',
+      target: raw.target ?? getField(action, 'target') ?? getField(action, 'targets') ?? action.description ?? 'agent-evidence',
+      status: raw.status ?? agentStatusToProbeStatus(agenticExecution.status),
+      success: raw.success ?? (agenticExecution.success && !agenticExecution.requires_approval),
+      summary: raw.summary ?? agenticExecution.message,
+      evidence: raw.evidence ?? agenticExecution.evidence ?? {},
+      ...raw,
+    };
+    const event = {
+      type: `probe_${probeResult.status}`,
+      action_type: action.type,
+      probe_id: probeId,
+      probe_type: probeResult.probe_type,
+      target: probeResult.target,
+      status: probeResult.status,
+      summary: probeResult.summary,
+    };
+    written += store.recordProbeEvent(probeId, event);
+    written += store.recordProbeResult(probeResult);
+    written += store.recordEvolutionEvent(event);
+  }
+  return { written, probeId: firstProbeId, synthesized: shouldSynthesize };
+}
+
+function persistCoreReviewWrites(store, action, agenticExecution) {
+  const reviews = asArray(agenticExecution.writes?.core_reviews);
+  if (!reviews.length) return 0;
+  let written = 0;
+  for (const review of reviews) {
+    written += store.recordEvolutionEvent({
+      type: 'core_review_requested',
+      action_type: action.type,
+      target: review.target ?? getField(action, 'target') ?? action.description ?? 'unspecified',
+      rationale: review.rationale ?? getField(action, 'rationale') ?? action.rationale ?? '',
+      risks: review.risks ?? getField(action, 'risks') ?? [],
+      approval_needed: true,
+      status: 'requires_human_review',
+      ...review,
+    });
+  }
+  return written;
 }
 
 export const actionHandlers = {
@@ -84,13 +293,31 @@ export const actionHandlers = {
     const store = storeFrom(ctx);
     const agenticExecution = await runPhase2Agent(action, ctx, {
       mode: 'propose',
-      objective: 'Review and execute a low-risk intelligence observation write. Confirm the observation should be persisted as a controlled Phase 2 finalizer.',
+      objective: 'Execute a low-risk intelligence observation write. Return writes.observations with the exact observation records the host should persist.',
     });
     if (!agenticExecution.success || agenticExecution.requires_approval) {
       const result = agentBlockedResult(agenticExecution);
       store.recordActionReceipt(action, result, ctx);
       return result;
     }
+    const agentWritten = persistObservationWrites(store, action, agenticExecution);
+    if (agentWritten > 0) {
+      const result = agentActionResult(action, agenticExecution, {
+        success: true,
+        status: agenticExecution.status ?? 'recorded',
+        message: `recorded ${agentWritten} observation(s) from agent writes`,
+        writes_applied: { observations: agentWritten },
+      });
+      store.recordActionReceipt(action, result, ctx);
+      return result;
+    }
+
+    if (!legacyFallbackAllowed(action)) {
+      const result = missingAgentArtifactsResult(action, agenticExecution, 'writes.observations');
+      store.recordActionReceipt(action, result, ctx);
+      return result;
+    }
+
     const observation = {
       source: getField(action, 'source') ?? 'oada-action',
       subject: getField(action, 'subject') ?? action.description ?? 'unspecified',
@@ -104,6 +331,10 @@ export const actionHandlers = {
       success: written > 0,
       message: `recorded ${written} observation(s)`,
       agentic_execution: agenticExecution,
+      evidence: agenticExecution.evidence,
+      writes: agenticExecution.writes,
+      provider: agenticExecution.provider,
+      fallback_used: true,
     };
     store.recordActionReceipt(action, result, ctx);
     return result;
@@ -114,13 +345,32 @@ export const actionHandlers = {
     const store = storeFrom(ctx);
     const agenticExecution = await runPhase2Agent(action, ctx, {
       mode: 'propose',
-      objective: 'Review and execute a bounded probe proposal write. Confirm the proposal is useful, bounded, and safe to persist.',
+      objective: 'Execute a bounded probe proposal write. Return writes.probe_proposals with the proposal events the host should persist.',
     });
     if (!agenticExecution.success || agenticExecution.requires_approval) {
       const result = agentBlockedResult(agenticExecution);
       store.recordActionReceipt(action, result, ctx);
       return result;
     }
+    const agentWrites = persistProbeProposalWrites(store, action, agenticExecution);
+    if (agentWrites.written > 0) {
+      const result = agentActionResult(action, agenticExecution, {
+        success: true,
+        status: agenticExecution.status ?? 'proposed_only',
+        message: `probe proposal recorded from agent writes: ${agentWrites.probeId}`,
+        probe_id: agentWrites.probeId,
+        writes_applied: { probe_proposals: agentWrites.written },
+      });
+      store.recordActionReceipt(action, result, ctx);
+      return result;
+    }
+
+    if (!legacyFallbackAllowed(action)) {
+      const result = missingAgentArtifactsResult(action, agenticExecution, 'writes.probe_proposals');
+      store.recordActionReceipt(action, result, ctx);
+      return result;
+    }
+
     const probeId = getField(action, 'probe_id') ?? action.id ?? `probe-${Date.now()}`;
     const event = {
       type: 'probe_proposed',
@@ -140,6 +390,10 @@ export const actionHandlers = {
       probe_id: probeId,
       status: 'proposed_only',
       agentic_execution: agenticExecution,
+      evidence: agenticExecution.evidence,
+      writes: agenticExecution.writes,
+      provider: agenticExecution.provider,
+      fallback_used: true,
     };
     store.recordActionReceipt(action, result, ctx);
     return result;
@@ -149,14 +403,36 @@ export const actionHandlers = {
     const store = storeFrom(ctx);
     const agenticExecution = await runPhase2Agent(action, ctx, {
       mode: 'observe',
-      objective: 'Execute this read-only probe as an agentic Phase 2 investigation. Understand the objective, paths, and expected evidence before the host runs its controlled read-only probe finalizer.',
-      acceptance: 'Return JSON describing what evidence the read-only probe should collect, whether the target/path semantics are plausible, and any warnings for verification.',
+      objective: 'Execute this read-only probe as an agentic Phase 2 investigation. Return evidence describing what was actually checked and writes.probe_results if structured probe evidence should be persisted.',
+      acceptance: 'Return JSON with status, summary, evidence, optional writes.probe_results, verification_hints, and next_actions. Do not rely on the host to infer the final outcome from the original target fields.',
     });
     if (!agenticExecution.success || agenticExecution.requires_approval) {
       const result = agentBlockedResult(agenticExecution);
       store.recordActionReceipt(action, result, ctx);
       return result;
     }
+    const agentProbeWrites = persistProbeResultWrites(store, action, agenticExecution);
+    if (agentProbeWrites.written > 0) {
+      const result = agentActionResult(action, agenticExecution, {
+        success: true,
+        status: agentStatusToProbeStatus(agenticExecution.status),
+        message: agenticExecution.message || 'agent probe evidence recorded',
+        probe_id: agentProbeWrites.probeId,
+        probe_type: getField(action, 'probe_type') ?? 'agent_investigation',
+        outcome_success: true,
+        writes_applied: { probe_results: agentProbeWrites.written },
+        synthesized_probe_result: agentProbeWrites.synthesized,
+      });
+      store.recordActionReceipt(action, result, ctx);
+      return result;
+    }
+
+    if (!legacyFallbackAllowed(action)) {
+      const result = missingAgentArtifactsResult(action, agenticExecution, 'evidence or writes.probe_results');
+      store.recordActionReceipt(action, result, ctx);
+      return result;
+    }
+
     const probeResult = runReadOnlyProbe(action, ctx);
     const event = {
       type: `probe_${probeResult.status}`,
@@ -180,6 +456,10 @@ export const actionHandlers = {
       probe_type: probeResult.probe_type,
       outcome_success: probeResult.success,
       agentic_execution: agenticExecution,
+      evidence: agenticExecution.evidence,
+      writes: agenticExecution.writes,
+      provider: agenticExecution.provider,
+      fallback_used: true,
     };
     store.recordActionReceipt(action, result, ctx);
     return result;
@@ -197,6 +477,11 @@ export const actionHandlers = {
       provider: agentResult.provider ?? agent.provider ?? (action?.params?.provider ?? 'llm_only'),
       status: agent.status ?? (agentResult.deferred ? 'deferred' : (agentResult.success ? 'completed' : 'failed')),
       requires_approval: !!agent.requires_approval,
+      action_type: agent.action_type ?? action.type,
+      action_id: agent.action_id ?? action.id ?? null,
+      served_goal: agent.served_goal ?? action.serves_goal ?? null,
+      evidence: agent.evidence ?? {},
+      writes: agent.writes ?? {},
       created_files: agent.created_files ?? [],
       modified_files: agent.modified_files ?? [],
       test_results: agent.test_results ?? [],
@@ -225,13 +510,31 @@ export const actionHandlers = {
     const store = storeFrom(ctx);
     const agenticExecution = await runPhase2Agent(action, ctx, {
       mode: 'propose',
-      objective: 'Review and execute a retrospective write. Confirm the summary, lessons, and next actions should be persisted as learning memory.',
+      objective: 'Execute a retrospective write. Return writes.retrospectives with the learning records the host should persist.',
     });
     if (!agenticExecution.success || agenticExecution.requires_approval) {
       const result = agentBlockedResult(agenticExecution);
       store.recordActionReceipt(action, result, ctx);
       return result;
     }
+    const agentWritten = persistRetrospectiveWrites(store, action, agenticExecution);
+    if (agentWritten > 0) {
+      const result = agentActionResult(action, agenticExecution, {
+        success: true,
+        status: agenticExecution.status ?? 'recorded',
+        message: `retrospective recorded from agent writes (${agentWritten})`,
+        writes_applied: { retrospectives: agentWritten },
+      });
+      store.recordActionReceipt(action, result, ctx);
+      return result;
+    }
+
+    if (!legacyFallbackAllowed(action)) {
+      const result = missingAgentArtifactsResult(action, agenticExecution, 'writes.retrospectives');
+      store.recordActionReceipt(action, result, ctx);
+      return result;
+    }
+
     const review = {
       summary: getField(action, 'summary'),
       outcome: getField(action, 'outcome') ?? 'reviewed',
@@ -244,6 +547,10 @@ export const actionHandlers = {
       success: written > 0,
       message: 'retrospective recorded',
       agentic_execution: agenticExecution,
+      evidence: agenticExecution.evidence,
+      writes: agenticExecution.writes,
+      provider: agenticExecution.provider,
+      fallback_used: true,
     };
     store.recordActionReceipt(action, result, ctx);
     return result;
@@ -253,13 +560,32 @@ export const actionHandlers = {
     const store = storeFrom(ctx);
     const agenticExecution = await runPhase2Agent(action, ctx, {
       mode: 'core_apply',
-      objective: 'Review a core-layer change request and decide whether it should be recorded for human review. Do not execute any mutation.',
+      objective: 'Execute a core-layer review request by returning writes.core_reviews. Do not mutate files; only request human review.',
     });
     if (!agenticExecution.success && !agenticExecution.requires_approval) {
       const result = agentBlockedResult(agenticExecution);
       store.recordActionReceipt(action, result, ctx);
       return result;
     }
+    const agentWritten = persistCoreReviewWrites(store, action, agenticExecution);
+    if (agentWritten > 0) {
+      const result = agentActionResult(action, agenticExecution, {
+        success: true,
+        message: 'core-layer request recorded for human review from agent writes; no mutation executed',
+        requires_approval: true,
+        status: 'requires_human_review',
+        writes_applied: { core_reviews: agentWritten },
+      });
+      store.recordActionReceipt(action, result, ctx);
+      return result;
+    }
+
+    if (!legacyFallbackAllowed(action)) {
+      const result = missingAgentArtifactsResult(action, agenticExecution, 'writes.core_reviews');
+      store.recordActionReceipt(action, result, ctx);
+      return result;
+    }
+
     const event = {
       type: 'core_review_requested',
       action_type: action.type,
@@ -276,6 +602,10 @@ export const actionHandlers = {
       requires_approval: true,
       status: 'requires_human_review',
       agentic_execution: agenticExecution,
+      evidence: agenticExecution.evidence,
+      writes: agenticExecution.writes,
+      provider: agenticExecution.provider,
+      fallback_used: true,
     };
     store.recordActionReceipt(action, result, ctx);
     return result;
@@ -287,15 +617,30 @@ const baseActionVerifiers = Object.fromEntries(
     type,
     {
       verify(action, result) {
+        const metric = result?.agentic_execution || result?.agent
+          ? 'agent_action_result'
+          : 'handler_receipt';
+        const requiresApproval = Boolean(result?.requires_approval);
+        const evidence_count = listCount(result?.evidence);
+        const writes_count = listCount(result?.writes);
+        const status = result?.success && !requiresApproval
+          ? (type === 'run_probe' && !result?.fallback_used && evidence_count === 0 && writes_count === 0 ? 'partial' : 'improved')
+          : (type === 'request_core_review' && result?.success && requiresApproval ? 'improved' : (requiresApproval ? 'partial' : 'blocked'));
         return {
           action,
-          metric: 'handler_receipt',
+          metric,
           value: {
             success: !!result?.success,
             status: result?.status ?? 'recorded',
             message: result?.message ?? '',
+            provider: result?.provider ?? result?.agentic_execution?.provider ?? null,
+            requires_approval: requiresApproval,
+            fallback_used: !!result?.fallback_used,
+            evidence_count,
+            writes_count,
+            verification_hints: result?.verification_hints ?? result?.agentic_execution?.verification_hints ?? [],
           },
-          status: result?.success ? 'improved' : 'partial',
+          status,
         };
       },
     },
@@ -308,15 +653,19 @@ export const actionVerifiers = {
     verify(action, result) {
       const hasReceipt = Boolean(result?.provider && result?.status && result?.agent);
       const needsHuman = Boolean(result?.requires_approval);
+      const evidence_count = listCount(result?.evidence);
+      const writes_count = listCount(result?.writes);
       return {
         action,
-        metric: 'agent_receipt',
+        metric: 'agent_action_result',
         value: {
           success: !!result?.success,
           provider: result?.provider ?? null,
           status: result?.status ?? 'unknown',
           requires_approval: needsHuman,
           message: result?.message ?? '',
+          evidence_count,
+          writes_count,
           modified_files: result?.modified_files ?? [],
           created_files: result?.created_files ?? [],
           test_results: result?.test_results ?? [],

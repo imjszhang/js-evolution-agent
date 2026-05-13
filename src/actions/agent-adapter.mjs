@@ -144,6 +144,24 @@ function buildPrompt(action, ctx) {
     compactJson({
       status: 'completed | partial | blocked | requires_human_review',
       summary: 'short human-readable result',
+      action_type: 'the action type you executed',
+      action_id: 'the decision/action id if available',
+      served_goal: 'goal id this action serves, if known',
+      evidence: {
+        files_read: [],
+        matches: [],
+        observations: [],
+        probe_results: [],
+        notes: [],
+      },
+      writes: {
+        observations: [],
+        probe_results: [],
+        probe_events: [],
+        evolution_events: [],
+        retrospectives: [],
+        core_reviews: [],
+      },
       outputs: {},
       created_files: [],
       modified_files: [],
@@ -162,11 +180,17 @@ function normalizeAgentResult(parsed, rawText, provider) {
   const obj = parsed && typeof parsed === 'object' ? parsed : {};
   const status = String(obj.status ?? 'completed');
   const requiresApproval = Boolean(obj.requires_approval || status === 'requires_human_review');
+  const outputs = asObject(obj.outputs);
   return {
     provider,
     status,
     summary: String(obj.summary ?? rawText ?? '').slice(0, 4000),
-    outputs: obj.outputs ?? {},
+    action_type: obj.action_type ?? null,
+    action_id: obj.action_id ?? null,
+    served_goal: obj.served_goal ?? obj.serves_goal ?? null,
+    evidence: asObject(obj.evidence ?? outputs.evidence),
+    writes: asObject(obj.writes ?? outputs.writes),
+    outputs,
     created_files: Array.isArray(obj.created_files) ? obj.created_files : [],
     modified_files: Array.isArray(obj.modified_files) ? obj.modified_files : [],
     test_results: Array.isArray(obj.test_results) ? obj.test_results : [],
