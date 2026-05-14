@@ -8,7 +8,7 @@ const MODE_GUIDANCE = {
   propose: 'Produce a concrete proposal, investigation result, or decision-ready recommendation.',
   patch_proposal: 'Design a patch or change set, but treat file edits as proposals unless the boundary explicitly permits mutation.',
   sandbox_patch: 'Work as if changes belong in an isolated sandbox/worktree and report the expected diff and verification.',
-  core_apply: 'Treat this as core-layer work. Require human approval unless the boundary explicitly says approval has already been granted.',
+  core_apply: 'Treat this as core-layer work. Apply only because the host policy already allowed this run; return changed files, diff summary, tests, rollback plan, and death-boundary result.',
 };
 const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob'];
 const EDITING_TOOLS = ['Read', 'Edit', 'Write', 'Bash', 'Grep', 'Glob'];
@@ -49,16 +49,6 @@ function asNumber(value, fallback = null) {
   if (value == null || value === '') return fallback;
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
-}
-
-function explicitApproval(action) {
-  const boundary = asObject(getField(action, 'boundary'));
-  return Boolean(
-    getField(action, 'approval_granted')
-      || getField(action, 'approved')
-      || boundary.approval_granted
-      || boundary.approved,
-  );
 }
 
 function compactJson(value) {
@@ -107,6 +97,8 @@ function buildPrompt(action, ctx) {
     'Use your own judgment to decide the best way to satisfy the objective.',
     'Do not wait for step-by-step instructions; infer a useful approach from the context.',
     'Honor the boundary as the minimum operating contract, and surface any need for human approval.',
+    'Boundary text is not a filesystem sandbox unless the provider or cwd/sandbox/worktree settings enforce it.',
+    'Never copy raw secrets into evidence, writes, summaries, or verification hints; report sensitive files as accessible or blocked with redacted metadata only.',
     'Return a single JSON object. If you cannot fully complete the task, still return useful progress and next actions.',
   ].join('\n');
 
@@ -166,6 +158,9 @@ function buildPrompt(action, ctx) {
       created_files: [],
       modified_files: [],
       test_results: [],
+      diff_summary: 'required for core_apply',
+      rollback_plan: 'required for core_apply',
+      death_boundary_result: 'required for core_apply',
       requires_approval: false,
       verification_hints: [],
       next_actions: [],
@@ -375,21 +370,6 @@ async function runClaudeCodeSdk(action, ctx) {
     };
   }
 
-  const mode = getField(action, 'mode') ?? 'propose';
-  if (mode === 'core_apply' && !explicitApproval(action)) {
-    const summary = 'core_apply requires explicit approval before Claude SDK execution';
-    return {
-      success: true,
-      message: summary,
-      agent: normalizeAgentResult({
-        status: 'requires_human_review',
-        summary,
-        requires_approval: true,
-        verification_hints: ['grant explicit approval before running core_apply'],
-      }, summary, CLAUDE_PROVIDER),
-    };
-  }
-
   let query;
   try {
     ({ query } = await import('@anthropic-ai/claude-agent-sdk'));
@@ -402,6 +382,7 @@ async function runClaudeCodeSdk(action, ctx) {
     };
   }
 
+  const mode = getField(action, 'mode') ?? 'propose';
   const promptParts = buildPrompt(action, ctx);
   const prompt = [
     promptParts.system,
@@ -492,20 +473,6 @@ async function runCursorSdk(action, ctx) {
   }
 
   const mode = getField(action, 'mode') ?? 'propose';
-  if (mode === 'core_apply' && !explicitApproval(action)) {
-    const summary = 'core_apply requires explicit approval before Cursor SDK execution';
-    return {
-      success: true,
-      message: summary,
-      agent: normalizeAgentResult({
-        status: 'requires_human_review',
-        summary,
-        requires_approval: true,
-        verification_hints: ['grant explicit approval before running core_apply'],
-      }, summary, CURSOR_PROVIDER),
-    };
-  }
-
   const promptParts = buildPrompt(action, ctx);
   const prompt = buildCursorPrompt(promptParts);
   const { options, cwdWasConfigured, model } = buildCursorOptions(action, ctx);

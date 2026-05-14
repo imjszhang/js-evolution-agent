@@ -115,6 +115,7 @@ afterEach(() => {
   delete process.env.CLAUDE_AGENT_MAX_TURNS;
   delete process.env.CLAUDE_AGENT_PERMISSION_MODE;
   delete process.env.CLAUDE_AGENT_SETTING_SOURCES;
+  delete process.env.JEA_CORE_APPLY_POLICY;
   if (ORIGINAL_CURSOR_API_KEY) {
     process.env.CURSOR_API_KEY = ORIGINAL_CURSOR_API_KEY;
   } else {
@@ -234,6 +235,149 @@ describe('controlled action handlers', () => {
     expect(result.success).toBe(true);
     expect(result.requires_approval).toBe(true);
     expect(result.agentic_execution.provider).toBe('llm_only');
+    expect(verification.status).toBe('improved');
+  });
+
+  it('records core requests from params when agent writes are absent', async () => {
+    const ctx = makeAgenticCtx({
+      status: 'completed',
+      summary: 'Core review request acknowledged, but no writes returned.',
+      writes: {},
+    });
+    const action = {
+      type: 'request_core_review',
+      params: {
+        target: 'safe-runtime boundary policy',
+        rationale: 'read isolation scope needs operator review',
+        risks: ['goal definition drift'],
+        approval_needed: true,
+      },
+    };
+
+    const result = await actionHandlers.request_core_review(action, ctx);
+    const events = ctx.host.intelligenceStore.readEvolutionEvents({ limit: 5 });
+    const receipts = ctx.host.intelligenceStore.readActionReceipts({ limit: 5 });
+    const verification = actionVerifiers.request_core_review.verify(action, result);
+
+    expect(result.success).toBe(true);
+    expect(result.requires_approval).toBe(true);
+    expect(result.fallback_used).toBe(false);
+    expect(result.writes_applied.core_reviews).toBe(1);
+    expect(events[0]).toMatchObject({
+      type: 'core_review_requested',
+      target: 'safe-runtime boundary policy',
+      status: 'requires_human_review',
+    });
+    expect(receipts[0].result.message).toMatch(/action params/);
+    expect(verification.status).toBe('improved');
+  });
+
+  function coreApplyAction(overrides = {}) {
+    return {
+      type: 'core_apply',
+      params: {
+        target: 'src/actions/handlers.mjs',
+        rationale: 'exercise the core apply protocol',
+        boundary: { death_boundary: 'test-only mutation boundary' },
+        acceptance: 'Return diff, tests, and rollback evidence.',
+        death_boundary: 'Only test fixtures may fail.',
+        ...overrides,
+      },
+    };
+  }
+
+  it('blocks core_apply when the core policy is disabled without calling the agent', async () => {
+    process.env.JEA_CORE_APPLY_POLICY = 'disabled';
+    const ctx = makeAgenticCtx();
+
+    const result = await actionHandlers.core_apply(coreApplyAction(), ctx);
+    const verification = actionVerifiers.core_apply.verify(coreApplyAction(), result);
+
+    expect(result.success).toBe(false);
+    expect(result.requires_approval).toBe(true);
+    expect(ctx.ai.agentCalls).toHaveLength(0);
+    expect(verification.status).toBe('partial');
+  });
+
+  it('keeps core_apply in human review by default without approval or sandbox', async () => {
+    const ctx = makeAgenticCtx();
+
+    const action = coreApplyAction();
+    const result = await actionHandlers.core_apply(action, ctx);
+    const verification = actionVerifiers.core_apply.verify(action, result);
+
+    expect(result.success).toBe(true);
+    expect(result.requires_approval).toBe(true);
+    expect(result.policy).toBe('review');
+    expect(ctx.ai.agentCalls).toHaveLength(0);
+    expect(verification.status).toBe('partial');
+  });
+
+  it('executes core_apply in review policy when explicit approval is granted', async () => {
+    const ctx = makeAgenticCtx({
+      status: 'completed',
+      summary: 'Applied approved core patch.',
+      modified_files: ['src/actions/handlers.mjs'],
+      test_results: [{ command: 'npm test', status: 'passed' }],
+      evidence: {
+        changed_files: ['src/actions/handlers.mjs'],
+        diff_summary: 'Added core apply policy handler.',
+        rollback_plan: 'Revert the core_apply patch.',
+        death_boundary_result: 'No fixture damage.',
+      },
+      confidence: 0.9,
+    });
+
+    const action = coreApplyAction({ approval_granted: true });
+    const result = await actionHandlers.core_apply(action, ctx);
+    const verification = actionVerifiers.core_apply.verify(action, result);
+
+    expect(result.success).toBe(true);
+    expect(result.requires_approval).toBe(false);
+    expect(ctx.ai.agentCalls[0][1].content).toContain('mode: core_apply');
+    expect(result.core_apply_audit.complete).toBe(true);
+    expect(verification.status).toBe('improved');
+  });
+
+  it('allows auto core_apply but marks incomplete audit evidence as partial', async () => {
+    process.env.JEA_CORE_APPLY_POLICY = 'auto';
+    const ctx = makeAgenticCtx({
+      status: 'completed',
+      summary: 'Changed core without enough audit evidence.',
+      modified_files: ['src/actions/handlers.mjs'],
+      evidence: { diff_summary: 'Changed a handler.' },
+    });
+
+    const action = coreApplyAction();
+    const result = await actionHandlers.core_apply(action, ctx);
+    const verification = actionVerifiers.core_apply.verify(action, result);
+
+    expect(result.success).toBe(true);
+    expect(result.requires_approval).toBe(false);
+    expect(result.core_apply_audit.complete).toBe(false);
+    expect(verification.status).toBe('partial');
+  });
+
+  it('marks auto core_apply with full audit evidence as improved', async () => {
+    process.env.JEA_CORE_APPLY_POLICY = 'auto';
+    const ctx = makeAgenticCtx({
+      status: 'completed',
+      summary: 'Changed core with audit evidence.',
+      modified_files: ['src/actions/handlers.mjs'],
+      test_results: [{ command: 'npm test', status: 'passed' }],
+      evidence: {
+        diff_summary: 'Registered core_apply verifier.',
+        rollback_plan: 'Revert the focused handler diff.',
+        death_boundary_result: 'No core death boundary breach.',
+      },
+    });
+
+    const action = coreApplyAction();
+    const result = await actionHandlers.core_apply(action, ctx);
+    const verification = actionVerifiers.core_apply.verify(action, result);
+
+    expect(result.success).toBe(true);
+    expect(result.core_apply_audit.complete).toBe(true);
     expect(verification.status).toBe('improved');
   });
 

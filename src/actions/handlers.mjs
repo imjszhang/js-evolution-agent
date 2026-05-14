@@ -79,6 +79,9 @@ function summarizeAgenticExecution(agentResult = {}) {
     verification_hints: agent.verification_hints ?? [],
     next_actions: agent.next_actions ?? [],
     outputs,
+    created_files: agent.created_files ?? [],
+    modified_files: agent.modified_files ?? [],
+    test_results: agent.test_results ?? [],
     agent,
     error: agentResult.error ?? null,
   };
@@ -95,6 +98,14 @@ async function runPhase2Agent(action, ctx, {
     params: {
       provider: getField(action, 'provider') ?? undefined,
       mode,
+      boundary: getField(action, 'boundary') ?? undefined,
+      cwd: getField(action, 'cwd') ?? undefined,
+      approval_granted: getField(action, 'approval_granted') ?? undefined,
+      approved: getField(action, 'approved') ?? undefined,
+      allowedTools: getField(action, 'allowedTools') ?? getField(action, 'allowed_tools') ?? undefined,
+      disallowedTools: getField(action, 'disallowedTools') ?? getField(action, 'disallowed_tools') ?? undefined,
+      permissionMode: getField(action, 'permissionMode') ?? getField(action, 'permission_mode') ?? undefined,
+      maxTurns: getField(action, 'maxTurns') ?? getField(action, 'max_turns') ?? undefined,
       objective: objective ?? [
         `Execute the Phase 2 action '${action?.type ?? 'unknown'}' as an autonomous execution agent.`,
         action?.description ? `Description: ${action.description}` : '',
@@ -157,6 +168,56 @@ function agentActionResult(action, agenticExecution, overrides = {}) {
 
 function legacyFallbackAllowed(action) {
   return Boolean(getField(action, 'allow_legacy_fallback') || getField(action, 'diagnostic_fallback'));
+}
+
+function explicitApproval(action) {
+  const boundary = asObject(getField(action, 'boundary'));
+  return Boolean(
+    getField(action, 'approval_granted')
+      || getField(action, 'approved')
+      || boundary.approval_granted
+      || boundary.approved,
+  );
+}
+
+function sandboxConfigured(action) {
+  const boundary = asObject(getField(action, 'boundary'));
+  return Boolean(getField(action, 'cwd') || boundary.cwd || boundary.sandbox || boundary.worktree);
+}
+
+function coreApplyPolicy() {
+  const value = String(process.env.JEA_CORE_APPLY_POLICY ?? 'review').trim().toLowerCase();
+  return ['disabled', 'review', 'auto'].includes(value) ? value : 'review';
+}
+
+function coreApplyAudit(result = {}) {
+  const evidence = asObject(result.evidence);
+  const outputs = asObject(result.outputs);
+  const writes = asObject(result.writes);
+  const changedFiles = [
+    ...asArray(result.modified_files),
+    ...asArray(result.created_files),
+    ...asArray(evidence.changed_files),
+    ...asArray(outputs.changed_files),
+  ];
+  const testResults = [
+    ...asArray(result.test_results),
+    ...asArray(evidence.test_results),
+    ...asArray(evidence.tests_run),
+    ...asArray(outputs.test_results),
+    ...asArray(outputs.tests_run),
+  ];
+  const diffSummary = evidence.diff_summary ?? outputs.diff_summary ?? writes.diff_summary ?? null;
+  const rollbackPlan = evidence.rollback_plan ?? outputs.rollback_plan ?? writes.rollback_plan ?? null;
+  const deathBoundaryResult = evidence.death_boundary_result ?? outputs.death_boundary_result ?? writes.death_boundary_result ?? null;
+  return {
+    changed_files: changedFiles,
+    diff_summary: diffSummary,
+    test_results: testResults,
+    rollback_plan: rollbackPlan,
+    death_boundary_result: deathBoundaryResult,
+    complete: changedFiles.length > 0 && Boolean(diffSummary) && testResults.length > 0 && Boolean(rollbackPlan),
+  };
 }
 
 function missingAgentArtifactsResult(action, agenticExecution, artifactKind) {
@@ -564,11 +625,92 @@ export const actionHandlers = {
     return result;
   },
 
+  async core_apply(action, ctx) {
+    requireParams(action, ['target', 'rationale', 'boundary', 'acceptance', 'death_boundary']);
+    const store = storeFrom(ctx);
+    const policy = coreApplyPolicy();
+    const approved = explicitApproval(action);
+    const hasSandbox = sandboxConfigured(action);
+
+    if (policy === 'disabled') {
+      const result = {
+        success: false,
+        status: 'requires_human_review',
+        message: 'core_apply is disabled by JEA_CORE_APPLY_POLICY; request_core_review or patch proposal is required',
+        requires_approval: true,
+        provider: null,
+        policy,
+        evidence: {},
+        writes: {},
+        fallback_used: false,
+      };
+      store.recordActionReceipt(action, result, ctx);
+      return result;
+    }
+
+    if (policy === 'review' && !approved && !hasSandbox) {
+      const result = {
+        success: true,
+        status: 'requires_human_review',
+        message: 'core_apply requires explicit approval or a sandbox/worktree when JEA_CORE_APPLY_POLICY=review',
+        requires_approval: true,
+        provider: null,
+        policy,
+        evidence: {
+          policy,
+          target: getField(action, 'target') ?? action.description ?? 'unspecified',
+          rationale: getField(action, 'rationale') ?? action.rationale ?? '',
+        },
+        writes: {},
+        verification_hints: ['grant approval_granted=true, provide boundary.sandbox/worktree, or set JEA_CORE_APPLY_POLICY=auto'],
+        fallback_used: false,
+      };
+      store.recordActionReceipt(action, result, ctx);
+      return result;
+    }
+
+    const agenticExecution = await runPhase2Agent(action, ctx, {
+      mode: 'core_apply',
+      objective: [
+        'Execute this approved core-layer change as an auditable core_apply action.',
+        'Return changed_files, diff_summary, tests_run or test_results, rollback_plan, and death_boundary_result.',
+        'If you cannot safely apply the change, return requires_human_review with a patch proposal instead of mutating files.',
+      ].join('\n'),
+      acceptance: [
+        'Return JSON with status, summary, evidence, writes, modified_files/created_files, test_results, verification_hints, next_actions.',
+        'Evidence must include diff_summary, rollback_plan, and death_boundary_result.',
+      ].join(' '),
+    });
+    if (!agenticExecution.success || agenticExecution.requires_approval) {
+      const result = agentBlockedResult(agenticExecution);
+      result.policy = policy;
+      store.recordActionReceipt(action, result, ctx);
+      return result;
+    }
+
+    const audit = coreApplyAudit(agenticExecution);
+    const result = agentActionResult(action, agenticExecution, {
+      success: true,
+      status: agenticExecution.status ?? 'completed',
+      message: agenticExecution.message || 'core_apply completed',
+      policy,
+      core_apply_audit: audit,
+      verification_hints: audit.complete
+        ? agenticExecution.verification_hints
+        : [
+          ...agenticExecution.verification_hints,
+          'core_apply receipt is missing changed_files, diff_summary, test_results/tests_run, or rollback_plan',
+        ],
+    });
+    store.recordActionReceipt(action, result, ctx);
+    return result;
+  },
+
   async request_core_review(action, ctx) {
     const store = storeFrom(ctx);
     const agenticExecution = await runPhase2Agent(action, ctx, {
-      mode: 'core_apply',
-      objective: 'Execute a core-layer review request by returning writes.core_reviews. Do not mutate files; only request human review.',
+      mode: 'propose',
+      objective: 'Record a core-layer review request by returning writes.core_reviews. Do not mutate files and do not apply the requested core change.',
     });
     if (!agenticExecution.success && !agenticExecution.requires_approval) {
       const result = agentBlockedResult(agenticExecution);
@@ -588,12 +730,6 @@ export const actionHandlers = {
       return result;
     }
 
-    if (!legacyFallbackAllowed(action)) {
-      const result = missingAgentArtifactsResult(action, agenticExecution, 'writes.core_reviews');
-      store.recordActionReceipt(action, result, ctx);
-      return result;
-    }
-
     const event = {
       type: 'core_review_requested',
       action_type: action.type,
@@ -606,14 +742,17 @@ export const actionHandlers = {
     store.recordEvolutionEvent(event);
     const result = {
       success: true,
-      message: 'core-layer request recorded for human review; no mutation executed',
+      message: legacyFallbackAllowed(action)
+        ? 'core-layer request recorded for human review via legacy fallback; no mutation executed'
+        : 'core-layer request recorded for human review from action params; no mutation executed',
       requires_approval: true,
       status: 'requires_human_review',
       agentic_execution: agenticExecution,
       evidence: agenticExecution.evidence,
       writes: agenticExecution.writes,
       provider: agenticExecution.provider,
-      fallback_used: true,
+      fallback_used: legacyFallbackAllowed(action),
+      writes_applied: { core_reviews: 1 },
     };
     store.recordActionReceipt(action, result, ctx);
     return result;
@@ -657,6 +796,34 @@ const baseActionVerifiers = Object.fromEntries(
 
 export const actionVerifiers = {
   ...baseActionVerifiers,
+  core_apply: {
+    verify(action, result) {
+      const audit = result?.core_apply_audit ?? coreApplyAudit(result ?? {});
+      const requiresApproval = Boolean(result?.requires_approval);
+      const evidence_count = listCount(result?.evidence);
+      const writes_count = listCount(result?.writes);
+      const base = {
+        action,
+        metric: result?.agentic_execution || result?.agent ? 'agent_action_result' : 'handler_receipt',
+        value: {
+          success: !!result?.success,
+          status: result?.status ?? 'unknown',
+          message: result?.message ?? '',
+          provider: result?.provider ?? result?.agentic_execution?.provider ?? null,
+          requires_approval: requiresApproval,
+          fallback_used: !!result?.fallback_used,
+          evidence_count,
+          writes_count,
+          policy: result?.policy ?? coreApplyPolicy(),
+          audit,
+          verification_hints: result?.verification_hints ?? result?.agentic_execution?.verification_hints ?? [],
+        },
+      };
+      if (!result?.success) return { ...base, status: requiresApproval ? 'partial' : 'blocked' };
+      if (requiresApproval) return { ...base, status: 'partial' };
+      return { ...base, status: audit.complete ? 'improved' : 'partial' };
+    },
+  },
   agent_execute: {
     verify(action, result) {
       const hasReceipt = Boolean(result?.provider && result?.status && result?.agent);

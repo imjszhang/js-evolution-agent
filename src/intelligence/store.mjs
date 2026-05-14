@@ -4,6 +4,7 @@ import {
   StorageEngine,
 } from 'js-intel-store';
 import { INTELLIGENCE_SPECS } from './specs.mjs';
+import { redactSecrets } from './redaction.mjs';
 
 export const DEFAULT_TIMEZONE = 'Asia/Shanghai';
 
@@ -55,14 +56,14 @@ export class IntelligenceStore {
       created_at: new Date().toISOString(),
       ...r,
     }, 'obs'));
-    return this.engine.ingest('intel_observations', records);
+    return this.engine.ingest('intel_observations', redactSecrets(records));
   }
 
   recordEvolutionEvent(event) {
-    return this.engine.ingest('evolution_events', withId({
+    return this.engine.ingest('evolution_events', redactSecrets(withId({
       recorded_at: new Date().toISOString(),
       ...event,
-    }, 'evt'));
+    }, 'evt')));
   }
 
   recordRetrospective(review) {
@@ -70,13 +71,14 @@ export class IntelligenceStore {
       recorded_at: new Date().toISOString(),
       ...review,
     }, 'retro');
-    const written = this.engine.ingest('retrospectives', record);
-    this.engine.ingest('latest_review', record);
+    const safeRecord = redactSecrets(record);
+    const written = this.engine.ingest('retrospectives', safeRecord);
+    this.engine.ingest('latest_review', safeRecord);
     return written;
   }
 
   recordActionReceipt(action, result, ctx = {}) {
-    return this.engine.ingest('action_receipts', withId({
+    return this.engine.ingest('action_receipts', redactSecrets(withId({
       recorded_at: new Date().toISOString(),
       cycle_id: ctx.cycleId ?? null,
       exec_cycle_id: ctx.execCycleId ?? ctx.cycleId ?? null,
@@ -86,26 +88,26 @@ export class IntelligenceStore {
       action_type: action?.type ?? 'unknown',
       action,
       result,
-    }, 'receipt'));
+    }, 'receipt')));
   }
 
   recordProbeEvent(probeId, event) {
-    return this.engine.ingest('probe_threads', withId({
+    return this.engine.ingest('probe_threads', redactSecrets(withId({
       _entity_id: probeId,
       recorded_at: new Date().toISOString(),
       ...event,
-    }, 'probe-event'));
+    }, 'probe-event')));
   }
 
   recordProbeResult(result) {
-    return this.engine.ingest('probe_results', withId({
+    return this.engine.ingest('probe_results', redactSecrets(withId({
       recorded_at: new Date().toISOString(),
       ...result,
-    }, 'probe-result'));
+    }, 'probe-result')));
   }
 
   ingest(source, records) {
-    return this.engine.ingest(source, asArray(records));
+    return this.engine.ingest(source, redactSecrets(asArray(records)));
   }
 
   listSourceNames() {
@@ -113,10 +115,10 @@ export class IntelligenceStore {
   }
 
   recordIntelReport(record) {
-    return this.engine.ingest('intel_reports', withId({
+    return this.engine.ingest('intel_reports', redactSecrets(withId({
       recorded_at: new Date().toISOString(),
       ...record,
-    }, 'report'));
+    }, 'report')));
   }
 
   readIntelReports({ limit = 20 } = {}) {
@@ -129,10 +131,10 @@ export class IntelligenceStore {
   }
 
   recordGoalEvent(event) {
-    return this.engine.ingest('goal_events', withId({
+    return this.engine.ingest('goal_events', redactSecrets(withId({
       recorded_at: new Date().toISOString(),
       ...event,
-    }, 'goal-event'));
+    }, 'goal-event')));
   }
 
   readGoalEvents({ limit = 20 } = {}) {
@@ -154,10 +156,10 @@ export class IntelligenceStore {
   }
 
   recordStandingMemory(memory) {
-    return this.engine.ingest('standing_memory', {
+    return this.engine.ingest('standing_memory', redactSecrets({
       source: 'report_builder',
       ...memory,
-    });
+    }));
   }
 
   readRecentIntel({ days = 7, limit = 20 } = {}) {

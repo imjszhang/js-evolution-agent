@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { redactSecrets } from './redaction.mjs';
 
 const DEFAULT_EVIDENCE_LIMITS = {
   obsLimit: 5,
@@ -739,6 +740,8 @@ export async function persistIntelReport({
       reason: fallbackReason,
     });
   }
+
+  finalMd = redactSecrets(finalMd);
 
   const reportsDir = join(runtime.runtimeRoot, 'data', 'intelligence', 'reports');
   mkdirSync(reportsDir, { recursive: true });

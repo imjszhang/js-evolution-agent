@@ -25,6 +25,10 @@ import {
   formatAgentContextDocs,
   parseGoalAssessment,
 } from '../src/intelligence/goal-assessor.mjs';
+import {
+  loadPhase1ConversationContext,
+  persistPhase1ConversationContext,
+} from '../src/intelligence/conversation-context.mjs';
 
 let tempDir = null;
 
@@ -130,6 +134,61 @@ describe('IntelligenceStore', () => {
       source_cycle_id: 'cycle-1',
       text: '主体整体态势稳定。',
     });
+  });
+
+  it('redacts secrets before persisting intelligence records', () => {
+    const store = makeStore();
+    const secret = 'sk-1234567890abcdef';
+    const cursorSecret = 'crsr_1234567890abcdef';
+
+    store.recordActionReceipt(
+      {
+        type: 'request_core_review',
+        params: { rationale: `DEEPSEEK_API_KEY=${secret}` },
+      },
+      {
+        success: false,
+        message: `Cursor token ${cursorSecret}`,
+        result: { apiKey: secret },
+      },
+      { cycleId: 'cycle-secret' },
+    );
+    store.recordProbeResult({
+      probe_id: 'probe-secret',
+      summary: `read .env with ${secret}`,
+      evidence: { text: `CURSOR_API_KEY=${cursorSecret}` },
+    });
+
+    const persisted = JSON.stringify({
+      receipts: store.readActionReceipts({ limit: 5 }),
+      probes: store.readProbeResults({ limit: 5 }),
+    });
+    expect(persisted).not.toContain(secret);
+    expect(persisted).not.toContain(cursorSecret);
+    expect(persisted).toContain('[REDACTED_SECRET]');
+  });
+});
+
+describe('conversation context redaction', () => {
+  it('redacts secrets from persisted restored conversation context', () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'jea-conversation-'));
+    const secret = 'sk-1234567890abcdef';
+    const path = persistPhase1ConversationContext({
+      runtimeRoot: tempDir,
+      cycleId: 'cycle-secret',
+      timestamp: '2026-05-14T10:52:37+08:00',
+      observation: { _prompt: `DEEPSEEK_API_KEY=${secret}`, observation_report: `saw ${secret}` },
+      reportMessages: [{ role: 'user', content: `token ${secret}` }],
+      reportMarkdown: `# Report\n\n${secret}`,
+      decideMessages: [{ role: 'assistant', content: `decision ${secret}` }],
+      rawDecision: `{"rationale":"${secret}"}`,
+    });
+
+    const raw = readFileSync(path, 'utf-8');
+    const loaded = loadPhase1ConversationContext({ path });
+    expect(raw).not.toContain(secret);
+    expect(raw).toContain('[REDACTED_SECRET]');
+    expect(JSON.stringify(loaded.context)).not.toContain(secret);
   });
 });
 

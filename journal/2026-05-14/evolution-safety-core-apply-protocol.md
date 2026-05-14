@@ -1,0 +1,279 @@
+# 进化安全与核心变更协议化
+
+> 日期：2026-05-14
+> 项目：js-evolution-agent
+> 类型：问题排查 / 架构设计 / 功能实现 / 调研分析
+> 来源：Cursor Agent 对话
+
+---
+
+## 目录
+
+1. [背景与动机](#1-背景与动机)
+2. [分析过程](#2-分析过程)
+3. [方案设计](#3-方案设计)
+4. [实现要点](#4-实现要点)
+5. [验证与测试](#5-验证与测试)
+6. [后续演化](#6-后续演化)
+
+---
+
+## 1. 背景与动机
+
+本次工作起点是一系列连续自演化循环暴露出的安全与治理问题。`js-evolution-agent` 在完成 bootstrap 验证后，主动执行了 safe-runtime 边界探针。探针结果显示：当前 agent provider 的读取能力并不受运行时数据命名空间约束，`.env` 与 `node_modules` 等命名空间外路径可被读取。
+
+随后又发现两个更深层问题：
+
+1. `request_core_review` 原本会因 agent 没有返回 `writes.core_reviews` 而无法持久化核心审核请求。
+2. Phase 2 / Phase 3 的 action receipt、conversation context、verify report 等持久化产物缺少统一脱敏，可能把敏感内容继续传播到后续循环。
+3. `core_apply` 被 provider 层硬编码为“无显式批准则 requires_human_review”，但 agent 实际已经拥有较大文件系统权限；这不是安全边界，只是流程门槛。
+
+因此，本次工作的目标不是简单“禁止 agent 做核心变更”，而是将安全与核心变更治理从隐式 prompt 约束升级为显式协议：
+
+- 敏感信息必须脱敏后才能进入长期记忆。
+- 核心审核请求必须能入库，不能因 agent 输出格式不完整而静默失败。
+- 核心变更必须可策略化执行，并留下 diff、测试和回滚证据。
+
+---
+
+## 2. 分析过程
+
+### 2.1 已观测后果
+
+| 后果 | 证据含义 |
+| ---- | ---- |
+| safe-runtime 读边界探针能读取命名空间外路径 | `boundary` 只是 prompt 约束，不是文件系统沙箱 |
+| `request_core_review` 失败且提示缺少 `writes.core_reviews` | handler 过度依赖 agent-first 写入契约 |
+| 运行产物中可能包含密钥片段 | store、conversation context、verify raw response 缺少统一脱敏 |
+| provider 层阻止 `core_apply` 无批准执行 | 这是流程门槛，不是实际能力约束 |
+
+### 2.2 第一性原理判断
+
+从第一性原理看，安全边界应先问：
+
+- 谁真正有能力改变系统？
+- 哪些变化会伤及主体连续性？
+- 如果变化失败，是否可隔离、可审计、可回滚？
+
+当前 agent 已经具备较大读写能力，因此“禁止 core_apply”不能被当成真正安全机制。它只能算治理协议的一部分。如果没有正式核心变更通道，agent 仍可能通过其他全权限路径产生改动，反而绕过审计。
+
+更合理的判断是：自演化系统不应消灭变化，而应让变化可感知、可约束、可恢复。
+
+### 2.3 Cyber-Taoist 视角
+
+结合 Cyber-Taoist 进化学应用指南，本次系统处于“试探性突破”向“规则更新”过渡阶段：
+
+- **事实**：边界探针已证明旧 safe-runtime 读隔离假设不成立。
+- **推断**：旧法则“prompt boundary 足以代表安全边界”已经失效。
+- **待观察项**：写隔离是否同样存在缺口，仍需独立探针验证。
+
+分形守破结构如下：
+
+| 层级 | 本系统中的含义 | 策略 |
+| ---- | ---- | ---- |
+| 核心层 | 操作者信任、密钥、主分支、运行时记忆、外部依赖包 | 不能被无记录地破坏 |
+| 缓冲层 | 当前工作区、测试失败、可回滚代码改动 | 可承受，但必须可恢复 |
+| 探针层 | probe、patch proposal、sandbox/worktree core apply | 允许失败，失败必须回传信息 |
+
+因此，`core_apply` 不应被永久堵住，而应成为“可死亡探针”：可以尝试，但必须有死亡边界、验证结果和回滚方案。
+
+---
+
+## 3. 方案设计
+
+### 关键决策
+
+| 决策 | 选择 | 理由 |
+| ---- | ---- | ---- |
+| 敏感信息处理 | 新增统一脱敏层 | 单点处理 store、report、conversation context、verify result，避免密钥扩散 |
+| `request_core_review` | 只负责审核请求入库，不执行核心变更 | review 与 apply 分离，防止审核请求被执行门槛卡死 |
+| safe-runtime 目标口径 | 拆分写边界与读隔离 | 当前 provider 不提供真实读沙箱，不能伪造安全承诺 |
+| `core_apply` | 新增独立 action + 策略控制 | 让核心变更成为正式协议，而非借 `agent_execute` 隐式表达 |
+| 默认核心策略 | `JEA_CORE_APPLY_POLICY=review` | 保守默认；无批准或 sandbox 时不落地修改 |
+| 自动核心变更 | `auto` 策略允许，但强制审计证据 | 承认 agent 可变更核心，同时要求 diff/test/rollback |
+
+### 核心变更协议
+
+```mermaid
+flowchart TD
+  decision["Core Decision"] --> review["request_core_review"]
+  review --> policy{"Core Apply Policy"}
+  policy -->|"disabled"| recordOnly["Record Review Only"]
+  policy -->|"review"| proposal["Patch Proposal Or Human Review"]
+  proposal --> approval{"Approval Or Sandbox"}
+  approval -->|"not granted"| waitHuman["Requires Human Review"]
+  approval -->|"granted"| apply["core_apply"]
+  policy -->|"auto"| apply
+  apply --> verify["Diff Tests Rollback Evidence"]
+  verify --> receipt["Action Receipt And Feedback"]
+```
+
+---
+
+## 4. 实现要点
+
+### 项目结构
+
+```text
+js-evolution-agent/
+├── src/
+│   ├── actions/
+│   │   ├── agent-adapter.mjs
+│   │   ├── handlers.mjs
+│   │   └── registry.mjs
+│   ├── cli/
+│   │   └── utils/i18n.mjs
+│   └── intelligence/
+│       ├── conversation-context.mjs
+│       ├── redaction.mjs
+│       ├── report-builder.mjs
+│       └── store.mjs
+└── test/
+    ├── actions.test.mjs
+    └── intelligence.test.mjs
+```
+
+### 关键模块
+
+| 文件 | 职责 |
+| ---- | ---- |
+| `src/intelligence/redaction.mjs` | 统一脱敏常见密钥格式与敏感字段 |
+| `src/intelligence/store.mjs` | 所有 intelligence 持久化入口统一调用脱敏 |
+| `src/intelligence/conversation-context.mjs` | conversation context 与 semantic verify 输入输出脱敏 |
+| `src/intelligence/report-builder.mjs` | 写入 Markdown 报告前脱敏 |
+| `src/actions/handlers.mjs` | 修复 `request_core_review`，新增 `core_apply` 策略 handler 和严格 verifier |
+| `src/actions/agent-adapter.mjs` | 移除 provider 层 `core_apply` 硬审批，将策略上移到 handler |
+| `src/actions/registry.mjs` | 注册 `core_apply` action spec，并声明输出契约 |
+| `src/cli/utils/i18n.mjs` | 更新 safe-runtime 默认目标文案，明确写边界与读隔离能力分离 |
+
+### 修复一：统一脱敏
+
+统一脱敏层覆盖：
+
+- action receipts
+- probe results / probe threads
+- observations
+- retrospectives
+- evolution events
+- goal events
+- standing memory
+- intel reports index
+- conversation context
+- semantic verify raw response
+
+脱敏目标包括：
+
+- `sk-...`
+- `crsr_...`
+- Anthropic 风格 token
+- `API_KEY` / `AUTH_TOKEN` / `ACCESS_TOKEN` / `SECRET` / `PASSWORD` 等字段
+
+### 修复二：核心审核入库
+
+`request_core_review` 被重新定义为“记录审核请求”，不执行核心变更：
+
+- agent 返回 `writes.core_reviews` 时优先使用。
+- agent 未返回时，从 action params 合成 `core_review_requested` 事件。
+- 状态保持 `requires_human_review`。
+- 不再因缺少 `writes.core_reviews` 而阻断审核请求入库。
+
+### 修复三：safe-runtime 目标澄清
+
+默认目标文案从“数据命令仅作用于命名空间”改为更精确的表述：
+
+- 宿主数据写入命令应限制在当前主体运行时数据命名空间。
+- agent 读路径隔离需要 provider / tool 层能力。
+- 敏感读取只允许持久化脱敏元数据，不能写入明文证据。
+
+### 修复四：核心变更协议化
+
+新增 `core_apply` action spec 与 handler。策略由 `JEA_CORE_APPLY_POLICY` 控制：
+
+| 策略 | 行为 |
+| ---- | ---- |
+| `disabled` | 不调用 agent，记录待人审 |
+| `review` | 默认；无批准且无 sandbox/worktree/cwd 时不执行 |
+| `auto` | 允许自动执行，但必须有审计证据 |
+
+`core_apply` 的审计证据包括：
+
+- changed files
+- diff summary
+- test results / tests run
+- rollback plan
+- death boundary result
+
+缺少关键审计字段时，verifier 最多标记为 `partial`，不能标记为 `improved`。
+
+---
+
+## 5. 验证与测试
+
+本次新增和调整了测试覆盖：
+
+| 测试范围 | 覆盖点 |
+| ---- | ---- |
+| `request_core_review` | 无 agent writes 时仍能从 params 入库 |
+| redaction | action receipt、probe result、conversation context 均不保留明文密钥 |
+| `core_apply disabled` | 不调用 agent，记录待人审 |
+| `core_apply review` | 默认无批准不执行 |
+| `core_apply approval` | 有显式批准时允许执行 |
+| `core_apply auto partial` | 自动执行但缺审计证据时标记 `partial` |
+| `core_apply auto improved` | 完整 diff/test/rollback 证据时标记 `improved` |
+
+验证命令：
+
+```powershell
+npm test -- test/actions.test.mjs
+npm test
+```
+
+验证结果：
+
+| 命令 | 结果 |
+| ---- | ---- |
+| `npm test -- test/actions.test.mjs` | 31 个测试通过 |
+| `npm test` | 4 个测试文件、109 个测试全部通过 |
+| `ReadLints` | 无 linter 错误 |
+| 代码区密钥模式扫描 | 仅命中脱敏正则本身，未发现新增明文密钥 |
+
+---
+
+## 6. 后续演化
+
+### 近期行动
+
+1. **轮换已暴露密钥**  
+   历史 runtime 产物中曾出现密钥片段，脱敏修复只保证后续写入，不自动修复历史数据。
+
+2. **历史产物脱敏迁移**  
+   若要保留历史数据，应先备份，再对 `runtime/subjects/js-evolution-agent/data/` 下旧 JSON/Markdown 运行一次脱敏迁移。
+
+3. **写隔离探针**  
+   当前只证明读隔离缺失。写隔离需要用临时哨兵文件设计低风险探针，不能直接尝试修改真实核心文件。
+
+4. **worktree/sandbox 执行核心变更**  
+   当前实现是协议层，不是 OS 级隔离。下一阶段可将 `core_apply` 默认落到 git worktree 或临时 sandbox。
+
+### 长期方向
+
+- 将 `core_apply` 与 retrospective 联动：核心变更成功或失败后自动写学习记录。
+- 将 death boundary 变成结构化字段，并在 verify 阶段强制检查。
+- 为 provider 层增加真正的工具路径白名单，区分“prompt 边界”和“能力边界”。
+- 将目标评估中的 `safe-runtime` 拆成两个独立子目标：`write-boundary` 与 `read-boundary`。
+
+---
+
+## 结论
+
+这次讨论和实现的核心不是“让 agent 更受限”，而是让系统停止依赖虚假的安全感。
+
+当前更合理的演化方向是：
+
+- 敏感信息默认脱敏；
+- 审核请求必须入库；
+- 核心变更可以发生，但必须通过显式策略；
+- 任何核心变更都必须留下 diff、测试、回滚和死亡边界反馈。
+
+这使 `js-evolution-agent` 从“靠 prompt 自律的受控循环”向“可审计、可恢复、可进化的核心变更协议”前进了一步。
+

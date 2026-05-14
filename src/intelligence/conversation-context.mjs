@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { chatMessages, parseJsonFromText } from '../ai/messages.mjs';
+import { redactSecrets } from './redaction.mjs';
 
 const CONTEXT_FILENAME = 'conversation_context.json';
 
@@ -55,7 +56,7 @@ export function persistPhase1ConversationContext({
     { role: 'assistant', content: String(rawDecision ?? '') },
   ].filter((msg) => msg.content);
 
-  const record = {
+  const record = redactSecrets({
     schema_version: 1,
     kind: 'phase1_conversation_context',
     cycle_id: cycleId,
@@ -83,7 +84,7 @@ export function persistPhase1ConversationContext({
       actions,
     },
     restored_conversation: restoredConversation,
-  };
+  });
 
   const path = contextPath(runtimeRoot, cycleId);
   writeFileSync(path, JSON.stringify(record, null, 2), 'utf-8');
@@ -104,6 +105,8 @@ export function loadPhase1ConversationContext({ runtimeRoot, cycleId, path = nul
 }
 
 function buildVerificationPrompt({ execResult, mechanicalVerification }) {
+  const safeExecResult = redactSecrets(execResult);
+  const safeMechanicalVerification = redactSecrets(mechanicalVerification);
   return [
     '# Reflective Phase 3 Verification',
     '',
@@ -138,13 +141,13 @@ function buildVerificationPrompt({ execResult, mechanicalVerification }) {
     '## Execution Result',
     '',
     '```json',
-    clip(execResult, 400000),
+    clip(safeExecResult, 400000),
     '```',
     '',
     '## Mechanical Verification',
     '',
     '```json',
-    clip(mechanicalVerification, 400000),
+    clip(safeMechanicalVerification, 400000),
     '```',
   ].join('\n');
 }
@@ -186,13 +189,14 @@ export async function verifyWithRestoredConversation({
 
   try {
     const raw = await chatMessages(aiClient, messages, { thinking: 'low', timeout: 180 });
-    const parsed = parseJsonFromText(aiClient, raw);
+    const safeRaw = redactSecrets(raw);
+    const parsed = redactSecrets(parseJsonFromText(aiClient, raw));
     return {
       enabled: true,
       source: 'phase1_conversation_context',
       context_path: loaded.path,
       status: 'ok',
-      raw_response: raw,
+      raw_response: safeRaw,
       result: parsed,
     };
   } catch (e) {
