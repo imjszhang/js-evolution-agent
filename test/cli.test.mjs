@@ -48,6 +48,11 @@ import {
   readActiveSubjectPolicy,
   setActiveSubject,
 } from '../src/cli/utils/subjects.mjs';
+import {
+  configuredActionToSpec,
+  loadSubjectActionConfig,
+  normalizeConfiguredAction,
+} from '../src/actions/configured-actions.mjs';
 
 let tempDir = null;
 const originalJeaLanguage = process.env.JEA_LANGUAGE;
@@ -158,6 +163,55 @@ describe('subject management', () => {
 });
 
 describe('action checks', () => {
+  it('loads configured subject actions and converts them to action specs', () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'jea-action-config-'));
+    mkdirSync(join(tempDir, 'policies', 'subjects'), { recursive: true });
+    mkdirSync(join(tempDir, 'runtime', 'subjects', 'agentank-tank', 'data', 'config'), { recursive: true });
+    writeJsonFile(join(tempDir, 'policies', 'active-subject.json'), {
+      active: 'agentank-tank',
+      policy: 'subjects/agentank-tank.md',
+      data_namespace: 'agentank-tank',
+    });
+    writeFileSync(join(tempDir, 'policies', 'subjects', 'agentank-tank.md'), '# agentank\n\n## Subject\nagentank', 'utf-8');
+    writeJsonFile(join(tempDir, 'runtime', 'subjects', 'agentank-tank', 'data', 'config', 'actions.json'), {
+      external_tools: {
+        test_tool: { root: 'tools/test', entry: 'src/cli.mjs' },
+      },
+      actions: [{
+        name: 'agentank_sync_context',
+        command: 'sync',
+        description: 'Sync context',
+        promptHint: 'Sync safely',
+        defaultRisk: 'low',
+        defaultPriority: 'high',
+        layer: 'probe',
+        params: { allowed: ['limit'] },
+      }],
+    });
+
+    const config = loadSubjectActionConfig(tempDir);
+    const spec = configuredActionToSpec(config.actions[0]);
+
+    expect(config.actions[0].name).toBe('agentank_sync_context');
+    expect(config.actions[0].tool).toBe('test_tool');
+    expect(config.actions[0].params.allowed).toEqual(['limit']);
+    expect(spec.name).toBe('agentank_sync_context');
+  });
+
+  it('rejects invalid configured action names', () => {
+    expect(() => normalizeConfiguredAction({ name: '../bad', tool: 'test_tool', command: 'sync' }))
+      .toThrow(/Invalid configured action name/);
+  });
+
+  it('requires explicit tool when multiple external tools are configured', () => {
+    expect(() => normalizeConfiguredAction({ name: 'custom_action', command: 'run' }, {
+      externalTools: {
+        first_tool: { root: 'tools/first' },
+        second_tool: { root: 'tools/second' },
+      },
+    })).toThrow(/must declare tool/);
+  });
+
   it('detects unknown queued action types', () => {
     const decisions = [
       { id: 'ok', action: { type: 'record_observation' } },

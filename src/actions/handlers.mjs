@@ -1,6 +1,11 @@
 import { runReadOnlyProbe } from './probe-runner.mjs';
 import { runAgenticAction } from './agent-adapter.mjs';
 import { createCoreApplyWorktree } from './worktree-manager.mjs';
+import { runConfiguredExternalAction } from './configured-external-runner.mjs';
+import {
+  getConfiguredExternalAction,
+  loadSubjectActionConfig,
+} from './configured-actions.mjs';
 
 function requireParams(action, fields) {
   const missing = fields.filter((field) => action?.params?.[field] == null && action?.[field] == null);
@@ -510,7 +515,41 @@ function persistCoreReviewWrites(store, action, agenticExecution) {
   return written;
 }
 
-export const actionHandlers = {
+async function runConfiguredExternalActionHandler(action, ctx) {
+  const store = storeFrom(ctx);
+  const externalResult = await runConfiguredExternalAction(action, ctx);
+  const observations = persistObservationWrites(store, action, {
+    writes: externalResult.writes ?? {},
+    message: externalResult.message,
+  });
+  store.recordEvolutionEvent({
+    type: 'configured_external_action',
+    action_type: action.type,
+    command: externalResult.command,
+    tool: externalResult.tool,
+    status: externalResult.status ?? (externalResult.success ? 'completed' : 'failed'),
+    success: !!externalResult.success,
+    requires_approval: !!externalResult.requires_approval,
+    summary: externalResult.message ?? externalResult.status ?? '',
+    evidence: externalResult.evidence ?? externalResult.evaluation ?? externalResult.candidate ?? null,
+  });
+  const result = {
+    success: !!externalResult.success,
+    status: externalResult.status ?? (externalResult.success ? 'completed' : 'failed'),
+    message: externalResult.message ?? `configured external command ${externalResult.command} completed`,
+    requires_approval: !!externalResult.requires_approval,
+    provider: 'configured-external-runner',
+    evidence: externalResult.evidence ?? {},
+    writes: externalResult.writes ?? {},
+    outputs: externalResult,
+    writes_applied: { observations },
+    fallback_used: false,
+  };
+  store.recordActionReceipt(action, result, ctx);
+  return result;
+}
+
+const builtInActionHandlers = {
   async record_observation(action, ctx) {
     requireParams(action, ['content']);
     const store = storeFrom(ctx);
@@ -934,6 +973,30 @@ export const actionHandlers = {
     return result;
   },
 };
+
+export const actionHandlers = new Proxy(builtInActionHandlers, {
+  get(target, prop, receiver) {
+    if (typeof prop !== 'string') return Reflect.get(target, prop, receiver);
+    if (Reflect.has(target, prop)) return Reflect.get(target, prop, receiver);
+    if (getConfiguredExternalAction(prop)) {
+      return async (action, ctx) => runConfiguredExternalActionHandler(action, ctx);
+    }
+    return undefined;
+  },
+  ownKeys(target) {
+    return [
+      ...Reflect.ownKeys(target),
+      ...loadSubjectActionConfig().actions.map((action) => action.name),
+    ];
+  },
+  getOwnPropertyDescriptor(target, prop) {
+    if (Reflect.has(target, prop)) return Reflect.getOwnPropertyDescriptor(target, prop);
+    if (typeof prop === 'string' && getConfiguredExternalAction(prop)) {
+      return { enumerable: true, configurable: true };
+    }
+    return undefined;
+  },
+});
 
 const baseActionVerifiers = Object.fromEntries(
   Object.keys(actionHandlers).map((type) => [

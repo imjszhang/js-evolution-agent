@@ -2,6 +2,7 @@ import {
   ActionTypeRegistry,
   ActionTypeSpec,
 } from 'js-evolution-engine';
+import { registerConfiguredActionSpecs } from './configured-actions.mjs';
 
 export const actionRegistry = new ActionTypeRegistry({ includeBuiltins: false });
 
@@ -74,4 +75,6 @@ actionRegistry.register(new ActionTypeSpec({
   autoExecutable: true,
   layer: 'core',
 }));
+
+registerConfiguredActionSpecs(actionRegistry, undefined, ActionTypeSpec);
 

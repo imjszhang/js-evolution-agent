@@ -14,6 +14,7 @@ import {
   actionHandlers,
   actionVerifiers,
 } from '../src/actions/handlers.mjs';
+import { runConfiguredExternalAction } from '../src/actions/configured-external-runner.mjs';
 import { createIntelligenceStore } from '../src/intelligence/store.mjs';
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
@@ -99,6 +100,48 @@ function makeAgenticCtx(agentResponse = null) {
   };
 }
 
+function writeJsonFile(filePath, value) {
+  writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf-8');
+}
+
+function installConfiguredActionProject(ctx) {
+  mkdirSync(join(ctx.projectRoot, 'policies', 'subjects'), { recursive: true });
+  mkdirSync(join(ctx.projectRoot, 'runtime', 'subjects', 'configured-test', 'data', 'config'), { recursive: true });
+  writeJsonFile(join(ctx.projectRoot, 'policies', 'active-subject.json'), {
+    active: 'configured-test',
+    policy: 'subjects/configured-test.md',
+    data_namespace: 'configured-test',
+  });
+  writeFileSync(join(ctx.projectRoot, 'policies', 'subjects', 'configured-test.md'), '# configured test\n', 'utf-8');
+  writeJsonFile(join(ctx.projectRoot, 'runtime', 'subjects', 'configured-test', 'data', 'config', 'actions.json'), {
+    external_tools: {
+      test_tool: { root: join(ctx.projectRoot, 'tool'), entry: 'src/cli.mjs' },
+    },
+    actions: [
+      {
+        name: 'configured_sync',
+        tool: 'test_tool',
+        command: 'sync',
+        description: 'Sync configured test context',
+        defaultRisk: 'low',
+        defaultPriority: 'high',
+        layer: 'probe',
+        params: { allowed: ['limit'] },
+      },
+      {
+        name: 'configured_challenge_request',
+        tool: 'test_tool',
+        command: 'challenge-request',
+        description: 'Record configured challenge request',
+        defaultRisk: 'high',
+        defaultPriority: 'medium',
+        layer: 'core',
+        params: { allowed: ['opponentTankId', 'map'] },
+      },
+    ],
+  });
+}
+
 function installFakeWorktree(ctx, path = join(ctx.projectRoot, '.worktrees', 'fake-core-apply')) {
   const createCoreApplyWorktree = vi.fn(() => ({
     path,
@@ -147,6 +190,68 @@ afterEach(() => {
 });
 
 describe('controlled action handlers', () => {
+  it('runs configured external actions through a subject-local runner config', async () => {
+    const ctx = makeCtx();
+    installConfiguredActionProject(ctx);
+    ctx.host.configuredExternalRunner = vi.fn(async ({ command, args, tool }) => ({
+      success: true,
+      status: 'synced',
+      command,
+      tool,
+      args,
+      evidence: { tankName: 'Test Tank' },
+      writes: {
+        observations: [{
+          source: 'agentank-evolver',
+          subject: 'agentank-tank',
+          kind: 'agentank_evolution',
+          content: 'synced remote context without secrets',
+        }],
+      },
+    }));
+
+    const result = await runConfiguredExternalAction({
+      type: 'configured_sync',
+      params: { limit: 3, secret: 'must-not-forward' },
+    }, ctx);
+
+    expect(result.success).toBe(true);
+    expect(ctx.host.configuredExternalRunner).toHaveBeenCalledOnce();
+    expect(result.tool).toBe('test_tool');
+    expect(result.args).toContain('--limit');
+    expect(result.args).toContain('3');
+    expect(result.args).not.toContain('--secret');
+  });
+
+  it('does not expose handlers for unconfigured external actions', () => {
+    expect(actionHandlers.agentank_sync_context).toBeUndefined();
+    expect(actionHandlers.agentank_unconfigured_action).toBeUndefined();
+  });
+
+  it('keeps configured challenge requests on the configured external runner path', async () => {
+    const ctx = makeCtx();
+    installConfiguredActionProject(ctx);
+    ctx.host.configuredExternalRunner = vi.fn(async ({ command, tool }) => ({
+      success: true,
+      status: 'requires_human_review',
+      requires_approval: true,
+      command,
+      tool,
+      message: 'Recorded challenge request only; no real challenge was executed.',
+      request: { opponentTankId: 42, mapId: 'classic' },
+    }));
+
+    const result = await runConfiguredExternalAction({
+      type: 'configured_challenge_request',
+      params: { opponentTankId: 42, map: 'classic' },
+    }, ctx);
+
+    expect(result.success).toBe(true);
+    expect(result.requires_approval).toBe(true);
+    expect(result.command).toBe('challenge-request');
+    expect(result.tool).toBe('test_tool');
+  });
+
   it('describes run_probe boundaries as contracts, not provider sandboxes', () => {
     const source = readFileSync(new URL('../src/actions/registry.mjs', import.meta.url), 'utf-8');
 
