@@ -60,6 +60,45 @@ function agentStatusToProbeStatus(status) {
   return status || 'inconclusive';
 }
 
+function probeHasHostBoundaryBlock(probeResult = {}) {
+  if (probeResult.status === 'blocked' || probeResult.reason) return true;
+  const steps = asArray(probeResult.evidence?.steps);
+  return steps.some((step) => step?.status === 'blocked' || step?.evidence?.blocked);
+}
+
+function persistLocalProbeResult(store, action, ctx, probeResult, overrides = {}) {
+  const event = {
+    type: `probe_${probeResult.status}`,
+    action_type: action.type,
+    probe_id: probeResult.probe_id,
+    probe_type: probeResult.probe_type,
+    target: probeResult.target,
+    status: probeResult.status,
+    summary: probeResult.summary,
+  };
+
+  store.recordProbeEvent(probeResult.probe_id, event);
+  store.recordProbeResult(probeResult);
+  store.recordEvolutionEvent(event);
+
+  const result = {
+    success: true,
+    message: probeResult.summary,
+    probe_id: probeResult.probe_id,
+    status: probeResult.status,
+    probe_type: probeResult.probe_type,
+    outcome_success: probeResult.success,
+    evidence: probeResult.evidence ?? {},
+    writes: {},
+    provider: null,
+    fallback_used: false,
+    host_boundary_preflight: !!overrides.host_boundary_preflight,
+    ...overrides,
+  };
+  store.recordActionReceipt(action, result, ctx);
+  return result;
+}
+
 function summarizeAgenticExecution(agentResult = {}) {
   const agent = agentResult.agent ?? {};
   const outputs = asObject(agent.outputs);
@@ -528,6 +567,18 @@ export const actionHandlers = {
 
   async run_probe(action, ctx) {
     const store = storeFrom(ctx);
+    const preflightProbeResult = runReadOnlyProbe(action, ctx);
+    if (probeHasHostBoundaryBlock(preflightProbeResult)) {
+      return persistLocalProbeResult(store, action, ctx, preflightProbeResult, {
+        message: `Probe blocked by host read boundary before agent execution: ${preflightProbeResult.summary}`,
+        verification_hints: [
+          'host read boundary preflight prevented agent access to blocked target(s)',
+          'remove sensitive/off-limits targets or provide a safe in-namespace target before using agentic investigation',
+        ],
+        host_boundary_preflight: true,
+      });
+    }
+
     const agenticExecution = await runPhase2Agent(action, ctx, {
       mode: 'observe',
       objective: 'Execute this read-only probe as an agentic Phase 2 investigation. Return evidence describing what was actually checked and writes.probe_results if structured probe evidence should be persisted.',
@@ -561,35 +612,13 @@ export const actionHandlers = {
     }
 
     const probeResult = runReadOnlyProbe(action, ctx);
-    const event = {
-      type: `probe_${probeResult.status}`,
-      action_type: action.type,
-      probe_id: probeResult.probe_id,
-      probe_type: probeResult.probe_type,
-      target: probeResult.target,
-      status: probeResult.status,
-      summary: probeResult.summary,
-    };
-
-    store.recordProbeEvent(probeResult.probe_id, event);
-    store.recordProbeResult(probeResult);
-    store.recordEvolutionEvent(event);
-
-    const result = {
-      success: true,
-      message: probeResult.summary,
-      probe_id: probeResult.probe_id,
-      status: probeResult.status,
-      probe_type: probeResult.probe_type,
-      outcome_success: probeResult.success,
+    return persistLocalProbeResult(store, action, ctx, probeResult, {
       agentic_execution: agenticExecution,
       evidence: agenticExecution.evidence,
       writes: agenticExecution.writes,
       provider: agenticExecution.provider,
       fallback_used: true,
-    };
-    store.recordActionReceipt(action, result, ctx);
-    return result;
+    });
   },
 
   async agent_execute(action, ctx) {

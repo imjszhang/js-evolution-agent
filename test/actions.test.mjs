@@ -951,7 +951,7 @@ describe('controlled action handlers', () => {
     expect(result.status).toBe('succeeded');
   });
 
-  it('blocks probes against sensitive files while still recording the outcome', async () => {
+  it('blocks probes against sensitive files before agent execution', async () => {
     const ctx = makeAgenticCtx();
     const target = join(ctx.projectRoot, '.env');
     writeFileSync(target, 'SECRET=hidden\n', 'utf-8');
@@ -971,8 +971,34 @@ describe('controlled action handlers', () => {
 
     expect(result.success).toBe(true);
     expect(result.status).toBe('blocked');
+    expect(result.host_boundary_preflight).toBe(true);
+    expect(ctx.ai.agentCalls).toHaveLength(0);
     expect(ctx.host.intelligenceStore.readProbeResults({ limit: 5 })[0].reason)
       .toMatch(/sensitive/);
+  });
+
+  it('keeps mixed-target probes local when any target violates the host read boundary', async () => {
+    const ctx = makeAgenticCtx();
+    const safeTarget = join(ctx.projectRoot, 'README.md');
+    const sensitiveTarget = join(ctx.projectRoot, '.env');
+    writeFileSync(safeTarget, '# Test Project\n', 'utf-8');
+    writeFileSync(sensitiveTarget, 'SECRET=hidden\n', 'utf-8');
+
+    const result = await actionHandlers.run_probe({
+      type: 'run_probe',
+      params: {
+        probe_type: 'investigation',
+        targets: [safeTarget, sensitiveTarget],
+        death_boundary: 'do not read sensitive files',
+      },
+    }, ctx);
+
+    const probeResult = ctx.host.intelligenceStore.readProbeResults({ limit: 5 })[0];
+    expect(result.success).toBe(true);
+    expect(result.host_boundary_preflight).toBe(true);
+    expect(ctx.ai.agentCalls).toHaveLength(0);
+    expect(probeResult.evidence.steps.some((step) => step.status === 'blocked')).toBe(true);
+    expect(JSON.stringify(probeResult)).not.toContain('SECRET=hidden');
   });
 });
 

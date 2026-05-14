@@ -168,7 +168,7 @@ js-evolution-agent/
 | `src/intelligence/store.mjs` | 所有 intelligence 持久化入口统一调用脱敏 |
 | `src/intelligence/conversation-context.mjs` | conversation context 与 semantic verify 输入输出脱敏 |
 | `src/intelligence/report-builder.mjs` | 写入 Markdown 报告前脱敏 |
-| `src/actions/handlers.mjs` | 修复 `request_core_review`，新增 `core_apply` 策略 handler 和严格 verifier |
+| `src/actions/handlers.mjs` | 修复 `request_core_review`，新增 `core_apply` 策略 handler、严格 verifier 与 `run_probe` 目标级预检 |
 | `src/actions/agent-adapter.mjs` | 移除 provider 层 `core_apply` 硬审批，将策略上移到 handler |
 | `src/actions/registry.mjs` | 注册 `core_apply` action spec，并声明输出契约 |
 | `src/actions/worktree-manager.mjs` | 封装 git worktree 创建、命名、分支和 cleanup hint |
@@ -256,6 +256,21 @@ js-evolution-agent/
 
 同时在 `.gitignore` 加入 `.worktrees/`，避免隔离工作区被主仓库误跟踪。
 
+### 修复六：`run_probe` 目标级预检
+
+> 追加时间：2026-05-14 12:31:15 +08:00
+
+后续测试发现一个剩余风险：`run_probe` 原本会先把探针交给 agentic provider 执行，只有在 agent 未返回结构化证据且允许 legacy fallback 时，才进入本地主机的 `runReadOnlyProbe`。这意味着即使本地读取器会拦截 `.env`、`.git`、`archives`、密钥文件或项目外路径，显式指向这些目标的探针仍可能先把敏感目标暴露给 agent。
+
+修复方式是在 `run_probe` 进入 agent 前增加 host read-boundary preflight：
+
+- 先用本地主机读取器对 action 的显式 `target` / `targets` / `initial_targets` 做一次预检。
+- 如果预检发现目标被本地边界阻断，直接记录 `probe_blocked`、`probe_result` 和 action receipt。
+- 不调用 agent，不把敏感目标交给 provider。
+- 对混合目标采用保守策略：只要显式目标集合中有一个目标被阻断，整次探针留在本地并记录 blocked 结果。
+
+这里的“混合目标”指显式目标集合，例如 `targets: ["README.md", ".env"]`。如果 target 是项目根目录，本地目录 inventory 会过滤 `.env` 等敏感 entry，但不会因为项目根目录下存在 `.env` 就整体阻断。该修复是**目标级预检**，不是完整文件系统沙箱；agent 后续自主探索仍需要 provider/tool 层路径白名单才能彻底约束。
+
 ---
 
 ## 5. 验证与测试
@@ -274,6 +289,8 @@ js-evolution-agent/
 | `core_apply worktree auto` | 批准或 auto 策略下自动创建 worktree，并将 provider cwd 指向隔离路径 |
 | `core_apply explicit worktree` | 已提供 `boundary.worktree` 时不自动创建 |
 | `core_apply worktree failure` | worktree 创建失败时阻塞，不回退到主工作区 |
+| `run_probe sensitive preflight` | 显式敏感目标在 agent 执行前被本地主机边界拦截 |
+| `run_probe mixed targets preflight` | 显式混合目标中包含敏感路径时整次探针留在本地，不调用 agent |
 
 验证命令：
 
@@ -286,8 +303,8 @@ npm test
 
 | 命令 | 结果 |
 | ---- | ---- |
-| `npm test -- test/actions.test.mjs` | 33 个测试通过 |
-| `npm test` | 4 个测试文件、111 个测试全部通过 |
+| `npm test -- test/actions.test.mjs` | 34 个测试通过 |
+| `npm test` | 4 个测试文件、112 个测试全部通过 |
 | `ReadLints` | 无 linter 错误 |
 | 代码区密钥模式扫描 | 仅命中脱敏正则本身，未发现新增明文密钥 |
 
@@ -309,6 +326,9 @@ npm test
 4. **worktree 结果合并策略**  
    当前已能自动创建 worktree 并隔离执行，但不会自动合并回主工作区。后续需要设计“审查 diff → 接受/拒绝 → 合并/丢弃”的流程。
 
+5. **将目标级预检升级为 provider 级白名单**  
+   当前 `run_probe` 已能拦截显式敏感目标，但这不是完整沙箱。若 agent 在项目根目录内自主探索，仍需要 provider/tool 层路径白名单才能阻止 `.env` 等敏感路径被读取。
+
 ### 长期方向
 
 - 将 `core_apply` 与 retrospective 联动：核心变更成功或失败后自动写学习记录。
@@ -329,6 +349,7 @@ npm test
 - 审核请求必须入库；
 - 核心变更可以发生，但必须通过显式策略；
 - 策略允许的核心变更默认进入隔离 worktree；
+- 显式敏感探针目标必须先经过 host read-boundary preflight，不能先交给 agent；
 - 任何核心变更都必须留下 diff、测试、回滚和死亡边界反馈。
 
 这使 `js-evolution-agent` 从“靠 prompt 自律的受控循环”向“可审计、可恢复、可隔离执行的核心变更协议”前进了一步。
