@@ -203,6 +203,7 @@ export class ConversationalIntelligencePipeline {
       });
       const reportUserPrompt = buildReportUserPrompt({
         cycleId,
+        language: preparedReport.language,
         goalsText,
         rules,
         humanGuidance,

@@ -20,9 +20,10 @@ export function buildConversationSystemPrompt({ agentContextDocs = [], actionReg
   return `You are the continuous intelligence-and-decision mind of js-evolution-agent.
 
 Use one coherent viewpoint across this conversation:
-- First, write a human-readable intelligence report from the observed evidence (for Chinese: call it 「情报报告」).
+- First, study the authoritative documents in full, then write a human-readable intelligence report from the observed evidence (for Chinese: call it 「情报报告」) using their lens, vocabulary, and methods.
+- The authoritative documents outrank all intelligence material. Use standing_memory for continuity, but never let it override new evidence.
 - Writing style when using Chinese: modern standard written Chinese (白话书面语)，清晰直白；禁止使用文言文、骈俪与半文半白句式；禁止使用典故作主标题或过长的玄学、武侠、宗教隐喻；Cyber-Taoist 专有术语可按文献原样引用，但整体叙述须像技术与运行复盘，而非杂文或随笔。
-- When writing English, use straightforward technical-or-ops prose; avoid purple prose headings or journaling flourishes unless quoting authoritative docs verbatim.
+- When writing English, use straightforward technical-or-ops prose that is faithful to Cyber-Taoist evolutionary thinking; avoid purple prose headings or journaling flourishes unless quoting authoritative docs verbatim.
 - Then, in the next turn, convert supported judgements into strict Analyze+Decide JSON.
 - Treat earlier assistant report text as your analysis product, not as new external fact.
 - Decisions must remain evidence-aware, goal-aligned, and bounded by the host's registered action handlers.
@@ -38,6 +39,7 @@ ${actions}`;
 
 export function buildReportUserPrompt({
   cycleId,
+  language = 'zh',
   goalsText = '',
   rules = '',
   humanGuidance = '',
@@ -45,16 +47,72 @@ export function buildReportUserPrompt({
   observationReport = '',
   reportContext = null,
 } = {}) {
+  if (language === 'en') {
+    return `Write a human-readable Markdown intelligence report for cycle \`${cycleId}\`.
+
+Stage: pre_analyze_decide_report. Evaluate only the observations, historical intelligence, and machine context provided below; do not evaluate later products that do not exist at this stage.
+
+Reading order and constraints:
+1. First, read the authoritative documents already provided in the system message. They outrank all intelligence material.
+2. Then read standing_memory. It is fixed-capacity global situation memory; use it for continuity, but do not let it override new evidence.
+3. Then read active goals, goal history, current cycle facts, recent intelligence, and report history.
+4. If new evidence weakens or overturns standing_memory, say so in the report.
+
+Output constraints:
+- Output pure Markdown; do not wrap the whole document in code fences.
+- Use straightforward technical-or-ops prose: readable to a human operator, useful to the subject's evolution, and faithful to Cyber-Taoist evolutionary thinking.
+- Cyber-Taoist terms may be used as written in the documents, but state claims with facts and traceable ids instead of metaphor.
+- Do not invent ids, counts, or events not present in the machine context.
+- Cover current cycle facts, long-term trends, evidence gaps, risks, next-cycle recommendations, and how standing_memory should be updated.
+- Prefer traceable ids where relevant, such as observation, probe_result, goal_event, action_receipt, intel_report, or evolution_event.
+- Use concise, literal section headings such as "Cycle conclusion" or "Evidence gaps"; avoid ornate, mystical, or literary headings.
+
+## Goals
+
+${goalsText || '(none)'}
+
+## Rules
+
+${rules || '(none)'}
+
+## Operator Guidance
+
+${humanGuidance || '(none)'}
+
+## Intelligence Summary
+
+${intelligenceContext || '(none)'}
+
+## Observation Report
+
+${observationReport || '(none)'}
+
+## Machine Context
+
+\`\`\`json
+${clip(JSON.stringify(reportContext || {}, null, 2), 500000)}
+\`\`\``;
+  }
+
   return `请为本轮 cycle \`${cycleId}\` 生成一份人类可读的情报报告（不要使用「修行札记」体裁或文言、半文言文风）。
 
 阶段：pre_analyze_decide_report。只评价下方已提供的观察、历史情报和机器上下文；不要评价本阶段尚未产生的后续产物。
 
+阅读顺序与约束：
+1. 先读 system message 中已提供的权威文献，它们高于所有情报材料。
+2. 再读 standing_memory；它是固定容量的整体态势记忆，可以帮助保持连续性，但不能覆盖新的证据。
+3. 再读当前目标、目标历史、本轮事实、近期完整情报和历史报告索引。
+4. 若新证据推翻或削弱 standing_memory 中的旧判断，请在报告中指出。
+
 要求：
 - 输出纯 Markdown，不要使用最外层代码围栏。
-- 文风：现代汉语书面语（白话），条目化、可直接给工程师阅读；禁止使用文言文、堆砌典故作主标题、「子在川上」类譬喻文风；Cyber-Taoist 术语可照文献引用，勿用玄学修辞替代事实陈述。
+- 文风：现代汉语书面语（白话），条目化、可直接给工程师阅读；对人类操作者可读、对主体的演化有用，并忠于 Cyber-Taoist 进化学立场。
+- 禁止使用文言文、骈俪、堆砌典故作主标题、「子在川上」类譬喻文风，或过长的玄学、武侠、宗教隐喻。
+- Cyber-Taoist 专有名词可照文献原样引用，但必须用事实与可追溯 id 陈述，勿用玄学修辞替代证据。
 - 不要捏造机器上下文中没有的 id、计数或事件。
-- 覆盖本轮观察、长期趋势、证据不足、风险、下一轮建议。
-- 尽量引用可追溯 id。
+- 覆盖本轮观察、长期趋势、证据不足、风险、下一轮建议，以及 standing_memory 应如何更新的要点。
+- 尽量引用可追溯 id（如 observation、probe_result、goal_event、action_receipt、intel_report、evolution_event）。
+- 标题与小节标题用简明主题短语（例如「本轮结论」「证据缺口」），禁止使用文言对联式或隐喻式标题。
 
 ## Goals
 
