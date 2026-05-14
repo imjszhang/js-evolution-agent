@@ -161,7 +161,9 @@ export function buildDecideUserPrompt({
 重要约束：
 - 只能输出 JSON 对象，不要 Markdown，不要代码围栏。
 - 报告中的判断可以作为分析线索，但 action 必须能追溯到机器上下文、观察报告、目标或历史证据。
-- 优先使用下方已注册 action types；如果确需非标准 type，必须在 params.execution_plan 写清楚步骤。
+- 优先使用具体 action types；不要用 \`agent_execute\` 表达观察、探针、复盘或核心 review 等已有语义。
+- \`agent_execute\` 只允许作为兜底动作：当没有任何具体 action type 能表达任务时才使用，并且必须提供 params.objective、params.mode、params.boundary、params.acceptance、params.escape_hatch_reason。
+- 如果确需非标准 type，必须在 params.execution_plan 写清楚步骤。
 - 每个 action 必须有 serves_goal，并尽量使用目标树中的 goal id。
 - 不要为了覆盖而制造行动；证据不足时可以把 decision 设为 "defer" 或让 actions 为空数组。
 

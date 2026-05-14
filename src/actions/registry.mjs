@@ -37,8 +37,8 @@ actionRegistry.register(new ActionTypeSpec({
 
 actionRegistry.register(new ActionTypeSpec({
   name: 'agent_execute',
-  description: 'Delegate an open-ended execution task to an LLM/agent with minimal structured boundaries and auditable receipts.',
-  promptHint: 'Delegate directly to an agent (params: objective, context, mode=observe|propose|patch_proposal|sandbox_patch|core_apply, boundary, acceptance). Return the standard agent action result with evidence/writes/verification_hints. Do not set params.provider unless a specific action must override JEA_AGENT_PROVIDER. Provider overrides may be llm_only|claude_code_sdk|cursor_sdk|cli_agent.',
+  description: 'Escape-hatch delegation for open-ended agent work that no dedicated action type can represent.',
+  promptHint: 'Use only when record_observation, propose_probe, run_probe, write_retrospective, or request_core_review do not fit. Required params: objective, mode=observe|propose|patch_proposal|sandbox_patch|core_apply, boundary, acceptance, escape_hatch_reason. Return the standard agent action result with evidence/writes/verification_hints. Do not set params.provider unless a specific action must override JEA_AGENT_PROVIDER. Provider overrides may be llm_only|claude_code_sdk|cursor_sdk|cli_agent.',
   defaultRisk: 'medium',
   defaultPriority: 'medium',
   autoExecutable: true,

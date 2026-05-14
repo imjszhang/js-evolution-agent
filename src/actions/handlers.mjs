@@ -8,6 +8,14 @@ function requireParams(action, fields) {
   }
 }
 
+const DIRECT_AGENT_EXECUTE_REQUIRED_PARAMS = [
+  'objective',
+  'mode',
+  'boundary',
+  'acceptance',
+  'escape_hatch_reason',
+];
+
 function getField(action, field) {
   return action?.params?.[field] ?? action?.[field] ?? null;
 }
@@ -466,7 +474,7 @@ export const actionHandlers = {
   },
 
   async agent_execute(action, ctx) {
-    requireParams(action, ['objective']);
+    requireParams(action, DIRECT_AGENT_EXECUTE_REQUIRED_PARAMS);
     const store = storeFrom(ctx);
     const agentResult = await runAgenticAction(action, ctx);
     const agent = agentResult.agent ?? {};

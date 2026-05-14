@@ -46,6 +46,17 @@ async function* streamMessages(messages) {
   for (const message of messages) yield message;
 }
 
+function directAgentParams(overrides = {}) {
+  return {
+    objective: 'Execute an open-ended task that no dedicated action type covers.',
+    mode: 'propose',
+    boundary: 'Do not mutate files unless this test explicitly provides a sandbox.',
+    acceptance: 'Return a normalized agent action result.',
+    escape_hatch_reason: 'This test exercises the direct agent_execute fallback path.',
+    ...overrides,
+  };
+}
+
 function makeCtx() {
   tempDir = mkdtempSync(join(tmpdir(), 'js-evolution-agent-actions-'));
   const projectRoot = join(tempDir, 'project');
@@ -251,12 +262,12 @@ describe('controlled action handlers', () => {
     const action = {
       type: 'agent_execute',
       description: 'Let the agent decide the next useful probe',
-      params: {
+      params: directAgentParams({
         objective: 'Find the strongest next probe',
         mode: 'propose',
         context: 'Use recent intelligence and receipts.',
         acceptance: 'Return a concrete recommendation.',
-      },
+      }),
     };
     const result = await actionHandlers.agent_execute(action, ctx);
     const verification = actionVerifiers.agent_execute.verify(action, result);
@@ -269,14 +280,23 @@ describe('controlled action handlers', () => {
       .toBe('agent_execute');
   });
 
+  it('requires explicit escape-hatch boundaries for direct agent execution', async () => {
+    await expect(actionHandlers.agent_execute({
+      type: 'agent_execute',
+      params: {
+        objective: 'Do an underspecified open-ended task',
+      },
+    }, makeCtx())).rejects.toThrow(/mode, boundary, acceptance, escape_hatch_reason/);
+  });
+
   it('defers reserved agent providers until they are configured', async () => {
     const ctx = makeCtx();
     const result = await actionHandlers.agent_execute({
       type: 'agent_execute',
-      params: {
+      params: directAgentParams({
         objective: 'Try a reserved CLI-backed execution',
         provider: 'cli_agent',
-      },
+      }),
     }, ctx);
 
     expect(result.success).toBe(false);
@@ -310,11 +330,11 @@ describe('controlled action handlers', () => {
     const ctx = makeCtx();
     const result = await actionHandlers.agent_execute({
       type: 'agent_execute',
-      params: {
+      params: directAgentParams({
         provider: 'cursor_sdk',
         objective: 'Use Cursor SDK to recommend execution',
         mode: 'observe',
-      },
+      }),
     }, ctx);
     const verification = actionVerifiers.agent_execute.verify(null, result);
 
@@ -344,9 +364,9 @@ describe('controlled action handlers', () => {
 
     const result = await actionHandlers.agent_execute({
       type: 'agent_execute',
-      params: {
+      params: directAgentParams({
         objective: 'Use the configured default provider',
-      },
+      }),
     }, makeCtx());
 
     expect(result.success).toBe(true);
@@ -374,10 +394,10 @@ describe('controlled action handlers', () => {
 
     const result = await actionHandlers.agent_execute({
       type: 'agent_execute',
-      params: {
+      params: directAgentParams({
         provider: 'llm_only',
         objective: 'Override the configured default provider',
-      },
+      }),
     }, ctx);
 
     expect(result.success).toBe(true);
@@ -403,9 +423,9 @@ describe('controlled action handlers', () => {
 
     const result = await actionHandlers.agent_execute({
       type: 'agent_execute',
-      params: {
+      params: directAgentParams({
         objective: 'Use Claude as the configured default provider',
-      },
+      }),
     }, makeCtx());
 
     expect(result.success).toBe(true);
@@ -418,10 +438,10 @@ describe('controlled action handlers', () => {
     delete process.env.CURSOR_API_KEY;
     const result = await actionHandlers.agent_execute({
       type: 'agent_execute',
-      params: {
+      params: directAgentParams({
         provider: 'cursor',
         objective: 'Try Cursor without credentials',
-      },
+      }),
     }, makeCtx());
 
     expect(result.success).toBe(false);
@@ -437,10 +457,10 @@ describe('controlled action handlers', () => {
 
     const result = await actionHandlers.agent_execute({
       type: 'agent_execute',
-      params: {
+      params: directAgentParams({
         provider: 'cursor_sdk',
         objective: 'Run Cursor despite a startup failure',
-      },
+      }),
     }, makeCtx());
 
     expect(result.success).toBe(false);
@@ -453,11 +473,11 @@ describe('controlled action handlers', () => {
     process.env.CURSOR_API_KEY = 'cursor-test-key';
     const result = await actionHandlers.agent_execute({
       type: 'agent_execute',
-      params: {
+      params: directAgentParams({
         provider: 'cursor_sdk',
         objective: 'Patch without a sandbox',
         mode: 'sandbox_patch',
-      },
+      }),
     }, makeCtx());
 
     expect(result.success).toBe(true);
@@ -499,11 +519,11 @@ describe('controlled action handlers', () => {
     const ctx = makeCtx();
     const action = {
       type: 'agent_execute',
-      params: {
+      params: directAgentParams({
         provider: 'claude_code_sdk',
         objective: 'Use Claude Code SDK to recommend execution',
         mode: 'observe',
-      },
+      }),
     };
     const result = await actionHandlers.agent_execute(action, ctx);
     const verification = actionVerifiers.agent_execute.verify(action, result);
@@ -544,13 +564,13 @@ describe('controlled action handlers', () => {
     mkdirSync(sandbox, { recursive: true });
     const result = await actionHandlers.agent_execute({
       type: 'agent_execute',
-      params: {
+      params: directAgentParams({
         provider: 'claude_code',
         objective: 'Patch in sandbox',
         mode: 'sandbox_patch',
         boundary: { sandbox },
         maxTurns: 3,
-      },
+      }),
     }, ctx);
 
     expect(result.success).toBe(true);
@@ -568,10 +588,10 @@ describe('controlled action handlers', () => {
     delete process.env.ANTHROPIC_AUTH_TOKEN;
     const result = await actionHandlers.agent_execute({
       type: 'agent_execute',
-      params: {
+      params: directAgentParams({
         provider: 'claude_agent_sdk',
         objective: 'Try Claude without credentials',
-      },
+      }),
     }, makeCtx());
 
     expect(result.success).toBe(false);
