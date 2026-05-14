@@ -426,5 +426,7 @@ describe('ConversationalIntelligencePipeline', () => {
     expect(semanticCalls[0].map((m) => m.role))
       .toEqual(['system', 'user', 'assistant', 'user', 'assistant', 'user']);
     expect(semanticCalls[0].at(-1).content).toContain('Mechanical Verification');
+    expect(semanticCalls[0].at(-1).content).toContain('boundary_risk');
+    expect(semanticCalls[0].at(-1).content).toContain('provider-level isolation');
   });
 });

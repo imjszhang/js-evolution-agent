@@ -225,6 +225,63 @@ function sandboxConfigured(action) {
   return Boolean(getField(action, 'cwd') || boundary.cwd || boundary.sandbox || boundary.worktree);
 }
 
+function sandboxBacking(action) {
+  const boundary = asObject(getField(action, 'boundary'));
+  const backing = [];
+  if (getField(action, 'cwd') || boundary.cwd) backing.push('cwd');
+  if (boundary.worktree) backing.push('worktree');
+  if (boundary.sandbox) backing.push('sandbox');
+  if (boundary.container) backing.push('container');
+  if (boundary.acl) backing.push('acl');
+  if (boundary.provider_enforcement || boundary.provider_enforced) backing.push('provider');
+  return backing.length ? backing : ['none'];
+}
+
+function boundaryRelevantPaths(action, result = {}) {
+  return [
+    ...asArray(getField(action, 'target')),
+    ...asArray(getField(action, 'targets')),
+    ...asArray(getField(action, 'initial_targets')),
+    ...asArray(result.created_files),
+    ...asArray(result.modified_files),
+  ]
+    .filter((value) => typeof value === 'string' && value.trim())
+    .slice(0, 20);
+}
+
+function hasSensitivePathSignal(paths) {
+  return paths.some((path) => {
+    const text = path.toLowerCase();
+    return text.includes('.env')
+      || text.includes('credential')
+      || text.includes('secret')
+      || text.includes('token')
+      || text.endsWith('.pem')
+      || text.endsWith('.key');
+  });
+}
+
+function summarizeBoundaryRisk(action, result = {}) {
+  const paths = boundaryRelevantPaths(action, result);
+  const backing = sandboxBacking(action);
+  const hasBacking = backing.some((item) => item !== 'none');
+  const writesObserved = paths.length > 0 || listCount(result.writes) > 0;
+  const sensitivePathSignal = hasSensitivePathSignal(paths);
+  const approvalGranted = explicitApproval(action);
+
+  return {
+    boundary_contract: getField(action, 'boundary') == null ? 'missing' : 'present',
+    boundary_model: hasBacking ? 'backed_by_execution_context' : 'soft_contract_only',
+    sandbox_backing: backing,
+    approval_granted: approvalGranted,
+    requires_approval: !!result.requires_approval,
+    writes_observed: writesObserved,
+    declared_paths: paths,
+    sensitive_path_signal: sensitivePathSignal,
+    review_recommended: sensitivePathSignal || (writesObserved && !approvalGranted && !hasBacking),
+  };
+}
+
 function coreApplyPolicy() {
   const value = String(process.env.JEA_CORE_APPLY_POLICY ?? 'review').trim().toLowerCase();
   return ['disabled', 'review', 'auto'].includes(value) ? value : 'review';
@@ -570,12 +627,17 @@ export const actionHandlers = {
     const preflightProbeResult = runReadOnlyProbe(action, ctx);
     if (probeHasHostBoundaryBlock(preflightProbeResult)) {
       return persistLocalProbeResult(store, action, ctx, preflightProbeResult, {
-        message: `Probe blocked by host read boundary before agent execution: ${preflightProbeResult.summary}`,
+        message: `Probe blocked by host preflight before agent execution: ${preflightProbeResult.summary}`,
         verification_hints: [
-          'host read boundary preflight prevented agent access to blocked target(s)',
+          'host preflight blocked the local probe path; this does not prove provider-level agent access is blocked',
           'remove sensitive/off-limits targets or provide a safe in-namespace target before using agentic investigation',
         ],
         host_boundary_preflight: true,
+        boundary_risk: {
+          ...summarizeBoundaryRisk(action),
+          preflight_result: 'blocked_local_probe',
+          provider_isolation_proven: false,
+        },
       });
     }
 
@@ -646,6 +708,7 @@ export const actionHandlers = {
       agent,
       error: agentResult.error,
     };
+    result.boundary_risk = summarizeBoundaryRisk(action, result);
 
     store.recordEvolutionEvent({
       type: 'agent_execute',
@@ -656,6 +719,7 @@ export const actionHandlers = {
       mode: getField(action, 'mode') ?? 'propose',
       requires_approval: result.requires_approval,
       summary: result.message,
+      boundary_risk: result.boundary_risk,
     });
     store.recordActionReceipt(action, result, ctx);
     return result;

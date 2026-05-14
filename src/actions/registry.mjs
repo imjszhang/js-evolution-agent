@@ -27,8 +27,8 @@ actionRegistry.register(new ActionTypeSpec({
 
 actionRegistry.register(new ActionTypeSpec({
   name: 'run_probe',
-  description: 'Run a sandboxed read-only probe or investigation and persist structured evidence.',
-  promptHint: 'Run an agent-executed read-only investigation (prefer params: objective, acceptance, boundary, resource intent, optional targets/initial_targets). The Phase 2 agent returns evidence and optional writes.probe_results. Boundary text is an operating contract, not a filesystem sandbox. Do not include secret file contents in evidence; report sensitive targets as accessible/blocked plus redacted metadata only. Legacy host-controlled probe fallback is disabled by default and requires explicit allow_legacy_fallback or diagnostic_fallback. Avoid hard-coding data/... paths unless the resource root is explicit.',
+  description: 'Run a bounded read-only probe or investigation and persist structured evidence.',
+  promptHint: 'Run an agent-executed read-only investigation (prefer params: objective, acceptance, boundary, resource intent, optional targets/initial_targets). The Phase 2 agent returns evidence and optional writes.probe_results. Boundary text is an operating contract, not a filesystem sandbox; host preflight may block local fallback probes but does not prove provider-level isolation. Do not include secret file contents in evidence; report sensitive targets as accessible/blocked plus redacted metadata only. Legacy host-controlled probe fallback is disabled by default and requires explicit allow_legacy_fallback or diagnostic_fallback. Avoid hard-coding data/... paths unless the resource root is explicit.',
   defaultRisk: 'low',
   defaultPriority: 'medium',
   autoExecutable: true,

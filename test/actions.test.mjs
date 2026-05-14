@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -147,6 +147,14 @@ afterEach(() => {
 });
 
 describe('controlled action handlers', () => {
+  it('describes run_probe boundaries as contracts, not provider sandboxes', () => {
+    const source = readFileSync(new URL('../src/actions/registry.mjs', import.meta.url), 'utf-8');
+
+    expect(source).toContain('bounded read-only probe');
+    expect(source).not.toContain('sandboxed read-only probe');
+    expect(source).toContain('does not prove provider-level isolation');
+  });
+
   it('records observations through the intelligence store', async () => {
     const ctx = makeAgenticCtx();
     const result = await actionHandlers.record_observation({
@@ -489,10 +497,39 @@ describe('controlled action handlers', () => {
     expect(result.success).toBe(true);
     expect(result.provider).toBe('llm_only');
     expect(result.agent.outputs.recommendation).toBe('inspect queue receipts');
+    expect(result.boundary_risk).toMatchObject({
+      boundary_contract: 'present',
+      boundary_model: 'soft_contract_only',
+      sandbox_backing: ['none'],
+    });
     expect(verification.status).toBe('improved');
     expect(ctx.host.intelligenceStore.readActionReceipts({ limit: 5 })[0].action_type)
       .toBe('agent_execute');
   });
+
+  it('records boundary risk for sensitive agent execution paths', async () => {
+    const ctx = makeAgenticCtx({
+      status: 'completed',
+      summary: 'Touched a sensitive path in the receipt metadata.',
+      modified_files: ['.env'],
+    });
+
+    const result = await actionHandlers.agent_execute({
+      type: 'agent_execute',
+      params: directAgentParams({
+        objective: 'Exercise boundary risk summary',
+      }),
+    }, ctx);
+    const event = ctx.host.intelligenceStore.readEvolutionEvents({ limit: 1 })[0];
+
+    expect(result.boundary_risk).toMatchObject({
+      sandbox_backing: ['none'],
+      sensitive_path_signal: true,
+      review_recommended: true,
+    });
+    expect(event.boundary_risk.sensitive_path_signal).toBe(true);
+  });
+
 
   it('requires explicit escape-hatch boundaries for direct agent execution', async () => {
     await expect(actionHandlers.agent_execute({
@@ -972,6 +1009,12 @@ describe('controlled action handlers', () => {
     expect(result.success).toBe(true);
     expect(result.status).toBe('blocked');
     expect(result.host_boundary_preflight).toBe(true);
+    expect(result.message).toContain('host preflight');
+    expect(result.boundary_risk).toMatchObject({
+      preflight_result: 'blocked_local_probe',
+      provider_isolation_proven: false,
+      sensitive_path_signal: true,
+    });
     expect(ctx.ai.agentCalls).toHaveLength(0);
     expect(ctx.host.intelligenceStore.readProbeResults({ limit: 5 })[0].reason)
       .toMatch(/sensitive/);

@@ -18,9 +18,9 @@ const CATALOG = {
           {
             id: 'safe-runtime',
             name: '安全运行时',
-            intent: '将宿主数据写入限制在 js-evolution-agent 主体命名空间内，并明确 agent 读路径隔离需要单独工具层能力。',
-            good_signal: '数据写入命令仅作用于当前主体的运行时数据命名空间，敏感读取只记录脱敏元数据。',
-            bad_signal: '任何命令试图修改引擎包、文档快照或密钥，或将密钥明文写入持久化证据。',
+            intent: '在当前 provider 不提供硬读写隔离的前提下，用 agent 行为协议、审批、审计、脱敏与 death boundary 降低运行时边界风险，并把硬隔离保留为未来外部沙箱能力。',
+            good_signal: 'agent 默认只读写当前主体相关上下文和运行时数据；越界、敏感或核心层动作先审批并留下审计回执；敏感读取只记录脱敏元数据。',
+            bad_signal: 'agent 未经审批读取或写入无关/敏感/核心路径，修改引擎包、文档快照或密钥，或将密钥明文写入持久化证据。',
             children: [],
           },
         ],
@@ -67,6 +67,13 @@ Generated: {generatedAt}
 - 创建提交、推送分支或打开拉取请求。
 - 运行破坏性命令、大规模重写或项目树外写入。
 - 执行非记录性质的 \`core\` 层动作。
+
+## Runtime Boundary Model
+
+- 当前 provider 下，读/写路径边界是 agent 行为协议与宿主预检约束，不是文件系统级硬隔离。
+- agent 不应主动读取密钥、凭据、无关路径或 \`archives\` 内容；若因探针需要触达敏感目标，只能记录可访问性与脱敏元数据。
+- agent 不应主动写入当前主体运行时数据命名空间之外的路径；任何越界写入、核心层修改或破坏性操作都必须先获得人类审批并留下审计回执。
+- \`boundary\` 与 \`death_boundary\` 是操作契约；只有在 cwd、worktree、容器、ACL 或 provider enforcement 支撑时，才能声明为硬安全边界。
 
 ## Probe Requirements
 
@@ -125,9 +132,9 @@ Template: {template}
           {
             id: 'safe-runtime',
             name: 'Safe Runtime',
-            intent: 'Keep host data writes bounded to the active js-evolution-agent subject namespace, and treat agent read isolation as a separate provider/tool capability.',
-            good_signal: 'Data write commands only touch the active subject runtime data namespace, and sensitive reads persist redacted metadata only.',
-            bad_signal: 'Any command attempts to modify engine packages, docs snapshots, or secrets, or persists plaintext secrets as evidence.',
+            intent: 'Reduce runtime boundary risk through agent conduct rules, approval, audit, redaction, and death boundaries while the current provider lacks hard read/write isolation; keep hard isolation as a future external sandbox capability.',
+            good_signal: 'The agent reads and writes only relevant subject context and runtime data by default; out-of-bounds, sensitive, or core-layer actions are approved and audited first; sensitive reads persist redacted metadata only.',
+            bad_signal: 'The agent reads or writes unrelated, sensitive, or core paths without approval; modifies engine packages, docs snapshots, or secrets; or persists plaintext secrets as evidence.',
             children: [],
           },
         ],
@@ -174,6 +181,13 @@ Generated: {generatedAt}
 - Creating commits, pushing branches, or opening pull requests.
 - Running destructive commands, broad rewrites, or writing outside the project tree.
 - Executing non-record \`core\` layer actions.
+
+## Runtime Boundary Model
+
+- In the current provider, read/write path boundaries are agent conduct rules and host preflight constraints, not filesystem-level hard isolation.
+- The agent should not intentionally read secrets, credentials, unrelated paths, or \`archives\` content; probes that touch sensitive targets may record accessibility and redacted metadata only.
+- The agent should not intentionally write outside the active subject runtime data namespace; out-of-bounds writes, core changes, or destructive operations require human approval and audit receipts first.
+- \`boundary\` and \`death_boundary\` are operating contracts; they are hard security boundaries only when backed by cwd, worktree, container, ACL, or provider enforcement.
 
 ## Probe Requirements
 

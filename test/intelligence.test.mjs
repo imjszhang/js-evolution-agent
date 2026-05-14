@@ -348,6 +348,24 @@ describe('goal assessment', () => {
     store.ingestObservation({ id: 'obs-assess', source: 'test', subject: 'goal', content: 'assessment recorded' });
     store.recordRetrospective({ id: 'retro-assess', outcome: 'ok', summary: 'assessment recorded' });
     store.recordGoalEvent({ id: 'goal-event-old', type: 'updated', goal_id: 'bootstrap', reason: 'previous update' });
+    const verifyReportPath = join(tempDir, 'verify-report.json');
+    writeFileSync(verifyReportPath, JSON.stringify({
+      timestamp: '2026-05-14T13:00:00+08:00',
+      verified: [{
+        action: { type: 'agent_execute', description: 'Boundary risk probe' },
+        status: 'partial',
+        value: {
+          success: true,
+          status: 'completed',
+          boundary_risk: {
+            boundary_model: 'soft_contract_only',
+            sandbox_backing: ['none'],
+            sensitive_path_signal: true,
+          },
+        },
+      }],
+      pending: [],
+    }));
 
     const context = buildGoalAssessmentContext({
       activeGoals,
@@ -359,6 +377,7 @@ describe('goal assessment', () => {
         source: 'ai',
       },
       reportMarkdown: '# Report\n\nGoal evidence.',
+      verificationReportPath: verifyReportPath,
       store,
     });
     const prompt = buildGoalAssessmentPrompt({ context, agentContextDocs: [{ id: 'subject:test', text: '中文主体策略。' }] });
@@ -367,11 +386,13 @@ describe('goal assessment', () => {
     expect(context.report.cycle_id).toBe('cycle-assess');
     expect(context.evidence.observations.map((o) => o.id)).toContain('obs-assess');
     expect(context.recent_goal_events.map((e) => e.id)).toContain('goal-event-old');
+    expect(context.verification.verified[0].boundary_risk.boundary_model).toBe('soft_contract_only');
     expect(context.machine_assessment[0].status).toBe('progressing');
     expect(prompt).toContain('权威文献 agentContextDocs');
     expect(prompt).toContain('Agent context document 1');
     expect(prompt).toContain('中文主体策略');
     expect(prompt).toContain('必须以 agentContextDocs 为最高层级约束');
+    expect(prompt).toContain('不得把软约束误判为硬隔离');
     expect(prompt).toContain('只返回一个 JSON 对象');
     expect(prompt).toContain('cycle-assess');
   });

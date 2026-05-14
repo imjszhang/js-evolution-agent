@@ -93,6 +93,7 @@ function summarizeVerificationItem(item) {
     fallback_used: value?.fallback_used ?? null,
     evidence_count: value?.evidence_count ?? null,
     writes_count: value?.writes_count ?? null,
+    boundary_risk: value?.boundary_risk ?? null,
   };
 }
 
@@ -115,6 +116,7 @@ function summarizeSemanticVerification(semantic) {
         evidence_count: item.evidence_count ?? null,
         writes_count: item.writes_count ?? null,
         fallback_used: item.fallback_used ?? null,
+        boundary_risk: item.boundary_risk ?? null,
       }))
       : [],
   };
@@ -227,6 +229,7 @@ export function buildGoalAssessmentPrompt({
 - 必须以 agentContextDocs 为最高层级约束来判断目标是否合理、可验证、是否偏离主体边界。
 - 没有来自情报侧的可用证据（观察、回顾、报告、事件等）支撑具体结论时：不得轻易建议 replace/split；若仅能依据文献得出「尚需等待证据」，则用 insufficient_evidence，且 confidence 为 low。
 - 能收敛，不扩展；目标越可验证越好；proposed_goal 必须仍符合文献与主体策略。
+- 评估 safe-runtime 时必须区分「agent 行为合规」「宿主预检阻断」和「provider/文件系统硬隔离」；verify_report 中的 boundary_risk 可作为边界风险证据，但不得把软约束误判为硬隔离。
 - evidence_refs：须引用支持你结论的情报条目（intel_report / verify_report / observation / probe_result / retrospective / goal_event / evolution_event）。若某项判断主要依据某一权威文献中的原则，也请用 type 为 agent_context、id 为该文档 id、ref 为该文档 id 前加前缀 agent_context: 一并列出，使理由可追溯。
 - 没有可用的 evidence_refs（含 agent_context）时 confidence 必须为 low。
 - reason 必须用中文简述：结合了哪些文献要点 + 哪些情报事实。
@@ -262,6 +265,7 @@ Hard constraints:
 - You MUST ground your judgment in agentContextDocs; intelligence is evidence about the world, not a substitute for doctrinal boundaries.
 - Do not recommend broad replace/split without concrete intelligence support; prefer insufficient_evidence with low confidence when facts are thin.
 - Prefer narrowing over expanding; proposed_goal must remain compliant with doctrine and subject policy.
+- When assessing safe-runtime, distinguish agent conduct compliance, host preflight blocking, and provider/filesystem hard isolation. boundary_risk from verify_report is evidence about boundary posture, but soft constraints must not be treated as hard isolation.
 - evidence_refs MUST cite intelligence items you rely on (intel_report / verify_report / observation / probe_result / retrospective / goal_event / evolution_event). When a key norm comes from authority text, also include agent_context with id = doc id and ref = the string "agent_context:" plus the same doc id.
 - If evidence_refs would be empty, confidence MUST be low.
 - reason MUST briefly name which authority points plus which factual evidence you used (English).

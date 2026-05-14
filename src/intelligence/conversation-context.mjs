@@ -115,6 +115,7 @@ function buildVerificationPrompt({ execResult, mechanicalVerification }) {
     '',
     'Judge only whether each executed action result provides evidence for its original objective and whether it advances the stated goal.',
     'For agent-first Phase 2 results, inspect result.evidence, result.writes, result.provider, result.requires_approval, result.fallback_used, and result.agentic_execution. A successful handler receipt with empty evidence is not enough to mark an investigation improved.',
+    'For boundary-sensitive actions, inspect result.boundary_risk and distinguish agent conduct, host preflight, and provider-level isolation. Do not infer hard read/write isolation unless the receipt shows cwd, worktree, container, ACL, or provider enforcement backing.',
     '',
     'Return exactly one JSON object with this shape:',
     JSON.stringify({
@@ -130,6 +131,14 @@ function buildVerificationPrompt({ execResult, mechanicalVerification }) {
           writes_count: 0,
           reasoning_summary: 'why this status follows from the receipt and original intent',
           goal_impact: 'how this affects the served goal',
+          boundary_risk: {
+            boundary_model: 'soft_contract_only | backed_by_execution_context | not_applicable',
+            sandbox_backing: ['none'],
+            approval_state: 'approved | requires_approval | not_required | unknown',
+            sensitive_path_signal: false,
+            review_recommended: false,
+            summary: 'how boundary risk affected verification',
+          },
           issues: [],
           next_verification_hints: [],
         },
