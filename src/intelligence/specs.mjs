@@ -63,7 +63,7 @@ export const INTELLIGENCE_SPECS = [
     description: 'Fixed-capacity rolling summary of the subject state for report generation.',
     storageType: 'single_json',
     subdir: 'memory',
-    filename: 'standing-memory.json',
+    filename: 'standing_memory.json',
   }),
 ];
 
