@@ -64,6 +64,7 @@ Output constraints:
 - Cyber-Taoist terms may be used as written in the documents, but state claims with facts and traceable ids instead of metaphor.
 - Do not invent ids, counts, or events not present in the machine context.
 - Cover current cycle facts, long-term trends, evidence gaps, risks, next-cycle recommendations, and how standing_memory should be updated.
+- Include an explicit Cyber-Taoist analysis section. It must interpret the evidence through the authoritative documents, including the current evolutionary phase, law/transaction/niche signals, and fractal keep/break/probe boundaries when the provided evidence supports them.
 - Prefer traceable ids where relevant, such as observation, probe_result, goal_event, action_receipt, intel_report, or evolution_event.
 - Use concise, literal section headings such as "Cycle conclusion" or "Evidence gaps"; avoid ornate, mystical, or literary headings.
 
@@ -111,6 +112,7 @@ ${clip(JSON.stringify(reportContext || {}, null, 2), 500000)}
 - Cyber-Taoist 专有名词可照文献原样引用，但必须用事实与可追溯 id 陈述，勿用玄学修辞替代证据。
 - 不要捏造机器上下文中没有的 id、计数或事件。
 - 覆盖本轮观察、长期趋势、证据不足、风险、下一轮建议，以及 standing_memory 应如何更新的要点。
+- 必须包含明确的 Cyber-Taoist 分析章节。该章节需依据权威文献解释当前证据，至少覆盖当前进化阶段、法则/交易/生态位信号，以及在证据支持时的分形守/破/探针边界。
 - 尽量引用可追溯 id（如 observation、probe_result、goal_event、action_receipt、intel_report、evolution_event）。
 - 标题与小节标题用简明主题短语（例如「本轮结论」「证据缺口」），禁止使用文言对联式或隐喻式标题。
 
@@ -201,6 +203,12 @@ Respond with exactly this JSON shape:
 {
   "analysis": {
     "key_patterns": ["..."],
+    "cyber_taoist_analysis": {
+      "evolutionary_phase": "...",
+      "law_transaction_niche_signals": ["..."],
+      "fractal_keep_break_probe_boundaries": ["..."],
+      "standing_memory_delta": "..."
+    },
     "root_causes": {
       "high_performers_why": "...",
       "low_performers_why": "...",

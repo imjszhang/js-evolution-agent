@@ -11,6 +11,10 @@ import { chatMessages } from '../src/ai/messages.mjs';
 import { createIntelligenceStore } from '../src/intelligence/store.mjs';
 import { ConversationalIntelligencePipeline } from '../src/intelligence/conversational-intel-pipeline.mjs';
 import { verifyWithRestoredConversation } from '../src/intelligence/conversation-context.mjs';
+import {
+  buildDecideUserPrompt,
+  buildReportUserPrompt,
+} from '../src/intelligence/conversation-prompts.mjs';
 
 let tempDir = null;
 
@@ -88,6 +92,20 @@ describe('chatMessages compatibility', () => {
     expect(calls[0]).toContain('system prompt');
     expect(calls[0]).toContain('### USER');
     expect(calls[0]).toContain('user prompt');
+  });
+});
+
+describe('conversation prompt constraints', () => {
+  it('requires Cyber-Taoist analysis in report and decision prompts', () => {
+    const zhReportPrompt = buildReportUserPrompt({ cycleId: 'cycle-test', language: 'zh' });
+    const enReportPrompt = buildReportUserPrompt({ cycleId: 'cycle-test', language: 'en' });
+    const decidePrompt = buildDecideUserPrompt();
+
+    expect(zhReportPrompt).toContain('必须包含明确的 Cyber-Taoist 分析章节');
+    expect(zhReportPrompt).toContain('法则/交易/生态位');
+    expect(enReportPrompt).toContain('Include an explicit Cyber-Taoist analysis section');
+    expect(enReportPrompt).toContain('law/transaction/niche');
+    expect(decidePrompt).toContain('"cyber_taoist_analysis"');
   });
 });
 
