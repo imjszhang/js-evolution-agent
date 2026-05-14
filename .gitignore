@@ -52,6 +52,7 @@ backups/
 data/
 runtime/
 work_dir/
+.worktrees/
 
 # Local subject selection and subject policies
 policies/active-subject.json

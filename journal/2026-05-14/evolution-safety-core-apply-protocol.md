@@ -32,7 +32,7 @@
 
 - 敏感信息必须脱敏后才能进入长期记忆。
 - 核心审核请求必须能入库，不能因 agent 输出格式不完整而静默失败。
-- 核心变更必须可策略化执行，并留下 diff、测试和回滚证据。
+- 核心变更必须可策略化执行，并默认进入隔离 worktree，留下 diff、测试和回滚证据。
 
 ---
 
@@ -89,6 +89,7 @@
 | `request_core_review` | 只负责审核请求入库，不执行核心变更 | review 与 apply 分离，防止审核请求被执行门槛卡死 |
 | safe-runtime 目标口径 | 拆分写边界与读隔离 | 当前 provider 不提供真实读沙箱，不能伪造安全承诺 |
 | `core_apply` | 新增独立 action + 策略控制 | 让核心变更成为正式协议，而非借 `agent_execute` 隐式表达 |
+| 核心变更执行位置 | 自动 git worktree | 策略允许执行时默认隔离到 `.worktrees/`，不直接修改主工作区 |
 | 默认核心策略 | `JEA_CORE_APPLY_POLICY=review` | 保守默认；无批准或 sandbox 时不落地修改 |
 | 自动核心变更 | `auto` 策略允许，但强制审计证据 | 承认 agent 可变更核心，同时要求 diff/test/rollback |
 
@@ -108,6 +109,31 @@ flowchart TD
   verify --> receipt["Action Receipt And Feedback"]
 ```
 
+### 自动 Worktree 隔离
+
+在继续讨论后，又补充了一层执行隔离：`core_apply` 一旦被策略允许执行，不再默认使用主工作区，而是优先使用独立 git worktree。
+
+```mermaid
+flowchart TD
+  coreApply["core_apply"] --> policy{"Policy Allows Execution"}
+  policy -->|"no"| humanReview["Requires Human Review"]
+  policy -->|"yes"| boundary{"Boundary Has Worktree Or Sandbox"}
+  boundary -->|"yes"| existing["Use Provided CWD"]
+  boundary -->|"no"| createWorktree["Create Git Worktree"]
+  createWorktree --> inject["Inject boundary.worktree And cwd"]
+  existing --> runAgent["Run Agent In Isolated Checkout"]
+  inject --> runAgent
+  runAgent --> audit["Record Worktree Diff Tests Rollback"]
+```
+
+设计约束：
+
+- 默认 `review` 且无批准时仍不创建 worktree、不执行变更。
+- 如果 action 已显式提供 `boundary.worktree` / `boundary.sandbox` / `cwd`，尊重用户路径。
+- 如果策略允许执行且未提供隔离路径，则自动创建 `.worktrees/js-evolution-agent/<name>`。
+- 不自动合并回主工作区。
+- 不自动删除 worktree，保留现场供审计；receipt 中提供 cleanup hint。
+
 ---
 
 ## 4. 实现要点
@@ -120,7 +146,8 @@ js-evolution-agent/
 │   ├── actions/
 │   │   ├── agent-adapter.mjs
 │   │   ├── handlers.mjs
-│   │   └── registry.mjs
+│   │   ├── registry.mjs
+│   │   └── worktree-manager.mjs
 │   ├── cli/
 │   │   └── utils/i18n.mjs
 │   └── intelligence/
@@ -144,6 +171,7 @@ js-evolution-agent/
 | `src/actions/handlers.mjs` | 修复 `request_core_review`，新增 `core_apply` 策略 handler 和严格 verifier |
 | `src/actions/agent-adapter.mjs` | 移除 provider 层 `core_apply` 硬审批，将策略上移到 handler |
 | `src/actions/registry.mjs` | 注册 `core_apply` action spec，并声明输出契约 |
+| `src/actions/worktree-manager.mjs` | 封装 git worktree 创建、命名、分支和 cleanup hint |
 | `src/cli/utils/i18n.mjs` | 更新 safe-runtime 默认目标文案，明确写边界与读隔离能力分离 |
 
 ### 修复一：统一脱敏
@@ -205,6 +233,29 @@ js-evolution-agent/
 
 缺少关键审计字段时，verifier 最多标记为 `partial`，不能标记为 `improved`。
 
+### 修复五：自动 Worktree 隔离
+
+新增 `src/actions/worktree-manager.mjs`，封装 `git worktree` 生命周期：
+
+- 使用 `git rev-parse --show-toplevel` 确认仓库根目录。
+- 默认 worktree 根路径为 `.worktrees/js-evolution-agent/`。
+- 分支名使用 `jea/core-apply/<name>`。
+- 创建命令为 `git worktree add -b <branch> <path> HEAD`。
+- 返回 `path`、`branch`、`auto_created`、`cleanup_hint`。
+
+`core_apply` handler 的执行逻辑也随之调整：
+
+| 场景 | 行为 |
+| ---- | ---- |
+| `disabled` | 不创建 worktree，不执行 |
+| 默认 `review` 且无批准 | 不创建 worktree，不执行 |
+| `review + approval_granted` | 若无显式 worktree，自动创建 |
+| `auto` | 若无显式 worktree，自动创建 |
+| 显式 `boundary.worktree/sandbox/cwd` | 直接使用用户提供路径 |
+| worktree 创建失败 | 阻塞，不回退到主工作区 |
+
+同时在 `.gitignore` 加入 `.worktrees/`，避免隔离工作区被主仓库误跟踪。
+
 ---
 
 ## 5. 验证与测试
@@ -220,6 +271,9 @@ js-evolution-agent/
 | `core_apply approval` | 有显式批准时允许执行 |
 | `core_apply auto partial` | 自动执行但缺审计证据时标记 `partial` |
 | `core_apply auto improved` | 完整 diff/test/rollback 证据时标记 `improved` |
+| `core_apply worktree auto` | 批准或 auto 策略下自动创建 worktree，并将 provider cwd 指向隔离路径 |
+| `core_apply explicit worktree` | 已提供 `boundary.worktree` 时不自动创建 |
+| `core_apply worktree failure` | worktree 创建失败时阻塞，不回退到主工作区 |
 
 验证命令：
 
@@ -232,8 +286,8 @@ npm test
 
 | 命令 | 结果 |
 | ---- | ---- |
-| `npm test -- test/actions.test.mjs` | 31 个测试通过 |
-| `npm test` | 4 个测试文件、109 个测试全部通过 |
+| `npm test -- test/actions.test.mjs` | 33 个测试通过 |
+| `npm test` | 4 个测试文件、111 个测试全部通过 |
 | `ReadLints` | 无 linter 错误 |
 | 代码区密钥模式扫描 | 仅命中脱敏正则本身，未发现新增明文密钥 |
 
@@ -252,13 +306,14 @@ npm test
 3. **写隔离探针**  
    当前只证明读隔离缺失。写隔离需要用临时哨兵文件设计低风险探针，不能直接尝试修改真实核心文件。
 
-4. **worktree/sandbox 执行核心变更**  
-   当前实现是协议层，不是 OS 级隔离。下一阶段可将 `core_apply` 默认落到 git worktree 或临时 sandbox。
+4. **worktree 结果合并策略**  
+   当前已能自动创建 worktree 并隔离执行，但不会自动合并回主工作区。后续需要设计“审查 diff → 接受/拒绝 → 合并/丢弃”的流程。
 
 ### 长期方向
 
 - 将 `core_apply` 与 retrospective 联动：核心变更成功或失败后自动写学习记录。
 - 将 death boundary 变成结构化字段，并在 verify 阶段强制检查。
+- 为自动 worktree 增加可配置清理策略，例如 `JEA_CORE_WORKTREE_CLEANUP=on_success|never`。
 - 为 provider 层增加真正的工具路径白名单，区分“prompt 边界”和“能力边界”。
 - 将目标评估中的 `safe-runtime` 拆成两个独立子目标：`write-boundary` 与 `read-boundary`。
 
@@ -273,7 +328,8 @@ npm test
 - 敏感信息默认脱敏；
 - 审核请求必须入库；
 - 核心变更可以发生，但必须通过显式策略；
+- 策略允许的核心变更默认进入隔离 worktree；
 - 任何核心变更都必须留下 diff、测试、回滚和死亡边界反馈。
 
-这使 `js-evolution-agent` 从“靠 prompt 自律的受控循环”向“可审计、可恢复、可进化的核心变更协议”前进了一步。
+这使 `js-evolution-agent` 从“靠 prompt 自律的受控循环”向“可审计、可恢复、可隔离执行的核心变更协议”前进了一步。
 

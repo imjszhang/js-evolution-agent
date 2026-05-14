@@ -8,7 +8,7 @@ const MODE_GUIDANCE = {
   propose: 'Produce a concrete proposal, investigation result, or decision-ready recommendation.',
   patch_proposal: 'Design a patch or change set, but treat file edits as proposals unless the boundary explicitly permits mutation.',
   sandbox_patch: 'Work as if changes belong in an isolated sandbox/worktree and report the expected diff and verification.',
-  core_apply: 'Treat this as core-layer work. Apply only because the host policy already allowed this run; return changed files, diff summary, tests, rollback plan, and death-boundary result.',
+  core_apply: 'Treat this as core-layer work. Apply only because the host policy already allowed this run. If boundary.worktree/cwd is provided, modify and test only inside that checkout. Return changed files, diff summary, tests, rollback plan, and death-boundary result.',
 };
 const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob'];
 const EDITING_TOOLS = ['Read', 'Edit', 'Write', 'Bash', 'Grep', 'Glob'];
@@ -98,6 +98,7 @@ function buildPrompt(action, ctx) {
     'Do not wait for step-by-step instructions; infer a useful approach from the context.',
     'Honor the boundary as the minimum operating contract, and surface any need for human approval.',
     'Boundary text is not a filesystem sandbox unless the provider or cwd/sandbox/worktree settings enforce it.',
+    'For core_apply, the provided cwd/boundary.worktree is the intended mutation boundary; do not modify the source checkout outside it.',
     'Never copy raw secrets into evidence, writes, summaries, or verification hints; report sensitive files as accessible or blocked with redacted metadata only.',
     'Return a single JSON object. If you cannot fully complete the task, still return useful progress and next actions.',
   ].join('\n');

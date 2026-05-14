@@ -99,6 +99,21 @@ function makeAgenticCtx(agentResponse = null) {
   };
 }
 
+function installFakeWorktree(ctx, path = join(ctx.projectRoot, '.worktrees', 'fake-core-apply')) {
+  const createCoreApplyWorktree = vi.fn(() => ({
+    path,
+    branch: 'jea/core-apply/fake-core-apply',
+    auto_created: true,
+    created: true,
+    cleanup_hint: [
+      `git worktree remove "${path}"`,
+      'git branch -D "jea/core-apply/fake-core-apply"',
+    ],
+  }));
+  ctx.host.createCoreApplyWorktree = createCoreApplyWorktree;
+  return createCoreApplyWorktree;
+}
+
 afterEach(() => {
   if (tempDir) rmSync(tempDir, { recursive: true, force: true });
   tempDir = null;
@@ -327,6 +342,7 @@ describe('controlled action handlers', () => {
       },
       confidence: 0.9,
     });
+    const createCoreApplyWorktree = installFakeWorktree(ctx);
 
     const action = coreApplyAction({ approval_granted: true });
     const result = await actionHandlers.core_apply(action, ctx);
@@ -334,8 +350,11 @@ describe('controlled action handlers', () => {
 
     expect(result.success).toBe(true);
     expect(result.requires_approval).toBe(false);
+    expect(createCoreApplyWorktree).toHaveBeenCalledOnce();
     expect(ctx.ai.agentCalls[0][1].content).toContain('mode: core_apply');
+    expect(ctx.ai.agentCalls[0][1].content).toContain('.worktrees');
     expect(result.core_apply_audit.complete).toBe(true);
+    expect(result.core_apply_audit.worktree.auto_created).toBe(true);
     expect(verification.status).toBe('improved');
   });
 
@@ -347,6 +366,7 @@ describe('controlled action handlers', () => {
       modified_files: ['src/actions/handlers.mjs'],
       evidence: { diff_summary: 'Changed a handler.' },
     });
+    installFakeWorktree(ctx);
 
     const action = coreApplyAction();
     const result = await actionHandlers.core_apply(action, ctx);
@@ -355,6 +375,7 @@ describe('controlled action handlers', () => {
     expect(result.success).toBe(true);
     expect(result.requires_approval).toBe(false);
     expect(result.core_apply_audit.complete).toBe(false);
+    expect(result.core_apply_audit.worktree.path).toContain('.worktrees');
     expect(verification.status).toBe('partial');
   });
 
@@ -371,6 +392,7 @@ describe('controlled action handlers', () => {
         death_boundary_result: 'No core death boundary breach.',
       },
     });
+    installFakeWorktree(ctx);
 
     const action = coreApplyAction();
     const result = await actionHandlers.core_apply(action, ctx);
@@ -378,7 +400,55 @@ describe('controlled action handlers', () => {
 
     expect(result.success).toBe(true);
     expect(result.core_apply_audit.complete).toBe(true);
+    expect(result.core_apply_audit.worktree.cleanup_hint[0]).toContain('git worktree remove');
     expect(verification.status).toBe('improved');
+  });
+
+  it('uses an explicit worktree without auto-creating one', async () => {
+    const explicitWorktree = join(tempDir ?? tmpdir(), 'explicit-worktree');
+    const ctx = makeAgenticCtx({
+      status: 'completed',
+      summary: 'Changed core in explicit worktree.',
+      modified_files: ['src/actions/handlers.mjs'],
+      test_results: [{ command: 'npm test', status: 'passed' }],
+      evidence: {
+        diff_summary: 'Used explicit worktree.',
+        rollback_plan: 'Remove explicit worktree changes.',
+        death_boundary_result: 'No boundary breach.',
+      },
+    });
+    const createCoreApplyWorktree = installFakeWorktree(ctx);
+
+    const action = coreApplyAction({
+      approval_granted: true,
+      boundary: { worktree: explicitWorktree, death_boundary: 'test-only mutation boundary' },
+    });
+    const result = await actionHandlers.core_apply(action, ctx);
+
+    expect(createCoreApplyWorktree).not.toHaveBeenCalled();
+    expect(result.core_apply_audit.worktree).toMatchObject({
+      path: explicitWorktree,
+      auto_created: false,
+    });
+  });
+
+  it('blocks core_apply when automatic worktree creation fails', async () => {
+    process.env.JEA_CORE_APPLY_POLICY = 'auto';
+    const ctx = makeAgenticCtx();
+    ctx.host.createCoreApplyWorktree = vi.fn(() => {
+      throw new Error('git worktree add failed');
+    });
+
+    const action = coreApplyAction();
+    const result = await actionHandlers.core_apply(action, ctx);
+    const verification = actionVerifiers.core_apply.verify(action, result);
+
+    expect(result.success).toBe(false);
+    expect(result.status).toBe('blocked');
+    expect(result.requires_approval).toBe(true);
+    expect(ctx.ai.agentCalls).toHaveLength(0);
+    expect(result.evidence.worktree_error).toContain('git worktree add failed');
+    expect(verification.status).toBe('partial');
   });
 
   it('delegates open-ended work to the configured AI agent and records a receipt', async () => {

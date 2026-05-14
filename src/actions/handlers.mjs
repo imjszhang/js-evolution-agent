@@ -1,5 +1,6 @@
 import { runReadOnlyProbe } from './probe-runner.mjs';
 import { runAgenticAction } from './agent-adapter.mjs';
+import { createCoreApplyWorktree } from './worktree-manager.mjs';
 
 function requireParams(action, fields) {
   const missing = fields.filter((field) => action?.params?.[field] == null && action?.[field] == null);
@@ -190,7 +191,7 @@ function coreApplyPolicy() {
   return ['disabled', 'review', 'auto'].includes(value) ? value : 'review';
 }
 
-function coreApplyAudit(result = {}) {
+function coreApplyAudit(result = {}, workspace = null) {
   const evidence = asObject(result.evidence);
   const outputs = asObject(result.outputs);
   const writes = asObject(result.writes);
@@ -216,8 +217,65 @@ function coreApplyAudit(result = {}) {
     test_results: testResults,
     rollback_plan: rollbackPlan,
     death_boundary_result: deathBoundaryResult,
-    complete: changedFiles.length > 0 && Boolean(diffSummary) && testResults.length > 0 && Boolean(rollbackPlan),
+    worktree: workspace ?? result.core_apply_workspace ?? evidence.worktree ?? outputs.worktree ?? null,
+    complete: changedFiles.length > 0
+      && Boolean(diffSummary)
+      && testResults.length > 0
+      && Boolean(rollbackPlan)
+      && Boolean(deathBoundaryResult),
   };
+}
+
+function explicitWorkspace(action) {
+  const boundary = asObject(getField(action, 'boundary'));
+  const path = getField(action, 'cwd') ?? boundary.cwd ?? boundary.sandbox ?? boundary.worktree ?? null;
+  if (!path) return null;
+  return {
+    path,
+    branch: boundary.branch ?? null,
+    auto_created: false,
+    created: false,
+    cleanup_hint: [],
+  };
+}
+
+function actionWithWorkspace(action, workspace) {
+  if (!workspace?.path) return action;
+  const params = asObject(action?.params);
+  const boundary = asObject(params.boundary ?? action?.boundary);
+  return {
+    ...action,
+    params: {
+      ...params,
+      cwd: workspace.path,
+      boundary: {
+        ...boundary,
+        worktree: workspace.path,
+      },
+    },
+  };
+}
+
+function prepareCoreApplyWorkspace(action, ctx) {
+  const provided = explicitWorkspace(action);
+  if (provided) return { ok: true, action, workspace: provided };
+
+  const create = ctx?.host?.createCoreApplyWorktree ?? createCoreApplyWorktree;
+  try {
+    const workspace = create({
+      repoRoot: ctx?.host?.sourceRoot ?? ctx?.projectRoot ?? process.cwd(),
+      cycleId: ctx?.cycleId,
+      actionId: ctx?.actionId ?? action?.id ?? getField(action, 'id'),
+      target: getField(action, 'target') ?? action?.description,
+    });
+    return { ok: true, action: actionWithWorkspace(action, workspace), workspace };
+  } catch (e) {
+    return {
+      ok: false,
+      error: e?.message || String(e),
+      workspace: null,
+    };
+  }
 }
 
 function missingAgentArtifactsResult(action, agenticExecution, artifactKind) {
@@ -669,10 +727,33 @@ export const actionHandlers = {
       return result;
     }
 
-    const agenticExecution = await runPhase2Agent(action, ctx, {
+    const workspacePrep = prepareCoreApplyWorkspace(action, ctx);
+    if (!workspacePrep.ok) {
+      const result = {
+        success: false,
+        status: 'blocked',
+        message: `core_apply could not prepare an isolated worktree: ${workspacePrep.error}`,
+        requires_approval: true,
+        provider: null,
+        policy,
+        evidence: {
+          worktree_error: workspacePrep.error,
+          target: getField(action, 'target') ?? action.description ?? 'unspecified',
+        },
+        writes: {},
+        verification_hints: ['fix git worktree creation or provide boundary.worktree/boundary.sandbox/cwd explicitly'],
+        fallback_used: false,
+      };
+      store.recordActionReceipt(action, result, ctx);
+      return result;
+    }
+
+    const executionAction = workspacePrep.action;
+    const agenticExecution = await runPhase2Agent(executionAction, ctx, {
       mode: 'core_apply',
       objective: [
         'Execute this approved core-layer change as an auditable core_apply action.',
+        'Modify and test only inside the provided boundary.worktree/cwd; do not apply changes to the source checkout directly.',
         'Return changed_files, diff_summary, tests_run or test_results, rollback_plan, and death_boundary_result.',
         'If you cannot safely apply the change, return requires_human_review with a patch proposal instead of mutating files.',
       ].join('\n'),
@@ -684,22 +765,24 @@ export const actionHandlers = {
     if (!agenticExecution.success || agenticExecution.requires_approval) {
       const result = agentBlockedResult(agenticExecution);
       result.policy = policy;
+      result.core_apply_workspace = workspacePrep.workspace;
       store.recordActionReceipt(action, result, ctx);
       return result;
     }
 
-    const audit = coreApplyAudit(agenticExecution);
+    const audit = coreApplyAudit(agenticExecution, workspacePrep.workspace);
     const result = agentActionResult(action, agenticExecution, {
       success: true,
       status: agenticExecution.status ?? 'completed',
       message: agenticExecution.message || 'core_apply completed',
       policy,
+      core_apply_workspace: workspacePrep.workspace,
       core_apply_audit: audit,
       verification_hints: audit.complete
         ? agenticExecution.verification_hints
         : [
           ...agenticExecution.verification_hints,
-          'core_apply receipt is missing changed_files, diff_summary, test_results/tests_run, or rollback_plan',
+          'core_apply receipt is missing changed_files, diff_summary, test_results/tests_run, rollback_plan, or death_boundary_result',
         ],
     });
     store.recordActionReceipt(action, result, ctx);
