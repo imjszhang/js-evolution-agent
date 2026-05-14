@@ -48,6 +48,9 @@ Commands:
   goals assess [--cycle ID]
                          Ask AI to assess goal calibration and record an assessment event
   audit queue            Check decision queue health
+  audit queue --archive  Preview archiving completed/expired queue items
+  audit queue --archive --yes
+                         Archive completed/expired queue items out of the hot queue
   llm ping               Test DeepSeek connectivity
   llm ping --mock        Test local mock AI path
   policy check           Verify active policy has Subject section
@@ -76,7 +79,9 @@ Examples:
   echo '{"content":"manual note"}' | jea intel ingest --source intel_observations
   jea intel inbox drain --json
   jea goals history
-  jea goals assess --cycle cycle-20260511-123237`;
+  jea goals assess --cycle cycle-20260511-123237
+  jea audit queue --archive
+  jea audit queue --archive --yes`;
 }
 
 export async function main(argv = process.argv.slice(2)) {

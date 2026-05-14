@@ -75,6 +75,15 @@ function toPreDecisionReportContext(reportContext) {
   };
 }
 
+function safeQueueSummary(queue) {
+  if (!queue || typeof queue.summarize !== 'function') return null;
+  try {
+    return queue.summarize();
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Host-side intel pipeline that makes two consecutive OpenAI-style message
  * calls: report first, then strict Analyze+Decide JSON using the full prior
@@ -129,6 +138,7 @@ export class ConversationalIntelligencePipeline {
       actions: [],
       issues_created: [],
       decisions_queued: [],
+      decisions_skipped: [],
       report: null,
       error: null,
     };
@@ -175,12 +185,15 @@ export class ConversationalIntelligencePipeline {
         success: true,
         actions: [],
         decisions_queued: [],
+        decisions_skipped: [],
       };
+      const queueSummary = safeQueueSummary(this.decisionQueue);
       const preparedReport = prepareIntelReport({
         intelResult: preliminaryIntelResult,
         runtime: this.runtime,
         store: this.host?.intelligenceStore,
         agentContextDocs: this.agentContextDocs,
+        queueSummary,
       });
       const reportPromptContext = toPreDecisionReportContext(preparedReport.reportContext);
 
@@ -315,12 +328,20 @@ export class ConversationalIntelligencePipeline {
           JSON.stringify({ cycle_id: cycleId, actions: result.actions }, null, 2),
           'utf-8',
         );
-        result.decisions_queued = this.decisionQueue.addDecisions({
-          cycleId,
-          actions: result.actions,
-          analysisContext,
-        });
-        this._log(`wrote draft + queued ${result.decisions_queued.length} decision(s) at ${draftDir}`);
+        const queued = this.decisionQueue.addDecisionsDetailed
+          ? this.decisionQueue.addDecisionsDetailed({
+            cycleId,
+            actions: result.actions,
+            analysisContext,
+          })
+          : { ids: this.decisionQueue.addDecisions({
+            cycleId,
+            actions: result.actions,
+            analysisContext,
+          }), skipped: [] };
+        result.decisions_queued = queued.ids;
+        result.decisions_skipped = queued.skipped;
+        this._log(`wrote draft + queued ${result.decisions_queued.length} decision(s), skipped ${result.decisions_skipped.length} at ${draftDir}`);
       }
 
       result.success = true;

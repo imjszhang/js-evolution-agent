@@ -11,7 +11,7 @@ import { parseArgv } from '../src/cli/utils/args.mjs';
 import { readJsonSafe, removeProjectDir, writeJsonFile } from '../src/cli/utils/files.mjs';
 import { extractMarkdownSection } from '../src/cli/commands/subject.mjs';
 import { findUnknownActions, readActiveDecisionQueue } from '../src/cli/commands/actions.mjs';
-import { auditQueue } from '../src/cli/commands/audit.mjs';
+import { archiveQueue, auditQueue } from '../src/cli/commands/audit.mjs';
 import { buildDefaultGoals, backupData, dataStatus, initData } from '../src/cli/commands/data.mjs';
 import {
   assessActiveGoals,
@@ -36,6 +36,7 @@ import {
   inboxPut,
 } from '../src/cli/commands/intel-inbox.mjs';
 import { buildIntelReport } from '../src/intelligence/report-builder.mjs';
+import { LocalDecisionQueue } from '../src/intelligence/decision-queue.mjs';
 import { createIntelligenceStore } from '../src/intelligence/store.mjs';
 import { checkPolicy } from '../src/cli/commands/policy.mjs';
 import {
@@ -181,6 +182,58 @@ describe('queue audit', () => {
     expect(result.counts.pending).toBe(1);
     expect(result.unknownActions).toEqual([{ id: 'b', type: 'custom' }]);
     expect(result.healthy).toBe(false);
+  });
+});
+
+describe('local decision queue lifecycle', () => {
+  it('deduplicates hot decisions and summarizes backlog pressure', () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'jea-local-queue-'));
+    const queue = new LocalDecisionQueue({ dataDir: tempDir });
+    const action = {
+      type: 'record_observation',
+      serves_goal: 'bootstrap',
+      params: { subject: 'queue', content: 'same' },
+    };
+
+    const first = queue.addDecisionsDetailed({
+      cycleId: 'cycle-a',
+      actions: [action, action],
+      analysisContext: 'analysis',
+    });
+    const second = queue.addDecisionsDetailed({
+      cycleId: 'cycle-b',
+      actions: [action],
+      analysisContext: 'analysis',
+    });
+    const summary = queue.summarize({ hotLimit: 1 });
+
+    expect(first.ids).toEqual(['cycle-a:0']);
+    expect(first.skipped).toHaveLength(1);
+    expect(second.ids).toEqual([]);
+    expect(second.skipped[0].reason).toBe('duplicate_hot_decision');
+    expect(summary.total).toBe(1);
+    expect(summary.hot).toBe(1);
+    expect(summary.backpressure).toBe(true);
+  });
+
+  it('archives completed decisions without deleting evidence in dry-run', () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'jea-local-archive-'));
+    writeJsonFile(join(tempDir, 'pending_decisions.json'), {
+      decisions: [
+        { id: 'done', status: 'completed', action: { type: 'record_observation' } },
+        { id: 'todo', status: 'pending', action: { type: 'record_observation' } },
+      ],
+    });
+    const queue = new LocalDecisionQueue({ dataDir: tempDir });
+
+    const dryRun = queue.archiveDecisions({ dryRun: true });
+    expect(dryRun.archived.map((d) => d.id)).toEqual(['done']);
+    expect(readJsonSafe(join(tempDir, 'pending_decisions.json')).decisions).toHaveLength(2);
+
+    const archived = queue.archiveDecisions({ dryRun: false });
+    expect(archived.archived.map((d) => d.id)).toEqual(['done']);
+    expect(readJsonSafe(join(tempDir, 'pending_decisions.json')).decisions.map((d) => d.id)).toEqual(['todo']);
+    expect(readJsonSafe(join(tempDir, 'archived_decisions.json')).decisions.map((d) => d.id)).toEqual(['done']);
   });
 });
 
@@ -654,6 +707,41 @@ describe('active decision queue', () => {
       { id: 'second', type: 'custom' },
     ]);
     expect(audit.unknownActions).toEqual([{ id: 'second', type: 'custom' }]);
+  });
+
+  it('archives only the active subject decision queue by default in dry-run', () => {
+    const root = mkdtempSync(join(tmpdir(), 'jea-queue-archive-'));
+    tempDir = root;
+    mkdirSync(join(root, 'policies'), { recursive: true });
+    writeFileSync(join(root, 'policies', 'project-guidance.md'), '## Subject\nagent\n');
+    ensureDefaultSubject(root);
+
+    const firstRuntime = getActiveSubjectRuntimeInfo(root);
+    writeJsonFile(join(firstRuntime.evolutionDir, 'pending_decisions.json'), {
+      decisions: [{ id: 'first-done', action: { type: 'record_observation' }, status: 'completed' }],
+    });
+
+    createSubject(root, 'other-agent');
+    setActiveSubject(root, 'other-agent');
+    const secondRuntime = getActiveSubjectRuntimeInfo(root);
+    writeJsonFile(join(secondRuntime.evolutionDir, 'pending_decisions.json'), {
+      decisions: [
+        { id: 'second-done', action: { type: 'record_observation' }, status: 'completed' },
+        { id: 'second-pending', action: { type: 'record_observation' }, status: 'pending' },
+      ],
+    });
+
+    const dryRun = archiveQueue(root, { dryRun: true });
+    expect(dryRun.runtime.dataNamespace).toBe('other-agent');
+    expect(dryRun.archived.map((d) => d.id)).toEqual(['second-done']);
+    expect(readJsonSafe(join(secondRuntime.evolutionDir, 'pending_decisions.json')).decisions).toHaveLength(2);
+
+    const archived = archiveQueue(root, { dryRun: false });
+    expect(archived.archived.map((d) => d.id)).toEqual(['second-done']);
+    expect(readJsonSafe(join(secondRuntime.evolutionDir, 'pending_decisions.json')).decisions.map((d) => d.id))
+      .toEqual(['second-pending']);
+    expect(readJsonSafe(join(firstRuntime.evolutionDir, 'pending_decisions.json')).decisions.map((d) => d.id))
+      .toEqual(['first-done']);
   });
 });
 

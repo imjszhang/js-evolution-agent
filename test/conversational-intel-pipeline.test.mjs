@@ -175,6 +175,7 @@ describe('ConversationalIntelligencePipeline', () => {
     expect(result.conversation_context_path).toBeTruthy();
     expect(messageCalls).toHaveLength(2);
     expect(messageCalls[0][1].content).toContain('pre_analyze_decide_report');
+    expect(messageCalls[0][1].content).toContain('"decision_queue"');
     expect(messageCalls[0][1].content).not.toContain('decisions_queued');
     expect(messageCalls[1].map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user']);
     expect(messageCalls[1][2].content).toContain('情报报告');
@@ -195,6 +196,79 @@ describe('ConversationalIntelligencePipeline', () => {
       status: 'pending',
       action: { type: 'record_observation' },
     });
+  });
+
+  it('skips duplicate hot queued actions', async () => {
+    const { runtimeRoot, runtime, host } = makeFixture();
+    const duplicateAction = {
+      type: 'record_observation',
+      description: 'Record that conversational decision generation worked',
+      serves_goal: 'bootstrap',
+      priority: 'medium',
+      params: {
+        source: 'test',
+        subject: 'conversation',
+        kind: 'pipeline',
+        content: 'conversation pipeline queued an action',
+        confidence: 'high',
+        tags: ['test'],
+      },
+    };
+    mkdirSync(join(runtimeRoot, 'data', 'evolution'), { recursive: true });
+    writeFileSync(
+      join(runtimeRoot, 'data', 'evolution', 'pending_decisions.json'),
+      JSON.stringify({
+        decisions: [{
+          id: 'older:0',
+          status: 'pending',
+          action: duplicateAction,
+        }],
+      }, null, 2),
+    );
+
+    const client = {
+      async chat() {
+        return longObservation();
+      },
+      async chatMessages(messages) {
+        const last = messages.at(-1).content;
+        if (last.includes('Strategic Analysis & Decision')) {
+          return JSON.stringify({
+            analysis: { key_patterns: [], root_causes: {}, opportunities: [] },
+            decision: 'execute',
+            rationale: 'duplicate action should not be requeued',
+            actions: [duplicateAction],
+            goal_coverage: { covered: ['bootstrap'], not_covered: {} },
+            deferred: [],
+            risk_mitigation: [],
+            goal_suggestions: [],
+            confidence_score: 0.8,
+          });
+        }
+        return '# 情报报告\n\n用于重复入队测试。\n';
+      },
+    };
+
+    const pipeline = new ConversationalIntelligencePipeline({
+      aiClient: client,
+      host,
+      projectRoot: runtimeRoot,
+      goalId: 'bootstrap',
+      actionRegistry: {
+        toPromptSection: () => '- `record_observation`: Record an observation',
+      },
+      runtime,
+    });
+    const result = await pipeline.run();
+    const queue = JSON.parse(readFileSync(
+      join(runtimeRoot, 'data', 'evolution', 'pending_decisions.json'),
+      'utf-8',
+    ));
+
+    expect(result.success).toBe(true);
+    expect(result.decisions_queued).toEqual([]);
+    expect(result.decisions_skipped).toHaveLength(1);
+    expect(queue.decisions.map((d) => d.id)).toEqual(['older:0']);
   });
 
   it('restores Phase 1 conversation from disk for semantic verification', async () => {

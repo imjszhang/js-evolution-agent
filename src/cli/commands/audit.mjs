@@ -1,4 +1,6 @@
 import { getProjectRoot } from '../utils/project.mjs';
+import { join } from 'node:path';
+import { LocalDecisionQueue } from '../../intelligence/decision-queue.mjs';
 import {
   findUnknownActions,
   readActiveDecisionQueue,
@@ -80,12 +82,54 @@ function printQueueAudit(audit) {
   console.log(audit.healthy ? 'queue healthy' : 'queue needs attention');
 }
 
+function parseStatuses(value) {
+  if (!value || value === true) return ['completed', 'expired'];
+  return String(value).split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+function printArchiveResult(result) {
+  console.log(result.dry_run ? '# Queue Archive Dry Run' : '# Queue Archive');
+  console.log(`statuses: ${result.statuses.join(', ')}`);
+  console.log(`archiveable: ${result.archived.length}`);
+  console.log(`retained: ${result.retained}`);
+  console.log(`archive path: ${result.archive_path}`);
+  for (const item of result.archived) {
+    console.log(`  - ${item.id}: ${item.status} ${item.action?.type ?? 'unknown'}`);
+  }
+}
+
+export function archiveQueue(root, { statuses = ['completed', 'expired'], dryRun = true } = {}) {
+  const { runtime } = readActiveDecisionQueue(root);
+  const queue = new LocalDecisionQueue({
+    dataDir: join(runtime.runtimeRoot, 'data', 'evolution'),
+  });
+  return {
+    runtime,
+    ...queue.archiveDecisions({ statuses, dryRun }),
+  };
+}
+
 export async function auditCommand({ subcommand, flags = {} } = {}) {
   if (subcommand !== 'queue') {
-    console.error('Usage: jea audit queue [--stale-minutes N] [--json]');
+    console.error('Usage: jea audit queue [--stale-minutes N] [--json] [--archive] [--yes] [--statuses completed,expired]');
     return 2;
   }
   const root = getProjectRoot();
+  if (flags.archive) {
+    const result = archiveQueue(root, {
+      statuses: parseStatuses(flags.statuses),
+      dryRun: !flags.yes,
+    });
+    if (flags.json) console.log(JSON.stringify(result, null, 2));
+    else {
+      console.log(`subject: ${result.runtime.subject}`);
+      console.log(`namespace: ${result.runtime.dataNamespace}`);
+      console.log(`runtime: ${result.runtime.runtimeRoot}`);
+      printArchiveResult(result);
+      if (result.dry_run) console.log('pass --yes to archive these decisions');
+    }
+    return 0;
+  }
   const { runtime, queue } = readActiveDecisionQueue(root);
   const staleMinutes = Number(flags['stale-minutes']) || 60;
   const audit = auditQueue(queue, await loadValidActionNames(), { staleMinutes });
