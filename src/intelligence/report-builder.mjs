@@ -551,7 +551,14 @@ function stripCodeFence(text) {
   return fenced ? fenced[1].trim() : trimmed;
 }
 
-function buildStandingMemoryUpdatePrompt({ language, oldMemory, reportMarkdown, reportContext, maxChars }) {
+function buildStandingMemoryUpdatePrompt({
+  language,
+  oldMemory,
+  reportMarkdown,
+  reportContext,
+  maxChars,
+  extraContext = null,
+}) {
   const contextJson = clipText(JSON.stringify({
     current_cycle: reportContext.current_cycle,
     source_counts: reportContext.source_counts,
@@ -564,6 +571,7 @@ function buildStandingMemoryUpdatePrompt({ language, oldMemory, reportMarkdown, 
     action_receipts: reportContext.action_receipts,
     latest_review: reportContext.latest_review,
     intel_reports_index: reportContext.intel_reports_index,
+    extra_context: extraContext,
   }, null, 2), 500000);
 
   if (language === 'en') {
@@ -609,7 +617,7 @@ ${reportMarkdown}
 ${contextJson}`;
 }
 
-async function updateStandingMemoryWithAi({
+export async function updateStandingMemoryWithAi({
   aiClient,
   store,
   language,
@@ -618,7 +626,8 @@ async function updateStandingMemoryWithAi({
   cycleId,
   generatedAt,
   logger,
-  maxChars,
+  maxChars = DEFAULT_REPORT_CONTEXT_LIMITS.standingMemoryCharLimit,
+  extraContext = null,
 } = {}) {
   if (!store || typeof store.recordStandingMemory !== 'function') {
     return { status: 'skipped', reason: 'store-unavailable' };
@@ -633,6 +642,7 @@ async function updateStandingMemoryWithAi({
     reportMarkdown,
     reportContext,
     maxChars,
+    extraContext,
   });
 
   try {

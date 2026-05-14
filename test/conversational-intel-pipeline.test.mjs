@@ -93,10 +93,12 @@ describe('chatMessages compatibility', () => {
 
 describe('ConversationalIntelligencePipeline', () => {
   it('builds a continuous report-to-decision conversation and queues actions', async () => {
-    const { runtimeRoot, runtime, host } = makeFixture();
+    const { runtimeRoot, runtime, store, host } = makeFixture();
+    const chatCalls = [];
     const messageCalls = [];
     const client = {
       async chat(message) {
+        chatCalls.push(message);
         if (message.includes('standing memory') || message.includes('固定容量')) {
           return '长期态势：对话式情报报告已经生成，并可供下一轮参考。';
         }
@@ -172,6 +174,7 @@ describe('ConversationalIntelligencePipeline', () => {
     expect(result.success).toBe(true);
     expect(result.decisions_queued).toHaveLength(1);
     expect(result.report.mdPath).toBeTruthy();
+    expect(result.standing_memory_update.status).toBe('updated');
     expect(result.conversation_context_path).toBeTruthy();
     expect(messageCalls).toHaveLength(2);
     expect(messageCalls[0][1].content).toContain('pre_analyze_decide_report');
@@ -186,6 +189,11 @@ describe('ConversationalIntelligencePipeline', () => {
     expect(context.restored_conversation.map((m) => m.role))
       .toEqual(['system', 'user', 'assistant', 'user', 'assistant']);
     expect(context.restored_conversation.at(-1).content).toContain('"decision":"execute"');
+
+    const memoryPrompt = chatCalls.find((message) => message.includes('固定容量 standing memory'));
+    expect(memoryPrompt).toContain('post_analyze_decide');
+    expect(memoryPrompt).toContain('record_observation');
+    expect(store.readStandingMemory().text).toContain('长期态势');
 
     const queue = JSON.parse(readFileSync(
       join(runtimeRoot, 'data', 'evolution', 'pending_decisions.json'),
@@ -269,6 +277,50 @@ describe('ConversationalIntelligencePipeline', () => {
     expect(result.decisions_queued).toEqual([]);
     expect(result.decisions_skipped).toHaveLength(1);
     expect(queue.decisions.map((d) => d.id)).toEqual(['older:0']);
+  });
+
+  it('can disable post-decision standing memory updates', async () => {
+    const { runtimeRoot, runtime, store, host } = makeFixture();
+    const client = {
+      async chat() {
+        return longObservation();
+      },
+      async chatMessages(messages) {
+        const last = messages.at(-1).content;
+        if (last.includes('Strategic Analysis & Decision')) {
+          return JSON.stringify({
+            analysis: { key_patterns: [], root_causes: {}, opportunities: [] },
+            decision: 'defer',
+            rationale: 'no action needed',
+            actions: [],
+            goal_coverage: { covered: [], not_covered: {} },
+            deferred: [],
+            risk_mitigation: [],
+            goal_suggestions: [],
+            confidence_score: 0.7,
+          });
+        }
+        return '# 情报报告\n\n用于禁用 standing memory 更新测试。\n';
+      },
+    };
+
+    const pipeline = new ConversationalIntelligencePipeline({
+      aiClient: client,
+      host,
+      projectRoot: runtimeRoot,
+      goalId: 'bootstrap',
+      actionRegistry: {
+        toPromptSection: () => '- `record_observation`: Record an observation',
+      },
+      runtime,
+      updateStandingMemory: false,
+    });
+
+    const result = await pipeline.run();
+
+    expect(result.success).toBe(true);
+    expect(result.standing_memory_update).toEqual({ status: 'skipped', reason: 'disabled' });
+    expect(store.readStandingMemory()).toBe(null);
   });
 
   it('restores Phase 1 conversation from disk for semantic verification', async () => {

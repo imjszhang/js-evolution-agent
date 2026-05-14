@@ -12,6 +12,7 @@ import { LocalDecisionQueue } from './decision-queue.mjs';
 import {
   persistIntelReport,
   prepareIntelReport,
+  updateStandingMemoryWithAi,
 } from './report-builder.mjs';
 import {
   buildConversationSystemPrompt,
@@ -84,6 +85,33 @@ function safeQueueSummary(queue) {
   }
 }
 
+function buildStandingMemoryExtraContext({
+  analysis,
+  actions,
+  reportPath,
+  conversationContextPath,
+} = {}) {
+  return {
+    stage: 'post_analyze_decide',
+    report_path: reportPath ?? null,
+    conversation_context_path: conversationContextPath ?? null,
+    decision: analysis?.decision ?? null,
+    rationale: analysis?.rationale ?? null,
+    actions: (actions || []).map((a) => ({
+      type: a.type,
+      description: a.description,
+      serves_goal: a.serves_goal,
+      priority: a.priority,
+      expected_impact: a.expected_impact,
+      risk: a.risk,
+    })),
+    goal_coverage: analysis?.goal_coverage ?? null,
+    deferred: analysis?.deferred ?? [],
+    risk_mitigation: analysis?.risk_mitigation ?? [],
+    confidence_score: analysis?.confidence_score ?? null,
+  };
+}
+
 /**
  * Host-side intel pipeline that makes two consecutive OpenAI-style message
  * calls: report first, then strict Analyze+Decide JSON using the full prior
@@ -101,6 +129,7 @@ export class ConversationalIntelligencePipeline {
     agentContextDocs = null,
     actionRegistry = null,
     runtime = null,
+    updateStandingMemory = true,
   } = {}) {
     if (mode !== 'local') {
       throw new Error('ConversationalIntelligencePipeline currently supports mode=local only');
@@ -121,6 +150,7 @@ export class ConversationalIntelligencePipeline {
     this.agentContextDocs = Array.isArray(agentContextDocs) ? agentContextDocs : [];
     this.actionRegistry = actionRegistry || this.engine.actionRegistry;
     this.runtime = runtime || runtimeFromHost(this.projectRoot, host);
+    this.updateStandingMemory = updateStandingMemory;
     this.decisionQueue = decisionQueue || new LocalDecisionQueue({
       dataDir: join(this.projectRoot, 'data', 'evolution'),
       logFn: (msg) => this._log(msg),
@@ -140,6 +170,7 @@ export class ConversationalIntelligencePipeline {
       decisions_queued: [],
       decisions_skipped: [],
       report: null,
+      standing_memory_update: null,
       error: null,
     };
 
@@ -308,6 +339,38 @@ export class ConversationalIntelligencePipeline {
         prompt: serializeMessages(decideMessages),
         aiResponse: rawDecision,
         aiDriven: true,
+      });
+
+      this._log(`[${cycleId}] phase 3b: standing memory`);
+      logger.startPhase('standing_memory');
+      const shouldUpdateStandingMemory = this.updateStandingMemory && !dryRun;
+      const memoryUpdate = shouldUpdateStandingMemory
+        ? await updateStandingMemoryWithAi({
+          aiClient: this.aiClient,
+          store: this.host?.intelligenceStore,
+          language: preparedReport.language,
+          reportContext: preparedReport.reportContext,
+          reportMarkdown,
+          cycleId,
+          generatedAt: result.timestamp,
+          logger: this.host?.logger,
+          extraContext: buildStandingMemoryExtraContext({
+            analysis,
+            actions: result.actions,
+            reportPath: persistedReport.mdPath,
+            conversationContextPath: result.conversation_context_path,
+          }),
+        })
+        : { status: 'skipped', reason: dryRun ? 'dry-run' : 'disabled' };
+      result.standing_memory_update = memoryUpdate;
+      logger.logPhase('standing_memory', {
+        outputs: {
+          status: memoryUpdate.status,
+          reason: memoryUpdate.reason,
+        },
+        aiDriven: shouldUpdateStandingMemory,
+        fallbackUsed: false,
+        error: memoryUpdate.status === 'failed' ? memoryUpdate.reason : null,
       });
 
       if (!dryRun) {
