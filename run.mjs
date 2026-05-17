@@ -12,6 +12,7 @@ import { assessActiveGoals } from './src/cli/commands/goals.mjs';
 import { getActiveSubjectRuntimeInfo } from './src/cli/utils/subjects.mjs';
 import { ConversationalIntelligencePipeline } from './src/intelligence/conversational-intel-pipeline.mjs';
 import { verifyWithRestoredConversation } from './src/intelligence/conversation-context.mjs';
+import { buildEvolutionDiary } from './src/intelligence/evolution-diary-builder.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -184,6 +185,7 @@ async function main() {
   console.log('  semantic:', semanticVerification.status);
   console.log('  report:', reportPath);
 
+  let goalsAssessResult = null;
   if (skipGoalsAssess()) {
     console.log('\n=== Phase 4: goals assess (skipped) ===');
   } else if (!intelReportReady) {
@@ -195,6 +197,7 @@ async function main() {
       const assessResult = await assessActiveGoals(__dirname, { cycle: intelResult.cycle_id }, {
         verificationReportPath: reportPath,
       });
+      goalsAssessResult = assessResult;
       console.log('  cycle:', assessResult.report.cycle_id);
       console.log('  status:', assessResult.assessment.status);
       console.log('  confidence:', assessResult.assessment.confidence);
@@ -215,6 +218,39 @@ async function main() {
         error: msg,
       });
     }
+  }
+
+  console.log('\n=== Phase 5: evolution diary ===');
+  try {
+    const diary = await buildEvolutionDiary({
+      aiClient: cfg.aiClient,
+      intelResult,
+      execResult,
+      verification,
+      goalsAssessResult,
+      runtime,
+      store,
+      agentContextDocs: cfg.agentContextDocs,
+      reportPath: intelResult.report?.mdPath,
+      verifyReportPath: reportPath,
+      logger: cfg.host.logger,
+    });
+    console.log(`  source: ${diary.source}`);
+    console.log(`  diary: ${diary.mdPath}`);
+    if (diary.tldr) {
+      console.log(`  tldr: ${diary.tldr.slice(0, 200)}`);
+    }
+  } catch (e) {
+    const msg = e?.message || String(e);
+    console.warn(`  evolution diary failed (non-fatal): ${msg}`);
+    store.recordEvolutionEvent({
+      type: 'evolution_diary',
+      status: 'failed',
+      cycle_id: execResult.cycle_id,
+      subject: runtime.subject,
+      namespace: runtime.dataNamespace,
+      error: msg,
+    });
   }
 
   console.log('\n=== Done ===');

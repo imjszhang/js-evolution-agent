@@ -179,6 +179,20 @@ function createMockAiClient() {
     '- probe layer: no new probe results.\n' +
     '- core layer: read-only, consistent with the subject policy boundary.\n\n' +
     'This placeholder text does not replace a DeepSeek run; switch to `--deepseek` for a full Cyber-Taoist-aligned reading.\n';
+  const mockDiaryZh =
+    '# 进化日记（mock 输出）\n\n' +
+    '这一轮在 mock 模式下完成，日记只记录可确认的运行事实。\n\n' +
+    '## 这一轮发生了什么\n\n' +
+    '系统完成了情报、执行、验证与目标评估后的收尾记录。\n\n' +
+    '## 下轮应该注意什么\n\n' +
+    '切换到真实 LLM 后，应重点阅读执行 receipt 与验证报告，再判断目标是否真正推进。\n';
+  const mockDiaryEn =
+    '# Evolution Diary (mock output)\n\n' +
+    'This cycle completed in mock mode, so the diary only preserves confirmed runtime facts.\n\n' +
+    '## What happened this cycle\n\n' +
+    'The system completed the post-intel, execution, verification, and goal-assessment recording path.\n\n' +
+    '## What the next cycle should remember\n\n' +
+    'With a real LLM enabled, inspect execution receipts and verification reports before judging goal progress.\n';
 
   return new MockAIClient({
     canned: [
@@ -191,6 +205,8 @@ function createMockAiClient() {
           '## Signals\nNo production mutations are allowed in the first cycle.\n\n' +
           '## Recommended Focus\nConfirm docs injection, local decision queue, and intelligence receipts.\n',
       },
+      { match: /进化日记/, response: mockDiaryZh },
+      { match: /evolution diary/i, response: mockDiaryEn },
       { match: /情报报告/, response: mockJournalZh },
       { match: /intelligence report/i, response: mockJournalEn },
     ],

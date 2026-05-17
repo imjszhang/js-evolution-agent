@@ -29,6 +29,11 @@ import {
   loadPhase1ConversationContext,
   persistPhase1ConversationContext,
 } from '../src/intelligence/conversation-context.mjs';
+import {
+  buildEvolutionDiary,
+  buildEvolutionDiaryContext,
+  buildEvolutionDiaryPrompt,
+} from '../src/intelligence/evolution-diary-builder.mjs';
 
 let tempDir = null;
 
@@ -621,5 +626,138 @@ describe('buildIntelReport', () => {
     expect(result.memoryUpdate.status).toBe('failed');
     expect(result.indexRecord.standing_memory_updated).toBe(false);
     expect(result.indexRecord.standing_memory_update_error).toContain('memory timeout');
+  });
+});
+
+function makeDiaryFixture() {
+  const { store, runtime, intelResult } = makeReportFixture();
+  const execResult = {
+    cycle_id: 'cycle-test-1',
+    success: true,
+    executed: [
+      {
+        action: {
+          id: 'action-1',
+          type: 'record_observation',
+          description: 'record test observation',
+          serves_goal: 'bootstrap',
+        },
+        result: {
+          success: true,
+          status: 'completed',
+          message: 'observation recorded',
+          provider: 'llm_only',
+          writes_applied: { observations: 1 },
+          evidence: { receipt: 'ok' },
+        },
+      },
+    ],
+  };
+  const verification = {
+    verified: [
+      {
+        action: { type: 'record_observation' },
+        status: 'verified',
+        value: { message: 'receipt verified' },
+      },
+    ],
+    pending: [],
+    semantic: {
+      status: 'ok',
+      result: {
+        overall_summary: 'The executed action supports the cycle objective.',
+        next_cycle_focus: ['inspect receipts'],
+      },
+    },
+  };
+  return { store, runtime, intelResult, execResult, verification };
+}
+
+describe('buildEvolutionDiary', () => {
+  it('builds a post-execution prompt scoped away from project journal updates', () => {
+    const { store, runtime, intelResult, execResult, verification } = makeDiaryFixture();
+    const context = buildEvolutionDiaryContext({
+      intelResult,
+      execResult,
+      verification,
+      runtime,
+      store,
+      generatedAt: '2026-05-17T13:08:16+08:00',
+    });
+    const prompt = buildEvolutionDiaryPrompt({
+      context,
+      agentContextDocs: [{ id: 'js-evolution-agent:subject:test', text: '主体策略全文。' }],
+    });
+
+    expect(context.cycle.cycle_id).toBe('cycle-test-1');
+    expect(prompt).toContain('进化日记');
+    expect(prompt).toContain('post-execution');
+    expect(prompt).toContain('不要写成 `journal/` 项目开发日志');
+    expect(prompt).toContain('cycle-test-1');
+  });
+
+  it('writes AI diary markdown under the active subject runtime and records an event', async () => {
+    const { store, runtime, intelResult, execResult, verification } = makeDiaryFixture();
+    const fakeAi = {
+      chat: async () => '# 进化日记\n\n本轮执行完成，receipt 已通过验证。\n\n## 下轮应该注意什么\n\n继续检查证据质量。\n',
+    };
+
+    const result = await buildEvolutionDiary({
+      aiClient: fakeAi,
+      intelResult,
+      execResult,
+      verification,
+      runtime,
+      store,
+      agentContextDocs: [{ id: 'js-evolution-agent:subject:test', text: '主体策略全文。' }],
+      generatedAt: '2026-05-17T13:08:16+08:00',
+    });
+
+    expect(result.source).toBe('ai');
+    expect(result.mdPath).toBe(join(runtime.runtimeRoot, 'data', 'evolution', 'diaries', 'cycle-test-1.md'));
+    expect(result.mdPath).not.toContain(join(runtime.runtimeRoot, 'journal'));
+    expect(existsSync(result.mdPath)).toBe(true);
+    expect(readFileSync(result.mdPath, 'utf-8')).toContain('receipt 已通过验证');
+
+    const events = store.readEvolutionEvents({ limit: 5 });
+    expect(events[0]).toMatchObject({
+      type: 'evolution_diary',
+      status: 'ok',
+      cycle_id: 'cycle-test-1',
+      source: 'ai',
+      diary_path: result.mdPath,
+    });
+  });
+
+  it('falls back to a redacted mechanical diary when AI generation fails', async () => {
+    const { store, runtime, intelResult, execResult, verification } = makeDiaryFixture();
+    const secret = 'sk-1234567890abcdef';
+    execResult.executed[0].result.message = `wrote receipt with DEEPSEEK_API_KEY=${secret}`;
+    const fakeAi = { chat: async () => { throw new Error('upstream timeout'); } };
+
+    const result = await buildEvolutionDiary({
+      aiClient: fakeAi,
+      intelResult,
+      execResult,
+      verification,
+      runtime,
+      store,
+      generatedAt: '2026-05-17T13:08:16+08:00',
+    });
+
+    const content = readFileSync(result.mdPath, 'utf-8');
+    expect(result.source).toBe('fallback');
+    expect(content).toContain('AI 日记生成失败');
+    expect(content).not.toContain(secret);
+    expect(content).toContain('[REDACTED_SECRET]');
+
+    const events = store.readEvolutionEvents({ limit: 5 });
+    expect(events[0]).toMatchObject({
+      type: 'evolution_diary',
+      status: 'fallback',
+      source: 'fallback',
+      cycle_id: 'cycle-test-1',
+    });
+    expect(events[0].fallback_reason).toContain('upstream timeout');
   });
 });
