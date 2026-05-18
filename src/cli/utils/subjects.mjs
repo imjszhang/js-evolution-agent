@@ -9,6 +9,7 @@ import { readJsonSafe, readTextSafe, writeJsonIfMissing } from './files.mjs';
 import { getLanguage, t } from './i18n.mjs';
 
 export const DEFAULT_SUBJECT = 'js-evolution-agent';
+export const SUBJECT_ENV = 'JEA_SUBJECT';
 
 export function subjectsDir(root) {
   return join(root, 'policies', 'subjects');
@@ -76,6 +77,9 @@ export function getActiveSubjectRuntimeInfo(root) {
 }
 
 export function readActiveSubject(root) {
+  if (process.env[SUBJECT_ENV]) {
+    return defaultActiveSubject(process.env[SUBJECT_ENV]);
+  }
   const active = readJsonSafe(activeSubjectFile(root), null);
   if (active?.active && active?.policy) return active;
   return defaultActiveSubject();

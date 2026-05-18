@@ -13,6 +13,7 @@ import { auditCommand } from './commands/audit.mjs';
 import { llmCommand } from './commands/llm.mjs';
 import { policyCommand } from './commands/policy.mjs';
 import { goalsCommand } from './commands/goals.mjs';
+import { evolveCommand } from './commands/evolve.mjs';
 
 export function helpText() {
   return `Usage: jea <command> [options]
@@ -23,6 +24,9 @@ Commands:
                          Run the full intel -> exec -> verify loop; by default
                          also records a goals assess event for the same cycle
   run --deepseek         Require DeepSeek API configuration
+  evolve --rounds N      Run multiple evolution cycles with retry/resume state
+  evolve resume ID       Resume an interrupted evolve run
+  evolve status [ID]     Show recent or specific evolve run status
   data status            Show runtime data status
   data status --json     Show runtime data status as JSON
   data init              Create runtime data directories
@@ -67,6 +71,8 @@ Examples:
   jea doctor
   jea run --mock
   jea run --skip-goals-assess
+  jea evolve --rounds 30
+  jea evolve status
   jea data init --all
   jea intel summary
   jea audit queue
@@ -95,6 +101,7 @@ export async function main(argv = process.argv.slice(2)) {
   }
   if (command === 'doctor') return doctorCommand({ flags });
   if (command === 'run') return runCommand({ flags });
+  if (command === 'evolve') return evolveCommand({ subcommand, flags, args });
   if (command === 'data') return dataCommand({ subcommand, flags });
   if (command === 'intel') return intelCommand({ subcommand, flags, args });
   if (command === 'goals') return goalsCommand({ subcommand, flags, args });

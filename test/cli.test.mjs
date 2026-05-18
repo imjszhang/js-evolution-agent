@@ -39,6 +39,7 @@ import { buildIntelReport } from '../src/intelligence/report-builder.mjs';
 import { LocalDecisionQueue } from '../src/intelligence/decision-queue.mjs';
 import { createIntelligenceStore } from '../src/intelligence/store.mjs';
 import { checkPolicy } from '../src/cli/commands/policy.mjs';
+import { classifyCycleFailure } from '../src/cli/commands/evolve.mjs';
 import {
   createSubject,
   ensureDefaultSubject,
@@ -49,6 +50,15 @@ import {
   setActiveSubject,
 } from '../src/cli/utils/subjects.mjs';
 import {
+  createRunManifest,
+  findRunManifest,
+  listRunManifests,
+  normalizeEvolveSubjects,
+  runtimeForSubject,
+  saveRunManifest,
+  summarizeManifest,
+} from '../src/cli/utils/evolve-runs.mjs';
+import {
   configuredActionToSpec,
   loadSubjectActionConfig,
   normalizeConfiguredAction,
@@ -56,12 +66,15 @@ import {
 
 let tempDir = null;
 const originalJeaLanguage = process.env.JEA_LANGUAGE;
+const originalJeaSubject = process.env.JEA_SUBJECT;
 
 afterEach(() => {
   if (tempDir) rmSync(tempDir, { recursive: true, force: true });
   tempDir = null;
   if (originalJeaLanguage === undefined) delete process.env.JEA_LANGUAGE;
   else process.env.JEA_LANGUAGE = originalJeaLanguage;
+  if (originalJeaSubject === undefined) delete process.env.JEA_SUBJECT;
+  else process.env.JEA_SUBJECT = originalJeaSubject;
 });
 
 describe('CLI argument parsing', () => {
@@ -159,6 +172,70 @@ describe('subject management', () => {
     expect(runtime.dataNamespace).toBe('my-product');
     expect(runtime.runtimeRoot).toBe(join(root, 'runtime', 'subjects', 'my-product'));
     expect(runtime.dataRoot).toBe(join(root, 'runtime', 'subjects', 'my-product', 'data'));
+  });
+});
+
+describe('evolve run manifests', () => {
+  function makeEvolveProjectRoot() {
+    tempDir = mkdtempSync(join(tmpdir(), 'jea-evolve-'));
+    mkdirSync(join(tempDir, 'policies', 'subjects'), { recursive: true });
+    writeFileSync(join(tempDir, 'policies', 'subjects', 'alpha.md'), '# alpha\n\n## Subject\nalpha', 'utf-8');
+    writeFileSync(join(tempDir, 'policies', 'subjects', 'beta.md'), '# beta\n\n## Subject\nbeta', 'utf-8');
+    writeJsonFile(join(tempDir, 'policies', 'active-subject.json'), {
+      active: 'alpha',
+      policy: 'subjects/alpha.md',
+      data_namespace: 'alpha',
+    });
+    return tempDir;
+  }
+
+  it('creates, saves, finds, and summarizes evolve manifests', () => {
+    const root = makeEvolveProjectRoot();
+    const subjects = normalizeEvolveSubjects(root, { subjects: 'alpha,beta' });
+    const manifest = createRunManifest({
+      root,
+      runId: 'evolve-test',
+      subject: 'alpha',
+      subjects,
+      rounds: 2,
+      flags: { retries: '1' },
+    });
+
+    expect(manifest.run_id).toBe('evolve-test');
+    expect(manifest.subjects).toEqual(['alpha', 'beta']);
+    expect(manifest.rounds.map((round) => round.status)).toEqual(['pending', 'pending']);
+
+    manifest.rounds[0].status = 'succeeded';
+    const saved = saveRunManifest(root, 'alpha', manifest);
+    const found = findRunManifest(root, 'evolve-test', { subject: 'alpha' });
+    const summary = summarizeManifest(found.manifest);
+
+    expect(saved.completed_rounds).toBe(0);
+    expect(found.filePath).toContain(join('runtime', 'subjects', 'alpha', 'data', 'evolution', 'runs', 'evolve-test.json'));
+    expect(summary.completed_rounds).toBe(1);
+    expect(summary.counts.pending).toBe(1);
+    expect(listRunManifests(root).map((item) => item.manifest.run_id)).toContain('evolve-test');
+  });
+
+  it('resolves subject runtime without changing active subject files', () => {
+    const root = makeEvolveProjectRoot();
+
+    process.env.JEA_SUBJECT = 'beta';
+
+    expect(runtimeForSubject(root, 'beta').runtimeRoot).toBe(join(root, 'runtime', 'subjects', 'beta'));
+    expect(getActiveSubjectRuntimeInfo(root).subject).toBe('beta');
+    expect(readJsonSafe(join(root, 'policies', 'active-subject.json')).active).toBe('alpha');
+  });
+
+  it('classifies transient AI failures as retryable', () => {
+    expect(classifyCycleFailure({
+      exitCode: 1,
+      output: 'js-evolution-agent failed: DeepSeek returned empty content',
+    }).retryable).toBe(true);
+    expect(classifyCycleFailure({
+      exitCode: 1,
+      output: 'DEEPSEEK_API_KEY is required for --deepseek.',
+    }).retryable).toBe(false);
   });
 });
 
