@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import lockfile from 'proper-lockfile';
 import { readJsonSafe, writeJsonFile } from './files.mjs';
@@ -87,18 +87,24 @@ export function runManifestPath(root, subject, runId) {
   return join(runsDirForSubject(root, subject), `${runId}.json`);
 }
 
+export function runIndexPath(root, subject) {
+  return join(runsDirForSubject(root, subject), 'index.jsonl');
+}
+
 export function createRunManifest({ root, runId = createRunId(), subject, subjects, rounds, flags = {} }) {
   const runtime = runtimeForSubject(root, subject);
   const now = nowIso();
   const requestedRounds = parsePositiveInt(rounds, { name: 'rounds' });
+  const selectedSubjects = Array.isArray(subjects) && subjects.length ? subjects : [subject];
   const manifest = {
     schema_version: 1,
     run_id: runId,
     subject: runtime.subject,
     data_namespace: runtime.dataNamespace,
-    subjects: [...subjects],
+    subjects: [...selectedSubjects],
     requested_rounds: requestedRounds,
     completed_rounds: 0,
+    current_round: null,
     status: 'pending',
     flags: {
       mock: Boolean(flags.mock),
@@ -106,6 +112,10 @@ export function createRunManifest({ root, runId = createRunId(), subject, subjec
       skip_goals_assess: Boolean(flags['skip-goals-assess']),
       retries: parsePositiveInt(flags.retries, { name: 'retries', defaultValue: 3, min: 0 }),
       continue_on_failure: Boolean(flags['continue-on-failure']),
+      exec_limit: flags['exec-limit'] == null || flags['exec-limit'] === true
+        ? null
+        : parsePositiveInt(flags['exec-limit'], { name: 'exec-limit', min: 1 }),
+      global_delay_ms: parsePositiveInt(flags['global-delay-ms'], { name: 'global-delay-ms', defaultValue: 0, min: 0 }),
     },
     rounds: Array.from({ length: requestedRounds }, (_, idx) => ({
       index: idx + 1,
@@ -114,9 +124,13 @@ export function createRunManifest({ root, runId = createRunId(), subject, subjec
       started_at: null,
       ended_at: null,
       last_error: null,
+      last_error_code: null,
+      last_error_reason: null,
       retryable: null,
     })),
     last_error: null,
+    last_error_code: null,
+    last_error_reason: null,
     started_at: now,
     updated_at: now,
     ended_at: null,
@@ -134,6 +148,22 @@ export function saveRunManifest(root, subject, manifest) {
   const next = { ...manifest, updated_at: nowIso() };
   writeJsonFile(filePath, next);
   return next;
+}
+
+export function appendRunEvent(root, subject, manifest, event = {}) {
+  const filePath = runIndexPath(root, subject);
+  mkdirSync(runsDirForSubject(root, subject), { recursive: true });
+  const record = {
+    timestamp: nowIso(),
+    run_id: manifest?.run_id ?? null,
+    subject: manifest?.subject ?? subject,
+    status: manifest?.status ?? null,
+    completed_rounds: manifest?.completed_rounds ?? null,
+    requested_rounds: manifest?.requested_rounds ?? null,
+    ...event,
+  };
+  appendFileSync(filePath, JSON.stringify(record) + '\n', 'utf-8');
+  return record;
 }
 
 export function findRunManifest(root, runId, { subject = null } = {}) {
@@ -185,8 +215,12 @@ export function summarizeManifest(manifest) {
     status: manifest?.status,
     requested_rounds: manifest?.requested_rounds ?? rounds.length,
     completed_rounds: counts.succeeded ?? 0,
+    current_round: manifest?.current_round ?? null,
+    next_round: nextRunnableRound(manifest)?.index ?? null,
     counts,
     last_error: manifest?.last_error ?? null,
+    last_error_code: manifest?.last_error_code ?? null,
+    last_error_reason: manifest?.last_error_reason ?? null,
     updated_at: manifest?.updated_at ?? null,
   };
 }
@@ -197,6 +231,48 @@ export function isManifestComplete(manifest) {
 
 export function nextRunnableRound(manifest) {
   return (manifest.rounds || []).find((round) => round.status !== 'succeeded') ?? null;
+}
+
+export function isSubjectLocked(root, subject) {
+  const runtime = runtimeForSubject(root, subject);
+  const lockTarget = join(runtime.evolutionDir, '.evolve.lock');
+  if (!existsSync(lockTarget)) return false;
+  try {
+    return lockfile.checkSync(lockTarget, { stale: 30 * 60 * 1000 });
+  } catch {
+    return false;
+  }
+}
+
+export function normalizeInterruptedManifest(root, manifest) {
+  if (!manifest) return { manifest, changed: false };
+  if (isSubjectLocked(root, manifest.subject)) return { manifest, changed: false };
+  let changed = false;
+  const next = {
+    ...manifest,
+    rounds: (manifest.rounds || []).map((round) => {
+      if (round.status !== 'running' && round.status !== 'retrying') return round;
+      changed = true;
+      return {
+        ...round,
+        status: 'interrupted',
+        ended_at: round.ended_at ?? nowIso(),
+        last_error: round.last_error || 'Run was interrupted before this round completed.',
+        last_error_code: round.last_error_code || 'interrupted',
+        last_error_reason: round.last_error_reason || 'stale_running_state',
+        retryable: true,
+      };
+    }),
+  };
+  if (!changed) return { manifest, changed: false };
+  next.status = 'interrupted';
+  next.current_round = next.rounds.find((round) => round.status !== 'succeeded')?.index ?? null;
+  next.completed_rounds = next.rounds.filter((round) => round.status === 'succeeded').length;
+  next.last_error = 'Run was interrupted before completion.';
+  next.last_error_code = 'interrupted';
+  next.last_error_reason = 'stale_running_state';
+  next.ended_at = next.ended_at ?? nowIso();
+  return { manifest: next, changed: true };
 }
 
 export async function withSubjectLock(root, subject, fn) {

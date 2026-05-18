@@ -39,7 +39,11 @@ import { buildIntelReport } from '../src/intelligence/report-builder.mjs';
 import { LocalDecisionQueue } from '../src/intelligence/decision-queue.mjs';
 import { createIntelligenceStore } from '../src/intelligence/store.mjs';
 import { checkPolicy } from '../src/cli/commands/policy.mjs';
-import { classifyCycleFailure } from '../src/cli/commands/evolve.mjs';
+import {
+  buildCycleEnv,
+  classifyCycleFailure,
+  parseExitRecord,
+} from '../src/cli/commands/evolve.mjs';
 import {
   createSubject,
   ensureDefaultSubject,
@@ -50,9 +54,11 @@ import {
   setActiveSubject,
 } from '../src/cli/utils/subjects.mjs';
 import {
+  appendRunEvent,
   createRunManifest,
   findRunManifest,
   listRunManifests,
+  normalizeInterruptedManifest,
   normalizeEvolveSubjects,
   runtimeForSubject,
   saveRunManifest,
@@ -198,11 +204,13 @@ describe('evolve run manifests', () => {
       subject: 'alpha',
       subjects,
       rounds: 2,
-      flags: { retries: '1' },
+      flags: { retries: '1', 'exec-limit': '2', 'global-delay-ms': '10' },
     });
 
     expect(manifest.run_id).toBe('evolve-test');
     expect(manifest.subjects).toEqual(['alpha', 'beta']);
+    expect(manifest.flags.exec_limit).toBe(2);
+    expect(manifest.flags.global_delay_ms).toBe(10);
     expect(manifest.rounds.map((round) => round.status)).toEqual(['pending', 'pending']);
 
     manifest.rounds[0].status = 'succeeded';
@@ -236,6 +244,82 @@ describe('evolve run manifests', () => {
       exitCode: 1,
       output: 'DEEPSEEK_API_KEY is required for --deepseek.',
     }).retryable).toBe(false);
+  });
+
+  it('prefers structured exit records over regex fallback', () => {
+    const output = [
+      'js-evolution-agent failed: DeepSeek returned empty content',
+      'JEA_EXIT_RECORD {"code":"configuration","message":"Subject policy not found","retryable":false}',
+    ].join('\n');
+
+    expect(parseExitRecord(output)).toMatchObject({
+      code: 'configuration',
+      retryable: false,
+    });
+    expect(classifyCycleFailure({ exitCode: 1, output })).toMatchObject({
+      retryable: false,
+      code: 'configuration',
+      reason: 'configuration',
+    });
+  });
+
+  it('normalizes stale running rounds as interrupted', () => {
+    const root = makeEvolveProjectRoot();
+    const manifest = createRunManifest({
+      root,
+      runId: 'evolve-interrupted',
+      subject: 'alpha',
+      subjects: ['alpha'],
+      rounds: 1,
+      flags: {},
+    });
+    manifest.status = 'running';
+    manifest.rounds[0].status = 'running';
+    manifest.rounds[0].attempts = 1;
+
+    const result = normalizeInterruptedManifest(root, manifest);
+
+    expect(result.changed).toBe(true);
+    expect(result.manifest.status).toBe('interrupted');
+    expect(result.manifest.rounds[0].status).toBe('interrupted');
+    expect(result.manifest.last_error_code).toBe('interrupted');
+  });
+
+  it('appends run index events', () => {
+    const root = makeEvolveProjectRoot();
+    const manifest = createRunManifest({
+      root,
+      runId: 'evolve-index',
+      subject: 'alpha',
+      subjects: ['alpha'],
+      rounds: 1,
+      flags: {},
+    });
+
+    appendRunEvent(root, 'alpha', manifest, { type: 'created' });
+    appendRunEvent(root, 'alpha', manifest, { type: 'round_started', round: 1 });
+
+    const indexPath = join(root, 'runtime', 'subjects', 'alpha', 'data', 'evolution', 'runs', 'index.jsonl');
+    const records = readFileSync(indexPath, 'utf-8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    expect(records.map((record) => record.type)).toEqual(['created', 'round_started']);
+    expect(records[0].run_id).toBe('evolve-index');
+  });
+
+  it('passes execution limit through child process env', () => {
+    const env = buildCycleEnv({
+      mock: true,
+      'skip-goals-assess': true,
+      'exec-limit': '2',
+    }, 'alpha');
+
+    expect(env.JEA_SUBJECT).toBe('alpha');
+    expect(env.JEA_FORCE_MOCK).toBe('1');
+    expect(env.JEA_SKIP_GOALS_ASSESS).toBe('1');
+    expect(env.JEA_EXEC_LIMIT).toBe('2');
+    expect(env.DEEPSEEK_API_KEY).toBeUndefined();
   });
 });
 

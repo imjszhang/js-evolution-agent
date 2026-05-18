@@ -2,7 +2,7 @@
 
 > 日期：2026-05-18  
 > 项目：js-evolution-agent  
-> 类型：架构设计 / 功能实现  
+> 类型：架构设计 / 功能实现 / 运维增强  
 > 来源：Cursor Agent 对话  
 
 ---
@@ -40,23 +40,27 @@
 
 - 第一版不拆 `run.mjs` 的 Phase，避免 decision queue / verify / receipts 的副作用在「半轮恢复」上失控；**断点粒度定为「整轮」**。
 - 多主体若每次改 `active-subject.json`，会污染操作者工作区；更合理的是 **进程内临时指定主体**（环境变量），子进程继承即可。
-- 失败分类做不到完美：采用 **启发式关键词**（空返回、超时、429/5xx、ECONNRESET 等判为可重试；缺 key、策略缺失等判为不可重试），并允许后续收紧规则。
+- 失败判定：**优先**使用 [`run.mjs`](../../run.mjs) 异常退出时打印的 **`JEA_EXIT_RECORD { "code", "message", "retryable" }`**（机器可读）；若无该行则再用日志正则作为 fallback（兼容旧输出或非标准错误）。
 
 ---
 
 ## 3. 方案设计
 
-在 CLI 之上增加一层 **Evolution Supervisor**：manifest 持久化 + 每轮 spawn 一次现有 `run.mjs`。
+在 CLI 之上增加一层 **Evolution Supervisor**：manifest 持久化 + 每轮 spawn 一次现有 `run.mjs`；强化阶段再把 `run.mjs` 的结构化退出接入分类与 manifest，并增加按主体的事件索引。
 
 ```mermaid
 flowchart TD
   User[User CLI] --> EvolveCommand[jea evolve]
   EvolveCommand --> RunManager[EvolutionRunManager]
   RunManager --> Manifest[Run Manifest JSON]
+  RunManager --> RunIndex[runs index jsonl]
   RunManager --> Scheduler[SubjectScheduler]
   Scheduler --> SubjectLock[Subject Lock]
   SubjectLock --> SingleCycle[SingleCycleRunner]
   SingleCycle --> RunMjs[run.mjs Phase1to5]
+  RunMjs --> ExitRecord[JEA_EXIT_RECORD]
+  ExitRecord --> EvolveClassifier[failure classifier]
+  EvolveClassifier --> Manifest
 ```
 
 ### 关键决策
@@ -68,6 +72,8 @@ flowchart TD
 | 多主体指定 | `JEA_SUBJECT` 覆盖读取 | 不改磁盘上的 active subject |
 | 并发 | 第一版串行 + 每主体文件锁 | 避免 API 限流与队列竞态 |
 | 多主体轮转 | A1→B1→C1→A2… | 每轮每个主体各推进「一格」到目标 `N` 轮 |
+| 中断恢复 | 无锁时 stale `running`/`retrying` → `interrupted` | 进程被杀后 manifest 不会永远卡在 running |
+| 可观测性 | `runs/index.jsonl` 追加事件 | 便于审计与后续接 UI / 报表 |
 
 ---
 
@@ -77,15 +83,23 @@ flowchart TD
 
 - **`jea evolve --rounds N`**：启动批量 run，生成 `run_id`，写入 manifest。
 - **`jea evolve --rounds N --subject NAME` / `--subjects a,b,c`**：多主体时每个主体内各写一份 manifest（同名 `run_id`），轮转执行。
-- **`jea evolve resume <run_id>`**：按 manifest 跳过已成功轮次，从未完成轮继续；可重试错误在 `--retries` 内退避重试。
-- **`jea evolve status [run_id]`**：列出近期 run 或单个 run 的汇总（支持 `--json`）。
+- **`jea evolve resume <run_id>`**：加载各主体 manifest 前做中断归一化；打印每主体的 skip/next 摘要；按 manifest 跳过已成功轮次继续。
+- **`jea evolve status [run_id]`**：人类可读为多段块（run id、进度、next round、`counts`、最近错误码）；`--json` 含 `last_error_code` / `current_round` / `next_round` 等稳定字段。
 
 入口注册：[`src/cli/jea.mjs`](../../src/cli/jea.mjs)。命令实现：[`src/cli/commands/evolve.mjs`](../../src/cli/commands/evolve.mjs)。
 
 ### 状态落盘
 
-- 路径：`runtime/subjects/<namespace>/data/evolution/runs/<run_id>.json`
+- **Manifest**：`runtime/subjects/<namespace>/data/evolution/runs/<run_id>.json`
+- **事件索引**：`runtime/subjects/<namespace>/data/evolution/runs/index.jsonl`（追加 `created`、`round_started`、`round_succeeded`、`round_failed`、`run_succeeded`、`run_failed` 等）
 - 工具：[`src/cli/utils/evolve-runs.mjs`](../../src/cli/utils/evolve-runs.mjs)
+
+Manifest 中除轮次列表外，另记录 **`last_error_code` / `last_error_reason` / `current_round`**，便于 `status --json` 被脚本消费。
+
+### 单轮与子进程
+
+- [`run.mjs`](../../run.mjs)：失败时 `console.error('JEA_EXIT_RECORD …')`；Phase 2 执行条数可由环境变量 **`JEA_EXEC_LIMIT`** 控制（数值 clamp）。
+- `evolve`：`parseExitRecord` 取最后一行结构化记录；`classifyCycleFailure` 优先使用其中 `retryable` / `code`。`buildCycleEnv` 在传入 `--exec-limit` 时设置 `JEA_EXEC_LIMIT`。
 
 ### 临时主体
 
@@ -93,30 +107,37 @@ flowchart TD
 
 ### 主体锁
 
-- `runtime/subjects/<namespace>/data/evolution/.evolve.lock`（`proper-lockfile`），防止同一主体上并发 evolve。
+- `runtime/subjects/<namespace>/data/evolution/.evolve.lock`（`proper-lockfile`），防止同一主体上并发 evolve。  
+- **中断归一化**：仅在**未持有**该锁时，把遗留的 `running` / `retrying` 轮次标为 **`interrupted`**，整体状态 `interrupted`，便于 `resume` 不重猜进度。
 
-### 可调参数（与实现一致）
+### 可调参数（与当前实现一致）
 
 | 标志 | 含义 |
 | ---- | ---- |
 | `--rounds N` | 每主体目标轮数 |
-| `--retries N` | 每轮额外重试次数（默认 3，即最多 1 + 3 次尝试） |
+| `--retries N` | 每轮额外重试次数（默认 3） |
 | `--retry-delay-ms` | 可重试失败后的等待（默认 30000） |
+| `--exec-limit N` | 单轮 Phase 2 最多执行决策条数，经 `JEA_EXEC_LIMIT` 传给 `run.mjs` |
+| `--global-delay-ms N` | 每个主体完成一轮（成功或本轮结束）后的额外等待，减轻限流 / 成本压力；写入 manifest `flags` 以便 resume 行为一致 |
 | `--continue-on-failure` | 某主体失败后仍继续其他主体/轮次 |
 | `--mock` / `--deepseek` / `--skip-goals-assess` | 与 `jea run` 语义对齐，通过子进程环境传递 |
+
+失败时终端会提示 **`Resume with: jea evolve resume <run_id>`**。
 
 ---
 
 ## 5. 验证与测试
 
-- **单元测试**：[`test/cli.test.mjs`](../../test/cli.test.mjs) 中新增 `evolve run manifests` 用例：manifest 创建/查找/汇总、`JEA_SUBJECT` 下 runtime 与磁盘 active 分离、失败分类（空内容 vs 缺 key）。
+- **单元测试**：[`test/cli.test.mjs`](../../test/cli.test.mjs) 中 `evolve run manifests` 覆盖：manifest 创建与 flags（含 `exec_limit` / `global_delay_ms`）、`JEA_EXIT_RECORD` 优先于正文正则、`interrupted` 归一化、`index.jsonl` 追加、`buildCycleEnv` 与 `JEA_EXEC_LIMIT`。
 - **建议命令**
   - `npm run jea -- evolve --rounds 5 --subject agentank-tank`
   - `npm run jea -- evolve status`
   - `npm run jea -- evolve resume <run_id>`
+  - `npm run jea -- evolve --rounds 1 --mock --retry-delay-ms 0 --exec-limit 1`
   - `node --preserve-symlinks ./node_modules/vitest/vitest.mjs run test/cli.test.mjs`
+  - `npm test`（全量套件）
 
-**说明：** 全量 `npm test` 在其它用例上可能存在与当前工作区 agentank 配置相关的既有断言差异；与本轮 evolve 功能相关的 CLI 测试应单独跑上述文件验证。
+当前仓库在该轮改动后，**全量 `npm test` 可通过**；若未来再次引入与环境强耦合的断言，仍以单测隔离 fixture 为准。
 
 ---
 
@@ -126,7 +147,8 @@ flowchart TD
 | ---- | ---- |
 | Phase 级断点 | 需把 `run.mjs` 拆成可幂等调用的模块，并定义每 Phase 的输入/输出契约 |
 | `--concurrency N` | 跨主体并发 + 更强的锁与 API 配额策略 |
-| 失败分类 | 结合 HTTP 状态码、引擎错误码结构化分类，减少误判 |
+| 失败码字典 | 在 `run.mjs` 侧统一产出 `code` 枚举，evolve 侧只做透传与展示，进一步减少正则依赖 |
+| `status` 读 index | 可选从 `index.jsonl` 聚合最近 N 条事件，补全「最近一次 round 花了多久」等 |
 | 与 shell 循环的关系 | 旧方式仍可应急；长期操作推荐统一用 `jea evolve` 留下可恢复账本 |
 
 ---
@@ -135,7 +157,8 @@ flowchart TD
 
 | 维度 | PowerShell 连续 `jea run` | `jea evolve` |
 | ---- | ------------------------- | ------------ |
-| 进度 | 仅终端输出 | manifest 可查、可 `status` |
-| 瞬时 API 失败 | 整轮退出 | 可重试 + 退避 |
-| 中断后 | 需人工估算从第几轮重跑 | `resume <run_id>` |
+| 进度 | 仅终端输出 | manifest + 可选 `index.jsonl` |
+| 瞬时 API 失败 | 整轮退出 | 可重试 + 退避；结构化 `retryable` |
+| 中断后 | 需人工估算从第几轮重跑 | `resume`；stale 状态可归一为 `interrupted` |
 | 多主体 | 需手写切换与轮转 | `--subjects` 轮转 + 每主体 manifest |
+| 成本 / 队列 | 固定行为 | `--exec-limit`、 `--global-delay-ms` 可调 |

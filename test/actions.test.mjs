@@ -14,6 +14,7 @@ import {
   actionHandlers,
   actionVerifiers,
 } from '../src/actions/handlers.mjs';
+import * as configuredActions from '../src/actions/configured-actions.mjs';
 import { runConfiguredExternalAction } from '../src/actions/configured-external-runner.mjs';
 import { createIntelligenceStore } from '../src/intelligence/store.mjs';
 
@@ -224,8 +225,10 @@ describe('controlled action handlers', () => {
   });
 
   it('does not expose handlers for unconfigured external actions', () => {
+    const spy = vi.spyOn(configuredActions, 'getConfiguredExternalAction').mockReturnValue(null);
     expect(actionHandlers.agentank_sync_context).toBeUndefined();
     expect(actionHandlers.agentank_unconfigured_action).toBeUndefined();
+    spy.mockRestore();
   });
 
   it('keeps configured challenge requests on the configured external runner path', async () => {

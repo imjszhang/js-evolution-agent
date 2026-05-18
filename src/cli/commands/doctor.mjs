@@ -1,5 +1,6 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import lockfile from 'proper-lockfile';
 import { getDefaultCyberTaoistDocsDir, getProjectRoot, loadProjectEnv } from '../utils/project.mjs';
 
 function statusLine(ok, label, detail = '') {
@@ -26,6 +27,26 @@ export async function doctorCommand() {
   ok = statusLine(existsSync(join(docsDir, 'CONSTITUTION.md')), 'Cyber-Taoist CONSTITUTION.md', docsDir) && ok;
   ok = statusLine(existsSync(join(docsDir, 'SKILL.md')), 'Cyber-Taoist SKILL.md', docsDir) && ok;
   ok = statusLine(existsSync(join(root, 'oada.config.mjs')), 'oada.config.mjs') && ok;
+
+  const runtimeSubjects = join(root, 'runtime', 'subjects');
+  if (existsSync(runtimeSubjects)) {
+    const heldLocks = [];
+    for (const entry of readdirSync(runtimeSubjects, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const lockPath = join(runtimeSubjects, entry.name, 'data', 'evolution', '.evolve.lock');
+      if (!existsSync(lockPath)) continue;
+      try {
+        if (lockfile.checkSync(lockPath)) heldLocks.push(entry.name);
+      } catch {
+        /* ignore unreadable locks */
+      }
+    }
+    if (heldLocks.length) {
+      ok = statusLine(false, 'Evolve subject lock held', heldLocks.join(', ')) && ok;
+    } else {
+      statusLine(true, 'Evolve subject locks', 'none held');
+    }
+  }
 
   console.log(ok ? 'Doctor completed: healthy enough to run.' : 'Doctor completed: warnings need attention.');
   return ok ? 0 : 1;

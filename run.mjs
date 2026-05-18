@@ -22,6 +22,35 @@ function skipGoalsAssess() {
   return v === '1' || String(v).toLowerCase() === 'true';
 }
 
+function parseExecLimit() {
+  const raw = process.env.JEA_EXEC_LIMIT;
+  if (raw == null || raw === '') return 5;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return 5;
+  const i = Math.trunc(n);
+  if (i < 1) return 1;
+  if (i > 100) return 100;
+  return i;
+}
+
+/**
+ * Machine-readable exit metadata for evolution supervisors (parsed from stderr).
+ * Line format: JEA_EXIT_RECORD {"code":"...","message":"...","retryable":true}
+ */
+function buildExitRecord(err) {
+  const message = err?.message || String(err);
+  const base = { message, retryable: false };
+  if (/empty content/i.test(message)) return { ...base, code: 'llm_empty_content', retryable: true };
+  if (/timeout|timed out/i.test(message)) return { ...base, code: 'timeout', retryable: true };
+  if (/\b429\b|rate limit/i.test(message)) return { ...base, code: 'rate_limit', retryable: true };
+  if (/ECONNRESET|ETIMEDOUT|EAI_AGAIN/i.test(message)) return { ...base, code: 'network', retryable: true };
+  if (/DEEPSEEK_API_KEY is required/i.test(message)) return { ...base, code: 'missing_api_key', retryable: false };
+  if (/Subject policy not found|run\.mjs not found/i.test(message)) return { ...base, code: 'configuration', retryable: false };
+  if (/intel pipeline failed/i.test(message)) return { ...base, code: 'intel_failed', retryable: true };
+  if (/exec pipeline failed/i.test(message)) return { ...base, code: 'exec_failed', retryable: false };
+  return { ...base, code: 'unknown', retryable: false };
+}
+
 function previewDoc(doc) {
   return doc.text.split('\n').slice(0, 2).join(' | ').slice(0, 100);
 }
@@ -134,7 +163,7 @@ async function main() {
     aiClient: cfg.aiClient,
     source: 'queue',
   });
-  const execResult = await exec.run({ limit: 5 });
+  const execResult = await exec.run({ limit: parseExecLimit() });
   console.log('  success:', execResult.success);
   console.log('  executed:', execResult.executed.length);
   for (const item of execResult.executed) {
@@ -260,6 +289,8 @@ async function main() {
 
 main().catch((err) => {
   console.error('js-evolution-agent failed:', err?.message || err);
+  const record = buildExitRecord(err);
+  console.error(`JEA_EXIT_RECORD ${JSON.stringify(record)}`);
   process.exit(1);
 });
 
