@@ -14,6 +14,7 @@ import { llmCommand } from './commands/llm.mjs';
 import { policyCommand } from './commands/policy.mjs';
 import { goalsCommand } from './commands/goals.mjs';
 import { evolveCommand } from './commands/evolve.mjs';
+import { daemonCommand } from './commands/daemon.mjs';
 
 export function helpText() {
   return `Usage: jea <command> [options]
@@ -27,6 +28,9 @@ Commands:
   evolve --rounds N      Run multiple evolution cycles with retry/resume state
   evolve resume ID       Resume an interrupted evolve run
   evolve status [ID]     Show recent or specific evolve run status
+  daemon enqueue         Enqueue event-driven daemon tasks
+  daemon work --once     Execute one daemon task
+  daemon status          Show daemon task projection
   data status            Show runtime data status
   data status --json     Show runtime data status as JSON
   data init              Create runtime data directories
@@ -73,6 +77,8 @@ Examples:
   jea run --skip-goals-assess
   jea evolve --rounds 30
   jea evolve status
+  jea daemon enqueue --type run_cycle
+  jea daemon work --once --mock
   jea data init --all
   jea intel summary
   jea audit queue
@@ -102,6 +108,7 @@ export async function main(argv = process.argv.slice(2)) {
   if (command === 'doctor') return doctorCommand({ flags });
   if (command === 'run') return runCommand({ flags });
   if (command === 'evolve') return evolveCommand({ subcommand, flags, args });
+  if (command === 'daemon') return daemonCommand({ subcommand, flags, args });
   if (command === 'data') return dataCommand({ subcommand, flags });
   if (command === 'intel') return intelCommand({ subcommand, flags, args });
   if (command === 'goals') return goalsCommand({ subcommand, flags, args });

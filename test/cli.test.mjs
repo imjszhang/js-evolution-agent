@@ -65,6 +65,19 @@ import {
   summarizeManifest,
 } from '../src/cli/utils/evolve-runs.mjs';
 import {
+  claimNextTask,
+  completeTask,
+  enqueueTask,
+  failTask,
+  readTaskQueue,
+} from '../src/cli/utils/daemon-tasks.mjs';
+import {
+  buildDaemonProjection,
+  currentStatePath,
+  writeDaemonProjection,
+} from '../src/cli/utils/daemon-projection.mjs';
+import { workOnce } from '../src/cli/commands/daemon.mjs';
+import {
   configuredActionToSpec,
   loadSubjectActionConfig,
   normalizeConfiguredAction,
@@ -320,6 +333,95 @@ describe('evolve run manifests', () => {
     expect(env.JEA_SKIP_GOALS_ASSESS).toBe('1');
     expect(env.JEA_EXEC_LIMIT).toBe('2');
     expect(env.DEEPSEEK_API_KEY).toBeUndefined();
+  });
+});
+
+describe('daemon task queue foundation', () => {
+  function makeDaemonProjectRoot() {
+    tempDir = mkdtempSync(join(tmpdir(), 'jea-daemon-'));
+    mkdirSync(join(tempDir, 'policies', 'subjects'), { recursive: true });
+    writeFileSync(join(tempDir, 'policies', 'subjects', 'alpha.md'), '# alpha\n\n## Subject\nalpha', 'utf-8');
+    writeJsonFile(join(tempDir, 'policies', 'active-subject.json'), {
+      active: 'alpha',
+      policy: 'subjects/alpha.md',
+      data_namespace: 'alpha',
+    });
+    return tempDir;
+  }
+
+  it('enqueues daemon tasks idempotently and claims leases', () => {
+    const root = makeDaemonProjectRoot();
+    const first = enqueueTask(root, 'alpha', {
+      type: 'run_cycle',
+      idempotencyKey: 'alpha:run-cycle:1',
+      input: { retries: 0 },
+    });
+    const second = enqueueTask(root, 'alpha', {
+      type: 'run_cycle',
+      idempotencyKey: 'alpha:run-cycle:1',
+      input: { retries: 0 },
+    });
+
+    expect(first.created).toBe(true);
+    expect(second.created).toBe(false);
+    expect(second.task.task_id).toBe(first.task.task_id);
+
+    const claimed = claimNextTask(root, 'alpha', { workerId: 'test-worker', leaseMs: 1000 });
+    expect(claimed.task.status).toBe('running');
+    expect(claimed.task.lease_owner).toBe('test-worker');
+
+    const queue = readTaskQueue(root, 'alpha');
+    expect(queue.tasks[0].status).toBe('running');
+  });
+
+  it('transitions daemon tasks to completed and failed', () => {
+    const root = makeDaemonProjectRoot();
+    const enqueued = enqueueTask(root, 'alpha', {
+      type: 'run_cycle',
+      idempotencyKey: 'alpha:run-cycle:complete',
+    });
+
+    completeTask(root, 'alpha', enqueued.task.task_id, { ok: true });
+    expect(readTaskQueue(root, 'alpha').tasks[0].status).toBe('completed');
+
+    const failedTask = enqueueTask(root, 'alpha', {
+      type: 'run_cycle',
+      idempotencyKey: 'alpha:run-cycle:failed',
+    });
+    failTask(root, 'alpha', failedTask.task.task_id, { code: 'boom', message: 'failed' });
+    const failed = readTaskQueue(root, 'alpha').tasks.find((task) => task.task_id === failedTask.task.task_id);
+    expect(failed.status).toBe('failed');
+    expect(failed.last_error_code).toBe('boom');
+  });
+
+  it('builds and writes daemon current-state projection', () => {
+    const root = makeDaemonProjectRoot();
+    enqueueTask(root, 'alpha', {
+      type: 'run_cycle',
+      idempotencyKey: 'alpha:projection',
+    });
+
+    const projection = buildDaemonProjection(root, 'alpha');
+    writeDaemonProjection(root, 'alpha', projection);
+
+    expect(projection.tasks.counts.pending).toBe(1);
+    expect(readJsonSafe(currentStatePath(root, 'alpha')).tasks.counts.pending).toBe(1);
+  });
+
+  it('workOnce handles a run_cycle task without executing when runner is missing', async () => {
+    const root = makeDaemonProjectRoot();
+    enqueueTask(root, 'alpha', {
+      type: 'run_cycle',
+      idempotencyKey: 'alpha:missing-runner',
+      input: { retries: 0 },
+    });
+
+    const result = await workOnce(root, 'alpha', { worker: 'test-worker' });
+
+    expect(result.worked).toBe(true);
+    expect(result.ok).toBe(false);
+    expect(result.task.status).toBe('failed');
+    expect(result.task.last_error_code).toBe('matched_non_retryable');
   });
 });
 

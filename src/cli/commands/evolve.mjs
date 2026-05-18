@@ -20,6 +20,7 @@ import {
   withSubjectLock,
 } from '../utils/evolve-runs.mjs';
 import { SUBJECT_ENV } from '../utils/subjects.mjs';
+import { enqueueTask } from '../utils/daemon-tasks.mjs';
 
 const RETRYABLE_PATTERNS = [
   /empty content/i,
@@ -407,6 +408,37 @@ export async function evolveCommand({ subcommand, flags = {}, args = [] } = {}) 
   }
 
   const runId = flags.run || createRunId();
+  if (flags['enqueue-only']) {
+    const tasks = [];
+    for (const subject of subjects) {
+      for (let idx = 1; idx <= rounds; idx++) {
+        const result = enqueueTask(root, subject, {
+          type: 'run_cycle',
+          idempotencyKey: `${runId}:${subject}:run_cycle:${idx}`,
+          input: {
+            run_id: runId,
+            round_index: idx,
+            rounds,
+            mock: Boolean(flags.mock),
+            deepseek: Boolean(flags.deepseek),
+            skip_goals_assess: Boolean(flags['skip-goals-assess']),
+            exec_limit: flags['exec-limit'] == null || flags['exec-limit'] === true
+              ? null
+              : parsePositiveInt(flags['exec-limit'], { name: 'exec-limit', min: 1 }),
+            retries: parsePositiveInt(flags.retries, { name: 'retries', defaultValue: 3, min: 0 }),
+          },
+        });
+        tasks.push({ subject, task_id: result.task.task_id, created: result.created, idempotency_key: result.task.idempotency_key });
+      }
+    }
+    if (flags.json) console.log(JSON.stringify({ run_id: runId, subjects, rounds, tasks }, null, 2));
+    else {
+      console.log(`Enqueued evolve run: ${runId}`);
+      console.log(`subjects: ${subjects.join(', ')}`);
+      console.log(`tasks: ${tasks.length}`);
+    }
+    return 0;
+  }
   const manifests = subjects.map((subject) => ({
     subject,
     manifest: createRunManifest({
