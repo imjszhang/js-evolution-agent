@@ -215,6 +215,22 @@ function legacyFallbackAllowed(action) {
   return Boolean(getField(action, 'allow_legacy_fallback') || getField(action, 'diagnostic_fallback'));
 }
 
+function agentExecutionRequested(action) {
+  return Boolean(
+    getField(action, 'provider')
+      || getField(action, 'force_agent')
+      || getField(action, 'require_agentic_execution')
+      || getField(action, 'boundary')
+      || getField(action, 'cwd')
+      || getField(action, 'allowedTools')
+      || getField(action, 'allowed_tools')
+      || getField(action, 'permissionMode')
+      || getField(action, 'permission_mode')
+      || getField(action, 'maxTurns')
+      || getField(action, 'max_turns'),
+  );
+}
+
 function explicitApproval(action) {
   const boundary = asObject(getField(action, 'boundary'));
   return Boolean(
@@ -553,6 +569,29 @@ const builtInActionHandlers = {
   async record_observation(action, ctx) {
     requireParams(action, ['content']);
     const store = storeFrom(ctx);
+    if (!agentExecutionRequested(action)) {
+      const observation = {
+        source: getField(action, 'source') ?? 'oada-action',
+        subject: getField(action, 'subject') ?? action.description ?? 'unspecified',
+        kind: getField(action, 'kind') ?? 'evolution_signal',
+        content: getField(action, 'content'),
+        confidence: getField(action, 'confidence') ?? 'medium',
+        tags: getField(action, 'tags') ?? ['js-evolution-agent'],
+      };
+      const written = store.ingestObservation(observation);
+      const result = {
+        success: written > 0,
+        status: written > 0 ? 'recorded' : 'failed',
+        message: `recorded ${written} observation(s) locally`,
+        provider: 'local',
+        fallback_used: false,
+        writes_applied: { observations: written },
+        evidence: {},
+        writes: { observations: [observation] },
+      };
+      store.recordActionReceipt(action, result, ctx);
+      return result;
+    }
     const agenticExecution = await runPhase2Agent(action, ctx, {
       mode: 'propose',
       objective: 'Execute a low-risk intelligence observation write. Return writes.observations with the exact observation records the host should persist.',

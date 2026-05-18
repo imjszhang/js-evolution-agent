@@ -54,6 +54,7 @@ export class DeepSeekOpenAIClient extends BaseAIClient {
    * @param {{ thinking?: string, timeout?: number }} [opts]
    */
   async chatMessages(messages, opts = {}) {
+    const timeoutSec = opts.timeout ?? this.timeout;
     const body = {
       model: this.model,
       messages,
@@ -66,7 +67,9 @@ export class DeepSeekOpenAIClient extends BaseAIClient {
 
     let completion;
     try {
-      completion = await this._openai.chat.completions.create(body);
+      completion = await this._openai.chat.completions.create(body, {
+        timeout: Math.max(1, Number(timeoutSec) || 120) * 1000,
+      });
     } catch (e) {
       const msg = e?.message || String(e);
       this._log(`DeepSeek API error: ${msg}`, 'error');

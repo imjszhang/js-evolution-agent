@@ -43,6 +43,7 @@ import {
   buildCycleEnv,
   classifyCycleFailure,
   parseExitRecord,
+  runSingleCycle,
 } from '../src/cli/commands/evolve.mjs';
 import {
   createSubject,
@@ -69,14 +70,22 @@ import {
   completeTask,
   enqueueTask,
   failTask,
+  reclaimExpiredLeases,
   readTaskQueue,
+  renewTaskLease,
 } from '../src/cli/utils/daemon-tasks.mjs';
 import {
   buildDaemonProjection,
   currentStatePath,
   writeDaemonProjection,
 } from '../src/cli/utils/daemon-projection.mjs';
-import { workOnce } from '../src/cli/commands/daemon.mjs';
+import {
+  createWorkerState,
+  readWorkerState,
+  requestWorkerStop,
+  workerStatePath,
+} from '../src/cli/utils/daemon-worker-state.mjs';
+import { runDaemonWorker, workOnce } from '../src/cli/commands/daemon.mjs';
 import {
   configuredActionToSpec,
   loadSubjectActionConfig,
@@ -337,6 +346,10 @@ describe('evolve run manifests', () => {
 });
 
 describe('daemon task queue foundation', () => {
+  function delay(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   function makeDaemonProjectRoot() {
     tempDir = mkdtempSync(join(tmpdir(), 'jea-daemon-'));
     mkdirSync(join(tempDir, 'policies', 'subjects'), { recursive: true });
@@ -406,6 +419,192 @@ describe('daemon task queue foundation', () => {
 
     expect(projection.tasks.counts.pending).toBe(1);
     expect(readJsonSafe(currentStatePath(root, 'alpha')).tasks.counts.pending).toBe(1);
+  });
+
+  it('tracks daemon worker state and stop requests', () => {
+    const root = makeDaemonProjectRoot();
+    const created = createWorkerState(root, 'alpha', {
+      workerId: 'worker-test',
+      pid: 123,
+      staleMs: 1000,
+    });
+
+    expect(created.created).toBe(true);
+    expect(readJsonSafe(workerStatePath(root, 'alpha')).status).toBe('running');
+
+    const duplicate = createWorkerState(root, 'alpha', {
+      workerId: 'worker-other',
+      pid: 456,
+      staleMs: 1000,
+    });
+    expect(duplicate.created).toBe(false);
+    expect(duplicate.reason).toBe('already_running');
+
+    const stopped = requestWorkerStop(root, 'alpha', { staleMs: 1000 });
+    expect(stopped.requested).toBe(true);
+    expect(readWorkerState(root, 'alpha').status).toBe('stopping');
+  });
+
+  it('reclaims expired daemon task leases explicitly', () => {
+    const root = makeDaemonProjectRoot();
+    enqueueTask(root, 'alpha', {
+      type: 'run_cycle',
+      idempotencyKey: 'alpha:expired-lease',
+    });
+    const claimed = claimNextTask(root, 'alpha', { workerId: 'old-worker', leaseMs: -1 });
+    expect(claimed.task.status).toBe('running');
+
+    const projectionBefore = buildDaemonProjection(root, 'alpha');
+    expect(projectionBefore.tasks.expired_running_count).toBe(1);
+
+    const reclaimed = reclaimExpiredLeases(root, 'alpha');
+    expect(reclaimed.reclaimed).toHaveLength(1);
+    const queue = readTaskQueue(root, 'alpha');
+    expect(queue.tasks[0].status).toBe('pending');
+    expect(queue.tasks[0].lease_owner).toBeNull();
+  });
+
+  it('renews running task leases only for the current owner', () => {
+    const root = makeDaemonProjectRoot();
+    enqueueTask(root, 'alpha', {
+      type: 'run_cycle',
+      idempotencyKey: 'alpha:renew-lease',
+    });
+    const claimed = claimNextTask(root, 'alpha', { workerId: 'lease-worker', leaseMs: 1000 });
+    const firstExpiry = Date.parse(claimed.task.lease_expires_at);
+
+    const denied = renewTaskLease(root, 'alpha', claimed.task.task_id, {
+      workerId: 'other-worker',
+      leaseMs: 5000,
+    });
+    expect(denied.renewed).toBe(false);
+    expect(denied.reason).toBe('lease_owner_mismatch');
+
+    const renewed = renewTaskLease(root, 'alpha', claimed.task.task_id, {
+      workerId: 'lease-worker',
+      leaseMs: 5000,
+    });
+    expect(renewed.renewed).toBe(true);
+    expect(Date.parse(renewed.task.lease_expires_at)).toBeGreaterThan(firstExpiry);
+  });
+
+  it('runSingleCycle aborts a child process with a structured stop record', async () => {
+    const root = makeDaemonProjectRoot();
+    writeFileSync(join(root, 'run.mjs'), [
+      "process.on('SIGTERM', () => {",
+      '  process.exit(0);',
+      '});',
+      'setInterval(() => {}, 1000);',
+    ].join('\n'), 'utf-8');
+    const controller = new AbortController();
+
+    const result = await runSingleCycle({
+      root,
+      subject: 'alpha',
+      flags: { mock: true },
+      signal: controller.signal,
+      hooks: {
+        onChildStart: () => controller.abort(),
+      },
+      abortKillMs: 50,
+    });
+
+    expect(result.aborted).toBe(true);
+    expect(parseExitRecord(result.output)).toMatchObject({
+      code: 'daemon_stop_requested',
+      retryable: true,
+    });
+  });
+
+  it('runs the daemon loop through workOnce and writes worker health', async () => {
+    const root = makeDaemonProjectRoot();
+    enqueueTask(root, 'alpha', {
+      type: 'run_cycle',
+      idempotencyKey: 'alpha:loop-missing-runner',
+      input: { retries: 0 },
+    });
+
+    const result = await runDaemonWorker(root, 'alpha', {
+      worker: 'loop-worker',
+      'max-iterations': '1',
+      'interval-ms': '0',
+      'idle-interval-ms': '0',
+    });
+
+    expect(result.started).toBe(true);
+    expect(result.iterations).toBe(1);
+    expect(result.reason).toBe('max_iterations');
+    const state = readWorkerState(root, 'alpha');
+    expect(state.status).toBe('stopped');
+    expect(state.last_work_result.worked).toBe(true);
+    expect(state.last_work_result.error_code).toBe('matched_non_retryable');
+
+    const projection = buildDaemonProjection(root, 'alpha');
+    expect(projection.worker.status).toBe('stopped');
+    expect(projection.tasks.counts.failed).toBe(1);
+  });
+
+  it('renews leases and heartbeats while a daemon task is running', async () => {
+    const root = makeDaemonProjectRoot();
+    writeFileSync(join(root, 'run.mjs'), [
+      'setTimeout(() => process.exit(0), 140);',
+    ].join('\n'), 'utf-8');
+    enqueueTask(root, 'alpha', {
+      type: 'run_cycle',
+      idempotencyKey: 'alpha:long-running',
+      input: { retries: 0 },
+    });
+
+    const result = await runDaemonWorker(root, 'alpha', {
+      worker: 'long-worker',
+      'max-iterations': '1',
+      'lease-ms': '80',
+      'heartbeat-ms': '20',
+      'interval-ms': '0',
+      'idle-interval-ms': '0',
+    });
+
+    expect(result.started).toBe(true);
+    expect(result.reason).toBe('max_iterations');
+    const queue = readTaskQueue(root, 'alpha');
+    expect(queue.tasks[0].status).toBe('completed');
+    const projection = buildDaemonProjection(root, 'alpha');
+    expect(projection.tasks.expired_running_count).toBe(0);
+    expect(Date.parse(readWorkerState(root, 'alpha').heartbeat_at))
+      .toBeGreaterThan(Date.parse(readWorkerState(root, 'alpha').started_at));
+  });
+
+  it('propagates daemon stop requests to the running child and releases the task', async () => {
+    const root = makeDaemonProjectRoot();
+    writeFileSync(join(root, 'run.mjs'), [
+      "process.on('SIGTERM', () => {",
+      '  process.exit(0);',
+      '});',
+      'setInterval(() => {}, 1000);',
+    ].join('\n'), 'utf-8');
+    enqueueTask(root, 'alpha', {
+      type: 'run_cycle',
+      idempotencyKey: 'alpha:stop-running',
+      input: { retries: 0 },
+    });
+
+    const worker = runDaemonWorker(root, 'alpha', {
+      worker: 'stop-worker',
+      'lease-ms': '100',
+      'heartbeat-ms': '20',
+      'interval-ms': '0',
+      'idle-interval-ms': '0',
+    });
+    await delay(60);
+    const stopped = requestWorkerStop(root, 'alpha');
+    expect(stopped.requested).toBe(true);
+
+    const result = await worker;
+    expect(result.reason).toBe('stop_requested');
+    const task = readTaskQueue(root, 'alpha').tasks[0];
+    expect(task.status).toBe('pending');
+    expect(task.last_error_code).toBe('daemon_stop_requested');
+    expect(readWorkerState(root, 'alpha').status).toBe('stopped');
   });
 
   it('workOnce handles a run_cycle task without executing when runner is missing', async () => {

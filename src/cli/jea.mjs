@@ -30,7 +30,10 @@ Commands:
   evolve status [ID]     Show recent or specific evolve run status
   daemon enqueue         Enqueue event-driven daemon tasks
   daemon work --once     Execute one daemon task
-  daemon status          Show daemon task projection
+  daemon start           Run the daemon worker loop in the foreground
+                         Supports --heartbeat-ms and --lease-ms for long tasks
+  daemon stop            Request the daemon worker to stop gracefully
+  daemon status          Show daemon task and worker projection
   data status            Show runtime data status
   data status --json     Show runtime data status as JSON
   data init              Create runtime data directories
@@ -79,6 +82,8 @@ Examples:
   jea evolve status
   jea daemon enqueue --type run_cycle
   jea daemon work --once --mock
+  jea daemon start --mock
+  jea daemon stop
   jea data init --all
   jea intel summary
   jea audit queue

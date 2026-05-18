@@ -276,8 +276,8 @@ describe('controlled action handlers', () => {
     }, ctx);
 
     expect(result.success).toBe(true);
-    expect(result.agentic_execution.provider).toBe('llm_only');
-    expect(ctx.ai.agentCalls).toHaveLength(1);
+    expect(result.provider).toBe('local');
+    expect(ctx.ai.agentCalls).toHaveLength(0);
     expect(ctx.host.intelligenceStore.readRecentIntel({ days: 1, limit: 5 })[0].content)
       .toBe('handler wrote an observation');
   });
@@ -302,6 +302,7 @@ describe('controlled action handlers', () => {
     const result = await actionHandlers.record_observation({
       type: 'record_observation',
       params: {
+        provider: 'llm_only',
         source: 'legacy',
         subject: 'handler',
         content: 'legacy observation',
@@ -330,6 +331,7 @@ describe('controlled action handlers', () => {
     const result = await actionHandlers.record_observation({
       type: 'record_observation',
       params: {
+        provider: 'llm_only',
         source: 'test',
         subject: 'approval',
         content: 'fallback should not run either',

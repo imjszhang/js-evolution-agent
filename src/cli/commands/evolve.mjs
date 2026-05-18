@@ -21,6 +21,7 @@ import {
 } from '../utils/evolve-runs.mjs';
 import { SUBJECT_ENV } from '../utils/subjects.mjs';
 import { enqueueTask } from '../utils/daemon-tasks.mjs';
+import { recordDaemonEvent } from '../utils/daemon-events.mjs';
 
 const RETRYABLE_PATTERNS = [
   /empty content/i,
@@ -126,7 +127,7 @@ function flagsFromManifest(manifest, overrides = {}) {
   };
 }
 
-export function runSingleCycle({ root, subject, flags = {} } = {}) {
+export function runSingleCycle({ root, subject, flags = {}, hooks = {}, signal = null, abortKillMs = 5000 } = {}) {
   const runner = join(root, 'run.mjs');
   if (!existsSync(runner)) {
     return Promise.resolve({ exitCode: 1, output: `run.mjs not found: ${runner}` });
@@ -141,17 +142,50 @@ export function runSingleCycle({ root, subject, flags = {} } = {}) {
     stdio: ['ignore', 'pipe', 'pipe'],
     shell: false,
   });
+  hooks.onChildStart?.(child);
   const chunks = [];
+  let aborted = false;
+  let childExited = false;
+  let killTimer = null;
   const collect = (chunk, stream) => {
     const text = chunk.toString();
     chunks.push(text);
+    hooks.onOutput?.(text, stream === process.stderr ? 'stderr' : 'stdout');
     stream.write(text);
   };
   child.stdout.on('data', (chunk) => collect(chunk, process.stdout));
   child.stderr.on('data', (chunk) => collect(chunk, process.stderr));
+  const abortChild = () => {
+    if (aborted) return;
+    aborted = true;
+    const record = {
+      code: 'daemon_stop_requested',
+      message: 'Daemon stop requested',
+      retryable: true,
+    };
+    chunks.push(`\nJEA_EXIT_RECORD ${JSON.stringify(record)}\n`);
+    if (!child.killed) child.kill('SIGTERM');
+    killTimer = setTimeout(() => {
+      if (!childExited) child.kill('SIGKILL');
+    }, abortKillMs);
+  };
+  if (signal) {
+    if (signal.aborted) abortChild();
+    else signal.addEventListener('abort', abortChild, { once: true });
+  }
   return new Promise((resolve) => {
-    child.on('close', (code) => resolve({ exitCode: code ?? 1, output: chunks.join('') }));
-    child.on('error', (err) => resolve({ exitCode: 1, output: err?.message || String(err) }));
+    child.on('close', (code) => {
+      childExited = true;
+      if (killTimer) clearTimeout(killTimer);
+      if (signal) signal.removeEventListener('abort', abortChild);
+      resolve({ exitCode: aborted ? 1 : code ?? 1, output: chunks.join(''), aborted });
+    });
+    child.on('error', (err) => {
+      childExited = true;
+      if (killTimer) clearTimeout(killTimer);
+      if (signal) signal.removeEventListener('abort', abortChild);
+      resolve({ exitCode: 1, output: err?.message || String(err), aborted });
+    });
   });
 }
 
@@ -428,6 +462,18 @@ export async function evolveCommand({ subcommand, flags = {}, args = [] } = {}) 
             retries: parsePositiveInt(flags.retries, { name: 'retries', defaultValue: 3, min: 0 }),
           },
         });
+        if (result.created) {
+          recordDaemonEvent(root, subject, {
+            type: 'task_enqueued',
+            status: 'ok',
+            task_id: result.task.task_id,
+            task_type: result.task.type,
+            idempotency_key: result.task.idempotency_key,
+            run_id: runId,
+            round_index: idx,
+            source: 'evolve_enqueue_only',
+          });
+        }
         tasks.push({ subject, task_id: result.task.task_id, created: result.created, idempotency_key: result.task.idempotency_key });
       }
     }

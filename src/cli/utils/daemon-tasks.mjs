@@ -104,10 +104,45 @@ export function enqueueTask(root, subject, {
   });
 }
 
-function expiredLease(task, nowMs = Date.now()) {
+export function expiredLease(task, nowMs = Date.now()) {
   if (task.status !== 'running') return false;
   const t = Date.parse(task.lease_expires_at ?? '');
   return !Number.isFinite(t) || t <= nowMs;
+}
+
+function sortPendingTasks(tasks) {
+  return [...tasks]
+    .filter((item) => item.status === 'pending')
+    .sort((a, b) => (a.priority ?? 100) - (b.priority ?? 100) || String(a.created_at).localeCompare(String(b.created_at)));
+}
+
+function reclaimExpiredLeasesInQueue(queue, { nowMs = Date.now(), reason = 'lease_expired' } = {}) {
+  const reclaimed = [];
+  for (const task of queue.tasks) {
+    if (!expiredLease(task, nowMs)) continue;
+    const previous = {
+      status: task.status,
+      lease_owner: task.lease_owner,
+      lease_expires_at: task.lease_expires_at,
+    };
+    task.status = 'pending';
+    task.lease_owner = null;
+    task.lease_expires_at = null;
+    task.last_error_code = reason;
+    task.last_error_reason = reason;
+    task.last_error = `Lease expired for worker ${previous.lease_owner || 'unknown'}`;
+    task.updated_at = nowIso();
+    reclaimed.push({ ...task, previous });
+  }
+  return reclaimed;
+}
+
+export function reclaimExpiredLeases(root, subject, { nowMs = Date.now(), reason = 'lease_expired' } = {}) {
+  return withTaskQueueLock(root, subject, () => {
+    const queue = readTaskQueue(root, subject);
+    const reclaimed = reclaimExpiredLeasesInQueue(queue, { nowMs, reason });
+    return { reclaimed, queue: writeTaskQueue(root, subject, queue) };
+  });
 }
 
 export function claimNextTask(root, subject, {
@@ -118,26 +153,19 @@ export function claimNextTask(root, subject, {
   return withTaskQueueLock(root, subject, () => {
     const queue = readTaskQueue(root, subject);
     const nowMs = Date.now();
-    for (const task of queue.tasks) {
-      if (expiredLease(task, nowMs)) {
-        task.status = 'pending';
-        task.lease_owner = null;
-        task.lease_expires_at = null;
-        task.updated_at = nowIso();
-      }
-    }
+    const reclaimed = reclaimExpiredLeasesInQueue(queue, { nowMs });
     const task = queue.tasks
       .filter((item) => item.status === 'pending' && (!type || item.type === type))
       .sort((a, b) => (a.priority ?? 100) - (b.priority ?? 100) || String(a.created_at).localeCompare(String(b.created_at)))[0] ?? null;
     if (!task) {
-      return { task: null, queue: writeTaskQueue(root, subject, queue), reclaimed: false };
+      return { task: null, queue: writeTaskQueue(root, subject, queue), reclaimed };
     }
     task.status = 'running';
     task.attempts = (task.attempts ?? 0) + 1;
     task.lease_owner = workerId;
     task.lease_expires_at = new Date(nowMs + leaseMs).toISOString();
     task.updated_at = nowIso();
-    return { task, queue: writeTaskQueue(root, subject, queue), reclaimed: false };
+    return { task, queue: writeTaskQueue(root, subject, queue), reclaimed };
   });
 }
 
@@ -180,6 +208,35 @@ export function releaseTaskForRetry(root, subject, taskIdValue, failure = {}) {
   }));
 }
 
+export function renewTaskLease(root, subject, taskIdValue, {
+  workerId = `worker-${process.pid}`,
+  leaseMs = 5 * 60 * 1000,
+} = {}) {
+  return withTaskQueueLock(root, subject, () => {
+    const queue = readTaskQueue(root, subject);
+    const idx = queue.tasks.findIndex((task) => task.task_id === taskIdValue);
+    if (idx < 0) {
+      return { renewed: false, reason: 'task_not_found', task: null, queue };
+    }
+    const task = queue.tasks[idx];
+    if (task.status !== 'running') {
+      return { renewed: false, reason: 'task_not_running', task, queue };
+    }
+    if (task.lease_owner !== workerId) {
+      return { renewed: false, reason: 'lease_owner_mismatch', task, queue };
+    }
+    const nowMs = Date.now();
+    const next = {
+      ...task,
+      lease_expires_at: new Date(nowMs + leaseMs).toISOString(),
+      lease_renewed_at: nowIso(),
+      updated_at: nowIso(),
+    };
+    queue.tasks[idx] = next;
+    return { renewed: true, task: next, queue: writeTaskQueue(root, subject, queue) };
+  });
+}
+
 export function updateTask(root, subject, taskIdValue, updater) {
   return withTaskQueueLock(root, subject, () => {
     const queue = readTaskQueue(root, subject);
@@ -195,11 +252,14 @@ export function summarizeTaskQueue(queue) {
   const tasks = Array.isArray(queue?.tasks) ? queue.tasks : [];
   const counts = {};
   for (const task of tasks) counts[task.status ?? 'unknown'] = (counts[task.status ?? 'unknown'] ?? 0) + 1;
+  const nowMs = Date.now();
+  const expired_running = tasks.filter((task) => expiredLease(task, nowMs));
   return {
     total: tasks.length,
     counts,
-    next_task: tasks.find((task) => task.status === 'pending') ?? null,
+    next_task: sortPendingTasks(tasks)[0] ?? null,
     running: tasks.filter((task) => task.status === 'running'),
+    expired_running,
     failed: tasks.filter((task) => task.status === 'failed'),
   };
 }
