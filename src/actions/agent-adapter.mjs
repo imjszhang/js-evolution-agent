@@ -3,6 +3,7 @@ import { chatMessages, parseJsonFromText } from '../ai/messages.mjs';
 const DEFAULT_PROVIDER = 'llm_only';
 const CLAUDE_PROVIDER = 'claude_code_sdk';
 const CURSOR_PROVIDER = 'cursor_sdk';
+const AGENT_VERIFICATION_ATTEMPTS = 3;
 const MODE_GUIDANCE = {
   observe: 'Read and synthesize available context. Do not propose source mutations as completed work.',
   propose: 'Produce a concrete proposal, investigation result, or decision-ready recommendation.',
@@ -58,6 +59,22 @@ function compactJson(value) {
   } catch {
     return String(value);
   }
+}
+
+function objectHasContent(value) {
+  const obj = asObject(value);
+  return Object.values(obj).some((item) => {
+    if (Array.isArray(item)) return item.length > 0;
+    if (item && typeof item === 'object') return Object.keys(item).length > 0;
+    return item != null && item !== '';
+  });
+}
+
+function firstList(...values) {
+  for (const value of values) {
+    if (Array.isArray(value) && value.length) return value;
+  }
+  return [];
 }
 
 function contextSummary(ctx) {
@@ -198,6 +215,184 @@ function normalizeAgentResult(parsed, rawText, provider) {
   };
 }
 
+function effectiveAction(action) {
+  const context = getField(action, 'context');
+  return asObject(context).action ?? action;
+}
+
+function effectiveActionType(action) {
+  return effectiveAction(action)?.type ?? action?.type ?? 'agent_execute';
+}
+
+function strictRawReceipt(rawText) {
+  try {
+    const parsed = JSON.parse(String(rawText ?? '').trim());
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function validateAgentReceipt(action, agent = {}) {
+  const actionType = effectiveActionType(action);
+  const evidence = asObject(agent.evidence);
+  const writes = asObject(agent.writes);
+  const outputs = asObject(agent.outputs);
+  const rawReceipt = strictRawReceipt(agent.raw_response);
+  const missing = [];
+
+  if (!rawReceipt) missing.push('strict JSON receipt');
+  if (!rawReceipt?.status) missing.push('status');
+  if (!rawReceipt?.summary) missing.push('summary');
+
+  if (actionType === 'record_observation' && !Array.isArray(writes.observations)) {
+    missing.push('writes.observations');
+  }
+
+  if (actionType === 'propose_probe') {
+    const proposals = firstList(writes.probe_proposals, writes.proposals, writes.probe_events);
+    if (!proposals.length) missing.push('writes.probe_proposals');
+  }
+
+  if (actionType === 'run_probe' && !objectHasContent(evidence) && !Array.isArray(writes.probe_results)) {
+    missing.push('evidence or writes.probe_results');
+  }
+
+  if (actionType === 'write_retrospective' && !Array.isArray(writes.retrospectives)) {
+    missing.push('writes.retrospectives');
+  }
+
+  if (
+    actionType === 'request_core_review'
+    && !Array.isArray(writes.core_reviews)
+    && rawReceipt?.status !== 'requires_human_review'
+    && !rawReceipt?.requires_approval
+  ) {
+    missing.push('writes.core_reviews');
+  }
+
+  if (actionType === 'core_apply') {
+    const changedFiles = firstList(
+      agent.modified_files,
+      agent.created_files,
+      evidence.changed_files,
+      outputs.changed_files,
+    );
+    const testResults = firstList(
+      agent.test_results,
+      evidence.test_results,
+      evidence.tests_run,
+      outputs.test_results,
+      outputs.tests_run,
+    );
+    const diffSummary = evidence.diff_summary ?? outputs.diff_summary ?? writes.diff_summary;
+    const rollbackPlan = evidence.rollback_plan ?? outputs.rollback_plan ?? writes.rollback_plan;
+    const deathBoundaryResult = evidence.death_boundary_result ?? outputs.death_boundary_result ?? writes.death_boundary_result;
+
+    if (!changedFiles.length) missing.push('modified_files/created_files or evidence.changed_files');
+    if (!diffSummary) missing.push('evidence.diff_summary');
+    if (!testResults.length) missing.push('test_results or evidence.tests_run');
+    if (!rollbackPlan) missing.push('evidence.rollback_plan');
+    if (!deathBoundaryResult) missing.push('evidence.death_boundary_result');
+  }
+
+  return {
+    valid: missing.length === 0,
+    action_type: actionType,
+    missing,
+  };
+}
+
+function buildAgentTaskTranslationMessages(action, ctx, promptParts) {
+  return [
+    {
+      role: 'system',
+      content: [
+        'You translate js-evolution-agent execution contracts into clear human task prompts for a code agent.',
+        'Do not solve the task. Do not invent facts. Preserve boundaries, cwd/worktree requirements, acceptance criteria, and receipt requirements.',
+        'Write the result as a practical assignment a human engineer would send to Claude Code or Cursor Agent.',
+      ].join('\n'),
+    },
+    {
+      role: 'user',
+      content: [
+        '# Machine execution contract',
+        '',
+        promptParts.system,
+        '',
+        promptParts.user,
+        '',
+        '# Translation task',
+        '',
+        'Rewrite the contract above into one concise, human-readable task prompt for an autonomous code agent.',
+        'The prompt must include:',
+        '- the goal in plain language;',
+        '- where the agent is working and any cwd/worktree/sandbox boundary;',
+        '- whether file mutation is allowed;',
+        '- what evidence or verification is expected;',
+        '- the requirement that final delivery must be a strict JSON receipt only after the task is actually complete.',
+        '',
+        'Return only the task prompt text. Do not wrap it in JSON or Markdown fences.',
+        '',
+        `cycle_id: ${ctx?.cycleId ?? 'unknown'}`,
+        `effective_action_type: ${effectiveActionType(action)}`,
+      ].join('\n'),
+    },
+  ];
+}
+
+async function translateAgentTaskPrompt(action, ctx, promptParts) {
+  const ai = ctx?.ai;
+  if (!ai) {
+    return {
+      ok: false,
+      error: 'agent providers require ctx.ai to translate the execution contract into an agent task prompt',
+    };
+  }
+  const raw = await chatMessages(ai, buildAgentTaskTranslationMessages(action, ctx, promptParts), {
+    thinking: getField(action, 'translation_thinking') ?? 'low',
+    timeout: getField(action, 'translation_timeout') ?? 180,
+  });
+  const text = String(raw ?? '').trim();
+  if (!text) {
+    return {
+      ok: false,
+      error: 'agent task prompt translation returned empty text',
+    };
+  }
+  return { ok: true, prompt: text, raw };
+}
+
+function buildAgentVerificationPrompt(action, validation, attempt) {
+  return [
+    'Please self-check the work you just performed against the original task, boundary, and acceptance criteria.',
+    '',
+    validation?.missing?.length
+      ? `The current receipt is missing: ${validation.missing.join(', ')}.`
+      : 'Even if the previous message looked complete, verify it against the actual work before final delivery.',
+    '',
+    'If the task is not actually complete, continue the missing work now in this same session.',
+    'When it is complete, reply with exactly one strict JSON object matching the required receipt contract.',
+    'Do not include Markdown, commentary, or code fences around the JSON.',
+    '',
+    `verification_attempt: ${attempt}/${AGENT_VERIFICATION_ATTEMPTS}`,
+    `effective_action_type: ${effectiveActionType(action)}`,
+  ].join('\n');
+}
+
+function withAgentLoopOutputs(agent, loop) {
+  agent.outputs = {
+    ...agent.outputs,
+    agent_loop: {
+      task_prompt: loop.taskPrompt,
+      verification_attempts: loop.verificationAttempts,
+      final_validation: loop.finalValidation,
+      same_session: loop.sameSession,
+    },
+  };
+  return agent;
+}
+
 function defaultClaudeModeOptions(mode) {
   if (mode === 'sandbox_patch') {
     return {
@@ -251,7 +446,7 @@ function buildClaudeOptions(action, ctx) {
       defaults.maxTurns,
     ),
     settingSources,
-    persistSession: false,
+    persistSession: true,
     systemPrompt: {
       type: 'preset',
       preset: 'claude_code',
@@ -385,27 +580,71 @@ async function runClaudeCodeSdk(action, ctx) {
 
   const mode = getField(action, 'mode') ?? 'propose';
   const promptParts = buildPrompt(action, ctx);
-  const prompt = [
-    promptParts.system,
-    '',
-    promptParts.user,
-    '',
-    'When you finish, emit the final answer as a single JSON object matching the Output contract.',
-  ].join('\n');
+  const translated = await translateAgentTaskPrompt(action, ctx, promptParts);
+  if (!translated.ok) {
+    return {
+      success: false,
+      deferred: true,
+      provider: CLAUDE_PROVIDER,
+      error: translated.error,
+    };
+  }
   const { options, cwdWasConfigured } = buildClaudeOptions(action, ctx);
   const assistantTexts = [];
   const toolUses = [];
   const messages = [];
+  const runResults = [];
   let resultMessage = null;
+  let lastRawText = '';
+  let agent = null;
+  let validation = { valid: false, missing: ['receipt'], action_type: effectiveActionType(action) };
+  let sessionId = null;
 
-  try {
-    for await (const message of query({ prompt, options })) {
+  async function runTurn(prompt, resumeSessionId = null) {
+    const turnOptions = resumeSessionId
+      ? { ...options, resume: resumeSessionId }
+      : options;
+    let turnResult = null;
+    const turnTexts = [];
+    for await (const message of query({ prompt, options: turnOptions })) {
       messages.push(message);
       if (message?.type === 'assistant') {
-        assistantTexts.push(...textFromAssistantMessage(message));
+        const texts = textFromAssistantMessage(message);
+        assistantTexts.push(...texts);
+        turnTexts.push(...texts);
         toolUses.push(...toolUsesFromAssistantMessage(message));
       }
-      if (message?.type === 'result') resultMessage = message;
+      if (message?.type === 'result') {
+        resultMessage = message;
+        turnResult = message;
+      }
+    }
+    sessionId ??= turnResult?.session_id ?? turnResult?.sessionId ?? null;
+    const rawText = String(turnResult?.result ?? turnTexts.join('\n\n') ?? '').trim();
+    runResults.push({
+      session_id: turnResult?.session_id ?? turnResult?.sessionId ?? sessionId,
+      subtype: turnResult?.subtype ?? null,
+      raw_text: rawText,
+    });
+    return { resultMessage: turnResult, rawText };
+  }
+
+  try {
+    const initial = await runTurn(translated.prompt);
+    lastRawText = initial.rawText;
+    if (initial.resultMessage && initial.resultMessage.subtype === 'error') {
+      const parsed = parseAgentJson(ctx?.ai, lastRawText || assistantTexts.join('\n\n'));
+      agent = normalizeAgentResult(parsed, lastRawText || assistantTexts.join('\n\n'), CLAUDE_PROVIDER);
+    } else {
+      for (let attempt = 1; attempt <= AGENT_VERIFICATION_ATTEMPTS; attempt += 1) {
+        const verificationPrompt = buildAgentVerificationPrompt(action, validation, attempt);
+        const verification = await runTurn(verificationPrompt, sessionId);
+        lastRawText = verification.rawText;
+        const parsed = parseAgentJson(ctx?.ai, lastRawText || assistantTexts.join('\n\n'));
+        agent = normalizeAgentResult(parsed, lastRawText || assistantTexts.join('\n\n'), CLAUDE_PROVIDER);
+        validation = validateAgentReceipt(action, agent);
+        if (validation.valid) break;
+      }
     }
   } catch (e) {
     return {
@@ -415,9 +654,17 @@ async function runClaudeCodeSdk(action, ctx) {
     };
   }
 
-  const rawText = String(resultMessage?.result ?? assistantTexts.join('\n\n') ?? '').trim();
-  const parsed = parseAgentJson(ctx?.ai, rawText || assistantTexts.join('\n\n'));
-  const agent = normalizeAgentResult(parsed, rawText || assistantTexts.join('\n\n'), CLAUDE_PROVIDER);
+  if (!agent) {
+    const parsed = parseAgentJson(ctx?.ai, lastRawText || assistantTexts.join('\n\n'));
+    agent = normalizeAgentResult(parsed, lastRawText || assistantTexts.join('\n\n'), CLAUDE_PROVIDER);
+    validation = validateAgentReceipt(action, agent);
+  }
+  withAgentLoopOutputs(agent, {
+    taskPrompt: translated.prompt,
+    verificationAttempts: runResults.length > 0 ? Math.max(0, runResults.length - 1) : 0,
+    finalValidation: validation,
+    sameSession: Boolean(sessionId),
+  });
   agent.outputs = {
     ...agent.outputs,
     claude: {
@@ -425,6 +672,7 @@ async function runClaudeCodeSdk(action, ctx) {
       sdk_result_subtype: resultMessage?.subtype ?? null,
       tool_uses: toolUses,
       message_count: messages.length,
+      run_results: runResults,
       options: {
         cwd: options.cwd,
         permissionMode: options.permissionMode,
@@ -446,8 +694,17 @@ async function runClaudeCodeSdk(action, ctx) {
     ];
   }
 
+  if (!validation.valid) {
+    agent.status = agent.status === 'completed' ? 'partial' : agent.status;
+    agent.requires_approval = agent.requires_approval || agent.status === 'requires_human_review';
+    agent.verification_hints = [
+      ...agent.verification_hints,
+      `agent receipt validation missing: ${validation.missing.join(', ')}`,
+    ];
+  }
+
   return {
-    success: resultMessage ? resultMessage.subtype !== 'error' : true,
+    success: (resultMessage ? resultMessage.subtype !== 'error' : true) && validation.valid,
     message: agent.summary,
     agent,
   };
@@ -475,7 +732,6 @@ async function runCursorSdk(action, ctx) {
 
   const mode = getField(action, 'mode') ?? 'propose';
   const promptParts = buildPrompt(action, ctx);
-  const prompt = buildCursorPrompt(promptParts);
   const { options, cwdWasConfigured, model } = buildCursorOptions(action, ctx);
 
   if (mode === 'sandbox_patch' && !cwdWasConfigured) {
@@ -505,9 +761,69 @@ async function runCursorSdk(action, ctx) {
     };
   }
 
-  let runResult;
+  const translated = await translateAgentTaskPrompt(action, ctx, promptParts);
+  if (!translated.ok) {
+    return {
+      success: false,
+      deferred: true,
+      provider: CURSOR_PROVIDER,
+      error: translated.error,
+    };
+  }
+
+  let cursorAgent = null;
+  const runResults = [];
+  let runResult = null;
+  let rawText = '';
+  let agentResult = null;
+  let validation = { valid: false, missing: ['receipt'], action_type: effectiveActionType(action) };
+  let sameSession = false;
+
   try {
-    runResult = await Agent.prompt(prompt, options);
+    if (typeof Agent.create === 'function') {
+      cursorAgent = Agent.create(options);
+      sameSession = true;
+
+      async function sendTurn(prompt) {
+        const run = await cursorAgent.send(prompt);
+        const result = typeof run?.wait === 'function' ? await run.wait() : run;
+        runResults.push({
+          id: result?.id ?? run?.id ?? null,
+          status: result?.status ?? null,
+          raw_text: String(result?.result ?? '').trim(),
+        });
+        return result;
+      }
+
+      await sendTurn(translated.prompt);
+      for (let attempt = 1; attempt <= AGENT_VERIFICATION_ATTEMPTS; attempt += 1) {
+        runResult = await sendTurn(buildAgentVerificationPrompt(action, validation, attempt));
+        rawText = String(runResult?.result ?? '').trim();
+        const parsed = parseAgentJson(ctx?.ai, rawText);
+        agentResult = normalizeAgentResult(parsed, rawText, CURSOR_PROVIDER);
+        validation = validateAgentReceipt(action, agentResult);
+        if (validation.valid) break;
+      }
+    } else {
+      const prompt = buildCursorPrompt({
+        system: '',
+        user: [
+          translated.prompt,
+          '',
+          buildAgentVerificationPrompt(action, validation, 1),
+        ].join('\n'),
+      });
+      runResult = await Agent.prompt(prompt, options);
+      rawText = String(runResult?.result ?? '').trim();
+      const parsed = parseAgentJson(ctx?.ai, rawText);
+      agentResult = normalizeAgentResult(parsed, rawText, CURSOR_PROVIDER);
+      validation = validateAgentReceipt(action, agentResult);
+      runResults.push({
+        id: runResult?.id ?? null,
+        status: runResult?.status ?? null,
+        raw_text: rawText,
+      });
+    }
   } catch (e) {
     const deferred = cursorStartupFailure(e, CursorAgentError);
     return {
@@ -517,14 +833,22 @@ async function runCursorSdk(action, ctx) {
       error: `Cursor SDK execution failed: ${e?.message || e}`,
       retryable: Boolean(e?.isRetryable),
     };
+  } finally {
+    if (cursorAgent && typeof cursorAgent[Symbol.asyncDispose] === 'function') {
+      await cursorAgent[Symbol.asyncDispose]();
+    }
   }
 
-  const rawText = String(runResult?.result ?? '').trim();
-  const parsed = parseAgentJson(ctx?.ai, rawText);
-  const agent = normalizeAgentResult(parsed, rawText, CURSOR_PROVIDER);
+  const agent = agentResult ?? normalizeAgentResult(parseAgentJson(ctx?.ai, rawText), rawText, CURSOR_PROVIDER);
   if (runResult?.status && runResult.status !== 'finished' && agent.status === 'completed') {
     agent.status = runResult.status === 'error' ? 'blocked' : runResult.status;
   }
+  withAgentLoopOutputs(agent, {
+    taskPrompt: translated.prompt,
+    verificationAttempts: sameSession ? runResults.length - 1 : runResults.length,
+    finalValidation: validation,
+    sameSession,
+  });
   agent.outputs = {
     ...agent.outputs,
     cursor: {
@@ -534,6 +858,7 @@ async function runCursorSdk(action, ctx) {
       duration_ms: runResult?.durationMs ?? null,
       model: runResult?.model ?? { id: model },
       git: runResult?.git ?? null,
+      run_results: runResults,
       options: {
         cwd: options.local.cwd,
         settingSources: options.local.settingSources,
@@ -542,8 +867,17 @@ async function runCursorSdk(action, ctx) {
     },
   };
 
+  if (!validation.valid) {
+    agent.status = agent.status === 'completed' ? 'partial' : agent.status;
+    agent.requires_approval = agent.requires_approval || agent.status === 'requires_human_review';
+    agent.verification_hints = [
+      ...agent.verification_hints,
+      `agent receipt validation missing: ${validation.missing.join(', ')}`,
+    ];
+  }
+
   return {
-    success: runResult?.status ? runResult.status === 'finished' : true,
+    success: (runResult?.status ? runResult.status === 'finished' : true) && validation.valid,
     message: agent.summary,
     agent,
   };

@@ -32,6 +32,7 @@ vi.mock('@cursor/sdk', () => {
   }
   return {
     Agent: {
+      create: vi.fn(),
       prompt: vi.fn(),
     },
     CursorAgentError: MockCursorAgentError,
@@ -99,6 +100,45 @@ function makeAgenticCtx(agentResponse = null) {
       },
     },
   };
+}
+
+function makeAgentProviderCtx(taskPrompt = 'Human task prompt for the code agent.') {
+  const ctx = makeCtx();
+  const translationCalls = [];
+  return {
+    ...ctx,
+    ai: {
+      translationCalls,
+      async chatMessages(messages) {
+        translationCalls.push(messages);
+        return taskPrompt;
+      },
+      parseJsonFromText(text) {
+        return JSON.parse(text);
+      },
+    },
+  };
+}
+
+function mockCursorSession(results, onCreate = null) {
+  const prompts = [];
+  const send = vi.fn(async (prompt) => {
+    prompts.push(prompt);
+    const result = typeof results === 'function' ? results(prompt, prompts.length) : results.shift();
+    return {
+      id: result?.id,
+      wait: vi.fn(async () => result),
+    };
+  });
+  const dispose = vi.fn(async () => {});
+  vi.mocked(Agent.create).mockImplementation((options) => {
+    onCreate?.(options);
+    return {
+      send,
+      [Symbol.asyncDispose]: dispose,
+    };
+  });
+  return { prompts, send, dispose };
 }
 
 function writeJsonFile(filePath, value) {
@@ -668,12 +708,16 @@ describe('controlled action handlers', () => {
   it('delegates execution to Cursor SDK local runtime and normalizes the receipt', async () => {
     process.env.CURSOR_API_KEY = 'cursor-test-key';
     process.env.CURSOR_AGENT_SETTING_SOURCES = 'project,user';
-    let capturedPrompt = null;
     let capturedOptions = null;
-    vi.mocked(Agent.prompt).mockImplementation(async (prompt, options) => {
-      capturedPrompt = prompt;
-      capturedOptions = options;
-      return {
+    const cursor = mockCursorSession([
+      {
+        id: 'cursor-run-prepare',
+        status: 'finished',
+        result: 'Inspected the requested context and prepared a recommendation.',
+        model: { id: 'composer-2' },
+        durationMs: 800,
+      },
+      {
         id: 'cursor-run-1',
         status: 'finished',
         result: JSON.stringify({
@@ -685,10 +729,12 @@ describe('controlled action handlers', () => {
         }),
         model: { id: 'composer-2' },
         durationMs: 1200,
-      };
+      },
+    ], (options) => {
+      capturedOptions = options;
     });
 
-    const ctx = makeCtx();
+    const ctx = makeAgentProviderCtx('Please inspect the execution queue like a human engineer.');
     const result = await actionHandlers.agent_execute({
       type: 'agent_execute',
       params: directAgentParams({
@@ -703,7 +749,10 @@ describe('controlled action handlers', () => {
     expect(result.provider).toBe('cursor_sdk');
     expect(result.agent.outputs.recommendation).toBe('inspect Cursor receipt');
     expect(result.agent.outputs.cursor.run_id).toBe('cursor-run-1');
-    expect(capturedPrompt).toContain('Cursor SDK local runtime note');
+    expect(ctx.ai.translationCalls[0][1].content).toContain('Translation task');
+    expect(cursor.prompts[0]).toContain('Please inspect the execution queue');
+    expect(cursor.prompts[1]).toContain('Please self-check');
+    expect(result.agent.outputs.agent_loop.same_session).toBe(true);
     expect(capturedOptions.apiKey).toBe('cursor-test-key');
     expect(capturedOptions.model).toEqual({ id: 'composer-2' });
     expect(capturedOptions.local.cwd).toBe(ctx.projectRoot);
@@ -714,26 +763,29 @@ describe('controlled action handlers', () => {
   it('uses JEA_AGENT_PROVIDER as the default agent provider', async () => {
     process.env.JEA_AGENT_PROVIDER = 'cursor_sdk';
     process.env.CURSOR_API_KEY = 'cursor-test-key';
-    vi.mocked(Agent.prompt).mockResolvedValue({
-      id: 'cursor-run-default',
-      status: 'finished',
-      result: JSON.stringify({
-        status: 'completed',
-        summary: 'Cursor default provider completed.',
-      }),
-    });
+    mockCursorSession([
+      { id: 'cursor-run-default-initial', status: 'finished', result: 'Started default provider work.' },
+      {
+        id: 'cursor-run-default',
+        status: 'finished',
+        result: JSON.stringify({
+          status: 'completed',
+          summary: 'Cursor default provider completed.',
+        }),
+      },
+    ]);
 
     const result = await actionHandlers.agent_execute({
       type: 'agent_execute',
       params: directAgentParams({
         objective: 'Use the configured default provider',
       }),
-    }, makeCtx());
+    }, makeAgentProviderCtx());
 
     expect(result.success).toBe(true);
     expect(result.provider).toBe('cursor_sdk');
     expect(result.agent.outputs.cursor.run_id).toBe('cursor-run-default');
-    expect(Agent.prompt).toHaveBeenCalledOnce();
+    expect(Agent.create).toHaveBeenCalledOnce();
   });
 
   it('allows action provider to override JEA_AGENT_PROVIDER', async () => {
@@ -770,29 +822,39 @@ describe('controlled action handlers', () => {
   it('supports Claude SDK as the configured default provider', async () => {
     process.env.JEA_AGENT_PROVIDER = 'claude_code_sdk';
     process.env.ANTHROPIC_API_KEY = 'test-key';
-    vi.mocked(claudeQuery).mockImplementation(() => streamMessages([
-      {
-        type: 'result',
-        subtype: 'success',
-        session_id: 'claude-default-session',
-        result: JSON.stringify({
-          status: 'completed',
-          summary: 'Claude default provider completed.',
-        }),
-      },
-    ]));
+    vi.mocked(claudeQuery)
+      .mockImplementationOnce(() => streamMessages([
+        {
+          type: 'result',
+          subtype: 'success',
+          session_id: 'claude-default-session',
+          result: 'Completed the requested Claude default work.',
+        },
+      ]))
+      .mockImplementationOnce(() => streamMessages([
+        {
+          type: 'result',
+          subtype: 'success',
+          session_id: 'claude-default-session',
+          result: JSON.stringify({
+            status: 'completed',
+            summary: 'Claude default provider completed.',
+          }),
+        },
+      ]));
 
     const result = await actionHandlers.agent_execute({
       type: 'agent_execute',
       params: directAgentParams({
         objective: 'Use Claude as the configured default provider',
       }),
-    }, makeCtx());
+    }, makeAgentProviderCtx());
 
     expect(result.success).toBe(true);
     expect(result.provider).toBe('claude_code_sdk');
     expect(result.agent.outputs.claude.session_id).toBe('claude-default-session');
-    expect(claudeQuery).toHaveBeenCalledOnce();
+    expect(claudeQuery).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(claudeQuery).mock.calls[1][0].options.resume).toBe('claude-default-session');
   });
 
   it('requires Cursor SDK credentials before execution', async () => {
@@ -814,7 +876,9 @@ describe('controlled action handlers', () => {
 
   it('defers Cursor SDK startup failures with retry metadata', async () => {
     process.env.CURSOR_API_KEY = 'cursor-test-key';
-    vi.mocked(Agent.prompt).mockRejectedValue(new CursorAgentError('temporary outage', { isRetryable: true }));
+    vi.mocked(Agent.create).mockImplementation(() => {
+      throw new CursorAgentError('temporary outage', { isRetryable: true });
+    });
 
     const result = await actionHandlers.agent_execute({
       type: 'agent_execute',
@@ -822,7 +886,7 @@ describe('controlled action handlers', () => {
         provider: 'cursor_sdk',
         objective: 'Run Cursor despite a startup failure',
       }),
-    }, makeCtx());
+    }, makeAgentProviderCtx());
 
     expect(result.success).toBe(false);
     expect(result.deferred).toBe(true);
@@ -844,14 +908,99 @@ describe('controlled action handlers', () => {
     expect(result.success).toBe(true);
     expect(result.requires_approval).toBe(true);
     expect(result.status).toBe('requires_human_review');
-    expect(Agent.prompt).not.toHaveBeenCalled();
+    expect(Agent.create).not.toHaveBeenCalled();
+  });
+
+  it('keeps Cursor follow-ups in one session until a valid receipt is delivered', async () => {
+    process.env.CURSOR_API_KEY = 'cursor-test-key';
+    const cursor = mockCursorSession([
+      { id: 'cursor-loop-initial', status: 'finished', result: 'Initial work done.' },
+      {
+        id: 'cursor-loop-incomplete',
+        status: 'finished',
+        result: JSON.stringify({
+          status: 'completed',
+          outputs: { note: 'missing summary so the host should ask again' },
+        }),
+      },
+      {
+        id: 'cursor-loop-final',
+        status: 'finished',
+        result: JSON.stringify({
+          status: 'completed',
+          summary: 'Cursor completed the follow-up loop.',
+          outputs: { recommendation: 'ship the receipt' },
+        }),
+      },
+    ]);
+
+    const result = await actionHandlers.agent_execute({
+      type: 'agent_execute',
+      params: directAgentParams({
+        provider: 'cursor_sdk',
+        objective: 'Exercise the Cursor verification loop',
+      }),
+    }, makeAgentProviderCtx('Run the task and wait for a self-check prompt before final JSON.'));
+
+    expect(result.success).toBe(true);
+    expect(cursor.send).toHaveBeenCalledTimes(3);
+    expect(cursor.prompts[1]).toContain('current receipt is missing: receipt');
+    expect(cursor.prompts[2]).toContain('current receipt is missing: summary');
+    expect(result.agent.outputs.agent_loop.verification_attempts).toBe(2);
+    expect(result.agent.outputs.agent_loop.final_validation.valid).toBe(true);
+  });
+
+  it('returns partial when agent receipt validation fails after three attempts', async () => {
+    process.env.CURSOR_API_KEY = 'cursor-test-key';
+    const cursor = mockCursorSession([
+      { id: 'cursor-fail-initial', status: 'finished', result: 'Initial work done.' },
+      { id: 'cursor-fail-1', status: 'finished', result: JSON.stringify({ status: 'completed' }) },
+      { id: 'cursor-fail-2', status: 'finished', result: JSON.stringify({ status: 'completed' }) },
+      { id: 'cursor-fail-3', status: 'finished', result: JSON.stringify({ status: 'completed' }) },
+    ]);
+
+    const result = await actionHandlers.agent_execute({
+      type: 'agent_execute',
+      params: directAgentParams({
+        provider: 'cursor_sdk',
+        objective: 'Fail receipt validation repeatedly',
+      }),
+    }, makeAgentProviderCtx());
+
+    expect(result.success).toBe(false);
+    expect(result.status).toBe('partial');
+    expect(cursor.send).toHaveBeenCalledTimes(4);
+    expect(result.agent.outputs.agent_loop.final_validation).toMatchObject({
+      valid: false,
+      missing: ['summary'],
+    });
+    expect(result.verification_hints[0]).toContain('summary');
   });
 
   it('delegates execution to Claude Code SDK and normalizes the receipt', async () => {
     process.env.ANTHROPIC_API_KEY = 'test-key';
-    let captured = null;
+    const captured = [];
     vi.mocked(claudeQuery).mockImplementation((args) => {
-      captured = args;
+      captured.push(args);
+      if (captured.length === 1) {
+        return streamMessages([
+          {
+            type: 'assistant',
+            message: {
+              content: [
+                { type: 'text', text: 'Inspecting the project.' },
+                { type: 'tool_use', name: 'Read', input: { file_path: 'README.md' } },
+              ],
+            },
+          },
+          {
+            type: 'result',
+            subtype: 'success',
+            session_id: 'claude-session-1',
+            result: 'Initial agent work completed.',
+          },
+        ]);
+      }
       return streamMessages([
         {
           type: 'assistant',
@@ -877,7 +1026,7 @@ describe('controlled action handlers', () => {
       ]);
     });
 
-    const ctx = makeCtx();
+    const ctx = makeAgentProviderCtx('Please use Claude Code to inspect the project and recommend execution.');
     const action = {
       type: 'agent_execute',
       params: directAgentParams({
@@ -894,22 +1043,37 @@ describe('controlled action handlers', () => {
     expect(result.agent.outputs.recommendation).toBe('run the queue verifier');
     expect(result.agent.outputs.claude.session_id).toBe('claude-session-1');
     expect(result.agent.outputs.claude.tool_uses[0].name).toBe('Read');
-    expect(captured.options.permissionMode).toBe('bypassPermissions');
-    expect(captured.options.allowDangerouslySkipPermissions).toBe(true);
-    expect(captured.options.settingSources).toEqual(['user', 'project', 'local']);
-    expect(captured.options.allowedTools).toEqual(['Read', 'Grep', 'Glob']);
+    expect(captured[0].prompt).toContain('Please use Claude Code');
+    expect(captured[1].prompt).toContain('Please self-check');
+    expect(captured[1].options.resume).toBe('claude-session-1');
+    expect(captured[0].options.permissionMode).toBe('bypassPermissions');
+    expect(captured[0].options.allowDangerouslySkipPermissions).toBe(true);
+    expect(captured[0].options.persistSession).toBe(true);
+    expect(captured[0].options.settingSources).toEqual(['user', 'project', 'local']);
+    expect(captured[0].options.allowedTools).toEqual(['Read', 'Grep', 'Glob']);
     expect(verification.status).toBe('improved');
   });
 
   it('maps sandbox_patch to Claude editing tools while preserving overrides', async () => {
     process.env.ANTHROPIC_API_KEY = 'test-key';
-    let captured = null;
+    const captured = [];
     vi.mocked(claudeQuery).mockImplementation((args) => {
-      captured = args;
+      captured.push(args);
+      if (captured.length === 1) {
+        return streamMessages([
+          {
+            type: 'result',
+            subtype: 'success',
+            session_id: 'claude-sandbox-session',
+            result: 'Sandbox patch applied, ready for final audit.',
+          },
+        ]);
+      }
       return streamMessages([
         {
           type: 'result',
           subtype: 'success',
+          session_id: 'claude-sandbox-session',
           result: JSON.stringify({
             status: 'completed',
             summary: 'Sandbox patch completed.',
@@ -920,7 +1084,7 @@ describe('controlled action handlers', () => {
       ]);
     });
 
-    const ctx = makeCtx();
+    const ctx = makeAgentProviderCtx('Patch only inside the sandbox and report the audit evidence.');
     const sandbox = join(ctx.projectRoot, 'sandbox');
     mkdirSync(sandbox, { recursive: true });
     const result = await actionHandlers.agent_execute({
@@ -936,11 +1100,12 @@ describe('controlled action handlers', () => {
 
     expect(result.success).toBe(true);
     expect(result.provider).toBe('claude_code_sdk');
-    expect(captured.options.cwd).toBe(sandbox);
-    expect(captured.options.permissionMode).toBe('bypassPermissions');
-    expect(captured.options.allowDangerouslySkipPermissions).toBe(true);
-    expect(captured.options.allowedTools).toEqual(['Read', 'Edit', 'Write', 'Bash', 'Grep', 'Glob']);
-    expect(captured.options.maxTurns).toBe(3);
+    expect(captured[0].options.cwd).toBe(sandbox);
+    expect(captured[0].options.permissionMode).toBe('bypassPermissions');
+    expect(captured[0].options.allowDangerouslySkipPermissions).toBe(true);
+    expect(captured[0].options.persistSession).toBe(true);
+    expect(captured[0].options.allowedTools).toEqual(['Read', 'Edit', 'Write', 'Bash', 'Grep', 'Glob']);
+    expect(captured[0].options.maxTurns).toBe(3);
     expect(result.modified_files).toEqual(['src/example.mjs']);
   });
 
