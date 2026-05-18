@@ -85,7 +85,7 @@ import {
   requestWorkerStop,
   workerStatePath,
 } from '../src/cli/utils/daemon-worker-state.mjs';
-import { runDaemonWorker, workOnce } from '../src/cli/commands/daemon.mjs';
+import { daemonCommand, runDaemonWorker, workOnce } from '../src/cli/commands/daemon.mjs';
 import {
   configuredActionToSpec,
   loadSubjectActionConfig,
@@ -350,6 +350,26 @@ describe('daemon task queue foundation', () => {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
+  async function captureConsole(fn) {
+    const logs = [];
+    const errors = [];
+    const originalLog = console.log;
+    const originalError = console.error;
+    console.log = (...args) => logs.push(args.join(' '));
+    console.error = (...args) => errors.push(args.join(' '));
+    try {
+      const code = await fn();
+      return {
+        code,
+        stdout: logs.join('\n'),
+        stderr: errors.join('\n'),
+      };
+    } finally {
+      console.log = originalLog;
+      console.error = originalError;
+    }
+  }
+
   function makeDaemonProjectRoot() {
     tempDir = mkdtempSync(join(tmpdir(), 'jea-daemon-'));
     mkdirSync(join(tempDir, 'policies', 'subjects'), { recursive: true });
@@ -421,6 +441,29 @@ describe('daemon task queue foundation', () => {
     expect(readJsonSafe(currentStatePath(root, 'alpha')).tasks.counts.pending).toBe(1);
   });
 
+  it('summarizes daemon health for idle, stale, expired, and failed states', async () => {
+    const idleRoot = makeDaemonProjectRoot();
+    expect(buildDaemonProjection(idleRoot, 'alpha').health.status).toBe('idle');
+    rmSync(idleRoot, { recursive: true, force: true });
+
+    const staleRoot = makeDaemonProjectRoot();
+    createWorkerState(staleRoot, 'alpha', { workerId: 'stale-worker', staleMs: 1 });
+    await delay(5);
+    expect(buildDaemonProjection(staleRoot, 'alpha').health.status).toBe('stale');
+    rmSync(staleRoot, { recursive: true, force: true });
+
+    const expiredRoot = makeDaemonProjectRoot();
+    enqueueTask(expiredRoot, 'alpha', { type: 'run_cycle', idempotencyKey: 'alpha:expired-health' });
+    claimNextTask(expiredRoot, 'alpha', { workerId: 'old-worker', leaseMs: -1 });
+    expect(buildDaemonProjection(expiredRoot, 'alpha').health.status).toBe('blocked');
+    rmSync(expiredRoot, { recursive: true, force: true });
+
+    const failedRoot = makeDaemonProjectRoot();
+    const failedTask = enqueueTask(failedRoot, 'alpha', { type: 'run_cycle', idempotencyKey: 'alpha:failed-health' });
+    failTask(failedRoot, 'alpha', failedTask.task.task_id, { code: 'boom', message: 'failed' });
+    expect(buildDaemonProjection(failedRoot, 'alpha').health.status).toBe('failed');
+  });
+
   it('tracks daemon worker state and stop requests', () => {
     const root = makeDaemonProjectRoot();
     const created = createWorkerState(root, 'alpha', {
@@ -443,6 +486,97 @@ describe('daemon task queue foundation', () => {
     const stopped = requestWorkerStop(root, 'alpha', { staleMs: 1000 });
     expect(stopped.requested).toBe(true);
     expect(readWorkerState(root, 'alpha').status).toBe('stopping');
+  });
+
+  it('prints daemon events through the CLI as JSON', async () => {
+    const root = makeDaemonProjectRoot();
+    createIntelligenceStore({ baseDir: runtimeForSubject(root, 'alpha').intelligenceDir })
+      .recordEvolutionEvent({
+        subject: 'alpha',
+        type: 'task_completed',
+        status: 'ok',
+        task_id: 'task-1',
+      });
+
+    const output = await captureConsole(() => daemonCommand({
+      root,
+      subcommand: 'events',
+      flags: { json: true, limit: '5' },
+    }));
+
+    expect(output.code).toBe(0);
+    expect(JSON.parse(output.stdout).events[0]).toMatchObject({
+      type: 'task_completed',
+      task_id: 'task-1',
+    });
+  });
+
+  it('reports daemon doctor diagnostics for pending work without a worker', async () => {
+    const root = makeDaemonProjectRoot();
+    enqueueTask(root, 'alpha', {
+      type: 'run_cycle',
+      idempotencyKey: 'alpha:doctor-pending',
+    });
+
+    const output = await captureConsole(() => daemonCommand({
+      root,
+      subcommand: 'doctor',
+      flags: { json: true },
+    }));
+    const report = JSON.parse(output.stdout);
+
+    expect(output.code).toBe(1);
+    expect(report.health.status).toBe('blocked');
+    expect(report.diagnostics.map((item) => item.code)).toContain('pending_without_worker');
+  });
+
+  it('lists, inspects, retries, and cancels daemon tasks through the CLI', async () => {
+    const root = makeDaemonProjectRoot();
+    const failedTask = enqueueTask(root, 'alpha', {
+      type: 'run_cycle',
+      idempotencyKey: 'alpha:tasks-failed',
+    });
+    failTask(root, 'alpha', failedTask.task.task_id, { code: 'boom', message: 'failed' });
+    const pendingTask = enqueueTask(root, 'alpha', {
+      type: 'run_cycle',
+      idempotencyKey: 'alpha:tasks-pending',
+    });
+
+    const list = await captureConsole(() => daemonCommand({
+      root,
+      subcommand: 'tasks',
+      args: ['list'],
+      flags: { json: true },
+    }));
+    expect(JSON.parse(list.stdout).tasks).toHaveLength(2);
+
+    const inspected = await captureConsole(() => daemonCommand({
+      root,
+      subcommand: 'tasks',
+      args: ['inspect', failedTask.task.task_id],
+      flags: { json: true },
+    }));
+    expect(JSON.parse(inspected.stdout).task.task_id).toBe(failedTask.task.task_id);
+
+    const retried = await captureConsole(() => daemonCommand({
+      root,
+      subcommand: 'tasks',
+      args: ['retry', failedTask.task.task_id],
+      flags: { json: true },
+    }));
+    expect(retried.code).toBe(0);
+
+    const cancelled = await captureConsole(() => daemonCommand({
+      root,
+      subcommand: 'tasks',
+      args: ['cancel', pendingTask.task.task_id],
+      flags: { json: true },
+    }));
+    expect(cancelled.code).toBe(0);
+
+    const tasks = readTaskQueue(root, 'alpha').tasks;
+    expect(tasks.find((task) => task.task_id === failedTask.task.task_id).status).toBe('pending');
+    expect(tasks.find((task) => task.task_id === pendingTask.task.task_id).status).toBe('cancelled');
   });
 
   it('reclaims expired daemon task leases explicitly', () => {

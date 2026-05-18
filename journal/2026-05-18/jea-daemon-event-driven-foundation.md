@@ -183,7 +183,23 @@ npm run jea -- evolve --rounds 3 --enqueue-only --subject agentank-tank --json
 
 [`src/ai/deepseek-client.mjs`](../../src/ai/deepseek-client.mjs)：`chatMessages` 的 **`timeout`** 此前未传给 `openai.chat.completions.create`，配置超时时仍可能**长时间阻塞**。**已修复**：将 `timeout` 透传到 create 选项。
 
-### 7.5 小结
+### 7.5 CLI 运维面优化：看得懂、诊断得出、能维护
+
+**动机**：`daemon enqueue/work/start/stop/status` 已能驱动后台任务，但默认 `status` 更偏原始投影，用户仍需理解 `worker-state.json`、`pending_tasks.json`、`evolution_events` 与 `.evolve.lock` 才能判断 daemon 是否健康。此次优化目标是先补齐**运维可见性**，而不是直接做 OS 服务或 detached 后台进程。
+
+**落地**：
+
+- [`src/cli/utils/daemon-projection.mjs`](../../src/cli/utils/daemon-projection.mjs)：`current-state.json` 增加 `health` 摘要，按 `healthy` / `idle` / `stale` / `blocked` / `failed` 给出 `reasons` 与 `suggestions`；`daemon status` 默认先输出健康结论，再输出 worker、队列、running/failed 细节。
+- [`src/cli/commands/daemon.mjs`](../../src/cli/commands/daemon.mjs)：新增 `daemon events [--limit N] [--json]`，复用 `recordDaemonEvent` 写入的 `evolution_events`，用于查看 daemon/task 生命周期事件。
+- [`src/cli/commands/daemon.mjs`](../../src/cli/commands/daemon.mjs)：新增 `daemon doctor [--json]`，聚合 projection 与 `.evolve.lock` 只读检查，提示 stale worker、expired running lease、pending-without-worker、failed task、subject lock 等诊断项；不主动清理锁。
+- [`src/cli/commands/daemon.mjs`](../../src/cli/commands/daemon.mjs) 与 [`src/cli/utils/daemon-tasks.mjs`](../../src/cli/utils/daemon-tasks.mjs)：新增 `daemon tasks list/inspect/retry/cancel`。`retry` 只允许 failed、pending 或已过期 running 任务回到 pending；`cancel` 第一版只允许 pending 任务转为 `cancelled`，running 任务仍走 `daemon stop` 的中止链路。
+- [`src/cli/jea.mjs`](../../src/cli/jea.mjs)：help 示例补充 `daemon events`、`daemon doctor`、`daemon tasks list`，并继续明确 `daemon start` 是 **foreground worker loop**。
+
+**边界**：本次仍**不**安装 Windows Service / systemd / launchd，也不实现跨平台 `start --detach`。原因是可观测和诊断能力应先稳定，否则 detached/service 化后排障成本会更高；后续若要真正后台化，可在当前 `status/events/doctor/tasks` 面之上独立迭代。
+
+**验证**：[`test/cli.test.mjs`](../../test/cli.test.mjs) 补充了 health 摘要、`daemon events --json`、`daemon doctor --json`、`daemon tasks list/inspect/retry/cancel` 的覆盖；本次回归 `npm test` 全量通过（4 个测试文件，146 个测试）。
+
+### 7.6 小结
 
 daemon 侧的「长跑可观测 + 安全中断」与同日的 action/API 两个小修 **独立但互补**：前者保证 **编排层**，后者保证 **单轮进化内部**不会因默认策略或 SDK 封装而「假死」。回归以 **`npm test`** 与关键 CLI 冒烟为准。
 

@@ -34,6 +34,9 @@ Commands:
                          Supports --heartbeat-ms and --lease-ms for long tasks
   daemon stop            Request the daemon worker to stop gracefully
   daemon status          Show daemon task and worker projection
+  daemon events          Show recent daemon/task lifecycle events
+  daemon doctor          Diagnose daemon worker, leases, queue, and subject lock state
+  daemon tasks list      List daemon tasks; inspect/retry/cancel are also supported
   data status            Show runtime data status
   data status --json     Show runtime data status as JSON
   data init              Create runtime data directories
@@ -84,6 +87,9 @@ Examples:
   jea daemon work --once --mock
   jea daemon start --mock
   jea daemon stop
+  jea daemon events --limit 10
+  jea daemon doctor
+  jea daemon tasks list --status failed
   jea data init --all
   jea intel summary
   jea audit queue

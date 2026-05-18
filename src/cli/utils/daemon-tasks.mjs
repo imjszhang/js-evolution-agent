@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import lockfile from 'proper-lockfile';
 import { runtimeForSubject, nowIso, parsePositiveInt } from './evolve-runs.mjs';
 
-export const TASK_STATUSES = new Set(['pending', 'running', 'completed', 'failed']);
+export const TASK_STATUSES = new Set(['pending', 'running', 'completed', 'failed', 'cancelled']);
 
 export function tasksDirForSubject(root, subject) {
   return join(runtimeForSubject(root, subject).evolutionDir, 'tasks');
@@ -206,6 +206,47 @@ export function releaseTaskForRetry(root, subject, taskIdValue, failure = {}) {
     last_error_reason: failure.reason ?? failure.last_error_reason ?? null,
     updated_at: nowIso(),
   }));
+}
+
+export function retryTask(root, subject, taskIdValue, failure = {}) {
+  return updateTask(root, subject, taskIdValue, (task) => {
+    if (task.status === 'running' && !expiredLease(task)) {
+      throw new Error(`Task is still running: ${taskIdValue}`);
+    }
+    if (!['failed', 'pending', 'running'].includes(task.status)) {
+      throw new Error(`Task cannot be retried from status ${task.status}: ${taskIdValue}`);
+    }
+    return {
+      ...task,
+      status: 'pending',
+      lease_owner: null,
+      lease_expires_at: null,
+      last_error: failure.message ?? task.last_error ?? null,
+      last_error_code: failure.code ?? task.last_error_code ?? null,
+      last_error_reason: failure.reason ?? task.last_error_reason ?? null,
+      retried_at: nowIso(),
+      updated_at: nowIso(),
+    };
+  });
+}
+
+export function cancelTask(root, subject, taskIdValue, reason = 'manual_cancel') {
+  return updateTask(root, subject, taskIdValue, (task) => {
+    if (task.status !== 'pending') {
+      throw new Error(`Only pending tasks can be cancelled: ${taskIdValue}`);
+    }
+    return {
+      ...task,
+      status: 'cancelled',
+      lease_owner: null,
+      lease_expires_at: null,
+      last_error: 'Task cancelled by daemon CLI.',
+      last_error_code: 'cancelled',
+      last_error_reason: reason,
+      cancelled_at: nowIso(),
+      updated_at: nowIso(),
+    };
+  });
 }
 
 export function renewTaskLease(root, subject, taskIdValue, {
