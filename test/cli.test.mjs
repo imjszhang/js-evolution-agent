@@ -96,6 +96,10 @@ import {
   normalizeConfiguredAction,
 } from '../src/actions/configured-actions.mjs';
 import {
+  actionHandlers,
+  buildRetrospectiveEnrichmentAction,
+} from '../src/actions/handlers.mjs';
+import {
   buildClaudeOptions,
   buildCursorOptions,
   runAgenticAction,
@@ -965,6 +969,66 @@ describe('action checks', () => {
     expect(result.provider).toBe('claude_code_sdk');
     expect(result.error).toContain('agent cwd does not exist');
     expect(result.error).toContain(missingCwd);
+  });
+
+  it('records write_retrospective locally without starting an agent', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'jea-retro-local-'));
+    const store = createIntelligenceStore({ baseDir: join(tempDir, 'intelligence') });
+    const action = {
+      id: 'retro-1',
+      type: 'write_retrospective',
+      serves_goal: 'bootstrap',
+      params: {
+        provider: 'claude_code_sdk',
+        summary: 'cycle completed',
+        outcome: 'ok',
+        lessons: ['use local writes for retrospectives'],
+        next_actions: ['continue'],
+      },
+    };
+
+    const result = await actionHandlers.write_retrospective(action, {
+      cycleId: 'exec-test',
+      host: { intelligenceStore: store },
+    });
+
+    expect(result).toMatchObject({
+      success: true,
+      status: 'recorded',
+      provider: 'local',
+      fallback_used: false,
+      writes_applied: { retrospectives: 1 },
+    });
+    expect(result.agentic_execution).toBeUndefined();
+    expect(store.readRetrospectives({ limit: 1 })[0]).toMatchObject({
+      summary: 'cycle completed',
+      outcome: 'ok',
+      action_type: 'write_retrospective',
+      served_goal: 'bootstrap',
+    });
+    expect(store.readLatestReview()).toMatchObject({ summary: 'cycle completed' });
+    expect(store.readActionReceipts({ limit: 1 })[0]).toMatchObject({
+      cycle_id: 'exec-test',
+      action_type: 'write_retrospective',
+      result: {
+        provider: 'local',
+        writes_applied: { retrospectives: 1 },
+      },
+    });
+  });
+
+  it('builds retrospective enrichment actions without file tools by default', () => {
+    const enriched = buildRetrospectiveEnrichmentAction({
+      type: 'write_retrospective',
+      params: {
+        enrich: true,
+        summary: 'cycle completed',
+      },
+    });
+
+    expect(enriched.params.provider).toBe('llm_only');
+    expect(enriched.params.allowedTools).toEqual([]);
+    expect(enriched.params.mode).toBe('propose');
   });
 });
 

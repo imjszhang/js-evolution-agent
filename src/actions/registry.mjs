@@ -49,7 +49,7 @@ actionRegistry.register(new ActionTypeSpec({
 actionRegistry.register(new ActionTypeSpec({
   name: 'write_retrospective',
   description: 'Write a review for a completed or failed evolution attempt.',
-  promptHint: 'Write a retrospective through the Phase 2 execution agent (params: summary, outcome, lessons, next_actions accepted for compatibility). The agent should return writes.retrospectives; the host validates and persists those learning records.',
+  promptHint: 'Write a host-backed retrospective learning record. Required params: summary; optional params: outcome, lessons, next_actions. This is a structured learning write, not a file investigation: do not read files, do not set cwd, and do not use it to gather new evidence. If more evidence is needed, schedule run_probe first, then write_retrospective only records the conclusion.',
   defaultRisk: 'low',
   defaultPriority: 'medium',
   autoExecutable: true,

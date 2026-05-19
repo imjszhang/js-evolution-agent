@@ -233,6 +233,41 @@ function agentExecutionRequested(action) {
   );
 }
 
+function retrospectiveEnrichmentRequested(action) {
+  return Boolean(
+    getField(action, 'enrich')
+      || getField(action, 'agent_enrich')
+      || getField(action, 'force_agent')
+      || getField(action, 'require_agentic_execution'),
+  );
+}
+
+function buildRetrospectiveRecord(action) {
+  return {
+    summary: getField(action, 'summary'),
+    outcome: getField(action, 'outcome') ?? 'reviewed',
+    lessons: getField(action, 'lessons') ?? [],
+    next_actions: getField(action, 'next_actions') ?? [],
+    action_type: action.type,
+    served_goal: action.serves_goal ?? getField(action, 'serves_goal') ?? null,
+  };
+}
+
+export function buildRetrospectiveEnrichmentAction(action) {
+  const params = asObject(action?.params);
+  return {
+    ...action,
+    params: {
+      ...params,
+      // Retrospective enrichment is reasoning-only. Do not inherit the global
+      // code-agent provider and do not expose file tools unless explicitly set.
+      provider: getField(action, 'provider') ?? 'llm_only',
+      allowedTools: getField(action, 'allowedTools') ?? getField(action, 'allowed_tools') ?? [],
+      mode: getField(action, 'mode') ?? 'propose',
+    },
+  };
+}
+
 function explicitApproval(action) {
   const boundary = asObject(getField(action, 'boundary'));
   return Boolean(
@@ -1011,7 +1046,28 @@ const builtInActionHandlers = {
   async write_retrospective(action, ctx) {
     requireParams(action, ['summary']);
     const store = storeFrom(ctx);
-    const agenticExecution = await runPhase2Agent(action, ctx, {
+    if (!retrospectiveEnrichmentRequested(action)) {
+      const review = buildRetrospectiveRecord(action);
+      const written = store.recordRetrospective(review);
+      const result = {
+        success: written > 0,
+        status: written > 0 ? 'recorded' : 'failed',
+        message: written > 0 ? 'retrospective recorded locally' : 'retrospective was not recorded',
+        provider: 'local',
+        requires_approval: false,
+        action_type: action.type,
+        action_id: action.id ?? null,
+        served_goal: review.served_goal,
+        evidence: {},
+        writes: { retrospectives: [review] },
+        writes_applied: { retrospectives: written },
+        fallback_used: false,
+      };
+      store.recordActionReceipt(action, result, ctx);
+      return result;
+    }
+
+    const agenticExecution = await runPhase2Agent(buildRetrospectiveEnrichmentAction(action), ctx, {
       mode: 'propose',
       objective: 'Execute a retrospective write. Return writes.retrospectives with the learning records the host should persist.',
     });
@@ -1038,13 +1094,7 @@ const builtInActionHandlers = {
       return result;
     }
 
-    const review = {
-      summary: getField(action, 'summary'),
-      outcome: getField(action, 'outcome') ?? 'reviewed',
-      lessons: getField(action, 'lessons') ?? [],
-      next_actions: getField(action, 'next_actions') ?? [],
-      action_type: action.type,
-    };
+    const review = buildRetrospectiveRecord(action);
     const written = store.recordRetrospective(review);
     const result = {
       success: written > 0,
