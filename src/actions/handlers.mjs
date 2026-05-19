@@ -1,5 +1,10 @@
 import { runReadOnlyProbe } from './probe-runner.mjs';
 import { runAgenticAction } from './agent-adapter.mjs';
+import {
+  actionRequiresExecutionRoot,
+  resolveActionExecutionRoots,
+  resolveConfiguredExecutionRoot,
+} from './execution-root.mjs';
 import { createCoreApplyWorktree } from './worktree-manager.mjs';
 import { runConfiguredExternalAction } from './configured-external-runner.mjs';
 import {
@@ -67,6 +72,10 @@ function agentStatusToProbeStatus(status) {
   return status || 'inconclusive';
 }
 
+function executionRootFor(action, ctx) {
+  return resolveActionExecutionRoots(action, ctx).executionRoot;
+}
+
 function probeHasHostBoundaryBlock(probeResult = {}) {
   if (probeResult.status === 'blocked' || probeResult.reason) return true;
   const steps = asArray(probeResult.evidence?.steps);
@@ -92,6 +101,7 @@ function persistLocalProbeResult(store, action, ctx, probeResult, overrides = {}
     success: true,
     message: probeResult.summary,
     probe_id: probeResult.probe_id,
+    execution_root: probeResult.execution_root ?? executionRootFor(action, ctx),
     status: probeResult.status,
     probe_type: probeResult.probe_type,
     outcome_success: probeResult.success,
@@ -109,6 +119,12 @@ function persistLocalProbeResult(store, action, ctx, probeResult, overrides = {}
 function summarizeAgenticExecution(agentResult = {}) {
   const agent = agentResult.agent ?? {};
   const outputs = asObject(agent.outputs);
+  const executionRoot = outputs.execution_root
+    ?? outputs.claude?.options?.execution_root
+    ?? outputs.cursor?.options?.execution_root
+    ?? outputs.claude?.options?.cwd
+    ?? outputs.cursor?.options?.cwd
+    ?? null;
   const evidence = asObject(agent.evidence ?? outputs.evidence);
   const writes = asObject(agent.writes ?? outputs.writes);
   return {
@@ -121,6 +137,7 @@ function summarizeAgenticExecution(agentResult = {}) {
     action_type: agent.action_type ?? null,
     action_id: agent.action_id ?? null,
     served_goal: agent.served_goal ?? null,
+    execution_root: executionRoot,
     evidence,
     writes,
     verification_hints: agent.verification_hints ?? [],
@@ -139,6 +156,19 @@ async function runPhase2Agent(action, ctx, {
   objective = null,
   acceptance = null,
 } = {}) {
+  const actionObjective = getField(action, 'objective') ?? action?.description ?? '';
+  const actionAcceptance = getField(action, 'acceptance') ?? getField(action, 'acceptance_criteria') ?? '';
+  const targets = [
+    ...asArray(getField(action, 'target')),
+    ...asArray(getField(action, 'targets')),
+    ...asArray(getField(action, 'initial_targets')),
+  ].filter(Boolean);
+  const primaryObjective = [
+    actionObjective || objective || `Execute the Phase 2 action '${action?.type ?? 'unknown'}'.`,
+    targets.length ? `Targets: ${targets.map(String).join(', ')}` : '',
+    objective && actionObjective ? `Phase 2 wrapper instruction: ${objective}` : '',
+  ].filter(Boolean).join('\n');
+
   const agentAction = {
     type: 'agent_execute',
     description: `Agentic Phase 2 execution for ${action?.type ?? 'unknown action'}`,
@@ -153,10 +183,7 @@ async function runPhase2Agent(action, ctx, {
       disallowedTools: getField(action, 'disallowedTools') ?? getField(action, 'disallowed_tools') ?? undefined,
       permissionMode: getField(action, 'permissionMode') ?? getField(action, 'permission_mode') ?? undefined,
       maxTurns: getField(action, 'maxTurns') ?? getField(action, 'max_turns') ?? undefined,
-      objective: objective ?? [
-        `Execute the Phase 2 action '${action?.type ?? 'unknown'}' as an autonomous execution agent.`,
-        action?.description ? `Description: ${action.description}` : '',
-      ].filter(Boolean).join('\n'),
+      objective: primaryObjective,
       context: {
         phase: 'exec',
         contract: [
@@ -167,7 +194,7 @@ async function runPhase2Agent(action, ctx, {
         ],
         action,
       },
-      acceptance: acceptance ?? 'Return a JSON action result with status, summary, evidence, writes, verification_hints, and next_actions.',
+      acceptance: actionAcceptance || acceptance || 'Return a JSON action result with status, summary, evidence, writes, verification_hints, and next_actions.',
     },
   };
 
@@ -202,6 +229,7 @@ function agentActionResult(action, agenticExecution, overrides = {}) {
     action_type: agenticExecution.action_type ?? action?.type ?? 'unknown',
     action_id: agenticExecution.action_id ?? action?.id ?? null,
     served_goal: agenticExecution.served_goal ?? action?.serves_goal ?? null,
+    execution_root: agenticExecution.execution_root ?? agenticExecution.outputs?.execution_root ?? null,
     evidence: agenticExecution.evidence ?? {},
     writes: agenticExecution.writes ?? {},
     verification_hints: agenticExecution.verification_hints ?? [],
@@ -942,6 +970,20 @@ const builtInActionHandlers = {
 
   async run_probe(action, ctx) {
     const store = storeFrom(ctx);
+    if (actionRequiresExecutionRoot(action) && !resolveConfiguredExecutionRoot(action)) {
+      const result = {
+        success: false,
+        status: 'blocked',
+        message: 'run_probe requires params.executionRoot or params.cwd for local file work',
+        provider: 'local',
+        fallback_used: false,
+        error: 'missing executionRoot',
+        evidence: {},
+        writes: {},
+      };
+      store.recordActionReceipt(action, result, ctx);
+      return result;
+    }
     const preflightProbeResult = runReadOnlyProbe(action, ctx);
     if (probeHasHostBoundaryBlock(preflightProbeResult)) {
       return persistLocalProbeResult(store, action, ctx, preflightProbeResult, {
@@ -975,6 +1017,7 @@ const builtInActionHandlers = {
         success: true,
         status: agentStatusToProbeStatus(agenticExecution.status),
         message: agenticExecution.message || 'agent probe evidence recorded',
+        execution_root: executionRootFor(action, ctx),
         probe_id: agentProbeWrites.probeId,
         probe_type: getField(action, 'probe_type') ?? 'agent_investigation',
         outcome_success: true,
@@ -993,6 +1036,7 @@ const builtInActionHandlers = {
 
     const probeResult = runReadOnlyProbe(action, ctx);
     return persistLocalProbeResult(store, action, ctx, probeResult, {
+      execution_root: executionRootFor(action, ctx),
       agentic_execution: agenticExecution,
       evidence: agenticExecution.evidence,
       writes: agenticExecution.writes,
@@ -1016,6 +1060,7 @@ const builtInActionHandlers = {
       action_type: agent.action_type ?? action.type,
       action_id: agent.action_id ?? action.id ?? null,
       served_goal: agent.served_goal ?? action.serves_goal ?? null,
+      execution_root: agentResult.execution_root ?? agent.outputs?.execution_root ?? agent.outputs?.claude?.options?.execution_root ?? agent.outputs?.cursor?.options?.execution_root ?? executionRootFor(action, ctx),
       evidence: agent.evidence ?? {},
       writes: agent.writes ?? {},
       created_files: agent.created_files ?? [],
@@ -1035,6 +1080,7 @@ const builtInActionHandlers = {
       status: result.status,
       objective: getField(action, 'objective') ?? action.description ?? 'unspecified',
       mode: getField(action, 'mode') ?? 'propose',
+      execution_root: result.execution_root,
       requires_approval: result.requires_approval,
       summary: result.message,
       boundary_risk: result.boundary_risk,

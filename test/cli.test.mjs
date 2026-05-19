@@ -102,6 +102,7 @@ import {
 import {
   buildClaudeOptions,
   buildCursorOptions,
+  resolveAgentExecutionRoots,
   runAgenticAction,
 } from '../src/actions/agent-adapter.mjs';
 
@@ -945,6 +946,39 @@ describe('action checks', () => {
     expect(claude.options.cwd).toBe(tempDir);
     expect(cursor.cwdWasConfigured).toBe(true);
     expect(cursor.options.local.cwd).toBe(tempDir);
+  });
+
+  it('treats explicit params.cwd as execution project root instead of host projectRoot', () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'jea-agent-cwd-'));
+    const externalDir = join(tempDir, 'agentank-evolver');
+    const subjectRuntime = join(tempDir, 'runtime', 'subjects', 'agentank-tank');
+    const hostRoot = join(tempDir, 'js-evolution-agent');
+    mkdirSync(externalDir, { recursive: true });
+    mkdirSync(subjectRuntime, { recursive: true });
+    mkdirSync(hostRoot, { recursive: true });
+
+    const action = {
+      type: 'run_probe',
+      params: {
+        cwd: externalDir,
+        mode: 'observe',
+        objective: 'inspect data/candidates for hash a3f92b',
+        targets: ['data/candidates/'],
+      },
+    };
+    const ctx = {
+      projectRoot: subjectRuntime,
+      host: { sourceRoot: hostRoot, runtimeRoot: subjectRuntime },
+    };
+
+    const roots = resolveAgentExecutionRoots(action, ctx);
+    expect(roots.executionCwd).toBe(externalDir);
+    expect(roots.usesExternalWorkspace).toBe(true);
+
+    const claude = buildClaudeOptions(action, ctx);
+    expect(claude.options.cwd).toBe(externalDir);
+    expect(claude.options.systemPrompt.append).toContain(externalDir);
+    expect(claude.options.systemPrompt.append).not.toContain('host_project_root');
   });
 
   it('blocks agent startup when explicit cwd does not exist', async () => {

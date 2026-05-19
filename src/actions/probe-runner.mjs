@@ -5,6 +5,11 @@ import {
   statSync,
 } from 'node:fs';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
+import {
+  actionRequiresExecutionRoot,
+  resolveActionExecutionRoots,
+  resolveConfiguredExecutionRoot,
+} from './execution-root.mjs';
 
 const TEXT_EXTENSIONS = new Set([
   '.js',
@@ -37,8 +42,9 @@ function isInside(child, parent) {
   return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
 }
 
-function sandbox(ctx) {
-  const sourceRoot = resolve(ctx?.host?.sourceRoot ?? ctx?.projectRoot ?? process.cwd());
+function sandbox(action, ctx) {
+  const roots = resolveActionExecutionRoots(action, ctx);
+  const sourceRoot = roots.executionRoot;
   const externalReadRoots = [];
 
   if (process.env.CYBER_TAOIST_DOCS_DIR) {
@@ -47,12 +53,14 @@ function sandbox(ctx) {
 
   return {
     sourceRoot,
+    executionRoot: sourceRoot,
+    executionRootWasConfigured: roots.executionRootWasConfigured,
     externalReadRoots,
   };
 }
 
-function blockedReason(fullPath, ctx) {
-  const { sourceRoot, externalReadRoots } = sandbox(ctx);
+function blockedReason(fullPath, ctx, action = null) {
+  const { sourceRoot, externalReadRoots } = sandbox(action, ctx);
   const resolvedPath = resolve(fullPath);
   const segments = pathSegments(resolvedPath);
   const base = basename(resolvedPath).toLowerCase();
@@ -80,15 +88,15 @@ function blockedReason(fullPath, ctx) {
   return allowed ? null : 'target is outside the read-only sandbox';
 }
 
-function resolveTarget(target, ctx) {
-  const { sourceRoot } = sandbox(ctx);
+function resolveTarget(target, ctx, action = null) {
+  const { sourceRoot } = sandbox(action, ctx);
   const text = String(target ?? '').trim();
   if (!text) throw new Error('missing target');
   return resolve(sourceRoot, text);
 }
 
-function relPath(fullPath, ctx) {
-  const { sourceRoot } = sandbox(ctx);
+function relPath(fullPath, ctx, action = null) {
+  const { sourceRoot } = sandbox(action, ctx);
   const rel = relative(sourceRoot, fullPath);
   return rel && !rel.startsWith('..') ? rel : fullPath;
 }
@@ -126,9 +134,9 @@ function canReadTextFile(fullPath) {
   return TEXT_EXTENSIONS.has(extname(fullPath).toLowerCase()) && stats.size <= DEFAULT_MAX_BYTES;
 }
 
-function nearbyFiles(fullPath, ctx) {
+function nearbyFiles(fullPath, ctx, action = null) {
   const parent = dirname(fullPath);
-  const reason = blockedReason(parent, ctx);
+  const reason = blockedReason(parent, ctx, action);
   if (reason || !existsSync(parent)) return [];
 
   const targetBase = basename(fullPath).toLowerCase();
@@ -141,7 +149,7 @@ function nearbyFiles(fullPath, ctx) {
       const stats = safeStat(candidate);
       return {
         name: entry.name,
-        path: relPath(candidate, ctx),
+        path: relPath(candidate, ctx, action),
         size: stats?.size ?? null,
         mtime_ms: stats?.mtimeMs ?? 0,
       };
@@ -157,8 +165,8 @@ function nearbyFiles(fullPath, ctx) {
 
 function fileExistsProbe(action, ctx) {
   const target = action.params.target;
-  const fullPath = resolveTarget(target, ctx);
-  const reason = blockedReason(fullPath, ctx);
+  const fullPath = resolveTarget(target, ctx, action);
+  const reason = blockedReason(fullPath, ctx, action);
   if (reason) return blockedResult(action, ctx, reason);
 
   const exists = existsSync(fullPath);
@@ -174,14 +182,14 @@ function fileExistsProbe(action, ctx) {
     status: exists ? 'succeeded' : 'failed',
     success: exists,
     summary: exists
-      ? `Target exists as ${kind}: ${relPath(fullPath, ctx)}`
+      ? `Target exists as ${kind}: ${relPath(fullPath, ctx, action)}`
       : `Target does not exist: ${target}`,
     evidence: {
-      path: relPath(fullPath, ctx),
+      path: relPath(fullPath, ctx, action),
       exists,
       kind,
       size,
-      nearby: exists ? [] : nearbyFiles(fullPath, ctx),
+      nearby: exists ? [] : nearbyFiles(fullPath, ctx, action),
     },
     success_signal_matched: exists,
     failure_signal_matched: !exists,
@@ -190,15 +198,15 @@ function fileExistsProbe(action, ctx) {
 
 function jsonlValidateProbe(action, ctx) {
   const target = action.params.target;
-  const fullPath = resolveTarget(target, ctx);
-  const reason = blockedReason(fullPath, ctx);
+  const fullPath = resolveTarget(target, ctx, action);
+  const reason = blockedReason(fullPath, ctx, action);
   if (reason) return blockedResult(action, ctx, reason);
   if (!existsSync(fullPath)) {
     return {
       status: 'failed',
       success: false,
       summary: `JSONL file does not exist: ${target}`,
-      evidence: { path: relPath(fullPath, ctx), exists: false },
+      evidence: { path: relPath(fullPath, ctx, action), exists: false },
       success_signal_matched: false,
       failure_signal_matched: true,
     };
@@ -210,7 +218,7 @@ function jsonlValidateProbe(action, ctx) {
       status: 'blocked',
       success: false,
       summary: `JSONL target is a directory: ${target}`,
-      evidence: { path: relPath(fullPath, ctx), kind: 'directory' },
+      evidence: { path: relPath(fullPath, ctx, action), kind: 'directory' },
       success_signal_matched: false,
       failure_signal_matched: true,
     };
@@ -247,9 +255,9 @@ function jsonlValidateProbe(action, ctx) {
   return {
     status,
     success: status === 'succeeded',
-    summary: `JSONL validation ${status}: ${valid_lines}/${lines.length} valid line(s) in ${relPath(fullPath, ctx)}`,
+    summary: `JSONL validation ${status}: ${valid_lines}/${lines.length} valid line(s) in ${relPath(fullPath, ctx, action)}`,
     evidence: {
-      path: relPath(fullPath, ctx),
+      path: relPath(fullPath, ctx, action),
       total_lines: lines.length,
       valid_lines,
       invalid_lines,
@@ -261,9 +269,9 @@ function jsonlValidateProbe(action, ctx) {
   };
 }
 
-function collectTextFiles(root, ctx, limit, files = []) {
+function collectTextFiles(root, ctx, limit, files = [], action = null) {
   if (files.length >= limit) return files;
-  const reason = blockedReason(root, ctx);
+  const reason = blockedReason(root, ctx, action);
   if (reason) return files;
   if (!existsSync(root)) return files;
 
@@ -278,9 +286,9 @@ function collectTextFiles(root, ctx, limit, files = []) {
   for (const entry of readdirSync(root, { withFileTypes: true })) {
     if (files.length >= limit) break;
     const fullPath = join(root, entry.name);
-    if (blockedReason(fullPath, ctx)) continue;
+    if (blockedReason(fullPath, ctx, action)) continue;
     if (entry.isDirectory()) {
-      collectTextFiles(fullPath, ctx, limit, files);
+      collectTextFiles(fullPath, ctx, limit, files, action);
     } else if (TEXT_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
       const fileStats = statSync(fullPath);
       if (fileStats.size <= DEFAULT_MAX_BYTES) files.push(fullPath);
@@ -311,15 +319,15 @@ function keywordSearchProbe(action, ctx) {
   const target = action.params.target;
   const keywords = inferKeywords(action);
 
-  const fullPath = resolveTarget(target, ctx);
-  const reason = blockedReason(fullPath, ctx);
+  const fullPath = resolveTarget(target, ctx, action);
+  const reason = blockedReason(fullPath, ctx, action);
   if (reason) return blockedResult(action, ctx, reason);
   if (!keywords.length) {
     return {
       status: 'inconclusive',
       success: false,
       summary: 'Keyword search had no explicit or inferred keywords',
-      evidence: { target: relPath(fullPath, ctx), keywords: [], matches: [] },
+      evidence: { target: relPath(fullPath, ctx, action), keywords: [], matches: [] },
       success_signal_matched: false,
       failure_signal_matched: false,
     };
@@ -328,7 +336,7 @@ function keywordSearchProbe(action, ctx) {
   const maxFiles = Number(action.params.max_files ?? DEFAULT_MAX_FILES);
   const maxMatches = Number(action.params.max_matches ?? DEFAULT_MAX_MATCHES);
   const caseSensitive = action.params.case_sensitive === true;
-  const files = collectTextFiles(fullPath, ctx, maxFiles);
+  const files = collectTextFiles(fullPath, ctx, maxFiles, [], action);
   const matches = [];
 
   for (const file of files) {
@@ -341,7 +349,7 @@ function keywordSearchProbe(action, ctx) {
         const needle = caseSensitive ? keyword : keyword.toLowerCase();
         if (haystack.includes(needle)) {
           matches.push({
-            path: relPath(file, ctx),
+            path: relPath(file, ctx, action),
             line: index + 1,
             keyword,
             snippet: line.trim().slice(0, 240),
@@ -360,7 +368,7 @@ function keywordSearchProbe(action, ctx) {
       ? `Keyword search found ${matches.length} match(es) in ${files.length} scanned file(s)`
       : `Keyword search found no matches in ${files.length} scanned file(s)`,
     evidence: {
-      target: relPath(fullPath, ctx),
+      target: relPath(fullPath, ctx, action),
       keywords,
       scanned_files: files.length,
       matches,
@@ -370,14 +378,14 @@ function keywordSearchProbe(action, ctx) {
   };
 }
 
-function directoryInventory(fullPath, ctx, budget) {
-  const reason = blockedReason(fullPath, ctx);
+function directoryInventory(fullPath, ctx, budget, action = null) {
+  const reason = blockedReason(fullPath, ctx, action);
   if (reason) return { blocked: reason };
   if (!existsSync(fullPath)) {
     return {
       exists: false,
-      path: relPath(fullPath, ctx),
-      nearby: nearbyFiles(fullPath, ctx),
+      path: relPath(fullPath, ctx, action),
+      nearby: nearbyFiles(fullPath, ctx, action),
     };
   }
 
@@ -386,7 +394,7 @@ function directoryInventory(fullPath, ctx, budget) {
     return {
       exists: true,
       kind: 'file',
-      path: relPath(fullPath, ctx),
+      path: relPath(fullPath, ctx, action),
       size: stats.size,
       extension: extname(fullPath).toLowerCase(),
       readable_text: canReadTextFile(fullPath),
@@ -399,33 +407,34 @@ function directoryInventory(fullPath, ctx, budget) {
       const entryStats = safeStat(entryPath);
       return {
         name: entry.name,
-        path: relPath(entryPath, ctx),
+        full_path: entryPath,
+        path: relPath(entryPath, ctx, action),
         kind: entry.isDirectory() ? 'directory' : 'file',
         size: entryStats?.size ?? null,
         mtime_ms: entryStats?.mtimeMs ?? 0,
       };
     })
-    .filter((entry) => !blockedReason(resolve(ctx?.host?.sourceRoot ?? ctx?.projectRoot ?? process.cwd(), entry.path), ctx))
+    .filter((entry) => !blockedReason(entry.full_path, ctx, action))
     .sort((a, b) => b.mtime_ms - a.mtime_ms)
     .slice(0, budget.max_files)
-    .map(({ mtime_ms, ...entry }) => entry);
+    .map(({ full_path, mtime_ms, ...entry }) => entry);
 
   return {
     exists: true,
     kind: 'directory',
-    path: relPath(fullPath, ctx),
+    path: relPath(fullPath, ctx, action),
     entries,
   };
 }
 
-function readTextSummary(fullPath, ctx, budget) {
-  const reason = blockedReason(fullPath, ctx);
+function readTextSummary(fullPath, ctx, budget, action = null) {
+  const reason = blockedReason(fullPath, ctx, action);
   if (reason) return { blocked: reason };
-  if (!existsSync(fullPath)) return { exists: false, path: relPath(fullPath, ctx), nearby: nearbyFiles(fullPath, ctx) };
+  if (!existsSync(fullPath)) return { exists: false, path: relPath(fullPath, ctx, action), nearby: nearbyFiles(fullPath, ctx, action) };
   if (!canReadTextFile(fullPath)) {
     return {
       exists: true,
-      path: relPath(fullPath, ctx),
+      path: relPath(fullPath, ctx, action),
       readable_text: false,
       reason: 'file is not a supported text file or exceeds read budget',
     };
@@ -458,7 +467,7 @@ function readTextSummary(fullPath, ctx, budget) {
 
   return {
     exists: true,
-    path: relPath(fullPath, ctx),
+    path: relPath(fullPath, ctx, action),
     size: statSync(fullPath).size,
     lines: lines.length,
     preview: lines.slice(0, 20).map((line) => line.slice(0, 240)),
@@ -477,14 +486,14 @@ function budgetFrom(params) {
   };
 }
 
-function targetsFrom(params, ctx) {
+function targetsFrom(params, ctx, action = null) {
   const targets = [
     ...asArray(params.target),
     ...asArray(params.targets),
     ...asArray(params.initial_targets),
   ].filter(Boolean);
   if (targets.length) return targets;
-  const { sourceRoot } = sandbox(ctx);
+  const { sourceRoot } = sandbox(action, ctx);
   return [params.default_target ?? sourceRoot];
 }
 
@@ -498,18 +507,18 @@ function investigationProbe(action, ctx) {
   let matchesFound = 0;
   let blocked = 0;
 
-  for (const target of targetsFrom(params, ctx)) {
+  for (const target of targetsFrom(params, ctx, action)) {
     if (steps.length >= budget.max_steps) break;
     let fullPath;
     try {
-      fullPath = resolveTarget(target, ctx);
+      fullPath = resolveTarget(target, ctx, action);
     } catch (e) {
       steps.push({ tool: 'resolve_target', target, status: 'blocked', summary: e.message });
       blocked += 1;
       continue;
     }
 
-    const inventory = directoryInventory(fullPath, ctx, budget);
+    const inventory = directoryInventory(fullPath, ctx, budget, action);
     steps.push({
       tool: 'inspect_target',
       target: String(target),
@@ -527,10 +536,10 @@ function investigationProbe(action, ctx) {
     if (steps.length >= budget.max_steps || inventory.blocked || inventory.exists === false) continue;
 
     if (inventory.kind === 'file') {
-      const summary = readTextSummary(fullPath, ctx, budget);
+      const summary = readTextSummary(fullPath, ctx, budget, action);
       steps.push({
         tool: 'read_text_summary',
-        target: relPath(fullPath, ctx),
+        target: relPath(fullPath, ctx, action),
         status: summary.blocked ? 'blocked' : summary.readable_text === false ? 'inconclusive' : 'ok',
         summary: summary.blocked ?? summary.reason ?? `read ${summary.lines ?? 0} line(s)`,
         evidence: summary,
@@ -588,6 +597,27 @@ export function runReadOnlyProbe(action, ctx) {
   const params = action?.params ?? {};
   const probeId = params.probe_id ?? action?.probe_id ?? action?.id ?? `probe-${Date.now()}`;
   const probeType = params.probe_type ?? action?.probe_type ?? 'investigation';
+  const roots = resolveActionExecutionRoots(action, ctx);
+
+  if (actionRequiresExecutionRoot(action) && !resolveConfiguredExecutionRoot(action)) {
+    return {
+      probe_id: probeId,
+      probe_type: probeType,
+      target: params.target ?? params.targets ?? params.initial_targets ?? null,
+      objective: params.objective ?? action?.description ?? null,
+      status: 'blocked',
+      success: false,
+      summary: 'Probe blocked: run_probe requires params.executionRoot or params.cwd for local file work',
+      evidence: {
+        execution_root: null,
+      },
+      success_signal_matched: false,
+      failure_signal_matched: true,
+      death_boundary_triggered: false,
+      reason: 'missing executionRoot',
+      created_at: new Date().toISOString(),
+    };
+  }
 
   let result;
   if (probeType === 'file_exists') {
@@ -621,6 +651,7 @@ export function runReadOnlyProbe(action, ctx) {
     probe_id: probeId,
     probe_type: result.probe_type ?? probeType,
     target: params.target ?? params.targets ?? params.initial_targets ?? null,
+    execution_root: roots.executionRoot,
     objective: params.objective ?? action.description ?? null,
     hypothesis: params.hypothesis ?? null,
     success_signal: params.success_signal ?? null,
@@ -629,5 +660,9 @@ export function runReadOnlyProbe(action, ctx) {
     death_boundary_triggered: false,
     created_at: new Date().toISOString(),
     ...result,
+    evidence: {
+      execution_root: roots.executionRoot,
+      ...(result.evidence ?? {}),
+    },
   };
 }

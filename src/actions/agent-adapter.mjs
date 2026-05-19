@@ -1,5 +1,11 @@
-import { existsSync, statSync } from 'node:fs';
 import { chatMessages, parseJsonFromText } from '../ai/messages.mjs';
+import {
+  actionRequiresExecutionRoot,
+  missingExecutionRootResult,
+  resolveActionExecutionRoots,
+  resolveConfiguredExecutionRoot,
+  validateExecutionRoot,
+} from './execution-root.mjs';
 
 const DEFAULT_PROVIDER = 'llm_only';
 const CLAUDE_PROVIDER = 'claude_code_sdk';
@@ -102,6 +108,49 @@ function agentContextDocs(ctx) {
     .join('\n\n---\n\n');
 }
 
+export function resolveConfiguredAgentCwd(action) {
+  return resolveConfiguredExecutionRoot(action);
+}
+
+export function resolveAgentExecutionRoots(action, ctx) {
+  return resolveActionExecutionRoots(action, ctx);
+}
+
+function buildWorkspacePromptSection(roots) {
+  const lines = [
+    '## Workspace (file tools)',
+    '',
+    `execution_cwd: ${roots.executionCwd}`,
+    `cwd_explicitly_configured: ${roots.cwdWasConfigured}`,
+    `host_project_root: ${roots.hostProjectRoot ?? 'unknown'} (subject runtime data; not the default file workspace)`,
+    `host_source_root: ${roots.hostSourceRoot ?? 'unknown'} (js-evolution-agent repository root)`,
+    `runtime_root: ${roots.runtimeRoot ?? 'unknown'}`,
+    '',
+    'Treat execution_cwd as the project root for every relative path in objective, targets, boundary, and acceptance.',
+    'Do not search host_project_root or host_source_root for task files unless the objective explicitly names those paths.',
+  ];
+  if (roots.usesExternalWorkspace) {
+    lines.push(
+      'This task runs in an external project checkout; host_project_root is only for evolution metadata, not for the files under investigation.',
+    );
+  }
+  return lines.join('\n');
+}
+
+function claudeSystemPromptAppend(roots) {
+  if (roots.cwdWasConfigured) {
+    return [
+      `You are executing a js-evolution-agent action with workspace root: ${roots.executionCwd}.`,
+      'Treat that directory as the project root for all file tools and relative paths.',
+      'Honor the requested objective and return a concise final JSON receipt matching the requested output contract.',
+    ].join(' ');
+  }
+  return [
+    'You are executing inside js-evolution-agent as an agent_execute provider.',
+    'Honor the requested objective and return a concise final JSON receipt matching the requested output contract.',
+  ].join(' ');
+}
+
 function buildPrompt(action, ctx) {
   const mode = getField(action, 'mode') ?? 'propose';
   const objective = getField(action, 'objective') ?? action?.description ?? '';
@@ -109,11 +158,13 @@ function buildPrompt(action, ctx) {
   const boundary = getField(action, 'boundary') ?? {};
   const acceptance = getField(action, 'acceptance') ?? getField(action, 'acceptance_criteria') ?? '';
   const modeGuidance = MODE_GUIDANCE[mode] ?? MODE_GUIDANCE.propose;
+  const roots = resolveAgentExecutionRoots(action, ctx);
 
   const system = [
-    'You are an autonomous execution agent inside js-evolution-agent.',
+    'You are an autonomous execution agent dispatched by js-evolution-agent.',
     'Use your own judgment to decide the best way to satisfy the objective.',
     'Do not wait for step-by-step instructions; infer a useful approach from the context.',
+    `Treat execution_cwd (${roots.executionCwd}) as the project root for file tools and relative paths unless the task explicitly references another absolute path.`,
     'Honor the boundary as the minimum operating contract, and surface any need for human approval.',
     'Boundary text is not a filesystem sandbox unless the provider or cwd/sandbox/worktree settings enforce it.',
     'For core_apply, the provided cwd/boundary.worktree is the intended mutation boundary; do not modify the source checkout outside it.',
@@ -126,9 +177,8 @@ function buildPrompt(action, ctx) {
     '',
     `mode: ${mode}`,
     `cycle_id: ${ctx?.cycleId ?? 'unknown'}`,
-    `project_root: ${ctx?.projectRoot ?? 'unknown'}`,
-    `source_root: ${ctx?.host?.sourceRoot ?? 'unknown'}`,
-    `runtime_root: ${ctx?.host?.runtimeRoot ?? ctx?.projectRoot ?? 'unknown'}`,
+    '',
+    buildWorkspacePromptSection(roots),
     '',
     '## Objective',
     objective || 'No objective provided.',
@@ -328,7 +378,8 @@ function buildAgentTaskTranslationMessages(action, ctx, promptParts) {
         'Rewrite the contract above into one concise, human-readable task prompt for an autonomous code agent.',
         'The prompt must include:',
         '- the goal in plain language;',
-        '- where the agent is working and any cwd/worktree/sandbox boundary;',
+        '- execution_cwd as the project root for file tools and relative paths (not host_project_root);',
+        '- any cwd/worktree/sandbox boundary;',
         '- whether file mutation is allowed;',
         '- what evidence or verification is expected;',
         '- the requirement that final delivery must be a strict JSON receipt only after the task is actually complete.',
@@ -417,55 +468,22 @@ function defaultClaudeModeOptions(mode) {
 }
 
 function validateConfiguredCwd({ cwd, cwdWasConfigured, provider }) {
-  if (!cwdWasConfigured) return null;
-  const value = String(cwd ?? '').trim();
-  if (!value) {
-    return {
-      success: false,
-      deferred: false,
-      provider,
-      error: 'agent cwd was explicitly configured but empty',
-    };
-  }
-  if (!existsSync(value)) {
-    return {
-      success: false,
-      deferred: false,
-      provider,
-      error: `agent cwd does not exist: ${value}`,
-    };
-  }
-  let stats;
-  try {
-    stats = statSync(value);
-  } catch (e) {
-    return {
-      success: false,
-      deferred: false,
-      provider,
-      error: `agent cwd cannot be inspected: ${value}: ${e?.message || e}`,
-    };
-  }
-  if (!stats.isDirectory()) {
-    return {
-      success: false,
-      deferred: false,
-      provider,
-      error: `agent cwd is not a directory: ${value}`,
-    };
-  }
-  return null;
+  const result = validateExecutionRoot({
+    executionRoot: cwd,
+    executionRootWasConfigured: cwdWasConfigured,
+    provider,
+  });
+  if (!result?.error) return result;
+  return {
+    ...result,
+    error: result.error.replace(/^executionRoot/, 'agent cwd'),
+  };
 }
 
 export function buildClaudeOptions(action, ctx) {
   const mode = getField(action, 'mode') ?? 'propose';
-  const boundary = asObject(getField(action, 'boundary'));
   const defaults = defaultClaudeModeOptions(mode);
-  const configuredCwd = getField(action, 'cwd')
-    ?? boundary.cwd
-    ?? boundary.sandbox
-    ?? boundary.worktree
-    ?? null;
+  const roots = resolveAgentExecutionRoots(action, ctx);
   const settingSources = asList(
     getField(action, 'settingSources')
       ?? getField(action, 'setting_sources')
@@ -479,7 +497,7 @@ export function buildClaudeOptions(action, ctx) {
     ?? defaults.permissionMode;
 
   const options = {
-    cwd: configuredCwd ?? ctx?.host?.sourceRoot ?? ctx?.projectRoot ?? process.cwd(),
+    cwd: roots.executionCwd,
     allowedTools: asList(getField(action, 'allowedTools') ?? getField(action, 'allowed_tools'), defaults.allowedTools),
     disallowedTools: asList(getField(action, 'disallowedTools') ?? getField(action, 'disallowed_tools'), []),
     permissionMode,
@@ -492,10 +510,7 @@ export function buildClaudeOptions(action, ctx) {
     systemPrompt: {
       type: 'preset',
       preset: 'claude_code',
-      append: [
-        'You are executing inside js-evolution-agent as an agent_execute provider.',
-        'Honor the requested objective and return a concise final JSON receipt matching the requested output contract.',
-      ].join('\n'),
+      append: claudeSystemPromptAppend(roots),
     },
   };
 
@@ -508,17 +523,21 @@ export function buildClaudeOptions(action, ctx) {
 
   return {
     options,
-    cwdWasConfigured: Boolean(configuredCwd),
+    cwdWasConfigured: roots.cwdWasConfigured,
+    executionRoot: roots.executionRoot,
+    executionCwd: roots.executionCwd,
   };
 }
 
-function buildCursorPrompt(promptParts) {
+function buildCursorPrompt(promptParts, roots) {
   return [
     promptParts.system,
     '',
     promptParts.user,
     '',
     'Cursor SDK local runtime note:',
+    `- execution_cwd / local.cwd project root: ${roots.executionCwd}`,
+    '- Resolve every relative path from execution_cwd, not host_project_root or host_source_root.',
     '- For observe/propose/patch_proposal modes, do not modify files; return proposed changes only.',
     '- For sandbox_patch, only modify files inside the explicitly configured cwd/sandbox/worktree.',
     '- When you finish, emit the final answer as a single JSON object matching the Output contract.',
@@ -526,12 +545,7 @@ function buildCursorPrompt(promptParts) {
 }
 
 export function buildCursorOptions(action, ctx) {
-  const boundary = asObject(getField(action, 'boundary'));
-  const configuredCwd = getField(action, 'cwd')
-    ?? boundary.cwd
-    ?? boundary.sandbox
-    ?? boundary.worktree
-    ?? null;
+  const roots = resolveAgentExecutionRoots(action, ctx);
   const settingSources = asList(
     getField(action, 'settingSources')
       ?? getField(action, 'setting_sources')
@@ -543,14 +557,16 @@ export function buildCursorOptions(action, ctx) {
     apiKey: process.env.CURSOR_API_KEY,
     model: { id: model },
     local: {
-      cwd: configuredCwd ?? ctx?.host?.sourceRoot ?? ctx?.projectRoot ?? process.cwd(),
+      cwd: roots.executionCwd,
       settingSources,
     },
   };
 
   return {
     options,
-    cwdWasConfigured: Boolean(configuredCwd),
+    cwdWasConfigured: roots.cwdWasConfigured,
+    executionRoot: roots.executionRoot,
+    executionCwd: roots.executionCwd,
     model,
   };
 }
@@ -724,6 +740,7 @@ async function runClaudeCodeSdk(action, ctx) {
       run_results: runResults,
       options: {
         cwd: options.cwd,
+        execution_root: options.cwd,
         permissionMode: options.permissionMode,
         allowDangerouslySkipPermissions: options.allowDangerouslySkipPermissions ?? false,
         allowedTools: options.allowedTools,
@@ -755,6 +772,7 @@ async function runClaudeCodeSdk(action, ctx) {
   return {
     success: (resultMessage ? resultMessage.subtype !== 'error' : true) && validation.valid,
     message: agent.summary,
+    execution_root: options.cwd,
     agent,
   };
 }
@@ -771,6 +789,7 @@ async function runCursorSdk(action, ctx) {
   }
 
   const mode = getField(action, 'mode') ?? 'propose';
+  const roots = resolveAgentExecutionRoots(action, ctx);
   const promptParts = buildPrompt(action, ctx);
   const { options, cwdWasConfigured, model } = buildCursorOptions(action, ctx);
   const cwdFailure = validateConfiguredCwd({
@@ -867,7 +886,7 @@ async function runCursorSdk(action, ctx) {
           '',
           buildAgentVerificationPrompt(action, validation, 1),
         ].join('\n'),
-      });
+      }, roots);
       runResult = await Agent.prompt(prompt, options);
       rawText = String(runResult?.result ?? '').trim();
       const parsed = parseAgentJson(ctx?.ai, rawText);
@@ -916,6 +935,7 @@ async function runCursorSdk(action, ctx) {
       run_results: runResults,
       options: {
         cwd: options.local.cwd,
+        execution_root: options.local.cwd,
         settingSources: options.local.settingSources,
         model,
       },
@@ -934,12 +954,14 @@ async function runCursorSdk(action, ctx) {
   return {
     success: (runResult?.status ? runResult.status === 'finished' : true) && validation.valid,
     message: agent.summary,
+    execution_root: options.local.cwd,
     agent,
   };
 }
 
 async function runLlmOnly(action, ctx) {
   const ai = ctx?.ai;
+  const roots = resolveAgentExecutionRoots(action, ctx);
   if (!ai) {
     return {
       success: false,
@@ -965,12 +987,16 @@ async function runLlmOnly(action, ctx) {
   return {
     success: true,
     message: parsed?.summary ?? String(rawText).slice(0, 500),
+    execution_root: roots.executionRoot,
     agent: normalizeAgentResult(parsed, rawText, DEFAULT_PROVIDER),
   };
 }
 
 export async function runAgenticAction(action, ctx) {
   const provider = resolveProvider(action);
+  if (actionRequiresExecutionRoot(action) && !resolveConfiguredExecutionRoot(action)) {
+    return missingExecutionRootResult(action, provider);
+  }
   if (provider === DEFAULT_PROVIDER) return runLlmOnly(action, ctx);
   if (provider === CLAUDE_PROVIDER) return runClaudeCodeSdk(action, ctx);
   if (provider === CURSOR_PROVIDER) return runCursorSdk(action, ctx);

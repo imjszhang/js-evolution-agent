@@ -14,6 +14,7 @@ import {
   actionHandlers,
   actionVerifiers,
 } from '../src/actions/handlers.mjs';
+import { runReadOnlyProbe } from '../src/actions/probe-runner.mjs';
 import * as configuredActions from '../src/actions/configured-actions.mjs';
 import { runConfiguredExternalAction } from '../src/actions/configured-external-runner.mjs';
 import { createIntelligenceStore } from '../src/intelligence/store.mjs';
@@ -905,9 +906,9 @@ describe('controlled action handlers', () => {
       }),
     }, makeCtx());
 
-    expect(result.success).toBe(true);
-    expect(result.requires_approval).toBe(true);
-    expect(result.status).toBe('requires_human_review');
+    expect(result.success).toBe(false);
+    expect(result.status).toBe('failed');
+    expect(result.error).toMatch(/executionRoot|cwd/);
     expect(Agent.create).not.toHaveBeenCalled();
   });
 
@@ -1136,6 +1137,7 @@ describe('controlled action handlers', () => {
       type: 'run_probe',
       params: {
         probe_type: 'jsonl_validate',
+        cwd: ctx.projectRoot,
         target,
         allow_legacy_fallback: true,
         required_fields: ['type', 'status'],
@@ -1152,6 +1154,51 @@ describe('controlled action handlers', () => {
     expect(ctx.ai.agentCalls[0][1].content).toContain('Agentic execution task');
     expect(ctx.host.intelligenceStore.readProbeResults({ limit: 5 })[0].probe_type)
       .toBe('jsonl_validate');
+  });
+
+  it('blocks local file probes that omit an execution root', async () => {
+    const ctx = makeAgenticCtx();
+    const target = join(ctx.projectRoot, 'README.md');
+    writeFileSync(target, '# Test Project\n', 'utf-8');
+
+    const result = await actionHandlers.run_probe({
+      type: 'run_probe',
+      params: {
+        probe_type: 'file_exists',
+        target,
+      },
+    }, ctx);
+
+    expect(result.success).toBe(false);
+    expect(result.status).toBe('blocked');
+    expect(result.error).toBe('missing executionRoot');
+    expect(ctx.ai.agentCalls).toHaveLength(0);
+  });
+
+  it('resolves read-only probe targets from params.cwd instead of host projectRoot', () => {
+    const ctx = makeCtx();
+    const externalRoot = join(tempDir, 'agentank-evolver');
+    const hostCandidateDir = join(ctx.projectRoot, 'data', 'candidates');
+    const externalCandidateDir = join(externalRoot, 'data', 'candidates');
+    mkdirSync(hostCandidateDir, { recursive: true });
+    mkdirSync(externalCandidateDir, { recursive: true });
+    writeFileSync(join(hostCandidateDir, 'candidate-host.json'), '{"hash":"host"}', 'utf-8');
+    writeFileSync(join(externalCandidateDir, 'candidate-external.json'), '{"hash":"external"}', 'utf-8');
+
+    const result = runReadOnlyProbe({
+      type: 'run_probe',
+      params: {
+        cwd: externalRoot,
+        objective: 'Inspect candidate files',
+        targets: ['data/candidates'],
+      },
+    }, ctx);
+
+    const entries = result.evidence.steps[0].evidence.entries.map((entry) => entry.path);
+    expect(result.execution_root).toBe(externalRoot);
+    expect(result.evidence.execution_root).toBe(externalRoot);
+    expect(entries).toContain(join('data', 'candidates', 'candidate-external.json'));
+    expect(entries).not.toContain(join('data', 'candidates', 'candidate-host.json'));
   });
 
   it('records agent probe evidence without using the read-only finalizer', async () => {
@@ -1171,6 +1218,7 @@ describe('controlled action handlers', () => {
       description: 'Investigate safe-runtime goal evidence',
       params: {
         probe_type: 'file_exists',
+        cwd: ctx.projectRoot,
         target: join(ctx.projectRoot, 'does-not-exist.json'),
       },
     }, ctx);
@@ -1194,6 +1242,7 @@ describe('controlled action handlers', () => {
       description: 'Search for pending decisions',
       params: {
         probe_type: 'keyword_search',
+        cwd: ctx.projectRoot,
         target,
       },
     }, ctx);
@@ -1231,6 +1280,7 @@ describe('controlled action handlers', () => {
       description: 'Investigate evolution runner evidence in the project',
       params: {
         objective: 'Find evolution runner evidence',
+        cwd: ctx.projectRoot,
         targets: [ctx.projectRoot],
         allow_legacy_fallback: true,
         budget: { max_files: 10, max_steps: 5 },
@@ -1254,6 +1304,7 @@ describe('controlled action handlers', () => {
       description: 'Search for pending decisions',
       params: {
         probe_type: 'keyword_search',
+        cwd: ctx.projectRoot,
         target,
         allow_legacy_fallback: true,
       },
@@ -1272,6 +1323,7 @@ describe('controlled action handlers', () => {
       type: 'run_probe',
       params: {
         probe_type: 'file_exists',
+        cwd: ctx.projectRoot,
         target,
         allow_legacy_fallback: true,
         hypothesis: 'sensitive file exists',
@@ -1306,6 +1358,7 @@ describe('controlled action handlers', () => {
       type: 'run_probe',
       params: {
         probe_type: 'investigation',
+        cwd: ctx.projectRoot,
         targets: [safeTarget, sensitiveTarget],
         death_boundary: 'do not read sensitive files',
       },
