@@ -73,6 +73,7 @@ import {
   reclaimExpiredLeases,
   readTaskQueue,
   renewTaskLease,
+  retryTask,
 } from '../src/cli/utils/daemon-tasks.mjs';
 import {
   buildDaemonProjection,
@@ -577,6 +578,102 @@ describe('daemon task queue foundation', () => {
     const tasks = readTaskQueue(root, 'alpha').tasks;
     expect(tasks.find((task) => task.task_id === failedTask.task.task_id).status).toBe('pending');
     expect(tasks.find((task) => task.task_id === pendingTask.task.task_id).status).toBe('cancelled');
+  });
+
+  it('does not claim later daemon rounds while an earlier round is incomplete', () => {
+    const root = makeDaemonProjectRoot();
+    const first = enqueueTask(root, 'alpha', {
+      type: 'run_cycle',
+      idempotencyKey: 'run-1:alpha:run_cycle:1',
+      input: { run_id: 'run-1', round_index: 1, rounds: 2 },
+    });
+    const second = enqueueTask(root, 'alpha', {
+      type: 'run_cycle',
+      idempotencyKey: 'run-1:alpha:run_cycle:2',
+      input: { run_id: 'run-1', round_index: 2, rounds: 2 },
+    });
+    failTask(root, 'alpha', first.task.task_id, { code: 'boom', message: 'failed' });
+
+    const claimed = claimNextTask(root, 'alpha', { workerId: 'timeline-worker' });
+
+    expect(claimed.task).toBeNull();
+    expect(readTaskQueue(root, 'alpha').tasks.find((task) => task.task_id === second.task.task_id).status)
+      .toBe('pending');
+  });
+
+  it('claims the next daemon round once earlier rounds are completed', () => {
+    const root = makeDaemonProjectRoot();
+    const first = enqueueTask(root, 'alpha', {
+      type: 'run_cycle',
+      idempotencyKey: 'run-2:alpha:run_cycle:1',
+      input: { run_id: 'run-2', round_index: 1, rounds: 2 },
+    });
+    const second = enqueueTask(root, 'alpha', {
+      type: 'run_cycle',
+      idempotencyKey: 'run-2:alpha:run_cycle:2',
+      input: { run_id: 'run-2', round_index: 2, rounds: 2 },
+    });
+    completeTask(root, 'alpha', first.task.task_id, { ok: true });
+
+    const claimed = claimNextTask(root, 'alpha', { workerId: 'timeline-worker' });
+
+    expect(claimed.task.task_id).toBe(second.task.task_id);
+    expect(claimed.task.status).toBe('running');
+  });
+
+  it('allows retrying a failed daemon round only before later rounds complete', () => {
+    const root = makeDaemonProjectRoot();
+    const first = enqueueTask(root, 'alpha', {
+      type: 'run_cycle',
+      idempotencyKey: 'run-3:alpha:run_cycle:1',
+      input: { run_id: 'run-3', round_index: 1, rounds: 2 },
+    });
+    enqueueTask(root, 'alpha', {
+      type: 'run_cycle',
+      idempotencyKey: 'run-3:alpha:run_cycle:2',
+      input: { run_id: 'run-3', round_index: 2, rounds: 2 },
+    });
+    failTask(root, 'alpha', first.task.task_id, { code: 'boom', message: 'failed' });
+
+    const retried = retryTask(root, 'alpha', first.task.task_id, {
+      code: 'manual_retry',
+      message: 'retry',
+    });
+
+    expect(retried.task.status).toBe('pending');
+  });
+
+  it('rejects retrying historical daemon rounds after later rounds complete', async () => {
+    const root = makeDaemonProjectRoot();
+    const first = enqueueTask(root, 'alpha', {
+      type: 'run_cycle',
+      idempotencyKey: 'run-4:alpha:run_cycle:1',
+      input: { run_id: 'run-4', round_index: 1, rounds: 2 },
+    });
+    const second = enqueueTask(root, 'alpha', {
+      type: 'run_cycle',
+      idempotencyKey: 'run-4:alpha:run_cycle:2',
+      input: { run_id: 'run-4', round_index: 2, rounds: 2 },
+    });
+    failTask(root, 'alpha', first.task.task_id, { code: 'boom', message: 'failed' });
+    completeTask(root, 'alpha', second.task.task_id, { ok: true });
+
+    expect(() => retryTask(root, 'alpha', first.task.task_id, {
+      code: 'manual_retry',
+      message: 'retry',
+    })).toThrow(/later rounds already completed/);
+
+    const retried = await captureConsole(() => daemonCommand({
+      root,
+      subcommand: 'tasks',
+      args: ['retry', first.task.task_id],
+      flags: { json: true },
+    }));
+    const body = JSON.parse(retried.stdout);
+
+    expect(retried.code).toBe(1);
+    expect(body.ok).toBe(false);
+    expect(body.error).toMatch(/later rounds already completed/);
   });
 
   it('reclaims expired daemon task leases explicitly', () => {

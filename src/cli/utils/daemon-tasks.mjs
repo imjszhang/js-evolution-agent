@@ -61,6 +61,48 @@ function activeTask(task) {
   return task.status === 'pending' || task.status === 'running';
 }
 
+function runCycleTimeline(task) {
+  if (task?.type !== 'run_cycle') return null;
+  const input = task.input || {};
+  if (input.run_id == null || input.round_index == null) return null;
+  const roundIndex = Number(input.round_index);
+  if (!Number.isInteger(roundIndex) || roundIndex < 1) return null;
+  return {
+    subject: task.subject,
+    runId: String(input.run_id),
+    roundIndex,
+  };
+}
+
+function sameRunCycleTimeline(left, right) {
+  return left
+    && right
+    && left.subject === right.subject
+    && left.runId === right.runId;
+}
+
+export function hasCompletedLaterRound(tasks, task) {
+  const timeline = runCycleTimeline(task);
+  if (!timeline) return false;
+  return tasks.some((item) => {
+    const other = runCycleTimeline(item);
+    return sameRunCycleTimeline(timeline, other)
+      && other.roundIndex > timeline.roundIndex
+      && item.status === 'completed';
+  });
+}
+
+export function hasIncompleteEarlierRound(tasks, task) {
+  const timeline = runCycleTimeline(task);
+  if (!timeline) return false;
+  return tasks.some((item) => {
+    const other = runCycleTimeline(item);
+    return sameRunCycleTimeline(timeline, other)
+      && other.roundIndex < timeline.roundIndex
+      && item.status !== 'completed';
+  });
+}
+
 function taskId() {
   return `task-${randomUUID()}`;
 }
@@ -156,7 +198,8 @@ export function claimNextTask(root, subject, {
     const reclaimed = reclaimExpiredLeasesInQueue(queue, { nowMs });
     const task = queue.tasks
       .filter((item) => item.status === 'pending' && (!type || item.type === type))
-      .sort((a, b) => (a.priority ?? 100) - (b.priority ?? 100) || String(a.created_at).localeCompare(String(b.created_at)))[0] ?? null;
+      .sort((a, b) => (a.priority ?? 100) - (b.priority ?? 100) || String(a.created_at).localeCompare(String(b.created_at)))
+      .find((item) => !hasIncompleteEarlierRound(queue.tasks, item)) ?? null;
     if (!task) {
       return { task: null, queue: writeTaskQueue(root, subject, queue), reclaimed };
     }
@@ -209,12 +252,15 @@ export function releaseTaskForRetry(root, subject, taskIdValue, failure = {}) {
 }
 
 export function retryTask(root, subject, taskIdValue, failure = {}) {
-  return updateTask(root, subject, taskIdValue, (task) => {
+  return updateTask(root, subject, taskIdValue, (task, queue) => {
     if (task.status === 'running' && !expiredLease(task)) {
       throw new Error(`Task is still running: ${taskIdValue}`);
     }
     if (!['failed', 'pending', 'running'].includes(task.status)) {
       throw new Error(`Task cannot be retried from status ${task.status}: ${taskIdValue}`);
+    }
+    if (hasCompletedLaterRound(queue.tasks, task)) {
+      throw new Error(`Task cannot be retried because later rounds already completed: ${taskIdValue}`);
     }
     return {
       ...task,
@@ -283,7 +329,7 @@ export function updateTask(root, subject, taskIdValue, updater) {
     const queue = readTaskQueue(root, subject);
     const idx = queue.tasks.findIndex((task) => task.task_id === taskIdValue);
     if (idx < 0) throw new Error(`Task not found: ${taskIdValue}`);
-    const task = updater(queue.tasks[idx]);
+    const task = updater(queue.tasks[idx], queue);
     queue.tasks[idx] = task;
     return { task, queue: writeTaskQueue(root, subject, queue) };
   });

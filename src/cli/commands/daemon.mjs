@@ -187,6 +187,8 @@ function taskSummary(task) {
     type: task.type,
     subject: task.subject,
     status: task.status,
+    run_id: task.input?.run_id ?? null,
+    round_index: task.input?.round_index ?? null,
     attempts: task.attempts,
     priority: task.priority,
     lease_owner: task.lease_owner,
