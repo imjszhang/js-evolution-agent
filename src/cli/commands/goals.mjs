@@ -31,6 +31,27 @@ function goalId(goal) {
   return goal?.id ?? goal?.goal_id ?? null;
 }
 
+const REQUIRED_GOAL_STRING_FIELDS = ['id', 'name', 'intent', 'good_signal', 'bad_signal'];
+
+export function validateGoalShape(goal, path = 'proposed_goal') {
+  if (!goal || typeof goal !== 'object' || Array.isArray(goal)) {
+    return { valid: false, reason: 'invalid_proposed_goal', detail: `${path} must be an object` };
+  }
+  for (const field of REQUIRED_GOAL_STRING_FIELDS) {
+    if (typeof goal[field] !== 'string' || !goal[field].trim()) {
+      return { valid: false, reason: 'invalid_proposed_goal', detail: `${path}.${field} must be a non-empty string` };
+    }
+  }
+  if (!Array.isArray(goal.children)) {
+    return { valid: false, reason: 'invalid_proposed_goal', detail: `${path}.children must be an array` };
+  }
+  for (let i = 0; i < goal.children.length; i += 1) {
+    const child = validateGoalShape(goal.children[i], `${path}.children[${i}]`);
+    if (!child.valid) return child;
+  }
+  return { valid: true, reason: null, detail: null };
+}
+
 export function parseEvidenceRefs(value) {
   if (!value) return [];
   return String(value)
@@ -80,18 +101,34 @@ export function buildGoalUpdate(root = getProjectRoot(), flags = {}) {
     throw new Error(`Goal file not found: ${flags.file}`);
   }
 
+  const nextGoal = readJsonFileStrict(flags.file);
+  return buildGoalObjectUpdate(root, nextGoal, {
+    type: flags.type || 'updated',
+    reason: flags.reason,
+    evidenceRefs: parseEvidenceRefs(flags.evidence),
+    cycle: flags.cycle ?? null,
+  });
+}
+
+export function buildGoalObjectUpdate(root = getProjectRoot(), nextGoal, opts = {}) {
+  if (!opts.reason || opts.reason === true || !String(opts.reason).trim()) {
+    throw new Error('Missing required reason.');
+  }
+
   const runtime = getActiveSubjectRuntimeInfo(root);
   const path = activeGoalsPath(runtime);
   const previousGoal = readJsonSafe(path, null);
-  const nextGoal = readJsonFileStrict(flags.file);
+  const evidenceRefs = Array.isArray(opts.evidenceRefs)
+    ? opts.evidenceRefs
+    : parseEvidenceRefs(opts.evidence);
   const event = {
-    type: flags.type || 'updated',
+    type: opts.type || 'updated',
     goal_id: goalId(nextGoal) ?? goalId(previousGoal),
     previous_goal: previousGoal,
     next_goal: nextGoal,
-    reason: String(flags.reason).trim(),
-    evidence_refs: parseEvidenceRefs(flags.evidence),
-    cycle_id: flags.cycle ?? null,
+    reason: String(opts.reason).trim(),
+    evidence_refs: evidenceRefs,
+    cycle_id: opts.cycle ?? null,
   };
 
   return {
@@ -103,12 +140,69 @@ export function buildGoalUpdate(root = getProjectRoot(), flags = {}) {
   };
 }
 
-export function updateGoals(root = getProjectRoot(), flags = {}) {
-  const update = buildGoalUpdate(root, flags);
-  const store = makeStore(update.runtime);
+function commitGoalUpdate(update, store = makeStore(update.runtime)) {
   writeJsonFile(update.path, update.nextGoal);
   const written = store.recordGoalEvent(update.event);
   return { ...update, written };
+}
+
+export function applyGoalObject(root = getProjectRoot(), nextGoal, opts = {}) {
+  const validation = validateGoalShape(nextGoal);
+  if (!validation.valid) {
+    throw new Error(validation.detail || validation.reason);
+  }
+  const update = buildGoalObjectUpdate(root, nextGoal, opts);
+  return commitGoalUpdate(update, opts.store);
+}
+
+export function updateGoals(root = getProjectRoot(), flags = {}) {
+  const update = buildGoalUpdate(root, flags);
+  return commitGoalUpdate(update);
+}
+
+export function autoCalibrateGoals(root = getProjectRoot(), goalsAssessResult = null, opts = {}) {
+  const assessment = goalsAssessResult?.assessment ?? null;
+  const cycleId = goalsAssessResult?.report?.cycle_id ?? goalsAssessResult?.event?.cycle_id ?? opts.cycle ?? null;
+  const base = {
+    cycle_id: cycleId,
+    previous_goal_id: null,
+    next_goal_id: goalId(assessment?.proposed_goal),
+    written: 0,
+  };
+  if (!assessment) return { ...base, status: 'skipped', reason: 'no_assessment' };
+  if (assessment.status !== 'refine') return { ...base, status: 'skipped', reason: 'status_not_refine' };
+  if (assessment.confidence !== 'high') return { ...base, status: 'skipped', reason: 'confidence_not_high' };
+  if (!assessment.proposed_goal) return { ...base, status: 'skipped', reason: 'no_proposed_goal' };
+
+  const validation = validateGoalShape(assessment.proposed_goal);
+  if (!validation.valid) {
+    return { ...base, status: 'skipped', reason: validation.reason, detail: validation.detail };
+  }
+
+  try {
+    const reason = `Applied high-confidence goal refine from cycle ${cycleId ?? 'unknown'}.`;
+    const update = applyGoalObject(root, assessment.proposed_goal, {
+      reason,
+      evidenceRefs: goalsAssessResult?.event?.evidence_refs ?? assessment.evidence_refs ?? [],
+      cycle: cycleId,
+      store: opts.store,
+    });
+    return {
+      ...base,
+      status: 'applied',
+      reason,
+      previous_goal_id: goalId(update.previousGoal),
+      next_goal_id: goalId(update.nextGoal),
+      written: update.written,
+      active_goals_path: update.path,
+    };
+  } catch (e) {
+    return {
+      ...base,
+      status: 'failed',
+      reason: e?.message || String(e),
+    };
+  }
 }
 
 function reportEvidenceRef(reportRecord) {

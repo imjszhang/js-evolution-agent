@@ -8,7 +8,7 @@ import {
   verifyActions,
 } from 'js-evolution-engine';
 import loadConfig from './oada.config.mjs';
-import { assessActiveGoals } from './src/cli/commands/goals.mjs';
+import { assessActiveGoals, autoCalibrateGoals } from './src/cli/commands/goals.mjs';
 import { getActiveSubjectRuntimeInfo } from './src/cli/utils/subjects.mjs';
 import { ConversationalIntelligencePipeline } from './src/intelligence/conversational-intel-pipeline.mjs';
 import { verifyWithRestoredConversation } from './src/intelligence/conversation-context.mjs';
@@ -215,6 +215,7 @@ async function main() {
   console.log('  report:', reportPath);
 
   let goalsAssessResult = null;
+  let goalsCalibrateResult = null;
   if (skipGoalsAssess()) {
     console.log('\n=== Phase 4: goals assess (skipped) ===');
   } else if (!intelReportReady) {
@@ -249,6 +250,26 @@ async function main() {
     }
   }
 
+  if (goalsAssessResult) {
+    console.log('\n=== Phase 4.5: goals calibrate ===');
+    goalsCalibrateResult = autoCalibrateGoals(__dirname, goalsAssessResult);
+    console.log('  status:', goalsCalibrateResult.status);
+    console.log('  reason:', goalsCalibrateResult.reason);
+    if (goalsCalibrateResult.next_goal_id) {
+      console.log('  next goal:', goalsCalibrateResult.next_goal_id);
+    }
+    store.recordEvolutionEvent({
+      type: 'goals_calibrate',
+      status: goalsCalibrateResult.status,
+      cycle_id: intelResult.cycle_id,
+      reason: goalsCalibrateResult.reason,
+      previous_goal_id: goalsCalibrateResult.previous_goal_id,
+      next_goal_id: goalsCalibrateResult.next_goal_id,
+      written: goalsCalibrateResult.written,
+      active_goals_path: goalsCalibrateResult.active_goals_path,
+    });
+  }
+
   console.log('\n=== Phase 5: evolution diary ===');
   try {
     const diary = await buildEvolutionDiary({
@@ -257,6 +278,7 @@ async function main() {
       execResult,
       verification,
       goalsAssessResult,
+      goalsCalibrateResult,
       runtime,
       store,
       agentContextDocs: cfg.agentContextDocs,

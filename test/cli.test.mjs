@@ -14,12 +14,15 @@ import { findUnknownActions, readActiveDecisionQueue } from '../src/cli/commands
 import { archiveQueue, auditQueue } from '../src/cli/commands/audit.mjs';
 import { buildDefaultGoals, backupData, dataStatus, initData } from '../src/cli/commands/data.mjs';
 import {
+  applyGoalObject,
   assessActiveGoals,
+  autoCalibrateGoals,
   buildGoalUpdate,
   getActiveGoals,
   getGoalHistory,
   parseEvidenceRefs,
   updateGoals,
+  validateGoalShape,
 } from '../src/cli/commands/goals.mjs';
 import { buildIntelSummary, findReportRecord } from '../src/cli/commands/intel.mjs';
 import {
@@ -1201,6 +1204,129 @@ describe('goals command helpers', () => {
     expect(history.events[0].evidence_refs).toEqual([
       { type: 'intel_report', id: 'cycle-1', ref: 'intel_report:cycle-1' },
     ]);
+  });
+
+  it('applies an in-memory goal object and records a goal event', () => {
+    const root = makeGoalsRoot('jea-goals-apply-object-');
+    const runtime = getActiveSubjectRuntimeInfo(root);
+    const nextGoal = {
+      id: 'bootstrap-refined',
+      name: 'Bootstrap refined',
+      intent: 'Make the next step verifiable.',
+      good_signal: 'The next cycle has a concrete signal.',
+      bad_signal: 'The system keeps the old ambiguous target.',
+      children: [],
+    };
+
+    const result = applyGoalObject(root, nextGoal, {
+      reason: 'Applied high-confidence goal refine from cycle cycle-apply.',
+      evidenceRefs: [{ type: 'intel_report', id: 'cycle-apply', ref: 'intel_report:cycle-apply' }],
+      cycle: 'cycle-apply',
+    });
+
+    expect(result.written).toBe(1);
+    expect(readJsonSafe(join(runtime.goalsDir, 'active_goals.json'))).toEqual(nextGoal);
+    const history = getGoalHistory(root, { limit: 5 });
+    expect(history.events[0]).toMatchObject({
+      type: 'updated',
+      goal_id: 'bootstrap-refined',
+      reason: 'Applied high-confidence goal refine from cycle cycle-apply.',
+      next_goal: nextGoal,
+    });
+  });
+
+  it('validates proposed goal shape mechanically', () => {
+    expect(validateGoalShape({
+      id: 'goal',
+      name: 'Goal',
+      intent: 'Intent',
+      good_signal: 'Good',
+      bad_signal: 'Bad',
+      children: [],
+    })).toMatchObject({ valid: true });
+
+    expect(validateGoalShape({
+      id: 'goal',
+      name: 'Goal',
+      intent: 'Intent',
+      good_signal: 'Good',
+      bad_signal: 'Bad',
+      children: {},
+    })).toMatchObject({
+      valid: false,
+      reason: 'invalid_proposed_goal',
+    });
+  });
+
+  it('auto-applies only high-confidence refine assessments', () => {
+    const root = makeGoalsRoot('jea-goals-auto-refine-');
+    const runtime = getActiveSubjectRuntimeInfo(root);
+    const nextGoal = {
+      id: 'bootstrap-refined',
+      name: 'Bootstrap refined',
+      intent: 'Make the next step verifiable.',
+      good_signal: 'The next cycle has a concrete signal.',
+      bad_signal: 'The system keeps the old ambiguous target.',
+      children: [],
+    };
+    const assessmentResult = {
+      report: { cycle_id: 'cycle-auto' },
+      event: {
+        evidence_refs: [{ type: 'intel_report', id: 'cycle-auto', ref: 'intel_report:cycle-auto' }],
+      },
+      assessment: {
+        status: 'refine',
+        confidence: 'high',
+        proposed_goal: nextGoal,
+        evidence_refs: [{ type: 'intel_report', id: 'cycle-auto', ref: 'intel_report:cycle-auto' }],
+      },
+    };
+
+    const result = autoCalibrateGoals(root, assessmentResult);
+
+    expect(result).toMatchObject({
+      status: 'applied',
+      previous_goal_id: 'bootstrap',
+      next_goal_id: 'bootstrap-refined',
+      written: 1,
+    });
+    expect(readJsonSafe(join(runtime.goalsDir, 'active_goals.json'))).toEqual(nextGoal);
+  });
+
+  it('skips auto calibration for non-refine, low confidence, or invalid goals', () => {
+    const root = makeGoalsRoot('jea-goals-auto-skip-');
+    const runtime = getActiveSubjectRuntimeInfo(root);
+    const before = readJsonSafe(join(runtime.goalsDir, 'active_goals.json'));
+    const validGoal = {
+      id: 'bootstrap-refined',
+      name: 'Bootstrap refined',
+      intent: 'Make the next step verifiable.',
+      good_signal: 'The next cycle has a concrete signal.',
+      bad_signal: 'The system keeps the old ambiguous target.',
+      children: [],
+    };
+
+    expect(autoCalibrateGoals(root, {
+      report: { cycle_id: 'cycle-keep' },
+      assessment: { status: 'keep', confidence: 'high', proposed_goal: validGoal },
+    })).toMatchObject({ status: 'skipped', reason: 'status_not_refine' });
+
+    expect(autoCalibrateGoals(root, {
+      report: { cycle_id: 'cycle-low' },
+      assessment: { status: 'refine', confidence: 'medium', proposed_goal: validGoal },
+    })).toMatchObject({ status: 'skipped', reason: 'confidence_not_high' });
+
+    expect(autoCalibrateGoals(root, {
+      report: { cycle_id: 'cycle-invalid' },
+      assessment: {
+        status: 'refine',
+        confidence: 'high',
+        proposed_goal: { ...validGoal, children: null },
+      },
+    })).toMatchObject({ status: 'skipped', reason: 'invalid_proposed_goal' });
+
+    expect(readJsonSafe(join(runtime.goalsDir, 'active_goals.json'))).toEqual(before);
+    expect(getGoalHistory(root, { limit: 10 }).events).toHaveLength(0);
   });
 
   it('rejects missing required update inputs before writing history', () => {

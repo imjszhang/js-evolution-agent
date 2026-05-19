@@ -69,6 +69,7 @@ export function buildEvolutionDiaryContext({
   execResult,
   verification,
   goalsAssessResult = null,
+  goalsCalibrateResult = null,
   runtime,
   reportPath = null,
   verifyReportPath = null,
@@ -143,6 +144,14 @@ export function buildEvolutionDiaryContext({
       confidence: goalsAssessResult?.assessment?.confidence ?? null,
       reason: goalsAssessResult?.assessment?.reason ?? null,
       written: goalsAssessResult?.written ?? null,
+    } : null,
+    phase4_5: goalsCalibrateResult ? {
+      status: goalsCalibrateResult?.status ?? null,
+      reason: goalsCalibrateResult?.reason ?? null,
+      previous_goal_id: goalsCalibrateResult?.previous_goal_id ?? null,
+      next_goal_id: goalsCalibrateResult?.next_goal_id ?? null,
+      written: goalsCalibrateResult?.written ?? null,
+      active_goals_path: goalsCalibrateResult?.active_goals_path ?? null,
     } : null,
     recent_memory: {
       standing_memory: safeReadStore(store, 'readStandingMemory', undefined, null),
@@ -258,6 +267,17 @@ function renderFallbackDiary({ context, generatedAt, reason, language }) {
     lines.push('');
   }
 
+  if (context?.phase4_5) {
+    lines.push(
+      `## ${t('目标自动校准', 'Goal Auto Calibration')}`,
+      '',
+      `- ${t('状态', 'status')}: ${context.phase4_5.status}`,
+      `- ${t('原因', 'reason')}: ${context.phase4_5.reason ?? 'n/a'}`,
+      `- ${t('新目标', 'next goal')}: ${context.phase4_5.next_goal_id ?? 'n/a'}`,
+      '',
+    );
+  }
+
   lines.push(
     `## ${t('下轮应该注意什么', 'What the next cycle should remember')}`,
     '',
@@ -312,6 +332,7 @@ export async function buildEvolutionDiary({
   execResult,
   verification,
   goalsAssessResult = null,
+  goalsCalibrateResult = null,
   runtime,
   store = null,
   agentContextDocs = [],
@@ -328,6 +349,7 @@ export async function buildEvolutionDiary({
     execResult,
     verification,
     goalsAssessResult,
+    goalsCalibrateResult,
     runtime,
     reportPath,
     verifyReportPath,
