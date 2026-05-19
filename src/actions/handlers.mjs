@@ -6,6 +6,8 @@ import {
   getConfiguredExternalAction,
   loadSubjectActionConfig,
 } from './configured-actions.mjs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 function requireParams(action, fields) {
   const missing = fields.filter((field) => action?.params?.[field] == null && action?.[field] == null);
@@ -565,10 +567,199 @@ async function runConfiguredExternalActionHandler(action, ctx) {
   return result;
 }
 
+const FORBIDDEN_OBSERVATION_FIELDS = new Set(['simulation_results']);
+
+const SCORE_FIELD_NAMES = new Set([
+  'winRate', 'score', 'rating', 'rank', 'elo',
+  'survivalScore', 'fitness', 'performance',
+]);
+
+function _flattenObject(obj, prefix = '') {
+  if (obj == null || typeof obj !== 'object') return {};
+  const result = {};
+  for (const [key, value] of Object.entries(obj)) {
+    const fullKey = prefix ? `${prefix}.${key}` : key;
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      Object.assign(result, _flattenObject(value, fullKey));
+    } else {
+      result[fullKey] = value;
+    }
+  }
+  return result;
+}
+
+function _hasForbiddenField(observation) {
+  const flat = _flattenObject(observation);
+  for (const field of FORBIDDEN_OBSERVATION_FIELDS) {
+    if (flat[field] != null) return field;
+  }
+  for (const key of Object.keys(flat)) {
+    if (FORBIDDEN_OBSERVATION_FIELDS.has(key)) return key;
+    for (const seg of key.split('.')) {
+      if (FORBIDDEN_OBSERVATION_FIELDS.has(seg)) return seg;
+    }
+  }
+  return null;
+}
+
+function _extractScoreFields(observation) {
+  const flat = _flattenObject(observation);
+  const scores = {};
+  for (const [key, value] of Object.entries(flat)) {
+    const baseName = key.split('.').pop();
+    if (SCORE_FIELD_NAMES.has(baseName) && typeof value === 'number') {
+      scores[key] = value;
+    }
+  }
+  return scores;
+}
+
+function _findSimulationDir(ctx) {
+  const dataRoot = ctx?.host?.dataRoot;
+  const projectRoot = ctx?.projectRoot;
+  const candidates = [];
+  if (dataRoot) {
+    candidates.push(join(dataRoot, '..', 'simulations'));
+  }
+  if (projectRoot) {
+    candidates.push(join(projectRoot, 'runtime', 'subjects'));
+    candidates.push(join(projectRoot, 'data', 'simulations'));
+  }
+  for (const dir of candidates) {
+    try {
+      if (existsSync(dir)) return dir;
+    } catch { /* skip */ }
+  }
+  return null;
+}
+
+function _readSimulationDir(dir, scores, onFound) {
+  try {
+    const entries = readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.endsWith('.json')) {
+        try {
+          const data = JSON.parse(readFileSync(join(dir, entry.name), 'utf-8'));
+          _extractSimulationScores(data, scores);
+          if (onFound) onFound(true);
+        } catch { /* skip unparseable */ }
+      }
+    }
+  } catch { /* skip unreadable dir */ }
+}
+
+function _walkSimulationFiles(dir, scores, opts = {}) {
+  const onFound = opts?.found;
+  try {
+    if (dir.split(/[/\\]/).pop() === 'simulations') {
+      _readSimulationDir(dir, scores, onFound);
+      return;
+    }
+    const entries = readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
+      const fullPath = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === 'simulations') {
+          _readSimulationDir(fullPath, scores, onFound);
+        } else {
+          _walkSimulationFiles(fullPath, scores, opts);
+        }
+      }
+    }
+  } catch { /* skip unreadable dir */ }
+}
+
+function _extractSimulationScores(data, scores) {
+  if (data == null) return;
+  if (typeof data.score === 'number') scores.add(data.score);
+  if (typeof data.winRate === 'number') scores.add(data.winRate);
+  const sims = Array.isArray(data.simulations) ? data.simulations : [];
+  for (const sim of sims) {
+    if (typeof sim.score === 'number') scores.add(sim.score);
+    const m = sim.metrics;
+    if (m) {
+      if (typeof m.winRate === 'number') scores.add(m.winRate);
+      if (typeof m.score === 'number') scores.add(m.score);
+      if (typeof m.survivalScore === 'number') scores.add(m.survivalScore);
+    }
+  }
+}
+
+function _collectAllSimulationScores(ctx) {
+  const dataRoot = ctx?.host?.dataRoot;
+  const projectRoot = ctx?.projectRoot;
+  const candidates = [];
+  if (dataRoot) {
+    candidates.push(join(dataRoot, '..', 'simulations'));
+  }
+  if (projectRoot) {
+    candidates.push(join(projectRoot, 'data', 'simulations'));
+    candidates.push(join(projectRoot, 'runtime', 'subjects'));
+  }
+  const scores = new Set();
+  let foundAny = false;
+  for (const dir of candidates) {
+    try {
+      if (existsSync(dir)) {
+        _walkSimulationFiles(dir, scores, { found: (v) => { foundAny = foundAny || v; } });
+      }
+    } catch { /* skip */ }
+  }
+  if (!foundAny) return null;
+  return scores;
+}
+
+function _validateObservation(observation, ctx) {
+  const forbiddenField = _hasForbiddenField(observation);
+  if (forbiddenField) {
+    return { valid: false, reason: `Observation contains forbidden field: ${forbiddenField}` };
+  }
+
+  const obsScores = _extractScoreFields(observation);
+  if (Object.keys(obsScores).length > 0) {
+    const simScores = _collectAllSimulationScores(ctx);
+    if (simScores !== null && simScores.size > 0) {
+      const unmatched = Object.entries(obsScores).filter(([, v]) => !simScores.has(v));
+      if (unmatched.length > 0) {
+        const fields = unmatched.map(([k]) => k).join(', ');
+        return {
+          valid: false,
+          reason: `Score field(s) not traceable to any simulation record: ${fields}. Scores must reference actual simulation outputs.`,
+        };
+      }
+    }
+  }
+
+  return { valid: true };
+}
+
+function _blockObservationResult(action, reason, ctx) {
+  const store = storeFrom(ctx);
+  const result = {
+    success: false,
+    status: 'blocked',
+    message: reason,
+    provider: 'local',
+    fallback_used: false,
+    evidence: {},
+    writes: {},
+  };
+  store.recordActionReceipt(action, result, ctx);
+  return result;
+}
+
 const builtInActionHandlers = {
   async record_observation(action, ctx) {
     requireParams(action, ['content']);
     const store = storeFrom(ctx);
+
+    const actionParams = asObject(action?.params);
+    const entryValidation = _validateObservation(actionParams, ctx);
+    if (!entryValidation.valid) {
+      return _blockObservationResult(action, entryValidation.reason, ctx);
+    }
+
     if (!agentExecutionRequested(action)) {
       const observation = {
         source: getField(action, 'source') ?? 'oada-action',
@@ -578,6 +769,10 @@ const builtInActionHandlers = {
         confidence: getField(action, 'confidence') ?? 'medium',
         tags: getField(action, 'tags') ?? ['js-evolution-agent'],
       };
+      const obsValidation = _validateObservation(observation, ctx);
+      if (!obsValidation.valid) {
+        return _blockObservationResult(action, obsValidation.reason, ctx);
+      }
       const written = store.ingestObservation(observation);
       const result = {
         success: written > 0,
@@ -600,6 +795,12 @@ const builtInActionHandlers = {
       const result = agentBlockedResult(agenticExecution);
       store.recordActionReceipt(action, result, ctx);
       return result;
+    }
+    const agentObservations = asArray(agenticExecution.writes?.observations);
+    const invalidAgentObs = agentObservations.find((obs) => !_validateObservation(obs, ctx).valid);
+    if (invalidAgentObs) {
+      const obsValidation = _validateObservation(invalidAgentObs, ctx);
+      return _blockObservationResult(action, obsValidation.reason, ctx);
     }
     const agentWritten = persistObservationWrites(store, action, agenticExecution);
     if (agentWritten > 0) {
@@ -627,6 +828,10 @@ const builtInActionHandlers = {
       confidence: getField(action, 'confidence') ?? 'medium',
       tags: getField(action, 'tags') ?? ['js-evolution-agent'],
     };
+    const obsValidation = _validateObservation(observation, ctx);
+    if (!obsValidation.valid) {
+      return _blockObservationResult(action, obsValidation.reason, ctx);
+    }
     const written = store.ingestObservation(observation);
     const result = {
       success: written > 0,
