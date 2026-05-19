@@ -1,3 +1,4 @@
+import { existsSync, statSync } from 'node:fs';
 import { chatMessages, parseJsonFromText } from '../ai/messages.mjs';
 
 const DEFAULT_PROVIDER = 'llm_only';
@@ -415,7 +416,48 @@ function defaultClaudeModeOptions(mode) {
   };
 }
 
-function buildClaudeOptions(action, ctx) {
+function validateConfiguredCwd({ cwd, cwdWasConfigured, provider }) {
+  if (!cwdWasConfigured) return null;
+  const value = String(cwd ?? '').trim();
+  if (!value) {
+    return {
+      success: false,
+      deferred: false,
+      provider,
+      error: 'agent cwd was explicitly configured but empty',
+    };
+  }
+  if (!existsSync(value)) {
+    return {
+      success: false,
+      deferred: false,
+      provider,
+      error: `agent cwd does not exist: ${value}`,
+    };
+  }
+  let stats;
+  try {
+    stats = statSync(value);
+  } catch (e) {
+    return {
+      success: false,
+      deferred: false,
+      provider,
+      error: `agent cwd cannot be inspected: ${value}: ${e?.message || e}`,
+    };
+  }
+  if (!stats.isDirectory()) {
+    return {
+      success: false,
+      deferred: false,
+      provider,
+      error: `agent cwd is not a directory: ${value}`,
+    };
+  }
+  return null;
+}
+
+export function buildClaudeOptions(action, ctx) {
   const mode = getField(action, 'mode') ?? 'propose';
   const boundary = asObject(getField(action, 'boundary'));
   const defaults = defaultClaudeModeOptions(mode);
@@ -483,7 +525,7 @@ function buildCursorPrompt(promptParts) {
   ].join('\n');
 }
 
-function buildCursorOptions(action, ctx) {
+export function buildCursorOptions(action, ctx) {
   const boundary = asObject(getField(action, 'boundary'));
   const configuredCwd = getField(action, 'cwd')
     ?? boundary.cwd
@@ -553,6 +595,14 @@ function parseAgentJson(ai, text) {
 }
 
 async function runClaudeCodeSdk(action, ctx) {
+  const { options, cwdWasConfigured } = buildClaudeOptions(action, ctx);
+  const cwdFailure = validateConfiguredCwd({
+    cwd: options.cwd,
+    cwdWasConfigured,
+    provider: CLAUDE_PROVIDER,
+  });
+  if (cwdFailure) return cwdFailure;
+
   const hasAnthropicCreds = Boolean(
     process.env.ANTHROPIC_API_KEY?.trim()
       || process.env.ANTHROPIC_AUTH_TOKEN?.trim(),
@@ -589,7 +639,6 @@ async function runClaudeCodeSdk(action, ctx) {
       error: translated.error,
     };
   }
-  const { options, cwdWasConfigured } = buildClaudeOptions(action, ctx);
   const assistantTexts = [];
   const toolUses = [];
   const messages = [];
@@ -711,15 +760,6 @@ async function runClaudeCodeSdk(action, ctx) {
 }
 
 async function runCursorSdk(action, ctx) {
-  if (!process.env.CURSOR_API_KEY?.trim() && !getField(action, 'allow_missing_api_key')) {
-    return {
-      success: false,
-      deferred: true,
-      provider: CURSOR_PROVIDER,
-      error: 'cursor_sdk requires CURSOR_API_KEY',
-    };
-  }
-
   const runtime = String(getField(action, 'runtime') ?? 'local').trim().toLowerCase();
   if (runtime !== 'local') {
     return {
@@ -733,6 +773,21 @@ async function runCursorSdk(action, ctx) {
   const mode = getField(action, 'mode') ?? 'propose';
   const promptParts = buildPrompt(action, ctx);
   const { options, cwdWasConfigured, model } = buildCursorOptions(action, ctx);
+  const cwdFailure = validateConfiguredCwd({
+    cwd: options.local?.cwd,
+    cwdWasConfigured,
+    provider: CURSOR_PROVIDER,
+  });
+  if (cwdFailure) return cwdFailure;
+
+  if (!process.env.CURSOR_API_KEY?.trim() && !getField(action, 'allow_missing_api_key')) {
+    return {
+      success: false,
+      deferred: true,
+      provider: CURSOR_PROVIDER,
+      error: 'cursor_sdk requires CURSOR_API_KEY',
+    };
+  }
 
   if (mode === 'sandbox_patch' && !cwdWasConfigured) {
     const summary = 'sandbox_patch requires an explicit cwd, sandbox, or worktree before Cursor SDK execution';

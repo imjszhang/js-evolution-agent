@@ -165,6 +165,7 @@ export function buildDecideUserPrompt({
 - 报告中的判断可以作为分析线索，但 action 必须能追溯到机器上下文、观察报告、目标或历史证据。
 - 优先使用具体 action types；不要用 \`agent_execute\` 表达观察、探针、复盘或核心 review 等已有语义。
 - \`agent_execute\` 只允许作为兜底动作：当没有任何具体 action type 能表达任务时才使用，并且必须提供 params.objective、params.mode、params.boundary、params.acceptance、params.escape_hatch_reason。
+- 当 \`agent_execute\` 或 \`run_probe\` 涉及本地文件或目录时，必须提供 params.cwd，且 cwd 必须是任务对象真实所属项目的根目录；文件路径应相对该 cwd 描述，不要混用多个项目根的绝对路径。
 - 涉及读写边界、安全探针、越界路径或敏感目标的 action，必须把 params.boundary 写成软操作约束而非沙箱承诺，并说明是否需要审批、如何审计、如何清理。
 - 如果确需非标准 type，必须在 params.execution_plan 写清楚步骤。
 - 每个 action 必须有 serves_goal，并尽量使用目标树中的 goal id。

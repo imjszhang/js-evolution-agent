@@ -95,6 +95,11 @@ import {
   loadSubjectActionConfig,
   normalizeConfiguredAction,
 } from '../src/actions/configured-actions.mjs';
+import {
+  buildClaudeOptions,
+  buildCursorOptions,
+  runAgenticAction,
+} from '../src/actions/agent-adapter.mjs';
 
 let tempDir = null;
 const originalJeaLanguage = process.env.JEA_LANGUAGE;
@@ -916,6 +921,50 @@ describe('action checks', () => {
     expect(findUnknownActions(decisions, new Set(['record_observation']))).toEqual([
       { id: 'bad', type: 'custom' },
     ]);
+  });
+
+  it('passes explicit action cwd into Claude and Cursor agent options', () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'jea-agent-cwd-'));
+    const action = {
+      type: 'agent_execute',
+      params: {
+        cwd: tempDir,
+        mode: 'observe',
+      },
+    };
+    const ctx = { projectRoot: join(tempDir, 'fallback') };
+
+    const claude = buildClaudeOptions(action, ctx);
+    const cursor = buildCursorOptions(action, ctx);
+
+    expect(claude.cwdWasConfigured).toBe(true);
+    expect(claude.options.cwd).toBe(tempDir);
+    expect(cursor.cwdWasConfigured).toBe(true);
+    expect(cursor.options.local.cwd).toBe(tempDir);
+  });
+
+  it('blocks agent startup when explicit cwd does not exist', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'jea-agent-cwd-'));
+    const missingCwd = join(tempDir, 'missing');
+
+    const result = await runAgenticAction({
+      type: 'agent_execute',
+      params: {
+        provider: 'claude_code_sdk',
+        cwd: missingCwd,
+        mode: 'observe',
+        objective: 'inspect local files',
+        boundary: 'read only',
+        acceptance: 'returns a structured receipt',
+        escape_hatch_reason: 'stop if cwd is invalid',
+      },
+    }, { projectRoot: tempDir });
+
+    expect(result.success).toBe(false);
+    expect(result.deferred).toBe(false);
+    expect(result.provider).toBe('claude_code_sdk');
+    expect(result.error).toContain('agent cwd does not exist');
+    expect(result.error).toContain(missingCwd);
   });
 });
 

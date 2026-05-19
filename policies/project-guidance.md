@@ -25,6 +25,15 @@ Generated: 2026-05-11T12:10:27.8975990+08:00
 - Running destructive commands, broad rewrites, or writing outside the project tree.
 - Executing non-record `core` layer actions.
 
+## Runtime Boundary Model
+
+- Host project cwd: `D:\github\My\js-evolution-agent`.
+- Subject runtime cwd pattern: `D:\github\My\js-evolution-agent\runtime\subjects\<subject-name>`.
+- For host code changes, `agent_execute` / `run_probe` must set `params.cwd` to the host project cwd and describe files relative to it.
+- For subject runtime data work, `agent_execute` / `run_probe` must set `params.cwd` to that subject's runtime cwd and describe files relative to it.
+- For external projects owned by a subject, the subject policy must declare the external project root; actions must set `params.cwd` to that root instead of searching from the host project.
+- If an explicit `params.cwd` does not exist, the action should fail rather than create a shadow project directory.
+
 ## Probe Requirements
 
 - `hypothesis`
