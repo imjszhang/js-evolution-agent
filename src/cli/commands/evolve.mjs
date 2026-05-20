@@ -34,6 +34,7 @@ const RETRYABLE_PATTERNS = [
   /ETIMEDOUT/i,
   /EAI_AGAIN/i,
   /network/i,
+  /Subject is already running/i,
 ];
 
 const NON_RETRYABLE_PATTERNS = [
@@ -109,6 +110,11 @@ export function buildCycleEnv(flags, subject) {
   }
   if (flags['exec-limit'] != null && flags['exec-limit'] !== true) {
     env.JEA_EXEC_LIMIT = String(flags['exec-limit']);
+  }
+  if (flags['subject-lock-held']) {
+    env.JEA_SUBJECT_RUN_LOCK_HELD = '1';
+  } else {
+    delete env.JEA_SUBJECT_RUN_LOCK_HELD;
   }
   return env;
 }
@@ -317,7 +323,14 @@ async function runOneRound(root, manifest, flags) {
       console.log(`\n=== evolve ${current.run_id} ${current.subject} round ${round.index}/${current.requested_rounds} attempt ${round.attempts + 1}/${retries + 1} ===\n`);
       current = saveRunManifest(root, current.subject, markRoundRunning(current, round));
       appendRunEvent(root, current.subject, current, { type: 'round_started', round: round.index, attempt: round.attempts });
-      const result = await runSingleCycle({ root, subject: current.subject, flags: effectiveFlags });
+      const result = await runSingleCycle({
+        root,
+        subject: current.subject,
+        flags: {
+          ...effectiveFlags,
+          'subject-lock-held': true,
+        },
+      });
       if (result.exitCode === 0) {
         current = saveRunManifest(root, current.subject, markRoundSucceeded(current, round));
         appendRunEvent(root, current.subject, current, { type: 'round_succeeded', round: round.index, attempt: round.attempts });

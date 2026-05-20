@@ -292,6 +292,13 @@ describe('evolve run manifests', () => {
       exitCode: 1,
       output: 'DEEPSEEK_API_KEY is required for --deepseek.',
     }).retryable).toBe(false);
+    expect(classifyCycleFailure({
+      exitCode: 1,
+      output: 'js-evolution-agent failed: Subject is already running: alpha',
+    })).toMatchObject({
+      retryable: true,
+      code: 'matched_retryable',
+    });
   });
 
   it('prefers structured exit records over regex fallback', () => {
@@ -368,6 +375,15 @@ describe('evolve run manifests', () => {
     expect(env.JEA_SKIP_GOALS_ASSESS).toBe('1');
     expect(env.JEA_EXEC_LIMIT).toBe('2');
     expect(env.DEEPSEEK_API_KEY).toBeUndefined();
+  });
+
+  it('marks child cycles when the parent already holds the subject lock', () => {
+    const env = buildCycleEnv({
+      'subject-lock-held': true,
+    }, 'alpha');
+
+    expect(env.JEA_SUBJECT).toBe('alpha');
+    expect(env.JEA_SUBJECT_RUN_LOCK_HELD).toBe('1');
   });
 });
 

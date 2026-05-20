@@ -10,6 +10,7 @@ import {
 import loadConfig from './oada.config.mjs';
 import { assessActiveGoals, autoCalibrateGoals } from './src/cli/commands/goals.mjs';
 import { getActiveSubjectRuntimeInfo } from './src/cli/utils/subjects.mjs';
+import { withSubjectLock } from './src/cli/utils/evolve-runs.mjs';
 import { ConversationalIntelligencePipeline } from './src/intelligence/conversational-intel-pipeline.mjs';
 import { verifyWithRestoredConversation } from './src/intelligence/conversation-context.mjs';
 import { buildEvolutionDiary } from './src/intelligence/evolution-diary-builder.mjs';
@@ -46,6 +47,7 @@ function buildExitRecord(err) {
   if (/ECONNRESET|ETIMEDOUT|EAI_AGAIN/i.test(message)) return { ...base, code: 'network', retryable: true };
   if (/DEEPSEEK_API_KEY is required/i.test(message)) return { ...base, code: 'missing_api_key', retryable: false };
   if (/Subject policy not found|run\.mjs not found/i.test(message)) return { ...base, code: 'configuration', retryable: false };
+  if (/Subject is already running/i.test(message)) return { ...base, code: 'subject_already_running', retryable: true };
   if (/intel pipeline failed/i.test(message)) return { ...base, code: 'intel_failed', retryable: true };
   if (/exec pipeline failed/i.test(message)) return { ...base, code: 'exec_failed', retryable: false };
   return { ...base, code: 'unknown', retryable: false };
@@ -66,6 +68,13 @@ async function main() {
   process.chdir(__dirname);
   const runtime = getActiveSubjectRuntimeInfo(__dirname);
   mkdirSync(runtime.runtimeRoot, { recursive: true });
+  if (process.env.JEA_SUBJECT_RUN_LOCK_HELD === '1') {
+    return runCycle(runtime);
+  }
+  return withSubjectLock(__dirname, runtime.subject, () => runCycle(runtime));
+}
+
+async function runCycle(runtime) {
   const cfg = await loadConfig({ cwd: __dirname });
   const store = cfg.host.intelligenceStore;
 
