@@ -1,9 +1,12 @@
 import { chatMessages, parseJsonFromText } from '../ai/messages.mjs';
 import {
+  actionMissingExecutionRoot,
   actionRequiresExecutionRoot,
   missingExecutionRootResult,
   resolveActionExecutionRoots,
   resolveConfiguredExecutionRoot,
+  rootMetadata,
+  rootMismatchResult,
   validateExecutionRoot,
 } from './execution-root.mjs';
 
@@ -121,12 +124,16 @@ function buildWorkspacePromptSection(roots) {
     '## Workspace (file tools)',
     '',
     `execution_cwd: ${roots.executionCwd}`,
+    `resource_scope: ${roots.resourceScope ?? 'unknown'}`,
+    `resource_kind: ${roots.resourceKind ?? 'unknown'}`,
+    `root_resolution_source: ${roots.rootResolutionSource ?? 'unknown'}`,
     `cwd_explicitly_configured: ${roots.cwdWasConfigured}`,
     `host_project_root: ${roots.hostProjectRoot ?? 'unknown'} (subject runtime data; not the default file workspace)`,
     `host_source_root: ${roots.hostSourceRoot ?? 'unknown'} (js-evolution-agent repository root)`,
     `runtime_root: ${roots.runtimeRoot ?? 'unknown'}`,
     '',
     'Treat execution_cwd as the project root for every relative path in objective, targets, boundary, and acceptance.',
+    'Treat resource_scope/resource_kind as the semantic boundary for interpreting missing-path evidence.',
     'Do not search host_project_root or host_source_root for task files unless the objective explicitly names those paths.',
   ];
   if (roots.usesExternalWorkspace) {
@@ -209,6 +216,7 @@ function buildPrompt(action, ctx) {
       action_id: 'the decision/action id if available',
       served_goal: 'goal id this action serves, if known',
       evidence: {
+        root_metadata: rootMetadata(roots),
         files_read: [],
         matches: [],
         observations: [],
@@ -467,10 +475,10 @@ function defaultClaudeModeOptions(mode) {
   };
 }
 
-function validateConfiguredCwd({ cwd, cwdWasConfigured, provider }) {
+function validateExecutionCwd({ cwd, shouldValidate, provider }) {
   const result = validateExecutionRoot({
     executionRoot: cwd,
-    executionRootWasConfigured: cwdWasConfigured,
+    executionRootWasConfigured: shouldValidate,
     provider,
   });
   if (!result?.error) return result;
@@ -526,6 +534,7 @@ export function buildClaudeOptions(action, ctx) {
     cwdWasConfigured: roots.cwdWasConfigured,
     executionRoot: roots.executionRoot,
     executionCwd: roots.executionCwd,
+    rootMetadata: rootMetadata(roots),
   };
 }
 
@@ -537,6 +546,8 @@ function buildCursorPrompt(promptParts, roots) {
     '',
     'Cursor SDK local runtime note:',
     `- execution_cwd / local.cwd project root: ${roots.executionCwd}`,
+    `- resource_scope: ${roots.resourceScope ?? 'unknown'}`,
+    `- resource_kind: ${roots.resourceKind ?? 'unknown'}`,
     '- Resolve every relative path from execution_cwd, not host_project_root or host_source_root.',
     '- For observe/propose/patch_proposal modes, do not modify files; return proposed changes only.',
     '- For sandbox_patch, only modify files inside the explicitly configured cwd/sandbox/worktree.',
@@ -567,6 +578,7 @@ export function buildCursorOptions(action, ctx) {
     cwdWasConfigured: roots.cwdWasConfigured,
     executionRoot: roots.executionRoot,
     executionCwd: roots.executionCwd,
+    rootMetadata: rootMetadata(roots),
     model,
   };
 }
@@ -611,10 +623,10 @@ function parseAgentJson(ai, text) {
 }
 
 async function runClaudeCodeSdk(action, ctx) {
-  const { options, cwdWasConfigured } = buildClaudeOptions(action, ctx);
-  const cwdFailure = validateConfiguredCwd({
+  const { options, cwdWasConfigured, rootMetadata: metadata } = buildClaudeOptions(action, ctx);
+  const cwdFailure = validateExecutionCwd({
     cwd: options.cwd,
-    cwdWasConfigured,
+    shouldValidate: cwdWasConfigured || Boolean(metadata.authoritative_root),
     provider: CLAUDE_PROVIDER,
   });
   if (cwdFailure) return cwdFailure;
@@ -741,6 +753,7 @@ async function runClaudeCodeSdk(action, ctx) {
       options: {
         cwd: options.cwd,
         execution_root: options.cwd,
+        root_metadata: metadata,
         permissionMode: options.permissionMode,
         allowDangerouslySkipPermissions: options.allowDangerouslySkipPermissions ?? false,
         allowedTools: options.allowedTools,
@@ -773,6 +786,7 @@ async function runClaudeCodeSdk(action, ctx) {
     success: (resultMessage ? resultMessage.subtype !== 'error' : true) && validation.valid,
     message: agent.summary,
     execution_root: options.cwd,
+    root_metadata: metadata,
     agent,
   };
 }
@@ -791,10 +805,10 @@ async function runCursorSdk(action, ctx) {
   const mode = getField(action, 'mode') ?? 'propose';
   const roots = resolveAgentExecutionRoots(action, ctx);
   const promptParts = buildPrompt(action, ctx);
-  const { options, cwdWasConfigured, model } = buildCursorOptions(action, ctx);
-  const cwdFailure = validateConfiguredCwd({
+  const { options, cwdWasConfigured, model, rootMetadata: metadata } = buildCursorOptions(action, ctx);
+  const cwdFailure = validateExecutionCwd({
     cwd: options.local?.cwd,
-    cwdWasConfigured,
+    shouldValidate: cwdWasConfigured || Boolean(metadata.authoritative_root),
     provider: CURSOR_PROVIDER,
   });
   if (cwdFailure) return cwdFailure;
@@ -936,6 +950,7 @@ async function runCursorSdk(action, ctx) {
       options: {
         cwd: options.local.cwd,
         execution_root: options.local.cwd,
+        root_metadata: metadata,
         settingSources: options.local.settingSources,
         model,
       },
@@ -955,6 +970,7 @@ async function runCursorSdk(action, ctx) {
     success: (runResult?.status ? runResult.status === 'finished' : true) && validation.valid,
     message: agent.summary,
     execution_root: options.local.cwd,
+    root_metadata: metadata,
     agent,
   };
 }
@@ -988,13 +1004,16 @@ async function runLlmOnly(action, ctx) {
     success: true,
     message: parsed?.summary ?? String(rawText).slice(0, 500),
     execution_root: roots.executionRoot,
+    root_metadata: rootMetadata(roots),
     agent: normalizeAgentResult(parsed, rawText, DEFAULT_PROVIDER),
   };
 }
 
 export async function runAgenticAction(action, ctx) {
   const provider = resolveProvider(action);
-  if (actionRequiresExecutionRoot(action) && !resolveConfiguredExecutionRoot(action)) {
+  const roots = resolveAgentExecutionRoots(action, ctx);
+  if (roots.rootMismatch) return rootMismatchResult(action, roots, provider);
+  if (actionRequiresExecutionRoot(action) && actionMissingExecutionRoot(action, ctx)) {
     return missingExecutionRootResult(action, provider);
   }
   if (provider === DEFAULT_PROVIDER) return runLlmOnly(action, ctx);

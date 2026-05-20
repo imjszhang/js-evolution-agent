@@ -586,6 +586,7 @@ Rules:
 - Preserve stable conclusions that are still supported.
 - Downgrade or remove stale claims when the new report or evidence weakens them.
 - Track active goal rationale, durable trends, risks, unresolved hypotheses, and useful evidence refs.
+- Missing-path, ENOENT, or blocked probe evidence must stay qualified by execution_root/resource_scope/resource_kind. Do not turn "path missing under root X" into "module missing" unless X is the authoritative root for that resource.
 
 === Previous Standing Memory ===
 ${oldMemory?.text || '(none)'}
@@ -607,6 +608,7 @@ ${contextJson}`;
 - 保留仍被证据支持的稳定结论。
 - 如果新报告或新证据削弱了旧判断，请降级或删除旧判断。
 - 记录当前目标理由、长期趋势、风险、未验证假设，以及有用的 evidence refs。
+- 缺失路径、ENOENT 或 blocked 探针证据必须保留 execution_root/resource_scope/resource_kind 边界；除非该 root 是该资源的权威 root，不得把「root X 下 path 不存在」升级为「模块缺失」「机制未实现」「写入冻结」。
 
 === 旧 Standing Memory ===
 ${oldMemory?.text || '(none)'}

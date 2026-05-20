@@ -112,6 +112,7 @@ ${clip(JSON.stringify(reportContext || {}, null, 2), 500000)}
 - Cyber-Taoist 专有名词可照文献原样引用，但必须用事实与可追溯 id 陈述，勿用玄学修辞替代证据。
 - 不要捏造机器上下文中没有的 id、计数或事件。
 - 覆盖本轮观察、长期趋势、证据不足、风险、下一轮建议，以及 standing_memory 应如何更新的要点。
+- 对缺失路径、ENOENT、blocked 探针等证据，必须引用 execution_root/resource_scope/resource_kind；除非该 root 是资源权威 root，不得升级为「模块缺失」「机制未实现」「写入冻结」。
 - 必须包含明确的 Cyber-Taoist 分析章节。该章节需依据权威文献解释当前证据，至少覆盖当前进化阶段、法则/交易/生态位信号，以及在证据支持时的分形守/破/探针边界。
 - 尽量引用可追溯 id（如 observation、probe_result、goal_event、action_receipt、intel_report、evolution_event）。
 - 标题与小节标题用简明主题短语（例如「本轮结论」「证据缺口」），禁止使用文言对联式或隐喻式标题。
@@ -165,7 +166,9 @@ export function buildDecideUserPrompt({
 - 报告中的判断可以作为分析线索，但 action 必须能追溯到机器上下文、观察报告、目标或历史证据。
 - 优先使用具体 action types；不要用 \`agent_execute\` 表达观察、探针、复盘或核心 review 等已有语义。
 - \`agent_execute\` 只允许作为兜底动作：当没有任何具体 action type 能表达任务时才使用，并且必须提供 params.objective、params.mode、params.boundary、params.acceptance、params.escape_hatch_reason。
-- 当 \`agent_execute\` 或 \`run_probe\` 涉及本地文件或目录时，必须提供 params.cwd（语义等同 executionRoot），且 cwd 必须是任务对象真实所属项目的唯一根目录；文件路径应相对该 cwd 描述，不要混用多个项目根的绝对路径。执行层、宿主预检和 fallback 都会从这个 executionRoot 解析路径，host 的 subject runtime 仅用于演化元数据。
+- 当 \`agent_execute\` 或 \`run_probe\` 涉及本地文件或目录时，优先提供 params.resource_kind / params.resource_scope，再提供 params.cwd（语义等同 executionRoot）。cwd 必须与资源归属一致；文件路径应相对该资源 root 描述，不要混用多个项目根的绝对路径。执行层会从资源语义解析权威 executionRoot，并阻断 root_mismatch。
+- 常见资源归属：主体日记/records/daemon/goals/intelligence 使用 resource_scope=subject_runtime；AgenTank candidates/scores/simulations/data/config/actions.json/src/strategy 使用 resource_scope=agentank_evolver；JEA 源码/policies/journal 使用 resource_scope=source_root。
+- 对 ENOENT、目录不存在、blocked 等缺失证据，只能表述为「在 executionRoot=X 下 path=Y 不存在」；除非该 root 是该 resource_kind 的权威 root，否则不得升级为「模块缺失」「机制未实现」「写入冻结」。
 - \`write_retrospective\` 只用于记录已经掌握的结构化复盘结论（summary/outcome/lessons/next_actions）；不要把它当作文件调查动作，不要设置 cwd。若需要读取文件或补证据，先调度 \`run_probe\`。
 - 涉及读写边界、安全探针、越界路径或敏感目标的 action，必须把 params.boundary 写成软操作约束而非沙箱承诺，并说明是否需要审批、如何审计、如何清理。
 - 如果确需非标准 type，必须在 params.execution_plan 写清楚步骤。

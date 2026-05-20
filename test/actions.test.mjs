@@ -1201,6 +1201,103 @@ describe('controlled action handlers', () => {
     expect(entries).not.toContain(join('data', 'candidates', 'candidate-host.json'));
   });
 
+  it('derives subject runtime root for diary probes without explicit cwd', () => {
+    const ctx = makeCtx();
+    ctx.host.runtimeRoot = join(ctx.projectRoot, 'runtime', 'subjects', 'test');
+    const diariesDir = join(ctx.host.runtimeRoot, 'data', 'evolution', 'diaries');
+    mkdirSync(diariesDir, { recursive: true });
+    writeFileSync(join(diariesDir, 'exec-test.md'), '# diary\n', 'utf-8');
+
+    const result = runReadOnlyProbe({
+      type: 'run_probe',
+      params: {
+        objective: 'List diary files',
+        targets: ['data/evolution/diaries/'],
+      },
+    }, ctx);
+
+    expect(result.success).toBe(true);
+    expect(result.execution_root).toBe(ctx.host.runtimeRoot);
+    expect(result.resource_kind).toBe('evolution_diary');
+    expect(result.resource_scope).toBe('subject_runtime');
+    expect(result.evidence.root_resolution_source).toBe('subject_runtime');
+    expect(result.evidence.steps[0].evidence.entries.map((entry) => entry.name))
+      .toContain('exec-test.md');
+  });
+
+  it('blocks diary probes whose cwd points at the evolver root', async () => {
+    const ctx = makeAgenticCtx();
+    ctx.host.runtimeRoot = join(ctx.projectRoot, 'runtime', 'subjects', 'test');
+    const evolverRoot = join(tempDir, 'agentank-evolver');
+    mkdirSync(join(ctx.host.runtimeRoot, 'data', 'evolution', 'diaries'), { recursive: true });
+    mkdirSync(evolverRoot, { recursive: true });
+
+    const result = await actionHandlers.run_probe({
+      type: 'run_probe',
+      params: {
+        cwd: evolverRoot,
+        objective: 'Check diaries',
+        targets: ['data/evolution/diaries/'],
+      },
+    }, ctx);
+
+    expect(result.success).toBe(false);
+    expect(result.status).toBe('blocked');
+    expect(result.error).toBe('root_mismatch');
+    expect(result.evidence.resource_kind).toBe('evolution_diary');
+    expect(result.evidence.resource_scope).toBe('subject_runtime');
+    expect(result.evidence.root_mismatch.provided_root).toBe(evolverRoot);
+    expect(result.evidence.root_mismatch.expected_root).toBe(ctx.host.runtimeRoot);
+    expect(ctx.ai.agentCalls).toHaveLength(0);
+  });
+
+  it('keeps agentank candidate probes in the configured evolver root', () => {
+    const ctx = makeCtx();
+    const evolverRoot = join(tempDir, 'agentank-evolver');
+    const candidateDir = join(evolverRoot, 'data', 'candidates');
+    mkdirSync(candidateDir, { recursive: true });
+    writeFileSync(join(candidateDir, 'candidate-evolver.json'), '{"hash":"evolver"}', 'utf-8');
+
+    const result = runReadOnlyProbe({
+      type: 'run_probe',
+      params: {
+        cwd: evolverRoot,
+        objective: 'Inspect candidate files',
+        targets: ['data/candidates/'],
+      },
+    }, ctx);
+
+    expect(result.success).toBe(true);
+    expect(result.execution_root).toBe(evolverRoot);
+    expect(result.resource_kind).toBe('agentank_candidate');
+    expect(result.resource_scope).toBe('agentank_evolver');
+    expect(result.evidence.steps[0].evidence.entries.map((entry) => entry.name))
+      .toContain('candidate-evolver.json');
+  });
+
+  it('records resource metadata on probe receipts', async () => {
+    const ctx = makeAgenticCtx();
+    ctx.host.runtimeRoot = join(ctx.projectRoot, 'runtime', 'subjects', 'test');
+    const diariesDir = join(ctx.host.runtimeRoot, 'data', 'evolution', 'diaries');
+    mkdirSync(diariesDir, { recursive: true });
+    writeFileSync(join(diariesDir, 'exec-test.md'), '# diary\n', 'utf-8');
+
+    const result = await actionHandlers.run_probe({
+      type: 'run_probe',
+      params: {
+        objective: 'Inspect diary files',
+        targets: ['data/evolution/diaries/'],
+        allow_legacy_fallback: true,
+      },
+    }, ctx);
+
+    const receipt = ctx.host.intelligenceStore.readActionReceipts({ limit: 1 })[0];
+    expect(result.resource_kind).toBe('evolution_diary');
+    expect(receipt.result.resource_kind).toBe('evolution_diary');
+    expect(receipt.result.resource_scope).toBe('subject_runtime');
+    expect(receipt.result.relative_targets).toEqual(['data/evolution/diaries/']);
+  });
+
   it('records agent probe evidence without using the read-only finalizer', async () => {
     const ctx = makeAgenticCtx({
       status: 'completed',

@@ -15,6 +15,7 @@
 4. [实现要点](#4-实现要点)
 5. [验证与测试](#5-验证与测试)
 6. [后续演化](#6-后续演化)
+7. [第二阶段：资源寻址模型](#7-第二阶段资源寻址模型)
 
 ---
 
@@ -41,7 +42,7 @@
 decide 阶段（`cycle-20260520-012950`）对探针的配置其实是**正确的**：
 
 | 探针目标 | `params.cwd` |
-|----------|----------------|
+| --- | --- |
 | 候选 / 评分 | `D:\github\My\agentank-evolver` |
 | 主体日记 | `D:\github\My\js-evolution-agent\runtime\subjects\agentank-tank` |
 
@@ -59,7 +60,7 @@ decide 阶段（`cycle-20260520-012950`）对探针的配置其实是**正确的
 用第一性原理追问后，把问题收敛为：**一个 action 只能有一个「文件项目根」**。扫描代码发现多处仍按宿主根解析：
 
 | 位置 | 旧行为 | 风险 |
-|------|--------|------|
+| --- | --- | --- |
 | `probe-runner` 预检 / legacy fallback | `sandbox` 用 `host.sourceRoot ?? projectRoot` | 与 SDK cwd **分裂**：Agent 在 evolver，预检在宿主 |
 | `runPhase2Agent` | 用泛化文案覆盖原 `objective` | 目录对了，任务语义被埋进 JSON context |
 | 无 `cwd` 时的 fallback | `sourceRoot → projectRoot → process.cwd()` | decide 漏写 cwd 时静默猜错 |
@@ -83,7 +84,7 @@ decide 阶段（`cycle-20260520-012950`）对探针的配置其实是**正确的
 ### 关键决策
 
 | 决策 | 选择 | 理由 |
-|------|------|------|
+| --- | --- | --- |
 | 对外字段 | 继续接受 `params.cwd`，内部统一 `executionRoot` | 不破坏已有 decide JSON 与 policy |
 | 解析顺序 | `executionRoot` → `cwd` → `boundary.cwd/sandbox/worktree` | 兼容旧数据，语义单一 |
 | 缺根时 | 本地文件型 `run_probe` / 相关 `agent_execute` **直接失败** | 禁止 fallback 猜目录 |
@@ -114,7 +115,7 @@ flowchart LR
 ### 新增模块
 
 | 文件 | 职责 |
-|------|------|
+| --- | --- |
 | [`src/actions/execution-root.mjs`](../../src/actions/execution-root.mjs) | 解析 `executionRoot`、判断 action 是否必须有根、校验目录存在 |
 | [`src/actions/agent-adapter.mjs`](../../src/actions/agent-adapter.mjs) | 复用解析器；缺根失败；prompt / SDK 对齐 `executionRoot` |
 | [`src/actions/probe-runner.mjs`](../../src/actions/probe-runner.mjs) | `sandbox` / `resolveTarget` / `relPath` 均基于 action 的执行根 |
@@ -138,7 +139,7 @@ configuredRoot =
 ### 行为变化摘要
 
 | 场景 | 修复前 | 修复后 |
-|------|--------|--------|
+| --- | --- | --- |
 | `cwd=agentank-evolver`，`targets=["data/candidates/"]` | 预检可能解析到宿主下的 `data/candidates` | 预检与 Agent 均在 evolver 下 |
 | decide 漏写 cwd 的 `run_probe` | 可能 fallback 到 `sourceRoot` | `blocked`，`missing executionRoot` |
 | `run_probe` 经 Phase2 执行 | 主 objective 为「Execute Phase 2…」 | 保留原探针 objective + targets |
@@ -201,12 +202,169 @@ npm test
 
 ---
 
+## 7. 第二阶段：资源寻址模型
+
+### 7.1 新触发事件：日记目录“缺失”的反证
+
+第一阶段统一 `executionRoot` 后，又出现了一个更细的路径语义问题。进化日记 [`exec-20260520-073257`](../../runtime/subjects/agentank-tank/data/evolution/diaries/exec-20260520-073257.md) 自身位于：
+
+```text
+runtime/subjects/agentank-tank/data/evolution/diaries/exec-20260520-073257.md
+```
+
+但正文却记录：
+
+> `data/evolution/diaries/` 目录仍然不存在，之前的日记写入时间戳可能是误报。
+
+这形成了一个直接反证：**日记文件已经被写入 diaries 目录，正文却说 diaries 目录不存在**。
+
+回溯 `cycle-20260520-073048` 的情报链后发现，`analyze_decide_prompt.txt` 引用了更早的 blocked 探针：
+
+```text
+Target directory 'data/evolution/diaries/' does not exist.
+Parent 'data/evolution/' also absent.
+Under data/ only: candidates, challenge-requests, challenges, config,
+context, matches, probe_results, probes, publish, scores, simulations.
+```
+
+这串 `data/` 子目录明显属于外部 `agentank-evolver` 项目，而不是主体 runtime。换句话说，探针在 **evolver** 下查了属于 **subject runtime** 的 `data/evolution/diaries/`，然后把“这个 root 下没有”升级成了“日记模块缺失”。
+
+### 7.2 第一性原理：问题不是 cwd，而是资源身份
+
+第一阶段的修复原则是“每个 action 只有一个 executionRoot”。但 `exec-20260520-073257` 暴露了更根本的问题：**相对路径本身不携带资源身份**。
+
+同样是 `data/...`：
+
+| 相对路径 | 真实资源 | 权威 root |
+| --- | --- | --- |
+| `data/evolution/diaries/**` | 主体进化日记 | subject runtime |
+| `data/evolution/records/**` | 主体周期记录 | subject runtime |
+| `data/candidates/**` | AgenTank 候选策略 | agentank-evolver |
+| `data/scores/**` | AgenTank 评分记录 | agentank-evolver |
+| `src/strategy/**` | tank 策略源码 | agentank-evolver |
+| `src/actions/**` | JEA 宿主执行层源码 | source root |
+
+只靠 `cwd + targets`，模型必须自己记住“这个路径属于哪个世界”。一旦 cwd 写错，执行层即使严格使用同一 executionRoot，也只能在错误世界里诚实地得出假阴性。
+
+因此第二阶段的核心判断变成：
+
+> 不要继续修 cwd；要修资源寻址模型。  
+> `cwd` 应是资源语义解析后的派生结果，而不是 LLM 手写的最终真理。
+
+### 7.3 方案升级：Resource Registry
+
+第二阶段新增一个小型资源注册表，先覆盖当前已知高风险路径：
+
+| resource_kind | resource_scope | 典型路径 |
+| --- | --- | --- |
+| `evolution_diary` | `subject_runtime` | `data/evolution/diaries/**` |
+| `evolution_record` | `subject_runtime` | `data/evolution/records/**` |
+| `evolution_daemon` | `subject_runtime` | `data/evolution/daemon/**` |
+| `goal_state` | `subject_runtime` | `data/goals/**` |
+| `intelligence_data` | `subject_runtime` | `data/intelligence/**` |
+| `agentank_candidate` | `agentank_evolver` | `data/candidates/**` |
+| `agentank_score` | `agentank_evolver` | `data/scores/**` |
+| `agentank_simulation` | `agentank_evolver` | `data/simulations/**` |
+| `agentank_config` | `agentank_evolver` | `data/config/actions.json`、`src/strategy/**`、`src/cli.mjs` |
+| `host_source` / `policy` / `journal` | `source_root` | `src/actions/**`、`src/intelligence/**`、`policies/**`、`journal/**` |
+
+新的解析链路是：
+
+```mermaid
+flowchart LR
+  action["Decide action"]
+  infer["infer resource_kind / resource_scope"]
+  root["resolve authoritative root"]
+  validate["validate cwd + targets"]
+  execute["probe / agent_execute"]
+  receipt["root-qualified receipt"]
+  memory["intelligence / standing memory"]
+
+  action --> infer
+  infer --> root
+  root --> validate
+  validate --> execute
+  validate --> mismatch["root_mismatch"]
+  execute --> receipt
+  receipt --> memory
+```
+
+### 7.4 实现要点
+
+本阶段新增 / 修改：
+
+| 文件 | 变化 |
+| --- | --- |
+| [`src/actions/resource-registry.mjs`](../../src/actions/resource-registry.mjs) | 新增资源注册表；从 targets / 显式 `resource_kind` 推断资源归属 |
+| [`src/actions/execution-root.mjs`](../../src/actions/execution-root.mjs) | 在 cwd 解析前加入资源解析；输出 `resource_kind`、`resource_scope`、`root_resolution_source`、`root_mismatch` |
+| [`src/actions/agent-adapter.mjs`](../../src/actions/agent-adapter.mjs) | Agent prompt 展示资源归属；Cursor/Claude/llm_only 结果带 `root_metadata` |
+| [`src/actions/probe-runner.mjs`](../../src/actions/probe-runner.mjs) | 本地 probe 先检查 `root_mismatch`；probe result 写入资源元数据 |
+| [`src/actions/handlers.mjs`](../../src/actions/handlers.mjs) | `run_probe` / `agent_execute` 阻断 root mismatch；action receipt、probe event、evolution event 写 root-qualified 元数据 |
+| [`src/intelligence/conversation-prompts.mjs`](../../src/intelligence/conversation-prompts.mjs) | decide prompt 要求优先声明 `resource_kind` / `resource_scope` |
+| [`src/intelligence/report-builder.mjs`](../../src/intelligence/report-builder.mjs) | standing memory 更新规则禁止把 ENOENT 跨 root 泛化 |
+| [`policies/project-guidance.md`](../../policies/project-guidance.md) | 补充全局资源寻址原则 |
+| [`policies/templates/project.md`](../../policies/templates/project.md) | subject 模板补充资源语义优先于 cwd |
+| [`policies/subjects/agentank-tank.md`](../../policies/subjects/agentank-tank.md) | 写明 AgenTank 资源映射 |
+
+关键行为变化：
+
+| 场景 | 修复前 | 修复后 |
+| --- | --- | --- |
+| `targets=["data/evolution/diaries/"]` 无 cwd | 旧策略下缺根失败，或早期版本猜默认根 | 解析为 `resource_kind=evolution_diary`、`resource_scope=subject_runtime` |
+| `cwd=agentank-evolver` + `targets=["data/evolution/diaries/"]` | 在 evolver 下报告目录不存在 | 返回 `root_mismatch`，不生成“日记模块缺失”结论 |
+| `targets=["data/candidates/"]` + evolver cwd | 依赖 cwd 正确 | 识别为 `agentank_candidate`，继续在 evolver 下执行 |
+| probe / receipt | 只有 `execution_root` 或无边界 | 记录 `resource_kind`、`resource_scope`、`relative_targets`、`root_resolution_source` |
+| standing memory | 可能把 ENOENT 升级为系统故障 | 必须保留 execution root 边界 |
+
+### 7.5 泛化边界
+
+这次修改分为两层：
+
+1. **通用机制**：`subject_runtime`、`source_root`、`root_mismatch`、root-qualified evidence、missing-path 不跨 root 泛化。这些适用于任何 subject。
+2. **内置词表**：`agentank_candidate`、`agentank_score`、`agentank_simulation`、`agentank_config` 是 AgenTank 主体特化项。
+
+因此它已经能泛化到任意主体的 runtime / host source 问题；但其他主体若有自己的外部项目，还需要在 policy 或后续配置中声明自己的 resource scope / kind。未知资源会标记为 `resource_kind=unknown`，沿用显式 cwd 兼容路径，不会被强行套用 AgenTank 规则。
+
+### 7.6 验证
+
+本阶段新增回归测试覆盖：
+
+- `data/evolution/diaries/` 无 cwd 时解析到 subject runtime
+- `data/evolution/diaries/` + evolver cwd 返回 `root_mismatch`
+- `data/candidates/` 仍在 evolver root 下读取
+- probe receipt 写入资源元数据
+- core_apply 的 source-root worktree 不被资源 registry 误判为 root mismatch
+
+验证结果：
+
+```bash
+npm test -- test/actions.test.mjs
+# Test Files  1 passed
+# Tests       47 passed
+
+npm test
+# Test Files  4 passed
+# Tests       167 passed
+```
+
+### 7.7 新教训
+
+1. **路径字符串不是资源身份**。`data/...` 在不同世界里含义完全不同。
+2. **ENOENT 是局部事实，不是系统结论**。它只说明“某 root 下没有某 path”。
+3. **LLM 应声明意图，系统负责路由**。`resource_kind` 比 `cwd` 更接近 action 的真实语义。
+4. **policy 也要升级心智模型**。如果 policy 仍只讲 cwd，decide 会继续按旧模型输出 action。
+5. **通用机制与主体词表要分离**。subject runtime / source root 是框架概念；AgenTank evolver 是主体特化概念。
+
+---
+
 ## 附录：相关路径速查
 
 | 用途 | 路径 |
-|------|------|
+| --- | --- |
 | 触发日记 | `runtime/subjects/agentank-tank/data/evolution/diaries/exec-20260520-013239.md` |
+| 反证日记 | `runtime/subjects/agentank-tank/data/evolution/diaries/exec-20260520-073257.md` |
 | 前序 cwd 日记 | `journal/2026-05-19/agent-cwd-routing-and-10-round-evolution-review.md` |
 | agentank-tank policy（三分 cwd） | `policies/subjects/agentank-tank.md` |
 | 外部演化项目 | `D:\github\My\agentank-evolver` |
 | 主体 runtime | `D:\github\My\js-evolution-agent\runtime\subjects\agentank-tank` |
+| 资源注册表 | `src/actions/resource-registry.mjs` |

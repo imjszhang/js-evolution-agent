@@ -29,8 +29,11 @@ Generated: 2026-05-11T12:10:27.8975990+08:00
 
 - The subject runtime root is `runtime/subjects/{{subject}}`; use it for this subject's local data, diaries, goals, receipts, and runtime configuration.
 - If this subject depends on an external source project, declare its root explicitly here, for example: `D:\path\to\external-project`.
-- Any `agent_execute` or `run_probe` action that reads or writes local files must set `params.cwd` to the real project root that owns those files.
-- Paths in the action objective should be relative to `params.cwd`; avoid mixing multiple absolute project roots in a single action.
+- Any `agent_execute` or `run_probe` action that reads or writes local files should identify the resource first, then the root. Prefer `params.resource_scope` / `params.resource_kind`; keep `params.cwd` as the compatibility execution root.
+- Common scopes are `subject_runtime` for this subject's runtime data, `source_root` for the js-evolution-agent host repository, and a subject-specific external scope for owned external projects.
+- Paths in the action objective should be relative to the resource root / `params.cwd`; avoid mixing multiple absolute project roots in a single action.
+- Missing-path evidence is root-qualified. A probe may say "path Y is missing under executionRoot X"; it must not generalize that into "module missing" or "write frozen" unless X is the authoritative root for that resource.
+- If `params.cwd` conflicts with the resource scope, the action should fail with `root_mismatch` rather than run in the wrong project.
 - If the intended `cwd` does not exist, the action should fail rather than create a replacement directory.
 
 ## Probe Requirements

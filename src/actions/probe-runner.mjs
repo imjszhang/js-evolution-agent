@@ -6,9 +6,10 @@ import {
 } from 'node:fs';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import {
+  actionMissingExecutionRoot,
   actionRequiresExecutionRoot,
   resolveActionExecutionRoots,
-  resolveConfiguredExecutionRoot,
+  rootMetadata,
 } from './execution-root.mjs';
 
 const TEXT_EXTENSIONS = new Set([
@@ -599,7 +600,31 @@ export function runReadOnlyProbe(action, ctx) {
   const probeType = params.probe_type ?? action?.probe_type ?? 'investigation';
   const roots = resolveActionExecutionRoots(action, ctx);
 
-  if (actionRequiresExecutionRoot(action) && !resolveConfiguredExecutionRoot(action)) {
+  if (roots.rootMismatch) {
+    const metadata = rootMetadata(roots);
+    return {
+      probe_id: probeId,
+      probe_type: probeType,
+      target: params.target ?? params.targets ?? params.initial_targets ?? null,
+      objective: params.objective ?? action?.description ?? null,
+      status: 'blocked',
+      success: false,
+      summary: `Probe blocked: root_mismatch for ${metadata.resource_kind} under ${metadata.resource_scope}`,
+      execution_root: roots.executionRoot,
+      resource_kind: metadata.resource_kind,
+      resource_scope: metadata.resource_scope,
+      root_resolution_source: metadata.root_resolution_source,
+      relative_targets: metadata.relative_targets,
+      evidence: metadata,
+      success_signal_matched: false,
+      failure_signal_matched: true,
+      death_boundary_triggered: false,
+      reason: 'root_mismatch',
+      created_at: new Date().toISOString(),
+    };
+  }
+
+  if (actionRequiresExecutionRoot(action) && actionMissingExecutionRoot(action, ctx)) {
     return {
       probe_id: probeId,
       probe_type: probeType,
@@ -610,6 +635,9 @@ export function runReadOnlyProbe(action, ctx) {
       summary: 'Probe blocked: run_probe requires params.executionRoot or params.cwd for local file work',
       evidence: {
         execution_root: null,
+        resource_kind: roots.resourceKind,
+        resource_scope: roots.resourceScope,
+        relative_targets: roots.relativeTargets,
       },
       success_signal_matched: false,
       failure_signal_matched: true,
@@ -652,6 +680,11 @@ export function runReadOnlyProbe(action, ctx) {
     probe_type: result.probe_type ?? probeType,
     target: params.target ?? params.targets ?? params.initial_targets ?? null,
     execution_root: roots.executionRoot,
+    resource_kind: roots.resourceKind,
+    resource_scope: roots.resourceScope,
+    authoritative_root: roots.authoritativeRoot,
+    root_resolution_source: roots.rootResolutionSource,
+    relative_targets: roots.relativeTargets,
     objective: params.objective ?? action.description ?? null,
     hypothesis: params.hypothesis ?? null,
     success_signal: params.success_signal ?? null,
@@ -661,6 +694,7 @@ export function runReadOnlyProbe(action, ctx) {
     created_at: new Date().toISOString(),
     ...result,
     evidence: {
+      ...rootMetadata(roots),
       execution_root: roots.executionRoot,
       ...(result.evidence ?? {}),
     },

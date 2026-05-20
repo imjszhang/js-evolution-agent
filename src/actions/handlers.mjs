@@ -1,9 +1,11 @@
 import { runReadOnlyProbe } from './probe-runner.mjs';
 import { runAgenticAction } from './agent-adapter.mjs';
 import {
+  actionMissingExecutionRoot,
   actionRequiresExecutionRoot,
   resolveActionExecutionRoots,
-  resolveConfiguredExecutionRoot,
+  rootMetadata,
+  rootMismatchResult,
 } from './execution-root.mjs';
 import { createCoreApplyWorktree } from './worktree-manager.mjs';
 import { runConfiguredExternalAction } from './configured-external-runner.mjs';
@@ -76,6 +78,10 @@ function executionRootFor(action, ctx) {
   return resolveActionExecutionRoots(action, ctx).executionRoot;
 }
 
+function rootMetadataFor(action, ctx) {
+  return rootMetadata(resolveActionExecutionRoots(action, ctx));
+}
+
 function probeHasHostBoundaryBlock(probeResult = {}) {
   if (probeResult.status === 'blocked' || probeResult.reason) return true;
   const steps = asArray(probeResult.evidence?.steps);
@@ -83,6 +89,7 @@ function probeHasHostBoundaryBlock(probeResult = {}) {
 }
 
 function persistLocalProbeResult(store, action, ctx, probeResult, overrides = {}) {
+  const metadata = rootMetadataFor(action, ctx);
   const event = {
     type: `probe_${probeResult.status}`,
     action_type: action.type,
@@ -91,6 +98,7 @@ function persistLocalProbeResult(store, action, ctx, probeResult, overrides = {}
     target: probeResult.target,
     status: probeResult.status,
     summary: probeResult.summary,
+    ...metadata,
   };
 
   store.recordProbeEvent(probeResult.probe_id, event);
@@ -102,6 +110,7 @@ function persistLocalProbeResult(store, action, ctx, probeResult, overrides = {}
     message: probeResult.summary,
     probe_id: probeResult.probe_id,
     execution_root: probeResult.execution_root ?? executionRootFor(action, ctx),
+    ...metadata,
     status: probeResult.status,
     probe_type: probeResult.probe_type,
     outcome_success: probeResult.success,
@@ -138,6 +147,7 @@ function summarizeAgenticExecution(agentResult = {}) {
     action_id: agent.action_id ?? null,
     served_goal: agent.served_goal ?? null,
     execution_root: executionRoot,
+    root_metadata: agentResult.root_metadata ?? outputs.root_metadata ?? null,
     evidence,
     writes,
     verification_hints: agent.verification_hints ?? [],
@@ -220,6 +230,7 @@ function agentBlockedResult(agenticExecution) {
 }
 
 function agentActionResult(action, agenticExecution, overrides = {}) {
+  const metadata = agenticExecution.root_metadata ?? {};
   return {
     success: agenticExecution.success && !agenticExecution.requires_approval,
     provider: agenticExecution.provider,
@@ -230,6 +241,7 @@ function agentActionResult(action, agenticExecution, overrides = {}) {
     action_id: agenticExecution.action_id ?? action?.id ?? null,
     served_goal: agenticExecution.served_goal ?? action?.serves_goal ?? null,
     execution_root: agenticExecution.execution_root ?? agenticExecution.outputs?.execution_root ?? null,
+    ...metadata,
     evidence: agenticExecution.evidence ?? {},
     writes: agenticExecution.writes ?? {},
     verification_hints: agenticExecution.verification_hints ?? [],
@@ -531,6 +543,7 @@ function persistProbeProposalWrites(store, action, agenticExecution) {
 }
 
 function persistProbeResultWrites(store, action, agenticExecution) {
+  const metadata = agenticExecution.root_metadata ?? {};
   const explicitResults = asArray(agenticExecution.writes?.probe_results);
   const shouldSynthesize = !explicitResults.length && objectHasContent(agenticExecution.evidence);
   const probeResults = shouldSynthesize
@@ -558,7 +571,11 @@ function persistProbeResultWrites(store, action, agenticExecution) {
       status: raw.status ?? agentStatusToProbeStatus(agenticExecution.status),
       success: raw.success ?? (agenticExecution.success && !agenticExecution.requires_approval),
       summary: raw.summary ?? agenticExecution.message,
-      evidence: raw.evidence ?? agenticExecution.evidence ?? {},
+      ...metadata,
+      evidence: {
+        ...metadata,
+        ...(raw.evidence ?? agenticExecution.evidence ?? {}),
+      },
       ...raw,
     };
     const event = {
@@ -569,6 +586,7 @@ function persistProbeResultWrites(store, action, agenticExecution) {
       target: probeResult.target,
       status: probeResult.status,
       summary: probeResult.summary,
+      ...metadata,
     };
     written += store.recordProbeEvent(probeId, event);
     written += store.recordProbeResult(probeResult);
@@ -970,7 +988,14 @@ const builtInActionHandlers = {
 
   async run_probe(action, ctx) {
     const store = storeFrom(ctx);
-    if (actionRequiresExecutionRoot(action) && !resolveConfiguredExecutionRoot(action)) {
+    const roots = resolveActionExecutionRoots(action, ctx);
+    const metadata = rootMetadata(roots);
+    if (roots.rootMismatch) {
+      const result = rootMismatchResult(action, roots, 'local');
+      store.recordActionReceipt(action, result, ctx);
+      return result;
+    }
+    if (actionRequiresExecutionRoot(action) && actionMissingExecutionRoot(action, ctx)) {
       const result = {
         success: false,
         status: 'blocked',
@@ -978,7 +1003,8 @@ const builtInActionHandlers = {
         provider: 'local',
         fallback_used: false,
         error: 'missing executionRoot',
-        evidence: {},
+        ...metadata,
+        evidence: metadata,
         writes: {},
       };
       store.recordActionReceipt(action, result, ctx);
@@ -1018,6 +1044,7 @@ const builtInActionHandlers = {
         status: agentStatusToProbeStatus(agenticExecution.status),
         message: agenticExecution.message || 'agent probe evidence recorded',
         execution_root: executionRootFor(action, ctx),
+        ...rootMetadataFor(action, ctx),
         probe_id: agentProbeWrites.probeId,
         probe_type: getField(action, 'probe_type') ?? 'agent_investigation',
         outcome_success: true,
@@ -1048,8 +1075,15 @@ const builtInActionHandlers = {
   async agent_execute(action, ctx) {
     requireParams(action, DIRECT_AGENT_EXECUTE_REQUIRED_PARAMS);
     const store = storeFrom(ctx);
+    const roots = resolveActionExecutionRoots(action, ctx);
+    if (roots.rootMismatch) {
+      const result = rootMismatchResult(action, roots, getField(action, 'provider') ?? 'llm_only');
+      store.recordActionReceipt(action, result, ctx);
+      return result;
+    }
     const agentResult = await runAgenticAction(action, ctx);
     const agent = agentResult.agent ?? {};
+    const metadata = agentResult.root_metadata ?? rootMetadata(roots);
     const result = {
       success: !!agentResult.success,
       deferred: !!agentResult.deferred,
@@ -1061,6 +1095,7 @@ const builtInActionHandlers = {
       action_id: agent.action_id ?? action.id ?? null,
       served_goal: agent.served_goal ?? action.serves_goal ?? null,
       execution_root: agentResult.execution_root ?? agent.outputs?.execution_root ?? agent.outputs?.claude?.options?.execution_root ?? agent.outputs?.cursor?.options?.execution_root ?? executionRootFor(action, ctx),
+      ...metadata,
       evidence: agent.evidence ?? {},
       writes: agent.writes ?? {},
       created_files: agent.created_files ?? [],
@@ -1081,6 +1116,9 @@ const builtInActionHandlers = {
       objective: getField(action, 'objective') ?? action.description ?? 'unspecified',
       mode: getField(action, 'mode') ?? 'propose',
       execution_root: result.execution_root,
+      resource_kind: result.resource_kind,
+      resource_scope: result.resource_scope,
+      root_resolution_source: result.root_resolution_source,
       requires_approval: result.requires_approval,
       summary: result.message,
       boundary_risk: result.boundary_risk,
