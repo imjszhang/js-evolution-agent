@@ -116,6 +116,9 @@ describe('conversation prompt constraints', () => {
     expect(enReportPrompt).toContain('not verified evidence');
     expect(decidePrompt).toContain('"cyber_taoist_analysis"');
     expect(decidePrompt).toContain('若不采纳 brief，应在 deferred 中说明原因');
+    expect(decidePrompt).toContain('"type": "agent_run"');
+    expect(decidePrompt).toContain('"primary_cwd_kind"');
+    expect(decidePrompt).toContain('"permission_profile"');
   });
 });
 

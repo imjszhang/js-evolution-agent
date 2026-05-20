@@ -1,6 +1,10 @@
 import { runReadOnlyProbe } from './probe-runner.mjs';
 import { runAgenticAction } from './agent-adapter.mjs';
 import {
+  applyRunSpecToAction,
+  normalizeAgentRunSpec,
+} from './agent-run-spec.mjs';
+import {
   actionMissingExecutionRoot,
   actionRequiresExecutionRoot,
   resolveActionExecutionRoots,
@@ -831,6 +835,43 @@ function _blockObservationResult(action, reason, ctx) {
 }
 
 const builtInActionHandlers = {
+  async agent_run(action, ctx) {
+    const store = storeFrom(ctx);
+    const executionAction = applyRunSpecToAction(action, ctx);
+    const runSpec = normalizeAgentRunSpec(executionAction, ctx);
+    const agentResult = await runAgenticAction(executionAction, ctx);
+    const agent = asObject(agentResult.agent);
+    const result = {
+      success: !!agentResult.success && !agent.requires_approval,
+      status: agent.status ?? (agentResult.success ? 'completed' : 'failed'),
+      message: agentResult.message ?? agent.summary ?? '',
+      provider: agentResult.provider ?? agent.provider ?? null,
+      requires_approval: !!agent.requires_approval,
+      execution_root: agentResult.execution_root ?? runSpec.primary_cwd,
+      root_metadata: agentResult.root_metadata ?? null,
+      run_spec: {
+        primary_cwd: runSpec.primary_cwd,
+        primary_cwd_kind: runSpec.primary_cwd_kind,
+        additional_directories: runSpec.additional_directories,
+        permission_profile: runSpec.permission_profile,
+        provider: runSpec.provider ?? agentResult.provider ?? agent.provider ?? null,
+        intent: runSpec.intent,
+        expected_output: runSpec.expected_output,
+      },
+      agent,
+      evidence: asObject(agent.evidence),
+      writes: asObject(agent.writes),
+      outputs: asObject(agent.outputs),
+      created_files: asArray(agent.created_files),
+      modified_files: asArray(agent.modified_files),
+      test_results: asArray(agent.test_results),
+      verification_hints: asArray(agent.verification_hints),
+      fallback_used: false,
+    };
+    store.recordActionReceipt(action, result, ctx);
+    return result;
+  },
+
   async record_observation(action, ctx) {
     requireParams(action, ['content']);
     const store = storeFrom(ctx);
@@ -1413,6 +1454,46 @@ const baseActionVerifiers = Object.fromEntries(
 
 export const actionVerifiers = {
   ...baseActionVerifiers,
+  agent_run: {
+    verify(action, result) {
+      const evidence_count = listCount(result?.evidence);
+      const writes_count = listCount(result?.writes);
+      const outputs_count = listCount(result?.outputs);
+      const expectedRoot = result?.run_spec?.primary_cwd ?? null;
+      const actualRoot = result?.execution_root ?? result?.agent?.outputs?.claude?.options?.cwd ?? result?.agent?.outputs?.cursor?.options?.cwd ?? null;
+      const rootMatches = !expectedRoot || !actualRoot || expectedRoot === actualRoot;
+      const hasReceipt = Boolean(result?.agent && result?.status && result?.message);
+      const hasEvidence = evidence_count > 0
+        || writes_count > 0
+        || outputs_count > 0
+        || asArray(result?.modified_files).length > 0
+        || asArray(result?.created_files).length > 0;
+      const requiresApproval = Boolean(result?.requires_approval);
+      const status = result?.success && hasReceipt && hasEvidence && rootMatches && !requiresApproval
+        ? 'improved'
+        : (hasReceipt ? 'partial' : 'blocked');
+      return {
+        action,
+        metric: 'agent_run_receipt',
+        value: {
+          success: !!result?.success,
+          status: result?.status ?? 'unknown',
+          provider: result?.provider ?? result?.agent?.provider ?? null,
+          requires_approval: requiresApproval,
+          execution_root: actualRoot,
+          expected_root: expectedRoot,
+          root_matches: rootMatches,
+          additional_directories: result?.run_spec?.additional_directories ?? [],
+          permission_profile: result?.run_spec?.permission_profile ?? null,
+          evidence_count,
+          writes_count,
+          outputs_count,
+          verification_hints: result?.verification_hints ?? [],
+        },
+        status,
+      };
+    },
+  },
   core_apply: {
     verify(action, result) {
       const audit = result?.core_apply_audit ?? coreApplyAudit(result ?? {});

@@ -2,9 +2,18 @@ import {
   ActionTypeRegistry,
   ActionTypeSpec,
 } from 'js-evolution-engine';
-import { registerConfiguredActionSpecs } from './configured-actions.mjs';
 
 export const actionRegistry = new ActionTypeRegistry({ includeBuiltins: false });
+
+actionRegistry.register(new ActionTypeSpec({
+  name: 'agent_run',
+  description: 'Run an autonomous code agent from a primary cwd with explicit runtime permissions and a receipt contract.',
+  promptHint: 'Preferred execution primitive. Params must include run_spec with primary_cwd_kind or primary_cwd, permission_profile=read_only|workspace_write|remote_write_review, intent, context, and expected_output. Use one primary cwd; place only necessary reference roots in additional_directories. Subject-specific commands are tool capabilities inside the agent run, not action types.',
+  defaultRisk: 'medium',
+  defaultPriority: 'high',
+  autoExecutable: true,
+  layer: 'probe',
+}));
 
 actionRegistry.register(new ActionTypeSpec({
   name: 'record_observation',
@@ -75,6 +84,4 @@ actionRegistry.register(new ActionTypeSpec({
   autoExecutable: true,
   layer: 'core',
 }));
-
-registerConfiguredActionSpecs(actionRegistry, undefined, ActionTypeSpec);
 

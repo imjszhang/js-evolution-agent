@@ -26,7 +26,7 @@ Use one coherent viewpoint across this conversation:
 - When writing English, use straightforward technical-or-ops prose that is faithful to Cyber-Taoist evolutionary thinking; avoid purple prose headings or journaling flourishes unless quoting authoritative docs verbatim.
 - Then, in the next turn, convert supported judgements into strict Analyze+Decide JSON.
 - Treat earlier assistant report text as your analysis product, not as new external fact.
-- Decisions must remain evidence-aware, goal-aligned, and bounded by the host's registered action handlers.
+- Decisions must remain evidence-aware and goal-aligned. Prefer one autonomous agent_run with a concrete run_spec over subject-specific action menus.
 
 Authoritative documents:
 
@@ -181,17 +181,20 @@ export function buildDecideUserPrompt({
 
 重要约束：
 - 只能输出 JSON 对象，不要 Markdown，不要代码围栏。
-- 报告中的判断可以作为分析线索，但 action 必须能追溯到机器上下文、观察报告、目标或历史证据。
-- 优先使用具体 action types；不要用 \`agent_execute\` 表达观察、探针、复盘或核心 review 等已有语义。
-- \`agent_execute\` 只允许作为兜底动作：当没有任何具体 action type 能表达任务时才使用，并且必须提供 params.objective、params.mode、params.boundary、params.acceptance、params.escape_hatch_reason。
-- 当 \`agent_execute\` 或 \`run_probe\` 涉及本地文件或目录时，优先提供 params.resource_kind / params.resource_scope，再提供 params.cwd（语义等同 executionRoot）。cwd 必须与资源归属一致；文件路径应相对该资源 root 描述，不要混用多个项目根的绝对路径。执行层会从资源语义解析权威 executionRoot，并阻断 root_mismatch。
-- 常见资源归属：主体日记/records/daemon/goals/intelligence 使用 resource_scope=subject_runtime；AgenTank candidates/scores/simulations/data/config/actions.json/src/strategy 使用 resource_scope=agentank_evolver；JEA 源码/policies/journal 使用 resource_scope=source_root。
+- 报告中的判断可以作为分析线索，但 run 必须能追溯到机器上下文、观察报告、目标或历史证据。
+- 默认输出 \`type: "agent_run"\`，并在 \`params.run_spec\` 中描述一次自主 agent 运行。不要再把主体业务步骤拆成 \`sync/generate/simulate/evaluate/publish\` 之类的 action 菜单。
+- \`params.run_spec.primary_cwd_kind\` 是一等字段。常见值：主体日记/records/daemon/goals/intelligence 使用 \`subject_runtime\`；AgenTank candidates/scores/simulations/data/config/actions.json/src/strategy 使用 \`agentank_evolver\`；JEA 源码/policies/journal 使用 \`source_root\`。
+- 每次 run 只能有一个 primary cwd。需要参考其他 root 时，使用 \`additional_directory_kinds\` 或把摘要写入 context；不要让一次 run 无差别跨多个项目根写入。
+- \`permission_profile\` 必须是 \`read_only\`、\`workspace_write\` 或 \`remote_write_review\` 之一。只读调查用 \`read_only\`；本地候选/模拟/沙盒改动用 \`workspace_write\`；真实远端变更或发布准备用 \`remote_write_review\`。
+- 若必须使用旧 action type，只能用于兼容已有队列或明确的宿主记录语义，并在 rationale 说明为什么 \`agent_run\` 不合适。
+- \`agent_execute\` 只允许作为旧兼容兜底动作；新决策不要优先使用它。
+- 当 run 涉及本地文件或目录时，文件路径应相对 primary cwd 描述，不要混用多个项目根的绝对路径。执行层会从 run_spec 解析 cwd 并阻断 root_mismatch。
+- 常见资源归属：主体日记/records/daemon/goals/intelligence 使用 primary_cwd_kind=subject_runtime；AgenTank candidates/scores/simulations/data/config/actions.json/src/strategy 使用 primary_cwd_kind=agentank_evolver；JEA 源码/policies/journal 使用 primary_cwd_kind=source_root。
 - 对 ENOENT、目录不存在、blocked 等缺失证据，只能表述为「在 executionRoot=X 下 path=Y 不存在」；除非该 root 是该 resource_kind 的权威 root，否则不得升级为「模块缺失」「机制未实现」「写入冻结」。
 - Operator Intent Briefs 是单轮人工意图，不是事实证据。可以据此优先调度核实动作；若不采纳 brief，应在 deferred 中说明原因。
-- \`write_retrospective\` 只用于记录已经掌握的结构化复盘结论（summary/outcome/lessons/next_actions）；不要把它当作文件调查动作，不要设置 cwd。若需要读取文件或补证据，先调度 \`run_probe\`。
-- 涉及读写边界、安全探针、越界路径或敏感目标的 action，必须把 params.boundary 写成软操作约束而非沙箱承诺，并说明是否需要审批、如何审计、如何清理。
-- 如果确需非标准 type，必须在 params.execution_plan 写清楚步骤。
-- 每个 action 必须有 serves_goal，并尽量使用目标树中的 goal id。
+- \`write_retrospective\` 只用于记录已经掌握的结构化复盘结论（summary/outcome/lessons/next_actions）；需要读取文件或补证据时，优先调度 \`agent_run\`。
+- 涉及权限、安全探针、越界路径或敏感目标的 run，必须通过 \`permission_profile\`、primary cwd、additional directories 和 expected_output 约束，不要只靠自然语言承诺。
+- 每个 action 必须有 serves_goal，并尽量使用目标树中的 goal id；对 \`agent_run\`，serves_goal 描述本次 run 要推进的目标。
 - 不要为了覆盖而制造行动；证据不足时可以把 decision 设为 "defer" 或让 actions 为空数组。
 
 ## Available Action Types
@@ -261,13 +264,34 @@ Respond with exactly this JSON shape:
   "rationale": "...",
   "actions": [
     {
-      "type": "action_type_name",
+      "type": "agent_run",
       "description": "...",
       "serves_goal": "<goal_id>",
       "goal_rationale": "...",
       "priority": "high/medium/low",
       "update_issue": null,
-      "params": {},
+      "params": {
+        "run_spec": {
+          "primary_cwd_kind": "subject_runtime | agentank_evolver | source_root",
+          "additional_directory_kinds": [],
+          "permission_profile": "read_only | workspace_write | remote_write_review",
+          "provider": "claude_code_sdk | cursor_sdk",
+          "intent": "...",
+          "context": {
+            "why_now": "...",
+            "relevant_evidence": ["..."],
+            "constraints": ["..."]
+          },
+          "expected_output": [
+            "strict JSON receipt",
+            "summary of what was done",
+            "evidence read or produced",
+            "files/resources touched",
+            "verification result",
+            "next recommendation"
+          ]
+        }
+      },
       "expected_impact": "...",
       "risk": "..."
     }

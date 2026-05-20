@@ -232,6 +232,43 @@ afterEach(() => {
 });
 
 describe('controlled action handlers', () => {
+  it('runs an agent_run action through the unified agent receipt path', async () => {
+    const ctx = makeAgenticCtx({
+      status: 'completed',
+      summary: 'Inspected the selected runtime and produced a recommendation.',
+      evidence: {
+        observations: ['runtime queue is ready'],
+      },
+      outputs: {
+        recommendation: 'continue with one focused run',
+      },
+      confidence: 0.8,
+    });
+
+    const result = await actionHandlers.agent_run({
+      type: 'agent_run',
+      description: 'Inspect runtime readiness',
+      params: {
+        run_spec: {
+          primary_cwd_kind: 'subject_runtime',
+          permission_profile: 'read_only',
+          provider: 'llm_only',
+          intent: 'Inspect whether the runtime is ready for the next cycle.',
+          expected_output: ['summary', 'evidence', 'recommendation'],
+        },
+      },
+    }, ctx);
+    const verification = actionVerifiers.agent_run.verify(null, result);
+
+    expect(result.success).toBe(true);
+    expect(result.run_spec.primary_cwd_kind).toBe('subject_runtime');
+    expect(result.run_spec.permission_profile).toBe('read_only');
+    expect(result.evidence.observations).toEqual(['runtime queue is ready']);
+    expect(verification.status).toBe('improved');
+    expect(ctx.host.intelligenceStore.readActionReceipts({ limit: 1 })[0].action_type)
+      .toBe('agent_run');
+  });
+
   it('runs configured external actions through a subject-local runner config', async () => {
     const ctx = makeCtx();
     installConfiguredActionProject(ctx);

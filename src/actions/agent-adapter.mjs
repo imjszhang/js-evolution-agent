@@ -9,6 +9,11 @@ import {
   rootMismatchResult,
   validateExecutionRoot,
 } from './execution-root.mjs';
+import {
+  applyRunSpecToAction,
+  normalizeAgentRunSpec,
+  rawRunSpecFromAction,
+} from './agent-run-spec.mjs';
 
 const DEFAULT_PROVIDER = 'llm_only';
 const CLAUDE_PROVIDER = 'claude_code_sdk';
@@ -36,8 +41,10 @@ function normalizeProvider(provider) {
 }
 
 function resolveProvider(action) {
+  const runSpec = rawRunSpecFromAction(action);
   return normalizeProvider(
-    getField(action, 'provider')
+    runSpec.provider
+      ?? getField(action, 'provider')
       ?? process.env.JEA_AGENT_PROVIDER
       ?? DEFAULT_PROVIDER,
   );
@@ -112,11 +119,11 @@ function agentContextDocs(ctx) {
 }
 
 export function resolveConfiguredAgentCwd(action) {
-  return resolveConfiguredExecutionRoot(action);
+  return resolveConfiguredExecutionRoot(applyRunSpecToAction(action));
 }
 
 export function resolveAgentExecutionRoots(action, ctx) {
-  return resolveActionExecutionRoots(action, ctx);
+  return resolveActionExecutionRoots(applyRunSpecToAction(action, ctx), ctx);
 }
 
 function buildWorkspacePromptSection(roots) {
@@ -317,6 +324,19 @@ function validateAgentReceipt(action, agent = {}) {
     missing.push('evidence or writes.probe_results');
   }
 
+  if (actionType === 'agent_run') {
+    const runSpec = rawRunSpecFromAction(action);
+    if (!objectHasContent(evidence) && !objectHasContent(outputs) && !agent.modified_files?.length && !agent.created_files?.length) {
+      missing.push('evidence, outputs, or touched resources');
+    }
+    if (runSpec.expected_output || runSpec.expectedOutput) {
+      const expectedText = JSON.stringify(runSpec.expected_output ?? runSpec.expectedOutput);
+      const receiptText = JSON.stringify({ evidence, outputs, writes });
+      const weakExpectationMatch = String(expectedText ?? '').length > 4 && receiptText.length > 4;
+      if (!weakExpectationMatch) missing.push('expected_output evidence');
+    }
+  }
+
   if (actionType === 'write_retrospective' && !Array.isArray(writes.retrospectives)) {
     missing.push('writes.retrospectives');
   }
@@ -489,28 +509,31 @@ function validateExecutionCwd({ cwd, shouldValidate, provider }) {
 }
 
 export function buildClaudeOptions(action, ctx) {
-  const mode = getField(action, 'mode') ?? 'propose';
+  const executionAction = applyRunSpecToAction(action, ctx);
+  const runSpec = normalizeAgentRunSpec(executionAction, ctx);
+  const mode = getField(executionAction, 'mode') ?? 'propose';
   const defaults = defaultClaudeModeOptions(mode);
-  const roots = resolveAgentExecutionRoots(action, ctx);
+  const roots = resolveAgentExecutionRoots(executionAction, ctx);
   const settingSources = asList(
-    getField(action, 'settingSources')
-      ?? getField(action, 'setting_sources')
+    getField(executionAction, 'settingSources')
+      ?? getField(executionAction, 'setting_sources')
       ?? process.env.CLAUDE_AGENT_SETTING_SOURCES,
     ['user', 'project', 'local'],
   );
 
-  const permissionMode = getField(action, 'permissionMode')
-    ?? getField(action, 'permission_mode')
+  const permissionMode = getField(executionAction, 'permissionMode')
+    ?? getField(executionAction, 'permission_mode')
     ?? process.env.CLAUDE_AGENT_PERMISSION_MODE
     ?? defaults.permissionMode;
 
   const options = {
     cwd: roots.executionCwd,
-    allowedTools: asList(getField(action, 'allowedTools') ?? getField(action, 'allowed_tools'), defaults.allowedTools),
-    disallowedTools: asList(getField(action, 'disallowedTools') ?? getField(action, 'disallowed_tools'), []),
+    additionalDirectories: runSpec.additional_directories,
+    allowedTools: asList(getField(executionAction, 'allowedTools') ?? getField(executionAction, 'allowed_tools'), defaults.allowedTools),
+    disallowedTools: asList(getField(executionAction, 'disallowedTools') ?? getField(executionAction, 'disallowed_tools'), []),
     permissionMode,
     maxTurns: asNumber(
-      getField(action, 'maxTurns') ?? getField(action, 'max_turns') ?? process.env.CLAUDE_AGENT_MAX_TURNS,
+      getField(executionAction, 'maxTurns') ?? getField(executionAction, 'max_turns') ?? process.env.CLAUDE_AGENT_MAX_TURNS,
       defaults.maxTurns,
     ),
     settingSources,
@@ -526,7 +549,7 @@ export function buildClaudeOptions(action, ctx) {
     options.allowDangerouslySkipPermissions = true;
   }
 
-  const model = getField(action, 'model') ?? process.env.CLAUDE_AGENT_MODEL;
+  const model = getField(executionAction, 'model') ?? process.env.CLAUDE_AGENT_MODEL;
   if (model) options.model = String(model);
 
   return {
@@ -535,6 +558,7 @@ export function buildClaudeOptions(action, ctx) {
     executionRoot: roots.executionRoot,
     executionCwd: roots.executionCwd,
     rootMetadata: rootMetadata(roots),
+    runSpec,
   };
 }
 
@@ -556,14 +580,16 @@ function buildCursorPrompt(promptParts, roots) {
 }
 
 export function buildCursorOptions(action, ctx) {
-  const roots = resolveAgentExecutionRoots(action, ctx);
+  const executionAction = applyRunSpecToAction(action, ctx);
+  const runSpec = normalizeAgentRunSpec(executionAction, ctx);
+  const roots = resolveAgentExecutionRoots(executionAction, ctx);
   const settingSources = asList(
-    getField(action, 'settingSources')
-      ?? getField(action, 'setting_sources')
+    getField(executionAction, 'settingSources')
+      ?? getField(executionAction, 'setting_sources')
       ?? process.env.CURSOR_AGENT_SETTING_SOURCES,
     [],
   );
-  const model = String(getField(action, 'model') ?? process.env.CURSOR_AGENT_MODEL ?? 'composer-2');
+  const model = String(getField(executionAction, 'model') ?? process.env.CURSOR_AGENT_MODEL ?? 'composer-2');
   const options = {
     apiKey: process.env.CURSOR_API_KEY,
     model: { id: model },
@@ -579,6 +605,7 @@ export function buildCursorOptions(action, ctx) {
     executionRoot: roots.executionRoot,
     executionCwd: roots.executionCwd,
     rootMetadata: rootMetadata(roots),
+    runSpec,
     model,
   };
 }
@@ -623,7 +650,8 @@ function parseAgentJson(ai, text) {
 }
 
 async function runClaudeCodeSdk(action, ctx) {
-  const { options, cwdWasConfigured, rootMetadata: metadata } = buildClaudeOptions(action, ctx);
+  const executionAction = applyRunSpecToAction(action, ctx);
+  const { options, cwdWasConfigured, rootMetadata: metadata, runSpec } = buildClaudeOptions(executionAction, ctx);
   const cwdFailure = validateExecutionCwd({
     cwd: options.cwd,
     shouldValidate: cwdWasConfigured || Boolean(metadata.authoritative_root),
@@ -635,7 +663,7 @@ async function runClaudeCodeSdk(action, ctx) {
     process.env.ANTHROPIC_API_KEY?.trim()
       || process.env.ANTHROPIC_AUTH_TOKEN?.trim(),
   );
-  if (!hasAnthropicCreds && !getField(action, 'allow_missing_api_key')) {
+  if (!hasAnthropicCreds && !getField(executionAction, 'allow_missing_api_key')) {
     return {
       success: false,
       deferred: true,
@@ -656,9 +684,9 @@ async function runClaudeCodeSdk(action, ctx) {
     };
   }
 
-  const mode = getField(action, 'mode') ?? 'propose';
-  const promptParts = buildPrompt(action, ctx);
-  const translated = await translateAgentTaskPrompt(action, ctx, promptParts);
+  const mode = getField(executionAction, 'mode') ?? 'propose';
+  const promptParts = buildPrompt(executionAction, ctx);
+  const translated = await translateAgentTaskPrompt(executionAction, ctx, promptParts);
   if (!translated.ok) {
     return {
       success: false,
@@ -674,7 +702,7 @@ async function runClaudeCodeSdk(action, ctx) {
   let resultMessage = null;
   let lastRawText = '';
   let agent = null;
-  let validation = { valid: false, missing: ['receipt'], action_type: effectiveActionType(action) };
+  let validation = { valid: false, missing: ['receipt'], action_type: effectiveActionType(executionAction) };
   let sessionId = null;
 
   async function runTurn(prompt, resumeSessionId = null) {
@@ -714,12 +742,12 @@ async function runClaudeCodeSdk(action, ctx) {
       agent = normalizeAgentResult(parsed, lastRawText || assistantTexts.join('\n\n'), CLAUDE_PROVIDER);
     } else {
       for (let attempt = 1; attempt <= AGENT_VERIFICATION_ATTEMPTS; attempt += 1) {
-        const verificationPrompt = buildAgentVerificationPrompt(action, validation, attempt);
+        const verificationPrompt = buildAgentVerificationPrompt(executionAction, validation, attempt);
         const verification = await runTurn(verificationPrompt, sessionId);
         lastRawText = verification.rawText;
         const parsed = parseAgentJson(ctx?.ai, lastRawText || assistantTexts.join('\n\n'));
         agent = normalizeAgentResult(parsed, lastRawText || assistantTexts.join('\n\n'), CLAUDE_PROVIDER);
-        validation = validateAgentReceipt(action, agent);
+        validation = validateAgentReceipt(executionAction, agent);
         if (validation.valid) break;
       }
     }
@@ -734,7 +762,7 @@ async function runClaudeCodeSdk(action, ctx) {
   if (!agent) {
     const parsed = parseAgentJson(ctx?.ai, lastRawText || assistantTexts.join('\n\n'));
     agent = normalizeAgentResult(parsed, lastRawText || assistantTexts.join('\n\n'), CLAUDE_PROVIDER);
-    validation = validateAgentReceipt(action, agent);
+    validation = validateAgentReceipt(executionAction, agent);
   }
   withAgentLoopOutputs(agent, {
     taskPrompt: translated.prompt,
@@ -753,7 +781,9 @@ async function runClaudeCodeSdk(action, ctx) {
       options: {
         cwd: options.cwd,
         execution_root: options.cwd,
+        additionalDirectories: options.additionalDirectories ?? [],
         root_metadata: metadata,
+        run_spec: runSpec.present ? runSpec : null,
         permissionMode: options.permissionMode,
         allowDangerouslySkipPermissions: options.allowDangerouslySkipPermissions ?? false,
         allowedTools: options.allowedTools,
@@ -792,7 +822,8 @@ async function runClaudeCodeSdk(action, ctx) {
 }
 
 async function runCursorSdk(action, ctx) {
-  const runtime = String(getField(action, 'runtime') ?? 'local').trim().toLowerCase();
+  const executionAction = applyRunSpecToAction(action, ctx);
+  const runtime = String(getField(executionAction, 'runtime') ?? 'local').trim().toLowerCase();
   if (runtime !== 'local') {
     return {
       success: false,
@@ -802,10 +833,10 @@ async function runCursorSdk(action, ctx) {
     };
   }
 
-  const mode = getField(action, 'mode') ?? 'propose';
-  const roots = resolveAgentExecutionRoots(action, ctx);
-  const promptParts = buildPrompt(action, ctx);
-  const { options, cwdWasConfigured, model, rootMetadata: metadata } = buildCursorOptions(action, ctx);
+  const mode = getField(executionAction, 'mode') ?? 'propose';
+  const roots = resolveAgentExecutionRoots(executionAction, ctx);
+  const promptParts = buildPrompt(executionAction, ctx);
+  const { options, cwdWasConfigured, model, rootMetadata: metadata, runSpec } = buildCursorOptions(executionAction, ctx);
   const cwdFailure = validateExecutionCwd({
     cwd: options.local?.cwd,
     shouldValidate: cwdWasConfigured || Boolean(metadata.authoritative_root),
@@ -813,7 +844,7 @@ async function runCursorSdk(action, ctx) {
   });
   if (cwdFailure) return cwdFailure;
 
-  if (!process.env.CURSOR_API_KEY?.trim() && !getField(action, 'allow_missing_api_key')) {
+  if (!process.env.CURSOR_API_KEY?.trim() && !getField(executionAction, 'allow_missing_api_key')) {
     return {
       success: false,
       deferred: true,
@@ -849,7 +880,7 @@ async function runCursorSdk(action, ctx) {
     };
   }
 
-  const translated = await translateAgentTaskPrompt(action, ctx, promptParts);
+  const translated = await translateAgentTaskPrompt(executionAction, ctx, promptParts);
   if (!translated.ok) {
     return {
       success: false,
@@ -864,7 +895,7 @@ async function runCursorSdk(action, ctx) {
   let runResult = null;
   let rawText = '';
   let agentResult = null;
-  let validation = { valid: false, missing: ['receipt'], action_type: effectiveActionType(action) };
+  let validation = { valid: false, missing: ['receipt'], action_type: effectiveActionType(executionAction) };
   let sameSession = false;
 
   try {
@@ -885,11 +916,11 @@ async function runCursorSdk(action, ctx) {
 
       await sendTurn(translated.prompt);
       for (let attempt = 1; attempt <= AGENT_VERIFICATION_ATTEMPTS; attempt += 1) {
-        runResult = await sendTurn(buildAgentVerificationPrompt(action, validation, attempt));
+        runResult = await sendTurn(buildAgentVerificationPrompt(executionAction, validation, attempt));
         rawText = String(runResult?.result ?? '').trim();
         const parsed = parseAgentJson(ctx?.ai, rawText);
         agentResult = normalizeAgentResult(parsed, rawText, CURSOR_PROVIDER);
-        validation = validateAgentReceipt(action, agentResult);
+        validation = validateAgentReceipt(executionAction, agentResult);
         if (validation.valid) break;
       }
     } else {
@@ -898,14 +929,14 @@ async function runCursorSdk(action, ctx) {
         user: [
           translated.prompt,
           '',
-          buildAgentVerificationPrompt(action, validation, 1),
+          buildAgentVerificationPrompt(executionAction, validation, 1),
         ].join('\n'),
       }, roots);
       runResult = await Agent.prompt(prompt, options);
       rawText = String(runResult?.result ?? '').trim();
       const parsed = parseAgentJson(ctx?.ai, rawText);
       agentResult = normalizeAgentResult(parsed, rawText, CURSOR_PROVIDER);
-      validation = validateAgentReceipt(action, agentResult);
+      validation = validateAgentReceipt(executionAction, agentResult);
       runResults.push({
         id: runResult?.id ?? null,
         status: runResult?.status ?? null,
@@ -950,7 +981,9 @@ async function runCursorSdk(action, ctx) {
       options: {
         cwd: options.local.cwd,
         execution_root: options.local.cwd,
+        additionalDirectories: runSpec.additional_directories,
         root_metadata: metadata,
+        run_spec: runSpec.present ? runSpec : null,
         settingSources: options.local.settingSources,
         model,
       },
@@ -1010,15 +1043,16 @@ async function runLlmOnly(action, ctx) {
 }
 
 export async function runAgenticAction(action, ctx) {
-  const provider = resolveProvider(action);
-  const roots = resolveAgentExecutionRoots(action, ctx);
-  if (roots.rootMismatch) return rootMismatchResult(action, roots, provider);
-  if (actionRequiresExecutionRoot(action) && actionMissingExecutionRoot(action, ctx)) {
-    return missingExecutionRootResult(action, provider);
+  const executionAction = applyRunSpecToAction(action, ctx);
+  const provider = resolveProvider(executionAction);
+  const roots = resolveAgentExecutionRoots(executionAction, ctx);
+  if (roots.rootMismatch) return rootMismatchResult(executionAction, roots, provider);
+  if (actionRequiresExecutionRoot(executionAction) && actionMissingExecutionRoot(executionAction, ctx)) {
+    return missingExecutionRootResult(executionAction, provider);
   }
-  if (provider === DEFAULT_PROVIDER) return runLlmOnly(action, ctx);
-  if (provider === CLAUDE_PROVIDER) return runClaudeCodeSdk(action, ctx);
-  if (provider === CURSOR_PROVIDER) return runCursorSdk(action, ctx);
+  if (provider === DEFAULT_PROVIDER) return runLlmOnly(executionAction, ctx);
+  if (provider === CLAUDE_PROVIDER) return runClaudeCodeSdk(executionAction, ctx);
+  if (provider === CURSOR_PROVIDER) return runCursorSdk(executionAction, ctx);
 
   if (provider === 'cli_agent') {
     return {
