@@ -1,5 +1,7 @@
 import { getProjectRoot, loadProjectEnv } from '../utils/project.mjs';
-import { isSubjectLocked, normalizeEvolveSubjects, parsePositiveInt } from '../utils/evolve-runs.mjs';
+import { isSubjectLocked, parsePositiveInt } from '../utils/evolve-runs.mjs';
+import { hasMultiSubjectSelection, selectSubjects } from '../utils/subject-selection.mjs';
+import { buildSubjectArtifactOverview } from '../utils/subject-artifacts.mjs';
 import {
   cancelTask,
   claimNextTask,
@@ -87,6 +89,27 @@ function readDaemonEvents(root, subject, { limit = 20 } = {}) {
     .filter((event) => !event.subject || event.subject === subject);
 }
 
+function buildProjection(root, subject, flags = {}) {
+  const store = storeForSubject(root, subject);
+  const projection = buildDaemonProjection(root, subject, {
+    store,
+    heartbeatStaleMs: parseHeartbeatStaleMs(flags['heartbeat-stale-ms']),
+  });
+  writeDaemonProjection(root, subject, projection);
+  return projection;
+}
+
+function projectionSummary(root, subject, projection) {
+  return {
+    subject,
+    health: projection.health,
+    worker: projection.worker,
+    tasks: projection.tasks,
+    locked: isSubjectLocked(root, subject),
+    latest_event: projection.recent_events?.[0] ?? null,
+  };
+}
+
 function printEvents(events) {
   if (!events.length) {
     console.log('No daemon events found.');
@@ -101,6 +124,18 @@ function printEvents(events) {
       event.error_code ? `error=${event.error_code}` : null,
     ].filter(Boolean);
     console.log(parts.join(' '));
+  }
+}
+
+function printMultiEvents(items) {
+  const any = items.some((item) => item.events.length);
+  if (!any) {
+    console.log('No daemon events found.');
+    return;
+  }
+  for (const item of items) {
+    console.log(`# ${item.subject}`);
+    printEvents(item.events);
   }
 }
 
@@ -181,6 +216,12 @@ function printDiagnostics(report) {
   }
 }
 
+function printMultiDiagnostics(reports) {
+  for (const report of reports) {
+    printDiagnostics(report);
+  }
+}
+
 function taskSummary(task) {
   return {
     task_id: task.task_id,
@@ -213,6 +254,18 @@ function printTaskList(tasks) {
   for (const task of tasks) {
     const error = task.last_error_code ? ` error=${task.last_error_code}` : '';
     console.log(`${task.task_id} ${task.status} ${task.type} attempts=${task.attempts ?? 0}${error}`);
+  }
+}
+
+function printMultiTaskList(items) {
+  const any = items.some((item) => item.tasks.length);
+  if (!any) {
+    console.log('No daemon tasks found.');
+    return;
+  }
+  for (const item of items) {
+    console.log(`# ${item.subject}`);
+    printTaskList(item.tasks);
   }
 }
 
@@ -537,15 +590,58 @@ function printProjection(projection) {
   for (const suggestion of projection.health.suggestions || []) console.log(`suggestion: ${suggestion}`);
 }
 
+function printProjectionSummaries(items) {
+  for (const item of items) {
+    const counts = item.tasks.counts || {};
+    const event = item.latest_event
+      ? `${item.latest_event.type || 'event'} ${item.latest_event.status || ''}`.trim()
+      : 'none';
+    console.log(`# ${item.subject}`);
+    console.log(`health: ${item.health.status} ok=${item.health.ok}`);
+    console.log(`worker: ${item.worker.status} pid=${item.worker.pid ?? 'none'} heartbeat=${item.worker.heartbeat_at ?? 'none'}`);
+    console.log(`tasks: pending=${counts.pending || 0} running=${counts.running || 0} failed=${counts.failed || 0} total=${item.tasks.total}`);
+    console.log(`evolve_lock: ${item.locked ? 'held' : 'free'}`);
+    console.log(`latest_event: ${event}`);
+    for (const reason of item.health.reasons || []) console.log(`reason: ${reason}`);
+  }
+}
+
+function printArtifactInbox(items) {
+  if (!items.length) {
+    console.log('No subjects found.');
+    return;
+  }
+  for (const item of items) {
+    console.log(`# ${item.subject}`);
+    console.log(`health: ${item.attention.health_status ?? 'unknown'}`);
+    console.log(`pending_tasks: ${item.attention.pending_tasks} failed_tasks: ${item.attention.failed_tasks}`);
+    const report = item.latest_report;
+    console.log(`latest_report: ${report?.cycle_id ?? 'none'} ${report?.generated_at ?? report?.recorded_at ?? ''}`.trim());
+    if (report?.tldr) console.log(`  tldr: ${report.tldr}`);
+    const diary = item.latest_diary;
+    console.log(`latest_diary: ${diary?.name ?? 'none'} ${diary?.mtime ?? ''}`.trim());
+    const verify = item.latest_verify_report;
+    console.log(`latest_verify_report: ${verify?.name ?? 'none'} ${verify?.semantic_status ? `semantic=${verify.semantic_status}` : ''}`.trim());
+    console.log(`standing_memory: ${item.standing_memory.exists ? item.standing_memory.updated_at || 'available' : 'none'}`);
+    for (const reason of item.attention.reasons || []) console.log(`reason: ${reason}`);
+  }
+}
+
 export async function daemonCommand({ subcommand, flags = {}, args = [], root = getProjectRoot() } = {}) {
   loadProjectEnv(root);
-  const subjects = normalizeEvolveSubjects(root, {
+  const subjects = selectSubjects(root, {
     subject: flags.subject,
     subjects: flags.subjects,
+    all: Boolean(flags.all),
   });
   const subject = subjects[0];
+  const multiSubject = subjects.length > 1 || hasMultiSubjectSelection(flags);
 
   if (subcommand === 'enqueue') {
+    if (multiSubject) {
+      console.error('daemon enqueue supports one subject at a time. Use evolve --enqueue-only --subjects for batch task creation.');
+      return 2;
+    }
     const type = flags.type && flags.type !== true ? flags.type : 'run_cycle';
     const result = enqueueDaemonTask(root, subject, {
       type,
@@ -559,6 +655,10 @@ export async function daemonCommand({ subcommand, flags = {}, args = [], root = 
   }
 
   if (subcommand === 'work') {
+    if (multiSubject) {
+      console.error('daemon work supports one subject at a time. Start one worker per subject for parallel evolution.');
+      return 2;
+    }
     if (!flags.once) {
       console.error('Usage: jea daemon work --once [--subject NAME]');
       return 2;
@@ -571,6 +671,10 @@ export async function daemonCommand({ subcommand, flags = {}, args = [], root = 
   }
 
   if (subcommand === 'start') {
+    if (multiSubject) {
+      console.error('daemon start supports one subject at a time. External orchestrators should start one worker process per subject.');
+      return 2;
+    }
     const result = await runDaemonWorker(root, subject, flags);
     if (flags.json) console.log(JSON.stringify(result, null, 2));
     else if (!result.started) console.log(`Daemon worker not started: ${result.reason}`);
@@ -580,51 +684,68 @@ export async function daemonCommand({ subcommand, flags = {}, args = [], root = 
 
   if (subcommand === 'stop') {
     const heartbeatStaleMs = parseHeartbeatStaleMs(flags['heartbeat-stale-ms']);
-    const result = requestWorkerStop(root, subject, { staleMs: heartbeatStaleMs });
-    recordDaemonEvent(root, subject, {
-      type: 'worker_stop_requested',
-      status: result.requested ? 'ok' : result.reason,
-      worker_id: result.state?.worker_id,
-      pid: result.state?.pid,
-      reason: result.reason,
+    const results = subjects.map((name) => {
+      const result = requestWorkerStop(root, name, { staleMs: heartbeatStaleMs });
+      recordDaemonEvent(root, name, {
+        type: 'worker_stop_requested',
+        status: result.requested ? 'ok' : result.reason,
+        worker_id: result.state?.worker_id,
+        pid: result.state?.pid,
+        reason: result.reason,
+      });
+      return { subject: name, ...result };
     });
-    if (flags.json) console.log(JSON.stringify(result, null, 2));
-    else console.log(result.requested ? 'Daemon worker stop requested.' : `Daemon worker not running: ${result.reason}`);
+    if (flags.json) console.log(JSON.stringify(multiSubject ? { subjects: results } : results[0], null, 2));
+    else {
+      for (const result of results) {
+        console.log(`${result.subject}: ${result.requested ? 'Daemon worker stop requested.' : `Daemon worker not running: ${result.reason}`}`);
+      }
+    }
     return 0;
   }
 
   if (subcommand === 'events' || subcommand === 'logs') {
     const limit = parseLimit(flags.limit, 20);
-    const events = readDaemonEvents(root, subject, { limit });
-    if (flags.json) console.log(JSON.stringify({ subject, events }, null, 2));
-    else printEvents(events);
+    const items = subjects.map((name) => ({
+      subject: name,
+      events: readDaemonEvents(root, name, { limit }),
+    }));
+    if (flags.json) console.log(JSON.stringify(multiSubject ? { subjects: items } : items[0], null, 2));
+    else if (multiSubject) printMultiEvents(items);
+    else printEvents(items[0].events);
     return 0;
   }
 
   if (subcommand === 'doctor') {
-    const store = storeForSubject(root, subject);
-    const projection = buildDaemonProjection(root, subject, {
-      store,
-      heartbeatStaleMs: parseHeartbeatStaleMs(flags['heartbeat-stale-ms']),
-    });
-    writeDaemonProjection(root, subject, projection);
-    const report = buildDaemonDiagnostics(root, subject, projection);
-    if (flags.json) console.log(JSON.stringify(report, null, 2));
-    else printDiagnostics(report);
-    return report.health.ok ? 0 : 1;
+    const reports = subjects.map((name) => buildDaemonDiagnostics(root, name, buildProjection(root, name, flags)));
+    if (flags.json) console.log(JSON.stringify(multiSubject ? { subjects: reports } : reports[0], null, 2));
+    else if (multiSubject) printMultiDiagnostics(reports);
+    else printDiagnostics(reports[0]);
+    return reports.every((report) => report.health.ok) ? 0 : 1;
   }
 
   if (subcommand === 'tasks') {
     const [taskCommand, taskId] = args;
-    const queue = readTaskQueue(root, subject);
     if (!taskCommand || taskCommand === 'list') {
-      const tasks = sortedTasks(queue.tasks || [])
-        .filter((task) => !flags.status || task.status === flags.status)
-        .map(taskSummary);
-      if (flags.json) console.log(JSON.stringify({ subject, tasks }, null, 2));
-      else printTaskList(tasks);
+      const items = subjects.map((name) => {
+        const queue = readTaskQueue(root, name);
+        return {
+          subject: name,
+          tasks: sortedTasks(queue.tasks || [])
+            .filter((task) => !flags.status || task.status === flags.status)
+            .map(taskSummary),
+        };
+      });
+      if (flags.json) console.log(JSON.stringify(multiSubject ? { subjects: items } : items[0], null, 2));
+      else if (multiSubject) printMultiTaskList(items);
+      else printTaskList(items[0].tasks);
       return 0;
     }
+    if (multiSubject) {
+      console.error('daemon tasks inspect/retry/cancel supports one subject at a time.');
+      return 2;
+    }
+    const queue = readTaskQueue(root, subject);
     if (taskCommand === 'inspect') {
       const task = (queue.tasks || []).find((item) => item.task_id === taskId);
       if (!task) {
@@ -679,20 +800,33 @@ export async function daemonCommand({ subcommand, flags = {}, args = [], root = 
     return 2;
   }
 
-  if (subcommand === 'status' || !subcommand) {
-    const store = storeForSubject(root, subject);
-    const projection = buildDaemonProjection(root, subject, {
-      store,
-      heartbeatStaleMs: parseHeartbeatStaleMs(flags['heartbeat-stale-ms']),
+  if (subcommand === 'inbox' || subcommand === 'overview') {
+    const items = subjects.map((name) => {
+      const projection = buildProjection(root, name, flags);
+      return buildSubjectArtifactOverview(root, name, { projection });
     });
-    writeDaemonProjection(root, subject, projection);
-    if (flags.json) console.log(JSON.stringify(projection, null, 2));
-    else printProjection(projection);
+    if (flags.json) console.log(JSON.stringify(multiSubject ? { subjects: items } : items[0], null, 2));
+    else printArtifactInbox(items);
+    return 0;
+  }
+
+  if (subcommand === 'status' || !subcommand) {
+    const projections = subjects.map((name) => buildProjection(root, name, flags));
+    if (flags.json) {
+      const payload = multiSubject
+        ? { subjects: projections.map((projection) => projectionSummary(root, projection.subject, projection)) }
+        : projections[0];
+      console.log(JSON.stringify(payload, null, 2));
+    } else if (multiSubject) {
+      printProjectionSummaries(projections.map((projection) => projectionSummary(root, projection.subject, projection)));
+    } else {
+      printProjection(projections[0]);
+    }
     return 0;
   }
 
   {
-    console.error('Usage: jea daemon <enqueue|work|start|stop|status|events|doctor|tasks> [--subject NAME] [--json]');
+    console.error('Usage: jea daemon <enqueue|work|start|stop|status|events|doctor|tasks|inbox> [--subject NAME] [--subjects a,b | --all] [--json]');
     console.error('       jea daemon enqueue --type run_cycle [--idempotency-key KEY]');
     console.error('       jea daemon work --once');
     console.error('       jea daemon start [--interval-ms N] [--idle-interval-ms N] [--heartbeat-ms N]');
@@ -700,6 +834,7 @@ export async function daemonCommand({ subcommand, flags = {}, args = [], root = 
     console.error('       jea daemon events [--limit N]');
     console.error('       jea daemon doctor');
     console.error('       jea daemon tasks <list|inspect|retry|cancel>');
+    console.error('       jea daemon inbox [--all]');
     return 2;
   }
 }

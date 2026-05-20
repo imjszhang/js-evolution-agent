@@ -95,6 +95,8 @@ import {
   workerStatePath,
 } from '../src/cli/utils/daemon-worker-state.mjs';
 import { daemonCommand, runDaemonWorker, workOnce } from '../src/cli/commands/daemon.mjs';
+import { selectSubjects } from '../src/cli/utils/subject-selection.mjs';
+import { buildSubjectArtifactOverview } from '../src/cli/utils/subject-artifacts.mjs';
 import {
   configuredActionToSpec,
   loadSubjectActionConfig,
@@ -398,6 +400,7 @@ describe('daemon task queue foundation', () => {
     tempDir = mkdtempSync(join(tmpdir(), 'jea-daemon-'));
     mkdirSync(join(tempDir, 'policies', 'subjects'), { recursive: true });
     writeFileSync(join(tempDir, 'policies', 'subjects', 'alpha.md'), '# alpha\n\n## Subject\nalpha', 'utf-8');
+    writeFileSync(join(tempDir, 'policies', 'subjects', 'beta.md'), '# beta\n\n## Subject\nbeta', 'utf-8');
     writeJsonFile(join(tempDir, 'policies', 'active-subject.json'), {
       active: 'alpha',
       policy: 'subjects/alpha.md',
@@ -533,6 +536,112 @@ describe('daemon task queue foundation', () => {
       type: 'task_completed',
       task_id: 'task-1',
     });
+  });
+
+  it('selects active, explicit, and all daemon subjects', () => {
+    const root = makeDaemonProjectRoot();
+
+    expect(selectSubjects(root)).toEqual(['alpha']);
+    expect(selectSubjects(root, { subjects: 'beta,alpha' })).toEqual(['beta', 'alpha']);
+    expect(selectSubjects(root, { all: true })).toEqual(['alpha', 'beta']);
+  });
+
+  it('reports multi-subject daemon status as JSON', async () => {
+    const root = makeDaemonProjectRoot();
+    enqueueTask(root, 'alpha', {
+      type: 'run_cycle',
+      idempotencyKey: 'alpha:multi-status',
+    });
+    const failedTask = enqueueTask(root, 'beta', {
+      type: 'run_cycle',
+      idempotencyKey: 'beta:multi-status',
+    });
+    failTask(root, 'beta', failedTask.task.task_id, { code: 'boom', message: 'failed' });
+
+    const output = await captureConsole(() => daemonCommand({
+      root,
+      subcommand: 'status',
+      flags: { all: true, json: true },
+    }));
+    const payload = JSON.parse(output.stdout);
+
+    expect(output.code).toBe(0);
+    expect(payload.subjects.map((item) => item.subject)).toEqual(['alpha', 'beta']);
+    expect(payload.subjects.find((item) => item.subject === 'alpha').tasks.counts.pending).toBe(1);
+    expect(payload.subjects.find((item) => item.subject === 'beta').health.status).toBe('failed');
+  });
+
+  it('fans out daemon stop to selected subjects only', async () => {
+    const root = makeDaemonProjectRoot();
+    createWorkerState(root, 'alpha', { workerId: 'worker-alpha', pid: 1, staleMs: 1000 });
+    createWorkerState(root, 'beta', { workerId: 'worker-beta', pid: 2, staleMs: 1000 });
+
+    const output = await captureConsole(() => daemonCommand({
+      root,
+      subcommand: 'stop',
+      flags: { subjects: 'beta', json: true },
+    }));
+    const payload = JSON.parse(output.stdout);
+
+    expect(output.code).toBe(0);
+    expect(payload.subjects[0].subject).toBe('beta');
+    expect(readWorkerState(root, 'beta').status).toBe('stopping');
+    expect(readWorkerState(root, 'alpha').status).toBe('running');
+  });
+
+  it('refuses multi-subject daemon task mutations', async () => {
+    const root = makeDaemonProjectRoot();
+    const task = enqueueTask(root, 'alpha', {
+      type: 'run_cycle',
+      idempotencyKey: 'alpha:multi-mutation',
+    });
+
+    const output = await captureConsole(() => daemonCommand({
+      root,
+      subcommand: 'tasks',
+      args: ['cancel', task.task.task_id],
+      flags: { all: true, json: true },
+    }));
+
+    expect(output.code).toBe(2);
+    expect(readTaskQueue(root, 'alpha').tasks[0].status).toBe('pending');
+  });
+
+  it('builds a multi-subject artifact inbox', async () => {
+    const root = makeDaemonProjectRoot();
+    const alphaRuntime = runtimeForSubject(root, 'alpha');
+    createIntelligenceStore({ baseDir: alphaRuntime.intelligenceDir }).recordIntelReport({
+      cycle_id: 'cycle-alpha',
+      generated_at: '2026-05-20T00:00:00.000Z',
+      md_path: join(alphaRuntime.intelligenceDir, 'reports', 'cycle-alpha.md'),
+      tldr: 'alpha report',
+      source: 'ai',
+    });
+    mkdirSync(join(alphaRuntime.evolutionDir, 'diaries'), { recursive: true });
+    writeFileSync(join(alphaRuntime.evolutionDir, 'diaries', 'exec-alpha.md'), '# alpha diary', 'utf-8');
+    mkdirSync(join(alphaRuntime.evolutionDir, 'verify_reports'), { recursive: true });
+    writeJsonFile(join(alphaRuntime.evolutionDir, 'verify_reports', 'exec-alpha.json'), {
+      cycle_id: 'exec-alpha',
+      verified: [{}],
+      pending: [],
+      semantic: { status: 'ok' },
+    });
+
+    const overview = buildSubjectArtifactOverview(root, 'alpha', {
+      projection: buildDaemonProjection(root, 'alpha'),
+    });
+    expect(overview.latest_report.cycle_id).toBe('cycle-alpha');
+    expect(overview.latest_diary.name).toBe('exec-alpha.md');
+    expect(overview.latest_verify_report.semantic_status).toBe('ok');
+
+    const output = await captureConsole(() => daemonCommand({
+      root,
+      subcommand: 'inbox',
+      flags: { all: true, json: true },
+    }));
+    const payload = JSON.parse(output.stdout);
+    expect(output.code).toBe(0);
+    expect(payload.subjects.find((item) => item.subject === 'alpha').latest_report.cycle_id).toBe('cycle-alpha');
   });
 
   it('reports daemon doctor diagnostics for pending work without a worker', async () => {

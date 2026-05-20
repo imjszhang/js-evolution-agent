@@ -57,6 +57,12 @@ First-version commands:
 - `jea intel ingest --source NAME [--file PATH | --stdin] [--json]`: ingest one or more JSON records directly into the active subject intelligence store. `entity_jsonl` sources (e.g. `probe_threads`) require `_entity_id` on every record.
 - `jea intel inbox put --source NAME [--file PATH | --stdin] [--name LABEL]`: queue records as a JSON payload under `runtime/subjects/<ns>/data/intelligence/_inbox/` for later draining; useful when external collectors drop files for the agent to pick up.
 - `jea intel inbox drain [--dir PATH] [--json]`: drain queued `_inbox` files into the intelligence store; unknown source or invalid files are kept and reported as failures (exit code 1).
+- `jea daemon status [--all | --subjects a,b] [--json]`: show daemon worker, queue, health, lock, and latest event summaries across one or more subjects.
+- `jea daemon doctor [--all | --subjects a,b] [--json]`: diagnose daemon health for one or more subjects.
+- `jea daemon events [--all | --subjects a,b] [--limit N] [--json]`: show recent daemon/task lifecycle events.
+- `jea daemon tasks list [--all | --subjects a,b] [--status STATUS] [--json]`: list daemon tasks across subjects. Task `inspect` / `retry` / `cancel` remain single-subject operations.
+- `jea daemon inbox [--all | --subjects a,b] [--json]`: show the latest intel report, evolution diary, verify report, standing memory marker, and health attention summary for each subject.
+- `jea daemon stop [--all | --subjects a,b]`: request graceful stop for selected subject workers. `daemon start` and `daemon work --once` remain one-subject-per-process so external orchestrators can run subjects in parallel.
 - `jea audit queue`: check decision queue health, unknown actions, and stale in-progress work.
 - `jea llm ping [--mock]`: test DeepSeek or local MockAIClient connectivity.
 - `jea policy check`: verify required active subject policy sections.
@@ -146,6 +152,24 @@ Each active subject owns a separate data namespace under `runtime/subjects/<data
 ```powershell
 jea data init --all
 ```
+
+## Multi-Subject Daemon Operations
+
+Subjects are independent evolution units. Run one daemon worker process per subject when you want parallel evolution, and use the multi-subject daemon views to supervise them:
+
+```powershell
+# External orchestrators can start these as separate foreground worker processes.
+jea daemon start --subject subject-a
+jea daemon start --subject subject-b
+
+# Operator views aggregate state without serializing the subjects into one run.
+jea daemon status --all
+jea daemon doctor --all
+jea daemon inbox --all
+jea daemon tasks list --all --status failed
+```
+
+Operational commands stay conservative: `daemon stop --all` fans out graceful stop requests, while `daemon start`, `daemon work --once`, and task `inspect` / `retry` / `cancel` operate on a single subject at a time.
 
 ## Runtime Data
 
