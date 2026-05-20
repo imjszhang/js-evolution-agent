@@ -3,6 +3,7 @@ import { runAgenticAction } from './agent-adapter.mjs';
 import {
   applyRunSpecToAction,
   normalizeAgentRunSpec,
+  validateAgentRunSpec,
 } from './agent-run-spec.mjs';
 import {
   actionMissingExecutionRoot,
@@ -255,6 +256,105 @@ function agentActionResult(action, agenticExecution, overrides = {}) {
     fallback_used: false,
     ...overrides,
   };
+}
+
+function blockedAgentRunResult(action, reason, details, ctx) {
+  const result = {
+    success: false,
+    status: 'blocked',
+    pipeline_status: 'completed',
+    agent_status: 'not_started',
+    acceptance_status: 'blocked',
+    goal_progress_status: 'not_progressed',
+    message: reason,
+    error: reason,
+    provider: details?.provider ?? null,
+    requires_approval: false,
+    execution_root: details?.roots?.executionRoot ?? details?.runSpec?.primary_cwd ?? null,
+    root_metadata: details?.roots ? rootMetadata(details.roots) : null,
+    run_spec: details?.runSpec ? {
+      primary_cwd: details.runSpec.primary_cwd,
+      primary_cwd_kind: details.runSpec.primary_cwd_kind,
+      additional_directories: details.runSpec.additional_directories,
+      permission_profile: details.runSpec.permission_profile,
+      provider: details.runSpec.provider ?? null,
+      intent: details.runSpec.intent,
+      expected_output: details.runSpec.expected_output,
+    } : null,
+    evidence: {
+      reason,
+      errors: details?.errors ?? [],
+      warnings: details?.warnings ?? [],
+      root_metadata: details?.roots ? rootMetadata(details.roots) : null,
+    },
+    writes: {},
+    outputs: {},
+    created_files: [],
+    modified_files: [],
+    test_results: [],
+    verification_hints: details?.verification_hints ?? [],
+    fallback_used: false,
+  };
+  storeFrom(ctx).recordActionReceipt(action, result, ctx);
+  return result;
+}
+
+function preflightAgentRun(action, ctx, executionAction, runSpec) {
+  const validation = validateAgentRunSpec(action, ctx);
+  if (!validation.valid) {
+    return {
+      blocked: true,
+      reason: 'invalid agent_run execution package',
+      details: {
+        errors: validation.errors,
+        warnings: validation.warnings,
+        runSpec: validation.spec,
+        roots: validation.roots,
+        verification_hints: ['Fix params.run_spec before queueing this agent_run.'],
+      },
+    };
+  }
+
+  const roots = resolveActionExecutionRoots(executionAction, ctx);
+  if (roots.rootMismatch) {
+    return {
+      blocked: true,
+      reason: 'root_mismatch',
+      details: {
+        errors: ['root_mismatch'],
+        runSpec,
+        roots,
+        verification_hints: ['Set run_spec.primary_cwd_kind/resource_scope or cwd to the authoritative resource root.'],
+      },
+    };
+  }
+  if (runSpec.primary_cwd_kind && roots.rootResolutionSource === 'default_fallback') {
+    return {
+      blocked: true,
+      reason: 'default_fallback execution root is not allowed for agent_run',
+      details: {
+        errors: ['default_fallback'],
+        runSpec,
+        roots,
+        verification_hints: ['Configure an authoritative root for the requested resource scope.'],
+      },
+    };
+  }
+  const requiresApproval = Boolean(getField(executionAction, 'requires_approval'));
+  const approved = Boolean(getField(executionAction, 'approval_granted') || getField(executionAction, 'approved'));
+  if (requiresApproval && !approved) {
+    return {
+      blocked: true,
+      reason: 'approval_required',
+      details: {
+        errors: ['approval_required'],
+        runSpec,
+        roots,
+        verification_hints: ['Grant approval before executing this agent_run.'],
+      },
+    };
+  }
+  return { blocked: false };
 }
 
 function legacyFallbackAllowed(action) {
@@ -839,14 +939,25 @@ const builtInActionHandlers = {
     const store = storeFrom(ctx);
     const executionAction = applyRunSpecToAction(action, ctx);
     const runSpec = normalizeAgentRunSpec(executionAction, ctx);
+    const preflight = preflightAgentRun(action, ctx, executionAction, runSpec);
+    if (preflight.blocked) {
+      return blockedAgentRunResult(action, preflight.reason, preflight.details, ctx);
+    }
     const agentResult = await runAgenticAction(executionAction, ctx);
     const agent = asObject(agentResult.agent);
+    const agentStatus = agent.status ?? (agentResult.success ? 'completed' : 'failed');
+    const requiresApproval = !!agent.requires_approval;
+    const acceptanceStatus = agentResult.success && !requiresApproval ? 'passed' : (requiresApproval ? 'requires_human_review' : 'failed');
     const result = {
-      success: !!agentResult.success && !agent.requires_approval,
-      status: agent.status ?? (agentResult.success ? 'completed' : 'failed'),
+      success: !!agentResult.success && !requiresApproval,
+      status: agentStatus,
+      pipeline_status: 'completed',
+      agent_status: agentStatus,
+      acceptance_status: acceptanceStatus,
+      goal_progress_status: agentResult.success && !requiresApproval ? 'progressed' : 'not_progressed',
       message: agentResult.message ?? agent.summary ?? '',
       provider: agentResult.provider ?? agent.provider ?? null,
-      requires_approval: !!agent.requires_approval,
+      requires_approval: requiresApproval,
       execution_root: agentResult.execution_root ?? runSpec.primary_cwd,
       root_metadata: agentResult.root_metadata ?? null,
       run_spec: {
@@ -1472,12 +1583,18 @@ export const actionVerifiers = {
       const status = result?.success && hasReceipt && hasEvidence && rootMatches && !requiresApproval
         ? 'improved'
         : (hasReceipt ? 'partial' : 'blocked');
+      const acceptanceStatus = result?.acceptance_status ?? (result?.success ? 'passed' : 'failed');
+      const goalProgressStatus = result?.goal_progress_status ?? (status === 'improved' ? 'progressed' : 'not_progressed');
       return {
         action,
         metric: 'agent_run_receipt',
         value: {
           success: !!result?.success,
           status: result?.status ?? 'unknown',
+          pipeline_status: result?.pipeline_status ?? null,
+          agent_status: result?.agent_status ?? null,
+          acceptance_status: acceptanceStatus,
+          goal_progress_status: goalProgressStatus,
           provider: result?.provider ?? result?.agent?.provider ?? null,
           requires_approval: requiresApproval,
           execution_root: actualRoot,
@@ -1490,7 +1607,9 @@ export const actionVerifiers = {
           outputs_count,
           verification_hints: result?.verification_hints ?? [],
         },
-        status,
+        status: result?.status === 'blocked' || acceptanceStatus === 'blocked'
+          ? 'blocked'
+          : (acceptanceStatus === 'passed' && goalProgressStatus === 'progressed' ? status : 'partial'),
       };
     },
   },

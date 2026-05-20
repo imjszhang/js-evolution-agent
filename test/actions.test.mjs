@@ -254,6 +254,7 @@ describe('controlled action handlers', () => {
           permission_profile: 'read_only',
           provider: 'llm_only',
           intent: 'Inspect whether the runtime is ready for the next cycle.',
+          context: { why_now: 'verify agent_run receipt path' },
           expected_output: ['summary', 'evidence', 'recommendation'],
         },
       },
@@ -267,6 +268,91 @@ describe('controlled action handlers', () => {
     expect(verification.status).toBe('improved');
     expect(ctx.host.intelligenceStore.readActionReceipts({ limit: 1 })[0].action_type)
       .toBe('agent_run');
+  });
+
+  it('blocks agent_run before agent execution when the execution package is incomplete', async () => {
+    const ctx = makeAgenticCtx();
+    const result = await actionHandlers.agent_run({
+      type: 'agent_run',
+      description: 'Inspect missing package',
+      params: {
+        run_spec: {
+          primary_cwd_kind: 'unknown_external',
+          permission_profile: 'read_only',
+          intent: 'Inspect an external project without a configured root.',
+          expected_output: ['summary'],
+          context: { why_now: 'test' },
+        },
+      },
+    }, ctx);
+
+    expect(result.success).toBe(false);
+    expect(result.status).toBe('blocked');
+    expect(result.agent_status).toBe('not_started');
+    expect(result.acceptance_status).toBe('blocked');
+    expect(result.error).toBe('invalid agent_run execution package');
+    expect(ctx.ai.agentCalls).toHaveLength(0);
+  });
+
+  it('passes a human-readable execution package with the full Phase 1 report to the agent', async () => {
+    const ctx = makeAgenticCtx({
+      status: 'completed',
+      summary: 'Report-aware run completed.',
+      evidence: { observations: ['used phase1 report'] },
+      outputs: { done: true },
+      confidence: 0.9,
+    });
+    const result = await actionHandlers.agent_run({
+      type: 'agent_run',
+      description: 'Use report context',
+      serves_goal: 'bootstrap',
+      params: {
+        run_spec: {
+          primary_cwd_kind: 'subject_runtime',
+          permission_profile: 'read_only',
+          provider: 'llm_only',
+          intent: 'Inspect the subject runtime using the prior report.',
+          context: {
+            why_now: 'the prior report identified a blocker',
+            relevant_evidence: ['receipt-1'],
+            do_not_repeat: ['do not inspect the host source root'],
+            phase1_report_markdown: '# 情报报告\n\n完整上下文。',
+          },
+          expected_output: ['summary', 'evidence'],
+        },
+      },
+    }, ctx);
+
+    expect(result.success).toBe(true);
+    const promptText = ctx.ai.agentCalls[0].map((message) => message.content).join('\n');
+    expect(promptText).toContain('本轮任务');
+    expect(promptText).toContain('Phase 1 情报报告全文');
+    expect(promptText).toContain('完整上下文');
+    expect(promptText).toContain('do not inspect the host source root');
+  });
+
+  it('blocks approval-required agent_run before agent execution when approval is absent', async () => {
+    const ctx = makeAgenticCtx();
+    const result = await actionHandlers.agent_run({
+      type: 'agent_run',
+      description: 'Approval-gated task',
+      params: {
+        requires_approval: true,
+        run_spec: {
+          primary_cwd_kind: 'subject_runtime',
+          permission_profile: 'workspace_write',
+          provider: 'llm_only',
+          intent: 'Perform an approval-gated workspace task.',
+          context: { why_now: 'test approval gate' },
+          expected_output: ['summary'],
+        },
+      },
+    }, ctx);
+
+    expect(result.success).toBe(false);
+    expect(result.status).toBe('blocked');
+    expect(result.error).toBe('approval_required');
+    expect(ctx.ai.agentCalls).toHaveLength(0);
   });
 
   it('runs configured external actions through a subject-local runner config', async () => {

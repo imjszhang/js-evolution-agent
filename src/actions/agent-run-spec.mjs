@@ -3,6 +3,9 @@ import {
   RESOURCE_SCOPES,
   resolveScopeRoot,
 } from './resource-registry.mjs';
+import {
+  resolveActionExecutionRoots,
+} from './execution-root.mjs';
 
 const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob'];
 const EDITING_TOOLS = ['Read', 'Edit', 'Write', 'Bash', 'Grep', 'Glob'];
@@ -30,6 +33,12 @@ export const PERMISSION_PROFILES = {
 
 function asObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function hasContent(value) {
+  if (Array.isArray(value)) return value.length > 0;
+  if (value && typeof value === 'object') return Object.keys(value).length > 0;
+  return value != null && String(value).trim() !== '';
 }
 
 function asList(value, fallback = []) {
@@ -214,5 +223,41 @@ export function applyRunSpecToAction(action = {}, ctx = {}) {
         expected_output: spec.expected_output,
       },
     },
+  };
+}
+
+export function validateAgentRunSpec(action = {}, ctx = {}) {
+  const spec = normalizeAgentRunSpec(action, ctx);
+  const errors = [];
+  const warnings = [];
+
+  if (!spec.present) return { valid: true, errors, warnings, spec };
+
+  if (!spec.primary_cwd_kind) errors.push('run_spec.primary_cwd_kind is required');
+  if (!spec.primary_cwd) errors.push('run_spec.primary_cwd could not be resolved');
+  if (!spec.permission_profile) errors.push('run_spec.permission_profile is required');
+  if (!spec.intent) errors.push('run_spec.intent is required');
+  if (!hasContent(spec.context)) errors.push('run_spec.context is required');
+  if (!hasContent(spec.expected_output)) errors.push('run_spec.expected_output is required');
+  if (!PERMISSION_PROFILES[spec.permission_profile]) {
+    errors.push(`unknown permission_profile: ${spec.permission_profile}`);
+  }
+
+  const executionAction = applyRunSpecToAction(action, ctx);
+  const roots = resolveActionExecutionRoots(executionAction, ctx);
+  if (roots.rootMismatch) errors.push('run_spec root_mismatch');
+  if (spec.primary_cwd_kind && roots.rootResolutionSource === 'default_fallback') {
+    errors.push(`resource root could not be resolved for scope: ${spec.primary_cwd_kind}`);
+  }
+  if (roots.resourceScope === RESOURCE_SCOPES.UNKNOWN && !spec.primary_cwd_kind) {
+    warnings.push('resource_scope is unknown');
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+    warnings,
+    spec,
+    roots,
   };
 }

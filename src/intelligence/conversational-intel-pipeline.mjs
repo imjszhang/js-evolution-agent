@@ -26,6 +26,7 @@ import {
   readPendingOperatorBriefs,
   summarizeOperatorBriefsForContext,
 } from './operator-briefs.mjs';
+import { validateAgentRunSpec } from '../actions/agent-run-spec.mjs';
 
 function summarizeAnalysis(analysis) {
   if (!analysis) return '';
@@ -59,6 +60,51 @@ function buildBriefing(cycle, context) {
     if (a.expected_impact) lines.push(`  - impact: ${a.expected_impact}`);
   }
   return lines.join('\n');
+}
+
+function attachExecutionContext(action, {
+  reportPath = null,
+  conversationContextPath = null,
+  reportMarkdown = null,
+  analysisContext = '',
+} = {}) {
+  if (action?.type !== 'agent_run') return action;
+  const params = action.params && typeof action.params === 'object' ? action.params : {};
+  const runSpec = params.run_spec && typeof params.run_spec === 'object' ? params.run_spec : {};
+  const context = runSpec.context && typeof runSpec.context === 'object'
+    ? runSpec.context
+    : { notes: runSpec.context ?? null };
+  return {
+    ...action,
+    params: {
+      ...params,
+      run_spec: {
+        ...runSpec,
+        context: {
+          ...context,
+          phase1_report_path: context.phase1_report_path ?? reportPath,
+          phase1_conversation_context_path: context.phase1_conversation_context_path ?? conversationContextPath,
+          phase1_report_markdown: context.phase1_report_markdown ?? reportMarkdown,
+          analysis_context: context.analysis_context ?? analysisContext,
+        },
+      },
+    },
+  };
+}
+
+function validateQueuedAction(action, ctx) {
+  if (action?.type !== 'agent_run') return { valid: true };
+  const validation = validateAgentRunSpec(action, ctx);
+  return {
+    valid: validation.valid,
+    errors: validation.errors,
+    warnings: validation.warnings,
+    run_spec: {
+      primary_cwd: validation.spec?.primary_cwd ?? null,
+      primary_cwd_kind: validation.spec?.primary_cwd_kind ?? null,
+      permission_profile: validation.spec?.permission_profile ?? null,
+    },
+  };
 }
 
 function runtimeFromHost(projectRoot, host) {
@@ -391,6 +437,12 @@ export class ConversationalIntelligencePipeline {
         const analysisContext = summarizeAnalysis(analysis);
         const draftDir = join(this.projectRoot, 'data', 'evolution', 'draft_issues', cycleId);
         mkdirSync(draftDir, { recursive: true });
+        result.actions = result.actions.map((action) => attachExecutionContext(action, {
+          reportPath: persistedReport.mdPath,
+          conversationContextPath: result.conversation_context_path,
+          reportMarkdown,
+          analysisContext,
+        }));
         writeFileSync(
           join(draftDir, 'briefing.md'),
           buildBriefing({
@@ -411,6 +463,16 @@ export class ConversationalIntelligencePipeline {
             cycleId,
             actions: result.actions,
             analysisContext,
+            metadata: {
+              report_path: persistedReport.mdPath,
+              conversation_context_path: result.conversation_context_path,
+            },
+            validateAction: (action) => validateQueuedAction(action, {
+              projectRoot: this.projectRoot,
+              host: this.host,
+              runtime: this.runtime,
+              cycleId,
+            }),
           })
           : { ids: this.decisionQueue.addDecisions({
             cycleId,

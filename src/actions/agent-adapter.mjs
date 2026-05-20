@@ -28,6 +28,7 @@ const MODE_GUIDANCE = {
 };
 const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob'];
 const EDITING_TOOLS = ['Read', 'Edit', 'Write', 'Bash', 'Grep', 'Glob'];
+const MAX_PHASE1_REPORT_CHARS = 40000;
 
 function getField(action, field) {
   return action?.params?.[field] ?? action?.[field] ?? null;
@@ -76,6 +77,12 @@ function compactJson(value) {
   } catch {
     return String(value);
   }
+}
+
+function clipText(value, max = MAX_PHASE1_REPORT_CHARS) {
+  const text = String(value ?? '').trim();
+  if (text.length <= max) return text;
+  return `${text.slice(0, max)}\n\n[truncated ${text.length - max} chars]`;
 }
 
 function objectHasContent(value) {
@@ -255,6 +262,121 @@ function buildPrompt(action, ctx) {
   return { system, user };
 }
 
+function contextObject(action) {
+  return asObject(getField(action, 'context'));
+}
+
+function phase1ReportText(action) {
+  const context = contextObject(action);
+  return context.phase1_report_markdown
+    ?? context.phase1_report
+    ?? null;
+}
+
+function buildExecutionPackagePrompt(action, ctx) {
+  const mode = getField(action, 'mode') ?? 'propose';
+  const objective = getField(action, 'objective') ?? action?.description ?? '';
+  const context = contextObject(action);
+  const boundary = getField(action, 'boundary') ?? {};
+  const acceptance = getField(action, 'acceptance') ?? getField(action, 'acceptance_criteria') ?? '';
+  const roots = resolveAgentExecutionRoots(action, ctx);
+  const runSpec = normalizeAgentRunSpec(action, ctx);
+  const reportText = phase1ReportText(action);
+  const knownFacts = context.known_facts ?? context.relevant_evidence ?? context.facts ?? [];
+  const doNotRepeat = context.do_not_repeat ?? context.avoid ?? [];
+  const constraints = context.constraints ?? [];
+
+  const user = [
+    `本轮任务：${objective || runSpec.intent || '完成本次 Phase 2 agent_run。'}`,
+    '',
+    '请在这个执行根完成：',
+    `- execution root: ${roots.executionCwd}`,
+    `- 资源域: ${roots.resourceScope ?? 'unknown'}`,
+    `- 资源类型: ${roots.resourceKind ?? 'unknown'}`,
+    `- root 来源: ${roots.rootResolutionSource ?? 'unknown'}`,
+    `- 权限: ${runSpec.permission_profile ?? 'unknown'}`,
+    `- 模式: ${mode}`,
+    '- 相对路径都以 execution root 为准；不要把 host_project_root 或 host_source_root 当成目标项目，除非本任务显式要求。',
+    '',
+    '背景上下文：',
+    compactJson({
+      why_now: context.why_now ?? null,
+      known_facts: knownFacts,
+      current_hypothesis: context.current_hypothesis ?? null,
+      recent_evidence: context.recent_evidence ?? null,
+      analysis_context: context.analysis_context ?? null,
+    }),
+    '',
+    '这轮不要重复：',
+    compactJson(doNotRepeat),
+    '',
+    '具体目标：',
+    compactJson(runSpec.intent || objective),
+    '',
+    '边界：',
+    compactJson({
+      boundary,
+      constraints,
+      allowed_tools: getField(action, 'allowedTools') ?? getField(action, 'allowed_tools') ?? null,
+      disallowed_tools: getField(action, 'disallowedTools') ?? getField(action, 'disallowed_tools') ?? null,
+      approval_required: Boolean(getField(action, 'requires_approval')),
+      approval_granted: Boolean(getField(action, 'approval_granted') || getField(action, 'approved')),
+    }),
+    '',
+    '验收标准：',
+    compactJson(acceptance || runSpec.expected_output || [
+      '返回严格 JSON receipt',
+      '列出实际读取或修改的文件/资源',
+      '给出可验证证据与下一步建议',
+    ]),
+    '',
+    '最终返回：',
+    compactJson({
+      status: 'completed | partial | blocked | requires_human_review',
+      summary: 'what was actually completed',
+      action_type: 'agent_run',
+      action_id: action?.id ?? null,
+      served_goal: action?.serves_goal ?? null,
+      evidence: {
+        files_read: [],
+        matches: [],
+        observations: [],
+        notes: [],
+      },
+      writes: {
+        observations: [],
+        probe_results: [],
+        evolution_events: [],
+        retrospectives: [],
+        core_reviews: [],
+      },
+      outputs: {},
+      created_files: [],
+      modified_files: [],
+      test_results: [],
+      verification_hints: [],
+      next_actions: [],
+      requires_approval: false,
+      confidence: 0.0,
+    }),
+    reportText ? [
+      '',
+      '参考上下文：Phase 1 情报报告全文',
+      '',
+      clipText(reportText),
+    ].join('\n') : '',
+    context.phase1_report_path ? [
+      '',
+      `Phase 1 report path: ${context.phase1_report_path}`,
+    ].join('\n') : '',
+  ].filter(Boolean).join('\n');
+
+  return {
+    system: '',
+    user,
+  };
+}
+
 function normalizeAgentResult(parsed, rawText, provider) {
   const obj = parsed && typeof parsed === 'object' ? parsed : {};
   const status = String(obj.status ?? 'completed');
@@ -387,7 +509,7 @@ function buildAgentTaskTranslationMessages(action, ctx, promptParts) {
     {
       role: 'system',
       content: [
-        'You translate js-evolution-agent execution contracts into clear human task prompts for a code agent.',
+        'You translate js-evolution-agent execution packages into clear human task prompts for a code agent.',
         'Do not solve the task. Do not invent facts. Preserve boundaries, cwd/worktree requirements, acceptance criteria, and receipt requirements.',
         'Write the result as a practical assignment a human engineer would send to Claude Code or Cursor Agent.',
       ].join('\n'),
@@ -403,10 +525,11 @@ function buildAgentTaskTranslationMessages(action, ctx, promptParts) {
         '',
         '# Translation task',
         '',
-        'Rewrite the contract above into one concise, human-readable task prompt for an autonomous code agent.',
+        'Rewrite the package above into one concise, human-readable task prompt for an autonomous code agent.',
         'The prompt must include:',
         '- the goal in plain language;',
         '- execution_cwd as the project root for file tools and relative paths (not host_project_root);',
+        '- the relevant context and do-not-repeat guidance;',
         '- any cwd/worktree/sandbox boundary;',
         '- whether file mutation is allowed;',
         '- what evidence or verification is expected;',
@@ -685,7 +808,9 @@ async function runClaudeCodeSdk(action, ctx) {
   }
 
   const mode = getField(executionAction, 'mode') ?? 'propose';
-  const promptParts = buildPrompt(executionAction, ctx);
+  const promptParts = effectiveActionType(executionAction) === 'agent_run'
+    ? buildExecutionPackagePrompt(executionAction, ctx)
+    : buildPrompt(executionAction, ctx);
   const translated = await translateAgentTaskPrompt(executionAction, ctx, promptParts);
   if (!translated.ok) {
     return {
@@ -835,7 +960,9 @@ async function runCursorSdk(action, ctx) {
 
   const mode = getField(executionAction, 'mode') ?? 'propose';
   const roots = resolveAgentExecutionRoots(executionAction, ctx);
-  const promptParts = buildPrompt(executionAction, ctx);
+  const promptParts = effectiveActionType(executionAction) === 'agent_run'
+    ? buildExecutionPackagePrompt(executionAction, ctx)
+    : buildPrompt(executionAction, ctx);
   const { options, cwdWasConfigured, model, rootMetadata: metadata, runSpec } = buildCursorOptions(executionAction, ctx);
   const cwdFailure = validateExecutionCwd({
     cwd: options.local?.cwd,
@@ -1020,7 +1147,9 @@ async function runLlmOnly(action, ctx) {
     };
   }
 
-  const prompt = buildPrompt(action, ctx);
+  const prompt = effectiveActionType(action) === 'agent_run'
+    ? buildExecutionPackagePrompt(action, ctx)
+    : buildPrompt(action, ctx);
   const rawText = await chatMessages(ai, [
     { role: 'system', content: prompt.system },
     { role: 'user', content: prompt.user },

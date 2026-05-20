@@ -275,6 +275,72 @@ describe('ConversationalIntelligencePipeline', () => {
     });
   });
 
+  it('skips invalid agent_run decisions before they enter the hot queue', async () => {
+    const { runtimeRoot, runtime, host } = makeFixture();
+    const messageCalls = [];
+    const client = {
+      async chat(message) {
+        if (message.includes('standing memory') || message.includes('固定容量')) {
+          return '长期态势：无效 action 被阻断。';
+        }
+        return longObservation();
+      },
+      async chatMessages(messages) {
+        messageCalls.push(messages);
+        const last = messages.at(-1).content;
+        if (last.includes('Strategic Analysis & Decision')) {
+          return JSON.stringify({
+            analysis: { key_patterns: ['invalid run spec'], root_causes: {} },
+            decision: 'execute',
+            rationale: 'This action intentionally omits the execution package.',
+            actions: [{
+              type: 'agent_run',
+              description: 'Invalid run without run_spec context',
+              serves_goal: 'bootstrap',
+              params: {
+                run_spec: {
+                  primary_cwd_kind: 'missing_external',
+                  permission_profile: 'read_only',
+                  intent: 'Inspect a missing external root.',
+                  expected_output: ['summary'],
+                },
+              },
+            }],
+            goal_coverage: { covered: ['bootstrap'], not_covered: {} },
+            deferred: [],
+            risk_mitigation: [],
+            goal_suggestions: [],
+          });
+        }
+        return '# 情报报告\n\n报告全文会被挂到 action context。\n';
+      },
+    };
+
+    const pipeline = new ConversationalIntelligencePipeline({
+      aiClient: client,
+      host,
+      projectRoot: runtimeRoot,
+      goalId: 'bootstrap',
+      actionRegistry: {
+        toPromptSection: () => '- `agent_run`: Run an execution package',
+      },
+      runtime,
+    });
+
+    const result = await pipeline.run();
+    const queue = JSON.parse(readFileSync(
+      join(runtimeRoot, 'data', 'evolution', 'pending_decisions.json'),
+      'utf-8',
+    ));
+
+    expect(result.success).toBe(true);
+    expect(result.decisions_queued).toEqual([]);
+    expect(result.decisions_skipped[0].reason).toBe('invalid_action');
+    expect(result.decisions_skipped[0].validation.errors)
+      .toContain('resource root could not be resolved for scope: missing_external');
+    expect(queue.decisions).toEqual([]);
+  });
+
   it('injects operator briefs into prompts and archives them after successful queuing', async () => {
     const { runtimeRoot, runtime, host } = makeFixture();
     writePendingOperatorBrief(runtimeRoot, {

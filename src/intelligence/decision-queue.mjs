@@ -156,7 +156,7 @@ export class LocalDecisionQueue {
     };
   }
 
-  addDecisionsDetailed({ cycleId, actions, analysisContext = '' }) {
+  addDecisionsDetailed({ cycleId, actions, analysisContext = '', metadata = {}, validateAction = null }) {
     const now = isoBeijing();
     const newIds = [];
     const skipped = [];
@@ -169,6 +169,16 @@ export class LocalDecisionQueue {
       );
       for (let idx = 0; idx < (actions || []).length; idx++) {
         const action = actions[idx];
+        const validation = typeof validateAction === 'function' ? validateAction(action, idx) : null;
+        if (validation && validation.valid === false) {
+          skipped.push({
+            index: idx,
+            reason: 'invalid_action',
+            validation,
+            type: action?.type ?? null,
+          });
+          continue;
+        }
         const fingerprint = decisionFingerprint(action);
         if (hotFingerprints.has(fingerprint)) {
           skipped.push({
@@ -188,6 +198,8 @@ export class LocalDecisionQueue {
           fingerprint,
           action,
           analysis_context: (analysisContext || '').slice(0, 3000),
+          metadata,
+          validation: validation ?? null,
         });
         newIds.push(decisionId);
         hotFingerprints.add(fingerprint);

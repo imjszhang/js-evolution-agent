@@ -70,6 +70,32 @@ const RESOURCE_RULES = [
   },
 ];
 
+function asRules(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value;
+  if (typeof value !== 'object') return [];
+  return Object.entries(value).map(([kind, rule]) => ({
+    kind,
+    ...(asObject(rule)),
+  }));
+}
+
+function resourceRules(action, ctx) {
+  const hostRules = [
+    ...asRules(ctx?.host?.resourceRules),
+    ...asRules(ctx?.host?.resource_rules),
+  ];
+  const actionRules = [
+    ...asRules(getActionField(action, 'resource_rules')),
+    ...asRules(getActionField(action, 'resourceRules')),
+  ];
+  return [
+    ...RESOURCE_RULES,
+    ...hostRules,
+    ...actionRules,
+  ].filter((rule) => rule?.kind && rule?.scope && Array.isArray(rule?.patterns));
+}
+
 function asObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
@@ -124,11 +150,11 @@ export function getActionTargets(action) {
     .filter(Boolean);
 }
 
-export function inferResourceFromTargets(targets = []) {
+export function inferResourceFromTargets(targets = [], rules = RESOURCE_RULES) {
   const matches = [];
   for (const target of targets) {
     if (!isLocalRelativePath(target)) continue;
-    for (const rule of RESOURCE_RULES) {
+    for (const rule of rules) {
       if (rule.patterns.some((pattern) => matchesPattern(target, pattern))) {
         matches.push({
           kind: rule.kind,
@@ -173,10 +199,10 @@ export function explicitResource(action) {
   };
 }
 
-export function inferActionResource(action) {
+export function inferActionResource(action, ctx = {}) {
   const explicit = explicitResource(action);
   const targets = getActionTargets(action);
-  const inferred = inferResourceFromTargets(targets);
+  const inferred = inferResourceFromTargets(targets, resourceRules(action, ctx));
   return {
     resourceKind: explicit.kind ?? inferred.kind ?? 'unknown',
     resourceScope: explicit.scope ?? inferred.scope ?? RESOURCE_SCOPES.UNKNOWN,
@@ -213,6 +239,13 @@ export function resolveScopeRoot(scope, ctx, configuredRoot = null) {
   for (const alias of scopeAliases(scope)) {
     if (resourceRoots[alias]) {
       return { root: resolve(String(resourceRoots[alias])), source: `resourceRoots.${alias}` };
+    }
+  }
+
+  const externalRoots = asObject(ctx?.host?.externalRoots ?? ctx?.host?.external_roots);
+  for (const alias of scopeAliases(scope)) {
+    if (externalRoots[alias]) {
+      return { root: resolve(String(externalRoots[alias])), source: `externalRoots.${alias}` };
     }
   }
 
@@ -254,7 +287,7 @@ export function resolveScopeRoot(scope, ctx, configuredRoot = null) {
 }
 
 export function resourceMetadataForRoot(action, ctx, configuredRoot = null) {
-  const resource = inferActionResource(action);
+  const resource = inferActionResource(action, ctx);
   const resolved = resolveScopeRoot(resource.resourceScope, ctx, configuredRoot);
   return {
     ...resource,
