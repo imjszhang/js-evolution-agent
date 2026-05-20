@@ -33,6 +33,7 @@ export function persistPhase1ConversationContext({
   timestamp,
   goalId = null,
   runtime = null,
+  operatorBriefs = [],
   observation = null,
   reportMessages = [],
   reportMarkdown = '',
@@ -67,6 +68,7 @@ export function persistPhase1ConversationContext({
       self: contextPath(runtimeRoot, cycleId),
       report: reportPath ?? null,
     },
+    operator_intent_briefs: operatorBriefs,
     observation: {
       prompt: observation?._prompt ?? null,
       response: observation?.observation_report ?? null,

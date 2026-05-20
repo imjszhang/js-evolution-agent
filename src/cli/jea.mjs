@@ -55,6 +55,10 @@ Commands:
                          Queue records as a JSON file under runtime _inbox for later drain
   intel inbox drain [--dir PATH] [--json]
                          Drain queued _inbox files into the intelligence store
+  intel brief put [--file PATH | --stdin]
+                         Queue a one-cycle operator intent brief for the next intel cycle
+  intel brief list       List pending operator intent briefs
+  intel brief processed  List consumed operator intent briefs
   goals show             Show the active goal hypothesis
   goals history          Show recent goal change events
   goals update --file PATH --reason TEXT [--evidence REF] [--cycle ID]
@@ -92,6 +96,7 @@ Examples:
   jea daemon tasks list --status failed
   jea data init --all
   jea intel summary
+  jea intel brief list
   jea audit queue
   jea llm ping --mock
   jea data backup --name before-reset
@@ -100,6 +105,7 @@ Examples:
   jea data reset --yes
   jea actions check
   echo '{"content":"manual note"}' | jea intel ingest --source intel_observations
+  echo '{"summary":"verify next cycle","claims_to_verify":["candidate hash changed"]}' | jea intel brief put --stdin
   jea intel inbox drain --json
   jea goals history
   jea goals assess --cycle cycle-20260511-123237

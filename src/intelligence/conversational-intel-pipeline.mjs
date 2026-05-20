@@ -20,6 +20,12 @@ import {
   buildReportUserPrompt,
 } from './conversation-prompts.mjs';
 import { persistPhase1ConversationContext } from './conversation-context.mjs';
+import {
+  formatOperatorBriefsForPrompt,
+  markOperatorBriefsProcessed,
+  readPendingOperatorBriefs,
+  summarizeOperatorBriefsForContext,
+} from './operator-briefs.mjs';
 
 function summarizeAnalysis(analysis) {
   if (!analysis) return '';
@@ -185,6 +191,10 @@ export class ConversationalIntelligencePipeline {
         : goalsText;
       const rules = this.engine.loadRules();
       const humanGuidance = this.engine.guidanceReader.readGuidance();
+      const operatorBriefRead = readPendingOperatorBriefs(this.runtime.runtimeRoot);
+      const operatorBriefs = operatorBriefRead.briefs;
+      const operatorBriefsContext = summarizeOperatorBriefsForContext(operatorBriefs);
+      const operatorBriefsPrompt = formatOperatorBriefsForPrompt(operatorBriefs);
       const intelligenceContext = this.host?.knowledgeWriter?.buildContextSummary?.() || '';
 
       logger.startCycle(cycleId);
@@ -225,6 +235,7 @@ export class ConversationalIntelligencePipeline {
         store: this.host?.intelligenceStore,
         agentContextDocs: this.agentContextDocs,
         queueSummary,
+        operatorBriefs: operatorBriefsContext,
       });
       const reportPromptContext = toPreDecisionReportContext(preparedReport.reportContext);
 
@@ -238,6 +249,7 @@ export class ConversationalIntelligencePipeline {
         goalsText,
         rules,
         humanGuidance,
+        operatorBriefs: operatorBriefsPrompt,
         intelligenceContext,
         observationReport: observation.observation_report,
         reportContext: reportPromptContext,
@@ -297,6 +309,7 @@ export class ConversationalIntelligencePipeline {
         goalsText,
         rules,
         humanGuidance,
+        operatorBriefs: operatorBriefsPrompt,
         intelligenceContext,
         observationReport: observation.observation_report,
         reportContext: preparedReport.reportContext,
@@ -320,6 +333,7 @@ export class ConversationalIntelligencePipeline {
         timestamp: result.timestamp,
         goalId: this.goalId,
         runtime: this.runtime,
+        operatorBriefs: operatorBriefsContext,
         observation,
         reportMessages,
         reportMarkdown,
@@ -406,6 +420,15 @@ export class ConversationalIntelligencePipeline {
         result.decisions_queued = queued.ids;
         result.decisions_skipped = queued.skipped;
         this._log(`wrote draft + queued ${result.decisions_queued.length} decision(s), skipped ${result.decisions_skipped.length} at ${draftDir}`);
+        const processedBriefs = markOperatorBriefsProcessed(this.runtime.runtimeRoot, operatorBriefs, {
+          cycleId,
+          outcome: result.decisions_queued.length ? 'consumed_with_decisions' : 'consumed_without_decisions',
+        });
+        result.operator_briefs = {
+          pending_read: operatorBriefsContext,
+          invalid: operatorBriefRead.invalid,
+          processed: processedBriefs,
+        };
       }
 
       result.success = true;

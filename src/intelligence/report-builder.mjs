@@ -184,6 +184,7 @@ export function gatherReportContext({
   intelResult,
   generatedAt,
   queueSummary = null,
+  operatorBriefs = [],
   limits: limitOverrides = {},
 } = {}) {
   const limits = { ...DEFAULT_REPORT_CONTEXT_LIMITS, ...limitOverrides };
@@ -197,6 +198,7 @@ export function gatherReportContext({
     subject: runtime?.subject ?? null,
     namespace: runtime?.dataNamespace ?? null,
     decision_queue: queueSummary,
+    operator_intent_briefs: operatorBriefs,
     current_cycle: {
       cycle_id: intelResult?.cycle_id ?? null,
       mode: intelResult?.mode ?? null,
@@ -276,6 +278,7 @@ export function gatherReportContext({
     retrospectives: context.retrospectives.length,
     evolution_events: context.evolution_events.length,
     action_receipts: context.action_receipts.length,
+    operator_intent_briefs: context.operator_intent_briefs.length,
     goal_events: context.goal_events.length,
     intel_reports_index: context.intel_reports_index.length,
     recent_report_markdowns: context.recent_report_markdowns.length,
@@ -675,11 +678,19 @@ export function prepareIntelReport({
   agentContextDocs = [],
   generatedAt = new Date().toISOString(),
   queueSummary = null,
+  operatorBriefs = [],
 }) {
   if (!intelResult?.cycle_id) {
     throw new Error('prepareIntelReport requires intelResult.cycle_id');
   }
-  const reportContext = gatherReportContext({ store, runtime, intelResult, generatedAt, queueSummary });
+  const reportContext = gatherReportContext({
+    store,
+    runtime,
+    intelResult,
+    generatedAt,
+    queueSummary,
+    operatorBriefs,
+  });
   const goals = reportContext.active_goals_flat;
   const evidence = reportContext.evidence;
   const assessment = assessGoals(goals, evidence);
@@ -716,10 +727,19 @@ export async function persistIntelReport({
   language = null,
   updateStandingMemory = true,
   queueSummary = null,
+  operatorBriefs = [],
 } = {}) {
   const prepared = reportContext && evidence && assessment && language
     ? { generatedAt: generatedAt || new Date().toISOString(), reportContext, goals, evidence, assessment, language }
-    : prepareIntelReport({ intelResult, runtime, store, agentContextDocs, generatedAt: generatedAt || new Date().toISOString(), queueSummary });
+    : prepareIntelReport({
+      intelResult,
+      runtime,
+      store,
+      agentContextDocs,
+      generatedAt: generatedAt || new Date().toISOString(),
+      queueSummary,
+      operatorBriefs,
+    });
 
   const cycleId = intelResult.cycle_id;
   const finalGeneratedAt = prepared.generatedAt;

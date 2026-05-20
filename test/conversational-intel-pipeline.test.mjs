@@ -15,6 +15,12 @@ import {
   buildDecideUserPrompt,
   buildReportUserPrompt,
 } from '../src/intelligence/conversation-prompts.mjs';
+import {
+  markOperatorBriefsProcessed,
+  readPendingOperatorBriefs,
+  readProcessedOperatorBriefs,
+  writePendingOperatorBrief,
+} from '../src/intelligence/operator-briefs.mjs';
 
 let tempDir = null;
 
@@ -97,15 +103,57 @@ describe('chatMessages compatibility', () => {
 
 describe('conversation prompt constraints', () => {
   it('requires Cyber-Taoist analysis in report and decision prompts', () => {
-    const zhReportPrompt = buildReportUserPrompt({ cycleId: 'cycle-test', language: 'zh' });
-    const enReportPrompt = buildReportUserPrompt({ cycleId: 'cycle-test', language: 'en' });
-    const decidePrompt = buildDecideUserPrompt();
+    const zhReportPrompt = buildReportUserPrompt({ cycleId: 'cycle-test', language: 'zh', operatorBriefs: 'brief-1' });
+    const enReportPrompt = buildReportUserPrompt({ cycleId: 'cycle-test', language: 'en', operatorBriefs: 'brief-1' });
+    const decidePrompt = buildDecideUserPrompt({ operatorBriefs: 'brief-1' });
 
     expect(zhReportPrompt).toContain('必须包含明确的 Cyber-Taoist 分析章节');
     expect(zhReportPrompt).toContain('法则/交易/生态位');
+    expect(zhReportPrompt).toContain('Operator Intent Briefs');
+    expect(zhReportPrompt).toContain('不得把其中 claim 表述为事实');
     expect(enReportPrompt).toContain('Include an explicit Cyber-Taoist analysis section');
     expect(enReportPrompt).toContain('law/transaction/niche');
+    expect(enReportPrompt).toContain('not verified evidence');
     expect(decidePrompt).toContain('"cyber_taoist_analysis"');
+    expect(decidePrompt).toContain('若不采纳 brief，应在 deferred 中说明原因');
+  });
+});
+
+describe('operator intent briefs', () => {
+  it('writes, reads, and marks pending briefs as processed', () => {
+    const { runtimeRoot } = makeFixture();
+    writePendingOperatorBrief(runtimeRoot, {
+      id: 'brief-test',
+      summary: 'Verify next cycle',
+      claims_to_verify: ['candidate hash changed'],
+      suggested_actions: ['agentank_generate_candidate'],
+    });
+    writeFileSync(
+      join(runtimeRoot, 'data', 'evolution', 'operator_briefs', 'pending', 'bad.json'),
+      '{not-json',
+    );
+
+    const pending = readPendingOperatorBriefs(runtimeRoot);
+    expect(pending.briefs).toHaveLength(1);
+    expect(pending.invalid).toHaveLength(1);
+    expect(pending.briefs[0]).toMatchObject({
+      id: 'brief-test',
+      scope: 'next_cycle',
+      expires_after_cycle: true,
+    });
+
+    const processed = markOperatorBriefsProcessed(runtimeRoot, pending.briefs, {
+      cycleId: 'cycle-test',
+      outcome: 'consumed_with_decisions',
+    });
+    expect(processed.moved).toHaveLength(1);
+    expect(readPendingOperatorBriefs(runtimeRoot).briefs).toHaveLength(0);
+    const archived = readProcessedOperatorBriefs(runtimeRoot);
+    expect(archived.briefs[0]).toMatchObject({
+      id: 'brief-test',
+      consumed_by_cycle: 'cycle-test',
+      outcome: 'consumed_with_decisions',
+    });
   });
 });
 
@@ -221,6 +269,91 @@ describe('ConversationalIntelligencePipeline', () => {
       id: `${result.cycle_id}:0`,
       status: 'pending',
       action: { type: 'record_observation' },
+    });
+  });
+
+  it('injects operator briefs into prompts and archives them after successful queuing', async () => {
+    const { runtimeRoot, runtime, host } = makeFixture();
+    writePendingOperatorBrief(runtimeRoot, {
+      id: 'brief-next',
+      summary: 'Verify diaries root and candidate hash',
+      claims_to_verify: [
+        {
+          claim: 'diaries ENOENT may be stale wrong-root evidence',
+          evidence_boundary: 'operator hypothesis',
+        },
+      ],
+      desired_decision_effect: 'Schedule verification before more diagnosis.',
+      suggested_actions: ['run_probe', 'agentank_generate_candidate'],
+    });
+    const messageCalls = [];
+    const client = {
+      async chat(message) {
+        if (message.includes('standing memory') || message.includes('固定容量')) {
+          return 'brief 已被消费并转化为下一轮验证重点。';
+        }
+        return longObservation();
+      },
+      async chatMessages(messages) {
+        messageCalls.push(messages);
+        const last = messages.at(-1).content;
+        if (last.includes('Strategic Analysis & Decision')) {
+          return JSON.stringify({
+            analysis: {
+              key_patterns: ['operator brief requests verification'],
+              root_causes: { high_performers_why: 'n/a', low_performers_why: 'n/a', failures_why: 'n/a' },
+              opportunities: [],
+              goal_assessment: {},
+            },
+            decision: 'execute',
+            rationale: 'Convert one-cycle brief into a bounded observation.',
+            actions: [{
+              type: 'record_observation',
+              description: 'Record operator brief consumption',
+              serves_goal: 'bootstrap',
+              priority: 'medium',
+              params: {
+                source: 'test',
+                subject: 'operator_brief',
+                kind: 'pipeline',
+                content: 'brief-next consumed',
+              },
+            }],
+            goal_coverage: { covered: ['bootstrap'], not_covered: {} },
+            deferred: [],
+            risk_mitigation: [],
+            goal_suggestions: [],
+            confidence_score: 0.8,
+          });
+        }
+        return '# 情报报告\n\nOperator Intent Briefs 已进入报告上下文。\n';
+      },
+    };
+
+    const pipeline = new ConversationalIntelligencePipeline({
+      aiClient: client,
+      host,
+      projectRoot: runtimeRoot,
+      goalId: 'bootstrap',
+      actionRegistry: {
+        toPromptSection: () => '- `record_observation`: Record an observation',
+      },
+      runtime,
+    });
+
+    const result = await pipeline.run();
+
+    expect(result.success).toBe(true);
+    expect(messageCalls[0][1].content).toContain('brief-next');
+    expect(messageCalls[1][3].content).toContain('brief-next');
+    expect(messageCalls[1][3].content).toContain('若不采纳 brief');
+    const context = JSON.parse(readFileSync(result.conversation_context_path, 'utf-8'));
+    expect(context.operator_intent_briefs[0].id).toBe('brief-next');
+    expect(context.report_turn.messages[1].content).toContain('"operator_intent_briefs"');
+    expect(readPendingOperatorBriefs(runtimeRoot).briefs).toHaveLength(0);
+    expect(readProcessedOperatorBriefs(runtimeRoot).briefs[0]).toMatchObject({
+      id: 'brief-next',
+      consumed_by_cycle: result.cycle_id,
     });
   });
 

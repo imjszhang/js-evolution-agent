@@ -26,6 +26,11 @@ import {
 } from '../src/cli/commands/goals.mjs';
 import { buildIntelSummary, findReportRecord } from '../src/cli/commands/intel.mjs';
 import {
+  briefList,
+  briefProcessed,
+  briefPut,
+} from '../src/cli/commands/intel-briefs.mjs';
+import {
   isValidSource,
   listValidSources,
   parseRecordsInput,
@@ -105,6 +110,11 @@ import {
   resolveAgentExecutionRoots,
   runAgenticAction,
 } from '../src/actions/agent-adapter.mjs';
+import {
+  markOperatorBriefsProcessed,
+  readPendingOperatorBriefs,
+  readProcessedOperatorBriefs,
+} from '../src/intelligence/operator-briefs.mjs';
 
 let tempDir = null;
 const originalJeaLanguage = process.env.JEA_LANGUAGE;
@@ -1905,5 +1915,49 @@ describe('intel inbox', () => {
 
     const code = await inboxDrain({ root, flags: { json: true } });
     expect(code).toBe(1);
+  });
+});
+
+describe('intel operator briefs', () => {
+  it('briefPut queues a one-cycle operator brief under the active runtime', async () => {
+    const root = makeIntelRoot('jea-brief-put-');
+    const filePath = join(root, 'brief.json');
+    writeFileSync(filePath, JSON.stringify({
+      id: 'brief-cli',
+      summary: 'Verify candidate hash next cycle',
+      claims_to_verify: ['codeHash differs from baseline'],
+      suggested_actions: ['agentank_generate_candidate'],
+    }));
+
+    const code = await briefPut({ root, flags: { file: filePath, json: true } });
+    expect(code).toBe(0);
+
+    const runtime = getActiveSubjectRuntimeInfo(root);
+    const pending = readPendingOperatorBriefs(runtime.runtimeRoot);
+    expect(pending.briefs).toHaveLength(1);
+    expect(pending.briefs[0]).toMatchObject({
+      id: 'brief-cli',
+      summary: 'Verify candidate hash next cycle',
+      scope: 'next_cycle',
+    });
+    expect(briefList({ root, flags: { json: true } })).toBe(0);
+  });
+
+  it('briefProcessed lists consumed briefs', async () => {
+    const root = makeIntelRoot('jea-brief-processed-');
+    const filePath = join(root, 'brief.json');
+    writeFileSync(filePath, JSON.stringify({
+      id: 'brief-done',
+      summary: 'Verify diaries root',
+      claims_to_verify: ['diaries path exists under subject runtime'],
+    }));
+
+    expect(await briefPut({ root, flags: { file: filePath } })).toBe(0);
+    const runtime = getActiveSubjectRuntimeInfo(root);
+    const pending = readPendingOperatorBriefs(runtime.runtimeRoot);
+    markOperatorBriefsProcessed(runtime.runtimeRoot, pending.briefs, { cycleId: 'cycle-cli' });
+
+    expect(readProcessedOperatorBriefs(runtime.runtimeRoot).briefs[0].id).toBe('brief-done');
+    expect(briefProcessed({ root, flags: { json: true } })).toBe(0);
   });
 });
