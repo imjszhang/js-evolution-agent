@@ -18,6 +18,10 @@ import { runReadOnlyProbe } from '../src/actions/probe-runner.mjs';
 import * as configuredActions from '../src/actions/configured-actions.mjs';
 import { runConfiguredExternalAction } from '../src/actions/configured-external-runner.mjs';
 import { createIntelligenceStore } from '../src/intelligence/store.mjs';
+import {
+  parseSubjectExternalRoots,
+  parseSubjectResourceRules,
+} from '../src/cli/utils/subjects.mjs';
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   query: vi.fn(),
@@ -232,6 +236,28 @@ afterEach(() => {
 });
 
 describe('controlled action handlers', () => {
+  it('parses external resource roots from subject policy text', () => {
+    const roots = parseSubjectExternalRoots([
+      '- 外部项目 root 是 `D:\\github\\My\\external-project`；处理资源时使用 `resource_scope=strategy_repo`。',
+      '- Runtime uses `resource_scope=subject_runtime` and host uses `resource_scope=source_root`.',
+    ].join('\n'));
+
+    expect(roots).toEqual({
+      strategy_repo: 'D:\\github\\My\\external-project',
+    });
+  });
+
+  it('parses external resource rules from subject policy text', () => {
+    const rules = parseSubjectResourceRules([
+      '- 外部资源映射：`data/candidates/**`、`data/scores/**` 属于 `resource_scope=strategy_repo`。',
+    ].join('\n'));
+
+    expect(rules).toEqual([
+      { kind: 'strategy_repo_candidates', scope: 'strategy_repo', patterns: ['data/candidates/**'] },
+      { kind: 'strategy_repo_scores', scope: 'strategy_repo', patterns: ['data/scores/**'] },
+    ]);
+  });
+
   it('runs an agent_run action through the unified agent receipt path', async () => {
     const ctx = makeAgenticCtx({
       status: 'completed',
@@ -1374,28 +1400,31 @@ describe('controlled action handlers', () => {
     expect(ctx.ai.agentCalls).toHaveLength(0);
   });
 
-  it('keeps agentank candidate probes in the configured evolver root', () => {
+  it('keeps external candidate probes in the configured subject resource root', () => {
     const ctx = makeCtx();
-    const evolverRoot = join(tempDir, 'agentank-evolver');
-    const candidateDir = join(evolverRoot, 'data', 'candidates');
+    const externalRoot = join(tempDir, 'external-project');
+    ctx.host.externalRoots = { strategy_repo: externalRoot };
+    ctx.host.resourceRules = [
+      { kind: 'strategy_candidate', scope: 'strategy_repo', patterns: ['data/candidates/**'] },
+    ];
+    const candidateDir = join(externalRoot, 'data', 'candidates');
     mkdirSync(candidateDir, { recursive: true });
-    writeFileSync(join(candidateDir, 'candidate-evolver.json'), '{"hash":"evolver"}', 'utf-8');
+    writeFileSync(join(candidateDir, 'candidate-external.json'), '{"hash":"external"}', 'utf-8');
 
     const result = runReadOnlyProbe({
       type: 'run_probe',
       params: {
-        cwd: evolverRoot,
         objective: 'Inspect candidate files',
         targets: ['data/candidates/'],
       },
     }, ctx);
 
     expect(result.success).toBe(true);
-    expect(result.execution_root).toBe(evolverRoot);
-    expect(result.resource_kind).toBe('agentank_candidate');
-    expect(result.resource_scope).toBe('agentank_evolver');
+    expect(result.execution_root).toBe(externalRoot);
+    expect(result.resource_kind).toBe('strategy_candidate');
+    expect(result.resource_scope).toBe('strategy_repo');
     expect(result.evidence.steps[0].evidence.entries.map((entry) => entry.name))
-      .toContain('candidate-evolver.json');
+      .toContain('candidate-external.json');
   });
 
   it('records resource metadata on probe receipts', async () => {

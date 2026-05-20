@@ -2,7 +2,6 @@ import { dirname, isAbsolute, resolve } from 'node:path';
 
 export const RESOURCE_SCOPES = {
   SUBJECT_RUNTIME: 'subject_runtime',
-  AGENTANK_EVOLVER: 'agentank_evolver',
   SOURCE_ROOT: 'source_root',
   UNKNOWN: 'unknown',
 };
@@ -32,26 +31,6 @@ const RESOURCE_RULES = [
     kind: 'intelligence_data',
     scope: RESOURCE_SCOPES.SUBJECT_RUNTIME,
     patterns: ['data/intelligence/**'],
-  },
-  {
-    kind: 'agentank_candidate',
-    scope: RESOURCE_SCOPES.AGENTANK_EVOLVER,
-    patterns: ['data/candidates/**'],
-  },
-  {
-    kind: 'agentank_score',
-    scope: RESOURCE_SCOPES.AGENTANK_EVOLVER,
-    patterns: ['data/scores/**'],
-  },
-  {
-    kind: 'agentank_simulation',
-    scope: RESOURCE_SCOPES.AGENTANK_EVOLVER,
-    patterns: ['data/simulations/**'],
-  },
-  {
-    kind: 'agentank_config',
-    scope: RESOURCE_SCOPES.AGENTANK_EVOLVER,
-    patterns: ['data/config/actions.json', 'src/strategy/**', 'src/cli.mjs'],
   },
   {
     kind: 'host_source',
@@ -268,22 +247,9 @@ export function resolveScopeRoot(scope, ctx, configuredRoot = null) {
       : { root: null, source: null };
   }
 
-  if (scope === RESOURCE_SCOPES.AGENTANK_EVOLVER) {
-    const evolverRoot = firstString(
-      ctx?.host?.agentankEvolverRoot,
-      ctx?.host?.agentank_evolver_root,
-      ctx?.host?.externalRoots?.agentank_evolver,
-      ctx?.host?.externalRoots?.agentankEvolver,
-      process.env.AGENTANK_EVOLVER_ROOT,
-      process.env.JEA_AGENTANK_EVOLVER_ROOT,
-      configuredRoot,
-    );
-    return evolverRoot
-      ? { root: resolve(evolverRoot), source: evolverRoot === configuredRoot ? 'configured_execution_root' : 'agentank_evolver_root' }
-      : { root: null, source: null };
-  }
-
-  return { root: null, source: null };
+  return configuredRoot
+    ? { root: resolve(configuredRoot), source: 'configured_execution_root' }
+    : { root: null, source: null };
 }
 
 export function resourceMetadataForRoot(action, ctx, configuredRoot = null) {

@@ -1085,17 +1085,17 @@ describe('action checks', () => {
 
   it('expands agent run specs into Claude additional directories and permission options', () => {
     tempDir = mkdtempSync(join(tmpdir(), 'jea-agent-run-spec-'));
-    const evolverRoot = join(tempDir, 'agentank-evolver');
+    const externalRoot = join(tempDir, 'external-project');
     const runtimeRoot = join(tempDir, 'runtime', 'subjects', 'agentank-tank');
     const sourceRoot = join(tempDir, 'js-evolution-agent');
-    mkdirSync(evolverRoot, { recursive: true });
+    mkdirSync(externalRoot, { recursive: true });
     mkdirSync(runtimeRoot, { recursive: true });
     mkdirSync(sourceRoot, { recursive: true });
     const action = {
       type: 'agent_run',
       params: {
         run_spec: {
-          primary_cwd_kind: 'agentank_evolver',
+          primary_cwd_kind: 'strategy_repo',
           additional_directory_kinds: ['subject_runtime'],
           permission_profile: 'workspace_write',
           provider: 'claude_code_sdk',
@@ -1109,18 +1109,18 @@ describe('action checks', () => {
       host: {
         sourceRoot,
         runtimeRoot,
-        externalRoots: { agentank_evolver: evolverRoot },
+        externalRoots: { strategy_repo: externalRoot },
       },
     };
 
     const claude = buildClaudeOptions(action, ctx);
     const cursor = buildCursorOptions(action, ctx);
 
-    expect(claude.options.cwd).toBe(evolverRoot);
+    expect(claude.options.cwd).toBe(externalRoot);
     expect(claude.options.additionalDirectories).toEqual([runtimeRoot]);
     expect(claude.options.allowedTools).toContain('Edit');
     expect(claude.runSpec.permission_profile).toBe('workspace_write');
-    expect(cursor.options.local.cwd).toBe(evolverRoot);
+    expect(cursor.options.local.cwd).toBe(externalRoot);
     expect(cursor.runSpec.additional_directories).toEqual([runtimeRoot]);
   });
 

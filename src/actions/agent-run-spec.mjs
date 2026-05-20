@@ -68,7 +68,6 @@ function normalizeScope(value) {
   if (!text) return null;
   if (text === 'runtime') return RESOURCE_SCOPES.SUBJECT_RUNTIME;
   if (text === 'subject') return RESOURCE_SCOPES.SUBJECT_RUNTIME;
-  if (text === 'evolver') return RESOURCE_SCOPES.AGENTANK_EVOLVER;
   if (text === 'host') return RESOURCE_SCOPES.SOURCE_ROOT;
   return text;
 }

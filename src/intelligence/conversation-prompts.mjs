@@ -183,13 +183,13 @@ export function buildDecideUserPrompt({
 - 只能输出 JSON 对象，不要 Markdown，不要代码围栏。
 - 报告中的判断可以作为分析线索，但 run 必须能追溯到机器上下文、观察报告、目标或历史证据。
 - 默认输出 \`type: "agent_run"\`，并在 \`params.run_spec\` 中描述一次自主 agent 运行。不要再把主体业务步骤拆成 \`sync/generate/simulate/evaluate/publish\` 之类的 action 菜单。
-- \`params.run_spec.primary_cwd_kind\` 是一等字段。常见值：主体日记/records/daemon/goals/intelligence 使用 \`subject_runtime\`；AgenTank candidates/scores/simulations/data/config/actions.json/src/strategy 使用 \`agentank_evolver\`；JEA 源码/policies/journal 使用 \`source_root\`。
+- \`params.run_spec.primary_cwd_kind\` 是一等字段。常见值：主体日记/records/daemon/goals/intelligence 使用 \`subject_runtime\`；JEA 源码/policies/journal 使用 \`source_root\`；主体外部项目使用 subject policy 中声明的自定义 scope。
 - 每次 run 只能有一个 primary cwd。需要参考其他 root 时，使用 \`additional_directory_kinds\` 或把摘要写入 context；不要让一次 run 无差别跨多个项目根写入。
 - \`permission_profile\` 必须是 \`read_only\`、\`workspace_write\` 或 \`remote_write_review\` 之一。只读调查用 \`read_only\`；本地候选/模拟/沙盒改动用 \`workspace_write\`；真实远端变更或发布准备用 \`remote_write_review\`。
 - 若必须使用旧 action type，只能用于兼容已有队列或明确的宿主记录语义，并在 rationale 说明为什么 \`agent_run\` 不合适。
 - \`agent_execute\` 只允许作为旧兼容兜底动作；新决策不要优先使用它。
 - 当 run 涉及本地文件或目录时，文件路径应相对 primary cwd 描述，不要混用多个项目根的绝对路径。执行层会从 run_spec 解析 cwd 并阻断 root_mismatch。
-- 常见资源归属：主体日记/records/daemon/goals/intelligence 使用 primary_cwd_kind=subject_runtime；AgenTank candidates/scores/simulations/data/config/actions.json/src/strategy 使用 primary_cwd_kind=agentank_evolver；JEA 源码/policies/journal 使用 primary_cwd_kind=source_root。
+- 常见资源归属：主体日记/records/daemon/goals/intelligence 使用 primary_cwd_kind=subject_runtime；JEA 源码/policies/journal 使用 primary_cwd_kind=source_root；外部项目文件使用 subject policy 中声明的自定义 primary_cwd_kind。
 - 对 ENOENT、目录不存在、blocked 等缺失证据，只能表述为「在 executionRoot=X 下 path=Y 不存在」；除非该 root 是该 resource_kind 的权威 root，否则不得升级为「模块缺失」「机制未实现」「写入冻结」。
 - Operator Intent Briefs 是单轮人工意图，不是事实证据。可以据此优先调度核实动作；若不采纳 brief，应在 deferred 中说明原因。
 - \`write_retrospective\` 只用于记录已经掌握的结构化复盘结论（summary/outcome/lessons/next_actions）；需要读取文件或补证据时，优先调度 \`agent_run\`。
@@ -272,7 +272,7 @@ Respond with exactly this JSON shape:
       "update_issue": null,
       "params": {
         "run_spec": {
-          "primary_cwd_kind": "subject_runtime | agentank_evolver | source_root",
+          "primary_cwd_kind": "subject_runtime | source_root | <subject_policy_external_scope>",
           "additional_directory_kinds": [],
           "permission_profile": "read_only | workspace_write | remote_write_review",
           "provider": "claude_code_sdk | cursor_sdk",

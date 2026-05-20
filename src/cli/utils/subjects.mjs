@@ -106,6 +106,122 @@ export function readActiveSubjectPolicy(root) {
   };
 }
 
+function normalizeResourceScope(value) {
+  const text = String(value || '').trim();
+  if (!text) return null;
+  if (text === 'runtime' || text === 'subject') return 'subject_runtime';
+  if (text === 'host') return 'source_root';
+  return text;
+}
+
+function pathLooksAbsolute(value) {
+  return /^[a-zA-Z]:[\\/]/.test(value) || value.startsWith('/') || value.startsWith('\\\\');
+}
+
+export function parseSubjectExternalRoots(policyText = '') {
+  const roots = {};
+  const lines = String(policyText || '').split(/\r?\n/);
+  for (const line of lines) {
+    const scopes = [...line.matchAll(/resource_scope=([a-zA-Z0-9_.:-]+)/g)]
+      .map((match) => normalizeResourceScope(match[1]))
+      .filter((scope) => scope && scope !== 'subject_runtime' && scope !== 'source_root');
+    if (!scopes.length) continue;
+
+    const inlinePaths = [...line.matchAll(/`([^`]+)`/g)]
+      .map((match) => match[1].trim())
+      .filter(pathLooksAbsolute);
+    const path = inlinePaths[0];
+    if (!path) continue;
+
+    for (const scope of scopes) roots[scope] = path;
+  }
+  return roots;
+}
+
+function normalizeResourceKind(value) {
+  const text = String(value || '').trim();
+  return text || null;
+}
+
+function patternLooksRelative(value) {
+  const text = String(value || '').trim();
+  if (!text || pathLooksAbsolute(text)) return false;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(text)) return false;
+  return text.includes('/') || text.includes('\\') || text.includes('*') || /\.[a-z0-9]{1,8}$/i.test(text);
+}
+
+function implicitScopeFromCodeValue(value) {
+  const text = String(value || '').trim();
+  const scoped = text.match(/^resource_scope=([a-zA-Z0-9_.:-]+)$/);
+  const candidate = normalizeResourceScope(scoped ? scoped[1] : text);
+  if (!candidate || candidate === 'subject_runtime' || candidate === 'source_root') return null;
+  if (!/^[a-z][a-z0-9_:-]*$/.test(candidate)) return null;
+  if (patternLooksRelative(candidate) || pathLooksAbsolute(candidate)) return null;
+  return candidate;
+}
+
+function kindFromScopeAndPattern(scope, pattern) {
+  const base = String(pattern || '')
+    .replace(/\\/g, '/')
+    .replace(/\*\*/g, '')
+    .replace(/\*/g, '')
+    .split('/')
+    .filter(Boolean)
+    .at(-1)
+    ?.replace(/\.[a-z0-9]+$/i, '')
+    ?.replace(/[^a-zA-Z0-9]+/g, '_')
+    ?.replace(/^_+|_+$/g, '')
+    ?.toLowerCase();
+  return [scope, base || 'resource'].filter(Boolean).join('_');
+}
+
+export function parseSubjectResourceRules(policyText = '') {
+  const rulesByKey = new Map();
+  const lines = String(policyText || '').split(/\r?\n/);
+  for (const line of lines) {
+    const explicitScopes = [...line.matchAll(/resource_scope=([a-zA-Z0-9_.:-]+)/g)]
+      .map((match) => normalizeResourceScope(match[1]))
+      .filter((scope) => scope && scope !== 'subject_runtime' && scope !== 'source_root');
+
+    const explicitKinds = [...line.matchAll(/resource_kind=([a-zA-Z0-9_.:-]+)/g)]
+      .map((match) => normalizeResourceKind(match[1]))
+      .filter(Boolean);
+
+    const codeValues = [...line.matchAll(/`([^`]+)`/g)]
+      .map((match) => match[1].trim());
+    const segments = line.split(/[；;]/);
+
+    const scopedSegments = explicitScopes.length
+      ? explicitScopes.map((scope) => ({ scope, text: line, codeValues }))
+      : segments.flatMap((segment) => {
+        if (!/(属于|belongs\s+to|resource\s+mapping|资源映射)/i.test(segment)) return [];
+        const segmentValues = [...segment.matchAll(/`([^`]+)`/g)]
+          .map((match) => match[1].trim());
+        const segmentPatterns = segmentValues.filter(patternLooksRelative);
+        if (!segmentPatterns.length) return [];
+        const maybeScope = segmentValues
+          .map(implicitScopeFromCodeValue)
+          .find(Boolean);
+        return maybeScope ? [{ scope: maybeScope, text: segment, codeValues: segmentValues }] : [];
+      });
+
+    for (const { scope, codeValues: values } of scopedSegments) {
+      const patterns = values.filter(patternLooksRelative);
+      for (const pattern of patterns) {
+        const kind = explicitKinds[0] || kindFromScopeAndPattern(scope, pattern);
+        const key = `${scope}:${kind}`;
+        const current = rulesByKey.get(key) || { kind, scope, patterns: [] };
+        current.patterns.push(pattern);
+        rulesByKey.set(key, current);
+      }
+    }
+  }
+  return [...rulesByKey.values()].map((rule) => ({
+    ...rule,
+    patterns: [...new Set(rule.patterns)],
+  }));
+}
+
 export function listSubjects(root) {
   const dir = subjectsDir(root);
   if (!existsSync(dir)) return [];

@@ -17,6 +17,8 @@ import { createIntelligenceStore } from './src/intelligence/store.mjs';
 import { getDefaultCyberTaoistDocsDir } from './src/cli/utils/project.mjs';
 import {
   getActiveSubjectRuntimeInfo,
+  parseSubjectExternalRoots,
+  parseSubjectResourceRules,
   readActiveSubjectPolicy,
 } from './src/cli/utils/subjects.mjs';
 
@@ -217,6 +219,9 @@ function createMockAiClient() {
 export default async function ({ cwd }) {
   registerGlobalActionTypes();
   const runtime = getActiveSubjectRuntimeInfo(cwd);
+  const subjectPolicy = readActiveSubjectPolicy(cwd);
+  const externalRoots = parseSubjectExternalRoots(subjectPolicy.text);
+  const resourceRules = parseSubjectResourceRules(subjectPolicy.text);
 
   const intelligenceStore = createIntelligenceStore({
     baseDir: runtime.intelligenceDir,
@@ -242,6 +247,9 @@ export default async function ({ cwd }) {
       intelligenceStore,
       knowledgeWriter: intelligenceStore,
       agentContextDocs,
+      externalRoots,
+      resourceRoots: externalRoots,
+      resourceRules,
       actionHandlers,
       actionVerifiers,
     },

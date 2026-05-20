@@ -74,6 +74,12 @@ resource_kind -> resource_scope -> authoritative_root
 
 核心系统只应该解决“这个 action 到底该在哪个权威 root 执行”。业务门禁，比如 agentank 的 `std < 40`，应该留给 subject policy / goal verifier，而不是写进 Phase 2 通用逻辑。
 
+这个原则后来又被验证了一次：第一版修复虽然支持 `host.externalRoots`，但核心代码里仍残留了 `AGENTANK_EVOLVER` scope、`agentank_candidate` / `agentank_score` / `agentank_config` 等内置规则，以及 prompt 中对 `agentank_evolver` 的示例提示。
+
+这些都被移除了。
+
+最终状态是：核心只认识框架级 scope（`subject_runtime`、`source_root`、`unknown`），外部 scope 和外部资源规则都从 subject policy 解析。`agentank_evolver` 仍然存在，但它只是 `policies/subjects/agentank-tank.md` 里的一个普通自定义 scope，不再是核心系统的内置概念。
+
 ---
 
 ## 3. 方案设计
@@ -126,6 +132,49 @@ flowchart TD
 [`src/actions/resource-registry.mjs`](../../src/actions/resource-registry.mjs) 增加了 host/action 注入资源规则和外部 root alias 支持。
 
 这让系统不只认识内置规则，还能从 `ctx.host.resourceRules`、`ctx.host.resourceRoots`、`ctx.host.externalRoots` 解析外部项目。
+
+后续又做了一次收敛：删除核心内置的 agentank 专用资源规则。现在 `resource-registry` 只保留框架级资源：
+
+- `subject_runtime` 下的日记、records、daemon、goals、intelligence。
+- `source_root` 下的 host source、policy、journal。
+- 外部项目资源由 `ctx.host.resourceRules` 注入。
+
+也就是说，`data/candidates/**`、`data/scores/**`、`src/strategy/**` 这类路径不再由核心硬编码归属，而是从 subject policy 解析出来。
+
+### 4.1.1 从 subject policy 提取外部资源拓扑
+
+[`src/cli/utils/subjects.mjs`](../../src/cli/utils/subjects.mjs) 新增两类解析：
+
+| 函数 | 作用 |
+| --- | --- |
+| `parseSubjectExternalRoots()` | 从主体 policy 中提取外部 scope 到绝对 root 的映射 |
+| `parseSubjectResourceRules()` | 从主体 policy 中提取外部 scope 的相对路径规则 |
+
+[`oada.config.mjs`](../../oada.config.mjs) 会把解析结果注入：
+
+- `host.externalRoots`
+- `host.resourceRoots`
+- `host.resourceRules`
+
+这次验证当前 `agentank-tank` 得到的配置是：
+
+```json
+{
+  "externalRoots": {
+    "agentank_evolver": "D:\\github\\My\\agentank-evolver"
+  },
+  "resourceRules": [
+    { "kind": "agentank_evolver_candidates", "scope": "agentank_evolver", "patterns": ["data/candidates/**"] },
+    { "kind": "agentank_evolver_scores", "scope": "agentank_evolver", "patterns": ["data/scores/**"] },
+    { "kind": "agentank_evolver_simulations", "scope": "agentank_evolver", "patterns": ["data/simulations/**"] },
+    { "kind": "agentank_evolver_actions", "scope": "agentank_evolver", "patterns": ["data/config/actions.json"] },
+    { "kind": "agentank_evolver_strategy", "scope": "agentank_evolver", "patterns": ["src/strategy/**"] },
+    { "kind": "agentank_evolver_cli", "scope": "agentank_evolver", "patterns": ["src/cli.mjs"] }
+  ]
+}
+```
+
+这里的 `agentank_evolver_*` 名称不是代码内置词表，而是由 policy 中的 scope 和路径动态生成的资源 kind。
 
 ### 4.2 `agent_run` execution package 校验
 
@@ -223,7 +272,7 @@ npm test
 
 ```text
 Test Files  4 passed (4)
-Tests       183 passed (183)
+Tests       185 passed (185)
 ```
 
 ### Lint
@@ -237,6 +286,20 @@ Tests       183 passed (183)
 - 未审批的 approval action 在 Phase 2 前被阻断。
 - Phase 2 agent prompt 包含目标化执行包和 Phase 1 情报报告全文。
 - 既有 `subject_runtime` 成功路径仍然可用。
+- subject policy 中的外部 root 和外部资源路径规则可以被泛化解析。
+- 核心实现不再内置 agentank 专用 resource scope / resource kind。
+
+### 修复后的一轮真实进化观察
+
+修复后跑了一轮：
+
+```bash
+npm run jea -- evolve --rounds 1 --subject agentank-tank
+```
+
+第一次观察到 Phase 1 规划了一个 `agent_run`，但因为 `agentank_evolver` root 没有注入到 host，入队前校验把 action 跳过，Phase 2 `executed: 0`。这证明新机制开始发挥作用：错误 root 不再 fallback 到宿主仓库执行。
+
+随后继续排查，发现 root 其实已经写在 `policies/subjects/agentank-tank.md`，只是 `oada.config.mjs` 没有解析 subject policy 并注入 `host.externalRoots`。修复后，外部 root 与资源规则都来自 subject policy，而不是 `.env`。
 
 ---
 
@@ -248,6 +311,7 @@ Tests       183 passed (183)
 - 让 evolve status 同步展示 `acceptance_status` / `goal_progress_status`，避免只看 `round succeeded`。
 - 为具体主体增加 goal verifier，例如 agentank 的 avg/std、candidate/simulation 文件、真实挑战同步状态。
 - 清理旧 pending decisions，把被证伪的假设写入 `do_not_repeat`，减少上下文噪声。
+- 将 subject policy 的资源声明语法进一步规范化，避免长期依赖自然语言解析。
 
 ### 长期方向
 
@@ -264,4 +328,4 @@ Tests       183 passed (183)
 | 问题 | 10 轮进化显示成功，但实际目标没有推进，Phase 2 agent 可能在错误 root 和不完整上下文里执行 |
 | 思考 | 问题不是 prompt 不够长，而是 `agent_run` 缺少可校验执行契约；完整情报报告应该可用，但不能替代工作包 |
 | 方案 | 建立 execution package：入队前校验、Phase 2 preflight、目标化人话任务说明、完整 Phase 1 报告作为参考附录 |
-| 执行 | 修改 resource registry、run spec、decision queue、conversational pipeline、agent adapter、handlers 和测试；全量 `npm test` 通过 |
+| 执行 | 修改 resource registry、run spec、decision queue、conversational pipeline、agent adapter、handlers、subject policy 解析和测试；全量 `npm test` 通过 |
