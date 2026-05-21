@@ -146,6 +146,25 @@ flowchart TD
 
 这不是推翻前两阶段，而是给它们换一套更容易被模型和人类共同遵守的语言。
 
+### 第四阶段：把 Seen 从提示词规则变成写入门禁
+
+三栏模型上线后，又执行了 3 轮 `agentank-tank` 进化。结果很清楚：
+
+- `Observation Evidence Guard` 已经进入 observe prompt。
+- `standing_memory` 已经按 Seen / Inferred / Remembered / Do Not Treat As Seen 四段输出。
+- 系统开始主动识别污染，并把污染范围量化到 17 条条目。
+
+但核心漏洞还在。
+
+模型已经会说“这不是 Seen”，但 `standing_memory` 更新器仍会把完整 `reportContext` 交给模型。模型可以从 `action_receipts`、日记、报告正文、partial receipt 的 summary 中重新摘取内容，再写回 `Seen`。
+
+这里的第一性原理更简单：
+
+> 记忆只能把亲眼见过的东西写进 Seen。  
+> “别人说看见了”不是 Seen。
+
+因此第四阶段不再加新的治理术语，也不继续扩展 forbidden 列表，而是在 `standing_memory` 写入路径上加硬门禁：`Seen` 只能来自 TDB 的 `seen`，并且要再过滤掉 partial / failed receipt 这类不适合进入长期事实层的状态。
+
 ---
 
 ## 4. 实现要点
@@ -224,6 +243,38 @@ flowchart TD
   blocked --> memory
 ```
 
+### 第四阶段写入门禁
+
+第四阶段只改一个关键位置：[`src/intelligence/report-builder.mjs`](../../src/intelligence/report-builder.mjs) 的 `standing_memory` 更新流程。
+
+以前 memory prompt 会收到完整机器上下文：
+
+- `goal_events`
+- `observations`
+- `probe_results`
+- `evolution_events`
+- `action_receipts`
+- `latest_review`
+- `intel_reports_index`
+- `historical_report_references`
+
+这给了模型太多“重新解释”的空间。即使 prompt 说 `Seen` 只能来自 TDB，模型仍可能把 receipt summary 或 diary prose 当成 Seen 写回。
+
+新的流程改成两层门禁：
+
+| 层级 | 作用 |
+| --- | --- |
+| `memory_admission` | 给 memory prompt 的机器上下文只暴露准入后的 `seen`、`remembered`、`do_not_treat_as_seen`，不再暴露完整 receipts/reports/diaries |
+| `enforceStandingMemorySeenGate()` | AI 输出后，用代码重写 `## Seen` 小节，确保最终写入的 Seen 只来自准入后的 TDB `seen` |
+
+同时增加一条很窄的过滤：
+
+- `partial` / `failed` 的 `action_receipt` 不进入 memory `Seen`。
+- `agent_narrative` 不进入 memory `Seen`。
+- 成功完成的 receipt 只能把结构化状态作为 Seen，不能把 summary 当 Seen。
+
+这一步的重点不是“证明所有 claim”，而是把长期记忆中最危险的入口关掉：模型叙述、partial receipt、历史报告都不能再自己爬回 Seen。
+
 ---
 
 ## 5. 验证与测试
@@ -294,6 +345,40 @@ ReadLints
 
 结果：相关改动文件无 linter 错误。
 
+第四阶段写入门禁补充了一个回归测试：
+
+```bash
+npm test -- test/intelligence.test.mjs
+```
+
+测试故意让 AI 生成污染的 standing memory：
+
+```text
+## Seen
+
+- receipt-polluted: worker-state.json.remote.matchCount is 4127
+```
+
+最终断言写入后的 `Seen` 小节被代码门禁重写，只包含 TDB 准入后的 source id，不包含 `remote.matchCount`，并且 `evidence_refs` 不再记录 partial receipt。
+
+结果：`test/intelligence.test.mjs` 37 个测试全部通过。
+
+随后运行完整测试：
+
+```bash
+npm test
+```
+
+结果：4 个测试文件、188 个测试全部通过。
+
+再运行静态诊断：
+
+```bash
+ReadLints
+```
+
+结果：[`src/intelligence/report-builder.mjs`](../../src/intelligence/report-builder.mjs) 和 [`test/intelligence.test.mjs`](../../test/intelligence.test.mjs) 无 linter 错误。
+
 ---
 
 ## 6. 后续演化
@@ -333,6 +418,17 @@ ReadLints
 3. **少加规则，多看失败样本**  
    第三阶段的原则是不再轻易扩展 forbidden 列表。只有当某类错误反复复活，并且能被稳定描述时，才把它沉淀为硬 guard。
 
+第四阶段之后，下一步更具体：
+
+1. **跑几轮验证污染是否复发**  
+   重点检查新生成的 `standing_memory`：`Seen` 是否只来自 `memory_admission.seen`，partial receipt 和 agent narrative 是否还会回流。
+
+2. **清理现有 standing_memory 中的旧污染**  
+   写入门禁只能防止新污染进入，不能自动修复已经存在的旧文本。后续可以执行一次明确的 memory 清理，把已识别的污染 receipt 从 `Seen` 移到 `Remembered`，并保留必要的 `Do Not Treat As Seen`。
+
+3. **再处理目标和队列**  
+   目标中的 `std<40 / 429=0` 这类不可验证指标、以及 pending decisions 的可归档积压，仍然需要处理。但顺序应该在 memory 写入门禁稳定之后。
+
 ---
 
 ## 附：本轮对话问题—思考—方案—执行对照
@@ -340,7 +436,7 @@ ReadLints
 | 阶段 | 内容 |
 | --- | --- |
 | 问题 | 进化工作流调用多篇历史内容时，没有充分注明时间，也没有明确要求按最新结论裁决，导致旧结论可能继续污染后续轮次 |
-| 思考 | 第一性原理下，持续演化系统不能依赖语言连续性维持记忆，而要依赖证据状态维持记忆；20 轮后进一步确认污染源在 observe 阶段更早出现；继续加治理术语又会让系统过度复杂 |
-| 方案 | 第一阶段新增 `Temporal Decision Brief`；第二阶段新增 `Observation Evidence Guard`，并把 Observation Report 降级为模型 claim；第三阶段统一为 Seen / Inferred / Remembered / Do Not Treat As Seen |
-| 执行 | 新增 `decision-brief` 和 `observation-guard`，接入 observe/report/decide/memory 链路，降权历史 Markdown 和 receipt summary，收紧 standing memory，并预留 `claim_ledger`；随后在 TDB、prompt、observe guard、standing memory 中统一三栏语言 |
-| 验证 | `ReadLints` 无错误；第一阶段 `npm test` 185 项通过，第二阶段和第三阶段 `npm test` 187 项通过 |
+| 思考 | 第一性原理下，持续演化系统不能依赖语言连续性维持记忆，而要依赖证据状态维持记忆；20 轮后进一步确认污染源在 observe 阶段更早出现；继续加治理术语又会让系统过度复杂；3 轮三栏验证后确认 prompt 语言不足以阻止污染回流 |
+| 方案 | 第一阶段新增 `Temporal Decision Brief`；第二阶段新增 `Observation Evidence Guard`，并把 Observation Report 降级为模型 claim；第三阶段统一为 Seen / Inferred / Remembered / Do Not Treat As Seen；第四阶段把 memory Seen 改成代码层写入门禁 |
+| 执行 | 新增 `decision-brief` 和 `observation-guard`，接入 observe/report/decide/memory 链路，降权历史 Markdown 和 receipt summary，收紧 standing memory，并预留 `claim_ledger`；随后在 TDB、prompt、observe guard、standing memory 中统一三栏语言；最后在 `report-builder` 中加入 `memory_admission` 与 `enforceStandingMemorySeenGate()` |
+| 验证 | `ReadLints` 无错误；第一阶段 `npm test` 185 项通过，第二阶段和第三阶段 `npm test` 187 项通过，第四阶段 `npm test` 188 项通过 |

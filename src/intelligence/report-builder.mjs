@@ -573,6 +573,69 @@ function stripCodeFence(text) {
   return fenced ? fenced[1].trim() : trimmed;
 }
 
+function seenSourceId(item) {
+  return item?.source?.id ?? item?.id ?? null;
+}
+
+function summarizeSeenItem(item) {
+  if (item?.summary) return shortText(item.summary, 260);
+  if (item?.fields && typeof item.fields === 'object') {
+    return shortText(JSON.stringify(item.fields), 260);
+  }
+  return shortText(JSON.stringify(item ?? {}), 260);
+}
+
+function buildMemoryAdmission(reportContext) {
+  const brief = reportContext?.temporal_decision_brief ?? {};
+  const seen = Array.isArray(brief.seen) ? brief.seen : [];
+  const memorySeen = seen.filter((item) => {
+    if (item?.evidence_level === 'agent_narrative') return false;
+    if (item?.source?.source_type !== 'action_receipt') return true;
+    const status = String(item?.fields?.status ?? '').toLowerCase();
+    const success = item?.fields?.success;
+    return status === 'completed' || status === 'succeeded' || success === true;
+  });
+  return {
+    rule: 'Only memory_admission.seen may appear in the final Seen section. Everything else is not Seen.',
+    seen: memorySeen.map((item) => ({
+      source_id: seenSourceId(item),
+      source_type: item?.source?.source_type ?? null,
+      recorded_at: item?.source?.recorded_at ?? null,
+      kind: item?.kind ?? null,
+      evidence_level: item?.evidence_level ?? null,
+      summary: summarizeSeenItem(item),
+    })).filter((item) => item.source_id),
+    remembered: (brief.remembered ?? []).slice(0, 40),
+    do_not_treat_as_seen: (brief.do_not_treat_as_seen ?? []).slice(0, 30),
+  };
+}
+
+function buildSeenSection(reportContext) {
+  const admitted = buildMemoryAdmission(reportContext).seen;
+  if (!admitted.length) return '- (none)';
+  return admitted
+    .map((item) => `- ${item.source_id}: ${item.summary}`)
+    .join('\n');
+}
+
+function replaceMarkdownSection(markdown, heading, replacementBody) {
+  const text = String(markdown || '').trim();
+  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const sectionPattern = new RegExp(
+    `(^|\\n)##\\s+${escaped}\\s*\\n[\\s\\S]*?(?=\\n##\\s+|$)`,
+    'i',
+  );
+  const replacement = `\n## ${heading}\n\n${replacementBody.trim()}\n`;
+  if (sectionPattern.test(text)) {
+    return text.replace(sectionPattern, replacement).trim();
+  }
+  return `## ${heading}\n\n${replacementBody.trim()}\n\n${text}`.trim();
+}
+
+export function enforceStandingMemorySeenGate(text, reportContext) {
+  return replaceMarkdownSection(text, 'Seen', buildSeenSection(reportContext));
+}
+
 function buildStandingMemoryUpdatePrompt({
   language,
   oldMemory,
@@ -582,19 +645,10 @@ function buildStandingMemoryUpdatePrompt({
   extraContext = null,
 }) {
   const contextJson = clipText(JSON.stringify({
-    temporal_decision_brief: reportContext.temporal_decision_brief,
+    memory_admission: buildMemoryAdmission(reportContext),
     current_cycle: reportContext.current_cycle,
     source_counts: reportContext.source_counts,
     active_goals: reportContext.active_goals,
-    goal_events: reportContext.goal_events,
-    observations: reportContext.observations,
-    probe_results: reportContext.probe_results,
-    retrospectives: reportContext.retrospectives,
-    evolution_events: reportContext.evolution_events,
-    action_receipts: reportContext.action_receipts,
-    latest_review: reportContext.latest_review,
-    intel_reports_index: reportContext.intel_reports_index,
-    historical_report_references: reportContext.historical_report_references,
     extra_context: extraContext,
   }, null, 2), 500000);
 
@@ -607,7 +661,7 @@ Rules:
 - Return only the new standing memory text. No code fences.
 - Keep it under ${maxChars} characters.
 - Use exactly these sections: Seen, Inferred, Remembered, Do Not Treat As Seen.
-- Seen may only use Temporal Decision Brief seen items.
+- Seen may only use Machine Context memory_admission.seen. Do not put report text, diary prose, receipt summaries, partial receipts, or agent claims in Seen.
 - Inferred must cite Seen source ids and include what would overturn the judgement.
 - Remembered is background only; do not phrase it as current fact.
 - Do Not Treat As Seen preserves refuted, stale, forbidden, or repeatedly misleading claims.
@@ -632,7 +686,7 @@ ${contextJson}`;
 - 只返回新版 standing memory 正文，不要代码围栏。
 - 总长度必须控制在 ${maxChars} 字符以内。
 - 固定使用四个小节：Seen、Inferred、Remembered、Do Not Treat As Seen。
-- Seen 只能使用 Temporal Decision Brief 的 seen 项。
+- Seen 只能使用机器上下文 memory_admission.seen。不得把报告正文、日记叙述、receipt summary、partial receipt 或 agent claim 放入 Seen。
 - Inferred 必须引用 Seen 的 source id，并写明什么证据会推翻该判断。
 - Remembered 只能作为背景，不得写成当前事实。
 - Do Not Treat As Seen 保留已证伪、过期、禁止复活或反复误导的说法。
@@ -679,7 +733,10 @@ export async function updateStandingMemoryWithAi({
 
   try {
     const raw = await aiClient.chat(prompt);
-    const text = clipText(stripCodeFence(raw), maxChars).trim();
+    const text = clipText(
+      enforceStandingMemorySeenGate(stripCodeFence(raw), reportContext),
+      maxChars,
+    ).trim();
     if (!text) return { status: 'failed', reason: 'empty-output' };
     const written = store.recordStandingMemory({
       source_cycle_id: cycleId,
@@ -687,11 +744,8 @@ export async function updateStandingMemoryWithAi({
       char_limit: maxChars,
       token_budget_hint: `fixed prompt region, max ${maxChars} characters`,
       text,
-      evidence_refs: [
-        ...(reportContext.temporal_decision_brief?.direct_evidence ?? []),
-        ...(reportContext.temporal_decision_brief?.structured_status ?? []),
-      ]
-        ?.map((fact) => fact?.source?.id)
+      evidence_refs: buildMemoryAdmission(reportContext).seen
+        ?.map((fact) => fact.source_id)
         .filter(Boolean)
         .slice(0, 50) ?? [],
       memory_policy: {

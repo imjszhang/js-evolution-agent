@@ -597,6 +597,62 @@ describe('buildIntelReport', () => {
     expect(store.readStandingMemory().text).toContain('新版 standing memory');
   });
 
+  it('rewrites standing memory Seen from TDB seen only', async () => {
+    const { store, runtime, intelResult } = makeReportFixture();
+    store.recordActionReceipt(
+      { type: 'agent_run', description: 'probe worker state' },
+      {
+        status: 'partial',
+        success: false,
+        summary: 'worker-state.json.remote.matchCount is 4127',
+      },
+      { cycleId: 'cycle-test-1' },
+    );
+    store.recordEvolutionEvent({
+      id: 'evt-safe',
+      type: 'task_completed',
+      status: 'ok',
+      cycle_id: 'cycle-test-1',
+      summary: 'task completed',
+    });
+
+    const aiText = '# 情报报告\n\n报告提到了 worker-state.json.remote.matchCount is 4127。\n';
+    const pollutedMemory = [
+      '## Seen',
+      '',
+      '- receipt-polluted: worker-state.json.remote.matchCount is 4127',
+      '',
+      '## Inferred',
+      '',
+      '- 远端同步健康。',
+      '',
+      '## Remembered',
+      '',
+      '- old report lead',
+    ].join('\n');
+    const outputs = [aiText, pollutedMemory];
+    const fakeAi = { chat: async () => outputs.shift() };
+
+    const result = await buildIntelReport({
+      intelResult,
+      runtime,
+      store,
+      aiClient: fakeAi,
+      useAi: true,
+    });
+
+    expect(result.memoryUpdate.status).toBe('updated');
+    const memory = store.readStandingMemory();
+    const seenText = memory.text.slice(
+      memory.text.indexOf('## Seen'),
+      memory.text.indexOf('## Inferred'),
+    );
+    expect(seenText).toContain('evt-safe');
+    expect(seenText).not.toContain('remote.matchCount');
+    expect(memory.evidence_refs).toContain('evt-safe');
+    expect(memory.evidence_refs.join('\n')).not.toContain('receipt-');
+  });
+
   it('falls back to placeholder when AI throws', async () => {
     const { store, runtime, intelResult } = makeReportFixture();
     const fakeAi = { chat: async () => { throw new Error('upstream timeout'); } };
