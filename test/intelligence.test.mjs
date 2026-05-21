@@ -34,6 +34,11 @@ import {
   buildEvolutionDiaryContext,
   buildEvolutionDiaryPrompt,
 } from '../src/intelligence/evolution-diary-builder.mjs';
+import { buildTemporalDecisionBrief } from '../src/intelligence/decision-brief.mjs';
+import {
+  buildObservationEvidenceGuard,
+  formatObservationEvidenceGuard,
+} from '../src/intelligence/observation-guard.mjs';
 
 let tempDir = null;
 
@@ -62,6 +67,44 @@ describe('intelligence specs', () => {
       'standing_memory',
       'claim_ledger',
     ]);
+  });
+});
+
+describe('evidence guards and decision brief', () => {
+  it('keeps narrative receipt summaries out of current facts', () => {
+    const brief = buildTemporalDecisionBrief({
+      generated_at: '2026-05-21T00:00:00.000Z',
+      current_cycle: { cycle_id: 'cycle-test', mode: 'local' },
+      action_receipts: [{
+        id: 'receipt-1',
+        recorded_at: '2026-05-21T00:00:00.000Z',
+        action_type: 'agent_run',
+        result: {
+          status: 'completed',
+          success: true,
+          summary: 'worker-state.json.remote.matchCount is 4127',
+        },
+      }],
+      probe_results: [],
+      evolution_events: [],
+      goal_events: [],
+      recent_report_markdowns: [],
+      standing_memory: { exists: false },
+    });
+
+    expect(JSON.stringify(brief.current_facts)).not.toContain('remote.matchCount');
+    expect(JSON.stringify(brief.structured_status)).toContain('completed');
+    expect(JSON.stringify(brief.agent_claims)).toContain('remote.matchCount');
+  });
+
+  it('formats observation guard with forbidden worker-state fields', () => {
+    const guard = buildObservationEvidenceGuard({ subject: 'agentank-tank' });
+    const text = formatObservationEvidenceGuard(guard);
+
+    expect(text).toContain('Observation Evidence Guard');
+    expect(text).toContain('worker-state.json.remote.*');
+    expect(text).toContain('json_pointer');
+    expect(text).toContain('standing_memory.json');
   });
 });
 

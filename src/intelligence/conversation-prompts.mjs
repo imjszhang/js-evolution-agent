@@ -100,10 +100,6 @@ ${operatorBriefs || '(none)'}
 
 ${intelligenceContext || '(none)'}
 
-## Observation Report
-
-${observationReport || '(none)'}
-
 ## Temporal Decision Brief
 
 Read this before the full Machine Context. It summarizes current evidence state, source freshness, and historical claims that should not be promoted without verification:
@@ -111,6 +107,12 @@ Read this before the full Machine Context. It summarizes current evidence state,
 \`\`\`json
 ${briefJson(reportContext)}
 \`\`\`
+
+## Model Observation Claims
+
+The following Observation Report is model-generated. Use it as leads only. If it conflicts with the Temporal Decision Brief, schema guards, or structured evidence, prefer the latter and call out the conflict:
+
+${observationReport || '(none)'}
 
 ## Machine Context
 
@@ -168,10 +170,6 @@ ${operatorBriefs || '(none)'}
 
 ${intelligenceContext || '(none)'}
 
-## Observation Report
-
-${observationReport || '(none)'}
-
 ## Temporal Decision Brief
 
 先读这一节，再读完整 Machine Context。它汇总当前证据状态、来源新旧顺序，以及不能直接升级为事实的历史 claim：
@@ -179,6 +177,12 @@ ${observationReport || '(none)'}
 \`\`\`json
 ${briefJson(reportContext)}
 \`\`\`
+
+## Model Observation Claims
+
+以下 Observation Report 是模型生成的观察 claim，只能作为线索。若它与 Temporal Decision Brief、schema guard 或结构化证据冲突，必须以后者为准，并指出冲突：
+
+${observationReport || '(none)'}
 
 ## Machine Context
 
@@ -252,15 +256,17 @@ ${operatorBriefs || '(none)'}
 
 ${intelligenceContext || '(none)'}
 
-## Observation Report
-
-${observationReport || '(none)'}
-
 ## Temporal Decision Brief
 
 \`\`\`json
 ${briefJson(reportContext)}
 \`\`\`
+
+## Model Observation Claims
+
+The following observation is model-generated lead material, not an authority. If it conflicts with the Temporal Decision Brief or schema guards, use it only as an unverified claim:
+
+${observationReport || '(none)'}
 
 ## Machine Context
 

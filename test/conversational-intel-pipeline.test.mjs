@@ -114,6 +114,8 @@ describe('conversation prompt constraints', () => {
     expect(enReportPrompt).toContain('Include an explicit Cyber-Taoist analysis section');
     expect(enReportPrompt).toContain('law/transaction/niche');
     expect(enReportPrompt).toContain('not verified evidence');
+    expect(zhReportPrompt.indexOf('## Temporal Decision Brief')).toBeLessThan(zhReportPrompt.indexOf('## Model Observation Claims'));
+    expect(zhReportPrompt).toContain('只能作为线索');
     expect(decidePrompt).toContain('"cyber_taoist_analysis"');
     expect(decidePrompt).toContain('若不采纳 brief，应在 deferred 中说明原因');
     expect(decidePrompt).toContain('"type": "agent_run"');
@@ -246,9 +248,13 @@ describe('ConversationalIntelligencePipeline', () => {
     expect(result.standing_memory_update.status).toBe('updated');
     expect(result.conversation_context_path).toBeTruthy();
     expect(messageCalls).toHaveLength(2);
+    expect(chatCalls[0]).toContain('Observation Evidence Guard');
+    expect(chatCalls[0]).toContain('worker-state.json.remote.*');
+    expect(chatCalls[0]).toContain('json_pointer');
     expect(messageCalls[0][1].content).toContain('pre_analyze_decide_report');
     expect(messageCalls[0][1].content).toContain('"decision_queue"');
     expect(messageCalls[0][1].content).not.toContain('decisions_queued');
+    expect(messageCalls[0][1].content.indexOf('## Temporal Decision Brief')).toBeLessThan(messageCalls[0][1].content.indexOf('## Model Observation Claims'));
     expect(messageCalls[1].map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user']);
     expect(messageCalls[1][2].content).toContain('情报报告');
 

@@ -67,6 +67,25 @@ function directFact({ sourceType, evidenceLevel, record, summary, path = null })
   };
 }
 
+function structuredStatus({ sourceType, record, fields }) {
+  return {
+    kind: 'structured_status',
+    evidence_level: 'structured_machine_record',
+    fields,
+    source: sourceRef({ sourceType, record }),
+  };
+}
+
+function agentClaim({ sourceType, record, summary, status = null }) {
+  return {
+    kind: 'agent_claim',
+    status: status ?? classifyHistoricalSummary(summary),
+    evidence_level: 'agent_narrative',
+    summary: shortText(summary),
+    source: sourceRef({ sourceType, record }),
+  };
+}
+
 function historicalClaim({ sourceType, record, summary, status = 'historical', path = null }) {
   return {
     kind: 'historical_claim',
@@ -113,27 +132,40 @@ function classifyHistoricalSummary(summary) {
   return 'historical';
 }
 
-function actionReceiptFacts(receipts, limit) {
+function actionReceiptStatuses(receipts, limit) {
   return newestFirst(receipts).slice(0, limit).map((record) => {
     const result = record?.result || {};
     const action = record?.action || {};
-    const status = result.status ?? result.success ?? 'unknown';
-    const message = result.message ?? result.error ?? result.summary ?? '';
-    return directFact({
+    return structuredStatus({
       sourceType: 'action_receipt',
-      evidenceLevel: 'structured_machine_record',
       record,
-      summary: `${record.action_type ?? action.type ?? 'action'} ${status}: ${message}`,
+      fields: {
+        action_type: record.action_type ?? action.type ?? null,
+        status: result.status ?? null,
+        success: result.success ?? null,
+        provider: result.provider ?? result.agentic_execution?.provider ?? null,
+        requires_approval: result.requires_approval ?? null,
+        fallback_used: result.fallback_used ?? null,
+        writes_applied: result.writes_applied ?? null,
+        decision_id: record.decision_id ?? null,
+        action_id: record.action_id ?? null,
+      },
     });
   });
 }
 
-function probeFacts(probes, limit) {
-  return newestFirst(probes).slice(0, limit).map((record) => directFact({
+function probeStatuses(probes, limit) {
+  return newestFirst(probes).slice(0, limit).map((record) => structuredStatus({
     sourceType: 'probe_result',
-    evidenceLevel: 'structured_machine_record',
     record,
-    summary: `${record.probe_type ?? 'probe'} ${record.target ?? ''} ${record.status ?? 'unknown'}: ${record.summary ?? ''}`,
+    fields: {
+      probe_type: record.probe_type ?? null,
+      target: record.target ?? null,
+      status: record.status ?? null,
+      execution_root: record.execution_root ?? null,
+      resource_scope: record.resource_scope ?? null,
+      resource_kind: record.resource_kind ?? null,
+    },
   }));
 }
 
@@ -153,6 +185,28 @@ function goalFacts(events, limit) {
     record,
     summary: `${record.type ?? 'goal_event'} ${record.goal_id ?? ''}: ${record.reason ?? record.summary ?? ''}`,
   }));
+}
+
+function receiptAgentClaims(receipts, limit) {
+  return newestFirst(receipts).slice(0, limit).flatMap((record) => {
+    const result = record?.result || {};
+    const summary = result.summary ?? result.message ?? result.error ?? result.agentic_execution?.summary ?? '';
+    return summary ? [agentClaim({ sourceType: 'action_receipt', record, summary })] : [];
+  });
+}
+
+function probeAgentClaims(probes, limit) {
+  return newestFirst(probes).slice(0, limit).flatMap((record) => {
+    const summary = record.summary ?? record.message ?? '';
+    return summary ? [agentClaim({ sourceType: 'probe_result', record, summary })] : [];
+  });
+}
+
+function eventAgentClaims(events, limit) {
+  return newestFirst(events).slice(0, limit).flatMap((record) => {
+    const summary = record.tldr ?? record.summary ?? record.result?.summary ?? '';
+    return summary ? [agentClaim({ sourceType: 'evolution_event', record, summary })] : [];
+  });
 }
 
 function reportClaims(reports, limit) {
@@ -240,11 +294,18 @@ export function buildTemporalDecisionBrief(reportContext = {}, {
       note: reportContext.current_cycle.note ?? null,
     }
     : null;
-  const currentFacts = [
-    ...actionReceiptFacts(reportContext.action_receipts, itemLimit),
-    ...probeFacts(reportContext.probe_results, itemLimit),
+  const structuredStatuses = [
+    ...actionReceiptStatuses(reportContext.action_receipts, itemLimit),
+    ...probeStatuses(reportContext.probe_results, itemLimit),
+  ];
+  const directEvidence = [
     ...eventFacts(reportContext.evolution_events, itemLimit),
     ...goalFacts(reportContext.goal_events, Math.ceil(itemLimit / 2)),
+  ];
+  const agentClaims = [
+    ...receiptAgentClaims(reportContext.action_receipts, itemLimit),
+    ...probeAgentClaims(reportContext.probe_results, itemLimit),
+    ...eventAgentClaims(reportContext.evolution_events, itemLimit),
   ];
   const claims = [
     ...standingMemoryClaim(reportContext.standing_memory),
@@ -275,8 +336,15 @@ export function buildTemporalDecisionBrief(reportContext = {}, {
         'When claims conflict, prefer newer structured evidence over older model summaries.',
       ],
     },
-    current_facts: currentFacts.slice(0, itemLimit * 3),
+    direct_evidence: directEvidence.slice(0, itemLimit * 2),
+    structured_status: structuredStatuses.slice(0, itemLimit * 2),
+    agent_claims: agentClaims.slice(0, itemLimit * 3),
+    current_facts: [
+      ...directEvidence.slice(0, itemLimit),
+      ...structuredStatuses.slice(0, itemLimit),
+    ],
     ...split,
+    forbidden_or_refuted_claims: split.refuted_or_weakened_claims,
     decision_constraints: {
       active_goals: reportContext.active_goals_flat ?? [],
       decision_queue: reportContext.decision_queue ?? null,

@@ -607,7 +607,9 @@ Rules:
 - Return only the new standing memory text. No code fences.
 - Keep it under ${maxChars} characters.
 - Treat the Temporal Decision Brief as the evidence-state authority for this update.
-- Preserve only active conclusions that are still supported by current facts or structured evidence.
+- Preserve only active conclusions that are supported by direct_evidence, structured_status, or verified active claims.
+- Treat agent_claims as unverified until independently supported; do not put them in core diagnosis as facts.
+- Reject any new report claim that matches forbidden_or_refuted_claims or known schema guards. Record it only as rejected/unverified if needed.
 - Downgrade, remove, or explicitly mark stale claims when the new report, brief, or evidence weakens them.
 - Do not compress historical report claims into standing memory unless they remain supported by current evidence.
 - Important numeric or status claims should cite evidence refs, source cycle ids, or structured source ids when available.
@@ -633,7 +635,9 @@ ${contextJson}`;
 - 只返回新版 standing memory 正文，不要代码围栏。
 - 总长度必须控制在 ${maxChars} 字符以内。
 - 把 Temporal Decision Brief 作为本次更新的证据状态权威。
-- 只保留仍被当前事实或结构化证据支持的 active 结论。
+- 只保留被 direct_evidence、structured_status 或已验证 active claim 支持的 active 结论。
+- agent_claims 默认是未验证叙述；除非有独立证据支持，不得写入核心诊断。
+- 如果新报告中的 claim 命中 forbidden_or_refuted_claims 或已知 schema guard，不得吸收到 active memory；必要时只记录为 rejected/unverified。
 - 如果新报告、brief 或新证据削弱了旧判断，请降级、删除，或明确标记为已失效。
 - 不要把历史报告中的 claim 压缩进 standing memory，除非它仍被当前证据支持。
 - 关键数值或状态判断应尽量引用 evidence refs、source cycle id 或结构化 source id。
@@ -689,13 +693,18 @@ export async function updateStandingMemoryWithAi({
       char_limit: maxChars,
       token_budget_hint: `fixed prompt region, max ${maxChars} characters`,
       text,
-      evidence_refs: reportContext.temporal_decision_brief?.current_facts
+      evidence_refs: [
+        ...(reportContext.temporal_decision_brief?.direct_evidence ?? []),
+        ...(reportContext.temporal_decision_brief?.structured_status ?? []),
+      ]
         ?.map((fact) => fact?.source?.id)
         .filter(Boolean)
         .slice(0, 50) ?? [],
       memory_policy: {
         standing_memory_role: 'active_claim_cache',
         evidence_precedence: reportContext.temporal_decision_brief?.evidence_policy?.precedence ?? [],
+        forbidden_claim_handling: 'reject_from_active_memory',
+        agent_claim_handling: 'unverified_until_independently_supported',
         source_cycle_id: cycleId,
       },
     });

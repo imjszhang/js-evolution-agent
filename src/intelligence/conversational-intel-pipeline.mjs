@@ -19,6 +19,10 @@ import {
   buildDecideUserPrompt,
   buildReportUserPrompt,
 } from './conversation-prompts.mjs';
+import {
+  buildObservationEvidenceGuard,
+  formatObservationEvidenceGuard,
+} from './observation-guard.mjs';
 import { persistPhase1ConversationContext } from './conversation-context.mjs';
 import {
   formatOperatorBriefsForPrompt,
@@ -137,6 +141,10 @@ function safeQueueSummary(queue) {
   }
 }
 
+function appendObservationGuard(rules, guardText) {
+  return [rules || '', guardText || ''].filter(Boolean).join('\n\n');
+}
+
 function buildStandingMemoryExtraContext({
   analysis,
   actions,
@@ -237,6 +245,8 @@ export class ConversationalIntelligencePipeline {
         : goalsText;
       const rules = this.engine.loadRules();
       const humanGuidance = this.engine.guidanceReader.readGuidance();
+      const observationGuard = buildObservationEvidenceGuard({ subject: this.runtime.subject });
+      const observationGuardText = formatObservationEvidenceGuard(observationGuard);
       const operatorBriefRead = readPendingOperatorBriefs(this.runtime.runtimeRoot);
       const operatorBriefs = operatorBriefRead.briefs;
       const operatorBriefsContext = summarizeOperatorBriefsForContext(operatorBriefs);
@@ -255,7 +265,7 @@ export class ConversationalIntelligencePipeline {
         host: this.host,
         evolutionLogger: logger,
         goalsText: observeGoalsText,
-        rules,
+        rules: appendObservationGuard(rules, observationGuardText),
         projectRoot: this.projectRoot,
         logger: this.host?.logger,
       });
