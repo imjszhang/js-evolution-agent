@@ -121,6 +121,31 @@ flowchart TD
 
 新的目标不是让模型“更谨慎一点”，而是让它很难把旧幻觉重新包装成当前事实。
 
+### 第三阶段：把治理语言压缩成 Seen / Inferred / Remembered
+
+第二阶段之后，系统的证据污染明显减少，但另一个问题开始显现：治理术语变多了。
+
+`Temporal Decision Brief` 里有 `direct_evidence`、`structured_status`、`agent_claims`、`historical_claims`、`refuted_or_weakened_claims`、`unverified_claims`。`Observation Evidence Guard` 又有自己的 schema guard 和 forbidden claim 语言。`standing_memory` 更新协议也在讲 active claim、verified claim、agent claim。
+
+这些词都对，但系统开始变得像在维护一套复杂的“事实法院”。
+
+用户指出一个关键约束：不是所有事实都能靠代码证明。继续扩大 claim ledger 或 forbidden 列表，可能会把系统带向过度工程化。于是第三阶段回到第一性原理：
+
+真正要避免的不是“所有 claim 都必须被证明”。
+
+真正要避免的是把“不知道”写成“知道”。
+
+因此第三阶段把证据治理统一成四栏：
+
+| 栏位 | 含义 | 使用规则 |
+| --- | --- | --- |
+| `seen` | 本轮或近期由文件、API、结构化记录直接看到的东西 | 可以当事实使用 |
+| `inferred` | 基于 `seen` 推断出的当前判断 | 必须引用 `seen`，并说明反证条件 |
+| `remembered` | 历史报告、日记、`standing_memory`、agent summary 中说过的内容 | 只能当线索或背景 |
+| `do_not_treat_as_seen` | 已证伪、禁止复活、或不能当直接事实的说法 | 不得作为事实或行动前提 |
+
+这不是推翻前两阶段，而是给它们换一套更容易被模型和人类共同遵守的语言。
+
 ---
 
 ## 4. 实现要点
@@ -172,6 +197,33 @@ standing memory 更新也变成基于 brief 的 active 记忆维护：只保留�
 
    其中自然语言 summary 进入 `agent_claims`，不再默认是事实。
 
+### 第三阶段简化实现
+
+第三阶段没有删除旧字段，也没有继续扩展大型 claim ledger。它做的是兼容式收敛：旧结构继续存在，新上下文优先使用 Seen / Inferred / Remembered 语言。
+
+| 文件 | 第三阶段变化 |
+| --- | --- |
+| [`src/intelligence/decision-brief.mjs`](../../src/intelligence/decision-brief.mjs) | 在 TDB 中新增 `seen`、`inferred`、`remembered`、`do_not_treat_as_seen` 兼容视图；`seen` 来自 `direct_evidence` 和 `structured_status`，`remembered` 来自 agent/historical/unverified claims |
+| [`src/intelligence/conversation-prompts.mjs`](../../src/intelligence/conversation-prompts.mjs) | report/decide prompt 改为先读 `seen`，再读 `inferred`，最后读 `remembered`；Observation Report 明确归入 remembered/lead material |
+| [`src/intelligence/observation-guard.mjs`](../../src/intelligence/observation-guard.mjs) | 保留 worker-state forbidden fields 等硬 guard，但文案收敛为 Seen / Inferred / Remembered 分类规则 |
+| [`src/intelligence/report-builder.mjs`](../../src/intelligence/report-builder.mjs) | `standing_memory` 更新协议改为固定四节：Seen、Inferred、Remembered、Do Not Treat As Seen |
+| [`test/intelligence.test.mjs`](../../test/intelligence.test.mjs) | 验证 TDB 三栏视图存在，并确认 receipt summary 进入 remembered 而不是 seen |
+| [`test/conversational-intel-pipeline.test.mjs`](../../test/conversational-intel-pipeline.test.mjs) | 验证 observe/report/memory prompt 都包含三栏语言 |
+
+数据流也变得更直观：
+
+```mermaid
+flowchart TD
+  records["Files, Receipts, Events"] --> tdb["Temporal Decision Brief"]
+  tdb --> seen["Seen"]
+  tdb --> remembered["Remembered"]
+  tdb --> blocked["Do Not Treat As Seen"]
+  seen --> inferred["Inferred by Report and Decide"]
+  inferred --> memory["Standing Memory"]
+  remembered --> memory
+  blocked --> memory
+```
+
 ---
 
 ## 5. 验证与测试
@@ -219,6 +271,29 @@ npm test
 - report prompt 中 `Temporal Decision Brief` 必须出现在 `Model Observation Claims` 之前。
 - receipt summary 中即使写了 `worker-state.json.remote.matchCount is 4127`，也只能进入 `agent_claims`，不能进入 `current_facts`。
 
+第三阶段简化实现后再次运行：
+
+```bash
+npm test
+```
+
+结果：4 个测试文件、187 个测试全部通过。
+
+新增覆盖点包括：
+
+- TDB 包含 `seen`、`remembered`、`do_not_treat_as_seen`。
+- receipt/probe summary 这类自然语言 claim 不进入 `seen`，只进入 `remembered`。
+- observe prompt 包含 `Seen / Inferred / Remembered`。
+- report prompt 和 standing memory prompt 都使用 Seen / Inferred / Remembered 语言。
+
+随后运行静态诊断：
+
+```bash
+ReadLints
+```
+
+结果：相关改动文件无 linter 错误。
+
 ---
 
 ## 6. 后续演化
@@ -247,6 +322,17 @@ npm test
 3. **让 Claim Ledger 记录“幻觉复活”**  
    不仅记录 claim 当前状态，还要记录 `last_seen_cycle`。如果同一个 forbidden claim 多轮复活，系统应该升级为管道缺陷，而不是每轮重新发现。
 
+第三阶段之后，后续重点再次收敛：
+
+1. **观察三栏语言是否真的降低记忆污染**  
+   接下来可以继续跑多轮 `agentank-tank` 进化，重点检查 `standing_memory` 是否仍会把 remembered 线索写成 seen 事实。
+
+2. **让日记也采用同一套三栏语言**  
+   当前 report/decide/observe/memory 已经统一，日记生成仍可以进一步消费 TDB 的 `seen`、`inferred`、`remembered`，避免复盘文本重新混淆证据状态。
+
+3. **少加规则，多看失败样本**  
+   第三阶段的原则是不再轻易扩展 forbidden 列表。只有当某类错误反复复活，并且能被稳定描述时，才把它沉淀为硬 guard。
+
 ---
 
 ## 附：本轮对话问题—思考—方案—执行对照
@@ -254,7 +340,7 @@ npm test
 | 阶段 | 内容 |
 | --- | --- |
 | 问题 | 进化工作流调用多篇历史内容时，没有充分注明时间，也没有明确要求按最新结论裁决，导致旧结论可能继续污染后续轮次 |
-| 思考 | 第一性原理下，持续演化系统不能依赖语言连续性维持记忆，而要依赖证据状态维持记忆；20 轮后进一步确认污染源在 observe 阶段更早出现 |
-| 方案 | 第一阶段新增 `Temporal Decision Brief`；第二阶段新增 `Observation Evidence Guard`，并把 Observation Report 降级为模型 claim |
-| 执行 | 新增 `decision-brief` 和 `observation-guard`，接入 observe/report/decide/memory 链路，降权历史 Markdown 和 receipt summary，收紧 standing memory，并预留 `claim_ledger` |
-| 验证 | `ReadLints` 无错误；第一阶段 `npm test` 185 项通过，第二阶段 `npm test` 187 项通过 |
+| 思考 | 第一性原理下，持续演化系统不能依赖语言连续性维持记忆，而要依赖证据状态维持记忆；20 轮后进一步确认污染源在 observe 阶段更早出现；继续加治理术语又会让系统过度复杂 |
+| 方案 | 第一阶段新增 `Temporal Decision Brief`；第二阶段新增 `Observation Evidence Guard`，并把 Observation Report 降级为模型 claim；第三阶段统一为 Seen / Inferred / Remembered / Do Not Treat As Seen |
+| 执行 | 新增 `decision-brief` 和 `observation-guard`，接入 observe/report/decide/memory 链路，降权历史 Markdown 和 receipt summary，收紧 standing memory，并预留 `claim_ledger`；随后在 TDB、prompt、observe guard、standing memory 中统一三栏语言 |
+| 验证 | `ReadLints` 无错误；第一阶段 `npm test` 185 项通过，第二阶段和第三阶段 `npm test` 187 项通过 |

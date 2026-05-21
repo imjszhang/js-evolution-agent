@@ -606,15 +606,12 @@ Update the memory so the next cycle can understand the global situation quickly.
 Rules:
 - Return only the new standing memory text. No code fences.
 - Keep it under ${maxChars} characters.
-- Treat the Temporal Decision Brief as the evidence-state authority for this update.
-- Preserve only active conclusions that are supported by direct_evidence, structured_status, or verified active claims.
-- Treat agent_claims as unverified until independently supported; do not put them in core diagnosis as facts.
-- Reject any new report claim that matches forbidden_or_refuted_claims or known schema guards. Record it only as rejected/unverified if needed.
-- Downgrade, remove, or explicitly mark stale claims when the new report, brief, or evidence weakens them.
-- Do not compress historical report claims into standing memory unless they remain supported by current evidence.
-- Important numeric or status claims should cite evidence refs, source cycle ids, or structured source ids when available.
-- Include a short section for refuted/superseded claims only when it helps prevent the next cycle from reviving them.
-- Track active goal rationale, durable trends, risks, unresolved hypotheses, and useful evidence refs.
+- Use exactly these sections: Seen, Inferred, Remembered, Do Not Treat As Seen.
+- Seen may only use Temporal Decision Brief seen items.
+- Inferred must cite Seen source ids and include what would overturn the judgement.
+- Remembered is background only; do not phrase it as current fact.
+- Do Not Treat As Seen preserves refuted, stale, forbidden, or repeatedly misleading claims.
+- Important numeric or status claims should cite source ids when available.
 - Missing-path, ENOENT, or blocked probe evidence must stay qualified by execution_root/resource_scope/resource_kind. Do not turn "path missing under root X" into "module missing" unless X is the authoritative root for that resource.
 
 === Previous Standing Memory ===
@@ -634,15 +631,12 @@ ${contextJson}`;
 规则：
 - 只返回新版 standing memory 正文，不要代码围栏。
 - 总长度必须控制在 ${maxChars} 字符以内。
-- 把 Temporal Decision Brief 作为本次更新的证据状态权威。
-- 只保留被 direct_evidence、structured_status 或已验证 active claim 支持的 active 结论。
-- agent_claims 默认是未验证叙述；除非有独立证据支持，不得写入核心诊断。
-- 如果新报告中的 claim 命中 forbidden_or_refuted_claims 或已知 schema guard，不得吸收到 active memory；必要时只记录为 rejected/unverified。
-- 如果新报告、brief 或新证据削弱了旧判断，请降级、删除，或明确标记为已失效。
-- 不要把历史报告中的 claim 压缩进 standing memory，除非它仍被当前证据支持。
-- 关键数值或状态判断应尽量引用 evidence refs、source cycle id 或结构化 source id。
-- 只有在能防止下一轮复活旧错误时，才保留一个简短的已证伪/已替代结论小节。
-- 记录当前目标理由、长期趋势、风险、未验证假设，以及有用的 evidence refs。
+- 固定使用四个小节：Seen、Inferred、Remembered、Do Not Treat As Seen。
+- Seen 只能使用 Temporal Decision Brief 的 seen 项。
+- Inferred 必须引用 Seen 的 source id，并写明什么证据会推翻该判断。
+- Remembered 只能作为背景，不得写成当前事实。
+- Do Not Treat As Seen 保留已证伪、过期、禁止复活或反复误导的说法。
+- 关键数值或状态判断应尽量引用 source id。
 - 缺失路径、ENOENT 或 blocked 探针证据必须保留 execution_root/resource_scope/resource_kind 边界；除非该 root 是该资源的权威 root，不得把「root X 下 path 不存在」升级为「模块缺失」「机制未实现」「写入冻结」。
 
 === 旧 Standing Memory ===
@@ -701,10 +695,9 @@ export async function updateStandingMemoryWithAi({
         .filter(Boolean)
         .slice(0, 50) ?? [],
       memory_policy: {
-        standing_memory_role: 'active_claim_cache',
+        standing_memory_role: 'seen_inferred_remembered_cache',
         evidence_precedence: reportContext.temporal_decision_brief?.evidence_policy?.precedence ?? [],
-        forbidden_claim_handling: 'reject_from_active_memory',
-        agent_claim_handling: 'unverified_until_independently_supported',
+        sections: ['Seen', 'Inferred', 'Remembered', 'Do Not Treat As Seen'],
         source_cycle_id: cycleId,
       },
     });

@@ -249,12 +249,16 @@ describe('ConversationalIntelligencePipeline', () => {
     expect(result.conversation_context_path).toBeTruthy();
     expect(messageCalls).toHaveLength(2);
     expect(chatCalls[0]).toContain('Observation Evidence Guard');
+    expect(chatCalls[0]).toContain('Seen / Inferred / Remembered');
     expect(chatCalls[0]).toContain('worker-state.json.remote.*');
     expect(chatCalls[0]).toContain('json_pointer');
     expect(messageCalls[0][1].content).toContain('pre_analyze_decide_report');
     expect(messageCalls[0][1].content).toContain('"decision_queue"');
     expect(messageCalls[0][1].content).not.toContain('decisions_queued');
     expect(messageCalls[0][1].content.indexOf('## Temporal Decision Brief')).toBeLessThan(messageCalls[0][1].content.indexOf('## Model Observation Claims'));
+    expect(messageCalls[0][1].content).toContain('Seen');
+    expect(messageCalls[0][1].content).toContain('Inferred');
+    expect(messageCalls[0][1].content).toContain('Remembered');
     expect(messageCalls[1].map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user']);
     expect(messageCalls[1][2].content).toContain('情报报告');
 
@@ -267,6 +271,9 @@ describe('ConversationalIntelligencePipeline', () => {
 
     const memoryPrompt = chatCalls.find((message) => message.includes('固定容量 standing memory'));
     expect(memoryPrompt).toContain('post_analyze_decide');
+    expect(memoryPrompt).toContain('Seen');
+    expect(memoryPrompt).toContain('Inferred');
+    expect(memoryPrompt).toContain('Do Not Treat As Seen');
     expect(memoryPrompt).toContain('record_observation');
     expect(store.readStandingMemory().text).toContain('长期态势');
 

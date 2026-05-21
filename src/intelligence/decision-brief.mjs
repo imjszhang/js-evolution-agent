@@ -261,6 +261,30 @@ function splitClaims(claims) {
   return out;
 }
 
+function toSeenItem(item) {
+  return {
+    ...item,
+    epistemic_role: 'seen',
+    use_as: 'fact',
+  };
+}
+
+function toRememberedItem(item) {
+  return {
+    ...item,
+    epistemic_role: 'remembered',
+    use_as: 'lead_not_fact',
+  };
+}
+
+function toDoNotTreatAsSeenItem(item) {
+  return {
+    ...item,
+    epistemic_role: 'do_not_treat_as_seen',
+    use_as: 'blocked_from_fact',
+  };
+}
+
 function sourceOrdering(context) {
   const sources = [
     ['action_receipts', context.action_receipts, 'structured_machine_record'],
@@ -313,6 +337,16 @@ export function buildTemporalDecisionBrief(reportContext = {}, {
     ...reviewClaim(reportContext.latest_review),
   ];
   const split = splitClaims(claims);
+  const seen = [
+    ...directEvidence.map(toSeenItem),
+    ...structuredStatuses.map(toSeenItem),
+  ];
+  const remembered = [
+    ...agentClaims.map(toRememberedItem),
+    ...split.historical_claims.map(toRememberedItem),
+    ...split.unverified_claims.map(toRememberedItem),
+  ];
+  const doNotTreatAsSeen = split.refuted_or_weakened_claims.map(toDoNotTreatAsSeenItem);
 
   return {
     schema_version: 1,
@@ -321,8 +355,12 @@ export function buildTemporalDecisionBrief(reportContext = {}, {
     namespace: reportContext.namespace ?? null,
     current_cycle: currentCycle,
     evidence_policy: {
-      purpose: 'Provide current decision state before reading historical narrative.',
+      purpose: 'Separate what was seen from what was inferred or remembered.',
       precedence: [
+        'seen',
+        'inferred_from_seen',
+        'remembered_as_context',
+        'do_not_treat_as_seen',
         'raw_or_direct_file_evidence',
         'structured_machine_record',
         'active_verified_claim',
@@ -330,12 +368,17 @@ export function buildTemporalDecisionBrief(reportContext = {}, {
         'operator_intent',
       ],
       rules: [
-        'Treat standing_memory as a cache, not an authority.',
-        'Treat historical reports as historical claims, not current facts.',
-        'Do not promote unverified, stale, or refuted claims into current facts.',
-        'When claims conflict, prefer newer structured evidence over older model summaries.',
+        'Seen may be used as fact.',
+        'Inferred must cite Seen and state what would overturn it.',
+        'Remembered is context only, not fact.',
+        'Do Not Treat As Seen must not be revived as fact unless new Seen evidence directly supports it.',
+        'When sources conflict, Seen overrides Remembered.',
       ],
     },
+    seen: seen.slice(0, itemLimit * 3),
+    inferred: [],
+    remembered: remembered.slice(0, itemLimit * 4),
+    do_not_treat_as_seen: doNotTreatAsSeen.slice(0, itemLimit * 2),
     direct_evidence: directEvidence.slice(0, itemLimit * 2),
     structured_status: structuredStatuses.slice(0, itemLimit * 2),
     agent_claims: agentClaims.slice(0, itemLimit * 3),

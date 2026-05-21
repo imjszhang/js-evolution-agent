@@ -93,6 +93,9 @@ describe('evidence guards and decision brief', () => {
     });
 
     expect(JSON.stringify(brief.current_facts)).not.toContain('remote.matchCount');
+    expect(JSON.stringify(brief.seen)).not.toContain('remote.matchCount');
+    expect(JSON.stringify(brief.remembered)).toContain('remote.matchCount');
+    expect(brief.do_not_treat_as_seen).toEqual([]);
     expect(JSON.stringify(brief.structured_status)).toContain('completed');
     expect(JSON.stringify(brief.agent_claims)).toContain('remote.matchCount');
   });
@@ -102,6 +105,7 @@ describe('evidence guards and decision brief', () => {
     const text = formatObservationEvidenceGuard(guard);
 
     expect(text).toContain('Observation Evidence Guard');
+    expect(text).toContain('Seen / Inferred / Remembered');
     expect(text).toContain('worker-state.json.remote.*');
     expect(text).toContain('json_pointer');
     expect(text).toContain('standing_memory.json');
