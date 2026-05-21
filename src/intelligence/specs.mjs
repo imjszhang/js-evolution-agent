@@ -65,5 +65,11 @@ export const INTELLIGENCE_SPECS = [
     subdir: 'memory',
     filename: 'standing_memory.json',
   }),
+  new DataSourceSpec({
+    name: 'claim_ledger',
+    description: 'Append-only lifecycle records for model-derived claims and their evidence status.',
+    storageType: 'append_jsonl',
+    filename: 'claim-ledger.jsonl',
+  }),
 ];
 

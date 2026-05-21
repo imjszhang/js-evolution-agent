@@ -162,6 +162,19 @@ export class IntelligenceStore {
     }));
   }
 
+  recordClaimLedgerEntry(entry) {
+    return this.engine.ingest('claim_ledger', redactSecrets(withId({
+      recorded_at: new Date().toISOString(),
+      status: 'unverified',
+      evidence_refs: [],
+      ...entry,
+    }, 'claim')));
+  }
+
+  readClaimLedger({ limit = 50 } = {}) {
+    return this.engine.readSource('claim_ledger', { limit });
+  }
+
   readRecentIntel({ days = 7, limit = 20 } = {}) {
     return this.engine.readSource('intel_observations', { days }).slice(0, limit);
   }

@@ -12,6 +12,10 @@ function formatAgentDocs(agentContextDocs = []) {
   ].filter(Boolean).join('\n\n')).join('\n\n---\n\n');
 }
 
+function briefJson(reportContext) {
+  return clip(JSON.stringify(reportContext?.temporal_decision_brief || {}, null, 2), 200000);
+}
+
 export function buildConversationSystemPrompt({ agentContextDocs = [], actionRegistry = null } = {}) {
   const actions = actionRegistry && typeof actionRegistry.toPromptSection === 'function'
     ? actionRegistry.toPromptSection()
@@ -55,10 +59,12 @@ Stage: pre_analyze_decide_report. Evaluate only the observations, historical int
 
 Reading order and constraints:
 1. First, read the authoritative documents already provided in the system message. They outrank all intelligence material.
-2. Then read standing_memory. It is fixed-capacity global situation memory; use it for continuity, but do not let it override new evidence.
-3. Then read active goals, goal history, current cycle facts, recent intelligence, and report history.
+2. Then read the Temporal Decision Brief. It is the current evidence-state summary and must be used before historical narrative.
+3. Then read standing_memory. It is fixed-capacity global situation memory; use it for continuity, but treat it as a cache, not an authority.
+4. Then read active goals, goal history, current cycle facts, recent intelligence, and report history.
 4. Then read Operator Intent Briefs. They are one-cycle operator intent, not verified evidence or standing memory.
-5. If new evidence weakens or overturns standing_memory, say so in the report.
+5. If new evidence weakens or overturns standing_memory or historical reports, say so in the report.
+6. When sources conflict, use this precedence: raw/direct file evidence > structured machine records > active verified claims > historical model summaries > operator intent.
 
 Output constraints:
 - Output pure Markdown; do not wrap the whole document in code fences.
@@ -66,6 +72,7 @@ Output constraints:
 - Cyber-Taoist terms may be used as written in the documents, but state claims with facts and traceable ids instead of metaphor.
 - Do not invent ids, counts, or events not present in the machine context.
 - Treat Operator Intent Briefs as requests to verify or focus attention. Do not state their claims as facts until supported by machine evidence.
+- Treat historical reports as historical claims, not current facts. Do not promote refuted, stale, or unverified claims into current facts.
 - Cover current cycle facts, long-term trends, evidence gaps, risks, next-cycle recommendations, and how standing_memory should be updated.
 - Include an explicit Cyber-Taoist analysis section. It must interpret the evidence through the authoritative documents, including the current evolutionary phase, law/transaction/niche signals, and fractal keep/break/probe boundaries when the provided evidence supports them.
 - Prefer traceable ids where relevant, such as observation, probe_result, goal_event, action_receipt, intel_report, or evolution_event.
@@ -97,6 +104,14 @@ ${intelligenceContext || '(none)'}
 
 ${observationReport || '(none)'}
 
+## Temporal Decision Brief
+
+Read this before the full Machine Context. It summarizes current evidence state, source freshness, and historical claims that should not be promoted without verification:
+
+\`\`\`json
+${briefJson(reportContext)}
+\`\`\`
+
 ## Machine Context
 
 \`\`\`json
@@ -110,10 +125,12 @@ ${clip(JSON.stringify(reportContext || {}, null, 2), 500000)}
 
 阅读顺序与约束：
 1. 先读 system message 中已提供的权威文献，它们高于所有情报材料。
-2. 再读 standing_memory；它是固定容量的整体态势记忆，可以帮助保持连续性，但不能覆盖新的证据。
-3. 再读当前目标、目标历史、本轮事实、近期完整情报和历史报告索引。
-4. 再读 Operator Intent Briefs。它们是单轮人工意图，不是已验证证据，也不是 standing_memory。
-5. 若新证据推翻或削弱 standing_memory 中的旧判断，请在报告中指出。
+2. 再读 Temporal Decision Brief；它是当前证据状态摘要，必须先于历史叙事使用。
+3. 再读 standing_memory；它是固定容量的整体态势缓存，可以帮助保持连续性，但不是权威事实源。
+4. 再读当前目标、目标历史、本轮事实、近期完整情报和历史报告索引。
+5. 再读 Operator Intent Briefs。它们是单轮人工意图，不是已验证证据，也不是 standing_memory。
+6. 若新证据推翻或削弱 standing_memory 或历史报告中的旧判断，请在报告中指出。
+7. 多源冲突时按以下优先级裁决：原始/直接文件证据 > 结构化机器记录 > 当前已验证 claim > 历史模型总结 > 人工意图。
 
 要求：
 - 输出纯 Markdown，不要使用最外层代码围栏。
@@ -122,6 +139,7 @@ ${clip(JSON.stringify(reportContext || {}, null, 2), 500000)}
 - Cyber-Taoist 专有名词可照文献原样引用，但必须用事实与可追溯 id 陈述，勿用玄学修辞替代证据。
 - 不要捏造机器上下文中没有的 id、计数或事件。
 - 将 Operator Intent Briefs 视为核实请求或注意力偏好；除非已有机器证据支持，不得把其中 claim 表述为事实。
+- 将历史报告视为 historical claim，而不是当前事实源；不得把 refuted、stale、unverified 的 claim 写成当前事实。
 - 覆盖本轮观察、长期趋势、证据不足、风险、下一轮建议，以及 standing_memory 应如何更新的要点。
 - 对缺失路径、ENOENT、blocked 探针等证据，必须引用 execution_root/resource_scope/resource_kind；除非该 root 是资源权威 root，不得升级为「模块缺失」「机制未实现」「写入冻结」。
 - 必须包含明确的 Cyber-Taoist 分析章节。该章节需依据权威文献解释当前证据，至少覆盖当前进化阶段、法则/交易/生态位信号，以及在证据支持时的分形守/破/探针边界。
@@ -154,6 +172,14 @@ ${intelligenceContext || '(none)'}
 
 ${observationReport || '(none)'}
 
+## Temporal Decision Brief
+
+先读这一节，再读完整 Machine Context。它汇总当前证据状态、来源新旧顺序，以及不能直接升级为事实的历史 claim：
+
+\`\`\`json
+${briefJson(reportContext)}
+\`\`\`
+
 ## Machine Context
 
 \`\`\`json
@@ -182,6 +208,9 @@ export function buildDecideUserPrompt({
 重要约束：
 - 只能输出 JSON 对象，不要 Markdown，不要代码围栏。
 - 报告中的判断可以作为分析线索，但 run 必须能追溯到机器上下文、观察报告、目标或历史证据。
+- 必须优先使用 Temporal Decision Brief 中的 current_facts、source_ordering 和 claim 状态；历史报告和 standing_memory 是历史 claim/缓存，不是权威事实源。
+- 若 brief 标记某个 claim 为 refuted_or_weakened 或 unverified，不得基于它调度执行动作，除非动作本身是为了重新验证它。
+- 多源冲突时按以下优先级裁决：原始/直接文件证据 > 结构化机器记录 > 当前已验证 claim > 历史模型总结 > 人工意图。
 - 默认输出 \`type: "agent_run"\`，并在 \`params.run_spec\` 中描述一次自主 agent 运行。不要再把主体业务步骤拆成 \`sync/generate/simulate/evaluate/publish\` 之类的 action 菜单。
 - \`params.run_spec.primary_cwd_kind\` 是一等字段。常见值：主体日记/records/daemon/goals/intelligence 使用 \`subject_runtime\`；JEA 源码/policies/journal 使用 \`source_root\`；主体外部项目使用 subject policy 中声明的自定义 scope。
 - 每次 run 只能有一个 primary cwd。需要参考其他 root 时，使用 \`additional_directory_kinds\` 或把摘要写入 context；不要让一次 run 无差别跨多个项目根写入。
@@ -226,6 +255,12 @@ ${intelligenceContext || '(none)'}
 ## Observation Report
 
 ${observationReport || '(none)'}
+
+## Temporal Decision Brief
+
+\`\`\`json
+${briefJson(reportContext)}
+\`\`\`
 
 ## Machine Context
 

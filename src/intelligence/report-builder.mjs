@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { buildTemporalDecisionBrief } from './decision-brief.mjs';
 import { redactSecrets } from './redaction.mjs';
 
 const DEFAULT_EVIDENCE_LIMITS = {
@@ -143,7 +144,7 @@ export function gatherEvidence(store, opts = {}) {
 
 function readRecentReportMarkdowns(reportRecords, { limit, charLimit } = {}) {
   return asRecords(reportRecords)
-    .slice(-limit)
+    .slice(0, limit)
     .map((record) => {
       const mdPath = record?.md_path ?? null;
       if (!mdPath || !existsSync(mdPath)) return null;
@@ -157,6 +158,20 @@ function readRecentReportMarkdowns(reportRecords, { limit, charLimit } = {}) {
       };
     })
     .filter(Boolean);
+}
+
+function historicalReportReferences(reportRecords, { limit } = {}) {
+  return asRecords(reportRecords)
+    .slice(0, limit)
+    .map((record) => ({
+      id: record.id ?? null,
+      cycle_id: record.cycle_id ?? null,
+      generated_at: record.generated_at ?? record.recorded_at ?? null,
+      md_path: record.md_path ?? null,
+      tldr: record.tldr ?? '',
+      source_role: 'historical_model_report_reference',
+      use_policy: 'Use as historical claim context only; verify against Temporal Decision Brief and structured evidence before treating as current fact.',
+    }));
 }
 
 function normalizeStandingMemory(memory, charLimit) {
@@ -238,6 +253,9 @@ export function gatherReportContext({
       : [],
     latest_review: store?.readLatestReview ? safeRead(() => store.readLatestReview(), null) : null,
     intel_reports_index: reportIndex,
+    historical_report_references: historicalReportReferences(reportIndex, {
+      limit: limits.reportMarkdownLimit,
+    }),
     recent_report_markdowns: readRecentReportMarkdowns(reportIndex, {
       limit: limits.reportMarkdownLimit,
       charLimit: limits.reportMarkdownCharLimit,
@@ -564,6 +582,7 @@ function buildStandingMemoryUpdatePrompt({
   extraContext = null,
 }) {
   const contextJson = clipText(JSON.stringify({
+    temporal_decision_brief: reportContext.temporal_decision_brief,
     current_cycle: reportContext.current_cycle,
     source_counts: reportContext.source_counts,
     active_goals: reportContext.active_goals,
@@ -575,6 +594,7 @@ function buildStandingMemoryUpdatePrompt({
     action_receipts: reportContext.action_receipts,
     latest_review: reportContext.latest_review,
     intel_reports_index: reportContext.intel_reports_index,
+    historical_report_references: reportContext.historical_report_references,
     extra_context: extraContext,
   }, null, 2), 500000);
 
@@ -586,8 +606,12 @@ Update the memory so the next cycle can understand the global situation quickly.
 Rules:
 - Return only the new standing memory text. No code fences.
 - Keep it under ${maxChars} characters.
-- Preserve stable conclusions that are still supported.
-- Downgrade or remove stale claims when the new report or evidence weakens them.
+- Treat the Temporal Decision Brief as the evidence-state authority for this update.
+- Preserve only active conclusions that are still supported by current facts or structured evidence.
+- Downgrade, remove, or explicitly mark stale claims when the new report, brief, or evidence weakens them.
+- Do not compress historical report claims into standing memory unless they remain supported by current evidence.
+- Important numeric or status claims should cite evidence refs, source cycle ids, or structured source ids when available.
+- Include a short section for refuted/superseded claims only when it helps prevent the next cycle from reviving them.
 - Track active goal rationale, durable trends, risks, unresolved hypotheses, and useful evidence refs.
 - Missing-path, ENOENT, or blocked probe evidence must stay qualified by execution_root/resource_scope/resource_kind. Do not turn "path missing under root X" into "module missing" unless X is the authoritative root for that resource.
 
@@ -608,8 +632,12 @@ ${contextJson}`;
 规则：
 - 只返回新版 standing memory 正文，不要代码围栏。
 - 总长度必须控制在 ${maxChars} 字符以内。
-- 保留仍被证据支持的稳定结论。
-- 如果新报告或新证据削弱了旧判断，请降级或删除旧判断。
+- 把 Temporal Decision Brief 作为本次更新的证据状态权威。
+- 只保留仍被当前事实或结构化证据支持的 active 结论。
+- 如果新报告、brief 或新证据削弱了旧判断，请降级、删除，或明确标记为已失效。
+- 不要把历史报告中的 claim 压缩进 standing memory，除非它仍被当前证据支持。
+- 关键数值或状态判断应尽量引用 evidence refs、source cycle id 或结构化 source id。
+- 只有在能防止下一轮复活旧错误时，才保留一个简短的已证伪/已替代结论小节。
 - 记录当前目标理由、长期趋势、风险、未验证假设，以及有用的 evidence refs。
 - 缺失路径、ENOENT 或 blocked 探针证据必须保留 execution_root/resource_scope/resource_kind 边界；除非该 root 是该资源的权威 root，不得把「root X 下 path 不存在」升级为「模块缺失」「机制未实现」「写入冻结」。
 
@@ -661,7 +689,15 @@ export async function updateStandingMemoryWithAi({
       char_limit: maxChars,
       token_budget_hint: `fixed prompt region, max ${maxChars} characters`,
       text,
-      evidence_refs: [],
+      evidence_refs: reportContext.temporal_decision_brief?.current_facts
+        ?.map((fact) => fact?.source?.id)
+        .filter(Boolean)
+        .slice(0, 50) ?? [],
+      memory_policy: {
+        standing_memory_role: 'active_claim_cache',
+        evidence_precedence: reportContext.temporal_decision_brief?.evidence_policy?.precedence ?? [],
+        source_cycle_id: cycleId,
+      },
     });
     return { status: written > 0 ? 'updated' : 'failed', reason: written > 0 ? null : 'write-failed' };
   } catch (e) {
@@ -694,6 +730,8 @@ export function prepareIntelReport({
   const goals = reportContext.active_goals_flat;
   const evidence = reportContext.evidence;
   const assessment = assessGoals(goals, evidence);
+  const temporalDecisionBrief = buildTemporalDecisionBrief(reportContext);
+  reportContext.temporal_decision_brief = temporalDecisionBrief;
 
   const subjectDoc = pickDoc(agentContextDocs, 'js-evolution-agent:subject:')
     || (Array.isArray(agentContextDocs) ? agentContextDocs.find((d) => d?.id?.includes(':subject:')) : null);
@@ -705,6 +743,7 @@ export function prepareIntelReport({
     goals,
     evidence,
     assessment,
+    temporalDecisionBrief,
     language,
   };
 }
@@ -730,7 +769,15 @@ export async function persistIntelReport({
   operatorBriefs = [],
 } = {}) {
   const prepared = reportContext && evidence && assessment && language
-    ? { generatedAt: generatedAt || new Date().toISOString(), reportContext, goals, evidence, assessment, language }
+    ? {
+      generatedAt: generatedAt || new Date().toISOString(),
+      reportContext,
+      goals,
+      evidence,
+      assessment,
+      temporalDecisionBrief: reportContext.temporal_decision_brief ?? buildTemporalDecisionBrief(reportContext),
+      language,
+    }
     : prepareIntelReport({
       intelResult,
       runtime,
@@ -744,6 +791,9 @@ export async function persistIntelReport({
   const cycleId = intelResult.cycle_id;
   const finalGeneratedAt = prepared.generatedAt;
   const finalReportContext = prepared.reportContext;
+  if (!finalReportContext.temporal_decision_brief) {
+    finalReportContext.temporal_decision_brief = prepared.temporalDecisionBrief ?? buildTemporalDecisionBrief(finalReportContext);
+  }
   const finalEvidence = prepared.evidence;
   const finalAssessment = prepared.assessment;
   const finalLanguage = prepared.language;

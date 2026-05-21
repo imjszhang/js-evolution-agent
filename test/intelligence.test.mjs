@@ -60,6 +60,7 @@ describe('intelligence specs', () => {
       'intel_reports',
       'goal_events',
       'standing_memory',
+      'claim_ledger',
     ]);
   });
 });
