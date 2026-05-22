@@ -4,7 +4,7 @@ import { getProjectRoot } from '../utils/project.mjs';
 import { readJsonSafe, writeJsonFile } from '../utils/files.mjs';
 import { getActiveSubjectRuntimeInfo } from '../utils/subjects.mjs';
 import { createIntelligenceStore } from '../../intelligence/store.mjs';
-import { assessGoalsWithAi } from '../../intelligence/goal-assessor.mjs';
+import { assessGoalsWithAi, normalizeProposedGoalShape } from '../../intelligence/goal-assessor.mjs';
 import { findReportRecord } from './intel.mjs';
 
 function numberFlag(flags, name, fallback) {
@@ -163,25 +163,26 @@ export function updateGoals(root = getProjectRoot(), flags = {}) {
 export function autoCalibrateGoals(root = getProjectRoot(), goalsAssessResult = null, opts = {}) {
   const assessment = goalsAssessResult?.assessment ?? null;
   const cycleId = goalsAssessResult?.report?.cycle_id ?? goalsAssessResult?.event?.cycle_id ?? opts.cycle ?? null;
+  const proposedGoal = normalizeProposedGoalShape(assessment?.proposed_goal);
   const base = {
     cycle_id: cycleId,
     previous_goal_id: null,
-    next_goal_id: goalId(assessment?.proposed_goal),
+    next_goal_id: goalId(proposedGoal),
     written: 0,
   };
   if (!assessment) return { ...base, status: 'skipped', reason: 'no_assessment' };
   if (assessment.status !== 'refine') return { ...base, status: 'skipped', reason: 'status_not_refine' };
   if (assessment.confidence !== 'high') return { ...base, status: 'skipped', reason: 'confidence_not_high' };
-  if (!assessment.proposed_goal) return { ...base, status: 'skipped', reason: 'no_proposed_goal' };
+  if (!proposedGoal) return { ...base, status: 'skipped', reason: 'no_proposed_goal' };
 
-  const validation = validateGoalShape(assessment.proposed_goal);
+  const validation = validateGoalShape(proposedGoal);
   if (!validation.valid) {
     return { ...base, status: 'skipped', reason: validation.reason, detail: validation.detail };
   }
 
   try {
     const reason = `Applied high-confidence goal refine from cycle ${cycleId ?? 'unknown'}.`;
-    const update = applyGoalObject(root, assessment.proposed_goal, {
+    const update = applyGoalObject(root, proposedGoal, {
       reason,
       evidenceRefs: goalsAssessResult?.event?.evidence_refs ?? assessment.evidence_refs ?? [],
       cycle: cycleId,

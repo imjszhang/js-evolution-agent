@@ -41,6 +41,25 @@ function hasContent(value) {
   return value != null && String(value).trim() !== '';
 }
 
+function textIncludesWriteIntent(...values) {
+  const text = values
+    .filter((value) => value != null)
+    .map((value) => (typeof value === 'string' ? value : JSON.stringify(value)))
+    .join('\n')
+    .toLowerCase();
+  return [
+    'write',
+    'save',
+    'persist',
+    'create file',
+    '落盘',
+    '写入',
+    '保存',
+    '持久化',
+    '创建文件',
+  ].some((term) => text.includes(term));
+}
+
 function asList(value, fallback = []) {
   if (value == null || value === '') return fallback;
   if (Array.isArray(value)) return value.map(String).map((item) => item.trim()).filter(Boolean);
@@ -250,6 +269,12 @@ export function validateAgentRunSpec(action = {}, ctx = {}) {
   }
   if (roots.resourceScope === RESOURCE_SCOPES.UNKNOWN && !spec.primary_cwd_kind) {
     warnings.push('resource_scope is unknown');
+  }
+  if (
+    spec.permission_profile === 'read_only'
+    && textIncludesWriteIntent(spec.intent, spec.context, spec.expected_output)
+  ) {
+    warnings.push('read_only run_spec mentions writing, saving, or persistence');
   }
 
   return {

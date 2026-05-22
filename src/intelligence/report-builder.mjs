@@ -614,8 +614,7 @@ function buildMemoryAdmission(reportContext) {
     if (item?.evidence_level === 'agent_narrative') return false;
     if (item?.source?.source_type !== 'action_receipt') return true;
     const status = String(item?.fields?.status ?? '').toLowerCase();
-    const success = item?.fields?.success;
-    return status === 'completed' || status === 'succeeded' || success === true;
+    return status === 'completed' || status === 'succeeded';
   });
   return {
     rule: 'Only memory_admission.seen may appear in the final Seen section. Everything else is not Seen.',
@@ -645,6 +644,17 @@ function buildSeenSection(reportContext) {
   return admitted
     .map((item) => `- ${item.source_address}: ${item.summary}`)
     .join('\n');
+}
+
+function buildTypedEvidenceRefs(reportContext) {
+  return buildMemoryAdmission(reportContext).seen
+    ?.map((fact) => ({
+      source_type: memorySourceType(fact.source_type),
+      source_id: fact.source_id,
+      source_address: fact.source_address,
+    }))
+    .filter((ref) => ref.source_id)
+    .slice(0, 50) ?? [];
 }
 
 function replaceMarkdownSection(markdown, heading, replacementBody) {
@@ -779,10 +789,9 @@ export async function updateStandingMemoryWithAi({
       char_limit: maxChars,
       token_budget_hint: `fixed prompt region, max ${maxChars} characters`,
       text,
-      evidence_refs: buildMemoryAdmission(reportContext).seen
-        ?.map((fact) => fact.source_id)
-        .filter(Boolean)
-        .slice(0, 50) ?? [],
+      evidence_refs: buildTypedEvidenceRefs(reportContext)
+        .map((ref) => ref.source_id),
+      typed_evidence_refs: buildTypedEvidenceRefs(reportContext),
       memory_policy: {
         standing_memory_role: 'seen_inferred_remembered_cache',
         evidence_precedence: reportContext.temporal_decision_brief?.evidence_policy?.precedence ?? [],

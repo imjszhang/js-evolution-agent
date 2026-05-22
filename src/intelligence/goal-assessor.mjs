@@ -241,11 +241,18 @@ JSON schema:
   "confidence": "low | medium | high",
   "reason": "string",
   "evidence_refs": [{ "type": "intel_report|verify_report|observation|probe_result|retrospective|goal_event|evolution_event|agent_context", "id": "string", "ref": "string" }],
-  "proposed_goal": null,
+  "proposed_goal": null | {
+    "id": "string",
+    "name": "string",
+    "intent": "string",
+    "good_signal": "string",
+    "bad_signal": "string",
+    "children": []
+  },
   "risk": "string"
 }
 
-若建议 refine/split/replace，可将 proposed_goal 填为符合文献的主体目标 JSON 草案；否则使用 null。
+若建议 refine/split/replace，可将 proposed_goal 填为符合文献的主体目标 JSON 草案；否则使用 null。proposed_goal 必须包含 id、name、intent、good_signal、bad_signal、children；即使没有子目标，也必须写 children: []。若包含子目标，每个子目标也必须使用同样结构。
 
 === 权威文献 agentContextDocs（全文，按加载顺序） ===
 ${authorityBlock}
@@ -278,11 +285,18 @@ JSON schema:
   "confidence": "low | medium | high",
   "reason": "string",
   "evidence_refs": [{ "type": "intel_report|verify_report|observation|probe_result|retrospective|goal_event|evolution_event|agent_context", "id": "string", "ref": "string" }],
-  "proposed_goal": null,
+  "proposed_goal": null | {
+    "id": "string",
+    "name": "string",
+    "intent": "string",
+    "good_signal": "string",
+    "bad_signal": "string",
+    "children": []
+  },
   "risk": "string"
 }
 
-If you recommend refine/split/replace, proposed_goal may be a draft goal JSON consistent with doctrine. Otherwise null.
+If you recommend refine/split/replace, proposed_goal may be a draft goal JSON consistent with doctrine. Otherwise null. proposed_goal must include id, name, intent, good_signal, bad_signal, and children. If there are no child goals, still write children: []. Any child goal must use the same shape.
 
 === Authority agentContextDocs (full text, loaded order) ===
 ${authorityBlock}
@@ -310,6 +324,17 @@ function extractJsonObject(text) {
   }
 }
 
+export function normalizeProposedGoalShape(goal) {
+  if (!goal || typeof goal !== 'object' || Array.isArray(goal)) return goal ?? null;
+  const hasChildren = Object.prototype.hasOwnProperty.call(goal, 'children');
+  return {
+    ...goal,
+    children: hasChildren
+      ? (Array.isArray(goal.children) ? goal.children.map(normalizeProposedGoalShape) : goal.children)
+      : [],
+  };
+}
+
 export function parseGoalAssessment(raw) {
   const parsed = extractJsonObject(raw);
   const status = VALID_STATUSES.has(parsed.status) ? parsed.status : 'insufficient_evidence';
@@ -321,7 +346,7 @@ export function parseGoalAssessment(raw) {
     confidence: refs.length ? confidence : 'low',
     reason: String(parsed.reason || 'No reason provided.'),
     evidence_refs: refs,
-    proposed_goal: parsed.proposed_goal ?? null,
+    proposed_goal: normalizeProposedGoalShape(parsed.proposed_goal),
     risk: String(parsed.risk || ''),
   };
 }

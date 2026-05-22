@@ -22,6 +22,7 @@ import {
   parseSubjectExternalRoots,
   parseSubjectResourceRules,
 } from '../src/cli/utils/subjects.mjs';
+import { validateAgentRunSpec } from '../src/actions/agent-run-spec.mjs';
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   query: vi.fn(),
@@ -1518,6 +1519,39 @@ describe('controlled action handlers', () => {
     expect(verification.metric).toBe('agent_action_result');
     expect(verification.status).toBe('partial');
     expect(verification.value.evidence_count).toBe(0);
+  });
+
+  it('warns when read_only agent_run asks to persist files', () => {
+    const ctx = makeCtx();
+    const validation = validateAgentRunSpec({
+      type: 'agent_run',
+      params: {
+        run_spec: {
+          primary_cwd_kind: 'source_root',
+          permission_profile: 'read_only',
+          intent: 'Read remote state and persist a sanitized summary.',
+          context: { constraints: ['只持久化脱敏摘要'] },
+          expected_output: ['write data/sync/remote_state_sanitized.json'],
+        },
+      },
+    }, ctx);
+
+    expect(validation.valid).toBe(true);
+    expect(validation.warnings).toContain('read_only run_spec mentions writing, saving, or persistence');
+
+    const writable = validateAgentRunSpec({
+      type: 'agent_run',
+      params: {
+        run_spec: {
+          primary_cwd_kind: 'source_root',
+          permission_profile: 'workspace_write',
+          intent: 'Read remote state and persist a sanitized summary.',
+          context: { constraints: ['只持久化脱敏摘要'] },
+          expected_output: ['write data/sync/remote_state_sanitized.json'],
+        },
+      },
+    }, ctx);
+    expect(writable.warnings).not.toContain('read_only run_spec mentions writing, saving, or persistence');
   });
 
   it('runs open-ended investigations without requiring a probe_type', async () => {

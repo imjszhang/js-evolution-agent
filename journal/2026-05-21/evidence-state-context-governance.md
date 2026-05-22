@@ -384,6 +384,36 @@ flowchart TD
 
 这不是大型 resolver，也不是 Claim Ledger。它只是把“这个 id 属于哪个数据源”写在记忆里。
 
+### 第七阶段执行契约治理
+
+第七阶段不是继续扩展证据分类，而是处理“系统已经看见问题，却无法执行落地”的断点。最新 3 轮验证后，问题从证据语义转向执行契约：
+
+- `goals_assess` 连续高置信建议 refine，但 `goals_calibrate` 因 `invalid_proposed_goal` 跳过，目标 v9 一直写不进去。
+- `standing_memory` 的 `Seen` 已有 `[source_type:id]`，但顶层 `evidence_refs` 仍是裸 id，机器消费者仍可能把 `receipt-*` 当文件名。
+- `partial` receipt 即使 `success=true` 仍可能进入 Seen，与“未完成执行不能当事实”的原则冲突。
+- 远端同步 action 声明 `permission_profile=read_only`，但任务又要求落盘脱敏摘要，权限声明和副作用不一致。
+
+用第一性原理收敛后，只保留三个执行不变量：
+
+| 不变量 | 含义 | 第七阶段实现 |
+| --- | --- | --- |
+| 契约一致 | 上游 AI 产物必须能被下游代码直接消费 | `proposed_goal` prompt 明确完整 goal shape；进入校验前只补缺失的 `children: []`，核心字段仍由强校验拒绝 |
+| 证据可重开 | 进入 Seen 的证据必须能按 source type 和 id 重新打开 | `standing_memory` 新增 `typed_evidence_refs`；`action_receipt` 只有 `completed/succeeded` 才能进入 Seen |
+| 副作用诚实 | 声明只读就不能要求写文件 | 决策 prompt 明确 `read_only` 不得落盘；`validateAgentRunSpec()` 对 read_only 写入/落盘/持久化意图给 warning |
+
+涉及文件：
+
+| 文件 | 第七阶段变化 |
+| --- | --- |
+| [`src/intelligence/goal-assessor.mjs`](../../src/intelligence/goal-assessor.mjs) | prompt 明确 `proposed_goal` 必须包含 `id/name/intent/good_signal/bad_signal/children`；新增 `normalizeProposedGoalShape()`，只补缺失的 `children: []` |
+| [`src/cli/commands/goals.mjs`](../../src/cli/commands/goals.mjs) | `autoCalibrateGoals()` 在 `validateGoalShape()` 前使用归一化后的 proposed goal，打破缺 `children` 导致的 dead-letter refine |
+| [`src/intelligence/report-builder.mjs`](../../src/intelligence/report-builder.mjs) | `buildMemoryAdmission()` 不再用 `success === true` 放行 partial receipt；写入 `typed_evidence_refs` |
+| [`src/intelligence/conversation-prompts.mjs`](../../src/intelligence/conversation-prompts.mjs) | 决策约束说明 `read_only` 只能返回 receipt/evidence，不得要求写入、落盘、保存或持久化文件 |
+| [`src/actions/agent-run-spec.mjs`](../../src/actions/agent-run-spec.mjs) | `validateAgentRunSpec()` 对 read_only 中出现写入/落盘/持久化意图的 run_spec 追加 warning |
+| [`test/cli.test.mjs`](../../test/cli.test.mjs) | 覆盖缺 `children` 的高置信 `proposed_goal` 能归一化并写入 |
+| [`test/intelligence.test.mjs`](../../test/intelligence.test.mjs) | 覆盖 `typed_evidence_refs` 与 `partial + success=true` 不进入 Seen |
+| [`test/actions.test.mjs`](../../test/actions.test.mjs) | 覆盖 `read_only` + 写入意图产生 warning，而 `workspace_write` 不产生该 warning |
+
 ---
 
 ## 5. 验证与测试
@@ -546,6 +576,37 @@ ReadLints
 
 结果：[`src/intelligence/report-builder.mjs`](../../src/intelligence/report-builder.mjs)、[`test/intelligence.test.mjs`](../../test/intelligence.test.mjs) 无 linter 错误。
 
+第七阶段执行契约治理补充了三类回归：
+
+```bash
+npm test -- test/intelligence.test.mjs test/cli.test.mjs test/actions.test.mjs
+```
+
+新增覆盖点：
+
+- 缺 `children` 的高置信 `proposed_goal` 会在写入前补 `children: []`，从而通过目标校准；缺核心字段仍然被拒绝。
+- `standing_memory` 写入 `typed_evidence_refs`，与 `Seen` 中的 `[source_type:id]` 地址一致。
+- `partial + success=true` 的 action receipt 不进入 `Seen`，只有明确 `completed/succeeded` 的 receipt 可以进入。
+- `permission_profile=read_only` 但描述中要求写入、落盘或持久化时，`validateAgentRunSpec()` 返回 warning；`workspace_write` 不触发这个 warning。
+
+结果：3 个测试文件、184 个测试全部通过。
+
+随后运行完整测试：
+
+```bash
+npm test
+```
+
+结果：4 个测试文件、193 个测试全部通过。
+
+静态诊断：
+
+```bash
+ReadLints
+```
+
+结果：[`src/intelligence/goal-assessor.mjs`](../../src/intelligence/goal-assessor.mjs)、[`src/cli/commands/goals.mjs`](../../src/cli/commands/goals.mjs)、[`src/intelligence/report-builder.mjs`](../../src/intelligence/report-builder.mjs)、[`src/intelligence/conversation-prompts.mjs`](../../src/intelligence/conversation-prompts.mjs)、[`src/actions/agent-run-spec.mjs`](../../src/actions/agent-run-spec.mjs)、[`test/cli.test.mjs`](../../test/cli.test.mjs)、[`test/intelligence.test.mjs`](../../test/intelligence.test.mjs)、[`test/actions.test.mjs`](../../test/actions.test.mjs) 无 linter 错误。
+
 ---
 
 ## 6. 后续演化
@@ -618,6 +679,17 @@ ReadLints
 3. **基于 source type 的验证是否能减少误判**  
    如果 `receipt-*` 能在 action receipts 数据源中找到，就不应再被称为“幻影文件引用”。
 
+第七阶段之后，后续重点变为执行消费：
+
+1. **确认 v9 是否能真正写入 active goals**  
+   下一轮应检查 `goals_calibrate` 是否从 `invalid_proposed_goal` 变为 `applied`，以及 `active_goals.json` 是否从 v8 更新到 v9。
+
+2. **让消费者优先使用 `typed_evidence_refs`**  
+   目前旧 `evidence_refs` 仍为兼容保留。后续代码和探针应优先读取 `typed_evidence_refs`，逐步减少裸 id 的使用。
+
+3. **把权限 warning 升级为决策反馈**  
+   当前 `read_only` 写入意图是 warning。后续可以把它反馈到决策队列或验证报告，让模型自动改成“只读 evidence”或拆出 `workspace_write` action。
+
 ---
 
 ## 附：本轮对话问题—思考—方案—执行对照
@@ -625,7 +697,7 @@ ReadLints
 | 阶段 | 内容 |
 | --- | --- |
 | 问题 | 进化工作流调用多篇历史内容时，没有充分注明时间，也没有明确要求按最新结论裁决，导致旧结论可能继续污染后续轮次 |
-| 思考 | 第一性原理下，持续演化系统不能依赖语言连续性维持记忆，而要依赖证据状态维持记忆；20 轮后进一步确认污染源在 observe 阶段更早出现；继续加治理术语又会让系统过度复杂；3 轮三栏验证后确认 prompt 语言不足以阻止污染回流；后续又确认自然语言不能被排除，问题是不能把“来源说了”写成“事实成立”；再后续发现裸 id 会让探针误把数据源记录当文件名搜索 |
-| 方案 | 第一阶段新增 `Temporal Decision Brief`；第二阶段新增 `Observation Evidence Guard`，并把 Observation Report 降级为模型 claim；第三阶段统一为 Seen / Inferred / Remembered / Do Not Treat As Seen；第四阶段把 memory Seen 改成代码层写入门禁；第五阶段把自然语言 Seen 统一为 `source claims/records` 来源摘录；第六阶段给 Seen 加 `[source_type:id]` 可重开地址 |
-| 执行 | 新增 `decision-brief` 和 `observation-guard`，接入 observe/report/decide/memory 链路，降权历史 Markdown 和 receipt summary，收紧 standing memory，并预留 `claim_ledger`；随后在 TDB、prompt、observe guard、standing memory 中统一三栏语言；在 `report-builder` 中加入 `memory_admission` 与 `enforceStandingMemorySeenGate()`；让 `goal_event`/`evolution_event` 自然语言进入 Seen 时保持来源摘录语义；最后把 Seen 输出改为 `[evolution_events:...]`、`[goal_events:...]`、`[action_receipts:...]`、`[probe_results:...]` |
-| 验证 | `ReadLints` 无错误；第一阶段 `npm test` 185 项通过，第二阶段和第三阶段 `npm test` 187 项通过，第四阶段 `npm test` 188 项通过，第五、第六阶段 `npm test` 190 项通过 |
+| 思考 | 第一性原理下，持续演化系统不能依赖语言连续性维持记忆，而要依赖证据状态维持记忆；20 轮后进一步确认污染源在 observe 阶段更早出现；继续加治理术语又会让系统过度复杂；3 轮三栏验证后确认 prompt 语言不足以阻止污染回流；后续又确认自然语言不能被排除，问题是不能把“来源说了”写成“事实成立”；再后续发现裸 id 会让探针误把数据源记录当文件名搜索；最新 3 轮则显示系统已能发现问题，但目标、memory、权限三个执行契约不能稳定消费发现 |
+| 方案 | 第一阶段新增 `Temporal Decision Brief`；第二阶段新增 `Observation Evidence Guard`，并把 Observation Report 降级为模型 claim；第三阶段统一为 Seen / Inferred / Remembered / Do Not Treat As Seen；第四阶段把 memory Seen 改成代码层写入门禁；第五阶段把自然语言 Seen 统一为 `source claims/records` 来源摘录；第六阶段给 Seen 加 `[source_type:id]` 可重开地址；第七阶段收敛为契约一致、证据可重开、副作用诚实三个执行不变量 |
+| 执行 | 新增 `decision-brief` 和 `observation-guard`，接入 observe/report/decide/memory 链路，降权历史 Markdown 和 receipt summary，收紧 standing memory，并预留 `claim_ledger`；随后在 TDB、prompt、observe guard、standing memory 中统一三栏语言；在 `report-builder` 中加入 `memory_admission` 与 `enforceStandingMemorySeenGate()`；让 `goal_event`/`evolution_event` 自然语言进入 Seen 时保持来源摘录语义；把 Seen 输出改为 `[evolution_events:...]`、`[goal_events:...]`、`[action_receipts:...]`、`[probe_results:...]`；最后补齐 `proposed_goal.children` 归一化、`typed_evidence_refs`、partial receipt 门禁和 read_only 写入 warning |
+| 验证 | `ReadLints` 无错误；第一阶段 `npm test` 185 项通过，第二阶段和第三阶段 `npm test` 187 项通过，第四阶段 `npm test` 188 项通过，第五、第六阶段 `npm test` 190 项通过，第七阶段 `npm test` 193 项通过 |

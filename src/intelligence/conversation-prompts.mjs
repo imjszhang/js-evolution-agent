@@ -221,6 +221,7 @@ export function buildDecideUserPrompt({
 - \`params.run_spec.primary_cwd_kind\` 是一等字段。常见值：主体日记/records/daemon/goals/intelligence 使用 \`subject_runtime\`；JEA 源码/policies/journal 使用 \`source_root\`；主体外部项目使用 subject policy 中声明的自定义 scope。
 - 每次 run 只能有一个 primary cwd。需要参考其他 root 时，使用 \`additional_directory_kinds\` 或把摘要写入 context；不要让一次 run 无差别跨多个项目根写入。
 - \`permission_profile\` 必须是 \`read_only\`、\`workspace_write\` 或 \`remote_write_review\` 之一。只读调查用 \`read_only\`；本地候选/模拟/沙盒改动用 \`workspace_write\`；真实远端变更或发布准备用 \`remote_write_review\`。
+- \`read_only\` 只能读取并在 receipt/evidence 中返回结果，不得要求写入、落盘、保存或持久化任何文件。若需要写脱敏摘要或缓存，必须单独生成 \`workspace_write\` action，并明确允许写入路径。
 - 若必须使用旧 action type，只能用于兼容已有队列或明确的宿主记录语义，并在 rationale 说明为什么 \`agent_run\` 不合适。
 - \`agent_execute\` 只允许作为旧兼容兜底动作；新决策不要优先使用它。
 - 当 run 涉及本地文件或目录时，文件路径应相对 primary cwd 描述，不要混用多个项目根的绝对路径。执行层会从 run_spec 解析 cwd 并阻断 root_mismatch。

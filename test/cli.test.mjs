@@ -1616,6 +1616,40 @@ describe('goals command helpers', () => {
     expect(readJsonSafe(join(runtime.goalsDir, 'active_goals.json'))).toEqual(nextGoal);
   });
 
+  it('normalizes missing children before auto calibration', () => {
+    const root = makeGoalsRoot('jea-goals-auto-normalize-');
+    const runtime = getActiveSubjectRuntimeInfo(root);
+    const proposedGoal = {
+      id: 'bootstrap-refined',
+      name: 'Bootstrap refined',
+      intent: 'Make the next step verifiable.',
+      good_signal: 'The next cycle has a concrete signal.',
+      bad_signal: 'The system keeps the old ambiguous target.',
+    };
+
+    const result = autoCalibrateGoals(root, {
+      report: { cycle_id: 'cycle-normalize' },
+      event: {
+        evidence_refs: [{ type: 'intel_report', id: 'cycle-normalize', ref: 'intel_report:cycle-normalize' }],
+      },
+      assessment: {
+        status: 'refine',
+        confidence: 'high',
+        proposed_goal: proposedGoal,
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: 'applied',
+      next_goal_id: 'bootstrap-refined',
+      written: 1,
+    });
+    expect(readJsonSafe(join(runtime.goalsDir, 'active_goals.json'))).toEqual({
+      ...proposedGoal,
+      children: [],
+    });
+  });
+
   it('skips auto calibration for non-refine, low confidence, or invalid goals', () => {
     const root = makeGoalsRoot('jea-goals-auto-skip-');
     const runtime = getActiveSubjectRuntimeInfo(root);

@@ -674,6 +674,64 @@ describe('buildIntelReport', () => {
     expect(seenText).not.toContain('remote.matchCount');
     expect(memory.evidence_refs).toContain('evt-safe');
     expect(memory.evidence_refs.join('\n')).not.toContain('receipt-');
+    expect(memory.typed_evidence_refs).toContainEqual({
+      source_type: 'evolution_events',
+      source_id: 'evt-safe',
+      source_address: '[evolution_events:evt-safe]',
+    });
+  });
+
+  it('keeps partial successful receipts out of standing memory Seen', async () => {
+    const { store, runtime, intelResult } = makeReportFixture();
+    store.recordActionReceipt(
+      { type: 'agent_run', description: 'partial sync probe' },
+      {
+        status: 'partial',
+        success: true,
+        summary: 'partial remote sync created a sanitized file',
+      },
+      { cycleId: 'cycle-test-1' },
+    );
+    store.recordActionReceipt(
+      { type: 'agent_run', description: 'completed sync probe' },
+      {
+        status: 'completed',
+        success: true,
+        summary: 'completed remote sync',
+      },
+      { cycleId: 'cycle-test-1' },
+    );
+
+    const outputs = [
+      '# 情报报告\n\n本轮检查了 receipt 门禁。\n',
+      [
+        '## Seen',
+        '',
+        '- receipt-polluted: partial remote sync created a sanitized file',
+        '',
+        '## Inferred',
+        '',
+        '- receipt status checked',
+      ].join('\n'),
+    ];
+    const fakeAi = { chat: async () => outputs.shift() };
+
+    await buildIntelReport({
+      intelResult,
+      runtime,
+      store,
+      aiClient: fakeAi,
+      useAi: true,
+    });
+
+    const memory = store.readStandingMemory();
+    const seenText = memory.text.slice(
+      memory.text.indexOf('## Seen'),
+      memory.text.indexOf('## Inferred'),
+    );
+    expect(seenText).toContain('"status":"completed"');
+    expect(seenText).not.toContain('"status":"partial"');
+    expect(memory.typed_evidence_refs.filter((ref) => ref.source_type === 'action_receipts')).toHaveLength(1);
   });
 
   it('writes natural language seen as source claims in standing memory', async () => {
