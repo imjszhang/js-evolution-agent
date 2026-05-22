@@ -617,7 +617,7 @@ function buildMemoryAdmission(reportContext) {
     return status === 'completed' || status === 'succeeded';
   });
   return {
-    rule: 'Only memory_admission.seen may appear in the final Seen section. Everything else is not Seen.',
+    rule: 'Only memory_admission.seen may appear in the final Seen section. Completed action_receipt structured status is Seen; receipt summaries, messages, and agent claims are not Seen.',
     seen: memorySeen.map((item) => ({
       source_id: seenSourceId(item),
       source_type: item?.source?.source_type ?? null,
@@ -700,13 +700,13 @@ Rules:
 - Return only the new standing memory text. No code fences.
 - Keep it under ${maxChars} characters.
 - Use exactly these sections: Seen, Inferred, Remembered, Do Not Treat As Seen.
-- Seen may only use Machine Context memory_admission.seen. Do not put report text, diary prose, receipt summaries, partial receipts, or agent claims in Seen.
+- Seen may only use Machine Context memory_admission.seen. Completed action_receipt structured status may appear as Seen, but receipt summaries, messages, audit conclusions, partial receipts, and agent claims must not appear in Seen.
 - Write every Seen item with its bracketed reopen address, for example [evolution_events:evt-...], [goal_events:goal-event-...], [action_receipts:receipt-...], or [probe_results:probe-result-...].
 - When verifying a Seen item later, use the bracketed source type to locate the record. Do not treat the id as a filename.
 - If a Seen item says "source claims" or "source records", keep that wording. It means the source was read, not that the statement is automatically true.
 - Inferred must cite Seen source ids and include what would overturn the judgement.
 - Remembered is background only; do not phrase it as current fact.
-- Do Not Treat As Seen preserves refuted, stale, forbidden, or repeatedly misleading claims.
+- Do Not Treat As Seen preserves refuted, stale, forbidden, or repeatedly misleading claims. Do not write a blanket rule that all receipt ids are forbidden; distinguish structured receipt status from receipt agent claims.
 - Important numeric or status claims should cite source ids when available.
 - Missing-path, ENOENT, or blocked probe evidence must stay qualified by execution_root/resource_scope/resource_kind. Do not turn "path missing under root X" into "module missing" unless X is the authoritative root for that resource.
 
@@ -728,13 +728,13 @@ ${contextJson}`;
 - 只返回新版 standing memory 正文，不要代码围栏。
 - 总长度必须控制在 ${maxChars} 字符以内。
 - 固定使用四个小节：Seen、Inferred、Remembered、Do Not Treat As Seen。
-- Seen 只能使用机器上下文 memory_admission.seen。不得把报告正文、日记叙述、receipt summary、partial receipt 或 agent claim 放入 Seen。
+- Seen 只能使用机器上下文 memory_admission.seen。已完成 action_receipt 的结构化状态可以作为 Seen；receipt summary、message、审计结论、partial receipt 或 agent claim 不得放入 Seen。
 - 每条 Seen 都必须写出方括号可重开地址，例如 [evolution_events:evt-...]、[goal_events:goal-event-...]、[action_receipts:receipt-...]、[probe_results:probe-result-...]。
 - 后续验证 Seen 时必须按方括号里的 source type 去对应数据源查找，不要把 id 当成文件名。
 - 如果 Seen 项写着 “source claims” 或 “source records”，必须保留这个说法。它表示读到了该来源，不表示该说法自动为真。
 - Inferred 必须引用 Seen 的 source id，并写明什么证据会推翻该判断。
 - Remembered 只能作为背景，不得写成当前事实。
-- Do Not Treat As Seen 保留已证伪、过期、禁止复活或反复误导的说法。
+- Do Not Treat As Seen 保留已证伪、过期、禁止复活或反复误导的说法。不要写成“所有 receipt id 都禁止”；必须区分 receipt 结构化状态和 receipt agent claim。
 - 关键数值或状态判断应尽量引用 source id。
 - 缺失路径、ENOENT 或 blocked 探针证据必须保留 execution_root/resource_scope/resource_kind 边界；除非该 root 是该资源的权威 root，不得把「root X 下 path 不存在」升级为「模块缺失」「机制未实现」「写入冻结」。
 

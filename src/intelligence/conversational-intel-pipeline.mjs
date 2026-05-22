@@ -380,7 +380,35 @@ export class ConversationalIntelligencePipeline {
       this._log(`[${cycleId}] phase 3/3: analyze + decide`);
       logger.startPhase('analyze_decide');
       const rawDecision = await chatMessages(this.aiClient, decideMessages, { thinking: 'medium', timeout: 600 });
-      const analysis = parseJsonFromText(this.aiClient, rawDecision);
+      let analysis = null;
+      let analysisParseError = null;
+      try {
+        analysis = parseJsonFromText(this.aiClient, rawDecision);
+      } catch (e) {
+        analysisParseError = e?.message || String(e);
+        this._log(`analyze+decide JSON parse failed: ${analysisParseError}; deferring without actions`, 'warning');
+        analysis = {
+          analysis: {
+            key_patterns: [],
+            root_causes: {},
+            opportunities: [],
+          },
+          decision: 'defer',
+          rationale: `Analyze+Decide JSON was invalid; no actions were queued. ${analysisParseError}`,
+          actions: [],
+          goal_coverage: { covered: [], not_covered: {} },
+          deferred: [{
+            action: 'retry_analyze_decide',
+            reason: analysisParseError,
+            revisit_after: 'next cycle',
+          }],
+          risk_mitigation: ['Do not queue actions from invalid Analyze+Decide JSON.'],
+          goal_suggestions: [],
+          confidence_score: 0,
+          error_code: 'invalid_ai_json',
+          parse_error: analysisParseError,
+        };
+      }
       result.analysis = analysis;
       result.actions = Array.isArray(analysis?.actions) ? analysis.actions : [];
       result.conversation_context_path = persistPhase1ConversationContext({
@@ -409,6 +437,8 @@ export class ConversationalIntelligencePipeline {
         prompt: serializeMessages(decideMessages),
         aiResponse: rawDecision,
         aiDriven: true,
+        fallbackUsed: Boolean(analysisParseError),
+        error: analysisParseError,
       });
 
       this._log(`[${cycleId}] phase 3b: standing memory`);

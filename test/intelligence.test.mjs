@@ -730,8 +730,37 @@ describe('buildIntelReport', () => {
       memory.text.indexOf('## Inferred'),
     );
     expect(seenText).toContain('"status":"completed"');
+    expect(seenText).not.toContain('completed remote sync');
     expect(seenText).not.toContain('"status":"partial"');
+    expect(seenText).not.toContain('partial remote sync created a sanitized file');
     expect(memory.typed_evidence_refs.filter((ref) => ref.source_type === 'action_receipts')).toHaveLength(1);
+  });
+
+  it('parses goal assessment JSON from text wrappers', () => {
+    const assessment = parseGoalAssessment([
+      'Here is the assessment:',
+      '```json',
+      JSON.stringify({
+        status: 'refine',
+        confidence: 'high',
+        reason: 'Goal needs tighter evidence.',
+        evidence_refs: ['evt-1'],
+        proposed_goal: {
+          id: 'goal-v2',
+          name: 'Goal v2',
+          intent: 'Tighten evidence',
+          good_signal: 'verified',
+          bad_signal: 'stale',
+        },
+        risk: 'low',
+      }),
+      '```',
+      'Done.',
+    ].join('\n'));
+
+    expect(assessment.status).toBe('refine');
+    expect(assessment.confidence).toBe('high');
+    expect(assessment.proposed_goal.children).toEqual([]);
   });
 
   it('writes natural language seen as source claims in standing memory', async () => {

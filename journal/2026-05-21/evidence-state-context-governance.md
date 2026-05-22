@@ -414,6 +414,35 @@ flowchart TD
 | [`test/intelligence.test.mjs`](../../test/intelligence.test.mjs) | 覆盖 `typed_evidence_refs` 与 `partial + success=true` 不进入 Seen |
 | [`test/actions.test.mjs`](../../test/actions.test.mjs) | 覆盖 `read_only` + 写入意图产生 warning，而 `workspace_write` 不产生该 warning |
 
+### 第八阶段执行边界修复
+
+第八阶段继续围绕“系统看见问题后能否稳定执行”，但问题更具体：上一轮修复后，系统已经能写入 v9 目标、生成 `typed_evidence_refs`，也能阻止 partial receipt 进入 `Seen`。最新 3 轮又暴露出两个边界问题。
+
+| 问题 | 现象 | 根因 |
+| --- | --- | --- |
+| receipt 语义被混判 | 审计把 `Seen` 中 9 条 `[action_receipts:...]` 判为违反 `Do Not Treat As Seen` | 代码允许 completed receipt 的结构化状态进入 Seen，但 prompt / DNTAS 文案容易被理解成“所有 receipt id 都禁止进入 Seen” |
+| Analyze+Decide JSON 失败会杀死 cycle | `cycle-20260522-164013` 因 `Cannot extract JSON from AI response` 停在 `intel_report` 之后 | Analyze+Decide 阶段直接解析严格 JSON；一旦模型输出被截断或包裹文本无法解析，就进入外层失败路径 |
+
+第八阶段的原则是只修执行边界，不再增加证据分类：
+
+1. **receipt 分两层**  
+   `action_receipt` 的结构化机器字段，例如 `status`、`success`、`provider`、`writes_applied`，可以作为 Seen；receipt 的 `summary/message/error`、审计结论、建议、推断仍只能作为 remembered/inferred，不能进 Seen。
+
+2. **JSON 失败变成可审计 defer**  
+   Analyze+Decide JSON 解析失败时，不把整轮 cycle 变成不可执行失败，也不凭空制造 action，而是保存 raw response 和解析错误，生成 `decision: defer`、`actions: []`、`error_code: invalid_ai_json` 的安全结果。
+
+涉及文件：
+
+| 文件 | 第八阶段变化 |
+| --- | --- |
+| [`src/ai/messages.mjs`](../../src/ai/messages.mjs) | 新增共用 `extractJsonFromText()`，支持 JSON 代码围栏、前后说明文本和首尾大括号截取；失败时保留前 500 字符错误信息 |
+| [`src/intelligence/goal-assessor.mjs`](../../src/intelligence/goal-assessor.mjs) | 复用共用 JSON 提取器，避免 goal assessment 和 conversation pipeline 使用两套解析逻辑 |
+| [`src/intelligence/conversational-intel-pipeline.mjs`](../../src/intelligence/conversational-intel-pipeline.mjs) | Analyze+Decide 解析失败时局部降级为 defer，并继续持久化 conversation context，不入队 action |
+| [`src/intelligence/report-builder.mjs`](../../src/intelligence/report-builder.mjs) | `memory_admission.rule` 和 standing memory prompt 明确 completed receipt structured status 可 Seen，receipt summary/message/agent claim 不可 Seen |
+| [`src/intelligence/conversation-context.mjs`](../../src/intelligence/conversation-context.mjs) | 语义验证 prompt 明确区分 `[action_receipts:...]` 结构化状态和 receipt agent claim，避免把所有 receipt id 泛化为违规 |
+| [`test/intelligence.test.mjs`](../../test/intelligence.test.mjs) | 覆盖 receipt summary 不进入 Seen、goal assessment 能解析包裹 JSON |
+| [`test/conversational-intel-pipeline.test.mjs`](../../test/conversational-intel-pipeline.test.mjs) | 覆盖 Analyze+Decide 包裹 JSON 可解析、无效 JSON 安全降级且不入队 action |
+
 ---
 
 ## 5. 验证与测试
@@ -607,6 +636,38 @@ ReadLints
 
 结果：[`src/intelligence/goal-assessor.mjs`](../../src/intelligence/goal-assessor.mjs)、[`src/cli/commands/goals.mjs`](../../src/cli/commands/goals.mjs)、[`src/intelligence/report-builder.mjs`](../../src/intelligence/report-builder.mjs)、[`src/intelligence/conversation-prompts.mjs`](../../src/intelligence/conversation-prompts.mjs)、[`src/actions/agent-run-spec.mjs`](../../src/actions/agent-run-spec.mjs)、[`test/cli.test.mjs`](../../test/cli.test.mjs)、[`test/intelligence.test.mjs`](../../test/intelligence.test.mjs)、[`test/actions.test.mjs`](../../test/actions.test.mjs) 无 linter 错误。
 
+第八阶段执行边界修复补充了两类回归：
+
+```bash
+npm test -- test/intelligence.test.mjs test/conversational-intel-pipeline.test.mjs
+```
+
+新增覆盖点：
+
+- completed receipt 的结构化状态仍可进入 `Seen`，但 receipt summary 不进入 `Seen`。
+- partial receipt 即使有 `success=true` 或 summary，也不会进入 `standing_memory` 的 `Seen`。
+- goal assessment 能解析带前后文本和 JSON 代码围栏的响应。
+- Analyze+Decide 能解析带前后文本和 JSON 代码围栏的响应。
+- Analyze+Decide JSON 被截断或无法解析时，pipeline 安全降级为 `decision: defer`、`actions: []`、`error_code: invalid_ai_json`，不入队 action，也不让整轮 cycle 失败。
+
+结果：2 个测试文件、52 个测试全部通过。
+
+随后运行完整测试：
+
+```bash
+npm test
+```
+
+结果：4 个测试文件、196 个测试全部通过。
+
+静态诊断：
+
+```bash
+ReadLints
+```
+
+结果：[`src/ai/messages.mjs`](../../src/ai/messages.mjs)、[`src/intelligence/goal-assessor.mjs`](../../src/intelligence/goal-assessor.mjs)、[`src/intelligence/conversational-intel-pipeline.mjs`](../../src/intelligence/conversational-intel-pipeline.mjs)、[`src/intelligence/report-builder.mjs`](../../src/intelligence/report-builder.mjs)、[`src/intelligence/conversation-context.mjs`](../../src/intelligence/conversation-context.mjs)、[`test/intelligence.test.mjs`](../../test/intelligence.test.mjs)、[`test/conversational-intel-pipeline.test.mjs`](../../test/conversational-intel-pipeline.test.mjs) 无 linter 错误。
+
 ---
 
 ## 6. 后续演化
@@ -690,6 +751,17 @@ ReadLints
 3. **把权限 warning 升级为决策反馈**  
    当前 `read_only` 写入意图是 warning。后续可以把它反馈到决策队列或验证报告，让模型自动改成“只读 evidence”或拆出 `workspace_write` action。
 
+第八阶段之后，后续验证重点是：
+
+1. **确认 receipt 不再被误判为整体违规**  
+   新一轮审计应区分 `[action_receipts:...]` 的结构化状态和 receipt summary/agent claim。前者不应再被统计为 `Do Not Treat As Seen` 违规。
+
+2. **观察 invalid AI JSON 是否变成可恢复事件**  
+   如果 Analyze+Decide 再次输出截断 JSON，cycle 应记录 `invalid_ai_json` 并 defer，不应让 worker task 失败。
+
+3. **再考虑同会话重试和 max_tokens**  
+   当前先做安全降级。若截断 JSON 仍高频出现，可以进一步加“同会话只修 JSON”的重试，以及为 decide/verify 设置更明确的 token 上限。
+
 ---
 
 ## 附：本轮对话问题—思考—方案—执行对照
@@ -697,7 +769,7 @@ ReadLints
 | 阶段 | 内容 |
 | --- | --- |
 | 问题 | 进化工作流调用多篇历史内容时，没有充分注明时间，也没有明确要求按最新结论裁决，导致旧结论可能继续污染后续轮次 |
-| 思考 | 第一性原理下，持续演化系统不能依赖语言连续性维持记忆，而要依赖证据状态维持记忆；20 轮后进一步确认污染源在 observe 阶段更早出现；继续加治理术语又会让系统过度复杂；3 轮三栏验证后确认 prompt 语言不足以阻止污染回流；后续又确认自然语言不能被排除，问题是不能把“来源说了”写成“事实成立”；再后续发现裸 id 会让探针误把数据源记录当文件名搜索；最新 3 轮则显示系统已能发现问题，但目标、memory、权限三个执行契约不能稳定消费发现 |
-| 方案 | 第一阶段新增 `Temporal Decision Brief`；第二阶段新增 `Observation Evidence Guard`，并把 Observation Report 降级为模型 claim；第三阶段统一为 Seen / Inferred / Remembered / Do Not Treat As Seen；第四阶段把 memory Seen 改成代码层写入门禁；第五阶段把自然语言 Seen 统一为 `source claims/records` 来源摘录；第六阶段给 Seen 加 `[source_type:id]` 可重开地址；第七阶段收敛为契约一致、证据可重开、副作用诚实三个执行不变量 |
-| 执行 | 新增 `decision-brief` 和 `observation-guard`，接入 observe/report/decide/memory 链路，降权历史 Markdown 和 receipt summary，收紧 standing memory，并预留 `claim_ledger`；随后在 TDB、prompt、observe guard、standing memory 中统一三栏语言；在 `report-builder` 中加入 `memory_admission` 与 `enforceStandingMemorySeenGate()`；让 `goal_event`/`evolution_event` 自然语言进入 Seen 时保持来源摘录语义；把 Seen 输出改为 `[evolution_events:...]`、`[goal_events:...]`、`[action_receipts:...]`、`[probe_results:...]`；最后补齐 `proposed_goal.children` 归一化、`typed_evidence_refs`、partial receipt 门禁和 read_only 写入 warning |
-| 验证 | `ReadLints` 无错误；第一阶段 `npm test` 185 项通过，第二阶段和第三阶段 `npm test` 187 项通过，第四阶段 `npm test` 188 项通过，第五、第六阶段 `npm test` 190 项通过，第七阶段 `npm test` 193 项通过 |
+| 思考 | 第一性原理下，持续演化系统不能依赖语言连续性维持记忆，而要依赖证据状态维持记忆；20 轮后进一步确认污染源在 observe 阶段更早出现；继续加治理术语又会让系统过度复杂；3 轮三栏验证后确认 prompt 语言不足以阻止污染回流；后续又确认自然语言不能被排除，问题是不能把“来源说了”写成“事实成立”；再后续发现裸 id 会让探针误把数据源记录当文件名搜索；最新 3 轮则显示系统已能发现问题，但目标、memory、权限三个执行契约不能稳定消费发现；再后一轮暴露的是执行边界问题：receipt 结构化状态与 agent claim 被混判，Analyze+Decide JSON 失败会杀死 cycle |
+| 方案 | 第一阶段新增 `Temporal Decision Brief`；第二阶段新增 `Observation Evidence Guard`，并把 Observation Report 降级为模型 claim；第三阶段统一为 Seen / Inferred / Remembered / Do Not Treat As Seen；第四阶段把 memory Seen 改成代码层写入门禁；第五阶段把自然语言 Seen 统一为 `source claims/records` 来源摘录；第六阶段给 Seen 加 `[source_type:id]` 可重开地址；第七阶段收敛为契约一致、证据可重开、副作用诚实三个执行不变量；第八阶段统一 receipt 结构化状态/agent claim 边界，并把 invalid AI JSON 转成可审计 defer |
+| 执行 | 新增 `decision-brief` 和 `observation-guard`，接入 observe/report/decide/memory 链路，降权历史 Markdown 和 receipt summary，收紧 standing memory，并预留 `claim_ledger`；随后在 TDB、prompt、observe guard、standing memory 中统一三栏语言；在 `report-builder` 中加入 `memory_admission` 与 `enforceStandingMemorySeenGate()`；让 `goal_event`/`evolution_event` 自然语言进入 Seen 时保持来源摘录语义；把 Seen 输出改为 `[evolution_events:...]`、`[goal_events:...]`、`[action_receipts:...]`、`[probe_results:...]`；补齐 `proposed_goal.children` 归一化、`typed_evidence_refs`、partial receipt 门禁和 read_only 写入 warning；最后增加共用 JSON 提取器、Analyze+Decide invalid JSON defer 降级，并更新 receipt policy / verify prompt |
+| 验证 | `ReadLints` 无错误；第一阶段 `npm test` 185 项通过，第二阶段和第三阶段 `npm test` 187 项通过，第四阶段 `npm test` 188 项通过，第五、第六阶段 `npm test` 190 项通过，第七阶段 `npm test` 193 项通过，第八阶段 `npm test` 196 项通过 |

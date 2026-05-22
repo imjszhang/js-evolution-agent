@@ -38,11 +38,42 @@ export async function chatMessages(aiClient, messages, opts = {}) {
   throw new Error('aiClient must implement chatMessages or chat');
 }
 
+function stripJsonCodeFence(text) {
+  const trimmed = String(text || '').trim();
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  return fenced ? fenced[1].trim() : trimmed;
+}
+
+export function extractJsonFromText(text) {
+  const stripped = stripJsonCodeFence(text);
+  if (!stripped) {
+    throw new Error('Cannot extract JSON from AI response. First 500 chars: ');
+  }
+  try {
+    return JSON.parse(stripped);
+  } catch {
+    const start = stripped.indexOf('{');
+    const end = stripped.lastIndexOf('}');
+    if (start >= 0 && end > start) {
+      try {
+        return JSON.parse(stripped.slice(start, end + 1));
+      } catch {
+        // Fall through to a consistent error message below.
+      }
+    }
+  }
+  throw new Error(`Cannot extract JSON from AI response. First 500 chars: ${stripped.slice(0, 500)}`);
+}
+
 export function parseJsonFromText(aiClient, text) {
   if (aiClient && typeof aiClient.parseJsonFromText === 'function') {
-    return aiClient.parseJsonFromText(text);
+    try {
+      return aiClient.parseJsonFromText(text);
+    } catch {
+      return extractJsonFromText(text);
+    }
   }
-  return JSON.parse(String(text || '').trim());
+  return extractJsonFromText(text);
 }
 
 export async function chatMessagesJson(aiClient, messages, opts = {}) {

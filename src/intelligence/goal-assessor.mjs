@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { extractJsonFromText } from '../ai/messages.mjs';
 import { assessGoals, detectLanguage, gatherEvidence } from './report-builder.mjs';
 
 const VALID_STATUSES = new Set(['keep', 'refine', 'split', 'replace', 'retire', 'insufficient_evidence']);
@@ -305,25 +306,6 @@ ${authorityBlock}
 ${contextJson}`;
 }
 
-function stripCodeFence(text) {
-  const trimmed = String(text || '').trim();
-  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-  return fenced ? fenced[1].trim() : trimmed;
-}
-
-function extractJsonObject(text) {
-  const stripped = stripCodeFence(text);
-  if (!stripped) throw new Error('empty AI output');
-  try {
-    return JSON.parse(stripped);
-  } catch {
-    const start = stripped.indexOf('{');
-    const end = stripped.lastIndexOf('}');
-    if (start < 0 || end <= start) throw new Error('AI output is not JSON');
-    return JSON.parse(stripped.slice(start, end + 1));
-  }
-}
-
 export function normalizeProposedGoalShape(goal) {
   if (!goal || typeof goal !== 'object' || Array.isArray(goal)) return goal ?? null;
   const hasChildren = Object.prototype.hasOwnProperty.call(goal, 'children');
@@ -336,7 +318,7 @@ export function normalizeProposedGoalShape(goal) {
 }
 
 export function parseGoalAssessment(raw) {
-  const parsed = extractJsonObject(raw);
+  const parsed = extractJsonFromText(raw);
   const status = VALID_STATUSES.has(parsed.status) ? parsed.status : 'insufficient_evidence';
   const confidence = VALID_CONFIDENCE.has(parsed.confidence) ? parsed.confidence : 'low';
   const refs = Array.isArray(parsed.evidence_refs) ? parsed.evidence_refs : [];

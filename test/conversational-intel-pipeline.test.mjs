@@ -512,6 +512,106 @@ describe('ConversationalIntelligencePipeline', () => {
     expect(queue.decisions.map((d) => d.id)).toEqual(['older:0']);
   });
 
+  it('parses Analyze+Decide JSON from text wrappers', async () => {
+    const { runtimeRoot, runtime, host } = makeFixture();
+    const client = {
+      async chat(message) {
+        if (message.includes('standing memory') || message.includes('固定容量')) {
+          return '长期态势：wrapped JSON 已被解析。';
+        }
+        return longObservation();
+      },
+      async chatMessages(messages) {
+        const last = messages.at(-1).content;
+        if (last.includes('Strategic Analysis & Decision')) {
+          return [
+            'Here is the decision:',
+            '```json',
+            JSON.stringify({
+              analysis: { key_patterns: ['wrapped json'], root_causes: {}, opportunities: [] },
+              decision: 'execute',
+              rationale: 'wrapped JSON should parse',
+              actions: [{
+                type: 'record_observation',
+                description: 'Record wrapped JSON parsing',
+                serves_goal: 'bootstrap',
+                params: { content: 'wrapped json parsed' },
+                expected_impact: 'queue receives one action',
+                risk: 'low',
+              }],
+              goal_coverage: { covered: ['bootstrap'], not_covered: {} },
+              deferred: [],
+              risk_mitigation: [],
+              goal_suggestions: [],
+              confidence_score: 0.8,
+            }),
+            '```',
+            'Thanks.',
+          ].join('\n');
+        }
+        return '# 情报报告\n\n用于 wrapped JSON 测试。\n';
+      },
+    };
+
+    const pipeline = new ConversationalIntelligencePipeline({
+      aiClient: client,
+      host,
+      projectRoot: runtimeRoot,
+      goalId: 'bootstrap',
+      actionRegistry: {
+        toPromptSection: () => '- `record_observation`: Record an observation',
+      },
+      runtime,
+    });
+    const result = await pipeline.run();
+
+    expect(result.success).toBe(true);
+    expect(result.decisions_queued).toHaveLength(1);
+    expect(result.analysis.decision).toBe('execute');
+  });
+
+  it('defers without queued actions when Analyze+Decide JSON is invalid', async () => {
+    const { runtimeRoot, runtime, host } = makeFixture();
+    const client = {
+      async chat(message) {
+        if (message.includes('standing memory') || message.includes('固定容量')) {
+          return '长期态势：invalid JSON 已被安全降级。';
+        }
+        return longObservation();
+      },
+      async chatMessages(messages) {
+        const last = messages.at(-1).content;
+        if (last.includes('Strategic Analysis & Decision')) {
+          return '{"analysis":{"key_patterns":["truncated"]},"decision":"execute"';
+        }
+        return '# 情报报告\n\n用于 invalid JSON 降级测试。\n';
+      },
+    };
+
+    const pipeline = new ConversationalIntelligencePipeline({
+      aiClient: client,
+      host,
+      projectRoot: runtimeRoot,
+      goalId: 'bootstrap',
+      actionRegistry: {
+        toPromptSection: () => '- `record_observation`: Record an observation',
+      },
+      runtime,
+    });
+    const result = await pipeline.run();
+    const context = JSON.parse(readFileSync(result.conversation_context_path, 'utf-8'));
+
+    expect(result.success).toBe(true);
+    expect(result.analysis).toMatchObject({
+      decision: 'defer',
+      error_code: 'invalid_ai_json',
+      actions: [],
+    });
+    expect(result.decisions_queued).toEqual([]);
+    expect(context.analyze_decide_turn.parsed.error_code).toBe('invalid_ai_json');
+    expect(context.analyze_decide_turn.response).toContain('truncated');
+  });
+
   it('can disable post-decision standing memory updates', async () => {
     const { runtimeRoot, runtime, store, host } = makeFixture();
     const client = {

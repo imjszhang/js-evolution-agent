@@ -118,6 +118,7 @@ function buildVerificationPrompt({ execResult, mechanicalVerification }) {
     'Judge only whether each executed action result provides evidence for its original objective and whether it advances the stated goal.',
     'For agent-first Phase 2 results, inspect result.evidence, result.writes, result.provider, result.requires_approval, result.fallback_used, and result.agentic_execution. A successful handler receipt with empty evidence is not enough to mark an investigation improved.',
     'For boundary-sensitive actions, inspect result.boundary_risk and distinguish agent conduct, host preflight, and provider-level isolation. Do not infer hard read/write isolation unless the receipt shows cwd, worktree, container, ACL, or provider enforcement backing.',
+    'When reviewing standing memory policy, distinguish action_receipt structured status from receipt agent claims. A Seen item like [action_receipts:receipt-...] with only structured fields (status, success, provider, writes_count, permission_profile) is not a receipt-summary violation; narrative summaries, audit conclusions, recommendations, or inferred claims from a receipt must not be treated as Seen.',
     '',
     'Return exactly one JSON object with this shape:',
     JSON.stringify({
