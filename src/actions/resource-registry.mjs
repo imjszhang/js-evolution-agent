@@ -8,6 +8,11 @@ export const RESOURCE_SCOPES = {
 
 const RESOURCE_RULES = [
   {
+    kind: 'standing_memory',
+    scope: RESOURCE_SCOPES.SUBJECT_RUNTIME,
+    patterns: ['data/intelligence/memory/standing_memory.json'],
+  },
+  {
     kind: 'evolution_diary',
     scope: RESOURCE_SCOPES.SUBJECT_RUNTIME,
     patterns: ['data/evolution/diaries/**'],
@@ -145,8 +150,18 @@ export function inferResourceFromTargets(targets = [], rules = RESOURCE_RULES) {
     }
   }
 
+  const bestMatches = new Map();
+  for (const match of matches) {
+    const current = bestMatches.get(match.target);
+    const score = Math.max(...match.patterns.map((pattern) => normalizePattern(pattern).replace(/\*\*$/, '').length));
+    const currentScore = current
+      ? Math.max(...current.patterns.map((pattern) => normalizePattern(pattern).replace(/\*\*$/, '').length))
+      : -1;
+    if (!current || score > currentScore) bestMatches.set(match.target, match);
+  }
+
   const unique = new Map();
-  for (const match of matches) unique.set(`${match.scope}:${match.kind}`, match);
+  for (const match of bestMatches.values()) unique.set(`${match.scope}:${match.kind}`, match);
   const values = [...unique.values()];
   if (!values.length) return { kind: null, scope: null, matches: [] };
 

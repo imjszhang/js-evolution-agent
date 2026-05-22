@@ -361,6 +361,13 @@ describe('gatherReportContext', () => {
     });
 
     expect(context.standing_memory.text).toContain('长期态势');
+    expect(context.standing_memory).toMatchObject({
+      resource_kind: 'standing_memory',
+      resource_scope: 'subject_runtime',
+      canonical_path: 'data/intelligence/memory/standing_memory.json',
+      source_role: 'model_summary_cache',
+    });
+    expect(context.standing_memory.path_policy).toContain('./standing_memory.json');
     expect(context.goal_events.map((r) => r.id)).toContain('goal-context');
     expect(context.action_receipts).toHaveLength(1);
     expect(context.latest_review.id).toBe('retro-context');

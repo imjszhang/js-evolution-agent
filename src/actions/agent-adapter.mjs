@@ -145,9 +145,11 @@ function buildWorkspacePromptSection(roots) {
     `host_project_root: ${roots.hostProjectRoot ?? 'unknown'} (subject runtime data; not the default file workspace)`,
     `host_source_root: ${roots.hostSourceRoot ?? 'unknown'} (js-evolution-agent repository root)`,
     `runtime_root: ${roots.runtimeRoot ?? 'unknown'}`,
+    'standing_memory_canonical_path: data/intelligence/memory/standing_memory.json',
     '',
     'Treat execution_cwd as the project root for every relative path in objective, targets, boundary, and acceptance.',
     'Treat resource_scope/resource_kind as the semantic boundary for interpreting missing-path evidence.',
+    'For standing_memory, only data/intelligence/memory/standing_memory.json is authoritative; ./standing_memory.json missing at execution_cwd root is only a missing alias, not evidence that standing_memory does not exist.',
     'Do not search host_project_root or host_source_root for task files unless the objective explicitly names those paths.',
   ];
   if (roots.usesExternalWorkspace) {
@@ -159,16 +161,28 @@ function buildWorkspacePromptSection(roots) {
 }
 
 function claudeSystemPromptAppend(roots) {
+  const workspace = [
+    `execution_cwd: ${roots.executionCwd}`,
+    `resource_scope: ${roots.resourceScope ?? 'unknown'}`,
+    `resource_kind: ${roots.resourceKind ?? 'unknown'}`,
+    `root_resolution_source: ${roots.rootResolutionSource ?? 'unknown'}`,
+    'standing_memory_canonical_path: data/intelligence/memory/standing_memory.json',
+    'Treat execution_cwd as the project root for every relative path in objective, targets, boundary, and acceptance.',
+    'Treat resource_scope/resource_kind as the semantic boundary for interpreting missing-path evidence.',
+    'For standing_memory, only data/intelligence/memory/standing_memory.json is authoritative; ./standing_memory.json missing at execution_cwd root is only a missing alias, not evidence that standing_memory does not exist.',
+  ].join('\n');
   if (roots.cwdWasConfigured) {
     return [
       `You are executing a js-evolution-agent action with workspace root: ${roots.executionCwd}.`,
       'Treat that directory as the project root for all file tools and relative paths.',
       'Honor the requested objective and return a concise final JSON receipt matching the requested output contract.',
+      workspace,
     ].join(' ');
   }
   return [
     'You are executing inside js-evolution-agent as an agent_execute provider.',
     'Honor the requested objective and return a concise final JSON receipt matching the requested output contract.',
+    workspace,
   ].join(' ');
 }
 

@@ -24,6 +24,8 @@ const DEFAULT_REPORT_CONTEXT_LIMITS = {
   standingMemoryCharLimit: 12000,
 };
 
+const STANDING_MEMORY_CANONICAL_PATH = 'data/intelligence/memory/standing_memory.json';
+
 function safeReadGoals(runtime) {
   const goalsPath = join(runtime.runtimeRoot, 'data', 'goals', 'active_goals.json');
   if (!existsSync(goalsPath)) return null;
@@ -178,6 +180,11 @@ function normalizeStandingMemory(memory, charLimit) {
   if (!memory) {
     return {
       exists: false,
+      resource_kind: 'standing_memory',
+      resource_scope: 'subject_runtime',
+      canonical_path: STANDING_MEMORY_CANONICAL_PATH,
+      source_role: 'model_summary_cache',
+      path_policy: 'Only canonical_path is authoritative. ./standing_memory.json at the runtime root is not an alias.',
       updated_at: null,
       source_cycle_id: null,
       text: '(no standing memory yet)',
@@ -186,6 +193,11 @@ function normalizeStandingMemory(memory, charLimit) {
   }
   return {
     exists: true,
+    resource_kind: 'standing_memory',
+    resource_scope: 'subject_runtime',
+    canonical_path: STANDING_MEMORY_CANONICAL_PATH,
+    source_role: 'model_summary_cache',
+    path_policy: 'Only canonical_path is authoritative. ./standing_memory.json at the runtime root is not an alias.',
     updated_at: memory.updated_at ?? null,
     source_cycle_id: memory.source_cycle_id ?? null,
     text: clipText(memory.text ?? '', charLimit),

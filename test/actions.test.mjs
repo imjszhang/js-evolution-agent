@@ -23,6 +23,7 @@ import {
   parseSubjectResourceRules,
 } from '../src/cli/utils/subjects.mjs';
 import { validateAgentRunSpec } from '../src/actions/agent-run-spec.mjs';
+import { inferActionResource } from '../src/actions/resource-registry.mjs';
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   query: vi.fn(),
@@ -257,6 +258,16 @@ describe('controlled action handlers', () => {
       { kind: 'strategy_repo_candidates', scope: 'strategy_repo', patterns: ['data/candidates/**'] },
       { kind: 'strategy_repo_scores', scope: 'strategy_repo', patterns: ['data/scores/**'] },
     ]);
+  });
+
+  it('treats canonical standing memory as a subject runtime resource', () => {
+    const resource = inferActionResource({
+      type: 'agent_run',
+      target: 'data/intelligence/memory/standing_memory.json',
+    }, makeCtx());
+
+    expect(resource.resourceKind).toBe('standing_memory');
+    expect(resource.resourceScope).toBe('subject_runtime');
   });
 
   it('runs an agent_run action through the unified agent receipt path', async () => {
@@ -1262,6 +1273,8 @@ describe('controlled action handlers', () => {
     expect(result.agent.outputs.claude.session_id).toBe('claude-session-1');
     expect(result.agent.outputs.claude.tool_uses[0].name).toBe('Read');
     expect(captured[0].prompt).toContain('Please use Claude Code');
+    expect(captured[0].options.systemPrompt.append).toContain('standing_memory_canonical_path: data/intelligence/memory/standing_memory.json');
+    expect(captured[0].options.systemPrompt.append).toContain('./standing_memory.json missing at execution_cwd root is only a missing alias');
     expect(captured[1].prompt).toContain('Please self-check');
     expect(captured[1].options.resume).toBe('claude-session-1');
     expect(captured[0].options.permissionMode).toBe('bypassPermissions');

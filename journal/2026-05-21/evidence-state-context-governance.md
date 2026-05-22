@@ -520,6 +520,31 @@ flowchart TD
 | [`src/intelligence/report-builder.mjs`](../../src/intelligence/report-builder.mjs) | 初始过滤 `remote_matchCount=847/4127`、虚构 pipeline 分数、login deadlock、worker zombie，以及把 `skillType=freeze` 误解为账号/发布通道冻结的说法 |
 | [`test/intelligence.test.mjs`](../../test/intelligence.test.mjs) | 覆盖完整 source-addressed receipt claim 中的已证伪内容不会进入 `## Remembered`，同时正常 remembered lead 仍保留 |
 
+### 第十二阶段 standing_memory 权威路径契约
+
+第十一阶段之后又跑了 3 轮，内容门禁基本生效：`remote_matchCount=4127`、虚构 pipeline 分数、`freeze=账号冻结` 等旧污染没有进入最终 `standing_memory` 主文件；`skillType=freeze` 也稳定被理解为 tank 技能类型。更重要的是，目标校准终于落地，`active_goals.json` 从 `win-more-agentank-refined-v9` 更新到 `win-more-agentank-refined-v10`。
+
+新的问题不是内容污染，而是**同名不同物**：多个探针都在说 `standing_memory.json`，但它们指向的不是同一个资源。
+
+| 路径 | 角色 | 是否权威 |
+| --- | --- | --- |
+| `data/intelligence/memory/standing_memory.json` | intelligence store 的 active standing memory | 是 |
+| `data/evolution/records/<cycle>/standing_memory.json` | cycle phase record / 快照 | 否 |
+| `./standing_memory.json` | runtime root 下的不存在别名 | 否 |
+
+第十二阶段的原则是：**不移动文件，修路径契约。** `standing_memory` 仍属于 subject runtime 下的 intelligence data，权威路径固定为 `data/intelligence/memory/standing_memory.json`。根目录 `./standing_memory.json` 的 ENOENT 只能说明非权威别名不存在，不能证伪 canonical memory。
+
+涉及文件：
+
+| 文件 | 第十二阶段变化 |
+| --- | --- |
+| [`src/actions/resource-registry.mjs`](../../src/actions/resource-registry.mjs) | 新增 `resource_kind=standing_memory`，匹配 canonical path `data/intelligence/memory/standing_memory.json`；资源推断改为同一 target 取最具体规则，避免被 `data/intelligence/**` 泛规则吞掉 |
+| [`src/actions/agent-adapter.mjs`](../../src/actions/agent-adapter.mjs) | workspace prompt 和 Claude system prompt 增加 `standing_memory_canonical_path`，明确 `./standing_memory.json` 缺失只是 missing alias，不是 canonical memory 不存在 |
+| [`src/intelligence/report-builder.mjs`](../../src/intelligence/report-builder.mjs) | `normalizeStandingMemory()` 输出 `resource_kind/resource_scope/canonical_path/source_role/path_policy`，让 report context 自带路径语义 |
+| [`src/intelligence/observation-guard.mjs`](../../src/intelligence/observation-guard.mjs) | 明确 `data/intelligence/memory/standing_memory.json` 是 canonical path，同时仍是 model-summary cache；根路径 ENOENT 不可当成 memory 不存在 |
+| [`test/actions.test.mjs`](../../test/actions.test.mjs) | 覆盖 canonical memory 资源识别，以及 Claude prompt 包含 canonical path 契约 |
+| [`test/intelligence.test.mjs`](../../test/intelligence.test.mjs) | 覆盖 report context 中 standing_memory path metadata |
+
 ---
 
 ## 5. 验证与测试
@@ -849,6 +874,36 @@ ReadLints
 
 结果：[`src/intelligence/report-builder.mjs`](../../src/intelligence/report-builder.mjs)、[`test/intelligence.test.mjs`](../../test/intelligence.test.mjs) 无 linter 错误。
 
+第十二阶段 standing_memory 权威路径契约补充了路径语义回归：
+
+```bash
+npm test -- test/actions.test.mjs test/intelligence.test.mjs
+```
+
+新增覆盖点：
+
+- `data/intelligence/memory/standing_memory.json` 会被识别为 `resource_kind=standing_memory`、`resource_scope=subject_runtime`，而不是被泛化为普通 `intelligence_data`。
+- Claude Code SDK 的 system prompt 会携带 `standing_memory_canonical_path`，并明确 `./standing_memory.json` 缺失只是非权威别名缺失。
+- report context 中的 `standing_memory` 带有 `canonical_path/source_role/path_policy`，供后续 report、verify 和 diary 消费。
+
+结果：2 个测试文件、102 个测试全部通过。
+
+随后运行完整测试：
+
+```bash
+npm test
+```
+
+结果：4 个测试文件、203 个测试全部通过。
+
+静态诊断：
+
+```bash
+ReadLints
+```
+
+结果：[`src/actions/resource-registry.mjs`](../../src/actions/resource-registry.mjs)、[`src/actions/agent-adapter.mjs`](../../src/actions/agent-adapter.mjs)、[`src/intelligence/report-builder.mjs`](../../src/intelligence/report-builder.mjs)、[`src/intelligence/observation-guard.mjs`](../../src/intelligence/observation-guard.mjs)、[`test/actions.test.mjs`](../../test/actions.test.mjs)、[`test/intelligence.test.mjs`](../../test/intelligence.test.mjs) 无 linter 错误。
+
 ---
 
 ## 6. 后续演化
@@ -976,6 +1031,17 @@ ReadLints
 3. **把内容门禁逐步接到 Claim Ledger**  
    当前规则是代码常量。长期更稳的形态是从 `operator_fact`、`Do Not Treat As Seen` 或 `claim_ledger` 中生成 refuted claim 集合，而不是继续人工维护固定 pattern。
 
+第十二阶段之后，后续验证重点是：
+
+1. **确认探针不再把 root ENOENT 当作 memory 不存在**  
+   下一轮如果探针读取 `./standing_memory.json` 失败，应报告为非权威别名缺失；只有读取 `data/intelligence/memory/standing_memory.json` 的结果才能判断 active memory 是否存在。
+
+2. **区分 active memory 与 cycle record 快照**  
+   `data/evolution/records/<cycle>/standing_memory.json` 只能用于审计某轮 phase 产物，不能反过来覆盖 active memory 的存在性或内容判断。
+
+3. **检查 v10 目标是否消费新契约**  
+   `verify-auditable-memory` 子目标应围绕 canonical path 的可审计性展开，而不是重新触发“清理不存在的 Remembered 区”叙事。
+
 ---
 
 ## 附：本轮对话问题—思考—方案—执行对照
@@ -983,7 +1049,7 @@ ReadLints
 | 阶段 | 内容 |
 | --- | --- |
 | 问题 | 进化工作流调用多篇历史内容时，没有充分注明时间，也没有明确要求按最新结论裁决，导致旧结论可能继续污染后续轮次 |
-| 思考 | 第一性原理下，持续演化系统不能依赖语言连续性维持记忆，而要依赖证据状态维持记忆；20 轮后进一步确认污染源在 observe 阶段更早出现；继续加治理术语又会让系统过度复杂；3 轮三栏验证后确认 prompt 语言不足以阻止污染回流；后续又确认自然语言不能被排除，问题是不能把“来源说了”写成“事实成立”；再后续发现裸 id 会让探针误把数据源记录当文件名搜索；最新 3 轮则显示系统已能发现问题，但目标、memory、权限三个执行契约不能稳定消费发现；再后一轮暴露的是执行边界问题：receipt 结构化状态与 agent claim 被混判，Analyze+Decide JSON 失败会杀死 cycle；第九阶段则确认直接编辑 `standing_memory.json` 不能持久，因为下一轮全量重写会复活旧 Remembered 污染；第十阶段进一步确认系统把执行是否完成、receipt 格式是否合格、模型如何解释执行结果混成了一个 `partial`；第十一阶段则确认格式正确的 Remembered 仍可能携带已证伪内容，必须在 admission 源头过滤 |
-| 方案 | 第一阶段新增 `Temporal Decision Brief`；第二阶段新增 `Observation Evidence Guard`，并把 Observation Report 降级为模型 claim；第三阶段统一为 Seen / Inferred / Remembered / Do Not Treat As Seen；第四阶段把 memory Seen 改成代码层写入门禁；第五阶段把自然语言 Seen 统一为 `source claims/records` 来源摘录；第六阶段给 Seen 加 `[source_type:id]` 可重开地址；第七阶段收敛为契约一致、证据可重开、副作用诚实三个执行不变量；第八阶段统一 receipt 结构化状态/agent claim 边界，并把 invalid AI JSON 转成可审计 defer；第九阶段把 Remembered 也改为由 `memory_admission.remembered` 驱动的轻量代码门禁；第十阶段把 agent_run 结果拆成执行层、格式层、解释层三层契约；第十一阶段为 Remembered 增加 refuted claim 内容门禁 |
-| 执行 | 新增 `decision-brief` 和 `observation-guard`，接入 observe/report/decide/memory 链路，降权历史 Markdown 和 receipt summary，收紧 standing memory，并预留 `claim_ledger`；随后在 TDB、prompt、observe guard、standing memory 中统一三栏语言；在 `report-builder` 中加入 `memory_admission` 与 `enforceStandingMemorySeenGate()`；让 `goal_event`/`evolution_event` 自然语言进入 Seen 时保持来源摘录语义；把 Seen 输出改为 `[evolution_events:...]`、`[goal_events:...]`、`[action_receipts:...]`、`[probe_results:...]`；补齐 `proposed_goal.children` 归一化、`typed_evidence_refs`、partial receipt 门禁和 read_only 写入 warning；最后增加共用 JSON 提取器、Analyze+Decide invalid JSON defer 降级，并更新 receipt policy / verify prompt；随后扩展 `memory_admission.remembered`、新增 Remembered gate，并在写入时统一应用 `enforceStandingMemoryGates()`；之后增加 nested receipt 归一化、拆分 `execution_status/schema_status/acceptance_status`，并让 TDB、verify、goal assessment、diary 消费三层状态；本轮新增 `isRefutedRememberedClaim()`，过滤已证伪 remembered claim |
-| 验证 | `ReadLints` 无错误；第一阶段 `npm test` 185 项通过，第二阶段和第三阶段 `npm test` 187 项通过，第四阶段 `npm test` 188 项通过，第五、第六阶段 `npm test` 190 项通过，第七阶段 `npm test` 193 项通过，第八阶段 `npm test` 196 项通过，第九阶段 `npm test` 198 项通过，第十阶段 `npm test` 201 项通过，第十一阶段 `npm test` 202 项通过 |
+| 思考 | 第一性原理下，持续演化系统不能依赖语言连续性维持记忆，而要依赖证据状态维持记忆；20 轮后进一步确认污染源在 observe 阶段更早出现；继续加治理术语又会让系统过度复杂；3 轮三栏验证后确认 prompt 语言不足以阻止污染回流；后续又确认自然语言不能被排除，问题是不能把“来源说了”写成“事实成立”；再后续发现裸 id 会让探针误把数据源记录当文件名搜索；最新 3 轮则显示系统已能发现问题，但目标、memory、权限三个执行契约不能稳定消费发现；再后一轮暴露的是执行边界问题：receipt 结构化状态与 agent claim 被混判，Analyze+Decide JSON 失败会杀死 cycle；第九阶段则确认直接编辑 `standing_memory.json` 不能持久，因为下一轮全量重写会复活旧 Remembered 污染；第十阶段进一步确认系统把执行是否完成、receipt 格式是否合格、模型如何解释执行结果混成了一个 `partial`；第十一阶段则确认格式正确的 Remembered 仍可能携带已证伪内容，必须在 admission 源头过滤；第十二阶段确认问题转为同名不同物，root ENOENT、cycle 快照和 canonical memory 被混成一个资源 |
+| 方案 | 第一阶段新增 `Temporal Decision Brief`；第二阶段新增 `Observation Evidence Guard`，并把 Observation Report 降级为模型 claim；第三阶段统一为 Seen / Inferred / Remembered / Do Not Treat As Seen；第四阶段把 memory Seen 改成代码层写入门禁；第五阶段把自然语言 Seen 统一为 `source claims/records` 来源摘录；第六阶段给 Seen 加 `[source_type:id]` 可重开地址；第七阶段收敛为契约一致、证据可重开、副作用诚实三个执行不变量；第八阶段统一 receipt 结构化状态/agent claim 边界，并把 invalid AI JSON 转成可审计 defer；第九阶段把 Remembered 也改为由 `memory_admission.remembered` 驱动的轻量代码门禁；第十阶段把 agent_run 结果拆成执行层、格式层、解释层三层契约；第十一阶段为 Remembered 增加 refuted claim 内容门禁；第十二阶段固定 standing_memory canonical path 契约 |
+| 执行 | 新增 `decision-brief` 和 `observation-guard`，接入 observe/report/decide/memory 链路，降权历史 Markdown 和 receipt summary，收紧 standing memory，并预留 `claim_ledger`；随后在 TDB、prompt、observe guard、standing memory 中统一三栏语言；在 `report-builder` 中加入 `memory_admission` 与 `enforceStandingMemorySeenGate()`；让 `goal_event`/`evolution_event` 自然语言进入 Seen 时保持来源摘录语义；把 Seen 输出改为 `[evolution_events:...]`、`[goal_events:...]`、`[action_receipts:...]`、`[probe_results:...]`；补齐 `proposed_goal.children` 归一化、`typed_evidence_refs`、partial receipt 门禁和 read_only 写入 warning；最后增加共用 JSON 提取器、Analyze+Decide invalid JSON defer 降级，并更新 receipt policy / verify prompt；随后扩展 `memory_admission.remembered`、新增 Remembered gate，并在写入时统一应用 `enforceStandingMemoryGates()`；之后增加 nested receipt 归一化、拆分 `execution_status/schema_status/acceptance_status`，并让 TDB、verify、goal assessment、diary 消费三层状态；随后新增 `isRefutedRememberedClaim()`，过滤已证伪 remembered claim；本轮新增 `resource_kind=standing_memory`、canonical path prompt、report context path metadata 和 observation guard 路径契约 |
+| 验证 | `ReadLints` 无错误；第一阶段 `npm test` 185 项通过，第二阶段和第三阶段 `npm test` 187 项通过，第四阶段 `npm test` 188 项通过，第五、第六阶段 `npm test` 190 项通过，第七阶段 `npm test` 193 项通过，第八阶段 `npm test` 196 项通过，第九阶段 `npm test` 198 项通过，第十阶段 `npm test` 201 项通过，第十一阶段 `npm test` 202 项通过，第十二阶段 `npm test` 203 项通过 |
