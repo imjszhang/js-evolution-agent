@@ -123,6 +123,55 @@ describe('evidence guards and decision brief', () => {
     expect(brief.seen[0].evidence_level).toBe('source_statement');
   });
 
+  it('carries resource observation boundaries into TDB structured seen', () => {
+    const brief = buildTemporalDecisionBrief({
+      generated_at: '2026-05-21T00:00:00.000Z',
+      current_cycle: { cycle_id: 'cycle-test', mode: 'local' },
+      action_receipts: [],
+      probe_results: [{
+        id: 'probe-result-1',
+        recorded_at: '2026-05-21T00:00:00.000Z',
+        probe_type: 'file_exists',
+        target: './standing_memory.json',
+        status: 'failed',
+        evidence: {
+          evidence_contract: {
+            boundary: {
+              execution_root: '/runtime',
+              resource_scope: 'subject_runtime',
+              resource_kind: 'standing_memory',
+              path: 'standing_memory.json',
+              canonical_path: 'data/intelligence/memory/standing_memory.json',
+              is_canonical_path: false,
+            },
+            observation: { status: 'failed', exists: false },
+            evidence_layer: 'resource',
+          },
+        },
+      }],
+      evolution_events: [],
+      goal_events: [],
+      recent_report_markdowns: [],
+      standing_memory: { exists: false },
+    });
+
+    const status = brief.structured_status[0].fields;
+    expect(status.boundary.path).toBe('standing_memory.json');
+    expect(status.boundary.is_canonical_path).toBe(false);
+    expect(status.boundary_summary).toContain('is_canonical_path=false');
+    expect(JSON.stringify(brief.seen)).toContain('canonical_path');
+  });
+
+  it('formats observation guard with generic boundary and layer rules', () => {
+    const guard = buildObservationEvidenceGuard({ subject: 'agentank-tank' });
+    const text = formatObservationEvidenceGuard(guard);
+
+    expect(text).toContain('No Boundary, No Fact');
+    expect(text).toContain('No Layer, No Execution Conclusion');
+    expect(text).toContain('execution_root');
+    expect(text).toContain('resource_scope');
+  });
+
   it('formats observation guard with forbidden worker-state fields', () => {
     const guard = buildObservationEvidenceGuard({ subject: 'agentank-tank' });
     const text = formatObservationEvidenceGuard(guard);
@@ -919,6 +968,65 @@ describe('buildIntelReport', () => {
     expect(rememberedText).not.toContain('cycle3_pipeline_confidence=0.72');
     expect(rememberedText).not.toContain('account is frozen');
     expect(rememberedText).not.toContain('publish channel is locked');
+  });
+
+  it('filters non-canonical standing memory ENOENT claims out of Remembered', async () => {
+    const { store, runtime, intelResult } = makeReportFixture();
+    store.recordActionReceipt(
+      { type: 'agent_run', description: 'non-canonical root missing claim' },
+      {
+        status: 'completed',
+        success: true,
+        summary: './standing_memory.json returned ENOENT, so standing_memory does not exist',
+      },
+      { cycleId: 'cycle-test-1' },
+    );
+    store.recordActionReceipt(
+      { type: 'agent_run', description: 'canonical lead' },
+      {
+        status: 'completed',
+        success: true,
+        summary: 'valid lead: data/intelligence/memory/standing_memory.json was audited with canonical path policy',
+      },
+      { cycleId: 'cycle-test-1' },
+    );
+
+    const outputs = [
+      '# 情报报告\n\n本轮检查 path_scope_mismatch Remembered 门禁。\n',
+      [
+        '## Seen',
+        '',
+        '- model seen',
+        '',
+        '## Inferred',
+        '',
+        '- remembered admission checked',
+        '',
+        '## Remembered',
+        '',
+        '- model remembered pollution',
+      ].join('\n'),
+    ];
+    const fakeAi = { chat: async () => outputs.shift() };
+
+    await buildIntelReport({
+      intelResult,
+      runtime,
+      store,
+      aiClient: fakeAi,
+      useAi: true,
+    });
+
+    const memory = store.readStandingMemory();
+    const rememberedText = memory.text.slice(
+      memory.text.indexOf('## Remembered'),
+      memory.text.indexOf('## Do Not Treat As Seen') >= 0
+        ? memory.text.indexOf('## Do Not Treat As Seen')
+        : memory.text.length,
+    );
+    expect(rememberedText).toContain('valid lead: data/intelligence/memory/standing_memory.json');
+    expect(rememberedText).not.toContain('./standing_memory.json returned ENOENT');
+    expect(rememberedText).not.toContain('so standing_memory does not exist');
   });
 
   it('deduplicates repeated goal event remembered claims', async () => {

@@ -744,6 +744,8 @@ describe('ConversationalIntelligencePipeline', () => {
     expect(semanticCalls[0].at(-1).content).toContain('boundary_risk');
     expect(semanticCalls[0].at(-1).content).toContain('provider-level isolation');
     expect(semanticCalls[0].at(-1).content).toContain('Separate execution facts, receipt schema, and model interpretation');
+    expect(semanticCalls[0].at(-1).content).toContain('No Boundary, No Fact');
+    expect(semanticCalls[0].at(-1).content).toContain('No Layer, No Execution Conclusion');
     expect(semanticCalls[0].at(-1).content).toContain('typed_evidence_refs are for Seen evidence only');
   });
 });

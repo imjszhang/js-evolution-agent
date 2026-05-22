@@ -85,6 +85,31 @@ function structuredStatus({ sourceType, record, fields }) {
   };
 }
 
+function evidenceContractOf(record, result = null) {
+  return record?.evidence_contract
+    ?? record?.evidence?.evidence_contract
+    ?? result?.evidence_contract
+    ?? result?.evidence?.evidence_contract
+    ?? null;
+}
+
+function boundarySummary(contract) {
+  const boundary = contract?.boundary;
+  const observation = contract?.observation;
+  if (!boundary && !observation) return null;
+  const parts = [
+    `layer=${contract?.evidence_layer ?? 'unknown'}`,
+    `status=${observation?.status ?? 'unknown'}`,
+    `execution_root=${boundary?.execution_root ?? 'unknown'}`,
+    `resource_scope=${boundary?.resource_scope ?? 'unknown'}`,
+    `resource_kind=${boundary?.resource_kind ?? 'unknown'}`,
+    `path=${boundary?.path ?? 'unknown'}`,
+  ];
+  if (boundary?.canonical_path) parts.push(`canonical_path=${boundary.canonical_path}`);
+  if (boundary?.is_canonical_path != null) parts.push(`is_canonical_path=${boundary.is_canonical_path}`);
+  return `resource observation: ${parts.join(' ')}`;
+}
+
 function agentClaim({ sourceType, record, summary, status = null }) {
   return {
     kind: 'agent_claim',
@@ -145,6 +170,7 @@ function actionReceiptStatuses(receipts, limit) {
   return newestFirst(receipts).slice(0, limit).map((record) => {
     const result = record?.result || {};
     const action = record?.action || {};
+    const evidenceContract = evidenceContractOf(record, result);
     return structuredStatus({
       sourceType: 'action_receipt',
       record,
@@ -162,24 +188,35 @@ function actionReceiptStatuses(receipts, limit) {
         writes_applied: result.writes_applied ?? null,
         decision_id: record.decision_id ?? null,
         action_id: record.action_id ?? null,
+        boundary: evidenceContract?.boundary ?? null,
+        observation: evidenceContract?.observation ?? null,
+        evidence_layer: evidenceContract?.evidence_layer ?? null,
+        boundary_summary: boundarySummary(evidenceContract),
       },
     });
   });
 }
 
 function probeStatuses(probes, limit) {
-  return newestFirst(probes).slice(0, limit).map((record) => structuredStatus({
-    sourceType: 'probe_result',
-    record,
-    fields: {
-      probe_type: record.probe_type ?? null,
-      target: record.target ?? null,
-      status: record.status ?? null,
-      execution_root: record.execution_root ?? null,
-      resource_scope: record.resource_scope ?? null,
-      resource_kind: record.resource_kind ?? null,
-    },
-  }));
+  return newestFirst(probes).slice(0, limit).map((record) => {
+    const evidenceContract = evidenceContractOf(record);
+    return structuredStatus({
+      sourceType: 'probe_result',
+      record,
+      fields: {
+        probe_type: record.probe_type ?? null,
+        target: record.target ?? null,
+        status: record.status ?? null,
+        execution_root: record.execution_root ?? null,
+        resource_scope: record.resource_scope ?? null,
+        resource_kind: record.resource_kind ?? null,
+        boundary: evidenceContract?.boundary ?? null,
+        observation: evidenceContract?.observation ?? null,
+        evidence_layer: evidenceContract?.evidence_layer ?? null,
+        boundary_summary: boundarySummary(evidenceContract),
+      },
+    });
+  });
 }
 
 function eventFacts(events, limit) {
@@ -411,6 +448,8 @@ export function buildTemporalDecisionBrief(reportContext = {}, {
         'Remembered is context only, not fact.',
         'Do Not Treat As Seen must not be revived as fact unless new Seen evidence directly supports it.',
         'When sources conflict, Seen overrides Remembered.',
+        'No Boundary, No Fact: missing/blocked/no-match resource observations without boundary stay as scoped observations, not global non-existence claims.',
+        'No Layer, No Execution Conclusion: action results without execution/schema/semantic layer metadata stay as receipt claims, not execution facts.',
       ],
     },
     seen: seen.slice(0, itemLimit * 3),

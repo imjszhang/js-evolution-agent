@@ -18,6 +18,7 @@ import {
   getConfiguredExternalAction,
   loadSubjectActionConfig,
 } from './configured-actions.mjs';
+import { buildEvidenceContract } from './resource-registry.mjs';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -236,6 +237,7 @@ function agentBlockedResult(agenticExecution) {
 
 function agentActionResult(action, agenticExecution, overrides = {}) {
   const metadata = agenticExecution.root_metadata ?? {};
+  const evidence = agenticExecution.evidence ?? {};
   return {
     success: agenticExecution.success && !agenticExecution.requires_approval,
     provider: agenticExecution.provider,
@@ -247,7 +249,24 @@ function agentActionResult(action, agenticExecution, overrides = {}) {
     served_goal: agenticExecution.served_goal ?? action?.serves_goal ?? null,
     execution_root: agenticExecution.execution_root ?? agenticExecution.outputs?.execution_root ?? null,
     ...metadata,
-    evidence: agenticExecution.evidence ?? {},
+    evidence: {
+      ...evidence,
+      evidence_contract: evidence.evidence_contract ?? buildEvidenceContract({
+        executionRoot: agenticExecution.execution_root ?? agenticExecution.outputs?.execution_root ?? metadata.execution_root ?? null,
+        resourceScope: metadata.resource_scope,
+        resourceKind: metadata.resource_kind,
+        rootResolutionSource: metadata.root_resolution_source,
+        path: metadata.relative_targets?.[0] ?? null,
+        status: agenticExecution.status,
+        observation: {
+          status: agenticExecution.status,
+          execution_status: agenticExecution.execution_status ?? agenticExecution.agent?.execution_status ?? agenticExecution.status,
+          schema_status: agenticExecution.schema_status ?? agenticExecution.agent?.schema_status ?? null,
+          acceptance_status: agenticExecution.acceptance_status ?? null,
+        },
+        evidenceLayer: 'execution',
+      }),
+    },
     writes: agenticExecution.writes ?? {},
     verification_hints: agenticExecution.verification_hints ?? [],
     next_actions: agenticExecution.next_actions ?? [],
@@ -259,6 +278,7 @@ function agentActionResult(action, agenticExecution, overrides = {}) {
 }
 
 function blockedAgentRunResult(action, reason, details, ctx) {
+  const roots = details?.roots ?? null;
   const result = {
     success: false,
     status: 'blocked',
@@ -271,7 +291,7 @@ function blockedAgentRunResult(action, reason, details, ctx) {
     provider: details?.provider ?? null,
     requires_approval: false,
     execution_root: details?.roots?.executionRoot ?? details?.runSpec?.primary_cwd ?? null,
-    root_metadata: details?.roots ? rootMetadata(details.roots) : null,
+    root_metadata: roots ? rootMetadata(roots) : null,
     run_spec: details?.runSpec ? {
       primary_cwd: details.runSpec.primary_cwd,
       primary_cwd_kind: details.runSpec.primary_cwd_kind,
@@ -285,7 +305,17 @@ function blockedAgentRunResult(action, reason, details, ctx) {
       reason,
       errors: details?.errors ?? [],
       warnings: details?.warnings ?? [],
-      root_metadata: details?.roots ? rootMetadata(details.roots) : null,
+      root_metadata: roots ? rootMetadata(roots) : null,
+      evidence_contract: buildEvidenceContract({
+        executionRoot: roots?.executionRoot ?? details?.runSpec?.primary_cwd ?? null,
+        resourceScope: roots?.resourceScope,
+        resourceKind: roots?.resourceKind,
+        rootResolutionSource: roots?.rootResolutionSource,
+        path: roots?.relativeTargets?.[0] ?? null,
+        status: 'blocked',
+        observation: { status: 'blocked', reason },
+        evidenceLayer: 'execution',
+      }),
     },
     writes: {},
     outputs: {},
@@ -960,6 +990,8 @@ const builtInActionHandlers = {
     const acceptanceStatus = requiresApproval
       ? 'requires_human_review'
       : (executionSucceeded && schemaStatus === 'valid' ? 'passed' : (executionSucceeded ? 'schema_invalid' : 'failed'));
+    const rootMetadataValue = agentResult.root_metadata ?? null;
+    const evidence = asObject(agent.evidence);
     const result = {
       success: executionSucceeded && schemaStatus === 'valid' && !requiresApproval,
       status: agentStatus,
@@ -970,11 +1002,11 @@ const builtInActionHandlers = {
       agent_status: agentStatus,
       acceptance_status: acceptanceStatus,
       goal_progress_status: executionSucceeded && hasExecutionEvidence && !requiresApproval ? 'progressed' : 'not_progressed',
-      message: agentResult.message ?? agent.summary ?? '',
+      message: agent.summary ?? agentResult.message ?? '',
       provider: agentResult.provider ?? agent.provider ?? null,
       requires_approval: requiresApproval,
       execution_root: agentResult.execution_root ?? runSpec.primary_cwd,
-      root_metadata: agentResult.root_metadata ?? null,
+      root_metadata: rootMetadataValue,
       run_spec: {
         primary_cwd: runSpec.primary_cwd,
         primary_cwd_kind: runSpec.primary_cwd_kind,
@@ -985,7 +1017,24 @@ const builtInActionHandlers = {
         expected_output: runSpec.expected_output,
       },
       agent,
-      evidence: asObject(agent.evidence),
+      evidence: {
+        ...evidence,
+        evidence_contract: evidence.evidence_contract ?? buildEvidenceContract({
+          executionRoot: agentResult.execution_root ?? runSpec.primary_cwd,
+          resourceScope: rootMetadataValue?.resource_scope ?? runSpec.primary_cwd_kind,
+          resourceKind: rootMetadataValue?.resource_kind ?? null,
+          rootResolutionSource: rootMetadataValue?.root_resolution_source ?? null,
+          path: rootMetadataValue?.relative_targets?.[0] ?? null,
+          status: agentStatus,
+          observation: {
+            status: agentStatus,
+            execution_status: executionStatus,
+            schema_status: schemaStatus,
+            acceptance_status: acceptanceStatus,
+          },
+          evidenceLayer: 'execution',
+        }),
+      },
       writes: asObject(agent.writes),
       outputs: asObject(agent.outputs),
       created_files: asArray(agent.created_files),

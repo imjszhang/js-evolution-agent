@@ -23,7 +23,7 @@ import {
   parseSubjectResourceRules,
 } from '../src/cli/utils/subjects.mjs';
 import { validateAgentRunSpec } from '../src/actions/agent-run-spec.mjs';
-import { inferActionResource } from '../src/actions/resource-registry.mjs';
+import { buildEvidenceContract, inferActionResource } from '../src/actions/resource-registry.mjs';
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   query: vi.fn(),
@@ -270,6 +270,29 @@ describe('controlled action handlers', () => {
     expect(resource.resourceScope).toBe('subject_runtime');
   });
 
+  it('marks canonical and non-canonical standing memory path observations differently', () => {
+    const canonical = buildEvidenceContract({
+      executionRoot: '/runtime',
+      resourceScope: 'subject_runtime',
+      resourceKind: 'standing_memory',
+      path: 'data/intelligence/memory/standing_memory.json',
+      status: 'failed',
+      observation: { exists: false },
+    });
+    const nonCanonical = buildEvidenceContract({
+      executionRoot: '/runtime',
+      resourceScope: 'subject_runtime',
+      resourceKind: 'standing_memory',
+      path: './standing_memory.json',
+      status: 'failed',
+      observation: { exists: false },
+    });
+
+    expect(canonical.boundary.is_canonical_path).toBe(true);
+    expect(nonCanonical.boundary.is_canonical_path).toBe(false);
+    expect(nonCanonical.boundary.canonical_path).toBe('data/intelligence/memory/standing_memory.json');
+  });
+
   it('runs an agent_run action through the unified agent receipt path', async () => {
     const ctx = makeAgenticCtx({
       status: 'completed',
@@ -371,6 +394,34 @@ describe('controlled action handlers', () => {
     expect(verification.status).toBe('partial');
     expect(verification.value.schema_status).toBe('invalid');
     expect(verification.value.execution_status).toBe('completed');
+  });
+
+  it('normalizes evidence_summary into agent_run summary', async () => {
+    const ctx = makeAgenticCtx({
+      status: 'completed',
+      evidence_summary: 'Evidence summary became the top-level summary.',
+      evidence: { observations: ['summary normalized'] },
+      outputs: { recommendation: 'continue' },
+    });
+
+    const result = await actionHandlers.agent_run({
+      type: 'agent_run',
+      description: 'Inspect evidence_summary normalization',
+      params: {
+        run_spec: {
+          primary_cwd_kind: 'subject_runtime',
+          permission_profile: 'read_only',
+          provider: 'llm_only',
+          intent: 'Verify evidence_summary fallback.',
+          context: { why_now: 'verify receipt normalization' },
+          expected_output: ['summary', 'evidence'],
+        },
+      },
+    }, ctx);
+
+    expect(result.message).toBe('Evidence summary became the top-level summary.');
+    expect(result.schema_status).toBe('valid');
+    expect(result.success).toBe(true);
   });
 
   it('blocks agent_run before agent execution when the execution package is incomplete', async () => {

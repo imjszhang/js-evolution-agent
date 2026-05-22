@@ -427,6 +427,7 @@ function buildPromptZh({ constitution, skill, subject, contextJson }) {
 4. 尽量引用可追溯的 id（如 observation、probe_result、goal_event、action_receipt、intel_report、evolution_event）。
 5. 报告应覆盖：本轮事实、长期趋势、证据不足处、风险、下一轮建议，以及 standing_memory 应如何更新的要点。
 6. 标题与小节标题用简明主题短语（例如「本轮结论」「证据缺口」），禁止使用文言对联式或隐喻式标题。
+7. 没有 boundary 的缺失观察不得升级成全局不存在；没有 layer 的 action 结果不得升级成执行结论。
 
 === 文献 1：Cyber-Taoist 宪章（CONSTITUTION.md，全文） ===
 ${constitution || '(missing)'}
@@ -461,6 +462,7 @@ Output constraints:
 4. Prefer traceable ids where relevant (observation, probe_result, goal_event, action_receipt, intel_report, evolution_event).
 5. Cover current cycle facts, long-term trends, evidence gaps, risks, next-cycle recommendations, and how standing_memory should be updated.
 6. Use concise, literal section headings (for example “Cycle conclusion”, “Evidence gaps”); avoid purple prose titles.
+7. Do not upgrade missing observations without boundary into global non-existence, and do not upgrade action results without layer metadata into execution conclusions.
 
 === Document 1: Cyber-Taoist Constitution (CONSTITUTION.md, full text) ===
 ${constitution || '(missing)'}
@@ -655,12 +657,23 @@ const REFUTED_REMEMBERED_PATTERNS = [
   /worker\s+(?:is\s+)?(?:app-level\s+)?zombie/i,
   /skillType\s*=\s*freeze[\s\S]{0,120}(?:account|publish|publishing|channel|frozen|locked|unfreeze|冻结|账号|账户|发布通道|发布|解冻)/i,
   /(?:account|publish|publishing|channel|frozen|locked|unfreeze|冻结|账号|账户|发布通道|发布|解冻)[\s\S]{0,120}skillType\s*=\s*freeze/i,
+  /(?:ENOENT|not\s+found|missing|does\s+not\s+exist|不存在|缺失)[\s\S]{0,160}(?:\.\/)?standing_memory\.json[\s\S]{0,160}(?:canonical|global|authoritative|memory\s+does\s+not\s+exist|不存在)/i,
+  /(?:\.\/)?standing_memory\.json[\s\S]{0,160}(?:ENOENT|not\s+found|missing|does\s+not\s+exist|不存在|缺失)[\s\S]{0,160}(?:canonical|global|authoritative|memory\s+does\s+not\s+exist|不存在)/i,
 ];
 
 function isRefutedRememberedClaim(item) {
   const summary = String(item?.summary ?? '');
   if (!summary.trim()) return false;
   return REFUTED_REMEMBERED_PATTERNS.some((pattern) => pattern.test(summary));
+}
+
+function isPathScopeMismatchRememberedClaim(item) {
+  const summary = String(item?.summary ?? '');
+  if (!summary.trim()) return false;
+  const mentionsStandingMemory = /(?:^|[^\w/])(?:\.\/)?standing_memory\.json\b/i.test(summary);
+  const mentionsCanonical = summary.includes(STANDING_MEMORY_CANONICAL_PATH);
+  const mentionsMissing = /ENOENT|not\s+found|missing|does\s+not\s+exist|不存在|缺失/i.test(summary);
+  return mentionsStandingMemory && !mentionsCanonical && mentionsMissing;
 }
 
 function normalizeRememberedItems(items) {
@@ -671,6 +684,7 @@ function normalizeRememberedItems(items) {
     const sourceType = item?.source?.source_type ?? null;
     if (sourceType === 'standing_memory') continue;
     if (isRefutedRememberedClaim(item)) continue;
+    if (isPathScopeMismatchRememberedClaim(item)) continue;
     const sourceId = seenSourceId(item);
     if (!sourceId) continue;
     const key = rememberedDedupeKey(item, sourceId);

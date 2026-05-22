@@ -89,6 +89,8 @@ export function buildObservationEvidenceGuard({
       'Previous reports, previous observations, and standing_memory are clues only, not current file facts.',
       'If a claim matches forbidden_claim_patterns, mark it hallucinated/unverified unless direct evidence is cited.',
       'Do not infer current metrics from filenames, historical reports, or narrative summaries.',
+      'No Boundary, No Fact: missing/blocked/no-match file observations require execution_root, resource_scope, resource_kind, and path; otherwise they are only scoped gaps.',
+      'No Layer, No Execution Conclusion: action results require execution/schema/semantic layer metadata before they can support execution conclusions.',
     ],
     source_requirements: {
       json_field_claim: ['source_path', 'json_pointer', 'observed_value_or_redacted_value'],
@@ -114,6 +116,8 @@ export function formatObservationEvidenceGuard(guard) {
     '- Any JSON field claim must include `source_path` and `json_pointer`.',
     '- Any metric claim must include `source_path` plus a field, line, or API response reference.',
     '- If a field or file is not directly read in this cycle, report it as an information gap.',
+    '- No Boundary, No Fact: missing, blocked, no-match, or empty file observations must include `execution_root`, `resource_scope`, `resource_kind`, and `path`; without that boundary they are not global facts.',
+    '- No Layer, No Execution Conclusion: action results must distinguish execution, schema, and semantic layers; without layer metadata, keep the statement as a receipt claim.',
     '',
     '### Known Schema Guards',
     `- \`data/evolution/daemon/worker-state.json\` allowed top-level keys: ${guard.schema_guards[0].allowed_top_level_keys.map((k) => `\`${k}\``).join(', ')}.`,

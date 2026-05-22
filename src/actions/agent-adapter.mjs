@@ -271,6 +271,8 @@ function buildPrompt(action, ctx) {
       next_actions: [],
       confidence: 0.0,
     }),
+    '',
+    'The final response must be one strict JSON object with top-level status, summary, evidence, and outputs. If you have evidence_summary, also copy it to summary.',
   ].join('\n');
 
   return { system, user };
@@ -373,6 +375,7 @@ function buildExecutionPackagePrompt(action, ctx) {
       requires_approval: false,
       confidence: 0.0,
     }),
+    '最终回复必须是一个严格 JSON 对象，顶层必须包含 status、summary、evidence、outputs；如果已有 evidence_summary，也要复制为 summary。',
     reportText ? [
       '',
       '参考上下文：Phase 1 情报报告全文',
@@ -396,10 +399,11 @@ function normalizeAgentResult(parsed, rawText, provider) {
   const status = String(obj.status ?? 'completed');
   const requiresApproval = Boolean(obj.requires_approval || status === 'requires_human_review');
   const outputs = asObject(obj.outputs);
+  const summary = obj.summary ?? obj.evidence_summary ?? outputs.summary ?? outputs.evidence_summary ?? rawText ?? '';
   return {
     provider,
     status,
-    summary: String(obj.summary ?? rawText ?? '').slice(0, 4000),
+    summary: String(summary).slice(0, 4000),
     action_type: obj.action_type ?? null,
     action_id: obj.action_id ?? null,
     served_goal: obj.served_goal ?? obj.serves_goal ?? null,
@@ -448,7 +452,10 @@ function validateAgentReceipt(action, agent = {}) {
   const evidence = asObject(agent.evidence);
   const writes = asObject(agent.writes);
   const outputs = asObject(agent.outputs);
-  const rawReceipt = unwrapReceiptObject(strictRawReceipt(agent.raw_response));
+  const parsedReceipt = unwrapReceiptObject(strictRawReceipt(agent.raw_response));
+  const rawReceipt = parsedReceipt && !parsedReceipt.summary && parsedReceipt.evidence_summary
+    ? { ...parsedReceipt, summary: parsedReceipt.evidence_summary }
+    : parsedReceipt;
   const missing = [];
 
   if (!rawReceipt) missing.push('strict JSON receipt');
@@ -599,6 +606,7 @@ function buildAgentVerificationPrompt(action, validation, attempt) {
     '',
     'If the task is not actually complete, continue the missing work now in this same session.',
     'When it is complete, reply with exactly one strict JSON object matching the required receipt contract.',
+    'The top-level JSON object must include status, summary, evidence, and outputs. If your draft has evidence_summary but no summary, copy evidence_summary to summary.',
     'Do not include Markdown, commentary, or code fences around the JSON.',
     '',
     `verification_attempt: ${attempt}/${AGENT_VERIFICATION_ATTEMPTS}`,

@@ -11,6 +11,7 @@ import {
   resolveActionExecutionRoots,
   rootMetadata,
 } from './execution-root.mjs';
+import { buildEvidenceContract } from './resource-registry.mjs';
 
 const TEXT_EXTENSIONS = new Set([
   '.js',
@@ -119,6 +120,23 @@ function blockedResult(action, ctx, reason, extra = {}) {
     reason,
     ...extra,
   };
+}
+
+function probeEvidenceContract(roots, result, path = null, layer = 'resource') {
+  return buildEvidenceContract({
+    executionRoot: roots?.executionRoot ?? null,
+    resourceScope: roots?.resourceScope,
+    resourceKind: roots?.resourceKind,
+    rootResolutionSource: roots?.rootResolutionSource,
+    path: path ?? result?.evidence?.path ?? result?.evidence?.target ?? roots?.relativeTargets?.[0] ?? null,
+    status: result?.status ?? null,
+    observation: {
+      status: result?.status ?? null,
+      exists: result?.evidence?.exists ?? null,
+      reason: result?.reason ?? result?.evidence?.reason ?? null,
+    },
+    evidenceLayer: layer,
+  });
 }
 
 function safeStat(fullPath) {
@@ -615,7 +633,19 @@ export function runReadOnlyProbe(action, ctx) {
       resource_scope: metadata.resource_scope,
       root_resolution_source: metadata.root_resolution_source,
       relative_targets: metadata.relative_targets,
-      evidence: metadata,
+      evidence: {
+        ...metadata,
+        evidence_contract: buildEvidenceContract({
+          executionRoot: roots.executionRoot,
+          resourceScope: roots.resourceScope,
+          resourceKind: roots.resourceKind,
+          rootResolutionSource: roots.rootResolutionSource,
+          path: roots.relativeTargets?.[0] ?? null,
+          status: 'blocked',
+          observation: { status: 'blocked', reason: 'root_mismatch' },
+          evidenceLayer: 'resource',
+        }),
+      },
       success_signal_matched: false,
       failure_signal_matched: true,
       death_boundary_triggered: false,
@@ -638,6 +668,16 @@ export function runReadOnlyProbe(action, ctx) {
         resource_kind: roots.resourceKind,
         resource_scope: roots.resourceScope,
         relative_targets: roots.relativeTargets,
+        evidence_contract: buildEvidenceContract({
+          executionRoot: null,
+          resourceScope: roots.resourceScope,
+          resourceKind: roots.resourceKind,
+          rootResolutionSource: roots.rootResolutionSource,
+          path: roots.relativeTargets?.[0] ?? null,
+          status: 'blocked',
+          observation: { status: 'blocked', reason: 'missing executionRoot' },
+          evidenceLayer: 'resource',
+        }),
       },
       success_signal_matched: false,
       failure_signal_matched: true,
@@ -697,6 +737,7 @@ export function runReadOnlyProbe(action, ctx) {
       ...rootMetadata(roots),
       execution_root: roots.executionRoot,
       ...(result.evidence ?? {}),
+      evidence_contract: probeEvidenceContract(roots, result),
     },
   };
 }

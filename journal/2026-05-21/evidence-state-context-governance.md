@@ -545,6 +545,28 @@ flowchart TD
 | [`test/actions.test.mjs`](../../test/actions.test.mjs) | 覆盖 canonical memory 资源识别，以及 Claude prompt 包含 canonical path 契约 |
 | [`test/intelligence.test.mjs`](../../test/intelligence.test.mjs) | 覆盖 report context 中 standing_memory path metadata |
 
+### 第十三阶段 证据边界契约
+
+第十二阶段之后，canonical path 契约已经让系统知道 `standing_memory` 的权威位置，但残留问题显示这仍是一个更泛化的问题：路径缺失、blocked、no match、empty 等观察如果没有边界，就容易被升级为全局事实；执行 receipt 如果没有层级，就容易把“执行发生了”“schema 不合格”“语义上是否有效”混成一个结论。
+
+第十三阶段的原则是：**Fact = boundary + observation + layer**。任何结论都必须能回答三个问题：在哪个边界观察、实际看到什么、这个结论属于资源层/执行层/schema 层/语义层中的哪一层。没有 boundary 的缺失观察只能是“该边界下没看到”；没有 layer 的 action 结果只能是 receipt claim，不能直接成为执行结论。
+
+涉及文件：
+
+| 文件 | 第十三阶段变化 |
+| --- | --- |
+| [`src/actions/resource-registry.mjs`](../../src/actions/resource-registry.mjs) | 新增轻量 `buildEvidenceContract()` 和 canonical resource path helper，输出 `boundary/observation/evidence_layer` plain object |
+| [`src/actions/probe-runner.mjs`](../../src/actions/probe-runner.mjs) | probe 结果在 blocked、missing、failed 等路径中写入 `evidence.evidence_contract`，带上 execution root、resource scope/kind、path、status |
+| [`src/actions/handlers.mjs`](../../src/actions/handlers.mjs) | `agent_run` 和 agent action receipt 写入执行层 `evidence_contract`，并把 execution/schema/acceptance 状态放进 observation |
+| [`src/actions/agent-adapter.mjs`](../../src/actions/agent-adapter.mjs) | final receipt 模板要求顶层 `status/summary/evidence/outputs`；`evidence_summary` 可归一化为 `summary`，但仍保留真实 schema 判断 |
+| [`src/intelligence/decision-brief.mjs`](../../src/intelligence/decision-brief.mjs) | TDB 的 structured Seen 消费 `boundary/observation/evidence_layer`，并生成 `boundary_summary`，避免裸 missing claim 升级 |
+| [`src/intelligence/report-builder.mjs`](../../src/intelligence/report-builder.mjs) | report prompt 增加通用边界/层级规则；Remembered admission 过滤非 canonical `./standing_memory.json` ENOENT 推导 |
+| [`src/intelligence/conversation-context.mjs`](../../src/intelligence/conversation-context.mjs) | semantic verification prompt 增加 `No Boundary, No Fact` 与 `No Layer, No Execution Conclusion` |
+| [`src/intelligence/observation-guard.mjs`](../../src/intelligence/observation-guard.mjs) | guard 明确缺失类文件观察必须携带 `execution_root/resource_scope/resource_kind/path`，action 结果必须区分执行/schema/语义层 |
+| [`test/actions.test.mjs`](../../test/actions.test.mjs) | 覆盖 canonical 与非 canonical path missing 判定差异、`evidence_summary` 归一化，以及 agent_run receipt contract |
+| [`test/intelligence.test.mjs`](../../test/intelligence.test.mjs) | 覆盖 TDB 边界消费、guard 通用规则、非 canonical ENOENT 不进入 `Remembered` |
+| [`test/conversational-intel-pipeline.test.mjs`](../../test/conversational-intel-pipeline.test.mjs) | 覆盖 verify prompt 明确包含 boundary/layer 规则 |
+
 ---
 
 ## 5. 验证与测试
@@ -904,6 +926,39 @@ ReadLints
 
 结果：[`src/actions/resource-registry.mjs`](../../src/actions/resource-registry.mjs)、[`src/actions/agent-adapter.mjs`](../../src/actions/agent-adapter.mjs)、[`src/intelligence/report-builder.mjs`](../../src/intelligence/report-builder.mjs)、[`src/intelligence/observation-guard.mjs`](../../src/intelligence/observation-guard.mjs)、[`test/actions.test.mjs`](../../test/actions.test.mjs)、[`test/intelligence.test.mjs`](../../test/intelligence.test.mjs) 无 linter 错误。
 
+第十三阶段证据边界契约补充了边界/观察/层级回归：
+
+```bash
+npm test -- test/actions.test.mjs test/intelligence.test.mjs test/conversational-intel-pipeline.test.mjs
+```
+
+新增覆盖点：
+
+- `buildEvidenceContract()` 会区分 canonical `data/intelligence/memory/standing_memory.json` 和非 canonical `./standing_memory.json`，后者缺失不会被当成 canonical missing。
+- probe/action/agent_run receipt 会携带 `evidence_contract.boundary`、`observation` 和 `evidence_layer`。
+- TDB 的 structured Seen 会输出边界摘要，旧的 root ENOENT agent claim 不会直接升级为 Inferred 的事实依据。
+- `evidence_summary` 缺 `summary` 时会被归一化，降低 schema_invalid 噪声，但执行/schema/acceptance 三层状态仍保留。
+- Verify prompt 和 Observation Evidence Guard 都明确 `No Boundary, No Fact`、`No Layer, No Execution Conclusion`。
+- 非 canonical `./standing_memory.json` ENOENT 推导不会进入 `standing_memory` 的 `## Remembered`。
+
+结果：3 个测试文件、118 个测试全部通过。
+
+随后运行完整测试：
+
+```bash
+npm test
+```
+
+结果：4 个测试文件、208 个测试全部通过。
+
+静态诊断：
+
+```bash
+ReadLints
+```
+
+结果：[`src/actions/resource-registry.mjs`](../../src/actions/resource-registry.mjs)、[`src/actions/probe-runner.mjs`](../../src/actions/probe-runner.mjs)、[`src/actions/handlers.mjs`](../../src/actions/handlers.mjs)、[`src/actions/agent-adapter.mjs`](../../src/actions/agent-adapter.mjs)、[`src/intelligence/decision-brief.mjs`](../../src/intelligence/decision-brief.mjs)、[`src/intelligence/report-builder.mjs`](../../src/intelligence/report-builder.mjs)、[`src/intelligence/conversation-context.mjs`](../../src/intelligence/conversation-context.mjs)、[`src/intelligence/observation-guard.mjs`](../../src/intelligence/observation-guard.mjs)、[`test/actions.test.mjs`](../../test/actions.test.mjs)、[`test/intelligence.test.mjs`](../../test/intelligence.test.mjs)、[`test/conversational-intel-pipeline.test.mjs`](../../test/conversational-intel-pipeline.test.mjs) 无 linter 错误。
+
 ---
 
 ## 6. 后续演化
@@ -1042,6 +1097,17 @@ ReadLints
 3. **检查 v10 目标是否消费新契约**  
    `verify-auditable-memory` 子目标应围绕 canonical path 的可审计性展开，而不是重新触发“清理不存在的 Remembered 区”叙事。
 
+第十三阶段之后，后续验证重点是：
+
+1. **确认缺失类观察不再跨边界升级**  
+   下一轮如果看到 `ENOENT`、blocked、no match 或 empty，应检查报告是否写明 `execution_root/resource_scope/resource_kind/path`。没有这些字段的说法只能留作 scoped gap，不能写成全局不存在。
+
+2. **确认 schema_invalid 不再覆盖执行事实**  
+   后续 verify report 应继续区分 `execution_status`、`schema_status`、`acceptance_status`。如果执行有证据但 receipt 格式不合格，应写成 schema 层问题，而不是执行失败。
+
+3. **观察 boundary contract 是否能泛化到其他资源**  
+   `standing_memory` 只是示例。后续应看 evolution diary、goal state、policy、source root 等资源是否也能按同一契约表达“在哪个边界看到了什么”。
+
 ---
 
 ## 附：本轮对话问题—思考—方案—执行对照
@@ -1049,7 +1115,7 @@ ReadLints
 | 阶段 | 内容 |
 | --- | --- |
 | 问题 | 进化工作流调用多篇历史内容时，没有充分注明时间，也没有明确要求按最新结论裁决，导致旧结论可能继续污染后续轮次 |
-| 思考 | 第一性原理下，持续演化系统不能依赖语言连续性维持记忆，而要依赖证据状态维持记忆；20 轮后进一步确认污染源在 observe 阶段更早出现；继续加治理术语又会让系统过度复杂；3 轮三栏验证后确认 prompt 语言不足以阻止污染回流；后续又确认自然语言不能被排除，问题是不能把“来源说了”写成“事实成立”；再后续发现裸 id 会让探针误把数据源记录当文件名搜索；最新 3 轮则显示系统已能发现问题，但目标、memory、权限三个执行契约不能稳定消费发现；再后一轮暴露的是执行边界问题：receipt 结构化状态与 agent claim 被混判，Analyze+Decide JSON 失败会杀死 cycle；第九阶段则确认直接编辑 `standing_memory.json` 不能持久，因为下一轮全量重写会复活旧 Remembered 污染；第十阶段进一步确认系统把执行是否完成、receipt 格式是否合格、模型如何解释执行结果混成了一个 `partial`；第十一阶段则确认格式正确的 Remembered 仍可能携带已证伪内容，必须在 admission 源头过滤；第十二阶段确认问题转为同名不同物，root ENOENT、cycle 快照和 canonical memory 被混成一个资源 |
-| 方案 | 第一阶段新增 `Temporal Decision Brief`；第二阶段新增 `Observation Evidence Guard`，并把 Observation Report 降级为模型 claim；第三阶段统一为 Seen / Inferred / Remembered / Do Not Treat As Seen；第四阶段把 memory Seen 改成代码层写入门禁；第五阶段把自然语言 Seen 统一为 `source claims/records` 来源摘录；第六阶段给 Seen 加 `[source_type:id]` 可重开地址；第七阶段收敛为契约一致、证据可重开、副作用诚实三个执行不变量；第八阶段统一 receipt 结构化状态/agent claim 边界，并把 invalid AI JSON 转成可审计 defer；第九阶段把 Remembered 也改为由 `memory_admission.remembered` 驱动的轻量代码门禁；第十阶段把 agent_run 结果拆成执行层、格式层、解释层三层契约；第十一阶段为 Remembered 增加 refuted claim 内容门禁；第十二阶段固定 standing_memory canonical path 契约 |
-| 执行 | 新增 `decision-brief` 和 `observation-guard`，接入 observe/report/decide/memory 链路，降权历史 Markdown 和 receipt summary，收紧 standing memory，并预留 `claim_ledger`；随后在 TDB、prompt、observe guard、standing memory 中统一三栏语言；在 `report-builder` 中加入 `memory_admission` 与 `enforceStandingMemorySeenGate()`；让 `goal_event`/`evolution_event` 自然语言进入 Seen 时保持来源摘录语义；把 Seen 输出改为 `[evolution_events:...]`、`[goal_events:...]`、`[action_receipts:...]`、`[probe_results:...]`；补齐 `proposed_goal.children` 归一化、`typed_evidence_refs`、partial receipt 门禁和 read_only 写入 warning；最后增加共用 JSON 提取器、Analyze+Decide invalid JSON defer 降级，并更新 receipt policy / verify prompt；随后扩展 `memory_admission.remembered`、新增 Remembered gate，并在写入时统一应用 `enforceStandingMemoryGates()`；之后增加 nested receipt 归一化、拆分 `execution_status/schema_status/acceptance_status`，并让 TDB、verify、goal assessment、diary 消费三层状态；随后新增 `isRefutedRememberedClaim()`，过滤已证伪 remembered claim；本轮新增 `resource_kind=standing_memory`、canonical path prompt、report context path metadata 和 observation guard 路径契约 |
-| 验证 | `ReadLints` 无错误；第一阶段 `npm test` 185 项通过，第二阶段和第三阶段 `npm test` 187 项通过，第四阶段 `npm test` 188 项通过，第五、第六阶段 `npm test` 190 项通过，第七阶段 `npm test` 193 项通过，第八阶段 `npm test` 196 项通过，第九阶段 `npm test` 198 项通过，第十阶段 `npm test` 201 项通过，第十一阶段 `npm test` 202 项通过，第十二阶段 `npm test` 203 项通过 |
+| 思考 | 第一性原理下，持续演化系统不能依赖语言连续性维持记忆，而要依赖证据状态维持记忆；20 轮后进一步确认污染源在 observe 阶段更早出现；继续加治理术语又会让系统过度复杂；3 轮三栏验证后确认 prompt 语言不足以阻止污染回流；后续又确认自然语言不能被排除，问题是不能把“来源说了”写成“事实成立”；再后续发现裸 id 会让探针误把数据源记录当文件名搜索；最新 3 轮则显示系统已能发现问题，但目标、memory、权限三个执行契约不能稳定消费发现；再后一轮暴露的是执行边界问题：receipt 结构化状态与 agent claim 被混判，Analyze+Decide JSON 失败会杀死 cycle；第九阶段则确认直接编辑 `standing_memory.json` 不能持久，因为下一轮全量重写会复活旧 Remembered 污染；第十阶段进一步确认系统把执行是否完成、receipt 格式是否合格、模型如何解释执行结果混成了一个 `partial`；第十一阶段则确认格式正确的 Remembered 仍可能携带已证伪内容，必须在 admission 源头过滤；第十二阶段确认问题转为同名不同物，root ENOENT、cycle 快照和 canonical memory 被混成一个资源；第十三阶段把它抽象为通用证据问题：任何事实都必须带 boundary、observation、layer |
+| 方案 | 第一阶段新增 `Temporal Decision Brief`；第二阶段新增 `Observation Evidence Guard`，并把 Observation Report 降级为模型 claim；第三阶段统一为 Seen / Inferred / Remembered / Do Not Treat As Seen；第四阶段把 memory Seen 改成代码层写入门禁；第五阶段把自然语言 Seen 统一为 `source claims/records` 来源摘录；第六阶段给 Seen 加 `[source_type:id]` 可重开地址；第七阶段收敛为契约一致、证据可重开、副作用诚实三个执行不变量；第八阶段统一 receipt 结构化状态/agent claim 边界，并把 invalid AI JSON 转成可审计 defer；第九阶段把 Remembered 也改为由 `memory_admission.remembered` 驱动的轻量代码门禁；第十阶段把 agent_run 结果拆成执行层、格式层、解释层三层契约；第十一阶段为 Remembered 增加 refuted claim 内容门禁；第十二阶段固定 standing_memory canonical path 契约；第十三阶段统一为 `Fact = boundary + observation + layer` 的证据边界契约 |
+| 执行 | 新增 `decision-brief` 和 `observation-guard`，接入 observe/report/decide/memory 链路，降权历史 Markdown 和 receipt summary，收紧 standing memory，并预留 `claim_ledger`；随后在 TDB、prompt、observe guard、standing memory 中统一三栏语言；在 `report-builder` 中加入 `memory_admission` 与 `enforceStandingMemorySeenGate()`；让 `goal_event`/`evolution_event` 自然语言进入 Seen 时保持来源摘录语义；把 Seen 输出改为 `[evolution_events:...]`、`[goal_events:...]`、`[action_receipts:...]`、`[probe_results:...]`；补齐 `proposed_goal.children` 归一化、`typed_evidence_refs`、partial receipt 门禁和 read_only 写入 warning；最后增加共用 JSON 提取器、Analyze+Decide invalid JSON defer 降级，并更新 receipt policy / verify prompt；随后扩展 `memory_admission.remembered`、新增 Remembered gate，并在写入时统一应用 `enforceStandingMemoryGates()`；之后增加 nested receipt 归一化、拆分 `execution_status/schema_status/acceptance_status`，并让 TDB、verify、goal assessment、diary 消费三层状态；随后新增 `isRefutedRememberedClaim()`，过滤已证伪 remembered claim；第十二阶段新增 `resource_kind=standing_memory`、canonical path prompt、report context path metadata 和 observation guard 路径契约；第十三阶段新增 `buildEvidenceContract()`，让 probe/action/agent_run receipt、TDB、report/verify/guard 和 Remembered admission 消费 boundary/observation/layer |
+| 验证 | `ReadLints` 无错误；第一阶段 `npm test` 185 项通过，第二阶段和第三阶段 `npm test` 187 项通过，第四阶段 `npm test` 188 项通过，第五、第六阶段 `npm test` 190 项通过，第七阶段 `npm test` 193 项通过，第八阶段 `npm test` 196 项通过，第九阶段 `npm test` 198 项通过，第十阶段 `npm test` 201 项通过，第十一阶段 `npm test` 202 项通过，第十二阶段 `npm test` 203 项通过，第十三阶段聚焦测试 118 项通过，全量 `npm test` 208 项通过 |

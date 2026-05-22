@@ -6,6 +6,10 @@ export const RESOURCE_SCOPES = {
   UNKNOWN: 'unknown',
 };
 
+const CANONICAL_RESOURCE_PATHS = {
+  standing_memory: 'data/intelligence/memory/standing_memory.json',
+};
+
 const RESOURCE_RULES = [
   {
     kind: 'standing_memory',
@@ -274,5 +278,40 @@ export function resourceMetadataForRoot(action, ctx, configuredRoot = null) {
     ...resource,
     authoritativeRoot: resolved.root,
     rootResolutionSource: resolved.source,
+  };
+}
+
+export function canonicalPathForResource(resourceKind) {
+  return CANONICAL_RESOURCE_PATHS[resourceKind] ?? null;
+}
+
+export function buildEvidenceContract({
+  executionRoot = null,
+  resourceScope = RESOURCE_SCOPES.UNKNOWN,
+  resourceKind = 'unknown',
+  rootResolutionSource = null,
+  path = null,
+  status = null,
+  observation = null,
+  evidenceLayer = 'resource',
+} = {}) {
+  const canonicalPath = canonicalPathForResource(resourceKind);
+  const normalizedPath = path ? normalizePathText(path) : null;
+  const normalizedCanonical = canonicalPath ? normalizePathText(canonicalPath) : null;
+  return {
+    boundary: {
+      execution_root: executionRoot,
+      resource_scope: resourceScope ?? RESOURCE_SCOPES.UNKNOWN,
+      resource_kind: resourceKind ?? 'unknown',
+      root_resolution_source: rootResolutionSource,
+      path: normalizedPath,
+      canonical_path: canonicalPath,
+      is_canonical_path: Boolean(normalizedPath && normalizedCanonical && normalizedPath === normalizedCanonical),
+    },
+    observation: {
+      status: status ?? observation?.status ?? null,
+      ...asObject(observation),
+    },
+    evidence_layer: evidenceLayer,
   };
 }
