@@ -124,6 +124,14 @@ export function buildEvolutionDiaryContext({
       semantic_status: verification?.semantic?.status ?? null,
       semantic_summary: verification?.semantic?.result?.overall_summary ?? null,
       semantic_next_cycle_focus: verification?.semantic?.result?.next_cycle_focus ?? [],
+      semantic_precedence: 'latest_semantic_verification_over_older_report_or_diary_claims',
+      semantic_verified: asArray(verification?.semantic?.result?.semantic_verified).slice(0, 8).map((item) => ({
+        action_type: item?.action_type ?? null,
+        final_status: item?.final_status ?? null,
+        confidence: item?.confidence ?? null,
+        evidence_summary: item?.evidence_summary ?? null,
+        issues: item?.issues ?? [],
+      })),
       semantic_error: verification?.semantic?.error ?? null,
       mechanical: {
         verified: asArray(verification?.verified).map((r) => ({
@@ -183,6 +191,7 @@ export function buildEvolutionDiaryPrompt({
       '- Do not invent ids, files, tests, writes, success, or failure not present in the context.',
       '- Keep the diary scoped to the active subject runtime; never describe it as a `journal/` project update.',
       '- Prefer traceable facts such as cycle id, action type, report path, verification status, and receipt summaries.',
+      '- If phase3.semantic is present, treat it as the latest interpretation of the executed receipt. Use it to correct stale report/diary inferences, but do not promote semantic summaries to Seen facts.',
       '- Be readable and candid: say what moved, what did not move, and what the next cycle should remember.',
       '',
       'Suggested sections:',
@@ -213,6 +222,7 @@ export function buildEvolutionDiaryPrompt({
     '- 不要编造上下文中不存在的 id、文件、测试、写入、成功或失败结论。',
     '- 只记录 active subject 的运行时进化，不要写成 `journal/` 项目开发日志。',
     '- 尽量引用可追溯事实，例如 cycle id、action type、报告路径、验证状态、receipt 摘要。',
+    '- 如果 phase3.semantic 存在，它是本轮执行 receipt 的最新解释层结论。用它修正旧 report/diary 推断，但不要把 semantic summary 升级成 Seen 事实。',
     '- 文风要像认真复盘的人写给操作者看：清楚、坦诚、可读，说清楚推进了什么、没推进什么、下一轮该记住什么。',
     '- 使用现代汉语书面语，避免文言、玄学散文、典故标题和过度模板化表格。',
     '',

@@ -945,16 +945,31 @@ const builtInActionHandlers = {
     }
     const agentResult = await runAgenticAction(executionAction, ctx);
     const agent = asObject(agentResult.agent);
-    const agentStatus = agent.status ?? (agentResult.success ? 'completed' : 'failed');
+    const executionStatus = agent.execution_status ?? agent.status ?? (agentResult.success ? 'completed' : 'failed');
+    const schemaStatus = agent.schema_status ?? (agentResult.success ? 'valid' : 'invalid');
+    const schemaMissing = asArray(agent.schema_missing);
+    const agentStatus = agent.status ?? executionStatus;
     const requiresApproval = !!agent.requires_approval;
-    const acceptanceStatus = agentResult.success && !requiresApproval ? 'passed' : (requiresApproval ? 'requires_human_review' : 'failed');
+    const hasExecutionEvidence = listCount(agent.evidence) > 0
+      || listCount(agent.writes) > 0
+      || listCount(agent.outputs) > 0
+      || asArray(agent.modified_files).length > 0
+      || asArray(agent.created_files).length > 0;
+    const executionSucceeded = ['completed', 'succeeded', 'improved'].includes(String(executionStatus).toLowerCase())
+      || (hasExecutionEvidence && !['failed', 'blocked'].includes(String(executionStatus).toLowerCase()));
+    const acceptanceStatus = requiresApproval
+      ? 'requires_human_review'
+      : (executionSucceeded && schemaStatus === 'valid' ? 'passed' : (executionSucceeded ? 'schema_invalid' : 'failed'));
     const result = {
-      success: !!agentResult.success && !requiresApproval,
+      success: executionSucceeded && schemaStatus === 'valid' && !requiresApproval,
       status: agentStatus,
+      execution_status: executionStatus,
+      schema_status: schemaStatus,
+      schema_missing: schemaMissing,
       pipeline_status: 'completed',
       agent_status: agentStatus,
       acceptance_status: acceptanceStatus,
-      goal_progress_status: agentResult.success && !requiresApproval ? 'progressed' : 'not_progressed',
+      goal_progress_status: executionSucceeded && hasExecutionEvidence && !requiresApproval ? 'progressed' : 'not_progressed',
       message: agentResult.message ?? agent.summary ?? '',
       provider: agentResult.provider ?? agent.provider ?? null,
       requires_approval: requiresApproval,
@@ -1591,6 +1606,9 @@ export const actionVerifiers = {
         value: {
           success: !!result?.success,
           status: result?.status ?? 'unknown',
+          execution_status: result?.execution_status ?? result?.agent?.execution_status ?? null,
+          schema_status: result?.schema_status ?? result?.agent?.schema_status ?? null,
+          schema_missing: result?.schema_missing ?? result?.agent?.schema_missing ?? [],
           pipeline_status: result?.pipeline_status ?? null,
           agent_status: result?.agent_status ?? null,
           acceptance_status: acceptanceStatus,
@@ -1609,7 +1627,7 @@ export const actionVerifiers = {
         },
         status: result?.status === 'blocked' || acceptanceStatus === 'blocked'
           ? 'blocked'
-          : (acceptanceStatus === 'passed' && goalProgressStatus === 'progressed' ? status : 'partial'),
+        : (goalProgressStatus === 'progressed' && ['passed', 'schema_invalid'].includes(acceptanceStatus) ? status : 'partial'),
       };
     },
   },

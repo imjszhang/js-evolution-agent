@@ -468,6 +468,35 @@ flowchart TD
 | [`src/intelligence/report-builder.mjs`](../../src/intelligence/report-builder.mjs) | 更新 standing memory prompt，明确旧 memory 只是 continuity hint，直接编辑 `standing_memory.json` 不是持久修复 |
 | [`test/intelligence.test.mjs`](../../test/intelligence.test.mjs) | 覆盖污染 Remembered 不复活、receipt summary 只以完整 `[action_receipts:...] agent_claim:` 进入 Remembered、重复 goal_event 只保留单条规范化记录 |
 
+### 第十阶段执行事实三层契约
+
+第九阶段之后又跑了 3 轮，`Seen` 和 `Remembered` 的写入门禁基本生效：`Seen` 能稳定保持 `[source_type:id]`，`Remembered` 也不再复活孤立短 id，而是以 `[action_receipts:...] agent_claim:` 形式保留线索。
+
+但新的执行消费问题浮出来了：系统把三件事混在同一个 `status/partial` 里。
+
+| 层次 | 旧问题 | 第十阶段含义 |
+| --- | --- | --- |
+| 执行层 | agent 实际完成了探针，但因为最终 JSON receipt 格式不合格被标成 partial | `execution_status` 表示任务是否真的完成、是否有 evidence/output、是否越权 |
+| 格式层 | nested `{ receipt: {...} }` 或缺顶层 `summary` 会让机器消费者以为执行失败 | `schema_status` / `schema_missing` 单独表示 receipt 是否满足宿主 schema |
+| 解释层 | verify/report/diary 会把模型总结当成事实，或者把 Remembered agent claim 当成结构缺口 | semantic verification 是最新解释层证据；`Remembered` 不需要进入 `typed_evidence_refs` |
+
+第一性原理是：**下一轮应该相信最新可重开的执行事实，而不是相信上一轮模型怎么描述它。**
+
+涉及文件：
+
+| 文件 | 第十阶段变化 |
+| --- | --- |
+| [`src/actions/agent-adapter.mjs`](../../src/actions/agent-adapter.mjs) | `normalizeAgentResult()` / `validateAgentReceipt()` 前置支持 nested `{ receipt: {...} }` 提升；输出 `schema_status` 和 `schema_missing`；schema invalid 不再直接改写 agent 原始执行状态 |
+| [`src/actions/handlers.mjs`](../../src/actions/handlers.mjs) | `agent_run` result 拆分 `execution_status`、`schema_status`、`acceptance_status`、`goal_progress_status`；有执行 evidence 但 schema invalid 时可保留 `goal_progress_status=progressed` |
+| [`src/actions/handlers.mjs`](../../src/actions/handlers.mjs) | `actionVerifiers.agent_run.verify()` 暴露三层状态，把 `schema_invalid` 作为格式问题，而不是执行失败 |
+| [`src/intelligence/decision-brief.mjs`](../../src/intelligence/decision-brief.mjs) | `actionReceiptStatuses()` 纳入 `execution_status`、`schema_status`、`acceptance_status`、`goal_progress_status`，供下一轮 TDB 结构化消费 |
+| [`src/intelligence/conversation-context.mjs`](../../src/intelligence/conversation-context.mjs) | Phase 3 semantic verify prompt 明确区分执行事实、receipt schema、模型解释；同时说明 `typed_evidence_refs` 只用于 `Seen`，不要求 `Remembered agent_claim` 进入其中 |
+| [`src/intelligence/goal-assessor.mjs`](../../src/intelligence/goal-assessor.mjs) | goal assessment context 标记 `verification.semantic` 的优先级高于旧 report/diary/remembered claim，但仍不把它升级成 Seen |
+| [`src/intelligence/evolution-diary-builder.mjs`](../../src/intelligence/evolution-diary-builder.mjs) | diary context 增加 semantic verification 摘要和优先级提示，让日记用最新执行解释修正旧推断 |
+| [`test/actions.test.mjs`](../../test/actions.test.mjs) | 覆盖 nested receipt 自动归一化、schema invalid 不抹掉 `execution_status=completed`、verifier 能区分格式问题与执行失败 |
+| [`test/intelligence.test.mjs`](../../test/intelligence.test.mjs) | 覆盖 TDB `Seen` 包含三层 receipt 状态字段，且 receipt summary 仍只作为 Remembered agent claim |
+| [`test/conversational-intel-pipeline.test.mjs`](../../test/conversational-intel-pipeline.test.mjs) | 覆盖 semantic verify prompt 明确三层状态和 Remembered/typed_evidence_refs 边界 |
+
 ---
 
 ## 5. 验证与测试
@@ -723,6 +752,50 @@ ReadLints
 
 结果：[`src/intelligence/report-builder.mjs`](../../src/intelligence/report-builder.mjs)、[`test/intelligence.test.mjs`](../../test/intelligence.test.mjs) 无 linter 错误。
 
+第十阶段执行事实三层契约补充了三类回归：
+
+```bash
+npm test -- test/actions.test.mjs
+```
+
+新增覆盖点：
+
+- nested `{ receipt: {...} }` 会在校验前提升为顶层 receipt。
+- 执行已经完成但 schema 缺字段时，`execution_status=completed`、`schema_status=invalid`，不再把执行事实伪装成 `partial`。
+- `actionVerifiers.agent_run.verify()` 能区分 `schema_invalid` 和真正执行失败。
+
+结果：1 个测试文件、56 个测试全部通过。
+
+随后运行 intelligence 与 pipeline 聚焦测试：
+
+```bash
+npm test -- test/intelligence.test.mjs test/conversational-intel-pipeline.test.mjs
+```
+
+新增覆盖点：
+
+- TDB / standing memory 的 `Seen` 包含结构化 receipt 三层状态字段，但不包含 receipt summary。
+- verify prompt 明确 `Remembered` 的 `[action_receipts:...] agent_claim:` 不要求进入 `typed_evidence_refs`。
+- 最新 semantic verification 可作为下一轮上下文中覆盖旧推断的解释层证据。
+
+结果：2 个测试文件、55 个测试全部通过。
+
+随后运行完整测试：
+
+```bash
+npm test
+```
+
+结果：4 个测试文件、201 个测试全部通过。
+
+静态诊断：
+
+```bash
+ReadLints
+```
+
+结果：[`src/actions/agent-adapter.mjs`](../../src/actions/agent-adapter.mjs)、[`src/actions/handlers.mjs`](../../src/actions/handlers.mjs)、[`src/intelligence/decision-brief.mjs`](../../src/intelligence/decision-brief.mjs)、[`src/intelligence/conversation-context.mjs`](../../src/intelligence/conversation-context.mjs)、[`src/intelligence/goal-assessor.mjs`](../../src/intelligence/goal-assessor.mjs)、[`src/intelligence/evolution-diary-builder.mjs`](../../src/intelligence/evolution-diary-builder.mjs)、[`test/actions.test.mjs`](../../test/actions.test.mjs)、[`test/intelligence.test.mjs`](../../test/intelligence.test.mjs)、[`test/conversational-intel-pipeline.test.mjs`](../../test/conversational-intel-pipeline.test.mjs) 无 linter 错误。
+
 ---
 
 ## 6. 后续演化
@@ -828,6 +901,17 @@ ReadLints
 3. **把持久修复转向 admission 源头**  
    后续不应再依赖 `workspace_write` 直接编辑 `standing_memory.json` 作为长期解法。真正持久的修复应进入 `memory_admission`、TDB 或对应原始记录的生成逻辑。
 
+第十阶段之后，后续验证重点是：
+
+1. **观察 schema invalid 是否不再污染执行判断**  
+   后续 verify report 应把“执行有证据但 receipt schema 不合格”写成格式层问题，而不是把 action 简化为执行失败或无进展。
+
+2. **确认 Remembered 不再被报成 typed_evidence_refs 缺口**  
+   `[action_receipts:...] agent_claim:` 是背景线索，只要有完整可重开地址，就不应被当成 Seen 结构缺失。
+
+3. **检查 semantic verification 是否能覆盖旧推断链**  
+   如果新一轮直接证据证伪了 worker 僵死、memory 污染等旧判断，goal assessment 和 diary 应优先采用最新 semantic verification，而不是继续复制旧 report 叙事。
+
 ---
 
 ## 附：本轮对话问题—思考—方案—执行对照
@@ -835,7 +919,7 @@ ReadLints
 | 阶段 | 内容 |
 | --- | --- |
 | 问题 | 进化工作流调用多篇历史内容时，没有充分注明时间，也没有明确要求按最新结论裁决，导致旧结论可能继续污染后续轮次 |
-| 思考 | 第一性原理下，持续演化系统不能依赖语言连续性维持记忆，而要依赖证据状态维持记忆；20 轮后进一步确认污染源在 observe 阶段更早出现；继续加治理术语又会让系统过度复杂；3 轮三栏验证后确认 prompt 语言不足以阻止污染回流；后续又确认自然语言不能被排除，问题是不能把“来源说了”写成“事实成立”；再后续发现裸 id 会让探针误把数据源记录当文件名搜索；最新 3 轮则显示系统已能发现问题，但目标、memory、权限三个执行契约不能稳定消费发现；再后一轮暴露的是执行边界问题：receipt 结构化状态与 agent claim 被混判，Analyze+Decide JSON 失败会杀死 cycle；第九阶段则确认直接编辑 `standing_memory.json` 不能持久，因为下一轮全量重写会复活旧 Remembered 污染 |
-| 方案 | 第一阶段新增 `Temporal Decision Brief`；第二阶段新增 `Observation Evidence Guard`，并把 Observation Report 降级为模型 claim；第三阶段统一为 Seen / Inferred / Remembered / Do Not Treat As Seen；第四阶段把 memory Seen 改成代码层写入门禁；第五阶段把自然语言 Seen 统一为 `source claims/records` 来源摘录；第六阶段给 Seen 加 `[source_type:id]` 可重开地址；第七阶段收敛为契约一致、证据可重开、副作用诚实三个执行不变量；第八阶段统一 receipt 结构化状态/agent claim 边界，并把 invalid AI JSON 转成可审计 defer；第九阶段把 Remembered 也改为由 `memory_admission.remembered` 驱动的轻量代码门禁 |
-| 执行 | 新增 `decision-brief` 和 `observation-guard`，接入 observe/report/decide/memory 链路，降权历史 Markdown 和 receipt summary，收紧 standing memory，并预留 `claim_ledger`；随后在 TDB、prompt、observe guard、standing memory 中统一三栏语言；在 `report-builder` 中加入 `memory_admission` 与 `enforceStandingMemorySeenGate()`；让 `goal_event`/`evolution_event` 自然语言进入 Seen 时保持来源摘录语义；把 Seen 输出改为 `[evolution_events:...]`、`[goal_events:...]`、`[action_receipts:...]`、`[probe_results:...]`；补齐 `proposed_goal.children` 归一化、`typed_evidence_refs`、partial receipt 门禁和 read_only 写入 warning；最后增加共用 JSON 提取器、Analyze+Decide invalid JSON defer 降级，并更新 receipt policy / verify prompt；本轮扩展 `memory_admission.remembered`、新增 Remembered gate，并在写入时统一应用 `enforceStandingMemoryGates()` |
-| 验证 | `ReadLints` 无错误；第一阶段 `npm test` 185 项通过，第二阶段和第三阶段 `npm test` 187 项通过，第四阶段 `npm test` 188 项通过，第五、第六阶段 `npm test` 190 项通过，第七阶段 `npm test` 193 项通过，第八阶段 `npm test` 196 项通过，第九阶段 `npm test` 198 项通过 |
+| 思考 | 第一性原理下，持续演化系统不能依赖语言连续性维持记忆，而要依赖证据状态维持记忆；20 轮后进一步确认污染源在 observe 阶段更早出现；继续加治理术语又会让系统过度复杂；3 轮三栏验证后确认 prompt 语言不足以阻止污染回流；后续又确认自然语言不能被排除，问题是不能把“来源说了”写成“事实成立”；再后续发现裸 id 会让探针误把数据源记录当文件名搜索；最新 3 轮则显示系统已能发现问题，但目标、memory、权限三个执行契约不能稳定消费发现；再后一轮暴露的是执行边界问题：receipt 结构化状态与 agent claim 被混判，Analyze+Decide JSON 失败会杀死 cycle；第九阶段则确认直接编辑 `standing_memory.json` 不能持久，因为下一轮全量重写会复活旧 Remembered 污染；第十阶段进一步确认系统把执行是否完成、receipt 格式是否合格、模型如何解释执行结果混成了一个 `partial` |
+| 方案 | 第一阶段新增 `Temporal Decision Brief`；第二阶段新增 `Observation Evidence Guard`，并把 Observation Report 降级为模型 claim；第三阶段统一为 Seen / Inferred / Remembered / Do Not Treat As Seen；第四阶段把 memory Seen 改成代码层写入门禁；第五阶段把自然语言 Seen 统一为 `source claims/records` 来源摘录；第六阶段给 Seen 加 `[source_type:id]` 可重开地址；第七阶段收敛为契约一致、证据可重开、副作用诚实三个执行不变量；第八阶段统一 receipt 结构化状态/agent claim 边界，并把 invalid AI JSON 转成可审计 defer；第九阶段把 Remembered 也改为由 `memory_admission.remembered` 驱动的轻量代码门禁；第十阶段把 agent_run 结果拆成执行层、格式层、解释层三层契约 |
+| 执行 | 新增 `decision-brief` 和 `observation-guard`，接入 observe/report/decide/memory 链路，降权历史 Markdown 和 receipt summary，收紧 standing memory，并预留 `claim_ledger`；随后在 TDB、prompt、observe guard、standing memory 中统一三栏语言；在 `report-builder` 中加入 `memory_admission` 与 `enforceStandingMemorySeenGate()`；让 `goal_event`/`evolution_event` 自然语言进入 Seen 时保持来源摘录语义；把 Seen 输出改为 `[evolution_events:...]`、`[goal_events:...]`、`[action_receipts:...]`、`[probe_results:...]`；补齐 `proposed_goal.children` 归一化、`typed_evidence_refs`、partial receipt 门禁和 read_only 写入 warning；最后增加共用 JSON 提取器、Analyze+Decide invalid JSON defer 降级，并更新 receipt policy / verify prompt；随后扩展 `memory_admission.remembered`、新增 Remembered gate，并在写入时统一应用 `enforceStandingMemoryGates()`；本轮增加 nested receipt 归一化、拆分 `execution_status/schema_status/acceptance_status`，并让 TDB、verify、goal assessment、diary 消费三层状态 |
+| 验证 | `ReadLints` 无错误；第一阶段 `npm test` 185 项通过，第二阶段和第三阶段 `npm test` 187 项通过，第四阶段 `npm test` 188 项通过，第五、第六阶段 `npm test` 190 项通过，第七阶段 `npm test` 193 项通过，第八阶段 `npm test` 196 项通过，第九阶段 `npm test` 198 项通过，第十阶段 `npm test` 201 项通过 |

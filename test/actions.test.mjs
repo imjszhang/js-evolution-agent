@@ -297,6 +297,71 @@ describe('controlled action handlers', () => {
       .toBe('agent_run');
   });
 
+  it('normalizes nested agent_run receipts before validation', async () => {
+    const ctx = makeAgenticCtx({
+      receipt: {
+        status: 'completed',
+        summary: 'Nested receipt completed.',
+        evidence: { observations: ['nested receipt evidence'] },
+        outputs: { recommendation: 'continue' },
+      },
+    });
+
+    const result = await actionHandlers.agent_run({
+      type: 'agent_run',
+      description: 'Inspect nested receipt',
+      params: {
+        run_spec: {
+          primary_cwd_kind: 'subject_runtime',
+          permission_profile: 'read_only',
+          provider: 'llm_only',
+          intent: 'Verify nested receipt normalization.',
+          context: { why_now: 'verify nested receipt normalization' },
+          expected_output: ['summary', 'evidence'],
+        },
+      },
+    }, ctx);
+
+    expect(result.success).toBe(true);
+    expect(result.schema_status).toBe('valid');
+    expect(result.execution_status).toBe('completed');
+    expect(result.evidence.observations).toEqual(['nested receipt evidence']);
+  });
+
+  it('keeps completed execution separate from invalid receipt schema', async () => {
+    const ctx = makeAgenticCtx({
+      status: 'completed',
+      evidence: { observations: ['execution evidence exists'] },
+      outputs: { recommendation: 'fix schema only' },
+    });
+
+    const result = await actionHandlers.agent_run({
+      type: 'agent_run',
+      description: 'Inspect schema split',
+      params: {
+        run_spec: {
+          primary_cwd_kind: 'subject_runtime',
+          permission_profile: 'read_only',
+          provider: 'llm_only',
+          intent: 'Verify schema invalid does not erase execution result.',
+          context: { why_now: 'verify schema status split' },
+          expected_output: ['summary', 'evidence'],
+        },
+      },
+    }, ctx);
+    const verification = actionVerifiers.agent_run.verify(null, result);
+
+    expect(result.success).toBe(false);
+    expect(result.agent.execution_status).toBe('completed');
+    expect(result.agent.schema_status).toBe('invalid');
+    expect(result.acceptance_status).toBe('schema_invalid');
+    expect(result.goal_progress_status).toBe('progressed');
+    expect(result.status).toBe('completed');
+    expect(verification.status).toBe('partial');
+    expect(verification.value.schema_status).toBe('invalid');
+    expect(verification.value.execution_status).toBe('completed');
+  });
+
   it('blocks agent_run before agent execution when the execution package is incomplete', async () => {
     const ctx = makeAgenticCtx();
     const result = await actionHandlers.agent_run({
@@ -1119,7 +1184,9 @@ describe('controlled action handlers', () => {
     }, makeAgentProviderCtx());
 
     expect(result.success).toBe(false);
-    expect(result.status).toBe('partial');
+    expect(result.status).toBe('completed');
+    expect(result.agent.execution_status).toBe('completed');
+    expect(result.agent.schema_status).toBe('invalid');
     expect(cursor.send).toHaveBeenCalledTimes(4);
     expect(result.agent.outputs.agent_loop.final_validation).toMatchObject({
       valid: false,

@@ -151,6 +151,10 @@ function actionReceiptStatuses(receipts, limit) {
       fields: {
         action_type: record.action_type ?? action.type ?? null,
         status: result.status ?? null,
+        execution_status: result.execution_status ?? result.agent?.execution_status ?? result.status ?? null,
+        schema_status: result.schema_status ?? result.agent?.schema_status ?? null,
+        acceptance_status: result.acceptance_status ?? null,
+        goal_progress_status: result.goal_progress_status ?? null,
         success: result.success ?? null,
         provider: result.provider ?? result.agentic_execution?.provider ?? null,
         requires_approval: result.requires_approval ?? null,

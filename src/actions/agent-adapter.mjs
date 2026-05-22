@@ -378,7 +378,7 @@ function buildExecutionPackagePrompt(action, ctx) {
 }
 
 function normalizeAgentResult(parsed, rawText, provider) {
-  const obj = parsed && typeof parsed === 'object' ? parsed : {};
+  const obj = unwrapReceiptObject(parsed && typeof parsed === 'object' ? parsed : {});
   const status = String(obj.status ?? 'completed');
   const requiresApproval = Boolean(obj.requires_approval || status === 'requires_human_review');
   const outputs = asObject(obj.outputs);
@@ -421,12 +421,20 @@ function strictRawReceipt(rawText) {
   }
 }
 
+function unwrapReceiptObject(obj) {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return {};
+  const nested = obj.receipt && typeof obj.receipt === 'object' && !Array.isArray(obj.receipt)
+    ? obj.receipt
+    : null;
+  return nested ? { ...obj, ...nested, receipt: nested } : obj;
+}
+
 function validateAgentReceipt(action, agent = {}) {
   const actionType = effectiveActionType(action);
   const evidence = asObject(agent.evidence);
   const writes = asObject(agent.writes);
   const outputs = asObject(agent.outputs);
-  const rawReceipt = strictRawReceipt(agent.raw_response);
+  const rawReceipt = unwrapReceiptObject(strictRawReceipt(agent.raw_response));
   const missing = [];
 
   if (!rawReceipt) missing.push('strict JSON receipt');
@@ -501,6 +509,7 @@ function validateAgentReceipt(action, agent = {}) {
     valid: missing.length === 0,
     action_type: actionType,
     missing,
+    schema_status: missing.length === 0 ? 'valid' : 'invalid',
   };
 }
 
@@ -895,6 +904,9 @@ async function runClaudeCodeSdk(action, ctx) {
     finalValidation: validation,
     sameSession: Boolean(sessionId),
   });
+  agent.execution_status = agent.execution_status ?? agent.status;
+  agent.schema_status = validation.schema_status;
+  agent.schema_missing = validation.missing;
   agent.outputs = {
     ...agent.outputs,
     claude: {
@@ -929,7 +941,9 @@ async function runClaudeCodeSdk(action, ctx) {
   }
 
   if (!validation.valid) {
-    agent.status = agent.status === 'completed' ? 'partial' : agent.status;
+    agent.execution_status = agent.status;
+    agent.schema_status = validation.schema_status;
+    agent.schema_missing = validation.missing;
     agent.requires_approval = agent.requires_approval || agent.status === 'requires_human_review';
     agent.verification_hints = [
       ...agent.verification_hints,
@@ -1095,6 +1109,9 @@ async function runCursorSdk(action, ctx) {
     finalValidation: validation,
     sameSession,
   });
+  agent.execution_status = agent.execution_status ?? agent.status;
+  agent.schema_status = validation.schema_status;
+  agent.schema_missing = validation.missing;
   agent.outputs = {
     ...agent.outputs,
     cursor: {
@@ -1118,7 +1135,9 @@ async function runCursorSdk(action, ctx) {
   };
 
   if (!validation.valid) {
-    agent.status = agent.status === 'completed' ? 'partial' : agent.status;
+    agent.execution_status = agent.status;
+    agent.schema_status = validation.schema_status;
+    agent.schema_missing = validation.missing;
     agent.requires_approval = agent.requires_approval || agent.status === 'requires_human_review';
     agent.verification_hints = [
       ...agent.verification_hints,
@@ -1161,13 +1180,27 @@ async function runLlmOnly(action, ctx) {
   } catch {
     parsed = { status: 'completed', summary: rawText };
   }
+  const agent = normalizeAgentResult(parsed, rawText, DEFAULT_PROVIDER);
+  const shouldValidateReceipt = ['agent_run', 'agent_execute'].includes(effectiveActionType(action));
+  const validation = shouldValidateReceipt
+    ? validateAgentReceipt(action, agent)
+    : { valid: true, missing: [], schema_status: 'valid' };
+  agent.execution_status = agent.execution_status ?? agent.status;
+  agent.schema_status = validation.schema_status;
+  agent.schema_missing = validation.missing;
+  if (!validation.valid) {
+    agent.verification_hints = [
+      ...agent.verification_hints,
+      `agent receipt validation missing: ${validation.missing.join(', ')}`,
+    ];
+  }
 
   return {
-    success: true,
+    success: validation.valid,
     message: parsed?.summary ?? String(rawText).slice(0, 500),
     execution_root: roots.executionRoot,
     root_metadata: rootMetadata(roots),
-    agent: normalizeAgentResult(parsed, rawText, DEFAULT_PROVIDER),
+    agent,
   };
 }
 

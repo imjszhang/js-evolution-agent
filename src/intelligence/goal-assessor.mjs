@@ -104,6 +104,7 @@ function summarizeSemanticVerification(semantic) {
   return {
     status: semantic.status ?? null,
     source: semantic.source ?? null,
+    precedence: 'latest_semantic_verification_over_older_report_or_diary_claims',
     overall_summary: clip(result.overall_summary ?? semantic.error ?? '', 800),
     next_cycle_focus: Array.isArray(result.next_cycle_focus)
       ? result.next_cycle_focus.slice(0, 8).map((item) => clip(item, 240))
@@ -231,6 +232,7 @@ export function buildGoalAssessmentPrompt({
 - 没有来自情报侧的可用证据（观察、回顾、报告、事件等）支撑具体结论时：不得轻易建议 replace/split；若仅能依据文献得出「尚需等待证据」，则用 insufficient_evidence，且 confidence 为 low。
 - 能收敛，不扩展；目标越可验证越好；proposed_goal 必须仍符合文献与主体策略。
 - 评估 safe-runtime 时必须区分「agent 行为合规」「宿主预检阻断」和「provider/文件系统硬隔离」；verify_report 中的 boundary_risk 可作为边界风险证据，但不得把软约束误判为硬隔离。
+- 若 verification.semantic 存在，最新 semantic verification 优先于旧 report、diary 或 remembered agent claim。它仍不是 Seen 事实；它是最近执行结果的解释层证据，应用来覆盖旧推断而不是放大旧推断。
 - evidence_refs：须引用支持你结论的情报条目（intel_report / verify_report / observation / probe_result / retrospective / goal_event / evolution_event）。若某项判断主要依据某一权威文献中的原则，也请用 type 为 agent_context、id 为该文档 id、ref 为该文档 id 前加前缀 agent_context: 一并列出，使理由可追溯。
 - 没有可用的 evidence_refs（含 agent_context）时 confidence 必须为 low。
 - reason 必须用中文简述：结合了哪些文献要点 + 哪些情报事实。
@@ -274,6 +276,7 @@ Hard constraints:
 - Do not recommend broad replace/split without concrete intelligence support; prefer insufficient_evidence with low confidence when facts are thin.
 - Prefer narrowing over expanding; proposed_goal must remain compliant with doctrine and subject policy.
 - When assessing safe-runtime, distinguish agent conduct compliance, host preflight blocking, and provider/filesystem hard isolation. boundary_risk from verify_report is evidence about boundary posture, but soft constraints must not be treated as hard isolation.
+- If verification.semantic exists, the latest semantic verification has priority over older report, diary, or remembered agent claims. It is not Seen fact; it is interpretation-layer evidence for the latest execution result, and should override stale inference chains instead of amplifying them.
 - evidence_refs MUST cite intelligence items you rely on (intel_report / verify_report / observation / probe_result / retrospective / goal_event / evolution_event). When a key norm comes from authority text, also include agent_context with id = doc id and ref = the string "agent_context:" plus the same doc id.
 - If evidence_refs would be empty, confidence MUST be low.
 - reason MUST briefly name which authority points plus which factual evidence you used (English).

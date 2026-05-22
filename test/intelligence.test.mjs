@@ -736,6 +736,39 @@ describe('buildIntelReport', () => {
     expect(memory.typed_evidence_refs.filter((ref) => ref.source_type === 'action_receipts')).toHaveLength(1);
   });
 
+  it('includes split receipt statuses in TDB Seen without promoting summaries', async () => {
+    const { store, runtime, intelResult } = makeReportFixture();
+    store.recordActionReceipt(
+      { type: 'agent_run', description: 'schema-invalid but executed probe' },
+      {
+        status: 'completed',
+        execution_status: 'completed',
+        schema_status: 'invalid',
+        acceptance_status: 'schema_invalid',
+        goal_progress_status: 'progressed',
+        success: false,
+        summary: 'schema failed but execution evidence exists',
+        evidence: { observations: ['worker healthy'] },
+      },
+      { cycleId: 'cycle-test-1' },
+    );
+
+    const context = gatherReportContext({ store, runtime, intelResult });
+    const brief = buildTemporalDecisionBrief(context);
+    const receiptSeen = brief.seen.find((item) => item.source?.source_type === 'action_receipt');
+    const receiptRemembered = brief.remembered.find((item) => item.source?.source_type === 'action_receipt');
+
+    expect(receiptSeen.fields).toMatchObject({
+      status: 'completed',
+      execution_status: 'completed',
+      schema_status: 'invalid',
+      acceptance_status: 'schema_invalid',
+      goal_progress_status: 'progressed',
+    });
+    expect(JSON.stringify(receiptSeen.fields)).not.toContain('schema failed but execution evidence exists');
+    expect(receiptRemembered.summary).toContain('schema failed but execution evidence exists');
+  });
+
   it('rewrites standing memory Remembered from admitted source-addressed leads', async () => {
     const { store, runtime, intelResult } = makeReportFixture();
     store.recordStandingMemory({
