@@ -201,6 +201,43 @@ standing_memory 清理已完成
 
 这样既保留自然语言的表达力，又避免把“来源说了”误写成“事实成立”。
 
+### 第六阶段：给 Seen 一个可重开的地址
+
+第五阶段之后又跑了 3 轮，`source claims/records` 已经生效。自然语言不再直接写成事实结论，而是保留为来源摘录。
+
+但新的问题也暴露出来了。
+
+系统会在 `standing_memory` 中写：
+
+```text
+receipt-39273435
+probe-result-337e44d3
+goal-event-890f2c10
+evt-e250de88
+```
+
+这些 id 看起来都像证据引用。但后续探针不知道它们应该去哪查，于是把 `receipt-*` 当作文件名在磁盘上搜索。搜索不到文件后，就得出“receipt 是幻影引用”的结论。
+
+这可能是误判。
+
+`receipt-*` 不一定对应单独的 `receipt-*.json` 文件。它可能存在于 action receipts 数据源中。`probe-result-*` 也不一定是同名文件，可能存在于 probe results store 中。
+
+所以第六阶段回到更小的第一性原理：
+
+> Seen 不只要有 id。  
+> Seen 必须告诉下一轮“去哪儿重新打开它”。
+
+也就是给每条 Seen 加一个可重开地址：
+
+```text
+[evolution_events:evt-xxx]
+[goal_events:goal-event-xxx]
+[action_receipts:receipt-xxx]
+[probe_results:probe-result-xxx]
+```
+
+这样后续验证者不会再把所有 id 都当成文件名，而是按 `source_type` 去对应数据源查。
+
 ---
 
 ## 4. 实现要点
@@ -326,6 +363,26 @@ flowchart TD
 - `Seen`: 我读到了这个来源说了什么。
 - `Inferred`: 我基于这些来源判断什么更可信。
 - `Remembered`: 旧来源曾经这样说过。
+
+### 第六阶段可重开地址
+
+第六阶段继续保持轻量，只改 `standing_memory` 的 Seen 输出格式和 prompt 规则。
+
+| 文件 | 第六阶段变化 |
+| --- | --- |
+| [`src/intelligence/report-builder.mjs`](../../src/intelligence/report-builder.mjs) | 增加 source type 映射，把内部来源类型格式化为 `[source_type:id]`；`buildSeenSection()` 输出可重开地址；memory prompt 明确要求后续验证按括号里的 source type 查找，不要把 id 当文件名 |
+| [`test/intelligence.test.mjs`](../../test/intelligence.test.mjs) | 更新回归测试，验证 `Seen` 输出 `[evolution_events:evt-safe]` 和 `[goal_events:goal-event-claim]` |
+
+映射规则很小：
+
+| 内部来源 | memory Seen 地址 |
+| --- | --- |
+| `evolution_event` | `[evolution_events:evt-...]` |
+| `goal_event` | `[goal_events:goal-event-...]` |
+| `action_receipt` | `[action_receipts:receipt-...]` |
+| `probe_result` | `[probe_results:probe-result-...]` |
+
+这不是大型 resolver，也不是 Claim Ledger。它只是把“这个 id 属于哪个数据源”写在记忆里。
 
 ---
 
@@ -460,6 +517,35 @@ ReadLints
 
 结果：[`src/intelligence/decision-brief.mjs`](../../src/intelligence/decision-brief.mjs)、[`src/intelligence/report-builder.mjs`](../../src/intelligence/report-builder.mjs)、[`test/intelligence.test.mjs`](../../test/intelligence.test.mjs) 无 linter 错误。
 
+第六阶段可重开地址更新了回归测试：
+
+```bash
+npm test -- test/intelligence.test.mjs
+```
+
+新增覆盖点：
+
+- `Seen` 不再只写裸 `evt-safe`，而是写 `[evolution_events:evt-safe]`。
+- 自然语言 Seen 仍保持 `source claims`，但地址写成 `[goal_events:goal-event-claim]`。
+
+结果：`test/intelligence.test.mjs` 39 个测试全部通过。
+
+完整测试：
+
+```bash
+npm test
+```
+
+结果：4 个测试文件、190 个测试全部通过。
+
+静态诊断：
+
+```bash
+ReadLints
+```
+
+结果：[`src/intelligence/report-builder.mjs`](../../src/intelligence/report-builder.mjs)、[`test/intelligence.test.mjs`](../../test/intelligence.test.mjs) 无 linter 错误。
+
 ---
 
 ## 6. 后续演化
@@ -521,6 +607,17 @@ ReadLints
 3. **observe 阶段仍需后续处理，但不是当前优先级**  
    observe 仍可能把目录树推断写得像直接读取文件。当前先确保 TDB 和 standing memory 不把这种说法升级为长期事实。
 
+第六阶段之后，下一轮要验证的是：
+
+1. **后续探针是否还把 receipt id 当文件名搜索**  
+   如果 memory 写成 `[action_receipts:receipt-xxx]`，探针应该去 action receipts 数据源查，而不是搜索 `receipt-xxx.json`。
+
+2. **Seen 是否都带可重开地址**  
+   新生成的 `standing_memory` 中，Seen 条目应统一是 `[source_type:id] ...` 形式。
+
+3. **基于 source type 的验证是否能减少误判**  
+   如果 `receipt-*` 能在 action receipts 数据源中找到，就不应再被称为“幻影文件引用”。
+
 ---
 
 ## 附：本轮对话问题—思考—方案—执行对照
@@ -528,7 +625,7 @@ ReadLints
 | 阶段 | 内容 |
 | --- | --- |
 | 问题 | 进化工作流调用多篇历史内容时，没有充分注明时间，也没有明确要求按最新结论裁决，导致旧结论可能继续污染后续轮次 |
-| 思考 | 第一性原理下，持续演化系统不能依赖语言连续性维持记忆，而要依赖证据状态维持记忆；20 轮后进一步确认污染源在 observe 阶段更早出现；继续加治理术语又会让系统过度复杂；3 轮三栏验证后确认 prompt 语言不足以阻止污染回流；后续又确认自然语言不能被排除，问题是不能把“来源说了”写成“事实成立” |
-| 方案 | 第一阶段新增 `Temporal Decision Brief`；第二阶段新增 `Observation Evidence Guard`，并把 Observation Report 降级为模型 claim；第三阶段统一为 Seen / Inferred / Remembered / Do Not Treat As Seen；第四阶段把 memory Seen 改成代码层写入门禁；第五阶段把自然语言 Seen 统一为 `source claims/records` 来源摘录 |
-| 执行 | 新增 `decision-brief` 和 `observation-guard`，接入 observe/report/decide/memory 链路，降权历史 Markdown 和 receipt summary，收紧 standing memory，并预留 `claim_ledger`；随后在 TDB、prompt、observe guard、standing memory 中统一三栏语言；在 `report-builder` 中加入 `memory_admission` 与 `enforceStandingMemorySeenGate()`；最后让 `goal_event`/`evolution_event` 自然语言进入 Seen 时保持来源摘录语义 |
-| 验证 | `ReadLints` 无错误；第一阶段 `npm test` 185 项通过，第二阶段和第三阶段 `npm test` 187 项通过，第四阶段 `npm test` 188 项通过，第五阶段 `npm test` 190 项通过 |
+| 思考 | 第一性原理下，持续演化系统不能依赖语言连续性维持记忆，而要依赖证据状态维持记忆；20 轮后进一步确认污染源在 observe 阶段更早出现；继续加治理术语又会让系统过度复杂；3 轮三栏验证后确认 prompt 语言不足以阻止污染回流；后续又确认自然语言不能被排除，问题是不能把“来源说了”写成“事实成立”；再后续发现裸 id 会让探针误把数据源记录当文件名搜索 |
+| 方案 | 第一阶段新增 `Temporal Decision Brief`；第二阶段新增 `Observation Evidence Guard`，并把 Observation Report 降级为模型 claim；第三阶段统一为 Seen / Inferred / Remembered / Do Not Treat As Seen；第四阶段把 memory Seen 改成代码层写入门禁；第五阶段把自然语言 Seen 统一为 `source claims/records` 来源摘录；第六阶段给 Seen 加 `[source_type:id]` 可重开地址 |
+| 执行 | 新增 `decision-brief` 和 `observation-guard`，接入 observe/report/decide/memory 链路，降权历史 Markdown 和 receipt summary，收紧 standing memory，并预留 `claim_ledger`；随后在 TDB、prompt、observe guard、standing memory 中统一三栏语言；在 `report-builder` 中加入 `memory_admission` 与 `enforceStandingMemorySeenGate()`；让 `goal_event`/`evolution_event` 自然语言进入 Seen 时保持来源摘录语义；最后把 Seen 输出改为 `[evolution_events:...]`、`[goal_events:...]`、`[action_receipts:...]`、`[probe_results:...]` |
+| 验证 | `ReadLints` 无错误；第一阶段 `npm test` 185 项通过，第二阶段和第三阶段 `npm test` 187 项通过，第四阶段 `npm test` 188 项通过，第五、第六阶段 `npm test` 190 项通过 |

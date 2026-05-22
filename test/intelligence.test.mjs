@@ -670,7 +670,7 @@ describe('buildIntelReport', () => {
       memory.text.indexOf('## Seen'),
       memory.text.indexOf('## Inferred'),
     );
-    expect(seenText).toContain('evt-safe');
+    expect(seenText).toContain('[evolution_events:evt-safe]');
     expect(seenText).not.toContain('remote.matchCount');
     expect(memory.evidence_refs).toContain('evt-safe');
     expect(memory.evidence_refs.join('\n')).not.toContain('receipt-');
@@ -712,7 +712,7 @@ describe('buildIntelReport', () => {
       memory.text.indexOf('## Seen'),
       memory.text.indexOf('## Inferred'),
     );
-    expect(seenText).toContain('goal-event-claim');
+    expect(seenText).toContain('[goal_events:goal-event-claim]');
     expect(seenText).toContain('source claims: assessment bootstrap: standing_memory cleanup is complete');
   });
 

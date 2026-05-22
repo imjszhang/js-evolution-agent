@@ -577,6 +577,24 @@ function seenSourceId(item) {
   return item?.source?.id ?? item?.id ?? null;
 }
 
+function memorySourceType(sourceType) {
+  const map = {
+    evolution_event: 'evolution_events',
+    goal_event: 'goal_events',
+    action_receipt: 'action_receipts',
+    probe_result: 'probe_results',
+    intel_report: 'reports',
+    latest_review: 'retrospectives',
+    standing_memory: 'standing_memory',
+  };
+  return map[sourceType] ?? sourceType ?? 'unknown';
+}
+
+function sourceAddress({ sourceType, sourceId } = {}) {
+  const type = memorySourceType(sourceType);
+  return sourceId ? `[${type}:${sourceId}]` : `[${type}:unknown]`;
+}
+
 function summarizeSeenItem(item) {
   if (item?.summary) {
     const summary = shortText(item.summary, 260);
@@ -604,6 +622,10 @@ function buildMemoryAdmission(reportContext) {
     seen: memorySeen.map((item) => ({
       source_id: seenSourceId(item),
       source_type: item?.source?.source_type ?? null,
+      source_address: sourceAddress({
+        sourceType: item?.source?.source_type,
+        sourceId: seenSourceId(item),
+      }),
       recorded_at: item?.source?.recorded_at ?? null,
       kind: item?.kind ?? null,
       evidence_level: item?.evidence_level ?? null,
@@ -621,7 +643,7 @@ function buildSeenSection(reportContext) {
   const admitted = buildMemoryAdmission(reportContext).seen;
   if (!admitted.length) return '- (none)';
   return admitted
-    .map((item) => `- ${item.source_id}: ${item.summary}`)
+    .map((item) => `- ${item.source_address}: ${item.summary}`)
     .join('\n');
 }
 
@@ -669,6 +691,8 @@ Rules:
 - Keep it under ${maxChars} characters.
 - Use exactly these sections: Seen, Inferred, Remembered, Do Not Treat As Seen.
 - Seen may only use Machine Context memory_admission.seen. Do not put report text, diary prose, receipt summaries, partial receipts, or agent claims in Seen.
+- Write every Seen item with its bracketed reopen address, for example [evolution_events:evt-...], [goal_events:goal-event-...], [action_receipts:receipt-...], or [probe_results:probe-result-...].
+- When verifying a Seen item later, use the bracketed source type to locate the record. Do not treat the id as a filename.
 - If a Seen item says "source claims" or "source records", keep that wording. It means the source was read, not that the statement is automatically true.
 - Inferred must cite Seen source ids and include what would overturn the judgement.
 - Remembered is background only; do not phrase it as current fact.
@@ -695,6 +719,8 @@ ${contextJson}`;
 - 总长度必须控制在 ${maxChars} 字符以内。
 - 固定使用四个小节：Seen、Inferred、Remembered、Do Not Treat As Seen。
 - Seen 只能使用机器上下文 memory_admission.seen。不得把报告正文、日记叙述、receipt summary、partial receipt 或 agent claim 放入 Seen。
+- 每条 Seen 都必须写出方括号可重开地址，例如 [evolution_events:evt-...]、[goal_events:goal-event-...]、[action_receipts:receipt-...]、[probe_results:probe-result-...]。
+- 后续验证 Seen 时必须按方括号里的 source type 去对应数据源查找，不要把 id 当成文件名。
 - 如果 Seen 项写着 “source claims” 或 “source records”，必须保留这个说法。它表示读到了该来源，不表示该说法自动为真。
 - Inferred 必须引用 Seen 的 source id，并写明什么证据会推翻该判断。
 - Remembered 只能作为背景，不得写成当前事实。
