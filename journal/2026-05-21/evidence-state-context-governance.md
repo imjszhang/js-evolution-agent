@@ -443,6 +443,31 @@ flowchart TD
 | [`test/intelligence.test.mjs`](../../test/intelligence.test.mjs) | 覆盖 receipt summary 不进入 Seen、goal assessment 能解析包裹 JSON |
 | [`test/conversational-intel-pipeline.test.mjs`](../../test/conversational-intel-pipeline.test.mjs) | 覆盖 Analyze+Decide 包裹 JSON 可解析、无效 JSON 安全降级且不入队 action |
 
+### 第九阶段持久记忆门禁
+
+第八阶段之后又跑了 3 轮，执行边界问题基本收敛：Analyze+Decide JSON 失败不再杀死 cycle，receipt 结构化状态和 agent claim 也能被审计区分。新的问题转移到 `standing_memory` 的持久性。
+
+表面上，系统已经能通过 `workspace_write` 清理 `standing_memory.json`。但下一轮 `updateStandingMemoryWithAi()` 会基于旧 memory、report 和 `memory_admission.remembered` 全量重写。只要写入入口仍允许模型自由生成 `## Remembered`，人工清理过的短 id、孤立 receipt claim、重复 goal_event 或旧 remembered claim 就可能再次复活。
+
+第九阶段的原则是：不要把清理放在事后手工编辑，而要放在每轮生成时的写入入口。
+
+| 原则 | 含义 |
+| --- | --- |
+| `Seen` 继续硬门禁 | 最终 `## Seen` 仍只来自 `memory_admission.seen` |
+| `Remembered` 也轻量门禁 | 最终 `## Remembered` 由过滤后的 `memory_admission.remembered` 生成 |
+| 旧 memory 只作线索 | `Previous Standing Memory` 不能直接决定最终 `Seen/Remembered` |
+| 不迁移数据库 | 不删除历史 JSONL，也不把 memory 改成完整 entry-array 结构 |
+
+涉及文件：
+
+| 文件 | 第九阶段变化 |
+| --- | --- |
+| [`src/intelligence/report-builder.mjs`](../../src/intelligence/report-builder.mjs) | 扩展 `memory_admission.remembered`，标准化 `source_type/source_id/source_address/summary/remembered_policy`，过滤无可重开 source id 和旧 `standing_memory` 条目 |
+| [`src/intelligence/report-builder.mjs`](../../src/intelligence/report-builder.mjs) | 新增 `buildRememberedSection()`、`enforceStandingMemoryRememberedGate()` 和 `enforceStandingMemoryGates()`，在写入时同时重写 `Seen` 与 `Remembered` |
+| [`src/intelligence/report-builder.mjs`](../../src/intelligence/report-builder.mjs) | 对 receipt/probe/event 的 `agent_claim` 保留 `agent_claim:` 前缀；对重复 `goal_event` assessment 按目标、类型和摘要去重，优先保留最新记录 |
+| [`src/intelligence/report-builder.mjs`](../../src/intelligence/report-builder.mjs) | 更新 standing memory prompt，明确旧 memory 只是 continuity hint，直接编辑 `standing_memory.json` 不是持久修复 |
+| [`test/intelligence.test.mjs`](../../test/intelligence.test.mjs) | 覆盖污染 Remembered 不复活、receipt summary 只以完整 `[action_receipts:...] agent_claim:` 进入 Remembered、重复 goal_event 只保留单条规范化记录 |
+
 ---
 
 ## 5. 验证与测试
@@ -668,6 +693,36 @@ ReadLints
 
 结果：[`src/ai/messages.mjs`](../../src/ai/messages.mjs)、[`src/intelligence/goal-assessor.mjs`](../../src/intelligence/goal-assessor.mjs)、[`src/intelligence/conversational-intel-pipeline.mjs`](../../src/intelligence/conversational-intel-pipeline.mjs)、[`src/intelligence/report-builder.mjs`](../../src/intelligence/report-builder.mjs)、[`src/intelligence/conversation-context.mjs`](../../src/intelligence/conversation-context.mjs)、[`test/intelligence.test.mjs`](../../test/intelligence.test.mjs)、[`test/conversational-intel-pipeline.test.mjs`](../../test/conversational-intel-pipeline.test.mjs) 无 linter 错误。
 
+第九阶段持久记忆门禁补充了 Remembered 写入入口回归：
+
+```bash
+npm test -- test/intelligence.test.mjs
+```
+
+新增覆盖点：
+
+- AI 输出污染的 `Remembered` 会被代码门禁替换，不会保留短 id、孤立 receipt claim 或旧 memory 中的污染文本。
+- completed receipt 的结构化状态仍保留在 `Seen`，receipt summary 只以完整 `[action_receipts:...] agent_claim:` 形式进入 `Remembered`。
+- 重复 goal_event assessment remembered 项只保留最新或单条规范化记录。
+
+结果：1 个测试文件、43 个测试全部通过。
+
+随后运行完整测试：
+
+```bash
+npm test
+```
+
+结果：4 个测试文件、198 个测试全部通过。
+
+静态诊断：
+
+```bash
+ReadLints
+```
+
+结果：[`src/intelligence/report-builder.mjs`](../../src/intelligence/report-builder.mjs)、[`test/intelligence.test.mjs`](../../test/intelligence.test.mjs) 无 linter 错误。
+
 ---
 
 ## 6. 后续演化
@@ -762,6 +817,17 @@ ReadLints
 3. **再考虑同会话重试和 max_tokens**  
    当前先做安全降级。若截断 JSON 仍高频出现，可以进一步加“同会话只修 JSON”的重试，以及为 decide/verify 设置更明确的 token 上限。
 
+第九阶段之后，后续验证重点是：
+
+1. **确认 Remembered 污染不会跨轮复活**  
+   新一轮应重点检查 `standing_memory` 中是否仍出现孤立 `receipt-xxxx` 短 id、旧 memory 污染文本或重复 goal_event remembered claim。
+
+2. **观察 Do Not Treat As Seen 是否仍需门禁**  
+   当前 `Do Not Treat As Seen` 仍由模型维护。只有当 blanket receipt 禁令或旧污染全文继续复活时，才考虑把它也收敛为轻量 admission/gate。
+
+3. **把持久修复转向 admission 源头**  
+   后续不应再依赖 `workspace_write` 直接编辑 `standing_memory.json` 作为长期解法。真正持久的修复应进入 `memory_admission`、TDB 或对应原始记录的生成逻辑。
+
 ---
 
 ## 附：本轮对话问题—思考—方案—执行对照
@@ -769,7 +835,7 @@ ReadLints
 | 阶段 | 内容 |
 | --- | --- |
 | 问题 | 进化工作流调用多篇历史内容时，没有充分注明时间，也没有明确要求按最新结论裁决，导致旧结论可能继续污染后续轮次 |
-| 思考 | 第一性原理下，持续演化系统不能依赖语言连续性维持记忆，而要依赖证据状态维持记忆；20 轮后进一步确认污染源在 observe 阶段更早出现；继续加治理术语又会让系统过度复杂；3 轮三栏验证后确认 prompt 语言不足以阻止污染回流；后续又确认自然语言不能被排除，问题是不能把“来源说了”写成“事实成立”；再后续发现裸 id 会让探针误把数据源记录当文件名搜索；最新 3 轮则显示系统已能发现问题，但目标、memory、权限三个执行契约不能稳定消费发现；再后一轮暴露的是执行边界问题：receipt 结构化状态与 agent claim 被混判，Analyze+Decide JSON 失败会杀死 cycle |
-| 方案 | 第一阶段新增 `Temporal Decision Brief`；第二阶段新增 `Observation Evidence Guard`，并把 Observation Report 降级为模型 claim；第三阶段统一为 Seen / Inferred / Remembered / Do Not Treat As Seen；第四阶段把 memory Seen 改成代码层写入门禁；第五阶段把自然语言 Seen 统一为 `source claims/records` 来源摘录；第六阶段给 Seen 加 `[source_type:id]` 可重开地址；第七阶段收敛为契约一致、证据可重开、副作用诚实三个执行不变量；第八阶段统一 receipt 结构化状态/agent claim 边界，并把 invalid AI JSON 转成可审计 defer |
-| 执行 | 新增 `decision-brief` 和 `observation-guard`，接入 observe/report/decide/memory 链路，降权历史 Markdown 和 receipt summary，收紧 standing memory，并预留 `claim_ledger`；随后在 TDB、prompt、observe guard、standing memory 中统一三栏语言；在 `report-builder` 中加入 `memory_admission` 与 `enforceStandingMemorySeenGate()`；让 `goal_event`/`evolution_event` 自然语言进入 Seen 时保持来源摘录语义；把 Seen 输出改为 `[evolution_events:...]`、`[goal_events:...]`、`[action_receipts:...]`、`[probe_results:...]`；补齐 `proposed_goal.children` 归一化、`typed_evidence_refs`、partial receipt 门禁和 read_only 写入 warning；最后增加共用 JSON 提取器、Analyze+Decide invalid JSON defer 降级，并更新 receipt policy / verify prompt |
-| 验证 | `ReadLints` 无错误；第一阶段 `npm test` 185 项通过，第二阶段和第三阶段 `npm test` 187 项通过，第四阶段 `npm test` 188 项通过，第五、第六阶段 `npm test` 190 项通过，第七阶段 `npm test` 193 项通过，第八阶段 `npm test` 196 项通过 |
+| 思考 | 第一性原理下，持续演化系统不能依赖语言连续性维持记忆，而要依赖证据状态维持记忆；20 轮后进一步确认污染源在 observe 阶段更早出现；继续加治理术语又会让系统过度复杂；3 轮三栏验证后确认 prompt 语言不足以阻止污染回流；后续又确认自然语言不能被排除，问题是不能把“来源说了”写成“事实成立”；再后续发现裸 id 会让探针误把数据源记录当文件名搜索；最新 3 轮则显示系统已能发现问题，但目标、memory、权限三个执行契约不能稳定消费发现；再后一轮暴露的是执行边界问题：receipt 结构化状态与 agent claim 被混判，Analyze+Decide JSON 失败会杀死 cycle；第九阶段则确认直接编辑 `standing_memory.json` 不能持久，因为下一轮全量重写会复活旧 Remembered 污染 |
+| 方案 | 第一阶段新增 `Temporal Decision Brief`；第二阶段新增 `Observation Evidence Guard`，并把 Observation Report 降级为模型 claim；第三阶段统一为 Seen / Inferred / Remembered / Do Not Treat As Seen；第四阶段把 memory Seen 改成代码层写入门禁；第五阶段把自然语言 Seen 统一为 `source claims/records` 来源摘录；第六阶段给 Seen 加 `[source_type:id]` 可重开地址；第七阶段收敛为契约一致、证据可重开、副作用诚实三个执行不变量；第八阶段统一 receipt 结构化状态/agent claim 边界，并把 invalid AI JSON 转成可审计 defer；第九阶段把 Remembered 也改为由 `memory_admission.remembered` 驱动的轻量代码门禁 |
+| 执行 | 新增 `decision-brief` 和 `observation-guard`，接入 observe/report/decide/memory 链路，降权历史 Markdown 和 receipt summary，收紧 standing memory，并预留 `claim_ledger`；随后在 TDB、prompt、observe guard、standing memory 中统一三栏语言；在 `report-builder` 中加入 `memory_admission` 与 `enforceStandingMemorySeenGate()`；让 `goal_event`/`evolution_event` 自然语言进入 Seen 时保持来源摘录语义；把 Seen 输出改为 `[evolution_events:...]`、`[goal_events:...]`、`[action_receipts:...]`、`[probe_results:...]`；补齐 `proposed_goal.children` 归一化、`typed_evidence_refs`、partial receipt 门禁和 read_only 写入 warning；最后增加共用 JSON 提取器、Analyze+Decide invalid JSON defer 降级，并更新 receipt policy / verify prompt；本轮扩展 `memory_admission.remembered`、新增 Remembered gate，并在写入时统一应用 `enforceStandingMemoryGates()` |
+| 验证 | `ReadLints` 无错误；第一阶段 `npm test` 185 项通过，第二阶段和第三阶段 `npm test` 187 项通过，第四阶段 `npm test` 188 项通过，第五、第六阶段 `npm test` 190 项通过，第七阶段 `npm test` 193 项通过，第八阶段 `npm test` 196 项通过，第九阶段 `npm test` 198 项通过 |

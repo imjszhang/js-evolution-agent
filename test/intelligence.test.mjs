@@ -736,6 +736,136 @@ describe('buildIntelReport', () => {
     expect(memory.typed_evidence_refs.filter((ref) => ref.source_type === 'action_receipts')).toHaveLength(1);
   });
 
+  it('rewrites standing memory Remembered from admitted source-addressed leads', async () => {
+    const { store, runtime, intelResult } = makeReportFixture();
+    store.recordStandingMemory({
+      source_cycle_id: 'old-cycle',
+      text: [
+        '## Seen',
+        '',
+        '- old seen',
+        '',
+        '## Remembered',
+        '',
+        '- receipt-12345678 orphan short id should not revive',
+        '- remote_matchCount=4127 old polluted memory',
+      ].join('\n'),
+    });
+    store.recordActionReceipt(
+      { type: 'agent_run', description: 'completed sync probe' },
+      {
+        status: 'completed',
+        success: true,
+        summary: 'remote sync summary should stay a lead',
+      },
+      { cycleId: 'cycle-test-1' },
+    );
+    store.recordActionReceipt(
+      { type: 'agent_run', description: 'partial sync probe' },
+      {
+        status: 'partial',
+        success: true,
+        summary: 'partial summary should stay remembered only',
+      },
+      { cycleId: 'cycle-test-1' },
+    );
+
+    const outputs = [
+      '# 情报报告\n\n本轮检查 Remembered 门禁。\n',
+      [
+        '## Seen',
+        '',
+        '- model polluted seen',
+        '',
+        '## Inferred',
+        '',
+        '- receipt status checked',
+        '',
+        '## Remembered',
+        '',
+        '- receipt-12345678 orphan short id should not revive',
+        '- remote_matchCount=4127 old polluted memory',
+      ].join('\n'),
+    ];
+    const fakeAi = { chat: async () => outputs.shift() };
+
+    await buildIntelReport({
+      intelResult,
+      runtime,
+      store,
+      aiClient: fakeAi,
+      useAi: true,
+    });
+
+    const memory = store.readStandingMemory();
+    const rememberedText = memory.text.slice(
+      memory.text.indexOf('## Remembered'),
+      memory.text.indexOf('## Do Not Treat As Seen') >= 0
+        ? memory.text.indexOf('## Do Not Treat As Seen')
+        : memory.text.length,
+    );
+    expect(rememberedText).toContain('[action_receipts:receipt-');
+    expect(rememberedText).toContain('agent_claim: remote sync summary should stay a lead');
+    expect(rememberedText).toContain('agent_claim: partial summary should stay remembered only');
+    expect(rememberedText).not.toContain('receipt-12345678 orphan short id');
+    expect(rememberedText).not.toContain('remote_matchCount=4127 old polluted memory');
+  });
+
+  it('deduplicates repeated goal event remembered claims', async () => {
+    const { store, runtime, intelResult } = makeReportFixture();
+    store.recordGoalEvent({
+      id: 'goal-event-old',
+      type: 'assessment',
+      goal_id: 'bootstrap',
+      reason: 'goal evidence needs current source addresses',
+      recorded_at: '2026-05-21T00:00:00.000Z',
+    });
+    store.recordGoalEvent({
+      id: 'goal-event-new',
+      type: 'assessment',
+      goal_id: 'bootstrap',
+      reason: 'goal evidence needs current source addresses',
+      recorded_at: '2026-05-22T00:00:00.000Z',
+    });
+
+    const outputs = [
+      '# 情报报告\n\n本轮检查 goal_event 去重。\n',
+      [
+        '## Seen',
+        '',
+        '- model seen',
+        '',
+        '## Inferred',
+        '',
+        '- goal status checked',
+        '',
+        '## Remembered',
+        '',
+        '- model remembered',
+      ].join('\n'),
+    ];
+    const fakeAi = { chat: async () => outputs.shift() };
+
+    await buildIntelReport({
+      intelResult,
+      runtime,
+      store,
+      aiClient: fakeAi,
+      useAi: true,
+    });
+
+    const memory = store.readStandingMemory();
+    const rememberedText = memory.text.slice(
+      memory.text.indexOf('## Remembered'),
+      memory.text.indexOf('## Do Not Treat As Seen') >= 0
+        ? memory.text.indexOf('## Do Not Treat As Seen')
+        : memory.text.length,
+    );
+    expect(rememberedText).toContain('[goal_events:goal-event-new]');
+    expect(rememberedText).not.toContain('[goal_events:goal-event-old]');
+    expect((rememberedText.match(/goal evidence needs current source addresses/g) ?? [])).toHaveLength(1);
+  });
+
   it('parses goal assessment JSON from text wrappers', () => {
     const assessment = parseGoalAssessment([
       'Here is the assessment:',
