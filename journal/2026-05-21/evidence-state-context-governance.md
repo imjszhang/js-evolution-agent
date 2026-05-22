@@ -165,6 +165,42 @@ flowchart TD
 
 因此第四阶段不再加新的治理术语，也不继续扩展 forbidden 列表，而是在 `standing_memory` 写入路径上加硬门禁：`Seen` 只能来自 TDB 的 `seen`，并且要再过滤掉 partial / failed receipt 这类不适合进入长期事实层的状态。
 
+### 第五阶段：自然语言可以是 Seen，但只能作为来源摘录
+
+第四阶段之后又跑了 3 轮，新的问题浮出来了：如果把 Seen 继续理解成“机器字段才干净”，系统会变得过窄。
+
+进化主体不是纯监控系统。很多关键事实本来就是自然语言：
+
+- 探针到底调查了什么。
+- 日记如何复盘一次执行。
+- goal event 为什么判断目标需要 refine。
+- receipt 为什么 partial。
+- 人类意图和外部约束是什么。
+
+如果把这些自然语言全部踢出 Seen，系统会只剩下 `status=ok`、`cycle_id=...` 这类骨架字段，却失去行动语义。
+
+所以第五阶段把原则修正为：
+
+> Seen 不是“事实为真”。  
+> Seen 是“我直接读到了这个来源”。  
+> Inferred 才是“所以我相信什么”。
+
+因此自然语言可以进入 Seen，但必须写成来源摘录：
+
+```text
+source goal-event-64e87b99 claims: 当前目标包含已证伪假设
+source evolution_event records: 本轮日记记录了 standing_memory 清理尝试
+```
+
+它不能写成：
+
+```text
+当前目标包含已证伪假设
+standing_memory 清理已完成
+```
+
+这样既保留自然语言的表达力，又避免把“来源说了”误写成“事实成立”。
+
 ---
 
 ## 4. 实现要点
@@ -275,6 +311,22 @@ flowchart TD
 
 这一步的重点不是“证明所有 claim”，而是把长期记忆中最危险的入口关掉：模型叙述、partial receipt、历史报告都不能再自己爬回 Seen。
 
+### 第五阶段来源摘录语义
+
+第五阶段没有新增大型 schema，也没有禁止自然语言。它只在两个位置加了最小语义边界。
+
+| 文件 | 第五阶段变化 |
+| --- | --- |
+| [`src/intelligence/decision-brief.mjs`](../../src/intelligence/decision-brief.mjs) | `goal_event.reason/summary` 进入 Seen 时改写为 `source claims: ...`；`evolution_event.summary/tldr` 进入 Seen 时改写为 `source records: ...`；无自然语言 statement 时仍保留结构化状态式 Seen |
+| [`src/intelligence/report-builder.mjs`](../../src/intelligence/report-builder.mjs) | `memory_admission.seen` 保留 `source claims/records` 文案；memory prompt 要求不得把这些来源摘录改写成事实结论；`enforceStandingMemorySeenGate()` 继续重写 `## Seen` 小节，确保最终写入保持来源摘录格式 |
+| [`test/intelligence.test.mjs`](../../test/intelligence.test.mjs) | 增加回归测试，验证 `goal_event.reason` 在 TDB 和 standing memory 中都以 `source claims: ...` 出现 |
+
+这里的关键变化不是字段数量，而是语义：
+
+- `Seen`: 我读到了这个来源说了什么。
+- `Inferred`: 我基于这些来源判断什么更可信。
+- `Remembered`: 旧来源曾经这样说过。
+
 ---
 
 ## 5. 验证与测试
@@ -379,6 +431,35 @@ ReadLints
 
 结果：[`src/intelligence/report-builder.mjs`](../../src/intelligence/report-builder.mjs) 和 [`test/intelligence.test.mjs`](../../test/intelligence.test.mjs) 无 linter 错误。
 
+第五阶段来源摘录语义补充了两个回归测试：
+
+```bash
+npm test -- test/intelligence.test.mjs
+```
+
+新增覆盖点：
+
+- `goal_event.reason` 进入 TDB `seen` 时，必须写成 `source claims: ...`，并标记为 `source_statement`。
+- 如果 AI 在 standing memory 中把自然语言 Seen 写成事实结论，写入门禁会把它恢复成 `source claims: ...`。
+
+结果：`test/intelligence.test.mjs` 39 个测试全部通过。
+
+随后运行完整测试：
+
+```bash
+npm test
+```
+
+结果：4 个测试文件、190 个测试全部通过。
+
+静态诊断：
+
+```bash
+ReadLints
+```
+
+结果：[`src/intelligence/decision-brief.mjs`](../../src/intelligence/decision-brief.mjs)、[`src/intelligence/report-builder.mjs`](../../src/intelligence/report-builder.mjs)、[`test/intelligence.test.mjs`](../../test/intelligence.test.mjs) 无 linter 错误。
+
 ---
 
 ## 6. 后续演化
@@ -429,6 +510,17 @@ ReadLints
 3. **再处理目标和队列**  
    目标中的 `std<40 / 429=0` 这类不可验证指标、以及 pending decisions 的可归档积压，仍然需要处理。但顺序应该在 memory 写入门禁稳定之后。
 
+第五阶段之后，后续验证要换一个问题问：
+
+1. **Seen 是否保持“来源摘录”语义**  
+   重点看新 memory 中是否还会把 `source claims/records` 改写成直接结论。
+
+2. **Inferred 是否承担判断职责**  
+   如果系统认为“目标需要 refine”或“清理未完成”，这些判断应该出现在 Inferred，并引用对应 Seen，而不是直接塞进 Seen。
+
+3. **observe 阶段仍需后续处理，但不是当前优先级**  
+   observe 仍可能把目录树推断写得像直接读取文件。当前先确保 TDB 和 standing memory 不把这种说法升级为长期事实。
+
 ---
 
 ## 附：本轮对话问题—思考—方案—执行对照
@@ -436,7 +528,7 @@ ReadLints
 | 阶段 | 内容 |
 | --- | --- |
 | 问题 | 进化工作流调用多篇历史内容时，没有充分注明时间，也没有明确要求按最新结论裁决，导致旧结论可能继续污染后续轮次 |
-| 思考 | 第一性原理下，持续演化系统不能依赖语言连续性维持记忆，而要依赖证据状态维持记忆；20 轮后进一步确认污染源在 observe 阶段更早出现；继续加治理术语又会让系统过度复杂；3 轮三栏验证后确认 prompt 语言不足以阻止污染回流 |
-| 方案 | 第一阶段新增 `Temporal Decision Brief`；第二阶段新增 `Observation Evidence Guard`，并把 Observation Report 降级为模型 claim；第三阶段统一为 Seen / Inferred / Remembered / Do Not Treat As Seen；第四阶段把 memory Seen 改成代码层写入门禁 |
-| 执行 | 新增 `decision-brief` 和 `observation-guard`，接入 observe/report/decide/memory 链路，降权历史 Markdown 和 receipt summary，收紧 standing memory，并预留 `claim_ledger`；随后在 TDB、prompt、observe guard、standing memory 中统一三栏语言；最后在 `report-builder` 中加入 `memory_admission` 与 `enforceStandingMemorySeenGate()` |
-| 验证 | `ReadLints` 无错误；第一阶段 `npm test` 185 项通过，第二阶段和第三阶段 `npm test` 187 项通过，第四阶段 `npm test` 188 项通过 |
+| 思考 | 第一性原理下，持续演化系统不能依赖语言连续性维持记忆，而要依赖证据状态维持记忆；20 轮后进一步确认污染源在 observe 阶段更早出现；继续加治理术语又会让系统过度复杂；3 轮三栏验证后确认 prompt 语言不足以阻止污染回流；后续又确认自然语言不能被排除，问题是不能把“来源说了”写成“事实成立” |
+| 方案 | 第一阶段新增 `Temporal Decision Brief`；第二阶段新增 `Observation Evidence Guard`，并把 Observation Report 降级为模型 claim；第三阶段统一为 Seen / Inferred / Remembered / Do Not Treat As Seen；第四阶段把 memory Seen 改成代码层写入门禁；第五阶段把自然语言 Seen 统一为 `source claims/records` 来源摘录 |
+| 执行 | 新增 `decision-brief` 和 `observation-guard`，接入 observe/report/decide/memory 链路，降权历史 Markdown 和 receipt summary，收紧 standing memory，并预留 `claim_ledger`；随后在 TDB、prompt、observe guard、standing memory 中统一三栏语言；在 `report-builder` 中加入 `memory_admission` 与 `enforceStandingMemorySeenGate()`；最后让 `goal_event`/`evolution_event` 自然语言进入 Seen 时保持来源摘录语义 |
+| 验证 | `ReadLints` 无错误；第一阶段 `npm test` 185 项通过，第二阶段和第三阶段 `npm test` 187 项通过，第四阶段 `npm test` 188 项通过，第五阶段 `npm test` 190 项通过 |

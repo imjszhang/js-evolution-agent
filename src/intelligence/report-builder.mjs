@@ -578,7 +578,11 @@ function seenSourceId(item) {
 }
 
 function summarizeSeenItem(item) {
-  if (item?.summary) return shortText(item.summary, 260);
+  if (item?.summary) {
+    const summary = shortText(item.summary, 260);
+    if (item.evidence_level === 'source_statement') return summary;
+    return summary;
+  }
   if (item?.fields && typeof item.fields === 'object') {
     return shortText(JSON.stringify(item.fields), 260);
   }
@@ -604,6 +608,9 @@ function buildMemoryAdmission(reportContext) {
       kind: item?.kind ?? null,
       evidence_level: item?.evidence_level ?? null,
       summary: summarizeSeenItem(item),
+      seen_policy: item?.evidence_level === 'source_statement'
+        ? 'source_statement_only'
+        : 'direct_field_or_status',
     })).filter((item) => item.source_id),
     remembered: (brief.remembered ?? []).slice(0, 40),
     do_not_treat_as_seen: (brief.do_not_treat_as_seen ?? []).slice(0, 30),
@@ -662,6 +669,7 @@ Rules:
 - Keep it under ${maxChars} characters.
 - Use exactly these sections: Seen, Inferred, Remembered, Do Not Treat As Seen.
 - Seen may only use Machine Context memory_admission.seen. Do not put report text, diary prose, receipt summaries, partial receipts, or agent claims in Seen.
+- If a Seen item says "source claims" or "source records", keep that wording. It means the source was read, not that the statement is automatically true.
 - Inferred must cite Seen source ids and include what would overturn the judgement.
 - Remembered is background only; do not phrase it as current fact.
 - Do Not Treat As Seen preserves refuted, stale, forbidden, or repeatedly misleading claims.
@@ -687,6 +695,7 @@ ${contextJson}`;
 - 总长度必须控制在 ${maxChars} 字符以内。
 - 固定使用四个小节：Seen、Inferred、Remembered、Do Not Treat As Seen。
 - Seen 只能使用机器上下文 memory_admission.seen。不得把报告正文、日记叙述、receipt summary、partial receipt 或 agent claim 放入 Seen。
+- 如果 Seen 项写着 “source claims” 或 “source records”，必须保留这个说法。它表示读到了该来源，不表示该说法自动为真。
 - Inferred 必须引用 Seen 的 source id，并写明什么证据会推翻该判断。
 - Remembered 只能作为背景，不得写成当前事实。
 - Do Not Treat As Seen 保留已证伪、过期、禁止复活或反复误导的说法。

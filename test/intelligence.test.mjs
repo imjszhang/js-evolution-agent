@@ -100,6 +100,29 @@ describe('evidence guards and decision brief', () => {
     expect(JSON.stringify(brief.agent_claims)).toContain('remote.matchCount');
   });
 
+  it('keeps natural language goal reasons as source claims in seen', () => {
+    const brief = buildTemporalDecisionBrief({
+      generated_at: '2026-05-21T00:00:00.000Z',
+      current_cycle: { cycle_id: 'cycle-test', mode: 'local' },
+      action_receipts: [],
+      probe_results: [],
+      evolution_events: [],
+      goal_events: [{
+        id: 'goal-event-1',
+        type: 'assessment',
+        goal_id: 'bootstrap',
+        recorded_at: '2026-05-21T00:00:00.000Z',
+        reason: 'standing_memory cleanup is complete',
+      }],
+      recent_report_markdowns: [],
+      standing_memory: { exists: false },
+    });
+
+    const seenText = JSON.stringify(brief.seen);
+    expect(seenText).toContain('source claims: assessment bootstrap: standing_memory cleanup is complete');
+    expect(brief.seen[0].evidence_level).toBe('source_statement');
+  });
+
   it('formats observation guard with forbidden worker-state fields', () => {
     const guard = buildObservationEvidenceGuard({ subject: 'agentank-tank' });
     const text = formatObservationEvidenceGuard(guard);
@@ -651,6 +674,46 @@ describe('buildIntelReport', () => {
     expect(seenText).not.toContain('remote.matchCount');
     expect(memory.evidence_refs).toContain('evt-safe');
     expect(memory.evidence_refs.join('\n')).not.toContain('receipt-');
+  });
+
+  it('writes natural language seen as source claims in standing memory', async () => {
+    const { store, runtime, intelResult } = makeReportFixture();
+    store.recordGoalEvent({
+      id: 'goal-event-claim',
+      type: 'assessment',
+      goal_id: 'bootstrap',
+      reason: 'standing_memory cleanup is complete',
+    });
+
+    const outputs = [
+      '# 情报报告\n\n目标评估声称 standing_memory cleanup is complete。\n',
+      [
+        '## Seen',
+        '',
+        '- standing_memory cleanup is complete',
+        '',
+        '## Inferred',
+        '',
+        '- cleanup complete',
+      ].join('\n'),
+    ];
+    const fakeAi = { chat: async () => outputs.shift() };
+
+    await buildIntelReport({
+      intelResult,
+      runtime,
+      store,
+      aiClient: fakeAi,
+      useAi: true,
+    });
+
+    const memory = store.readStandingMemory();
+    const seenText = memory.text.slice(
+      memory.text.indexOf('## Seen'),
+      memory.text.indexOf('## Inferred'),
+    );
+    expect(seenText).toContain('goal-event-claim');
+    expect(seenText).toContain('source claims: assessment bootstrap: standing_memory cleanup is complete');
   });
 
   it('falls back to placeholder when AI throws', async () => {

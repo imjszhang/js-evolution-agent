@@ -67,6 +67,15 @@ function directFact({ sourceType, evidenceLevel, record, summary, path = null })
   };
 }
 
+function sourceStatement({ sourceType, record, verb, statement }) {
+  return directFact({
+    sourceType,
+    evidenceLevel: 'source_statement',
+    record,
+    summary: `source ${verb}: ${statement}`,
+  });
+}
+
 function structuredStatus({ sourceType, record, fields }) {
   return {
     kind: 'structured_status',
@@ -170,21 +179,45 @@ function probeStatuses(probes, limit) {
 }
 
 function eventFacts(events, limit) {
-  return newestFirst(events).slice(0, limit).map((record) => directFact({
-    sourceType: 'evolution_event',
-    evidenceLevel: 'structured_machine_record',
-    record,
-    summary: `${record.type ?? 'event'} ${record.status ?? ''}: ${record.tldr ?? record.summary ?? record.result?.status ?? ''}`,
-  }));
+  return newestFirst(events).slice(0, limit).map((record) => {
+    const eventStatus = `${record.type ?? 'event'} ${record.status ?? ''}`.trim();
+    const statement = record.tldr ?? record.summary ?? record.result?.summary ?? null;
+    if (!statement) {
+      return directFact({
+        sourceType: 'evolution_event',
+        evidenceLevel: 'structured_machine_record',
+        record,
+        summary: eventStatus,
+      });
+    }
+    return sourceStatement({
+      sourceType: 'evolution_event',
+      record,
+      verb: 'records',
+      statement: `${eventStatus}: ${statement}`,
+    });
+  });
 }
 
 function goalFacts(events, limit) {
-  return newestFirst(events).slice(0, limit).map((record) => directFact({
-    sourceType: 'goal_event',
-    evidenceLevel: 'structured_machine_record',
-    record,
-    summary: `${record.type ?? 'goal_event'} ${record.goal_id ?? ''}: ${record.reason ?? record.summary ?? ''}`,
-  }));
+  return newestFirst(events).slice(0, limit).map((record) => {
+    const goalStatus = `${record.type ?? 'goal_event'} ${record.goal_id ?? ''}`.trim();
+    const statement = record.reason ?? record.summary ?? null;
+    if (!statement) {
+      return directFact({
+        sourceType: 'goal_event',
+        evidenceLevel: 'structured_machine_record',
+        record,
+        summary: goalStatus,
+      });
+    }
+    return sourceStatement({
+      sourceType: 'goal_event',
+      record,
+      verb: 'claims',
+      statement: `${goalStatus}: ${statement}`,
+    });
+  });
 }
 
 function receiptAgentClaims(receipts, limit) {
@@ -369,6 +402,7 @@ export function buildTemporalDecisionBrief(reportContext = {}, {
       ],
       rules: [
         'Seen may be used as fact.',
+        'Natural-language Seen means a source was read, not that the source statement is automatically true.',
         'Inferred must cite Seen and state what would overturn it.',
         'Remembered is context only, not fact.',
         'Do Not Treat As Seen must not be revived as fact unless new Seen evidence directly supports it.',
