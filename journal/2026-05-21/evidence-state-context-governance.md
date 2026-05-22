@@ -497,6 +497,29 @@ flowchart TD
 | [`test/intelligence.test.mjs`](../../test/intelligence.test.mjs) | 覆盖 TDB `Seen` 包含三层 receipt 状态字段，且 receipt summary 仍只作为 Remembered agent claim |
 | [`test/conversational-intel-pipeline.test.mjs`](../../test/conversational-intel-pipeline.test.mjs) | 覆盖 semantic verify prompt 明确三层状态和 Remembered/typed_evidence_refs 边界 |
 
+### 第十一阶段 Remembered 内容门禁
+
+第十阶段之后又跑了 3 轮，执行事实三层契约基本生效：系统能区分执行完成、receipt schema 不合格和模型解释层判断；operator fact 也已进入情报系统，`skillType=freeze` 被补充为 tank 技能而不是账号冻结。
+
+新的问题集中在 `standing_memory` 的 `Remembered` 内容层：第九阶段已经保证 Remembered 有完整 `[source_type:id]` 地址，也不再复活短 id；但只要上游 receipt summary、conversation context 或旧报告继续携带已证伪说法，`Remembered` 仍会以“有地址的线索”形式保存污染内容。格式正确不等于内容应该被长期记住。
+
+第十一阶段的原则是：**已证伪 claim 不应该作为 Remembered lead 继续进入长期记忆。**
+
+| 原则 | 含义 |
+| --- | --- |
+| 不手工清 memory | 不依赖 `workspace_write` 直接编辑 `standing_memory.json` |
+| 在 admission 源头过滤 | 在 `normalizeRememberedItems()` 准入时过滤已证伪内容 |
+| 先做小规则 | 只覆盖已经反复复活、可稳定描述的污染 claim |
+| 不影响普通线索 | 普通 receipt summary 仍可作为 `[action_receipts:...] agent_claim:` 保留 |
+
+涉及文件：
+
+| 文件 | 第十一阶段变化 |
+| --- | --- |
+| [`src/intelligence/report-builder.mjs`](../../src/intelligence/report-builder.mjs) | 新增 `REFUTED_REMEMBERED_PATTERNS` 和 `isRefutedRememberedClaim()`，在 `normalizeRememberedItems()` 内过滤已证伪 Remembered claim |
+| [`src/intelligence/report-builder.mjs`](../../src/intelligence/report-builder.mjs) | 初始过滤 `remote_matchCount=847/4127`、虚构 pipeline 分数、login deadlock、worker zombie，以及把 `skillType=freeze` 误解为账号/发布通道冻结的说法 |
+| [`test/intelligence.test.mjs`](../../test/intelligence.test.mjs) | 覆盖完整 source-addressed receipt claim 中的已证伪内容不会进入 `## Remembered`，同时正常 remembered lead 仍保留 |
+
 ---
 
 ## 5. 验证与测试
@@ -796,6 +819,36 @@ ReadLints
 
 结果：[`src/actions/agent-adapter.mjs`](../../src/actions/agent-adapter.mjs)、[`src/actions/handlers.mjs`](../../src/actions/handlers.mjs)、[`src/intelligence/decision-brief.mjs`](../../src/intelligence/decision-brief.mjs)、[`src/intelligence/conversation-context.mjs`](../../src/intelligence/conversation-context.mjs)、[`src/intelligence/goal-assessor.mjs`](../../src/intelligence/goal-assessor.mjs)、[`src/intelligence/evolution-diary-builder.mjs`](../../src/intelligence/evolution-diary-builder.mjs)、[`test/actions.test.mjs`](../../test/actions.test.mjs)、[`test/intelligence.test.mjs`](../../test/intelligence.test.mjs)、[`test/conversational-intel-pipeline.test.mjs`](../../test/conversational-intel-pipeline.test.mjs) 无 linter 错误。
 
+第十一阶段 Remembered 内容门禁补充了内容级过滤回归：
+
+```bash
+npm test -- test/intelligence.test.mjs
+```
+
+新增覆盖点：
+
+- 完整 `[action_receipts:...] agent_claim:` 中如果包含已证伪 `remote_matchCount=4127` 或虚构 pipeline confidence，不会进入 `standing_memory` 的 `## Remembered`。
+- 把 `skillType=freeze` 解释为账号冻结或发布通道锁定的说法会被过滤。
+- 正常 remembered lead 不受影响，仍能作为带 source address 的线索保留。
+
+结果：1 个测试文件、45 个测试全部通过。
+
+随后运行完整测试：
+
+```bash
+npm test
+```
+
+结果：4 个测试文件、202 个测试全部通过。
+
+静态诊断：
+
+```bash
+ReadLints
+```
+
+结果：[`src/intelligence/report-builder.mjs`](../../src/intelligence/report-builder.mjs)、[`test/intelligence.test.mjs`](../../test/intelligence.test.mjs) 无 linter 错误。
+
 ---
 
 ## 6. 后续演化
@@ -912,6 +965,17 @@ ReadLints
 3. **检查 semantic verification 是否能覆盖旧推断链**  
    如果新一轮直接证据证伪了 worker 僵死、memory 污染等旧判断，goal assessment 和 diary 应优先采用最新 semantic verification，而不是继续复制旧 report 叙事。
 
+第十一阶段之后，后续验证重点是：
+
+1. **确认内容污染不再以“有地址线索”复活**  
+   新一轮应检查 `standing_memory` 的 `## Remembered`，确认 `remote_matchCount=4127`、虚构 pipeline 分数、worker zombie、`freeze=账号冻结` 等已证伪 claim 不再出现。
+
+2. **观察规则是否过窄或过宽**  
+   当前过滤器是小规则，不是通用真伪判断器。若新的固定污染 claim 反复复活，再加入 pattern；若正常 tank 技能线索被误伤，则缩小 `freeze` 相关匹配范围。
+
+3. **把内容门禁逐步接到 Claim Ledger**  
+   当前规则是代码常量。长期更稳的形态是从 `operator_fact`、`Do Not Treat As Seen` 或 `claim_ledger` 中生成 refuted claim 集合，而不是继续人工维护固定 pattern。
+
 ---
 
 ## 附：本轮对话问题—思考—方案—执行对照
@@ -919,7 +983,7 @@ ReadLints
 | 阶段 | 内容 |
 | --- | --- |
 | 问题 | 进化工作流调用多篇历史内容时，没有充分注明时间，也没有明确要求按最新结论裁决，导致旧结论可能继续污染后续轮次 |
-| 思考 | 第一性原理下，持续演化系统不能依赖语言连续性维持记忆，而要依赖证据状态维持记忆；20 轮后进一步确认污染源在 observe 阶段更早出现；继续加治理术语又会让系统过度复杂；3 轮三栏验证后确认 prompt 语言不足以阻止污染回流；后续又确认自然语言不能被排除，问题是不能把“来源说了”写成“事实成立”；再后续发现裸 id 会让探针误把数据源记录当文件名搜索；最新 3 轮则显示系统已能发现问题，但目标、memory、权限三个执行契约不能稳定消费发现；再后一轮暴露的是执行边界问题：receipt 结构化状态与 agent claim 被混判，Analyze+Decide JSON 失败会杀死 cycle；第九阶段则确认直接编辑 `standing_memory.json` 不能持久，因为下一轮全量重写会复活旧 Remembered 污染；第十阶段进一步确认系统把执行是否完成、receipt 格式是否合格、模型如何解释执行结果混成了一个 `partial` |
-| 方案 | 第一阶段新增 `Temporal Decision Brief`；第二阶段新增 `Observation Evidence Guard`，并把 Observation Report 降级为模型 claim；第三阶段统一为 Seen / Inferred / Remembered / Do Not Treat As Seen；第四阶段把 memory Seen 改成代码层写入门禁；第五阶段把自然语言 Seen 统一为 `source claims/records` 来源摘录；第六阶段给 Seen 加 `[source_type:id]` 可重开地址；第七阶段收敛为契约一致、证据可重开、副作用诚实三个执行不变量；第八阶段统一 receipt 结构化状态/agent claim 边界，并把 invalid AI JSON 转成可审计 defer；第九阶段把 Remembered 也改为由 `memory_admission.remembered` 驱动的轻量代码门禁；第十阶段把 agent_run 结果拆成执行层、格式层、解释层三层契约 |
-| 执行 | 新增 `decision-brief` 和 `observation-guard`，接入 observe/report/decide/memory 链路，降权历史 Markdown 和 receipt summary，收紧 standing memory，并预留 `claim_ledger`；随后在 TDB、prompt、observe guard、standing memory 中统一三栏语言；在 `report-builder` 中加入 `memory_admission` 与 `enforceStandingMemorySeenGate()`；让 `goal_event`/`evolution_event` 自然语言进入 Seen 时保持来源摘录语义；把 Seen 输出改为 `[evolution_events:...]`、`[goal_events:...]`、`[action_receipts:...]`、`[probe_results:...]`；补齐 `proposed_goal.children` 归一化、`typed_evidence_refs`、partial receipt 门禁和 read_only 写入 warning；最后增加共用 JSON 提取器、Analyze+Decide invalid JSON defer 降级，并更新 receipt policy / verify prompt；随后扩展 `memory_admission.remembered`、新增 Remembered gate，并在写入时统一应用 `enforceStandingMemoryGates()`；本轮增加 nested receipt 归一化、拆分 `execution_status/schema_status/acceptance_status`，并让 TDB、verify、goal assessment、diary 消费三层状态 |
-| 验证 | `ReadLints` 无错误；第一阶段 `npm test` 185 项通过，第二阶段和第三阶段 `npm test` 187 项通过，第四阶段 `npm test` 188 项通过，第五、第六阶段 `npm test` 190 项通过，第七阶段 `npm test` 193 项通过，第八阶段 `npm test` 196 项通过，第九阶段 `npm test` 198 项通过，第十阶段 `npm test` 201 项通过 |
+| 思考 | 第一性原理下，持续演化系统不能依赖语言连续性维持记忆，而要依赖证据状态维持记忆；20 轮后进一步确认污染源在 observe 阶段更早出现；继续加治理术语又会让系统过度复杂；3 轮三栏验证后确认 prompt 语言不足以阻止污染回流；后续又确认自然语言不能被排除，问题是不能把“来源说了”写成“事实成立”；再后续发现裸 id 会让探针误把数据源记录当文件名搜索；最新 3 轮则显示系统已能发现问题，但目标、memory、权限三个执行契约不能稳定消费发现；再后一轮暴露的是执行边界问题：receipt 结构化状态与 agent claim 被混判，Analyze+Decide JSON 失败会杀死 cycle；第九阶段则确认直接编辑 `standing_memory.json` 不能持久，因为下一轮全量重写会复活旧 Remembered 污染；第十阶段进一步确认系统把执行是否完成、receipt 格式是否合格、模型如何解释执行结果混成了一个 `partial`；第十一阶段则确认格式正确的 Remembered 仍可能携带已证伪内容，必须在 admission 源头过滤 |
+| 方案 | 第一阶段新增 `Temporal Decision Brief`；第二阶段新增 `Observation Evidence Guard`，并把 Observation Report 降级为模型 claim；第三阶段统一为 Seen / Inferred / Remembered / Do Not Treat As Seen；第四阶段把 memory Seen 改成代码层写入门禁；第五阶段把自然语言 Seen 统一为 `source claims/records` 来源摘录；第六阶段给 Seen 加 `[source_type:id]` 可重开地址；第七阶段收敛为契约一致、证据可重开、副作用诚实三个执行不变量；第八阶段统一 receipt 结构化状态/agent claim 边界，并把 invalid AI JSON 转成可审计 defer；第九阶段把 Remembered 也改为由 `memory_admission.remembered` 驱动的轻量代码门禁；第十阶段把 agent_run 结果拆成执行层、格式层、解释层三层契约；第十一阶段为 Remembered 增加 refuted claim 内容门禁 |
+| 执行 | 新增 `decision-brief` 和 `observation-guard`，接入 observe/report/decide/memory 链路，降权历史 Markdown 和 receipt summary，收紧 standing memory，并预留 `claim_ledger`；随后在 TDB、prompt、observe guard、standing memory 中统一三栏语言；在 `report-builder` 中加入 `memory_admission` 与 `enforceStandingMemorySeenGate()`；让 `goal_event`/`evolution_event` 自然语言进入 Seen 时保持来源摘录语义；把 Seen 输出改为 `[evolution_events:...]`、`[goal_events:...]`、`[action_receipts:...]`、`[probe_results:...]`；补齐 `proposed_goal.children` 归一化、`typed_evidence_refs`、partial receipt 门禁和 read_only 写入 warning；最后增加共用 JSON 提取器、Analyze+Decide invalid JSON defer 降级，并更新 receipt policy / verify prompt；随后扩展 `memory_admission.remembered`、新增 Remembered gate，并在写入时统一应用 `enforceStandingMemoryGates()`；之后增加 nested receipt 归一化、拆分 `execution_status/schema_status/acceptance_status`，并让 TDB、verify、goal assessment、diary 消费三层状态；本轮新增 `isRefutedRememberedClaim()`，过滤已证伪 remembered claim |
+| 验证 | `ReadLints` 无错误；第一阶段 `npm test` 185 项通过，第二阶段和第三阶段 `npm test` 187 项通过，第四阶段 `npm test` 188 项通过，第五、第六阶段 `npm test` 190 项通过，第七阶段 `npm test` 193 项通过，第八阶段 `npm test` 196 项通过，第九阶段 `npm test` 198 项通过，第十阶段 `npm test` 201 项通过，第十一阶段 `npm test` 202 项通过 |

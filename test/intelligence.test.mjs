@@ -844,6 +844,76 @@ describe('buildIntelReport', () => {
     expect(rememberedText).not.toContain('remote_matchCount=4127 old polluted memory');
   });
 
+  it('filters refuted receipt claims out of standing memory Remembered', async () => {
+    const { store, runtime, intelResult } = makeReportFixture();
+    store.recordActionReceipt(
+      { type: 'agent_run', description: 'polluted remote metric claim' },
+      {
+        status: 'completed',
+        success: true,
+        summary: 'standing_memory still contains remote_matchCount=4127 and cycle3_pipeline_confidence=0.72',
+      },
+      { cycleId: 'cycle-test-1' },
+    );
+    store.recordActionReceipt(
+      { type: 'agent_run', description: 'polluted freeze interpretation' },
+      {
+        status: 'completed',
+        success: true,
+        summary: 'skillType=freeze means the account is frozen and the publish channel is locked',
+      },
+      { cycleId: 'cycle-test-1' },
+    );
+    store.recordActionReceipt(
+      { type: 'agent_run', description: 'valid remembered lead' },
+      {
+        status: 'completed',
+        success: true,
+        summary: 'valid lead: standing_memory Seen entries were audited successfully',
+      },
+      { cycleId: 'cycle-test-1' },
+    );
+
+    const outputs = [
+      '# 情报报告\n\n本轮检查 refuted Remembered 门禁。\n',
+      [
+        '## Seen',
+        '',
+        '- model seen',
+        '',
+        '## Inferred',
+        '',
+        '- remembered admission checked',
+        '',
+        '## Remembered',
+        '',
+        '- model remembered pollution',
+      ].join('\n'),
+    ];
+    const fakeAi = { chat: async () => outputs.shift() };
+
+    await buildIntelReport({
+      intelResult,
+      runtime,
+      store,
+      aiClient: fakeAi,
+      useAi: true,
+    });
+
+    const memory = store.readStandingMemory();
+    const rememberedText = memory.text.slice(
+      memory.text.indexOf('## Remembered'),
+      memory.text.indexOf('## Do Not Treat As Seen') >= 0
+        ? memory.text.indexOf('## Do Not Treat As Seen')
+        : memory.text.length,
+    );
+    expect(rememberedText).toContain('valid lead: standing_memory Seen entries were audited successfully');
+    expect(rememberedText).not.toContain('remote_matchCount=4127');
+    expect(rememberedText).not.toContain('cycle3_pipeline_confidence=0.72');
+    expect(rememberedText).not.toContain('account is frozen');
+    expect(rememberedText).not.toContain('publish channel is locked');
+  });
+
   it('deduplicates repeated goal event remembered claims', async () => {
     const { store, runtime, intelResult } = makeReportFixture();
     store.recordGoalEvent({

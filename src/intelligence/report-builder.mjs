@@ -634,6 +634,23 @@ function rememberedDedupeKey(item, sourceId) {
   return `${sourceType}:${sourceId}`;
 }
 
+const REFUTED_REMEMBERED_PATTERNS = [
+  /remote_matchCount\s*=\s*(?:847|4127)/i,
+  /cycle3_pipeline_confidence\s*=\s*0\.72/i,
+  /pipeline_score\s*=\s*0\.87/i,
+  /sync_success_rate\s*=\s*0\.95/i,
+  /login\s+deadlock/i,
+  /worker\s+(?:is\s+)?(?:app-level\s+)?zombie/i,
+  /skillType\s*=\s*freeze[\s\S]{0,120}(?:account|publish|publishing|channel|frozen|locked|unfreeze|冻结|账号|账户|发布通道|发布|解冻)/i,
+  /(?:account|publish|publishing|channel|frozen|locked|unfreeze|冻结|账号|账户|发布通道|发布|解冻)[\s\S]{0,120}skillType\s*=\s*freeze/i,
+];
+
+function isRefutedRememberedClaim(item) {
+  const summary = String(item?.summary ?? '');
+  if (!summary.trim()) return false;
+  return REFUTED_REMEMBERED_PATTERNS.some((pattern) => pattern.test(summary));
+}
+
 function normalizeRememberedItems(items) {
   const counts = new Map();
   const seenKeys = new Set();
@@ -641,6 +658,7 @@ function normalizeRememberedItems(items) {
   for (const item of Array.isArray(items) ? items : []) {
     const sourceType = item?.source?.source_type ?? null;
     if (sourceType === 'standing_memory') continue;
+    if (isRefutedRememberedClaim(item)) continue;
     const sourceId = seenSourceId(item);
     if (!sourceId) continue;
     const key = rememberedDedupeKey(item, sourceId);
