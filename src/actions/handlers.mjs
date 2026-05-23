@@ -992,6 +992,7 @@ const builtInActionHandlers = {
       : (executionSucceeded && schemaStatus === 'valid' ? 'passed' : (executionSucceeded ? 'schema_invalid' : 'failed'));
     const rootMetadataValue = agentResult.root_metadata ?? null;
     const evidence = asObject(agent.evidence);
+    const providerFailure = agent.provider_failure ?? agentResult.provider_failure ?? null;
     const result = {
       success: executionSucceeded && schemaStatus === 'valid' && !requiresApproval,
       status: agentStatus,
@@ -1002,7 +1003,8 @@ const builtInActionHandlers = {
       agent_status: agentStatus,
       acceptance_status: acceptanceStatus,
       goal_progress_status: executionSucceeded && hasExecutionEvidence && !requiresApproval ? 'progressed' : 'not_progressed',
-      message: agent.summary ?? agentResult.message ?? '',
+      message: agent.summary ?? agentResult.message ?? agentResult.error ?? providerFailure?.message ?? '',
+      error: agentResult.error ?? providerFailure?.message ?? null,
       provider: agentResult.provider ?? agent.provider ?? null,
       requires_approval: requiresApproval,
       execution_root: agentResult.execution_root ?? runSpec.primary_cwd,
@@ -1019,6 +1021,7 @@ const builtInActionHandlers = {
       agent,
       evidence: {
         ...evidence,
+        ...(providerFailure ? { provider_failure: providerFailure } : {}),
         evidence_contract: evidence.evidence_contract ?? buildEvidenceContract({
           executionRoot: agentResult.execution_root ?? runSpec.primary_cwd,
           resourceScope: rootMetadataValue?.resource_scope ?? runSpec.primary_cwd_kind,
@@ -1036,11 +1039,17 @@ const builtInActionHandlers = {
         }),
       },
       writes: asObject(agent.writes),
-      outputs: asObject(agent.outputs),
+      outputs: {
+        ...asObject(agent.outputs),
+        ...(providerFailure ? { provider_failure: providerFailure } : {}),
+      },
       created_files: asArray(agent.created_files),
       modified_files: asArray(agent.modified_files),
       test_results: asArray(agent.test_results),
-      verification_hints: asArray(agent.verification_hints),
+      verification_hints: [
+        ...asArray(agent.verification_hints),
+        ...(providerFailure ? [`provider failure phase: ${providerFailure.phase}`] : []),
+      ],
       fallback_used: false,
     };
     store.recordActionReceipt(action, result, ctx);

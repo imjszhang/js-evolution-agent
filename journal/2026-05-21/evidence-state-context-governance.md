@@ -567,6 +567,23 @@ flowchart TD
 | [`test/intelligence.test.mjs`](../../test/intelligence.test.mjs) | 覆盖 TDB 边界消费、guard 通用规则、非 canonical ENOENT 不进入 `Remembered` |
 | [`test/conversational-intel-pipeline.test.mjs`](../../test/conversational-intel-pipeline.test.mjs) | 覆盖 verify prompt 明确包含 boundary/layer 规则 |
 
+### 第十四阶段 provider failure 可观测性
+
+第十三阶段之后又跑了 3 轮，证据边界契约基本生效：系统不再把 `./standing_memory.json` 的旧 ENOENT 当作 active memory 不存在；`schema_invalid` 也能被区分为格式层问题，而不是执行失败。但最新执行轮次 `exec-20260523-031151` 暴露了一个新问题：两个 `agent_run` 都以 `execution_status=failed`、`goal_progress_status=not_progressed` 结束，receipt 只有空的失败状态，没有原始 provider 错误。verify 只能根据现象猜测可能是 run_spec 上下文过大。
+
+复查代码后确认：**上下文过长不是已证根因**。真实问题是 Claude SDK provider failure 的诊断信息在 `runClaudeCodeSdk()` 与 `handlers.agent_run()` 之间丢失。SDK 抛异常或返回 `subtype=error` 时，adapter 会返回 `error` 或普通 failed agent；外层 receipt 没有持久化失败阶段、原始错误、SDK subtype、session、prompt 长度和消息数，导致后续只能猜原因。
+
+第十四阶段的原则是：**失败也是证据，provider failure 必须可重开。**
+
+涉及文件：
+
+| 文件 | 第十四阶段变化 |
+| --- | --- |
+| [`src/actions/agent-adapter.mjs`](../../src/actions/agent-adapter.mjs) | 新增 `providerFailureDiagnostic()`，在翻译失败、SDK query 抛异常、Claude SDK 返回 `subtype=error` 时记录 provider、phase、message、error name、SDK subtype、session、message/run result 计数、prompt 字符数 |
+| [`src/actions/agent-adapter.mjs`](../../src/actions/agent-adapter.mjs) | Claude SDK `subtype=error` 不再被当成普通 completed agent 归一化；会标记 `execution_status=failed`，并把 `provider_failure` 写入 evidence/outputs |
+| [`src/actions/handlers.mjs`](../../src/actions/handlers.mjs) | `agent_run` 最终 receipt 保留 `agentResult.error/provider_failure`，同步写入 `message/error/evidence/outputs/verification_hints`，避免外层吞掉根因 |
+| [`test/actions.test.mjs`](../../test/actions.test.mjs) | 覆盖 Claude SDK 抛异常和 SDK result `subtype=error` 两类失败，确保 provider failure 诊断被持久化 |
+
 ---
 
 ## 5. 验证与测试
@@ -959,6 +976,36 @@ ReadLints
 
 结果：[`src/actions/resource-registry.mjs`](../../src/actions/resource-registry.mjs)、[`src/actions/probe-runner.mjs`](../../src/actions/probe-runner.mjs)、[`src/actions/handlers.mjs`](../../src/actions/handlers.mjs)、[`src/actions/agent-adapter.mjs`](../../src/actions/agent-adapter.mjs)、[`src/intelligence/decision-brief.mjs`](../../src/intelligence/decision-brief.mjs)、[`src/intelligence/report-builder.mjs`](../../src/intelligence/report-builder.mjs)、[`src/intelligence/conversation-context.mjs`](../../src/intelligence/conversation-context.mjs)、[`src/intelligence/observation-guard.mjs`](../../src/intelligence/observation-guard.mjs)、[`test/actions.test.mjs`](../../test/actions.test.mjs)、[`test/intelligence.test.mjs`](../../test/intelligence.test.mjs)、[`test/conversational-intel-pipeline.test.mjs`](../../test/conversational-intel-pipeline.test.mjs) 无 linter 错误。
 
+第十四阶段 provider failure 可观测性补充了执行失败诊断回归：
+
+```bash
+npm test -- test/actions.test.mjs
+```
+
+新增覆盖点：
+
+- Claude SDK query 抛异常时，`agent_run` receipt 会保留 `provider_failure.phase=sdk_query_exception`、原始错误信息、prompt 字符数和 verification hint。
+- Claude SDK 返回 `result.subtype=error` 时，receipt 会保留 `provider_failure.phase=initial_query_result_error`、SDK subtype、session id、run result 计数，并标记执行层失败。
+- `handlers.agent_run()` 不再吞掉 `agentResult.error/provider_failure`，最终 receipt 的 `message/error/evidence/outputs` 都能重开 provider failure。
+
+结果：1 个测试文件、61 个测试全部通过。
+
+随后运行完整测试：
+
+```bash
+npm test
+```
+
+结果：4 个测试文件、210 个测试全部通过。
+
+静态诊断：
+
+```bash
+ReadLints
+```
+
+结果：[`src/actions/agent-adapter.mjs`](../../src/actions/agent-adapter.mjs)、[`src/actions/handlers.mjs`](../../src/actions/handlers.mjs)、[`test/actions.test.mjs`](../../test/actions.test.mjs) 无 linter 错误。
+
 ---
 
 ## 6. 后续演化
@@ -1108,6 +1155,17 @@ ReadLints
 3. **观察 boundary contract 是否能泛化到其他资源**  
    `standing_memory` 只是示例。后续应看 evolution diary、goal state、policy、source root 等资源是否也能按同一契约表达“在哪个边界看到了什么”。
 
+第十四阶段之后，后续验证重点是：
+
+1. **确认 provider failure 不再只能靠猜**  
+   下一轮若 `claude_code_sdk` 再次空失败，应检查 receipt 中是否出现 `provider_failure.phase`、`message`、`sdk_result_subtype`、`translated_prompt_chars` 和 `message_count`，而不是只在 verify 中推测“上下文太长”。
+
+2. **区分 provider 错误与任务执行错误**  
+   如果 `execution_status=failed` 但 `provider_failure` 存在，应先按 provider/SDK 层故障处理；如果 agent 进入 session 并有 tool use，再按任务执行失败处理。
+
+3. **用真实 provider 诊断再决定是否收缩上下文**  
+   只有当 provider failure 明确指向 token/context/timeout 时，才把 run_spec context 缩减作为根因修复。否则应按认证、限流、SDK session、工具启动或网络异常分别处理。
+
 ---
 
 ## 附：本轮对话问题—思考—方案—执行对照
@@ -1115,7 +1173,7 @@ ReadLints
 | 阶段 | 内容 |
 | --- | --- |
 | 问题 | 进化工作流调用多篇历史内容时，没有充分注明时间，也没有明确要求按最新结论裁决，导致旧结论可能继续污染后续轮次 |
-| 思考 | 第一性原理下，持续演化系统不能依赖语言连续性维持记忆，而要依赖证据状态维持记忆；20 轮后进一步确认污染源在 observe 阶段更早出现；继续加治理术语又会让系统过度复杂；3 轮三栏验证后确认 prompt 语言不足以阻止污染回流；后续又确认自然语言不能被排除，问题是不能把“来源说了”写成“事实成立”；再后续发现裸 id 会让探针误把数据源记录当文件名搜索；最新 3 轮则显示系统已能发现问题，但目标、memory、权限三个执行契约不能稳定消费发现；再后一轮暴露的是执行边界问题：receipt 结构化状态与 agent claim 被混判，Analyze+Decide JSON 失败会杀死 cycle；第九阶段则确认直接编辑 `standing_memory.json` 不能持久，因为下一轮全量重写会复活旧 Remembered 污染；第十阶段进一步确认系统把执行是否完成、receipt 格式是否合格、模型如何解释执行结果混成了一个 `partial`；第十一阶段则确认格式正确的 Remembered 仍可能携带已证伪内容，必须在 admission 源头过滤；第十二阶段确认问题转为同名不同物，root ENOENT、cycle 快照和 canonical memory 被混成一个资源；第十三阶段把它抽象为通用证据问题：任何事实都必须带 boundary、observation、layer |
-| 方案 | 第一阶段新增 `Temporal Decision Brief`；第二阶段新增 `Observation Evidence Guard`，并把 Observation Report 降级为模型 claim；第三阶段统一为 Seen / Inferred / Remembered / Do Not Treat As Seen；第四阶段把 memory Seen 改成代码层写入门禁；第五阶段把自然语言 Seen 统一为 `source claims/records` 来源摘录；第六阶段给 Seen 加 `[source_type:id]` 可重开地址；第七阶段收敛为契约一致、证据可重开、副作用诚实三个执行不变量；第八阶段统一 receipt 结构化状态/agent claim 边界，并把 invalid AI JSON 转成可审计 defer；第九阶段把 Remembered 也改为由 `memory_admission.remembered` 驱动的轻量代码门禁；第十阶段把 agent_run 结果拆成执行层、格式层、解释层三层契约；第十一阶段为 Remembered 增加 refuted claim 内容门禁；第十二阶段固定 standing_memory canonical path 契约；第十三阶段统一为 `Fact = boundary + observation + layer` 的证据边界契约 |
-| 执行 | 新增 `decision-brief` 和 `observation-guard`，接入 observe/report/decide/memory 链路，降权历史 Markdown 和 receipt summary，收紧 standing memory，并预留 `claim_ledger`；随后在 TDB、prompt、observe guard、standing memory 中统一三栏语言；在 `report-builder` 中加入 `memory_admission` 与 `enforceStandingMemorySeenGate()`；让 `goal_event`/`evolution_event` 自然语言进入 Seen 时保持来源摘录语义；把 Seen 输出改为 `[evolution_events:...]`、`[goal_events:...]`、`[action_receipts:...]`、`[probe_results:...]`；补齐 `proposed_goal.children` 归一化、`typed_evidence_refs`、partial receipt 门禁和 read_only 写入 warning；最后增加共用 JSON 提取器、Analyze+Decide invalid JSON defer 降级，并更新 receipt policy / verify prompt；随后扩展 `memory_admission.remembered`、新增 Remembered gate，并在写入时统一应用 `enforceStandingMemoryGates()`；之后增加 nested receipt 归一化、拆分 `execution_status/schema_status/acceptance_status`，并让 TDB、verify、goal assessment、diary 消费三层状态；随后新增 `isRefutedRememberedClaim()`，过滤已证伪 remembered claim；第十二阶段新增 `resource_kind=standing_memory`、canonical path prompt、report context path metadata 和 observation guard 路径契约；第十三阶段新增 `buildEvidenceContract()`，让 probe/action/agent_run receipt、TDB、report/verify/guard 和 Remembered admission 消费 boundary/observation/layer |
-| 验证 | `ReadLints` 无错误；第一阶段 `npm test` 185 项通过，第二阶段和第三阶段 `npm test` 187 项通过，第四阶段 `npm test` 188 项通过，第五、第六阶段 `npm test` 190 项通过，第七阶段 `npm test` 193 项通过，第八阶段 `npm test` 196 项通过，第九阶段 `npm test` 198 项通过，第十阶段 `npm test` 201 项通过，第十一阶段 `npm test` 202 项通过，第十二阶段 `npm test` 203 项通过，第十三阶段聚焦测试 118 项通过，全量 `npm test` 208 项通过 |
+| 思考 | 第一性原理下，持续演化系统不能依赖语言连续性维持记忆，而要依赖证据状态维持记忆；20 轮后进一步确认污染源在 observe 阶段更早出现；继续加治理术语又会让系统过度复杂；3 轮三栏验证后确认 prompt 语言不足以阻止污染回流；后续又确认自然语言不能被排除，问题是不能把“来源说了”写成“事实成立”；再后续发现裸 id 会让探针误把数据源记录当文件名搜索；最新 3 轮则显示系统已能发现问题，但目标、memory、权限三个执行契约不能稳定消费发现；再后一轮暴露的是执行边界问题：receipt 结构化状态与 agent claim 被混判，Analyze+Decide JSON 失败会杀死 cycle；第九阶段则确认直接编辑 `standing_memory.json` 不能持久，因为下一轮全量重写会复活旧 Remembered 污染；第十阶段进一步确认系统把执行是否完成、receipt 格式是否合格、模型如何解释执行结果混成了一个 `partial`；第十一阶段则确认格式正确的 Remembered 仍可能携带已证伪内容，必须在 admission 源头过滤；第十二阶段确认问题转为同名不同物，root ENOENT、cycle 快照和 canonical memory 被混成一个资源；第十三阶段把它抽象为通用证据问题：任何事实都必须带 boundary、observation、layer；第十四阶段确认“上下文过长”不是已证根因，真正问题是 provider failure 诊断在 receipt 中丢失 |
+| 方案 | 第一阶段新增 `Temporal Decision Brief`；第二阶段新增 `Observation Evidence Guard`，并把 Observation Report 降级为模型 claim；第三阶段统一为 Seen / Inferred / Remembered / Do Not Treat As Seen；第四阶段把 memory Seen 改成代码层写入门禁；第五阶段把自然语言 Seen 统一为 `source claims/records` 来源摘录；第六阶段给 Seen 加 `[source_type:id]` 可重开地址；第七阶段收敛为契约一致、证据可重开、副作用诚实三个执行不变量；第八阶段统一 receipt 结构化状态/agent claim 边界，并把 invalid AI JSON 转成可审计 defer；第九阶段把 Remembered 也改为由 `memory_admission.remembered` 驱动的轻量代码门禁；第十阶段把 agent_run 结果拆成执行层、格式层、解释层三层契约；第十一阶段为 Remembered 增加 refuted claim 内容门禁；第十二阶段固定 standing_memory canonical path 契约；第十三阶段统一为 `Fact = boundary + observation + layer` 的证据边界契约；第十四阶段把 provider failure 也作为可重开执行证据保存 |
+| 执行 | 新增 `decision-brief` 和 `observation-guard`，接入 observe/report/decide/memory 链路，降权历史 Markdown 和 receipt summary，收紧 standing memory，并预留 `claim_ledger`；随后在 TDB、prompt、observe guard、standing memory 中统一三栏语言；在 `report-builder` 中加入 `memory_admission` 与 `enforceStandingMemorySeenGate()`；让 `goal_event`/`evolution_event` 自然语言进入 Seen 时保持来源摘录语义；把 Seen 输出改为 `[evolution_events:...]`、`[goal_events:...]`、`[action_receipts:...]`、`[probe_results:...]`；补齐 `proposed_goal.children` 归一化、`typed_evidence_refs`、partial receipt 门禁和 read_only 写入 warning；最后增加共用 JSON 提取器、Analyze+Decide invalid JSON defer 降级，并更新 receipt policy / verify prompt；随后扩展 `memory_admission.remembered`、新增 Remembered gate，并在写入时统一应用 `enforceStandingMemoryGates()`；之后增加 nested receipt 归一化、拆分 `execution_status/schema_status/acceptance_status`，并让 TDB、verify、goal assessment、diary 消费三层状态；随后新增 `isRefutedRememberedClaim()`，过滤已证伪 remembered claim；第十二阶段新增 `resource_kind=standing_memory`、canonical path prompt、report context path metadata 和 observation guard 路径契约；第十三阶段新增 `buildEvidenceContract()`，让 probe/action/agent_run receipt、TDB、report/verify/guard 和 Remembered admission 消费 boundary/observation/layer；第十四阶段新增 `providerFailureDiagnostic()`，让 Claude SDK 异常和 `subtype=error` 的失败阶段、原始错误、session、prompt 长度等进入 receipt |
+| 验证 | `ReadLints` 无错误；第一阶段 `npm test` 185 项通过，第二阶段和第三阶段 `npm test` 187 项通过，第四阶段 `npm test` 188 项通过，第五、第六阶段 `npm test` 190 项通过，第七阶段 `npm test` 193 项通过，第八阶段 `npm test` 196 项通过，第九阶段 `npm test` 198 项通过，第十阶段 `npm test` 201 项通过，第十一阶段 `npm test` 202 项通过，第十二阶段 `npm test` 203 项通过，第十三阶段聚焦测试 118 项通过，全量 `npm test` 208 项通过，第十四阶段 `test/actions.test.mjs` 61 项通过，全量 `npm test` 210 项通过 |

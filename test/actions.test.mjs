@@ -1409,6 +1409,79 @@ describe('controlled action handlers', () => {
     expect(claudeQuery).not.toHaveBeenCalled();
   });
 
+  it('preserves Claude SDK exception diagnostics in agent_run receipts', async () => {
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    vi.mocked(claudeQuery).mockImplementation(() => {
+      throw new Error('provider transport disconnected');
+    });
+
+    const result = await actionHandlers.agent_run({
+      type: 'agent_run',
+      description: 'Exercise Claude provider failure observability',
+      params: {
+        run_spec: {
+          primary_cwd_kind: 'subject_runtime',
+          permission_profile: 'read_only',
+          provider: 'claude_code_sdk',
+          intent: 'Run a lightweight diagnostic.',
+          context: { why_now: 'verify provider failure diagnostics' },
+          expected_output: ['provider failure diagnostic'],
+        },
+      },
+    }, makeAgentProviderCtx('Translated diagnostic task prompt.'));
+
+    expect(result.success).toBe(false);
+    expect(result.execution_status).toBe('failed');
+    expect(result.error).toContain('provider transport disconnected');
+    expect(result.evidence.provider_failure).toMatchObject({
+      provider: 'claude_code_sdk',
+      phase: 'sdk_query_exception',
+      message: 'provider transport disconnected',
+    });
+    expect(result.outputs.provider_failure.translated_prompt_chars).toBeGreaterThan(0);
+    expect(result.verification_hints).toContain('provider failure phase: sdk_query_exception');
+  });
+
+  it('preserves Claude SDK result error diagnostics in agent_run receipts', async () => {
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    vi.mocked(claudeQuery).mockImplementation(() => streamMessages([
+      {
+        type: 'result',
+        subtype: 'error',
+        session_id: 'claude-error-session',
+        result: 'model overloaded before tool use',
+      },
+    ]));
+
+    const ctx = makeAgentProviderCtx('Translated diagnostic task prompt.');
+    const result = await actionHandlers.agent_run({
+      type: 'agent_run',
+      description: 'Exercise Claude result error observability',
+      params: {
+        run_spec: {
+          primary_cwd_kind: 'subject_runtime',
+          permission_profile: 'read_only',
+          provider: 'claude_code_sdk',
+          intent: 'Run another lightweight diagnostic.',
+          context: { why_now: 'verify result subtype diagnostics' },
+          expected_output: ['provider result diagnostic'],
+        },
+      },
+    }, ctx);
+
+    expect(result.success).toBe(false);
+    expect(result.execution_status).toBe('failed');
+    expect(result.evidence.provider_failure).toMatchObject({
+      provider: 'claude_code_sdk',
+      phase: 'initial_query_result_error',
+      sdk_result_subtype: 'error',
+      session_id: 'claude-error-session',
+      message: 'model overloaded before tool use',
+    });
+    expect(result.outputs.provider_failure.run_results_count).toBe(1);
+    expect(result.outputs.claude.provider_failure.phase).toBe('initial_query_result_error');
+  });
+
   it('runs read-only JSONL probes and records structured results', async () => {
     const ctx = makeAgenticCtx();
     const target = join(ctx.host.dataRoot, 'events.jsonl');

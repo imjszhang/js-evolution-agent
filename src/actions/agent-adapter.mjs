@@ -94,6 +94,35 @@ function objectHasContent(value) {
   });
 }
 
+function providerFailureDiagnostic({
+  provider,
+  phase,
+  error = null,
+  translatedPrompt = null,
+  promptParts = null,
+  messages = [],
+  runResults = [],
+  resultMessage = null,
+  sessionId = null,
+} = {}) {
+  const message = String(error?.message ?? error ?? resultMessage?.result ?? 'provider failed without a detailed error');
+  return {
+    provider,
+    phase,
+    message,
+    error_name: error?.name ?? null,
+    sdk_result_subtype: resultMessage?.subtype ?? null,
+    session_id: resultMessage?.session_id ?? resultMessage?.sessionId ?? sessionId ?? null,
+    message_count: Array.isArray(messages) ? messages.length : 0,
+    run_results_count: Array.isArray(runResults) ? runResults.length : 0,
+    translated_prompt_chars: translatedPrompt == null ? null : String(translatedPrompt).length,
+    machine_prompt_chars: promptParts ? {
+      system: String(promptParts.system ?? '').length,
+      user: String(promptParts.user ?? '').length,
+    } : null,
+  };
+}
+
 function firstList(...values) {
   for (const value of values) {
     if (Array.isArray(value) && value.length) return value;
@@ -844,11 +873,18 @@ async function runClaudeCodeSdk(action, ctx) {
     : buildPrompt(executionAction, ctx);
   const translated = await translateAgentTaskPrompt(executionAction, ctx, promptParts);
   if (!translated.ok) {
+    const diagnostic = providerFailureDiagnostic({
+      provider: CLAUDE_PROVIDER,
+      phase: 'translate_agent_task_prompt',
+      error: translated.error,
+      promptParts,
+    });
     return {
       success: false,
       deferred: true,
       provider: CLAUDE_PROVIDER,
       error: translated.error,
+      provider_failure: diagnostic,
     };
   }
   const assistantTexts = [];
@@ -896,6 +932,22 @@ async function runClaudeCodeSdk(action, ctx) {
     if (initial.resultMessage && initial.resultMessage.subtype === 'error') {
       const parsed = parseAgentJson(ctx?.ai, lastRawText || assistantTexts.join('\n\n'));
       agent = normalizeAgentResult(parsed, lastRawText || assistantTexts.join('\n\n'), CLAUDE_PROVIDER);
+      agent.execution_status = 'failed';
+      agent.status = agent.status === 'completed' ? 'failed' : agent.status;
+      agent.provider_failure = providerFailureDiagnostic({
+        provider: CLAUDE_PROVIDER,
+        phase: 'initial_query_result_error',
+        translatedPrompt: translated.prompt,
+        promptParts,
+        messages,
+        runResults,
+        resultMessage: initial.resultMessage,
+        sessionId,
+      });
+      agent.evidence = {
+        ...asObject(agent.evidence),
+        provider_failure: agent.provider_failure,
+      };
     } else {
       for (let attempt = 1; attempt <= AGENT_VERIFICATION_ATTEMPTS; attempt += 1) {
         const verificationPrompt = buildAgentVerificationPrompt(executionAction, validation, attempt);
@@ -908,10 +960,24 @@ async function runClaudeCodeSdk(action, ctx) {
       }
     }
   } catch (e) {
+    const diagnostic = providerFailureDiagnostic({
+      provider: CLAUDE_PROVIDER,
+      phase: 'sdk_query_exception',
+      error: e,
+      translatedPrompt: translated.prompt,
+      promptParts,
+      messages,
+      runResults,
+      resultMessage,
+      sessionId,
+    });
     return {
       success: false,
       provider: CLAUDE_PROVIDER,
       error: `Claude SDK execution failed: ${e?.message || e}`,
+      provider_failure: diagnostic,
+      execution_root: options.cwd,
+      root_metadata: metadata,
     };
   }
 
@@ -952,6 +1018,9 @@ async function runClaudeCodeSdk(action, ctx) {
       },
     },
   };
+  if (agent.provider_failure) {
+    agent.outputs.claude.provider_failure = agent.provider_failure;
+  }
 
   if (mode === 'sandbox_patch' && !cwdWasConfigured) {
     agent.requires_approval = true;
