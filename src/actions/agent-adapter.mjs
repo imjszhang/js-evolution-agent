@@ -469,6 +469,77 @@ function strictRawReceipt(rawText) {
   }
 }
 
+function jsonObjectCandidates(rawText) {
+  const text = String(rawText ?? '');
+  const candidates = [];
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let idx = 0; idx < text.length; idx++) {
+    const char = text[idx];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === '{') {
+      if (depth === 0) start = idx;
+      depth += 1;
+      continue;
+    }
+    if (char !== '}' || depth === 0) continue;
+
+    depth -= 1;
+    if (depth === 0 && start >= 0) {
+      const snippet = text.slice(start, idx + 1);
+      try {
+        const parsed = JSON.parse(snippet);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          candidates.push(parsed);
+        }
+      } catch {
+        // Ignore JSON-looking snippets that are not valid JSON objects.
+      }
+      start = -1;
+    }
+  }
+
+  return candidates;
+}
+
+function receiptScore(obj) {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return -1;
+  const unwrapped = unwrapReceiptObject(obj);
+  let score = 0;
+  if (unwrapped.status) score += 4;
+  if (unwrapped.summary || unwrapped.evidence_summary) score += 4;
+  if (unwrapped.evidence && typeof unwrapped.evidence === 'object') score += 2;
+  if (unwrapped.outputs && typeof unwrapped.outputs === 'object') score += 1;
+  if (unwrapped.writes && typeof unwrapped.writes === 'object') score += 1;
+  return score;
+}
+
+function parseRawReceipt(rawText) {
+  const strict = strictRawReceipt(rawText);
+  if (strict) return { receipt: strict, parseMode: 'strict_json' };
+
+  const candidates = jsonObjectCandidates(rawText)
+    .map((receipt, index) => ({ receipt, index, score: receiptScore(receipt) }))
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score || b.index - a.index);
+  return candidates[0]
+    ? { receipt: candidates[0].receipt, parseMode: 'extracted_json' }
+    : { receipt: null, parseMode: 'none' };
+}
+
 function unwrapReceiptObject(obj) {
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return {};
   const nested = obj.receipt && typeof obj.receipt === 'object' && !Array.isArray(obj.receipt)
@@ -482,7 +553,8 @@ function validateAgentReceipt(action, agent = {}) {
   const evidence = asObject(agent.evidence);
   const writes = asObject(agent.writes);
   const outputs = asObject(agent.outputs);
-  const parsedReceipt = unwrapReceiptObject(strictRawReceipt(agent.raw_response));
+  const rawParse = parseRawReceipt(agent.raw_response);
+  const parsedReceipt = unwrapReceiptObject(rawParse.receipt);
   const rawReceipt = parsedReceipt && !parsedReceipt.summary && parsedReceipt.evidence_summary
     ? { ...parsedReceipt, summary: parsedReceipt.evidence_summary }
     : parsedReceipt;
@@ -561,6 +633,7 @@ function validateAgentReceipt(action, agent = {}) {
     action_type: actionType,
     missing,
     schema_status: missing.length === 0 ? 'valid' : 'invalid',
+    raw_receipt_parse_mode: rawParse.parseMode,
   };
 }
 
@@ -833,7 +906,7 @@ function parseAgentJson(ai, text) {
   try {
     return parseJsonFromText(ai, text);
   } catch {
-    return { status: 'completed', summary: text };
+    return parseRawReceipt(text).receipt ?? { summary: text };
   }
 }
 
@@ -1000,6 +1073,13 @@ async function runClaudeCodeSdk(action, ctx) {
   agent.execution_status = agent.execution_status ?? agent.status;
   agent.schema_status = validation.schema_status;
   agent.schema_missing = validation.missing;
+  agent.raw_receipt_parse_mode = validation.raw_receipt_parse_mode;
+  if (validation.raw_receipt_parse_mode === 'extracted_json') {
+    agent.verification_hints = [
+      ...agent.verification_hints,
+      'agent receipt parsed from embedded JSON object',
+    ];
+  }
   agent.outputs = {
     ...agent.outputs,
     claude: {
@@ -1040,6 +1120,7 @@ async function runClaudeCodeSdk(action, ctx) {
     agent.execution_status = agent.status;
     agent.schema_status = validation.schema_status;
     agent.schema_missing = validation.missing;
+    agent.raw_receipt_parse_mode = validation.raw_receipt_parse_mode;
     agent.requires_approval = agent.requires_approval || agent.status === 'requires_human_review';
     agent.verification_hints = [
       ...agent.verification_hints,
@@ -1196,6 +1277,7 @@ async function runCursorSdk(action, ctx) {
   }
 
   const agent = agentResult ?? normalizeAgentResult(parseAgentJson(ctx?.ai, rawText), rawText, CURSOR_PROVIDER);
+  validation ??= validateAgentReceipt(executionAction, agent);
   if (runResult?.status && runResult.status !== 'finished' && agent.status === 'completed') {
     agent.status = runResult.status === 'error' ? 'blocked' : runResult.status;
   }
@@ -1208,6 +1290,13 @@ async function runCursorSdk(action, ctx) {
   agent.execution_status = agent.execution_status ?? agent.status;
   agent.schema_status = validation.schema_status;
   agent.schema_missing = validation.missing;
+  agent.raw_receipt_parse_mode = validation.raw_receipt_parse_mode;
+  if (validation.raw_receipt_parse_mode === 'extracted_json') {
+    agent.verification_hints = [
+      ...agent.verification_hints,
+      'agent receipt parsed from embedded JSON object',
+    ];
+  }
   agent.outputs = {
     ...agent.outputs,
     cursor: {
@@ -1234,6 +1323,7 @@ async function runCursorSdk(action, ctx) {
     agent.execution_status = agent.status;
     agent.schema_status = validation.schema_status;
     agent.schema_missing = validation.missing;
+    agent.raw_receipt_parse_mode = validation.raw_receipt_parse_mode;
     agent.requires_approval = agent.requires_approval || agent.status === 'requires_human_review';
     agent.verification_hints = [
       ...agent.verification_hints,
@@ -1270,12 +1360,7 @@ async function runLlmOnly(action, ctx) {
     { role: 'user', content: prompt.user },
   ], { thinking: getField(action, 'thinking') ?? 'medium', timeout: getField(action, 'timeout') ?? 180 });
 
-  let parsed = null;
-  try {
-    parsed = parseJsonFromText(ai, rawText);
-  } catch {
-    parsed = { status: 'completed', summary: rawText };
-  }
+  const parsed = parseAgentJson(ai, rawText);
   const agent = normalizeAgentResult(parsed, rawText, DEFAULT_PROVIDER);
   const shouldValidateReceipt = ['agent_run', 'agent_execute'].includes(effectiveActionType(action));
   const validation = shouldValidateReceipt
@@ -1284,6 +1369,13 @@ async function runLlmOnly(action, ctx) {
   agent.execution_status = agent.execution_status ?? agent.status;
   agent.schema_status = validation.schema_status;
   agent.schema_missing = validation.missing;
+  agent.raw_receipt_parse_mode = validation.raw_receipt_parse_mode;
+  if (validation.raw_receipt_parse_mode === 'extracted_json') {
+    agent.verification_hints = [
+      ...agent.verification_hints,
+      'agent receipt parsed from embedded JSON object',
+    ];
+  }
   if (!validation.valid) {
     agent.verification_hints = [
       ...agent.verification_hints,

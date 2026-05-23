@@ -103,7 +103,7 @@ function makeAgenticCtx(agentResponse = null) {
             outputs: { approved: true },
             confidence: 0.8,
           });
-        return JSON.stringify(response);
+        return typeof response === 'string' ? response : JSON.stringify(response);
       },
       parseJsonFromText(text) {
         return JSON.parse(text);
@@ -528,6 +528,96 @@ describe('controlled action handlers', () => {
     expect(result.schema_status).toBe('valid');
     expect(result.execution_status).toBe('completed');
     expect(result.evidence.observations).toEqual(['nested receipt evidence']);
+  });
+
+  it('accepts an agent_run receipt embedded after explanatory text', async () => {
+    const ctx = makeAgenticCtx(() => [
+      'Verifying the work before returning the final receipt.',
+      '',
+      JSON.stringify({
+        status: 'completed',
+        summary: 'Embedded receipt completed.',
+        evidence: { observations: ['embedded receipt evidence'] },
+        outputs: { recommendation: 'continue' },
+      }),
+    ].join('\n'));
+
+    const result = await actionHandlers.agent_run({
+      type: 'agent_run',
+      description: 'Inspect embedded receipt',
+      params: {
+        run_spec: {
+          primary_cwd_kind: 'subject_runtime',
+          permission_profile: 'read_only',
+          provider: 'llm_only',
+          intent: 'Verify embedded receipt extraction.',
+          context: { why_now: 'verify embedded receipt extraction' },
+          expected_output: ['summary', 'evidence'],
+        },
+      },
+    }, ctx);
+
+    expect(result.success).toBe(true);
+    expect(result.schema_status).toBe('valid');
+    expect(result.agent.raw_receipt_parse_mode).toBe('extracted_json');
+    expect(result.agent.verification_hints).toContain('agent receipt parsed from embedded JSON object');
+    expect(result.evidence.observations).toEqual(['embedded receipt evidence']);
+  });
+
+  it('selects the best receipt object from multiple embedded JSON snippets', async () => {
+    const ctx = makeAgenticCtx(() => [
+      JSON.stringify({ note: 'diagnostic context only' }),
+      'Final receipt:',
+      JSON.stringify({
+        status: 'completed',
+        summary: 'Best receipt selected.',
+        evidence: { observations: ['selected receipt evidence'] },
+        outputs: { recommendation: 'continue' },
+      }),
+    ].join('\n'));
+
+    const result = await actionHandlers.agent_run({
+      type: 'agent_run',
+      description: 'Inspect multiple embedded receipts',
+      params: {
+        run_spec: {
+          primary_cwd_kind: 'subject_runtime',
+          permission_profile: 'read_only',
+          provider: 'llm_only',
+          intent: 'Verify best embedded receipt selection.',
+          context: { why_now: 'verify embedded receipt selection' },
+          expected_output: ['summary', 'evidence'],
+        },
+      },
+    }, ctx);
+
+    expect(result.success).toBe(true);
+    expect(result.message).toBe('Best receipt selected.');
+    expect(result.evidence.observations).toEqual(['selected receipt evidence']);
+  });
+
+  it('does not accept natural language without a structured receipt', async () => {
+    const ctx = makeAgenticCtx(() => 'I completed the work and everything looks good.');
+
+    const result = await actionHandlers.agent_run({
+      type: 'agent_run',
+      description: 'Inspect unstructured receipt',
+      params: {
+        run_spec: {
+          primary_cwd_kind: 'subject_runtime',
+          permission_profile: 'read_only',
+          provider: 'llm_only',
+          intent: 'Verify unstructured receipt rejection.',
+          context: { why_now: 'verify unstructured receipt rejection' },
+          expected_output: ['summary', 'evidence'],
+        },
+      },
+    }, ctx);
+
+    expect(result.success).toBe(false);
+    expect(result.schema_status).toBe('invalid');
+    expect(result.schema_missing).toContain('status');
+    expect(result.schema_missing).toContain('summary');
   });
 
   it('keeps completed execution separate from invalid receipt schema', async () => {
