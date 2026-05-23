@@ -135,6 +135,32 @@ function includesAny(text, terms) {
   return terms.some((term) => lower.includes(term));
 }
 
+function envAuthorityStatus(record, result = record?.result || {}) {
+  const actionText = [
+    record?.action?.description,
+    record?.action?.params?.run_spec?.intent,
+    JSON.stringify(record?.action?.params?.run_spec?.context ?? {}),
+    JSON.stringify(result?.agent?.evidence ?? {}),
+    JSON.stringify(result?.agent?.outputs ?? {}),
+  ].filter(Boolean).join('\n');
+  const envVars = [...new Set([...actionText.matchAll(/\b[A-Z][A-Z0-9_]{2,}\b/g)].map((match) => match[0]))]
+    .filter((name) => !/^(JEA_|DEEPSEEK_|ANTHROPIC_|CLAUDE_|CURSOR_|OPENAI_)/.test(name));
+  if (!envVars.length) return null;
+  const contract = evidenceContractOf(record, result);
+  const scope = contract?.boundary?.resource_scope ?? result?.root_metadata?.resource_scope ?? result?.run_spec?.primary_cwd_kind ?? null;
+  const kind = contract?.boundary?.resource_kind ?? result?.root_metadata?.resource_kind ?? null;
+  const authoritative = scope && scope !== 'subject_runtime' && kind !== 'standing_memory';
+  return {
+    env_vars: envVars,
+    observed_scope: scope ?? 'unknown',
+    observed_resource_kind: kind ?? 'unknown',
+    authority_status: authoritative ? 'authoritative_or_external_scope' : 'non_authoritative_scope',
+    scoped_summary: authoritative
+      ? `env observation for ${envVars.join(', ')} under ${scope}`
+      : `scoped env observation only: ${envVars.join(', ')} checked under ${scope ?? 'unknown'}, not a global credential fact`,
+  };
+}
+
 function classifyHistoricalSummary(summary) {
   const text = String(summary || '');
   if (!text.trim()) return 'historical';
@@ -192,6 +218,7 @@ function actionReceiptStatuses(receipts, limit) {
         observation: evidenceContract?.observation ?? null,
         evidence_layer: evidenceContract?.evidence_layer ?? null,
         boundary_summary: boundarySummary(evidenceContract),
+        env_authority: envAuthorityStatus(record, result),
       },
     });
   });

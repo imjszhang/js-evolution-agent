@@ -162,6 +162,56 @@ describe('evidence guards and decision brief', () => {
     expect(JSON.stringify(brief.seen)).toContain('canonical_path');
   });
 
+  it('marks subject runtime env observations as non-authoritative scoped facts', () => {
+    const brief = buildTemporalDecisionBrief({
+      generated_at: '2026-05-21T00:00:00.000Z',
+      current_cycle: { cycle_id: 'cycle-test', mode: 'local' },
+      action_receipts: [{
+        id: 'receipt-1',
+        recorded_at: '2026-05-21T00:00:00.000Z',
+        action_type: 'agent_run',
+        action: {
+          description: 'Check whether AGENTANK_TANK_KEY is configured.',
+          params: {
+            run_spec: {
+              intent: 'Verify AGENTANK_TANK_KEY visibility before remote sync.',
+            },
+          },
+        },
+        result: {
+          status: 'completed',
+          success: true,
+          run_spec: { primary_cwd_kind: 'subject_runtime' },
+          root_metadata: { resource_scope: 'subject_runtime', resource_kind: 'runtime_state' },
+          agent: {
+            evidence: { credential_present: false },
+            outputs: { AGENTANK_TANK_KEY: false },
+          },
+          evidence: {
+            evidence_contract: {
+              boundary: {
+                execution_root: '/runtime',
+                resource_scope: 'subject_runtime',
+                resource_kind: 'runtime_state',
+              },
+              observation: { status: 'completed' },
+              evidence_layer: 'execution',
+            },
+          },
+        },
+      }],
+      probe_results: [],
+      evolution_events: [],
+      goal_events: [],
+      recent_report_markdowns: [],
+      standing_memory: { exists: false },
+    });
+
+    const envAuthority = brief.structured_status[0].fields.env_authority;
+    expect(envAuthority.authority_status).toBe('non_authoritative_scope');
+    expect(envAuthority.scoped_summary).toContain('not a global credential fact');
+  });
+
   it('formats observation guard with generic boundary and layer rules', () => {
     const guard = buildObservationEvidenceGuard({ subject: 'agentank-tank' });
     const text = formatObservationEvidenceGuard(guard);

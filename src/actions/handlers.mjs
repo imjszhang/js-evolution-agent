@@ -18,6 +18,7 @@ import {
   getConfiguredExternalAction,
   loadSubjectActionConfig,
 } from './configured-actions.mjs';
+import { validateAuthorityScope } from './authority-contract.mjs';
 import { buildEvidenceContract } from './resource-registry.mjs';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -355,6 +356,23 @@ function preflightAgentRun(action, ctx, executionAction, runSpec) {
         runSpec,
         roots,
         verification_hints: ['Set run_spec.primary_cwd_kind/resource_scope or cwd to the authoritative resource root.'],
+      },
+    };
+  }
+  const authority = validateAuthorityScope(executionAction, ctx, roots);
+  if (!authority.valid) {
+    return {
+      blocked: true,
+      reason: 'non_authoritative_execution_scope',
+      details: {
+        errors: ['non_authoritative_execution_scope'],
+        warnings: [authority.message],
+        runSpec,
+        roots,
+        verification_hints: [
+          authority.message,
+          'Use the authoritative primary_cwd_kind for this capability, or dispatch the configured external action for the target tool.',
+        ],
       },
     };
   }

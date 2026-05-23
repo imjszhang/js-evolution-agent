@@ -601,6 +601,25 @@ flowchart TD
 | [`src/actions/configured-external-runner.mjs`](../../src/actions/configured-external-runner.mjs) | configured external action 子进程从 tool root `.env` 构造 env；测试 runner 也收到同一 env，避免 mock 路径与真实 spawn 行为分叉 |
 | [`test/actions.test.mjs`](../../test/actions.test.mjs) | 覆盖 tool root `.env`、Claude execution cwd `.env`，并验证执行目录 `.env` 只补齐缺失变量、不覆盖宿主进程显式变量 |
 
+### 第十六阶段 权威执行域契约
+
+第十五阶段之后又跑了 3 轮，`execution-env` 能力已经具备，但系统仍然报告 `AGENTANK_TANK_KEY` 未设置。重新审视后确认：这不是 `.env` 加载能力本身失败，而是决策层仍把凭据检查放在 `subject_runtime` 中执行。`subject_runtime` 是主体运行态数据根，不是 `agentank-evolver` 的工具根；在那里看不到 `AGENTANK_TANK_KEY` 只能证明 subject runtime 不暴露该变量，不能证明外部工具凭据缺失。
+
+第十六阶段把问题提升为系统契约：**能力事实必须在其权威执行域中观察；非权威域观察只能是 scoped observation，不能升级为全局事实。**
+
+这也回答当前关键问题：现在 agent 执行时是否会使用正确 env，取决于 action 是否路由到正确的 `primary_cwd_kind`。当 `agent_run` 使用 `primary_cwd_kind=agentank_evolver` 时，执行目录解析到 `D:\github\My\agentank-evolver`，provider options 和 Claude SDK 临时 `process.env` 都会使用该目录 `.env` 构造出的 execution env；configured external action 也会使用 tool root `.env`。如果后续决策又把 `AGENTANK_TANK_KEY` 检查放进 `subject_runtime`，预检会直接阻断为 `non_authoritative_execution_scope`，不再执行并产生“全局未设置”的误导 receipt。
+
+涉及文件：
+
+| 文件 | 第十六阶段变化 |
+| --- | --- |
+| [`src/actions/authority-contract.mjs`](../../src/actions/authority-contract.mjs) | 新增权威执行域契约：支持显式/configured authority rules；对 env/credential 类观察推断能力名；单外部 root 场景下把非 host env 变量绑定到该外部 scope |
+| [`src/actions/handlers.mjs`](../../src/actions/handlers.mjs) | `agent_run` preflight 在 root mismatch/default fallback 之间加入 authority validation；错误 scope 的外部凭据检查以 `non_authoritative_execution_scope` 阻断，agent 不会启动 |
+| [`src/intelligence/decision-brief.mjs`](../../src/intelligence/decision-brief.mjs) | TDB structured status 增加 `env_authority`，把 `subject_runtime` 下的 env false 标记为 `non_authoritative_scope` 和 scoped observation |
+| [`src/intelligence/conversation-prompts.mjs`](../../src/intelligence/conversation-prompts.mjs) | report/decide prompt 明确外部工具凭据、同步、发布、挑战、候选生成、模拟、评分必须使用外部项目 scope 或 configured external action |
+| [`test/actions.test.mjs`](../../test/actions.test.mjs) | 覆盖 `AGENTANK_TANK_KEY` 在 `subject_runtime` 被阻断、在 `agentank_evolver` 权威 scope 放行 |
+| [`test/intelligence.test.mjs`](../../test/intelligence.test.mjs) | 覆盖 TDB 将 subject runtime env observation 降级为 `non_authoritative_scope`，不当作全局凭据事实 |
+
 ---
 
 ## 5. 验证与测试
@@ -1053,6 +1072,47 @@ ReadLints
 
 结果：[`src/actions/execution-env.mjs`](../../src/actions/execution-env.mjs)、[`src/actions/agent-adapter.mjs`](../../src/actions/agent-adapter.mjs)、[`src/actions/configured-external-runner.mjs`](../../src/actions/configured-external-runner.mjs)、[`test/actions.test.mjs`](../../test/actions.test.mjs) 无 linter 错误。
 
+第十六阶段权威执行域契约补充了 action preflight 与 TDB 降级回归：
+
+```bash
+npm test -- --run test/actions.test.mjs
+```
+
+新增覆盖点：
+
+- 外部凭据检查如果在 `subject_runtime` 中执行，会被 `non_authoritative_execution_scope` 阻断，agent 不会启动。
+- 同一 `AGENTANK_TANK_KEY` 检查如果使用 `primary_cwd_kind=agentank_evolver`，会解析到外部 root 并进入 agent 执行链路。
+
+结果：1 个测试文件、65 个测试全部通过。
+
+随后运行 intelligence 聚焦测试：
+
+```bash
+npm test -- --run test/intelligence.test.mjs
+```
+
+新增覆盖点：
+
+- TDB 的 `env_authority` 会把 `subject_runtime` 下的 env false 标记为 `non_authoritative_scope`，并写明这不是全局 credential fact。
+
+结果：1 个测试文件、49 个测试全部通过。
+
+最后运行完整测试：
+
+```bash
+npm test -- --run
+```
+
+结果：4 个测试文件、215 个测试全部通过。
+
+静态诊断：
+
+```bash
+ReadLints
+```
+
+结果：[`src/actions/authority-contract.mjs`](../../src/actions/authority-contract.mjs)、[`src/actions/handlers.mjs`](../../src/actions/handlers.mjs)、[`src/intelligence/decision-brief.mjs`](../../src/intelligence/decision-brief.mjs)、[`src/intelligence/conversation-prompts.mjs`](../../src/intelligence/conversation-prompts.mjs)、[`test/actions.test.mjs`](../../test/actions.test.mjs)、[`test/intelligence.test.mjs`](../../test/intelligence.test.mjs) 无 linter 错误。
+
 ---
 
 ## 6. 后续演化
@@ -1224,6 +1284,17 @@ ReadLints
 3. **观察 env 可见性是否恢复远端交易**  
    若 `agentank-evolver/.env` 中的凭据被 execution env 正确加载，下一轮应从“凭据缺失等待”转为“凭据可见后执行同步/发布门禁验证”。若仍报告缺失，应优先检查 execution root/tool root 选择是否正确。
 
+第十六阶段之后，后续验证重点是：
+
+1. **确认错误 scope 不再产生凭据缺失结论**  
+   下一轮如果模型尝试在 `subject_runtime` 中检查 `AGENTANK_TANK_KEY` 或类似外部工具变量，应看到 `non_authoritative_execution_scope` 阻断，而不是继续生成“凭据未设置”的执行结论。
+
+2. **确认正确 scope 能消费 execution env**  
+   对 `agentank_evolver` 或 configured external action 的同步/发布门禁，应检查 receipt 的 execution root/tool root 是否指向外部项目，并确认报告把 env 事实写成“在该权威执行域可见/不可见”，不再引用 host env。
+
+3. **把权威域契约泛化到更多能力**  
+   当前最直接覆盖 env/credential 类能力。后续如果出现远端 API、发布门禁、挑战请求、候选生成、评分记录等事实跨 root 误判，应把这些能力显式加入 `authorityRules` 或 subject policy 派生规则，而不是继续靠 prompt 约定。
+
 ---
 
 ## 附：本轮对话问题—思考—方案—执行对照
@@ -1231,7 +1302,7 @@ ReadLints
 | 阶段 | 内容 |
 | --- | --- |
 | 问题 | 进化工作流调用多篇历史内容时，没有充分注明时间，也没有明确要求按最新结论裁决，导致旧结论可能继续污染后续轮次 |
-| 思考 | 第一性原理下，持续演化系统不能依赖语言连续性维持记忆，而要依赖证据状态维持记忆；20 轮后进一步确认污染源在 observe 阶段更早出现；继续加治理术语又会让系统过度复杂；3 轮三栏验证后确认 prompt 语言不足以阻止污染回流；后续又确认自然语言不能被排除，问题是不能把“来源说了”写成“事实成立”；再后续发现裸 id 会让探针误把数据源记录当文件名搜索；最新 3 轮则显示系统已能发现问题，但目标、memory、权限三个执行契约不能稳定消费发现；再后一轮暴露的是执行边界问题：receipt 结构化状态与 agent claim 被混判，Analyze+Decide JSON 失败会杀死 cycle；第九阶段则确认直接编辑 `standing_memory.json` 不能持久，因为下一轮全量重写会复活旧 Remembered 污染；第十阶段进一步确认系统把执行是否完成、receipt 格式是否合格、模型如何解释执行结果混成了一个 `partial`；第十一阶段则确认格式正确的 Remembered 仍可能携带已证伪内容，必须在 admission 源头过滤；第十二阶段确认问题转为同名不同物，root ENOENT、cycle 快照和 canonical memory 被混成一个资源；第十三阶段把它抽象为通用证据问题：任何事实都必须带 boundary、observation、layer；第十四阶段确认“上下文过长”不是已证根因，真正问题是 provider failure 诊断在 receipt 中丢失；第十五阶段确认 `AGENTANK_TANK_KEY` 不是简单缺失，而是 host env 与 execution env 边界错位 |
-| 方案 | 第一阶段新增 `Temporal Decision Brief`；第二阶段新增 `Observation Evidence Guard`，并把 Observation Report 降级为模型 claim；第三阶段统一为 Seen / Inferred / Remembered / Do Not Treat As Seen；第四阶段把 memory Seen 改成代码层写入门禁；第五阶段把自然语言 Seen 统一为 `source claims/records` 来源摘录；第六阶段给 Seen 加 `[source_type:id]` 可重开地址；第七阶段收敛为契约一致、证据可重开、副作用诚实三个执行不变量；第八阶段统一 receipt 结构化状态/agent claim 边界，并把 invalid AI JSON 转成可审计 defer；第九阶段把 Remembered 也改为由 `memory_admission.remembered` 驱动的轻量代码门禁；第十阶段把 agent_run 结果拆成执行层、格式层、解释层三层契约；第十一阶段为 Remembered 增加 refuted claim 内容门禁；第十二阶段固定 standing_memory canonical path 契约；第十三阶段统一为 `Fact = boundary + observation + layer` 的证据边界契约；第十四阶段把 provider failure 也作为可重开执行证据保存；第十五阶段把 env 来源拆成 host env 与 execution env，并由执行目录 `.env` 补齐目标动作变量 |
-| 执行 | 新增 `decision-brief` 和 `observation-guard`，接入 observe/report/decide/memory 链路，降权历史 Markdown 和 receipt summary，收紧 standing memory，并预留 `claim_ledger`；随后在 TDB、prompt、observe guard、standing memory 中统一三栏语言；在 `report-builder` 中加入 `memory_admission` 与 `enforceStandingMemorySeenGate()`；让 `goal_event`/`evolution_event` 自然语言进入 Seen 时保持来源摘录语义；把 Seen 输出改为 `[evolution_events:...]`、`[goal_events:...]`、`[action_receipts:...]`、`[probe_results:...]`；补齐 `proposed_goal.children` 归一化、`typed_evidence_refs`、partial receipt 门禁和 read_only 写入 warning；最后增加共用 JSON 提取器、Analyze+Decide invalid JSON defer 降级，并更新 receipt policy / verify prompt；随后扩展 `memory_admission.remembered`、新增 Remembered gate，并在写入时统一应用 `enforceStandingMemoryGates()`；之后增加 nested receipt 归一化、拆分 `execution_status/schema_status/acceptance_status`，并让 TDB、verify、goal assessment、diary 消费三层状态；随后新增 `isRefutedRememberedClaim()`，过滤已证伪 remembered claim；第十二阶段新增 `resource_kind=standing_memory`、canonical path prompt、report context path metadata 和 observation guard 路径契约；第十三阶段新增 `buildEvidenceContract()`，让 probe/action/agent_run receipt、TDB、report/verify/guard 和 Remembered admission 消费 boundary/observation/layer；第十四阶段新增 `providerFailureDiagnostic()`，让 Claude SDK 异常和 `subtype=error` 的失败阶段、原始错误、session、prompt 长度等进入 receipt；第十五阶段新增 `execution-env`，并接入 agent SDK 与 configured external runner |
-| 验证 | `ReadLints` 无错误；第一阶段 `npm test` 185 项通过，第二阶段和第三阶段 `npm test` 187 项通过，第四阶段 `npm test` 188 项通过，第五、第六阶段 `npm test` 190 项通过，第七阶段 `npm test` 193 项通过，第八阶段 `npm test` 196 项通过，第九阶段 `npm test` 198 项通过，第十阶段 `npm test` 201 项通过，第十一阶段 `npm test` 202 项通过，第十二阶段 `npm test` 203 项通过，第十三阶段聚焦测试 118 项通过，全量 `npm test` 208 项通过，第十四阶段 `test/actions.test.mjs` 61 项通过，全量 `npm test` 210 项通过，第十五阶段 `test/actions.test.mjs` 63 项通过，全量 `npm test` 212 项通过 |
+| 思考 | 第一性原理下，持续演化系统不能依赖语言连续性维持记忆，而要依赖证据状态维持记忆；20 轮后进一步确认污染源在 observe 阶段更早出现；继续加治理术语又会让系统过度复杂；3 轮三栏验证后确认 prompt 语言不足以阻止污染回流；后续又确认自然语言不能被排除，问题是不能把“来源说了”写成“事实成立”；再后续发现裸 id 会让探针误把数据源记录当文件名搜索；最新 3 轮则显示系统已能发现问题，但目标、memory、权限三个执行契约不能稳定消费发现；再后一轮暴露的是执行边界问题：receipt 结构化状态与 agent claim 被混判，Analyze+Decide JSON 失败会杀死 cycle；第九阶段则确认直接编辑 `standing_memory.json` 不能持久，因为下一轮全量重写会复活旧 Remembered 污染；第十阶段进一步确认系统把执行是否完成、receipt 格式是否合格、模型如何解释执行结果混成了一个 `partial`；第十一阶段则确认格式正确的 Remembered 仍可能携带已证伪内容，必须在 admission 源头过滤；第十二阶段确认问题转为同名不同物，root ENOENT、cycle 快照和 canonical memory 被混成一个资源；第十三阶段把它抽象为通用证据问题：任何事实都必须带 boundary、observation、layer；第十四阶段确认“上下文过长”不是已证根因，真正问题是 provider failure 诊断在 receipt 中丢失；第十五阶段确认 `AGENTANK_TANK_KEY` 不是简单缺失，而是 host env 与 execution env 边界错位；第十六阶段进一步确认仅有 execution env 能力还不够，凭据/同步/发布等能力事实必须由权威执行域裁决，错误 scope 的观察不能升级为全局事实 |
+| 方案 | 第一阶段新增 `Temporal Decision Brief`；第二阶段新增 `Observation Evidence Guard`，并把 Observation Report 降级为模型 claim；第三阶段统一为 Seen / Inferred / Remembered / Do Not Treat As Seen；第四阶段把 memory Seen 改成代码层写入门禁；第五阶段把自然语言 Seen 统一为 `source claims/records` 来源摘录；第六阶段给 Seen 加 `[source_type:id]` 可重开地址；第七阶段收敛为契约一致、证据可重开、副作用诚实三个执行不变量；第八阶段统一 receipt 结构化状态/agent claim 边界，并把 invalid AI JSON 转成可审计 defer；第九阶段把 Remembered 也改为由 `memory_admission.remembered` 驱动的轻量代码门禁；第十阶段把 agent_run 结果拆成执行层、格式层、解释层三层契约；第十一阶段为 Remembered 增加 refuted claim 内容门禁；第十二阶段固定 standing_memory canonical path 契约；第十三阶段统一为 `Fact = boundary + observation + layer` 的证据边界契约；第十四阶段把 provider failure 也作为可重开执行证据保存；第十五阶段把 env 来源拆成 host env 与 execution env，并由执行目录 `.env` 补齐目标动作变量；第十六阶段新增 authority contract，把能力事实绑定到权威执行域，非权威 env 观察只能进入 scoped observation |
+| 执行 | 新增 `decision-brief` 和 `observation-guard`，接入 observe/report/decide/memory 链路，降权历史 Markdown 和 receipt summary，收紧 standing memory，并预留 `claim_ledger`；随后在 TDB、prompt、observe guard、standing memory 中统一三栏语言；在 `report-builder` 中加入 `memory_admission` 与 `enforceStandingMemorySeenGate()`；让 `goal_event`/`evolution_event` 自然语言进入 Seen 时保持来源摘录语义；把 Seen 输出改为 `[evolution_events:...]`、`[goal_events:...]`、`[action_receipts:...]`、`[probe_results:...]`；补齐 `proposed_goal.children` 归一化、`typed_evidence_refs`、partial receipt 门禁和 read_only 写入 warning；最后增加共用 JSON 提取器、Analyze+Decide invalid JSON defer 降级，并更新 receipt policy / verify prompt；随后扩展 `memory_admission.remembered`、新增 Remembered gate，并在写入时统一应用 `enforceStandingMemoryGates()`；之后增加 nested receipt 归一化、拆分 `execution_status/schema_status/acceptance_status`，并让 TDB、verify、goal assessment、diary 消费三层状态；随后新增 `isRefutedRememberedClaim()`，过滤已证伪 remembered claim；第十二阶段新增 `resource_kind=standing_memory`、canonical path prompt、report context path metadata 和 observation guard 路径契约；第十三阶段新增 `buildEvidenceContract()`，让 probe/action/agent_run receipt、TDB、report/verify/guard 和 Remembered admission 消费 boundary/observation/layer；第十四阶段新增 `providerFailureDiagnostic()`，让 Claude SDK 异常和 `subtype=error` 的失败阶段、原始错误、session、prompt 长度等进入 receipt；第十五阶段新增 `execution-env`，并接入 agent SDK 与 configured external runner；第十六阶段新增 `authority-contract`，在 `agent_run` preflight 阻断非权威 scope 的外部 env/credential 检查，并让 TDB/prompt 消费 `env_authority` |
+| 验证 | `ReadLints` 无错误；第一阶段 `npm test` 185 项通过，第二阶段和第三阶段 `npm test` 187 项通过，第四阶段 `npm test` 188 项通过，第五、第六阶段 `npm test` 190 项通过，第七阶段 `npm test` 193 项通过，第八阶段 `npm test` 196 项通过，第九阶段 `npm test` 198 项通过，第十阶段 `npm test` 201 项通过，第十一阶段 `npm test` 202 项通过，第十二阶段 `npm test` 203 项通过，第十三阶段聚焦测试 118 项通过，全量 `npm test` 208 项通过，第十四阶段 `test/actions.test.mjs` 61 项通过，全量 `npm test` 210 项通过，第十五阶段 `test/actions.test.mjs` 63 项通过，全量 `npm test` 212 项通过；第十六阶段 `test/actions.test.mjs` 65 项、`test/intelligence.test.mjs` 49 项通过，全量 `npm test -- --run` 215 项通过 |

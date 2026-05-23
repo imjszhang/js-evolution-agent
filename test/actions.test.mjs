@@ -515,6 +515,67 @@ describe('controlled action handlers', () => {
     expect(ctx.ai.agentCalls).toHaveLength(0);
   });
 
+  it('blocks external credential checks from non-authoritative subject runtime scope', async () => {
+    const ctx = makeAgenticCtx();
+    const externalRoot = join(tempDir, 'agentank-evolver');
+    mkdirSync(externalRoot, { recursive: true });
+    ctx.host.runtimeRoot = join(ctx.projectRoot, 'runtime', 'subjects', 'agentank-tank');
+    mkdirSync(ctx.host.runtimeRoot, { recursive: true });
+    ctx.host.externalRoots = { agentank_evolver: externalRoot };
+
+    const result = await actionHandlers.agent_run({
+      type: 'agent_run',
+      description: 'Check whether AGENTANK_TANK_KEY is configured before syncing remote tank context.',
+      params: {
+        run_spec: {
+          primary_cwd_kind: 'subject_runtime',
+          permission_profile: 'read_only',
+          provider: 'llm_only',
+          intent: 'Verify AGENTANK_TANK_KEY visibility for the remote sync capability.',
+          context: { why_now: 'credential gate before remote sync' },
+          expected_output: ['redacted credential visibility'],
+        },
+      },
+    }, ctx);
+
+    expect(result.success).toBe(false);
+    expect(result.status).toBe('blocked');
+    expect(result.error).toBe('non_authoritative_execution_scope');
+    expect(result.evidence.warnings[0]).toContain('env:AGENTANK_TANK_KEY requires authoritative scope agentank_evolver');
+    expect(ctx.ai.agentCalls).toHaveLength(0);
+  });
+
+  it('allows external credential checks from the authoritative external scope', async () => {
+    const ctx = makeAgenticCtx({
+      status: 'completed',
+      summary: 'Checked redacted credential visibility from the external tool root.',
+      evidence: { credential_visibility: 'present_redacted' },
+      outputs: { recommendation: 'sync can proceed through configured external action' },
+    });
+    const externalRoot = join(tempDir, 'agentank-evolver');
+    mkdirSync(externalRoot, { recursive: true });
+    ctx.host.externalRoots = { agentank_evolver: externalRoot };
+
+    const result = await actionHandlers.agent_run({
+      type: 'agent_run',
+      description: 'Check whether AGENTANK_TANK_KEY is configured before syncing remote tank context.',
+      params: {
+        run_spec: {
+          primary_cwd_kind: 'agentank_evolver',
+          permission_profile: 'read_only',
+          provider: 'llm_only',
+          intent: 'Verify AGENTANK_TANK_KEY visibility for the remote sync capability without printing the value.',
+          context: { why_now: 'credential gate before remote sync' },
+          expected_output: ['redacted credential visibility'],
+        },
+      },
+    }, ctx);
+
+    expect(result.success).toBe(true);
+    expect(result.execution_root).toBe(externalRoot);
+    expect(ctx.ai.agentCalls).toHaveLength(1);
+  });
+
   it('runs configured external actions through a subject-local runner config', async () => {
     const ctx = makeCtx();
     installConfiguredActionProject(ctx);

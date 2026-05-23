@@ -146,6 +146,7 @@ ${clip(JSON.stringify(reportContext || {}, null, 2), 500000)}
 - 报告结构应围绕「本轮看到」「基于证据的判断」「历史线索与未采纳内容」组织。Seen 是事实；Inferred 是判断；Remembered 只是线索。
 - 覆盖本轮观察、长期趋势、证据不足、风险、下一轮建议，以及 standing_memory 应如何更新的要点。
 - 对缺失路径、ENOENT、blocked 探针等证据，必须引用 execution_root/resource_scope/resource_kind；除非该 root 是资源权威 root，不得升级为「模块缺失」「机制未实现」「写入冻结」。
+- 对环境变量、凭据、同步、发布、挑战等外部工具能力，必须先确认权威执行域。\`subject_runtime\` 下的 env false 只能说明 subject runtime 看不到该变量；不得升级为外部 tool root 或远端交易凭据缺失。外部工具能力应使用 subject policy 中声明的自定义 scope 或 configured external action。
 - 必须包含明确的 Cyber-Taoist 分析章节。该章节需依据权威文献解释当前证据，至少覆盖当前进化阶段、法则/交易/生态位信号，以及在证据支持时的分形守/破/探针边界。
 - 尽量引用可追溯 id（如 observation、probe_result、goal_event、action_receipt、intel_report、evolution_event）。
 - 标题与小节标题用简明主题短语（例如「本轮结论」「证据缺口」），禁止使用文言对联式或隐喻式标题。
@@ -226,6 +227,7 @@ export function buildDecideUserPrompt({
 - \`agent_execute\` 只允许作为旧兼容兜底动作；新决策不要优先使用它。
 - 当 run 涉及本地文件或目录时，文件路径应相对 primary cwd 描述，不要混用多个项目根的绝对路径。执行层会从 run_spec 解析 cwd 并阻断 root_mismatch。
 - 常见资源归属：主体日记/records/daemon/goals/intelligence 使用 primary_cwd_kind=subject_runtime；JEA 源码/policies/journal 使用 primary_cwd_kind=source_root；外部项目文件使用 subject policy 中声明的自定义 primary_cwd_kind。
+- 外部工具能力归属：凭据存在性、远端同步、发布、挑战、候选生成/模拟/评分等事实，应使用对应外部项目 scope（例如 subject policy 中声明的 \`agentank_evolver\`）或 configured external action；不要用 \`subject_runtime\` 的 \`process.env\` 结果判断外部工具凭据是否全局缺失。
 - 对 ENOENT、目录不存在、blocked 等缺失证据，只能表述为「在 executionRoot=X 下 path=Y 不存在」；除非该 root 是该 resource_kind 的权威 root，否则不得升级为「模块缺失」「机制未实现」「写入冻结」。
 - Operator Intent Briefs 是单轮人工意图，不是事实证据。可以据此优先调度核实动作；若不采纳 brief，应在 deferred 中说明原因。
 - \`write_retrospective\` 只用于记录已经掌握的结构化复盘结论（summary/outcome/lessons/next_actions）；需要读取文件或补证据时，优先调度 \`agent_run\`。
