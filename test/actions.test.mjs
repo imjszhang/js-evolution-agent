@@ -25,7 +25,7 @@ import {
 } from '../src/cli/utils/subjects.mjs';
 import { validateAgentRunSpec } from '../src/actions/agent-run-spec.mjs';
 import { buildEvidenceContract, inferActionResource } from '../src/actions/resource-registry.mjs';
-import { buildLaneWorkBranch, checkLaneStatus, initializeLane } from '../src/actions/lane-manager.mjs';
+import { buildLaneWorkBranch, checkLaneStatus, initializeLane, runLaneCommand } from '../src/actions/lane-manager.mjs';
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   query: vi.fn(),
@@ -322,6 +322,92 @@ describe('controlled action handlers', () => {
     expect(status.ok).toBe(true);
     expect(second.success).toBe(true);
     expect(second.created).toBe(false);
+  });
+
+  it('runs lane commands in a dedicated lane worktree when the main checkout stays on main', () => {
+    const repo = join(tempDir || mkdtempSync(join(tmpdir(), 'jea-lane-command-')), 'repo');
+    mkdirSync(repo, { recursive: true });
+    execFileSync('git', ['init', '-b', 'main'], { cwd: repo, stdio: 'ignore' });
+    writeFileSync(join(repo, 'marker.txt'), 'main\n', 'utf-8');
+    execFileSync('git', ['add', 'marker.txt'], { cwd: repo, stdio: 'ignore' });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-m', 'main'], { cwd: repo, stdio: 'ignore' });
+    execFileSync('git', ['checkout', '-b', 'jea/agentank/local'], { cwd: repo, stdio: 'ignore' });
+    writeFileSync(join(repo, 'marker.txt'), 'lane\n', 'utf-8');
+    execFileSync('git', ['add', 'marker.txt'], { cwd: repo, stdio: 'ignore' });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-m', 'lane'], { cwd: repo, stdio: 'ignore' });
+    execFileSync('git', ['checkout', 'main'], { cwd: repo, stdio: 'ignore' });
+
+    const config = {
+      configured: true,
+      repoRoot: repo,
+      baseBranch: 'main',
+      lane: 'jea/agentank/local',
+      laneWorktreeRoot: join(repo, '.worktrees', 'js-evolution-agent', 'lane-test'),
+    };
+    const result = runLaneCommand(config, { command: 'node -e "process.stdout.write(require(\'fs\').readFileSync(\'marker.txt\', \'utf8\'))"' });
+    const mainBranch = execFileSync('git', ['branch', '--show-current'], { cwd: repo, encoding: 'utf-8' }).trim();
+
+    expect(result.success).toBe(true);
+    expect(result.stdout.replace(/\r\n/g, '\n')).toBe('lane\n');
+    expect(result.checkoutKind).toBe('lane_worktree');
+    expect(result.executionRoot).toContain('.worktrees');
+    expect(result.worktreeCreated).toBe(true);
+    expect(result.worktreeReused).toBe(false);
+    expect(result.commit).toMatch(/^[0-9a-f]{40}$/);
+    expect(mainBranch).toBe('main');
+  });
+
+  it('reuses the fixed lane worktree across lane commands', () => {
+    const repo = join(tempDir || mkdtempSync(join(tmpdir(), 'jea-lane-reuse-')), 'repo');
+    mkdirSync(repo, { recursive: true });
+    execFileSync('git', ['init', '-b', 'main'], { cwd: repo, stdio: 'ignore' });
+    writeFileSync(join(repo, 'README.md'), '# lane\n', 'utf-8');
+    execFileSync('git', ['add', 'README.md'], { cwd: repo, stdio: 'ignore' });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-m', 'init'], { cwd: repo, stdio: 'ignore' });
+
+    const config = {
+      configured: true,
+      repoRoot: repo,
+      baseBranch: 'main',
+      lane: 'jea/agentank/local',
+      laneWorktreeRoot: join(repo, '.worktrees', 'js-evolution-agent', 'lane-test'),
+    };
+    initializeLane(config);
+    const first = runLaneCommand(config, { command: 'node -e "process.stdout.write(process.cwd())"' });
+    const second = runLaneCommand(config, { command: 'node -e "process.stdout.write(process.cwd())"' });
+
+    expect(first.success).toBe(true);
+    expect(second.success).toBe(true);
+    expect(first.executionRoot).toBe(second.executionRoot);
+    expect(first.worktreeCreated).toBe(true);
+    expect(second.worktreeCreated).toBe(false);
+    expect(second.worktreeReused).toBe(true);
+  });
+
+  it('fails lane commands when the dedicated lane worktree is dirty', () => {
+    const repo = join(tempDir || mkdtempSync(join(tmpdir(), 'jea-lane-dirty-')), 'repo');
+    mkdirSync(repo, { recursive: true });
+    execFileSync('git', ['init', '-b', 'main'], { cwd: repo, stdio: 'ignore' });
+    writeFileSync(join(repo, 'README.md'), '# lane\n', 'utf-8');
+    execFileSync('git', ['add', 'README.md'], { cwd: repo, stdio: 'ignore' });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-m', 'init'], { cwd: repo, stdio: 'ignore' });
+
+    const config = {
+      configured: true,
+      repoRoot: repo,
+      baseBranch: 'main',
+      lane: 'jea/agentank/local',
+      laneWorktreeRoot: join(repo, '.worktrees', 'js-evolution-agent', 'lane-test'),
+    };
+    initializeLane(config);
+    const first = runLaneCommand(config, { command: 'node -e "process.stdout.write(\'ok\')"' });
+    writeFileSync(join(first.executionRoot, 'dirty.txt'), 'dirty\n', 'utf-8');
+    const second = runLaneCommand(config, { command: 'node -e "process.stdout.write(\'should-not-run\')"' });
+
+    expect(first.success).toBe(true);
+    expect(second.success).toBe(false);
+    expect(second.error).toContain('lane worktree is dirty');
+    expect(second.stdout).toBe('');
   });
 
   it('resolves agent_run target_repo scope from subject repo lane', () => {

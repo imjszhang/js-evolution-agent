@@ -56,6 +56,7 @@ Subject + Repo + Lane
 - 缺少“检查 lane 状态、运行目标项目测试、记录结果”的动作。
 - 缺少显式初始化 lane 的入口。如果 subject 已配置 lane 但分支还不存在，普通进化应提前失败，而不是跑到某个 action 才失败。
 - GitHub PR 只能作为后续增强，不能一开始就成为本地闭环的前提。
+- 二次检查中又发现一个执行语义问题：`subject lane init` 创建了 lane 分支，但不会把目标仓库主目录 checkout 到 lane。如果 `lane_observe`、`lane_verify` 继续直接在目标仓库主目录运行命令，那么主目录停在 `main` 时，证据实际来自 `main`，而不是 lane。
 
 这里真正需要避免的是“把所有东西做成一个大动作”。如果一个动作既负责判断 repo、创建分支、调用 agent、跑测试、push、开 PR，它会很快变成不可审查的黑盒。
 
@@ -88,6 +89,7 @@ main
 | 资源根 | `target_repo` scope | 不再把目标项目混同于宿主 `source_root` |
 | lane 初始化 | 显式 `jea subject lane init` | 防止普通 `evolve` 悄悄创建分支；需要操作者明确建立长期进化线 |
 | 启动前检查 | 配置了 lane 但未初始化则提前失败 | 避免一轮进化跑到中途才在 `lane_observe`、`core_apply` 或 PR 阶段失败 |
+| lane 命令执行目录 | 固定 lane worktree | `lane_observe`、`lane_verify` 不依赖主目录当前分支，避免 `main` 与 lane 分叉后证据错位 |
 | GitHub PR | 作为显式动作 | 本地闭环先稳定，push/PR 不成为默认副作用 |
 | 兼容旧配置 | 保留 `agentank_evolver` alias | `agentank-tank` 已有 configured actions 可能仍引用旧 scope |
 
@@ -124,7 +126,7 @@ js-evolution-agent/
 | `src/cli/utils/subjects.mjs` | 新增 `parseSubjectRepoLane`，从 policy 中解析 `Repo`、`Base Branch`、`Lane`、`Test Command`、`Run Command`、`GitHub Repo` |
 | `src/cli/utils/subject-lane-guard.mjs` | 在执行进化前检查已配置 lane 是否可用，并给出初始化提示 |
 | `src/cli/commands/subject.mjs` | `subject show --json` 输出 repo lane 信息；新增 `subject lane status/init` |
-| `src/actions/lane-manager.mjs` | 新增 lane 状态检查、显式初始化、work 分支命名、lane 命令运行、GitHub lane PR 创建 |
+| `src/actions/lane-manager.mjs` | 新增 lane 状态检查、显式初始化、work 分支命名、lane 命令运行、lane 专用 worktree、GitHub lane PR 创建 |
 | `src/actions/worktree-manager.mjs` | 抽出 `createBranchWorktree`，支持指定 `repoRoot`、`baseBranch`、`workBranchPrefix` |
 | `src/actions/resource-registry.mjs` | 新增 `target_repo` 与 `lane_worktree` scope |
 | `src/actions/handlers.mjs` | 注册 `lane_status`、`lane_observe`、`lane_verify`、`github_open_lane_pr` 处理逻辑，并让 `core_apply` 在配置了 subject repo lane 时从 lane 创建 worktree |
@@ -158,6 +160,24 @@ npm run jea -- subject lane init --push
 
 其中 `init` 只创建本地 lane；`--push` 才推送到 `origin`。普通 `run/evolve/daemon work/start` 不会自动创建 lane。
 
+### Lane 命令执行修正
+
+初始化完成后，目标仓库主目录仍可能停在 `main`。这本身不应成为问题：主目录是人的稳定工作区，自动进化应该在明确的 lane / worktree 边界内发生。
+
+为避免 `lane_observe`、`lane_verify` 在主目录停留 `main` 时误测 `main`，后续修正把 lane 命令执行目录改为固定 lane worktree：
+
+```text
+<gitRoot>/.worktrees/js-evolution-agent/lane/<sanitized-lane>
+```
+
+`runLaneCommand` 现在会先通过 `ensureLaneWorktree` 创建或复用这个 checkout，并校验：
+
+- worktree 当前分支必须是配置的 lane。
+- worktree 必须干净；如果 dirty，直接失败，不自动清理。
+- evidence 会记录 `checkoutKind`、`executionRoot`、`commit`、`worktreeCreated`、`worktreeReused`。
+
+同时，`checkLaneStatus` 对系统内部 `.worktrees/js-evolution-agent` 做了排除，避免系统自己创建的 lane worktree 让目标仓库主目录被误判为 dirty。`core_apply` 的行为不变：它仍然从 lane 派生每轮独立 worktree，而不是复用 lane 命令 worktree。
+
 ## 5. 验证与测试
 
 运行完整测试：
@@ -170,7 +190,7 @@ npm test
 
 ```text
 Test Files  4 passed (4)
-Tests       222 passed (222)
+Tests       225 passed (225)
 ```
 
 新增和覆盖的验证点包括：
@@ -181,6 +201,9 @@ Tests       222 passed (222)
 - `initializeLane` 能从 `main` 创建缺失 lane，且重复运行保持幂等。
 - 配置了 repo lane 但 lane 不存在时，`run/evolve/daemon` 执行入口会提前失败并提示 `jea subject lane init`。
 - `agent_run` 可以通过 `primary_cwd_kind=target_repo` 解析到目标 repo。
+- `runLaneCommand` 在主目录仍停留 `main` 时，会在 lane 专用 worktree 中执行命令。
+- lane 专用 worktree 首次运行会创建，后续运行会复用。
+- lane 专用 worktree dirty 时，`runLaneCommand` 会失败并返回清晰错误，不会继续执行测试或同步命令。
 - 简化后的 `agentank-tank` policy 仍能解析出：
   - `repoLane.repoRoot = D:\github\My\agentank-evolver`
   - `externalRoots.target_repo = D:\github\My\agentank-evolver`
@@ -193,7 +216,7 @@ Tests       222 passed (222)
 
 第一步已经让系统具备了“主体绑定目标仓库和独立 lane”的基础能力。后续可以继续把闭环做实：
 
-1. 在 daemon/evolve 每轮开始时自动插入 `lane_status` 或 `lane_observe`，把目标仓库状态变成常规证据。
+1. 在 daemon/evolve 每轮开始时自动插入 `lane_status` 或 `lane_observe`，把目标仓库状态变成常规证据；其中 `lane_observe` 已可稳定运行在 lane 专用 worktree。
 2. 为 `github_open_lane_pr` 增加更完整的 PR body 模板，包含 diff summary、测试结果、风险和回滚方式。
 3. 增加 `github_watch_lane_pr` 和 `github_repair_lane_pr`，处理 CI 失败和 review comment。
 4. 当本地闭环稳定后，再设计 `lane -> main` 的 promotion PR，但不要自动合并。
@@ -206,6 +229,6 @@ Tests       222 passed (222)
 | 阶段 | 内容 |
 | --- | --- |
 | 问题 | 用户希望设定主体后，自动进化一个本地已 clone 的 GitHub 项目，并且进化发生在独立分支上 |
-| 思考 | 传统“每轮从 main 开 PR”不符合长期进化；多设备并行要求分支和 PR 不冲突 |
-| 方案 | 抽象为 `Subject + Repo + Lane`，每个主体/设备拥有长期 lane，每次改动从 lane 派生 work 分支 |
-| 执行 | 新增 repo lane 解析、lane manager、target repo scope、lane 动作、worktree 泛化、显式 lane init、启动前 guard，并更新 agentank policy 与测试 |
+| 思考 | 传统“每轮从 main 开 PR”不符合长期进化；多设备并行要求分支和 PR 不冲突；主目录不应决定自动证据来自哪个分支 |
+| 方案 | 抽象为 `Subject + Repo + Lane`，每个主体/设备拥有长期 lane，每次改动从 lane 派生 work 分支；lane observe/verify 使用固定 lane worktree |
+| 执行 | 新增 repo lane 解析、lane manager、target repo scope、lane 动作、worktree 泛化、显式 lane init、启动前 guard；随后补充 lane 专用 worktree 执行修正，并更新 agentank policy 与测试 |

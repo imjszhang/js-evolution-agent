@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, mkdirSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 
 function runGit(args, cwd) {
   try {
@@ -62,6 +62,10 @@ export function buildLaneWorkBranch({ lane, cycleId = 'cycle', slug = 'change', 
   return parts.join('/');
 }
 
+function sanitizePathPart(value, fallback = 'lane') {
+  return sanitizeBranchPart(value, fallback).replace(/[\\/]+/g, '-').slice(0, 120) || fallback;
+}
+
 export function getSubjectRepoLane(ctx = {}) {
   return ctx?.host?.subjectRepoLane ?? ctx?.subjectRepoLane ?? null;
 }
@@ -118,7 +122,7 @@ export function checkLaneStatus(config = {}) {
     result.errors.push('lane is not configured');
   }
 
-  const dirty = runGit(['status', '--porcelain'], result.gitRoot);
+  const dirty = runGit(['status', '--porcelain', '--', '.', ':(exclude).worktrees/js-evolution-agent'], result.gitRoot);
   result.dirty = dirty.ok ? dirty.stdout.length > 0 : null;
   if (result.dirty) result.errors.push('repo working tree is dirty');
 
@@ -179,6 +183,76 @@ export function initializeLane(config = {}, { push = false } = {}) {
   return result;
 }
 
+export function ensureLaneWorktree(config = {}, status = checkLaneStatus(config)) {
+  const result = {
+    success: false,
+    checkoutKind: 'lane_worktree',
+    repoRoot: status.gitRoot ?? status.repoRoot,
+    lane: status.lane,
+    executionRoot: null,
+    branch: null,
+    commit: null,
+    dirty: null,
+    created: false,
+    reused: false,
+    error: null,
+  };
+
+  if (!status.ok) {
+    result.error = `lane not ready: ${status.errors.join('; ')}`;
+    return result;
+  }
+
+  const laneWorktreeRoot = config.laneWorktreeRoot
+    ? resolve(String(config.laneWorktreeRoot))
+    : join(status.gitRoot, '.worktrees', 'js-evolution-agent', 'lane');
+  const executionRoot = join(laneWorktreeRoot, sanitizePathPart(status.lane, 'lane'));
+  result.executionRoot = executionRoot;
+
+  if (!existsSync(executionRoot)) {
+    mkdirSync(laneWorktreeRoot, { recursive: true });
+    const created = runGit(['worktree', 'add', executionRoot, status.lane], status.gitRoot);
+    if (!created.ok) {
+      result.error = created.stderr || `failed to create lane worktree: ${executionRoot}`;
+      return result;
+    }
+    result.created = true;
+  } else {
+    result.reused = true;
+  }
+
+  const gitRoot = runGit(['rev-parse', '--show-toplevel'], executionRoot);
+  if (!gitRoot.ok || resolve(gitRoot.stdout) !== resolve(executionRoot)) {
+    result.error = gitRoot.ok
+      ? `lane worktree path is not its git root: ${executionRoot}`
+      : `lane worktree is not a git repository: ${gitRoot.stderr}`;
+    return result;
+  }
+
+  const branch = runGit(['branch', '--show-current'], executionRoot);
+  result.branch = branch.ok ? branch.stdout || null : null;
+  if (result.branch !== status.lane) {
+    result.error = `lane worktree is on ${result.branch ?? '(detached)'}, expected ${status.lane}`;
+    return result;
+  }
+
+  const dirty = runGit(['status', '--porcelain'], executionRoot);
+  result.dirty = dirty.ok ? dirty.stdout.length > 0 : null;
+  if (result.dirty) {
+    result.error = `lane worktree is dirty: ${executionRoot}`;
+    return result;
+  }
+
+  const commit = runGit(['rev-parse', 'HEAD'], executionRoot);
+  if (!commit.ok) {
+    result.error = commit.stderr || 'failed to read lane worktree commit';
+    return result;
+  }
+  result.commit = commit.stdout;
+  result.success = true;
+  return result;
+}
+
 export function runLaneCommand(config = {}, {
   command = null,
   kind = 'test',
@@ -197,6 +271,11 @@ export function runLaneCommand(config = {}, {
     stdout: '',
     stderr: '',
     error: null,
+    checkoutKind: null,
+    executionRoot: null,
+    commit: null,
+    worktreeCreated: false,
+    worktreeReused: false,
   };
   if (!status.ok) {
     result.error = `lane not ready: ${status.errors.join('; ')}`;
@@ -208,8 +287,19 @@ export function runLaneCommand(config = {}, {
     return result;
   }
 
+  const checkout = ensureLaneWorktree(config, status);
+  result.checkoutKind = checkout.checkoutKind;
+  result.executionRoot = checkout.executionRoot;
+  result.commit = checkout.commit;
+  result.worktreeCreated = checkout.created;
+  result.worktreeReused = checkout.reused;
+  if (!checkout.success) {
+    result.error = checkout.error;
+    return result;
+  }
+
   const child = spawnSync(command, {
-    cwd: status.gitRoot,
+    cwd: checkout.executionRoot,
     shell: true,
     encoding: 'utf-8',
     timeout: timeoutMs,
