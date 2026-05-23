@@ -27,15 +27,20 @@ Generated: 2026-05-11T12:10:27.8975990+08:00
 
 ## Runtime Boundary Model
 
-- Host project cwd: `D:\github\My\js-evolution-agent`.
-- Subject runtime cwd pattern: `D:\github\My\js-evolution-agent\runtime\subjects\<subject-name>`.
-- Local file actions should identify the resource before the directory. Prefer `params.resource_scope` / `params.resource_kind`; keep `params.cwd` as the compatibility execution root.
-- For host code changes, use `resource_scope=source_root` and describe files relative to the host project cwd.
-- For subject runtime data work, use `resource_scope=subject_runtime` and describe files relative to that subject's runtime cwd.
-- For external projects owned by a subject, the subject policy must declare the external project root and resource scope; actions must use that scope/root instead of searching from the host project.
-- Missing-path evidence is root-qualified. A probe may say "path Y is missing under executionRoot X"; it must not generalize that into "module missing" or "write frozen" unless X is the authoritative root for that resource.
-- If `params.cwd` conflicts with the resource scope, the action should fail with `root_mismatch` rather than run in the wrong project.
-- If an explicit `params.cwd` does not exist, the action should fail rather than create a shadow project directory.
+- Host source: `D:\github\My\js-evolution-agent`，使用 `resource_scope=source_root`。
+- Subject runtime: `D:\github\My\js-evolution-agent\runtime\subjects\<subject-name>`，使用 `resource_scope=subject_runtime`。
+- Target repo: 如果主体绑定外部仓库，在主体 policy 的 `Subject Repo Lane` 中声明 `Repo`，并使用 `resource_scope=target_repo`。
+- Git lane: 自动代码改进应从主体 lane 派生 `work/*` 分支和 worktree；验证通过前不得直接改写 lane，且不得直接指向 `main`。
+- Safety: `params.cwd` 必须匹配资源 root；显式 `params.cwd` 不存在时应失败；越界写入、敏感读取、核心层修改必须先获得人类审批。
+
+## Subject Repo Lane
+
+- Repo: `D:\path\to\target-project`
+- Base Branch: `main`
+- Lane: `jea/js-evolution-agent/local`
+- Test Command: `npm test`
+- Run Command: `npm start`
+- GitHub Repo: `owner/repo`
 
 ## Probe Requirements
 

@@ -59,6 +59,7 @@ import {
   buildDefaultSubjectPolicy,
   getActiveSubjectRuntimeInfo,
   listSubjects,
+  parseSubjectRepoLane,
   readActiveSubjectPolicy,
   setActiveSubject,
 } from '../src/cli/utils/subjects.mjs';
@@ -226,6 +227,27 @@ describe('subject management', () => {
     expect(runtime.dataNamespace).toBe('my-product');
     expect(runtime.runtimeRoot).toBe(join(root, 'runtime', 'subjects', 'my-product'));
     expect(runtime.dataRoot).toBe(join(root, 'runtime', 'subjects', 'my-product', 'data'));
+  });
+
+  it('parses subject repo lane configuration from policy text', () => {
+    const root = makeProjectRoot();
+    const config = parseSubjectRepoLane([
+      '## Subject Repo Lane',
+      '',
+      '- Repo: `..\\agentank`',
+      '- Base Branch: `main`',
+      '- Lane: `jea/agentank/desktop-a`',
+      '- Test Command: `npm test`',
+      '- Run Command: `npm start`',
+    ].join('\n'), { root, subject: 'agentank' });
+
+    expect(config.configured).toBe(true);
+    expect(config.repoRoot).toBe(join(root, '..\\agentank'));
+    expect(config.baseBranch).toBe('main');
+    expect(config.lane).toBe('jea/agentank/desktop-a');
+    expect(config.workBranchPrefix).toBe('jea/agentank/desktop-a/work');
+    expect(config.testCommand).toBe('npm test');
+    expect(config.runCommand).toBe('npm start');
   });
 });
 

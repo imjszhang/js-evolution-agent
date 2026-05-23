@@ -17,6 +17,7 @@ import { createIntelligenceStore } from './src/intelligence/store.mjs';
 import { getDefaultCyberTaoistDocsDir } from './src/cli/utils/project.mjs';
 import {
   getActiveSubjectRuntimeInfo,
+  parseSubjectRepoLane,
   parseSubjectExternalRoots,
   parseSubjectResourceRules,
   readActiveSubjectPolicy,
@@ -220,7 +221,14 @@ export default async function ({ cwd }) {
   registerGlobalActionTypes();
   const runtime = getActiveSubjectRuntimeInfo(cwd);
   const subjectPolicy = readActiveSubjectPolicy(cwd);
+  const subjectRepoLane = parseSubjectRepoLane(subjectPolicy.text, {
+    root: cwd,
+    subject: subjectPolicy.active.active,
+  });
   const externalRoots = parseSubjectExternalRoots(subjectPolicy.text);
+  if (subjectRepoLane.configured) {
+    externalRoots.target_repo = subjectRepoLane.repoRoot;
+  }
   const resourceRules = parseSubjectResourceRules(subjectPolicy.text);
 
   const intelligenceStore = createIntelligenceStore({
@@ -242,6 +250,7 @@ export default async function ({ cwd }) {
       runtimeRoot: runtime.runtimeRoot,
       dataRoot: runtime.dataRoot,
       dataNamespace: runtime.dataNamespace,
+      subjectRepoLane,
       appName: 'js-evolution-agent',
       logger: consoleLogger,
       intelligenceStore,

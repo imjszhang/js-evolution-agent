@@ -24,6 +24,7 @@ import {
 } from '../src/cli/utils/subjects.mjs';
 import { validateAgentRunSpec } from '../src/actions/agent-run-spec.mjs';
 import { buildEvidenceContract, inferActionResource } from '../src/actions/resource-registry.mjs';
+import { buildLaneWorkBranch, checkLaneStatus } from '../src/actions/lane-manager.mjs';
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   query: vi.fn(),
@@ -274,6 +275,55 @@ describe('controlled action handlers', () => {
 
     expect(resource.resourceKind).toBe('standing_memory');
     expect(resource.resourceScope).toBe('subject_runtime');
+  });
+
+  it('builds lane work branches with subject lane isolation', () => {
+    expect(buildLaneWorkBranch({
+      lane: 'jea/agentank/desktop-a',
+      cycleId: 'cycle-1',
+      slug: 'fix pathing',
+      suffix: 'abc123',
+    })).toBe('jea/agentank/desktop-a/work/cycle-1/fix-pathing/abc123');
+  });
+
+  it('reports missing lane repo as not configured or missing', () => {
+    const status = checkLaneStatus({
+      configured: true,
+      repoRoot: join(tempDir || tmpdir(), 'missing-agentank'),
+      baseBranch: 'main',
+      lane: 'jea/agentank/local',
+    });
+
+    expect(status.ok).toBe(false);
+    expect(status.errors[0]).toContain('repo does not exist');
+  });
+
+  it('resolves agent_run target_repo scope from subject repo lane', () => {
+    const ctx = makeCtx();
+    const targetRepo = join(ctx.projectRoot, 'target-repo');
+    mkdirSync(targetRepo, { recursive: true });
+    ctx.host.subjectRepoLane = {
+      configured: true,
+      repoRoot: targetRepo,
+      lane: 'jea/agentank/local',
+      baseBranch: 'main',
+    };
+
+    const validation = validateAgentRunSpec({
+      type: 'agent_run',
+      params: {
+        run_spec: {
+          primary_cwd_kind: 'target_repo',
+          permission_profile: 'read_only',
+          intent: 'Inspect the target repo.',
+          context: { subject: 'agentank' },
+          expected_output: ['summary'],
+        },
+      },
+    }, ctx);
+
+    expect(validation.valid).toBe(true);
+    expect(validation.spec.primary_cwd).toBe(targetRepo);
   });
 
   it('marks canonical and non-canonical standing memory path observations differently', () => {

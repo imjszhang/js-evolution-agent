@@ -36,6 +36,14 @@ Generated: 2026-05-11T12:10:27.8975990+08:00
 - If `params.cwd` conflicts with the resource scope, the action should fail with `root_mismatch` rather than run in the wrong project.
 - If the intended `cwd` does not exist, the action should fail rather than create a replacement directory.
 
+## Subject Repo Lane
+
+- Repo: `D:\path\to\{{subject}}`
+- Base Branch: `main`
+- Lane: `jea/{{subject}}/local`
+- Test Command: `npm test`
+- Run Command: `npm start`
+
 ## Probe Requirements
 
 - `hypothesis`

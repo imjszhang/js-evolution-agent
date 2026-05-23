@@ -111,6 +111,14 @@ Template: {template}
 - 运行破坏性命令、大规模重写或项目树外写入。
 - 执行非记录性质的 \`core\` 层动作。
 
+## Subject Repo Lane
+
+- Repo: \`D:\\path\\to\\{subject}\`
+- Base Branch: \`main\`
+- Lane: \`jea/{subject}/local\`
+- Test Command: \`npm test\`
+- Run Command: \`npm start\`
+
 ## Probe Requirements
 
 - \`hypothesis\`
@@ -224,6 +232,14 @@ Template: {template}
 - Creating commits, pushing branches, or opening pull requests.
 - Running destructive commands, broad rewrites, or writing outside the configured project tree.
 - Executing non-record \`core\` layer actions.
+
+## Subject Repo Lane
+
+- Repo: \`D:\\path\\to\\{subject}\`
+- Base Branch: \`main\`
+- Lane: \`jea/{subject}/local\`
+- Test Command: \`npm test\`
+- Run Command: \`npm start\`
 
 ## Probe Requirements
 

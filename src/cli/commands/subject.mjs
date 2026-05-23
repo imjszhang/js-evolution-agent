@@ -5,6 +5,7 @@ import {
   ensureDefaultSubject,
   getActiveSubjectRuntimeInfo,
   listSubjects,
+  parseSubjectRepoLane,
   readActiveSubjectPolicy,
   setActiveSubject,
 } from '../utils/subjects.mjs';
@@ -16,11 +17,20 @@ export function extractMarkdownSection(text, heading) {
 }
 
 function printSubject(policy, runtime) {
+  const repoLane = parseSubjectRepoLane(policy.text, {
+    root: getProjectRoot(),
+    subject: policy.active.active,
+  });
   console.log(`# Active Subject: ${policy.active.active}`);
   console.log(`policy: ${policy.file}`);
   console.log(`data namespace: ${runtime.dataNamespace}`);
   console.log(`runtime root: ${runtime.runtimeRoot}`);
   console.log(`data root: ${runtime.dataRoot}`);
+  if (repoLane.configured) {
+    console.log(`repo: ${repoLane.repoRoot}`);
+    console.log(`base branch: ${repoLane.baseBranch}`);
+    console.log(`lane: ${repoLane.lane}`);
+  }
   console.log('\n# Subject');
   console.log(extractMarkdownSection(policy.text, 'Subject') || '(not found)');
   console.log('\n# Core Layer');
@@ -62,6 +72,10 @@ export async function subjectCommand({ subcommand, flags = {}, args = [] } = {})
         active: policy.active,
         file: policy.file,
         runtime,
+        repoLane: parseSubjectRepoLane(policy.text, {
+          root,
+          subject: policy.active.active,
+        }),
         subject: extractMarkdownSection(policy.text, 'Subject'),
         coreLayer: extractMarkdownSection(policy.text, 'Core Layer'),
       }, null, 2));

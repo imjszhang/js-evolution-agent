@@ -12,12 +12,21 @@ import {
   rootMetadata,
   rootMismatchResult,
 } from './execution-root.mjs';
-import { createCoreApplyWorktree } from './worktree-manager.mjs';
+import {
+  createBranchWorktree,
+  createCoreApplyWorktree,
+} from './worktree-manager.mjs';
 import { runConfiguredExternalAction } from './configured-external-runner.mjs';
 import {
   getConfiguredExternalAction,
   loadSubjectActionConfig,
 } from './configured-actions.mjs';
+import {
+  checkLaneStatus,
+  getSubjectRepoLane,
+  openLanePullRequest,
+  runLaneCommand,
+} from './lane-manager.mjs';
 import { validateAuthorityScope } from './authority-contract.mjs';
 import { buildEvidenceContract } from './resource-registry.mjs';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
@@ -606,10 +615,21 @@ function prepareCoreApplyWorkspace(action, ctx) {
   const provided = explicitWorkspace(action);
   if (provided) return { ok: true, action, workspace: provided };
 
-  const create = ctx?.host?.createCoreApplyWorktree ?? createCoreApplyWorktree;
+  const repoLane = getSubjectRepoLane(ctx);
+  const create = ctx?.host?.createCoreApplyWorktree
+    ?? (repoLane?.configured
+      ? (opts) => createBranchWorktree({
+        repoRoot: repoLane.repoRoot,
+        baseBranch: repoLane.lane,
+        workBranchPrefix: repoLane.workBranchPrefix,
+        cycleId: opts.cycleId,
+        actionId: opts.actionId,
+        target: opts.target,
+      })
+      : createCoreApplyWorktree);
   try {
     const workspace = create({
-      repoRoot: ctx?.host?.sourceRoot ?? ctx?.projectRoot ?? process.cwd(),
+      repoRoot: repoLane?.repoRoot ?? ctx?.host?.sourceRoot ?? ctx?.projectRoot ?? process.cwd(),
       cycleId: ctx?.cycleId,
       actionId: ctx?.actionId ?? action?.id ?? getField(action, 'id'),
       target: getField(action, 'target') ?? action?.description,
@@ -983,6 +1003,147 @@ function _blockObservationResult(action, reason, ctx) {
 }
 
 const builtInActionHandlers = {
+  async lane_status(action, ctx) {
+    const store = storeFrom(ctx);
+    const config = {
+      ...asObject(getSubjectRepoLane(ctx)),
+      ...asObject(action?.params?.repoLane ?? action?.repoLane),
+    };
+    const status = checkLaneStatus(config);
+    const result = {
+      success: status.ok,
+      status: status.ok ? 'ready' : 'blocked',
+      message: status.ok
+        ? `lane ready: ${status.lane}`
+        : `lane not ready: ${status.errors.join('; ')}`,
+      provider: 'local',
+      requires_approval: false,
+      evidence: {
+        repo_lane: status,
+      },
+      writes: {},
+      fallback_used: false,
+    };
+    store.recordEvolutionEvent({
+      type: 'lane_status_checked',
+      status: result.status,
+      subject_lane: status.lane,
+      repo_root: status.repoRoot,
+      ok: status.ok,
+      errors: status.errors,
+    });
+    store.recordActionReceipt(action, result, ctx);
+    return result;
+  },
+
+  async lane_observe(action, ctx) {
+    const store = storeFrom(ctx);
+    const config = {
+      ...asObject(getSubjectRepoLane(ctx)),
+      ...asObject(action?.params?.repoLane ?? action?.repoLane),
+    };
+    const command = getField(action, 'command') ?? config.runCommand;
+    const evidence = runLaneCommand(config, {
+      command,
+      kind: 'observe',
+      timeoutMs: Number(getField(action, 'timeout_ms') ?? 120_000),
+    });
+    const result = {
+      success: evidence.success,
+      status: evidence.success ? (evidence.skipped ? 'skipped' : 'completed') : 'failed',
+      message: evidence.skipped
+        ? 'lane observe skipped because no Run Command is configured'
+        : `lane observe ${evidence.success ? 'completed' : 'failed'}: ${command ?? '(none)'}`,
+      provider: 'local',
+      requires_approval: false,
+      evidence: { lane_observe: evidence },
+      writes: {},
+      fallback_used: false,
+    };
+    store.recordEvolutionEvent({
+      type: 'lane_observe',
+      status: result.status,
+      repo_root: evidence.repoRoot,
+      subject_lane: evidence.lane,
+      command,
+      exit_code: evidence.exitCode,
+    });
+    store.recordActionReceipt(action, result, ctx);
+    return result;
+  },
+
+  async lane_verify(action, ctx) {
+    const store = storeFrom(ctx);
+    const config = {
+      ...asObject(getSubjectRepoLane(ctx)),
+      ...asObject(action?.params?.repoLane ?? action?.repoLane),
+    };
+    const command = getField(action, 'command') ?? config.testCommand;
+    const evidence = runLaneCommand(config, {
+      command,
+      kind: 'verify',
+      timeoutMs: Number(getField(action, 'timeout_ms') ?? 120_000),
+    });
+    const result = {
+      success: evidence.success,
+      status: evidence.success ? (evidence.skipped ? 'skipped' : 'passed') : 'failed',
+      message: evidence.skipped
+        ? 'lane verify skipped because no Test Command is configured'
+        : `lane verify ${evidence.success ? 'passed' : 'failed'}: ${command ?? '(none)'}`,
+      provider: 'local',
+      requires_approval: false,
+      evidence: { lane_verify: evidence },
+      writes: {},
+      fallback_used: false,
+    };
+    store.recordEvolutionEvent({
+      type: 'lane_verify',
+      status: result.status,
+      repo_root: evidence.repoRoot,
+      subject_lane: evidence.lane,
+      command,
+      exit_code: evidence.exitCode,
+    });
+    store.recordActionReceipt(action, result, ctx);
+    return result;
+  },
+
+  async github_open_lane_pr(action, ctx) {
+    const store = storeFrom(ctx);
+    const config = {
+      ...asObject(getSubjectRepoLane(ctx)),
+      ...asObject(action?.params?.repoLane ?? action?.repoLane),
+    };
+    const pr = openLanePullRequest(config, {
+      headBranch: getField(action, 'head_branch') ?? getField(action, 'headBranch'),
+      title: getField(action, 'title'),
+      body: getField(action, 'body'),
+      draft: getField(action, 'draft') ?? true,
+    });
+    const result = {
+      success: pr.success,
+      status: pr.success ? 'opened' : 'failed',
+      message: pr.success
+        ? `opened lane PR from ${pr.headBranch} to ${pr.baseBranch}`
+        : `failed to open lane PR: ${pr.error}`,
+      provider: 'gh',
+      requires_approval: false,
+      evidence: { github_open_lane_pr: pr },
+      writes: {},
+      fallback_used: false,
+    };
+    store.recordEvolutionEvent({
+      type: 'github_open_lane_pr',
+      status: result.status,
+      subject_lane: pr.baseBranch,
+      head_branch: pr.headBranch,
+      pr_url: pr.pr?.stdout || null,
+      error: pr.error,
+    });
+    store.recordActionReceipt(action, result, ctx);
+    return result;
+  },
+
   async agent_run(action, ctx) {
     const store = storeFrom(ctx);
     const executionAction = applyRunSpecToAction(action, ctx);

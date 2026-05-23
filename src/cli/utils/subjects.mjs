@@ -222,6 +222,79 @@ export function parseSubjectResourceRules(policyText = '') {
   }));
 }
 
+function stripInlineCode(value) {
+  const text = String(value || '').trim();
+  const code = text.match(/`([^`]+)`/);
+  return (code ? code[1] : text)
+    .replace(/^[-*]\s*/, '')
+    .trim();
+}
+
+function normalizePolicyKey(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ');
+}
+
+function readPolicyKeyValues(policyText = '') {
+  const values = new Map();
+  for (const rawLine of String(policyText || '').split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const match = line.match(/^(?:[-*]\s*)?([A-Za-z][A-Za-z _-]{1,40})\s*:\s*(.+)$/);
+    if (!match) continue;
+    values.set(normalizePolicyKey(match[1]), stripInlineCode(match[2]));
+  }
+  return values;
+}
+
+function firstPolicyValue(values, keys) {
+  for (const key of keys) {
+    const value = values.get(normalizePolicyKey(key));
+    if (value) return value;
+  }
+  return null;
+}
+
+function defaultLaneForSubject(subject) {
+  return `jea/${sanitizeSubjectName(subject)}/local`;
+}
+
+export function parseSubjectRepoLane(policyText = '', {
+  root = process.cwd(),
+  subject = DEFAULT_SUBJECT,
+} = {}) {
+  const values = readPolicyKeyValues(policyText);
+  const repo = firstPolicyValue(values, [
+    'Repo',
+    'Repository',
+    'Target Repo',
+    'Target Repository',
+    'Local Repo',
+    'Local Repository',
+  ]);
+  const baseBranch = firstPolicyValue(values, ['Base Branch', 'Base']) || 'main';
+  const lane = firstPolicyValue(values, ['Lane', 'Evolution Lane', 'Evolution Branch'])
+    || defaultLaneForSubject(subject);
+  const testCommand = firstPolicyValue(values, ['Test Command', 'Verify Command']);
+  const runCommand = firstPolicyValue(values, ['Run Command', 'Observe Command']);
+  const githubRepo = firstPolicyValue(values, ['GitHub Repo', 'Github Repo', 'Remote Repo']);
+  const resolvedRepo = repo ? resolve(root, repo) : null;
+  return {
+    configured: Boolean(repo),
+    repo,
+    repoRoot: resolvedRepo,
+    baseBranch,
+    lane,
+    workBranchPrefix: `${lane.replace(/\/+$/g, '')}/work`,
+    testCommand,
+    runCommand,
+    githubRepo,
+  };
+}
+
 export function listSubjects(root) {
   const dir = subjectsDir(root);
   if (!existsSync(dir)) return [];

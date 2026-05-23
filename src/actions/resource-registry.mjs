@@ -3,6 +3,8 @@ import { dirname, isAbsolute, resolve } from 'node:path';
 export const RESOURCE_SCOPES = {
   SUBJECT_RUNTIME: 'subject_runtime',
   SOURCE_ROOT: 'source_root',
+  TARGET_REPO: 'target_repo',
+  LANE_WORKTREE: 'lane_worktree',
   UNKNOWN: 'unknown',
 };
 
@@ -263,6 +265,28 @@ export function resolveScopeRoot(scope, ctx, configuredRoot = null) {
     const sourceRoot = firstString(ctx?.host?.sourceRoot, ctx?.sourceRoot, ctx?.projectRoot);
     return sourceRoot
       ? { root: resolve(sourceRoot), source: 'source_root' }
+      : { root: null, source: null };
+  }
+
+  if (scope === RESOURCE_SCOPES.TARGET_REPO) {
+    const targetRoot = firstString(
+      ctx?.host?.subjectRepoLane?.repoRoot,
+      ctx?.subjectRepoLane?.repoRoot,
+      ctx?.host?.targetRepoRoot,
+    );
+    return targetRoot
+      ? { root: resolve(targetRoot), source: 'subject_repo_lane' }
+      : { root: null, source: null };
+  }
+
+  if (scope === RESOURCE_SCOPES.LANE_WORKTREE) {
+    const worktreeRoot = firstString(
+      ctx?.host?.laneWorktree?.path,
+      ctx?.laneWorktree?.path,
+      ctx?.host?.subjectRepoLane?.worktreePath,
+    );
+    return worktreeRoot
+      ? { root: resolve(worktreeRoot), source: 'lane_worktree' }
       : { root: null, source: null };
   }
 

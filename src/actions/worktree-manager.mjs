@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { sanitizeBranchPart } from './lane-manager.mjs';
 
 function safeSlug(value, fallback = 'core-apply') {
   const text = String(value ?? '').trim()
@@ -36,20 +37,50 @@ export function createCoreApplyWorktree({
   ].filter(Boolean).join('-'));
   const worktreesRoot = process.env.JEA_CORE_WORKTREE_ROOT
     ?? join(gitRoot, '.worktrees', 'js-evolution-agent');
-  const worktreePath = join(worktreesRoot, name);
-  const branch = `jea/core-apply/${name}`;
+  return createBranchWorktree({
+    repoRoot: gitRoot,
+    baseBranch: 'HEAD',
+    worktreeRoot: worktreesRoot,
+    branch: `jea/core-apply/${name}`,
+    name,
+  });
+}
 
-  mkdirSync(worktreesRoot, { recursive: true });
-  runGit(['worktree', 'add', '-b', branch, worktreePath, 'HEAD'], gitRoot);
+export function createBranchWorktree({
+  repoRoot,
+  baseBranch = 'HEAD',
+  workBranchPrefix = 'jea/work',
+  worktreeRoot = null,
+  branch = null,
+  name = null,
+  cycleId = 'cycle',
+  actionId = null,
+  target = null,
+} = {}) {
+  if (!repoRoot) throw new Error('repoRoot is required to create a worktree');
+  const gitRoot = runGit(['rev-parse', '--show-toplevel'], repoRoot);
+  const worktreeName = safeSlug(name ?? [
+    cycleId,
+    actionId,
+    target,
+    Date.now(),
+  ].filter(Boolean).join('-'), 'work');
+  const root = worktreeRoot ?? join(gitRoot, '.worktrees', 'js-evolution-agent');
+  const worktreePath = join(root, worktreeName);
+  const branchName = branch
+    ?? `${sanitizeBranchPart(workBranchPrefix, 'jea/work')}/${sanitizeBranchPart(worktreeName, 'change')}`;
+  mkdirSync(root, { recursive: true });
+  runGit(['worktree', 'add', '-b', branchName, worktreePath, baseBranch], gitRoot);
 
   return {
     path: worktreePath,
-    branch,
+    branch: branchName,
+    base_branch: baseBranch,
     auto_created: true,
     created: true,
     cleanup_hint: [
       `git worktree remove "${worktreePath}"`,
-      `git branch -D "${branch}"`,
+      `git branch -D "${branchName}"`,
     ],
   };
 }

@@ -85,3 +85,43 @@ actionRegistry.register(new ActionTypeSpec({
   layer: 'core',
 }));
 
+actionRegistry.register(new ActionTypeSpec({
+  name: 'lane_status',
+  description: 'Check the active subject target repo lane without mutating Git state.',
+  promptHint: 'Use this before repo evolution work. It reports whether the subject Repo/Base Branch/Lane are configured, the target repo is a Git repo, the base/lane branches exist, and the worktree is clean.',
+  defaultRisk: 'low',
+  defaultPriority: 'high',
+  autoExecutable: true,
+  layer: 'probe',
+}));
+
+actionRegistry.register(new ActionTypeSpec({
+  name: 'lane_observe',
+  description: 'Run the configured read-only lane observation command in the subject target repo.',
+  promptHint: 'Runs the subject Run Command on the active lane when configured and records stdout/stderr as evidence. Use for actual project usage probes that do not mutate source.',
+  defaultRisk: 'low',
+  defaultPriority: 'high',
+  autoExecutable: true,
+  layer: 'probe',
+}));
+
+actionRegistry.register(new ActionTypeSpec({
+  name: 'lane_verify',
+  description: 'Run the configured lane test command in the subject target repo.',
+  promptHint: 'Runs the subject Test Command on the active lane and records exit status plus stdout/stderr as verification evidence before integrating work.',
+  defaultRisk: 'low',
+  defaultPriority: 'high',
+  autoExecutable: true,
+  layer: 'probe',
+}));
+
+actionRegistry.register(new ActionTypeSpec({
+  name: 'github_open_lane_pr',
+  description: 'Push a work branch and open a GitHub pull request back to the active subject lane.',
+  promptHint: 'Use only after local verification passes. Required params: head_branch. The PR base is the configured subject lane, defaults to draft, and does not merge automatically.',
+  defaultRisk: 'medium',
+  defaultPriority: 'medium',
+  autoExecutable: true,
+  layer: 'core',
+}));
+
