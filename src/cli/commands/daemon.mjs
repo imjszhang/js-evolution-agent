@@ -3,6 +3,7 @@ import { isSubjectLocked, parsePositiveInt } from '../utils/evolve-runs.mjs';
 import { hasMultiSubjectSelection, selectSubjects } from '../utils/subject-selection.mjs';
 import { buildSubjectArtifactOverview } from '../utils/subject-artifacts.mjs';
 import {
+  acknowledgeTask,
   cancelTask,
   claimNextTask,
   completeTask,
@@ -180,10 +181,10 @@ function buildDaemonDiagnostics(root, subject, projection) {
   }
   if ((projection.tasks.counts.failed || 0) > 0) {
     diagnostics.push({
-      severity: 'warning',
+      severity: 'info',
       code: 'failed_tasks',
-      message: `${projection.tasks.counts.failed} daemon task(s) have failed.`,
-      action: 'Inspect failed tasks and retry only after the underlying error is understood.',
+      message: `${projection.tasks.counts.failed} historical daemon task(s) have failed.`,
+      action: 'Inspect and acknowledge failed tasks after the underlying error is understood.',
     });
   }
   if (locked) {
@@ -243,6 +244,8 @@ function taskSummary(task) {
     updated_at: task.updated_at,
     last_error_code: task.last_error_code,
     last_error: task.last_error,
+    acknowledged_at: task.acknowledged_at,
+    acknowledged_reason: task.acknowledged_reason,
   };
 }
 
@@ -618,7 +621,7 @@ function printArtifactInbox(items) {
   for (const item of items) {
     console.log(`# ${item.subject}`);
     console.log(`health: ${item.attention.health_status ?? 'unknown'}`);
-    console.log(`pending_tasks: ${item.attention.pending_tasks} failed_tasks: ${item.attention.failed_tasks}`);
+    console.log(`pending_tasks: ${item.attention.pending_tasks} failed_tasks: ${item.attention.failed_tasks} acknowledged_tasks: ${item.attention.acknowledged_tasks}`);
     const report = item.latest_report;
     console.log(`latest_report: ${report?.cycle_id ?? 'none'} ${report?.generated_at ?? report?.recorded_at ?? ''}`.trim());
     if (report?.tldr) console.log(`  tldr: ${report.tldr}`);
@@ -756,7 +759,7 @@ export async function daemonCommand({ subcommand, flags = {}, args = [], root = 
       return 0;
     }
     if (multiSubject) {
-      console.error('daemon tasks inspect/retry/cancel supports one subject at a time.');
+      console.error('daemon tasks inspect/retry/cancel/acknowledge supports one subject at a time.');
       return 2;
     }
     const queue = readTaskQueue(root, subject);
@@ -810,7 +813,25 @@ export async function daemonCommand({ subcommand, flags = {}, args = [], root = 
         return 1;
       }
     }
-    console.error('Usage: jea daemon tasks <list|inspect|retry|cancel> [task_id] [--status STATUS] [--json]');
+    if (taskCommand === 'acknowledge' || taskCommand === 'ack') {
+      try {
+        const acknowledged = acknowledgeTask(root, subject, taskId);
+        recordDaemonEvent(root, subject, {
+          type: 'task_acknowledged',
+          status: 'ok',
+          task_id: acknowledged.task.task_id,
+          task_type: acknowledged.task.type,
+        });
+        if (flags.json) console.log(JSON.stringify(acknowledged, null, 2));
+        else printTask(acknowledged.task);
+        return 0;
+      } catch (e) {
+        if (flags.json) console.log(JSON.stringify({ ok: false, error: e?.message || String(e) }, null, 2));
+        else console.error(e?.message || String(e));
+        return 1;
+      }
+    }
+    console.error('Usage: jea daemon tasks <list|inspect|retry|cancel|acknowledge> [task_id] [--status STATUS] [--json]');
     return 2;
   }
 
@@ -847,7 +868,7 @@ export async function daemonCommand({ subcommand, flags = {}, args = [], root = 
     console.error('       jea daemon stop');
     console.error('       jea daemon events [--limit N]');
     console.error('       jea daemon doctor');
-    console.error('       jea daemon tasks <list|inspect|retry|cancel>');
+    console.error('       jea daemon tasks <list|inspect|retry|cancel|acknowledge>');
     console.error('       jea daemon inbox [--all]');
     return 2;
   }

@@ -74,6 +74,7 @@ export function buildSubjectArtifactOverview(root, subject, { projection = null 
       reasons: projection?.health?.reasons ?? [],
       failed_tasks: projection?.tasks?.counts?.failed ?? 0,
       pending_tasks: projection?.tasks?.counts?.pending ?? 0,
+      acknowledged_tasks: projection?.tasks?.counts?.acknowledged ?? 0,
     },
   };
 }

@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import lockfile from 'proper-lockfile';
 import { runtimeForSubject, nowIso, parsePositiveInt } from './evolve-runs.mjs';
 
-export const TASK_STATUSES = new Set(['pending', 'running', 'completed', 'failed', 'cancelled']);
+export const TASK_STATUSES = new Set(['pending', 'running', 'completed', 'failed', 'cancelled', 'acknowledged']);
 
 export function tasksDirForSubject(root, subject) {
   return join(runtimeForSubject(root, subject).evolutionDir, 'tasks');
@@ -295,6 +295,23 @@ export function cancelTask(root, subject, taskIdValue, reason = 'manual_cancel')
   });
 }
 
+export function acknowledgeTask(root, subject, taskIdValue, reason = 'manual_acknowledge') {
+  return updateTask(root, subject, taskIdValue, (task) => {
+    if (task.status !== 'failed') {
+      throw new Error(`Only failed tasks can be acknowledged: ${taskIdValue}`);
+    }
+    return {
+      ...task,
+      status: 'acknowledged',
+      lease_owner: null,
+      lease_expires_at: null,
+      acknowledged_at: nowIso(),
+      acknowledged_reason: reason,
+      updated_at: nowIso(),
+    };
+  });
+}
+
 export function renewTaskLease(root, subject, taskIdValue, {
   workerId = `worker-${process.pid}`,
   leaseMs = 5 * 60 * 1000,
@@ -348,6 +365,7 @@ export function summarizeTaskQueue(queue) {
     running: tasks.filter((task) => task.status === 'running'),
     expired_running,
     failed: tasks.filter((task) => task.status === 'failed'),
+    acknowledged: tasks.filter((task) => task.status === 'acknowledged'),
   };
 }
 

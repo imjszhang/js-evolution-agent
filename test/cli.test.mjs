@@ -76,6 +76,7 @@ import {
   summarizeManifest,
 } from '../src/cli/utils/evolve-runs.mjs';
 import {
+  acknowledgeTask,
   claimNextTask,
   completeTask,
   enqueueTask,
@@ -551,7 +552,7 @@ describe('daemon task queue foundation', () => {
     expect(readJsonSafe(currentStatePath(root, 'alpha')).tasks.counts.pending).toBe(1);
   });
 
-  it('summarizes daemon health for idle, stale, expired, and failed states', async () => {
+  it('summarizes daemon health without letting historical failures block status', async () => {
     const idleRoot = makeDaemonProjectRoot();
     expect(buildDaemonProjection(idleRoot, 'alpha').health.status).toBe('idle');
     rmSync(idleRoot, { recursive: true, force: true });
@@ -571,7 +572,11 @@ describe('daemon task queue foundation', () => {
     const failedRoot = makeDaemonProjectRoot();
     const failedTask = enqueueTask(failedRoot, 'alpha', { type: 'run_cycle', idempotencyKey: 'alpha:failed-health' });
     failTask(failedRoot, 'alpha', failedTask.task.task_id, { code: 'boom', message: 'failed' });
-    expect(buildDaemonProjection(failedRoot, 'alpha').health.status).toBe('failed');
+    const failedProjection = buildDaemonProjection(failedRoot, 'alpha');
+    expect(failedProjection.health.status).toBe('idle');
+    expect(failedProjection.health.ok).toBe(true);
+    expect(failedProjection.tasks.counts.failed).toBe(1);
+    expect(failedProjection.health.suggestions.join('\n')).toMatch(/acknowledge/);
   });
 
   it('tracks daemon worker state and stop requests', () => {
@@ -651,7 +656,8 @@ describe('daemon task queue foundation', () => {
     expect(output.code).toBe(0);
     expect(payload.subjects.map((item) => item.subject)).toEqual(['alpha', 'beta']);
     expect(payload.subjects.find((item) => item.subject === 'alpha').tasks.counts.pending).toBe(1);
-    expect(payload.subjects.find((item) => item.subject === 'beta').health.status).toBe('failed');
+    expect(payload.subjects.find((item) => item.subject === 'beta').health.status).toBe('idle');
+    expect(payload.subjects.find((item) => item.subject === 'beta').tasks.counts.failed).toBe(1);
   });
 
   it('fans out daemon stop to selected subjects only', async () => {
@@ -746,7 +752,7 @@ describe('daemon task queue foundation', () => {
     expect(report.diagnostics.map((item) => item.code)).toContain('pending_without_worker');
   });
 
-  it('lists, inspects, retries, and cancels daemon tasks through the CLI', async () => {
+  it('lists, inspects, retries, cancels, and acknowledges daemon tasks through the CLI', async () => {
     const root = makeDaemonProjectRoot();
     const failedTask = enqueueTask(root, 'alpha', {
       type: 'run_cycle',
@@ -793,6 +799,35 @@ describe('daemon task queue foundation', () => {
     const tasks = readTaskQueue(root, 'alpha').tasks;
     expect(tasks.find((task) => task.task_id === failedTask.task.task_id).status).toBe('pending');
     expect(tasks.find((task) => task.task_id === pendingTask.task.task_id).status).toBe('cancelled');
+
+    failTask(root, 'alpha', failedTask.task.task_id, { code: 'boom-again', message: 'failed again' });
+    const acknowledged = await captureConsole(() => daemonCommand({
+      root,
+      subcommand: 'tasks',
+      args: ['acknowledge', failedTask.task.task_id],
+      flags: { json: true },
+    }));
+    expect(acknowledged.code).toBe(0);
+    const acknowledgedTask = readTaskQueue(root, 'alpha').tasks.find((task) => task.task_id === failedTask.task.task_id);
+    expect(acknowledgedTask.status).toBe('acknowledged');
+    expect(acknowledgedTask.acknowledged_at).toBeTruthy();
+  });
+
+  it('acknowledges failed daemon tasks directly', () => {
+    const root = makeDaemonProjectRoot();
+    const failedTask = enqueueTask(root, 'alpha', {
+      type: 'run_cycle',
+      idempotencyKey: 'alpha:direct-acknowledge',
+    });
+    failTask(root, 'alpha', failedTask.task.task_id, { code: 'boom', message: 'failed' });
+
+    const acknowledged = acknowledgeTask(root, 'alpha', failedTask.task.task_id, 'reviewed');
+    const projection = buildDaemonProjection(root, 'alpha');
+
+    expect(acknowledged.task.status).toBe('acknowledged');
+    expect(acknowledged.task.acknowledged_reason).toBe('reviewed');
+    expect(projection.tasks.counts.acknowledged).toBe(1);
+    expect(projection.tasks.counts.failed || 0).toBe(0);
   });
 
   it('does not claim later daemon rounds while an earlier round is incomplete', () => {

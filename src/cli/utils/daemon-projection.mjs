@@ -35,10 +35,6 @@ function buildDaemonHealth({ worker, tasks }) {
     status = 'blocked';
     reasons.push(`${pending} pending task(s) are waiting but no fresh worker is running`);
     suggestions.push('Run `jea daemon start` in a foreground terminal, or use `jea daemon work --once`.');
-  } else if (failed > 0) {
-    status = 'failed';
-    reasons.push(`${failed} task(s) have failed`);
-    suggestions.push('Use `jea daemon tasks list --status failed` and `jea daemon tasks inspect <task_id>`.');
   } else if (worker.running && active === 0) {
     status = 'idle';
     reasons.push('Worker is fresh and no daemon task is waiting');
@@ -49,6 +45,9 @@ function buildDaemonHealth({ worker, tasks }) {
     suggestions.push('Start the worker only when background evolution should run.');
   } else {
     reasons.push('Daemon worker and task queue are progressing normally');
+  }
+  if (failed > 0) {
+    suggestions.push('Historical failed task(s) are retained for audit. Use `jea daemon tasks acknowledge <task_id>` after inspection.');
   }
 
   return {
@@ -96,6 +95,14 @@ export function buildDaemonProjection(root, subject, { store = null, eventLimit 
       attempts: task.attempts,
       last_error_code: task.last_error_code,
       last_error: task.last_error,
+    })),
+    acknowledged: summary.acknowledged.slice(0, 10).map((task) => ({
+      task_id: task.task_id,
+      type: task.type,
+      attempts: task.attempts,
+      last_error_code: task.last_error_code,
+      acknowledged_at: task.acknowledged_at,
+      acknowledged_reason: task.acknowledged_reason,
     })),
   };
   return {
