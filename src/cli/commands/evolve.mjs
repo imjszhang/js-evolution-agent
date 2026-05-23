@@ -22,6 +22,10 @@ import {
 import { SUBJECT_ENV } from '../utils/subjects.mjs';
 import { enqueueTask } from '../utils/daemon-tasks.mjs';
 import { recordDaemonEvent } from '../utils/daemon-events.mjs';
+import {
+  checkSubjectLaneReady,
+  printSubjectLaneGuardFailure,
+} from '../utils/subject-lane-guard.mjs';
 
 const RETRYABLE_PATTERNS = [
   /empty content/i,
@@ -428,6 +432,13 @@ export async function evolveCommand({ subcommand, flags = {}, args = [] } = {}) 
       return 1;
     }
     for (const item of manifests) {
+      const laneGuard = checkSubjectLaneReady(root, { subject: item.subject });
+      if (!laneGuard.ok) {
+        printSubjectLaneGuardFailure(laneGuard, { json: !!flags.json });
+        return 1;
+      }
+    }
+    for (const item of manifests) {
       const summary = summarizeManifest(item.manifest);
       console.log(`resume: ${summary.run_id} subject=${summary.subject} skip=${summary.completed_rounds} next=${summary.next_round ?? 'none'} status=${summary.status}`);
     }
@@ -452,6 +463,13 @@ export async function evolveCommand({ subcommand, flags = {}, args = [] } = {}) 
   } catch (e) {
     console.error(e?.message || String(e));
     return 2;
+  }
+  for (const subject of subjects) {
+    const laneGuard = checkSubjectLaneReady(root, { subject });
+    if (!laneGuard.ok) {
+      printSubjectLaneGuardFailure(laneGuard, { json: !!flags.json });
+      return 1;
+    }
   }
 
   const runId = flags.run || createRunId();

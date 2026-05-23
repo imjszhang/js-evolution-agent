@@ -76,6 +76,8 @@ Commands:
   policy check           Verify active policy has Subject section
   subject list           List configured subjects
   subject show           Show policy, namespace, and runtime paths
+  subject lane status    Check the active subject target repo lane
+  subject lane init      Create the active subject lane from its base branch
   subject init <name>    Create a subject policy from a template
   subject use <name>     Switch the active subject and runtime namespace
   subject check          Validate the active subject policy

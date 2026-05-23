@@ -31,6 +31,10 @@ import {
   classifyCycleFailure,
   runSingleCycle,
 } from './evolve.mjs';
+import {
+  checkSubjectLaneReady,
+  printSubjectLaneGuardFailure,
+} from '../utils/subject-lane-guard.mjs';
 
 function sleep(ms) {
   if (!ms) return Promise.resolve();
@@ -663,6 +667,11 @@ export async function daemonCommand({ subcommand, flags = {}, args = [], root = 
       console.error('Usage: jea daemon work --once [--subject NAME]');
       return 2;
     }
+    const laneGuard = checkSubjectLaneReady(root, { subject });
+    if (!laneGuard.ok) {
+      printSubjectLaneGuardFailure(laneGuard, { json: !!flags.json });
+      return 1;
+    }
     const result = await workOnce(root, subject, flags);
     if (flags.json) console.log(JSON.stringify(result, null, 2));
     else if (!result.worked) console.log('No daemon task available.');
@@ -674,6 +683,11 @@ export async function daemonCommand({ subcommand, flags = {}, args = [], root = 
     if (multiSubject) {
       console.error('daemon start supports one subject at a time. External orchestrators should start one worker process per subject.');
       return 2;
+    }
+    const laneGuard = checkSubjectLaneReady(root, { subject });
+    if (!laneGuard.ok) {
+      printSubjectLaneGuardFailure(laneGuard, { json: !!flags.json });
+      return 1;
     }
     const result = await runDaemonWorker(root, subject, flags);
     if (flags.json) console.log(JSON.stringify(result, null, 2));

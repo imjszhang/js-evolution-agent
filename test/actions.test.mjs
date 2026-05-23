@@ -1,5 +1,6 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import {
   afterEach,
@@ -24,7 +25,7 @@ import {
 } from '../src/cli/utils/subjects.mjs';
 import { validateAgentRunSpec } from '../src/actions/agent-run-spec.mjs';
 import { buildEvidenceContract, inferActionResource } from '../src/actions/resource-registry.mjs';
-import { buildLaneWorkBranch, checkLaneStatus } from '../src/actions/lane-manager.mjs';
+import { buildLaneWorkBranch, checkLaneStatus, initializeLane } from '../src/actions/lane-manager.mjs';
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   query: vi.fn(),
@@ -296,6 +297,31 @@ describe('controlled action handlers', () => {
 
     expect(status.ok).toBe(false);
     expect(status.errors[0]).toContain('repo does not exist');
+  });
+
+  it('initializes a missing lane branch from the configured base branch', () => {
+    const repo = join(tempDir || mkdtempSync(join(tmpdir(), 'jea-lane-init-')), 'repo');
+    mkdirSync(repo, { recursive: true });
+    execFileSync('git', ['init', '-b', 'main'], { cwd: repo, stdio: 'ignore' });
+    writeFileSync(join(repo, 'README.md'), '# lane test\n', 'utf-8');
+    execFileSync('git', ['add', 'README.md'], { cwd: repo, stdio: 'ignore' });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-m', 'init'], { cwd: repo, stdio: 'ignore' });
+
+    const config = {
+      configured: true,
+      repoRoot: repo,
+      baseBranch: 'main',
+      lane: 'jea/agentank/local',
+    };
+    const result = initializeLane(config);
+    const status = checkLaneStatus(config);
+    const second = initializeLane(config);
+
+    expect(result.success).toBe(true);
+    expect(result.created).toBe(true);
+    expect(status.ok).toBe(true);
+    expect(second.success).toBe(true);
+    expect(second.created).toBe(false);
   });
 
   it('resolves agent_run target_repo scope from subject repo lane', () => {

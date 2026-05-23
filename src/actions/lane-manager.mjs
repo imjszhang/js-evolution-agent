@@ -131,6 +131,54 @@ export function checkLaneStatus(config = {}) {
   return result;
 }
 
+export function initializeLane(config = {}, { push = false } = {}) {
+  const before = checkLaneStatus(config);
+  const result = {
+    success: false,
+    created: false,
+    pushed: false,
+    before,
+    after: null,
+    branch: before.lane,
+    baseBranch: before.baseBranch,
+    push: null,
+    error: null,
+  };
+
+  if (!before.exists || !before.isGitRepo || !before.baseBranchExists || before.dirty !== false) {
+    result.error = before.errors.join('; ') || 'lane prerequisites are not satisfied';
+    return result;
+  }
+  if (!before.lane) {
+    result.error = 'lane is not configured';
+    return result;
+  }
+  if (!before.laneBranchExists) {
+    const created = runGit(['branch', before.lane, before.baseBranch], before.gitRoot);
+    if (!created.ok) {
+      result.error = created.stderr || `failed to create lane branch: ${before.lane}`;
+      return result;
+    }
+    result.created = true;
+  }
+
+  if (push) {
+    const pushed = runGit(['push', '-u', 'origin', before.lane], before.gitRoot);
+    result.push = pushed;
+    if (!pushed.ok) {
+      result.error = pushed.stderr || `failed to push lane branch: ${before.lane}`;
+      result.after = checkLaneStatus(config);
+      return result;
+    }
+    result.pushed = true;
+  }
+
+  result.after = checkLaneStatus(config);
+  result.success = result.after.ok;
+  if (!result.success) result.error = result.after.errors.join('; ');
+  return result;
+}
+
 export function runLaneCommand(config = {}, {
   command = null,
   kind = 'test',

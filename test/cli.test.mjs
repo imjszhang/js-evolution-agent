@@ -1,4 +1,5 @@
 import { mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -98,6 +99,7 @@ import {
 import { daemonCommand, runDaemonWorker, workOnce } from '../src/cli/commands/daemon.mjs';
 import { selectSubjects } from '../src/cli/utils/subject-selection.mjs';
 import { buildSubjectArtifactOverview } from '../src/cli/utils/subject-artifacts.mjs';
+import { checkSubjectLaneReady } from '../src/cli/utils/subject-lane-guard.mjs';
 import {
   configuredActionToSpec,
   loadSubjectActionConfig,
@@ -248,6 +250,49 @@ describe('subject management', () => {
     expect(config.workBranchPrefix).toBe('jea/agentank/desktop-a/work');
     expect(config.testCommand).toBe('npm test');
     expect(config.runCommand).toBe('npm start');
+  });
+
+  it('does not block subjects without repo lane configuration', () => {
+    const root = makeProjectRoot();
+    ensureDefaultSubject(root);
+
+    const report = checkSubjectLaneReady(root);
+
+    expect(report.ok).toBe(true);
+    expect(report.configured).toBe(false);
+  });
+
+  it('blocks configured repo lanes until the lane branch exists', () => {
+    const root = makeProjectRoot();
+    const repo = join(root, 'target-repo');
+    mkdirSync(repo, { recursive: true });
+    execFileSync('git', ['init', '-b', 'main'], { cwd: repo, stdio: 'ignore' });
+    writeFileSync(join(repo, 'README.md'), '# target\n', 'utf-8');
+    execFileSync('git', ['add', 'README.md'], { cwd: repo, stdio: 'ignore' });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-m', 'init'], { cwd: repo, stdio: 'ignore' });
+    mkdirSync(join(root, 'policies', 'subjects'), { recursive: true });
+    writeFileSync(join(root, 'policies', 'subjects', 'agentank.md'), [
+      '# agentank',
+      '',
+      '## Subject',
+      'agentank',
+      '',
+      '## Subject Repo Lane',
+      `- Repo: \`${repo}\``,
+      '- Base Branch: `main`',
+      '- Lane: `jea/agentank/local`',
+    ].join('\n'), 'utf-8');
+    writeJsonFile(join(root, 'policies', 'active-subject.json'), {
+      active: 'agentank',
+      policy: 'subjects/agentank.md',
+      data_namespace: 'agentank',
+    });
+
+    const report = checkSubjectLaneReady(root);
+
+    expect(report.ok).toBe(false);
+    expect(report.configured).toBe(true);
+    expect(report.errors).toContain('lane branch not found: jea/agentank/local');
   });
 });
 

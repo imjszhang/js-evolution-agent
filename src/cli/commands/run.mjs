@@ -2,6 +2,10 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { getProjectRoot, loadProjectEnv } from '../utils/project.mjs';
 import { runNode } from '../utils/process.mjs';
+import {
+  checkSubjectLaneReady,
+  printSubjectLaneGuardFailure,
+} from '../utils/subject-lane-guard.mjs';
 
 export async function runCommand({ flags = {} } = {}) {
   const root = getProjectRoot();
@@ -19,6 +23,11 @@ export async function runCommand({ flags = {} } = {}) {
   }
   if (flags.deepseek && !env.DEEPSEEK_API_KEY) {
     console.error('DEEPSEEK_API_KEY is required for --deepseek.');
+    return 1;
+  }
+  const laneGuard = checkSubjectLaneReady(root);
+  if (!laneGuard.ok) {
+    printSubjectLaneGuardFailure(laneGuard, { json: !!flags.json });
     return 1;
   }
 
