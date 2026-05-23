@@ -6,6 +6,7 @@ import {
   loadSubjectActionConfig,
   resolveConfiguredToolRoot,
 } from './configured-actions.mjs';
+import { buildExecutionEnv } from './execution-env.mjs';
 
 function getField(action, field) {
   return action?.params?.[field] ?? action?.[field] ?? null;
@@ -65,6 +66,7 @@ export async function runConfiguredExternalAction(action, ctx, opts = {}) {
   const entry = config.external_tools?.[configured.tool]?.entry || 'src/cli.mjs';
   const cli = resolve(toolRoot, entry);
   const args = flagArgs(configured, action);
+  const { env: childEnv } = buildExecutionEnv(toolRoot, { overrides: opts.env ?? {} });
 
   if (ctx?.host?.configuredExternalRunner) {
     return ctx.host.configuredExternalRunner({
@@ -73,17 +75,13 @@ export async function runConfiguredExternalAction(action, ctx, opts = {}) {
       tool: configured.tool,
       toolRoot,
       cli,
+      env: childEnv,
       action,
       ctx,
       configured,
     });
   }
   if (!existsSync(cli)) throw new Error(`Configured external tool CLI not found: ${cli}`);
-
-  const childEnv = {
-    ...process.env,
-    ...(opts.env ?? {}),
-  };
 
   return new Promise((resolvePromise) => {
     const child = spawn(process.execPath, [cli, command, ...args], {

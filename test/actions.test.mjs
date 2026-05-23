@@ -51,6 +51,7 @@ const ORIGINAL_ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const ORIGINAL_ANTHROPIC_AUTH_TOKEN = process.env.ANTHROPIC_AUTH_TOKEN;
 const ORIGINAL_CURSOR_API_KEY = process.env.CURSOR_API_KEY;
 const ORIGINAL_JEA_AGENT_PROVIDER = process.env.JEA_AGENT_PROVIDER;
+const ORIGINAL_AGENTANK_TANK_KEY = process.env.AGENTANK_TANK_KEY;
 
 async function* streamMessages(messages) {
   for (const message of messages) yield message;
@@ -233,6 +234,11 @@ afterEach(() => {
     process.env.JEA_AGENT_PROVIDER = ORIGINAL_JEA_AGENT_PROVIDER;
   } else {
     delete process.env.JEA_AGENT_PROVIDER;
+  }
+  if (ORIGINAL_AGENTANK_TANK_KEY) {
+    process.env.AGENTANK_TANK_KEY = ORIGINAL_AGENTANK_TANK_KEY;
+  } else {
+    delete process.env.AGENTANK_TANK_KEY;
   }
   vi.clearAllMocks();
 });
@@ -540,6 +546,33 @@ describe('controlled action handlers', () => {
     expect(result.args).toContain('--limit');
     expect(result.args).toContain('3');
     expect(result.args).not.toContain('--secret');
+  });
+
+  it('loads configured external action env from the tool root without overriding process env', async () => {
+    const ctx = makeCtx();
+    installConfiguredActionProject(ctx);
+    const toolRoot = join(ctx.projectRoot, 'tool');
+    mkdirSync(toolRoot, { recursive: true });
+    writeFileSync(join(toolRoot, '.env'), [
+      'AGENTANK_TANK_KEY=tool-root-key',
+      'HOST_ONLY_FROM_TOOL=tool-value',
+      '',
+    ].join('\n'), 'utf-8');
+    process.env.AGENTANK_TANK_KEY = 'host-key';
+
+    ctx.host.configuredExternalRunner = vi.fn(async ({ env }) => {
+      return {
+        success: true,
+        status: 'checked',
+        hostKeyVisible: env.AGENTANK_TANK_KEY,
+        toolOnlyVisible: env.HOST_ONLY_FROM_TOOL,
+      };
+    });
+
+    const result = await runConfiguredExternalAction({ type: 'configured_sync' }, ctx);
+
+    expect(result.hostKeyVisible).toBe('host-key');
+    expect(result.toolOnlyVisible).toBe('tool-value');
   });
 
   it('does not expose handlers for unconfigured external actions', () => {
@@ -1334,6 +1367,62 @@ describe('controlled action handlers', () => {
     expect(captured[0].options.settingSources).toEqual(['user', 'project', 'local']);
     expect(captured[0].options.allowedTools).toEqual(['Read', 'Grep', 'Glob']);
     expect(verification.status).toBe('improved');
+  });
+
+  it('loads Claude SDK execution env from the execution cwd without overriding process env', async () => {
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    process.env.AGENTANK_TANK_KEY = 'host-key';
+    const ctx = makeAgentProviderCtx('Please verify execution environment visibility.');
+    const executionRoot = join(ctx.projectRoot, 'subject-runtime');
+    mkdirSync(executionRoot, { recursive: true });
+    writeFileSync(join(executionRoot, '.env'), [
+      'AGENTANK_TANK_KEY=execution-root-key',
+      'EXECUTION_ONLY_TOKEN=execution-only',
+      '',
+    ].join('\n'), 'utf-8');
+
+    const seenEnv = [];
+    vi.mocked(claudeQuery).mockImplementation(() => {
+      seenEnv.push({
+        agentank: process.env.AGENTANK_TANK_KEY,
+        executionOnly: process.env.EXECUTION_ONLY_TOKEN,
+      });
+      if (seenEnv.length === 1) {
+        return streamMessages([
+          { type: 'result', subtype: 'success', session_id: 'env-session', result: 'Environment inspected.' },
+        ]);
+      }
+      return streamMessages([
+        {
+          type: 'result',
+          subtype: 'success',
+          session_id: 'env-session',
+          result: JSON.stringify({
+            status: 'completed',
+            summary: 'Execution env was visible.',
+          }),
+        },
+      ]);
+    });
+
+    const result = await actionHandlers.agent_execute({
+      type: 'agent_execute',
+      params: directAgentParams({
+        provider: 'claude_code_sdk',
+        objective: 'Inspect execution environment',
+        cwd: executionRoot,
+      }),
+    }, ctx);
+
+    expect(result.success).toBe(true);
+    expect(seenEnv).toEqual([
+      { agentank: 'host-key', executionOnly: 'execution-only' },
+      { agentank: 'host-key', executionOnly: 'execution-only' },
+    ]);
+    expect(process.env.AGENTANK_TANK_KEY).toBe('host-key');
+    expect(process.env.EXECUTION_ONLY_TOKEN).toBeUndefined();
+    expect(vi.mocked(claudeQuery).mock.calls[0][0].options.env.AGENTANK_TANK_KEY).toBe('host-key');
+    expect(vi.mocked(claudeQuery).mock.calls[0][0].options.env.EXECUTION_ONLY_TOKEN).toBe('execution-only');
   });
 
   it('maps sandbox_patch to Claude editing tools while preserving overrides', async () => {

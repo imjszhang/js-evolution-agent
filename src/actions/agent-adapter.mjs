@@ -14,6 +14,7 @@ import {
   normalizeAgentRunSpec,
   rawRunSpecFromAction,
 } from './agent-run-spec.mjs';
+import { buildExecutionEnv, streamWithExecutionEnv } from './execution-env.mjs';
 
 const DEFAULT_PROVIDER = 'llm_only';
 const CLAUDE_PROVIDER = 'claude_code_sdk';
@@ -709,8 +710,10 @@ export function buildClaudeOptions(action, ctx) {
     ?? process.env.CLAUDE_AGENT_PERMISSION_MODE
     ?? defaults.permissionMode;
 
+  const executionEnv = buildExecutionEnv(roots.executionCwd);
   const options = {
     cwd: roots.executionCwd,
+    env: executionEnv.env,
     additionalDirectories: runSpec.additional_directories,
     allowedTools: asList(getField(executionAction, 'allowedTools') ?? getField(executionAction, 'allowed_tools'), defaults.allowedTools),
     disallowedTools: asList(getField(executionAction, 'disallowedTools') ?? getField(executionAction, 'disallowed_tools'), []),
@@ -773,11 +776,13 @@ export function buildCursorOptions(action, ctx) {
     [],
   );
   const model = String(getField(executionAction, 'model') ?? process.env.CURSOR_AGENT_MODEL ?? 'composer-2');
+  const executionEnv = buildExecutionEnv(roots.executionCwd);
   const options = {
     apiKey: process.env.CURSOR_API_KEY,
     model: { id: model },
     local: {
       cwd: roots.executionCwd,
+      env: executionEnv.env,
       settingSources,
     },
   };
@@ -903,7 +908,7 @@ async function runClaudeCodeSdk(action, ctx) {
       : options;
     let turnResult = null;
     const turnTexts = [];
-    for await (const message of query({ prompt, options: turnOptions })) {
+    for await (const message of streamWithExecutionEnv(options.cwd, () => query({ prompt, options: turnOptions }))) {
       messages.push(message);
       if (message?.type === 'assistant') {
         const texts = textFromAssistantMessage(message);
