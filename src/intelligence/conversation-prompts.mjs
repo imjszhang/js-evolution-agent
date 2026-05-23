@@ -234,6 +234,7 @@ export function buildDecideUserPrompt({
 - 涉及权限、安全探针、越界路径或敏感目标的 run，必须通过 \`permission_profile\`、primary cwd、additional directories 和 expected_output 约束，不要只靠自然语言承诺。
 - 每个 action 必须有 serves_goal，并尽量使用目标树中的 goal id；对 \`agent_run\`，serves_goal 描述本次 run 要推进的目标。
 - 不要为了覆盖而制造行动；证据不足时可以把 decision 设为 "defer" 或让 actions 为空数组。
+- \`goal_coverage.not_covered\` 必须是 JSON object，不能写成裸字符串列表；每一项必须是 \`"goal_id_or_label": "reason"\`。
 
 ## Available Action Types
 
@@ -344,7 +345,10 @@ Respond with exactly this JSON shape:
   ],
   "goal_coverage": {
     "covered": ["<goal_id>"],
-    "not_covered": { "<goal_id>": "reason" }
+    "not_covered": {
+      "<goal_id_or_label>": "reason",
+      "example-uncovered-goal": "not enough evidence yet"
+    }
   },
   "deferred": [
     { "action": "...", "reason": "...", "revisit_after": "..." }

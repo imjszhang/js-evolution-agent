@@ -570,6 +570,93 @@ describe('ConversationalIntelligencePipeline', () => {
     expect(result.analysis.decision).toBe('execute');
   });
 
+  it('repairs malformed Analyze+Decide JSON and queues preserved actions', async () => {
+    const { runtimeRoot, runtime, host } = makeFixture();
+    const messageCalls = [];
+    const repairedDecision = {
+      analysis: { key_patterns: ['repair path'], root_causes: {}, opportunities: [] },
+      decision: 'execute',
+      rationale: 'repair should preserve the action',
+      actions: [{
+        type: 'record_observation',
+        description: 'Record repaired JSON parsing',
+        serves_goal: 'bootstrap',
+        params: { content: 'repaired json parsed' },
+        expected_impact: 'queue receives repaired action',
+        risk: 'low',
+      }],
+      goal_coverage: {
+        covered: ['bootstrap'],
+        not_covered: {
+          'publish-readiness': 'needs more evidence',
+          'memory-audit': 'needs second clean cycle',
+        },
+      },
+      deferred: [],
+      risk_mitigation: [],
+      goal_suggestions: [],
+      confidence_score: 0.8,
+    };
+    const client = {
+      async chat(message) {
+        if (message.includes('standing memory') || message.includes('固定容量')) {
+          return '长期态势：malformed JSON 已被修复。';
+        }
+        return longObservation();
+      },
+      async chatMessages(messages) {
+        messageCalls.push(messages);
+        const last = messages.at(-1).content;
+        if (last.includes('Repair this Analyze+Decide JSON')) {
+          return JSON.stringify(repairedDecision);
+        }
+        if (last.includes('Strategic Analysis & Decision')) {
+          return [
+            '{',
+            '  "analysis": {"key_patterns":["repair path"],"root_causes":{},"opportunities":[]},',
+            '  "decision": "execute",',
+            '  "rationale": "repair should preserve the action",',
+            '  "actions": [{"type":"record_observation","description":"Record repaired JSON parsing","serves_goal":"bootstrap","params":{"content":"repaired json parsed"},"expected_impact":"queue receives repaired action","risk":"low"}],',
+            '  "goal_coverage": {',
+            '    "covered": ["bootstrap"],',
+            '    "not_covered": {',
+            '      "publish-readiness needs more evidence",',
+            '      "memory-audit needs second clean cycle"',
+            '    }',
+            '  },',
+            '  "deferred": [],',
+            '  "risk_mitigation": [],',
+            '  "goal_suggestions": [],',
+            '  "confidence_score": 0.8',
+            '}',
+          ].join('\n');
+        }
+        return '# 情报报告\n\n用于 JSON repair 测试。\n';
+      },
+    };
+
+    const pipeline = new ConversationalIntelligencePipeline({
+      aiClient: client,
+      host,
+      projectRoot: runtimeRoot,
+      goalId: 'bootstrap',
+      actionRegistry: {
+        toPromptSection: () => '- `record_observation`: Record an observation',
+      },
+      runtime,
+    });
+    const result = await pipeline.run();
+    const context = JSON.parse(readFileSync(result.conversation_context_path, 'utf-8'));
+
+    expect(result.success).toBe(true);
+    expect(result.decisions_queued).toHaveLength(1);
+    expect(result.analysis.json_repair_used).toBe(true);
+    expect(result.analysis.decision).toBe('execute');
+    expect(result.analysis.goal_coverage.not_covered).toEqual(repairedDecision.goal_coverage.not_covered);
+    expect(context.analyze_decide_turn.parsed.json_repair_used).toBe(true);
+    expect(messageCalls.some((messages) => messages.at(-1).content.includes('Repair this Analyze+Decide JSON'))).toBe(true);
+  });
+
   it('defers without queued actions when Analyze+Decide JSON is invalid', async () => {
     const { runtimeRoot, runtime, host } = makeFixture();
     const client = {

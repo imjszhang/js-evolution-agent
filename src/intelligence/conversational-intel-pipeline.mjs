@@ -19,6 +19,92 @@ import {
   buildDecideUserPrompt,
   buildReportUserPrompt,
 } from './conversation-prompts.mjs';
+
+export function normalizeAnalyzeDecision(analysis = {}) {
+  const next = analysis && typeof analysis === 'object' && !Array.isArray(analysis)
+    ? { ...analysis }
+    : {};
+  next.analysis = next.analysis && typeof next.analysis === 'object' && !Array.isArray(next.analysis)
+    ? next.analysis
+    : { key_patterns: [], root_causes: {}, opportunities: [] };
+  next.decision = next.decision || (Array.isArray(next.actions) && next.actions.length ? 'execute' : 'defer');
+  next.actions = Array.isArray(next.actions) ? next.actions : [];
+  const coverage = next.goal_coverage && typeof next.goal_coverage === 'object' && !Array.isArray(next.goal_coverage)
+    ? { ...next.goal_coverage }
+    : {};
+  coverage.covered = Array.isArray(coverage.covered) ? coverage.covered : [];
+  if (Array.isArray(coverage.not_covered)) {
+    coverage.not_covered = Object.fromEntries(coverage.not_covered.map((item, idx) => [`item_${idx + 1}`, String(item)]));
+  } else if (!coverage.not_covered || typeof coverage.not_covered !== 'object') {
+    coverage.not_covered = {};
+  }
+  next.goal_coverage = coverage;
+  next.deferred = Array.isArray(next.deferred) ? next.deferred : [];
+  next.risk_mitigation = Array.isArray(next.risk_mitigation) ? next.risk_mitigation : [];
+  next.goal_suggestions = Array.isArray(next.goal_suggestions) ? next.goal_suggestions : [];
+  return next;
+}
+
+function buildAnalyzeDecisionRepairMessages(rawDecision, parseError) {
+  return [
+    {
+      role: 'system',
+      content: [
+        'You repair malformed JSON for js-evolution-agent Analyze+Decide outputs.',
+        'Return only one strict JSON object. No Markdown, no code fence, no explanation.',
+        'Preserve all original semantics, actions, ids, paths, and strings as much as possible.',
+        'Fix only syntax and shape errors.',
+        'Required shape includes goal_coverage.not_covered as an object, e.g. {"goal-id":"reason"}.',
+      ].join('\n'),
+    },
+    {
+      role: 'user',
+      content: [
+        `Parse error: ${parseError}`,
+        '',
+        'Repair this Analyze+Decide JSON:',
+        rawDecision,
+      ].join('\n'),
+    },
+  ];
+}
+
+export async function parseAnalyzeDecisionWithRepair(aiClient, rawDecision, { logger = null } = {}) {
+  try {
+    return {
+      analysis: normalizeAnalyzeDecision(parseJsonFromText(aiClient, rawDecision)),
+      parseError: null,
+      repairUsed: false,
+      repairError: null,
+      repairedRaw: null,
+    };
+  } catch (e) {
+    const parseError = e?.message || String(e);
+    try {
+      const repairedRaw = await chatMessages(aiClient, buildAnalyzeDecisionRepairMessages(rawDecision, parseError), {
+        thinking: 'low',
+        timeout: 180,
+      });
+      const repaired = normalizeAnalyzeDecision(parseJsonFromText(aiClient, repairedRaw));
+      logger?.warning?.(`[analyze_decide] repaired invalid JSON: ${parseError}`);
+      return {
+        analysis: repaired,
+        parseError,
+        repairUsed: true,
+        repairError: null,
+        repairedRaw,
+      };
+    } catch (repairException) {
+      return {
+        analysis: null,
+        parseError,
+        repairUsed: true,
+        repairError: repairException?.message || String(repairException),
+        repairedRaw: null,
+      };
+    }
+  }
+}
 import {
   buildObservationEvidenceGuard,
   formatObservationEvidenceGuard,
@@ -382,11 +468,13 @@ export class ConversationalIntelligencePipeline {
       const rawDecision = await chatMessages(this.aiClient, decideMessages, { thinking: 'medium', timeout: 600 });
       let analysis = null;
       let analysisParseError = null;
-      try {
-        analysis = parseJsonFromText(this.aiClient, rawDecision);
-      } catch (e) {
-        analysisParseError = e?.message || String(e);
-        this._log(`analyze+decide JSON parse failed: ${analysisParseError}; deferring without actions`, 'warning');
+      const parsedDecision = await parseAnalyzeDecisionWithRepair(this.aiClient, rawDecision, {
+        logger: this.host?.logger,
+      });
+      analysis = parsedDecision.analysis;
+      analysisParseError = parsedDecision.parseError;
+      if (!analysis) {
+        this._log(`analyze+decide JSON parse failed: ${analysisParseError}; repair failed: ${parsedDecision.repairError}; deferring without actions`, 'warning');
         analysis = {
           analysis: {
             key_patterns: [],
@@ -407,7 +495,11 @@ export class ConversationalIntelligencePipeline {
           confidence_score: 0,
           error_code: 'invalid_ai_json',
           parse_error: analysisParseError,
+          repair_error: parsedDecision.repairError,
         };
+      } else if (parsedDecision.repairUsed) {
+        analysis.json_repair_used = true;
+        analysis.original_parse_error = analysisParseError;
       }
       result.analysis = analysis;
       result.actions = Array.isArray(analysis?.actions) ? analysis.actions : [];
@@ -437,8 +529,10 @@ export class ConversationalIntelligencePipeline {
         prompt: serializeMessages(decideMessages),
         aiResponse: rawDecision,
         aiDriven: true,
-        fallbackUsed: Boolean(analysisParseError),
-        error: analysisParseError,
+        fallbackUsed: Boolean(analysis.error_code === 'invalid_ai_json'),
+        error: analysis.error_code === 'invalid_ai_json' ? analysisParseError : null,
+        jsonRepairUsed: Boolean(parsedDecision.repairUsed && !analysis.error_code),
+        repairedAiResponse: parsedDecision.repairedRaw,
       });
 
       this._log(`[${cycleId}] phase 3b: standing memory`);
