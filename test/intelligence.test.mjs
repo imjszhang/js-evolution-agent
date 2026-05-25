@@ -1366,7 +1366,7 @@ describe('buildEvolutionDiary', () => {
     });
 
     expect(result.source).toBe('ai');
-    expect(result.mdPath).toBe(join(runtime.runtimeRoot, 'data', 'evolution', 'diaries', 'cycle-test-1.md'));
+    expect(result.mdPath).toBe(join(runtime.runtimeRoot, 'data', 'evolution', 'diaries', '2026', '05', '2026-05-17', 'cycle-test-1.md'));
     expect(result.mdPath).not.toContain(join(runtime.runtimeRoot, 'journal'));
     expect(existsSync(result.mdPath)).toBe(true);
     expect(readFileSync(result.mdPath, 'utf-8')).toContain('receipt 已通过验证');

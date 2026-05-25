@@ -1,25 +1,39 @@
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { EVOLUTION_DIARIES_REL } from '../../intelligence/diary-paths.mjs';
 import { readJsonSafe } from './files.mjs';
 import { runtimeForSubject } from './evolve-runs.mjs';
 import { storeForSubject } from './daemon-events.mjs';
 
-function latestFileInDir(dirPath, predicate = () => true) {
+function latestFileInDir(dirPath, predicate = () => true, { recursive = false } = {}) {
   if (!existsSync(dirPath)) return null;
   let latest = null;
-  for (const entry of readdirSync(dirPath, { withFileTypes: true })) {
-    if (!entry.isFile() || !predicate(entry.name)) continue;
-    const filePath = join(dirPath, entry.name);
+
+  function considerFile(filePath, name) {
+    if (!predicate(name)) return;
     const stat = statSync(filePath);
     if (!latest || stat.mtimeMs > latest.mtimeMs) {
       latest = {
         path: filePath,
-        name: entry.name,
+        name,
         mtime: stat.mtime.toISOString(),
         mtimeMs: stat.mtimeMs,
       };
     }
   }
+
+  function walk(currentDir) {
+    for (const entry of readdirSync(currentDir, { withFileTypes: true })) {
+      const filePath = join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        if (recursive) walk(filePath);
+        continue;
+      }
+      if (entry.isFile()) considerFile(filePath, entry.name);
+    }
+  }
+
+  walk(dirPath);
   if (!latest) return null;
   const { mtimeMs, ...publicRecord } = latest;
   return publicRecord;
@@ -58,7 +72,7 @@ export function buildSubjectArtifactOverview(root, subject, { projection = null 
     runtimeRoot: runtime.runtimeRoot,
     health: projection?.health ?? null,
     latest_report: latestIntelReport(store),
-    latest_diary: latestFileInDir(join(runtime.evolutionDir, 'diaries'), (name) => name.endsWith('.md')),
+    latest_diary: latestFileInDir(join(runtime.runtimeRoot, ...EVOLUTION_DIARIES_REL.split('/')), (name) => name.endsWith('.md'), { recursive: true }),
     latest_verify_report: latestVerifyReport(runtime),
     standing_memory: standingMemory ? {
       exists: true,

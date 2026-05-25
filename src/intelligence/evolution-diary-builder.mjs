@@ -1,8 +1,9 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname } from 'node:path';
 import { chatMessages } from '../ai/messages.mjs';
 import { detectLanguage, extractTldr } from './report-builder.mjs';
 import { redactSecrets } from './redaction.mjs';
+import { resolveEvolutionDiaryWritePath } from './diary-paths.mjs';
 
 const DIARY_CONTEXT_CHAR_LIMIT = 500000;
 
@@ -314,9 +315,8 @@ export function persistEvolutionDiary({
   if (!cycleId) throw new Error('cycle_id is required');
 
   const finalMarkdown = redactSecrets(stripCodeFence(markdown)).trim() + '\n';
-  const diariesDir = join(runtime.runtimeRoot, 'data', 'evolution', 'diaries');
-  mkdirSync(diariesDir, { recursive: true });
-  const mdPath = join(diariesDir, `${cycleId}.md`);
+  const mdPath = resolveEvolutionDiaryWritePath(runtime.runtimeRoot, cycleId, { generatedAt });
+  mkdirSync(dirname(mdPath), { recursive: true });
   writeFileSync(mdPath, finalMarkdown, 'utf-8');
 
   const tldr = extractTldr(finalMarkdown);

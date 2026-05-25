@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import {
   afterEach,
   describe,
@@ -1979,6 +1979,36 @@ describe('controlled action handlers', () => {
     expect(result.evidence.root_resolution_source).toBe('subject_runtime');
     expect(result.evidence.steps[0].evidence.entries.map((entry) => entry.name))
       .toContain('exec-test.md');
+  });
+
+  it('finds nested diary files via keyword search under hierarchical diaries layout', () => {
+    const ctx = makeCtx();
+    ctx.host.runtimeRoot = join(ctx.projectRoot, 'runtime', 'subjects', 'test');
+    const diaryPath = join(
+      ctx.host.runtimeRoot,
+      'data',
+      'evolution',
+      'diaries',
+      '2026',
+      '05',
+      '2026-05-25',
+      'exec-20260525-100536.md',
+    );
+    mkdirSync(dirname(diaryPath), { recursive: true });
+    writeFileSync(diaryPath, '# diary\nunique-nested-marker-12345\n', 'utf-8');
+
+    const result = runReadOnlyProbe({
+      type: 'run_probe',
+      params: {
+        objective: 'Find nested diary marker unique-nested-marker-12345',
+        targets: ['data/evolution/diaries/'],
+        keywords: ['unique-nested-marker-12345'],
+      },
+    }, ctx);
+
+    expect(result.success).toBe(true);
+    expect(result.evidence.matches_found).toBeGreaterThan(0);
+    expect(result.evidence.steps.some((step) => step.tool === 'keyword_search' && step.status === 'succeeded')).toBe(true);
   });
 
   it('blocks diary probes whose cwd points at the evolver root', async () => {

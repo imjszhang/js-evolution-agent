@@ -71,6 +71,7 @@ export function buildObservationEvidenceGuard({
       },
       {
         source_path: 'data/evolution/diaries/',
+        layout: 'data/evolution/diaries/{YYYY}/{MM}/{YYYY-MM-DD}/exec-*.md|cycle-*.md; legacy flat root diaries/exec-*.md|cycle-*.md is also valid',
         allowed_filename_patterns: ['exec-*.md', 'cycle-*.md'],
         forbidden_unless_listed: ['diary-YYYYMMDD-*.md'],
       },
@@ -124,7 +125,7 @@ export function formatObservationEvidenceGuard(guard) {
     `- Do not claim these worker-state fields unless independently verified in the current cycle: ${guard.schema_guards[0].forbidden_unless_independently_verified.map((k) => `\`${k}\``).join(', ')}.`,
     '- Treat `data/intelligence/memory/standing_memory.json` as the canonical standing_memory path and as a model-summary cache unless the current cycle directly reads a different structured schema.',
     '- If `./standing_memory.json` is missing at the runtime root, report it as a missing non-canonical alias, not as evidence that canonical standing_memory does not exist.',
-    '- Runtime diary files are expected to use `exec-*.md` or `cycle-*.md`; do not invent `diary-YYYYMMDD-*.md` filenames.',
+    '- Runtime diary files live under `data/evolution/diaries/{YYYY}/{MM}/{YYYY-MM-DD}/` or legacy flat `data/evolution/diaries/exec-*.md|cycle-*.md`; do not invent `diary-YYYYMMDD-*.md` filenames.',
     '',
     '### Known Refuted Claims',
     ...guard.known_refuted_claims.map((item) => `- ${item.claim}: ${item.status}. ${item.reason}`),
