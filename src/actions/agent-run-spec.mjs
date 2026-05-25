@@ -139,9 +139,19 @@ export function rawRunSpecFromAction(action = {}) {
   return asObject(params.run_spec ?? params.runSpec ?? action.run_spec ?? action.runSpec);
 }
 
+function omitModelControlledProvider(rawSpec = {}) {
+  const {
+    provider: _provider,
+    Provider: _Provider,
+    ...rest
+  } = asObject(rawSpec);
+  return rest;
+}
+
 export function normalizeAgentRunSpec(action = {}, ctx = {}) {
   const params = asObject(action.params);
   const rawSpec = rawRunSpecFromAction(action);
+  const sanitizedRawSpec = omitModelControlledProvider(rawSpec);
   const profileName = firstString(
     rawSpec.permission_profile,
     rawSpec.permissionProfile,
@@ -197,7 +207,6 @@ export function normalizeAgentRunSpec(action = {}, ctx = {}) {
 
   return {
     present: Object.keys(rawSpec).length > 0 || action?.type === 'agent_run',
-    provider: firstString(rawSpec.provider, params.provider, action.provider),
     primary_cwd: primaryCwd ? resolve(primaryCwd) : null,
     primary_cwd_kind: normalizeScope(primaryKind),
     primary_cwd_source: primaryCwd ? (kindRoot.root && resolve(primaryCwd) === kindRoot.root ? kindRoot.source : 'configured') : null,
@@ -207,7 +216,7 @@ export function normalizeAgentRunSpec(action = {}, ctx = {}) {
     intent: firstString(rawSpec.intent, params.intent, params.objective, action.description),
     context: rawSpec.context ?? params.context ?? action.rationale ?? null,
     expected_output: rawSpec.expected_output ?? rawSpec.expectedOutput ?? params.expected_output ?? params.expectedOutput ?? params.acceptance ?? params.acceptance_criteria ?? null,
-    raw: rawSpec,
+    raw: sanitizedRawSpec,
   };
 }
 
@@ -219,7 +228,6 @@ export function applyRunSpecToAction(action = {}, ctx = {}) {
     ...action,
     params: {
       ...params,
-      provider: params.provider ?? spec.provider,
       mode: params.mode ?? spec.permission.mode,
       cwd: params.cwd ?? spec.primary_cwd,
       resource_scope: params.resource_scope ?? params.resourceScope ?? spec.primary_cwd_kind,

@@ -225,6 +225,7 @@ export function buildDecideUserPrompt({
 - \`read_only\` 只能读取并在 receipt/evidence 中返回结果，不得要求写入、落盘、保存或持久化任何文件。若需要写脱敏摘要或缓存，必须单独生成 \`workspace_write\` action，并明确允许写入路径。
 - 若必须使用旧 action type，只能用于兼容已有队列或明确的宿主记录语义，并在 rationale 说明为什么 \`agent_run\` 不合适。
 - \`agent_execute\` 只允许作为旧兼容兜底动作；新决策不要优先使用它。
+- 不要在 \`params.run_spec\` 中设置 \`provider\`。agent provider 是宿主执行配置，由 \`JEA_AGENT_PROVIDER\` 或人工/API action override 决定，不是模型决策内容。
 - 当 run 涉及本地文件或目录时，文件路径应相对 primary cwd 描述，不要混用多个项目根的绝对路径。执行层会从 run_spec 解析 cwd 并阻断 root_mismatch。
 - 常见资源归属：主体日记/records/daemon/goals/intelligence 使用 primary_cwd_kind=subject_runtime；JEA 源码/policies/journal 使用 primary_cwd_kind=source_root；外部项目文件使用 subject policy 中声明的自定义 primary_cwd_kind。
 - 外部工具能力归属：凭据存在性、远端同步、发布、挑战、候选生成/模拟/评分等事实，应使用对应外部项目 scope（例如 subject policy 中声明的 \`agentank_evolver\`）或 configured external action；不要用 \`subject_runtime\` 的 \`process.env\` 结果判断外部工具凭据是否全局缺失。
@@ -322,7 +323,6 @@ Respond with exactly this JSON shape:
           "primary_cwd_kind": "subject_runtime | source_root | <subject_policy_external_scope>",
           "additional_directory_kinds": [],
           "permission_profile": "read_only | workspace_write | remote_write_review",
-          "provider": "claude_code_sdk | cursor_sdk",
           "intent": "...",
           "context": {
             "why_now": "...",

@@ -43,10 +43,8 @@ function normalizeProvider(provider) {
 }
 
 function resolveProvider(action) {
-  const runSpec = rawRunSpecFromAction(action);
   return normalizeProvider(
-    runSpec.provider
-      ?? getField(action, 'provider')
+    getField(action, 'provider')
       ?? process.env.JEA_AGENT_PROVIDER
       ?? DEFAULT_PROVIDER,
   );

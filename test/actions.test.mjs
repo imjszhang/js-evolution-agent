@@ -1412,6 +1412,43 @@ describe('controlled action handlers', () => {
     expect(Agent.create).toHaveBeenCalledOnce();
   });
 
+  it('ignores model-provided run_spec provider and uses configured default provider', async () => {
+    process.env.JEA_AGENT_PROVIDER = 'cursor_sdk';
+    process.env.CURSOR_API_KEY = 'cursor-test-key';
+    const ctx = makeAgentProviderCtx();
+    mockCursorSession([
+      { id: 'cursor-run-spec-initial', status: 'finished', result: 'Started run spec provider test.' },
+      {
+        id: 'cursor-run-spec-final',
+        status: 'finished',
+        result: JSON.stringify({
+          status: 'completed',
+          summary: 'Cursor handled run_spec despite model provider field.',
+          evidence: { provider_boundary: 'run_spec provider ignored' },
+        }),
+      },
+    ]);
+
+    const result = await actionHandlers.agent_run({
+      type: 'agent_run',
+      params: {
+        run_spec: {
+          primary_cwd_kind: 'source_root',
+          permission_profile: 'read_only',
+          provider: 'claude_code_sdk',
+          intent: 'Use host configured provider even if model emitted provider.',
+          context: { why_now: 'verify provider control boundary' },
+          expected_output: ['strict JSON receipt'],
+        },
+      },
+    }, ctx);
+
+    expect(result.provider).toBe('cursor_sdk');
+    expect(result.agent.outputs.cursor.run_id).toBe('cursor-run-spec-final');
+    expect(Agent.create).toHaveBeenCalledOnce();
+    expect(claudeQuery).not.toHaveBeenCalled();
+  });
+
   it('allows action provider to override JEA_AGENT_PROVIDER', async () => {
     process.env.JEA_AGENT_PROVIDER = 'cursor_sdk';
     const ctx = {
@@ -1821,10 +1858,10 @@ describe('controlled action handlers', () => {
       type: 'agent_run',
       description: 'Exercise Claude provider failure observability',
       params: {
+        provider: 'claude_code_sdk',
         run_spec: {
           primary_cwd_kind: 'subject_runtime',
           permission_profile: 'read_only',
-          provider: 'claude_code_sdk',
           intent: 'Run a lightweight diagnostic.',
           context: { why_now: 'verify provider failure diagnostics' },
           expected_output: ['provider failure diagnostic'],
@@ -1860,10 +1897,10 @@ describe('controlled action handlers', () => {
       type: 'agent_run',
       description: 'Exercise Claude result error observability',
       params: {
+        provider: 'claude_code_sdk',
         run_spec: {
           primary_cwd_kind: 'subject_runtime',
           permission_profile: 'read_only',
-          provider: 'claude_code_sdk',
           intent: 'Run another lightweight diagnostic.',
           context: { why_now: 'verify result subtype diagnostics' },
           expected_output: ['provider result diagnostic'],
