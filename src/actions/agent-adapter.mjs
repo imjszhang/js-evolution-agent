@@ -1216,7 +1216,7 @@ async function runCursorSdk(action, ctx) {
 
   try {
     if (typeof Agent.create === 'function') {
-      cursorAgent = Agent.create(options);
+      cursorAgent = await Agent.create(options);
       sameSession = true;
 
       async function sendTurn(prompt) {
