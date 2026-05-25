@@ -231,6 +231,11 @@ export function buildGoalAssessmentPrompt({
 - 必须以 agentContextDocs 为最高层级约束来判断目标是否合理、可验证、是否偏离主体边界。
 - 没有来自情报侧的可用证据（观察、回顾、报告、事件等）支撑具体结论时：不得轻易建议 replace/split；若仅能依据文献得出「尚需等待证据」，则用 insufficient_evidence，且 confidence 为 low。
 - 能收敛，不扩展；目标越可验证越好；proposed_goal 必须仍符合文献与主体策略。
+- 降标或收缩目标只允许作为恢复期策略，不能永久替代原始主目标的成果压力。若当前目标已从「成果目标」（例如胜率、排名、真实反馈改善、策略能力提升）降为「过程目标」（例如凭据合规、审计、仅观察），必须判断这些过程目标是否已经完成、稳定或可持续。
+- 当恢复期子目标已经达成或连续多轮可维持时，不应仅因低标准目标仍可验证就继续 keep；应优先建议 refine，把目标重新升回能推动原始主目标的成果指标。
+- 若 active_goals 的子目标全部是前置条件、合规、审计或观察类任务，而缺少直接衡量主体效果的成果指标，必须在 reason 中明确指出 "goal_pressure_loss"。除非有明确证据表明主体仍处于阻塞恢复期，否则应输出 status="refine"。
+- refine 可以保留安全、凭据、审计类子目标作为守护条件，但 proposed_goal 必须至少包含一个成果压力子目标，例如模拟质量提升、真实 matchCount/rank 反馈、发布后表现改善或策略能力提升。
+- 如果连续多个 cycle 为 keep，但顶层成果指标没有改善（例如 matchCount、rank、胜率或模拟质量长期停滞），不得仅因目标「仍可验证」而 keep；必须评估是否需要升标、收紧门禁或新增成果型子目标。
 - 评估 safe-runtime 时必须区分「agent 行为合规」「宿主预检阻断」和「provider/文件系统硬隔离」；verify_report 中的 boundary_risk 可作为边界风险证据，但不得把软约束误判为硬隔离。
 - 若 verification.semantic 存在，最新 semantic verification 优先于旧 report、diary 或 remembered agent claim。它仍不是 Seen 事实；它是最近执行结果的解释层证据，应用来覆盖旧推断而不是放大旧推断。
 - evidence_refs：须引用支持你结论的情报条目（intel_report / verify_report / observation / probe_result / retrospective / goal_event / evolution_event）。若某项判断主要依据某一权威文献中的原则，也请用 type 为 agent_context、id 为该文档 id、ref 为该文档 id 前加前缀 agent_context: 一并列出，使理由可追溯。
@@ -275,6 +280,11 @@ Hard constraints:
 - You MUST ground your judgment in agentContextDocs; intelligence is evidence about the world, not a substitute for doctrinal boundaries.
 - Do not recommend broad replace/split without concrete intelligence support; prefer insufficient_evidence with low confidence when facts are thin.
 - Prefer narrowing over expanding; proposed_goal must remain compliant with doctrine and subject policy.
+- Goal downgrading or narrowing is allowed only as a recovery-phase strategy. It must not permanently replace the original top-level outcome pressure. If the active goal has drifted from outcome goals (win rate, rank, real feedback improvement, strategy capability) into process goals (credential hygiene, auditability, observation only), assess whether those process goals are now completed, stable, or sustainable.
+- When recovery subgoals are achieved or repeatedly maintainable, do not keep a low-pressure goal merely because it remains testable. Prefer refine to restore outcome pressure.
+- If all child goals are prerequisite, compliance, audit, or observation work and none directly measures subject effectiveness, explicitly mention "goal_pressure_loss" in reason. Unless evidence shows the subject is still in a blocking recovery phase, return status="refine".
+- A refined goal may keep safety, credential, and audit work as guardrails, but proposed_goal must include at least one outcome-pressure child goal, such as simulation quality, real match/rank feedback, post-publish performance, or strategy capability improvement.
+- If several consecutive cycles are keep while top-level outcome metrics do not improve, do not keep solely because the goal is still testable; assess whether to raise standards, tighten gates, or add an outcome-oriented child goal.
 - When assessing safe-runtime, distinguish agent conduct compliance, host preflight blocking, and provider/filesystem hard isolation. boundary_risk from verify_report is evidence about boundary posture, but soft constraints must not be treated as hard isolation.
 - If verification.semantic exists, the latest semantic verification has priority over older report, diary, or remembered agent claims. It is not Seen fact; it is interpretation-layer evidence for the latest execution result, and should override stale inference chains instead of amplifying them.
 - evidence_refs MUST cite intelligence items you rely on (intel_report / verify_report / observation / probe_result / retrospective / goal_event / evolution_event). When a key norm comes from authority text, also include agent_context with id = doc id and ref = the string "agent_context:" plus the same doc id.
