@@ -156,6 +156,7 @@ flowchart LR
 | 文件 | 职责 |
 | --- | --- |
 | [`src/intelligence/goal-assessor.mjs`](../../src/intelligence/goal-assessor.mjs) | Phase 4 目标审计 prompt，中英文硬约束 |
+| [`src/intelligence/evolution-diary-builder.mjs`](../../src/intelligence/evolution-diary-builder.mjs) | Phase 5 进化日记 prompt，要求显式记录 Phase 4/4.5 结果 |
 
 ### 中文 prompt 新增规则
 
@@ -177,6 +178,28 @@ flowchart LR
 - Refined goals must include at least one outcome-pressure child.
 - Consecutive keep with stagnant outcome metrics must trigger assessment of stricter standards.
 
+### 让进化日记显式写出校准结果
+
+后续追问里又确认了一件事：`goal-assessor` 的结果虽然会进入进化日记的 Machine Context，但 AI 版日记不一定会把它写进最终 Markdown。
+
+数据链路本来已经存在：
+
+- `run.mjs` 把 `goalsAssessResult` 和 `goalsCalibrateResult` 传给 `buildEvolutionDiary()`。
+- `buildEvolutionDiaryContext()` 会生成 `phase4` 和 `phase4_5`。
+- fallback 日记会固定写 `目标自动校准` 段。
+
+缺口在 AI 日记 prompt：它只建议写“发生了什么、推进了什么、没推进什么”，没有硬性要求记录 Phase 4/4.5。因此当自动校准只是 `skipped` 时，AI 常常省略这一段。
+
+为此，同步修改 `evolution-diary-builder.mjs`：
+
+- 中英文写作要求都增加：若 Machine Context 中存在 `phase4` 或 `phase4_5`，必须显式记录。
+- Phase 4 至少写 `status`、`confidence`、`reason`。
+- Phase 4.5 至少写 `status`、`reason`、`next_goal_id`、`written`。
+- 如果校准被 skipped，也必须写明 skipped reason。
+- 建议章节中新增「目标评估与自动校准」/ `Goal assessment and calibration`。
+
+这让下一轮 `exec-*.md` 不再只靠 AI 自觉提及目标校准，而是稳定保留审计线索。
+
 ### 影响范围
 
 这次修改不会直接改变：
@@ -186,7 +209,10 @@ flowchart LR
 - goal event schema。
 - report 生成 prompt。
 
-它只改变下一次 Phase 4 LLM 审计目标时的判断压力。
+它改变两件事：
+
+1. 下一次 Phase 4 LLM 审计目标时的判断压力。
+2. 下一次 Phase 5 生成进化日记时，对目标评估/校准结果的显式记录要求。
 
 ---
 
@@ -209,13 +235,14 @@ Tests  96 passed (96)
 
 ```text
 src/intelligence/goal-assessor.mjs: no linter errors
+src/intelligence/evolution-diary-builder.mjs: no linter errors
 ```
 
 验证结论：
 
 - 目标 CLI 与自动校准相关测试通过。
-- prompt 修改没有破坏 JSON schema、目标更新、自动跳过、历史读取等已有行为。
-- 当前工作树仅修改 `src/intelligence/goal-assessor.mjs` 与本 journal 文件。
+- prompt 修改没有破坏 JSON schema、目标更新、自动跳过、历史读取、日记生成相关已有行为。
+- 当前工作树修改 `src/intelligence/goal-assessor.mjs`、`src/intelligence/evolution-diary-builder.mjs` 与本 journal 文件。
 
 ---
 
@@ -229,6 +256,7 @@ src/intelligence/goal-assessor.mjs: no linter errors
 - 若输出 `refine`，reason 是否包含 `goal_pressure_loss`。
 - proposed_goal 是否新增策略质量、模拟质量或真实反馈类子目标。
 - confidence 是否能达到 `high`，从而让 Phase 4.5 自动写入。
+- 进化日记是否出现「目标评估与自动校准」章节，并明确写出 Phase 4/4.5 的 status、reason 与 skipped/applied 状态。
 
 ### 6.2 可能的下一步代码增强
 
@@ -241,6 +269,7 @@ src/intelligence/goal-assessor.mjs: no linter errors
 | outcome-pressure 机械检查 | 检查 `active_goals.children` 是否包含成果指标 |
 | 自动校准条件分层 | 对“升标型 refine”可采用不同阈值或人工确认流程 |
 | report 阶段同步提示 | Phase 1 报告也提示识别过程目标替代成果目标的风险 |
+| diary 机械兜底一致化 | 若 AI 日记仍漏写，可考虑 post-process 强制追加 Phase 4/4.5 小节 |
 
 ### 6.3 当前判断
 
@@ -258,5 +287,5 @@ src/intelligence/goal-assessor.mjs: no linter errors
 | --- | --- |
 | 问题 | 当前目标不断降标，降到可维持标准后长期 `keep`，不再主动升标 |
 | 思考 | Phase 4 看得到目标，但 prompt 更重“可验证/收敛”，缺少成果压力保持规则 |
-| 方案 | 在 `goal-assessor` 中加入恢复期降标、稳定后升标、`goal_pressure_loss`、成果子目标要求 |
-| 执行 | 修改 `src/intelligence/goal-assessor.mjs` 中英文 prompt，并通过 `npm test -- test/cli.test.mjs` 验证 |
+| 方案 | 在 `goal-assessor` 中加入恢复期降标、稳定后升标、`goal_pressure_loss`、成果子目标要求；在日记 prompt 中要求显式记录 Phase 4/4.5 |
+| 执行 | 修改 `src/intelligence/goal-assessor.mjs` 与 `src/intelligence/evolution-diary-builder.mjs`，并通过 `npm test -- test/cli.test.mjs` 验证 |
