@@ -25,7 +25,7 @@ import {
   updateGoals,
   validateGoalShape,
 } from '../src/cli/commands/goals.mjs';
-import { buildIntelSummary, findReportRecord } from '../src/cli/commands/intel.mjs';
+import { buildIntelSummary, findReportRecord, intelReportCommand } from '../src/cli/commands/intel.mjs';
 import {
   briefList,
   briefProcessed,
@@ -121,10 +121,34 @@ import {
   readPendingOperatorBriefs,
   readProcessedOperatorBriefs,
 } from '../src/intelligence/operator-briefs.mjs';
+import {
+  intelligenceReportsRoot,
+  resolveIntelReportPath,
+} from '../src/intelligence/report-paths.mjs';
 
 let tempDir = null;
 const originalJeaLanguage = process.env.JEA_LANGUAGE;
 const originalJeaSubject = process.env.JEA_SUBJECT;
+
+async function captureConsole(fn) {
+  const logs = [];
+  const errors = [];
+  const originalLog = console.log;
+  const originalError = console.error;
+  console.log = (...args) => logs.push(args.join(' '));
+  console.error = (...args) => errors.push(args.join(' '));
+  try {
+    const code = await fn();
+    return {
+      code,
+      stdout: logs.join('\n'),
+      stderr: errors.join('\n'),
+    };
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
+  }
+}
 
 afterEach(() => {
   if (tempDir) rmSync(tempDir, { recursive: true, force: true });
@@ -458,26 +482,6 @@ describe('evolve run manifests', () => {
 describe('daemon task queue foundation', () => {
   function delay(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  async function captureConsole(fn) {
-    const logs = [];
-    const errors = [];
-    const originalLog = console.log;
-    const originalError = console.error;
-    console.log = (...args) => logs.push(args.join(' '));
-    console.error = (...args) => errors.push(args.join(' '));
-    try {
-      const code = await fn();
-      return {
-        code,
-        stdout: logs.join('\n'),
-        stderr: errors.join('\n'),
-      };
-    } finally {
-      console.log = originalLog;
-      console.error = originalError;
-    }
   }
 
   function makeDaemonProjectRoot() {
@@ -1898,6 +1902,41 @@ describe('goals command helpers', () => {
     expect(result.event.cycle_id).toBe('cycle-first');
   });
 
+  it('assesses a canonical report when the indexed md_path is stale', async () => {
+    const root = makeGoalsRoot('jea-goals-report-stale-');
+    const runtime = getActiveSubjectRuntimeInfo(root);
+    const store = createIntelligenceStore({
+      baseDir: runtime.intelligenceDir,
+      timezone: 'Asia/Shanghai',
+    });
+    const canonical = resolveIntelReportPath(runtime.runtimeRoot, 'cycle-20260525-104338');
+    mkdirSync(join(runtime.runtimeRoot, 'data', 'intelligence', 'reports', '2026', '05', '2026-05-25'), { recursive: true });
+    writeFileSync(canonical, '# Canonical Goal Report\n\nbaseline evidence', 'utf-8');
+    store.recordIntelReport({
+      cycle_id: 'cycle-20260525-104338',
+      generated_at: '2026-05-25T02:43:38.000Z',
+      md_path: join(intelligenceReportsRoot(runtime.runtimeRoot), 'cycle-20260525-104338.md'),
+      tldr: 'canonical report',
+    });
+
+    const result = await assessActiveGoals(root, { cycle: 'cycle-20260525-104338' }, {
+      aiClient: {
+        chat: async () => JSON.stringify({
+          status: 'keep',
+          confidence: 'medium',
+          reason: 'The canonical report is readable.',
+          evidence_refs: [{ type: 'intel_report', id: 'cycle-20260525-104338', ref: 'intel_report:cycle-20260525-104338' }],
+          proposed_goal: null,
+          risk: 'No change needed.',
+        }),
+      },
+      agentContextDocs: [],
+    });
+
+    expect(result.report.md_path).toBe(canonical);
+    expect(result.assessment.status).toBe('keep');
+  });
+
   it('does not write assessment events when goals or reports are missing', async () => {
     const rootWithoutGoals = mkdtempSync(join(tmpdir(), 'jea-goals-no-active-'));
     tempDir = rootWithoutGoals;
@@ -2006,6 +2045,33 @@ describe('intel report cli helpers', () => {
 
     const missing = findReportRecord(root, { cycle: 'cycle-Z' });
     expect(missing.record).toBeNull();
+  });
+
+  it('prints a canonical report when the indexed md_path is stale', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'jea-report-cli-stale-'));
+    tempDir = root;
+    mkdirSync(join(root, 'policies'), { recursive: true });
+    writeFileSync(join(root, 'policies', 'project-guidance.md'), '## Subject\nagent\n');
+    initData(root, { all: true });
+
+    const runtime = getActiveSubjectRuntimeInfo(root);
+    const store = createIntelligenceStore({
+      baseDir: join(runtime.runtimeRoot, 'data', 'intelligence'),
+      timezone: 'Asia/Shanghai',
+    });
+    const canonical = resolveIntelReportPath(runtime.runtimeRoot, 'cycle-20260525-104338');
+    mkdirSync(join(runtime.runtimeRoot, 'data', 'intelligence', 'reports', '2026', '05', '2026-05-25'), { recursive: true });
+    writeFileSync(canonical, '# Canonical CLI Report\n\nnew layout', 'utf-8');
+    store.recordIntelReport({
+      cycle_id: 'cycle-20260525-104338',
+      generated_at: '2026-05-25T02:43:38.000Z',
+      md_path: join(intelligenceReportsRoot(runtime.runtimeRoot), 'cycle-20260525-104338.md'),
+      tldr: 'canonical report',
+    });
+
+    const output = await captureConsole(() => intelReportCommand(root, { cycle: 'cycle-20260525-104338' }, []));
+    expect(output.code).toBe(0);
+    expect(output.stdout).toContain('Canonical CLI Report');
   });
 });
 

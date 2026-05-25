@@ -1,6 +1,10 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { buildTemporalDecisionBrief } from './decision-brief.mjs';
+import {
+  resolveIntelReportRecordPath,
+  resolveIntelReportWritePath,
+} from './report-paths.mjs';
 import { redactSecrets } from './redaction.mjs';
 
 const DEFAULT_EVIDENCE_LIMITS = {
@@ -144,11 +148,13 @@ export function gatherEvidence(store, opts = {}) {
   return { observations, probes, retrospectives, events };
 }
 
-function readRecentReportMarkdowns(reportRecords, { limit, charLimit } = {}) {
+function readRecentReportMarkdowns(reportRecords, { runtimeRoot = null, limit, charLimit } = {}) {
   return asRecords(reportRecords)
     .slice(0, limit)
     .map((record) => {
-      const mdPath = record?.md_path ?? null;
+      const mdPath = runtimeRoot
+        ? resolveIntelReportRecordPath(runtimeRoot, record)
+        : record?.md_path ?? null;
       if (!mdPath || !existsSync(mdPath)) return null;
       return {
         id: record.id ?? null,
@@ -269,6 +275,7 @@ export function gatherReportContext({
       limit: limits.reportMarkdownLimit,
     }),
     recent_report_markdowns: readRecentReportMarkdowns(reportIndex, {
+      runtimeRoot: runtime?.runtimeRoot ?? null,
       limit: limits.reportMarkdownLimit,
       charLimit: limits.reportMarkdownCharLimit,
     }),
@@ -1051,9 +1058,8 @@ export async function persistIntelReport({
 
   finalMd = redactSecrets(finalMd);
 
-  const reportsDir = join(runtime.runtimeRoot, 'data', 'intelligence', 'reports');
-  mkdirSync(reportsDir, { recursive: true });
-  const mdPath = join(reportsDir, `${cycleId}.md`);
+  const mdPath = resolveIntelReportWritePath(runtime.runtimeRoot, cycleId, { generatedAt: finalGeneratedAt });
+  mkdirSync(dirname(mdPath), { recursive: true });
   writeFileSync(mdPath, finalMd, 'utf-8');
 
   const memoryUpdate = updateStandingMemory

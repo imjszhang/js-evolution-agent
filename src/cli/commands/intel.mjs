@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { getProjectRoot } from '../utils/project.mjs';
 import { createIntelligenceStore } from '../../intelligence/store.mjs';
+import { resolveIntelReportRecordPath } from '../../intelligence/report-paths.mjs';
 import { getActiveSubjectRuntimeInfo } from '../utils/subjects.mjs';
 import { runIntelIngest } from './intel-ingest.mjs';
 import { inboxDrain, inboxPut } from './intel-inbox.mjs';
@@ -143,7 +144,7 @@ export async function intelReportCommand(root, flags = {}, args = []) {
     return 0;
   }
 
-  const mdPath = record.md_path;
+  const mdPath = resolveIntelReportRecordPath(runtime.runtimeRoot, record);
   if (!mdPath || !existsSync(mdPath)) {
     console.error(`Report file missing on disk: ${mdPath}`);
     return 1;

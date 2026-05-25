@@ -39,6 +39,7 @@ import {
   buildObservationEvidenceGuard,
   formatObservationEvidenceGuard,
 } from '../src/intelligence/observation-guard.mjs';
+import { resolveIntelReportPath } from '../src/intelligence/report-paths.mjs';
 
 let tempDir = null;
 
@@ -484,6 +485,30 @@ describe('gatherReportContext', () => {
       latest_review: 1,
       standing_memory: 1,
     });
+  });
+
+  it('loads recent report markdowns from canonical layout when indexed md_path is stale', () => {
+    const { store, runtime, intelResult } = makeReportFixture();
+    const reportPath = resolveIntelReportPath(runtime.runtimeRoot, 'cycle-20260525-104338');
+    mkdirSync(join(runtime.runtimeRoot, 'data', 'intelligence', 'reports', '2026', '05', '2026-05-25'), { recursive: true });
+    writeFileSync(reportPath, '# Canonical Report\n\n新路径报告正文。');
+    store.recordIntelReport({
+      id: 'report-stale-path',
+      cycle_id: 'cycle-20260525-104338',
+      generated_at: '2026-05-25T02:43:38.000Z',
+      md_path: join(runtime.runtimeRoot, 'data', 'intelligence', 'reports', 'cycle-20260525-104338.md'),
+      tldr: '新路径报告摘要',
+    });
+
+    const context = gatherReportContext({
+      store,
+      runtime,
+      intelResult,
+      generatedAt: '2026-05-25T02:45:00.000Z',
+    });
+
+    expect(context.recent_report_markdowns[0].md_path).toBe(reportPath);
+    expect(context.recent_report_markdowns[0].markdown).toContain('Canonical Report');
   });
 });
 

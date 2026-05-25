@@ -5,6 +5,7 @@ import { readJsonSafe, writeJsonFile } from '../utils/files.mjs';
 import { getActiveSubjectRuntimeInfo } from '../utils/subjects.mjs';
 import { createIntelligenceStore } from '../../intelligence/store.mjs';
 import { assessGoalsWithAi, normalizeProposedGoalShape } from '../../intelligence/goal-assessor.mjs';
+import { resolveIntelReportRecordPath } from '../../intelligence/report-paths.mjs';
 import { findReportRecord } from './intel.mjs';
 
 function numberFlag(flags, name, fallback) {
@@ -233,24 +234,26 @@ export async function assessActiveGoals(root = getProjectRoot(), flags = {}, opt
       ? `No intel report found for cycle: ${flags.cycle}`
       : 'No intel reports found yet. Run `jea run` first.');
   }
-  if (!reportRecord.md_path || !existsSync(reportRecord.md_path)) {
+  const reportPath = resolveIntelReportRecordPath(active.runtime.runtimeRoot, reportRecord);
+  if (!reportPath || !existsSync(reportPath)) {
     throw new Error(`Report file missing on disk: ${reportRecord.md_path}`);
   }
 
   const cfg = opts.aiClient || opts.agentContextDocs ? opts : await loadAssessmentConfig(root);
   const store = opts.store ?? makeStore(active.runtime);
-  const reportMarkdown = readFileSync(reportRecord.md_path, 'utf-8');
+  const resolvedReportRecord = { ...reportRecord, md_path: reportPath };
+  const reportMarkdown = readFileSync(reportPath, 'utf-8');
   const assessed = await assessGoalsWithAi({
     aiClient: cfg.aiClient,
     activeGoals: active.goals,
-    reportRecord,
+    reportRecord: resolvedReportRecord,
     reportMarkdown,
     verificationReportPath: opts.verificationReportPath,
     store,
     agentContextDocs: cfg.agentContextDocs ?? [],
     logger: cfg.host?.logger,
   });
-  const reportRef = reportEvidenceRef(reportRecord);
+  const reportRef = reportEvidenceRef(resolvedReportRecord);
   const event = {
     type: 'assessment',
     goal_id: active.goals.id ?? null,
@@ -260,7 +263,7 @@ export async function assessActiveGoals(root = getProjectRoot(), flags = {}, opt
       : (reportRef ? [reportRef] : []),
     assessment: assessed.assessment,
     proposed_goal: assessed.assessment.proposed_goal ?? null,
-    cycle_id: reportRecord.cycle_id ?? null,
+    cycle_id: resolvedReportRecord.cycle_id ?? null,
     source: assessed.source,
   };
   const written = store.recordGoalEvent(event);
@@ -268,7 +271,7 @@ export async function assessActiveGoals(root = getProjectRoot(), flags = {}, opt
   return {
     runtime: active.runtime,
     active_goals_path: active.path,
-    report: reportRecord,
+    report: resolvedReportRecord,
     event,
     assessment: assessed.assessment,
     source: assessed.source,
