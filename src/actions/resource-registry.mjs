@@ -280,6 +280,9 @@ export function resolveScopeRoot(scope, ctx, configuredRoot = null) {
   }
 
   if (scope === RESOURCE_SCOPES.LANE_WORKTREE) {
+    if (configuredRoot) {
+      return { root: resolve(String(configuredRoot)), source: 'configured_execution_root' };
+    }
     const worktreeRoot = firstString(
       ctx?.host?.laneWorktree?.path,
       ctx?.laneWorktree?.path,

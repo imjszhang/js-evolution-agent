@@ -23,8 +23,13 @@ import {
   parseSubjectExternalRoots,
   parseSubjectResourceRules,
 } from '../src/cli/utils/subjects.mjs';
-import { validateAgentRunSpec } from '../src/actions/agent-run-spec.mjs';
-import { buildEvidenceContract, inferActionResource } from '../src/actions/resource-registry.mjs';
+import { applyRunSpecToAction, validateAgentRunSpec } from '../src/actions/agent-run-spec.mjs';
+import { buildClaudeOptions, buildCursorOptions } from '../src/actions/agent-adapter.mjs';
+import {
+  buildEvidenceContract,
+  inferActionResource,
+  RESOURCE_SCOPES,
+} from '../src/actions/resource-registry.mjs';
 import { buildLaneWorkBranch, checkLaneStatus, initializeLane, runLaneCommand } from '../src/actions/lane-manager.mjs';
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
@@ -206,6 +211,41 @@ function installFakeWorktree(ctx, path = join(ctx.projectRoot, '.worktrees', 'fa
   }));
   ctx.host.createCoreApplyWorktree = createCoreApplyWorktree;
   return createCoreApplyWorktree;
+}
+
+function installFakeAgentRunWorktree(ctx, path = join(ctx.projectRoot, '.worktrees', 'fake-agent-run')) {
+  const createAgentRunWorktree = vi.fn(() => ({
+    path,
+    branch: 'jea/agentank/local/work/cycle-1/test-change',
+    base_branch: 'jea/agentank/local',
+    auto_created: true,
+    created: true,
+    cleanup_hint: [
+      `git worktree remove "${path}"`,
+      'git branch -D "jea/agentank/local/work/cycle-1/test-change"',
+    ],
+  }));
+  ctx.host.createAgentRunWorktree = createAgentRunWorktree;
+  return createAgentRunWorktree;
+}
+
+function mockLaneReady(ctx, targetRepo, lane = 'jea/agentank/local') {
+  ctx.host.checkLaneStatus = () => ({
+    configured: true,
+    repoRoot: targetRepo,
+    baseBranch: 'main',
+    lane,
+    workBranchPrefix: `${lane}/work`,
+    exists: true,
+    isGitRepo: true,
+    gitRoot: targetRepo,
+    currentBranch: 'main',
+    baseBranchExists: true,
+    laneBranchExists: true,
+    dirty: false,
+    ok: true,
+    errors: [],
+  });
 }
 
 afterEach(() => {
@@ -436,6 +476,222 @@ describe('controlled action handlers', () => {
 
     expect(validation.valid).toBe(true);
     expect(validation.spec.primary_cwd).toBe(targetRepo);
+  });
+
+  it('resolves lane_worktree scope from injected agent_run cwd', () => {
+    const ctx = makeCtx();
+    const worktreePath = join(ctx.projectRoot, 'lane-worktree');
+    mkdirSync(worktreePath, { recursive: true });
+
+    const validation = validateAgentRunSpec({
+      type: 'agent_run',
+      params: {
+        cwd: worktreePath,
+        resource_scope: RESOURCE_SCOPES.LANE_WORKTREE,
+        run_spec: {
+          primary_cwd: worktreePath,
+          primary_cwd_kind: RESOURCE_SCOPES.LANE_WORKTREE,
+          permission_profile: 'workspace_write',
+          intent: 'Patch the target project.',
+          context: { lane_execution: { worktree_path: worktreePath } },
+          expected_output: ['diff summary'],
+        },
+      },
+    }, ctx);
+
+    expect(validation.valid).toBe(true);
+    expect(validation.spec.primary_cwd).toBe(worktreePath);
+    expect(validation.roots.rootResolutionSource).toBe('configured_execution_root');
+  });
+
+  it('maps lane_worktree agent_run specs to the same cwd in Claude and Cursor options', () => {
+    const worktreePath = join(tempDir || mkdtempSync(join(tmpdir(), 'jea-lane-options-')), 'lane-worktree');
+    mkdirSync(worktreePath, { recursive: true });
+    const action = {
+      type: 'agent_run',
+      params: {
+        cwd: worktreePath,
+        resource_scope: RESOURCE_SCOPES.LANE_WORKTREE,
+        run_spec: {
+          primary_cwd: worktreePath,
+          primary_cwd_kind: RESOURCE_SCOPES.LANE_WORKTREE,
+          permission_profile: 'workspace_write',
+          intent: 'Patch strategy code.',
+          context: {
+            lane_execution: {
+              target_repo_root: 'D:\\github\\My\\target',
+              lane_branch: 'jea/agentank/local',
+              work_branch: 'jea/agentank/local/work/cycle-1/change',
+              worktree_path: worktreePath,
+            },
+          },
+          expected_output: ['diff summary'],
+        },
+      },
+    };
+    const ctx = makeCtx();
+    const executionAction = applyRunSpecToAction(action, ctx);
+    const claude = buildClaudeOptions(executionAction, ctx);
+    const cursor = buildCursorOptions(executionAction, ctx);
+
+    expect(claude.options.cwd).toBe(worktreePath);
+    expect(cursor.options.local.cwd).toBe(worktreePath);
+    expect(claude.rootMetadata.resource_scope).toBe(RESOURCE_SCOPES.LANE_WORKTREE);
+  });
+
+  it('prepares a lane-derived worktree for write agent_run on target_repo', async () => {
+    const ctx = makeAgenticCtx({
+      status: 'completed',
+      summary: 'Applied a bounded patch in the lane worktree.',
+      modified_files: ['src/strategy/foo.mjs'],
+      evidence: { diff_summary: 'Updated strategy module.' },
+    });
+    const targetRepo = join(ctx.projectRoot, 'target-repo');
+    mkdirSync(targetRepo, { recursive: true });
+    ctx.host.subjectRepoLane = {
+      configured: true,
+      repoRoot: targetRepo,
+      lane: 'jea/agentank/local',
+      baseBranch: 'main',
+      workBranchPrefix: 'jea/agentank/local/work',
+    };
+    mockLaneReady(ctx, targetRepo);
+    const createWorktree = installFakeAgentRunWorktree(ctx);
+
+    const result = await actionHandlers.agent_run({
+      type: 'agent_run',
+      description: 'Patch target repo strategy',
+      params: {
+        run_spec: {
+          primary_cwd_kind: 'target_repo',
+          permission_profile: 'workspace_write',
+          intent: 'Patch strategy code in the target repo.',
+          context: { goal: 'improve candidate generation' },
+          expected_output: ['diff summary', 'test results'],
+        },
+      },
+    }, ctx);
+
+    expect(createWorktree).toHaveBeenCalledOnce();
+    expect(result.lane_workspace?.path).toContain('.worktrees');
+    expect(result.lane_workspace?.lane_branch).toBe('jea/agentank/local');
+    expect(result.lane_workspace?.target_repo_root).toBe(targetRepo);
+    expect(result.run_spec.primary_cwd_kind).toBe(RESOURCE_SCOPES.LANE_WORKTREE);
+    expect(result.execution_root).toContain('.worktrees');
+  });
+
+  it('does not create a lane worktree for read_only agent_run on target_repo', async () => {
+    const ctx = makeAgenticCtx({
+      status: 'completed',
+      summary: 'Read-only inspection completed.',
+      evidence: { observations: ['repo is ready'] },
+    });
+    const targetRepo = join(ctx.projectRoot, 'target-repo');
+    mkdirSync(targetRepo, { recursive: true });
+    ctx.host.subjectRepoLane = {
+      configured: true,
+      repoRoot: targetRepo,
+      lane: 'jea/agentank/local',
+      baseBranch: 'main',
+    };
+    mockLaneReady(ctx, targetRepo);
+    const createWorktree = installFakeAgentRunWorktree(ctx);
+
+    const result = await actionHandlers.agent_run({
+      type: 'agent_run',
+      params: {
+        run_spec: {
+          primary_cwd_kind: 'target_repo',
+          permission_profile: 'read_only',
+          intent: 'Inspect the target repo.',
+          context: { subject: 'agentank' },
+          expected_output: ['summary'],
+        },
+      },
+    }, ctx);
+
+    expect(createWorktree).not.toHaveBeenCalled();
+    expect(result.lane_workspace ?? null).toBeNull();
+    expect(result.run_spec.primary_cwd_kind).toBe('target_repo');
+    expect(result.execution_root).toBe(targetRepo);
+  });
+
+  it('reuses an explicit worktree for agent_run without auto-creating another one', async () => {
+    const ctx = makeAgenticCtx({
+      status: 'completed',
+      summary: 'Used the provided worktree.',
+      modified_files: ['README.md'],
+    });
+    const explicitWorktree = join(ctx.projectRoot, 'explicit-worktree');
+    mkdirSync(explicitWorktree, { recursive: true });
+    const targetRepo = join(ctx.projectRoot, 'target-repo');
+    mkdirSync(targetRepo, { recursive: true });
+    ctx.host.subjectRepoLane = {
+      configured: true,
+      repoRoot: targetRepo,
+      lane: 'jea/agentank/local',
+      baseBranch: 'main',
+    };
+    mockLaneReady(ctx, targetRepo);
+    const createWorktree = installFakeAgentRunWorktree(ctx);
+
+    const result = await actionHandlers.agent_run({
+      type: 'agent_run',
+      params: {
+        cwd: explicitWorktree,
+        boundary: { worktree: explicitWorktree },
+        run_spec: {
+          primary_cwd: explicitWorktree,
+          primary_cwd_kind: RESOURCE_SCOPES.LANE_WORKTREE,
+          permission_profile: 'workspace_write',
+          intent: 'Patch using explicit worktree.',
+          context: { use_explicit_worktree: true },
+          expected_output: ['diff summary'],
+        },
+      },
+    }, ctx);
+
+    expect(createWorktree).not.toHaveBeenCalled();
+    expect(result.lane_workspace ?? null).toBeNull();
+    expect(result.execution_root).toBe(explicitWorktree);
+  });
+
+  it('blocks write agent_run when the subject repo lane is not ready', async () => {
+    const ctx = makeAgenticCtx();
+    const targetRepo = join(ctx.projectRoot, 'target-repo');
+    mkdirSync(targetRepo, { recursive: true });
+    ctx.host.subjectRepoLane = {
+      configured: true,
+      repoRoot: targetRepo,
+      lane: 'jea/agentank/local',
+      baseBranch: 'main',
+    };
+    ctx.host.checkLaneStatus = () => ({
+      configured: true,
+      repoRoot: targetRepo,
+      lane: 'jea/agentank/local',
+      ok: false,
+      errors: ['lane branch not found: jea/agentank/local'],
+    });
+    const createWorktree = installFakeAgentRunWorktree(ctx);
+
+    const result = await actionHandlers.agent_run({
+      type: 'agent_run',
+      params: {
+        run_spec: {
+          primary_cwd_kind: 'target_repo',
+          permission_profile: 'workspace_write',
+          intent: 'Patch strategy code.',
+          context: { goal: 'patch' },
+          expected_output: ['diff summary'],
+        },
+      },
+    }, ctx);
+
+    expect(createWorktree).not.toHaveBeenCalled();
+    expect(result.status).toBe('blocked');
+    expect(result.message).toContain('lane worktree');
+    expect(ctx.ai.agentCalls).toHaveLength(0);
   });
 
   it('marks canonical and non-canonical standing memory path observations differently', () => {

@@ -219,7 +219,8 @@ export function buildDecideUserPrompt({
 - remembered 只能作为线索；do_not_treat_as_seen 不得作为行动前提，除非动作本身是为了重新验证它。
 - 多源冲突时，Seen 覆盖 Remembered；Inferred 必须说明 evidence_refs 和反证条件。
 - 默认输出 \`type: "agent_run"\`，并在 \`params.run_spec\` 中描述一次自主 agent 运行。不要再把主体业务步骤拆成 \`sync/generate/simulate/evaluate/publish\` 之类的 action 菜单。
-- \`params.run_spec.primary_cwd_kind\` 是一等字段。常见值：主体日记/records/daemon/goals/intelligence 使用 \`subject_runtime\`；JEA 源码/policies/journal 使用 \`source_root\`；主体外部项目使用 subject policy 中声明的自定义 scope。
+- \`params.run_spec.primary_cwd_kind\` 是一等字段。常见值：主体日记/records/daemon/goals/intelligence 使用 \`subject_runtime\`；JEA 源码/policies/journal 使用 \`source_root\`；主体外部项目使用 subject policy 中声明的自定义 scope 或 \`target_repo\`。
+- 对配置了 Subject Repo Lane 的外部目标项目：\`read_only\` 调查可继续声明 \`target_repo\` 或外部 scope；\`workspace_write\` / \`remote_write_review\` 写入型 run 只需声明目标项目资源意图与权限 profile，宿主会在 Phase 2 自动从 subject lane 派生 \`work/*\` worktree 并注入 \`lane_worktree\` 执行目录，不要自行指定主目录 checkout 或 lane 分支名。
 - 每次 run 只能有一个 primary cwd。需要参考其他 root 时，使用 \`additional_directory_kinds\` 或把摘要写入 context；不要让一次 run 无差别跨多个项目根写入。
 - \`permission_profile\` 必须是 \`read_only\`、\`workspace_write\` 或 \`remote_write_review\` 之一。只读调查用 \`read_only\`；本地候选/模拟/沙盒改动用 \`workspace_write\`；真实远端变更或发布准备用 \`remote_write_review\`。
 - \`read_only\` 只能读取并在 receipt/evidence 中返回结果，不得要求写入、落盘、保存或持久化任何文件。若需要写脱敏摘要或缓存，必须单独生成 \`workspace_write\` action，并明确允许写入路径。
@@ -227,7 +228,7 @@ export function buildDecideUserPrompt({
 - \`agent_execute\` 只允许作为旧兼容兜底动作；新决策不要优先使用它。
 - 不要在 \`params.run_spec\` 中设置 \`provider\`。agent provider 是宿主执行配置，由 \`JEA_AGENT_PROVIDER\` 或人工/API action override 决定，不是模型决策内容。
 - 当 run 涉及本地文件或目录时，文件路径应相对 primary cwd 描述，不要混用多个项目根的绝对路径。执行层会从 run_spec 解析 cwd 并阻断 root_mismatch。
-- 常见资源归属：主体日记/records/daemon/goals/intelligence 使用 primary_cwd_kind=subject_runtime；JEA 源码/policies/journal 使用 primary_cwd_kind=source_root；外部项目文件使用 subject policy 中声明的自定义 primary_cwd_kind。
+- 常见资源归属：主体日记/records/daemon/goals/intelligence 使用 primary_cwd_kind=subject_runtime；JEA 源码/policies/journal 使用 primary_cwd_kind=source_root；外部项目只读调查使用 subject policy 自定义 scope 或 target_repo；外部项目写入型 run 由宿主自动转入 lane-derived worktree（primary_cwd_kind 最终为 lane_worktree）。
 - 外部工具能力归属：凭据存在性、远端同步、发布、挑战、候选生成/模拟/评分等事实，应使用对应外部项目 scope（例如 subject policy 中声明的 \`agentank_evolver\`）或 configured external action；不要用 \`subject_runtime\` 的 \`process.env\` 结果判断外部工具凭据是否全局缺失。
 - 对 ENOENT、目录不存在、blocked 等缺失证据，只能表述为「在 executionRoot=X 下 path=Y 不存在」；除非该 root 是该 resource_kind 的权威 root，否则不得升级为「模块缺失」「机制未实现」「写入冻结」。
 - Operator Intent Briefs 是单轮人工意图，不是事实证据。可以据此优先调度核实动作；若不采纳 brief，应在 deferred 中说明原因。

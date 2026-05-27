@@ -54,6 +54,13 @@ function asObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
 
+function providerLaneMetadata(runSpec = {}) {
+  const context = asObject(runSpec.context ?? runSpec.raw?.context);
+  const lane = context.lane_execution;
+  if (!lane || typeof lane !== 'object' || !Object.keys(lane).length) return null;
+  return lane;
+}
+
 function asList(value, fallback = []) {
   if (value == null || value === '') return fallback;
   if (Array.isArray(value)) return value.map(String).filter(Boolean);
@@ -1092,6 +1099,7 @@ async function runClaudeCodeSdk(action, ctx) {
         additionalDirectories: options.additionalDirectories ?? [],
         root_metadata: metadata,
         run_spec: runSpec.present ? runSpec : null,
+        lane_execution: providerLaneMetadata(runSpec),
         permissionMode: options.permissionMode,
         allowDangerouslySkipPermissions: options.allowDangerouslySkipPermissions ?? false,
         allowedTools: options.allowedTools,
@@ -1311,6 +1319,7 @@ async function runCursorSdk(action, ctx) {
         additionalDirectories: runSpec.additional_directories,
         root_metadata: metadata,
         run_spec: runSpec.present ? runSpec : null,
+        lane_execution: providerLaneMetadata(runSpec),
         settingSources: options.local.settingSources,
         model,
       },

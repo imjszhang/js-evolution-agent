@@ -30,7 +30,8 @@ import {
 import { validateAuthorityScope } from './authority-contract.mjs';
 import { buildEvidenceContract } from './resource-registry.mjs';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { RESOURCE_SCOPES } from './resource-registry.mjs';
 
 function requireParams(action, fields) {
   const missing = fields.filter((field) => action?.params?.[field] == null && action?.[field] == null);
@@ -611,6 +612,120 @@ function actionWithWorkspace(action, workspace) {
   };
 }
 
+const AGENT_RUN_WRITE_PROFILES = new Set(['workspace_write', 'remote_write_review']);
+
+function agentRunTargetsTargetRepo(action, ctx, runSpec) {
+  const repoLane = getSubjectRepoLane(ctx);
+  if (!repoLane?.configured || !repoLane.repoRoot) return false;
+  const targetRoot = resolve(repoLane.repoRoot);
+  const primaryKind = String(runSpec.primary_cwd_kind ?? '').trim();
+  if (primaryKind === RESOURCE_SCOPES.TARGET_REPO) return true;
+  if (runSpec.primary_cwd && resolve(runSpec.primary_cwd) === targetRoot) return true;
+  const externalRoots = asObject(ctx?.host?.externalRoots ?? ctx?.host?.external_roots);
+  if (primaryKind && externalRoots[primaryKind] && resolve(String(externalRoots[primaryKind])) === targetRoot) {
+    return true;
+  }
+  return false;
+}
+
+function agentRunNeedsLaneWorktree(action, ctx, runSpec) {
+  if (explicitWorkspace(action)) return false;
+  if (!agentRunTargetsTargetRepo(action, ctx, runSpec)) return false;
+  const profile = String(runSpec.permission_profile ?? 'read_only').trim();
+  const mode = String(getField(action, 'mode') ?? runSpec.permission?.mode ?? '').trim();
+  if (profile === 'read_only' && mode !== 'sandbox_patch') return false;
+  if (!AGENT_RUN_WRITE_PROFILES.has(profile) && mode !== 'sandbox_patch') return false;
+  return true;
+}
+
+function actionWithAgentRunWorkspace(action, workspace, laneMeta = {}) {
+  if (!workspace?.path) return action;
+  const params = asObject(action?.params);
+  const boundary = asObject(params.boundary ?? action?.boundary);
+  const runSpec = asObject(params.run_spec ?? params.runSpec);
+  const context = asObject(runSpec.context);
+  return {
+    ...action,
+    params: {
+      ...params,
+      cwd: workspace.path,
+      resource_scope: RESOURCE_SCOPES.LANE_WORKTREE,
+      resourceScope: RESOURCE_SCOPES.LANE_WORKTREE,
+      boundary: {
+        ...boundary,
+        worktree: workspace.path,
+        branch: workspace.branch ?? boundary.branch ?? null,
+      },
+      run_spec: {
+        ...runSpec,
+        primary_cwd: workspace.path,
+        primary_cwd_kind: RESOURCE_SCOPES.LANE_WORKTREE,
+        context: {
+          ...context,
+          lane_execution: {
+            target_repo_root: laneMeta.targetRepoRoot ?? null,
+            lane_branch: laneMeta.lane ?? null,
+            work_branch: workspace.branch ?? null,
+            worktree_path: workspace.path,
+            auto_created: workspace.auto_created ?? true,
+          },
+        },
+      },
+    },
+  };
+}
+
+function prepareAgentRunLaneWorkspace(action, ctx, runSpec) {
+  if (!agentRunNeedsLaneWorktree(action, ctx, runSpec)) {
+    return { ok: true, action, workspace: null, laneMeta: null };
+  }
+
+  const repoLane = getSubjectRepoLane(ctx);
+  const laneStatus = typeof ctx?.host?.checkLaneStatus === 'function'
+    ? ctx.host.checkLaneStatus(repoLane)
+    : checkLaneStatus(repoLane);
+  if (!laneStatus.ok) {
+    return {
+      ok: false,
+      error: `subject repo lane is not ready: ${laneStatus.errors.join('; ')}`,
+      workspace: null,
+      laneMeta: null,
+    };
+  }
+
+  const create = ctx?.host?.createAgentRunWorktree
+    ?? ((opts) => createBranchWorktree({
+      repoRoot: repoLane.repoRoot,
+      baseBranch: repoLane.lane,
+      workBranchPrefix: repoLane.workBranchPrefix,
+      cycleId: opts.cycleId,
+      actionId: opts.actionId,
+      target: opts.target,
+    }));
+
+  try {
+    const workspace = create({
+      repoRoot: repoLane.repoRoot,
+      cycleId: ctx?.cycleId,
+      actionId: ctx?.actionId ?? action?.id ?? getField(action, 'id'),
+      target: runSpec.intent ?? action?.description,
+    });
+    const laneMeta = {
+      targetRepoRoot: repoLane.repoRoot,
+      lane: repoLane.lane,
+    };
+    const updatedAction = actionWithAgentRunWorkspace(action, workspace, laneMeta);
+    return { ok: true, action: updatedAction, workspace, laneMeta };
+  } catch (e) {
+    return {
+      ok: false,
+      error: e?.message || String(e),
+      workspace: null,
+      laneMeta: null,
+    };
+  }
+}
+
 function prepareCoreApplyWorkspace(action, ctx) {
   const provided = explicitWorkspace(action);
   if (provided) return { ok: true, action, workspace: provided };
@@ -1146,8 +1261,21 @@ const builtInActionHandlers = {
 
   async agent_run(action, ctx) {
     const store = storeFrom(ctx);
-    const executionAction = applyRunSpecToAction(action, ctx);
-    const runSpec = normalizeAgentRunSpec(executionAction, ctx);
+    const runSpecForLane = normalizeAgentRunSpec(action, ctx);
+    const workspacePrep = prepareAgentRunLaneWorkspace(action, ctx, runSpecForLane);
+    if (!workspacePrep.ok) {
+      return blockedAgentRunResult(action, 'agent_run could not prepare lane worktree', {
+        errors: ['lane_worktree_unavailable'],
+        runSpec: runSpecForLane,
+        verification_hints: [
+          workspacePrep.error,
+          'Run jea subject lane init when the lane branch is missing.',
+          'Fix git worktree creation or provide boundary.worktree/cwd explicitly.',
+        ],
+      }, ctx);
+    }
+    let executionAction = applyRunSpecToAction(workspacePrep.action, ctx);
+    let runSpec = normalizeAgentRunSpec(executionAction, ctx);
     const preflight = preflightAgentRun(action, ctx, executionAction, runSpec);
     if (preflight.blocked) {
       return blockedAgentRunResult(action, preflight.reason, preflight.details, ctx);
@@ -1172,6 +1300,15 @@ const builtInActionHandlers = {
     const rootMetadataValue = agentResult.root_metadata ?? null;
     const evidence = asObject(agent.evidence);
     const providerFailure = agent.provider_failure ?? agentResult.provider_failure ?? null;
+    const laneWorkspaceEvidence = workspacePrep.workspace
+      ? {
+        lane_workspace: {
+          ...workspacePrep.workspace,
+          target_repo_root: workspacePrep.laneMeta?.targetRepoRoot ?? null,
+          lane_branch: workspacePrep.laneMeta?.lane ?? null,
+        },
+      }
+      : {};
     const result = {
       success: executionSucceeded && schemaStatus === 'valid' && !requiresApproval,
       status: agentStatus,
@@ -1198,8 +1335,16 @@ const builtInActionHandlers = {
         expected_output: runSpec.expected_output,
       },
       agent,
+      lane_workspace: workspacePrep.workspace
+        ? {
+          ...workspacePrep.workspace,
+          target_repo_root: workspacePrep.laneMeta?.targetRepoRoot ?? null,
+          lane_branch: workspacePrep.laneMeta?.lane ?? null,
+        }
+        : null,
       evidence: {
         ...evidence,
+        ...laneWorkspaceEvidence,
         ...(providerFailure ? { provider_failure: providerFailure } : {}),
         evidence_contract: evidence.evidence_contract ?? buildEvidenceContract({
           executionRoot: agentResult.execution_root ?? runSpec.primary_cwd,
