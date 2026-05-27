@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+﻿#!/usr/bin/env node
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,7 +9,7 @@ import {
 } from 'js-evolution-engine';
 import loadConfig from './oada.config.mjs';
 import { assessActiveGoals, autoCalibrateGoals } from './src/cli/commands/goals.mjs';
-import { getActiveSubjectRuntimeInfo } from './src/cli/utils/subjects.mjs';
+import { runtimeInfoForDefaultSubject } from './src/cli/utils/subjects.mjs';
 import { withSubjectLock } from './src/cli/utils/evolve-runs.mjs';
 import { ConversationalIntelligencePipeline } from './src/intelligence/conversational-intel-pipeline.mjs';
 import { verifyWithRestoredConversation } from './src/intelligence/conversation-context.mjs';
@@ -66,7 +66,7 @@ function inspectQueue(runtimeRoot) {
 
 async function main() {
   process.chdir(__dirname);
-  const runtime = getActiveSubjectRuntimeInfo(__dirname);
+  const runtime = runtimeInfoForDefaultSubject(__dirname);
   mkdirSync(runtime.runtimeRoot, { recursive: true });
   if (process.env.JEA_SUBJECT_RUN_LOCK_HELD === '1') {
     return runCycle(runtime);

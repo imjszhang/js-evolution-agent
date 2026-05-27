@@ -1,15 +1,15 @@
-import { existsSync } from 'node:fs';
+﻿import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { getProjectRoot } from '../cli/utils/project.mjs';
 import { readJsonSafe } from '../cli/utils/files.mjs';
-import { getActiveSubjectRuntimeInfo } from '../cli/utils/subjects.mjs';
+import { runtimeInfoForDefaultSubject } from '../cli/utils/subjects.mjs';
 
 const VALID_RISKS = new Set(['low', 'medium', 'high']);
 const VALID_PRIORITIES = new Set(['low', 'medium', 'high']);
 const VALID_LAYERS = new Set(['buffer', 'probe', 'core']);
 
 export function subjectActionConfigPath(root = getProjectRoot()) {
-  const runtime = getActiveSubjectRuntimeInfo(root);
+  const runtime = runtimeInfoForDefaultSubject(root);
   return join(runtime.dataRoot, 'config', 'actions.json');
 }
 

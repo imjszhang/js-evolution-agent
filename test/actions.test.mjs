@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+﻿import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
@@ -171,10 +171,14 @@ function writeJsonFile(filePath, value) {
 function installConfiguredActionProject(ctx) {
   mkdirSync(join(ctx.projectRoot, 'policies', 'subjects'), { recursive: true });
   mkdirSync(join(ctx.projectRoot, 'runtime', 'subjects', 'configured-test', 'data', 'config'), { recursive: true });
-  writeJsonFile(join(ctx.projectRoot, 'policies', 'active-subject.json'), {
-    active: 'configured-test',
-    policy: 'subjects/configured-test.md',
-    data_namespace: 'configured-test',
+  writeJsonFile(join(ctx.projectRoot, 'policies', 'subjects.json'), {
+    default_subject: 'configured-test',
+    subjects: {
+      'configured-test': {
+        policy: 'subjects/configured-test.md',
+        data_namespace: 'configured-test',
+      },
+    },
   });
   writeFileSync(join(ctx.projectRoot, 'policies', 'subjects', 'configured-test.md'), '# configured test\n', 'utf-8');
   writeJsonFile(join(ctx.projectRoot, 'runtime', 'subjects', 'configured-test', 'data', 'config', 'actions.json'), {

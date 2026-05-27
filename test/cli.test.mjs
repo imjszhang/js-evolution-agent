@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+﻿import { mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -56,13 +56,13 @@ import {
 } from '../src/cli/commands/evolve.mjs';
 import {
   createSubject,
-  ensureDefaultSubject,
+  ensureSubjectsRegistry,
   buildDefaultSubjectPolicy,
-  getActiveSubjectRuntimeInfo,
+  runtimeInfoForDefaultSubject,
   listSubjects,
   parseSubjectRepoLane,
-  readActiveSubjectPolicy,
-  setActiveSubject,
+  readDefaultSubjectPolicy,
+  setDefaultSubject,
 } from '../src/cli/utils/subjects.mjs';
 import {
   appendRunEvent,
@@ -211,34 +211,34 @@ describe('subject management', () => {
 
   it('creates default subject layout from localized policy template', () => {
     const root = makeProjectRoot();
-    const result = ensureDefaultSubject(root);
+    const result = ensureSubjectsRegistry(root);
     expect(result.subject.written).toBe(true);
     expect(listSubjects(root)).toEqual(['js-evolution-agent']);
-    expect(readActiveSubjectPolicy(root).active.active).toBe('js-evolution-agent');
-    expect(readActiveSubjectPolicy(root).text).toContain('`js-evolution-agent` 是本项目的受控自演化宿主');
-    expect(readActiveSubjectPolicy(root).text).toContain('## Probe Requirements');
+    expect(readDefaultSubjectPolicy(root).active.active).toBe('js-evolution-agent');
+    expect(readDefaultSubjectPolicy(root).text).toContain('`js-evolution-agent` 是本项目的受控自演化宿主');
+    expect(readDefaultSubjectPolicy(root).text).toContain('## Probe Requirements');
   });
 
   it('creates English default subject policy when requested by env language', () => {
     const root = makeProjectRoot();
     process.env.JEA_LANGUAGE = 'en-US';
 
-    const result = ensureDefaultSubject(root);
+    const result = ensureSubjectsRegistry(root);
 
     expect(result.subject.written).toBe(true);
-    expect(readActiveSubjectPolicy(root).text).toContain("`js-evolution-agent` is this project's controlled self-evolution host");
-    expect(readActiveSubjectPolicy(root).text).toContain('## Probe Requirements');
+    expect(readDefaultSubjectPolicy(root).text).toContain("`js-evolution-agent` is this project's controlled self-evolution host");
+    expect(readDefaultSubjectPolicy(root).text).toContain('## Probe Requirements');
     expect(buildDefaultSubjectPolicy('en-US')).toContain("`js-evolution-agent` is this project's controlled self-evolution host");
   });
 
   it('creates and switches default subjects via subjects.json', () => {
     const root = makeProjectRoot();
-    ensureDefaultSubject(root);
+    ensureSubjectsRegistry(root);
     const created = createSubject(root, 'my-product');
     expect(created.written).toBe(true);
-    const active = setActiveSubject(root, 'my-product');
+    const active = setDefaultSubject(root, 'my-product');
     expect(active.active.active).toBe('my-product');
-    const policy = readActiveSubjectPolicy(root);
+    const policy = readDefaultSubjectPolicy(root);
     expect(policy.active.active).toBe('my-product');
     expect(policy.text).toContain('## Subject');
     expect(readJsonSafe(join(root, 'policies', 'subjects.json')).default_subject).toBe('my-product');
@@ -259,18 +259,18 @@ describe('subject management', () => {
       'legacy subject',
     ].join('\n'), 'utf-8');
 
-    const policy = readActiveSubjectPolicy(root);
+    const policy = readDefaultSubjectPolicy(root);
     expect(policy.active.active).toBe('legacy-agent');
-    expect(getActiveSubjectRuntimeInfo(root).dataNamespace).toBe('legacy-agent');
+    expect(runtimeInfoForDefaultSubject(root).dataNamespace).toBe('legacy-agent');
   });
 
   it('resolves active subject runtime paths from data namespace', () => {
     const root = makeProjectRoot();
-    ensureDefaultSubject(root);
+    ensureSubjectsRegistry(root);
     createSubject(root, 'my-product');
-    setActiveSubject(root, 'my-product');
+    setDefaultSubject(root, 'my-product');
 
-    const runtime = getActiveSubjectRuntimeInfo(root);
+    const runtime = runtimeInfoForDefaultSubject(root);
     expect(runtime.subject).toBe('my-product');
     expect(runtime.dataNamespace).toBe('my-product');
     expect(runtime.runtimeRoot).toBe(join(root, 'runtime', 'subjects', 'my-product'));
@@ -300,7 +300,7 @@ describe('subject management', () => {
 
   it('does not block subjects without repo lane configuration', () => {
     const root = makeProjectRoot();
-    ensureDefaultSubject(root);
+    ensureSubjectsRegistry(root);
 
     const report = checkSubjectLaneReady(root);
 
@@ -392,7 +392,7 @@ describe('evolve run manifests', () => {
     process.env.JEA_SUBJECT = 'beta';
 
     expect(runtimeForSubject(root, 'beta').runtimeRoot).toBe(join(root, 'runtime', 'subjects', 'beta'));
-    expect(getActiveSubjectRuntimeInfo(root).subject).toBe('beta');
+    expect(runtimeInfoForDefaultSubject(root).subject).toBe('beta');
     expect(readJsonSafe(join(root, 'policies', 'active-subject.json')).active).toBe('alpha');
   });
 
@@ -1490,7 +1490,7 @@ describe('data initialization', () => {
   it('creates runtime directories without goals or seed by default', () => {
     const root = makeProjectRoot();
     const result = initData(root);
-    const runtime = getActiveSubjectRuntimeInfo(root);
+    const runtime = runtimeInfoForDefaultSubject(root);
 
     expect(result.directories.every((d) => existsSync(d.path))).toBe(true);
     expect(result.directories.every((d) => d.path.startsWith(runtime.runtimeRoot))).toBe(true);
@@ -1502,7 +1502,7 @@ describe('data initialization', () => {
 
   it('writes goals once and preserves existing goals unless forced', () => {
     const root = makeProjectRoot();
-    const goalsPath = join(getActiveSubjectRuntimeInfo(root).goalsDir, 'active_goals.json');
+    const goalsPath = join(runtimeInfoForDefaultSubject(root).goalsDir, 'active_goals.json');
 
     const first = initData(root, { goals: true });
     expect(first.goals.written).toBe(true);
@@ -1521,7 +1521,7 @@ describe('data initialization', () => {
 
   it('writes English default goals when requested by env language', () => {
     const root = makeProjectRoot();
-    const goalsPath = join(getActiveSubjectRuntimeInfo(root).goalsDir, 'active_goals.json');
+    const goalsPath = join(runtimeInfoForDefaultSubject(root).goalsDir, 'active_goals.json');
     process.env.JEA_LANGUAGE = 'en-US';
 
     const result = initData(root, { goals: true });
@@ -1541,11 +1541,11 @@ describe('data initialization', () => {
     expect(second.seed.observationCount).toBe(1);
     expect(second.seed.eventCount).toBe(1);
 
-    const intelFile = join(getActiveSubjectRuntimeInfo(root).intelligenceDir, 'evolution_events', 'evolution-events.jsonl');
+    const intelFile = join(runtimeInfoForDefaultSubject(root).intelligenceDir, 'evolution_events', 'evolution-events.jsonl');
     const lines = readFileSync(intelFile, 'utf-8').trim().split('\n');
     expect(lines).toHaveLength(2);
     const store = createIntelligenceStore({
-      baseDir: getActiveSubjectRuntimeInfo(root).intelligenceDir,
+      baseDir: runtimeInfoForDefaultSubject(root).intelligenceDir,
     });
     expect(store.readRecentIntel({ limit: 5 }).some((record) => (
       record.content === '已为主体初始化运行时数据：The subject is test-agent.'
@@ -1554,10 +1554,10 @@ describe('data initialization', () => {
 
   it('isolates data status by active subject namespace', () => {
     const root = makeProjectRoot();
-    ensureDefaultSubject(root);
+    ensureSubjectsRegistry(root);
     initData(root);
     createSubject(root, 'another-agent');
-    setActiveSubject(root, 'another-agent');
+    setDefaultSubject(root, 'another-agent');
 
     expect(dataStatus(root).map((s) => s.exists)).toEqual([false, false, false]);
     initData(root);
@@ -1619,7 +1619,7 @@ describe('goals command helpers', () => {
 
   it('updates active goals and records a goal event', () => {
     const root = makeGoalsRoot();
-    const runtime = getActiveSubjectRuntimeInfo(root);
+    const runtime = runtimeInfoForDefaultSubject(root);
     const nextPath = join(root, 'next-goals.json');
     const nextGoal = {
       id: 'bootstrap',
@@ -1658,7 +1658,7 @@ describe('goals command helpers', () => {
 
   it('applies an in-memory goal object and records a goal event', () => {
     const root = makeGoalsRoot('jea-goals-apply-object-');
-    const runtime = getActiveSubjectRuntimeInfo(root);
+    const runtime = runtimeInfoForDefaultSubject(root);
     const nextGoal = {
       id: 'bootstrap-refined',
       name: 'Bootstrap refined',
@@ -1710,7 +1710,7 @@ describe('goals command helpers', () => {
 
   it('auto-applies only high-confidence refine assessments', () => {
     const root = makeGoalsRoot('jea-goals-auto-refine-');
-    const runtime = getActiveSubjectRuntimeInfo(root);
+    const runtime = runtimeInfoForDefaultSubject(root);
     const nextGoal = {
       id: 'bootstrap-refined',
       name: 'Bootstrap refined',
@@ -1745,7 +1745,7 @@ describe('goals command helpers', () => {
 
   it('normalizes missing children before auto calibration', () => {
     const root = makeGoalsRoot('jea-goals-auto-normalize-');
-    const runtime = getActiveSubjectRuntimeInfo(root);
+    const runtime = runtimeInfoForDefaultSubject(root);
     const proposedGoal = {
       id: 'bootstrap-refined',
       name: 'Bootstrap refined',
@@ -1779,7 +1779,7 @@ describe('goals command helpers', () => {
 
   it('skips auto calibration for non-refine, low confidence, or invalid goals', () => {
     const root = makeGoalsRoot('jea-goals-auto-skip-');
-    const runtime = getActiveSubjectRuntimeInfo(root);
+    const runtime = runtimeInfoForDefaultSubject(root);
     const before = readJsonSafe(join(runtime.goalsDir, 'active_goals.json'));
     const validGoal = {
       id: 'bootstrap-refined',
@@ -1823,7 +1823,7 @@ describe('goals command helpers', () => {
 
   it('rejects invalid goal JSON without changing active goals or history', () => {
     const root = makeGoalsRoot();
-    const runtime = getActiveSubjectRuntimeInfo(root);
+    const runtime = runtimeInfoForDefaultSubject(root);
     const before = readJsonSafe(join(runtime.goalsDir, 'active_goals.json'));
     const badPath = join(root, 'bad-goals.json');
     writeFileSync(badPath, '{not-json');
@@ -1839,7 +1839,7 @@ describe('goals command helpers', () => {
 
   it('assesses latest report and records an assessment event without changing active goals', async () => {
     const root = makeGoalsRoot();
-    const runtime = getActiveSubjectRuntimeInfo(root);
+    const runtime = runtimeInfoForDefaultSubject(root);
     const store = createIntelligenceStore({
       baseDir: runtime.intelligenceDir,
       timezone: 'Asia/Shanghai',
@@ -1884,7 +1884,7 @@ describe('goals command helpers', () => {
 
   it('assesses a specific report cycle', async () => {
     const root = makeGoalsRoot('jea-goals-cycle-');
-    const runtime = getActiveSubjectRuntimeInfo(root);
+    const runtime = runtimeInfoForDefaultSubject(root);
     const store = createIntelligenceStore({
       baseDir: runtime.intelligenceDir,
       timezone: 'Asia/Shanghai',
@@ -1925,7 +1925,7 @@ describe('goals command helpers', () => {
 
   it('assesses a canonical report when the indexed md_path is stale', async () => {
     const root = makeGoalsRoot('jea-goals-report-stale-');
-    const runtime = getActiveSubjectRuntimeInfo(root);
+    const runtime = runtimeInfoForDefaultSubject(root);
     const store = createIntelligenceStore({
       baseDir: runtime.intelligenceDir,
       timezone: 'Asia/Shanghai',
@@ -2002,10 +2002,10 @@ describe('intel summary', () => {
     tempDir = root;
     mkdirSync(join(root, 'policies'), { recursive: true });
     writeFileSync(join(root, 'policies', 'project-guidance.md'), '## Subject\nagent\n');
-    ensureDefaultSubject(root);
+    ensureSubjectsRegistry(root);
     initData(root, { seed: true });
     createSubject(root, 'other-agent');
-    setActiveSubject(root, 'other-agent');
+    setDefaultSubject(root, 'other-agent');
 
     const emptySummary = buildIntelSummary(root, { days: 1, limit: 5 });
     expect(emptySummary.runtime.dataNamespace).toBe('other-agent');
@@ -2037,7 +2037,7 @@ describe('intel report cli helpers', () => {
     writeFileSync(join(root, 'policies', 'project-guidance.md'), '## Subject\nagent\n');
     initData(root, { all: true });
 
-    const runtime = getActiveSubjectRuntimeInfo(root);
+    const runtime = runtimeInfoForDefaultSubject(root);
     const store = createIntelligenceStore({
       baseDir: join(runtime.runtimeRoot, 'data', 'intelligence'),
       timezone: 'Asia/Shanghai',
@@ -2075,7 +2075,7 @@ describe('intel report cli helpers', () => {
     writeFileSync(join(root, 'policies', 'project-guidance.md'), '## Subject\nagent\n');
     initData(root, { all: true });
 
-    const runtime = getActiveSubjectRuntimeInfo(root);
+    const runtime = runtimeInfoForDefaultSubject(root);
     const store = createIntelligenceStore({
       baseDir: join(runtime.runtimeRoot, 'data', 'intelligence'),
       timezone: 'Asia/Shanghai',
@@ -2102,18 +2102,18 @@ describe('active decision queue', () => {
     tempDir = root;
     mkdirSync(join(root, 'policies'), { recursive: true });
     writeFileSync(join(root, 'policies', 'project-guidance.md'), '## Subject\nagent\n');
-    ensureDefaultSubject(root);
+    ensureSubjectsRegistry(root);
 
-    const firstRuntime = getActiveSubjectRuntimeInfo(root);
+    const firstRuntime = runtimeInfoForDefaultSubject(root);
     writeJsonFile(join(firstRuntime.evolutionDir, 'pending_decisions.json'), {
       decisions: [{ id: 'first', action: { type: 'record_observation' }, status: 'pending' }],
     });
 
     createSubject(root, 'other-agent');
-    setActiveSubject(root, 'other-agent');
+    setDefaultSubject(root, 'other-agent');
     expect(readActiveDecisionQueue(root).queue.decisions).toHaveLength(0);
 
-    const secondRuntime = getActiveSubjectRuntimeInfo(root);
+    const secondRuntime = runtimeInfoForDefaultSubject(root);
     writeJsonFile(join(secondRuntime.evolutionDir, 'pending_decisions.json'), {
       decisions: [{ id: 'second', action: { type: 'custom' }, status: 'pending' }],
     });
@@ -2133,16 +2133,16 @@ describe('active decision queue', () => {
     tempDir = root;
     mkdirSync(join(root, 'policies'), { recursive: true });
     writeFileSync(join(root, 'policies', 'project-guidance.md'), '## Subject\nagent\n');
-    ensureDefaultSubject(root);
+    ensureSubjectsRegistry(root);
 
-    const firstRuntime = getActiveSubjectRuntimeInfo(root);
+    const firstRuntime = runtimeInfoForDefaultSubject(root);
     writeJsonFile(join(firstRuntime.evolutionDir, 'pending_decisions.json'), {
       decisions: [{ id: 'first-done', action: { type: 'record_observation' }, status: 'completed' }],
     });
 
     createSubject(root, 'other-agent');
-    setActiveSubject(root, 'other-agent');
-    const secondRuntime = getActiveSubjectRuntimeInfo(root);
+    setDefaultSubject(root, 'other-agent');
+    const secondRuntime = runtimeInfoForDefaultSubject(root);
     writeJsonFile(join(secondRuntime.evolutionDir, 'pending_decisions.json'), {
       decisions: [
         { id: 'second-done', action: { type: 'record_observation' }, status: 'completed' },
@@ -2169,7 +2169,7 @@ function makeIntelRoot(prefix) {
   tempDir = root;
   mkdirSync(join(root, 'policies'), { recursive: true });
   writeFileSync(join(root, 'policies', 'project-guidance.md'), '## Subject\nagent\n');
-  ensureDefaultSubject(root);
+  ensureSubjectsRegistry(root);
   initData(root);
   return root;
 }
@@ -2250,7 +2250,7 @@ describe('intel inbox', () => {
     });
     expect(code).toBe(0);
 
-    const runtime = getActiveSubjectRuntimeInfo(root);
+    const runtime = runtimeInfoForDefaultSubject(root);
     const dir = defaultInboxDir(runtime);
     const list = readdirSync(dir);
     expect(list.length).toBe(1);
@@ -2260,7 +2260,7 @@ describe('intel inbox', () => {
 
   it('inboxDrain processes known, removes empty, keeps unknown source files', async () => {
     const root = makeIntelRoot('jea-inbox-drain-');
-    const runtime = getActiveSubjectRuntimeInfo(root);
+    const runtime = runtimeInfoForDefaultSubject(root);
     const dir = defaultInboxDir(runtime);
     mkdirSync(dir, { recursive: true });
 
@@ -2297,7 +2297,7 @@ describe('intel inbox', () => {
 
   it('inboxDrain returns exit code 1 when failures exist', async () => {
     const root = makeIntelRoot('jea-inbox-drain-fail-');
-    const runtime = getActiveSubjectRuntimeInfo(root);
+    const runtime = runtimeInfoForDefaultSubject(root);
     const dir = defaultInboxDir(runtime);
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'bad.json'), JSON.stringify({ records: [{}] }));
@@ -2321,7 +2321,7 @@ describe('intel operator briefs', () => {
     const code = await briefPut({ root, flags: { file: filePath, json: true } });
     expect(code).toBe(0);
 
-    const runtime = getActiveSubjectRuntimeInfo(root);
+    const runtime = runtimeInfoForDefaultSubject(root);
     const pending = readPendingOperatorBriefs(runtime.runtimeRoot);
     expect(pending.briefs).toHaveLength(1);
     expect(pending.briefs[0]).toMatchObject({
@@ -2342,7 +2342,7 @@ describe('intel operator briefs', () => {
     }));
 
     expect(await briefPut({ root, flags: { file: filePath } })).toBe(0);
-    const runtime = getActiveSubjectRuntimeInfo(root);
+    const runtime = runtimeInfoForDefaultSubject(root);
     const pending = readPendingOperatorBriefs(runtime.runtimeRoot);
     markOperatorBriefsProcessed(runtime.runtimeRoot, pending.briefs, { cycleId: 'cycle-cli' });
 

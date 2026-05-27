@@ -114,7 +114,7 @@ flowchart TD
 | --- | --- | --- |
 | 配置形态 | `subjects.json` registry | 表达「有哪些主体」，而非「当前激活谁」 |
 | default 语义 | `default_subject` 可省略 `--subject` | 保留交互便利，但不作为并行运行的全局状态 |
-| 旧 API | 保留 `readActiveSubject` 等 wrapper | 降低一次性改动面，内部转调 resolver |
+| 旧 API | 重命名为 `*DefaultSubject*` / `runtimeInfoForSubject` | 消除「active」语义；legacy 文件仍只读兼容 |
 | policy 内容 | 仍用 Markdown | 避免把 repo/lane 结构化迁移扩 scope |
 | 旧文件 | `active-subject.json` 只读兼容一版 | 平滑迁移；两者并存时以 registry 为准 |
 | `jea subject use` | 改为写 `default_subject` | 语义与 registry 一致，CLI 提示已更新 |
@@ -167,30 +167,68 @@ jea subject default agentank-tank    # 原 use 语义
 jea subject show --subject js-evolution-agent
 ```
 
+### 4.4 API 命名清理（迁移后补完）
+
+运行时代码已从「active subject」命名切到 registry 语义：
+
+| 旧名 | 新名 |
+| --- | --- |
+| `getActiveSubjectRuntimeInfo` | `runtimeInfoForDefaultSubject` |
+| `readActiveSubjectPolicy` | `readDefaultSubjectPolicy` |
+| `setActiveSubject` / `ensureDefaultSubject` | `setDefaultSubject` / `ensureSubjectsRegistry` |
+
+涉及文件：`oada.config.mjs`、`run.mjs`、`scripts/reset-data.mjs`、`src/actions/configured-actions.mjs`、`src/cli/utils/subjects.mjs` 及对应测试。
+
+`subjects.mjs` 内仍保留 `legacyActiveSubjectFile()` 只读路径：registry 不存在时可从旧 `active-subject.json` 引导生成 `subjects.json`；两者并存时以 registry 为准。
+
 ---
 
 ## 5. 验证与测试
 
-实现完成后运行：
+### 5.1 自动化测试
 
 ```powershell
 npm test
 ```
 
-结果：**265 tests passed**（含新增 legacy `active-subject.json` 兼容用例、`subjects.json` init 断言）。
+结果：**265 tests passed**（含 legacy `active-subject.json` 兼容用例、`subjects.json` init 断言、重命名后的 API 调用）。
 
-手动确认项（对话中已执行）：
+### 5.2 本地 registry 落地
 
-- 从 `active-subject.json` 生成 `policies/subjects.json`，注册两个主体、default 为 `agentank-tank`
+- 从 `active-subject.json` 生成 `policies/subjects.json`，注册 `agentank-tank` + `js-evolution-agent`，default 为 `agentank-tank`
 - 删除 `policies/active-subject.json`
 
-未在本轮 journal 覆盖的验证（建议操作者自行 smoke）：
+### 5.3 Smoke 与 lane 检查
 
 ```powershell
 jea subject list
-jea run --mock --subject agentank-tank
 jea data status --subject agentank-tank
+jea subject lane status --subject agentank-tank
 ```
+
+结果：
+
+- `subject list`：default 为 `agentank-tank`，两个主体均已注册
+- `data status`：namespace 与 `runtime/subjects/agentank-tank/` 路径正确
+- `lane status`：`ok: true`，lane 存在且 repo 干净
+
+### 5.4 Mock 演化端到端
+
+```powershell
+npm run jea -- run --mock --subject agentank-tank --skip-goals-assess
+```
+
+Cycle `cycle-20260527-161654` 完整跑通：
+
+| 阶段 | 结果 |
+| --- | --- |
+| Phase 1 Intel | 成功，入队 2 条决策（`record_observation`、`propose_probe`） |
+| Phase 1.5 情报报告 | 已写入 `runtime/subjects/agentank-tank/data/intelligence/reports/.../cycle-20260527-161654.md` |
+| Phase 2 Exec | 2 条均完成；`propose_probe` 耗时约 1–2 分钟 |
+| Phase 3 Verify | 2 verified，0 pending |
+| Phase 5 Diary | 已写入 `exec-20260527-161655.md` |
+
+说明：mock 模式下 exec 默认只处理本轮新入队决策（受 `JEA_EXEC_LIMIT` 影响）；历史 `pending_decisions.json` 中仍有大量陈旧项，不影响本轮验证。
 
 ---
 
@@ -198,10 +236,12 @@ jea data status --subject agentank-tank
 
 | 方向 | 说明 |
 | --- | --- |
+| 提交未提交改动 | API 命名清理涉及 7 个文件，尚未 commit |
 | 收紧默认行为 | 写入/执行型命令在无 `--subject` 时要求显式指定，而非静默用 default |
 | policy 结构化 | 将 `Subject Repo Lane`、resource scope 等机器字段逐步迁入 registry 或 sidecar JSON，减少 Markdown 解析脆弱性 |
 | 文档同步 | 操作者 habit：并行演化始终 `jea run --subject X` / 各开一 daemon worker |
-| 清理兼容层 | 一个版本周期后移除 `active-subject.json` 只读路径与 `readActiveSubject` 命名 |
+| 清理兼容层 | 一个版本周期后移除 `legacyActiveSubjectFile` 只读路径 |
+| 队列卫生 | 可选清理 `pending_decisions.json` 中历史 pending 项，缩短 exec 阶段 inspect 输出 |
 
 ---
 
@@ -212,4 +252,4 @@ jea data status --subject agentank-tank
 | 问题 | `active-subject.json` 表达全局「当前主体」，与 evolve/daemon 多主体并行模型冲突；操作者需要 registry + 运行时显式选择 |
 | 思考 | 梳理 policy 在工作流中的用法；定位 `readActiveSubject` 与 `evolve-runs` 旁路双读；区分 registry（索引）与 policy（权威+部分机器配置） |
 | 方案 | 引入 `subjects.json` + `resolveSubjectConfig`；`default_subject` 仅作便利；CLI/运行时统一 resolver；短期兼容 legacy active 文件 |
-| 执行 | 改 subjects 工具链与各 CLI；补测试与 README/AGENTS；生成本地 `subjects.json`；删除 `active-subject.json` |
+| 执行 | 改 subjects 工具链与各 CLI；补测试与 README/AGENTS；生成本地 `subjects.json`；删除 `active-subject.json`；重命名 active API；smoke + lane + mock 演化验证通过 |

@@ -1,4 +1,4 @@
-import 'dotenv/config';
+﻿import 'dotenv/config';
 
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -16,7 +16,7 @@ import {
 import { createIntelligenceStore } from './src/intelligence/store.mjs';
 import { getDefaultCyberTaoistDocsDir } from './src/cli/utils/project.mjs';
 import {
-  getActiveSubjectRuntimeInfo,
+  runtimeInfoForDefaultSubject,
   parseSubjectRepoLane,
   parseSubjectExternalRoots,
   parseSubjectResourceRules,
@@ -221,7 +221,7 @@ function createMockAiClient() {
 export default async function ({ cwd }) {
   registerGlobalActionTypes();
   const subjectConfig = resolveSubjectConfig(cwd);
-  const runtime = getActiveSubjectRuntimeInfo(cwd);
+  const runtime = runtimeInfoForDefaultSubject(cwd);
   const subjectPolicy = readSubjectPolicy(cwd, subjectConfig);
   const subjectRepoLane = parseSubjectRepoLane(subjectPolicy.text, {
     root: cwd,
