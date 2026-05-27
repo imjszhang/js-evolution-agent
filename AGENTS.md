@@ -1,4 +1,4 @@
-# AGENT.md
+# AGENTS.md
 
 本文件是当前项目的 CLI 操作指引，面向本地操作者和自动化代理。项目主命令是 `jea`，推荐在项目根目录执行。
 
@@ -27,16 +27,16 @@ jea data status
 
 ## 环境与诊断
 
-- `jea doctor`：检查 Node、依赖、`.env`、DeepSeek 配置、文档和配置文件。
+- `jea doctor`：检查 Node、依赖、`.env`、DeepSeek 配置、Cyber-Taoist 文档（`CONSTITUTION.md`、`SKILL.md`）和 `oada.config.mjs`。
 - `jea llm ping`：测试 DeepSeek 连接。
 - `jea llm ping --mock`：测试本地 Mock AI 路径。
-- `jea policy check`：检查当前主体策略是否包含必需章节。
+- `jea policy check`：检查当前主体策略是否包含必需章节（`Subject`）。
 
 真实模型调用依赖 `.env` 中的 `DEEPSEEK_API_KEY`。没有 API key 时，可使用 `--mock` 走本地模拟路径。
 
 ## 运行演化循环
 
-- `jea run [--mock] [--deepseek] [--skip-goals-assess]`：运行一次完整的 `intel -> exec -> verify` 循环，默认还会记录目标评估事件。
+- `jea run [--mock] [--deepseek] [--skip-goals-assess]`：运行一次完整的 `intel -> exec -> verify` 循环并写入情报回执，默认还会记录目标评估事件。
 - `jea run --mock`：不调用真实模型，适合本地冒烟验证。
 - `jea run --deepseek`：要求 DeepSeek API 配置存在。
 - `jea run --skip-goals-assess`：跳过本轮目标评估。
@@ -83,7 +83,7 @@ runtime/subjects/<data_namespace>/
 
 写入情报：
 
-- `jea intel ingest --source NAME [--file PATH | --stdin] [--json]`：直接写入一条或多条 JSON 记录到当前主体 intelligence store。
+- `jea intel ingest --source NAME [--file PATH | --stdin] [--json]`：直接写入一条或多条 JSON 记录到当前主体 intelligence store。`entity_jsonl` 类 source（如 `probe_threads`）要求每条记录带 `_entity_id`。
 - `jea intel inbox put --source NAME [--file PATH | --stdin] [--name LABEL]`：把 JSON 载荷放入 `_inbox`，供之后 drain。
 - `jea intel inbox drain [--dir PATH] [--json]`：将 `_inbox` 中的文件导入 intelligence store。
 
@@ -127,8 +127,9 @@ Daemon 用于事件驱动的前台 worker 循环。每个 subject 应独立运�
 - `jea daemon tasks inspect <task_id>`：查看单个任务详情。
 - `jea daemon tasks retry <task_id>`：重试任务。
 - `jea daemon tasks cancel <task_id>`：取消任务。
+- `jea daemon tasks acknowledge <task_id>`：确认已检查过的失败任务（别名 `ack`）。
 
-`daemon start` 和 `daemon work --once` 保持单 subject 单进程；多主体并行应由外部终端或编排器分别启动。
+`jea daemon start` 和 `jea daemon work --once` 保持单 subject 单进程；多主体并行应由外部终端或编排器分别启动。
 
 ## Subject 管理
 
