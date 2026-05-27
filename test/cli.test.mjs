@@ -695,12 +695,14 @@ describe('evolve run manifests', () => {
     const env = buildCycleEnv({
       mock: true,
       'skip-goals-assess': true,
+      'skip-belief-update': true,
       'exec-limit': '2',
     }, 'alpha');
 
     expect(env.JEA_SUBJECT).toBe('alpha');
     expect(env.JEA_FORCE_MOCK).toBe('1');
     expect(env.JEA_SKIP_GOALS_ASSESS).toBe('1');
+    expect(env.JEA_SKIP_BELIEF_UPDATE).toBe('1');
     expect(env.JEA_EXEC_LIMIT).toBe('2');
     expect(env.DEEPSEEK_API_KEY).toBeUndefined();
   });

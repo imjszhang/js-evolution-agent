@@ -36,7 +36,7 @@ jea data status
 
 ## 运行演化循环
 
-- `jea run [--mock] [--deepseek] [--skip-goals-assess]`：运行一次完整的 `intel -> exec -> verify` 循环并写入情报回执，默认还会记录目标评估事件。
+- `jea run [--mock] [--deepseek] [--skip-goals-assess] [--skip-belief-update]`：运行一次完整的 `intel -> exec -> verify` 循环并写入情报回执，默认还会记录目标评估事件与 post-verify 信念更新。
 - `jea run --mock`：不调用真实模型，适合本地冒烟验证。
 - `jea run --deepseek`：要求 DeepSeek API 配置存在。
 - `jea run --skip-goals-assess`：跳过本轮目标评估。
@@ -51,6 +51,7 @@ jea data status
 
 - `JEA_EXEC_LIMIT`：限制单轮执行阶段最多处理的决策数，默认 `5`。
 - `JEA_SKIP_GOALS_ASSESS=1`：跳过目标评估。
+- `JEA_SKIP_BELIEF_UPDATE=1`：跳过 post-verify 信念更新。
 - `JEA_FORCE_MOCK=1`：强制使用 Mock AI。
 
 ## 运行时数据
@@ -99,6 +100,12 @@ runtime/subjects/<data_namespace>/
 - `jea goals history [--limit N]`：查看目标变更事件。
 - `jea goals update --file PATH --reason TEXT [--evidence REF] [--cycle ID]`：替换 active goals 并记录目标事件。
 - `jea goals assess [--cycle ID]`：让 AI 评估目标校准情况并记录评估事件。
+
+信念管理：
+
+- `jea beliefs show`：显示当前 active/validated/refuted 信念状态。
+- `jea beliefs events [--limit N]`：查看近期信念变更事件。
+- `jea beliefs update [--cycle ID]`：手动触发 post-verify 信念更新（通常由 `jea run` Phase 3.5 自动执行）。
 
 目标 JSON 需要包含 `id`、`name`、`intent`、`good_signal`、`bad_signal` 和 `children`。
 

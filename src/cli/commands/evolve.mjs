@@ -112,6 +112,9 @@ export function buildCycleEnv(flags, subject) {
   if (flags['skip-goals-assess']) {
     env.JEA_SKIP_GOALS_ASSESS = '1';
   }
+  if (flags['skip-belief-update']) {
+    env.JEA_SKIP_BELIEF_UPDATE = '1';
+  }
   if (flags['exec-limit'] != null && flags['exec-limit'] !== true) {
     env.JEA_EXEC_LIMIT = String(flags['exec-limit']);
   }
@@ -129,6 +132,7 @@ function flagsFromManifest(manifest, overrides = {}) {
     mock: stored.mock,
     deepseek: stored.deepseek,
     'skip-goals-assess': stored.skip_goals_assess,
+    'skip-belief-update': stored.skip_belief_update,
     retries: stored.retries,
     'continue-on-failure': stored.continue_on_failure,
     'exec-limit': stored.exec_limit ?? undefined,
@@ -487,6 +491,7 @@ export async function evolveCommand({ subcommand, flags = {}, args = [] } = {}) 
             mock: Boolean(flags.mock),
             deepseek: Boolean(flags.deepseek),
             skip_goals_assess: Boolean(flags['skip-goals-assess']),
+            skip_belief_update: Boolean(flags['skip-belief-update']),
             exec_limit: flags['exec-limit'] == null || flags['exec-limit'] === true
               ? null
               : parsePositiveInt(flags['exec-limit'], { name: 'exec-limit', min: 1 }),

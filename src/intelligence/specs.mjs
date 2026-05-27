@@ -71,5 +71,19 @@ export const INTELLIGENCE_SPECS = [
     storageType: 'append_jsonl',
     filename: 'claim-ledger.jsonl',
   }),
+  new DataSourceSpec({
+    name: 'current_beliefs',
+    description: 'Current actionable belief state for the active subject (testable hypotheses tied to goals).',
+    storageType: 'single_json',
+    subdir: 'beliefs',
+    filename: 'current_beliefs.json',
+  }),
+  new DataSourceSpec({
+    name: 'belief_events',
+    description: 'Append-only audit log of belief lifecycle changes.',
+    storageType: 'append_jsonl',
+    subdir: 'beliefs',
+    filename: 'belief-events.jsonl',
+  }),
 ];
 

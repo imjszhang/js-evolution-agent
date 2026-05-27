@@ -13,6 +13,7 @@ import { auditCommand } from './commands/audit.mjs';
 import { llmCommand } from './commands/llm.mjs';
 import { policyCommand } from './commands/policy.mjs';
 import { goalsCommand } from './commands/goals.mjs';
+import { beliefsCommand } from './commands/beliefs.mjs';
 import { evolveCommand } from './commands/evolve.mjs';
 import { daemonCommand } from './commands/daemon.mjs';
 
@@ -21,7 +22,7 @@ export function helpText() {
 
 Commands:
   doctor                 Check env, dependencies, docs, and config
-  run [--mock] [--skip-goals-assess] [--subject NAME]
+  run [--mock] [--skip-goals-assess] [--skip-belief-update] [--subject NAME]
                          Run the full intel -> exec -> verify loop; by default
                          also records a goals assess event for the same cycle
   run --deepseek         Require DeepSeek API configuration
@@ -67,6 +68,11 @@ Commands:
                          Replace active goals and record a goal event
   goals assess [--cycle ID]
                          Ask AI to assess goal calibration and record an assessment event
+  beliefs show             Show current actionable beliefs
+  beliefs events [--limit N]
+                         Show recent belief change events
+  beliefs update [--cycle ID]
+                         Run post-verify belief update for a cycle context
   audit queue            Check decision queue health
   audit queue --archive  Preview archiving completed/expired queue items
   audit queue --archive --yes
@@ -116,6 +122,7 @@ Examples:
   jea intel inbox drain --json
   jea goals history
   jea goals assess --cycle cycle-20260511-123237
+  jea beliefs show --json
   jea audit queue --archive
   jea audit queue --archive --yes`;
 }
@@ -136,6 +143,7 @@ export async function main(argv = process.argv.slice(2)) {
   if (command === 'data') return dataCommand({ subcommand, flags });
   if (command === 'intel') return intelCommand({ subcommand, flags, args });
   if (command === 'goals') return goalsCommand({ subcommand, flags, args });
+  if (command === 'beliefs') return beliefsCommand({ subcommand, flags, args });
   if (command === 'audit') return auditCommand({ subcommand, flags });
   if (command === 'llm') return llmCommand({ subcommand, flags });
   if (command === 'policy') return policyCommand({ subcommand, flags });

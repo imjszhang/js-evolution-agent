@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { buildTemporalDecisionBrief } from './decision-brief.mjs';
+import { normalizeCurrentBeliefs } from './beliefs.mjs';
 import {
   resolveIntelReportRecordPath,
   resolveIntelReportWritePath,
@@ -22,6 +23,7 @@ const DEFAULT_REPORT_CONTEXT_LIMITS = {
   eventLimit: 500,
   receiptLimit: 500,
   goalEventLimit: 200,
+  beliefEventLimit: 100,
   reportIndexLimit: 50,
   reportMarkdownLimit: 3,
   reportMarkdownCharLimit: 60000,
@@ -249,6 +251,12 @@ export function gatherReportContext({
       store?.readStandingMemory ? safeRead(() => store.readStandingMemory(), null) : null,
       limits.standingMemoryCharLimit,
     ),
+    current_beliefs: normalizeCurrentBeliefs(
+      store?.readCurrentBeliefs ? safeRead(() => store.readCurrentBeliefs(), null) : null,
+    ),
+    belief_events: store?.readBeliefEvents
+      ? safeRead(() => store.readBeliefEvents({ limit: limits.beliefEventLimit }), [])
+      : [],
     active_goals: activeGoals,
     active_goals_flat: flattenGoals(activeGoals),
     goal_events: store?.readGoalEvents
@@ -321,6 +329,8 @@ export function gatherReportContext({
     recent_report_markdowns: context.recent_report_markdowns.length,
     latest_review: context.latest_review ? 1 : 0,
     standing_memory: context.standing_memory.exists ? 1 : 0,
+    current_beliefs: context.current_beliefs.exists ? context.current_beliefs.beliefs.length : 0,
+    belief_events: context.belief_events.length,
     decision_queue: context.decision_queue ? 1 : 0,
   };
 
@@ -1093,6 +1103,8 @@ export async function persistIntelReport({
     recent_report_count: finalReportContext.recent_report_markdowns.length,
     action_receipt_count: finalReportContext.action_receipts.length,
     goal_event_count: finalReportContext.goal_events.length,
+    belief_count: finalReportContext.current_beliefs?.beliefs?.length ?? 0,
+    belief_event_count: finalReportContext.belief_events.length,
     subject: runtime.subject,
     namespace: runtime.dataNamespace,
     language: finalLanguage,

@@ -9,6 +9,7 @@ import {
 } from 'js-evolution-engine';
 import loadConfig from './oada.config.mjs';
 import { assessActiveGoals, autoCalibrateGoals } from './src/cli/commands/goals.mjs';
+import { updateActiveBeliefs } from './src/intelligence/belief-updater.mjs';
 import { runtimeInfoForDefaultSubject } from './src/cli/utils/subjects.mjs';
 import { withSubjectLock } from './src/cli/utils/evolve-runs.mjs';
 import { ConversationalIntelligencePipeline } from './src/intelligence/conversational-intel-pipeline.mjs';
@@ -19,6 +20,12 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 function skipGoalsAssess() {
   const v = process.env.JEA_SKIP_GOALS_ASSESS;
+  if (!v) return false;
+  return v === '1' || String(v).toLowerCase() === 'true';
+}
+
+function skipBeliefUpdate() {
+  const v = process.env.JEA_SKIP_BELIEF_UPDATE;
   if (!v) return false;
   return v === '1' || String(v).toLowerCase() === 'true';
 }
@@ -223,6 +230,39 @@ async function runCycle(runtime) {
   console.log('  semantic:', semanticVerification.status);
   console.log('  report:', reportPath);
 
+  let beliefUpdateResult = null;
+  if (skipBeliefUpdate()) {
+    console.log('\n=== Phase 3.5: belief update (skipped) ===');
+  } else {
+    console.log('\n=== Phase 3.5: belief update ===');
+    try {
+      beliefUpdateResult = await updateActiveBeliefs(__dirname, {
+        cycleId: execResult.cycle_id,
+        intelResult,
+        execResult,
+        verification,
+        verificationReportPath: reportPath,
+        store,
+        aiClient: cfg.aiClient,
+        agentContextDocs: cfg.agentContextDocs,
+        logger: cfg.host.logger,
+      });
+      console.log('  source:', beliefUpdateResult.source);
+      console.log('  status:', beliefUpdateResult.result.status);
+      console.log('  updates:', beliefUpdateResult.result.updates?.length ?? 0);
+      console.log('  events_written:', beliefUpdateResult.eventsWritten ?? 0);
+    } catch (e) {
+      const msg = e?.message || String(e);
+      console.warn(`  belief update failed (non-fatal): ${msg}`);
+      store.recordEvolutionEvent({
+        type: 'belief_update',
+        status: 'failed',
+        cycle_id: execResult.cycle_id,
+        error: msg,
+      });
+    }
+  }
+
   let goalsAssessResult = null;
   let goalsCalibrateResult = null;
   if (skipGoalsAssess()) {
@@ -286,6 +326,7 @@ async function runCycle(runtime) {
       intelResult,
       execResult,
       verification,
+      beliefUpdateResult,
       goalsAssessResult,
       goalsCalibrateResult,
       runtime,

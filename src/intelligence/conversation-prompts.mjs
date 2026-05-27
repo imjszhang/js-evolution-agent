@@ -61,10 +61,11 @@ Reading order and constraints:
 1. First, read the authoritative documents already provided in the system message. They outrank all intelligence material.
 2. Then read the Temporal Decision Brief in this order: Seen, Inferred, Remembered, Do Not Treat As Seen.
 3. Then read standing_memory. It is fixed-capacity global situation memory; use it for continuity, but treat it as a cache, not an authority.
-4. Then read active goals, goal history, current cycle facts, recent intelligence, and report history.
-4. Then read Operator Intent Briefs. They are one-cycle operator intent, not verified evidence or standing memory.
-5. If new evidence weakens or overturns standing_memory or historical reports, say so in the report.
-6. When sources conflict, Seen overrides Remembered. Inferred judgements must cite Seen evidence and state what would overturn them.
+4. Then read current_beliefs from Machine Context / Temporal Decision Brief decision_constraints. Active beliefs are testable action hypotheses tied to goals; validated beliefs are operating assumptions; recently_refuted beliefs are avoid-repeat constraints, not facts.
+5. Then read active goals, goal history, current cycle facts, recent intelligence, and report history.
+6. Then read Operator Intent Briefs. They are one-cycle operator intent, not verified evidence or standing memory.
+7. If new evidence weakens or overturns standing_memory or historical reports, say so in the report.
+8. When sources conflict, Seen overrides Remembered. Inferred judgements must cite Seen evidence and state what would overturn them.
 
 Output constraints:
 - Output pure Markdown; do not wrap the whole document in code fences.
@@ -130,10 +131,11 @@ ${clip(JSON.stringify(reportContext || {}, null, 2), 500000)}
 1. 先读 system message 中已提供的权威文献，它们高于所有情报材料。
 2. 再读 Temporal Decision Brief，并按顺序理解：Seen（本轮看到）、Inferred（基于证据判断）、Remembered（历史线索）、Do Not Treat As Seen（不得当事实）。
 3. 再读 standing_memory；它是固定容量的整体态势缓存，可以帮助保持连续性，但不是权威事实源。
-4. 再读当前目标、目标历史、本轮事实、近期完整情报和历史报告索引。
-5. 再读 Operator Intent Briefs。它们是单轮人工意图，不是已验证证据，也不是 standing_memory。
-6. 若新证据推翻或削弱 standing_memory 或历史报告中的旧判断，请在报告中指出。
-7. 多源冲突时，Seen 覆盖 Remembered；Inferred 必须引用 Seen，并说明什么证据会推翻该判断。
+4. 再读 Machine Context / Temporal Decision Brief 中的 current_beliefs。active 信念是当前可验证的行动假设；validated 信念是当前行动前提；recently_refuted 信念是避免重复试错的约束，不是事实。
+5. 再读当前目标、目标历史、本轮事实、近期完整情报和历史报告索引。
+6. 再读 Operator Intent Briefs。它们是单轮人工意图，不是已验证证据，也不是 standing_memory。
+7. 若新证据推翻或削弱 standing_memory 或历史报告中的旧判断，请在报告中指出。
+8. 多源冲突时，Seen 覆盖 Remembered；Inferred 必须引用 Seen，并说明什么证据会推翻该判断。
 
 要求：
 - 输出纯 Markdown，不要使用最外层代码围栏。
@@ -237,6 +239,12 @@ export function buildDecideUserPrompt({
 - 对 ENOENT、目录不存在、blocked 等缺失证据，只能表述为「在 executionRoot=X 下 path=Y 不存在」；除非该 root 是该 resource_kind 的权威 root，否则不得升级为「模块缺失」「机制未实现」「写入冻结」。
 - Operator Intent Briefs 是单轮人工意图，不是事实证据。可以据此优先调度核实动作；若不采纳 brief，应在 deferred 中说明原因。
 - \`write_retrospective\` 只用于记录已经掌握的结构化复盘结论（summary/outcome/lessons/next_actions）；需要读取文件或补证据时，优先调度 \`agent_run\`。
+- Belief constraints（Phase 2 信念绑定）：
+  - 每个 \`agent_run\` 必须在 \`params.run_spec.context\` 中声明 \`belief_id\` 或 \`belief_relation: "create_belief"\`。
+  - \`belief_relation\` 只能是 \`test_belief\`、\`strengthen_belief\`、\`refute_belief\`、\`create_belief\`、\`recover_blocker\` 之一。
+  - 行动前提优先来自 Temporal Decision Brief 的 Seen 与 decision_constraints.current_beliefs（active / validated）。
+  - \`recently_refuted\` 信念不得无新证据复活；若要 reopen，必须明确 \`belief_relation\` 与 \`expected_belief_update\`。
+  - 不要只因为 report 建议而行动；必须说明 action 如何验证/改变 belief 或推进 goal。
 - 涉及权限、安全探针、越界路径或敏感目标的 run，必须通过 \`permission_profile\`、primary cwd、additional directories 和 expected_output 约束，不要只靠自然语言承诺。
 - 每个 action 必须有 serves_goal，并尽量使用目标树中的 goal id；对 \`agent_run\`，serves_goal 描述本次 run 要推进的目标。
 - 不要为了覆盖而制造行动；证据不足时可以把 decision 设为 "defer" 或让 actions 为空数组。
@@ -332,7 +340,10 @@ Respond with exactly this JSON shape:
           "context": {
             "why_now": "...",
             "relevant_evidence": ["..."],
-            "constraints": ["..."]
+            "constraints": ["..."],
+            "belief_id": "belief-example",
+            "belief_relation": "test_belief",
+            "expected_belief_update": "..."
           },
           "expected_output": [
             "strict JSON receipt",

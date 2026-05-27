@@ -121,6 +121,7 @@ export function createRunManifest({ root, runId = createRunId(), subject, subjec
       mock: Boolean(flags.mock),
       deepseek: Boolean(flags.deepseek),
       skip_goals_assess: Boolean(flags['skip-goals-assess']),
+      skip_belief_update: Boolean(flags['skip-belief-update']),
       retries: parsePositiveInt(flags.retries, { name: 'retries', defaultValue: 3, min: 0 }),
       continue_on_failure: Boolean(flags['continue-on-failure']),
       exec_limit: flags['exec-limit'] == null || flags['exec-limit'] === true

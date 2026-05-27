@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { extractJsonFromText } from '../ai/messages.mjs';
 import { assessGoals, detectLanguage, gatherEvidence } from './report-builder.mjs';
+import { normalizeCurrentBeliefs, partitionBeliefs } from './beliefs.mjs';
 
 const VALID_STATUSES = new Set(['keep', 'refine', 'split', 'replace', 'retire', 'insufficient_evidence']);
 const VALID_CONFIDENCE = new Set(['low', 'medium', 'high']);
@@ -124,7 +125,7 @@ function summarizeSemanticVerification(semantic) {
   };
 }
 
-function summarizeVerificationReport(reportPath) {
+export function summarizeVerificationReport(reportPath) {
   if (!reportPath) return null;
   const { verification, error } = readVerificationReport(reportPath);
   const reportId = verifyReportId(reportPath);
@@ -180,11 +181,18 @@ export function buildGoalAssessmentContext({
   const evidence = gatherEvidence(store);
   const machineAssessment = assessGoals(goals, evidence);
   const recentGoalEvents = store?.readGoalEvents?.({ limit: goalEventsLimit }) ?? [];
+  const currentBeliefs = normalizeCurrentBeliefs(store?.readCurrentBeliefs?.() ?? null);
+  const beliefPartitions = partitionBeliefs(currentBeliefs.beliefs ?? []);
   const markdown = reportMarkdown ?? readReportMarkdown(reportRecord);
 
   return {
     active_goals: activeGoals,
     flat_goals: goals,
+    current_beliefs: {
+      active: beliefPartitions.active,
+      validated: beliefPartitions.validated,
+      recently_refuted: beliefPartitions.recentlyRefuted,
+    },
     report: reportRecord ? {
       id: reportRecord.id ?? null,
       cycle_id: reportRecord.cycle_id ?? null,
@@ -238,7 +246,8 @@ export function buildGoalAssessmentPrompt({
 - 如果连续多个 cycle 为 keep，但顶层成果指标没有改善（例如 matchCount、rank、胜率或模拟质量长期停滞），不得仅因目标「仍可验证」而 keep；必须评估是否需要升标、收紧门禁或新增成果型子目标。
 - 评估 safe-runtime 时必须区分「agent 行为合规」「宿主预检阻断」和「provider/文件系统硬隔离」；verify_report 中的 boundary_risk 可作为边界风险证据，但不得把软约束误判为硬隔离。
 - 若 verification.semantic 存在，最新 semantic verification 优先于旧 report、diary 或 remembered agent claim。它仍不是 Seen 事实；它是最近执行结果的解释层证据，应用来覆盖旧推断而不是放大旧推断。
-- evidence_refs：须引用支持你结论的情报条目（intel_report / verify_report / observation / probe_result / retrospective / goal_event / evolution_event）。若某项判断主要依据某一权威文献中的原则，也请用 type 为 agent_context、id 为该文档 id、ref 为该文档 id 前加前缀 agent_context: 一并列出，使理由可追溯。
+- evidence_refs：须引用支持你结论的情报条目（intel_report / verify_report / observation / probe_result / retrospective / goal_event / evolution_event / belief_event）。若某项判断主要依据某一权威文献中的原则，也请用 type 为 agent_context、id 为该文档 id、ref 为该文档 id 前加前缀 agent_context: 一并列出，使理由可追溯。
+- 如果某个 goal 下 active beliefs 全部 refuted/blocked，或 belief 长期无法产生 evidence，应在 reason 中指出 strategy pressure 或 goal pressure 失衡。
 - 没有可用的 evidence_refs（含 agent_context）时 confidence 必须为 low。
 - reason 必须用中文简述：结合了哪些文献要点 + 哪些情报事实。
 - 只返回一个 JSON 对象，不要 Markdown，不要代码块。

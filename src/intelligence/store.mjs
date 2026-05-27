@@ -175,6 +175,28 @@ export class IntelligenceStore {
     return this.engine.readSource('claim_ledger', { limit });
   }
 
+  readCurrentBeliefs() {
+    return this.engine.readSource('current_beliefs');
+  }
+
+  recordCurrentBeliefs(beliefs) {
+    return this.engine.ingest('current_beliefs', redactSecrets({
+      source: 'belief_updater',
+      ...beliefs,
+    }));
+  }
+
+  readBeliefEvents({ limit = 50 } = {}) {
+    return this.engine.readSource('belief_events', { limit });
+  }
+
+  recordBeliefEvent(event) {
+    return this.engine.ingest('belief_events', redactSecrets(withId({
+      recorded_at: new Date().toISOString(),
+      ...event,
+    }, 'belief-event')));
+  }
+
   readRecentIntel({ days = 7, limit = 20 } = {}) {
     return this.engine.readSource('intel_observations', { days }).slice(0, limit);
   }

@@ -1,3 +1,7 @@
+import {
+  partitionBeliefs,
+} from './beliefs.mjs';
+
 const DEFAULT_TEXT_LIMIT = 600;
 const DEFAULT_ITEM_LIMIT = 12;
 
@@ -288,6 +292,58 @@ function goalFacts(events, limit) {
   });
 }
 
+function beliefFacts(events, limit) {
+  return newestFirst(events).slice(0, limit).map((record) => {
+    const beliefStatus = `${record.change ?? 'belief_event'} ${record.belief_id ?? ''}`.trim();
+    const statement = record.reason ?? record.summary ?? null;
+    if (!statement) {
+      return directFact({
+        sourceType: 'belief_event',
+        evidenceLevel: 'structured_machine_record',
+        record,
+        summary: beliefStatus,
+      });
+    }
+    return sourceStatement({
+      sourceType: 'belief_event',
+      record,
+      verb: 'records',
+      statement: `${beliefStatus}: ${statement}`,
+    });
+  });
+}
+
+function beliefConstraintItems(beliefs = [], status, limit) {
+  return beliefs.slice(0, limit).map((belief) => ({
+    id: belief.id ?? null,
+    goal_id: belief.goal_id ?? null,
+    claim: shortText(belief.claim ?? '', DEFAULT_TEXT_LIMIT),
+    status: belief.status ?? status,
+    confidence: belief.confidence ?? null,
+    next_test: shortText(belief.next_test ?? '', DEFAULT_TEXT_LIMIT),
+    evidence_refs: Array.isArray(belief.evidence_refs) ? belief.evidence_refs : [],
+    recheck_trigger: belief.recheck_trigger ?? null,
+  }));
+}
+
+function validatedBeliefClaims(beliefs, limit) {
+  return beliefs.slice(0, limit).map((belief) => historicalClaim({
+    sourceType: 'current_beliefs',
+    record: { id: belief.id, updated_at: belief.last_change?.changed_at ?? null },
+    status: 'historical',
+    summary: `validated assumption: ${belief.claim ?? ''}`,
+  }));
+}
+
+function refutedBeliefClaims(beliefs, limit) {
+  return beliefs.slice(0, limit).map((belief) => historicalClaim({
+    sourceType: 'current_beliefs',
+    record: { id: belief.id, updated_at: belief.last_change?.changed_at ?? null },
+    status: 'refuted_or_weakened',
+    summary: `refuted belief: ${belief.claim ?? ''}`,
+  }));
+}
+
 function receiptAgentClaims(receipts, limit) {
   return newestFirst(receipts).slice(0, limit).flatMap((record) => {
     const result = record?.result || {};
@@ -392,6 +448,8 @@ function sourceOrdering(context) {
     ['probe_results', context.probe_results, 'structured_machine_record'],
     ['evolution_events', context.evolution_events, 'structured_machine_record'],
     ['goal_events', context.goal_events, 'structured_machine_record'],
+    ['belief_events', context.belief_events, 'structured_machine_record'],
+    ['current_beliefs', context.current_beliefs?.exists ? context.current_beliefs.beliefs : [], 'active_verified_claim'],
     ['standing_memory', context.standing_memory?.exists ? [context.standing_memory] : [], 'model_summary_cache'],
     ['recent_report_markdowns', context.recent_report_markdowns, 'historical_model_report'],
     ['intel_reports_index', context.intel_reports_index, 'historical_model_report_index'],
@@ -423,9 +481,11 @@ export function buildTemporalDecisionBrief(reportContext = {}, {
     ...actionReceiptStatuses(reportContext.action_receipts, itemLimit),
     ...probeStatuses(reportContext.probe_results, itemLimit),
   ];
+  const beliefPartitions = partitionBeliefs(reportContext.current_beliefs?.beliefs ?? []);
   const directEvidence = [
     ...eventFacts(reportContext.evolution_events, itemLimit),
     ...goalFacts(reportContext.goal_events, Math.ceil(itemLimit / 2)),
+    ...beliefFacts(reportContext.belief_events, Math.ceil(itemLimit / 2)),
   ];
   const agentClaims = [
     ...receiptAgentClaims(reportContext.action_receipts, itemLimit),
@@ -436,6 +496,8 @@ export function buildTemporalDecisionBrief(reportContext = {}, {
     ...standingMemoryClaim(reportContext.standing_memory),
     ...reportClaims(reportContext.recent_report_markdowns, itemLimit),
     ...reviewClaim(reportContext.latest_review),
+    ...validatedBeliefClaims(beliefPartitions.validated, itemLimit),
+    ...refutedBeliefClaims(beliefPartitions.recentlyRefuted, itemLimit),
   ];
   const split = splitClaims(claims);
   const seen = [
@@ -494,6 +556,17 @@ export function buildTemporalDecisionBrief(reportContext = {}, {
     forbidden_or_refuted_claims: split.refuted_or_weakened_claims,
     decision_constraints: {
       active_goals: reportContext.active_goals_flat ?? [],
+      current_beliefs: {
+        active: beliefConstraintItems(beliefPartitions.active, 'active', itemLimit),
+        validated: beliefConstraintItems(beliefPartitions.validated, 'validated', itemLimit).map((item) => ({
+          ...item,
+          use_as: 'operating_assumption',
+        })),
+        recently_refuted: beliefConstraintItems(beliefPartitions.recentlyRefuted, 'refuted', itemLimit).map((item) => ({
+          ...item,
+          use_as: 'avoid_repeat',
+        })),
+      },
       decision_queue: reportContext.decision_queue ?? null,
       operator_intent_briefs: reportContext.operator_intent_briefs ?? [],
     },

@@ -22,6 +22,10 @@ export async function runCommand({ flags = {} } = {}) {
     env.JEA_SKIP_GOALS_ASSESS = '1';
     console.log('Goals assess will be skipped (--skip-goals-assess).');
   }
+  if (flags['skip-belief-update']) {
+    env.JEA_SKIP_BELIEF_UPDATE = '1';
+    console.log('Belief update will be skipped (--skip-belief-update).');
+  }
   if (flags.deepseek && !env.DEEPSEEK_API_KEY) {
     console.error('DEEPSEEK_API_KEY is required for --deepseek.');
     return 1;

@@ -36,6 +36,15 @@ import {
 } from '../src/intelligence/evolution-diary-builder.mjs';
 import { buildTemporalDecisionBrief } from '../src/intelligence/decision-brief.mjs';
 import {
+  applyBeliefUpdates,
+  buildBeliefUpdateContext,
+  parseBeliefUpdate,
+} from '../src/intelligence/belief-updater.mjs';
+import {
+  normalizeCurrentBeliefs,
+  partitionBeliefs,
+} from '../src/intelligence/beliefs.mjs';
+import {
   buildObservationEvidenceGuard,
   formatObservationEvidenceGuard,
 } from '../src/intelligence/observation-guard.mjs';
@@ -67,7 +76,165 @@ describe('intelligence specs', () => {
       'goal_events',
       'standing_memory',
       'claim_ledger',
+      'current_beliefs',
+      'belief_events',
     ]);
+  });
+});
+
+describe('beliefs store', () => {
+  it('reads and writes current beliefs and belief events', () => {
+    const store = makeStore();
+    store.recordCurrentBeliefs({
+      schema_version: 1,
+      updated_at: '2026-05-28T00:00:00.000Z',
+      source_cycle_id: 'exec-test',
+      beliefs: [{
+        id: 'belief-1',
+        goal_id: 'bootstrap',
+        claim: 'feedback loop is blocked',
+        status: 'active',
+        confidence: 'medium',
+        evidence_refs: [],
+        next_test: 'verify match signal',
+      }],
+    });
+    store.recordBeliefEvent({
+      cycle_id: 'exec-test',
+      belief_id: 'belief-1',
+      change: 'create',
+      reason: 'seed belief',
+      evidence_refs: [],
+      source: 'test',
+      before: null,
+      after: { id: 'belief-1' },
+    });
+
+    const beliefs = normalizeCurrentBeliefs(store.readCurrentBeliefs());
+    expect(beliefs.exists).toBe(true);
+    expect(beliefs.beliefs).toHaveLength(1);
+    expect(store.readBeliefEvents({ limit: 5 })).toHaveLength(1);
+  });
+});
+
+describe('beliefs and decision brief', () => {
+  it('partitions beliefs into active, validated, and refuted constraints', () => {
+    const beliefs = [
+      { id: 'a', status: 'active', claim: 'active claim' },
+      { id: 'v', status: 'validated', claim: 'validated claim' },
+      { id: 'r', status: 'refuted', claim: 'refuted claim' },
+    ];
+    const parts = partitionBeliefs(beliefs);
+    expect(parts.active).toHaveLength(1);
+    expect(parts.validated).toHaveLength(1);
+    expect(parts.recentlyRefuted).toHaveLength(1);
+
+    const brief = buildTemporalDecisionBrief({
+      generated_at: '2026-05-28T00:00:00.000Z',
+      current_cycle: { cycle_id: 'cycle-test', mode: 'local' },
+      action_receipts: [],
+      probe_results: [],
+      evolution_events: [],
+      goal_events: [],
+      belief_events: [],
+      current_beliefs: normalizeCurrentBeliefs({
+        beliefs,
+        updated_at: '2026-05-28T00:00:00.000Z',
+      }),
+      recent_report_markdowns: [],
+      standing_memory: { exists: false },
+    });
+
+    expect(brief.decision_constraints.current_beliefs.active).toHaveLength(1);
+    expect(brief.decision_constraints.current_beliefs.validated).toHaveLength(1);
+    expect(brief.decision_constraints.current_beliefs.recently_refuted).toHaveLength(1);
+    expect(JSON.stringify(brief.do_not_treat_as_seen)).toContain('refuted claim');
+  });
+
+  it('includes beliefs in gatherReportContext source counts', () => {
+    const store = makeStore();
+    store.recordCurrentBeliefs({
+      schema_version: 1,
+      beliefs: [{ id: 'belief-1', status: 'active', claim: 'test' }],
+    });
+    store.recordBeliefEvent({ belief_id: 'belief-1', change: 'create', reason: 'seed' });
+
+    const context = gatherReportContext({
+      store,
+      runtime: { subject: 'test', dataNamespace: 'test', runtimeRoot: tempDir },
+      intelResult: { cycle_id: 'cycle-test', actions: [] },
+      generatedAt: '2026-05-28T00:00:00.000Z',
+    });
+
+    expect(context.current_beliefs.beliefs).toHaveLength(1);
+    expect(context.belief_events).toHaveLength(1);
+    expect(context.source_counts.current_beliefs).toBe(1);
+    expect(context.source_counts.belief_events).toBe(1);
+  });
+
+  it('applies belief updates and records before/after events', () => {
+    const applied = applyBeliefUpdates(
+      normalizeCurrentBeliefs({
+        beliefs: [{
+          id: 'belief-1',
+          goal_id: 'bootstrap',
+          claim: 'old claim',
+          status: 'active',
+          confidence: 'low',
+          evidence_refs: [],
+        }],
+      }),
+      [{
+        belief_id: 'belief-1',
+        change: 'strengthen',
+        reason: 'receipt confirms signal',
+        evidence_refs: ['action_receipt:receipt-1'],
+      }],
+      { cycleId: 'exec-test' },
+    );
+
+    expect(applied.currentBeliefs.beliefs[0].confidence).toBe('medium');
+    expect(applied.events).toHaveLength(1);
+    expect(applied.events[0].before.claim).toBe('old claim');
+  });
+
+  it('parses belief update JSON', () => {
+    const parsed = parseBeliefUpdate(JSON.stringify({
+      status: 'updated',
+      reason: 'ok',
+      updates: [{
+        belief_id: 'belief-1',
+        change: 'validate',
+        reason: 'verified',
+        evidence_refs: ['verify_report:exec-1'],
+      }],
+    }));
+    expect(parsed.status).toBe('updated');
+    expect(parsed.updates[0].change).toBe('validate');
+  });
+
+  it('builds belief update context with action belief bindings', () => {
+    const store = makeStore();
+    const context = buildBeliefUpdateContext({
+      activeGoals: { id: 'bootstrap', children: [] },
+      intelResult: {
+        cycle_id: 'cycle-test',
+        actions: [{
+          type: 'agent_run',
+          params: {
+            run_spec: {
+              context: {
+                belief_id: 'belief-1',
+                belief_relation: 'test_belief',
+              },
+            },
+          },
+        }],
+      },
+      execResult: { cycle_id: 'exec-test' },
+      store,
+    });
+    expect(context.actions[0].belief_id).toBe('belief-1');
   });
 });
 

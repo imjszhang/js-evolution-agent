@@ -290,6 +290,7 @@ function taskInputFromFlags(flags) {
     mock: Boolean(flags.mock),
     deepseek: Boolean(flags.deepseek),
     skip_goals_assess: Boolean(flags['skip-goals-assess']),
+    skip_belief_update: Boolean(flags['skip-belief-update']),
     exec_limit: flags['exec-limit'] == null || flags['exec-limit'] === true
       ? null
       : parsePositiveInt(flags['exec-limit'], { name: 'exec-limit', min: 1 }),
@@ -303,6 +304,7 @@ function flagsFromTask(task, overrides = {}) {
     mock: Boolean(input.mock || overrides.mock),
     deepseek: Boolean(input.deepseek || overrides.deepseek),
     'skip-goals-assess': Boolean(input.skip_goals_assess || overrides['skip-goals-assess']),
+    'skip-belief-update': Boolean(input.skip_belief_update || overrides['skip-belief-update']),
     'exec-limit': overrides['exec-limit'] ?? input.exec_limit ?? undefined,
   };
 }

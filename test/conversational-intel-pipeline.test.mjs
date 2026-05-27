@@ -115,13 +115,16 @@ describe('conversation prompt constraints', () => {
     expect(enReportPrompt).toContain('law/transaction/niche');
     expect(enReportPrompt).toContain('not verified evidence');
     expect(zhReportPrompt.indexOf('## Temporal Decision Brief')).toBeLessThan(zhReportPrompt.indexOf('## Model Observation Claims'));
-    expect(zhReportPrompt).toContain('只能作为线索');
+    expect(zhReportPrompt).toContain('current_beliefs');
     expect(decidePrompt).toContain('"cyber_taoist_analysis"');
     expect(decidePrompt).toContain('若不采纳 brief，应在 deferred 中说明原因');
     expect(decidePrompt).toContain('"type": "agent_run"');
     expect(decidePrompt).toContain('"primary_cwd_kind"');
     expect(decidePrompt).toContain('"permission_profile"');
     expect(decidePrompt).toContain('Action taxonomy');
+    expect(decidePrompt).toContain('Belief constraints');
+    expect(decidePrompt).toContain('belief_id');
+    expect(decidePrompt).toContain('belief_relation');
     expect(decidePrompt).toContain('记录型');
     expect(decidePrompt).toContain('系统/兼容');
     expect(decidePrompt).toContain('不要在 `params.run_spec` 中设置 `provider`');
