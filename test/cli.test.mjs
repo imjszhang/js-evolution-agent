@@ -58,6 +58,7 @@ import {
   createSubject,
   ensureSubjectsRegistry,
   buildDefaultSubjectPolicy,
+  diagnoseSubjectRuntimeConfig,
   runtimeInfoForDefaultSubject,
   listSubjects,
   parseSubjectRepoLane,
@@ -420,6 +421,88 @@ describe('subject management', () => {
     expect(resolveSubjectResourceRules(policyText, { config: { resources: {} } })).toEqual([
       { kind: 'strategy_repo_candidates', scope: 'strategy_repo', patterns: ['data/candidates/**'] },
     ]);
+  });
+
+  it('diagnoses healthy structured subject runtime config', () => {
+    const root = makeProjectRoot();
+    const result = diagnoseSubjectRuntimeConfig([
+      '## Runtime Boundary Model',
+      '- Target repo: `D:\\target`，使用 `resource_scope=strategy_repo`。',
+      '- Resource mapping: `src/**` 属于 `resource_scope=strategy_repo`。',
+      '',
+      '## Subject Repo Lane',
+      '- Repo: `D:\\target`',
+      '- Base Branch: `main`',
+      '- Lane: `jea/agentank/local`',
+      '- Test Command: `npm test`',
+      '- Run Command: `npm start`',
+    ].join('\n'), {
+      root,
+      subject: 'agentank',
+      config: {
+        name: 'agentank',
+        lane: {
+          repo: 'D:\\target',
+          base_branch: 'main',
+          lane_branch: 'jea/agentank/local',
+          work_branch_prefix: 'jea/agentank/work',
+          test_command: 'npm test',
+          run_command: 'npm start',
+        },
+        resources: {
+          roots: { strategy_repo: 'D:\\target' },
+          rules: [{ kind: 'strategy_repo_src', scope: 'strategy_repo', patterns: ['src/**'] }],
+        },
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it('diagnoses structured subject runtime conflicts and missing resource roots', () => {
+    const root = makeProjectRoot();
+    const result = diagnoseSubjectRuntimeConfig([
+      '## Runtime Boundary Model',
+      '- Target repo: `D:\\markdown`，使用 `resource_scope=strategy_repo`。',
+      '- Resource mapping: `data/markdown/**` 属于 `resource_scope=strategy_repo`。',
+      '',
+      '## Subject Repo Lane',
+      '- Repo: `D:\\markdown`',
+      '- Base Branch: `main`',
+      '- Lane: `jea/agentank/markdown`',
+      '- Test Command: `npm test:markdown`',
+    ].join('\n'), {
+      root,
+      subject: 'agentank',
+      config: {
+        name: 'agentank',
+        lane: {
+          repo: 'D:\\structured',
+          base_branch: 'develop',
+          lane_branch: 'jea/agentank/structured',
+          test_command: 'npm test:structured',
+        },
+        resources: {
+          roots: { strategy_repo: 'D:\\structured' },
+          rules: [
+            { kind: 'strategy_src', scope: 'missing_repo', patterns: ['src/**'] },
+          ],
+        },
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics.map((item) => item.code)).toEqual(expect.arrayContaining([
+      'lane.repo_conflict',
+      'lane.base_branch_conflict',
+      'lane.branch_conflict',
+      'lane.test_command_conflict',
+      'resources.root_conflict',
+      'resources.rule_scope_missing_root',
+      'resources.rules_conflict',
+    ]));
+    expect(result.diagnostics.find((item) => item.code === 'resources.root_conflict')?.severity).toBe('error');
   });
 
   it('does not block subjects without repo lane configuration', () => {

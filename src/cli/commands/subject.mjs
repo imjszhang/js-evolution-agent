@@ -6,6 +6,7 @@ import {
 } from '../../actions/lane-manager.mjs';
 import {
   createSubject,
+  diagnoseSubjectRuntimeConfig,
   ensureSubjectsRegistry,
   listRegisteredSubjects,
   readSubjectPolicy,
@@ -53,6 +54,14 @@ function checkSubjectPolicy(text) {
     else missing.push(section);
   }
   return { ok: missing.length === 0, present, missing };
+}
+
+function printDiagnostics(diagnostics = []) {
+  if (!diagnostics.length) return;
+  console.log('diagnostics:');
+  for (const item of diagnostics) {
+    console.log(`- ${item.severity}: ${item.code} - ${item.message}`);
+  }
 }
 
 function currentRepoLane(root, flags = {}) {
@@ -227,12 +236,21 @@ export async function subjectCommand({ subcommand, flags = {}, args = [] } = {})
     ensureSubjectsRegistry(root);
     const config = resolveSubjectFromFlags(root, flags);
     const policy = readSubjectPolicy(root, config);
+    const policyCheck = checkSubjectPolicy(policy.text);
+    const runtimeCheck = diagnoseSubjectRuntimeConfig(policy.text, {
+      root,
+      subject: config.name,
+      config,
+    });
     const result = {
       subject: config.name,
       default_subject: resolveDefaultSubjectName(root),
       file: policy.file,
-      ...checkSubjectPolicy(policy.text),
+      ...policyCheck,
+      diagnostics: runtimeCheck.diagnostics,
+      runtime_ok: runtimeCheck.ok,
     };
+    result.ok = policyCheck.ok && runtimeCheck.ok;
     if (flags.json) console.log(JSON.stringify(result, null, 2));
     else {
       console.log(`# Subject Check`);
@@ -241,6 +259,7 @@ export async function subjectCommand({ subcommand, flags = {}, args = [] } = {})
       console.log(`file: ${result.file}`);
       console.log(`ok: ${result.ok}`);
       if (result.missing.length) console.log(`missing: ${result.missing.join(', ')}`);
+      printDiagnostics(result.diagnostics);
     }
     return result.ok ? 0 : 1;
   }

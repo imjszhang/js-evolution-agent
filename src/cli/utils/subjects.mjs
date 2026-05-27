@@ -481,6 +481,139 @@ export function resolveSubjectResourceRules(policyText = '', { config = null } =
   return structuredRules.length ? structuredRules : parseSubjectResourceRules(policyText);
 }
 
+function makeDiagnostic(severity, code, message, details = {}) {
+  return { severity, code, message, ...details };
+}
+
+function sameStringValue(a, b) {
+  return String(a ?? '').trim() === String(b ?? '').trim();
+}
+
+function normalizePathForCompare(value) {
+  return String(value ?? '').trim().replace(/\\/g, '/').replace(/\/+$/g, '').toLowerCase();
+}
+
+function samePathValue(a, b) {
+  return normalizePathForCompare(a) === normalizePathForCompare(b);
+}
+
+function canonicalRule(rule) {
+  return {
+    kind: String(rule?.kind ?? '').trim(),
+    scope: String(rule?.scope ?? '').trim(),
+    patterns: [...new Set((rule?.patterns ?? []).map((pattern) => String(pattern).trim()).filter(Boolean))].sort(),
+  };
+}
+
+function rulesSignature(rules) {
+  return JSON.stringify((rules ?? [])
+    .map(canonicalRule)
+    .sort((a, b) => `${a.scope}:${a.kind}`.localeCompare(`${b.scope}:${b.kind}`)));
+}
+
+function hasStructuredLane(config) {
+  return Boolean(Object.keys(asPlainObject(config?.lane)).length);
+}
+
+function structuredLaneRepo(config) {
+  return firstStructuredLaneValue(asPlainObject(config?.lane), ['repo', 'repository', 'target_repo', 'targetRepo']);
+}
+
+function structuredLaneValue(config, keys) {
+  return firstStructuredLaneValue(asPlainObject(config?.lane), keys);
+}
+
+export function diagnoseSubjectRuntimeConfig(policyText = '', {
+  root = process.cwd(),
+  subject = DEFAULT_SUBJECT,
+  config = null,
+} = {}) {
+  const diagnostics = [];
+  const structuredRoots = normalizeStructuredRoots(config?.resources?.roots);
+  const structuredRules = Array.isArray(config?.resources?.rules)
+    ? config.resources.rules.map(normalizeStructuredResourceRule).filter(Boolean)
+    : [];
+  const markdownLane = parseSubjectRepoLane(policyText, { root, subject });
+  const markdownRoots = parseSubjectExternalRoots(policyText);
+  const markdownRules = parseSubjectResourceRules(policyText);
+
+  if (hasStructuredLane(config)) {
+    const repo = structuredLaneRepo(config);
+    if (!repo) {
+      diagnostics.push(makeDiagnostic('error', 'lane.repo_missing', 'structured lane repo is required when lane is configured'));
+    }
+    const laneBranch = structuredLaneValue(config, ['lane_branch', 'laneBranch', 'lane']);
+    if (!laneBranch) {
+      diagnostics.push(makeDiagnostic('warning', 'lane.branch_missing', 'structured lane branch is missing; default lane will be used'));
+    }
+    const workBranchPrefix = structuredLaneValue(config, ['work_branch_prefix', 'workBranchPrefix', 'work_prefix', 'workPrefix']);
+    if (!workBranchPrefix) {
+      diagnostics.push(makeDiagnostic('warning', 'lane.work_prefix_missing', 'structured work branch prefix is missing; default prefix will be used'));
+    }
+    if (repo && markdownLane.repo && !samePathValue(resolve(root, repo), markdownLane.repoRoot)) {
+      diagnostics.push(makeDiagnostic('warning', 'lane.repo_conflict', 'structured lane repo differs from markdown policy', {
+        structured: repo,
+        markdown: markdownLane.repo,
+      }));
+    }
+    const structuredBase = structuredLaneValue(config, ['base_branch', 'baseBranch', 'base']);
+    if (structuredBase && markdownLane.baseBranch && !sameStringValue(structuredBase, markdownLane.baseBranch)) {
+      diagnostics.push(makeDiagnostic('warning', 'lane.base_branch_conflict', 'structured base branch differs from markdown policy', {
+        structured: structuredBase,
+        markdown: markdownLane.baseBranch,
+      }));
+    }
+    if (laneBranch && markdownLane.lane && !sameStringValue(laneBranch, markdownLane.lane)) {
+      diagnostics.push(makeDiagnostic('warning', 'lane.branch_conflict', 'structured lane branch differs from markdown policy', {
+        structured: laneBranch,
+        markdown: markdownLane.lane,
+      }));
+    }
+    const structuredTest = structuredLaneValue(config, ['test_command', 'testCommand', 'verify_command', 'verifyCommand']);
+    if (structuredTest && markdownLane.testCommand && !sameStringValue(structuredTest, markdownLane.testCommand)) {
+      diagnostics.push(makeDiagnostic('warning', 'lane.test_command_conflict', 'structured test command differs from markdown policy', {
+        structured: structuredTest,
+        markdown: markdownLane.testCommand,
+      }));
+    }
+    const structuredRun = structuredLaneValue(config, ['run_command', 'runCommand', 'observe_command', 'observeCommand']);
+    if (structuredRun && markdownLane.runCommand && !sameStringValue(structuredRun, markdownLane.runCommand)) {
+      diagnostics.push(makeDiagnostic('warning', 'lane.run_command_conflict', 'structured run command differs from markdown policy', {
+        structured: structuredRun,
+        markdown: markdownLane.runCommand,
+      }));
+    }
+  }
+
+  for (const [scope, rootPath] of Object.entries(structuredRoots)) {
+    if (markdownRoots[scope] && !samePathValue(rootPath, markdownRoots[scope])) {
+      diagnostics.push(makeDiagnostic('error', 'resources.root_conflict', `structured resource root differs from markdown policy for scope '${scope}'`, {
+        scope,
+        structured: rootPath,
+        markdown: markdownRoots[scope],
+      }));
+    }
+  }
+
+  for (const rule of structuredRules) {
+    if (!structuredRoots[rule.scope]) {
+      diagnostics.push(makeDiagnostic('error', 'resources.rule_scope_missing_root', `resource rule scope '${rule.scope}' has no configured root`, {
+        scope: rule.scope,
+        kind: rule.kind,
+      }));
+    }
+  }
+
+  if (structuredRules.length && markdownRules.length && rulesSignature(structuredRules) !== rulesSignature(markdownRules)) {
+    diagnostics.push(makeDiagnostic('warning', 'resources.rules_conflict', 'structured resource rules differ from markdown policy'));
+  }
+
+  return {
+    ok: diagnostics.every((item) => item.severity !== 'error'),
+    diagnostics,
+  };
+}
+
 function stripInlineCode(value) {
   const text = String(value || '').trim();
   const code = text.match(/`([^`]+)`/);
