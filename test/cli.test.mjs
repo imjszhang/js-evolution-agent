@@ -401,9 +401,14 @@ describe('subject management', () => {
           strategy_repo: 'D:\\structured',
           subject_runtime: 'ignored',
         },
+        aliases: {
+          strategy_alias: 'strategy_repo',
+          missing_alias: 'missing_repo',
+          source_root_alias: 'source_root',
+        },
         rules: [{
           kind: 'strategy_src',
-          scope: 'strategy_repo',
+          scope: 'strategy_alias',
           patterns: ['src/**', 'src/**'],
         }],
       },
@@ -411,9 +416,10 @@ describe('subject management', () => {
 
     expect(resolveSubjectExternalRoots(policyText, { config })).toEqual({
       strategy_repo: 'D:\\structured',
+      strategy_alias: 'D:\\structured',
     });
     expect(resolveSubjectResourceRules(policyText, { config })).toEqual([
-      { kind: 'strategy_src', scope: 'strategy_repo', patterns: ['src/**'] },
+      { kind: 'strategy_src', scope: 'strategy_alias', patterns: ['src/**'] },
     ]);
   });
 

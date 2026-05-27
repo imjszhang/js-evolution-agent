@@ -451,6 +451,27 @@ function normalizeStructuredRoots(roots = {}) {
   return result;
 }
 
+function normalizeStructuredRootAliases(aliases = {}, roots = {}) {
+  const result = {};
+  for (const [rawAlias, rawTarget] of Object.entries(asPlainObject(aliases))) {
+    const alias = normalizeResourceScope(rawAlias);
+    const target = normalizeResourceScope(rawTarget);
+    if (!alias || alias === 'subject_runtime' || alias === 'source_root') continue;
+    if (!target || target === 'subject_runtime' || target === 'source_root') continue;
+    if (!roots[target]) continue;
+    result[alias] = roots[target];
+  }
+  return result;
+}
+
+function normalizeStructuredResourceRoots(resources = {}) {
+  const roots = normalizeStructuredRoots(resources?.roots);
+  return {
+    ...roots,
+    ...normalizeStructuredRootAliases(resources?.aliases, roots),
+  };
+}
+
 function normalizeStructuredResourceRule(rule = {}) {
   if (!rule || typeof rule !== 'object') return null;
   const scope = normalizeResourceScope(rule.scope);
@@ -470,7 +491,7 @@ function normalizeStructuredResourceRule(rule = {}) {
 export function resolveSubjectExternalRoots(policyText = '', { config = null } = {}) {
   return {
     ...parseSubjectExternalRoots(policyText),
-    ...normalizeStructuredRoots(config?.resources?.roots),
+    ...normalizeStructuredResourceRoots(config?.resources),
   };
 }
 
@@ -529,7 +550,7 @@ export function diagnoseSubjectRuntimeConfig(policyText = '', {
   config = null,
 } = {}) {
   const diagnostics = [];
-  const structuredRoots = normalizeStructuredRoots(config?.resources?.roots);
+  const structuredRoots = normalizeStructuredResourceRoots(config?.resources);
   const structuredRules = Array.isArray(config?.resources?.rules)
     ? config.resources.rules.map(normalizeStructuredResourceRule).filter(Boolean)
     : [];

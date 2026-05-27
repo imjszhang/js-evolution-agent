@@ -17,18 +17,15 @@
         "roots": {
           "target_repo": "D:\\path\\to\\target-project"
         },
+        "aliases": {
+          "target_project": "target_repo"
+        },
         "rules": [
           {
-            "kind": "target_project_src",
-            "scope": "target_repo",
+            "kind": "target_project",
+            "scope": "target_project",
             "patterns": [
-              "src/**"
-            ]
-          },
-          {
-            "kind": "target_project_tests",
-            "scope": "target_repo",
-            "patterns": [
+              "src/**",
               "test/**"
             ]
           }
