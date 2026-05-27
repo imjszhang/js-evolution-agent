@@ -52,6 +52,16 @@ function getField(action, field) {
   return action?.params?.[field] ?? action?.[field] ?? null;
 }
 
+const COMPATIBILITY_ACTION_TYPES = new Set(['run_probe', 'agent_execute']);
+
+function compatibilityReceiptFields(action) {
+  if (!COMPATIBILITY_ACTION_TYPES.has(action?.type)) return {};
+  return {
+    compatibility_action: true,
+    escape_hatch_reason: getField(action, 'escape_hatch_reason') ?? null,
+  };
+}
+
 function storeFrom(ctx) {
   const store = ctx?.host?.intelligenceStore;
   if (!store) throw new Error('host.intelligenceStore is not configured');
@@ -137,6 +147,7 @@ function persistLocalProbeResult(store, action, ctx, probeResult, overrides = {}
     fallback_used: false,
     host_boundary_preflight: !!overrides.host_boundary_preflight,
     ...overrides,
+    ...compatibilityReceiptFields(action),
   };
   store.recordActionReceipt(action, result, ctx);
   return result;
@@ -285,6 +296,7 @@ function agentActionResult(action, agenticExecution, overrides = {}) {
     agentic_execution: agenticExecution,
     fallback_used: false,
     ...overrides,
+    ...compatibilityReceiptFields(action),
   };
 }
 
@@ -1407,12 +1419,15 @@ const builtInActionHandlers = {
       const result = {
         success: written > 0,
         status: written > 0 ? 'recorded' : 'failed',
-        message: `recorded ${written} observation(s) locally`,
+        message: written > 0 ? 'recorded observation locally (host-backed write)' : 'observation was not recorded',
         provider: 'local',
         fallback_used: false,
         writes_applied: { observations: written },
         evidence: {},
         writes: { observations: [observation] },
+        verification_hints: written > 0
+          ? ['record_observation is a host-backed write only; use agent_run for investigations.']
+          : [],
       };
       store.recordActionReceipt(action, result, ctx);
       return result;
@@ -1446,6 +1461,10 @@ const builtInActionHandlers = {
 
     if (!legacyFallbackAllowed(action)) {
       const result = missingAgentArtifactsResult(action, agenticExecution, 'writes.observations');
+      result.verification_hints = [
+        ...(result.verification_hints ?? []),
+        'record_observation requires writes.observations from the agent; use agent_run for investigations, then record_observation to persist conclusions.',
+      ];
       store.recordActionReceipt(action, result, ctx);
       return result;
     }
@@ -1503,6 +1522,10 @@ const builtInActionHandlers = {
 
     if (!legacyFallbackAllowed(action)) {
       const result = missingAgentArtifactsResult(action, agenticExecution, 'writes.probe_proposals');
+      result.verification_hints = [
+        ...(result.verification_hints ?? []),
+        'propose_probe registers experiment plans only; execute experiments with agent_run after the proposal is recorded.',
+      ];
       store.recordActionReceipt(action, result, ctx);
       return result;
     }
@@ -1540,7 +1563,10 @@ const builtInActionHandlers = {
     const roots = resolveActionExecutionRoots(action, ctx);
     const metadata = rootMetadata(roots);
     if (roots.rootMismatch) {
-      const result = rootMismatchResult(action, roots, 'local');
+      const result = {
+        ...rootMismatchResult(action, roots, 'local'),
+        ...compatibilityReceiptFields(action),
+      };
       store.recordActionReceipt(action, result, ctx);
       return result;
     }
@@ -1548,13 +1574,15 @@ const builtInActionHandlers = {
       const result = {
         success: false,
         status: 'blocked',
-        message: 'run_probe requires params.executionRoot or params.cwd for local file work',
+        message: 'run_probe requires params.executionRoot or params.cwd for local file work; prefer agent_run with permission_profile=read_only for new investigations',
         provider: 'local',
         fallback_used: false,
         error: 'missing executionRoot',
         ...metadata,
         evidence: metadata,
         writes: {},
+        verification_hints: ['Prefer agent_run with permission_profile=read_only instead of run_probe for new decisions.'],
+        ...compatibilityReceiptFields(action),
       };
       store.recordActionReceipt(action, result, ctx);
       return result;
@@ -1605,7 +1633,14 @@ const builtInActionHandlers = {
     }
 
     if (!legacyFallbackAllowed(action)) {
-      const result = missingAgentArtifactsResult(action, agenticExecution, 'evidence or writes.probe_results');
+      const result = {
+        ...missingAgentArtifactsResult(action, agenticExecution, 'evidence or writes.probe_results'),
+        verification_hints: [
+          ...(agenticExecution.verification_hints ?? []),
+          'run_probe is a compatibility action; prefer agent_run with permission_profile=read_only for new investigations.',
+        ],
+        ...compatibilityReceiptFields(action),
+      };
       store.recordActionReceipt(action, result, ctx);
       return result;
     }
@@ -1650,10 +1685,14 @@ const builtInActionHandlers = {
       created_files: agent.created_files ?? [],
       modified_files: agent.modified_files ?? [],
       test_results: agent.test_results ?? [],
-      verification_hints: agent.verification_hints ?? [],
+      verification_hints: [
+        ...(agent.verification_hints ?? []),
+        'agent_execute is a compatibility escape hatch; prefer agent_run for new decisions.',
+      ],
       next_actions: agent.next_actions ?? [],
       agent,
       error: agentResult.error,
+      ...compatibilityReceiptFields(action),
     };
     result.boundary_risk = summarizeBoundaryRisk(action, result);
 
@@ -1685,7 +1724,7 @@ const builtInActionHandlers = {
       const result = {
         success: written > 0,
         status: written > 0 ? 'recorded' : 'failed',
-        message: written > 0 ? 'retrospective recorded locally' : 'retrospective was not recorded',
+        message: written > 0 ? 'retrospective recorded locally (host-backed write)' : 'retrospective was not recorded',
         provider: 'local',
         requires_approval: false,
         action_type: action.type,
@@ -1695,6 +1734,9 @@ const builtInActionHandlers = {
         writes: { retrospectives: [review] },
         writes_applied: { retrospectives: written },
         fallback_used: false,
+        verification_hints: written > 0
+          ? ['write_retrospective records conclusions only; use agent_run when more evidence is needed.']
+          : [],
       };
       store.recordActionReceipt(action, result, ctx);
       return result;
@@ -1760,6 +1802,7 @@ const builtInActionHandlers = {
         evidence: {},
         writes: {},
         fallback_used: false,
+        verification_hints: ['Ordinary target-repo edits belong in agent_run + lane worktree, not core_apply.'],
       };
       store.recordActionReceipt(action, result, ctx);
       return result;
@@ -1949,6 +1992,8 @@ const baseActionVerifiers = Object.fromEntries(
             provider: result?.provider ?? result?.agentic_execution?.provider ?? null,
             requires_approval: requiresApproval,
             fallback_used: !!result?.fallback_used,
+            compatibility_action: !!result?.compatibility_action,
+            escape_hatch_reason: result?.escape_hatch_reason ?? null,
             evidence_count,
             writes_count,
             verification_hints: result?.verification_hints ?? result?.agentic_execution?.verification_hints ?? [],
@@ -2056,6 +2101,9 @@ export const actionVerifiers = {
           status: result?.status ?? 'unknown',
           requires_approval: needsHuman,
           message: result?.message ?? '',
+          compatibility_action: !!result?.compatibility_action,
+          escape_hatch_reason: result?.escape_hatch_reason ?? null,
+          fallback_used: !!result?.fallback_used,
           evidence_count,
           writes_count,
           modified_files: result?.modified_files ?? [],

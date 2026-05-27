@@ -121,6 +121,9 @@ describe('conversation prompt constraints', () => {
     expect(decidePrompt).toContain('"type": "agent_run"');
     expect(decidePrompt).toContain('"primary_cwd_kind"');
     expect(decidePrompt).toContain('"permission_profile"');
+    expect(decidePrompt).toContain('Action taxonomy');
+    expect(decidePrompt).toContain('记录型');
+    expect(decidePrompt).toContain('系统/兼容');
     expect(decidePrompt).toContain('不要在 `params.run_spec` 中设置 `provider`');
     expect(decidePrompt).not.toContain('"provider": "claude_code_sdk | cursor_sdk"');
   });

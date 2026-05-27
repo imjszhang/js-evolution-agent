@@ -1268,9 +1268,19 @@ describe('controlled action handlers', () => {
   it('describes run_probe boundaries as contracts, not provider sandboxes', () => {
     const source = readFileSync(new URL('../src/actions/registry.mjs', import.meta.url), 'utf-8');
 
-    expect(source).toContain('bounded read-only probe');
+    expect(source).toContain('Legacy bounded read-only investigation');
     expect(source).not.toContain('sandboxed read-only probe');
-    expect(source).toContain('does not prove provider-level isolation');
+    expect(source).toContain('prefer agent_run');
+  });
+
+  it('registry marks run_probe and agent_execute as compatibility actions', () => {
+    const source = readFileSync(new URL('../src/actions/registry.mjs', import.meta.url), 'utf-8');
+
+    expect(source).toContain("name: 'run_probe'");
+    expect(source).toContain('[COMPAT');
+    expect(source).toContain("name: 'agent_execute'");
+    expect(source).toContain('[PRIMARY EXECUTION]');
+    expect(source).toContain('[RECORDING ONLY]');
   });
 
   it('records observations through the intelligence store', async () => {
@@ -1350,6 +1360,29 @@ describe('controlled action handlers', () => {
 
     expect(result.success).toBe(false);
     expect(result.requires_approval).toBe(true);
+    expect(ctx.host.intelligenceStore.readRecentIntel({ days: 1, limit: 5 })).toEqual([]);
+  });
+
+  it('does not silently fallback when agent observation writes are missing', async () => {
+    const ctx = makeAgenticCtx({
+      status: 'completed',
+      summary: 'Agent completed without observation writes.',
+      writes: {},
+    });
+
+    const result = await actionHandlers.record_observation({
+      type: 'record_observation',
+      params: {
+        provider: 'llm_only',
+        source: 'test',
+        subject: 'missing-writes',
+        content: 'should not be written via fallback',
+      },
+    }, ctx);
+
+    expect(result.success).toBe(false);
+    expect(result.fallback_used).not.toBe(true);
+    expect(result.verification_hints.join(' ')).toMatch(/agent_run/);
     expect(ctx.host.intelligenceStore.readRecentIntel({ days: 1, limit: 5 })).toEqual([]);
   });
 
@@ -1616,6 +1649,7 @@ describe('controlled action handlers', () => {
 
     expect(result.success).toBe(true);
     expect(result.provider).toBe('llm_only');
+    expect(result.compatibility_action).toBe(true);
     expect(result.agent.outputs.recommendation).toBe('inspect queue receipts');
     expect(result.boundary_risk).toMatchObject({
       boundary_contract: 'present',
@@ -1623,6 +1657,7 @@ describe('controlled action handlers', () => {
       sandbox_backing: ['none'],
     });
     expect(verification.status).toBe('improved');
+    expect(verification.value.compatibility_action).toBe(true);
     expect(ctx.host.intelligenceStore.readActionReceipts({ limit: 5 })[0].action_type)
       .toBe('agent_execute');
   });
@@ -2289,6 +2324,7 @@ describe('controlled action handlers', () => {
 
     expect(result.success).toBe(true);
     expect(result.status).toBe('succeeded');
+    expect(result.compatibility_action).toBe(true);
     expect(result.agentic_execution.provider).toBe('llm_only');
     expect(ctx.ai.agentCalls[0][1].content).toContain('Agentic execution task');
     expect(ctx.host.intelligenceStore.readProbeResults({ limit: 5 })[0].probe_type)

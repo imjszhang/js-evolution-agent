@@ -149,6 +149,8 @@ Copy-Item policies\subjects.example.json policies\subjects.json
 
 主体 Markdown policy 会进入 agent context；因此应避免写入本地绝对路径、密钥、机器专属分支策略或会频繁变化的运行参数。
 
+不要在 subject policy 中维护 subject-specific action 菜单（例如 `sync/generate/simulate/publish` 等独立 action type）。这类业务能力应通过 `subjects.json` 的 `lane` / `resources` 配置，或 `runtime/subjects/<namespace>/data/config/actions.json` 中的 configured external actions 表达；Intel 阶段默认用 `agent_run` 承载复杂任务，用记录型 action 落证据。
+
 ## 提交策略
 
 通常可以提交：
