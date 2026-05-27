@@ -1,7 +1,7 @@
 import { getProjectRoot } from '../utils/project.mjs';
 import { REQUIRED_POLICY_SECTIONS } from '../utils/policy-sections.mjs';
 import { extractMarkdownSection } from './subject.mjs';
-import { readActiveSubjectPolicy } from '../utils/subjects.mjs';
+import { readSubjectPolicy, resolveSubjectFromFlags } from '../utils/subjects.mjs';
 
 export { REQUIRED_POLICY_SECTIONS };
 
@@ -21,12 +21,14 @@ export function checkPolicy(text, sections = REQUIRED_POLICY_SECTIONS) {
 
 export async function policyCommand({ subcommand, flags = {} } = {}) {
   if (subcommand !== 'check') {
-    console.error('Usage: jea policy check [--json]');
+    console.error('Usage: jea policy check [--subject NAME] [--json]');
     return 2;
   }
   const root = getProjectRoot();
-  const { active, file, text } = readActiveSubjectPolicy(root);
+  const config = resolveSubjectFromFlags(root, flags);
+  const { active, file, text } = readSubjectPolicy(root, config);
   const result = {
+    subject: config.name,
     active: active.active,
     file,
     ...checkPolicy(text),
@@ -35,6 +37,7 @@ export async function policyCommand({ subcommand, flags = {} } = {}) {
     console.log(JSON.stringify(result, null, 2));
   } else {
     console.log(`# Policy Check`);
+    console.log(`subject: ${result.subject}`);
     console.log(`file: ${file}`);
     console.log(`ok: ${result.ok}`);
     if (result.present.length) console.log(`present: ${result.present.join(', ')}`);

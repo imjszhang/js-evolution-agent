@@ -5,7 +5,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
-import { readJsonSafe, readTextSafe, writeJsonIfMissing } from './files.mjs';
+import { readJsonSafe, readTextSafe, writeJsonFile, writeJsonIfMissing } from './files.mjs';
 import { getLanguage, t } from './i18n.mjs';
 
 export const DEFAULT_SUBJECT = 'js-evolution-agent';
@@ -19,8 +19,13 @@ export function templatesDir(root) {
   return join(root, 'policies', 'templates');
 }
 
+/** @deprecated use subjectsRegistryFile */
 export function activeSubjectFile(root) {
   return join(root, 'policies', 'active-subject.json');
+}
+
+export function subjectsRegistryFile(root) {
+  return join(root, 'policies', 'subjects.json');
 }
 
 export function subjectFile(root, name) {
@@ -35,38 +40,263 @@ export function sanitizeSubjectName(name) {
   return value;
 }
 
-export function defaultActiveSubject(name = DEFAULT_SUBJECT) {
+export function defaultSubjectEntry(name = DEFAULT_SUBJECT) {
+  const subject = sanitizeSubjectName(name);
   return {
-    active: name,
-    policy: `subjects/${name}.md`,
-    data_namespace: name,
+    policy: `subjects/${subject}.md`,
+    data_namespace: subject,
   };
 }
 
-export function getActiveDataNamespace(root, active = readActiveSubject(root)) {
-  return sanitizeSubjectName(active.data_namespace || active.active || DEFAULT_SUBJECT);
-}
-
-export function getActiveSubjectRuntimeRoot(root, active = readActiveSubject(root)) {
-  return join(root, 'runtime', 'subjects', getActiveDataNamespace(root, active));
-}
-
-export function getActiveSubjectDataRoot(root, active = readActiveSubject(root)) {
-  return join(getActiveSubjectRuntimeRoot(root, active), 'data');
-}
-
-export function getActiveSubjectDataDir(root, kind, active = readActiveSubject(root)) {
-  return join(getActiveSubjectDataRoot(root, active), sanitizeSubjectName(kind));
-}
-
-export function getActiveSubjectRuntimeInfo(root) {
-  const active = readActiveSubject(root);
-  const dataNamespace = getActiveDataNamespace(root, active);
-  const runtimeRoot = getActiveSubjectRuntimeRoot(root, active);
-  const dataRoot = getActiveSubjectDataRoot(root, active);
+/** @deprecated use defaultSubjectEntry / subjectConfigToLegacy */
+export function defaultActiveSubject(name = DEFAULT_SUBJECT) {
+  const subject = sanitizeSubjectName(name);
   return {
-    active,
-    subject: active.active || DEFAULT_SUBJECT,
+    active: subject,
+    policy: `subjects/${subject}.md`,
+    data_namespace: subject,
+  };
+}
+
+export function subjectConfigToLegacy(config) {
+  const subject = config?.name ?? config?.active ?? DEFAULT_SUBJECT;
+  return {
+    active: subject,
+    policy: config?.policy ?? `subjects/${subject}.md`,
+    data_namespace: config?.data_namespace ?? subject,
+  };
+}
+
+function defaultSubjectsRegistry() {
+  return {
+    default_subject: DEFAULT_SUBJECT,
+    subjects: {
+      [DEFAULT_SUBJECT]: defaultSubjectEntry(DEFAULT_SUBJECT),
+    },
+  };
+}
+
+export function normalizeRegistryEntry(name, entry = {}) {
+  const subject = sanitizeSubjectName(name);
+  return {
+    name: subject,
+    policy: entry.policy ?? `subjects/${subject}.md`,
+    data_namespace: entry.data_namespace ?? subject,
+  };
+}
+
+function registryFromLegacyActive(legacy) {
+  if (!legacy?.active) return null;
+  const name = sanitizeSubjectName(legacy.active);
+  return {
+    default_subject: name,
+    subjects: {
+      [name]: {
+        policy: legacy.policy ?? `subjects/${name}.md`,
+        data_namespace: legacy.data_namespace ?? name,
+      },
+    },
+  };
+}
+
+export function readSubjectsRegistry(root) {
+  const registryPath = subjectsRegistryFile(root);
+  const registry = readJsonSafe(registryPath, null);
+  if (registry?.subjects && typeof registry.subjects === 'object') {
+    return {
+      path: registryPath,
+      source: 'subjects.json',
+      default_subject: sanitizeSubjectName(registry.default_subject || DEFAULT_SUBJECT),
+      subjects: registry.subjects,
+    };
+  }
+
+  const legacy = readJsonSafe(activeSubjectFile(root), null);
+  const migrated = registryFromLegacyActive(legacy);
+  if (migrated) {
+    return {
+      path: activeSubjectFile(root),
+      source: 'active-subject.json',
+      default_subject: migrated.default_subject,
+      subjects: migrated.subjects,
+    };
+  }
+
+  const fallback = defaultSubjectsRegistry();
+  return {
+    path: registryPath,
+    source: 'default',
+    default_subject: fallback.default_subject,
+    subjects: fallback.subjects,
+  };
+}
+
+export function writeSubjectsRegistry(root, registry) {
+  const file = subjectsRegistryFile(root);
+  const payload = {
+    default_subject: sanitizeSubjectName(registry.default_subject || DEFAULT_SUBJECT),
+    subjects: registry.subjects ?? {},
+  };
+  writeJsonFile(file, payload);
+  return { path: file, registry: payload };
+}
+
+export function ensureSubjectsRegistry(root, { language = getLanguage() } = {}) {
+  ensureSubjectLayout(root);
+  const file = subjectsRegistryFile(root);
+  const existed = existsSync(file);
+  if (!existed) {
+    const legacy = readJsonSafe(activeSubjectFile(root), null);
+    const migrated = registryFromLegacyActive(legacy);
+    writeSubjectsRegistry(root, migrated ?? defaultSubjectsRegistry());
+  }
+
+  const registry = readSubjectsRegistry(root);
+
+  const destination = subjectFile(root, DEFAULT_SUBJECT);
+  let subjectWritten = false;
+  if (!existsSync(destination)) {
+    writeFileSync(destination, buildDefaultSubjectPolicy(language), 'utf-8');
+    subjectWritten = true;
+  }
+
+  return {
+    registry,
+    registryWritten: !existed,
+    subject: { file: destination, written: subjectWritten },
+  };
+}
+
+/** @deprecated use ensureSubjectsRegistry */
+export function ensureDefaultSubject(root, options = {}) {
+  const result = ensureSubjectsRegistry(root, options);
+  return {
+    active: {
+      path: result.registry.path,
+      written: result.registryWritten,
+      skipped: !result.registryWritten,
+      existed: !result.registryWritten,
+    },
+    subject: result.subject,
+  };
+}
+
+export function getSubjectEntry(root, name) {
+  const registry = readSubjectsRegistry(root);
+  const subject = sanitizeSubjectName(name);
+  const entry = registry.subjects?.[subject];
+  if (entry) {
+    return normalizeRegistryEntry(subject, entry);
+  }
+  if (existsSync(subjectFile(root, subject))) {
+    return normalizeRegistryEntry(subject, defaultSubjectEntry(subject));
+  }
+  return null;
+}
+
+export function registerSubject(root, name, entry = {}) {
+  const registry = readSubjectsRegistry(root);
+  const subject = sanitizeSubjectName(name);
+  const next = {
+    default_subject: registry.default_subject || subject,
+    subjects: {
+      ...registry.subjects,
+      [subject]: {
+        ...defaultSubjectEntry(subject),
+        ...entry,
+      },
+    },
+  };
+  return writeSubjectsRegistry(root, next);
+}
+
+export function resolveSubjectConfig(root, {
+  subject = null,
+  allowDefault = true,
+  envSubject = process.env[SUBJECT_ENV] ?? null,
+} = {}) {
+  const registry = readSubjectsRegistry(root);
+  let resolvedName = null;
+  let resolutionSource = null;
+
+  if (subject) {
+    resolvedName = sanitizeSubjectName(subject);
+    resolutionSource = 'explicit';
+  } else if (envSubject) {
+    resolvedName = sanitizeSubjectName(envSubject);
+    resolutionSource = 'env';
+  } else if (allowDefault) {
+    resolvedName = sanitizeSubjectName(registry.default_subject || DEFAULT_SUBJECT);
+    resolutionSource = registry.source === 'active-subject.json'
+      ? 'legacy-active-subject'
+      : 'default_subject';
+  }
+
+  if (!resolvedName) {
+    throw new Error('Subject is required. Pass --subject NAME or set JEA_SUBJECT.');
+  }
+
+  const entry = getSubjectEntry(root, resolvedName);
+  if (!entry) {
+    throw new Error(`Subject not found: ${resolvedName}`);
+  }
+
+  return {
+    ...entry,
+    resolutionSource,
+    registrySource: registry.source,
+    legacyActive: subjectConfigToLegacy(entry),
+  };
+}
+
+export function resolveSubjectFromFlags(root, flags = {}, { allowDefault = true } = {}) {
+  const subject = flags.subject && flags.subject !== true ? flags.subject : null;
+  return resolveSubjectConfig(root, { subject, allowDefault });
+}
+
+export function resolveDefaultSubjectName(root) {
+  return readSubjectsRegistry(root).default_subject || DEFAULT_SUBJECT;
+}
+
+export function getDataNamespace(root, config) {
+  return sanitizeSubjectName(config.data_namespace || config.name || config.active || DEFAULT_SUBJECT);
+}
+
+/** @deprecated use getDataNamespace with resolveSubjectConfig */
+export function getActiveDataNamespace(root, active = readActiveSubject(root)) {
+  return getDataNamespace(root, active);
+}
+
+export function getSubjectRuntimeRoot(root, config) {
+  return join(root, 'runtime', 'subjects', getDataNamespace(root, config));
+}
+
+/** @deprecated */
+export function getActiveSubjectRuntimeRoot(root, active = readActiveSubject(root)) {
+  return getSubjectRuntimeRoot(root, active);
+}
+
+export function getSubjectDataRoot(root, config) {
+  return join(getSubjectRuntimeRoot(root, config), 'data');
+}
+
+/** @deprecated */
+export function getActiveSubjectDataDir(root, kind, active = readActiveSubject(root)) {
+  return join(getSubjectDataRoot(root, active), sanitizeSubjectName(kind));
+}
+
+export function runtimeInfoForSubject(root, subjectOrConfig) {
+  const config = typeof subjectOrConfig === 'string'
+    ? resolveSubjectConfig(root, { subject: subjectOrConfig })
+    : subjectOrConfig;
+  const legacy = subjectConfigToLegacy(config);
+  const dataNamespace = getDataNamespace(root, config);
+  const runtimeRoot = getSubjectRuntimeRoot(root, config);
+  const dataRoot = join(runtimeRoot, 'data');
+  return {
+    config,
+    active: legacy,
+    subject: config.name,
     dataNamespace,
     runtimeRoot,
     dataRoot,
@@ -76,34 +306,68 @@ export function getActiveSubjectRuntimeInfo(root) {
   };
 }
 
-export function readActiveSubject(root) {
-  if (process.env[SUBJECT_ENV]) {
-    return defaultActiveSubject(process.env[SUBJECT_ENV]);
-  }
-  const active = readJsonSafe(activeSubjectFile(root), null);
-  if (active?.active && active?.policy) return active;
-  return defaultActiveSubject();
+/** @deprecated use runtimeInfoForSubject */
+export function getActiveSubjectRuntimeInfo(root) {
+  return runtimeInfoForSubject(root, resolveSubjectConfig(root));
 }
 
-export function resolveSubjectPolicyPath(root, active = readActiveSubject(root)) {
-  const configured = resolve(root, 'policies', active.policy || '');
+/** @deprecated use resolveSubjectConfig */
+export function readActiveSubject(root) {
+  return resolveSubjectConfig(root).legacyActive;
+}
+
+export function resolveSubjectPolicyPath(root, config) {
+  const legacy = subjectConfigToLegacy(config);
+  const configured = resolve(root, 'policies', legacy.policy || '');
   const policiesRoot = resolve(root, 'policies');
   if (configured.startsWith(policiesRoot) && existsSync(configured)) return configured;
 
-  const fallback = subjectFile(root, active.active || DEFAULT_SUBJECT);
+  const fallback = subjectFile(root, legacy.active || DEFAULT_SUBJECT);
   if (existsSync(fallback)) return fallback;
 
   return join(root, 'policies', 'project-guidance.md');
 }
 
-export function readActiveSubjectPolicy(root) {
-  const active = readActiveSubject(root);
-  const file = resolveSubjectPolicyPath(root, active);
+export function readSubjectPolicy(root, subjectOrConfig) {
+  const config = typeof subjectOrConfig === 'string'
+    ? resolveSubjectConfig(root, { subject: subjectOrConfig })
+    : subjectOrConfig;
+  const file = resolveSubjectPolicyPath(root, config);
   return {
-    active,
+    config,
+    active: subjectConfigToLegacy(config),
     file,
     text: readTextSafe(file),
   };
+}
+
+/** @deprecated use readSubjectPolicy */
+export function readActiveSubjectPolicy(root) {
+  return readSubjectPolicy(root, resolveSubjectConfig(root));
+}
+
+export function setDefaultSubject(root, name) {
+  const subject = sanitizeSubjectName(name);
+  const file = subjectFile(root, subject);
+  if (!existsSync(file)) {
+    throw new Error(`Subject policy not found: ${file}`);
+  }
+  const registry = readSubjectsRegistry(root);
+  const next = {
+    default_subject: subject,
+    subjects: {
+      ...registry.subjects,
+      [subject]: registry.subjects?.[subject] ?? defaultSubjectEntry(subject),
+    },
+  };
+  writeSubjectsRegistry(root, next);
+  const config = normalizeRegistryEntry(subject, next.subjects[subject]);
+  return { config, active: subjectConfigToLegacy(config), file };
+}
+
+/** @deprecated use setDefaultSubject */
+export function setActiveSubject(root, name) {
+  return setDefaultSubject(root, name);
 }
 
 function normalizeResourceScope(value) {
@@ -262,6 +526,10 @@ function defaultLaneForSubject(subject) {
   return `jea/${sanitizeSubjectName(subject)}/local`;
 }
 
+export function defaultWorkBranchPrefixForSubject(subject) {
+  return `jea/${sanitizeSubjectName(subject)}/work`;
+}
+
 export function parseSubjectRepoLane(policyText = '', {
   root = process.cwd(),
   subject = DEFAULT_SUBJECT,
@@ -278,6 +546,11 @@ export function parseSubjectRepoLane(policyText = '', {
   const baseBranch = firstPolicyValue(values, ['Base Branch', 'Base']) || 'main';
   const lane = firstPolicyValue(values, ['Lane', 'Evolution Lane', 'Evolution Branch'])
     || defaultLaneForSubject(subject);
+  const workBranchPrefix = firstPolicyValue(values, [
+    'Work Branch Prefix',
+    'Work Prefix',
+    'Work Branch',
+  ]) || defaultWorkBranchPrefixForSubject(subject);
   const testCommand = firstPolicyValue(values, ['Test Command', 'Verify Command']);
   const runCommand = firstPolicyValue(values, ['Run Command', 'Observe Command']);
   const githubRepo = firstPolicyValue(values, ['GitHub Repo', 'Github Repo', 'Remote Repo']);
@@ -288,20 +561,34 @@ export function parseSubjectRepoLane(policyText = '', {
     repoRoot: resolvedRepo,
     baseBranch,
     lane,
-    workBranchPrefix: `${lane.replace(/\/+$/g, '')}/work`,
+    workBranchPrefix,
     testCommand,
     runCommand,
     githubRepo,
   };
 }
 
-export function listSubjects(root) {
+export function listSubjectPolicyFiles(root) {
   const dir = subjectsDir(root);
   if (!existsSync(dir)) return [];
   return readdirSync(dir, { withFileTypes: true })
     .filter((entry) => entry.isFile() && entry.name.endsWith('.md'))
     .map((entry) => basename(entry.name, '.md'))
     .sort();
+}
+
+/** @deprecated use listSubjectPolicyFiles */
+export function listSubjects(root) {
+  return listSubjectPolicyFiles(root);
+}
+
+export function listRegisteredSubjects(root) {
+  const registry = readSubjectsRegistry(root);
+  const names = new Set([
+    ...Object.keys(registry.subjects ?? {}),
+    ...listSubjectPolicyFiles(root),
+  ]);
+  return [...names].sort();
 }
 
 function generatedAt() {
@@ -339,29 +626,6 @@ export function createSubject(root, name, { template = 'project', force = false,
     return { name: subject, file, written: false, skipped: true, existed };
   }
   writeFileSync(file, buildSubjectPolicyTemplate(subject, { template, language }), 'utf-8');
+  registerSubject(root, subject);
   return { name: subject, file, written: true, skipped: false, existed };
 }
-
-export function setActiveSubject(root, name) {
-  const subject = sanitizeSubjectName(name);
-  const file = subjectFile(root, subject);
-  if (!existsSync(file)) {
-    throw new Error(`Subject policy not found: ${file}`);
-  }
-  const active = defaultActiveSubject(subject);
-  writeJsonIfMissing(root, join('policies', 'active-subject.json'), active, { force: true });
-  return { active, file };
-}
-
-export function ensureDefaultSubject(root, { language = getLanguage() } = {}) {
-  ensureSubjectLayout(root);
-  const active = defaultActiveSubject();
-  const activeResult = writeJsonIfMissing(root, join('policies', 'active-subject.json'), active);
-  const destination = subjectFile(root, DEFAULT_SUBJECT);
-  if (!existsSync(destination)) {
-    writeFileSync(destination, buildDefaultSubjectPolicy(language), 'utf-8');
-    return { active: activeResult, subject: { file: destination, written: true } };
-  }
-  return { active: activeResult, subject: { file: destination, written: false } };
-}
-

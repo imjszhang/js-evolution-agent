@@ -1,7 +1,18 @@
 import { join } from 'node:path';
 import { getProjectRoot } from '../utils/project.mjs';
 import { readJsonSafe } from '../utils/files.mjs';
-import { getActiveSubjectRuntimeInfo } from '../utils/subjects.mjs';
+import { resolveSubjectFromFlags, runtimeInfoForSubject } from '../utils/subjects.mjs';
+
+function runtimeForFlags(root, flags = {}) {
+  const config = resolveSubjectFromFlags(root, flags);
+  return runtimeInfoForSubject(root, config);
+}
+
+export function readActiveDecisionQueue(root, flags = {}) {
+  const runtime = runtimeForFlags(root, flags);
+  const queue = readJsonSafe(join(runtime.runtimeRoot, 'data', 'evolution', 'pending_decisions.json'), { decisions: [] });
+  return { runtime, queue };
+}
 
 export function findUnknownActions(decisions, validNames) {
   const valid = validNames instanceof Set ? validNames : new Set(validNames);
@@ -13,18 +24,12 @@ export function findUnknownActions(decisions, validNames) {
   return unknown;
 }
 
-export function readActiveDecisionQueue(root) {
-  const runtime = getActiveSubjectRuntimeInfo(root);
-  const queue = readJsonSafe(join(runtime.runtimeRoot, 'data', 'evolution', 'pending_decisions.json'), { decisions: [] });
-  return { runtime, queue };
-}
-
 async function loadActionRegistry() {
   const mod = await import('../../actions/registry.mjs');
   return mod.actionRegistry;
 }
 
-export async function actionsCommand({ subcommand } = {}) {
+export async function actionsCommand({ subcommand, flags = {} } = {}) {
   if (subcommand === 'list') {
     const actionRegistry = await loadActionRegistry();
     for (const spec of actionRegistry.listAll()) {
@@ -40,7 +45,7 @@ export async function actionsCommand({ subcommand } = {}) {
   if (subcommand === 'check') {
     const actionRegistry = await loadActionRegistry();
     const root = getProjectRoot();
-    const { runtime, queue } = readActiveDecisionQueue(root);
+    const { runtime, queue } = readActiveDecisionQueue(root, flags);
     const unknown = findUnknownActions(queue.decisions, actionRegistry.validNames());
     if (!unknown.length) {
       console.log(`All queued action types are registered for ${runtime.subject} (${runtime.dataNamespace}).`);
@@ -51,7 +56,7 @@ export async function actionsCommand({ subcommand } = {}) {
     return 1;
   }
 
-  console.error('Usage: jea actions <list|check>');
+  console.error('Usage: jea actions <list|check> [--subject NAME]');
   return 2;
 }
 

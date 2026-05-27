@@ -21,7 +21,7 @@ export function helpText() {
 
 Commands:
   doctor                 Check env, dependencies, docs, and config
-  run [--mock] [--skip-goals-assess]
+  run [--mock] [--skip-goals-assess] [--subject NAME]
                          Run the full intel -> exec -> verify loop; by default
                          also records a goals assess event for the same cycle
   run --deepseek         Require DeepSeek API configuration
@@ -43,8 +43,8 @@ Commands:
   data status --json     Show runtime data status as JSON
   data init              Create runtime data directories
   data init --all        Create goals template and seed intelligence
-  data backup            Back up active subject runtime data
-  data reset [--yes]     Remove local runtime data
+  data backup            Back up subject runtime data (--subject NAME)
+  data reset [--yes]     Remove local runtime data (--subject NAME)
   intel summary          Show recent intelligence memory
   intel report           Print the latest intel report (Markdown)
   intel report list      List recent intel reports
@@ -73,21 +73,22 @@ Commands:
                          Archive completed/expired queue items out of the hot queue
   llm ping               Test DeepSeek connectivity
   llm ping --mock        Test local mock AI path
-  policy check           Verify active policy has Subject section
-  subject list           List configured subjects
-  subject show           Show policy, namespace, and runtime paths
-  subject lane status    Check the active subject target repo lane
-  subject lane init      Create the active subject lane from its base branch
+  policy check           Verify subject policy has Subject section (--subject NAME)
+  subject list           List registered subjects and default subject
+  subject show           Show policy, namespace, and runtime paths (--subject NAME)
+  subject lane status    Check the subject target repo lane (--subject NAME)
+  subject lane init      Create the subject lane from its base branch (--subject NAME)
   subject init <name>    Create a subject policy from a template
-  subject use <name>     Switch the active subject and runtime namespace
-  subject check          Validate the active subject policy
+  subject use <name>     Set the default subject in policies/subjects.json
+  subject default <name> Same as subject use
+  subject check          Validate a subject policy (--subject NAME)
   actions list           List registered action types
   actions check          Check pending decisions for unknown action types
   help                   Show this help
 
 Examples:
   jea doctor
-  jea run --mock
+  jea run --mock --subject agentank-tank
   jea run --skip-goals-assess
   jea evolve --rounds 30
   jea evolve status

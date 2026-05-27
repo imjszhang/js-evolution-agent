@@ -41,6 +41,7 @@ Generated: 2026-05-11T12:10:27.8975990+08:00
 - Repo: `D:\path\to\{{subject}}`
 - Base Branch: `main`
 - Lane: `jea/{{subject}}/local`
+- Work Branch Prefix: `jea/{{subject}}/work` (optional; default; must not nest under Lane)
 - Test Command: `npm test`
 - Run Command: `npm start`
 

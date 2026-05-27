@@ -3,10 +3,15 @@ import { join } from 'node:path';
 import lockfile from 'proper-lockfile';
 import { readJsonSafe, writeJsonFile } from './files.mjs';
 import {
-  defaultActiveSubject,
-  getActiveDataNamespace,
-  getActiveSubjectRuntimeRoot,
+  defaultSubjectEntry,
+  getDataNamespace,
+  getSubjectEntry,
+  getSubjectRuntimeRoot,
+  normalizeRegistryEntry,
+  readSubjectsRegistry,
+  resolveDefaultSubjectName,
   sanitizeSubjectName,
+  subjectConfigToLegacy,
   subjectFile,
 } from './subjects.mjs';
 
@@ -50,10 +55,8 @@ export function normalizeEvolveSubjects(root, { subject = null, subjects = null 
     ...(subject && subject !== true ? [sanitizeSubjectName(subject)] : []),
     ...parseSubjectList(subjects),
   ];
-  const active = defaultActiveSubject(sanitizeSubjectName(
-    process.env.JEA_SUBJECT || readJsonSafe(join(root, 'policies', 'active-subject.json'), null)?.active || 'js-evolution-agent',
-  ));
-  const selected = explicit.length ? explicit : [active.active];
+  const fallback = resolveDefaultSubjectName(root);
+  const selected = explicit.length ? explicit : [fallback];
   const unique = [...new Set(selected)];
   for (const name of unique) {
     const file = subjectFile(root, name);
@@ -63,13 +66,21 @@ export function normalizeEvolveSubjects(root, { subject = null, subjects = null 
 }
 
 export function runtimeForSubject(root, subject) {
-  const active = defaultActiveSubject(sanitizeSubjectName(subject));
-  const dataNamespace = getActiveDataNamespace(root, active);
-  const runtimeRoot = getActiveSubjectRuntimeRoot(root, active);
+  const name = sanitizeSubjectName(subject);
+  const entry = getSubjectEntry(root, name) ?? normalizeRegistryEntry(name, defaultSubjectEntry(name));
+  const config = {
+    ...entry,
+    resolutionSource: 'explicit',
+    registrySource: readSubjectsRegistry(root).source,
+    legacyActive: subjectConfigToLegacy(entry),
+  };
+  const dataNamespace = getDataNamespace(root, config);
+  const runtimeRoot = getSubjectRuntimeRoot(root, config);
   const dataRoot = join(runtimeRoot, 'data');
   return {
-    active,
-    subject: active.active,
+    config,
+    active: config.legacyActive,
+    subject: config.name,
     dataNamespace,
     runtimeRoot,
     dataRoot,

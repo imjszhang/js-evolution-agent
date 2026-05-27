@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getProjectRoot } from '../utils/project.mjs';
 import { readJsonSafe, writeJsonFile } from '../utils/files.mjs';
-import { getActiveSubjectRuntimeInfo } from '../utils/subjects.mjs';
+import { resolveSubjectFromFlags, runtimeInfoForSubject } from '../utils/subjects.mjs';
 import { createIntelligenceStore } from '../../intelligence/store.mjs';
 import { assessGoalsWithAi, normalizeProposedGoalShape } from '../../intelligence/goal-assessor.mjs';
 import { resolveIntelReportRecordPath } from '../../intelligence/report-paths.mjs';
@@ -11,6 +11,11 @@ import { findReportRecord } from './intel.mjs';
 function numberFlag(flags, name, fallback) {
   const n = Number(flags[name]);
   return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+function runtimeForFlags(root, flags = {}) {
+  const config = resolveSubjectFromFlags(root, flags);
+  return runtimeInfoForSubject(root, config);
 }
 
 function makeStore(runtime) {
@@ -70,8 +75,8 @@ export function parseEvidenceRefs(value) {
     });
 }
 
-export function getActiveGoals(root = getProjectRoot()) {
-  const runtime = getActiveSubjectRuntimeInfo(root);
+export function getActiveGoals(root = getProjectRoot(), flags = {}) {
+  const runtime = runtimeForFlags(root, flags);
   const path = activeGoalsPath(runtime);
   return {
     runtime,
@@ -81,7 +86,7 @@ export function getActiveGoals(root = getProjectRoot()) {
 }
 
 export function getGoalHistory(root = getProjectRoot(), flags = {}) {
-  const runtime = getActiveSubjectRuntimeInfo(root);
+  const runtime = runtimeForFlags(root, flags);
   const limit = numberFlag(flags, 'limit', 20);
   const store = makeStore(runtime);
   return {
@@ -108,6 +113,7 @@ export function buildGoalUpdate(root = getProjectRoot(), flags = {}) {
     reason: flags.reason,
     evidenceRefs: parseEvidenceRefs(flags.evidence),
     cycle: flags.cycle ?? null,
+    flags,
   });
 }
 
@@ -116,7 +122,7 @@ export function buildGoalObjectUpdate(root = getProjectRoot(), nextGoal, opts = 
     throw new Error('Missing required reason.');
   }
 
-  const runtime = getActiveSubjectRuntimeInfo(root);
+  const runtime = runtimeForFlags(root, opts.flags ?? {});
   const path = activeGoalsPath(runtime);
   const previousGoal = readJsonSafe(path, null);
   const evidenceRefs = Array.isArray(opts.evidenceRefs)
@@ -382,10 +388,10 @@ export async function goalsCommand({ subcommand, flags = {} } = {}) {
     }
   }
 
-  console.error('Usage: jea goals <show|history|update|assess> [...]\n' +
-    '  jea goals show [--json]\n' +
-    '  jea goals history [--limit N] [--json]\n' +
-    '  jea goals update --file PATH --reason TEXT [--evidence REF] [--cycle ID] [--json]\n' +
-    '  jea goals assess [--cycle ID] [--json]');
+  console.error('Usage: jea goals <show|history|update|assess> [...] [--subject NAME]\n' +
+    '  jea goals show [--subject NAME] [--json]\n' +
+    '  jea goals history [--subject NAME] [--limit N] [--json]\n' +
+    '  jea goals update --file PATH --reason TEXT [--subject NAME] [--evidence REF] [--cycle ID] [--json]\n' +
+    '  jea goals assess [--subject NAME] [--cycle ID] [--json]');
   return 2;
 }

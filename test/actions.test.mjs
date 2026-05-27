@@ -30,7 +30,15 @@ import {
   inferActionResource,
   RESOURCE_SCOPES,
 } from '../src/actions/resource-registry.mjs';
-import { buildLaneWorkBranch, checkLaneStatus, initializeLane, runLaneCommand } from '../src/actions/lane-manager.mjs';
+import {
+  buildLaneWorkBranch,
+  checkLaneStatus,
+  initializeLane,
+  runLaneCommand,
+  workBranchPrefixConflictsWithLane,
+} from '../src/actions/lane-manager.mjs';
+import { createBranchWorktree } from '../src/actions/worktree-manager.mjs';
+import { parseSubjectRepoLane } from '../src/cli/utils/subjects.mjs';
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   query: vi.fn(),
@@ -216,13 +224,13 @@ function installFakeWorktree(ctx, path = join(ctx.projectRoot, '.worktrees', 'fa
 function installFakeAgentRunWorktree(ctx, path = join(ctx.projectRoot, '.worktrees', 'fake-agent-run')) {
   const createAgentRunWorktree = vi.fn(() => ({
     path,
-    branch: 'jea/agentank/local/work/cycle-1/test-change',
+    branch: 'jea/agentank/work/cycle-1/test-change',
     base_branch: 'jea/agentank/local',
     auto_created: true,
     created: true,
     cleanup_hint: [
       `git worktree remove "${path}"`,
-      'git branch -D "jea/agentank/local/work/cycle-1/test-change"',
+      'git branch -D "jea/agentank/work/cycle-1/test-change"',
     ],
   }));
   ctx.host.createAgentRunWorktree = createAgentRunWorktree;
@@ -235,7 +243,7 @@ function mockLaneReady(ctx, targetRepo, lane = 'jea/agentank/local') {
     repoRoot: targetRepo,
     baseBranch: 'main',
     lane,
-    workBranchPrefix: `${lane}/work`,
+    workBranchPrefix: 'jea/agentank/work',
     exists: true,
     isGitRepo: true,
     gitRoot: targetRepo,
@@ -318,13 +326,41 @@ describe('controlled action handlers', () => {
     expect(resource.resourceScope).toBe('subject_runtime');
   });
 
-  it('builds lane work branches with subject lane isolation', () => {
+  it('builds lane work branches with subject-scoped work prefix', () => {
     expect(buildLaneWorkBranch({
-      lane: 'jea/agentank/desktop-a',
+      subject: 'agentank',
       cycleId: 'cycle-1',
       slug: 'fix pathing',
       suffix: 'abc123',
-    })).toBe('jea/agentank/desktop-a/work/cycle-1/fix-pathing/abc123');
+    })).toBe('jea/agentank/work/cycle-1/fix-pathing/abc123');
+  });
+
+  it('detects nested work branch prefix under lane ref path', () => {
+    expect(workBranchPrefixConflictsWithLane('jea/agentank/local', 'jea/agentank/local/work')).toBe(true);
+    expect(workBranchPrefixConflictsWithLane('jea/agentank/local', 'jea/agentank/work')).toBe(false);
+  });
+
+  it('fails lane status when work prefix is nested under lane', () => {
+    const status = checkLaneStatus({
+      configured: true,
+      repoRoot: join(tempDir || tmpdir(), 'missing-agentank'),
+      baseBranch: 'main',
+      lane: 'jea/agentank/local',
+      workBranchPrefix: 'jea/agentank/local/work',
+    });
+
+    expect(status.ok).toBe(false);
+    expect(status.errors.some((error) => error.includes('nested under lane branch'))).toBe(true);
+  });
+
+  it('parses default work branch prefix from subject name', () => {
+    const config = parseSubjectRepoLane([
+      '## Subject Repo Lane',
+      '- Repo: `D:\\target`',
+      '- Lane: `jea/agentank/desktop-a`',
+    ].join('\n'), { subject: 'agentank' });
+
+    expect(config.workBranchPrefix).toBe('jea/agentank/work');
   });
 
   it('reports missing lane repo as not configured or missing', () => {
@@ -333,6 +369,7 @@ describe('controlled action handlers', () => {
       repoRoot: join(tempDir || tmpdir(), 'missing-agentank'),
       baseBranch: 'main',
       lane: 'jea/agentank/local',
+      workBranchPrefix: 'jea/agentank/work',
     });
 
     expect(status.ok).toBe(false);
@@ -352,6 +389,7 @@ describe('controlled action handlers', () => {
       repoRoot: repo,
       baseBranch: 'main',
       lane: 'jea/agentank/local',
+      workBranchPrefix: 'jea/agentank/work',
     };
     const result = initializeLane(config);
     const status = checkLaneStatus(config);
@@ -382,6 +420,7 @@ describe('controlled action handlers', () => {
       repoRoot: repo,
       baseBranch: 'main',
       lane: 'jea/agentank/local',
+      workBranchPrefix: 'jea/agentank/work',
       laneWorktreeRoot: join(repo, '.worktrees', 'js-evolution-agent', 'lane-test'),
     };
     const result = runLaneCommand(config, { command: 'node -e "process.stdout.write(require(\'fs\').readFileSync(\'marker.txt\', \'utf8\'))"' });
@@ -410,6 +449,7 @@ describe('controlled action handlers', () => {
       repoRoot: repo,
       baseBranch: 'main',
       lane: 'jea/agentank/local',
+      workBranchPrefix: 'jea/agentank/work',
       laneWorktreeRoot: join(repo, '.worktrees', 'js-evolution-agent', 'lane-test'),
     };
     initializeLane(config);
@@ -437,6 +477,7 @@ describe('controlled action handlers', () => {
       repoRoot: repo,
       baseBranch: 'main',
       lane: 'jea/agentank/local',
+      workBranchPrefix: 'jea/agentank/work',
       laneWorktreeRoot: join(repo, '.worktrees', 'js-evolution-agent', 'lane-test'),
     };
     initializeLane(config);
@@ -448,6 +489,51 @@ describe('controlled action handlers', () => {
     expect(second.success).toBe(false);
     expect(second.error).toContain('lane worktree is dirty');
     expect(second.stdout).toBe('');
+  });
+
+  it('creates worktree branches with non-nested prefix when lane branch exists', () => {
+    const repo = join(tempDir || mkdtempSync(join(tmpdir(), 'jea-lane-worktree-')), 'repo');
+    mkdirSync(repo, { recursive: true });
+    execFileSync('git', ['init', '-b', 'main'], { cwd: repo, stdio: 'ignore' });
+    writeFileSync(join(repo, 'README.md'), '# worktree\n', 'utf-8');
+    execFileSync('git', ['add', 'README.md'], { cwd: repo, stdio: 'ignore' });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-m', 'init'], { cwd: repo, stdio: 'ignore' });
+    execFileSync('git', ['branch', 'jea/test/local', 'main'], { cwd: repo, stdio: 'ignore' });
+
+    const worktreesRoot = join(repo, '.worktrees', 'js-evolution-agent');
+    const workspace = createBranchWorktree({
+      repoRoot: repo,
+      baseBranch: 'jea/test/local',
+      workBranchPrefix: 'jea/test/work',
+      branch: 'jea/test/work/smoke',
+      name: 'smoke',
+      worktreeRoot: worktreesRoot,
+    });
+
+    expect(workspace.branch).toBe('jea/test/work/smoke');
+    expect(workspace.path).toContain('smoke');
+
+    execFileSync('git', ['worktree', 'remove', workspace.path], { cwd: repo, stdio: 'ignore' });
+    execFileSync('git', ['branch', '-D', workspace.branch], { cwd: repo, stdio: 'ignore' });
+  });
+
+  it('rejects nested work branch names when lane branch exists', () => {
+    const repo = join(tempDir || mkdtempSync(join(tmpdir(), 'jea-lane-worktree-nested-')), 'repo');
+    mkdirSync(repo, { recursive: true });
+    execFileSync('git', ['init', '-b', 'main'], { cwd: repo, stdio: 'ignore' });
+    writeFileSync(join(repo, 'README.md'), '# nested\n', 'utf-8');
+    execFileSync('git', ['add', 'README.md'], { cwd: repo, stdio: 'ignore' });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-m', 'init'], { cwd: repo, stdio: 'ignore' });
+    execFileSync('git', ['branch', 'jea/test/local', 'main'], { cwd: repo, stdio: 'ignore' });
+
+    expect(() => createBranchWorktree({
+      repoRoot: repo,
+      baseBranch: 'jea/test/local',
+      workBranchPrefix: 'jea/test/local/work',
+      branch: 'jea/test/local/work/bad',
+      name: 'bad',
+      worktreeRoot: join(repo, '.worktrees', 'js-evolution-agent'),
+    })).toThrow();
   });
 
   it('resolves agent_run target_repo scope from subject repo lane', () => {
@@ -521,7 +607,7 @@ describe('controlled action handlers', () => {
             lane_execution: {
               target_repo_root: 'D:\\github\\My\\target',
               lane_branch: 'jea/agentank/local',
-              work_branch: 'jea/agentank/local/work/cycle-1/change',
+              work_branch: 'jea/agentank/work/cycle-1/change',
               worktree_path: worktreePath,
             },
           },
@@ -553,7 +639,7 @@ describe('controlled action handlers', () => {
       repoRoot: targetRepo,
       lane: 'jea/agentank/local',
       baseBranch: 'main',
-      workBranchPrefix: 'jea/agentank/local/work',
+      workBranchPrefix: 'jea/agentank/work',
     };
     mockLaneReady(ctx, targetRepo);
     const createWorktree = installFakeAgentRunWorktree(ctx);

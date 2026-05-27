@@ -4,7 +4,12 @@ import {
 import { basename, join } from 'node:path';
 import { getProjectRoot } from '../utils/project.mjs';
 import { createIntelligenceStore } from '../../intelligence/store.mjs';
-import { getActiveSubjectRuntimeInfo } from '../utils/subjects.mjs';
+import { resolveSubjectFromFlags, runtimeInfoForSubject } from '../utils/subjects.mjs';
+
+function runtimeForFlags(root, flags = {}) {
+  const config = resolveSubjectFromFlags(root, flags);
+  return runtimeInfoForSubject(root, config);
+}
 import {
   isValidSource,
   listValidSources,
@@ -64,7 +69,7 @@ export async function inboxPut({ root = getProjectRoot(), flags = {} } = {}) {
     return 2;
   }
 
-  const runtime = getActiveSubjectRuntimeInfo(root);
+  const runtime = runtimeForFlags(root, flags);
   const inboxDir = resolveInboxDir(runtime, flags);
   mkdirSync(inboxDir, { recursive: true });
 
@@ -162,7 +167,7 @@ export function drainInboxDir({ inboxDir, store }) {
 }
 
 export async function inboxDrain({ root = getProjectRoot(), flags = {} } = {}) {
-  const runtime = getActiveSubjectRuntimeInfo(root);
+  const runtime = runtimeForFlags(root, flags);
   const inboxDir = resolveInboxDir(runtime, flags);
   const store = makeStore(runtime);
   const result = drainInboxDir({ inboxDir, store });

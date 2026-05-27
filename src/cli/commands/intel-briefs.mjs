@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { getProjectRoot } from '../utils/project.mjs';
-import { getActiveSubjectRuntimeInfo } from '../utils/subjects.mjs';
+import { resolveSubjectFromFlags, runtimeInfoForSubject } from '../utils/subjects.mjs';
 import {
   formatOperatorBriefsForPrompt,
   operatorBriefDisplayName,
@@ -10,6 +10,11 @@ import {
   readProcessedOperatorBriefs,
   writePendingOperatorBrief,
 } from '../../intelligence/operator-briefs.mjs';
+
+function runtimeForFlags(root, flags = {}) {
+  const config = resolveSubjectFromFlags(root, flags);
+  return runtimeInfoForSubject(root, config);
+}
 
 async function readStdinText() {
   if (process.stdin.isTTY) {
@@ -72,7 +77,7 @@ function printBriefList(title, runtime, readResult, { processed = false, verbose
 }
 
 export async function briefPut({ root = getProjectRoot(), flags = {} } = {}) {
-  const runtime = getActiveSubjectRuntimeInfo(root);
+  const runtime = runtimeForFlags(root, flags);
   let data;
   try {
     data = parseBriefInput(await readBriefInput(flags));
@@ -99,7 +104,7 @@ export async function briefPut({ root = getProjectRoot(), flags = {} } = {}) {
 }
 
 export function briefList({ root = getProjectRoot(), flags = {} } = {}) {
-  const runtime = getActiveSubjectRuntimeInfo(root);
+  const runtime = runtimeForFlags(root, flags);
   const result = readPendingOperatorBriefs(runtime.runtimeRoot, {
     limit: numberFlag(flags, 'limit', 20),
   });
@@ -112,7 +117,7 @@ export function briefList({ root = getProjectRoot(), flags = {} } = {}) {
 }
 
 export function briefProcessed({ root = getProjectRoot(), flags = {} } = {}) {
-  const runtime = getActiveSubjectRuntimeInfo(root);
+  const runtime = runtimeForFlags(root, flags);
   const result = readProcessedOperatorBriefs(runtime.runtimeRoot, {
     limit: numberFlag(flags, 'limit', 20),
   });

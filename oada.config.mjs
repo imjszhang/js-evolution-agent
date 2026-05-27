@@ -20,7 +20,8 @@ import {
   parseSubjectRepoLane,
   parseSubjectExternalRoots,
   parseSubjectResourceRules,
-  readActiveSubjectPolicy,
+  readSubjectPolicy,
+  resolveSubjectConfig,
 } from './src/cli/utils/subjects.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -39,9 +40,9 @@ function readRequiredFile(fullPath, hint) {
   return readFileSync(fullPath, 'utf-8');
 }
 
-function buildAgentContextDocs() {
+function buildAgentContextDocs(root) {
   const docsDir = resolveDocsDir();
-  const subjectPolicy = readActiveSubjectPolicy(__dirname);
+  const subjectPolicy = readSubjectPolicy(root, resolveSubjectConfig(root));
   return [
     {
       id: 'cyber-taoist:constitution',
@@ -54,7 +55,7 @@ function buildAgentContextDocs() {
       text: readRequiredFile(resolve(docsDir, 'SKILL.md'), 'Cyber-Taoist skill guide'),
     },
     {
-      id: `js-evolution-agent:subject:${subjectPolicy.active.active}`,
+      id: `js-evolution-agent:subject:${subjectPolicy.config.name}`,
       source: subjectPolicy.file,
       text: subjectPolicy.text,
     },
@@ -219,11 +220,12 @@ function createMockAiClient() {
 
 export default async function ({ cwd }) {
   registerGlobalActionTypes();
+  const subjectConfig = resolveSubjectConfig(cwd);
   const runtime = getActiveSubjectRuntimeInfo(cwd);
-  const subjectPolicy = readActiveSubjectPolicy(cwd);
+  const subjectPolicy = readSubjectPolicy(cwd, subjectConfig);
   const subjectRepoLane = parseSubjectRepoLane(subjectPolicy.text, {
     root: cwd,
-    subject: subjectPolicy.active.active,
+    subject: subjectConfig.name,
   });
   const externalRoots = parseSubjectExternalRoots(subjectPolicy.text);
   if (subjectRepoLane.configured) {
@@ -238,7 +240,7 @@ export default async function ({ cwd }) {
   });
 
   const aiClient = createAiClient();
-  const agentContextDocs = buildAgentContextDocs();
+  const agentContextDocs = buildAgentContextDocs(cwd);
 
   return {
     aiClient,

@@ -111,7 +111,7 @@ This project uses [DeepSeek's OpenAI-compatible Chat Completions API](https://ap
 
 By default, `oada.config.mjs` reads Cyber-Taoist Markdown from the installed `js-evolution-engine` package (`examples/cyber-taoist-demo/cyber-taoist-docs/`), plus:
 
-- the active subject policy configured by `policies/active-subject.json`
+- the subject policy selected by `JEA_SUBJECT`, `--subject`, or `policies/subjects.json` default
 
 `policies/project-guidance.md` is kept as a compatibility entry. New subject policies live under `policies/subjects/`.
 
@@ -128,26 +128,28 @@ Cyber-Taoist analysis requires a defined subject. `js-evolution-agent` manages s
 
 ```text
 policies/
-  active-subject.json
+  subjects.json
   subjects/
     js-evolution-agent.md
   templates/
     project.md
 ```
 
-`policies/active-subject.json` and `policies/subjects/` are local state and are ignored by Git by default. Commit templates and stable project defaults, not operator-specific active subject files. `policies/project-guidance.md` remains the committed compatibility/default policy.
+`policies/subjects.json` registers known subjects and optional `default_subject` for interactive CLI convenience. `policies/subjects.json`, legacy `policies/active-subject.json`, and `policies/subjects/*.md` are local state and are ignored by Git by default. Commit templates and stable project defaults, not operator-specific registry files. `policies/project-guidance.md` remains the committed compatibility/default policy.
 
 Common commands:
 
 ```powershell
 jea subject list
 jea subject show
+jea subject show --subject agentank-tank
 jea subject init my-product
 jea subject use my-product
 jea subject check
+jea run --subject agentank-tank
 ```
 
-Each active subject owns a separate data namespace under `runtime/subjects/<data_namespace>/`. After switching subjects, initialize that subject runtime before running:
+Each subject owns a separate data namespace under `runtime/subjects/<data_namespace>/`. After creating or selecting a subject, initialize that subject runtime before running:
 
 ```powershell
 jea data init --all
@@ -173,7 +175,7 @@ Operational commands stay conservative: `daemon stop --all` fans out graceful st
 
 ## Runtime Data
 
-Runtime data is isolated by active subject:
+Runtime data is isolated by subject namespace:
 
 ```text
 runtime/subjects/<data_namespace>/
@@ -183,7 +185,7 @@ runtime/subjects/<data_namespace>/
     goals/
 ```
 
-`policies/active-subject.json` decides the current subject and `data_namespace`. `jea run`, `jea data status/init/reset/backup`, `jea intel summary`, `jea audit queue`, and `jea actions check` all use the current namespace by default.
+`policies/subjects.json` registers subjects and optional `default_subject`. Explicit selection uses `--subject NAME` or `JEA_SUBJECT`. `jea run`, `jea data status/init/reset/backup`, `jea intel summary`, `jea audit queue`, and `jea actions check` resolve the subject through that order. Legacy `policies/active-subject.json` is still read when `subjects.json` is missing.
 
 Use `init` for a non-destructive first setup:
 
@@ -193,7 +195,7 @@ jea data init --all
 
 This creates:
 
-- `policies/subjects/` layout if needed and, when `--all` only: `policies/active-subject.json` plus a localized `policies/subjects/js-evolution-agent.md` generated from `JEA_LANGUAGE` when that subject file is missing (same rules as `jea subject list`)
+- `policies/subjects/` layout if needed and, when `--all` only: `policies/subjects.json` plus a localized `policies/subjects/js-evolution-agent.md` generated from `JEA_LANGUAGE` when that subject file is missing (same rules as `jea subject list`)
 
 - `runtime/subjects/<data_namespace>/data/evolution`
 - `runtime/subjects/<data_namespace>/data/intelligence`

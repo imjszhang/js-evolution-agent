@@ -231,7 +231,7 @@ describe('subject management', () => {
     expect(buildDefaultSubjectPolicy('en-US')).toContain("`js-evolution-agent` is this project's controlled self-evolution host");
   });
 
-  it('creates and switches active subjects', () => {
+  it('creates and switches default subjects via subjects.json', () => {
     const root = makeProjectRoot();
     ensureDefaultSubject(root);
     const created = createSubject(root, 'my-product');
@@ -241,6 +241,27 @@ describe('subject management', () => {
     const policy = readActiveSubjectPolicy(root);
     expect(policy.active.active).toBe('my-product');
     expect(policy.text).toContain('## Subject');
+    expect(readJsonSafe(join(root, 'policies', 'subjects.json')).default_subject).toBe('my-product');
+  });
+
+  it('reads legacy active-subject.json when subjects.json is missing', () => {
+    const root = makeProjectRoot();
+    writeJsonFile(join(root, 'policies', 'active-subject.json'), {
+      active: 'legacy-agent',
+      policy: 'subjects/legacy-agent.md',
+      data_namespace: 'legacy-agent',
+    });
+    mkdirSync(join(root, 'policies', 'subjects'), { recursive: true });
+    writeFileSync(join(root, 'policies', 'subjects', 'legacy-agent.md'), [
+      '# legacy-agent',
+      '',
+      '## Subject',
+      'legacy subject',
+    ].join('\n'), 'utf-8');
+
+    const policy = readActiveSubjectPolicy(root);
+    expect(policy.active.active).toBe('legacy-agent');
+    expect(getActiveSubjectRuntimeInfo(root).dataNamespace).toBe('legacy-agent');
   });
 
   it('resolves active subject runtime paths from data namespace', () => {
@@ -272,7 +293,7 @@ describe('subject management', () => {
     expect(config.repoRoot).toBe(join(root, '..\\agentank'));
     expect(config.baseBranch).toBe('main');
     expect(config.lane).toBe('jea/agentank/desktop-a');
-    expect(config.workBranchPrefix).toBe('jea/agentank/desktop-a/work');
+    expect(config.workBranchPrefix).toBe('jea/agentank/work');
     expect(config.testCommand).toBe('npm test');
     expect(config.runCommand).toBe('npm start');
   });
@@ -1550,7 +1571,7 @@ describe('data initialization', () => {
     expect(result.goals.written).toBe(true);
     expect(result.seed.observationCount).toBe(1);
     expect(result.policies).not.toBeNull();
-    expect(existsSync(join(root, 'policies', 'active-subject.json'))).toBe(true);
+    expect(existsSync(join(root, 'policies', 'subjects.json'))).toBe(true);
     expect(existsSync(join(root, 'policies', 'subjects', 'js-evolution-agent.md'))).toBe(true);
   });
 

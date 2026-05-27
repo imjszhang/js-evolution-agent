@@ -1,12 +1,9 @@
 import { checkLaneStatus } from '../../actions/lane-manager.mjs';
 import {
-  defaultActiveSubject,
   parseSubjectRepoLane,
-  readActiveSubject,
-  readActiveSubjectPolicy,
-  resolveSubjectPolicyPath,
+  readSubjectPolicy,
+  resolveSubjectConfig,
 } from './subjects.mjs';
-import { readTextSafe } from './files.mjs';
 
 export function laneGuardMessage(report) {
   if (report.ok) return '';
@@ -18,21 +15,10 @@ export function laneGuardMessage(report) {
   ].join('\n');
 }
 
-function policyForSubject(root, subject) {
-  const active = subject
-    ? defaultActiveSubject(subject)
-    : readActiveSubject(root);
-  const file = resolveSubjectPolicyPath(root, active);
-  return {
-    active,
-    file,
-    text: readTextSafe(file),
-  };
-}
-
 export function checkSubjectLaneReady(root, { subject = null } = {}) {
-  const policy = subject ? policyForSubject(root, subject) : readActiveSubjectPolicy(root);
-  const activeSubject = policy.active.active;
+  const config = resolveSubjectConfig(root, { subject, allowDefault: !subject });
+  const policy = readSubjectPolicy(root, config);
+  const activeSubject = config.name;
   const repoLane = parseSubjectRepoLane(policy.text, {
     root,
     subject: activeSubject,

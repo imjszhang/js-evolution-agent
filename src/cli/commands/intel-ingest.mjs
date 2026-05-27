@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { getProjectRoot } from '../utils/project.mjs';
 import { createIntelligenceStore } from '../../intelligence/store.mjs';
 import { INTELLIGENCE_SPECS } from '../../intelligence/specs.mjs';
-import { getActiveSubjectRuntimeInfo } from '../utils/subjects.mjs';
+import { resolveSubjectFromFlags, runtimeInfoForSubject } from '../utils/subjects.mjs';
 
 const VALID_SOURCES = INTELLIGENCE_SPECS.map((s) => s.name);
 const ENTITY_JSONL_SOURCES = new Set(
@@ -111,7 +111,8 @@ export async function runIntelIngest({ root = getProjectRoot(), flags = {} } = {
     return 2;
   }
 
-  const runtime = getActiveSubjectRuntimeInfo(root);
+  const config = resolveSubjectFromFlags(root, flags);
+  const runtime = runtimeInfoForSubject(root, config);
   const store = makeStore(runtime);
   let written;
   try {

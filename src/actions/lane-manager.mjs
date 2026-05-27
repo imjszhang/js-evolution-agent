@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { defaultWorkBranchPrefixForSubject } from '../cli/utils/subjects.mjs';
 
 function runGit(args, cwd) {
   try {
@@ -50,11 +51,24 @@ export function sanitizeBranchPart(value, fallback = 'work') {
   return text || fallback;
 }
 
-export function buildLaneWorkBranch({ lane, cycleId = 'cycle', slug = 'change', suffix = null } = {}) {
-  const base = sanitizeBranchPart(lane, 'jea/local');
+export function workBranchPrefixConflictsWithLane(lane, workBranchPrefix) {
+  if (!lane || !workBranchPrefix) return false;
+  const normalizedLane = String(lane).replace(/\/+$/g, '');
+  const prefix = String(workBranchPrefix).replace(/\/+$/g, '');
+  return prefix === normalizedLane || prefix.startsWith(`${normalizedLane}/`);
+}
+
+export function buildLaneWorkBranch({
+  workBranchPrefix,
+  subject,
+  cycleId = 'cycle',
+  slug = 'change',
+  suffix = null,
+} = {}) {
+  const prefix = workBranchPrefix
+    ?? (subject ? defaultWorkBranchPrefixForSubject(subject) : 'jea/work');
   const parts = [
-    base,
-    'work',
+    sanitizeBranchPart(prefix, 'jea/work'),
     sanitizeBranchPart(cycleId, 'cycle'),
     sanitizeBranchPart(slug, 'change'),
     suffix ? sanitizeBranchPart(suffix, '') : null,
@@ -77,7 +91,7 @@ export function checkLaneStatus(config = {}) {
     repoRoot,
     baseBranch: config.baseBranch ?? 'main',
     lane: config.lane ?? null,
-    workBranchPrefix: config.workBranchPrefix ?? (config.lane ? `${config.lane}/work` : null),
+    workBranchPrefix: config.workBranchPrefix ?? null,
     exists: false,
     isGitRepo: false,
     gitRoot: null,
@@ -92,6 +106,13 @@ export function checkLaneStatus(config = {}) {
   if (!result.configured) {
     result.errors.push('subject repo lane is not configured');
     return result;
+  }
+  if (!result.workBranchPrefix) {
+    result.errors.push('work branch prefix is not configured');
+  } else if (result.lane && workBranchPrefixConflictsWithLane(result.lane, result.workBranchPrefix)) {
+    result.errors.push(
+      'work branch prefix is nested under lane branch; Git cannot create child refs under an existing lane branch',
+    );
   }
   if (!existsSync(repoRoot)) {
     result.errors.push(`repo does not exist: ${repoRoot}`);

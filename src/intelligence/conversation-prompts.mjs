@@ -220,7 +220,7 @@ export function buildDecideUserPrompt({
 - 多源冲突时，Seen 覆盖 Remembered；Inferred 必须说明 evidence_refs 和反证条件。
 - 默认输出 \`type: "agent_run"\`，并在 \`params.run_spec\` 中描述一次自主 agent 运行。不要再把主体业务步骤拆成 \`sync/generate/simulate/evaluate/publish\` 之类的 action 菜单。
 - \`params.run_spec.primary_cwd_kind\` 是一等字段。常见值：主体日记/records/daemon/goals/intelligence 使用 \`subject_runtime\`；JEA 源码/policies/journal 使用 \`source_root\`；主体外部项目使用 subject policy 中声明的自定义 scope 或 \`target_repo\`。
-- 对配置了 Subject Repo Lane 的外部目标项目：\`read_only\` 调查可继续声明 \`target_repo\` 或外部 scope；\`workspace_write\` / \`remote_write_review\` 写入型 run 只需声明目标项目资源意图与权限 profile，宿主会在 Phase 2 自动从 subject lane 派生 \`work/*\` worktree 并注入 \`lane_worktree\` 执行目录，不要自行指定主目录 checkout 或 lane 分支名。
+- 对配置了 Subject Repo Lane 的外部目标项目：\`read_only\` 调查可继续声明 \`target_repo\` 或外部 scope；\`workspace_write\` / \`remote_write_review\` 写入型 run 只需声明目标项目资源意图与权限 profile，宿主会在 Phase 2 自动从 subject lane 派生 \`jea/<subject>/work/*\` work 分支与 worktree（基于 lane checkout，ref 不嵌套在 lane 路径下）并注入 \`lane_worktree\` 执行目录，不要自行指定主目录 checkout、lane 或 work 分支名。
 - 每次 run 只能有一个 primary cwd。需要参考其他 root 时，使用 \`additional_directory_kinds\` 或把摘要写入 context；不要让一次 run 无差别跨多个项目根写入。
 - \`permission_profile\` 必须是 \`read_only\`、\`workspace_write\` 或 \`remote_write_review\` 之一。只读调查用 \`read_only\`；本地候选/模拟/沙盒改动用 \`workspace_write\`；真实远端变更或发布准备用 \`remote_write_review\`。
 - \`read_only\` 只能读取并在 receipt/evidence 中返回结果，不得要求写入、落盘、保存或持久化任何文件。若需要写脱敏摘要或缓存，必须单独生成 \`workspace_write\` action，并明确允许写入路径。

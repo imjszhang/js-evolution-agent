@@ -1,7 +1,8 @@
 import { existsSync } from 'node:fs';
 import {
-  listSubjects,
-  readActiveSubject,
+  listSubjectPolicyFiles,
+  resolveDefaultSubjectName,
+  resolveSubjectConfig,
   sanitizeSubjectName,
   subjectFile,
 } from './subjects.mjs';
@@ -30,10 +31,10 @@ export function selectSubjects(root, {
     ...parseSubjectList(subjects),
   ];
   const selected = all
-    ? listSubjects(root)
+    ? listSubjectPolicyFiles(root)
     : explicit;
-  const active = readActiveSubject(root);
-  const names = unique(selected.length ? selected : [sanitizeSubjectName(active.active)]);
+  const fallback = resolveDefaultSubjectName(root);
+  const names = unique(selected.length ? selected : [fallback]);
 
   if (!names.length) {
     throw new Error('No subjects found.');
@@ -42,6 +43,11 @@ export function selectSubjects(root, {
     for (const name of names) {
       const file = subjectFile(root, name);
       if (!existsSync(file)) throw new Error(`Subject policy not found: ${file}`);
+      try {
+        resolveSubjectConfig(root, { subject: name, allowDefault: false });
+      } catch (e) {
+        throw new Error(e?.message || String(e));
+      }
     }
   }
   return names;

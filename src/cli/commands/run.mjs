@@ -6,6 +6,7 @@ import {
   checkSubjectLaneReady,
   printSubjectLaneGuardFailure,
 } from '../utils/subject-lane-guard.mjs';
+import { resolveSubjectFromFlags } from '../utils/subjects.mjs';
 
 export async function runCommand({ flags = {} } = {}) {
   const root = getProjectRoot();
@@ -25,7 +26,11 @@ export async function runCommand({ flags = {} } = {}) {
     console.error('DEEPSEEK_API_KEY is required for --deepseek.');
     return 1;
   }
-  const laneGuard = checkSubjectLaneReady(root);
+
+  const config = resolveSubjectFromFlags(root, flags);
+  env.JEA_SUBJECT = config.name;
+
+  const laneGuard = checkSubjectLaneReady(root, { subject: config.name });
   if (!laneGuard.ok) {
     printSubjectLaneGuardFailure(laneGuard, { json: !!flags.json });
     return 1;

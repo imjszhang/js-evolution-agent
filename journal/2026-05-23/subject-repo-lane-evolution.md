@@ -214,6 +214,22 @@ Tests       225 passed (225)
 
 ## 6. 后续演化
 
+### 勘误（2026-05-27）：work 分支 ref 命名
+
+原设计树 `jea/<subject>/<lane>/work/*` 在 Git 中与长期 lane 分支 `jea/<subject>/<lane>` **不能共存**：若 lane 已是叶子 ref，则无法创建以 `lane/` 为前缀的子分支（`git worktree add -b` 会报 ref hierarchy 冲突）。
+
+修正后的默认约定：
+
+```text
+main
+  └── jea/<subject>/local          # 长期 lane（policy 可自定义 Lane 名）
+  └── jea/<subject>/work/<slug>   # 单轮 work（从 lane checkout，ref 与 lane 同级前缀）
+```
+
+实现见 `defaultWorkBranchPrefixForSubject()`、`workBranchPrefixConflictsWithLane()` 与 `checkLaneStatus` 启动前检测。
+
+---
+
 第一步已经让系统具备了“主体绑定目标仓库和独立 lane”的基础能力。后续可以继续把闭环做实：
 
 1. 在 daemon/evolve 每轮开始时自动插入 `lane_status` 或 `lane_observe`，把目标仓库状态变成常规证据；其中 `lane_observe` 已可稳定运行在 lane 专用 worktree。

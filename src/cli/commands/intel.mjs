@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { getProjectRoot } from '../utils/project.mjs';
 import { createIntelligenceStore } from '../../intelligence/store.mjs';
 import { resolveIntelReportRecordPath } from '../../intelligence/report-paths.mjs';
-import { getActiveSubjectRuntimeInfo } from '../utils/subjects.mjs';
+import { resolveSubjectFromFlags, runtimeInfoForSubject } from '../utils/subjects.mjs';
 import { runIntelIngest } from './intel-ingest.mjs';
 import { inboxDrain, inboxPut } from './intel-inbox.mjs';
 import { intelBriefCommand } from './intel-briefs.mjs';
@@ -12,6 +12,11 @@ import { intelBriefCommand } from './intel-briefs.mjs';
 function numberFlag(flags, name, fallback) {
   const n = Number(flags[name]);
   return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+function runtimeForFlags(root, flags = {}) {
+  const config = resolveSubjectFromFlags(root, flags);
+  return runtimeInfoForSubject(root, config);
 }
 
 function makeStore(runtime) {
@@ -22,7 +27,7 @@ function makeStore(runtime) {
 }
 
 export function buildIntelSummary(root, flags = {}) {
-  const runtime = getActiveSubjectRuntimeInfo(root);
+  const runtime = runtimeForFlags(root, flags);
   const days = numberFlag(flags, 'days', 7);
   const limit = numberFlag(flags, 'limit', 8);
   const store = makeStore(runtime);
@@ -57,7 +62,7 @@ function printIntelSummary(summary) {
 }
 
 export function findReportRecord(root, flags = {}) {
-  const runtime = getActiveSubjectRuntimeInfo(root);
+  const runtime = runtimeForFlags(root, flags);
   const store = makeStore(runtime);
   const limit = numberFlag(flags, 'limit', 20);
   const records = store.readIntelReports({ limit: Math.max(limit, 50) });
@@ -121,7 +126,7 @@ export async function intelReportCommand(root, flags = {}, args = []) {
     if (flags.json) {
       console.log(JSON.stringify({ runtime, records: records.slice(0, limit) }, null, 2));
     } else {
-      console.log(`active subject: ${runtime.subject}`);
+      console.log(`subject: ${runtime.subject}`);
       console.log(`namespace: ${runtime.dataNamespace}`);
       console.log('');
       printReportList(records, limit);
@@ -196,7 +201,7 @@ export async function intelCommand({ subcommand, flags = {}, args = [] } = {}) {
     return intelBriefCommand({ root, action: args[0], flags });
   }
 
-  console.error('Usage: jea intel <summary|report|ingest|inbox> [...]\n' +
+  console.error('Usage: jea intel <summary|report|ingest|inbox|brief> [...] [--subject NAME]\n' +
     '  jea intel summary [--days N] [--limit N] [--json]\n' +
     '  jea intel report [--latest] [--cycle <id>] [--json] [--open]\n' +
     '  jea intel report list [--limit N] [--json]\n' +

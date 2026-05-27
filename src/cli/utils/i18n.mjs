@@ -116,6 +116,7 @@ Template: {template}
 - Repo: \`D:\\path\\to\\{subject}\`
 - Base Branch: \`main\`
 - Lane: \`jea/{subject}/local\`
+- Work Branch Prefix: \`jea/{subject}/work\` (optional; must not nest under Lane)
 - Test Command: \`npm test\`
 - Run Command: \`npm start\`
 
@@ -238,6 +239,7 @@ Template: {template}
 - Repo: \`D:\\path\\to\\{subject}\`
 - Base Branch: \`main\`
 - Lane: \`jea/{subject}/local\`
+- Work Branch Prefix: \`jea/{subject}/work\` (optional; must not nest under Lane)
 - Test Command: \`npm test\`
 - Run Command: \`npm start\`
 

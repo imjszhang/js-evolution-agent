@@ -133,20 +133,20 @@ Daemon 用于事件驱动的前台 worker 循环。每个 subject 应独立运�
 
 ## Subject 管理
 
-Subject 决定当前策略、命名空间和运行时路径。
+Subject 决定策略、命名空间和运行时路径。
 
-- `jea subject list`：列出配置的 subjects。
-- `jea subject show`：显示当前 subject、core layer、namespace 和 runtime paths。
-- `jea subject init <name> [--use]`：从模板创建新 subject，可立即切换使用。
-- `jea subject use <name>`：切换 active subject。
-- `jea subject check`：校验当前 subject policy。
-- `jea subject lane status`：检查当前 subject 的目标仓库 lane。
-- `jea subject lane init`：从 base branch 创建当前 subject lane。
+- `jea subject list`：列出 registry 中的 subjects 与 default subject。
+- `jea subject show [--subject NAME]`：显示 subject、core layer、namespace 和 runtime paths；无 `--subject` 时使用 default subject。
+- `jea subject init <name> [--use]`：从模板创建新 subject 并写入 registry；`--use` 同时设为 default。
+- `jea subject use <name>` / `jea subject default <name>`：更新 `policies/subjects.json` 中的 default subject。
+- `jea subject check [--subject NAME]`：校验 subject policy。
+- `jea subject lane status|init [--subject NAME]`：检查或初始化目标仓库 lane。
+- `jea run --subject NAME`：显式指定单轮演化主体；`jea evolve` / `jea daemon` 已支持 `--subject` / `--subjects` / `--all`。
 
-切换 subject 后，通常先执行：
+创建或切换 subject 后，通常先执行：
 
 ```powershell
-jea data init --all
+jea data init --all --subject <name>
 ```
 
 ## 审计与动作

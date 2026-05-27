@@ -13,9 +13,10 @@ import {
 import { extractMarkdownSection } from './subject.mjs';
 import { createIntelligenceStore } from '../../intelligence/store.mjs';
 import {
-  ensureDefaultSubject,
-  getActiveSubjectRuntimeInfo,
-  readActiveSubjectPolicy,
+  ensureSubjectsRegistry,
+  readSubjectPolicy,
+  resolveSubjectFromFlags,
+  runtimeInfoForSubject,
 } from '../utils/subjects.mjs';
 import { getLanguage, t, tObject } from '../utils/i18n.mjs';
 
@@ -37,9 +38,15 @@ export function buildDefaultGoals(language = getLanguage()) {
   return tObject('data.defaultGoals', language);
 }
 
-function getSubject(root) {
-  const { text, active } = readActiveSubjectPolicy(root);
-  return extractMarkdownSection(text, 'Subject') || active.active || 'js-evolution-agent';
+function getSubject(root, flags = {}) {
+  const config = resolveSubjectFromFlags(root, flags);
+  const { text, config: subjectConfig } = readSubjectPolicy(root, config);
+  return extractMarkdownSection(text, 'Subject') || subjectConfig.name || 'js-evolution-agent';
+}
+
+function runtimeForFlags(root, flags = {}) {
+  const config = resolveSubjectFromFlags(root, flags);
+  return runtimeInfoForSubject(root, config);
 }
 
 function statusObject(root, relativeDir) {
@@ -61,8 +68,8 @@ function printDirStatus(root, relativeDir) {
   console.log(`  latest: ${status.latest ?? 'none'}`);
 }
 
-export function dataStatus(root) {
-  const runtime = getActiveSubjectRuntimeInfo(root);
+export function dataStatus(root, flags = {}) {
+  const runtime = runtimeForFlags(root, flags);
   return DATA_DIRS.map((dir) => statusObject(runtime.runtimeRoot, dir));
 }
 
@@ -70,8 +77,8 @@ export function initData(root, flags = {}) {
   const language = flags.language || getLanguage();
   const withGoals = !!(flags.goals || flags.all);
   const withSeed = !!(flags.seed || flags.all);
-  const policies = flags.all ? ensureDefaultSubject(root, { language }) : null;
-  const runtime = getActiveSubjectRuntimeInfo(root);
+  const policies = flags.all ? ensureSubjectsRegistry(root, { language }) : null;
+  const runtime = runtimeForFlags(root, flags);
   const result = {
     runtime,
     policies,
@@ -95,7 +102,7 @@ export function initData(root, flags = {}) {
       timezone: 'Asia/Shanghai',
     });
     const initializedAt = nowIso();
-    const subject = getSubject(root);
+    const subject = getSubject(root, flags);
     const observationCount = store.ingestObservation({
       source: 'jea data init',
       subject: 'js-evolution-agent',
@@ -119,7 +126,7 @@ export function initData(root, flags = {}) {
 }
 
 export function backupData(root, flags = {}) {
-  const runtime = getActiveSubjectRuntimeInfo(root);
+  const runtime = runtimeForFlags(root, flags);
   const name = String(flags.name || `data-${timestampForPath()}`)
     .replace(/[\\/]/g, '-')
     .replace(/\s+/g, '-');
@@ -140,16 +147,16 @@ function printInitResult(result, root, language = getLanguage()) {
   console.log(`  ${t('data.init.namespace', {}, language)}: ${result.runtime.dataNamespace}`);
   console.log(`  ${t('data.init.runtime', {}, language)}: ${result.runtime.runtimeRoot}`);
   if (result.policies) {
-    const { active, subject } = result.policies;
-    const activeLabel = active?.skipped
-      ? t('data.init.exists', {}, language)
-      : t('data.init.created', {}, language);
+    const { registry, subject } = result.policies;
+    const registryLabel = registry?.registryWritten
+      ? t('data.init.created', {}, language)
+      : t('data.init.exists', {}, language);
     const subjectLabel = subject?.written
       ? t('data.init.created', {}, language)
       : t('data.init.exists', {}, language);
     const policyRel = relative(root, subject.file);
     console.log(`  ${t('data.init.policies', {}, language)}:`);
-    console.log(`    - policies/active-subject.json: ${activeLabel}`);
+    console.log(`    - policies/subjects.json: ${registryLabel}`);
     console.log(`    - ${policyRel}: ${subjectLabel}`);
   }
   for (const dir of result.directories) {
@@ -174,12 +181,12 @@ function printInitResult(result, root, language = getLanguage()) {
 
 export async function dataCommand({ subcommand, flags = {} } = {}) {
   const root = getProjectRoot();
-  const runtime = getActiveSubjectRuntimeInfo(root);
+  const runtime = runtimeForFlags(root, flags);
   if (subcommand === 'status') {
-    const status = dataStatus(root);
+    const status = dataStatus(root, flags);
     if (flags.json) console.log(JSON.stringify({ runtime, status }, null, 2));
     else {
-      console.log(`active subject: ${runtime.subject}`);
+      console.log(`subject: ${runtime.subject}`);
       console.log(`data namespace: ${runtime.dataNamespace}`);
       console.log(`runtime root: ${runtime.runtimeRoot}`);
       for (const item of status) printDirStatus(runtime.runtimeRoot, item.dir);
@@ -230,7 +237,7 @@ export async function dataCommand({ subcommand, flags = {} } = {}) {
     return 0;
   }
 
-  console.error('Usage: jea data <status|init|backup|reset> [--goals] [--seed] [--all] [--force] [--json] [--yes]');
+  console.error('Usage: jea data <status|init|backup|reset> [--subject NAME] [--goals] [--seed] [--all] [--force] [--json] [--yes]');
   return 2;
 }
 
