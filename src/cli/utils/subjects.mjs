@@ -68,6 +68,7 @@ function defaultSubjectsRegistry() {
 export function normalizeRegistryEntry(name, entry = {}) {
   const subject = sanitizeSubjectName(name);
   return {
+    ...entry,
     name: subject,
     policy: entry.policy ?? `subjects/${subject}.md`,
     data_namespace: entry.data_namespace ?? subject,
@@ -434,6 +435,52 @@ export function parseSubjectResourceRules(policyText = '') {
   }));
 }
 
+function asPlainObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function normalizeStructuredRoots(roots = {}) {
+  const result = {};
+  for (const [rawScope, rawPath] of Object.entries(asPlainObject(roots))) {
+    const scope = normalizeResourceScope(rawScope);
+    if (!scope || scope === 'subject_runtime' || scope === 'source_root') continue;
+    const path = String(rawPath || '').trim();
+    if (!path) continue;
+    result[scope] = path;
+  }
+  return result;
+}
+
+function normalizeStructuredResourceRule(rule = {}) {
+  if (!rule || typeof rule !== 'object') return null;
+  const scope = normalizeResourceScope(rule.scope);
+  if (!scope || scope === 'subject_runtime' || scope === 'source_root') return null;
+  const patterns = Array.isArray(rule.patterns)
+    ? rule.patterns.map((pattern) => String(pattern || '').trim()).filter(Boolean)
+    : [];
+  if (!patterns.length) return null;
+  const kind = normalizeResourceKind(rule.kind) || kindFromScopeAndPattern(scope, patterns[0]);
+  return {
+    kind,
+    scope,
+    patterns: [...new Set(patterns)],
+  };
+}
+
+export function resolveSubjectExternalRoots(policyText = '', { config = null } = {}) {
+  return {
+    ...parseSubjectExternalRoots(policyText),
+    ...normalizeStructuredRoots(config?.resources?.roots),
+  };
+}
+
+export function resolveSubjectResourceRules(policyText = '', { config = null } = {}) {
+  const structuredRules = Array.isArray(config?.resources?.rules)
+    ? config.resources.rules.map(normalizeStructuredResourceRule).filter(Boolean)
+    : [];
+  return structuredRules.length ? structuredRules : parseSubjectResourceRules(policyText);
+}
+
 function stripInlineCode(value) {
   const text = String(value || '').trim();
   const code = text.match(/`([^`]+)`/);
@@ -509,6 +556,47 @@ export function parseSubjectRepoLane(policyText = '', {
     repoRoot: resolvedRepo,
     baseBranch,
     lane,
+    workBranchPrefix,
+    testCommand,
+    runCommand,
+    githubRepo,
+  };
+}
+
+function firstStructuredLaneValue(lane, keys) {
+  for (const key of keys) {
+    const value = lane?.[key];
+    if (value !== undefined && value !== null && String(value).trim()) return String(value).trim();
+  }
+  return null;
+}
+
+export function resolveSubjectRepoLane(policyText = '', {
+  root = process.cwd(),
+  subject = DEFAULT_SUBJECT,
+  config = null,
+} = {}) {
+  const parsed = parseSubjectRepoLane(policyText, { root, subject });
+  const lane = asPlainObject(config?.lane);
+  if (!Object.keys(lane).length) return parsed;
+
+  const repo = firstStructuredLaneValue(lane, ['repo', 'repository', 'target_repo', 'targetRepo']) ?? parsed.repo;
+  const baseBranch = firstStructuredLaneValue(lane, ['base_branch', 'baseBranch', 'base']) ?? parsed.baseBranch;
+  const laneBranch = firstStructuredLaneValue(lane, ['lane_branch', 'laneBranch', 'lane']) ?? parsed.lane;
+  const workBranchPrefix = firstStructuredLaneValue(lane, ['work_branch_prefix', 'workBranchPrefix', 'work_prefix', 'workPrefix'])
+    ?? parsed.workBranchPrefix;
+  const testCommand = firstStructuredLaneValue(lane, ['test_command', 'testCommand', 'verify_command', 'verifyCommand'])
+    ?? parsed.testCommand;
+  const runCommand = firstStructuredLaneValue(lane, ['run_command', 'runCommand', 'observe_command', 'observeCommand'])
+    ?? parsed.runCommand;
+  const githubRepo = firstStructuredLaneValue(lane, ['github_repo', 'githubRepo', 'remote_repo', 'remoteRepo'])
+    ?? parsed.githubRepo;
+  return {
+    configured: Boolean(repo),
+    repo,
+    repoRoot: repo ? resolve(root, repo) : null,
+    baseBranch,
+    lane: laneBranch,
     workBranchPrefix,
     testCommand,
     runCommand,

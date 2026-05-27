@@ -1,7 +1,7 @@
 import { checkLaneStatus } from '../../actions/lane-manager.mjs';
 import {
-  parseSubjectRepoLane,
   readSubjectPolicy,
+  resolveSubjectRepoLane,
   resolveSubjectConfig,
 } from './subjects.mjs';
 
@@ -19,9 +19,10 @@ export function checkSubjectLaneReady(root, { subject = null } = {}) {
   const config = resolveSubjectConfig(root, { subject, allowDefault: !subject });
   const policy = readSubjectPolicy(root, config);
   const activeSubject = config.name;
-  const repoLane = parseSubjectRepoLane(policy.text, {
+  const repoLane = resolveSubjectRepoLane(policy.text, {
     root,
     subject: activeSubject,
+    config,
   });
   if (!repoLane.configured) {
     return {

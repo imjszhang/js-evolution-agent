@@ -8,9 +8,9 @@ import {
   createSubject,
   ensureSubjectsRegistry,
   listRegisteredSubjects,
-  parseSubjectRepoLane,
   readSubjectPolicy,
   resolveDefaultSubjectName,
+  resolveSubjectRepoLane,
   resolveSubjectFromFlags,
   runtimeInfoForSubject,
   setDefaultSubject,
@@ -23,9 +23,10 @@ export function extractMarkdownSection(text, heading) {
 }
 
 function printSubject(policy, runtime, { defaultSubject = null } = {}) {
-  const repoLane = parseSubjectRepoLane(policy.text, {
+  const repoLane = resolveSubjectRepoLane(policy.text, {
     root: getProjectRoot(),
     subject: policy.config.name,
+    config: policy.config,
   });
   const defaultLabel = defaultSubject && defaultSubject === policy.config.name ? ' (default)' : '';
   console.log(`# Subject: ${policy.config.name}${defaultLabel}`);
@@ -61,9 +62,10 @@ function currentRepoLane(root, flags = {}) {
   return {
     config,
     policy,
-    repoLane: parseSubjectRepoLane(policy.text, {
+    repoLane: resolveSubjectRepoLane(policy.text, {
       root,
       subject: config.name,
+      config,
     }),
   };
 }
@@ -121,9 +123,10 @@ export async function subjectCommand({ subcommand, flags = {}, args = [] } = {})
         default_subject: defaultSubject,
         file: policy.file,
         runtime,
-        repoLane: parseSubjectRepoLane(policy.text, {
+        repoLane: resolveSubjectRepoLane(policy.text, {
           root,
           subject: config.name,
+          config,
         }),
         subject: extractMarkdownSection(policy.text, 'Subject'),
         coreLayer: extractMarkdownSection(policy.text, 'Core Layer'),

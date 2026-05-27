@@ -17,9 +17,9 @@ import { createIntelligenceStore } from './src/intelligence/store.mjs';
 import { getDefaultCyberTaoistDocsDir } from './src/cli/utils/project.mjs';
 import {
   runtimeInfoForDefaultSubject,
-  parseSubjectRepoLane,
-  parseSubjectExternalRoots,
-  parseSubjectResourceRules,
+  resolveSubjectRepoLane,
+  resolveSubjectExternalRoots,
+  resolveSubjectResourceRules,
   readSubjectPolicy,
   resolveSubjectConfig,
 } from './src/cli/utils/subjects.mjs';
@@ -223,15 +223,20 @@ export default async function ({ cwd }) {
   const subjectConfig = resolveSubjectConfig(cwd);
   const runtime = runtimeInfoForDefaultSubject(cwd);
   const subjectPolicy = readSubjectPolicy(cwd, subjectConfig);
-  const subjectRepoLane = parseSubjectRepoLane(subjectPolicy.text, {
+  const subjectRepoLane = resolveSubjectRepoLane(subjectPolicy.text, {
     root: cwd,
     subject: subjectConfig.name,
+    config: subjectConfig,
   });
-  const externalRoots = parseSubjectExternalRoots(subjectPolicy.text);
+  const externalRoots = resolveSubjectExternalRoots(subjectPolicy.text, {
+    config: subjectConfig,
+  });
   if (subjectRepoLane.configured) {
     externalRoots.target_repo = subjectRepoLane.repoRoot;
   }
-  const resourceRules = parseSubjectResourceRules(subjectPolicy.text);
+  const resourceRules = resolveSubjectResourceRules(subjectPolicy.text, {
+    config: subjectConfig,
+  });
 
   const intelligenceStore = createIntelligenceStore({
     baseDir: runtime.intelligenceDir,

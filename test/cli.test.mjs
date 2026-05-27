@@ -61,6 +61,10 @@ import {
   runtimeInfoForDefaultSubject,
   listSubjects,
   parseSubjectRepoLane,
+  resolveSubjectExternalRoots,
+  resolveSubjectRepoLane,
+  resolveSubjectResourceRules,
+  resolveSubjectConfig,
   readDefaultSubjectPolicy,
   setDefaultSubject,
 } from '../src/cli/utils/subjects.mjs';
@@ -296,6 +300,126 @@ describe('subject management', () => {
     expect(config.workBranchPrefix).toBe('jea/agentank/work');
     expect(config.testCommand).toBe('npm test');
     expect(config.runCommand).toBe('npm start');
+  });
+
+  it('preserves structured subject runtime fields from subjects.json', () => {
+    const root = makeProjectRoot();
+    mkdirSync(join(root, 'policies', 'subjects'), { recursive: true });
+    writeFileSync(join(root, 'policies', 'subjects', 'agentank.md'), '# agentank\n\n## Subject\nagentank', 'utf-8');
+    writeJsonFile(join(root, 'policies', 'subjects.json'), {
+      default_subject: 'agentank',
+      subjects: {
+        agentank: {
+          policy: 'subjects/agentank.md',
+          data_namespace: 'agentank',
+          lane: {
+            repo: '..\\agentank',
+            lane_branch: 'jea/agentank/local',
+          },
+          resources: {
+            roots: {
+              strategy_repo: '..\\agentank',
+            },
+          },
+        },
+      },
+    });
+
+    const config = resolveSubjectConfig(root);
+
+    expect(config.lane.repo).toBe('..\\agentank');
+    expect(config.lane.lane_branch).toBe('jea/agentank/local');
+    expect(config.resources.roots.strategy_repo).toBe('..\\agentank');
+  });
+
+  it('prefers structured subject repo lane fields over markdown policy values', () => {
+    const root = makeProjectRoot();
+    const config = resolveSubjectRepoLane([
+      '## Subject Repo Lane',
+      '',
+      '- Repo: `..\\markdown-repo`',
+      '- Base Branch: `main`',
+      '- Lane: `jea/agentank/markdown`',
+      '- Test Command: `npm test:markdown`',
+    ].join('\n'), {
+      root,
+      subject: 'agentank',
+      config: {
+        name: 'agentank',
+        lane: {
+          repo: '..\\structured-repo',
+          base_branch: 'develop',
+          lane_branch: 'jea/agentank/structured',
+          work_branch_prefix: 'jea/agentank/structured-work',
+          test_command: 'npm test:structured',
+          run_command: 'npm run structured',
+          github_repo: 'owner/structured',
+        },
+      },
+    });
+
+    expect(config.configured).toBe(true);
+    expect(config.repo).toBe('..\\structured-repo');
+    expect(config.repoRoot).toBe(join(root, '..\\structured-repo'));
+    expect(config.baseBranch).toBe('develop');
+    expect(config.lane).toBe('jea/agentank/structured');
+    expect(config.workBranchPrefix).toBe('jea/agentank/structured-work');
+    expect(config.testCommand).toBe('npm test:structured');
+    expect(config.runCommand).toBe('npm run structured');
+    expect(config.githubRepo).toBe('owner/structured');
+  });
+
+  it('falls back to markdown repo lane fields when structured fields are absent', () => {
+    const root = makeProjectRoot();
+    const config = resolveSubjectRepoLane([
+      '## Subject Repo Lane',
+      '',
+      '- Repo: `..\\markdown-repo`',
+      '- Base Branch: `main`',
+      '- Lane: `jea/agentank/markdown`',
+    ].join('\n'), {
+      root,
+      subject: 'agentank',
+      config: { name: 'agentank' },
+    });
+
+    expect(config.repo).toBe('..\\markdown-repo');
+    expect(config.lane).toBe('jea/agentank/markdown');
+  });
+
+  it('prefers structured external roots and resource rules over markdown parsing', () => {
+    const policyText = [
+      '- Target repo: `D:\\markdown`，使用 `resource_scope=strategy_repo`。',
+      '- 外部资源映射：`data/markdown/**` 属于 `resource_scope=strategy_repo`。',
+    ].join('\n');
+    const config = {
+      resources: {
+        roots: {
+          strategy_repo: 'D:\\structured',
+          subject_runtime: 'ignored',
+        },
+        rules: [{
+          kind: 'strategy_src',
+          scope: 'strategy_repo',
+          patterns: ['src/**', 'src/**'],
+        }],
+      },
+    };
+
+    expect(resolveSubjectExternalRoots(policyText, { config })).toEqual({
+      strategy_repo: 'D:\\structured',
+    });
+    expect(resolveSubjectResourceRules(policyText, { config })).toEqual([
+      { kind: 'strategy_src', scope: 'strategy_repo', patterns: ['src/**'] },
+    ]);
+  });
+
+  it('falls back to markdown resource rules when structured rules are absent', () => {
+    const policyText = '- 外部资源映射：`data/candidates/**` 属于 `resource_scope=strategy_repo`。';
+
+    expect(resolveSubjectResourceRules(policyText, { config: { resources: {} } })).toEqual([
+      { kind: 'strategy_repo_candidates', scope: 'strategy_repo', patterns: ['data/candidates/**'] },
+    ]);
   });
 
   it('does not block subjects without repo lane configuration', () => {
