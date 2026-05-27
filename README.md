@@ -129,13 +129,16 @@ Cyber-Taoist analysis requires a defined subject. `js-evolution-agent` manages s
 ```text
 policies/
   subjects.json
+  subjects.example.json
   subjects/
     js-evolution-agent.md
   templates/
     project.md
 ```
 
-`policies/subjects.json` registers known subjects and optional `default_subject` for interactive CLI convenience. `policies/subjects.json`, legacy `policies/active-subject.json`, and `policies/subjects/*.md` are local state and are ignored by Git by default. Commit templates and stable project defaults, not operator-specific registry files. `policies/project-guidance.md` remains the committed compatibility/default policy.
+`policies/subjects.json` registers known subjects and optional `default_subject` for interactive CLI convenience. It may also carry structured `lane` and `resources` fields for machine-readable repo, branch, command, resource-root, and resource-rule configuration. Use `policies/subjects.example.json` as the copyable shape for those fields.
+
+`policies/subjects.json`, legacy `policies/active-subject.json`, and `policies/subjects/*.md` are local state and are ignored by Git by default. Commit examples, templates, and stable project defaults, not operator-specific registry files. `policies/project-guidance.md` remains the committed compatibility/default policy.
 
 Common commands:
 

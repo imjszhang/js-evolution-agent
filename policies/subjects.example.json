@@ -1,0 +1,39 @@
+{
+  "default_subject": "my-subject",
+  "subjects": {
+    "my-subject": {
+      "policy": "subjects/my-subject.md",
+      "data_namespace": "my-subject",
+      "lane": {
+        "repo": "D:\\path\\to\\target-project",
+        "base_branch": "main",
+        "lane_branch": "jea/my-subject/local",
+        "work_branch_prefix": "jea/my-subject/work",
+        "test_command": "npm test",
+        "run_command": "npm start",
+        "github_repo": "owner/repo"
+      },
+      "resources": {
+        "roots": {
+          "target_repo": "D:\\path\\to\\target-project"
+        },
+        "rules": [
+          {
+            "kind": "target_project_src",
+            "scope": "target_repo",
+            "patterns": [
+              "src/**"
+            ]
+          },
+          {
+            "kind": "target_project_tests",
+            "scope": "target_repo",
+            "patterns": [
+              "test/**"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

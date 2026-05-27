@@ -221,7 +221,8 @@ describe('subject management', () => {
     expect(listSubjects(root)).toEqual(['js-evolution-agent']);
     expect(readDefaultSubjectPolicy(root).active.active).toBe('js-evolution-agent');
     expect(readDefaultSubjectPolicy(root).text).toContain('`js-evolution-agent` 是本项目的受控自演化宿主');
-    expect(readDefaultSubjectPolicy(root).text).toContain('## Probe Requirements');
+    expect(readDefaultSubjectPolicy(root).text).toContain('资源 root、lane、分支、验证命令和 resource mapping 属于结构化主体配置');
+    expect(readDefaultSubjectPolicy(root).text).not.toContain('## Probe Requirements');
   });
 
   it('creates English default subject policy when requested by env language', () => {
@@ -232,7 +233,8 @@ describe('subject management', () => {
 
     expect(result.subject.written).toBe(true);
     expect(readDefaultSubjectPolicy(root).text).toContain("`js-evolution-agent` is this project's controlled self-evolution host");
-    expect(readDefaultSubjectPolicy(root).text).toContain('## Probe Requirements');
+    expect(readDefaultSubjectPolicy(root).text).toContain('Resource roots, lanes, branches, verification commands, and resource mappings belong in structured subject config');
+    expect(readDefaultSubjectPolicy(root).text).not.toContain('## Probe Requirements');
     expect(buildDefaultSubjectPolicy('en-US')).toContain("`js-evolution-agent` is this project's controlled self-evolution host");
   });
 

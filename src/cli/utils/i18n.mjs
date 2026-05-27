@@ -73,14 +73,8 @@ Generated: {generatedAt}
 - 当前 provider 下，读/写路径边界是 agent 行为协议与宿主预检约束，不是文件系统级硬隔离。
 - agent 不应主动读取密钥、凭据、无关路径或 \`archives\` 内容；若因探针需要触达敏感目标，只能记录可访问性与脱敏元数据。
 - agent 不应主动写入当前主体运行时数据命名空间之外的路径；任何越界写入、核心层修改或破坏性操作都必须先获得人类审批并留下审计回执。
+- 资源 root、lane、分支、验证命令和 resource mapping 属于结构化主体配置，不在本文维护。
 - \`boundary\` 与 \`death_boundary\` 是操作契约；只有在 cwd、worktree、容器、ACL 或 provider enforcement 支撑时，才能声明为硬安全边界。
-
-## Probe Requirements
-
-- \`hypothesis\`
-- \`success_signal\`
-- \`failure_signal\`
-- \`death_boundary\`
 `,
       subjectTemplate: `# {subject} 项目指导
 
@@ -111,21 +105,11 @@ Template: {template}
 - 运行破坏性命令、大规模重写或项目树外写入。
 - 执行非记录性质的 \`core\` 层动作。
 
-## Subject Repo Lane
+## Runtime Boundary Model
 
-- Repo: \`D:\\path\\to\\{subject}\`
-- Base Branch: \`main\`
-- Lane: \`jea/{subject}/local\`
-- Work Branch Prefix: \`jea/{subject}/work\` (optional; must not nest under Lane)
-- Test Command: \`npm test\`
-- Run Command: \`npm start\`
-
-## Probe Requirements
-
-- \`hypothesis\`
-- \`success_signal\`
-- \`failure_signal\`
-- \`death_boundary\`
+- 资源 root、lane、分支、验证命令和 resource mapping 属于结构化主体配置，不在本文维护。
+- \`params.cwd\` 必须匹配结构化 resource root。
+- 越界写入、敏感读取、核心层修改必须先获得人类审批。
 `,
     },
   },
@@ -196,14 +180,8 @@ Generated: {generatedAt}
 - In the current provider, read/write path boundaries are agent conduct rules and host preflight constraints, not filesystem-level hard isolation.
 - The agent should not intentionally read secrets, credentials, unrelated paths, or \`archives\` content; probes that touch sensitive targets may record accessibility and redacted metadata only.
 - The agent should not intentionally write outside the active subject runtime data namespace; out-of-bounds writes, core changes, or destructive operations require human approval and audit receipts first.
+- Resource roots, lanes, branches, verification commands, and resource mappings belong in structured subject config, not this policy document.
 - \`boundary\` and \`death_boundary\` are operating contracts; they are hard security boundaries only when backed by cwd, worktree, container, ACL, or provider enforcement.
-
-## Probe Requirements
-
-- \`hypothesis\`
-- \`success_signal\`
-- \`failure_signal\`
-- \`death_boundary\`
 `,
       subjectTemplate: `# {subject} Project Guidance
 
@@ -234,21 +212,11 @@ Template: {template}
 - Running destructive commands, broad rewrites, or writing outside the configured project tree.
 - Executing non-record \`core\` layer actions.
 
-## Subject Repo Lane
+## Runtime Boundary Model
 
-- Repo: \`D:\\path\\to\\{subject}\`
-- Base Branch: \`main\`
-- Lane: \`jea/{subject}/local\`
-- Work Branch Prefix: \`jea/{subject}/work\` (optional; must not nest under Lane)
-- Test Command: \`npm test\`
-- Run Command: \`npm start\`
-
-## Probe Requirements
-
-- \`hypothesis\`
-- \`success_signal\`
-- \`failure_signal\`
-- \`death_boundary\`
+- Resource roots, lanes, branches, verification commands, and resource mappings belong in structured subject config, not this policy document.
+- \`params.cwd\` must match the structured resource root.
+- Out-of-bounds writes, sensitive reads, and core-layer changes require human approval first.
 `,
     },
   },

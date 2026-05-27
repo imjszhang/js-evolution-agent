@@ -143,6 +143,8 @@ Subject 决定策略、命名空间和运行时路径。
 - `jea subject lane status|init [--subject NAME]`：检查或初始化目标仓库 lane。
 - `jea run --subject NAME`：显式指定单轮演化主体；`jea evolve` / `jea daemon` 已支持 `--subject` / `--subjects` / `--all`。
 
+`policies/subjects.json` 是本地 registry，可承载机器可读的 `lane` 与 `resources` 字段；字段形态参考 `policies/subjects.example.json`。主体 Markdown policy 只保留主体语义、安全边界和人工审批规则，不维护 repo、branch、resource root、resource mapping 等机器字段。
+
 创建或切换 subject 后，通常先执行：
 
 ```powershell
