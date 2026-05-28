@@ -1319,7 +1319,17 @@ const builtInActionHandlers = {
     const schemaStatus = agent.schema_status ?? (agentResult.success ? 'valid' : 'invalid');
     const schemaMissing = asArray(agent.schema_missing);
     const agentStatus = agent.status ?? executionStatus;
-    const requiresApproval = !!agent.requires_approval;
+    const rawRequiresApproval = !!agent.requires_approval;
+    const postExecutionApproval = rawRequiresApproval
+      ? (autoApproval ?? resolveApprovalDecision({
+        ...action,
+        type: action?.type ?? 'agent_run',
+        params: executionAction?.params ?? action?.params,
+      }, ctx, { runSpec }).auto_approval)
+      : null;
+    const receiptAutoApproval = postExecutionApproval ?? autoApproval;
+    const approvalOverride = rawRequiresApproval && postExecutionApproval?.mode === 'auto_all';
+    const requiresApproval = rawRequiresApproval && !approvalOverride;
     const hasExecutionEvidence = listCount(agent.evidence) > 0
       || listCount(agent.writes) > 0
       || listCount(agent.outputs) > 0
@@ -1407,7 +1417,7 @@ const builtInActionHandlers = {
         ...asArray(agent.verification_hints),
         ...(providerFailure ? [`provider failure phase: ${providerFailure.phase}`] : []),
       ],
-      ...(autoApproval ? { auto_approval: autoApproval } : {}),
+      ...(receiptAutoApproval ? { auto_approval: receiptAutoApproval } : {}),
       ...(approvalPolicy ? { approval_policy: approvalPolicy } : {}),
       fallback_used: false,
     };

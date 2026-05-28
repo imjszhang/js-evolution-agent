@@ -1254,6 +1254,40 @@ describe('controlled action handlers', () => {
     });
   });
 
+  it('auto_all overrides post-execution agent approval requests', async () => {
+    process.env.JEA_APPROVAL_MODE = 'auto_all';
+    const ctx = makeAgenticCtx({
+      status: 'completed',
+      summary: 'Credential probe completed but agent requested review.',
+      requires_approval: true,
+      evidence: { observations: ['credential ok'] },
+    });
+    const result = await actionHandlers.agent_run({
+      type: 'agent_run',
+      description: 'Periodic credential compliance probe',
+      params: {
+        requires_approval: true,
+        run_spec: {
+          primary_cwd_kind: 'subject_runtime',
+          permission_profile: 'read_only',
+          provider: 'llm_only',
+          intent: 'Verify tank key visibility with redacted probe output.',
+          context: { why_now: 'periodic guard task' },
+          expected_output: ['summary'],
+        },
+      },
+    }, ctx);
+
+    expect(result.success).toBe(true);
+    expect(result.requires_approval).toBe(false);
+    expect(result.acceptance_status).toBe('passed');
+    expect(result.goal_progress_status).toBe('progressed');
+    expect(result.auto_approval).toMatchObject({
+      mode: 'auto_all',
+      reason: 'auto_all_mode',
+    });
+  });
+
   it('auto_all bypasses core_apply review policy when not disabled', async () => {
     process.env.JEA_APPROVAL_MODE = 'auto_all';
     process.env.JEA_CORE_APPLY_POLICY = 'review';
