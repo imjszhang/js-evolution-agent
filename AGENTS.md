@@ -108,7 +108,20 @@ runtime/subjects/<data_namespace>/
 - `jea intel inbox put --source NAME [--file PATH | --stdin] [--name LABEL]`：把 JSON 载荷放入 `_inbox`，供之后 drain。
 - `jea intel inbox drain [--dir PATH] [--json]`：将 `_inbox` 中的文件导入 intelligence store。
 
-操作者 brief（Operator Intent Brief）：
+## 操作者输入
+
+进化系统区分四类人工/操作者输入，不要混用：
+
+| 类型 | 含义 | 典型入口 |
+| --- | --- | --- |
+| **Constraint（约束）** | 长期必须遵守的边界或偏好 | `human_guidance.md`、subject policy、OADA 规则 |
+| **Intent（意图）** | 下一轮关注什么，**不是事实** | `jea intel brief put` |
+| **Fact（确立事实）** | 操作者已确认、可当 Seen 引用 | `operator_fact` via `intel ingest` |
+| **Evidence（证据）** | 世界发生了什么，可被推翻 | `intel ingest` / `inbox`、probe、receipt |
+
+另有 **Action（硬开关）**：如 `approval_granted`，由 Decide 产出、Phase 2 执行；操作者不应直接写 `pending_decisions.json` 绕过 Decide。
+
+### Operator Intent Brief
 
 - `jea intel brief put [--file PATH | --stdin]`：为下一次 intel cycle 放入一次性操作者意图 brief。
 - `jea intel brief list`：列出待处理 brief。
@@ -135,6 +148,81 @@ runtime/subjects/<data_namespace>/data/evolution/operator_briefs/processed/
 ```
 
 常用字段：`summary`、`claims_to_verify[]`、`desired_decision_effect`、`suggested_actions[]`、`kind`（如 `verification_request`、`approval_request`）、`priority`。在 chat 里口头说「同意发布」**不会**自动进入系统；操作者或自动化代理需执行 `jea intel brief put` 落盘。
+
+### Operator Fact
+
+- 入口：`jea intel ingest --source intel_observations [--file PATH | --stdin] [--json]`；记录需带 `kind: "operator_fact"`（或 `source: "operator_fact"`）。
+- 存储：`runtime/subjects/<data_namespace>/data/intelligence/` 下的 `intel_observations`（持久，**不是**单轮消费队列）。
+- 作用：在 Temporal Decision Brief 中升格为 **Seen**（`operator_established_fact`），后续 report / decide / goal assess 可当作已确立事实引用；`buildContextSummary()` 也会优先展示 operator facts。
+- 与 brief 区别：brief 是「下一轮请核实 / 请这样排优先级」的**一次性意图**；fact 是操作者已确认、希望系统长期遵守的**领域口径或基线**（如 rank 方向、术语定义）。待验证命题用 brief；已确认口径用 fact。
+
+最小 JSON 示例：
+
+```json
+{
+  "kind": "operator_fact",
+  "source": "operator",
+  "subject": "agentank-tank",
+  "content": "standing.rank lower is better; rankScore higher is better",
+  "confidence": "high"
+}
+```
+
+常用字段：`content`（或 `summary`）、`subject`、`confidence`（仅 `high` 或缺省时会进入 Seen；`medium` / `low` 不会升格为 `operator_established_fact`）。没有独立的 `jea intel fact put` 命令；与 generic observation 共用 `intel ingest`。自动化代理在未获操作者明确确认时，不要替其写入 operator fact。
+
+### Operator Guidance（长期约束）
+
+- 路径：`runtime/subjects/<data_namespace>/data/evolution/human_guidance.md` 的 `## Current` 段。
+- 注入：Phase 1 report/decide 的 **Operator Guidance** 区块；**每轮**都会读，当前 pipeline 不会在 cycle 结束后自动清空。
+- 适合：稳定规则（如「ENOENT 必须带 execution_root 解释」）。
+- 不适合：「下一轮请核实 X」——应改用 `jea intel brief put`。
+
+### 主体策略与权威文档
+
+- `policies/subjects/<name>.md`：`Off-Limits Without Human Approval` 等审批与安全边界；用 `jea subject check` 校验结构。
+- `policies/subjects.json`：lane、resource root 等机器可读配置。
+- `CONSTITUTION.md`、`SKILL.md`、`oada.config.mjs`：Phase 1 权威文档，优先级高于情报材料。
+
+### 通用情报写入（Evidence，非 operator_fact）
+
+- 见上文「写入情报」的 `intel ingest` / `inbox`；可写入任意合法 source（`probe_results`、`goal_events` 等）。
+- 普通 observation 默认 `kind: observation`、`confidence: medium`，**不会**升格为 `operator_established_fact`。
+- 适合：外部探针结果、可推翻的手工观测；与 `operator_fact` 的「已确认口径」区分开。
+
+### 目标与信念
+
+- `jea goals update`：替换 active goals，写 `goal-events.jsonl`（演化方向的人工写入点）。
+- `jea beliefs update`：手动触发 Phase 3.5；信念的正式创建/调整通常由 verify 自动完成，依据 receipt 与 verify_report，而非 report 叙事。详见下文「目标管理」。
+
+### 记录型 action（经 Decide 间接落盘）
+
+Decide 可调度、`Phase 2` 执行的记录型动作，用于落已有结论而非调查：`record_observation`、`propose_probe`、`write_retrospective`、`request_core_review`。操作者通常通过 brief 引导 Decide，而不是直接写决策队列。
+
+### 不建议的操作者入口
+
+| 入口 | 原因 |
+| --- | --- |
+| 直接编辑 `pending_decisions.json` | 绕过 Decide，破坏 OADA 闭环 |
+| 手改 `standing_memory.json` | 易污染 Remembered；应由报告管线更新 |
+| chat 口头审批 | 不会进入系统；需 `jea intel brief put` |
+
+### 入口对照
+
+| 场景 | 用哪个 |
+| --- | --- |
+| 长期约束、稳定偏好 | `human_guidance.md` 或 subject policy |
+| 下一轮核实 / 审批意图 / 排优先级 | `jea intel brief put` |
+| 已确认领域口径或术语 | `operator_fact`（`intel ingest`） |
+| 可推翻的外部观测 | `intel ingest` / `inbox`（普通 observation） |
+| 调整演化目标假设 | `jea goals update` |
+| 远端发布 / 核心变更放行 | brief → Decide 产出 `approval_granted`（+ env 如 `AGENTANK_ALLOW_PUBLISH`） |
+
+| 机制 | 入口 | 生命周期 | 证据地位 |
+| --- | --- | --- | --- |
+| Operator Intent Brief | `jea intel brief put` | 单轮；入队后归档 | 软意图，不可当事实 |
+| Operator Fact | `jea intel ingest --source intel_observations` | 持久 | 高置信时可作 Seen 事实 |
+| Operator Guidance | `human_guidance.md` ## Current | 持续，直至手动清空 | 约束，非证据 |
+| 普通 observation | `jea intel ingest --source intel_observations` | 持久（90 天 retention） | 证据，非自动 Seen |
 
 ## 人工审批与操作者意图
 
@@ -261,3 +349,6 @@ npm run reset-data
 - 多主体并行时，用 `jea daemon status --all`、`jea daemon doctor --all` 和 `jea daemon inbox --all` 做总览。
 - 自动化脚本需要结构化输出时，优先使用带 `--json` 的命令。
 - 发布/基线校准等人工作业：先读最新 evolution diary 与 verify report，再用 `jea intel brief put` 提交意图，然后 `jea daemon enqueue --type run_cycle` 或 `jea run`；用 `jea intel brief list` / `processed` 确认 brief 是否已被消费。
+- 已确认的领域口径或术语定义（非待验证命题）：用 `jea intel ingest --source intel_observations` 写入 `operator_fact`；待核实或单轮优先级调整仍用 `jea intel brief put`。
+- 长期稳定约束写 `human_guidance.md` 的 `## Current`；一次性核实请求不要写进 guidance，改用 brief。
+- 调整演化方向用 `jea goals update`；不要手改 `standing_memory.json` 或直接写 `pending_decisions.json`。
