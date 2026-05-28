@@ -14,8 +14,16 @@
         "github_repo": "owner/repo"
       },
       "resources": {
+        "items": {
+          "target_repo": {
+            "kind": "repo",
+            "handle": "D:\\path\\to\\target-project",
+            "note": "Target project repository used as this subject's lane and external write scope.",
+            "fallback": "Pause lane writes and inspect the repository manually."
+          }
+        },
         "roots": {
-          "target_repo": "D:\\path\\to\\target-project"
+          "target_repo": "target_repo"
         },
         "aliases": {
           "target_project": "target_repo"

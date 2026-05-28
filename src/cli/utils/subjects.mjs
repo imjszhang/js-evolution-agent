@@ -439,37 +439,165 @@ function asPlainObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
 
-function normalizeStructuredRoots(roots = {}) {
+function isWindowsAbsolutePath(value) {
+  return /^[a-zA-Z]:[\\/]/.test(String(value || '').trim());
+}
+
+function parseRelativeResourceHandle(handle) {
+  const text = String(handle || '').trim();
+  if (!text || isWindowsAbsolutePath(text)) return null;
+  const match = text.match(/^([^:]+):(.+)$/);
+  if (!match) return null;
+  return {
+    prefix: match[1].trim(),
+    path: match[2].trim(),
+  };
+}
+
+function isLocalRootHandle(handle) {
+  return Boolean(String(handle || '').trim()) && !parseRelativeResourceHandle(handle);
+}
+
+const ROOT_RESOURCE_KINDS = new Set(['repo', 'root']);
+const RESOURCE_NOTE_KINDS = new Set(['repo', 'root', 'document']);
+
+function normalizeStructuredResourceItem(item = {}) {
+  if (!item || typeof item !== 'object') return null;
+  const kind = String(item.kind || '').trim().toLowerCase();
+  const handle = String(item.handle || '').trim();
+  if (!kind || !handle) return null;
+  const normalized = { kind, handle };
+  const note = String(item.note || '').trim();
+  const fallback = String(item.fallback || '').trim();
+  if (note) normalized.note = note;
+  if (fallback) normalized.fallback = fallback;
+  return normalized;
+}
+
+export function normalizeStructuredResourceItems(items = {}) {
   const result = {};
-  for (const [rawScope, rawPath] of Object.entries(asPlainObject(roots))) {
-    const scope = normalizeResourceScope(rawScope);
-    if (!scope || scope === 'subject_runtime' || scope === 'source_root') continue;
-    const path = String(rawPath || '').trim();
-    if (!path) continue;
-    result[scope] = path;
+  for (const [id, raw] of Object.entries(asPlainObject(items))) {
+    const normalized = normalizeStructuredResourceItem(raw);
+    if (normalized) result[id] = normalized;
   }
   return result;
 }
 
-function normalizeStructuredRootAliases(aliases = {}, roots = {}) {
-  const result = {};
-  for (const [rawAlias, rawTarget] of Object.entries(asPlainObject(aliases))) {
+function resolveRootScopeName(resources = {}, scopeName = '') {
+  const aliases = asPlainObject(resources?.aliases);
+  const scope = normalizeResourceScope(scopeName);
+  if (!scope || scope === 'subject_runtime' || scope === 'source_root') return null;
+  const aliasTarget = aliases[scope];
+  if (aliasTarget) {
+    const resolved = normalizeResourceScope(aliasTarget);
+    return resolved && resolved !== 'subject_runtime' && resolved !== 'source_root'
+      ? resolved
+      : scope;
+  }
+  return scope;
+}
+
+function resolveResourceItemId(resources = {}, resourceRef = '') {
+  const items = normalizeStructuredResourceItems(resources?.items);
+  const id = String(resourceRef || '').trim();
+  if (!id || !items[id]) return null;
+  return id;
+}
+
+function resolveRootScopeToPath(resources = {}, scopeName = '') {
+  const items = normalizeStructuredResourceItems(resources?.items);
+  const roots = asPlainObject(resources?.roots);
+  const rootScope = resolveRootScopeName(resources, scopeName);
+  if (!rootScope) return null;
+
+  const resourceRef = roots[rootScope];
+  if (!resourceRef) return null;
+
+  const itemId = resolveResourceItemId(resources, resourceRef);
+  if (!itemId) return null;
+
+  const item = items[itemId];
+  if (!ROOT_RESOURCE_KINDS.has(item.kind)) return null;
+  if (!isLocalRootHandle(item.handle)) return null;
+
+  return item.handle;
+}
+
+function normalizeStructuredResourceRoots(resources = {}) {
+  const roots = {};
+  for (const scopeName of Object.keys(asPlainObject(resources?.roots))) {
+    const scope = normalizeResourceScope(scopeName);
+    if (!scope || scope === 'subject_runtime' || scope === 'source_root') continue;
+    const path = resolveRootScopeToPath(resources, scopeName);
+    if (path) roots[scope] = path;
+  }
+
+  for (const [rawAlias, rawTarget] of Object.entries(asPlainObject(resources?.aliases))) {
     const alias = normalizeResourceScope(rawAlias);
     const target = normalizeResourceScope(rawTarget);
     if (!alias || alias === 'subject_runtime' || alias === 'source_root') continue;
     if (!target || target === 'subject_runtime' || target === 'source_root') continue;
-    if (!roots[target]) continue;
-    result[alias] = roots[target];
+    const path = roots[target] || resolveRootScopeToPath(resources, target);
+    if (path) roots[alias] = path;
   }
-  return result;
+
+  return roots;
 }
 
-function normalizeStructuredResourceRoots(resources = {}) {
-  const roots = normalizeStructuredRoots(resources?.roots);
-  return {
-    ...roots,
-    ...normalizeStructuredRootAliases(resources?.aliases, roots),
-  };
+function diagnoseStructuredResourceItems(resources = {}) {
+  const diagnostics = [];
+  const items = normalizeStructuredResourceItems(resources?.items);
+  const itemIds = new Set(Object.keys(items));
+
+  for (const [id, item] of Object.entries(items)) {
+    if (!item.kind || !item.handle) {
+      diagnostics.push(makeDiagnostic('error', 'resources.item_invalid', `resource item '${id}' requires kind and handle`, { id }));
+      continue;
+    }
+    if (RESOURCE_NOTE_KINDS.has(item.kind)) {
+      if (!item.note) {
+        diagnostics.push(makeDiagnostic('warning', 'resources.item_note_missing', `resource item '${id}' is missing note`, { id }));
+      }
+      if (!item.fallback) {
+        diagnostics.push(makeDiagnostic('warning', 'resources.item_fallback_missing', `resource item '${id}' is missing fallback`, { id }));
+      }
+    }
+    const relativeHandle = parseRelativeResourceHandle(item.handle);
+    if (relativeHandle && !itemIds.has(relativeHandle.prefix)) {
+      diagnostics.push(makeDiagnostic('warning', 'resources.item_handle_prefix_missing', `resource item '${id}' handle prefix '${relativeHandle.prefix}' does not exist`, {
+        id,
+        prefix: relativeHandle.prefix,
+      }));
+    }
+  }
+
+  for (const [scopeName, resourceRef] of Object.entries(asPlainObject(resources?.roots))) {
+    const scope = normalizeResourceScope(scopeName);
+    if (!scope || scope === 'subject_runtime' || scope === 'source_root') continue;
+    const itemId = resolveResourceItemId(resources, resourceRef);
+    if (!itemId) {
+      diagnostics.push(makeDiagnostic('error', 'resources.root_resource_missing', `root scope '${scope}' references missing resource '${resourceRef}'`, {
+        scope,
+        resource: resourceRef,
+      }));
+      continue;
+    }
+    const item = items[itemId];
+    if (!ROOT_RESOURCE_KINDS.has(item.kind)) {
+      diagnostics.push(makeDiagnostic('error', 'resources.root_resource_kind_invalid', `root scope '${scope}' must reference a repo/root resource`, {
+        scope,
+        resource: itemId,
+        kind: item.kind,
+      }));
+    } else if (!isLocalRootHandle(item.handle)) {
+      diagnostics.push(makeDiagnostic('error', 'resources.root_resource_handle_invalid', `root scope '${scope}' resource '${itemId}' must use a local path handle`, {
+        scope,
+        resource: itemId,
+      }));
+    }
+  }
+
+  return diagnostics;
 }
 
 function normalizeStructuredResourceRule(rule = {}) {
@@ -554,6 +682,7 @@ export function diagnoseSubjectRuntimeConfig(policyText = '', {
   const structuredRules = Array.isArray(config?.resources?.rules)
     ? config.resources.rules.map(normalizeStructuredResourceRule).filter(Boolean)
     : [];
+  diagnostics.push(...diagnoseStructuredResourceItems(config?.resources));
   const markdownLane = parseSubjectRepoLane(policyText, { root, subject });
   const markdownRoots = parseSubjectExternalRoots(policyText);
   const markdownRules = parseSubjectResourceRules(policyText);

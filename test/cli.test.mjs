@@ -59,6 +59,7 @@ import {
   ensureSubjectsRegistry,
   buildDefaultSubjectPolicy,
   diagnoseSubjectRuntimeConfig,
+  normalizeStructuredResourceItems,
   runtimeInfoForDefaultSubject,
   listSubjects,
   parseSubjectRepoLane,
@@ -320,8 +321,16 @@ describe('subject management', () => {
             lane_branch: 'jea/agentank/local',
           },
           resources: {
+            items: {
+              strategy_repo: {
+                kind: 'repo',
+                handle: '..\\agentank',
+                note: 'Strategy repository for agentank subject.',
+                fallback: 'Inspect the repository manually.',
+              },
+            },
             roots: {
-              strategy_repo: '..\\agentank',
+              strategy_repo: 'strategy_repo',
             },
           },
         },
@@ -332,7 +341,8 @@ describe('subject management', () => {
 
     expect(config.lane.repo).toBe('..\\agentank');
     expect(config.lane.lane_branch).toBe('jea/agentank/local');
-    expect(config.resources.roots.strategy_repo).toBe('..\\agentank');
+    expect(config.resources.items.strategy_repo.handle).toBe('..\\agentank');
+    expect(config.resources.roots.strategy_repo).toBe('strategy_repo');
   });
 
   it('prefers structured subject repo lane fields over markdown policy values', () => {
@@ -397,9 +407,16 @@ describe('subject management', () => {
     ].join('\n');
     const config = {
       resources: {
+        items: {
+          strategy_repo: {
+            kind: 'repo',
+            handle: 'D:\\structured',
+            note: 'Structured strategy repository.',
+            fallback: 'Inspect manually.',
+          },
+        },
         roots: {
-          strategy_repo: 'D:\\structured',
-          subject_runtime: 'ignored',
+          strategy_repo: 'strategy_repo',
         },
         aliases: {
           strategy_alias: 'strategy_repo',
@@ -458,7 +475,15 @@ describe('subject management', () => {
           run_command: 'npm start',
         },
         resources: {
-          roots: { strategy_repo: 'D:\\target' },
+          items: {
+            strategy_repo: {
+              kind: 'repo',
+              handle: 'D:\\target',
+              note: 'Target strategy repository.',
+              fallback: 'Inspect manually.',
+            },
+          },
+          roots: { strategy_repo: 'strategy_repo' },
           rules: [{ kind: 'strategy_repo_src', scope: 'strategy_repo', patterns: ['src/**'] }],
         },
       },
@@ -492,7 +517,15 @@ describe('subject management', () => {
           test_command: 'npm test:structured',
         },
         resources: {
-          roots: { strategy_repo: 'D:\\structured' },
+          items: {
+            strategy_repo: {
+              kind: 'repo',
+              handle: 'D:\\structured',
+              note: 'Structured strategy repository.',
+              fallback: 'Inspect manually.',
+            },
+          },
+          roots: { strategy_repo: 'strategy_repo' },
           rules: [
             { kind: 'strategy_src', scope: 'missing_repo', patterns: ['src/**'] },
           ],
@@ -511,6 +544,98 @@ describe('subject management', () => {
       'resources.rules_conflict',
     ]));
     expect(result.diagnostics.find((item) => item.code === 'resources.root_conflict')?.severity).toBe('error');
+  });
+
+  it('resolves external roots from resource items via root scope references', () => {
+    const config = {
+      resources: {
+        items: {
+          target_repo: {
+            kind: 'repo',
+            handle: 'D:\\github\\My\\agentank-evolver',
+            note: 'Target repository.',
+            fallback: 'Inspect manually.',
+          },
+        },
+        roots: {
+          target_repo: 'target_repo',
+        },
+        aliases: {
+          agentank_evolver: 'target_repo',
+        },
+      },
+    };
+
+    expect(resolveSubjectExternalRoots('', { config })).toEqual({
+      target_repo: 'D:\\github\\My\\agentank-evolver',
+      agentank_evolver: 'D:\\github\\My\\agentank-evolver',
+    });
+  });
+
+  it('warns when resource items are missing note or fallback', () => {
+    const result = diagnoseSubjectRuntimeConfig('', {
+      config: {
+        resources: {
+          items: {
+            target_repo: {
+              kind: 'repo',
+              handle: 'D:\\target',
+            },
+            agentank_guide: {
+              kind: 'document',
+              handle: 'target_repo:docs/agent-guide.md',
+            },
+          },
+          roots: {
+            target_repo: 'target_repo',
+          },
+        },
+      },
+    });
+
+    expect(result.diagnostics.map((item) => item.code)).toEqual(expect.arrayContaining([
+      'resources.item_note_missing',
+      'resources.item_fallback_missing',
+    ]));
+  });
+
+  it('warns when document handle prefix resource does not exist', () => {
+    const result = diagnoseSubjectRuntimeConfig('', {
+      config: {
+        resources: {
+          items: {
+            agentank_guide: {
+              kind: 'document',
+              handle: 'missing_repo:docs/agent-guide.md',
+              note: 'Guide document.',
+              fallback: 'Use live guide URL.',
+            },
+          },
+        },
+      },
+    });
+
+    expect(result.diagnostics.some((item) => item.code === 'resources.item_handle_prefix_missing')).toBe(true);
+  });
+
+  it('preserves structured resource items from subjects.json', () => {
+    const items = normalizeStructuredResourceItems({
+      target_repo: {
+        kind: 'repo',
+        handle: 'D:\\target',
+        note: 'Target repo.',
+        fallback: 'Inspect manually.',
+      },
+      agentank_guide: {
+        kind: 'document',
+        handle: 'target_repo:docs/agent-guide.md',
+        note: 'Guide document.',
+        fallback: 'Use live guide URL.',
+      },
+    });
+
+    expect(items.target_repo.kind).toBe('repo');
+    expect(items.agentank_guide.handle).toBe('target_repo:docs/agent-guide.md');
   });
 
   it('does not block subjects without repo lane configuration', () => {
