@@ -15,6 +15,7 @@ import {
   buildDecideUserPrompt,
   buildReportUserPrompt,
 } from '../src/intelligence/conversation-prompts.mjs';
+import { buildSubjectResourceSummary } from '../src/cli/utils/subjects.mjs';
 import {
   markOperatorBriefsProcessed,
   readPendingOperatorBriefs,
@@ -129,6 +130,45 @@ describe('conversation prompt constraints', () => {
     expect(decidePrompt).toContain('系统/兼容');
     expect(decidePrompt).toContain('不要在 `params.run_spec` 中设置 `provider`');
     expect(decidePrompt).not.toContain('"provider": "claude_code_sdk | cursor_sdk"');
+  });
+
+  it('includes subject_resources in Machine Context when provided', () => {
+    const subjectResources = buildSubjectResourceSummary({
+      items: {
+        target_repo: {
+          kind: 'repo',
+          handle: 'D:\\github\\My\\agentank-evolver',
+          note: 'Target repository.',
+          fallback: 'Inspect manually.',
+        },
+        agentank_guide: {
+          kind: 'document',
+          handle: 'target_repo:docs/agent-guide.md',
+          note: 'Guide document.',
+          fallback: 'Use live guide URL.',
+        },
+      },
+      roots: {
+        target_repo: 'target_repo',
+      },
+      aliases: {
+        agentank_evolver: 'target_repo',
+      },
+    });
+    const reportPrompt = buildReportUserPrompt({
+      cycleId: 'cycle-test',
+      language: 'zh',
+      reportContext: { subject_resources: subjectResources },
+    });
+    const decidePrompt = buildDecideUserPrompt({
+      reportContext: { subject_resources: subjectResources },
+    });
+
+    expect(reportPrompt).toContain('subject_resources');
+    expect(reportPrompt).toContain('agentank_guide');
+    expect(reportPrompt).toContain('target_repo:docs/agent-guide.md');
+    expect(decidePrompt).toContain('subject_resources');
+    expect(decidePrompt).toContain('agentank_evolver');
   });
 });
 

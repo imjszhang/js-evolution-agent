@@ -20,6 +20,7 @@ import {
   resolveSubjectRepoLane,
   resolveSubjectExternalRoots,
   resolveSubjectResourceRules,
+  buildSubjectResourceSummary,
   readSubjectPolicy,
   resolveSubjectConfig,
 } from './src/cli/utils/subjects.mjs';
@@ -237,6 +238,7 @@ export default async function ({ cwd }) {
   const resourceRules = resolveSubjectResourceRules(subjectPolicy.text, {
     config: subjectConfig,
   });
+  const subjectResources = buildSubjectResourceSummary(subjectConfig.resources);
 
   const intelligenceStore = createIntelligenceStore({
     baseDir: runtime.intelligenceDir,
@@ -266,6 +268,7 @@ export default async function ({ cwd }) {
       externalRoots,
       resourceRoots: externalRoots,
       resourceRules,
+      subjectResources,
       actionHandlers,
       actionVerifiers,
     },

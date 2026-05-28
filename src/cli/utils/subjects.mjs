@@ -630,6 +630,123 @@ export function resolveSubjectResourceRules(policyText = '', { config = null } =
   return structuredRules.length ? structuredRules : parseSubjectResourceRules(policyText);
 }
 
+export function buildSubjectResourceSummary(resources = {}) {
+  const items = normalizeStructuredResourceItems(resources?.items);
+  const roots = asPlainObject(resources?.roots);
+  const aliases = asPlainObject(resources?.aliases);
+  const rules = Array.isArray(resources?.rules)
+    ? resources.rules.map(normalizeStructuredResourceRule).filter(Boolean)
+    : [];
+
+  const rootScopesByItemId = {};
+  for (const [scopeName, resourceRef] of Object.entries(roots)) {
+    const scope = normalizeResourceScope(scopeName);
+    if (!scope || scope === 'subject_runtime' || scope === 'source_root') continue;
+    const itemId = resolveResourceItemId(resources, resourceRef) || String(resourceRef || '').trim();
+    if (!itemId) continue;
+    if (!rootScopesByItemId[itemId]) rootScopesByItemId[itemId] = [];
+    rootScopesByItemId[itemId].push(scope);
+  }
+
+  const aliasEntries = {};
+  for (const [rawAlias, rawTarget] of Object.entries(aliases)) {
+    const alias = normalizeResourceScope(rawAlias);
+    const target = normalizeResourceScope(rawTarget);
+    if (!alias || alias === 'subject_runtime' || alias === 'source_root') continue;
+    if (target) aliasEntries[alias] = target;
+  }
+
+  const summaryItems = Object.entries(items).map(([id, item]) => ({
+    id,
+    kind: item.kind,
+    handle: item.handle,
+    note: item.note ?? null,
+    fallback: item.fallback ?? null,
+    root_scopes: rootScopesByItemId[id] ?? [],
+    is_root_resource: Boolean(rootScopesByItemId[id]?.length),
+  }));
+
+  return {
+    items: summaryItems,
+    roots: { ...roots },
+    aliases: aliasEntries,
+    rules,
+  };
+}
+
+function listRunSpecAdditionalKinds(runSpec = {}) {
+  const raw = asPlainObject(runSpec.raw);
+  const values = [
+    ...(Array.isArray(raw.additional_directory_kinds) ? raw.additional_directory_kinds : []),
+    ...(Array.isArray(raw.additionalDirectoryKinds) ? raw.additionalDirectoryKinds : []),
+    ...(Array.isArray(raw.additional_cwd_kinds) ? raw.additional_cwd_kinds : []),
+    ...(Array.isArray(raw.additionalCwdKinds) ? raw.additionalCwdKinds : []),
+  ];
+  return [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))];
+}
+
+export function resolveResourcesUsedFromRunSpec(runSpec = {}, subjectResources = {}) {
+  const used = [];
+  const seen = new Set();
+  const items = Array.isArray(subjectResources?.items) ? subjectResources.items : [];
+  const itemsById = Object.fromEntries(items.map((item) => [item.id, item]));
+  const scopeToItemId = {};
+
+  for (const item of items) {
+    scopeToItemId[item.id] = item.id;
+    for (const scope of item.root_scopes ?? []) {
+      scopeToItemId[scope] = item.id;
+    }
+  }
+  for (const [alias, target] of Object.entries(subjectResources?.aliases ?? {})) {
+    const aliasScope = normalizeResourceScope(alias);
+    const targetScope = normalizeResourceScope(target);
+    if (!aliasScope || !targetScope) continue;
+    scopeToItemId[aliasScope] = scopeToItemId[targetScope] ?? itemsById[targetScope]?.id ?? null;
+  }
+
+  function pushUsed(scopeOrKind, role) {
+    const scope = normalizeResourceScope(scopeOrKind);
+    if (!scope || scope === 'subject_runtime' || scope === 'source_root') {
+      if (scope === 'subject_runtime' || scope === 'source_root') {
+        const key = `${role}:${scope}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        used.push({
+          scope,
+          resource_id: null,
+          kind: 'scope',
+          role,
+          handle: null,
+          note: null,
+        });
+      }
+      return;
+    }
+    const key = `${role}:${scope}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+
+    const itemId = scopeToItemId[scope] ?? null;
+    const item = itemId ? itemsById[itemId] : null;
+    used.push({
+      scope,
+      resource_id: itemId,
+      kind: item?.kind ?? 'scope',
+      role,
+      handle: item?.handle ?? null,
+      note: item?.note ?? null,
+    });
+  }
+
+  pushUsed(runSpec.primary_cwd_kind, 'primary_cwd');
+  for (const kind of listRunSpecAdditionalKinds(runSpec)) {
+    pushUsed(kind, 'additional_directory');
+  }
+
+  return used;
+}
+
 function makeDiagnostic(severity, code, message, details = {}) {
   return { severity, code, message, ...details };
 }

@@ -22,6 +22,7 @@ import { createIntelligenceStore } from '../src/intelligence/store.mjs';
 import {
   parseSubjectExternalRoots,
   parseSubjectResourceRules,
+  buildSubjectResourceSummary,
 } from '../src/cli/utils/subjects.mjs';
 import { applyRunSpecToAction, validateAgentRunSpec } from '../src/actions/agent-run-spec.mjs';
 import { buildClaudeOptions, buildCursorOptions } from '../src/actions/agent-adapter.mjs';
@@ -710,6 +711,66 @@ describe('controlled action handlers', () => {
     expect(result.lane_workspace ?? null).toBeNull();
     expect(result.run_spec.primary_cwd_kind).toBe('target_repo');
     expect(result.execution_root).toBe(targetRepo);
+  });
+
+  it('records resources_used on agent_run receipt and verifier value', async () => {
+    const ctx = makeAgenticCtx({
+      status: 'completed',
+      summary: 'Read-only inspection completed.',
+      evidence: { observations: ['repo is ready'] },
+    });
+    const targetRepo = join(ctx.projectRoot, 'target-repo');
+    mkdirSync(targetRepo, { recursive: true });
+    ctx.host.subjectResources = buildSubjectResourceSummary({
+      items: {
+        target_repo: {
+          kind: 'repo',
+          handle: targetRepo,
+          note: 'Target repository.',
+          fallback: 'Inspect manually.',
+        },
+        agentank_guide: {
+          kind: 'document',
+          handle: 'target_repo:docs/agent-guide.md',
+          note: 'Guide document.',
+          fallback: 'Use live guide URL.',
+        },
+      },
+      roots: {
+        target_repo: 'target_repo',
+      },
+      aliases: {
+        agentank_evolver: 'target_repo',
+      },
+    });
+    ctx.host.externalRoots = {
+      target_repo: targetRepo,
+      agentank_evolver: targetRepo,
+    };
+
+    const result = await actionHandlers.agent_run({
+      type: 'agent_run',
+      params: {
+        run_spec: {
+          primary_cwd_kind: 'agentank_evolver',
+          permission_profile: 'read_only',
+          intent: 'Inspect the target repo.',
+          context: { subject: 'agentank' },
+          expected_output: ['summary'],
+        },
+      },
+    }, ctx);
+    const verification = actionVerifiers.agent_run.verify(null, result);
+
+    expect(result.resources_used).toEqual([{
+      scope: 'agentank_evolver',
+      resource_id: 'target_repo',
+      kind: 'repo',
+      role: 'primary_cwd',
+      handle: targetRepo,
+      note: 'Target repository.',
+    }]);
+    expect(verification.value.resources_used).toEqual(result.resources_used);
   });
 
   it('reuses an explicit worktree for agent_run without auto-creating another one', async () => {

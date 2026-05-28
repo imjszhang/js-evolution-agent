@@ -379,6 +379,9 @@ export class ConversationalIntelligencePipeline {
         queueSummary,
         operatorBriefs: operatorBriefsContext,
       });
+      if (this.host?.subjectResources) {
+        preparedReport.reportContext.subject_resources = this.host.subjectResources;
+      }
       const reportPromptContext = toPreDecisionReportContext(preparedReport.reportContext);
 
       const systemPrompt = buildConversationSystemPrompt({

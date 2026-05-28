@@ -58,8 +58,10 @@ import {
   createSubject,
   ensureSubjectsRegistry,
   buildDefaultSubjectPolicy,
+  buildSubjectResourceSummary,
   diagnoseSubjectRuntimeConfig,
   normalizeStructuredResourceItems,
+  resolveResourcesUsedFromRunSpec,
   runtimeInfoForDefaultSubject,
   listSubjects,
   parseSubjectRepoLane,
@@ -636,6 +638,117 @@ describe('subject management', () => {
 
     expect(items.target_repo.kind).toBe('repo');
     expect(items.agentank_guide.handle).toBe('target_repo:docs/agent-guide.md');
+  });
+
+  it('builds a safe subject resource summary for prompt and receipt use', () => {
+    const summary = buildSubjectResourceSummary({
+      items: {
+        target_repo: {
+          kind: 'repo',
+          handle: 'D:\\github\\My\\agentank-evolver',
+          note: 'Target repository.',
+          fallback: 'Inspect manually.',
+        },
+        agentank_guide: {
+          kind: 'document',
+          handle: 'target_repo:docs/agent-guide.md',
+          note: 'Guide document.',
+          fallback: 'Use live guide URL.',
+        },
+      },
+      roots: {
+        target_repo: 'target_repo',
+      },
+      aliases: {
+        agentank_evolver: 'target_repo',
+      },
+      rules: [
+        { kind: 'strategy_src', scope: 'target_repo', patterns: ['src/**'] },
+      ],
+    });
+
+    expect(summary.items.map((item) => item.id)).toEqual(['target_repo', 'agentank_guide']);
+    expect(summary.items[0]).toMatchObject({
+      id: 'target_repo',
+      kind: 'repo',
+      handle: 'D:\\github\\My\\agentank-evolver',
+      note: 'Target repository.',
+      fallback: 'Inspect manually.',
+      root_scopes: ['target_repo'],
+      is_root_resource: true,
+    });
+    expect(summary.items[1]).toMatchObject({
+      id: 'agentank_guide',
+      kind: 'document',
+      handle: 'target_repo:docs/agent-guide.md',
+      root_scopes: [],
+      is_root_resource: false,
+    });
+    expect(summary.aliases.agentank_evolver).toBe('target_repo');
+    expect(summary.rules).toHaveLength(1);
+  });
+
+  it('resolves resources_used from run_spec scopes and aliases without reading files', () => {
+    const subjectResources = buildSubjectResourceSummary({
+      items: {
+        target_repo: {
+          kind: 'repo',
+          handle: 'D:\\github\\My\\agentank-evolver',
+          note: 'Target repository.',
+          fallback: 'Inspect manually.',
+        },
+        agentank_guide: {
+          kind: 'document',
+          handle: 'target_repo:docs/agent-guide.md',
+          note: 'Guide document.',
+          fallback: 'Use live guide URL.',
+        },
+      },
+      roots: {
+        target_repo: 'target_repo',
+      },
+      aliases: {
+        agentank_evolver: 'target_repo',
+      },
+    });
+
+    const aliasUsed = resolveResourcesUsedFromRunSpec(
+      { primary_cwd_kind: 'agentank_evolver' },
+      subjectResources,
+    );
+    expect(aliasUsed).toEqual([{
+      scope: 'agentank_evolver',
+      resource_id: 'target_repo',
+      kind: 'repo',
+      role: 'primary_cwd',
+      handle: 'D:\\github\\My\\agentank-evolver',
+      note: 'Target repository.',
+    }]);
+
+    const runtimeUsed = resolveResourcesUsedFromRunSpec(
+      { primary_cwd_kind: 'subject_runtime' },
+      subjectResources,
+    );
+    expect(runtimeUsed).toEqual([{
+      scope: 'subject_runtime',
+      resource_id: null,
+      kind: 'scope',
+      role: 'primary_cwd',
+      handle: null,
+      note: null,
+    }]);
+
+    expect(resolveResourcesUsedFromRunSpec(
+      { primary_cwd_kind: 'D:\\github\\My\\agentank-evolver' },
+      subjectResources,
+    )).toEqual([{
+      scope: 'D:\\github\\My\\agentank-evolver',
+      resource_id: null,
+      kind: 'scope',
+      role: 'primary_cwd',
+      handle: null,
+      note: null,
+    }]);
   });
 
   it('does not block subjects without repo lane configuration', () => {

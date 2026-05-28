@@ -1,9 +1,9 @@
-# Subject Resources 语义升级：把 root 路径改成可解释的资源对象
+# Subject Resources 语义升级与工作流可见性 MVP
 
 > 日期：2026-05-29  
 > 项目：js-evolution-agent  
 > 类型：架构设计 / 功能实现 / 升级迁移  
-> 来源：Cursor Agent 对话（从“封装资源即遗传”到 subject resources 结构重定义）
+> 来源：Cursor Agent 对话（从“封装资源即遗传”到 subject resources 结构重定义，再到 report/receipt 可见性闭环）
 
 ---
 
@@ -15,6 +15,7 @@
 4. [实现要点](#4-实现要点)
 5. [验证与测试](#5-验证与测试)
 6. [后续演化](#6-后续演化)
+7. [Resource Workflow Visibility MVP](#7-resource-workflow-visibility-mvp)
 
 ---
 
@@ -158,6 +159,8 @@
 | `resolveRootScopeToPath` | 读取 `roots.<scope> -> resource_id`，再从 `items[resource_id].handle` 得到本地路径 |
 | `normalizeStructuredResourceRoots` | 输出既有 OADA runtime 需要的 `{ scope: path }` roots 映射 |
 | `diagnoseStructuredResourceItems` | 诊断缺说明、悬空 handle 前缀、无效 root 引用 |
+| `buildSubjectResourceSummary` | 生成 prompt/receipt 用的安全资源摘要（见第 7 节） |
+| `resolveResourcesUsedFromRunSpec` | 从 `run_spec` primary/additional scope 解析 `resources_used`（见第 7 节） |
 
 关键链路：
 
@@ -211,26 +214,94 @@ npm run jea -- subject check --subject agentank-tank --json
 
 | 命令 | 结果 |
 | --- | --- |
-| `npm test` | 9 files passed，**329** tests passed |
+| `npm test` | 9 files passed，**329** tests passed（语义升级阶段） |
 | `jea subject check --subject agentank-tank --json` | `ok: true`，`diagnostics: []` |
+
+语义升级阶段结束后，又补跑一轮真实演化（`cycle-20260529-025539`），确认 `agentank_evolver` scope 能正确解析到 lane 目标 repo，但 **`agentank_guide`、`note/fallback`、`resources_used` 仍未进入 report/receipt**。这直接触发了第 7 节的可见性 MVP。
 
 同时检查：
 
 - `ReadLints` 未发现相关文件 linter error；
 - `rg` 未发现旧 `resources.roots.<id>` 直接路径语义残留；
-- `git diff --stat` 显示本轮 tracked 变更集中在 `policies/subjects.example.json`、`src/cli/utils/subjects.mjs`、`test/cli.test.mjs`。
+- 语义升级阶段 tracked 变更集中在 `policies/subjects.example.json`、`src/cli/utils/subjects.mjs`、`test/cli.test.mjs`。
 
 ---
 
 ## 6. 后续演化
 
-| 项 | 建议 |
+| 项 | 建议 | 状态 |
+| --- | --- | --- |
+| 文档化 resource schema | 在 `AGENTS.md` 或 policies README 中补一段 `items/roots/aliases/rules` 语义说明 | 待做 |
+| 运行时可见性 | intel report/decide prompt 展示 Resource Summary | **已完成**（见第 7 节） |
+| receipt 证据链 | `resources_used` 进入 action receipt / verify report | **已完成**（见第 7 节） |
+| 更多资源类型 | MCP、LLM、数据库、凭据能力都可以进入 `resources.items`，但应逐个验证 | 待做 |
+| 动态健康 | health score / 半衰期 / 自动 fallback | 暂不做 |
+| Resource Health 文件 | 独立 runtime 健康评分与降权 | 暂不做 |
+| 文档正文注入 | 不读取 `agent-guide.md` 全文进 prompt | 刻意不做 |
+
+---
+
+## 7. Resource Workflow Visibility MVP
+
+### 7.1 背景
+
+语义升级后，`resources.items` 已能通过 `roots -> items.handle` 参与 execution root 解析，但 intel/report/decide 和 receipt 仍只看到 `{ scope: path }`。`agentank_guide` 的 `note/fallback`、文档 handle 引用形式，以及 alias 到 root 的映射，对 Decide 与 verify 不可见。
+
+本轮目标只做最小闭环：
+
+```text
+resources.items -> Machine Context -> report/decide prompt -> agent_run receipt
+```
+
+明确不做：Resource Health、自动降权、半衰期、fallback 自动切换、读取 `agent-guide.md` 正文。
+
+### 7.2 方案
+
+| 步骤 | 做法 |
 | --- | --- |
-| 文档化 resource schema | 在 `AGENTS.md` 或 policies README 中补一段 `items/roots/aliases/rules` 语义说明 |
-| 运行时可见性 | 后续可在 intel report 中展示简短 Resource Summary，但本轮刻意不做 |
-| receipt 证据链 | 下一步再考虑 `resources_used`，让资源使用进入 action receipt |
-| 更多资源类型 | MCP、LLM、数据库、凭据能力都可以进入 `resources.items`，但应逐个验证 |
-| 动态健康 | 暂不做 health score / 半衰期 / 自动 fallback；先让静态语义稳定 |
+| 暴露到 host | `oada.config.mjs` 用 `buildSubjectResourceSummary()` 生成 `host.subjectResources` |
+| 注入 prompt | `conversational-intel-pipeline.mjs` 把摘要写入 `reportContext.subject_resources` |
+| Decide 约束 | `conversation-prompts.mjs` 补充：优先使用 `subject_resources` 中的 resource id / root scope / alias |
+| receipt 记录 | `handlers.mjs` 的 `agent_run` 结果增加 `resources_used`；verifier `value` 同步透出 |
+
+Resource Summary 每个 item 包含：`id`、`kind`、`handle`、`note`、`fallback`、`root_scopes`、`is_root_resource`；document handle 如 `target_repo:docs/agent-guide.md` 保持引用形式，不读文件。
+
+`resources_used` 每项包含：`scope`、`resource_id`、`kind`、`role`（`primary_cwd` / `additional_directory`）、`handle`、`note`；alias（如 `agentank_evolver`）解析到对应 item。
+
+### 7.3 实现要点
+
+| 文件 | 变更 |
+| --- | --- |
+| [`src/cli/utils/subjects.mjs`](../../src/cli/utils/subjects.mjs) | 新增 `buildSubjectResourceSummary()`、`resolveResourcesUsedFromRunSpec()` |
+| [`oada.config.mjs`](../../oada.config.mjs) | `host.subjectResources = buildSubjectResourceSummary(subjectConfig.resources)` |
+| [`src/intelligence/conversational-intel-pipeline.mjs`](../../src/intelligence/conversational-intel-pipeline.mjs) | `preparedReport.reportContext.subject_resources = this.host.subjectResources` |
+| [`src/intelligence/conversation-prompts.mjs`](../../src/intelligence/conversation-prompts.mjs) | Decide 约束引用 `subject_resources` |
+| [`src/actions/handlers.mjs`](../../src/actions/handlers.mjs) | `agent_run` result 与 verifier `value` 增加 `resources_used` |
+
+保留现有 `externalRoots` / `resourceRoots` / `resourceRules`，不破坏 execution root 解析。
+
+### 7.4 测试
+
+| 文件 | 覆盖 |
+| --- | --- |
+| [`test/cli.test.mjs`](../../test/cli.test.mjs) | summary 输出 `target_repo` / `agentank_guide`；`resolveResourcesUsedFromRunSpec` alias 与 Windows 路径 |
+| [`test/conversational-intel-pipeline.test.mjs`](../../test/conversational-intel-pipeline.test.mjs) | report/decide prompt Machine Context 含 `subject_resources` |
+| [`test/actions.test.mjs`](../../test/actions.test.mjs) | `agent_run` receipt 与 verifier `value` 含 `resources_used` |
+
+### 7.5 验证
+
+```powershell
+cd d:\github\My\js-evolution-agent
+npm test
+npm run jea -- subject check --subject agentank-tank --json
+```
+
+| 命令 | 结果 |
+| --- | --- |
+| `npm test` | 9 files passed，**333** tests passed |
+| `jea subject check --subject agentank-tank --json` | `ok: true`，`diagnostics: []` |
+
+可选运行时确认：再跑 `jea run --subject agentank-tank`，在 cycle records 的 report/decide prompt 或 `verify_report` 中检查 `subject_resources` / `resources_used`。
 
 ---
 
@@ -241,4 +312,7 @@ npm run jea -- subject check --subject agentank-tank --json
 | 问题 | 封装工具、MCP、数据库、文档等是否都应视为主体资源，以及是否需要说明 |
 | 思考 | 第一性原理下资源要回答“能用什么、为什么可信、坏了退到哪里”；旧 `roots` 只能回答路径 |
 | 方案 | `resources.items` 定义资源对象，`roots` 改为 root scope 到资源 id 的引用 |
-| 执行 | 更新资源解析、诊断、示例配置与 CLI 测试；`npm test` 329 passed，subject check 通过 |
+| 执行 | 更新资源解析、诊断、示例配置与 CLI 测试；语义升级阶段 329 passed，subject check 通过 |
+| 缺口 | 真实演化中 report/receipt 仍看不到 `agentank_guide` 与 `note/fallback` |
+| 补闭环 | Resource Summary 注入 Machine Context；`agent_run` 记录 `resources_used` |
+| 验证 | 333 tests passed；prompt 与 receipt 测试覆盖 alias / document handle / Windows 路径 |

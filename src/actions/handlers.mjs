@@ -34,6 +34,7 @@ import {
   resolveApprovalDecision,
 } from './approval-policy.mjs';
 import { buildEvidenceContract } from './resource-registry.mjs';
+import { resolveResourcesUsedFromRunSpec } from '../cli/utils/subjects.mjs';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { RESOURCE_SCOPES } from './resource-registry.mjs';
@@ -1419,6 +1420,10 @@ const builtInActionHandlers = {
       ],
       ...(receiptAutoApproval ? { auto_approval: receiptAutoApproval } : {}),
       ...(approvalPolicy ? { approval_policy: approvalPolicy } : {}),
+      resources_used: resolveResourcesUsedFromRunSpec(
+        runSpec,
+        ctx?.host?.subjectResources ?? ctx?.host?.subject_resources,
+      ),
       fallback_used: false,
     };
     store.recordActionReceipt(action, result, ctx);
@@ -2081,6 +2086,7 @@ export const actionVerifiers = {
           root_matches: rootMatches,
           additional_directories: result?.run_spec?.additional_directories ?? [],
           permission_profile: result?.run_spec?.permission_profile ?? null,
+          resources_used: result?.resources_used ?? [],
           evidence_count,
           writes_count,
           outputs_count,
