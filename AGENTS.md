@@ -81,6 +81,9 @@ runtime/subjects/<data_namespace>/
 - `jea intel report --cycle <id>`：输出指定 cycle 的报告。
 - `jea intel report --open`：用系统默认程序打开最新报告。
 - `jea intel report --json`：输出报告索引记录 JSON，而不是 Markdown 正文。
+- `jea intel viewer build [--subject NAME] [--limit N] [--out PATH]`：构建静态演化对照浏览器（情报报告 + 进化日记，输出到 `tools/evolution-viewer/dist/`）。
+- `jea intel viewer serve [--port N] [--open]`：本地托管已构建的 viewer（需先 `viewer build`）。
+- `npm run viewer:build` / `npm run viewer:serve`：同上（`viewer:serve` 默认 `--open`）。
 
 写入情报：
 

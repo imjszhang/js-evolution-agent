@@ -921,6 +921,228 @@ function buildTypedEvidenceRefs(reportContext) {
   return buildTypedEvidenceRefsFromAdmission(buildMemoryAdmission(reportContext));
 }
 
+const BACKFILL_SOURCE_MAP = {
+  action_receipts: { field: 'action_receipts', sourceType: 'action_receipts' },
+  belief_events: { field: 'belief_events', sourceType: 'belief_event' },
+  goal_events: { field: 'goal_events', sourceType: 'goal_events' },
+  evolution_events: { field: 'evolution_events', sourceType: 'evolution_events' },
+};
+
+function typedEvidenceRefKey(ref) {
+  return `${memorySourceType(ref?.source_type)}:${ref?.source_id ?? ''}`;
+}
+
+export function readReportBuilderConfig(runtimeRoot) {
+  if (!runtimeRoot) return null;
+  const configPath = join(runtimeRoot, 'data', 'config', 'report_builder.json');
+  if (!existsSync(configPath)) return null;
+  try {
+    return JSON.parse(readFileSync(configPath, 'utf-8'));
+  } catch {
+    return null;
+  }
+}
+
+function recordTimestamp(record) {
+  return record?.recorded_at ?? record?.generated_at ?? record?.timestamp ?? record?.created_at ?? '';
+}
+
+function summarizeBackfillRecord(sourceType, record) {
+  if (record?.summary) return shortText(record.summary, 260);
+  if (sourceType === 'action_receipts') {
+    return shortText(JSON.stringify({
+      action_type: record?.action_type ?? record?.type ?? null,
+      status: record?.status ?? null,
+      success: record?.success ?? null,
+    }), 260);
+  }
+  if (sourceType === 'belief_event') {
+    return shortText(`source records: ${record?.change ?? 'update'} ${record?.belief_id ?? ''}: ${record?.reason ?? ''}`, 260);
+  }
+  if (sourceType === 'goal_events') {
+    return shortText(`source claims: ${record?.type ?? 'goal_event'} ${record?.goal_id ?? ''}: ${record?.reason ?? ''}`, 260);
+  }
+  if (sourceType === 'evolution_events') {
+    return shortText(record?.summary ?? record?.type ?? JSON.stringify(record ?? {}), 260);
+  }
+  return shortText(JSON.stringify(record ?? {}), 260);
+}
+
+function lookupRecordSummary(reportContext, ref) {
+  const sourceType = memorySourceType(ref.source_type);
+  const collections = {
+    evolution_events: reportContext?.evolution_events,
+    goal_events: reportContext?.goal_events,
+    action_receipts: reportContext?.action_receipts,
+    belief_events: reportContext?.belief_events,
+  };
+  const records = asRecords(collections[sourceType]);
+  const record = records.find((item) => (item?.id ?? item?.receipt_id) === ref.source_id);
+  if (!record) return summarizeBackfillRecord(sourceType, { summary: `backfill preserved: ${ref.source_address}` });
+  return summarizeBackfillRecord(sourceType, record);
+}
+
+function collectBackfillCandidates(reportContext, sourceNames, excludeKeys) {
+  const candidates = [];
+  for (const sourceName of sourceNames) {
+    const mapping = BACKFILL_SOURCE_MAP[sourceName];
+    if (!mapping) continue;
+    const records = [...asRecords(reportContext?.[mapping.field])].sort((a, b) => (
+      String(recordTimestamp(b)).localeCompare(String(recordTimestamp(a)))
+    ));
+    for (const record of records) {
+      const sourceId = record?.id ?? record?.receipt_id ?? null;
+      if (!sourceId) continue;
+      const key = typedEvidenceRefKey({ source_type: mapping.sourceType, source_id: sourceId });
+      if (excludeKeys.has(key)) continue;
+      candidates.push({
+        source_type: mapping.sourceType,
+        source_id: sourceId,
+        source_address: sourceAddress({ sourceType: mapping.sourceType, sourceId }),
+        record,
+      });
+      excludeKeys.add(key);
+    }
+  }
+  return candidates;
+}
+
+function buildAdmissionSeenItem(ref, reportContext, admissionSeenByKey) {
+  const key = typedEvidenceRefKey(ref);
+  const existing = admissionSeenByKey.get(key);
+  if (existing) return existing;
+  return {
+    source_id: ref.source_id,
+    source_type: ref.source_type,
+    source_address: ref.source_address,
+    recorded_at: null,
+    kind: ref._backfill ? 'backfill' : null,
+    evidence_level: ref._backfill ? 'backfill_preserved' : null,
+    summary: lookupRecordSummary(reportContext, ref),
+    seen_policy: ref._backfill ? 'backfill_preserved' : 'direct_field_or_status',
+  };
+}
+
+export function buildExtendedMemoryAdmission(admission, typedEvidenceRefs, reportContext) {
+  const admissionSeenByKey = new Map(
+    admission.seen.map((item) => [
+      typedEvidenceRefKey({ source_type: item.source_type, source_id: item.source_id }),
+      item,
+    ]),
+  );
+  return {
+    ...admission,
+    seen: typedEvidenceRefs.map((ref) => buildAdmissionSeenItem(ref, reportContext, admissionSeenByKey)),
+  };
+}
+
+export function applyRollingTypedEvidenceRefs({
+  cycleRefs = [],
+  oldMemory = null,
+  reportContext = null,
+  currentStateBody = '',
+  config = {},
+} = {}) {
+  const minRefs = config.min_typed_evidence_refs ?? STANDING_MEMORY_EVIDENCE_DEPTH_TARGET;
+  const maxRefs = config.max_typed_evidence_refs ?? STANDING_MEMORY_LIMITS.maxEvidenceItems;
+  const backfillSources = Array.isArray(config.on_roll_backfill_from) ? config.on_roll_backfill_from : [];
+  const referencedInState = new Set(extractBracketAddresses(currentStateBody));
+  const rememberedAddresses = new Set(
+    config.preserve_remembered_leads
+      ? [
+        ...extractBracketAddresses(extractMarkdownSection(oldMemory?.text ?? '', 'Remembered')),
+        ...(reportContext ? buildMemoryAdmission(reportContext).remembered.map((item) => item.source_address) : []),
+      ]
+      : [],
+  );
+
+  const oldRefs = Array.isArray(oldMemory?.typed_evidence_refs) ? oldMemory.typed_evidence_refs : [];
+  const oldOrder = oldRefs.map((ref) => typedEvidenceRefKey(ref));
+  const merged = new Map();
+
+  for (const ref of cycleRefs) {
+    merged.set(typedEvidenceRefKey(ref), { ...ref });
+  }
+
+  for (const ref of oldRefs) {
+    const key = typedEvidenceRefKey(ref);
+    if (ref._locked === true && !merged.has(key)) {
+      merged.set(key, { ...ref });
+    }
+  }
+
+  if (config.preserve_referenced_in_current_state) {
+    for (const ref of oldRefs) {
+      const key = typedEvidenceRefKey(ref);
+      if (referencedInState.has(ref.source_address) && !merged.has(key)) {
+        merged.set(key, { ...ref });
+      }
+    }
+  }
+
+  if (config.preserve_remembered_leads) {
+    for (const ref of oldRefs) {
+      const key = typedEvidenceRefKey(ref);
+      if (rememberedAddresses.has(ref.source_address) && !merged.has(key)) {
+        merged.set(key, { ...ref });
+      }
+    }
+  }
+
+  if (config.backfill_when_below_min && merged.size < minRefs) {
+    const excludeKeys = new Set([...merged.keys()]);
+    const candidates = collectBackfillCandidates(reportContext, backfillSources, excludeKeys);
+    for (const candidate of candidates) {
+      if (merged.size >= minRefs) break;
+      merged.set(typedEvidenceRefKey(candidate), {
+        source_type: candidate.source_type,
+        source_id: candidate.source_id,
+        source_address: candidate.source_address,
+        _locked: true,
+        _backfill: true,
+      });
+    }
+  }
+
+  const evictable = () => [...merged.entries()].filter(([key, ref]) => {
+    if (ref._locked === true) return false;
+    if (config.preserve_referenced_in_current_state && referencedInState.has(ref.source_address)) return false;
+    if (config.preserve_remembered_leads && rememberedAddresses.has(ref.source_address)) return false;
+    return true;
+  });
+
+  while (merged.size > maxRefs && config.eviction_policy === 'drop_oldest_unlinked') {
+    const candidates = evictable();
+    if (!candidates.length) break;
+    const oldestKey = candidates.sort((a, b) => {
+      const ai = oldOrder.indexOf(a[0]);
+      const bi = oldOrder.indexOf(b[0]);
+      const aRank = ai === -1 ? Number.MAX_SAFE_INTEGER : ai;
+      const bRank = bi === -1 ? Number.MAX_SAFE_INTEGER : bi;
+      return aRank - bRank;
+    })[0]?.[0];
+    if (!oldestKey) break;
+    merged.delete(oldestKey);
+  }
+
+  const orderedKeys = [
+    ...cycleRefs.map((ref) => typedEvidenceRefKey(ref)),
+    ...oldOrder.filter((key) => merged.has(key) && !cycleRefs.some((ref) => typedEvidenceRefKey(ref) === key)),
+    ...[...merged.keys()].filter((key) => !oldOrder.includes(key) && !cycleRefs.some((ref) => typedEvidenceRefKey(ref) === key)),
+  ];
+  const seenKeys = new Set();
+  const result = [];
+  for (const key of orderedKeys) {
+    if (seenKeys.has(key) || !merged.has(key)) continue;
+    seenKeys.add(key);
+    result.push(merged.get(key));
+  }
+  for (const [key, ref] of merged.entries()) {
+    if (!seenKeys.has(key)) result.push(ref);
+  }
+  return result.slice(0, maxRefs);
+}
+
 export function composeStandingMemoryMarkdown({
   currentStateBody,
   reportContext,
@@ -1092,6 +1314,7 @@ export async function updateStandingMemoryWithAi({
   logger,
   maxChars = DEFAULT_REPORT_CONTEXT_LIMITS.standingMemoryCharLimit,
   extraContext = null,
+  runtimeRoot = null,
 } = {}) {
   if (!store || typeof store.recordStandingMemory !== 'function') {
     return { status: 'skipped', reason: 'store-unavailable' };
@@ -1111,26 +1334,47 @@ export async function updateStandingMemoryWithAi({
 
   try {
     const admission = buildMemoryAdmission(reportContext);
-    const typedEvidenceRefs = buildTypedEvidenceRefsFromAdmission(admission);
+    const cycleRefs = buildTypedEvidenceRefsFromAdmission(admission);
+    const oldMemory = safeRead(() => store.readStandingMemory(), null);
+    const rollingConfig = readReportBuilderConfig(runtimeRoot)?.rolling_update ?? null;
     const raw = await aiClient.chat(prompt);
     const aiBody = stripCodeFence(raw);
     const currentStateBody = extractCurrentStateBody(aiBody);
+    const typedEvidenceRefs = rollingConfig
+      ? applyRollingTypedEvidenceRefs({
+        cycleRefs,
+        oldMemory,
+        reportContext,
+        currentStateBody,
+        config: rollingConfig,
+      })
+      : cycleRefs;
+    const extendedAdmission = rollingConfig
+      ? buildExtendedMemoryAdmission(admission, typedEvidenceRefs, reportContext)
+      : admission;
     let text = composeStandingMemoryMarkdown({
       currentStateBody,
       reportContext,
       language,
-      admission,
+      admission: extendedAdmission,
     });
     let audit = auditStandingMemoryMarkdown({ text, typedEvidenceRefs });
     let usedFallback = false;
     if (!audit.ok) {
-      text = buildFallbackStandingMemoryMarkdown({ reportContext, language });
+      text = composeStandingMemoryMarkdown({
+        currentStateBody: '- (none)',
+        reportContext,
+        language,
+        admission: extendedAdmission,
+      });
       audit = auditStandingMemoryMarkdown({ text, typedEvidenceRefs });
       usedFallback = true;
     }
     if (!text.trim()) return { status: 'failed', reason: 'empty-output' };
     if (!audit.ok) return { status: 'failed', reason: `audit-failed:${audit.issues.join(',')}` };
 
+    const lockedRefsCount = typedEvidenceRefs.filter((ref) => ref._locked === true).length;
+    const backfillRefsCount = typedEvidenceRefs.filter((ref) => ref._backfill === true).length;
     const written = store.recordStandingMemory({
       source_cycle_id: cycleId,
       generated_at: generatedAt,
@@ -1149,6 +1393,9 @@ export async function updateStandingMemoryWithAi({
         source_cycle_id: cycleId,
         audit_ok: audit.ok,
         used_fallback: usedFallback,
+        rolling_update_applied: Boolean(rollingConfig),
+        locked_refs_count: lockedRefsCount,
+        backfill_refs_count: backfillRefsCount,
       },
     });
     return {
@@ -1157,6 +1404,8 @@ export async function updateStandingMemoryWithAi({
       audit,
       used_fallback: usedFallback,
       evidence_depth: typedEvidenceRefs.length,
+      locked_refs_count: lockedRefsCount,
+      backfill_refs_count: backfillRefsCount,
     };
   } catch (e) {
     const msg = e?.message || String(e);
@@ -1288,6 +1537,7 @@ export async function persistIntelReport({
       generatedAt: finalGeneratedAt,
       logger,
       maxChars: DEFAULT_REPORT_CONTEXT_LIMITS.standingMemoryCharLimit,
+      runtimeRoot: runtime.runtimeRoot,
     })
     : { status: 'skipped', reason: 'disabled' };
 

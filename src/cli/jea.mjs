@@ -62,6 +62,8 @@ Commands:
                          Queue a one-cycle operator intent brief for the next intel cycle
   intel brief list       List pending operator intent briefs
   intel brief processed  List consumed operator intent briefs
+  intel viewer build     Build static evolution report/diary viewer (--subject, --limit)
+  intel viewer serve     Serve the built viewer locally (--port, --open)
   goals show             Show the active goal hypothesis
   goals history          Show recent goal change events
   goals update --file PATH --reason TEXT [--evidence REF] [--cycle ID]
@@ -120,6 +122,8 @@ Examples:
   echo '{"content":"manual note"}' | jea intel ingest --source intel_observations
   echo '{"summary":"verify next cycle","claims_to_verify":["candidate hash changed"]}' | jea intel brief put --stdin
   jea intel inbox drain --json
+  npm run viewer:build -- --subject agentank-tank
+  npm run viewer:serve
   jea goals history
   jea goals assess --cycle cycle-20260511-123237
   jea beliefs show --json

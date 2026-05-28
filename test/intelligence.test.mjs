@@ -11,7 +11,9 @@ import { INTELLIGENCE_SPECS } from '../src/intelligence/specs.mjs';
 import { createIntelligenceStore } from '../src/intelligence/store.mjs';
 import {
   assessGoals,
+  applyRollingTypedEvidenceRefs,
   auditStandingMemoryMarkdown,
+  buildExtendedMemoryAdmission,
   buildIntelReport,
   buildMemoryAdmission,
   buildPrompt,
@@ -21,6 +23,7 @@ import {
   extractTldr,
   gatherEvidence,
   gatherReportContext,
+  readReportBuilderConfig,
 } from '../src/intelligence/report-builder.mjs';
 import {
   assessGoalsWithAi,
@@ -1376,6 +1379,79 @@ describe('buildIntelReport', () => {
     });
     expect(audit.ok).toBe(true);
     expect(memory.text).not.toContain('...(truncated)');
+  });
+
+  it('locks backfill typed_evidence_refs when rolling_update is below min threshold', async () => {
+    const { store, runtime, intelResult } = makeReportFixture();
+    mkdirSync(join(runtime.runtimeRoot, 'data', 'config'), { recursive: true });
+    writeFileSync(
+      join(runtime.runtimeRoot, 'data', 'config', 'report_builder.json'),
+      JSON.stringify({
+        auto_fill_sections: false,
+        rolling_update: {
+          min_typed_evidence_refs: 8,
+          max_typed_evidence_refs: 12,
+          eviction_policy: 'drop_oldest_unlinked',
+          preserve_referenced_in_current_state: true,
+          preserve_remembered_leads: true,
+          on_roll_backfill_from: ['evolution_events', 'action_receipts'],
+          backfill_when_below_min: true,
+        },
+      }),
+    );
+    store.recordEvolutionEvent({
+      id: 'evt-cycle',
+      type: 'task_completed',
+      status: 'ok',
+      cycle_id: 'cycle-test-1',
+      summary: 'current cycle evidence',
+    });
+    for (let i = 1; i <= 6; i += 1) {
+      store.recordEvolutionEvent({
+        id: `evt-backfill-${i}`,
+        type: 'task_completed',
+        status: 'ok',
+        cycle_id: `cycle-old-${i}`,
+        summary: `backfill candidate ${i}`,
+        recorded_at: `2026-05-2${i}T00:00:00.000Z`,
+      });
+    }
+    store.recordActionReceipt(
+      { type: 'agent_run', description: 'backfill receipt' },
+      { status: 'completed', success: true, summary: 'completed backfill receipt' },
+      { cycleId: 'cycle-old-receipt' },
+    );
+
+    const context = gatherReportContext({ store, runtime, intelResult });
+    context.temporal_decision_brief = buildTemporalDecisionBrief(context);
+    const admission = buildMemoryAdmission(context);
+    const cycleRefs = [{
+      source_type: 'evolution_events',
+      source_id: 'evt-cycle',
+      source_address: '[evolution_events:evt-cycle]',
+    }];
+    const refs = applyRollingTypedEvidenceRefs({
+      cycleRefs,
+      oldMemory: null,
+      reportContext: context,
+      currentStateBody: '- one fact [evolution_events:evt-cycle]',
+      config: readReportBuilderConfig(runtime.runtimeRoot).rolling_update,
+    });
+
+    expect(cycleRefs.length).toBeLessThan(8);
+    expect(refs.length).toBeGreaterThanOrEqual(8);
+    const backfillRefs = refs.filter((ref) => ref._backfill === true);
+    expect(backfillRefs.length).toBeGreaterThan(0);
+    expect(backfillRefs.every((ref) => ref._locked === true)).toBe(true);
+
+    const extendedAdmission = buildExtendedMemoryAdmission(admission, refs, context);
+    const text = composeStandingMemoryMarkdown({
+      currentStateBody: '- one fact [evolution_events:evt-cycle]',
+      reportContext: context,
+      admission: extendedAdmission,
+    });
+    const audit = auditStandingMemoryMarkdown({ text, typedEvidenceRefs: refs });
+    expect(audit.ok).toBe(true);
   });
 
   it('composeStandingMemoryMarkdown passes audit for admission-only Evidence', () => {

@@ -548,6 +548,7 @@ export class ConversationalIntelligencePipeline {
           cycleId,
           generatedAt: result.timestamp,
           logger: this.host?.logger,
+          runtimeRoot: this.runtime.runtimeRoot,
           extraContext: buildStandingMemoryExtraContext({
             analysis,
             actions: result.actions,

@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Evolution Viewer</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>Evolution Viewer</h1>
+    <p id="meta" class="meta"></p>
+    <input type="search" id="filter" placeholder="筛选 cycle_id 或摘要…" autocomplete="off" />
+  </header>
+  <div class="layout">
+    <aside class="sidebar" id="timeline" aria-label="演化轮次"></aside>
+    <main class="detail" id="detail">
+      <p class="placeholder">从左侧选择一轮，或打开带 <code>#cycle-…</code> 的链接。</p>
+    </main>
+  </div>
+  <script src="app.js" type="module"></script>
+</body>
+</html>

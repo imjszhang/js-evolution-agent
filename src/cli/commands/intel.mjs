@@ -8,6 +8,7 @@ import { resolveSubjectFromFlags, runtimeInfoForSubject } from '../utils/subject
 import { runIntelIngest } from './intel-ingest.mjs';
 import { inboxDrain, inboxPut } from './intel-inbox.mjs';
 import { intelBriefCommand } from './intel-briefs.mjs';
+import { intelViewerCommand } from './intel-viewer.mjs';
 
 function numberFlag(flags, name, fallback) {
   const n = Number(flags[name]);
@@ -201,13 +202,19 @@ export async function intelCommand({ subcommand, flags = {}, args = [] } = {}) {
     return intelBriefCommand({ root, action: args[0], flags });
   }
 
-  console.error('Usage: jea intel <summary|report|ingest|inbox|brief> [...] [--subject NAME]\n' +
+  if (subcommand === 'viewer') {
+    return intelViewerCommand(root, flags, args);
+  }
+
+  console.error('Usage: jea intel <summary|report|ingest|inbox|brief|viewer> [...] [--subject NAME]\n' +
     '  jea intel summary [--days N] [--limit N] [--json]\n' +
     '  jea intel report [--latest] [--cycle <id>] [--json] [--open]\n' +
     '  jea intel report list [--limit N] [--json]\n' +
     '  jea intel ingest --source NAME [--file PATH | --stdin] [--json]\n' +
     '  jea intel inbox put --source NAME [--file PATH | --stdin] [--name LABEL]\n' +
     '  jea intel inbox drain [--dir PATH] [--json]\n' +
-    '  jea intel brief <put|list|processed> [--file PATH | --stdin] [--json]');
+    '  jea intel brief <put|list|processed> [--file PATH | --stdin] [--json]\n' +
+    '  jea intel viewer build [--subject NAME] [--limit N] [--out PATH]\n' +
+    '  jea intel viewer serve [--port N] [--open] [--out PATH]');
   return 2;
 }
