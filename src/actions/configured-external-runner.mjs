@@ -7,6 +7,7 @@ import {
   resolveConfiguredToolRoot,
 } from './configured-actions.mjs';
 import { buildExecutionEnv } from './execution-env.mjs';
+import { allowsExternalForceAutoApproval } from './approval-policy.mjs';
 
 function getField(action, field) {
   return action?.params?.[field] ?? action?.[field] ?? null;
@@ -26,7 +27,9 @@ function flagArgs(configured, action) {
     if (value !== true) args.push(String(value));
   }
   const approvalFlag = configured.params.approvalFlag;
-  if (approvalFlag && (getField(action, approvalFlag) || getField(action, 'approved'))) {
+  const explicitForce = Boolean(getField(action, approvalFlag) || getField(action, 'approved'));
+  const policyForce = Boolean(approvalFlag && allowsExternalForceAutoApproval());
+  if (approvalFlag && (explicitForce || policyForce)) {
     args.push(configured.params.forceFlag || '--force');
   }
   return args;

@@ -23,6 +23,16 @@ export async function doctorCommand() {
   ok = statusLine(!!process.env.DEEPSEEK_API_KEY, 'DEEPSEEK_API_KEY', process.env.DEEPSEEK_API_KEY ? 'set' : 'missing') && ok;
   statusLine(!!process.env.DEEPSEEK_MODEL, 'DEEPSEEK_MODEL', process.env.DEEPSEEK_MODEL || 'default: deepseek-v4-flash');
 
+  const rawApprovalMode = String(process.env.JEA_APPROVAL_MODE ?? 'manual').trim().toLowerCase();
+  const approvalMode = ['manual', 'auto_guarded', 'auto_all'].includes(rawApprovalMode) ? rawApprovalMode : 'manual';
+  if (process.env.JEA_APPROVAL_MODE && rawApprovalMode !== approvalMode) {
+    statusLine(false, 'JEA_APPROVAL_MODE', `${process.env.JEA_APPROVAL_MODE} invalid; fallback manual`);
+  } else if (approvalMode === 'auto_all') {
+    statusLine(true, 'JEA_APPROVAL_MODE', `${approvalMode} (auto-approves all actions; use with caution)`);
+  } else {
+    statusLine(true, 'JEA_APPROVAL_MODE', approvalMode);
+  }
+
   const docsDir = process.env.CYBER_TAOIST_DOCS_DIR || getDefaultCyberTaoistDocsDir();
   ok = statusLine(existsSync(join(docsDir, 'CONSTITUTION.md')), 'Cyber-Taoist CONSTITUTION.md', docsDir) && ok;
   ok = statusLine(existsSync(join(docsDir, 'SKILL.md')), 'Cyber-Taoist SKILL.md', docsDir) && ok;

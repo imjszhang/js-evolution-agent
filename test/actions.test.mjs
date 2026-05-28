@@ -67,6 +67,7 @@ const ORIGINAL_ANTHROPIC_AUTH_TOKEN = process.env.ANTHROPIC_AUTH_TOKEN;
 const ORIGINAL_CURSOR_API_KEY = process.env.CURSOR_API_KEY;
 const ORIGINAL_JEA_AGENT_PROVIDER = process.env.JEA_AGENT_PROVIDER;
 const ORIGINAL_AGENTANK_TANK_KEY = process.env.AGENTANK_TANK_KEY;
+const ORIGINAL_JEA_APPROVAL_MODE = process.env.JEA_APPROVAL_MODE;
 
 async function* streamMessages(messages) {
   for (const message of messages) yield message;
@@ -277,6 +278,11 @@ afterEach(() => {
   delete process.env.CLAUDE_AGENT_PERMISSION_MODE;
   delete process.env.CLAUDE_AGENT_SETTING_SOURCES;
   delete process.env.JEA_CORE_APPLY_POLICY;
+  if (ORIGINAL_JEA_APPROVAL_MODE) {
+    process.env.JEA_APPROVAL_MODE = ORIGINAL_JEA_APPROVAL_MODE;
+  } else {
+    delete process.env.JEA_APPROVAL_MODE;
+  }
   if (ORIGINAL_CURSOR_API_KEY) {
     process.env.CURSOR_API_KEY = ORIGINAL_CURSOR_API_KEY;
   } else {
@@ -1090,6 +1096,7 @@ describe('controlled action handlers', () => {
   });
 
   it('blocks approval-required agent_run before agent execution when approval is absent', async () => {
+    delete process.env.JEA_APPROVAL_MODE;
     const ctx = makeAgenticCtx();
     const result = await actionHandlers.agent_run({
       type: 'agent_run',
@@ -1111,6 +1118,174 @@ describe('controlled action handlers', () => {
     expect(result.status).toBe('blocked');
     expect(result.error).toBe('approval_required');
     expect(ctx.ai.agentCalls).toHaveLength(0);
+  });
+
+  it('auto_guarded allows read_only approval-required agent_run without explicit approval', async () => {
+    process.env.JEA_APPROVAL_MODE = 'auto_guarded';
+    const ctx = makeAgenticCtx({
+      status: 'completed',
+      summary: 'Credential probe completed.',
+      evidence: { observations: ['credential ok'] },
+    });
+    const result = await actionHandlers.agent_run({
+      type: 'agent_run',
+      description: 'Periodic credential compliance probe',
+      params: {
+        requires_approval: true,
+        run_spec: {
+          primary_cwd_kind: 'subject_runtime',
+          permission_profile: 'read_only',
+          provider: 'llm_only',
+          intent: 'Verify tank key visibility with redacted probe output.',
+          context: { why_now: 'periodic guard task' },
+          expected_output: ['summary'],
+        },
+      },
+    }, ctx);
+
+    expect(result.success).toBe(true);
+    expect(ctx.ai.agentCalls.length).toBeGreaterThan(0);
+    expect(result.auto_approval).toMatchObject({
+      mode: 'auto_guarded',
+      reason: 'read_only_agent_run',
+    });
+  });
+
+  it('auto_guarded still blocks write-profile agent_run without explicit approval', async () => {
+    process.env.JEA_APPROVAL_MODE = 'auto_guarded';
+    const ctx = makeAgenticCtx();
+
+    const result = await actionHandlers.agent_run({
+      type: 'agent_run',
+      description: 'Workspace write task',
+      params: {
+        requires_approval: true,
+        run_spec: {
+          primary_cwd_kind: 'subject_runtime',
+          permission_profile: 'workspace_write',
+          provider: 'llm_only',
+          intent: 'Update local standing memory fields.',
+          context: { why_now: 'maintenance task' },
+          expected_output: ['summary'],
+        },
+      },
+    }, ctx);
+
+    expect(result.success).toBe(false);
+    expect(result.status).toBe('blocked');
+    expect(result.error).toBe('approval_required');
+    expect(ctx.ai.agentCalls).toHaveLength(0);
+  });
+
+  it('auto_guarded still blocks publish intent on read_only agent_run', async () => {
+    process.env.JEA_APPROVAL_MODE = 'auto_guarded';
+    const ctx = makeAgenticCtx();
+    const result = await actionHandlers.agent_run({
+      type: 'agent_run',
+      description: 'Publish candidate remotely',
+      params: {
+        requires_approval: true,
+        run_spec: {
+          primary_cwd_kind: 'subject_runtime',
+          permission_profile: 'read_only',
+          provider: 'llm_only',
+          intent: 'Publish candidate to remote tank after gate pass.',
+          context: { why_now: 'release window' },
+          expected_output: ['summary'],
+        },
+      },
+    }, ctx);
+
+    expect(result.success).toBe(false);
+    expect(result.status).toBe('blocked');
+    expect(result.error).toBe('approval_required');
+    expect(ctx.ai.agentCalls).toHaveLength(0);
+  });
+
+  it('auto_guarded does not bypass core_apply review policy', async () => {
+    process.env.JEA_APPROVAL_MODE = 'auto_guarded';
+    process.env.JEA_CORE_APPLY_POLICY = 'review';
+    const ctx = makeAgenticCtx();
+
+    const result = await actionHandlers.core_apply({
+      type: 'core_apply',
+      params: {
+        target: 'src/actions/handlers.mjs',
+        rationale: 'exercise the core apply protocol',
+        boundary: { death_boundary: 'test-only mutation boundary' },
+        acceptance: 'Return diff, tests, and rollback evidence.',
+        death_boundary: 'Only test fixtures may fail.',
+      },
+    }, ctx);
+
+    expect(result.requires_approval).toBe(true);
+    expect(result.status).toBe('requires_human_review');
+    expect(ctx.ai.agentCalls).toHaveLength(0);
+  });
+
+  it('auto_all allows workspace_write approval-required agent_run without explicit approval', async () => {
+    process.env.JEA_APPROVAL_MODE = 'auto_all';
+    const ctx = makeAgenticCtx({
+      status: 'completed',
+      summary: 'Workspace task completed.',
+      evidence: { observations: ['done'] },
+    });
+    const result = await actionHandlers.agent_run({
+      type: 'agent_run',
+      description: 'Workspace write task',
+      params: {
+        requires_approval: true,
+        run_spec: {
+          primary_cwd_kind: 'subject_runtime',
+          permission_profile: 'workspace_write',
+          provider: 'llm_only',
+          intent: 'Update local standing memory fields.',
+          context: { why_now: 'maintenance task' },
+          expected_output: ['summary'],
+        },
+      },
+    }, ctx);
+
+    expect(result.success).toBe(true);
+    expect(ctx.ai.agentCalls.length).toBeGreaterThan(0);
+    expect(result.auto_approval).toMatchObject({
+      mode: 'auto_all',
+      reason: 'auto_all_mode',
+    });
+  });
+
+  it('auto_all bypasses core_apply review policy when not disabled', async () => {
+    process.env.JEA_APPROVAL_MODE = 'auto_all';
+    process.env.JEA_CORE_APPLY_POLICY = 'review';
+    const ctx = makeAgenticCtx({
+      status: 'completed',
+      summary: 'Applied core patch.',
+      modified_files: ['src/actions/handlers.mjs'],
+      test_results: [{ command: 'npm test', status: 'passed' }],
+      evidence: {
+        changed_files: ['src/actions/handlers.mjs'],
+        diff_summary: 'Added auto_all support.',
+        rollback_plan: 'Revert the patch.',
+        death_boundary_result: 'No fixture damage.',
+      },
+    });
+    const createCoreApplyWorktree = installFakeWorktree(ctx);
+
+    const result = await actionHandlers.core_apply({
+      type: 'core_apply',
+      params: {
+        target: 'src/actions/handlers.mjs',
+        rationale: 'exercise auto_all core apply path',
+        boundary: { death_boundary: 'test-only mutation boundary' },
+        acceptance: 'Return diff, tests, and rollback evidence.',
+        death_boundary: 'Only test fixtures may fail.',
+      },
+    }, ctx);
+
+    expect(result.requires_approval).toBe(false);
+    expect(result.success).toBe(true);
+    expect(createCoreApplyWorktree).toHaveBeenCalledOnce();
+    expect(ctx.ai.agentCalls.length).toBeGreaterThan(0);
   });
 
   it('blocks external credential checks from non-authoritative subject runtime scope', async () => {

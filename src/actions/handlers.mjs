@@ -28,6 +28,11 @@ import {
   runLaneCommand,
 } from './lane-manager.mjs';
 import { validateAuthorityScope } from './authority-contract.mjs';
+import {
+  explicitApprovalFromAction,
+  getApprovalMode,
+  resolveApprovalDecision,
+} from './approval-policy.mjs';
 import { buildEvidenceContract } from './resource-registry.mjs';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -411,7 +416,11 @@ function preflightAgentRun(action, ctx, executionAction, runSpec) {
     };
   }
   const requiresApproval = Boolean(getField(executionAction, 'requires_approval'));
-  const approved = Boolean(getField(executionAction, 'approval_granted') || getField(executionAction, 'approved'));
+  const explicitApproved = explicitApprovalFromAction(executionAction);
+  const policyDecision = requiresApproval && !explicitApproved
+    ? resolveApprovalDecision({ ...action, type: action?.type ?? 'agent_run', params: executionAction?.params ?? action?.params }, ctx, { runSpec })
+    : null;
+  const approved = explicitApproved || (policyDecision?.approved ?? false);
   if (requiresApproval && !approved) {
     return {
       blocked: true,
@@ -420,11 +429,27 @@ function preflightAgentRun(action, ctx, executionAction, runSpec) {
         errors: ['approval_required'],
         runSpec,
         roots,
+        auto_approval: policyDecision?.auto_approval ?? null,
+        approval_policy: policyDecision ? {
+          mode: policyDecision.mode,
+          reason: policyDecision.reason,
+          guardrails: policyDecision.guardrails,
+        } : null,
         verification_hints: ['Grant approval before executing this agent_run.'],
       },
     };
   }
-  return { blocked: false };
+  return {
+    blocked: false,
+    auto_approval: policyDecision?.auto_approval ?? null,
+    approval_policy: policyDecision && policyDecision.approved && !explicitApproved
+      ? {
+        mode: policyDecision.mode,
+        reason: policyDecision.reason,
+        guardrails: policyDecision.guardrails,
+      }
+      : null,
+  };
 }
 
 function legacyFallbackAllowed(action) {
@@ -483,13 +508,7 @@ export function buildRetrospectiveEnrichmentAction(action) {
 }
 
 function explicitApproval(action) {
-  const boundary = asObject(getField(action, 'boundary'));
-  return Boolean(
-    getField(action, 'approval_granted')
-      || getField(action, 'approved')
-      || boundary.approval_granted
-      || boundary.approved,
-  );
+  return explicitApprovalFromAction(action);
 }
 
 function sandboxConfigured(action) {
@@ -1292,6 +1311,8 @@ const builtInActionHandlers = {
     if (preflight.blocked) {
       return blockedAgentRunResult(action, preflight.reason, preflight.details, ctx);
     }
+    const autoApproval = preflight.auto_approval ?? null;
+    const approvalPolicy = preflight.approval_policy ?? null;
     const agentResult = await runAgenticAction(executionAction, ctx);
     const agent = asObject(agentResult.agent);
     const executionStatus = agent.execution_status ?? agent.status ?? (agentResult.success ? 'completed' : 'failed');
@@ -1386,6 +1407,8 @@ const builtInActionHandlers = {
         ...asArray(agent.verification_hints),
         ...(providerFailure ? [`provider failure phase: ${providerFailure.phase}`] : []),
       ],
+      ...(autoApproval ? { auto_approval: autoApproval } : {}),
+      ...(approvalPolicy ? { approval_policy: approvalPolicy } : {}),
       fallback_used: false,
     };
     store.recordActionReceipt(action, result, ctx);
@@ -1788,7 +1811,8 @@ const builtInActionHandlers = {
     requireParams(action, ['target', 'rationale', 'boundary', 'acceptance', 'death_boundary']);
     const store = storeFrom(ctx);
     const policy = coreApplyPolicy();
-    const approved = explicitApproval(action);
+    const approved = explicitApproval(action)
+      || (getApprovalMode() === 'auto_all' && policy !== 'disabled');
     const hasSandbox = sandboxConfigured(action);
 
     if (policy === 'disabled') {

@@ -248,6 +248,30 @@ Decide 可调度、`Phase 2` 执行的记录型动作，用于落已有结论而
 
 自动化代理在未获操作者明确确认时，不要替其提交发布/基线校准类 brief，也不要在 action 上伪造 `approval_granted`。
 
+### 环境变量审批策略（JEA_APPROVAL_MODE）
+
+`.env` 可配置审批策略，默认 `manual`（保持现状）：
+
+| 值 | 含义 |
+| --- | --- |
+| `manual` | 所有需要 `approval_granted` 的 `agent_run` 必须显式批准 |
+| `auto_guarded` | 仅自动批准低风险动作：只读 `agent_run`（`permission_profile=read_only`）、`record_observation`、`propose_probe`、`write_retrospective` |
+| `auto_all` | 自动批准所有需审批动作（含远端发布、`workspace_write` / `remote_write_review`）；`core_apply` 在 `JEA_CORE_APPLY_POLICY=review` 时也会自动执行；外部工具 `approvalFlag` 会自动追加 `--force`。`JEA_CORE_APPLY_POLICY=disabled` 仍硬拦截 |
+
+`auto_guarded` **不会**自动：
+
+- 远端发布（`remote_write_review` / publish intent）
+- 更新 rank baseline
+- 解除 `iterate-skill` 人工介入阻塞
+- `core_apply`（仍由 `JEA_CORE_APPLY_POLICY` 独立控制）
+- 外部工具 `--force`（如 `AGENTANK_ALLOW_PUBLISH` 路径）
+
+`auto_all` **适合完全沙盒或本地实验**；生产主体（如 `agentank-tank`）慎用，因为会跳过人工 brief 与显式 `approval_granted`。
+
+建议用法：本地长期演化时设 `JEA_APPROVAL_MODE=auto_guarded`，让凭据合规探针、记忆审计探针、只读 replay 分析、记录型 action 无需每轮人工 brief；远端发布仍通过 `jea intel brief put` 或 Decide 显式 `approval_granted: true`。需要完全无人值守时再设 `auto_all`。
+
+自动批准会在 action receipt 中留下 `auto_approval` 审计字段（`mode`、`reason`、`guardrails`）。
+
 ## 目标管理
 
 - `jea goals show`：显示当前 active goal hypothesis。
