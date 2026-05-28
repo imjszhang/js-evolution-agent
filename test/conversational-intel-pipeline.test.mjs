@@ -173,13 +173,19 @@ describe('operator intent briefs', () => {
 describe('ConversationalIntelligencePipeline', () => {
   it('builds a continuous report-to-decision conversation and queues actions', async () => {
     const { runtimeRoot, runtime, store, host } = makeFixture();
+    store.recordEvolutionEvent({
+      id: 'evt-conversation',
+      type: 'task_completed',
+      status: 'ok',
+      summary: 'conversation pipeline standing memory anchor',
+    });
     const chatCalls = [];
     const messageCalls = [];
     const client = {
       async chat(message) {
         chatCalls.push(message);
         if (message.includes('standing memory') || message.includes('固定容量')) {
-          return '## Current State\n\n- 长期态势：对话式情报报告已经生成，并可供下一轮参考。';
+          return '## Current State\n\n- 长期态势：对话式情报报告已经生成，并可供下一轮参考。[evolution_events:evt-conversation]';
         }
         return longObservation();
       },

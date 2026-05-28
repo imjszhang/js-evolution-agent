@@ -12,6 +12,7 @@ import { createIntelligenceStore } from '../src/intelligence/store.mjs';
 import {
   assessGoals,
   applyRollingTypedEvidenceRefs,
+  auditStandingMemoryFreeText,
   auditStandingMemoryMarkdown,
   buildExtendedMemoryAdmission,
   buildIntelReport,
@@ -19,6 +20,7 @@ import {
   buildPrompt,
   buildTypedEvidenceRefsFromAdmission,
   composeStandingMemoryMarkdown,
+  sanitizeCurrentStateBody,
   detectLanguage,
   extractTldr,
   gatherEvidence,
@@ -968,6 +970,13 @@ describe('buildIntelReport', () => {
 
   it('uses AI output verbatim when AI returns non-empty text (no schema check)', async () => {
     const { store, runtime, intelResult } = makeReportFixture();
+    store.recordEvolutionEvent({
+      id: 'evt-placeholder',
+      type: 'task_completed',
+      status: 'ok',
+      cycle_id: 'cycle-test-1',
+      summary: 'placeholder evidence for current state',
+    });
     const aiText = '# 情报报告\n\n本轮观测到主体的呼吸节律稳定，buffer 层无溢出。\n';
     const outputs = [aiText, '## Current State\n\n- 新版 standing memory [evolution_events:evt-placeholder]'];
     const fakeAi = { chat: async () => outputs.shift() };
@@ -1187,10 +1196,12 @@ describe('buildIntelReport', () => {
     );
     expect(rememberedText).toContain('连续性线索');
     expect(rememberedText).toContain('[action_receipts:receipt-');
-    expect(rememberedText).toContain('agent_claim: remote sync summary should stay a lead');
-    expect(rememberedText).toContain('agent_claim: partial summary should stay remembered only');
+    expect(rememberedText).toContain('agent_claim_lead_not_fact');
+    expect(rememberedText).not.toContain('agent_claim: remote sync summary should stay a lead');
+    expect(rememberedText).not.toContain('agent_claim: partial summary should stay remembered only');
     expect(rememberedText).not.toContain('receipt-12345678 orphan short id');
     expect(rememberedText).not.toContain('remote_matchCount=4127 old polluted memory');
+    expect(memory.text).not.toMatch(/\bagent_claim:/i);
   });
 
   it('filters refuted receipt claims out of standing memory Remembered', async () => {
@@ -1244,7 +1255,8 @@ describe('buildIntelReport', () => {
         ? memory.text.indexOf('## Do Not Treat As Seen')
         : memory.text.length,
     );
-    expect(rememberedText).toContain('valid lead: standing_memory Seen entries were audited successfully');
+    expect(rememberedText).toContain('[action_receipts:receipt-');
+    expect(rememberedText).toContain('agent_claim_lead_not_fact');
     expect(rememberedText).not.toContain('remote_matchCount=4127');
     expect(rememberedText).not.toContain('cycle3_pipeline_confidence=0.72');
     expect(rememberedText).not.toContain('account is frozen');
@@ -1293,7 +1305,8 @@ describe('buildIntelReport', () => {
         ? memory.text.indexOf('## Do Not Treat As Seen')
         : memory.text.length,
     );
-    expect(rememberedText).toContain('valid lead: data/intelligence/memory/standing_memory.json');
+    expect(rememberedText).toContain('[action_receipts:receipt-');
+    expect(rememberedText).toContain('agent_claim_lead_not_fact');
     expect(rememberedText).not.toContain('./standing_memory.json returned ENOENT');
     expect(rememberedText).not.toContain('so standing_memory does not exist');
   });
@@ -1338,7 +1351,8 @@ describe('buildIntelReport', () => {
     );
     expect(rememberedText).toContain('[goal_events:goal-event-new]');
     expect(rememberedText).not.toContain('[goal_events:goal-event-old]');
-    expect((rememberedText.match(/goal evidence needs current source addresses/g) ?? [])).toHaveLength(1);
+    expect((rememberedText.match(/\[goal_events:goal-event-new\]/g) ?? [])).toHaveLength(1);
+    expect(rememberedText).not.toContain('goal evidence needs current source addresses');
   });
 
   it('parses goal assessment JSON from text wrappers', () => {
@@ -1507,6 +1521,135 @@ describe('buildIntelReport', () => {
     });
     const audit = auditStandingMemoryMarkdown({ text, typedEvidenceRefs: refs });
     expect(audit.ok).toBe(true);
+  });
+
+  it('sanitizeCurrentStateBody drops polluted and unlinked bullets', () => {
+    const allowed = ['[evolution_events:evt-safe]'];
+    const body = [
+      '- clean [evolution_events:evt-safe]',
+      '- dirty agent_claim: remote.matchCount=4127 [evolution_events:evt-safe]',
+      '- orphan [action_receipts:receipt-missing]',
+      '- no address bullet',
+    ].join('\n');
+    const sanitized = sanitizeCurrentStateBody(body, allowed);
+    expect(sanitized).toContain('[evolution_events:evt-safe]');
+    expect(sanitized).not.toContain('agent_claim');
+    expect(sanitized).not.toContain('receipt-missing');
+    expect(sanitized).not.toContain('no address');
+  });
+
+  it('auditStandingMemoryFreeText rejects agent_claim outside Evidence', () => {
+    const text = [
+      '## Current State',
+      '',
+      '- blocked [evolution_events:evt-1]',
+      '',
+      '## Evidence',
+      '',
+      '- [evolution_events:evt-1]: ok',
+      '',
+      '## Remembered',
+      '',
+      '- [action_receipts:receipt-1] agent_claim: polluted summary',
+      '',
+      '## Do Not Treat As Seen',
+      '',
+      '- (none)',
+    ].join('\n');
+    const audit = auditStandingMemoryFreeText({
+      text,
+      typedEvidenceRefs: [{
+        source_type: 'evolution_events',
+        source_id: 'evt-1',
+        source_address: '[evolution_events:evt-1]',
+      }],
+      admission: {
+        remembered: [{
+          source_address: '[action_receipts:receipt-1]',
+        }],
+      },
+    });
+    expect(audit.ok).toBe(false);
+    expect(audit.issues.some((i) => i.includes('agent_claim_prefix'))).toBe(true);
+  });
+
+  it('summarizeDoNotTreatItem avoids embedding standing_memory body', async () => {
+    const { store, runtime, intelResult } = makeReportFixture();
+    store.recordStandingMemory({
+      source_cycle_id: 'old-cycle',
+      text: [
+        '## Current State',
+        '',
+        '- refuted stale narrative about free_text_clean=false',
+        '',
+        '## Evidence',
+        '',
+        '- [evolution_events:evt-old]: old',
+      ].join('\n'),
+    });
+    const outputs = [
+      '# 情报报告\n\nstanding memory do-not-treat gate\n',
+      '## Current State\n\n- refreshed [evolution_events:evt-compose]',
+    ];
+    const fakeAi = { chat: async () => outputs.shift() };
+    store.recordEvolutionEvent({
+      id: 'evt-compose',
+      type: 'task_completed',
+      status: 'ok',
+      cycle_id: 'cycle-test-1',
+      summary: 'compose check',
+    });
+    await buildIntelReport({
+      intelResult,
+      runtime,
+      store,
+      aiClient: fakeAi,
+      useAi: true,
+    });
+    const memory = store.readStandingMemory();
+    const doNotTreatText = memory.text.slice(memory.text.indexOf('## Do Not Treat As Seen'));
+    expect(doNotTreatText).toContain('[standing_memory:standing_memory]');
+    expect(doNotTreatText).toContain('prior-cycle working-memory narrative');
+    expect(doNotTreatText).not.toContain('## Current State');
+    expect(doNotTreatText).not.toContain('free_text_clean=false');
+  });
+
+  it('filters polluted Current State from AI output during standing memory update', async () => {
+    const { store, runtime, intelResult } = makeReportFixture();
+    store.recordEvolutionEvent({
+      id: 'evt-pollute',
+      type: 'task_completed',
+      status: 'ok',
+      cycle_id: 'cycle-test-1',
+      summary: 'safe event',
+    });
+    const outputs = [
+      '# 情报报告\n\npollution gate\n',
+      [
+        '## Current State',
+        '',
+        '- good [evolution_events:evt-pollute]',
+        '- bad agent_claim: remote.matchCount=4127 [evolution_events:evt-pollute]',
+        '- orphan [action_receipts:receipt-ghost]',
+      ].join('\n'),
+    ];
+    const fakeAi = { chat: async () => outputs.shift() };
+    await buildIntelReport({
+      intelResult,
+      runtime,
+      store,
+      aiClient: fakeAi,
+      useAi: true,
+    });
+    const memory = store.readStandingMemory();
+    const currentStateText = memory.text.slice(
+      memory.text.indexOf('## Current State'),
+      memory.text.indexOf('## Evidence'),
+    );
+    expect(currentStateText).toContain('[evolution_events:evt-pollute]');
+    expect(currentStateText).not.toContain('agent_claim');
+    expect(currentStateText).not.toContain('receipt-ghost');
+    expect(memory.memory_policy?.audit_ok).toBe(true);
   });
 
   it('composeStandingMemoryMarkdown passes audit for admission-only Evidence', () => {

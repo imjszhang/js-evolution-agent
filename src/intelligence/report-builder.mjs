@@ -59,6 +59,19 @@ const EVIDENCE_SECTION_POLLUTION_PATTERNS = [
   /remote_matchCount\s*=/i,
 ];
 
+/** Patterns that make standing_memory narrative (free text) fail external clean audits. */
+const FREE_TEXT_POLLUTION_PATTERNS = [
+  /\.\.\.\(truncated\)/i,
+  /…/,
+  /\bfallba…/i,
+  /\bagent_claim:/i,
+  /\bfree_text_clean\b/i,
+  /\bremote\.matchCount/i,
+  /remote_matchCount\s*=/i,
+];
+
+const DO_NOT_TREAT_MAX_LINE_CHARS = 220;
+
 function safeReadGoals(runtime) {
   const goalsPath = join(runtime.runtimeRoot, 'data', 'goals', 'active_goals.json');
   if (!existsSync(goalsPath)) return null;
@@ -841,14 +854,42 @@ function extractBracketAddresses(text) {
   return [...new Set(matches)];
 }
 
-function extractCurrentStateBody(aiText) {
+function extractRawCurrentStateBody(aiText) {
   let body = extractMarkdownSection(aiText, 'Current State');
   if (!body) body = extractMarkdownSection(aiText, 'Inferred');
   if (!body) {
     const legacySeen = extractMarkdownSection(aiText, 'Seen');
     if (legacySeen && !legacySeen.includes('[')) body = legacySeen;
   }
-  return limitBulletItems(body, STANDING_MEMORY_LIMITS.maxCurrentStateItems);
+  return body;
+}
+
+function bulletHasFreeTextPollution(text) {
+  return FREE_TEXT_POLLUTION_PATTERNS.some((pattern) => pattern.test(String(text || '')));
+}
+
+/**
+ * Keep only Current State bullets that cite allowed evidence addresses and pass free-text gates.
+ */
+export function sanitizeCurrentStateBody(body, allowedAddresses = []) {
+  const allowed = new Set(Array.isArray(allowedAddresses) ? allowedAddresses : []);
+  const bullets = splitBulletItems(body);
+  const kept = bullets.filter((bullet) => {
+    if (bulletHasFreeTextPollution(bullet)) return false;
+    const addresses = extractBracketAddresses(bullet);
+    if (!addresses.length) return false;
+    return addresses.some((addr) => allowed.has(addr));
+  });
+  if (!kept.length) return '- (none)';
+  return limitBulletItems(kept.join('\n'), STANDING_MEMORY_LIMITS.maxCurrentStateItems);
+}
+
+function extractCurrentStateBody(aiText, allowedAddresses = null) {
+  const body = extractRawCurrentStateBody(aiText);
+  if (allowedAddresses == null) {
+    return limitBulletItems(body, STANDING_MEMORY_LIMITS.maxCurrentStateItems);
+  }
+  return sanitizeCurrentStateBody(body, allowedAddresses);
 }
 
 function buildEvidenceSectionBody(admission, { maxItems = STANDING_MEMORY_LIMITS.maxEvidenceItems } = {}) {
@@ -877,7 +918,7 @@ function buildRememberedSectionBody(admission, language = 'zh') {
   const hint = STANDING_MEMORY_REMEMBERED_HINT[language === 'en' ? 'en' : 'zh'];
   const leads = admission.remembered
     .slice(0, STANDING_MEMORY_LIMITS.maxRememberedLeads)
-    .map((item) => `- ${item.source_address} ${item.prefix}: ${item.summary}`);
+    .map((item) => `- ${item.source_address} (${item.remembered_policy})`);
   if (!leads.length) return hint;
   return [hint, ...leads].join('\n');
 }
@@ -887,9 +928,12 @@ function buildRememberedSection(reportContext, language = 'zh') {
 }
 
 function summarizeDoNotTreatItem(item) {
-  const summary = shortText(item?.summary ?? '', 220);
   const sourceId = item?.source?.id ?? item?.id ?? null;
   const sourceType = item?.source?.source_type ?? null;
+  if (sourceType === 'standing_memory') {
+    return `${sourceAddress({ sourceType, sourceId })}: prior-cycle working-memory narrative; reopen source before treating as fact`;
+  }
+  const summary = shortText(item?.summary ?? '', DO_NOT_TREAT_MAX_LINE_CHARS);
   if (sourceId && sourceType) {
     return `${sourceAddress({ sourceType, sourceId })}: ${summary}`;
   }
@@ -1159,7 +1203,69 @@ export function composeStandingMemoryMarkdown({
   return sections.map(([heading, body]) => `## ${heading}\n\n${body.trim()}`).join('\n\n').trim();
 }
 
-export function auditStandingMemoryMarkdown({ text, typedEvidenceRefs = [] } = {}) {
+export function auditStandingMemoryFreeText({
+  text,
+  typedEvidenceRefs = [],
+  admission = null,
+} = {}) {
+  const issues = [];
+  const body = String(text || '');
+  const refAddresses = new Set(
+    typedEvidenceRefs.map((ref) => ref.source_address).filter(Boolean),
+  );
+  const admittedRemembered = new Set(
+    (admission?.remembered ?? []).map((item) => item.source_address).filter(Boolean),
+  );
+
+  const currentStateText = extractMarkdownSection(body, 'Current State');
+  const rememberedText = extractMarkdownSection(body, 'Remembered');
+  const doNotTreatText = extractMarkdownSection(body, 'Do Not Treat As Seen');
+
+  for (const [sectionName, sectionText] of [
+    ['current_state', currentStateText],
+    ['remembered', rememberedText],
+    ['do_not_treat', doNotTreatText],
+  ]) {
+    if (/\.\.\.\(truncated\)/i.test(sectionText)) {
+      issues.push(`${sectionName}:truncated_marker`);
+    }
+    if (/…/.test(sectionText)) issues.push(`${sectionName}:unicode_ellipsis`);
+    if (/\bfallba…/i.test(sectionText)) issues.push(`${sectionName}:partial_truncation`);
+    if (/\bagent_claim:/i.test(sectionText)) issues.push(`${sectionName}:agent_claim_prefix`);
+    const openBracket = (sectionText.match(/\[[a-z_]+:[^\]]*$/im) ?? []).length;
+    if (openBracket > 0) issues.push(`${sectionName}:incomplete_source_address`);
+  }
+
+  if (/##\s+Current State/i.test(doNotTreatText)) {
+    issues.push('do_not_treat:standing_memory_body_embedded');
+  }
+  if (doNotTreatText.length > 1200) {
+    issues.push('do_not_treat:section_too_long');
+  }
+
+  for (const bullet of splitBulletItems(currentStateText)) {
+    if (bullet === '- (none)' || /\(omitted \d+ items/.test(bullet)) continue;
+    if (bulletHasFreeTextPollution(bullet)) issues.push('current_state:pollution');
+    const addresses = extractBracketAddresses(bullet);
+    if (!addresses.some((addr) => refAddresses.has(addr))) {
+      issues.push('current_state:unlinked_bullet');
+    }
+  }
+
+  for (const addr of extractBracketAddresses(rememberedText)) {
+    if (!refAddresses.has(addr) && !admittedRemembered.has(addr)) {
+      issues.push(`remembered:orphan_address:${addr}`);
+    }
+  }
+
+  return { ok: issues.length === 0, issues };
+}
+
+export function auditStandingMemoryMarkdown({
+  text,
+  typedEvidenceRefs = [],
+  admission = null,
+} = {}) {
   const issues = [];
   const body = String(text || '');
 
@@ -1187,6 +1293,11 @@ export function auditStandingMemoryMarkdown({ text, typedEvidenceRefs = [] } = {
 
   for (const pattern of EVIDENCE_SECTION_POLLUTION_PATTERNS) {
     if (pattern.test(evidenceText)) issues.push(`evidence_pollution:${pattern}`);
+  }
+
+  const freeTextAudit = auditStandingMemoryFreeText({ text, typedEvidenceRefs, admission });
+  if (!freeTextAudit.ok) {
+    for (const issue of freeTextAudit.issues) issues.push(`free_text:${issue}`);
   }
 
   return { ok: issues.length === 0, issues };
@@ -1339,16 +1450,18 @@ export async function updateStandingMemoryWithAi({
     const rollingConfig = readReportBuilderConfig(runtimeRoot)?.rolling_update ?? null;
     const raw = await aiClient.chat(prompt);
     const aiBody = stripCodeFence(raw);
-    const currentStateBody = extractCurrentStateBody(aiBody);
+    const rawCurrentStateBody = extractCurrentStateBody(aiBody);
     const typedEvidenceRefs = rollingConfig
       ? applyRollingTypedEvidenceRefs({
         cycleRefs,
         oldMemory,
         reportContext,
-        currentStateBody,
+        currentStateBody: rawCurrentStateBody,
         config: rollingConfig,
       })
       : cycleRefs;
+    const allowedAddresses = typedEvidenceRefs.map((ref) => ref.source_address).filter(Boolean);
+    const currentStateBody = sanitizeCurrentStateBody(rawCurrentStateBody, allowedAddresses);
     const extendedAdmission = rollingConfig
       ? buildExtendedMemoryAdmission(admission, typedEvidenceRefs, reportContext)
       : admission;
@@ -1358,7 +1471,11 @@ export async function updateStandingMemoryWithAi({
       language,
       admission: extendedAdmission,
     });
-    let audit = auditStandingMemoryMarkdown({ text, typedEvidenceRefs });
+    let audit = auditStandingMemoryMarkdown({
+      text,
+      typedEvidenceRefs,
+      admission: extendedAdmission,
+    });
     let usedFallback = false;
     if (!audit.ok) {
       text = composeStandingMemoryMarkdown({
@@ -1367,7 +1484,11 @@ export async function updateStandingMemoryWithAi({
         language,
         admission: extendedAdmission,
       });
-      audit = auditStandingMemoryMarkdown({ text, typedEvidenceRefs });
+      audit = auditStandingMemoryMarkdown({
+        text,
+        typedEvidenceRefs,
+        admission: extendedAdmission,
+      });
       usedFallback = true;
     }
     if (!text.trim()) return { status: 'failed', reason: 'empty-output' };
