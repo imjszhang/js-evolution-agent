@@ -1,7 +1,4 @@
-import { createServer } from 'node:http';
-import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
-import { join, extname, resolve, relative } from 'node:path';
+import { resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { getProjectRoot } from '../utils/project.mjs';
 import { resolveSubjectFromFlags, runtimeInfoForSubject } from '../utils/subjects.mjs';
@@ -11,18 +8,10 @@ import {
   evolutionViewerOutDir,
   evolutionViewerPublicDir,
 } from '../../intelligence/evolution-viewer/runtime-build.mjs';
+import { createViewerApiServer } from '../../intelligence/evolution-viewer/viewer-api.mjs';
 
 const DEFAULT_LIMIT = DEFAULT_VIEWER_LIMIT;
 const DEFAULT_PORT = 4173;
-
-const MIME = {
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-  '.svg': 'image/svg+xml',
-  '.ico': 'image/x-icon',
-};
 
 function numberFlag(flags, name, fallback) {
   const n = Number(flags[name]);
@@ -69,56 +58,41 @@ export async function intelViewerBuild(root, flags = {}) {
   console.log(`  subject: ${manifest.subject}`);
   console.log(`  rounds: ${manifest.round_count}`);
   console.log(`  limit: ${manifest.limit}`);
-  console.log(`  serve: jea intel viewer serve [--port ${DEFAULT_PORT}] [--open]`);
+  console.log(`  offline: npx serve ${outDir}`);
+  console.log(`  live API: jea intel viewer serve [--port ${DEFAULT_PORT}] [--open]`);
   return 0;
-}
-
-function createStaticServer(distDir, port) {
-  return createServer(async (req, res) => {
-    try {
-      const url = new URL(req.url ?? '/', `http://127.0.0.1:${port}`);
-      let pathname = decodeURIComponent(url.pathname);
-      if (pathname === '/') pathname = '/index.html';
-      const filePath = resolve(distDir, pathname.replace(/^\/+/, ''));
-      const rel = relative(resolve(distDir), filePath);
-      if (rel.startsWith('..') || rel.includes('..')) {
-        res.writeHead(403);
-        res.end('Forbidden');
-        return;
-      }
-      if (!existsSync(filePath)) {
-        res.writeHead(404);
-        res.end('Not found');
-        return;
-      }
-      const body = await readFile(filePath);
-      const ext = extname(filePath);
-      res.writeHead(200, { 'Content-Type': MIME[ext] ?? 'application/octet-stream' });
-      res.end(body);
-    } catch (err) {
-      res.writeHead(500);
-      res.end(String(err?.message ?? err));
-    }
-  });
 }
 
 export async function intelViewerServe(root, flags = {}) {
   const port = numberFlag(flags, 'port', DEFAULT_PORT);
-  const distDir = flags.out ? resolve(flags.out) : evolutionViewerOutDir(root);
-  if (!existsSync(join(distDir, 'manifest.json'))) {
-    console.error(`No viewer build at ${distDir}. Run: jea intel viewer build`);
-    return 1;
-  }
+  const limit = numberFlag(flags, 'limit', DEFAULT_LIMIT);
+  const config = resolveSubjectFromFlags(root, flags);
+  const runtime = runtimeInfoForSubject(root, config);
+  const publicDir = flags.public ? resolve(flags.public) : evolutionViewerPublicDir(root);
 
-  const server = createStaticServer(distDir, port);
-  await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve));
+  const apiCtx = createViewerApiServer({ runtime, limit, port, publicDir });
+  await new Promise((resolveListen) => apiCtx.server.listen(port, '127.0.0.1', resolveListen));
+
   const url = `http://127.0.0.1:${port}/`;
-  console.log(`Evolution viewer: ${url}`);
+  const eventsUrl = `${url}events`;
+
+  console.log(`Evolution viewer API: ${url}`);
+  console.log(`  subject: ${runtime.subject}`);
+  console.log(`  runtime: ${runtime.runtimeRoot}`);
+  console.log(`  events: ${eventsUrl}`);
+  console.log(`  limit: ${limit}`);
   console.log('Press Ctrl+C to stop.');
 
   if (flags.open) {
     openInDefaultApp(url);
   }
+
+  const shutdown = async () => {
+    await apiCtx.close();
+    process.exit(0);
+  };
+  process.on('SIGINT', () => { void shutdown(); });
+  process.on('SIGTERM', () => { void shutdown(); });
 
   await new Promise(() => {});
   return 0;
@@ -131,7 +105,7 @@ export async function intelViewerCommand(root, flags = {}, args = []) {
   console.error(
     'Usage: jea intel viewer <build|serve> [--subject NAME] [--limit N] [--out PATH] [--port N] [--open]\n' +
     '  jea intel viewer build [--subject NAME] [--limit 50] [--out PATH]\n' +
-    '  jea intel viewer serve [--port 4173] [--open] [--out PATH]',
+    '  jea intel viewer serve [--port 4173] [--open] [--limit N] [--subject NAME]',
   );
   return 2;
 }

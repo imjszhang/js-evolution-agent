@@ -22,7 +22,7 @@ export function helpText() {
 
 Commands:
   doctor                 Check env, dependencies, docs, and config
-  run [--mock] [--skip-goals-assess] [--skip-belief-update] [--viewer-build] [--subject NAME]
+  run [--mock] [--skip-goals-assess] [--skip-belief-update] [--subject NAME]
                          Run the full intel -> exec -> verify loop; by default
                          also records a goals assess event for the same cycle
   run --deepseek         Require DeepSeek API configuration
@@ -63,7 +63,7 @@ Commands:
   intel brief list       List pending operator intent briefs
   intel brief processed  List consumed operator intent briefs
   intel viewer build     Build static evolution report/diary viewer (--subject, --limit)
-  intel viewer serve     Serve the built viewer locally (--port, --open)
+  intel viewer serve     Serve viewer API + SSE (reads runtime; no dist required)
   goals show             Show the active goal hypothesis
   goals history          Show recent goal change events
   goals update --file PATH --reason TEXT [--evidence REF] [--cycle ID]

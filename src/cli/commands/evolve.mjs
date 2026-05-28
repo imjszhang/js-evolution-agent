@@ -123,9 +123,6 @@ export function buildCycleEnv(flags, subject) {
   } else {
     delete env.JEA_SUBJECT_RUN_LOCK_HELD;
   }
-  if (flags['viewer-build']) {
-    env.JEA_AUTO_VIEWER_BUILD = '1';
-  }
   return env;
 }
 
@@ -136,7 +133,6 @@ function flagsFromManifest(manifest, overrides = {}) {
     deepseek: stored.deepseek,
     'skip-goals-assess': stored.skip_goals_assess,
     'skip-belief-update': stored.skip_belief_update,
-    'viewer-build': stored.viewer_build,
     retries: stored.retries,
     'continue-on-failure': stored.continue_on_failure,
     'exec-limit': stored.exec_limit ?? undefined,
@@ -496,7 +492,6 @@ export async function evolveCommand({ subcommand, flags = {}, args = [] } = {}) 
             deepseek: Boolean(flags.deepseek),
             skip_goals_assess: Boolean(flags['skip-goals-assess']),
             skip_belief_update: Boolean(flags['skip-belief-update']),
-            viewer_build: Boolean(flags['viewer-build']),
             exec_limit: flags['exec-limit'] == null || flags['exec-limit'] === true
               ? null
               : parsePositiveInt(flags['exec-limit'], { name: 'exec-limit', min: 1 }),

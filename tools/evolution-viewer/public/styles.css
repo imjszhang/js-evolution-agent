@@ -238,6 +238,43 @@ body {
   color: #b45309;
 }
 
+.live-status {
+  margin: 0;
+  font-size: 0.8rem;
+  min-height: 1.2em;
+}
+
+.live-status.connected {
+  color: #059669;
+}
+
+.live-status.connecting {
+  color: var(--muted);
+}
+
+.live-status.disconnected {
+  color: #b45309;
+}
+
+.live-status.error {
+  color: #dc2626;
+}
+
+.round-btn.is-new {
+  background: #fef9c3;
+}
+
+.round-btn .new-tag {
+  display: inline-block;
+  margin-left: 4px;
+  font-size: 0.65rem;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: #facc15;
+  color: #713f12;
+  vertical-align: middle;
+}
+
 @media (max-width: 900px) {
   body {
     overflow: auto;

@@ -50,8 +50,7 @@ jea data status
 相关环境变量：
 
 - `JEA_EXEC_LIMIT`：限制单轮执行阶段最多处理的决策数，默认 `5`。
-- `JEA_AUTO_VIEWER_BUILD=1`：每轮 `jea run` 成功后自动重建 evolution viewer（输出到 `tools/evolution-viewer/dist/`）。也可用 `jea run --viewer-build` / `jea evolve --viewer-build`。
-- `JEA_VIEWER_BUILD_LIMIT`：自动 build 时的轮次上限，默认 `50`。
+- `JEA_VIEWER_BUILD_LIMIT`：`jea intel viewer serve` / `build` 的轮次上限，默认 `50`。
 - `JEA_SKIP_GOALS_ASSESS=1`：跳过目标评估。
 - `JEA_SKIP_BELIEF_UPDATE=1`：跳过 post-verify 信念更新。
 - `JEA_FORCE_MOCK=1`：强制使用 Mock AI。
@@ -83,10 +82,9 @@ runtime/subjects/<data_namespace>/
 - `jea intel report --cycle <id>`：输出指定 cycle 的报告。
 - `jea intel report --open`：用系统默认程序打开最新报告。
 - `jea intel report --json`：输出报告索引记录 JSON，而不是 Markdown 正文。
-- `jea intel viewer build [--subject NAME] [--limit N] [--out PATH]`：构建静态演化对照浏览器（情报报告 + 进化日记，输出到 `tools/evolution-viewer/dist/`）。
-- `jea intel viewer serve [--port N] [--open]`：本地托管已构建的 viewer（需先 `viewer build`）。
+- `jea intel viewer serve [--port N] [--open] [--limit N] [--subject NAME]`：托管 `tools/evolution-viewer/public/` 并直读当前 subject runtime（`GET /api/manifest`、`GET /api/rounds/:cycleId`）；`/events` SSE tail `evolution-events.jsonl`，推送 `round_added` / `round_updated`，**无需先 build dist**。
+- `jea intel viewer build [--subject NAME] [--limit N] [--out PATH]`：可选离线快照（marked 预渲染到 `tools/evolution-viewer/dist/`）；用 `npx serve tools/evolution-viewer/dist` 等任意静态服务器打开。
 - `npm run viewer:build` / `npm run viewer:serve`：同上（`viewer:serve` 默认 `--open`）。
-- 若设置了 `JEA_AUTO_VIEWER_BUILD=1` 或使用了 `--viewer-build`，每轮演化结束会自动执行 viewer build，无需手工刷新 dist。
 
 写入情报：
 
