@@ -36,10 +36,26 @@ jea data status
 
 ## 运行演化循环
 
-- `jea run [--mock] [--deepseek] [--skip-goals-assess] [--skip-belief-update]`：运行一次完整的 `intel -> exec -> verify` 循环并写入情报回执，默认还会记录目标评估事件与 post-verify 信念更新。
+- `jea run [--mock] [--deepseek] [--skip-goals-assess] [--skip-belief-update] [--subject NAME]`：运行一次完整演化循环并写入情报回执。
 - `jea run --mock`：不调用真实模型，适合本地冒烟验证。
 - `jea run --deepseek`：要求 DeepSeek API 配置存在。
-- `jea run --skip-goals-assess`：跳过本轮目标评估。
+- `jea run --skip-goals-assess`：跳过本轮目标评估（Phase 4 / 4.5）。
+- `jea run --skip-belief-update`：跳过 post-verify 信念更新（Phase 3.5）。
+
+单轮主流水线：
+
+```text
+Phase 1   intel pipeline（observe -> report -> analyze+decide）
+Phase 1.5 intel report 持久化
+Phase 2   exec（消费 pending_decisions 队列）
+Phase 3   verify（机械验证 + 语义验证）
+Phase 3.5 belief_update（更新 current_beliefs；可用 --skip-belief-update 跳过）
+Phase 4   goals assess
+Phase 4.5 goals calibrate
+Phase 5   evolution diary
+```
+
+信念（Belief）在 Phase 1 被 Decide 读取约束行动，在 Phase 3.5 依据 receipt 与 verify_report 正式更新。详见下文「信念管理」与「人工审批与操作者意图」。
 
 批量演化：
 
@@ -92,11 +108,57 @@ runtime/subjects/<data_namespace>/
 - `jea intel inbox put --source NAME [--file PATH | --stdin] [--name LABEL]`：把 JSON 载荷放入 `_inbox`，供之后 drain。
 - `jea intel inbox drain [--dir PATH] [--json]`：将 `_inbox` 中的文件导入 intelligence store。
 
-操作者 brief：
+操作者 brief（Operator Intent Brief）：
 
 - `jea intel brief put [--file PATH | --stdin]`：为下一次 intel cycle 放入一次性操作者意图 brief。
 - `jea intel brief list`：列出待处理 brief。
 - `jea intel brief processed`：列出已消费 brief。
+
+Brief 是**单轮人工意图**，不是已验证证据；Phase 1 的 report/decide prompt 会读取它，Analyze+Decide 成功入队后归档到 `processed/`。存储路径：
+
+```text
+runtime/subjects/<data_namespace>/data/evolution/operator_briefs/pending/
+runtime/subjects/<data_namespace>/data/evolution/operator_briefs/processed/
+```
+
+最小 JSON 示例：
+
+```json
+{
+  "kind": "approval_request",
+  "scope": "next_cycle",
+  "summary": "人工审批同意发布候选 X",
+  "desired_decision_effect": "下一周期在 agentank_evolver scope 执行远端发布，并在发布后 getTank 探针验证 rank 变化",
+  "suggested_actions": ["agent_run"],
+  "expires_after_cycle": true
+}
+```
+
+常用字段：`summary`、`claims_to_verify[]`、`desired_decision_effect`、`suggested_actions[]`、`kind`（如 `verification_request`、`approval_request`）、`priority`。在 chat 里口头说「同意发布」**不会**自动进入系统；操作者或自动化代理需执行 `jea intel brief put` 落盘。
+
+## 人工审批与操作者意图
+
+系统**没有**独立的 `jea approve` 命令。人工审批通过两层机制配合：
+
+| 机制 | 入口 | 作用 | 是否硬开关 |
+| --- | --- | --- | --- |
+| Operator Intent Brief | `jea intel brief put` | 影响下一轮 Phase 1 Decide 如何排优先级 | 否（软输入，引导 LLM） |
+| `approval_granted` | Decide 产出的 action 字段 | Phase 2 preflight：与 `requires_approval` 联用时，无批准则 blocked | 是 |
+
+典型远端发布流程（如 `agentank-tank`）：
+
+1. 某轮 `agent_run` 在 lane worktree 内完成候选生成、模拟、门禁，仅准备 release artifacts（Decide 可约束「不触发远端发布」）。
+2. verify / evolution diary 标记 `requires_approval` 或 `acceptance_status: requires_human_review`。
+3. 操作者 `jea intel brief put` 表达同意（或校准基线、修正口径等意图）。
+4. 下一轮 Decide 调度带 `approval_granted: true` 的 `agent_run`（`permission_profile: remote_write_review`）；外部工具层（如 agentank-evolver 的 `AGENTANK_ALLOW_PUBLISH`）仍可能拦截。
+5. 发布后 getTank 探针验证 rank；若 `|rank_delta|≥50`，可能再次要求人工确认新基线（再提交 brief）。
+
+其他需人工介入的场景：
+
+- **核心层变更**：`core_apply` 默认受 `JEA_CORE_APPLY_POLICY=review` 约束；`request_core_review` 只落审批请求，不执行变更。
+- **主体边界**：`policies/subjects/<name>.md` 的 Off-Limits Without Human Approval 定义各 subject 的审批规则（凭据、远端发布、越界写入等）；AGENTS.md 不重复主体语义，用 `jea subject check` 校验 policy 结构。
+
+自动化代理在未获操作者明确确认时，不要替其提交发布/基线校准类 brief，也不要在 action 上伪造 `approval_granted`。
 
 ## 目标管理
 
@@ -110,6 +172,8 @@ runtime/subjects/<data_namespace>/
 - `jea beliefs show`：显示当前 active/validated/refuted 信念状态。
 - `jea beliefs events [--limit N]`：查看近期信念变更事件。
 - `jea beliefs update [--cycle ID]`：手动触发 post-verify 信念更新（通常由 `jea run` Phase 3.5 自动执行）。
+
+信念是绑在 goal 上的可验证行动假设（`claim`、`next_test`、`evidence_refs`）。Decide 阶段通过 `params.run_spec.context.belief_id` / `belief_relation` 绑定 `agent_run`；**创建或调整信念的正式写入点在 Phase 3.5**，依据 action receipt 与 verify_report，而非 report 叙事。存储：`data/intelligence/beliefs/current_beliefs.json`、`belief-events.jsonl`。
 
 目标 JSON 需要包含 `id`、`name`、`intent`、`good_signal`、`bad_signal` 和 `children`。
 
@@ -196,3 +260,4 @@ npm run reset-data
 - 涉及删除或重置数据的命令，例如 `jea data reset --yes`，必须确认当前 subject 和 namespace。
 - 多主体并行时，用 `jea daemon status --all`、`jea daemon doctor --all` 和 `jea daemon inbox --all` 做总览。
 - 自动化脚本需要结构化输出时，优先使用带 `--json` 的命令。
+- 发布/基线校准等人工作业：先读最新 evolution diary 与 verify report，再用 `jea intel brief put` 提交意图，然后 `jea daemon enqueue --type run_cycle` 或 `jea run`；用 `jea intel brief list` / `processed` 确认 brief 是否已被消费。
