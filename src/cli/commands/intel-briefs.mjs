@@ -25,12 +25,26 @@ async function readStdinText() {
   return Buffer.concat(chunks).toString('utf-8');
 }
 
+function assertNotMojibake(text, { source = 'input' } = {}) {
+  const raw = String(text || '');
+  const questionMarks = (raw.match(/\?/g) || []).length;
+  const replacementChars = (raw.match(/\uFFFD/g) || []).length;
+  const hasKnownAsciiHints = /\b(rank|standing|operator|brief|claim|verify|baseline|rankScore)\b/i.test(raw);
+  if (replacementChars > 0 || (hasKnownAsciiHints && questionMarks >= 8)) {
+    throw new Error(`${source} appears to contain mojibake; save the JSON as UTF-8 and pass it with --file PATH instead of piping stdin`);
+  }
+}
+
 async function readBriefInput(flags = {}) {
   if (flags.file && typeof flags.file === 'string') {
-    return readFileSync(flags.file, 'utf-8');
+    const text = readFileSync(flags.file, 'utf-8');
+    assertNotMojibake(text, { source: flags.file });
+    return text;
   }
   if (flags.stdin || (!flags.file && !process.stdin.isTTY)) {
-    return readStdinText();
+    const text = await readStdinText();
+    assertNotMojibake(text, { source: 'stdin' });
+    return text;
   }
   throw new Error('No input provided. Use --file PATH or pipe JSON to stdin.');
 }

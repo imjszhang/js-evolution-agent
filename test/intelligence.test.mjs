@@ -158,6 +158,35 @@ describe('beliefs and decision brief', () => {
     expect(JSON.stringify(brief.do_not_treat_as_seen)).toContain('refuted claim');
   });
 
+  it('promotes high-confidence operator facts into seen evidence', () => {
+    const brief = buildTemporalDecisionBrief({
+      generated_at: '2026-05-28T00:00:00.000Z',
+      current_cycle: { cycle_id: 'cycle-test', mode: 'local' },
+      observations: [{
+        id: 'operator-fact-rank-score',
+        kind: 'operator_fact',
+        source: 'operator',
+        subject: 'agentank-tank',
+        content: 'standing.rank lower is better; rankScore higher is better',
+        confidence: 'high',
+        created_at: '2026-05-28T00:00:00.000Z',
+      }],
+      action_receipts: [],
+      probe_results: [],
+      evolution_events: [],
+      goal_events: [],
+      belief_events: [],
+      current_beliefs: normalizeCurrentBeliefs({ beliefs: [] }),
+      recent_report_markdowns: [],
+      standing_memory: { exists: false },
+    });
+
+    const seenText = JSON.stringify(brief.seen);
+    expect(seenText).toContain('operator_established_fact');
+    expect(seenText).toContain('standing.rank lower is better');
+    expect(brief.source_ordering.some((item) => item.source_type === 'intel_observations')).toBe(true);
+  });
+
   it('includes beliefs in gatherReportContext source counts', () => {
     const store = makeStore();
     store.recordCurrentBeliefs({
@@ -440,6 +469,32 @@ describe('IntelligenceStore', () => {
     expect(store.readLatestReview().summary).toBe('reviewed bootstrap');
     expect(store.buildContextSummary()).toContain('hello intelligence');
     expect(store.buildContextSummary()).toContain('README exists');
+  });
+
+  it('keeps operator facts visible in context summaries', () => {
+    const store = makeStore();
+    for (let i = 0; i < 12; i += 1) {
+      store.ingestObservation({
+        id: `obs-${i}`,
+        source: 'test',
+        subject: 'noise',
+        content: `noise observation ${i}`,
+        created_at: new Date(Date.UTC(2026, 0, 1, 0, i)).toISOString(),
+      });
+    }
+    store.ingest('intel_observations', {
+      id: 'operator-fact-rank-score',
+      kind: 'operator_fact',
+      source: 'operator',
+      subject: 'agentank-tank',
+      content: 'standing.rank lower is better; rankScore higher is better',
+      confidence: 'high',
+      created_at: '2026-01-01T00:00:00.000Z',
+    });
+
+    const summary = store.buildContextSummary();
+    expect(summary).toContain('standing.rank lower is better');
+    expect(summary).toContain('rankScore higher is better');
   });
 
   it('records and reads goal events', () => {

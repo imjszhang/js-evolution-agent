@@ -313,6 +313,26 @@ function beliefFacts(events, limit) {
   });
 }
 
+function isOperatorFact(record) {
+  return record?.kind === 'operator_fact' || record?.source === 'operator_fact';
+}
+
+function isHighConfidence(record) {
+  return !record?.confidence || record.confidence === 'high';
+}
+
+function operatorFacts(observations, limit) {
+  return newestFirst(observations)
+    .filter((record) => isOperatorFact(record) && isHighConfidence(record))
+    .slice(0, limit)
+    .map((record) => directFact({
+      sourceType: 'intel_observations',
+      evidenceLevel: 'operator_established_fact',
+      record,
+      summary: record.content ?? record.summary ?? '',
+    }));
+}
+
 function beliefConstraintItems(beliefs = [], status, limit) {
   return beliefs.slice(0, limit).map((belief) => ({
     id: belief.id ?? null,
@@ -449,6 +469,7 @@ function sourceOrdering(context) {
     ['evolution_events', context.evolution_events, 'structured_machine_record'],
     ['goal_events', context.goal_events, 'structured_machine_record'],
     ['belief_events', context.belief_events, 'structured_machine_record'],
+    ['intel_observations', context.observations, 'operator_established_fact'],
     ['current_beliefs', context.current_beliefs?.exists ? context.current_beliefs.beliefs : [], 'active_verified_claim'],
     ['standing_memory', context.standing_memory?.exists ? [context.standing_memory] : [], 'model_summary_cache'],
     ['recent_report_markdowns', context.recent_report_markdowns, 'historical_model_report'],
@@ -483,6 +504,7 @@ export function buildTemporalDecisionBrief(reportContext = {}, {
   ];
   const beliefPartitions = partitionBeliefs(reportContext.current_beliefs?.beliefs ?? []);
   const directEvidence = [
+    ...operatorFacts(reportContext.observations, Math.ceil(itemLimit / 2)),
     ...eventFacts(reportContext.evolution_events, itemLimit),
     ...goalFacts(reportContext.goal_events, Math.ceil(itemLimit / 2)),
     ...beliefFacts(reportContext.belief_events, Math.ceil(itemLimit / 2)),

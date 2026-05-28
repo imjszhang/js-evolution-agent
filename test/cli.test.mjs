@@ -2549,6 +2549,19 @@ describe('intel operator briefs', () => {
     expect(briefList({ root, flags: { json: true } })).toBe(0);
   });
 
+  it('briefPut rejects mojibake input with a file hint', async () => {
+    const root = makeIntelRoot('jea-brief-mojibake-');
+    const filePath = join(root, 'brief.json');
+    writeFileSync(filePath, JSON.stringify({
+      id: 'brief-mojibake',
+      summary: 'operator rank ????????????',
+      claims_to_verify: ['standing.rank ????????????'],
+    }));
+
+    const code = await briefPut({ root, flags: { file: filePath } });
+    expect(code).toBe(2);
+  });
+
   it('briefProcessed lists consumed briefs', async () => {
     const root = makeIntelRoot('jea-brief-processed-');
     const filePath = join(root, 'brief.json');

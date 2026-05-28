@@ -30,6 +30,28 @@ function formatList(title, records, render) {
   return `${title}:\n${lines.join('\n')}`;
 }
 
+function timestampOf(record) {
+  const raw = record?.recorded_at
+    ?? record?.created_at
+    ?? record?.generated_at
+    ?? record?.updated_at
+    ?? record?.timestamp;
+  return Date.parse(raw || '') || 0;
+}
+
+function isOperatorFact(record) {
+  return record?.kind === 'operator_fact' || record?.source === 'operator_fact';
+}
+
+function prioritizeOperatorFacts(records, limit = 20) {
+  const sorted = asArray(records)
+    .slice()
+    .sort((a, b) => timestampOf(b) - timestampOf(a));
+  const facts = sorted.filter(isOperatorFact);
+  const others = sorted.filter((record) => !isOperatorFact(record));
+  return [...facts, ...others].slice(0, limit);
+}
+
 export class IntelligenceStore {
   constructor({
     baseDir,
@@ -222,7 +244,10 @@ export class IntelligenceStore {
   }
 
   buildContextSummary() {
-    const observations = this.readRecentIntel({ days: 7, limit: 8 });
+    const observations = prioritizeOperatorFacts(
+      this.readRecentIntel({ days: 7, limit: 50 }),
+      20,
+    );
     const events = this.readEvolutionEvents({ limit: 8 });
     const probeResults = this.readProbeResults({ limit: 8 });
     const latestReview = this.readLatestReview();
