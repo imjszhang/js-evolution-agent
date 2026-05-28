@@ -32,6 +32,33 @@ const DEFAULT_REPORT_CONTEXT_LIMITS = {
 
 const STANDING_MEMORY_CANONICAL_PATH = 'data/intelligence/memory/standing_memory.json';
 
+const STANDING_MEMORY_EVIDENCE_DEPTH_TARGET = 35;
+
+const STANDING_MEMORY_LIMITS = {
+  maxEvidenceItems: 50,
+  maxCurrentStateItems: 5,
+  maxRememberedLeads: 5,
+  maxDoNotTreatAsSeenItems: 10,
+};
+
+const STANDING_MEMORY_SECTIONS = [
+  'Current State',
+  'Evidence',
+  'Remembered',
+  'Do Not Treat As Seen',
+];
+
+const STANDING_MEMORY_REMEMBERED_HINT = {
+  en: '- Historical reports, beliefs, and diaries are continuity hints only. Reopen source records before treating them as Seen.',
+  zh: '- 历史报告、信念与日记仅作连续性线索；重开源记录前不得当作 Seen 事实。',
+};
+
+const EVIDENCE_SECTION_POLLUTION_PATTERNS = [
+  /\bagent_claim:/i,
+  /remote\.matchCount/i,
+  /remote_matchCount\s*=/i,
+];
+
 function safeReadGoals(runtime) {
   const goalsPath = join(runtime.runtimeRoot, 'data', 'goals', 'active_goals.json');
   if (!existsSync(goalsPath)) return null;
@@ -191,7 +218,7 @@ function normalizeStandingMemory(memory, charLimit) {
       resource_kind: 'standing_memory',
       resource_scope: 'subject_runtime',
       canonical_path: STANDING_MEMORY_CANONICAL_PATH,
-      source_role: 'model_summary_cache',
+      source_role: 'working_memory_index',
       path_policy: 'Only canonical_path is authoritative. ./standing_memory.json at the runtime root is not an alias.',
       updated_at: null,
       source_cycle_id: null,
@@ -204,7 +231,7 @@ function normalizeStandingMemory(memory, charLimit) {
     resource_kind: 'standing_memory',
     resource_scope: 'subject_runtime',
     canonical_path: STANDING_MEMORY_CANONICAL_PATH,
-    source_role: 'model_summary_cache',
+    source_role: 'working_memory_index',
     path_policy: 'Only canonical_path is authoritative. ./standing_memory.json at the runtime root is not an alias.',
     updated_at: memory.updated_at ?? null,
     source_cycle_id: memory.source_cycle_id ?? null,
@@ -730,7 +757,7 @@ function normalizeRememberedItems(items) {
   return normalized;
 }
 
-function buildMemoryAdmission(reportContext) {
+export function buildMemoryAdmission(reportContext) {
   const brief = reportContext?.temporal_decision_brief ?? {};
   const seen = Array.isArray(brief.seen) ? brief.seen : [];
   const memorySeen = seen.filter((item) => {
@@ -747,7 +774,7 @@ function buildMemoryAdmission(reportContext) {
     )),
   ];
   return {
-    rule: 'Only memory_admission.seen may appear in the final Seen section. Completed action_receipt structured status is Seen; receipt summaries, messages, and agent claims are not Seen.',
+    rule: 'Only memory_admission.seen may appear in the final Evidence section. Completed action_receipt structured status is Evidence; receipt summaries, messages, and agent claims are not Evidence.',
     seen: memorySeen.map((item) => ({
       source_id: seenSourceId(item),
       source_type: item?.source?.source_type ?? null,
@@ -763,36 +790,192 @@ function buildMemoryAdmission(reportContext) {
         ? 'source_statement_only'
         : 'direct_field_or_status',
     })).filter((item) => item.source_id),
-    remembered: normalizeRememberedItems(rememberedCandidates).slice(0, 40),
-    do_not_treat_as_seen: (brief.do_not_treat_as_seen ?? []).slice(0, 30),
+    remembered: normalizeRememberedItems(rememberedCandidates)
+      .slice(0, STANDING_MEMORY_LIMITS.maxRememberedLeads),
+    do_not_treat_as_seen: (brief.do_not_treat_as_seen ?? [])
+      .slice(0, STANDING_MEMORY_LIMITS.maxDoNotTreatAsSeenItems),
   };
 }
 
-function buildSeenSection(reportContext) {
-  const admitted = buildMemoryAdmission(reportContext).seen;
+function extractMarkdownSection(markdown, heading) {
+  const text = String(markdown || '').trim();
+  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const sectionPattern = new RegExp(
+    `##\\s+${escaped}\\s*\\n([\\s\\S]*?)(?=\\n##\\s+|$)`,
+    'i',
+  );
+  const match = text.match(sectionPattern);
+  return match ? match[1].trim() : '';
+}
+
+function splitBulletItems(body) {
+  const lines = String(body || '').split('\n');
+  const bullets = [];
+  let current = [];
+  for (const line of lines) {
+    if (/^\s*-\s+/.test(line)) {
+      if (current.length) bullets.push(current.join('\n').trim());
+      current = [line];
+    } else if (current.length) {
+      current.push(line);
+    }
+  }
+  if (current.length) bullets.push(current.join('\n').trim());
+  return bullets.filter(Boolean);
+}
+
+function limitBulletItems(body, maxItems) {
+  const bullets = splitBulletItems(body);
+  if (!bullets.length) return '- (none)';
+  const kept = bullets.slice(0, maxItems);
+  const omitted = bullets.length - kept.length;
+  let result = kept.join('\n');
+  if (omitted > 0) {
+    result += `\n- (omitted ${omitted} items due to section budget)`;
+  }
+  return result;
+}
+
+function extractBracketAddresses(text) {
+  const matches = String(text || '').match(/\[[a-z_]+:[^\]]+\]/gi) ?? [];
+  return [...new Set(matches)];
+}
+
+function extractCurrentStateBody(aiText) {
+  let body = extractMarkdownSection(aiText, 'Current State');
+  if (!body) body = extractMarkdownSection(aiText, 'Inferred');
+  if (!body) {
+    const legacySeen = extractMarkdownSection(aiText, 'Seen');
+    if (legacySeen && !legacySeen.includes('[')) body = legacySeen;
+  }
+  return limitBulletItems(body, STANDING_MEMORY_LIMITS.maxCurrentStateItems);
+}
+
+function buildEvidenceSectionBody(admission, { maxItems = STANDING_MEMORY_LIMITS.maxEvidenceItems } = {}) {
+  const admitted = admission.seen.slice(0, maxItems);
+  const omitted = admission.seen.length - admitted.length;
   if (!admitted.length) return '- (none)';
-  return admitted
+  let body = admitted
     .map((item) => `- ${item.source_address}: ${item.summary}`)
     .join('\n');
+  if (omitted > 0) {
+    body += `\n- (omitted ${omitted} evidence items due to section budget)`;
+  }
+  return body;
 }
 
-function buildRememberedSection(reportContext) {
-  const admitted = buildMemoryAdmission(reportContext).remembered;
-  if (!admitted.length) return '- (none)';
-  return admitted
-    .map((item) => `- ${item.source_address} ${item.prefix}: ${item.summary}`)
-    .join('\n');
+function buildEvidenceSection(reportContext) {
+  return buildEvidenceSectionBody(buildMemoryAdmission(reportContext));
 }
 
-function buildTypedEvidenceRefs(reportContext) {
-  return buildMemoryAdmission(reportContext).seen
-    ?.map((fact) => ({
+/** @deprecated Use buildEvidenceSection; kept for callers expecting Seen gate naming. */
+export function buildSeenSection(reportContext) {
+  return buildEvidenceSection(reportContext);
+}
+
+function buildRememberedSectionBody(admission, language = 'zh') {
+  const hint = STANDING_MEMORY_REMEMBERED_HINT[language === 'en' ? 'en' : 'zh'];
+  const leads = admission.remembered
+    .slice(0, STANDING_MEMORY_LIMITS.maxRememberedLeads)
+    .map((item) => `- ${item.source_address} ${item.prefix}: ${item.summary}`);
+  if (!leads.length) return hint;
+  return [hint, ...leads].join('\n');
+}
+
+function buildRememberedSection(reportContext, language = 'zh') {
+  return buildRememberedSectionBody(buildMemoryAdmission(reportContext), language);
+}
+
+function summarizeDoNotTreatItem(item) {
+  const summary = shortText(item?.summary ?? '', 220);
+  const sourceId = item?.source?.id ?? item?.id ?? null;
+  const sourceType = item?.source?.source_type ?? null;
+  if (sourceId && sourceType) {
+    return `${sourceAddress({ sourceType, sourceId })}: ${summary}`;
+  }
+  return summary || '- (item)';
+}
+
+function buildDoNotTreatAsSeenSectionBody(admission) {
+  const items = admission.do_not_treat_as_seen.slice(0, STANDING_MEMORY_LIMITS.maxDoNotTreatAsSeenItems);
+  if (!items.length) return '- (none)';
+  return items.map((item) => `- ${summarizeDoNotTreatItem(item)}`).join('\n');
+}
+
+function buildDoNotTreatAsSeenSection(reportContext) {
+  return buildDoNotTreatAsSeenSectionBody(buildMemoryAdmission(reportContext));
+}
+
+export function buildTypedEvidenceRefsFromAdmission(admission) {
+  return admission.seen
+    .slice(0, STANDING_MEMORY_LIMITS.maxEvidenceItems)
+    .map((fact) => ({
       source_type: memorySourceType(fact.source_type),
       source_id: fact.source_id,
       source_address: fact.source_address,
     }))
-    .filter((ref) => ref.source_id)
-    .slice(0, 50) ?? [];
+    .filter((ref) => ref.source_id);
+}
+
+function buildTypedEvidenceRefs(reportContext) {
+  return buildTypedEvidenceRefsFromAdmission(buildMemoryAdmission(reportContext));
+}
+
+export function composeStandingMemoryMarkdown({
+  currentStateBody,
+  reportContext,
+  language = 'zh',
+  admission = null,
+} = {}) {
+  const resolvedAdmission = admission ?? buildMemoryAdmission(reportContext);
+  const sections = [
+    ['Current State', limitBulletItems(currentStateBody, STANDING_MEMORY_LIMITS.maxCurrentStateItems)],
+    ['Evidence', buildEvidenceSectionBody(resolvedAdmission)],
+    ['Remembered', buildRememberedSectionBody(resolvedAdmission, language)],
+    ['Do Not Treat As Seen', buildDoNotTreatAsSeenSectionBody(resolvedAdmission)],
+  ];
+  return sections.map(([heading, body]) => `## ${heading}\n\n${body.trim()}`).join('\n\n').trim();
+}
+
+export function auditStandingMemoryMarkdown({ text, typedEvidenceRefs = [] } = {}) {
+  const issues = [];
+  const body = String(text || '');
+
+  if (/\.\.\.\(truncated\)/i.test(body)) issues.push('truncated_marker');
+
+  for (const heading of STANDING_MEMORY_SECTIONS) {
+    if (!new RegExp(`##\\s+${heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(body)) {
+      issues.push(`missing_section:${heading}`);
+    }
+  }
+
+  const evidenceText = extractMarkdownSection(body, 'Evidence');
+  const evidenceAddresses = extractBracketAddresses(evidenceText);
+  const refAddresses = typedEvidenceRefs.map((ref) => ref.source_address).filter(Boolean);
+
+  if (evidenceAddresses.length !== refAddresses.length) {
+    issues.push('evidence_count_mismatch');
+  }
+  for (const addr of refAddresses) {
+    if (!evidenceAddresses.includes(addr)) issues.push(`ref_missing_in_evidence:${addr}`);
+  }
+
+  const openBracket = (evidenceText.match(/\[[a-z_]+:[^\]]*$/im) ?? []).length;
+  if (openBracket > 0) issues.push('incomplete_source_address');
+
+  for (const pattern of EVIDENCE_SECTION_POLLUTION_PATTERNS) {
+    if (pattern.test(evidenceText)) issues.push(`evidence_pollution:${pattern}`);
+  }
+
+  return { ok: issues.length === 0, issues };
+}
+
+export function buildFallbackStandingMemoryMarkdown({ reportContext, language = 'zh' } = {}) {
+  return composeStandingMemoryMarkdown({
+    currentStateBody: '- (none)',
+    reportContext,
+    language,
+  });
 }
 
 function replaceMarkdownSection(markdown, heading, replacementBody) {
@@ -809,19 +992,30 @@ function replaceMarkdownSection(markdown, heading, replacementBody) {
   return `## ${heading}\n\n${replacementBody.trim()}\n\n${text}`.trim();
 }
 
+export function enforceStandingMemoryEvidenceGate(text, reportContext) {
+  return replaceMarkdownSection(text, 'Evidence', buildEvidenceSection(reportContext));
+}
+
+/** @deprecated Use enforceStandingMemoryEvidenceGate */
 export function enforceStandingMemorySeenGate(text, reportContext) {
-  return replaceMarkdownSection(text, 'Seen', buildSeenSection(reportContext));
+  let updated = replaceMarkdownSection(text, 'Evidence', buildEvidenceSection(reportContext));
+  if (/##\s+Seen\b/i.test(updated)) {
+    updated = replaceMarkdownSection(updated, 'Seen', buildEvidenceSection(reportContext));
+  }
+  return updated;
 }
 
-export function enforceStandingMemoryRememberedGate(text, reportContext) {
-  return replaceMarkdownSection(text, 'Remembered', buildRememberedSection(reportContext));
+export function enforceStandingMemoryRememberedGate(text, reportContext, language = 'zh') {
+  return replaceMarkdownSection(text, 'Remembered', buildRememberedSection(reportContext, language));
 }
 
-export function enforceStandingMemoryGates(text, reportContext) {
-  return enforceStandingMemoryRememberedGate(
-    enforceStandingMemorySeenGate(text, reportContext),
+export function enforceStandingMemoryGates(text, reportContext, language = 'zh') {
+  const currentState = extractCurrentStateBody(text);
+  return composeStandingMemoryMarkdown({
+    currentStateBody: currentState,
     reportContext,
-  );
+    language,
+  });
 }
 
 function buildStandingMemoryUpdatePrompt({
@@ -841,25 +1035,18 @@ function buildStandingMemoryUpdatePrompt({
   }, null, 2), 500000);
 
   if (language === 'en') {
-    return `You maintain the fixed-capacity standing memory for js-evolution-agent.
+    return `You maintain the short Markdown standing memory index for js-evolution-agent.
 
-Update the memory so the next cycle can understand the global situation quickly.
+This is not an intelligence report. Write only the Current State section.
 
 Rules:
-- Return only the new standing memory text. No code fences.
-- Keep it under ${maxChars} characters.
-- Use exactly these sections: Seen, Inferred, Remembered, Do Not Treat As Seen.
-- Previous Standing Memory is only a continuity hint. Do not copy its Seen or Remembered items unless they also appear in Machine Context memory_admission.
-- Seen and Remembered will be rewritten by code from Machine Context memory_admission. Treat direct edits to standing_memory.json as temporary unless they are represented in admission/gates.
-- Seen may only use Machine Context memory_admission.seen. Completed action_receipt structured status may appear as Seen, but receipt summaries, messages, audit conclusions, partial receipts, and agent claims must not appear in Seen.
-- Write every Seen item with its bracketed reopen address, for example [evolution_events:evt-...], [goal_events:goal-event-...], [action_receipts:receipt-...], or [probe_results:probe-result-...].
-- When verifying a Seen item later, use the bracketed source type to locate the record. Do not treat the id as a filename.
-- If a Seen item says "source claims" or "source records", keep that wording. It means the source was read, not that the statement is automatically true.
-- Inferred must cite Seen source ids and include what would overturn the judgement.
-- Remembered may only use Machine Context memory_admission.remembered. It is background only; do not phrase it as current fact, do not use short ids, and do not revive old Previous Standing Memory text.
-- Do Not Treat As Seen preserves refuted, stale, forbidden, or repeatedly misleading claims. Do not write a blanket rule that all receipt ids are forbidden; distinguish structured receipt status from receipt agent claims.
-- Important numeric or status claims should cite source ids when available.
-- Missing-path, ENOENT, or blocked probe evidence must stay qualified by execution_root/resource_scope/resource_kind. Do not turn "path missing under root X" into "module missing" unless X is the authoritative root for that resource.
+- Return only Markdown for "## Current State". No code fences. No other sections.
+- Keep Current State under ${maxChars} characters and at most ${STANDING_MEMORY_LIMITS.maxCurrentStateItems} bullet items.
+- Each bullet must cite at least one Evidence source address from Machine Context memory_admission.seen, for example [evolution_events:evt-...] or [action_receipts:receipt-...].
+- Current State is judgement only. Do not restate receipt summaries, agent claims, or historical report prose.
+- Evidence, Remembered, and Do Not Treat As Seen will be rewritten by code after your output.
+- Do not copy old Standing Memory bullets unless still supported by current admission.
+- State what would overturn each judgement.
 
 === Previous Standing Memory ===
 ${oldMemory?.text || '(none)'}
@@ -871,25 +1058,18 @@ ${reportMarkdown}
 ${contextJson}`;
   }
 
-  return `你维护 js-evolution-agent 的固定容量 standing memory。
+  return `你维护 js-evolution-agent 的短 Markdown standing memory 索引。
 
-请把它更新为下一轮可快速理解整体态势的概要记忆。
+这不是情报报告。你只写 Current State 小节。
 
 规则：
-- 只返回新版 standing memory 正文，不要代码围栏。
-- 总长度必须控制在 ${maxChars} 字符以内。
-- 固定使用四个小节：Seen、Inferred、Remembered、Do Not Treat As Seen。
-- 旧 Standing Memory 只能作为连续性线索。除非内容也出现在机器上下文 memory_admission 中，否则不要复制旧的 Seen 或 Remembered。
-- Seen 和 Remembered 会被代码根据 Machine Context memory_admission 重写。直接编辑 standing_memory.json 只是临时修复；持久修复必须进入 admission/gate。
-- Seen 只能使用机器上下文 memory_admission.seen。已完成 action_receipt 的结构化状态可以作为 Seen；receipt summary、message、审计结论、partial receipt 或 agent claim 不得放入 Seen。
-- 每条 Seen 都必须写出方括号可重开地址，例如 [evolution_events:evt-...]、[goal_events:goal-event-...]、[action_receipts:receipt-...]、[probe_results:probe-result-...]。
-- 后续验证 Seen 时必须按方括号里的 source type 去对应数据源查找，不要把 id 当成文件名。
-- 如果 Seen 项写着 “source claims” 或 “source records”，必须保留这个说法。它表示读到了该来源，不表示该说法自动为真。
-- Inferred 必须引用 Seen 的 source id，并写明什么证据会推翻该判断。
-- Remembered 只能使用机器上下文 memory_admission.remembered。它只能作为背景，不得写成当前事实，不得使用短 id，也不得复活旧 Standing Memory 文本。
-- Do Not Treat As Seen 保留已证伪、过期、禁止复活或反复误导的说法。不要写成“所有 receipt id 都禁止”；必须区分 receipt 结构化状态和 receipt agent claim。
-- 关键数值或状态判断应尽量引用 source id。
-- 缺失路径、ENOENT 或 blocked 探针证据必须保留 execution_root/resource_scope/resource_kind 边界；除非该 root 是该资源的权威 root，不得把「root X 下 path 不存在」升级为「模块缺失」「机制未实现」「写入冻结」。
+- 只返回 "## Current State" 的 Markdown 正文，不要代码围栏，不要写其他小节。
+- Current State 控制在 ${maxChars} 字符以内，最多 ${STANDING_MEMORY_LIMITS.maxCurrentStateItems} 条 bullet。
+- 每条 bullet 必须引用机器上下文 memory_admission.seen 中的至少一个 Evidence 地址，例如 [evolution_events:evt-...] 或 [action_receipts:receipt-...]。
+- Current State 只写判断，不要复述 receipt summary、agent claim 或历史报告正文。
+- Evidence、Remembered、Do Not Treat As Seen 会由代码在你输出后重写。
+- 不要复制旧 Standing Memory 中未被当前 admission 支持的 bullet。
+- 每条判断应写明什么证据会推翻它。
 
 === 旧 Standing Memory ===
 ${oldMemory?.text || '(none)'}
@@ -930,29 +1110,54 @@ export async function updateStandingMemoryWithAi({
   });
 
   try {
+    const admission = buildMemoryAdmission(reportContext);
+    const typedEvidenceRefs = buildTypedEvidenceRefsFromAdmission(admission);
     const raw = await aiClient.chat(prompt);
-    const text = clipText(
-      enforceStandingMemoryGates(stripCodeFence(raw), reportContext),
-      maxChars,
-    ).trim();
-    if (!text) return { status: 'failed', reason: 'empty-output' };
+    const aiBody = stripCodeFence(raw);
+    const currentStateBody = extractCurrentStateBody(aiBody);
+    let text = composeStandingMemoryMarkdown({
+      currentStateBody,
+      reportContext,
+      language,
+      admission,
+    });
+    let audit = auditStandingMemoryMarkdown({ text, typedEvidenceRefs });
+    let usedFallback = false;
+    if (!audit.ok) {
+      text = buildFallbackStandingMemoryMarkdown({ reportContext, language });
+      audit = auditStandingMemoryMarkdown({ text, typedEvidenceRefs });
+      usedFallback = true;
+    }
+    if (!text.trim()) return { status: 'failed', reason: 'empty-output' };
+    if (!audit.ok) return { status: 'failed', reason: `audit-failed:${audit.issues.join(',')}` };
+
     const written = store.recordStandingMemory({
       source_cycle_id: cycleId,
       generated_at: generatedAt,
       char_limit: maxChars,
-      token_budget_hint: `fixed prompt region, max ${maxChars} characters`,
+      token_budget_hint: `short working-memory index, max ${maxChars} characters`,
       text,
-      evidence_refs: buildTypedEvidenceRefs(reportContext)
-        .map((ref) => ref.source_id),
-      typed_evidence_refs: buildTypedEvidenceRefs(reportContext),
+      evidence_refs: typedEvidenceRefs.map((ref) => ref.source_id),
+      typed_evidence_refs: typedEvidenceRefs,
       memory_policy: {
-        standing_memory_role: 'seen_inferred_remembered_cache',
+        standing_memory_role: 'working_memory_index',
         evidence_precedence: reportContext.temporal_decision_brief?.evidence_policy?.precedence ?? [],
-        sections: ['Seen', 'Inferred', 'Remembered', 'Do Not Treat As Seen'],
+        sections: STANDING_MEMORY_SECTIONS,
+        evidence_depth_target: STANDING_MEMORY_EVIDENCE_DEPTH_TARGET,
+        evidence_depth: typedEvidenceRefs.length,
+        evidence_depth_ok: typedEvidenceRefs.length >= STANDING_MEMORY_EVIDENCE_DEPTH_TARGET,
         source_cycle_id: cycleId,
+        audit_ok: audit.ok,
+        used_fallback: usedFallback,
       },
     });
-    return { status: written > 0 ? 'updated' : 'failed', reason: written > 0 ? null : 'write-failed' };
+    return {
+      status: written > 0 ? 'updated' : 'failed',
+      reason: written > 0 ? null : 'write-failed',
+      audit,
+      used_fallback: usedFallback,
+      evidence_depth: typedEvidenceRefs.length,
+    };
   } catch (e) {
     const msg = e?.message || String(e);
     logger?.warn?.(`[report] standing memory update failed: ${msg}`);

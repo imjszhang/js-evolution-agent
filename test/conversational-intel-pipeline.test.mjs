@@ -179,7 +179,7 @@ describe('ConversationalIntelligencePipeline', () => {
       async chat(message) {
         chatCalls.push(message);
         if (message.includes('standing memory') || message.includes('固定容量')) {
-          return '长期态势：对话式情报报告已经生成，并可供下一轮参考。';
+          return '## Current State\n\n- 长期态势：对话式情报报告已经生成，并可供下一轮参考。';
         }
         return longObservation();
       },
@@ -277,11 +277,11 @@ describe('ConversationalIntelligencePipeline', () => {
       .toEqual(['system', 'user', 'assistant', 'user', 'assistant']);
     expect(context.restored_conversation.at(-1).content).toContain('"decision":"execute"');
 
-    const memoryPrompt = chatCalls.find((message) => message.includes('固定容量 standing memory'));
-    expect(memoryPrompt).toContain('post_analyze_decide');
-    expect(memoryPrompt).toContain('Seen');
-    expect(memoryPrompt).toContain('Inferred');
-    expect(memoryPrompt).toContain('Do Not Treat As Seen');
+    const memoryPrompt = chatCalls.find((message) => message.includes('standing memory'));
+    expect(memoryPrompt).toBeTruthy();
+    expect(memoryPrompt).toContain('Current State');
+    expect(memoryPrompt).toContain('Evidence');
+    expect(memoryPrompt).toContain('memory_admission');
     expect(memoryPrompt).toContain('record_observation');
     expect(store.readStandingMemory().text).toContain('长期态势');
 

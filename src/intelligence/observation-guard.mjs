@@ -66,8 +66,8 @@ export function buildObservationEvidenceGuard({
       },
       {
         source_path: 'data/intelligence/memory/standing_memory.json',
-        source_role: 'model_summary_cache',
-        rule: 'Treat as narrative/model cache unless a structured schema is directly read in the current cycle. This canonical path is the authoritative standing_memory location; ./standing_memory.json at the runtime root is not an alias.',
+        source_role: 'working_memory_index',
+        rule: 'Treat as a short working-memory index (Current State + Evidence pointers + continuity hints), not as a narrative report. Reopen cited source records before treating content as current fact. This canonical path is authoritative; ./standing_memory.json at the runtime root is not an alias.',
       },
       {
         source_path: 'data/evolution/diaries/',
@@ -123,7 +123,7 @@ export function formatObservationEvidenceGuard(guard) {
     '### Known Schema Guards',
     `- \`data/evolution/daemon/worker-state.json\` allowed top-level keys: ${guard.schema_guards[0].allowed_top_level_keys.map((k) => `\`${k}\``).join(', ')}.`,
     `- Do not claim these worker-state fields unless independently verified in the current cycle: ${guard.schema_guards[0].forbidden_unless_independently_verified.map((k) => `\`${k}\``).join(', ')}.`,
-    '- Treat `data/intelligence/memory/standing_memory.json` as the canonical standing_memory path and as a model-summary cache unless the current cycle directly reads a different structured schema.',
+    '- Treat `data/intelligence/memory/standing_memory.json` as the canonical standing_memory path and as a short working-memory index unless the current cycle directly reads a different structured schema.',
     '- If `./standing_memory.json` is missing at the runtime root, report it as a missing non-canonical alias, not as evidence that canonical standing_memory does not exist.',
     '- Runtime diary files live under `data/evolution/diaries/{YYYY}/{MM}/{YYYY-MM-DD}/` or legacy flat `data/evolution/diaries/exec-*.md|cycle-*.md`; do not invent `diary-YYYYMMDD-*.md` filenames.',
     '',

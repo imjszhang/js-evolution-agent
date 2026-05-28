@@ -11,8 +11,12 @@ import { INTELLIGENCE_SPECS } from '../src/intelligence/specs.mjs';
 import { createIntelligenceStore } from '../src/intelligence/store.mjs';
 import {
   assessGoals,
+  auditStandingMemoryMarkdown,
   buildIntelReport,
+  buildMemoryAdmission,
   buildPrompt,
+  buildTypedEvidenceRefsFromAdmission,
+  composeStandingMemoryMarkdown,
   detectLanguage,
   extractTldr,
   gatherEvidence,
@@ -632,7 +636,7 @@ describe('gatherReportContext', () => {
       resource_kind: 'standing_memory',
       resource_scope: 'subject_runtime',
       canonical_path: 'data/intelligence/memory/standing_memory.json',
-      source_role: 'model_summary_cache',
+      source_role: 'working_memory_index',
     });
     expect(context.standing_memory.path_policy).toContain('./standing_memory.json');
     expect(context.goal_events.map((r) => r.id)).toContain('goal-context');
@@ -907,7 +911,7 @@ describe('buildIntelReport', () => {
   it('uses AI output verbatim when AI returns non-empty text (no schema check)', async () => {
     const { store, runtime, intelResult } = makeReportFixture();
     const aiText = '# 情报报告\n\n本轮观测到主体的呼吸节律稳定，buffer 层无溢出。\n';
-    const outputs = [aiText, '新版 standing memory'];
+    const outputs = [aiText, '## Current State\n\n- 新版 standing memory [evolution_events:evt-placeholder]'];
     const fakeAi = { chat: async () => outputs.shift() };
     const result = await buildIntelReport({
       intelResult, runtime, store, aiClient: fakeAi, useAi: true,
@@ -916,9 +920,10 @@ describe('buildIntelReport', () => {
     expect(readFileSync(result.mdPath, 'utf-8')).toContain('呼吸节律稳定');
     expect(result.memoryUpdate.status).toBe('updated');
     expect(store.readStandingMemory().text).toContain('新版 standing memory');
+    expect(store.readStandingMemory().text).toContain('## Evidence');
   });
 
-  it('rewrites standing memory Seen from TDB seen only', async () => {
+  it('rewrites standing memory Evidence from TDB seen only', async () => {
     const { store, runtime, intelResult } = makeReportFixture();
     store.recordActionReceipt(
       { type: 'agent_run', description: 'probe worker state' },
@@ -939,17 +944,13 @@ describe('buildIntelReport', () => {
 
     const aiText = '# 情报报告\n\n报告提到了 worker-state.json.remote.matchCount is 4127。\n';
     const pollutedMemory = [
-      '## Seen',
+      '## Current State',
+      '',
+      '- 远端同步健康 [action_receipts:receipt-polluted]。',
+      '',
+      '## Evidence',
       '',
       '- receipt-polluted: worker-state.json.remote.matchCount is 4127',
-      '',
-      '## Inferred',
-      '',
-      '- 远端同步健康。',
-      '',
-      '## Remembered',
-      '',
-      '- old report lead',
     ].join('\n');
     const outputs = [aiText, pollutedMemory];
     const fakeAi = { chat: async () => outputs.shift() };
@@ -964,12 +965,12 @@ describe('buildIntelReport', () => {
 
     expect(result.memoryUpdate.status).toBe('updated');
     const memory = store.readStandingMemory();
-    const seenText = memory.text.slice(
-      memory.text.indexOf('## Seen'),
-      memory.text.indexOf('## Inferred'),
+    const evidenceText = memory.text.slice(
+      memory.text.indexOf('## Evidence'),
+      memory.text.indexOf('## Remembered'),
     );
-    expect(seenText).toContain('[evolution_events:evt-safe]');
-    expect(seenText).not.toContain('remote.matchCount');
+    expect(evidenceText).toContain('[evolution_events:evt-safe]');
+    expect(evidenceText).not.toContain('remote.matchCount');
     expect(memory.evidence_refs).toContain('evt-safe');
     expect(memory.evidence_refs.join('\n')).not.toContain('receipt-');
     expect(memory.typed_evidence_refs).toContainEqual({
@@ -977,9 +978,12 @@ describe('buildIntelReport', () => {
       source_id: 'evt-safe',
       source_address: '[evolution_events:evt-safe]',
     });
+    expect(memory.typed_evidence_refs.length).toBe(memory.typed_evidence_refs.filter((ref) => (
+      evidenceText.includes(ref.source_address)
+    )).length);
   });
 
-  it('keeps partial successful receipts out of standing memory Seen', async () => {
+  it('keeps partial successful receipts out of standing memory Evidence', async () => {
     const { store, runtime, intelResult } = makeReportFixture();
     store.recordActionReceipt(
       { type: 'agent_run', description: 'partial sync probe' },
@@ -1003,13 +1007,9 @@ describe('buildIntelReport', () => {
     const outputs = [
       '# 情报报告\n\n本轮检查了 receipt 门禁。\n',
       [
-        '## Seen',
+        '## Current State',
         '',
-        '- receipt-polluted: partial remote sync created a sanitized file',
-        '',
-        '## Inferred',
-        '',
-        '- receipt status checked',
+        '- receipt status checked [action_receipts:receipt-completed]',
       ].join('\n'),
     ];
     const fakeAi = { chat: async () => outputs.shift() };
@@ -1023,15 +1023,16 @@ describe('buildIntelReport', () => {
     });
 
     const memory = store.readStandingMemory();
-    const seenText = memory.text.slice(
-      memory.text.indexOf('## Seen'),
-      memory.text.indexOf('## Inferred'),
+    const evidenceText = memory.text.slice(
+      memory.text.indexOf('## Evidence'),
+      memory.text.indexOf('## Remembered'),
     );
-    expect(seenText).toContain('"status":"completed"');
-    expect(seenText).not.toContain('completed remote sync');
-    expect(seenText).not.toContain('"status":"partial"');
-    expect(seenText).not.toContain('partial remote sync created a sanitized file');
+    expect(evidenceText).toContain('"status":"completed"');
+    expect(evidenceText).not.toContain('completed remote sync');
+    expect(evidenceText).not.toContain('"status":"partial"');
+    expect(evidenceText).not.toContain('partial remote sync created a sanitized file');
     expect(memory.typed_evidence_refs.filter((ref) => ref.source_type === 'action_receipts')).toHaveLength(1);
+    expect(memory.memory_policy?.sections).toContain('Evidence');
   });
 
   it('includes split receipt statuses in TDB Seen without promoting summaries', async () => {
@@ -1072,9 +1073,9 @@ describe('buildIntelReport', () => {
     store.recordStandingMemory({
       source_cycle_id: 'old-cycle',
       text: [
-        '## Seen',
+        '## Current State',
         '',
-        '- old seen',
+        '- old state',
         '',
         '## Remembered',
         '',
@@ -1104,18 +1105,9 @@ describe('buildIntelReport', () => {
     const outputs = [
       '# 情报报告\n\n本轮检查 Remembered 门禁。\n',
       [
-        '## Seen',
+        '## Current State',
         '',
-        '- model polluted seen',
-        '',
-        '## Inferred',
-        '',
-        '- receipt status checked',
-        '',
-        '## Remembered',
-        '',
-        '- receipt-12345678 orphan short id should not revive',
-        '- remote_matchCount=4127 old polluted memory',
+        '- receipt status checked [action_receipts:receipt-completed]',
       ].join('\n'),
     ];
     const fakeAi = { chat: async () => outputs.shift() };
@@ -1135,6 +1127,7 @@ describe('buildIntelReport', () => {
         ? memory.text.indexOf('## Do Not Treat As Seen')
         : memory.text.length,
     );
+    expect(rememberedText).toContain('连续性线索');
     expect(rememberedText).toContain('[action_receipts:receipt-');
     expect(rememberedText).toContain('agent_claim: remote sync summary should stay a lead');
     expect(rememberedText).toContain('agent_claim: partial summary should stay remembered only');
@@ -1174,19 +1167,7 @@ describe('buildIntelReport', () => {
 
     const outputs = [
       '# 情报报告\n\n本轮检查 refuted Remembered 门禁。\n',
-      [
-        '## Seen',
-        '',
-        '- model seen',
-        '',
-        '## Inferred',
-        '',
-        '- remembered admission checked',
-        '',
-        '## Remembered',
-        '',
-        '- model remembered pollution',
-      ].join('\n'),
+      '## Current State\n\n- remembered admission checked [action_receipts:receipt-valid]',
     ];
     const fakeAi = { chat: async () => outputs.shift() };
 
@@ -1235,19 +1216,7 @@ describe('buildIntelReport', () => {
 
     const outputs = [
       '# 情报报告\n\n本轮检查 path_scope_mismatch Remembered 门禁。\n',
-      [
-        '## Seen',
-        '',
-        '- model seen',
-        '',
-        '## Inferred',
-        '',
-        '- remembered admission checked',
-        '',
-        '## Remembered',
-        '',
-        '- model remembered pollution',
-      ].join('\n'),
+      '## Current State\n\n- remembered admission checked [action_receipts:receipt-canonical]',
     ];
     const fakeAi = { chat: async () => outputs.shift() };
 
@@ -1290,19 +1259,7 @@ describe('buildIntelReport', () => {
 
     const outputs = [
       '# 情报报告\n\n本轮检查 goal_event 去重。\n',
-      [
-        '## Seen',
-        '',
-        '- model seen',
-        '',
-        '## Inferred',
-        '',
-        '- goal status checked',
-        '',
-        '## Remembered',
-        '',
-        '- model remembered',
-      ].join('\n'),
+      '## Current State\n\n- goal status checked [goal_events:goal-event-new]',
     ];
     const fakeAi = { chat: async () => outputs.shift() };
 
@@ -1353,7 +1310,7 @@ describe('buildIntelReport', () => {
     expect(assessment.proposed_goal.children).toEqual([]);
   });
 
-  it('writes natural language seen as source claims in standing memory', async () => {
+  it('writes natural language goal events as source claims in standing memory Evidence', async () => {
     const { store, runtime, intelResult } = makeReportFixture();
     store.recordGoalEvent({
       id: 'goal-event-claim',
@@ -1364,15 +1321,7 @@ describe('buildIntelReport', () => {
 
     const outputs = [
       '# 情报报告\n\n目标评估声称 standing_memory cleanup is complete。\n',
-      [
-        '## Seen',
-        '',
-        '- standing_memory cleanup is complete',
-        '',
-        '## Inferred',
-        '',
-        '- cleanup complete',
-      ].join('\n'),
+      '## Current State\n\n- cleanup complete [goal_events:goal-event-claim]',
     ];
     const fakeAi = { chat: async () => outputs.shift() };
 
@@ -1385,12 +1334,72 @@ describe('buildIntelReport', () => {
     });
 
     const memory = store.readStandingMemory();
-    const seenText = memory.text.slice(
-      memory.text.indexOf('## Seen'),
-      memory.text.indexOf('## Inferred'),
+    const evidenceText = memory.text.slice(
+      memory.text.indexOf('## Evidence'),
+      memory.text.indexOf('## Remembered'),
     );
-    expect(seenText).toContain('[goal_events:goal-event-claim]');
-    expect(seenText).toContain('source claims: assessment bootstrap: standing_memory cleanup is complete');
+    expect(evidenceText).toContain('[goal_events:goal-event-claim]');
+    expect(evidenceText).toContain('source claims: assessment bootstrap: standing_memory cleanup is complete');
+  });
+
+  it('keeps typed_evidence_refs aligned with Evidence and does not require depth 35', async () => {
+    const { store, runtime, intelResult } = makeReportFixture();
+    store.recordEvolutionEvent({
+      id: 'evt-depth',
+      type: 'task_completed',
+      status: 'ok',
+      cycle_id: 'cycle-test-1',
+      summary: 'single evidence item',
+    });
+
+    const outputs = [
+      '# 情报报告\n\ndepth check\n',
+      '## Current State\n\n- one fact [evolution_events:evt-depth]',
+    ];
+    const fakeAi = { chat: async () => outputs.shift() };
+    await buildIntelReport({
+      intelResult,
+      runtime,
+      store,
+      aiClient: fakeAi,
+      useAi: true,
+    });
+
+    const memory = store.readStandingMemory();
+    expect(memory.memory_policy?.evidence_depth).toBe(1);
+    expect(memory.memory_policy?.evidence_depth_ok).toBe(false);
+    expect(memory.memory_policy?.evidence_depth_target).toBe(35);
+    expect(memory.typed_evidence_refs).toHaveLength(1);
+    const audit = auditStandingMemoryMarkdown({
+      text: memory.text,
+      typedEvidenceRefs: memory.typed_evidence_refs,
+    });
+    expect(audit.ok).toBe(true);
+    expect(memory.text).not.toContain('...(truncated)');
+  });
+
+  it('composeStandingMemoryMarkdown passes audit for admission-only Evidence', () => {
+    const { store, runtime, intelResult } = makeReportFixture();
+    store.recordEvolutionEvent({
+      id: 'evt-compose',
+      type: 'task_completed',
+      status: 'ok',
+      cycle_id: 'cycle-test-1',
+      summary: 'compose check',
+    });
+    const context = gatherReportContext({ store, runtime, intelResult });
+    context.temporal_decision_brief = buildTemporalDecisionBrief(context);
+    const admission = buildMemoryAdmission(context);
+    const typedEvidenceRefs = buildTypedEvidenceRefsFromAdmission(admission);
+    const text = composeStandingMemoryMarkdown({
+      currentStateBody: '- state [evolution_events:evt-compose]',
+      reportContext: context,
+      admission,
+    });
+    const audit = auditStandingMemoryMarkdown({ text, typedEvidenceRefs });
+    expect(audit.ok).toBe(true);
+    expect(text).toContain('## Evidence');
+    expect(text).toContain('连续性线索');
   });
 
   it('falls back to placeholder when AI throws', async () => {
