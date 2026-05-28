@@ -10,6 +10,10 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { buildEvolutionViewerDist } from '../src/intelligence/evolution-viewer/build-manifest.mjs';
+import {
+  autoViewerBuildEnabled,
+  parseViewerBuildLimit,
+} from '../src/intelligence/evolution-viewer/runtime-build.mjs';
 import { parseIntelCycleIdFromDiary, diaryIdFromFileName } from '../src/intelligence/evolution-viewer/diary-link.mjs';
 import { pairIntelToExecFromEvents } from '../src/intelligence/evolution-viewer/event-pairing.mjs';
 import { resolveIntelReportPath } from '../src/intelligence/report-paths.mjs';
@@ -168,5 +172,20 @@ describe('buildEvolutionViewerDist', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('runtime-build helpers', () => {
+  it('detects auto viewer build env toggle', () => {
+    expect(autoViewerBuildEnabled({})).toBe(false);
+    expect(autoViewerBuildEnabled({ JEA_AUTO_VIEWER_BUILD: '1' })).toBe(true);
+    expect(autoViewerBuildEnabled({ JEA_AUTO_VIEWER_BUILD: 'true' })).toBe(true);
+    expect(autoViewerBuildEnabled({ JEA_AUTO_VIEWER_BUILD: '0' })).toBe(false);
+  });
+
+  it('parses viewer build limit from env', () => {
+    expect(parseViewerBuildLimit({})).toBe(50);
+    expect(parseViewerBuildLimit({ JEA_VIEWER_BUILD_LIMIT: '12' })).toBe(12);
+    expect(parseViewerBuildLimit({ JEA_VIEWER_BUILD_LIMIT: 'bad' })).toBe(50);
   });
 });

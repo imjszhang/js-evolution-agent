@@ -5,9 +5,14 @@ import { join, extname, resolve, relative } from 'node:path';
 import { spawn } from 'node:child_process';
 import { getProjectRoot } from '../utils/project.mjs';
 import { resolveSubjectFromFlags, runtimeInfoForSubject } from '../utils/subjects.mjs';
-import { buildEvolutionViewerFromRuntime } from '../../intelligence/evolution-viewer/build-manifest.mjs';
+import {
+  DEFAULT_VIEWER_LIMIT,
+  buildEvolutionViewerForRuntime,
+  evolutionViewerOutDir,
+  evolutionViewerPublicDir,
+} from '../../intelligence/evolution-viewer/runtime-build.mjs';
 
-const DEFAULT_LIMIT = 50;
+const DEFAULT_LIMIT = DEFAULT_VIEWER_LIMIT;
 const DEFAULT_PORT = 4173;
 
 const MIME = {
@@ -22,14 +27,6 @@ const MIME = {
 function numberFlag(flags, name, fallback) {
   const n = Number(flags[name]);
   return Number.isFinite(n) && n > 0 ? n : fallback;
-}
-
-function defaultOutDir(root) {
-  return join(root, 'tools', 'evolution-viewer', 'dist');
-}
-
-function defaultPublicDir(root) {
-  return join(root, 'tools', 'evolution-viewer', 'public');
 }
 
 function openInDefaultApp(url) {
@@ -57,17 +54,14 @@ function openInDefaultApp(url) {
 
 export async function intelViewerBuild(root, flags = {}) {
   const limit = numberFlag(flags, 'limit', DEFAULT_LIMIT);
-  const outDir = flags.out ? resolve(flags.out) : defaultOutDir(root);
-  const publicDir = flags.public ? resolve(flags.public) : defaultPublicDir(root);
+  const outDir = flags.out ? resolve(flags.out) : evolutionViewerOutDir(root);
+  const publicDir = flags.public ? resolve(flags.public) : evolutionViewerPublicDir(root);
   const config = resolveSubjectFromFlags(root, flags);
   const runtime = runtimeInfoForSubject(root, config);
-  const baseDir = join(runtime.runtimeRoot, 'data', 'intelligence');
 
-  const manifest = buildEvolutionViewerFromRuntime({
-    baseDir,
-    runtime,
-    outDir,
+  const manifest = buildEvolutionViewerForRuntime(root, runtime, {
     limit,
+    outDir,
     publicDir,
   });
 
@@ -110,7 +104,7 @@ function createStaticServer(distDir, port) {
 
 export async function intelViewerServe(root, flags = {}) {
   const port = numberFlag(flags, 'port', DEFAULT_PORT);
-  const distDir = flags.out ? resolve(flags.out) : defaultOutDir(root);
+  const distDir = flags.out ? resolve(flags.out) : evolutionViewerOutDir(root);
   if (!existsSync(join(distDir, 'manifest.json'))) {
     console.error(`No viewer build at ${distDir}. Run: jea intel viewer build`);
     return 1;
@@ -142,6 +136,4 @@ export async function intelViewerCommand(root, flags = {}, args = []) {
   return 2;
 }
 
-export function evolutionViewerPublicDir(root) {
-  return defaultPublicDir(root);
-}
+export { evolutionViewerOutDir, evolutionViewerPublicDir } from '../../intelligence/evolution-viewer/runtime-build.mjs';

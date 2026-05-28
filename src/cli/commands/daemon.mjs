@@ -291,6 +291,7 @@ function taskInputFromFlags(flags) {
     deepseek: Boolean(flags.deepseek),
     skip_goals_assess: Boolean(flags['skip-goals-assess']),
     skip_belief_update: Boolean(flags['skip-belief-update']),
+    viewer_build: Boolean(flags['viewer-build']),
     exec_limit: flags['exec-limit'] == null || flags['exec-limit'] === true
       ? null
       : parsePositiveInt(flags['exec-limit'], { name: 'exec-limit', min: 1 }),
@@ -305,6 +306,7 @@ function flagsFromTask(task, overrides = {}) {
     deepseek: Boolean(input.deepseek || overrides.deepseek),
     'skip-goals-assess': Boolean(input.skip_goals_assess || overrides['skip-goals-assess']),
     'skip-belief-update': Boolean(input.skip_belief_update || overrides['skip-belief-update']),
+    'viewer-build': Boolean(input.viewer_build || overrides['viewer-build']),
     'exec-limit': overrides['exec-limit'] ?? input.exec_limit ?? undefined,
   };
 }

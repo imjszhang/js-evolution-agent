@@ -50,6 +50,8 @@ jea data status
 相关环境变量：
 
 - `JEA_EXEC_LIMIT`：限制单轮执行阶段最多处理的决策数，默认 `5`。
+- `JEA_AUTO_VIEWER_BUILD=1`：每轮 `jea run` 成功后自动重建 evolution viewer（输出到 `tools/evolution-viewer/dist/`）。也可用 `jea run --viewer-build` / `jea evolve --viewer-build`。
+- `JEA_VIEWER_BUILD_LIMIT`：自动 build 时的轮次上限，默认 `50`。
 - `JEA_SKIP_GOALS_ASSESS=1`：跳过目标评估。
 - `JEA_SKIP_BELIEF_UPDATE=1`：跳过 post-verify 信念更新。
 - `JEA_FORCE_MOCK=1`：强制使用 Mock AI。
@@ -84,6 +86,7 @@ runtime/subjects/<data_namespace>/
 - `jea intel viewer build [--subject NAME] [--limit N] [--out PATH]`：构建静态演化对照浏览器（情报报告 + 进化日记，输出到 `tools/evolution-viewer/dist/`）。
 - `jea intel viewer serve [--port N] [--open]`：本地托管已构建的 viewer（需先 `viewer build`）。
 - `npm run viewer:build` / `npm run viewer:serve`：同上（`viewer:serve` 默认 `--open`）。
+- 若设置了 `JEA_AUTO_VIEWER_BUILD=1` 或使用了 `--viewer-build`，每轮演化结束会自动执行 viewer build，无需手工刷新 dist。
 
 写入情报：
 

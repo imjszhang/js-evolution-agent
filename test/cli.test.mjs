@@ -707,6 +707,14 @@ describe('evolve run manifests', () => {
     expect(env.DEEPSEEK_API_KEY).toBeUndefined();
   });
 
+  it('passes viewer build flag through child process env', () => {
+    const env = buildCycleEnv({
+      'viewer-build': true,
+    }, 'alpha');
+
+    expect(env.JEA_AUTO_VIEWER_BUILD).toBe('1');
+  });
+
   it('marks child cycles when the parent already holds the subject lock', () => {
     const env = buildCycleEnv({
       'subject-lock-held': true,

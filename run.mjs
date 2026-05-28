@@ -15,6 +15,7 @@ import { withSubjectLock } from './src/cli/utils/evolve-runs.mjs';
 import { ConversationalIntelligencePipeline } from './src/intelligence/conversational-intel-pipeline.mjs';
 import { verifyWithRestoredConversation } from './src/intelligence/conversation-context.mjs';
 import { buildEvolutionDiary } from './src/intelligence/evolution-diary-builder.mjs';
+import { autoBuildEvolutionViewerIfEnabled } from './src/intelligence/evolution-viewer/runtime-build.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -353,6 +354,8 @@ async function runCycle(runtime) {
       error: msg,
     });
   }
+
+  await autoBuildEvolutionViewerIfEnabled({ root: __dirname, runtime });
 
   console.log('\n=== Done ===');
   console.log(`Evolution data: ${runtime.evolutionDir}`);

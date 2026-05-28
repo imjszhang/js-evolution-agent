@@ -26,6 +26,10 @@ export async function runCommand({ flags = {} } = {}) {
     env.JEA_SKIP_BELIEF_UPDATE = '1';
     console.log('Belief update will be skipped (--skip-belief-update).');
   }
+  if (flags['viewer-build']) {
+    env.JEA_AUTO_VIEWER_BUILD = '1';
+    console.log('Evolution viewer will rebuild after each cycle (--viewer-build).');
+  }
   if (flags.deepseek && !env.DEEPSEEK_API_KEY) {
     console.error('DEEPSEEK_API_KEY is required for --deepseek.');
     return 1;

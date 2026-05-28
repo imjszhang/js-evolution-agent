@@ -22,7 +22,7 @@ export function helpText() {
 
 Commands:
   doctor                 Check env, dependencies, docs, and config
-  run [--mock] [--skip-goals-assess] [--skip-belief-update] [--subject NAME]
+  run [--mock] [--skip-goals-assess] [--skip-belief-update] [--viewer-build] [--subject NAME]
                          Run the full intel -> exec -> verify loop; by default
                          also records a goals assess event for the same cycle
   run --deepseek         Require DeepSeek API configuration
