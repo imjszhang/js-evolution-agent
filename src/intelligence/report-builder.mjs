@@ -1360,6 +1360,79 @@ export function buildFallbackStandingMemoryMarkdown({ reportContext, language = 
   });
 }
 
+export function hasLockedEvidenceRefs(refs = []) {
+  return (Array.isArray(refs) ? refs : []).some((ref) => ref._locked === true);
+}
+
+/** When locked refs exist, keep narrative sections from a prior clean memory and refresh Evidence only. */
+export function mergePreservedNarrativeWithUpdatedEvidence({
+  oldText,
+  typedEvidenceRefs = [],
+  admission = null,
+  language = 'zh',
+} = {}) {
+  const currentStateBody = limitBulletItems(
+    extractMarkdownSection(oldText, 'Current State'),
+    STANDING_MEMORY_LIMITS.maxCurrentStateItems,
+  );
+  const rememberedBody = extractMarkdownSection(oldText, 'Remembered');
+  const doNotTreatBody = extractMarkdownSection(oldText, 'Do Not Treat As Seen');
+  const evidenceBody = admission
+    ? buildEvidenceSectionBody(admission)
+    : typedEvidenceRefs.map((ref) => `- ${ref.source_address}`).join('\n') || '- (none)';
+  const sections = [
+    ['Current State', currentStateBody || '- (none)'],
+    ['Evidence', evidenceBody],
+    ['Remembered', rememberedBody || STANDING_MEMORY_REMEMBERED_HINT[language === 'en' ? 'en' : 'zh']],
+    ['Do Not Treat As Seen', doNotTreatBody || '- (none)'],
+  ];
+  return sections.map(([heading, body]) => `## ${heading}\n\n${body.trim()}`).join('\n\n').trim();
+}
+
+function applyLockedNarrativePreservation({
+  text,
+  audit,
+  oldMemory,
+  typedEvidenceRefs,
+  extendedAdmission,
+  language,
+} = {}) {
+  const hasLockedRefs = hasLockedEvidenceRefs(typedEvidenceRefs)
+    || hasLockedEvidenceRefs(oldMemory?.typed_evidence_refs);
+  if (!oldMemory?.text) return { text, audit, narrative_preserved: false };
+
+  const oldFreeTextAudit = auditStandingMemoryFreeText({
+    text: oldMemory.text,
+    typedEvidenceRefs: oldMemory.typed_evidence_refs ?? [],
+  });
+  if (!oldFreeTextAudit.ok) return { text, audit, narrative_preserved: false };
+
+  const newFreeTextAudit = auditStandingMemoryFreeText({
+    text,
+    typedEvidenceRefs,
+    admission: extendedAdmission,
+  });
+  const shouldPreserve = hasLockedRefs || !newFreeTextAudit.ok;
+  if (!shouldPreserve) return { text, audit, narrative_preserved: false };
+
+  const preservedText = mergePreservedNarrativeWithUpdatedEvidence({
+    oldText: oldMemory.text,
+    typedEvidenceRefs,
+    admission: extendedAdmission,
+    language,
+  });
+  const preservedAudit = auditStandingMemoryMarkdown({
+    text: preservedText,
+    typedEvidenceRefs,
+    admission: extendedAdmission,
+  });
+  return {
+    text: preservedText,
+    audit: preservedAudit,
+    narrative_preserved: true,
+  };
+}
+
 function replaceMarkdownSection(markdown, heading, replacementBody) {
   const text = String(markdown || '').trim();
   const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -1525,6 +1598,19 @@ export async function updateStandingMemoryWithAi({
       typedEvidenceRefs,
       admission: extendedAdmission,
     });
+    let narrativePreserved = false;
+    ({
+      text,
+      audit,
+      narrative_preserved: narrativePreserved,
+    } = applyLockedNarrativePreservation({
+      text,
+      audit,
+      oldMemory,
+      typedEvidenceRefs,
+      extendedAdmission,
+      language,
+    }));
     let usedFallback = false;
     if (!audit.ok) {
       text = composeStandingMemoryMarkdown({
@@ -1566,6 +1652,7 @@ export async function updateStandingMemoryWithAi({
         rolling_update_applied: Boolean(rollingConfig),
         locked_refs_count: lockedRefsCount,
         backfill_refs_count: backfillRefsCount,
+        narrative_preserved: narrativePreserved,
       },
     });
     return {
@@ -1573,6 +1660,7 @@ export async function updateStandingMemoryWithAi({
       reason: written > 0 ? null : 'write-failed',
       audit,
       used_fallback: usedFallback,
+      narrative_preserved: narrativePreserved,
       evidence_depth: typedEvidenceRefs.length,
       locked_refs_count: lockedRefsCount,
       backfill_refs_count: backfillRefsCount,
