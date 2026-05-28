@@ -666,16 +666,62 @@ function sourceAddress({ sourceType, sourceId } = {}) {
   return sourceId ? `[${type}:${sourceId}]` : `[${type}:unknown]`;
 }
 
+function hasStandingMemoryPollution(text) {
+  const raw = String(text || '');
+  return [
+    ...FREE_TEXT_POLLUTION_PATTERNS,
+    ...EVIDENCE_SECTION_POLLUTION_PATTERNS,
+  ].some((pattern) => pattern.test(raw));
+}
+
+function summarizeEvidenceFields(fields = {}) {
+  if (!fields || typeof fields !== 'object') return '';
+  const keys = [
+    'action_type',
+    'type',
+    'status',
+    'success',
+    'provider',
+    'cycle_id',
+    'confidence',
+    'execution_status',
+    'schema_status',
+    'acceptance_status',
+    'goal_progress_status',
+    'writes_count',
+  ];
+  const compact = {};
+  for (const key of keys) {
+    if (fields[key] != null) compact[key] = fields[key];
+  }
+  return Object.keys(compact).length ? JSON.stringify(compact) : '';
+}
+
+function structuredEvidenceSummary(item) {
+  const parts = [
+    item?.kind ? `kind=${item.kind}` : null,
+    item?.evidence_level ? `level=${item.evidence_level}` : null,
+    item?.seen_policy ? `policy=${item.seen_policy}` : null,
+    summarizeEvidenceFields(item?.fields),
+  ].filter(Boolean);
+  return parts.length ? parts.join(' ') : 'structured evidence';
+}
+
 function summarizeSeenItem(item) {
+  const rawSummary = String(item?.summary ?? '').trim();
+  const fieldSummary = summarizeEvidenceFields(item?.fields);
+  if (fieldSummary) return fieldSummary;
+  if (rawSummary && !hasStandingMemoryPollution(rawSummary)) {
+    return shortText(rawSummary, 180);
+  }
   if (item?.summary) {
-    const summary = shortText(item.summary, 260);
-    if (item.evidence_level === 'source_statement') return summary;
-    return summary;
+    return structuredEvidenceSummary(item);
   }
   if (item?.fields && typeof item.fields === 'object') {
-    return shortText(JSON.stringify(item.fields), 260);
+    return structuredEvidenceSummary(item);
   }
-  return shortText(JSON.stringify(item ?? {}), 260);
+  const raw = shortText(JSON.stringify(item ?? {}), 180);
+  return hasStandingMemoryPollution(raw) ? structuredEvidenceSummary(item) : raw;
 }
 
 function rememberedPrefix(item) {
@@ -1218,11 +1264,13 @@ export function auditStandingMemoryFreeText({
   );
 
   const currentStateText = extractMarkdownSection(body, 'Current State');
+  const evidenceText = extractMarkdownSection(body, 'Evidence');
   const rememberedText = extractMarkdownSection(body, 'Remembered');
   const doNotTreatText = extractMarkdownSection(body, 'Do Not Treat As Seen');
 
   for (const [sectionName, sectionText] of [
     ['current_state', currentStateText],
+    ['evidence', evidenceText],
     ['remembered', rememberedText],
     ['do_not_treat', doNotTreatText],
   ]) {
@@ -1232,6 +1280,7 @@ export function auditStandingMemoryFreeText({
     if (/…/.test(sectionText)) issues.push(`${sectionName}:unicode_ellipsis`);
     if (/\bfallba…/i.test(sectionText)) issues.push(`${sectionName}:partial_truncation`);
     if (/\bagent_claim:/i.test(sectionText)) issues.push(`${sectionName}:agent_claim_prefix`);
+    if (hasStandingMemoryPollution(sectionText)) issues.push(`${sectionName}:pollution`);
     const openBracket = (sectionText.match(/\[[a-z_]+:[^\]]*$/im) ?? []).length;
     if (openBracket > 0) issues.push(`${sectionName}:incomplete_source_address`);
   }

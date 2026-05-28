@@ -1573,6 +1573,37 @@ describe('buildIntelReport', () => {
     expect(audit.issues.some((i) => i.includes('agent_claim_prefix'))).toBe(true);
   });
 
+  it('auditStandingMemoryFreeText rejects polluted Evidence summaries', () => {
+    const text = [
+      '## Current State',
+      '',
+      '- blocked [evolution_events:evt-1]',
+      '',
+      '## Evidence',
+      '',
+      '- [evolution_events:evt-1]: free_text_clean=false with unicode ellipsis ...',
+      '',
+      '## Remembered',
+      '',
+      '- 历史报告、信念与日记仅作连续性线索；重开源记录前不得当作 Seen 事实。',
+      '',
+      '## Do Not Treat As Seen',
+      '',
+      '- (none)',
+    ].join('\n').replace('...', '…');
+    const audit = auditStandingMemoryFreeText({
+      text,
+      typedEvidenceRefs: [{
+        source_type: 'evolution_events',
+        source_id: 'evt-1',
+        source_address: '[evolution_events:evt-1]',
+      }],
+    });
+    expect(audit.ok).toBe(false);
+    expect(audit.issues).toContain('evidence:unicode_ellipsis');
+    expect(audit.issues).toContain('evidence:pollution');
+  });
+
   it('summarizeDoNotTreatItem avoids embedding standing_memory body', async () => {
     const { store, runtime, intelResult } = makeReportFixture();
     store.recordStandingMemory({
@@ -1674,6 +1705,31 @@ describe('buildIntelReport', () => {
     expect(audit.ok).toBe(true);
     expect(text).toContain('## Evidence');
     expect(text).toContain('连续性线索');
+  });
+
+  it('standing memory Evidence uses structured summaries for polluted source statements', () => {
+    const { store, runtime, intelResult } = makeReportFixture();
+    store.recordEvolutionEvent({
+      id: 'evt-polluted-summary',
+      type: 'verify_pipeline',
+      status: 'ok',
+      cycle_id: 'cycle-test-1',
+      summary: 'memory probe says free_text_clean=false and details are omitted …',
+    });
+    const context = gatherReportContext({ store, runtime, intelResult });
+    context.temporal_decision_brief = buildTemporalDecisionBrief(context);
+    const admission = buildMemoryAdmission(context);
+    const typedEvidenceRefs = buildTypedEvidenceRefsFromAdmission(admission);
+    const text = composeStandingMemoryMarkdown({
+      currentStateBody: '- state [evolution_events:evt-polluted-summary]',
+      reportContext: context,
+      admission,
+    });
+    const audit = auditStandingMemoryMarkdown({ text, typedEvidenceRefs, admission });
+    expect(audit.ok).toBe(true);
+    expect(text).toContain('[evolution_events:evt-polluted-summary]');
+    expect(text).not.toContain('free_text_clean');
+    expect(text).not.toContain('…');
   });
 
   it('falls back to placeholder when AI throws', async () => {
