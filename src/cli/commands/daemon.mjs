@@ -1047,7 +1047,7 @@ export async function daemonCommand({ subcommand, flags = {}, args = [], root = 
 
   {
     console.error('Usage: jea daemon <enqueue|work|start|stop|status|events|doctor|tasks|inbox> [--subject NAME] [--subjects a,b | --all] [--json]');
-    console.error('       jea daemon enqueue --type run_cycle [--idempotency-key KEY]');
+    console.error('       jea daemon enqueue --type intel|exec|verify|...|run_cycle [--idempotency-key KEY]');
     console.error('       jea daemon work --once');
     console.error('       jea daemon start [--tick-ms N] [--interval-ms N] [--idle-interval-ms N] [--heartbeat-ms N]');
     console.error('       jea daemon stop');

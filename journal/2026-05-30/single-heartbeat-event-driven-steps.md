@@ -2,7 +2,7 @@
 
 > 日期：2026-05-30  
 > 项目：js-evolution-agent  
-> 类型：架构设计 / 功能实现  
+> 类型：架构设计 / 功能实现（含 parity 补全）  
 > 来源：Cursor Agent 对话（设计 → 实施 → 审查）  
 
 ---
@@ -16,6 +16,7 @@
 5. [验证与测试](#5-验证与测试)
 6. [已知差距与风险](#6-已知差距与风险)
 7. [后续演化](#7-后续演化)
+8. [Parity 补全（同日第二轮）](#8-parity-补全同日第二轮)
 
 ---
 
@@ -228,41 +229,33 @@ jea daemon status --json
 
 ## 6. 已知差距与风险
 
-审查结论：**基础设施层已按计划落地，step 逐步路径尚不能完整替代整轮 `run.mjs`。**
+> **2026-05-30 第二轮 parity 补全后**：§6.1、§6.2 中 P0 项已修复；本节保留历史审查记录，当前状态见 [§8](#8-parity-补全同日第二轮)。
 
-### 6.1 与同步链的语义偏差
+审查结论（第一轮）：**基础设施层已按计划落地，step 逐步路径尚不能完整替代整轮 `run.mjs`。**
 
-| 点 | 原 `run.mjs` | 当前 reducer / step 路径 |
-| --- | --- | --- |
-| `decisions_queued = 0` | 仍跑 exec（空队列） | 标记 `exec` **skipped**，并可能 enqueue `verify`（`exec_skipped`） |
-| `exec_failed` | throw，中断后续 | skip belief/goals，enqueue `diary` ✅ |
+### 6.1 与同步链的语义偏差（已修复）
 
-无决策时跳过 exec 与旧行为不一致，可能导致 verify 缺少 receipt——**P0 待修**。
+| 点 | 原 `run.mjs` | 第一轮实现 | 第二轮 |
+| --- | --- | --- | --- |
+| `decisions_queued = 0` | 仍跑 exec | 标记 exec skipped | **始终 enqueue exec** ✅ |
+| `exec_failed` | throw | skip belief/goals + diary | 不变 ✅ |
 
-### 6.2 单 step 子进程 artifact 不完整
+### 6.2 单 step 子进程 artifact（已修复）
 
-[`run.mjs#runSingleStepMode`](../../run.mjs) 中 verify 及之后 step 使用占位 `intelResult` / `execResult`（如 `executed: []`），未从磁盘加载完整产物：
+第一轮 [`run.mjs#runSingleStepMode`](../../run.mjs) 使用占位对象。第二轮引入 **per-step checkpoint**（`cycle-state/<cycleId>/<step>.json`），[`cycle-checkpoints.mjs`](../../src/cli/utils/cycle-checkpoints.mjs) 的 `loadCycleStepContext` 重建 `intelResult` / `execResult` / assess 等上游产物。
 
-- `verify` 可能空跑
-- `goals_calibrate` 固定 `goalsAssessResult: null`，单独跑此 step 永远 skip
-- `diary` 缺少 rich context
+### 6.3 仍待完成
 
-**整轮 `jea run` / `run_cycle` 仍更可靠**；daemon step 模式适合 intel→exec 前半链或后续补 checkpoint 后扩展。
-
-### 6.3 未完成项（计划步骤 5 残余）
-
-- evolve manifest 与 cycle-state **未打通**
-- [`AGENTS.md`](../../AGENTS.md) 未补充 `--tick-ms`、step type、`cycle-state/` 说明
+- evolve manifest 与 cycle-state **未打通**（可选 `cycle_id` 引用留后续）
 - evolution viewer 未做 step 级 UI
+- mock 端到端整轮 vs step 链事件序列对比测试（未做，仅有 checkpoint + reconcile 单测）
 
-### 6.4 双路径并存
+### 6.4 双路径并存（当前推荐）
 
 | 路径 | 适用 |
 | --- | --- |
-| `jea run` / `run_cycle` | 生产整轮演化 |
-| `daemon start` step 模式 | 后台节律 + 逐步推进（首版） |
-
-同时 enqueue `run_cycle` 与 step 时按 priority 竞争（step priority 更高）。
+| **`jea daemon start` step 模式** | **后台长期演化（推荐主路径）** |
+| `jea run` / `run_cycle` | 本地调试、兼容 fallback |
 
 ---
 
@@ -270,13 +263,13 @@ jea daemon status --json
 
 ### 7.1 优先级
 
-| 优先级 | 项 |
-| --- | --- |
-| **P0** | `decisions_queued=0` 时仍 enqueue exec（或显式 skip verify），与 `run.mjs` 对齐 |
-| **P0** | step 模式增加 checkpoint / 从磁盘加载 intel、exec、assess 产物，修复 verify→diary 链 |
-| **P1** | `goals_calibrate` 从 cycle-state 或磁盘读 assess 结果 |
-| **P1** | 补 `jea run --mock` vs daemon step 事件序列对比测试 |
-| **P2** | 更新 AGENTS.md；evolve manifest 增加可选 `cycle_id`；viewer step 级展示 |
+| 优先级 | 项 | 状态 |
+| --- | --- | --- |
+| ~~**P0**~~ | exec 空队列语义对齐 | ✅ |
+| ~~**P0**~~ | checkpoint + loadCycleStepContext | ✅ |
+| ~~**P1**~~ | goals_calibrate 读 assess checkpoint | ✅ |
+| **P1** | mock 整轮 vs step 链事件序列对比测试 | 待做 |
+| **P2** | evolve manifest 可选 `cycle_id`；viewer step 级展示 | 待做 |
 
 ### 7.2 机制化改进
 
@@ -286,11 +279,38 @@ jea daemon status --json
 
 ---
 
+## 8. Parity 补全（同日第二轮）
+
+### 8.1 动机
+
+第一轮审查发现 step 链在 **exec 空队列语义** 与 **跨子进程 artifact 传递** 两处无法达到整轮 parity。操作者确认：采用 **显式 checkpoint** 落盘，**step 为主路径**。
+
+### 8.2 实现摘要
+
+| 模块 | 变更 |
+| --- | --- |
+| [`cycle-state.mjs`](../../src/cli/utils/cycle-state.mjs) | `writeStepArtifact` / `readStepArtifact` → `cycle-state/<cycleId>/<step>.json` |
+| [`cycle-checkpoints.mjs`](../../src/cli/utils/cycle-checkpoints.mjs) | `loadCycleStepContext` 从 checkpoint 重建上游产物 |
+| [`cycle-steps.mjs`](../../src/evolution/cycle-steps.mjs) | 各 step 成功后写 checkpoint |
+| [`cycle-reducer.mjs`](../../src/cli/utils/cycle-reducer.mjs) | `intel_ready` 始终 enqueue `exec` |
+| [`run.mjs`](../../run.mjs) | 单 step 模式经 `loadCycleStepContext` 加载真实上游；缺 checkpoint 抛 `checkpoint_missing` |
+| [`AGENTS.md`](../../AGENTS.md) | Daemon 章节：step 主路径、`--tick-ms`、checkpoint 目录说明 |
+
+### 8.3 验证
+
+| 项 | 结果 |
+| --- | --- |
+| [`test/cycle-checkpoint.test.mjs`](../../test/cycle-checkpoint.test.mjs) | checkpoint 读写、exec 重建、reconcile 补 verify ✅ |
+| cycle-reducer / dispatch / cli daemon | ✅ |
+| 全量 `npm test` | **352/355**（3 失败为无关 lane worktree） |
+
+---
+
 ## 附：问题—思考—方案—执行对照
 
 | 阶段 | 内容 |
 | --- | --- |
-| 问题 | 如何只保留 5min 心跳，并把 Phase 1→5 改为事件驱动 step？ |
-| 思考 | 瓶颈在同步链与整轮 `run_cycle`；复用队列/租约/事件流；需 cycle-state + reducer；心跳作兜底非唯一推进力。 |
-| 方案 | 三层架构；混合推进；渐进五小步；保留 `run_cycle` 兼容。 |
-| 执行 | 落地 `cycle-reducer` / `cycle-state` / `cycle-dispatch` / `cycle-steps`；daemon 5min tick + step worker；`run.mjs` 单 step 入口；投影扩展；单测 + daemon 回归通过；审查记录语义偏差与 artifact 缺口。 |
+| 问题 | 如何只保留 5min 心跳，并把 Phase 1→5 改为事件驱动 step，且达到整轮 parity？ |
+| 思考 | 瓶颈在同步链与 exec 产物未落盘；heartbeat 作兜底；step 间需 checkpoint。 |
+| 方案 | 三层架构 + checkpoint + reducer 对齐 + step 为主路径。 |
+| 执行 | 两轮落地：基础设施 → parity 补全；352 测试通过；AGENTS/journal 已更新。 |

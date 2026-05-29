@@ -1,9 +1,10 @@
 ﻿#!/usr/bin/env node
 import { mkdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runtimeInfoForDefaultSubject } from './src/cli/utils/subjects.mjs';
 import { withSubjectLock } from './src/cli/utils/evolve-runs.mjs';
+import { loadCycleStepContext } from './src/cli/utils/cycle-checkpoints.mjs';
 import {
   buildCycleContext,
   runBeliefUpdateStep,
@@ -14,11 +15,9 @@ import {
   runIntelReportStep,
   runIntelStep,
   runVerifyStep,
-  loadStepArtifacts,
   skipGoalsAssessFromEnv,
   skipBeliefUpdateFromEnv,
 } from './src/evolution/cycle-steps.mjs';
-import { readCycleState } from './src/cli/utils/cycle-state.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -34,6 +33,7 @@ function buildExitRecord(err) {
   if (/Subject is already running/i.test(message)) return { ...base, code: 'subject_already_running', retryable: true };
   if (/intel pipeline failed/i.test(message)) return { ...base, code: 'intel_failed', retryable: true };
   if (/exec pipeline failed/i.test(message)) return { ...base, code: 'exec_failed', retryable: false };
+  if (/checkpoint/i.test(message)) return { ...base, code: 'checkpoint_missing', retryable: false };
   return { ...base, code: 'unknown', retryable: false };
 }
 
@@ -44,10 +44,24 @@ function recordStateBag(runtime) {
   };
 }
 
+function requireCheckpoint(stepContext, { requireExec = false } = {}) {
+  if (!stepContext?.intelResult?.cycle_id) {
+    throw new Error('checkpoint missing for intel before downstream step');
+  }
+  if (requireExec && !stepContext.execResult) {
+    throw new Error(`checkpoint missing for exec before downstream step (cycle=${stepContext.intelResult.cycle_id})`);
+  }
+}
+
 async function runSingleStepMode(runtime, step, cycleId) {
+  if (!cycleId && step !== 'intel') {
+    throw new Error(`JEA_CYCLE_ID is required for step: ${step}`);
+  }
   const ctx = await buildCycleContext(__dirname, runtime);
   const recordState = recordStateBag(runtime);
-  const cycleState = cycleId ? readCycleState(__dirname, runtime.subject, cycleId) : null;
+  const stepContext = cycleId
+    ? loadCycleStepContext(__dirname, runtime.subject, cycleId, runtime.runtimeRoot)
+    : null;
 
   switch (step) {
     case 'intel': {
@@ -67,8 +81,8 @@ async function runSingleStepMode(runtime, step, cycleId) {
       return;
     }
     case 'intel_report': {
-      const intelResult = { cycle_id: cycleId, report: cycleState?.meta?.report_path ? { mdPath: cycleState.meta.report_path } : null };
-      const outcome = await runIntelReportStep(ctx, { intelResult, recordState });
+      requireCheckpoint(stepContext);
+      const outcome = await runIntelReportStep(ctx, { intelResult: stepContext.intelResult, recordState });
       console.log(`JEA_STEP_RESULT ${JSON.stringify({ step: 'intel_report', cycle_id: cycleId, ok: !outcome.failed, intel_report_ready: outcome.intelReportReady })}`);
       if (outcome.failed) throw new Error('intel report step failed');
       return;
@@ -79,37 +93,43 @@ async function runSingleStepMode(runtime, step, cycleId) {
       return;
     }
     case 'verify': {
-      const intelResult = { cycle_id: cycleId };
-      const execResult = { cycle_id: cycleId, executed: [] };
-      const { verification, reportPath } = await runVerifyStep(ctx, { intelResult, execResult, recordState });
+      requireCheckpoint(stepContext, { requireExec: true });
+      const { verification, reportPath } = await runVerifyStep(ctx, {
+        intelResult: stepContext.intelResult,
+        execResult: stepContext.execResult,
+        recordState,
+      });
       console.log(`JEA_STEP_RESULT ${JSON.stringify({ step: 'verify', cycle_id: cycleId, ok: true, report_path: reportPath })}`);
       return;
     }
     case 'belief_update': {
-      const intelResult = { cycle_id: cycleId };
-      const execResult = { cycle_id: cycleId };
-      const { verification, reportPath } = loadStepArtifacts(runtime.runtimeRoot, cycleId);
+      requireCheckpoint(stepContext, { requireExec: true });
       const outcome = await runBeliefUpdateStep(ctx, {
-        intelResult, execResult, verification, reportPath, recordState,
+        intelResult: stepContext.intelResult,
+        execResult: stepContext.execResult,
+        verification: stepContext.verification,
+        reportPath: stepContext.reportPath,
+        recordState,
       });
       console.log(`JEA_STEP_RESULT ${JSON.stringify({ step: 'belief_update', cycle_id: cycleId, ok: true, skipped: outcome.skipped })}`);
       return;
     }
     case 'goals_assess': {
-      const intelResult = { cycle_id: cycleId };
-      const { reportPath } = loadStepArtifacts(runtime.runtimeRoot, cycleId);
-      const intelReportReady = cycleState?.meta?.intel_report_ready ?? false;
+      requireCheckpoint(stepContext);
       const outcome = await runGoalsAssessStep(ctx, {
-        intelResult, reportPath, intelReportReady, recordState,
+        intelResult: stepContext.intelResult,
+        reportPath: stepContext.reportPath,
+        intelReportReady: stepContext.intelReportReady,
+        recordState,
       });
       console.log(`JEA_STEP_RESULT ${JSON.stringify({ step: 'goals_assess', cycle_id: cycleId, ok: true, skipped: outcome.skipped })}`);
       return;
     }
     case 'goals_calibrate': {
-      const intelResult = { cycle_id: cycleId };
+      requireCheckpoint(stepContext);
       const outcome = await runGoalsCalibrateStep(ctx, {
-        intelResult,
-        goalsAssessResult: null,
+        intelResult: stepContext.intelResult,
+        goalsAssessResult: stepContext.goalsAssessResult,
         store: ctx.store,
         recordState,
       });
@@ -117,17 +137,15 @@ async function runSingleStepMode(runtime, step, cycleId) {
       return;
     }
     case 'diary': {
-      const intelResult = { cycle_id: cycleId };
-      const execResult = { cycle_id: cycleId };
-      const { verification, reportPath } = loadStepArtifacts(runtime.runtimeRoot, cycleId);
+      requireCheckpoint(stepContext, { requireExec: true });
       const outcome = await runDiaryStep(ctx, {
-        intelResult,
-        execResult,
-        verification,
-        beliefUpdateResult: null,
-        goalsAssessResult: null,
-        goalsCalibrateResult: null,
-        reportPath,
+        intelResult: stepContext.intelResult,
+        execResult: stepContext.execResult,
+        verification: stepContext.verification,
+        beliefUpdateResult: stepContext.beliefUpdateResult,
+        goalsAssessResult: stepContext.goalsAssessResult,
+        goalsCalibrateResult: stepContext.goalsCalibrateResult,
+        reportPath: stepContext.reportPath,
         recordState,
       });
       console.log(`JEA_STEP_RESULT ${JSON.stringify({ step: 'diary', cycle_id: cycleId, ok: !outcome.failed })}`);

@@ -170,12 +170,7 @@ export function nextSteps(event, cycleState = {}, options = {}) {
 
     case 'intel_ready': {
       enqueue('intel_report', 'intel_ready');
-      const decisions = event.decisions_queued ?? cycleMeta(cycleState).decisions_queued ?? 0;
-      if (decisions > 0) {
-        enqueue('exec', 'intel_ready');
-      } else if (isStepRunnable(cycleState, 'exec')) {
-        markSkipped.push('exec');
-      }
+      enqueue('exec', 'intel_ready');
       break;
     }
 

@@ -11,7 +11,10 @@ import { updateActiveBeliefs } from '../intelligence/belief-updater.mjs';
 import { ConversationalIntelligencePipeline } from '../intelligence/conversational-intel-pipeline.mjs';
 import { verifyWithRestoredConversation } from '../intelligence/conversation-context.mjs';
 import { buildEvolutionDiary } from '../intelligence/evolution-diary-builder.mjs';
-import { markStepStatus } from '../cli/utils/cycle-state.mjs';
+import { markStepStatus, writeStepArtifact } from '../cli/utils/cycle-state.mjs';
+import { loadCycleStepContext, loadVerifyReportForCycle } from '../cli/utils/cycle-checkpoints.mjs';
+
+export { loadCycleStepContext } from '../cli/utils/cycle-checkpoints.mjs';
 
 export function skipGoalsAssessFromEnv() {
   const v = process.env.JEA_SKIP_GOALS_ASSESS;
@@ -102,6 +105,16 @@ export async function runIntelStep(ctx, { cycleId = null, recordState = null } =
   const metaPatch = { decisions_queued: intelResult.decisions_queued?.length ?? 0 };
   if (recordState) {
     await recordStepSidecar(recordState.root, recordState.subject, resolvedCycleId, 'intel', 'done', metaPatch);
+    await persistCheckpoint(recordState, resolvedCycleId, 'intel', {
+      cycle_id: resolvedCycleId,
+      success: true,
+      decisions_queued: metaPatch.decisions_queued,
+      report: intelResult.report ? {
+        mdPath: intelResult.report.mdPath,
+        source: intelResult.report.source,
+        indexRecord: intelResult.report.indexRecord,
+      } : null,
+    });
   }
   return {
     cycleId: resolvedCycleId,
@@ -142,6 +155,13 @@ export async function runIntelReportStep(ctx, { intelResult, recordState = null 
     await recordStepSidecar(recordState.root, recordState.subject, intelResult.cycle_id, 'intel_report', 'done', {
       intel_report_ready: intelReportReady,
     });
+    await persistCheckpoint(recordState, intelResult.cycle_id, 'intel_report', {
+      cycle_id: intelResult.cycle_id,
+      intel_report_ready: intelReportReady,
+      report_path: intelResult.report?.mdPath ?? null,
+      source: intelResult.report?.source ?? null,
+      indexRecord: intelResult.report?.indexRecord ?? null,
+    });
   }
   return { intelReportReady, eventPayload: { intel_report_ready: intelReportReady } };
 }
@@ -172,6 +192,12 @@ export async function runExecStep(ctx, { recordState = null } = {}) {
   }
   if (recordState) {
     await recordStepSidecar(recordState.root, recordState.subject, execResult.cycle_id, 'exec', 'done');
+    await persistCheckpoint(recordState, execResult.cycle_id, 'exec', {
+      cycle_id: execResult.cycle_id,
+      success: execResult.success,
+      executed: execResult.executed ?? [],
+      error: execResult.error ?? null,
+    });
   }
   return { execResult };
 }
@@ -208,6 +234,12 @@ export async function runVerifyStep(ctx, { intelResult, execResult, recordState 
   });
   if (recordState) {
     await recordStepSidecar(recordState.root, recordState.subject, execResult.cycle_id, 'verify', 'done');
+    await persistCheckpoint(recordState, execResult.cycle_id, 'verify', {
+      cycle_id: execResult.cycle_id,
+      report_path: reportPath,
+      verified_count: verification.verified?.length ?? 0,
+      semantic_status: semanticVerification.status,
+    });
   }
   return { verification, reportPath, semanticVerification };
 }
@@ -219,6 +251,11 @@ export async function runBeliefUpdateStep(ctx, {
   if (skipBeliefUpdateFromEnv()) {
     if (recordState) {
       await recordStepSidecar(recordState.root, recordState.subject, execResult.cycle_id, 'belief_update', 'skipped');
+      await persistCheckpoint(recordState, execResult.cycle_id, 'belief_update', {
+        cycle_id: execResult.cycle_id,
+        skipped: true,
+        beliefUpdateResult: null,
+      });
     }
     return { skipped: true, beliefUpdateResult: null };
   }
@@ -236,6 +273,15 @@ export async function runBeliefUpdateStep(ctx, {
     });
     if (recordState) {
       await recordStepSidecar(recordState.root, recordState.subject, execResult.cycle_id, 'belief_update', 'done');
+      await persistCheckpoint(recordState, execResult.cycle_id, 'belief_update', {
+        cycle_id: execResult.cycle_id,
+        skipped: false,
+        beliefUpdateResult: {
+          source: beliefUpdateResult.source,
+          result: beliefUpdateResult.result,
+          eventsWritten: beliefUpdateResult.eventsWritten ?? 0,
+        },
+      });
     }
     return { beliefUpdateResult };
   } catch (e) {
@@ -260,6 +306,11 @@ export async function runGoalsAssessStep(ctx, {
   if (skipGoalsAssessFromEnv() || !intelReportReady) {
     if (recordState) {
       await recordStepSidecar(recordState.root, recordState.subject, intelResult.cycle_id, 'goals_assess', 'skipped');
+      await persistCheckpoint(recordState, intelResult.cycle_id, 'goals_assess', {
+        cycle_id: intelResult.cycle_id,
+        skipped: true,
+        goalsAssessResult: null,
+      });
     }
     return { skipped: true, goalsAssessResult: null };
   }
@@ -275,6 +326,11 @@ export async function runGoalsAssessStep(ctx, {
     });
     if (recordState) {
       await recordStepSidecar(recordState.root, recordState.subject, intelResult.cycle_id, 'goals_assess', 'done');
+      await persistCheckpoint(recordState, intelResult.cycle_id, 'goals_assess', {
+        cycle_id: intelResult.cycle_id,
+        skipped: false,
+        goalsAssessResult: assessResult,
+      });
     }
     return { goalsAssessResult: assessResult };
   } catch (e) {
@@ -296,6 +352,11 @@ export async function runGoalsCalibrateStep(ctx, { intelResult, goalsAssessResul
   if (!goalsAssessResult) {
     if (recordState) {
       await recordStepSidecar(recordState.root, recordState.subject, intelResult.cycle_id, 'goals_calibrate', 'skipped');
+      await persistCheckpoint(recordState, intelResult.cycle_id, 'goals_calibrate', {
+        cycle_id: intelResult.cycle_id,
+        skipped: true,
+        goalsCalibrateResult: null,
+      });
     }
     return { skipped: true, goalsCalibrateResult: null };
   }
@@ -312,6 +373,11 @@ export async function runGoalsCalibrateStep(ctx, { intelResult, goalsAssessResul
   });
   if (recordState) {
     await recordStepSidecar(recordState.root, recordState.subject, intelResult.cycle_id, 'goals_calibrate', 'done');
+    await persistCheckpoint(recordState, intelResult.cycle_id, 'goals_calibrate', {
+      cycle_id: intelResult.cycle_id,
+      skipped: false,
+      goalsCalibrateResult,
+    });
   }
   return { goalsCalibrateResult };
 }
@@ -339,6 +405,12 @@ export async function runDiaryStep(ctx, {
     });
     if (recordState) {
       await recordStepSidecar(recordState.root, recordState.subject, execResult?.cycle_id || intelResult.cycle_id, 'diary', 'done');
+      await persistCheckpoint(recordState, execResult?.cycle_id || intelResult.cycle_id, 'diary', {
+        cycle_id: execResult?.cycle_id || intelResult.cycle_id,
+        mdPath: diary.mdPath ?? null,
+        source: diary.source ?? null,
+        tldr: diary.tldr ?? null,
+      });
     }
     return { diary };
   } catch (e) {
@@ -358,16 +430,25 @@ export async function runDiaryStep(ctx, {
   }
 }
 
+async function persistCheckpoint(recordState, cycleId, step, payload) {
+  if (!recordState?.root || !recordState?.subject || !cycleId) return;
+  try {
+    writeStepArtifact(recordState.root, recordState.subject, cycleId, step, payload);
+  } catch {
+    // checkpoint must not break step execution
+  }
+}
+
+function loadVerifyReport(runtimeRoot, cycleId) {
+  return loadVerifyReportForCycle(runtimeRoot, cycleId);
+}
+
 /**
- * Load intermediate artifacts from disk for step-isolated execution.
+ * @deprecated use loadCycleStepContext
  */
 export function loadStepArtifacts(runtimeRoot, cycleId) {
-  const verifyPath = join(runtimeRoot, 'data', 'evolution', 'verify_reports', `${cycleId}.json`);
-  let verification = null;
-  if (existsSync(verifyPath)) {
-    verification = JSON.parse(readFileSync(verifyPath, 'utf-8'));
-  }
-  return { verification, reportPath: verifyPath };
+  const { verification, reportPath } = loadVerifyReport(runtimeRoot, cycleId);
+  return { verification, reportPath };
 }
 
 export const CYCLE_STEP_RUNNERS = Object.freeze([

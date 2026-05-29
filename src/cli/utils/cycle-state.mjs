@@ -13,6 +13,55 @@ export function cycleStatePath(root, subject, cycleId) {
   return join(cycleStateDir(root, subject), `${cycleId}.json`);
 }
 
+export function cycleArtifactsDir(root, subject, cycleId) {
+  return join(cycleStateDir(root, subject), cycleId);
+}
+
+export function stepArtifactPath(root, subject, cycleId, step) {
+  return join(cycleArtifactsDir(root, subject, cycleId), `${step}.json`);
+}
+
+function writeJsonAtomic(filePath, data) {
+  mkdirSync(dirname(filePath), { recursive: true });
+  const tmp = `${filePath}.tmp`;
+  writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+  renameSync(tmp, filePath);
+  return data;
+}
+
+export function writeStepArtifact(root, subject, cycleId, step, payload) {
+  return withCycleStateLock(root, subject, cycleId, () => {
+    const record = {
+      step,
+      cycle_id: cycleId,
+      written_at: nowIso(),
+      payload,
+    };
+    writeJsonAtomic(stepArtifactPath(root, subject, cycleId, step), record);
+    return record;
+  });
+}
+
+export function readStepArtifact(root, subject, cycleId, step) {
+  const filePath = stepArtifactPath(root, subject, cycleId, step);
+  if (!existsSync(filePath)) return null;
+  try {
+    const data = JSON.parse(readFileSync(filePath, 'utf-8'));
+    if (data && typeof data === 'object' && 'payload' in data) return data.payload;
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+export function listStepArtifacts(root, subject, cycleId) {
+  const dir = cycleArtifactsDir(root, subject, cycleId);
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((name) => name.endsWith('.json'))
+    .map((name) => name.replace(/\.json$/, ''));
+}
+
 function emptySteps() {
   const steps = {};
   for (const step of CYCLE_STEP_TYPES) {

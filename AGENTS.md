@@ -291,17 +291,33 @@ Decide 可调度、`Phase 2` 执行的记录型动作，用于落已有结论而
 
 ## Daemon 工作流
 
-Daemon 用于事件驱动的前台 worker 循环。每个 subject 应独立运行 worker，避免同一 subject 并发演化。
+Daemon 用于 **事件驱动的 step 级演化**。推荐用 `jea daemon start` 启动 worker：默认每 **5 分钟** heartbeat tick 开新 cycle（无 open cycle 且无 pending 任务时），step 完成后 **即时** enqueue 下一步；5min tick 同时做 reconcile 补偿。
 
-任务与 worker：
+`run_cycle` 整轮任务与 `jea run` 同步链仍保留，供本地调试与兼容；**后台长期运行请优先 step 模式**。
 
-- `jea daemon enqueue --type run_cycle`：加入一个 daemon 任务。
-- `jea daemon work --once [--mock]`：执行一个 daemon 任务后退出。
-- `jea daemon start [--mock] [--heartbeat-ms N] [--lease-ms N]`：在前台启动 worker 循环。
-- `jea daemon stop`：请求当前主体 worker 优雅停止。
-- `jea daemon stop --all`：请求所有选中主体 worker 停止。
+### 任务与 worker
 
-观测与诊断：
+- `jea daemon start [--mock] [--tick-ms N] [--heartbeat-ms N] [--lease-ms N]`：前台 worker；默认 `tick-ms=300000`（5min）。
+- `jea daemon work --once [--mock]`：领取并执行一个 task（step 或 `run_cycle`）后退出。
+- `jea daemon enqueue --type <step|run_cycle>`：手动入队；step 类型含 `intel`、`exec`、`verify`、`belief_update`、`goals_assess`、`goals_calibrate`、`diary` 等。
+- `jea daemon stop` / `jea daemon stop --all`：请求 worker 优雅停止。
+
+### Step 状态与 checkpoint
+
+每轮 cycle 的状态与 step 产物位于：
+
+```text
+runtime/subjects/<data_namespace>/data/evolution/cycle-state/
+├── <cycleId>.json              # step 状态机（pending/running/done/skipped/failed）
+└── <cycleId>/
+    ├── intel.json              # step checkpoint（可序列化输出）
+    ├── exec.json
+    └── ...
+```
+
+下游 step 子进程从 checkpoint 重建上游产物（如 verify 读取 `exec.json` 的 `executed` 列表）。`jea daemon status --json` 的 `cycles` / `tasks.step_tasks` 字段可观测 step 进度。
+
+### 观测与诊断
 
 - `jea daemon status [--all | --subjects a,b] [--json]`：查看 worker、队列、健康状态、锁和最近事件。
 - `jea daemon doctor [--all | --subjects a,b] [--json]`：诊断 daemon 健康状态。

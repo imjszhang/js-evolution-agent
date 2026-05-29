@@ -35,15 +35,15 @@ describe('cycle-reducer', () => {
     expect(markSkipped).toEqual([]);
   });
 
-  it('skips exec when no decisions queued', () => {
+  it('always enqueues exec after intel_ready even with zero decisions', () => {
     const state = createEmptyCycleState({ cycleId: 'cycle-1', subject: 'alpha' });
     const { steps, markSkipped } = nextSteps({
       type: 'intel_ready',
       cycle_id: 'cycle-1',
       decisions_queued: 0,
     }, state);
-    expect(steps.map((s) => s.type)).toEqual(['intel_report']);
-    expect(markSkipped).toEqual(['exec']);
+    expect(steps.map((s) => s.type)).toEqual(['intel_report', 'exec']);
+    expect(markSkipped).toEqual([]);
   });
 
   it('enqueues verify after exec_done', () => {
