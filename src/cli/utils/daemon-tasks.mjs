@@ -3,6 +3,11 @@ import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import lockfile from 'proper-lockfile';
 import { runtimeForSubject, nowIso, parsePositiveInt } from './evolve-runs.mjs';
+import { CYCLE_STEP_TYPES, stepIdempotencyKey } from './cycle-reducer.mjs';
+
+export { CYCLE_STEP_TYPES };
+
+const CYCLE_STEP_ORDER = Object.fromEntries(CYCLE_STEP_TYPES.map((step, index) => [step, index + 1]));
 
 export const TASK_STATUSES = new Set(['pending', 'running', 'completed', 'failed', 'cancelled', 'acknowledged']);
 
@@ -107,7 +112,23 @@ function taskId() {
   return `task-${randomUUID()}`;
 }
 
+export function hasIncompleteEarlierStep(tasks, task) {
+  if (!CYCLE_STEP_TYPES.includes(task.type)) return false;
+  const cycleId = task.input?.cycle_id;
+  if (!cycleId) return false;
+  const order = CYCLE_STEP_ORDER[task.type] ?? 999;
+  return tasks.some((item) => {
+    if (item.input?.cycle_id !== cycleId) return false;
+    if (!CYCLE_STEP_TYPES.includes(item.type)) return false;
+    const otherOrder = CYCLE_STEP_ORDER[item.type] ?? 999;
+    return otherOrder < order && item.status !== 'completed' && item.status !== 'cancelled';
+  });
+}
+
 export function defaultIdempotencyKey({ subject, type, input = {} } = {}) {
+  if (input.cycle_id && CYCLE_STEP_TYPES.includes(type)) {
+    return stepIdempotencyKey(subject, input.cycle_id, type);
+  }
   const suffix = input.round_index != null ? `:${input.round_index}` : '';
   return `${subject}:${type}${suffix}`;
 }
@@ -199,7 +220,7 @@ export function claimNextTask(root, subject, {
     const task = queue.tasks
       .filter((item) => item.status === 'pending' && (!type || item.type === type))
       .sort((a, b) => (a.priority ?? 100) - (b.priority ?? 100) || String(a.created_at).localeCompare(String(b.created_at)))
-      .find((item) => !hasIncompleteEarlierRound(queue.tasks, item)) ?? null;
+      .find((item) => !hasIncompleteEarlierRound(queue.tasks, item) && !hasIncompleteEarlierStep(queue.tasks, item)) ?? null;
     if (!task) {
       return { task: null, queue: writeTaskQueue(root, subject, queue), reclaimed };
     }

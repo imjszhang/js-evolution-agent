@@ -30,12 +30,17 @@ import {
 } from '../utils/daemon-worker-state.mjs';
 import {
   classifyCycleFailure,
+  parseStepResult,
   runSingleCycle,
+  runSingleStep,
+  CYCLE_STEP_TYPES,
 } from './evolve.mjs';
 import {
   checkSubjectLaneReady,
   printSubjectLaneGuardFailure,
 } from '../utils/subject-lane-guard.mjs';
+import { markStepRunning } from '../utils/cycle-state.mjs';
+import { dispatchAfterStepCompletion, runHeartbeatTick } from '../utils/cycle-dispatch.mjs';
 
 function sleep(ms) {
   if (!ms) return Promise.resolve();
@@ -309,6 +314,163 @@ function flagsFromTask(task, overrides = {}) {
   };
 }
 
+function parseTickMs(flags = {}) {
+  return parsePositiveInt(flags['tick-ms'], {
+    name: 'tick-ms',
+    defaultValue: 5 * 60 * 1000,
+    min: 1000,
+  });
+}
+
+function isCycleStepType(type) {
+  return CYCLE_STEP_TYPES.includes(type);
+}
+
+async function workRunCycleStep(root, subject, task, flags) {
+  const workerId = task.lease_owner || flags.worker || `worker-${process.pid}`;
+  const { leaseMs, heartbeatMs } = heartbeatDefaults(flags);
+  const controller = flags.watchdog ? new AbortController() : null;
+  let lastLeaseRenewEventAt = 0;
+  let watchdog = null;
+  const step = task.type;
+  const cycleId = task.input?.cycle_id;
+  if (cycleId) {
+    try {
+      markStepRunning(root, subject, cycleId, step);
+    } catch {
+      // non-fatal
+    }
+  }
+  const tick = () => {
+    const state = readWorkerState(root, subject);
+    const stopping = Boolean(state?.stop_requested_at);
+    if (flags.watchdog) {
+      updateWorkerHeartbeat(root, subject, {
+        worker_id: workerId,
+        pid: process.pid,
+        status: stopping ? 'stopping' : 'running',
+        current_task_id: task.task_id,
+      });
+    }
+    const renewed = renewTaskLease(root, subject, task.task_id, { workerId, leaseMs });
+    if (!renewed.renewed) {
+      recordDaemonEvent(root, subject, {
+        type: 'task_lease_renew_failed',
+        status: renewed.reason,
+        task_id: task.task_id,
+        task_type: task.type,
+        lease_owner: workerId,
+      });
+      controller?.abort();
+      return;
+    }
+    const now = Date.now();
+    if (now - lastLeaseRenewEventAt >= Math.max(heartbeatMs * 10, 60_000)) {
+      lastLeaseRenewEventAt = now;
+      recordDaemonEvent(root, subject, {
+        type: 'task_lease_renewed',
+        status: 'ok',
+        task_id: task.task_id,
+        task_type: task.type,
+        lease_owner: workerId,
+        lease_expires_at: renewed.task.lease_expires_at,
+      });
+    }
+    if (stopping) controller?.abort();
+  };
+  if (flags.watchdog) {
+    tick();
+    watchdog = setInterval(tick, heartbeatMs);
+  }
+  const result = await runSingleStep({
+    root,
+    subject,
+    step,
+    cycleId,
+    flags: flagsFromTask(task, flags),
+    signal: controller?.signal,
+    hooks: flags.watchdog ? {
+      onOutput: () => tick(),
+    } : {},
+  });
+  if (watchdog) clearInterval(watchdog);
+
+  const stepResult = parseStepResult(result.output);
+  const resolvedCycleId = stepResult?.cycle_id || cycleId;
+
+  if (result.exitCode === 0) {
+    dispatchAfterStepCompletion(root, subject, step, {
+      cycle_id: resolvedCycleId,
+      status: 'done',
+      ok: true,
+      eventPayload: {
+        decisions_queued: stepResult?.decisions_queued,
+        intel_report_ready: stepResult?.intel_report_ready,
+      },
+      metaPatch: {
+        decisions_queued: stepResult?.decisions_queued,
+        intel_report_ready: stepResult?.intel_report_ready,
+      },
+    }, task.input || {});
+    const completed = completeTask(root, subject, task.task_id, { exit_code: 0, step_result: stepResult });
+    recordDaemonEvent(root, subject, {
+      type: 'task_completed',
+      status: 'ok',
+      task_id: task.task_id,
+      task_type: task.type,
+      cycle_id: resolvedCycleId,
+    });
+    return { ok: true, task: completed.task, stepResult };
+  }
+
+  const failure = classifyCycleFailure({ exitCode: result.exitCode, output: result.output });
+  dispatchAfterStepCompletion(root, subject, step, {
+    cycle_id: resolvedCycleId,
+    status: 'failed',
+    ok: false,
+    error: failure.message,
+  }, task.input || {});
+
+  if (failure.code === 'daemon_stop_requested') {
+    const released = releaseTaskForRetry(root, subject, task.task_id, failure);
+    recordDaemonEvent(root, subject, {
+      type: 'task_failed',
+      status: 'stop_requested_retry_scheduled',
+      task_id: task.task_id,
+      task_type: task.type,
+      retryable: true,
+      error_code: failure.code,
+      error_reason: failure.reason,
+    });
+    return { ok: false, retryable: true, stopped: true, task: released.task, failure };
+  }
+  const maxAttempts = Math.max(1, (task.input?.retries ?? 3) + 1);
+  if (failure.retryable && task.attempts < maxAttempts) {
+    const released = releaseTaskForRetry(root, subject, task.task_id, failure);
+    recordDaemonEvent(root, subject, {
+      type: 'task_failed',
+      status: 'retry_scheduled',
+      task_id: task.task_id,
+      task_type: task.type,
+      retryable: true,
+      error_code: failure.code,
+      error_reason: failure.reason,
+    });
+    return { ok: false, retryable: true, task: released.task, failure };
+  }
+  const failed = failTask(root, subject, task.task_id, failure);
+  recordDaemonEvent(root, subject, {
+    type: 'task_failed',
+    status: 'failed',
+    task_id: task.task_id,
+    task_type: task.type,
+    retryable: failure.retryable,
+    error_code: failure.code,
+    error_reason: failure.reason,
+  });
+  return { ok: false, retryable: false, task: failed.task, failure };
+}
+
 async function workRunCycle(root, subject, task, flags) {
   const workerId = task.lease_owner || flags.worker || `worker-${process.pid}`;
   const { leaseMs, heartbeatMs } = heartbeatDefaults(flags);
@@ -446,16 +608,20 @@ export async function workOnce(root, subject, flags = {}) {
     lease_owner: claim.task.lease_owner,
     lease_expires_at: claim.task.lease_expires_at,
   });
-  if (claim.task.type !== 'run_cycle') {
-    const failed = failTask(root, subject, claim.task.task_id, {
-      code: 'unsupported_task_type',
-      reason: claim.task.type,
-      message: `Unsupported task type: ${claim.task.type}`,
-    });
-    return { worked: true, ok: false, task: failed.task };
+  if (claim.task.type === 'run_cycle') {
+    const outcome = await workRunCycle(root, subject, claim.task, flags);
+    return { worked: true, ...outcome };
   }
-  const outcome = await workRunCycle(root, subject, claim.task, flags);
-  return { worked: true, ...outcome };
+  if (isCycleStepType(claim.task.type)) {
+    const outcome = await workRunCycleStep(root, subject, claim.task, flags);
+    return { worked: true, ...outcome };
+  }
+  const failed = failTask(root, subject, claim.task.task_id, {
+    code: 'unsupported_task_type',
+    reason: claim.task.type,
+    message: `Unsupported task type: ${claim.task.type}`,
+  });
+  return { worked: true, ok: false, task: failed.task };
 }
 
 function workResultSummary(result) {
@@ -487,7 +653,8 @@ async function reclaimStaleLeasesForWorker(root, subject) {
 export async function runDaemonWorker(root, subject, flags = {}) {
   const workerId = flags.worker && flags.worker !== true ? flags.worker : defaultWorkerId();
   const { leaseMs, heartbeatMs, heartbeatStaleMs } = heartbeatDefaults(flags);
-  const intervalMs = parsePositiveInt(flags['interval-ms'], { name: 'interval-ms', defaultValue: 1000, min: 0 });
+  const tickMs = parseTickMs(flags);
+  const workIntervalMs = parsePositiveInt(flags['interval-ms'], { name: 'interval-ms', defaultValue: 1000, min: 0 });
   const idleIntervalMs = parsePositiveInt(flags['idle-interval-ms'], { name: 'idle-interval-ms', defaultValue: 5000, min: 0 });
   const maxIterations = flags['max-iterations'] == null || flags['max-iterations'] === true
     ? null
@@ -503,6 +670,7 @@ export async function runDaemonWorker(root, subject, flags = {}) {
     pid: process.pid,
     heartbeat_ms: heartbeatMs,
     lease_ms: leaseMs,
+    tick_ms: tickMs,
   });
 
   let stopping = false;
@@ -514,6 +682,8 @@ export async function runDaemonWorker(root, subject, flags = {}) {
   process.once('SIGTERM', requestLocalStop);
   let iterations = 0;
   let stopReason = 'stopped';
+  let lastTickAt = 0;
+  const taskInput = taskInputFromFlags(flags);
   try {
     for (;;) {
       const current = readWorkerState(root, subject);
@@ -527,6 +697,13 @@ export async function runDaemonWorker(root, subject, flags = {}) {
         status: 'running',
       });
       await reclaimStaleLeasesForWorker(root, subject);
+
+      const now = Date.now();
+      if (lastTickAt === 0 || now - lastTickAt >= tickMs) {
+        runHeartbeatTick(root, subject, taskInput);
+        lastTickAt = now;
+      }
+
       const result = await workOnce(root, subject, {
         ...flags,
         worker: workerId,
@@ -556,7 +733,13 @@ export async function runDaemonWorker(root, subject, flags = {}) {
         stopReason = afterWork?.stop_requested_at ? 'stop_requested' : 'signal';
         break;
       }
-      await sleep(result.worked ? intervalMs : idleIntervalMs);
+
+      if (result.worked) {
+        await sleep(workIntervalMs);
+      } else {
+        const untilTick = Math.max(0, tickMs - (Date.now() - lastTickAt));
+        await sleep(Math.min(untilTick, idleIntervalMs));
+      }
     }
   } finally {
     process.removeListener('SIGINT', requestLocalStop);
@@ -866,7 +1049,7 @@ export async function daemonCommand({ subcommand, flags = {}, args = [], root = 
     console.error('Usage: jea daemon <enqueue|work|start|stop|status|events|doctor|tasks|inbox> [--subject NAME] [--subjects a,b | --all] [--json]');
     console.error('       jea daemon enqueue --type run_cycle [--idempotency-key KEY]');
     console.error('       jea daemon work --once');
-    console.error('       jea daemon start [--interval-ms N] [--idle-interval-ms N] [--heartbeat-ms N]');
+    console.error('       jea daemon start [--tick-ms N] [--interval-ms N] [--idle-interval-ms N] [--heartbeat-ms N]');
     console.error('       jea daemon stop');
     console.error('       jea daemon events [--limit N]');
     console.error('       jea daemon doctor');

@@ -22,10 +22,13 @@ import {
 import { SUBJECT_ENV } from '../utils/subjects.mjs';
 import { enqueueTask } from '../utils/daemon-tasks.mjs';
 import { recordDaemonEvent } from '../utils/daemon-events.mjs';
+import { CYCLE_STEP_TYPES } from '../utils/cycle-reducer.mjs';
 import {
   checkSubjectLaneReady,
   printSubjectLaneGuardFailure,
 } from '../utils/subject-lane-guard.mjs';
+
+export { CYCLE_STEP_TYPES };
 
 const RETRYABLE_PATTERNS = [
   /empty content/i,
@@ -59,6 +62,19 @@ function sleep(ms) {
 
 function normalizeFailureText(errorText = '') {
   return String(errorText || '').split(/\r?\n/).slice(-80).join('\n');
+}
+
+export function parseStepResult(output = '') {
+  const matches = [...String(output || '').matchAll(/^JEA_STEP_RESULT\s+(\{.*\})\s*$/gm)];
+  const last = matches.at(-1)?.[1];
+  if (!last) return null;
+  try {
+    const record = JSON.parse(last);
+    if (!record || typeof record !== 'object') return null;
+    return record;
+  } catch {
+    return null;
+  }
 }
 
 export function parseExitRecord(output = '') {
@@ -123,6 +139,16 @@ export function buildCycleEnv(flags, subject) {
   } else {
     delete env.JEA_SUBJECT_RUN_LOCK_HELD;
   }
+  if (flags['cycle-step']) {
+    env.JEA_CYCLE_STEP = String(flags['cycle-step']);
+  } else {
+    delete env.JEA_CYCLE_STEP;
+  }
+  if (flags['cycle-id']) {
+    env.JEA_CYCLE_ID = String(flags['cycle-id']);
+  } else {
+    delete env.JEA_CYCLE_ID;
+  }
   return env;
 }
 
@@ -142,6 +168,26 @@ function flagsFromManifest(manifest, overrides = {}) {
 }
 
 export function runSingleCycle({ root, subject, flags = {}, hooks = {}, signal = null, abortKillMs = 5000 } = {}) {
+  return runCycleProcess({ root, subject, flags, hooks, signal, abortKillMs });
+}
+
+export function runSingleStep({ root, subject, step, cycleId, flags = {}, hooks = {}, signal = null, abortKillMs = 5000 } = {}) {
+  return runCycleProcess({
+    root,
+    subject,
+    flags: {
+      ...flags,
+      'cycle-step': step,
+      'cycle-id': cycleId,
+      'subject-lock-held': true,
+    },
+    hooks,
+    signal,
+    abortKillMs,
+  });
+}
+
+function runCycleProcess({ root, subject, flags = {}, hooks = {}, signal = null, abortKillMs = 5000 } = {}) {
   const runner = join(root, 'run.mjs');
   if (!existsSync(runner)) {
     return Promise.resolve({ exitCode: 1, output: `run.mjs not found: ${runner}` });

@@ -4,6 +4,8 @@ import { writeJsonFile } from './files.mjs';
 import { runtimeForSubject } from './evolve-runs.mjs';
 import { readTaskQueue, summarizeTaskQueue } from './daemon-tasks.mjs';
 import { readWorkerState, summarizeWorkerState } from './daemon-worker-state.mjs';
+import { buildCycleProjection } from './cycle-dispatch.mjs';
+import { listOpenCycles, summarizeCycleState } from './cycle-state.mjs';
 
 export function daemonViewsDir(root, subject) {
   return join(runtimeForSubject(root, subject).evolutionDir, 'views');
@@ -61,6 +63,7 @@ function buildDaemonHealth({ worker, tasks }) {
 export function buildDaemonProjection(root, subject, { store = null, eventLimit = 20, heartbeatStaleMs = 60_000 } = {}) {
   const queue = readTaskQueue(root, subject);
   const summary = summarizeTaskQueue(queue);
+  const queueTasks = Array.isArray(queue?.tasks) ? queue.tasks : [];
   const worker = summarizeWorkerState(readWorkerState(root, subject), { staleMs: heartbeatStaleMs });
   const events = store?.readEvolutionEvents
     ? store.readEvolutionEvents({ limit: eventLimit }).filter((event) => !event.subject || event.subject === subject)
@@ -69,6 +72,13 @@ export function buildDaemonProjection(root, subject, { store = null, eventLimit 
     total: summary.total,
     counts: summary.counts,
     expired_running_count: summary.expired_running.length,
+    step_tasks: queueTasks.filter((t) => t.input?.cycle_id).slice(0, 20).map((task) => ({
+      task_id: task.task_id,
+      type: task.type,
+      cycle_id: task.input.cycle_id,
+      status: task.status,
+      attempts: task.attempts,
+    })),
     next_task: summary.next_task ? {
       task_id: summary.next_task.task_id,
       type: summary.next_task.type,
@@ -111,6 +121,10 @@ export function buildDaemonProjection(root, subject, { store = null, eventLimit 
     worker,
     health: buildDaemonHealth({ worker, tasks }),
     tasks,
+    cycles: {
+      ...buildCycleProjection(root, subject),
+      recent: listOpenCycles(root, subject).slice(0, 5).map(summarizeCycleState),
+    },
     recent_events: events.slice(0, eventLimit).map((event) => ({
       id: event.id,
       type: event.type,
