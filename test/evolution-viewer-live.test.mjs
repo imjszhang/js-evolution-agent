@@ -47,6 +47,19 @@ describe('sseEventFromEvolutionLine', () => {
     );
     expect(ev).toEqual({ type: 'round_added', cycle_id: 'cycle-20260528-100000' });
   });
+
+  it('maps cycle_step events to round_updated', () => {
+    const completed = sseEventFromEvolutionLine(
+      { type: 'cycle_step_completed', cycle_id: 'cycle-20260528-100000' },
+      '/tmp',
+    );
+    expect(completed).toEqual({ type: 'round_updated', cycle_id: 'cycle-20260528-100000' });
+    const dispatched = sseEventFromEvolutionLine(
+      { type: 'cycle_event_dispatched', cycle_id: 'cycle-20260528-100000' },
+      '/tmp',
+    );
+    expect(dispatched).toEqual({ type: 'round_updated', cycle_id: 'cycle-20260528-100000' });
+  });
 });
 
 describe('SseHub', () => {

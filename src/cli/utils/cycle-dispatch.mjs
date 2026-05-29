@@ -9,6 +9,7 @@ import {
 } from './cycle-reducer.mjs';
 import {
   createCycle,
+  findStuckSteps,
   listOpenCycles,
   markStepStatus,
   markStepsSkipped,
@@ -105,6 +106,17 @@ export function dispatchAfterStepCompletion(root, subject, stepType, outcome, in
     metaPatch: outcome.metaPatch ?? {},
   });
 
+  if (
+    stepType === 'intel'
+    && status === 'done'
+    && (outcome.eventPayload?.intel_report_ready || outcome.metaPatch?.intel_report_ready)
+  ) {
+    markStepStatus(root, subject, cycleId, 'intel_report', {
+      status: 'done',
+      metaPatch: { intel_report_ready: true },
+    });
+  }
+
   const cycleState = readCycleState(root, subject, cycleId);
   const event = eventFromStepCompletion(stepType, {
     status,
@@ -151,14 +163,27 @@ export function startCycleFromTick(root, subject, input = {}) {
   return { started: true, cycle: cycleState, ...dispatched };
 }
 
+function reconcileStaleRunningSteps(root, subject, cycleState, { staleMs = 60_000 } = {}) {
+  const stuck = findStuckSteps(cycleState, { staleMs });
+  if (!stuck.length) return cycleState;
+  let current = cycleState;
+  for (const item of stuck) {
+    markStepStatus(root, subject, current.cycle_id, item.step, { status: 'pending' });
+    current = readCycleState(root, subject, current.cycle_id);
+  }
+  return current;
+}
+
 export function reconcileOpenCycles(root, subject, input = {}) {
+  const staleMs = Number(input.stale_ms) > 0 ? Number(input.stale_ms) : 60_000;
   const openCycles = listOpenCycles(root, subject);
   const options = dispatchOptionsFromInput(input);
   const allEnqueued = [];
   const allSkipped = [];
 
   for (const cycleState of openCycles) {
-    const { steps, markSkipped } = reconcileCycle(cycleState, options);
+    const refreshed = reconcileStaleRunningSteps(root, subject, cycleState, { staleMs });
+    const { steps, markSkipped } = reconcileCycle(refreshed, options);
     if (markSkipped?.length) {
       markStepsSkipped(root, subject, cycleState.cycle_id, markSkipped);
       allSkipped.push(...markSkipped);

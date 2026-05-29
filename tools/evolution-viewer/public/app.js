@@ -112,6 +112,33 @@ async function loadRoundDetail(cycleId) {
   return res.json();
 }
 
+function renderStepBadges(steps) {
+  if (!steps || typeof steps !== 'object') return '';
+  const order = [
+    'intel', 'intel_report', 'exec', 'verify', 'belief_update',
+    'goals_assess', 'goals_calibrate', 'diary',
+  ];
+  const labels = {
+    intel: 'Intel',
+    intel_report: 'Report',
+    exec: 'Exec',
+    verify: 'Verify',
+    belief_update: 'Beliefs',
+    goals_assess: 'Goals',
+    goals_calibrate: 'Calibrate',
+    diary: 'Diary',
+  };
+  const items = order
+    .filter((name) => steps[name])
+    .map((name) => {
+      const status = steps[name].status ?? 'pending';
+      const label = labels[name] ?? name;
+      return `<span class="step-badge step-${status}" title="${name}">${label}: ${status}</span>`;
+    });
+  if (!items.length) return '';
+  return `<div class="step-badges">${items.join('')}</div>`;
+}
+
 function renderDetail(data) {
   const diaries = data.diaries ?? [];
   let diaryIndex = 0;
@@ -119,6 +146,12 @@ function renderDetail(data) {
   const header = document.createElement('div');
   header.className = 'detail-header';
   header.innerHTML = `<h2>${data.cycle_id}</h2>`;
+  if (data.steps) {
+    const stepsWrap = document.createElement('div');
+    stepsWrap.className = 'detail-steps';
+    stepsWrap.innerHTML = renderStepBadges(data.steps);
+    header.appendChild(stepsWrap);
+  }
 
   if (diaries.length > 1) {
     const selectWrap = document.createElement('div');

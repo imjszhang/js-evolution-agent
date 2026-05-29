@@ -246,9 +246,9 @@ jea daemon status --json
 
 ### 6.3 仍待完成
 
-- evolve manifest 与 cycle-state **未打通**（可选 `cycle_id` 引用留后续）
-- evolution viewer 未做 step 级 UI
-- mock 端到端整轮 vs step 链事件序列对比测试（未做，仅有 checkpoint + reconcile 单测）
+- ~~evolve manifest 与 cycle-state **未打通**~~ → ✅ 第三轮：`round.cycle_id` best-effort 关联
+- ~~evolution viewer 未做 step 级 UI~~ → ✅ 第三轮
+- ~~mock 端到端 step 链测试~~ → ✅ 第三轮 [`test/cycle-e2e.test.mjs`](../../test/cycle-e2e.test.mjs)
 
 ### 6.4 双路径并存（当前推荐）
 
@@ -268,12 +268,13 @@ jea daemon status --json
 | ~~**P0**~~ | exec 空队列语义对齐 | ✅ |
 | ~~**P0**~~ | checkpoint + loadCycleStepContext | ✅ |
 | ~~**P1**~~ | goals_calibrate 读 assess checkpoint | ✅ |
-| **P1** | mock 整轮 vs step 链事件序列对比测试 | 待做 |
-| **P2** | evolve manifest 可选 `cycle_id`；viewer step 级展示 | 待做 |
+| ~~**P1**~~ | mock 整轮 vs step 链事件序列对比测试 | ✅ [`test/cycle-e2e.test.mjs`](../../test/cycle-e2e.test.mjs) |
+| ~~**P2**~~ | evolve manifest 可选 `cycle_id`；viewer step 级展示 | ✅ |
+| ~~**P2**~~ | 卡住 step 可观测（doctor / status / inbox） | ✅ |
 
 ### 7.2 机制化改进
 
-- viewer / `daemon inbox` step 级时间线与卡住告警
+- ~~viewer / `daemon inbox` step 级时间线与卡住告警~~ → ✅ 第三轮（viewer step 徽章 + inbox attention）
 - 与 [beliefs-driven loop](../2026-05-28/beliefs-driven-evolution-loop.md) 对齐：belief_update 仍在 verify 之后
 - 长跑 `agent_run` 与 5min reconcile 窗口：首版保留 step 内 watchdog
 
@@ -303,6 +304,39 @@ jea daemon status --json
 | [`test/cycle-checkpoint.test.mjs`](../../test/cycle-checkpoint.test.mjs) | checkpoint 读写、exec 重建、reconcile 补 verify ✅ |
 | cycle-reducer / dispatch / cli daemon | ✅ |
 | 全量 `npm test` | **352/355**（3 失败为无关 lane worktree） |
+
+---
+
+## 9. 全面收尾（同日第三轮）
+
+### 9.1 范围
+
+验证 + 可观测 + 关联 + 可视：使 step 主路径**可信、可运维、可视**。
+
+### 9.2 实现摘要
+
+| 模块 | 变更 |
+| --- | --- |
+| [`test/cycle-e2e.test.mjs`](../../test/cycle-e2e.test.mjs) | mock 下 `startCycleFromTick` + `workOnce` 循环至 `cycle closed`；断言 checkpoint 与 evolution events |
+| [`test/cycle-checkpoint.test.mjs`](../../test/cycle-checkpoint.test.mjs) | stale `running` step + 缺失下游 task 的 reconcile 恢复且不重复 |
+| [`cycle-state.mjs`](../../src/cli/utils/cycle-state.mjs) | `findStuckSteps`、`summarizeCycleState` 增 `running_steps` / `stuck_steps` |
+| [`daemon-projection.mjs`](../../src/cli/utils/daemon-projection.mjs) | `cycles.stuck_steps`、`oldest_open_cycle_age_ms` |
+| [`daemon.mjs`](../../src/cli/commands/daemon.mjs) | doctor 诊断 `stuck_cycle_step` |
+| [`subject-artifacts.mjs`](../../src/cli/utils/subject-artifacts.mjs) | inbox `attention.open_cycles` / `stuck_steps` |
+| [`evolve-runs.mjs`](../../src/cli/utils/evolve-runs.mjs) | `round.cycle_id`、`attachCycleIdToRound`、`resolveClosedCycleIdSince` |
+| [`evolve.mjs`](../../src/cli/commands/evolve.mjs) | 轮次成功后 best-effort 关联 closed cycle |
+| [`round-detail.mjs`](../../src/intelligence/evolution-viewer/round-detail.mjs) | API 详情合入 cycle-state steps |
+| [`viewer-api.mjs`](../../src/intelligence/evolution-viewer/viewer-api.mjs) | SSE 识别 `cycle_step_completed` / `cycle_event_dispatched` |
+| [`tools/evolution-viewer/public/app.js`](../../tools/evolution-viewer/public/app.js) | step 状态徽章 UI |
+| [`AGENTS.md`](../../AGENTS.md) | stuck 诊断与 `cycles.*` 字段说明 |
+
+### 9.3 验证
+
+| 项 | 结果 |
+| --- | --- |
+| E2E mock step 链 | `test/cycle-e2e.test.mjs` |
+| reconcile 恢复 | `test/cycle-checkpoint.test.mjs` |
+| stuck step / SSE / manifest link | 单元测试覆盖 |
 
 ---
 

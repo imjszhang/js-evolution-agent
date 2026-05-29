@@ -89,6 +89,8 @@ export function buildSubjectArtifactOverview(root, subject, { projection = null 
       failed_tasks: projection?.tasks?.counts?.failed ?? 0,
       pending_tasks: projection?.tasks?.counts?.pending ?? 0,
       acknowledged_tasks: projection?.tasks?.counts?.acknowledged ?? 0,
+      open_cycles: projection?.cycles?.open_count ?? 0,
+      stuck_steps: projection?.cycles?.stuck_steps?.length ?? 0,
     },
   };
 }

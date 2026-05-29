@@ -159,6 +159,56 @@ body {
   font-family: ui-monospace, Consolas, monospace;
 }
 
+.detail-steps {
+  width: 100%;
+}
+
+.step-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.step-badge {
+  display: inline-block;
+  font-size: 0.72rem;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: #f3f4f6;
+  color: var(--muted);
+  text-transform: lowercase;
+}
+
+.step-badge.step-done {
+  background: #d1fae5;
+  color: #065f46;
+  border-color: #a7f3d0;
+}
+
+.step-badge.step-running {
+  background: #dbeafe;
+  color: #1d4ed8;
+  border-color: #93c5fd;
+}
+
+.step-badge.step-pending {
+  background: #f3f4f6;
+  color: var(--muted);
+}
+
+.step-badge.step-skipped {
+  background: #fef3c7;
+  color: #92400e;
+  border-color: #fde68a;
+}
+
+.step-badge.step-failed {
+  background: #fee2e2;
+  color: #991b1b;
+  border-color: #fecaca;
+}
+
 .diary-select label {
   font-size: 0.85rem;
   color: var(--muted);

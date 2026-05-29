@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { getProjectRoot, loadProjectEnv } from '../utils/project.mjs';
 import {
   appendRunEvent,
+  attachCycleIdToRound,
   createRunId,
   createRunManifest,
   findRunManifest,
@@ -14,6 +15,7 @@ import {
   normalizeEvolveSubjects,
   parsePositiveInt,
   readRunManifest,
+  resolveClosedCycleIdSince,
   runManifestPath,
   saveRunManifest,
   summarizeManifest,
@@ -119,8 +121,11 @@ export function classifyCycleFailure({ exitCode = 1, output = '' } = {}) {
   return { retryable: false, reason: 'unclassified', code: 'unclassified', message: text || `exit code ${exitCode}` };
 }
 
-export function buildCycleEnv(flags, subject) {
+export function buildCycleEnv(flags, subject, root = null) {
   const env = { ...process.env, [SUBJECT_ENV]: subject };
+  if (root) {
+    env.JEA_PROJECT_ROOT = root;
+  }
   if (flags.mock) {
     delete env.DEEPSEEK_API_KEY;
     env.JEA_FORCE_MOCK = '1';
@@ -195,7 +200,7 @@ function runCycleProcess({ root, subject, flags = {}, hooks = {}, signal = null,
   if (flags.deepseek && !process.env.DEEPSEEK_API_KEY) {
     return Promise.resolve({ exitCode: 1, output: 'DEEPSEEK_API_KEY is required for --deepseek.' });
   }
-  const env = buildCycleEnv(flags, subject);
+  const env = buildCycleEnv(flags, subject, root);
   const child = spawn(process.execPath, ['--preserve-symlinks', runner], {
     cwd: root,
     env,
@@ -386,7 +391,12 @@ async function runOneRound(root, manifest, flags) {
         },
       });
       if (result.exitCode === 0) {
-        current = saveRunManifest(root, current.subject, markRoundSucceeded(current, round));
+        let succeeded = markRoundSucceeded(current, round);
+        const cycleId = resolveClosedCycleIdSince(root, current.subject, round.started_at);
+        if (cycleId) {
+          succeeded = attachCycleIdToRound(succeeded, round.index, cycleId);
+        }
+        current = saveRunManifest(root, current.subject, succeeded);
         appendRunEvent(root, current.subject, current, { type: 'round_succeeded', round: round.index, attempt: round.attempts });
         if (isManifestComplete(current)) {
           appendRunEvent(root, current.subject, current, { type: 'run_succeeded' });

@@ -5,7 +5,7 @@ import { runtimeForSubject } from './evolve-runs.mjs';
 import { readTaskQueue, summarizeTaskQueue } from './daemon-tasks.mjs';
 import { readWorkerState, summarizeWorkerState } from './daemon-worker-state.mjs';
 import { buildCycleProjection } from './cycle-dispatch.mjs';
-import { listOpenCycles, summarizeCycleState } from './cycle-state.mjs';
+import { findStuckSteps, listOpenCycles, summarizeCycleState } from './cycle-state.mjs';
 
 export function daemonViewsDir(root, subject) {
   return join(runtimeForSubject(root, subject).evolutionDir, 'views');
@@ -115,6 +115,24 @@ export function buildDaemonProjection(root, subject, { store = null, eventLimit 
       acknowledged_reason: task.acknowledged_reason,
     })),
   };
+  const openCycles = listOpenCycles(root, subject);
+  const stuckSteps = [];
+  let oldestOpenCycleAgeMs = null;
+  for (const cycle of openCycles) {
+    for (const item of findStuckSteps(cycle, { staleMs: heartbeatStaleMs })) {
+      stuckSteps.push({ cycle_id: cycle.cycle_id, ...item });
+    }
+    if (cycle.opened_at) {
+      const opened = Date.parse(cycle.opened_at);
+      if (Number.isFinite(opened)) {
+        const ageMs = Date.now() - opened;
+        if (oldestOpenCycleAgeMs == null || ageMs > oldestOpenCycleAgeMs) {
+          oldestOpenCycleAgeMs = ageMs;
+        }
+      }
+    }
+  }
+
   return {
     subject,
     generated_at: new Date().toISOString(),
@@ -123,7 +141,9 @@ export function buildDaemonProjection(root, subject, { store = null, eventLimit 
     tasks,
     cycles: {
       ...buildCycleProjection(root, subject),
-      recent: listOpenCycles(root, subject).slice(0, 5).map(summarizeCycleState),
+      stuck_steps: stuckSteps,
+      oldest_open_cycle_age_ms: oldestOpenCycleAgeMs,
+      recent: openCycles.slice(0, 5).map((cycle) => summarizeCycleState(cycle, { staleMs: heartbeatStaleMs })),
     },
     recent_events: events.slice(0, eventLimit).map((event) => ({
       id: event.id,

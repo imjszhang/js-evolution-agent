@@ -315,14 +315,24 @@ runtime/subjects/<data_namespace>/data/evolution/cycle-state/
     └── ...
 ```
 
-下游 step 子进程从 checkpoint 重建上游产物（如 verify 读取 `exec.json` 的 `executed` 列表）。`jea daemon status --json` 的 `cycles` / `tasks.step_tasks` 字段可观测 step 进度。
+下游 step 子进程从 checkpoint 重建上游产物（如 verify 读取 `exec.json` 的 `executed` 列表）。`jea daemon status --json` 的 `cycles` / `tasks.step_tasks` 字段可观测 step 进度：
+
+| 字段 | 含义 |
+| --- | --- |
+| `cycles.open_count` | 未关闭 cycle 数量 |
+| `cycles.stuck_steps[]` | `running` 且 `updated_at` 超过 heartbeat stale 阈值的 step（含 `cycle_id`、`step`、`age_ms`） |
+| `cycles.oldest_open_cycle_age_ms` | 最久未关闭 cycle 的打开时长（毫秒） |
+| `cycles.recent[].running_steps` / `stuck_steps` | 各 open cycle 摘要 |
+| `tasks.step_tasks` | 带 `cycle_id` 的 daemon task 列表 |
+
+卡住 step 阈值与 worker heartbeat stale 共用（默认 60s，可用 `--heartbeat-stale-ms` 调整）。
 
 ### 观测与诊断
 
 - `jea daemon status [--all | --subjects a,b] [--json]`：查看 worker、队列、健康状态、锁和最近事件。
-- `jea daemon doctor [--all | --subjects a,b] [--json]`：诊断 daemon 健康状态。
+- `jea daemon doctor [--all | --subjects a,b] [--json]`：诊断 daemon 健康状态；若存在 stale `running` step，输出 `stuck_cycle_step` 诊断（warning/error，含 `stuck_steps` 明细）。
 - `jea daemon events [--all | --subjects a,b] [--limit N] [--json]`：查看近期 daemon/task 生命周期事件。
-- `jea daemon inbox [--all | --subjects a,b] [--json]`：汇总最新 intel report、evolution diary、verify report、standing memory 和健康注意项。
+- `jea daemon inbox [--all | --subjects a,b] [--json]`：汇总最新 intel report、evolution diary、verify report、standing memory 和健康注意项；`attention.open_cycles` / `attention.stuck_steps` 汇总 open cycle 与卡住 step 数量。
 
 任务列表与处置：
 

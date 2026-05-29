@@ -200,6 +200,22 @@ function buildDaemonDiagnostics(root, subject, projection) {
       action: 'This is expected while daemon or foreground evolve is running; avoid concurrent evolve for the same subject.',
     });
   }
+  const stuckSteps = projection.cycles?.stuck_steps ?? [];
+  if (stuckSteps.length > 0) {
+    const summary = stuckSteps
+      .slice(0, 5)
+      .map((item) => `${item.cycle_id}:${item.step}`)
+      .join(', ');
+    diagnostics.push({
+      severity: stuckSteps.some((item) => (item.age_ms ?? 0) >= 120_000)
+        ? 'error'
+        : 'warning',
+      code: 'stuck_cycle_step',
+      message: `${stuckSteps.length} cycle step(s) appear stuck in running state (${summary}).`,
+      action: 'Inspect cycle-state, reclaim expired task leases with `jea daemon work --once`, or retry/cancel the stuck task.',
+      stuck_steps: stuckSteps,
+    });
+  }
   if (!diagnostics.length) {
     diagnostics.push({
       severity: 'ok',
@@ -396,7 +412,7 @@ async function workRunCycleStep(root, subject, task, flags) {
   if (watchdog) clearInterval(watchdog);
 
   const stepResult = parseStepResult(result.output);
-  const resolvedCycleId = stepResult?.cycle_id || cycleId;
+  const resolvedCycleId = cycleId || stepResult?.cycle_id;
 
   if (result.exitCode === 0) {
     dispatchAfterStepCompletion(root, subject, step, {

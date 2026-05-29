@@ -14,6 +14,7 @@ import {
   subjectConfigToLegacy,
   subjectFile,
 } from './subjects.mjs';
+import { listCycleStates } from './cycle-state.mjs';
 
 export const RUN_STATUSES = new Set(['pending', 'running', 'succeeded', 'failed', 'interrupted']);
 export const ROUND_STATUSES = new Set(['pending', 'running', 'retrying', 'succeeded', 'failed', 'interrupted']);
@@ -132,6 +133,7 @@ export function createRunManifest({ root, runId = createRunId(), subject, subjec
     rounds: Array.from({ length: requestedRounds }, (_, idx) => ({
       index: idx + 1,
       status: 'pending',
+      cycle_id: null,
       attempts: 0,
       started_at: null,
       ended_at: null,
@@ -243,6 +245,27 @@ export function isManifestComplete(manifest) {
 
 export function nextRunnableRound(manifest) {
   return (manifest.rounds || []).find((round) => round.status !== 'succeeded') ?? null;
+}
+
+export function attachCycleIdToRound(manifest, roundIndex, cycleId) {
+  if (!manifest || roundIndex == null || !cycleId) return manifest;
+  return {
+    ...manifest,
+    rounds: (manifest.rounds || []).map((round) => (
+      round.index === roundIndex ? { ...round, cycle_id: cycleId } : round
+    )),
+  };
+}
+
+export function resolveClosedCycleIdSince(root, subject, startedAt = null) {
+  const closed = listCycleStates(root, subject).filter((state) => {
+    if (state.status !== 'closed' || !state.closed_at) return false;
+    if (!startedAt) return true;
+    return state.closed_at >= startedAt;
+  });
+  if (!closed.length) return null;
+  closed.sort((a, b) => String(b.closed_at).localeCompare(String(a.closed_at)));
+  return closed[0].cycle_id;
 }
 
 export function isSubjectLocked(root, subject) {

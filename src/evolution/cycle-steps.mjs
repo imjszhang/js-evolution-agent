@@ -68,6 +68,10 @@ async function recordStepSidecar(root, subject, cycleId, step, status, metaPatch
   }
 }
 
+function stateCycleId(intelResult, stateCycleId = null, execResult = null) {
+  return stateCycleId || intelResult?.cycle_id || execResult?.cycle_id || null;
+}
+
 export async function runIntelStep(ctx, { cycleId = null, recordState = null } = {}) {
   const { cfg, engine, runtime, store } = ctx;
   const forcedCycleId = cycleId || process.env.JEA_CYCLE_ID;
@@ -166,7 +170,7 @@ export async function runIntelReportStep(ctx, { intelResult, recordState = null 
   return { intelReportReady, eventPayload: { intel_report_ready: intelReportReady } };
 }
 
-export async function runExecStep(ctx, { recordState = null } = {}) {
+export async function runExecStep(ctx, { recordState = null, intelResult = null, stateCycleId: stateCycleIdOpt = null } = {}) {
   const { cfg, runtime, store } = ctx;
   const exec = new ExecutionPipeline({
     host: cfg.host,
@@ -175,6 +179,7 @@ export async function runExecStep(ctx, { recordState = null } = {}) {
     source: 'queue',
   });
   const execResult = await exec.run({ limit: parseExecLimitFromEnv() });
+  const artifactCycleId = stateCycleId(intelResult, stateCycleIdOpt, execResult);
   store.recordEvolutionEvent({
     type: 'exec_pipeline',
     status: execResult.success ? 'ok' : 'failed',
@@ -183,17 +188,18 @@ export async function runExecStep(ctx, { recordState = null } = {}) {
     error: execResult.error,
   });
   if (!execResult.success) {
-    if (recordState) {
-      await recordStepSidecar(recordState.root, recordState.subject, execResult.cycle_id, 'exec', 'failed', {
+    if (recordState && artifactCycleId) {
+      await recordStepSidecar(recordState.root, recordState.subject, artifactCycleId, 'exec', 'failed', {
         error: execResult.error,
       });
     }
     throw new Error(execResult.error || 'exec pipeline failed');
   }
-  if (recordState) {
-    await recordStepSidecar(recordState.root, recordState.subject, execResult.cycle_id, 'exec', 'done');
-    await persistCheckpoint(recordState, execResult.cycle_id, 'exec', {
+  if (recordState && artifactCycleId) {
+    await recordStepSidecar(recordState.root, recordState.subject, artifactCycleId, 'exec', 'done');
+    await persistCheckpoint(recordState, artifactCycleId, 'exec', {
       cycle_id: execResult.cycle_id,
+      intel_cycle_id: intelResult?.cycle_id ?? artifactCycleId,
       success: execResult.success,
       executed: execResult.executed ?? [],
       error: execResult.error ?? null,
@@ -233,8 +239,9 @@ export async function runVerifyStep(ctx, { intelResult, execResult, recordState 
     report_path: reportPath,
   });
   if (recordState) {
-    await recordStepSidecar(recordState.root, recordState.subject, execResult.cycle_id, 'verify', 'done');
-    await persistCheckpoint(recordState, execResult.cycle_id, 'verify', {
+    const artifactCycleId = stateCycleId(intelResult);
+    await recordStepSidecar(recordState.root, recordState.subject, artifactCycleId, 'verify', 'done');
+    await persistCheckpoint(recordState, artifactCycleId, 'verify', {
       cycle_id: execResult.cycle_id,
       report_path: reportPath,
       verified_count: verification.verified?.length ?? 0,
@@ -250,8 +257,9 @@ export async function runBeliefUpdateStep(ctx, {
   const { cfg, store } = ctx;
   if (skipBeliefUpdateFromEnv()) {
     if (recordState) {
-      await recordStepSidecar(recordState.root, recordState.subject, execResult.cycle_id, 'belief_update', 'skipped');
-      await persistCheckpoint(recordState, execResult.cycle_id, 'belief_update', {
+      const artifactCycleId = stateCycleId(intelResult, null, execResult);
+      await recordStepSidecar(recordState.root, recordState.subject, artifactCycleId, 'belief_update', 'skipped');
+      await persistCheckpoint(recordState, artifactCycleId, 'belief_update', {
         cycle_id: execResult.cycle_id,
         skipped: true,
         beliefUpdateResult: null,
@@ -272,8 +280,9 @@ export async function runBeliefUpdateStep(ctx, {
       logger: cfg.host.logger,
     });
     if (recordState) {
-      await recordStepSidecar(recordState.root, recordState.subject, execResult.cycle_id, 'belief_update', 'done');
-      await persistCheckpoint(recordState, execResult.cycle_id, 'belief_update', {
+      const artifactCycleId = stateCycleId(intelResult, null, execResult);
+      await recordStepSidecar(recordState.root, recordState.subject, artifactCycleId, 'belief_update', 'done');
+      await persistCheckpoint(recordState, artifactCycleId, 'belief_update', {
         cycle_id: execResult.cycle_id,
         skipped: false,
         beliefUpdateResult: {
@@ -293,7 +302,8 @@ export async function runBeliefUpdateStep(ctx, {
       error: msg,
     });
     if (recordState) {
-      await recordStepSidecar(recordState.root, recordState.subject, execResult.cycle_id, 'belief_update', 'failed', { error: msg });
+      const artifactCycleId = stateCycleId(intelResult, null, execResult);
+      await recordStepSidecar(recordState.root, recordState.subject, artifactCycleId, 'belief_update', 'failed', { error: msg });
     }
     return { failed: true, error: msg, beliefUpdateResult: null };
   }
@@ -404,8 +414,9 @@ export async function runDiaryStep(ctx, {
       logger: cfg.host.logger,
     });
     if (recordState) {
-      await recordStepSidecar(recordState.root, recordState.subject, execResult?.cycle_id || intelResult.cycle_id, 'diary', 'done');
-      await persistCheckpoint(recordState, execResult?.cycle_id || intelResult.cycle_id, 'diary', {
+      const artifactCycleId = stateCycleId(intelResult, null, execResult);
+      await recordStepSidecar(recordState.root, recordState.subject, artifactCycleId, 'diary', 'done');
+      await persistCheckpoint(recordState, artifactCycleId, 'diary', {
         cycle_id: execResult?.cycle_id || intelResult.cycle_id,
         mdPath: diary.mdPath ?? null,
         source: diary.source ?? null,
@@ -424,7 +435,8 @@ export async function runDiaryStep(ctx, {
       error: msg,
     });
     if (recordState) {
-      await recordStepSidecar(recordState.root, recordState.subject, execResult?.cycle_id || intelResult.cycle_id, 'diary', 'failed', { error: msg });
+      const artifactCycleId = stateCycleId(intelResult, null, execResult);
+      await recordStepSidecar(recordState.root, recordState.subject, artifactCycleId, 'diary', 'failed', { error: msg });
     }
     return { failed: true, error: msg };
   }

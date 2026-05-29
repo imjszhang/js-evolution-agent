@@ -157,6 +157,13 @@ export function sseEventFromEvolutionLine(event, runtimeRoot) {
     return { type: 'round_updated', cycle_id: intelId, has_diary: true };
   }
 
+  if (
+    (event.type === 'cycle_step_completed' || event.type === 'cycle_event_dispatched')
+    && cycleId.startsWith('cycle-')
+  ) {
+    return { type: 'round_updated', cycle_id: cycleId };
+  }
+
   return null;
 }
 

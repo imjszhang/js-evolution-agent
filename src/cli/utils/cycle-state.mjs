@@ -212,13 +212,44 @@ export function createCycle(root, subject, { cycleId = null, meta = {} } = {}) {
   return state;
 }
 
-export function summarizeCycleState(state) {
+export function findStuckSteps(state, { staleMs = 60_000 } = {}) {
+  if (!state?.steps) return [];
+  const now = Date.now();
+  const stuck = [];
+  for (const [stepName, info] of Object.entries(state.steps)) {
+    if (info?.status !== 'running') continue;
+    const updated = Date.parse(info.updated_at || '');
+    if (!Number.isFinite(updated)) {
+      stuck.push({
+        step: stepName,
+        age_ms: null,
+        updated_at: info.updated_at ?? null,
+      });
+      continue;
+    }
+    const ageMs = now - updated;
+    if (ageMs >= staleMs) {
+      stuck.push({
+        step: stepName,
+        age_ms: ageMs,
+        updated_at: info.updated_at,
+      });
+    }
+  }
+  return stuck;
+}
+
+export function summarizeCycleState(state, { staleMs = null } = {}) {
   if (!state) return null;
   const steps = state.steps || {};
   const stepSummary = {};
   for (const [name, info] of Object.entries(steps)) {
     stepSummary[name] = info?.status ?? 'pending';
   }
+  const running_steps = Object.entries(steps)
+    .filter(([, info]) => info?.status === 'running')
+    .map(([name]) => name);
+  const stuck = staleMs != null ? findStuckSteps(state, { staleMs }) : [];
   return {
     cycle_id: state.cycle_id,
     subject: state.subject,
@@ -226,6 +257,8 @@ export function summarizeCycleState(state) {
     opened_at: state.opened_at,
     closed_at: state.closed_at,
     steps: stepSummary,
+    running_steps,
+    stuck_steps: stuck,
     meta: state.meta,
   };
 }

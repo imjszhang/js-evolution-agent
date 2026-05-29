@@ -5,7 +5,9 @@ import { tmpdir } from 'node:os';
 import { writeJsonFile } from '../src/cli/utils/files.mjs';
 import {
   createCycle,
+  cycleStatePath,
   markStepStatus,
+  readCycleState,
   readStepArtifact,
   writeStepArtifact,
   listStepArtifacts,
@@ -82,6 +84,35 @@ describe('cycle step checkpoints', () => {
     expect(enqueued.some((item) => item.type === 'verify')).toBe(true);
     const queue = readTaskQueue(root, 'alpha');
     expect(queue.tasks.some((t) => t.type === 'verify' && t.input.cycle_id === cycleId)).toBe(true);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('reconcile re-enqueues missing downstream step without duplicates', () => {
+    const root = makeRoot();
+    const cycleId = 'cycle-cp-stale-running';
+    createCycle(root, 'alpha', { cycleId });
+    markStepStatus(root, 'alpha', cycleId, 'intel', { status: 'done', metaPatch: { decisions_queued: 0 } });
+    markStepStatus(root, 'alpha', cycleId, 'intel_report', { status: 'running' });
+    const staleAt = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    const state = readCycleState(root, 'alpha', cycleId);
+    state.steps.intel_report.updated_at = staleAt;
+    writeJsonFile(cycleStatePath(root, 'alpha', cycleId), state);
+
+    const first = reconcileOpenCycles(root, 'alpha');
+    expect(first.enqueued.some((item) => item.type === 'intel_report')).toBe(true);
+    const queueAfterFirst = readTaskQueue(root, 'alpha');
+    const intelReportTasks = queueAfterFirst.tasks.filter(
+      (t) => t.type === 'intel_report' && t.input.cycle_id === cycleId,
+    );
+    expect(intelReportTasks).toHaveLength(1);
+
+    const second = reconcileOpenCycles(root, 'alpha');
+    expect(second.enqueued.filter((item) => item.type === 'intel_report')).toHaveLength(0);
+    const queueAfterSecond = readTaskQueue(root, 'alpha');
+    const intelReportTasksAgain = queueAfterSecond.tasks.filter(
+      (t) => t.type === 'intel_report' && t.input.cycle_id === cycleId,
+    );
+    expect(intelReportTasksAgain).toHaveLength(1);
     rmSync(root, { recursive: true, force: true });
   });
 });

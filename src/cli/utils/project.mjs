@@ -9,6 +9,8 @@ const require = createRequire(import.meta.url);
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 export function getProjectRoot() {
+  const fromEnv = process.env.JEA_PROJECT_ROOT;
+  if (fromEnv) return resolve(fromEnv);
   return resolve(__dirname, '..', '..', '..');
 }
 

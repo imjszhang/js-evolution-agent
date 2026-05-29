@@ -1,0 +1,153 @@
+import { describe, expect, it } from 'vitest';
+import {
+  cpSync,
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { writeJsonFile } from '../src/cli/utils/files.mjs';
+import { initData } from '../src/cli/commands/data.mjs';
+import { startCycleFromTick, reconcileOpenCycles } from '../src/cli/utils/cycle-dispatch.mjs';
+import {
+  CYCLE_STEP_TYPES,
+  TERMINAL_STEP_STATUSES,
+} from '../src/cli/utils/cycle-reducer.mjs';
+import {
+  listStepArtifacts,
+  readCycleState,
+} from '../src/cli/utils/cycle-state.mjs';
+import { readTaskQueue } from '../src/cli/utils/daemon-tasks.mjs';
+import { workOnce } from '../src/cli/commands/daemon.mjs';
+import { runtimeForSubject } from '../src/cli/utils/evolve-runs.mjs';
+
+const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
+const SUBJECT = 'alpha';
+
+function linkOrCopy(from, to, { dir = false, preferCopy = false } = {}) {
+  if (existsSync(to)) return;
+  if (preferCopy) {
+    cpSync(from, to, { recursive: dir });
+    return;
+  }
+  try {
+    cpSync(from, to, { recursive: dir });
+  } catch {
+    /* ignore */
+  }
+}
+
+function makeE2eProjectRoot() {
+  const root = mkdtempSync(join(tmpdir(), 'jea-e2e-'));
+  for (const name of ['run.mjs', 'oada.config.mjs']) {
+    linkOrCopy(join(REPO_ROOT, name), join(root, name), { preferCopy: true });
+  }
+  linkOrCopy(join(REPO_ROOT, 'src'), join(root, 'src'), { dir: true });
+  linkOrCopy(join(REPO_ROOT, 'node_modules'), join(root, 'node_modules'), { dir: true });
+
+  mkdirSync(join(root, 'policies', 'subjects'), { recursive: true });
+  writeFileSync(join(root, 'policies', 'subjects', 'alpha.md'), '# alpha\n\n## Subject\nalpha', 'utf-8');
+  writeJsonFile(join(root, 'policies', 'active-subject.json'), {
+    active: SUBJECT,
+    policy: 'subjects/alpha.md',
+    data_namespace: 'alpha',
+  });
+
+  initData(root, { all: true, subject: SUBJECT });
+  return root;
+}
+
+const STEP_FLAGS = {
+  mock: true,
+  'skip-goals-assess': true,
+  'skip-belief-update': true,
+};
+
+function pendingOrRunningCount(root) {
+  const queue = readTaskQueue(root, SUBJECT);
+  return queue.tasks.filter((task) => task.status === 'pending' || task.status === 'running').length;
+}
+
+async function drainCycle(root, cycleId, stepInput) {
+  const maxIterations = 80;
+  for (let i = 0; i < maxIterations; i += 1) {
+    const state = readCycleState(root, SUBJECT, cycleId);
+    if (state?.status === 'closed' || state?.status === 'failed') {
+      return state;
+    }
+
+    if (pendingOrRunningCount(root) === 0) {
+      reconcileOpenCycles(root, SUBJECT, stepInput);
+    }
+
+    await workOnce(root, SUBJECT, STEP_FLAGS);
+  }
+  return readCycleState(root, SUBJECT, cycleId);
+}
+
+function readEvolutionEventTypes(root) {
+  const runtimeRoot = runtimeForSubject(root, SUBJECT).runtimeRoot;
+  const path = join(runtimeRoot, 'data', 'intelligence', 'evolution_events', 'evolution-events.jsonl');
+  if (!existsSync(path)) return [];
+  return readFileSync(path, 'utf-8')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+}
+
+describe('cycle step e2e (mock)', () => {
+  it('workOnce loop runs full step chain until cycle closed', async () => {
+    const root = makeE2eProjectRoot();
+    const stepInput = {
+      mock: true,
+      skip_belief_update: true,
+      skip_goals_assess: true,
+    };
+
+    try {
+      const started = startCycleFromTick(root, SUBJECT, stepInput);
+      expect(started.started).toBe(true);
+      const cycleId = started.cycle.cycle_id;
+      expect(cycleId).toBeTruthy();
+
+      const finalState = await drainCycle(root, cycleId, stepInput);
+      expect(finalState?.status).toBe('closed');
+
+      for (const step of CYCLE_STEP_TYPES) {
+        const status = finalState.steps[step]?.status;
+        expect(TERMINAL_STEP_STATUSES.has(status), `${step}=${status}`).toBe(true);
+      }
+
+      const artifacts = listStepArtifacts(root, SUBJECT, cycleId);
+      expect(artifacts).toContain('intel');
+      expect(artifacts).toContain('exec');
+      expect(artifacts).toContain('verify');
+      expect(artifacts).toContain('diary');
+
+      const events = readEvolutionEventTypes(root);
+      const types = new Set(events.map((e) => e.type));
+      expect(types.has('intel_pipeline')).toBe(true);
+      expect(types.has('exec_pipeline')).toBe(true);
+      expect(types.has('verify_pipeline')).toBe(true);
+      expect(types.has('evolution_diary')).toBe(true);
+
+      const cycleEvents = events.filter((e) => e.cycle_id === cycleId || e.cycle_id?.startsWith('exec-'));
+      expect(cycleEvents.length).toBeGreaterThan(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 180_000);
+});

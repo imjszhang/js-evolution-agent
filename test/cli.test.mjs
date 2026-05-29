@@ -74,6 +74,7 @@ import {
 } from '../src/cli/utils/subjects.mjs';
 import {
   appendRunEvent,
+  attachCycleIdToRound,
   createRunManifest,
   findRunManifest,
   listRunManifests,
@@ -828,6 +829,10 @@ describe('evolve run manifests', () => {
     expect(manifest.rounds.map((round) => round.status)).toEqual(['pending', 'pending']);
 
     manifest.rounds[0].status = 'succeeded';
+    const withCycle = attachCycleIdToRound(manifest, 1, 'cycle-test-link');
+    expect(withCycle.rounds[0].cycle_id).toBe('cycle-test-link');
+    expect(withCycle.rounds[1].cycle_id).toBeNull();
+
     const saved = saveRunManifest(root, 'alpha', manifest);
     const found = findRunManifest(root, 'evolve-test', { subject: 'alpha' });
     const summary = summarizeManifest(found.manifest);

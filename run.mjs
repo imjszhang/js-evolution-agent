@@ -88,7 +88,12 @@ async function runSingleStepMode(runtime, step, cycleId) {
       return;
     }
     case 'exec': {
-      const { execResult } = await runExecStep(ctx, { recordState });
+      requireCheckpoint(stepContext);
+      const { execResult } = await runExecStep(ctx, {
+        recordState,
+        intelResult: stepContext.intelResult,
+        stateCycleId: cycleId,
+      });
       console.log(`JEA_STEP_RESULT ${JSON.stringify({ step: 'exec', cycle_id: execResult.cycle_id, ok: true })}`);
       return;
     }
@@ -184,7 +189,7 @@ async function runCycle(runtime) {
   console.log('\n=== Phase 2: exec pipeline ===');
   let execResult;
   try {
-    ({ execResult } = await runExecStep(ctx, { recordState }));
+    ({ execResult } = await runExecStep(ctx, { recordState, intelResult, stateCycleId: intelResult.cycle_id }));
     console.log('  success:', execResult.success);
     console.log('  executed:', execResult.executed.length);
   } catch (e) {

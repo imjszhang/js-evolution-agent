@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { writeJsonFile } from '../src/cli/utils/files.mjs';
 import {
   createCycle,
+  findStuckSteps,
   listOpenCycles,
   markStepStatus,
   readCycleState,
@@ -97,6 +98,21 @@ describe('cycle-state and dispatch', () => {
     const state = createCycle(root, 'alpha', { cycleId: 'cycle-sum-1' });
     const summary = summarizeCycleState(state);
     expect(summary.steps.intel).toBe('pending');
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('findStuckSteps detects stale running steps', () => {
+    const root = makeRoot();
+    const cycleId = 'cycle-stuck-1';
+    createCycle(root, 'alpha', { cycleId });
+    markStepStatus(root, 'alpha', cycleId, 'exec', { status: 'running' });
+    const state = readCycleState(root, 'alpha', cycleId);
+    state.steps.exec.updated_at = new Date(Date.now() - 120_000).toISOString();
+    const stuck = findStuckSteps(state, { staleMs: 60_000 });
+    expect(stuck).toHaveLength(1);
+    expect(stuck[0].step).toBe('exec');
+    const summary = summarizeCycleState(state, { staleMs: 60_000 });
+    expect(summary.stuck_steps).toHaveLength(1);
     rmSync(root, { recursive: true, force: true });
   });
 });

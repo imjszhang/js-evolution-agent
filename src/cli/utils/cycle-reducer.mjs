@@ -228,6 +228,7 @@ export function nextSteps(event, cycleState = {}, options = {}) {
       } else if ((shouldSkipGoalsAssess(cycleState, options) || !intelReportReady(cycleState, event))
         && isStepRunnable(cycleState, 'goals_assess')) {
         markSkipped.push('goals_assess');
+        if (isStepRunnable(cycleState, 'goals_calibrate')) markSkipped.push('goals_calibrate');
       }
       if (diaryReady(cycleState, event, options)) {
         enqueue('diary', 'verify_done');
