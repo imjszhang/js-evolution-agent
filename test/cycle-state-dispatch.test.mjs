@@ -11,8 +11,8 @@ import {
   readCycleState,
   summarizeCycleState,
 } from '../src/cli/utils/cycle-state.mjs';
-import { startCycleFromTick, dispatchCycleEvent } from '../src/cli/utils/cycle-dispatch.mjs';
-import { enqueueTask, readTaskQueue } from '../src/cli/utils/daemon-tasks.mjs';
+import { startCycleFromTick, dispatchCycleEvent, reconcileOpenCycles } from '../src/cli/utils/cycle-dispatch.mjs';
+import { enqueueTask, pendingTasksPath, readTaskQueue } from '../src/cli/utils/daemon-tasks.mjs';
 import { stepIdempotencyKey } from '../src/cli/utils/cycle-reducer.mjs';
 
 function makeRoot() {
@@ -25,7 +25,24 @@ function makeRoot() {
     data_namespace: 'alpha',
   });
   mkdirSync(join(tempDir, 'runtime', 'subjects', 'alpha', 'data', 'intelligence'), { recursive: true });
+  mkdirSync(join(tempDir, 'runtime', 'subjects', 'alpha', 'data', 'evolution', 'tasks'), { recursive: true });
   return tempDir;
+}
+
+function seedRunningStepTask(root, subject, cycleId, stepType, { leaseMs = 300_000 } = {}) {
+  const key = stepIdempotencyKey(subject, cycleId, stepType);
+  const { task } = enqueueTask(root, subject, {
+    type: stepType,
+    idempotencyKey: key,
+    input: { cycle_id: cycleId },
+  });
+  const queue = readTaskQueue(root, subject);
+  const target = queue.tasks.find((item) => item.task_id === task.task_id);
+  target.status = 'running';
+  target.lease_owner = 'test-worker';
+  target.lease_expires_at = new Date(Date.now() + leaseMs).toISOString();
+  writeJsonFile(pendingTasksPath(root, subject), queue);
+  return target;
 }
 
 describe('cycle-state and dispatch', () => {
@@ -101,18 +118,80 @@ describe('cycle-state and dispatch', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it('findStuckSteps detects stale running steps', () => {
+  it('findStuckSteps ignores long-running step when task lease is valid', () => {
+    const root = makeRoot();
+    const cycleId = 'cycle-stuck-lease-1';
+    createCycle(root, 'alpha', { cycleId, meta: { driver: 'daemon' } });
+    markStepStatus(root, 'alpha', cycleId, 'exec', { status: 'running' });
+    seedRunningStepTask(root, 'alpha', cycleId, 'exec');
+    const state = readCycleState(root, 'alpha', cycleId);
+    state.steps.exec.updated_at = new Date(Date.now() - 120_000).toISOString();
+    const queue = readTaskQueue(root, 'alpha');
+    const stuck = findStuckSteps(state, { taskQueue: queue, subject: 'alpha' });
+    expect(stuck).toHaveLength(0);
+    const summary = summarizeCycleState(state, { taskQueue: queue, subject: 'alpha' });
+    expect(summary.stuck_steps).toHaveLength(0);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('findStuckSteps flags running step without valid lease', () => {
     const root = makeRoot();
     const cycleId = 'cycle-stuck-1';
     createCycle(root, 'alpha', { cycleId, meta: { driver: 'daemon' } });
     markStepStatus(root, 'alpha', cycleId, 'exec', { status: 'running' });
     const state = readCycleState(root, 'alpha', cycleId);
     state.steps.exec.updated_at = new Date(Date.now() - 120_000).toISOString();
-    const stuck = findStuckSteps(state, { staleMs: 60_000 });
+    const queue = readTaskQueue(root, 'alpha');
+    const stuck = findStuckSteps(state, { taskQueue: queue, subject: 'alpha' });
     expect(stuck).toHaveLength(1);
     expect(stuck[0].step).toBe('exec');
-    const summary = summarizeCycleState(state, { staleMs: 60_000 });
-    expect(summary.stuck_steps).toHaveLength(1);
+    expect(stuck[0].reason).toBe('no_task');
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('findStuckSteps flags running step when task lease expired', () => {
+    const root = makeRoot();
+    const cycleId = 'cycle-stuck-expired-1';
+    createCycle(root, 'alpha', { cycleId, meta: { driver: 'daemon' } });
+    markStepStatus(root, 'alpha', cycleId, 'exec', { status: 'running' });
+    seedRunningStepTask(root, 'alpha', cycleId, 'exec', { leaseMs: -1_000 });
+    const state = readCycleState(root, 'alpha', cycleId);
+    const queue = readTaskQueue(root, 'alpha');
+    const stuck = findStuckSteps(state, { taskQueue: queue, subject: 'alpha' });
+    expect(stuck).toHaveLength(1);
+    expect(stuck[0].reason).toBe('lease_expired');
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('reconcileOpenCycles keeps running exec when task lease is valid', () => {
+    const root = makeRoot();
+    const cycleId = 'cycle-reconcile-lease-1';
+    createCycle(root, 'alpha', { cycleId, meta: { driver: 'daemon' } });
+    markStepStatus(root, 'alpha', cycleId, 'exec', { status: 'running' });
+    seedRunningStepTask(root, 'alpha', cycleId, 'exec');
+    const state = readCycleState(root, 'alpha', cycleId);
+    state.steps.exec.updated_at = new Date(Date.now() - 120_000).toISOString();
+    writeJsonFile(
+      join(root, 'runtime', 'subjects', 'alpha', 'data', 'evolution', 'cycle-state', `${cycleId}.json`),
+      state,
+    );
+
+    reconcileOpenCycles(root, 'alpha');
+    const after = readCycleState(root, 'alpha', cycleId);
+    expect(after.steps.exec.status).toBe('running');
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('reconcileOpenCycles resets running exec when task lease expired', () => {
+    const root = makeRoot();
+    const cycleId = 'cycle-reconcile-expired-1';
+    createCycle(root, 'alpha', { cycleId, meta: { driver: 'daemon' } });
+    markStepStatus(root, 'alpha', cycleId, 'exec', { status: 'running' });
+    seedRunningStepTask(root, 'alpha', cycleId, 'exec', { leaseMs: -1_000 });
+
+    reconcileOpenCycles(root, 'alpha');
+    const after = readCycleState(root, 'alpha', cycleId);
+    expect(after.steps.exec.status).toBe('pending');
     rmSync(root, { recursive: true, force: true });
   });
 });

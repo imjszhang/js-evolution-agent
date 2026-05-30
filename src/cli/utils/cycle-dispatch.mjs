@@ -167,8 +167,8 @@ export function startCycleFromTick(root, subject, input = {}) {
   return { started: true, cycle: cycleState, ...dispatched };
 }
 
-function reconcileStaleRunningSteps(root, subject, cycleState, { staleMs = 60_000 } = {}) {
-  const stuck = findStuckSteps(cycleState, { staleMs });
+function reconcileStaleRunningSteps(root, subject, cycleState, taskQueue) {
+  const stuck = findStuckSteps(cycleState, { taskQueue, subject });
   if (!stuck.length) return cycleState;
   let current = cycleState;
   for (const item of stuck) {
@@ -180,6 +180,7 @@ function reconcileStaleRunningSteps(root, subject, cycleState, { staleMs = 60_00
 
 export function reconcileOpenCycles(root, subject, input = {}) {
   const staleMs = Number(input.stale_ms) > 0 ? Number(input.stale_ms) : 60_000;
+  const taskQueue = readTaskQueue(root, subject);
   let openCycles = listOpenCycles(root, subject);
   const options = dispatchOptionsFromInput(input);
   const allEnqueued = [];
@@ -209,7 +210,7 @@ export function reconcileOpenCycles(root, subject, input = {}) {
   }
 
   for (const cycleState of openCycles) {
-    const refreshed = reconcileStaleRunningSteps(root, subject, cycleState, { staleMs });
+    const refreshed = reconcileStaleRunningSteps(root, subject, cycleState, taskQueue);
     const { steps, markSkipped } = reconcileCycle(refreshed, options);
     if (markSkipped?.length) {
       markStepsSkipped(root, subject, cycleState.cycle_id, markSkipped);

@@ -2,8 +2,8 @@
 
 > 日期：2026-05-30  
 > 项目：js-evolution-agent  
-> 类型：架构设计 / 功能实现（含 parity 补全、Viewer daemon 控制台与阅读体验）
-> 来源：Cursor Agent 对话（设计 → 实施 → 审查 → Viewer 四轮迭代）
+> 类型：架构设计 / 功能实现（含 parity 补全、Viewer、租约权威 stuck 判定）
+> 来源：Cursor Agent 对话（设计 → 实施 → 审查 → Viewer 五轮 → reconcile/stuck 修复）
 
 ---
 
@@ -20,6 +20,8 @@
 9. [全面收尾（同日第三轮）](#9-全面收尾同日第三轮)
 10. [Evolution Viewer Daemon 控制台（同日第四轮）](#10-evolution-viewer-daemon-控制台同日第四轮)
 11. [Viewer 阅读体验 A+B（同日第五轮）](#11-viewer-阅读体验-ab同日第五轮)
+12. [韧性 P0（daemon 队列与存活）](#12-韧性-p0daemon-队列与存活)
+13. [租约权威 Stuck 判定（同日第六轮）](#13-租约权威-stuck-判定同日第六轮)
 
 ---
 
@@ -126,7 +128,7 @@ flowchart TD
 | 恰好推进一次 | reducer 读 cycle-state 再 enqueue | ✅ |
 | 单 subject 串行 | open cycle + pending 任务时不开新 cycle；subject lock | ✅ |
 | 崩溃恢复 | reconcile + 租约回收 | ✅ 基础路径 |
-| 长任务 | step 内 watchdog 续租（沿用 `workRunCycle` 模式） | ✅ |
+| 长任务 | step 内 watchdog 续租；stuck 判定以租约为准（见 [§13](#13-租约权威-stuck-判定同日第六轮)） | ✅ |
 
 ### 关键决策
 
@@ -275,6 +277,7 @@ jea daemon status --json
 | ~~**P2**~~ | evolve manifest 可选 `cycle_id`；viewer step 级展示 | ✅ |
 | ~~**P2**~~ | 卡住 step 可观测（doctor / status / inbox） | ✅ |
 | ~~**P2**~~ | viewer daemon 运行态控制台（Archive + Runtime 双轨） | ✅ 第四轮 |
+| ~~**P2**~~ | reconcile 长跑 exec 误杀（租约权威 stuck 判定） | ✅ 第六轮 |
 | **P3** | viewer tick 倒计时、checkpoint 面板、Attention 区 | ⏳ Phase 2–4 |
 | **P3** | viewer 侧栏 incremental diff、「暂停 live」 | ⏳ Phase 1.5+ |
 
@@ -283,7 +286,7 @@ jea daemon status --json
 - ~~viewer / `daemon inbox` step 级时间线与卡住告警~~ → ✅ 第三轮（step 徽章 + inbox attention）；✅ 第四轮（daemon-bar / active cycles / event feed）
 - ~~viewer live 更新导致报告区闪烁、滚动回顶~~ → ✅ 第五轮（fingerprint diff + 详情 patch）
 - 与 [beliefs-driven loop](../2026-05-28/beliefs-driven-evolution-loop.md) 对齐：belief_update 仍在 verify 之后
-- 长跑 `agent_run` 与 5min reconcile 窗口：首版保留 step 内 watchdog
+- ~~长跑 `agent_run` 与 5min reconcile 窗口：首版保留 step 内 watchdog~~ → ✅ 第六轮：stuck 改以 task 租约为准，长跑 exec 不再被 reconcile 误杀
 
 ---
 
@@ -326,7 +329,7 @@ jea daemon status --json
 | --- | --- |
 | [`test/cycle-e2e.test.mjs`](../../test/cycle-e2e.test.mjs) | mock 下 `startCycleFromTick` + `workOnce` 循环至 `cycle closed`；断言 checkpoint 与 evolution events |
 | [`test/cycle-checkpoint.test.mjs`](../../test/cycle-checkpoint.test.mjs) | stale `running` step + 缺失下游 task 的 reconcile 恢复且不重复 |
-| [`cycle-state.mjs`](../../src/cli/utils/cycle-state.mjs) | `findStuckSteps`、`summarizeCycleState` 增 `running_steps` / `stuck_steps` |
+| [`cycle-state.mjs`](../../src/cli/utils/cycle-state.mjs) | `findStuckSteps`、`summarizeCycleState` 增 `running_steps` / `stuck_steps`（**stuck 语义**见 [§13](#13-租约权威-stuck-判定同日第六轮)） |
 | [`daemon-projection.mjs`](../../src/cli/utils/daemon-projection.mjs) | `cycles.stuck_steps`、`oldest_open_cycle_age_ms` |
 | [`daemon.mjs`](../../src/cli/commands/daemon.mjs) | doctor 诊断 `stuck_cycle_step` |
 | [`subject-artifacts.mjs`](../../src/cli/utils/subject-artifacts.mjs) | inbox `attention.open_cycles` / `stuck_steps` |
@@ -456,6 +459,85 @@ Windows 上 `pending_tasks.json` 的 `rename` 在 `reclaim` 时 `EPERM`，未捕
 
 ---
 
+## 13. 租约权威 Stuck 判定（同日第六轮）
+
+### 13.1 动机
+
+第三轮引入 `findStuckSteps` 后，reconcile 每 5 分钟会把 **cycle-state 里 `running` 且 `updated_at` 超过 ~60s** 的 step 打回 `pending`。长跑 `exec`（内含 `agent_run`）只在 `markStepRunning` 时写一次时间，watchdog 虽在续 **task 租约**，却不刷新 cycle-state。
+
+真正的问题不是「有没有 watchdog」，而是 **同一件事（这一步还在不在跑）用了两套标准**：白板上的 `updated_at` vs 队列里的租约。长跑时两者必然分裂——界面/doctor 报 stuck，后台其实还在干活。
+
+### 13.2 分析
+
+| 信号 | 含义 | 长跑时 |
+| --- | --- | --- |
+| task 租约 + watchdog | worker 真在执行 | 可靠 |
+| cycle-state `updated_at` | 仅 step 开始时写一次 | 不能当心跳 |
+| `reconcileStaleRunningSteps` | 误用 `updated_at` 判死 | 误杀长跑 exec |
+
+备选方案对比：
+
+| 方案 | 做法 | 为何未选 |
+| --- | --- | --- |
+| touch 心跳 | watchdog 定期刷新 step `updated_at` | 与租约重复，两套信号要对齐 |
+| 分 step 加长 stale 阈值 | exec 单独 30min | 仍是拍脑袋的第三套标准 |
+| **租约为准** | stuck = running 且无有效租约 | **单一真相源，改动最小** |
+
+第一性原理：**谁在干活，以 task 租约为准**；cycle-state 是进度投影，不应单独用时间戳猜死活。
+
+### 13.3 方案
+
+对 cycle-state 中 `status === 'running'` 的 step：
+
+- **不算 stuck**：存在 `idempotency_key = subject:cycleId:step` 的 task，且 `running` + 租约未过期
+- **算 stuck**：无对应 task、task 非 running、或租约已过期 → reconcile 可 reset 为 `pending`
+
+```mermaid
+flowchart LR
+  CS[cycle-state running]
+  TQ[pending_tasks 租约]
+  CS --> Check{有效租约?}
+  TQ --> Check
+  Check -->|是| Keep[不 reset]
+  Check -->|否| Reset[pending + 可 re-enqueue]
+```
+
+**刻意不做**（保持最小 diff）：watchdog 额外 touch `updated_at`；lease reclaim 时同步 cycle-state（恢复仍走「租约过期 → 下次 reconcile 判 stuck → reset」）。
+
+### 13.4 实现摘要
+
+| 模块 | 变更 |
+| --- | --- |
+| [`daemon-tasks.mjs`](../../src/cli/utils/daemon-tasks.mjs) | `findCycleStepTask`、`stepHasValidLease` |
+| [`cycle-state.mjs`](../../src/cli/utils/cycle-state.mjs) | `findStuckSteps` 改租约判定；返回 `reason` / `task_id` 等；`summarizeCycleState` 需 `taskQueue` + `subject` |
+| [`cycle-dispatch.mjs`](../../src/cli/utils/cycle-dispatch.mjs) | `reconcileOpenCycles` 读一次 queue 传入 stuck 判定 |
+| [`daemon-projection.mjs`](../../src/cli/utils/daemon-projection.mjs) | doctor/viewer 的 `stuck_steps` 与 reconcile 一致 |
+| [`daemon.mjs`](../../src/cli/commands/daemon.mjs) | `reason === 'lease_expired'` 时 doctor 升 error |
+| [`AGENTS.md`](../../AGENTS.md) | `cycles.stuck_steps[]` 语义更新 |
+| [`test/cycle-state-dispatch.test.mjs`](../../test/cycle-state-dispatch.test.mjs) | 有效租约不误杀、过期/无 task 判 stuck、reconcile 集成 |
+
+`stuck` 项 `reason` 取值：`no_task` | `lease_expired` | `task_not_running`。`age_ms` 仍来自 step `updated_at`，**仅展示**跑了多久，不参与判定。
+
+### 13.5 验证
+
+```bash
+npm test -- test/cycle-state-dispatch.test.mjs test/cycle-checkpoint.test.mjs
+npm test -- test/subject-lock.test.mjs test/cycle-e2e.test.mjs
+```
+
+| 项 | 结果 |
+| --- | --- |
+| 有效租约 + 旧 `updated_at` | 0 stuck ✅ |
+| 无 task / 过期租约 | stuck + reconcile reset ✅ |
+| subject-lock / e2e 回归 | ✅ |
+
+### 13.6 后续
+
+- lease reclaim 时同步 cycle-state step → `pending`（缩短 recovery，不等 5min tick）
+- 长跑 step 在 viewer 展示绑定的 `task_id` / 租约剩余（与 Phase 2 控制台增强衔接）
+
+---
+
 ## 附：问题—思考—方案—执行对照
 
 | 阶段 | 内容 |
@@ -463,4 +545,4 @@ Windows 上 `pending_tasks.json` 的 `rename` 在 `reclaim` 时 `EPERM`，未捕
 | 问题 | 如何只保留 5min 心跳，并把 Phase 1→5 改为事件驱动 step，且达到整轮 parity？ |
 | 思考 | 瓶颈在同步链与 exec 产物未落盘；heartbeat 作兜底；step 间需 checkpoint。 |
 | 方案 | 三层架构 + checkpoint + reducer 对齐 + step 为主路径。 |
-| 执行 | 五轮同日落地：基础设施 → parity → 可观测/viewer 徽章 → **daemon 控制台** → **阅读体验 A+B**；viewer 相关测试 22/22。 |
+| 执行 | 六轮同日落地：基础设施 → parity → 可观测/viewer → **daemon 控制台** → **阅读 A+B** → **租约权威 stuck**；stuck/reconcile 测试 15/15 + e2e 回归通过。 |

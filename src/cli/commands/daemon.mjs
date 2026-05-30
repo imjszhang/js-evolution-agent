@@ -247,7 +247,7 @@ function buildDaemonDiagnostics(root, subject, projection) {
       .map((item) => `${item.cycle_id}:${item.step}`)
       .join(', ');
     diagnostics.push({
-      severity: stuckSteps.some((item) => (item.age_ms ?? 0) >= 120_000)
+      severity: stuckSteps.some((item) => item.reason === 'lease_expired' || (item.age_ms ?? 0) >= 120_000)
         ? 'error'
         : 'warning',
       code: 'stuck_cycle_step',

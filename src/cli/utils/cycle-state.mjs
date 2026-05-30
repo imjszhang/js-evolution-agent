@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import lockfile from 'proper-lockfile';
 import { runtimeForSubject, nowIso } from './evolve-runs.mjs';
 import { CYCLE_STEP_TYPES } from './cycle-reducer.mjs';
+import { findCycleStepTask, stepHasValidLease } from './daemon-tasks.mjs';
 
 export function cycleStateDir(root, subject) {
   return join(runtimeForSubject(root, subject).evolutionDir, 'cycle-state');
@@ -252,34 +253,37 @@ export function abandonCycle(root, subject, cycleId, { reason = 'stale_abandoned
   });
 }
 
-export function findStuckSteps(state, { staleMs = 60_000 } = {}) {
-  if (!state?.steps) return [];
-  const now = Date.now();
+export function findStuckSteps(state, { taskQueue = null, subject = null, nowMs = Date.now() } = {}) {
+  if (!state?.steps || !taskQueue || !subject) return [];
   const stuck = [];
   for (const [stepName, info] of Object.entries(state.steps)) {
     if (info?.status !== 'running') continue;
+    const task = findCycleStepTask(taskQueue, subject, state.cycle_id, stepName);
+    if (stepHasValidLease(task, nowMs)) continue;
+
     const updated = Date.parse(info.updated_at || '');
-    if (!Number.isFinite(updated)) {
-      stuck.push({
-        step: stepName,
-        age_ms: null,
-        updated_at: info.updated_at ?? null,
-      });
-      continue;
+    const ageMs = Number.isFinite(updated) ? nowMs - updated : null;
+    let reason = 'no_task';
+    if (task?.status === 'running') {
+      reason = 'lease_expired';
+    } else if (task) {
+      reason = 'task_not_running';
     }
-    const ageMs = now - updated;
-    if (ageMs >= staleMs) {
-      stuck.push({
-        step: stepName,
-        age_ms: ageMs,
-        updated_at: info.updated_at,
-      });
-    }
+
+    stuck.push({
+      step: stepName,
+      age_ms: ageMs,
+      updated_at: info.updated_at ?? null,
+      task_id: task?.task_id ?? null,
+      task_status: task?.status ?? null,
+      lease_expires_at: task?.lease_expires_at ?? null,
+      reason,
+    });
   }
   return stuck;
 }
 
-export function summarizeCycleState(state, { staleMs = null } = {}) {
+export function summarizeCycleState(state, { taskQueue = null, subject = null, nowMs = Date.now() } = {}) {
   if (!state) return null;
   const steps = state.steps || {};
   const stepSummary = {};
@@ -289,7 +293,10 @@ export function summarizeCycleState(state, { staleMs = null } = {}) {
   const running_steps = Object.entries(steps)
     .filter(([, info]) => info?.status === 'running')
     .map(([name]) => name);
-  const stuck = staleMs != null ? findStuckSteps(state, { staleMs }) : [];
+  const resolvedSubject = subject ?? state.subject ?? null;
+  const stuck = taskQueue && resolvedSubject
+    ? findStuckSteps(state, { taskQueue, subject: resolvedSubject, nowMs })
+    : [];
   return {
     cycle_id: state.cycle_id,
     subject: state.subject,

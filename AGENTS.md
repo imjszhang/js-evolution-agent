@@ -320,7 +320,7 @@ runtime/subjects/<data_namespace>/data/evolution/cycle-state/
 | 字段 | 含义 |
 | --- | --- |
 | `cycles.open_count` | 未关闭 cycle 数量 |
-| `cycles.stuck_steps[]` | `running` 且 `updated_at` 超过 heartbeat stale 阈值的 step（含 `cycle_id`、`step`、`age_ms`） |
+| `cycles.stuck_steps[]` | cycle-state 为 `running` 但无有效 step task 租约（含 `cycle_id`、`step`、`reason`、`age_ms`） |
 | `cycles.oldest_open_cycle_age_ms` | 最久未关闭 cycle 的打开时长（毫秒） |
 | `cycles.recent[].running_steps` / `stuck_steps` | 各 open cycle 摘要 |
 | `tasks.step_tasks` | 带 `cycle_id` 的 daemon task 列表 |
@@ -340,7 +340,7 @@ runtime/subjects/<data_namespace>/data/evolution/cycle-state/
 ### 观测与诊断
 
 - `jea daemon status [--all | --subjects a,b] [--json]`：查看 worker、队列、健康状态、锁和最近事件。
-- `jea daemon doctor [--all | --subjects a,b] [--json]`：诊断 daemon 健康状态；若存在 stale `running` step，输出 `stuck_cycle_step` 诊断（warning/error，含 `stuck_steps` 明细）。
+- `jea daemon doctor [--all | --subjects a,b] [--json]`：诊断 daemon 健康状态；若存在 `running` 但无有效租约的 step，输出 `stuck_cycle_step` 诊断（warning/error，含 `stuck_steps` 明细）。
 - `jea daemon events [--all | --subjects a,b] [--limit N] [--json]`：查看近期 daemon/task 生命周期事件。
 - `jea daemon inbox [--all | --subjects a,b] [--json]`：汇总最新 intel report、evolution diary、verify report、standing memory 和健康注意项；`attention.open_cycles` / `attention.stuck_steps` 汇总 open cycle 与卡住 step 数量。
 

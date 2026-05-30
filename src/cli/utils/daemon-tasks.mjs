@@ -188,6 +188,15 @@ export function expiredLease(task, nowMs = Date.now()) {
   return !Number.isFinite(t) || t <= nowMs;
 }
 
+export function findCycleStepTask(queue, subject, cycleId, stepType) {
+  const key = stepIdempotencyKey(subject, cycleId, stepType);
+  return queue?.tasks?.find((task) => task.idempotency_key === key) ?? null;
+}
+
+export function stepHasValidLease(task, nowMs = Date.now()) {
+  return task?.status === 'running' && !expiredLease(task, nowMs);
+}
+
 function sortPendingTasks(tasks) {
   return [...tasks]
     .filter((item) => item.status === 'pending')

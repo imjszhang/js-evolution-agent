@@ -184,7 +184,7 @@ export function buildDaemonProjection(root, subject, { store = null, eventLimit 
   const stuckSteps = [];
   let oldestOpenCycleAgeMs = null;
   for (const cycle of openCycles) {
-    for (const item of findStuckSteps(cycle, { staleMs: heartbeatStaleMs })) {
+    for (const item of findStuckSteps(cycle, { taskQueue: queue, subject })) {
       stuckSteps.push({ cycle_id: cycle.cycle_id, ...item });
     }
     if (cycle.opened_at) {
@@ -202,7 +202,7 @@ export function buildDaemonProjection(root, subject, { store = null, eventLimit 
     ...cycleProjection,
     stuck_steps: stuckSteps,
     oldest_open_cycle_age_ms: oldestOpenCycleAgeMs,
-    recent: openCycles.slice(0, 5).map((cycle) => summarizeCycleState(cycle, { staleMs: heartbeatStaleMs })),
+    recent: openCycles.slice(0, 5).map((cycle) => summarizeCycleState(cycle, { taskQueue: queue, subject })),
     last_closed_cycle_id: lastClosedCycle?.cycle_id ?? null,
     last_closed_at: lastClosedCycle?.closed_at ?? null,
   };
