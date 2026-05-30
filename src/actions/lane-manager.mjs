@@ -1,8 +1,22 @@
 import { execFileSync } from 'node:child_process';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { defaultWorkBranchPrefixForSubject } from '../cli/utils/subjects.mjs';
+
+function normalizePathForCompare(filePath) {
+  if (!filePath) return '';
+  const resolved = resolve(String(filePath));
+  try {
+    return realpathSync.native(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+function samePath(left, right) {
+  return normalizePathForCompare(left) === normalizePathForCompare(right);
+}
 
 function runGit(args, cwd) {
   try {
@@ -243,7 +257,7 @@ export function ensureLaneWorktree(config = {}, status = checkLaneStatus(config)
   }
 
   const gitRoot = runGit(['rev-parse', '--show-toplevel'], executionRoot);
-  if (!gitRoot.ok || resolve(gitRoot.stdout) !== resolve(executionRoot)) {
+  if (!gitRoot.ok || !samePath(gitRoot.stdout, executionRoot)) {
     result.error = gitRoot.ok
       ? `lane worktree path is not its git root: ${executionRoot}`
       : `lane worktree is not a git repository: ${gitRoot.stderr}`;
