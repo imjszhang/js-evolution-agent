@@ -6,6 +6,8 @@ import { readTaskQueue, summarizeTaskQueue } from './daemon-tasks.mjs';
 import { readWorkerState, summarizeWorkerState } from './daemon-worker-state.mjs';
 import { buildCycleProjection } from './cycle-dispatch.mjs';
 import { findStuckSteps, getLastClosedCycle, listOpenCycles, summarizeCycleState } from './cycle-state.mjs';
+import { readPendingCycleStartRequest } from './cycle-start-requests.mjs';
+import { resolveEvolutionMode } from './evolution-mode.mjs';
 
 export function daemonViewsDir(root, subject) {
   return join(runtimeForSubject(root, subject).evolutionDir, 'views');
@@ -41,6 +43,8 @@ function buildDaemonHealth({
   lastClosedCycle = null,
   recentEvents = [],
   tickMs = DEFAULT_TICK_MS,
+  evolutionMode = 'continuous',
+  pendingCycleStartRequest = null,
   nowMs = Date.now(),
 }) {
   const counts = tasks.counts || {};
@@ -80,10 +84,22 @@ function buildDaemonHealth({
     const noWork = openCount === 0 && active === 0;
     const tickQuiet = !hasRecentTickActivity(recentEvents, tickMs, nowMs);
     const workerUnavailable = !worker.running;
-    const evolutionStalled = noWork && pastTickWindow
+    const onDemand = evolutionMode === 'on_demand';
+    const pendingRequest = pendingCycleStartRequest;
+    const requestUpdatedMs = pendingRequest?.updated_at ? Date.parse(pendingRequest.updated_at) : NaN;
+    const requestBlockedLong = onDemand && pendingRequest
+      && Number.isFinite(requestUpdatedMs)
+      && (nowMs - requestUpdatedMs >= tickMs * 2)
+      && (pendingRequest.deferred_count ?? 0) > 0;
+    const evolutionStalled = !onDemand && noWork && pastTickWindow
       && (workerUnavailable || (worker.running && tickQuiet));
 
-    if (evolutionStalled) {
+    if (requestBlockedLong) {
+      status = 'cycle_start_blocked';
+      ok = false;
+      reasons.push('Pending cycle start request could not be consumed within 2 tick windows');
+      suggestions.push('Check open cycles, pending tasks, or worker logs; use `jea daemon status --json` for details.');
+    } else if (evolutionStalled) {
       status = 'evolution_stalled';
       ok = false;
       reasons.push('No open cycle or queued work, and no new cycle started within the heartbeat tick window');
@@ -91,12 +107,20 @@ function buildDaemonHealth({
     } else if (worker.running && active === 0) {
       status = 'idle';
       ok = true;
-      if (Number.isFinite(lastClosedMs) && nowMs - lastClosedMs < tickMs) {
+      if (onDemand && pendingRequest) {
+        reasons.push('On-demand mode: cycle start request is pending');
+        suggestions.push('Ensure the daemon worker is running; the request will be consumed when preconditions pass.');
+      } else if (onDemand) {
+        reasons.push('On-demand mode: no cycle start request queued');
+        suggestions.push('Use `jea daemon cycle request` or `jea intel brief put` to queue a cycle.');
+      } else if (Number.isFinite(lastClosedMs) && nowMs - lastClosedMs < tickMs) {
         reasons.push('Worker is running; last cycle closed recently — next cycle may start on tick');
       } else {
         reasons.push('Worker is fresh and no daemon task is waiting');
       }
-      suggestions.push('Wait for the next heartbeat tick, or use `jea daemon enqueue --type intel` to queue work.');
+      if (!onDemand) {
+        suggestions.push('Wait for the next heartbeat tick, or use `jea daemon cycle request` to queue a cycle.');
+      }
     } else if (!worker.running && active === 0) {
       status = 'idle';
       ok = true;
@@ -121,7 +145,7 @@ function buildDaemonHealth({
   };
 }
 
-export function buildDaemonProjection(root, subject, { store = null, eventLimit = 20, heartbeatStaleMs = 60_000 } = {}) {
+export function buildDaemonProjection(root, subject, { store = null, eventLimit = 20, heartbeatStaleMs = 60_000, flags = {} } = {}) {
   const queue = readTaskQueue(root, subject);
   const summary = summarizeTaskQueue(queue);
   const queueTasks = Array.isArray(queue?.tasks) ? queue.tasks : [];
@@ -207,9 +231,15 @@ export function buildDaemonProjection(root, subject, { store = null, eventLimit 
     last_closed_at: lastClosedCycle?.closed_at ?? null,
   };
 
+  const evolution = resolveEvolutionMode(root, { subject, flags });
+  const pendingCycleStartRequest = cycleProjection.pending_cycle_start_request
+    ?? readPendingCycleStartRequest(root, subject);
+
   return {
     subject,
     generated_at: new Date().toISOString(),
+    evolution_mode: evolution.mode,
+    evolution_mode_source: evolution.source,
     worker,
     health: buildDaemonHealth({
       worker,
@@ -218,6 +248,8 @@ export function buildDaemonProjection(root, subject, { store = null, eventLimit 
       lastClosedCycle,
       recentEvents: events,
       tickMs,
+      evolutionMode: evolution.mode,
+      pendingCycleStartRequest,
     }),
     tasks,
     cycles,

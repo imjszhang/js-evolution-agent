@@ -4,6 +4,9 @@
     "my-subject": {
       "policy": "subjects/my-subject.md",
       "data_namespace": "my-subject",
+      "evolution": {
+        "mode": "on_demand"
+      },
       "lane": {
         "repo": "D:\\path\\to\\target-project",
         "base_branch": "main",

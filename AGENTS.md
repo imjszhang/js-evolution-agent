@@ -291,15 +291,20 @@ Decide 可调度、`Phase 2` 执行的记录型动作，用于落已有结论而
 
 ## Daemon 工作流
 
-Daemon 用于 **事件驱动的 step 级演化**。推荐用 `jea daemon start` 启动 worker：默认每 **5 分钟** heartbeat tick 开新 cycle（无 open cycle 且无 pending 任务时），step 完成后 **即时** enqueue 下一步；5min tick 同时做 reconcile 补偿。
+Daemon 用于 **事件驱动的 step 级演化**。推荐用 `jea daemon start` 启动 worker：默认 **持续进化模式**（`continuous`）下每 **5 分钟** heartbeat tick 会入队 cycle 启动请求并尝试开新 cycle（无 open cycle 且无 pending 任务时）；step 完成后 **即时** enqueue 下一步；5min tick 同时做 reconcile 补偿。
+
+**按需进化模式**（`on_demand`）：tick **不会**自动入队开轮请求，仅消费已有请求（`jea daemon cycle request`、`jea intel brief put` 等）。worker idle 时也会尝试消费 pending 请求，不必等 5 分钟。
+
+演化模式解析优先级：`policies/subjects.json` 中 `subjects.<name>.evolution.mode` > `jea daemon start --evolution-mode` > env `JEA_EVOLUTION_MODE` > 默认 `continuous`。
 
 `run_cycle` 整轮任务与 `jea run` 同步链仍保留，供本地调试与兼容；**后台长期运行请优先 step 模式**。
 
 ### 任务与 worker
 
-- `jea daemon start [--mock] [--tick-ms N] [--heartbeat-ms N] [--lease-ms N]`：前台 worker；默认 `tick-ms=300000`（5min）。
+- `jea daemon start [--mock] [--tick-ms N] [--evolution-mode continuous|on_demand] [--heartbeat-ms N] [--lease-ms N]`：前台 worker；默认 `tick-ms=300000`（5min）。
+- `jea daemon cycle request [--reason TEXT] [--note TEXT]`：入队 cycle 启动请求（写入 `data/evolution/cycle-start-requests.json`），由 worker 在前提满足时开轮。
 - `jea daemon work --once [--mock]`：领取并执行一个 task（step 或 `run_cycle`）后退出。
-- `jea daemon enqueue --type <step|run_cycle>`：手动入队；step 类型含 `intel`、`exec`、`verify`、`belief_update`、`goals_assess`、`goals_calibrate`、`diary` 等。
+- `jea daemon enqueue --type <step|run_cycle>`：手动入队 step 任务；step 类型含 `intel`、`exec`、`verify`、`belief_update`、`goals_assess`、`goals_calibrate`、`diary` 等。
 - `jea daemon stop` / `jea daemon stop --all`：请求 worker 优雅停止。
 
 ### Step 状态与 checkpoint

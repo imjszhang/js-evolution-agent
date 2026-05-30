@@ -54,6 +54,8 @@ export function createWorkerState(root, subject, {
   pid = process.pid,
   staleMs = 60_000,
   tickMs = null,
+  evolutionMode = null,
+  evolutionModeSource = null,
 } = {}) {
   const existing = readWorkerState(root, subject);
   if (existing && isWorkerZombie(existing, { staleMs })) {
@@ -77,6 +79,8 @@ export function createWorkerState(root, subject, {
     stopped_at: null,
     stale_after_ms: staleMs,
     tick_ms: tickMs,
+    evolution_mode: evolutionMode,
+    evolution_mode_source: evolutionModeSource,
     last_work_result: null,
     last_error: null,
   };

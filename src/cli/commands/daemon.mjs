@@ -47,7 +47,13 @@ import {
   printSubjectLaneGuardFailure,
 } from '../utils/subject-lane-guard.mjs';
 import { markStepRunning } from '../utils/cycle-state.mjs';
-import { dispatchAfterStepCompletion, runHeartbeatTick } from '../utils/cycle-dispatch.mjs';
+import {
+  dispatchAfterStepCompletion,
+  enqueueCycleStartRequestWithEvent,
+  processCycleStartRequests,
+  runHeartbeatTick,
+} from '../utils/cycle-dispatch.mjs';
+import { resolveEvolutionMode } from '../utils/evolution-mode.mjs';
 
 function sleep(ms) {
   if (!ms) return Promise.resolve();
@@ -111,6 +117,7 @@ function buildProjection(root, subject, flags = {}) {
   const projection = buildDaemonProjection(root, subject, {
     store,
     heartbeatStaleMs: parseHeartbeatStaleMs(flags['heartbeat-stale-ms']),
+    flags,
   });
   writeDaemonProjection(root, subject, projection);
   return projection;
@@ -346,7 +353,10 @@ function printTaskDetails(task) {
   if (task.result) console.log(`result: ${JSON.stringify(task.result)}`);
 }
 
-function taskInputFromFlags(flags) {
+function taskInputFromFlags(flags, root, subject) {
+  const evolution = root && subject
+    ? resolveEvolutionMode(root, { subject, flags })
+    : { mode: 'continuous', source: 'default' };
   return {
     mock: Boolean(flags.mock),
     deepseek: Boolean(flags.deepseek),
@@ -356,6 +366,8 @@ function taskInputFromFlags(flags) {
       ? null
       : parsePositiveInt(flags['exec-limit'], { name: 'exec-limit', min: 1 }),
     retries: parsePositiveInt(flags.retries, { name: 'retries', defaultValue: 3, min: 0 }),
+    evolution_mode: evolution.mode,
+    evolution_mode_source: evolution.source,
   };
 }
 
@@ -756,6 +768,15 @@ function safeRunHeartbeatTick(root, subject, taskInput) {
   }
 }
 
+function safeProcessCycleStartRequests(root, subject, taskInput) {
+  try {
+    return processCycleStartRequests(root, subject, taskInput);
+  } catch (err) {
+    recordLoopFailure(root, subject, { operation: 'cycle_start_process', err });
+    return null;
+  }
+}
+
 export async function runDaemonWorker(root, subject, flags = {}) {
   const workerId = flags.worker && flags.worker !== true ? flags.worker : defaultWorkerId();
   const { leaseMs, heartbeatMs, heartbeatStaleMs } = heartbeatDefaults(flags);
@@ -765,10 +786,13 @@ export async function runDaemonWorker(root, subject, flags = {}) {
   const maxIterations = flags['max-iterations'] == null || flags['max-iterations'] === true
     ? null
     : parsePositiveInt(flags['max-iterations'], { name: 'max-iterations', min: 1 });
+  const evolution = resolveEvolutionMode(root, { subject, flags });
   const created = createWorkerState(root, subject, {
     workerId,
     staleMs: heartbeatStaleMs,
     tickMs,
+    evolutionMode: evolution.mode,
+    evolutionModeSource: evolution.source,
   });
   if (!created.created) {
     return { started: false, reason: created.reason, state: created.state };
@@ -838,11 +862,15 @@ export async function runDaemonWorker(root, subject, flags = {}) {
     heartbeat_ms: heartbeatMs,
     lease_ms: leaseMs,
     tick_ms: tickMs,
+    evolution_mode: evolution.mode,
+    evolution_mode_source: evolution.source,
   });
   updateWorkerHeartbeat(root, subject, {
     worker_id: workerId,
     pid: process.pid,
     tick_ms: tickMs,
+    evolution_mode: evolution.mode,
+    evolution_mode_source: evolution.source,
   });
 
   let stopping = false;
@@ -855,7 +883,7 @@ export async function runDaemonWorker(root, subject, flags = {}) {
   let iterations = 0;
   let stopReason = 'stopped';
   let lastTickAt = 0;
-  const taskInput = taskInputFromFlags(flags);
+  const taskInput = taskInputFromFlags(flags, root, subject);
   try {
     for (;;) {
       const current = readWorkerState(root, subject);
@@ -910,6 +938,7 @@ export async function runDaemonWorker(root, subject, flags = {}) {
       if (result.worked) {
         await sleep(workIntervalMs);
       } else {
+        safeProcessCycleStartRequests(root, subject, taskInput);
         const untilTick = Math.max(0, tickMs - (Date.now() - lastTickAt));
         await sleep(Math.min(untilTick, idleIntervalMs));
       }
@@ -1007,6 +1036,32 @@ export async function daemonCommand({ subcommand, flags = {}, args = [], root = 
   const subject = subjects[0];
   const multiSubject = subjects.length > 1 || hasMultiSubjectSelection(flags);
 
+  if (subcommand === 'cycle') {
+    if (multiSubject) {
+      console.error('daemon cycle supports one subject at a time.');
+      return 2;
+    }
+    const [cycleCommand, ...cycleArgs] = args;
+    if (cycleCommand === 'request') {
+      const reason = flags.reason && flags.reason !== true ? String(flags.reason) : 'manual';
+      const note = flags.note && flags.note !== true ? String(flags.note) : null;
+      const result = enqueueCycleStartRequestWithEvent(root, subject, {
+        reason,
+        meta: note ? { note } : {},
+      });
+      if (flags.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        console.log(`cycle start request: ${result.request.request_id}`);
+        console.log(`reasons: ${result.request.reasons.join(', ')}`);
+        console.log(result.created ? 'status: created' : 'status: merged');
+      }
+      return 0;
+    }
+    console.error('Usage: jea daemon cycle request [--reason TEXT] [--note TEXT] [--subject NAME] [--json]');
+    return 2;
+  }
+
   if (subcommand === 'enqueue') {
     if (multiSubject) {
       console.error('daemon enqueue supports one subject at a time. Use evolve --enqueue-only --subjects for batch task creation.');
@@ -1017,7 +1072,7 @@ export async function daemonCommand({ subcommand, flags = {}, args = [], root = 
       type,
       idempotencyKey: flags['idempotency-key'] && flags['idempotency-key'] !== true ? flags['idempotency-key'] : null,
       priority: flags.priority || 100,
-      input: taskInputFromFlags(flags),
+      input: taskInputFromFlags(flags, root, subject),
     });
     if (flags.json) console.log(JSON.stringify(result, null, 2));
     else printTask(result.task, { created: result.created });
@@ -1229,10 +1284,11 @@ export async function daemonCommand({ subcommand, flags = {}, args = [], root = 
   }
 
   {
-    console.error('Usage: jea daemon <enqueue|work|start|stop|status|events|doctor|tasks|inbox> [--subject NAME] [--subjects a,b | --all] [--json]');
+    console.error('Usage: jea daemon <enqueue|work|start|stop|status|events|doctor|tasks|inbox|cycle> [--subject NAME] [--subjects a,b | --all] [--json]');
     console.error('       jea daemon enqueue --type intel|exec|verify|...|run_cycle [--idempotency-key KEY]');
+    console.error('       jea daemon cycle request [--reason TEXT] [--note TEXT]');
     console.error('       jea daemon work --once');
-    console.error('       jea daemon start [--tick-ms N] [--interval-ms N] [--idle-interval-ms N] [--heartbeat-ms N]');
+    console.error('       jea daemon start [--tick-ms N] [--evolution-mode continuous|on_demand] [--interval-ms N] [--idle-interval-ms N] [--heartbeat-ms N]');
     console.error('       jea daemon stop');
     console.error('       jea daemon events [--limit N]');
     console.error('       jea daemon doctor');

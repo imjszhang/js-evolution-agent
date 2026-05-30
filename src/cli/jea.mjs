@@ -30,9 +30,10 @@ Commands:
   evolve resume ID       Resume an interrupted evolve run
   evolve status [ID]     Show recent or specific evolve run status
   daemon enqueue         Enqueue event-driven daemon tasks
+  daemon cycle request   Queue a cycle start request (on_demand mode)
   daemon work --once     Execute one daemon task
   daemon start           Run the daemon worker loop in the foreground
-                         Supports --heartbeat-ms and --lease-ms for long tasks
+                         Supports --evolution-mode continuous|on_demand
   daemon stop            Request the daemon worker to stop gracefully
   daemon status          Show daemon task and worker projection
                          Supports --all and --subjects for multi-subject views

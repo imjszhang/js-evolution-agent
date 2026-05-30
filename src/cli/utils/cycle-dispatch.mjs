@@ -19,6 +19,28 @@ import {
   readCycleState,
   summarizeCycleState,
 } from './cycle-state.mjs';
+import {
+  consumeCycleStartRequest,
+  deferCycleStartRequest,
+  enqueueCycleStartRequest,
+  readPendingCycleStartRequest,
+  summarizePendingCycleStartRequest,
+} from './cycle-start-requests.mjs';
+import { isContinuousEvolutionMode } from './evolution-mode.mjs';
+
+const deferredEventByRequest = new Map();
+
+function deferredEventKey(subject, requestId) {
+  return `${subject}:${requestId}`;
+}
+
+function shouldRecordDeferredEvent(subject, requestId, blockedReason) {
+  const key = deferredEventKey(subject, requestId);
+  const prev = deferredEventByRequest.get(key);
+  if (prev?.blockedReason === blockedReason) return false;
+  deferredEventByRequest.set(key, { blockedReason, at: Date.now() });
+  return true;
+}
 
 function dispatchOptionsFromInput(input = {}) {
   return {
@@ -137,19 +159,26 @@ export function dispatchAfterStepCompletion(root, subject, stepType, outcome, in
   return dispatchCycleEvent(root, subject, event, { input });
 }
 
-export function startCycleFromTick(root, subject, input = {}) {
+export function startCycleFromRequest(root, subject, input = {}, trigger = {}) {
   const openCycles = listOpenCycles(root, subject);
   const queue = readTaskQueue(root, subject);
   const pendingTaskCount = queue.tasks.filter((task) => task.status === 'pending').length;
   if (!shouldStartCycleFromTick({ openCycles, throttle: input.throttle, pendingTaskCount })) {
-    return { started: false, reason: openCycles.length ? 'open_cycle_exists' : pendingTaskCount ? 'pending_tasks' : 'throttled' };
+    return {
+      started: false,
+      reason: openCycles.length ? 'open_cycle_exists' : pendingTaskCount ? 'pending_tasks' : 'throttled',
+    };
   }
 
+  const triggerReasons = trigger.reasons?.length ? trigger.reasons : ['unknown'];
   const cycleState = createCycle(root, subject, {
     meta: {
       driver: 'daemon',
       skip_belief_update: Boolean(input.skip_belief_update),
       skip_goals_assess: Boolean(input.skip_goals_assess),
+      cycle_start_trigger: triggerReasons[0],
+      cycle_start_reasons: triggerReasons,
+      cycle_start_request_id: trigger.request_id ?? null,
     },
   });
 
@@ -157,6 +186,9 @@ export function startCycleFromTick(root, subject, input = {}) {
     type: 'cycle_due',
     status: 'ok',
     cycle_id: cycleState.cycle_id,
+    trigger: triggerReasons[0],
+    trigger_reasons: triggerReasons,
+    request_id: trigger.request_id ?? null,
   });
 
   const dispatched = dispatchCycleEvent(root, subject, {
@@ -165,6 +197,88 @@ export function startCycleFromTick(root, subject, input = {}) {
   }, { input });
 
   return { started: true, cycle: cycleState, ...dispatched };
+}
+
+/** @deprecated use startCycleFromRequest */
+export function startCycleFromTick(root, subject, input = {}) {
+  return startCycleFromRequest(root, subject, input, { reasons: ['tick'] });
+}
+
+function cycleStartBlockedReason(root, subject, input = {}) {
+  const openCycles = listOpenCycles(root, subject);
+  const queue = readTaskQueue(root, subject);
+  const pendingTaskCount = queue.tasks.filter((task) => task.status === 'pending').length;
+  if (!shouldStartCycleFromTick({ openCycles, throttle: input.throttle, pendingTaskCount })) {
+    return openCycles.length ? 'open_cycle_exists' : pendingTaskCount ? 'pending_tasks' : 'throttled';
+  }
+  return null;
+}
+
+export function processCycleStartRequests(root, subject, input = {}) {
+  const pending = readPendingCycleStartRequest(root, subject);
+  if (!pending) {
+    return { processed: false, started: false, reason: 'no_request' };
+  }
+
+  const blockedReason = cycleStartBlockedReason(root, subject, input);
+  if (blockedReason) {
+    deferCycleStartRequest(root, subject, pending.request_id, { blockedReason });
+    if (shouldRecordDeferredEvent(subject, pending.request_id, blockedReason)) {
+      recordDaemonEvent(root, subject, {
+        type: 'cycle_start_deferred',
+        status: 'deferred',
+        request_id: pending.request_id,
+        trigger_reasons: pending.reasons,
+        blocked_reason: blockedReason,
+      });
+    }
+    return { processed: true, started: false, reason: blockedReason, request: summarizePendingCycleStartRequest(pending) };
+  }
+
+  const trigger = {
+    reasons: pending.reasons ?? ['unknown'],
+    request_id: pending.request_id,
+  };
+  const startResult = startCycleFromRequest(root, subject, input, trigger);
+  if (!startResult.started) {
+    deferCycleStartRequest(root, subject, pending.request_id, { blockedReason: startResult.reason });
+    return { processed: true, started: false, reason: startResult.reason, request: summarizePendingCycleStartRequest(pending) };
+  }
+
+  consumeCycleStartRequest(root, subject, pending.request_id);
+  deferredEventByRequest.delete(deferredEventKey(subject, pending.request_id));
+  recordDaemonEvent(root, subject, {
+    type: 'cycle_start_consumed',
+    status: 'ok',
+    request_id: pending.request_id,
+    trigger_reasons: trigger.reasons,
+    cycle_id: startResult.cycle?.cycle_id,
+  });
+
+  return {
+    processed: true,
+    started: true,
+    reason: 'started',
+    cycle: startResult.cycle,
+    request: summarizePendingCycleStartRequest(pending),
+    ...startResult,
+  };
+}
+
+export function enqueueCycleStartRequestWithEvent(root, subject, options = {}) {
+  const result = enqueueCycleStartRequest(root, subject, options);
+  if (result.created || result.merged) {
+    recordDaemonEvent(root, subject, {
+      type: 'cycle_start_requested',
+      status: 'ok',
+      request_id: result.request.request_id,
+      reason: options.reason ?? 'manual',
+      trigger_reasons: result.request.reasons,
+      created: result.created,
+      merged: result.merged,
+    });
+  }
+  return result;
 }
 
 function reconcileStaleRunningSteps(root, subject, cycleState, taskQueue) {
@@ -237,10 +351,17 @@ export function reconcileOpenCycles(root, subject, input = {}) {
 export function runHeartbeatTick(root, subject, input = {}) {
   recordDaemonEvent(root, subject, { type: 'daemon_tick', status: 'ok' });
   const reconcileResult = reconcileOpenCycles(root, subject, input);
-  const startResult = startCycleFromTick(root, subject, input);
+  const evolutionMode = input.evolution_mode ?? 'continuous';
+  let requestEnqueue = null;
+  if (isContinuousEvolutionMode(evolutionMode)) {
+    requestEnqueue = enqueueCycleStartRequestWithEvent(root, subject, { reason: 'tick' });
+  }
+  const requestProcess = processCycleStartRequests(root, subject, input);
   return {
     reconcile: reconcileResult,
-    start: startResult,
+    request_enqueue: requestEnqueue,
+    request_process: requestProcess,
+    start: requestProcess,
   };
 }
 
@@ -249,5 +370,6 @@ export function buildCycleProjection(root, subject) {
   return {
     open_cycles: open.map(summarizeCycleState),
     open_count: open.length,
+    pending_cycle_start_request: summarizePendingCycleStartRequest(readPendingCycleStartRequest(root, subject)),
   };
 }

@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { getProjectRoot } from '../utils/project.mjs';
 import { resolveSubjectFromFlags, runtimeInfoForSubject } from '../utils/subjects.mjs';
+import { enqueueCycleStartRequestWithEvent } from '../utils/cycle-dispatch.mjs';
 import {
   formatOperatorBriefsForPrompt,
   operatorBriefDisplayName,
@@ -102,11 +103,16 @@ export async function briefPut({ root = getProjectRoot(), flags = {} } = {}) {
 
   try {
     const { file, brief } = writePendingOperatorBrief(runtime.runtimeRoot, data);
+    const cycleRequest = enqueueCycleStartRequestWithEvent(root, runtime.subject, {
+      reason: 'operator_brief',
+      meta: { brief_ids: [brief.id] },
+    });
     const result = {
       file,
       brief,
       namespace: runtime.dataNamespace,
       subject: runtime.subject,
+      cycle_start_request: cycleRequest.request,
     };
     if (flags.json) console.log(JSON.stringify(result, null, 2));
     else console.log(`queued operator brief ${brief.id} -> ${file}`);
