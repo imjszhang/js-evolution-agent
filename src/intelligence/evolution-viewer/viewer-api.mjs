@@ -3,12 +3,20 @@ import { existsSync, readFileSync, statSync, watch } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join, extname, resolve, relative } from 'node:path';
 import { createIntelligenceStore } from '../store.mjs';
+import { buildDaemonProjection } from '../../cli/utils/daemon-projection.mjs';
 import { buildManifest, manifestForApi } from './round-catalog.mjs';
 import { buildRoundDetail } from './round-detail.mjs';
+import { buildCycleDetail } from './cycle-detail.mjs';
+import {
+  daemonSseFromEvolutionLine,
+  readRecentDaemonEvents,
+  readTickHints,
+} from './daemon-sse.mjs';
 import { buildIntelToExecMapFromRuntimeSync } from './event-pairing.mjs';
 
 const PING_INTERVAL_MS = 25_000;
 const DEFAULT_CACHE_SIZE = 30;
+const RUNTIME_WATCH_DEBOUNCE_MS = 1000;
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -170,7 +178,7 @@ export function sseEventFromEvolutionLine(event, runtimeRoot) {
 /**
  * Tail evolution-events.jsonl and emit SSE on new lines.
  */
-export function createEvolutionEventsTailer({ runtimeRoot, sse, onInvalidateCache }) {
+export function createEvolutionEventsTailer({ runtimeRoot, sse, onInvalidateCache, onDaemonEvent }) {
   const path = evolutionEventsPath(runtimeRoot);
   let offset = 0;
   let partial = '';
@@ -202,12 +210,23 @@ export function createEvolutionEventsTailer({ runtimeRoot, sse, onInvalidateCach
       } catch {
         continue;
       }
+
+      const daemonEv = daemonSseFromEvolutionLine(event);
+      if (daemonEv) {
+        sse.broadcast('daemon_event', { event: 'daemon_event', ...daemonEv.payload });
+        onDaemonEvent?.(daemonEv.payload);
+        if (daemonEv.payload.cycle_id) {
+          onInvalidateCache?.(daemonEv.payload.cycle_id);
+        }
+      }
+
       const sseEv = sseEventFromEvolutionLine(event, runtimeRoot);
       if (!sseEv) continue;
       if (sseEv.type === 'round_updated') {
         onInvalidateCache?.(sseEv.cycle_id);
       }
       sse.broadcast(sseEv.type, {
+        event: sseEv.type,
         cycle_id: sseEv.cycle_id,
         ...(sseEv.has_diary != null ? { has_diary: sseEv.has_diary } : {}),
       });
@@ -256,6 +275,60 @@ export function createEvolutionEventsTailer({ runtimeRoot, sse, onInvalidateCach
   return { start, stop, readNewBytes, path };
 }
 
+/**
+ * Watch runtime daemon files and emit runtime_updated SSE (debounced).
+ */
+export function createRuntimeWatcher({ runtimeRoot, sse, onRuntimeChange }) {
+  const paths = [
+    join(runtimeRoot, 'data', 'evolution', 'tasks', 'pending_tasks.json'),
+    join(runtimeRoot, 'data', 'evolution', 'daemon', 'worker-state.json'),
+    join(runtimeRoot, 'data', 'evolution', 'cycle-state'),
+  ];
+
+  /** @type {import('node:fs').FSWatcher[]} */
+  const watchers = [];
+  let debounceTimer = null;
+
+  function notify() {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      debounceTimer = null;
+      onRuntimeChange?.();
+      sse.broadcast('runtime_updated', { event: 'runtime_updated' });
+    }, RUNTIME_WATCH_DEBOUNCE_MS);
+    if (debounceTimer.unref) debounceTimer.unref();
+  }
+
+  function start() {
+    for (const target of paths) {
+      if (!existsSync(target)) continue;
+      try {
+        const watcher = watch(target, notify);
+        watchers.push(watcher);
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  function stop() {
+    if (debounceTimer) {
+      clearTimeout(debounceTimer);
+      debounceTimer = null;
+    }
+    for (const watcher of watchers) {
+      try {
+        watcher.close();
+      } catch {
+        // ignore
+      }
+    }
+    watchers.length = 0;
+  }
+
+  return { start, stop };
+}
+
 async function serveStatic(publicDir, pathname, res) {
   let path = pathname;
   if (path === '/') path = '/index.html';
@@ -282,23 +355,51 @@ function jsonResponse(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
+function buildDaemonApiResponse(projectRoot, runtime, store) {
+  const projection = buildDaemonProjection(projectRoot, runtime.subject, {
+    store,
+    eventLimit: 30,
+  });
+  const tickHints = readTickHints(store, runtime.subject, 50);
+  return {
+    ...projection,
+    tick_ms: tickHints.tick_ms,
+    last_tick_at: tickHints.last_tick_at,
+  };
+}
+
 /**
  * @param {object} options
  * @param {object} options.runtime
+ * @param {string} options.projectRoot
  * @param {number} options.limit
  * @param {number} options.port
  * @param {string} options.publicDir
  */
-export function createViewerApiServer({ runtime, limit, port, publicDir }) {
+export function createViewerApiServer({ runtime, projectRoot, limit, port, publicDir }) {
+  if (!projectRoot) throw new Error('projectRoot is required');
+
   const baseDir = join(runtime.runtimeRoot, 'data', 'intelligence');
   const store = createIntelligenceStore({ baseDir, timezone: 'Asia/Shanghai' });
   const sse = new SseHub();
   sse.start();
 
   const detailCache = new LruCache(DEFAULT_CACHE_SIZE);
+  const cycleDetailCache = new LruCache(DEFAULT_CACHE_SIZE);
   let catalogCache = null;
   let catalogCacheAt = 0;
+  let daemonCache = null;
+  let daemonCacheAt = 0;
   const CATALOG_TTL_MS = 2000;
+
+  function invalidateRuntimeCaches(cycleId = null) {
+    catalogCacheAt = 0;
+    daemonCacheAt = 0;
+    if (cycleId) {
+      detailCache.delete(cycleId);
+      cycleDetailCache.delete(cycleId);
+    }
+  }
 
   function getCatalog(force = false) {
     const now = Date.now();
@@ -308,6 +409,16 @@ export function createViewerApiServer({ runtime, limit, port, publicDir }) {
     catalogCache = buildManifest({ runtime, store, limit });
     catalogCacheAt = now;
     return catalogCache;
+  }
+
+  function getDaemon(force = false) {
+    const now = Date.now();
+    if (!force && daemonCache && now - daemonCacheAt < CATALOG_TTL_MS) {
+      return daemonCache;
+    }
+    daemonCache = buildDaemonApiResponse(projectRoot, runtime, store);
+    daemonCacheAt = now;
+    return daemonCache;
   }
 
   function getRoundDetail(cycleId) {
@@ -324,15 +435,37 @@ export function createViewerApiServer({ runtime, limit, port, publicDir }) {
     return detail;
   }
 
+  function getCycleDetail(cycleId) {
+    const cached = cycleDetailCache.get(cycleId);
+    if (cached) return cached;
+    const catalog = getCatalog();
+    const detail = buildCycleDetail({
+      projectRoot,
+      runtime,
+      store,
+      cycleId,
+      diariesByIntel: catalog._diariesByIntel,
+    });
+    if (detail) cycleDetailCache.set(cycleId, detail);
+    return detail;
+  }
+
   const tailer = createEvolutionEventsTailer({
     runtimeRoot: runtime.runtimeRoot,
     sse,
-    onInvalidateCache: (cycleId) => {
-      detailCache.delete(cycleId);
-      catalogCacheAt = 0;
+    onInvalidateCache: (cycleId) => invalidateRuntimeCaches(cycleId),
+    onDaemonEvent: () => {
+      daemonCacheAt = 0;
     },
   });
   tailer.start();
+
+  const runtimeWatcher = createRuntimeWatcher({
+    runtimeRoot: runtime.runtimeRoot,
+    sse,
+    onRuntimeChange: () => invalidateRuntimeCaches(),
+  });
+  runtimeWatcher.start();
 
   const server = createServer(async (req, res) => {
     try {
@@ -347,6 +480,7 @@ export function createViewerApiServer({ runtime, limit, port, publicDir }) {
           Connection: 'keep-alive',
         });
         res.write(formatSseMessage('hello', {
+          event: 'hello',
           subject: runtime.subject,
           namespace: runtime.dataNamespace,
           round_count: catalog.round_count ?? catalog.rounds?.length ?? 0,
@@ -362,6 +496,32 @@ export function createViewerApiServer({ runtime, limit, port, publicDir }) {
         catalogCache = catalog;
         catalogCacheAt = Date.now();
         jsonResponse(res, 200, manifestForApi(catalog));
+        return;
+      }
+
+      if (pathname === '/api/daemon') {
+        jsonResponse(res, 200, getDaemon());
+        return;
+      }
+
+      if (pathname === '/api/events/recent') {
+        const reqLimit = Number(url.searchParams.get('limit'));
+        const effectiveLimit = Number.isFinite(reqLimit) && reqLimit > 0 ? reqLimit : 50;
+        jsonResponse(res, 200, {
+          events: readRecentDaemonEvents(store, runtime.subject, effectiveLimit),
+        });
+        return;
+      }
+
+      const cycleMatch = pathname.match(/^\/api\/cycles\/([^/]+)$/);
+      if (cycleMatch) {
+        const cycleId = cycleMatch[1];
+        const detail = getCycleDetail(cycleId);
+        if (!detail) {
+          jsonResponse(res, 404, { error: 'cycle not found', cycle_id: cycleId });
+          return;
+        }
+        jsonResponse(res, 200, detail);
         return;
       }
 
@@ -389,12 +549,16 @@ export function createViewerApiServer({ runtime, limit, port, publicDir }) {
     server,
     sse,
     tailer,
+    runtimeWatcher,
     invalidateAll() {
       detailCache.clear();
+      cycleDetailCache.clear();
       catalogCacheAt = 0;
+      daemonCacheAt = 0;
     },
     async close() {
       tailer.stop();
+      runtimeWatcher.stop();
       sse.stop();
       await new Promise((resolveClose, reject) => {
         server.close((err) => (err ? reject(err) : resolveClose()));

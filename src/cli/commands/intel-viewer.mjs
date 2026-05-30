@@ -70,7 +70,7 @@ export async function intelViewerServe(root, flags = {}) {
   const runtime = runtimeInfoForSubject(root, config);
   const publicDir = flags.public ? resolve(flags.public) : evolutionViewerPublicDir(root);
 
-  const apiCtx = createViewerApiServer({ runtime, limit, port, publicDir });
+  const apiCtx = createViewerApiServer({ runtime, projectRoot: root, limit, port, publicDir });
   await new Promise((resolveListen) => apiCtx.server.listen(port, '127.0.0.1', resolveListen));
 
   const url = `http://127.0.0.1:${port}/`;

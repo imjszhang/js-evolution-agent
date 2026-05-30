@@ -98,8 +98,8 @@ runtime/subjects/<data_namespace>/
 - `jea intel report --cycle <id>`：输出指定 cycle 的报告。
 - `jea intel report --open`：用系统默认程序打开最新报告。
 - `jea intel report --json`：输出报告索引记录 JSON，而不是 Markdown 正文。
-- `jea intel viewer serve [--port N] [--open] [--limit N] [--subject NAME]`：托管 `tools/evolution-viewer/public/` 并直读当前 subject runtime（`GET /api/manifest`、`GET /api/rounds/:cycleId`）；`/events` SSE tail `evolution-events.jsonl`，推送 `round_added` / `round_updated`，**无需先 build dist**。
-- `jea intel viewer build [--subject NAME] [--limit N] [--out PATH]`：可选离线快照（marked 预渲染到 `tools/evolution-viewer/dist/`）；用 `npx serve tools/evolution-viewer/dist` 等任意静态服务器打开。
+- `jea intel viewer serve [--port N] [--open] [--limit N] [--subject NAME]`：托管 `tools/evolution-viewer/public/` 并直读当前 subject runtime。Live API：`GET /api/manifest`、`GET /api/rounds/:cycleId`（归档报告/日记）、`GET /api/daemon`（worker/queue/open cycles）、`GET /api/cycles/:cycleId`（cycle-state，可无 report）、`GET /api/events/recent?limit=N`（daemon 事件）。`/events` SSE tail `evolution-events.jsonl`，推送 `round_added` / `round_updated` / `daemon_event` / `runtime_updated`，**无需先 build dist**。
+- `jea intel viewer build [--subject NAME] [--limit N] [--out PATH]`：可选离线快照（marked 预渲染到 `tools/evolution-viewer/dist/`）；用 `npx serve tools/evolution-viewer/dist` 等任意静态服务器打开。**离线 build 不含 daemon 控制台**（无 `/api/daemon`）；daemon 运行态仅 live serve 可用。
 - `npm run viewer:build` / `npm run viewer:serve`：同上（`viewer:serve` 默认 `--open`）。
 
 写入情报：
