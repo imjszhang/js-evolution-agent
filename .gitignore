@@ -57,7 +57,8 @@ runtime/
 work_dir/
 .worktrees/
 
-# Local subject registry and subject policies
+# Local subject registry, subject policies, and goal sources
 policies/subjects.json
 policies/active-subject.json
 policies/subjects/
+policies/goals/

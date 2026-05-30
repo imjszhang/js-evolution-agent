@@ -1664,6 +1664,27 @@ describe('controlled action handlers', () => {
     }, ctx)).rejects.toThrow(/missing required field/);
   });
 
+  it('records probe proposals locally without starting an agent', async () => {
+    const ctx = makeAgenticCtx();
+    const result = await actionHandlers.propose_probe({
+      type: 'propose_probe',
+      id: 'probe-bootstrap-1',
+      params: {
+        target: 'self-evolution workflow',
+        hypothesis: 'A record-only first cycle proves the integration path.',
+        success_signal: 'Receipts appear under the active subject runtime.',
+        failure_signal: 'Any action modifies external projects.',
+        death_boundary: 'Do not write outside the active subject runtime.',
+      },
+    }, ctx);
+
+    expect(result.success).toBe(true);
+    expect(result.provider).toBe('local');
+    expect(result.probe_id).toBe('probe-bootstrap-1');
+    expect(ctx.ai.agentCalls).toHaveLength(0);
+    expect(result.verification_hints.join(' ')).toMatch(/agent_run/);
+  });
+
   it('records core requests without executing mutation', async () => {
     const ctx = makeAgenticCtx();
     const action = {

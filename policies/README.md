@@ -1,17 +1,19 @@
 # policies 目录说明
 
-`policies/` 保存主体选择、主体 policy、示例 registry 和策略模板。这里的文件分成两类：可提交的项目默认说明与示例，以及每台机器/每个操作者自己的本地主体状态。
+`policies/` 保存可提交的项目说明与示例 registry，以及每台机器/每个操作者自己的本地主体配置。仓库内通常只有 `README.md` 与 `subjects.example.json`；其余主体相关文件在本地生成且被 `.gitignore` 排除。
 
 ## 文件角色
 
 | 路径 | 角色 | 建议 |
 | --- | --- | --- |
-| `project-guidance.md` | 旧版兼容/default policy 入口 | 保留为兼容文件；新主体不要继续把机器字段写在这里 |
+| `README.md` | 本说明 | 可提交 |
 | `subjects.example.json` | 可提交的 `subjects.json` 示例 | 新增结构化字段时先更新这里 |
 | `subjects.json` | 本地 subject registry | 通常是本地状态；按当前机器路径配置 |
-| `subjects/*.md` | 每个 subject 的语义 policy | 描述主体、边界和人工审批规则 |
-| `templates/project.md` | 新 subject policy 模板 | 用于 `jea subject init` 或人工复制 |
-| `active-subject.json` | 旧版 active subject 状态 | 仅兼容旧数据；新流程使用 `subjects.json` |
+| `subjects/*.md` | 每个 subject 的语义 policy | 由 `jea subject init` 生成或手工维护；描述主体、边界和人工审批规则 |
+| `goals/<name>.json` | 本地 goal 源文件（可选） | `jea goals update --file` 的输入；运行时读 `runtime/.../active_goals.json` |
+| `active-subject.json` | 旧版 active subject 状态（若存在） | 仅兼容旧数据；新流程使用 `subjects.json` |
+
+`jea subject init` 的主体 policy 模板来自宿主 i18n 内置文案，**不**依赖 `policies/templates/` 下的文件（该目录当前未纳入仓库）。
 
 ## 推荐创建流程
 
@@ -35,7 +37,25 @@ npm run jea -- subject check --subject <name>
 2. 在 `policies/subjects.json` 的 `subjects` 中登记该 subject。
 3. 如需要外部目标仓库，补充 `lane` 和 `resources`。
 4. 运行 `jea subject check --subject <name>` 校验。
-5. 运行 `jea data init --all --subject <name>` 初始化运行时数据。
+5. 运行 `jea data init --all --subject <name>` 初始化运行时数据（会写入 bootstrap 版 `active_goals.json`）。
+6. 按需编写本地 `policies/goals/<name>.json` 并运行 `jea goals update`（见下文「goals 的创建方式」）。
+
+## goals 的创建方式
+
+演化循环**只读** `runtime/subjects/<data_namespace>/data/goals/active_goals.json`。`policies/goals/` 是可选的本地源目录，供 `jea goals update --file` 写入 runtime；直接改 `policies/goals/` 不会自动生效，必须再跑 `goals update`。
+
+`data init --all` 会先写入宿主默认 bootstrap goals；若与主体语义不符，在本地新建 JSON 后更新：
+
+```powershell
+# 1. 在 policies/goals/ 下创建 <name>.json（该目录已被 .gitignore，仅本机保留）
+# 2. 写入 runtime
+npm run jea -- goals update --file policies/goals/<name>.json --reason "初始化主体目标" --subject <name>
+npm run jea -- goals show --subject <name>
+```
+
+Goal JSON 需包含字段：`id`、`name`、`intent`、`good_signal`、`bad_signal`、`children`（数组，子节点结构相同）。Decide 阶段 action 的 `serves_goal` 应对齐树中的 `id`。
+
+Phase 4.5 在 `status=refine` 且 `confidence=high` 时也可能自动改写 runtime 里的 `active_goals.json`；若需与本地源文件对齐，改完后应手动同步或再次 `goals update`。
 
 ## subjects.json 的创建方式
 
@@ -153,18 +173,18 @@ Copy-Item policies\subjects.example.json policies\subjects.json
 
 ## 提交策略
 
-通常可以提交：
+**仓库内可提交：**
 
 - `policies/README.md`
 - `policies/subjects.example.json`
-- `policies/project-guidance.md`
-- `policies/templates/*.md`
 
-通常不要提交：
+**通常不要提交（已在 `.gitignore` 或应为本地状态）：**
 
-- 机器专属的 `policies/subjects.json`
-- 旧版本地状态 `policies/active-subject.json`
-- 包含操作者私有路径、凭据线索或本地 lane 的 subject policy
+- `policies/subjects.json`
+- `policies/subjects/`
+- `policies/goals/`
+- `policies/active-subject.json`（若仍存在）
+- `runtime/`（含各 subject 的 `active_goals.json` 等运行时数据）
 
 提交前建议运行：
 

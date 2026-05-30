@@ -1536,6 +1536,39 @@ const builtInActionHandlers = {
   async propose_probe(action, ctx) {
     requireParams(action, ['hypothesis', 'success_signal', 'failure_signal', 'death_boundary']);
     const store = storeFrom(ctx);
+
+    if (!agentExecutionRequested(action)) {
+      const probeId = getField(action, 'probe_id') ?? action.id ?? `probe-${Date.now()}`;
+      const event = {
+        type: 'probe_proposed',
+        action_type: action.type,
+        target: getField(action, 'target') ?? action.description ?? 'unspecified',
+        hypothesis: getField(action, 'hypothesis'),
+        success_signal: getField(action, 'success_signal'),
+        failure_signal: getField(action, 'failure_signal'),
+        death_boundary: getField(action, 'death_boundary'),
+        status: 'proposed_only',
+      };
+      store.recordProbeEvent(probeId, event);
+      store.recordEvolutionEvent({ ...event, probe_id: probeId });
+      const result = {
+        success: true,
+        status: 'proposed_only',
+        message: `probe proposal recorded locally (host-backed write): ${probeId}`,
+        probe_id: probeId,
+        provider: 'local',
+        fallback_used: false,
+        writes_applied: { probe_proposals: 2 },
+        evidence: {},
+        writes: { probe_proposals: [{ ...event, probe_id: probeId }] },
+        verification_hints: [
+          'propose_probe registers experiment plans only; execute experiments with agent_run after the proposal is recorded.',
+        ],
+      };
+      store.recordActionReceipt(action, result, ctx);
+      return result;
+    }
+
     const agenticExecution = await runPhase2Agent(action, ctx, {
       mode: 'propose',
       objective: 'Execute a bounded probe proposal write. Return writes.probe_proposals with the proposal events the host should persist.',
