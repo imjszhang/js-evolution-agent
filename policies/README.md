@@ -7,6 +7,7 @@
 | 路径 | 角色 | 建议 |
 | --- | --- | --- |
 | `README.md` | 本说明 | 可提交 |
+| `authority/` | 跨 subject 共享的 Cyber-Taoist 权威文献（`CONSTITUTION.md`、`GUIDE.md`） | 可提交；见 `authority/README.md` |
 | `subjects.example.json` | 可提交的 `subjects.json` 示例 | 新增结构化字段时先更新这里 |
 | `subjects.json` | 本地 subject registry | 通常是本地状态；按当前机器路径配置 |
 | `subjects/*.md` | 每个 subject 的语义 policy | 由 `jea subject init` 生成或手工维护；描述主体、边界和人工审批规则 |

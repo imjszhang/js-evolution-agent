@@ -7,7 +7,7 @@ Updated: 2026-05-10 22:44:39 +08:00
 ## Architecture
 
 - `js-evolution-engine`: engine, pipelines, action registry, decision queue, verification helpers.
-- `examples/cyber-taoist-demo/cyber-taoist-docs`: read-only `CONSTITUTION.md` and `SKILL.md` context.
+- `policies/authority/`: read-only `CONSTITUTION.md` and `GUIDE.md` authority context (project-local).
 - `js-intel-store`: file-backed intelligence memory under `runtime/subjects/<data_namespace>/data/intelligence`.
 - `js-evolution-agent`: host adapter, local policy, controlled action handlers, CLI, reports, and runtime data.
 
@@ -109,16 +109,16 @@ This project uses [DeepSeek's OpenAI-compatible Chat Completions API](https://ap
 
 ## Context Documents
 
-By default, `oada.config.mjs` reads Cyber-Taoist Markdown from the installed `js-evolution-engine` package (`examples/cyber-taoist-demo/cyber-taoist-docs/`), plus:
+By default, `oada.config.mjs` reads Cyber-Taoist Markdown from this repository's `policies/authority/`, plus:
 
 - the subject policy selected by `JEA_SUBJECT`, `--subject`, or `policies/subjects.json` default
 
 `policies/project-guidance.md` is kept as a compatibility entry. New subject policies live under `policies/subjects/`.
 
-To use a different Cyber-Taoist docs directory:
+To override the authority docs directory:
 
 ```powershell
-$env:CYBER_TAOIST_DOCS_DIR = 'D:\path\to\cyber-taoist-docs'
+$env:CYBER_TAOIST_DOCS_DIR = 'D:\path\to\custom-authority-docs'
 jea run
 ```
 
@@ -240,7 +240,7 @@ The legacy top-level `data/` directory is still ignored for compatibility with o
 
 After every successful Phase 1 (intel pipeline), a Phase 1.5 build step writes one free-form Markdown report per cycle. The report is intentionally **unconstrained**:
 
-- The full text of `CONSTITUTION.md`, `SKILL.md`, and the active subject policy is injected into the AI prompt. The model is free to choose structure, voice, length, and section names — it is asked only to be human-readable, faithful to Cyber-Taoist evolutionary thinking, and to not invent ids/counts beyond the cycle facts JSON.
+- The full text of `CONSTITUTION.md`, `GUIDE.md`, and the active subject policy is injected into the AI prompt. The model is free to choose structure, voice, length, and section names — it is asked only to be human-readable, faithful to Cyber-Taoist evolutionary thinking, and to not invent ids/counts beyond the cycle facts JSON.
 - Output language is detected from the active subject policy (CJK ratio): primarily Chinese policies produce Chinese reports; otherwise English. The default is Chinese.
 - `gatherEvidence` (recent `intel_observations` / `probe_results` / `retrospectives` / `evolution_events`) and `assessGoals` (deterministic bad-signal / good-signal token match) are still computed and passed to the prompt as auxiliary signals; the AI may use, override, or ignore them.
 - When the AI client is missing or throws, the builder writes a minimal placeholder Markdown listing only mechanical facts (cycle id, action count, evidence counts) so `jea intel report` always has something to display. `source: 'fallback'` marks these.

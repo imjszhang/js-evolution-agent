@@ -897,7 +897,7 @@ describe('buildPrompt', () => {
   it('embeds full Cyber-Taoist documents and subject policy when provided', () => {
     const docs = [
       { id: 'cyber-taoist:constitution', source: '/c', text: 'CONSTITUTION_FULL_TEXT_MARKER' },
-      { id: 'cyber-taoist:skill', source: '/s', text: 'SKILL_FULL_TEXT_MARKER' },
+      { id: 'cyber-taoist:guide', source: '/g', text: 'GUIDE_FULL_TEXT_MARKER' },
       { id: 'js-evolution-agent:subject:test', source: '/p', text: '主体策略全文标记' },
     ];
     const prompt = buildPrompt({
@@ -911,7 +911,7 @@ describe('buildPrompt', () => {
       generatedAt: '2026-05-10T00:00:00.000Z',
     });
     expect(prompt).toContain('CONSTITUTION_FULL_TEXT_MARKER');
-    expect(prompt).toContain('SKILL_FULL_TEXT_MARKER');
+    expect(prompt).toContain('GUIDE_FULL_TEXT_MARKER');
     expect(prompt).toContain('主体策略全文标记');
     expect(prompt).toContain('情报报告');
   });
@@ -1854,14 +1854,14 @@ describe('buildIntelReport', () => {
     };
     const docs = [
       { id: 'cyber-taoist:constitution', source: '/c', text: 'FULL_CONSTITUTION_BODY' },
-      { id: 'cyber-taoist:skill', source: '/s', text: 'FULL_SKILL_BODY' },
+      { id: 'cyber-taoist:guide', source: '/g', text: 'FULL_GUIDE_BODY' },
       { id: 'js-evolution-agent:subject:tt', source: '/p', text: 'FULL_SUBJECT_BODY' },
     ];
     await buildIntelReport({
       intelResult, runtime, store, agentContextDocs: docs, aiClient: fakeAi, useAi: true,
     });
     expect(captured[0]).toContain('FULL_CONSTITUTION_BODY');
-    expect(captured[0]).toContain('FULL_SKILL_BODY');
+    expect(captured[0]).toContain('FULL_GUIDE_BODY');
     expect(captured[0]).toContain('FULL_SUBJECT_BODY');
   });
 

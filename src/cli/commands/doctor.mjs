@@ -1,6 +1,6 @@
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { getDefaultCyberTaoistDocsDir, getProjectRoot, loadProjectEnv } from '../utils/project.mjs';
+import { getProjectRoot, loadProjectEnv, resolveAuthorityDocsDir } from '../utils/project.mjs';
 import { describeSubjectLockHealth } from '../utils/evolve-runs.mjs';
 import { readSubjectsRegistry } from '../utils/subjects.mjs';
 
@@ -34,9 +34,9 @@ export async function doctorCommand() {
     statusLine(true, 'JEA_APPROVAL_MODE', approvalMode);
   }
 
-  const docsDir = process.env.CYBER_TAOIST_DOCS_DIR || getDefaultCyberTaoistDocsDir();
-  ok = statusLine(existsSync(join(docsDir, 'CONSTITUTION.md')), 'Cyber-Taoist CONSTITUTION.md', docsDir) && ok;
-  ok = statusLine(existsSync(join(docsDir, 'SKILL.md')), 'Cyber-Taoist SKILL.md', docsDir) && ok;
+  const docsDir = resolveAuthorityDocsDir(root);
+  ok = statusLine(existsSync(join(docsDir, 'CONSTITUTION.md')), 'Authority CONSTITUTION.md', docsDir) && ok;
+  ok = statusLine(existsSync(join(docsDir, 'GUIDE.md')), 'Authority GUIDE.md', docsDir) && ok;
   ok = statusLine(existsSync(join(root, 'oada.config.mjs')), 'oada.config.mjs') && ok;
 
   const runtimeSubjects = join(root, 'runtime', 'subjects');

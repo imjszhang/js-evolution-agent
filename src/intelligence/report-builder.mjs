@@ -466,7 +466,7 @@ function pickDoc(docs, idPrefix) {
   return docs.find((d) => typeof d?.id === 'string' && d.id.startsWith(idPrefix)) || null;
 }
 
-function buildPromptZh({ constitution, skill, subject, contextJson }) {
+function buildPromptZh({ constitution, guide, subject, contextJson }) {
   return `你是 \`js-evolution-agent\` 主体的情报员。请先研读以下三份文献的全文，然后用其中的视角、术语与方法，为本轮（cycle）写一份 Markdown 「情报报告」。
 
 章节结构与篇幅可适当发挥，但必须同时满足：(1) 对人类操作者可读、对主体的演化有用、忠于 Cyber-Taoist 进化学立场；(2) 全文使用现代汉语书面语（白话），禁止使用文言文、骈俪、「修行札记」式杂文口吻，以及堆砌典故作主标题或过长的玄学隐喻；(3) Cyber-Taoist 专有名词可按文献原样使用，用事实与可追溯 id 陈述，少用比喻替代证据。
@@ -489,8 +489,8 @@ function buildPromptZh({ constitution, skill, subject, contextJson }) {
 === 文献 1：Cyber-Taoist 宪章（CONSTITUTION.md，全文） ===
 ${constitution || '(missing)'}
 
-=== 文献 2：Cyber-Taoist 应用指南（SKILL.md，全文） ===
-${skill || '(missing)'}
+=== 文献 2：Cyber-Taoist 应用指南（GUIDE.md，全文） ===
+${guide || '(missing)'}
 
 === 文献 3：本主体策略（active subject policy，全文） ===
 ${subject || '(missing)'}
@@ -501,7 +501,7 @@ ${contextJson}
 请开始撰写报告。`;
 }
 
-function buildPromptEn({ constitution, skill, subject, contextJson }) {
+function buildPromptEn({ constitution, guide, subject, contextJson }) {
   return `You are the intel writer for the \`js-evolution-agent\` subject. First, study the three documents below in full, then write a Markdown intelligence report for this cycle using their lens, vocabulary, and methods.
 
 Sectioning and depth are yours, but voice must stay modern, plain, and technical-ops flavored: readable to a human operator, useful to evolution, faithful to Cyber-Taoist evolutionary thinking. Avoid archaic/literary register, ornate metaphors as section titles, or "meditation journal" tone unless you are quoting the constitution verbatim.
@@ -524,8 +524,8 @@ Output constraints:
 === Document 1: Cyber-Taoist Constitution (CONSTITUTION.md, full text) ===
 ${constitution || '(missing)'}
 
-=== Document 2: Cyber-Taoist Skill Guide (SKILL.md, full text) ===
-${skill || '(missing)'}
+=== Document 2: Cyber-Taoist Application Guide (GUIDE.md, full text) ===
+${guide || '(missing)'}
 
 === Document 3: Active Subject Policy (full text) ===
 ${subject || '(missing)'}
@@ -566,7 +566,7 @@ function buildAiContext({ intelResult, runtime, goals, evidence, assessment, gen
 
 export function buildPrompt({ language, agentContextDocs, intelResult, runtime, goals, evidence, assessment, generatedAt, reportContext = null }) {
   const constitutionDoc = pickDoc(agentContextDocs, 'cyber-taoist:constitution');
-  const skillDoc = pickDoc(agentContextDocs, 'cyber-taoist:skill');
+  const guideDoc = pickDoc(agentContextDocs, 'cyber-taoist:guide');
   const subjectDoc = pickDoc(agentContextDocs, 'js-evolution-agent:subject:')
     || pickDoc(agentContextDocs, 'subject:')
     || (Array.isArray(agentContextDocs) ? agentContextDocs.find((d) => d?.id?.includes(':subject:')) : null);
@@ -574,7 +574,7 @@ export function buildPrompt({ language, agentContextDocs, intelResult, runtime, 
   const contextJson = buildAiContext({ intelResult, runtime, goals, evidence, assessment, generatedAt, reportContext });
   const args = {
     constitution: constitutionDoc?.text,
-    skill: skillDoc?.text,
+    guide: guideDoc?.text,
     subject: subjectDoc?.text,
     contextJson,
   };

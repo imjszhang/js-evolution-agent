@@ -27,7 +27,7 @@ jea data status
 
 ## 环境与诊断
 
-- `jea doctor`：检查 Node、依赖、`.env`、DeepSeek 配置、Cyber-Taoist 文档（`CONSTITUTION.md`、`SKILL.md`）和 `oada.config.mjs`。
+- `jea doctor`：检查 Node、依赖、`.env`、DeepSeek 配置、权威文档（`policies/authority/CONSTITUTION.md`、`GUIDE.md`）和 `oada.config.mjs`。
 - `jea llm ping`：测试 DeepSeek 连接。
 - `jea llm ping --mock`：测试本地 Mock AI 路径。
 - `jea policy check`：检查当前主体策略是否包含必需章节（`Subject`）。
@@ -181,7 +181,7 @@ runtime/subjects/<data_namespace>/data/evolution/operator_briefs/processed/
 
 - `policies/subjects/<name>.md`：`Off-Limits Without Human Approval` 等审批与安全边界；用 `jea subject check` 校验结构。
 - `policies/subjects.json`：lane、resource root 等机器可读配置。
-- `CONSTITUTION.md`、`SKILL.md`、`oada.config.mjs`：Phase 1 权威文档，优先级高于情报材料。
+- `policies/authority/CONSTITUTION.md`、`policies/authority/GUIDE.md`、`oada.config.mjs`：Phase 1 权威文档，优先级高于情报材料。
 
 ### 通用情报写入（Evidence，非 operator_fact）
 

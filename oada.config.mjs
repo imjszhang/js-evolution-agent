@@ -14,7 +14,7 @@ import {
   actionVerifiers,
 } from './src/actions/handlers.mjs';
 import { createIntelligenceStore } from './src/intelligence/store.mjs';
-import { getDefaultCyberTaoistDocsDir } from './src/cli/utils/project.mjs';
+import { resolveAuthorityDocsDir } from './src/cli/utils/project.mjs';
 import {
   runtimeInfoForDefaultSubject,
   resolveSubjectRepoLane,
@@ -27,11 +27,8 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-function resolveDocsDir() {
-  if (process.env.CYBER_TAOIST_DOCS_DIR) {
-    return resolve(process.env.CYBER_TAOIST_DOCS_DIR);
-  }
-  return getDefaultCyberTaoistDocsDir();
+function resolveDocsDir(root) {
+  return resolveAuthorityDocsDir(root);
 }
 
 function readRequiredFile(fullPath, hint) {
@@ -42,7 +39,7 @@ function readRequiredFile(fullPath, hint) {
 }
 
 function buildAgentContextDocs(root) {
-  const docsDir = resolveDocsDir();
+  const docsDir = resolveDocsDir(root);
   const subjectPolicy = readSubjectPolicy(root, resolveSubjectConfig(root));
   return [
     {
@@ -51,9 +48,9 @@ function buildAgentContextDocs(root) {
       text: readRequiredFile(resolve(docsDir, 'CONSTITUTION.md'), 'Cyber-Taoist constitution'),
     },
     {
-      id: 'cyber-taoist:skill',
-      source: resolve(docsDir, 'SKILL.md'),
-      text: readRequiredFile(resolve(docsDir, 'SKILL.md'), 'Cyber-Taoist skill guide'),
+      id: 'cyber-taoist:guide',
+      source: resolve(docsDir, 'GUIDE.md'),
+      text: readRequiredFile(resolve(docsDir, 'GUIDE.md'), 'Cyber-Taoist application guide'),
     },
     {
       id: `js-evolution-agent:subject:${subjectPolicy.config.name}`,
@@ -107,7 +104,7 @@ const cannedAnalyzeDecide = {
         source: 'bootstrap-cycle',
         subject: 'js-evolution-agent',
         kind: 'project_state',
-        content: 'Initial controlled loop uses js-evolution-engine, cyber-taoist docs, and js-intel-store.',
+        content: 'Initial controlled loop uses js-evolution-engine, project authority docs, and js-intel-store.',
         confidence: 'high',
         tags: ['bootstrap', 'controlled-loop'],
       },
@@ -124,7 +121,7 @@ const cannedAnalyzeDecide = {
         target: 'self-evolution workflow',
         hypothesis: 'A record-only first cycle proves the integration path before any mutation is allowed.',
         success_signal: 'Decision queue executes and receipts appear under the active subject runtime data namespace.',
-        failure_signal: 'Any action tries to modify js-evolution-engine or cyber-taoist-docs.',
+        failure_signal: 'Any action tries to modify js-evolution-engine or policies/authority/.',
         death_boundary: 'Do not write outside the active subject runtime during the first cycle.',
       },
       expected_impact: 'One decisive integration signal with no external side effects.',
