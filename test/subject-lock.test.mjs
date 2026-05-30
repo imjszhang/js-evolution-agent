@@ -41,7 +41,7 @@ describe('subject lock', () => {
     const first = await acquireSubjectLock(root, 'alpha', { staleMs: 60_000, mode: 'daemon' });
     await expect(acquireSubjectLock(root, 'alpha', { staleMs: 60_000, mode: 'daemon', retries: 0 }))
       .rejects
-      .toThrow(/already running|Subject is already running/i);
+      .toThrow(/already running|Subject is already running|foreground run or evolve/i);
     await first.release();
     rmSync(root, { recursive: true, force: true });
   });
