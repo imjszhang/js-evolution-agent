@@ -33,7 +33,7 @@ function makeRoot() {
 describe('cycle step checkpoints', () => {
   it('writes and reads per-step artifact files', () => {
     const root = makeRoot();
-    createCycle(root, 'alpha', { cycleId: 'cycle-cp-1' });
+    createCycle(root, 'alpha', { cycleId: 'cycle-cp-1', meta: { driver: 'daemon' } });
     writeStepArtifact(root, 'alpha', 'cycle-cp-1', 'exec', {
       cycle_id: 'cycle-cp-1',
       success: true,
@@ -48,7 +48,7 @@ describe('cycle step checkpoints', () => {
   it('reconstructs execResult from checkpoint for downstream steps', () => {
     const root = makeRoot();
     const cycleId = 'cycle-cp-2';
-    createCycle(root, 'alpha', { cycleId });
+    createCycle(root, 'alpha', { cycleId, meta: { driver: 'daemon' } });
     writeStepArtifact(root, 'alpha', cycleId, 'intel', {
       cycle_id: cycleId,
       success: true,
@@ -71,7 +71,7 @@ describe('cycle step checkpoints', () => {
   it('reconcile enqueues verify when exec is done but verify pending', () => {
     const root = makeRoot();
     const cycleId = 'cycle-cp-3';
-    createCycle(root, 'alpha', { cycleId });
+    createCycle(root, 'alpha', { cycleId, meta: { driver: 'daemon' } });
     markStepStatus(root, 'alpha', cycleId, 'intel', { status: 'done', metaPatch: { decisions_queued: 0 } });
     markStepStatus(root, 'alpha', cycleId, 'intel_report', { status: 'done', metaPatch: { intel_report_ready: true } });
     markStepStatus(root, 'alpha', cycleId, 'exec', { status: 'done' });
@@ -90,7 +90,7 @@ describe('cycle step checkpoints', () => {
   it('reconcile re-enqueues missing downstream step without duplicates', () => {
     const root = makeRoot();
     const cycleId = 'cycle-cp-stale-running';
-    createCycle(root, 'alpha', { cycleId });
+    createCycle(root, 'alpha', { cycleId, meta: { driver: 'daemon' } });
     markStepStatus(root, 'alpha', cycleId, 'intel', { status: 'done', metaPatch: { decisions_queued: 0 } });
     markStepStatus(root, 'alpha', cycleId, 'intel_report', { status: 'running' });
     const staleAt = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();

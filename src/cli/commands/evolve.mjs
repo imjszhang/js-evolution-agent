@@ -154,6 +154,13 @@ export function buildCycleEnv(flags, subject, root = null) {
   } else {
     delete env.JEA_CYCLE_ID;
   }
+  if (flags['cycle-driver']) {
+    env.JEA_CYCLE_DRIVER = String(flags['cycle-driver']);
+  } else if (!flags['cycle-step']) {
+    env.JEA_CYCLE_DRIVER = 'evolve';
+  } else {
+    delete env.JEA_CYCLE_DRIVER;
+  }
   return env;
 }
 
@@ -430,7 +437,7 @@ async function runOneRound(root, manifest, flags) {
       await sleep(retryDelayMs);
     }
     return { ok: true, manifest: current };
-  });
+  }, { mode: 'run' });
 }
 
 async function runRoundRobinOneRound(root, manifests, flags) {

@@ -4,6 +4,7 @@ import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runtimeInfoForDefaultSubject } from './src/cli/utils/subjects.mjs';
 import { withSubjectLock } from './src/cli/utils/evolve-runs.mjs';
+import { createCycle } from './src/cli/utils/cycle-state.mjs';
 import { loadCycleStepContext } from './src/cli/utils/cycle-checkpoints.mjs';
 import {
   buildCycleContext,
@@ -161,6 +162,12 @@ async function runSingleStepMode(runtime, step, cycleId) {
   }
 }
 
+function cycleDriverFromEnv() {
+  const value = process.env.JEA_CYCLE_DRIVER;
+  if (value === 'evolve' || value === 'daemon' || value === 'run') return value;
+  return 'run';
+}
+
 async function runCycle(runtime) {
   const ctx = await buildCycleContext(__dirname, runtime);
   const recordState = recordStateBag(runtime);
@@ -171,8 +178,12 @@ async function runCycle(runtime) {
   console.log('  namespace:', runtime.dataNamespace);
   console.log('  runtimeRoot:', runtime.runtimeRoot);
 
+  const cycleState = createCycle(recordState.root, runtime.subject, {
+    meta: { driver: cycleDriverFromEnv() },
+  });
+
   console.log('\n=== Phase 1: intel pipeline ===');
-  const intelOutcome = await runIntelStep(ctx, { recordState });
+  const intelOutcome = await runIntelStep(ctx, { cycleId: cycleState.cycle_id, recordState });
   const intelResult = intelOutcome.intelResult;
   console.log('  success:', intelResult.success);
   console.log('  actions queued:', intelResult.decisions_queued.length);
@@ -272,7 +283,7 @@ async function main() {
   if (process.env.JEA_SUBJECT_RUN_LOCK_HELD === '1') {
     return run();
   }
-  return withSubjectLock(__dirname, runtime.subject, run);
+  return withSubjectLock(__dirname, runtime.subject, run, { mode: 'run' });
 }
 
 main().catch((err) => {

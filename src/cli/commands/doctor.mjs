@@ -1,7 +1,8 @@
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import lockfile from 'proper-lockfile';
 import { getDefaultCyberTaoistDocsDir, getProjectRoot, loadProjectEnv } from '../utils/project.mjs';
+import { describeSubjectLockHealth } from '../utils/evolve-runs.mjs';
+import { readSubjectsRegistry } from '../utils/subjects.mjs';
 
 function statusLine(ok, label, detail = '') {
   const mark = ok ? 'OK ' : 'WARN';
@@ -40,19 +41,24 @@ export async function doctorCommand() {
 
   const runtimeSubjects = join(root, 'runtime', 'subjects');
   if (existsSync(runtimeSubjects)) {
+    const registry = readSubjectsRegistry(root);
+    const namespaceToSubject = new Map();
+    for (const [name, entry] of Object.entries(registry.subjects || {})) {
+      const ns = entry?.data_namespace || name;
+      namespaceToSubject.set(ns, name);
+    }
     const heldLocks = [];
     for (const entry of readdirSync(runtimeSubjects, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
-      const lockPath = join(runtimeSubjects, entry.name, 'data', 'evolution', '.evolve.lock');
-      if (!existsSync(lockPath)) continue;
-      try {
-        if (lockfile.checkSync(lockPath)) heldLocks.push(entry.name);
-      } catch {
-        /* ignore unreadable locks */
+      const namespace = entry.name;
+      const subject = namespaceToSubject.get(namespace) || namespace;
+      const health = describeSubjectLockHealth(root, subject);
+      if (health.code === 'lock_held_by_daemon' || health.code === 'lock_held_by_foreground') {
+        heldLocks.push(`${subject} (${health.code})`);
       }
     }
     if (heldLocks.length) {
-      ok = statusLine(false, 'Evolve subject lock held', heldLocks.join(', ')) && ok;
+      statusLine(true, 'Evolve subject lock held', heldLocks.join(', '));
     } else {
       statusLine(true, 'Evolve subject locks', 'none held');
     }

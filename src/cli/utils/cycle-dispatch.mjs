@@ -8,8 +8,11 @@ import {
   eventFromStepCompletion,
 } from './cycle-reducer.mjs';
 import {
+  abandonCycle,
   createCycle,
+  cycleDriver,
   findStuckSteps,
+  isCycleStale,
   listOpenCycles,
   markStepStatus,
   markStepsSkipped,
@@ -144,6 +147,7 @@ export function startCycleFromTick(root, subject, input = {}) {
 
   const cycleState = createCycle(root, subject, {
     meta: {
+      driver: 'daemon',
       skip_belief_update: Boolean(input.skip_belief_update),
       skip_goals_assess: Boolean(input.skip_goals_assess),
     },
@@ -176,10 +180,33 @@ function reconcileStaleRunningSteps(root, subject, cycleState, { staleMs = 60_00
 
 export function reconcileOpenCycles(root, subject, input = {}) {
   const staleMs = Number(input.stale_ms) > 0 ? Number(input.stale_ms) : 60_000;
-  const openCycles = listOpenCycles(root, subject);
+  let openCycles = listOpenCycles(root, subject);
   const options = dispatchOptionsFromInput(input);
   const allEnqueued = [];
   const allSkipped = [];
+  const abandoned = [];
+
+  for (const cycleState of openCycles) {
+    const driver = cycleDriver(cycleState);
+    if (driver !== 'daemon' && isCycleStale(cycleState, { staleMs })) {
+      abandonCycle(root, subject, cycleState.cycle_id, {
+        reason: `abandoned stale ${driver} cycle`,
+      });
+      recordDaemonEvent(root, subject, {
+        type: 'cycle_abandoned',
+        status: 'ok',
+        cycle_id: cycleState.cycle_id,
+        driver,
+        reason: `stale_${driver}_cycle`,
+      });
+      abandoned.push({ cycle_id: cycleState.cycle_id, driver });
+      continue;
+    }
+  }
+
+  if (abandoned.length) {
+    openCycles = listOpenCycles(root, subject);
+  }
 
   for (const cycleState of openCycles) {
     const refreshed = reconcileStaleRunningSteps(root, subject, cycleState, { staleMs });
@@ -203,7 +230,7 @@ export function reconcileOpenCycles(root, subject, input = {}) {
     });
   }
 
-  return { enqueued: allEnqueued, skipped: allSkipped, open_cycles: openCycles.length };
+  return { enqueued: allEnqueued, skipped: allSkipped, open_cycles: openCycles.length, abandoned };
 }
 
 export function runHeartbeatTick(root, subject, input = {}) {

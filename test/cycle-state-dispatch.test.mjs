@@ -31,7 +31,7 @@ function makeRoot() {
 describe('cycle-state and dispatch', () => {
   it('creates and updates cycle state files', () => {
     const root = makeRoot();
-    const state = createCycle(root, 'alpha', { cycleId: 'cycle-test-1' });
+    const state = createCycle(root, 'alpha', { cycleId: 'cycle-test-1', meta: { driver: 'daemon' } });
     expect(state.cycle_id).toBe('cycle-test-1');
     markStepStatus(root, 'alpha', 'cycle-test-1', 'intel', { status: 'done', metaPatch: { decisions_queued: 1 } });
     const updated = readCycleState(root, 'alpha', 'cycle-test-1');
@@ -61,7 +61,7 @@ describe('cycle-state and dispatch', () => {
 
   it('dispatchCycleEvent enqueues exec after intel_ready', () => {
     const root = makeRoot();
-    const cycle = createCycle(root, 'alpha', { cycleId: 'cycle-dispatch-1' });
+    const cycle = createCycle(root, 'alpha', { cycleId: 'cycle-dispatch-1', meta: { driver: 'daemon' } });
     markStepStatus(root, 'alpha', cycle.cycle_id, 'intel', {
       status: 'done',
       metaPatch: { decisions_queued: 2 },
@@ -95,7 +95,7 @@ describe('cycle-state and dispatch', () => {
 
   it('summarizeCycleState exposes step statuses', () => {
     const root = makeRoot();
-    const state = createCycle(root, 'alpha', { cycleId: 'cycle-sum-1' });
+    const state = createCycle(root, 'alpha', { cycleId: 'cycle-sum-1', meta: { driver: 'daemon' } });
     const summary = summarizeCycleState(state);
     expect(summary.steps.intel).toBe('pending');
     rmSync(root, { recursive: true, force: true });
@@ -104,7 +104,7 @@ describe('cycle-state and dispatch', () => {
   it('findStuckSteps detects stale running steps', () => {
     const root = makeRoot();
     const cycleId = 'cycle-stuck-1';
-    createCycle(root, 'alpha', { cycleId });
+    createCycle(root, 'alpha', { cycleId, meta: { driver: 'daemon' } });
     markStepStatus(root, 'alpha', cycleId, 'exec', { status: 'running' });
     const state = readCycleState(root, 'alpha', cycleId);
     state.steps.exec.updated_at = new Date(Date.now() - 120_000).toISOString();

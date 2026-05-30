@@ -1,7 +1,18 @@
-import { appendFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import lockfile from 'proper-lockfile';
 import { readJsonSafe, writeJsonFile } from './files.mjs';
+import {
+  acquireSubjectLockAt,
+  describeSubjectLockHealthAt,
+  formatSubjectLockConflictMessageAt,
+  inspectSubjectLockAt,
+  isSubjectLockHeldAt,
+  resolveSubjectLockStaleMs,
+  resolveSubjectLockUpdateMs,
+  SUBJECT_LOCK_DAEMON_STALE_MS_DEFAULT,
+  SUBJECT_LOCK_RUN_STALE_MS,
+  withSubjectLockAt,
+} from './subject-lock.mjs';
 import {
   defaultSubjectEntry,
   getDataNamespace,
@@ -268,16 +279,45 @@ export function resolveClosedCycleIdSince(root, subject, startedAt = null) {
   return closed[0].cycle_id;
 }
 
-export function isSubjectLocked(root, subject) {
+export function subjectLockPath(root, subject) {
   const runtime = runtimeForSubject(root, subject);
-  const lockTarget = join(runtime.evolutionDir, '.evolve.lock');
-  if (!existsSync(lockTarget)) return false;
-  try {
-    return lockfile.checkSync(lockTarget, { stale: 30 * 60 * 1000 });
-  } catch {
-    return false;
-  }
+  return join(runtime.evolutionDir, '.evolve.lock');
 }
+
+export function inspectSubjectLock(root, subject, options = {}) {
+  return inspectSubjectLockAt(subjectLockPath(root, subject), { ...options, root, subject });
+}
+
+export function isSubjectLocked(root, subject, options = {}) {
+  const lockTarget = subjectLockPath(root, subject);
+  const staleMs = options.staleMs ?? SUBJECT_LOCK_DAEMON_STALE_MS_DEFAULT;
+  return isSubjectLockHeldAt(lockTarget, { staleMs });
+}
+
+export function formatSubjectLockConflictMessage(root, subject) {
+  return formatSubjectLockConflictMessageAt(root, subject, subjectLockPath(root, subject));
+}
+
+export async function acquireSubjectLock(root, subject, options = {}) {
+  const lockTarget = subjectLockPath(root, subject);
+  return acquireSubjectLockAt(lockTarget, { ...options, root, subject });
+}
+
+export async function withSubjectLock(root, subject, fn, options = {}) {
+  const lockTarget = subjectLockPath(root, subject);
+  return withSubjectLockAt(lockTarget, fn, { ...options, root, subject });
+}
+
+export function describeSubjectLockHealth(root, subject, options = {}) {
+  return describeSubjectLockHealthAt(subjectLockPath(root, subject), { root, subject, ...options });
+}
+
+export {
+  SUBJECT_LOCK_DAEMON_STALE_MS_DEFAULT,
+  SUBJECT_LOCK_RUN_STALE_MS,
+  resolveSubjectLockStaleMs,
+  resolveSubjectLockUpdateMs,
+};
 
 export function normalizeInterruptedManifest(root, manifest) {
   if (!manifest) return { manifest, changed: false };
@@ -309,25 +349,3 @@ export function normalizeInterruptedManifest(root, manifest) {
   next.ended_at = next.ended_at ?? nowIso();
   return { manifest: next, changed: true };
 }
-
-export async function withSubjectLock(root, subject, fn) {
-  const runtime = runtimeForSubject(root, subject);
-  mkdirSync(runtime.evolutionDir, { recursive: true });
-  const lockTarget = join(runtime.evolutionDir, '.evolve.lock');
-  if (!existsSync(lockTarget)) writeFileSync(lockTarget, '', 'utf-8');
-  let release;
-  try {
-    release = lockfile.lockSync(lockTarget, {
-      retries: { retries: 0 },
-      stale: 30 * 60 * 1000,
-    });
-  } catch {
-    throw new Error(`Subject is already running: ${subject}`);
-  }
-  try {
-    return await fn();
-  } finally {
-    try { release?.(); } catch {}
-  }
-}
-

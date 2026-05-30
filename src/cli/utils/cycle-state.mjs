@@ -85,6 +85,7 @@ export function createEmptyCycleState({ cycleId, subject, meta = {} } = {}) {
       intel_report_ready: false,
       skip_belief_update: false,
       skip_goals_assess: false,
+      driver: null,
       ...meta,
     },
   };
@@ -206,10 +207,42 @@ export function markStepsSkipped(root, subject, cycleId, stepNames) {
 }
 
 export function createCycle(root, subject, { cycleId = null, meta = {} } = {}) {
+  const driver = meta.driver;
+  if (driver !== 'run' && driver !== 'evolve' && driver !== 'daemon') {
+    throw new Error('createCycle requires meta.driver to be one of: run, evolve, daemon');
+  }
   const id = cycleId || generateCycleId();
-  const state = createEmptyCycleState({ cycleId: id, subject, meta });
+  const state = createEmptyCycleState({
+    cycleId: id,
+    subject,
+    meta: {
+      ...meta,
+      driver,
+    },
+  });
   writeCycleState(root, subject, state);
   return state;
+}
+
+export function cycleDriver(state) {
+  return state?.meta?.driver ?? 'run';
+}
+
+export function isCycleStale(state, { staleMs = 60_000, nowMs = Date.now() } = {}) {
+  const updated = Date.parse(state?.updated_at || '');
+  if (!Number.isFinite(updated)) return true;
+  return nowMs - updated >= staleMs;
+}
+
+export function abandonCycle(root, subject, cycleId, { reason = 'stale_abandoned' } = {}) {
+  return markStepStatus(root, subject, cycleId, 'diary', {
+    status: 'failed',
+    error: reason,
+    metaPatch: {
+      abandoned: true,
+      abandoned_reason: reason,
+    },
+  });
 }
 
 export function findStuckSteps(state, { staleMs = 60_000 } = {}) {

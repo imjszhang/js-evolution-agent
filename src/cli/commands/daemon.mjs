@@ -1,5 +1,11 @@
 import { getProjectRoot, loadProjectEnv } from '../utils/project.mjs';
-import { isSubjectLocked, parsePositiveInt } from '../utils/evolve-runs.mjs';
+import {
+  acquireSubjectLock,
+  describeSubjectLockHealth,
+  isSubjectLocked,
+  parsePositiveInt,
+  withSubjectLock,
+} from '../utils/evolve-runs.mjs';
 import { hasMultiSubjectSelection, selectSubjects } from '../utils/subject-selection.mjs';
 import { buildSubjectArtifactOverview } from '../utils/subject-artifacts.mjs';
 import {
@@ -193,12 +199,29 @@ function buildDaemonDiagnostics(root, subject, projection) {
     });
   }
   if (locked) {
-    diagnostics.push({
-      severity: 'info',
-      code: 'subject_evolve_lock_present',
-      message: 'Subject evolve lock appears to be held.',
-      action: 'This is expected while daemon or foreground evolve is running; avoid concurrent evolve for the same subject.',
-    });
+    const lockHealth = describeSubjectLockHealth(root, subject);
+    if (lockHealth.code === 'lock_held_by_foreground') {
+      diagnostics.push({
+        severity: 'info',
+        code: lockHealth.code,
+        message: lockHealth.message,
+        action: 'Wait for the foreground run or evolve process to finish before starting daemon for this subject.',
+      });
+    } else if (lockHealth.code === 'lock_held_by_daemon' && !projection.worker.running) {
+      diagnostics.push({
+        severity: 'warning',
+        code: 'lock_without_fresh_worker',
+        message: 'Evolve lock is held but daemon worker projection is not running.',
+        action: 'Check worker heartbeat or wait for lock stale expiry.',
+      });
+    } else {
+      diagnostics.push({
+        severity: 'info',
+        code: 'subject_evolve_lock_present',
+        message: lockHealth.message,
+        action: 'This is expected while daemon or foreground evolve is running; avoid concurrent evolve for the same subject.',
+      });
+    }
   }
   const stuckSteps = projection.cycles?.stuck_steps ?? [];
   if (stuckSteps.length > 0) {
@@ -537,7 +560,10 @@ async function workRunCycle(root, subject, task, flags) {
   const result = await runSingleCycle({
     root,
     subject,
-    flags: flagsFromTask(task, flags),
+    flags: {
+      ...flagsFromTask(task, flags),
+      'cycle-driver': 'daemon',
+    },
     signal: controller?.signal,
     hooks: flags.watchdog ? {
       onOutput: () => tick(),
@@ -595,7 +621,7 @@ async function workRunCycle(root, subject, task, flags) {
   return { ok: false, retryable: false, task: failed.task, failure };
 }
 
-export async function workOnce(root, subject, flags = {}) {
+async function runWorkOnceBody(root, subject, flags = {}) {
   const workerId = flags.worker || `worker-${process.pid}`;
   const leaseMs = parseLeaseMs(flags['lease-ms']);
   const claim = claimNextTask(root, subject, {
@@ -640,6 +666,24 @@ export async function workOnce(root, subject, flags = {}) {
   return { worked: true, ok: false, task: failed.task };
 }
 
+export async function workOnce(root, subject, flags = {}) {
+  const execute = () => runWorkOnceBody(root, subject, flags);
+  if (flags['subject-lock-held']) {
+    return execute();
+  }
+  const staleMs = parseHeartbeatStaleMs(flags['heartbeat-stale-ms']);
+  try {
+    return await withSubjectLock(root, subject, execute, { mode: 'daemon', staleMs });
+  } catch (err) {
+    return {
+      worked: false,
+      ok: false,
+      task: null,
+      lockError: err?.message || String(err),
+    };
+  }
+}
+
 function workResultSummary(result) {
   return {
     worked: Boolean(result.worked),
@@ -679,6 +723,29 @@ export async function runDaemonWorker(root, subject, flags = {}) {
   if (!created.created) {
     return { started: false, reason: created.reason, state: created.state };
   }
+
+  let lockHandle = null;
+  try {
+    lockHandle = await acquireSubjectLock(root, subject, {
+      staleMs: heartbeatStaleMs,
+      mode: 'daemon',
+      retries: 0,
+    });
+  } catch (err) {
+    markWorkerStopped(root, subject, {
+      worker_id: workerId,
+      pid: process.pid,
+      stop_reason: 'subject_lock_held',
+    });
+    recordDaemonEvent(root, subject, {
+      type: 'worker_start_failed',
+      status: 'subject_lock_held',
+      worker_id: workerId,
+      error: err?.message || String(err),
+    });
+    return { started: false, reason: 'subject_lock_held', error: err?.message || String(err), state: readWorkerState(root, subject) };
+  }
+
   recordDaemonEvent(root, subject, {
     type: 'worker_started',
     status: 'ok',
@@ -726,6 +793,7 @@ export async function runDaemonWorker(root, subject, flags = {}) {
         'lease-ms': leaseMs,
         'heartbeat-ms': heartbeatMs,
         watchdog: true,
+        'subject-lock-held': true,
       });
       iterations += 1;
       const summary = workResultSummary(result);
@@ -760,6 +828,9 @@ export async function runDaemonWorker(root, subject, flags = {}) {
   } finally {
     process.removeListener('SIGINT', requestLocalStop);
     process.removeListener('SIGTERM', requestLocalStop);
+    if (lockHandle) {
+      await lockHandle.release();
+    }
   }
   const stopped = markWorkerStopped(root, subject, {
     worker_id: workerId,
@@ -877,6 +948,11 @@ export async function daemonCommand({ subcommand, flags = {}, args = [], root = 
       return 1;
     }
     const result = await workOnce(root, subject, flags);
+    if (result.lockError) {
+      console.error(result.lockError);
+      if (flags.json) console.log(JSON.stringify(result, null, 2));
+      return 1;
+    }
     if (flags.json) console.log(JSON.stringify(result, null, 2));
     else if (!result.worked) console.log('No daemon task available.');
     else printTask(result.task);
