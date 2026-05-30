@@ -172,7 +172,9 @@ body {
 }
 
 .daemon-chip.health-stale,
-.daemon-chip.health-blocked {
+.daemon-chip.health-blocked,
+.daemon-chip.health-worker_zombie,
+.daemon-chip.health-evolution_stalled {
   background: #fee2e2;
   color: #991b1b;
   border-color: #fecaca;

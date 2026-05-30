@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { readJsonSafe, writeJsonFile } from './files.mjs';
 import { nowIso, parsePositiveInt, runtimeForSubject } from './evolve-runs.mjs';
+import { isProcessAlive } from './process-alive.mjs';
 
 export function daemonStateDir(root, subject) {
   return join(runtimeForSubject(root, subject).evolutionDir, 'daemon');
@@ -41,13 +42,27 @@ export function isWorkerFresh(state, { nowMs = Date.now(), staleMs = 60_000 } = 
   return Number.isFinite(heartbeatMs) && heartbeatMs > nowMs - staleMs;
 }
 
+export function isWorkerZombie(state, { nowMs = Date.now(), staleMs = 60_000 } = {}) {
+  if (!state || !['running', 'stopping'].includes(state.status)) return false;
+  const effectiveStaleMs = state.stale_after_ms ?? staleMs;
+  if (!isWorkerFresh(state, { nowMs, staleMs: effectiveStaleMs })) return false;
+  return !isProcessAlive(state.pid);
+}
+
 export function createWorkerState(root, subject, {
   workerId = defaultWorkerId(),
   pid = process.pid,
   staleMs = 60_000,
+  tickMs = null,
 } = {}) {
   const existing = readWorkerState(root, subject);
-  if (isWorkerFresh(existing, { staleMs })) {
+  if (existing && isWorkerZombie(existing, { staleMs })) {
+    markWorkerStopped(root, subject, {
+      worker_id: existing.worker_id,
+      pid: existing.pid,
+      stop_reason: 'zombie_pid_dead',
+    });
+  } else if (existing && isWorkerFresh(existing, { staleMs }) && isProcessAlive(existing.pid)) {
     return { created: false, reason: 'already_running', state: existing };
   }
   const now = nowIso();
@@ -61,6 +76,7 @@ export function createWorkerState(root, subject, {
     stop_requested_at: null,
     stopped_at: null,
     stale_after_ms: staleMs,
+    tick_ms: tickMs,
     last_work_result: null,
     last_error: null,
   };
@@ -138,28 +154,38 @@ export function summarizeWorkerState(state, { nowMs = Date.now(), staleMs = 60_0
       running: false,
       fresh: false,
       stale: false,
+      zombie: false,
+      pid_alive: false,
       pid: null,
       worker_id: null,
       heartbeat_at: null,
       stop_requested_at: null,
+      tick_ms: null,
       last_work_result: null,
       last_error: null,
     };
   }
-  const fresh = isWorkerFresh(state, { nowMs, staleMs: state.stale_after_ms ?? staleMs });
+  const effectiveStaleMs = state.stale_after_ms ?? staleMs;
+  const fresh = isWorkerFresh(state, { nowMs, staleMs: effectiveStaleMs });
   const stale = ['running', 'stopping'].includes(state.status) && !fresh;
+  const pid_alive = isProcessAlive(state.pid);
+  const zombie = ['running', 'stopping'].includes(state.status) && fresh && !pid_alive;
+  const aliveAndFresh = fresh && pid_alive;
   return {
-    status: stale ? 'stale' : state.status,
-    running: ['running', 'stopping'].includes(state.status) && fresh,
+    status: zombie ? 'zombie' : (stale ? 'stale' : state.status),
+    running: ['running', 'stopping'].includes(state.status) && aliveAndFresh,
     fresh,
     stale,
+    zombie,
+    pid_alive,
     pid: state.pid ?? null,
     worker_id: state.worker_id ?? null,
     started_at: state.started_at ?? null,
     heartbeat_at: state.heartbeat_at ?? null,
     stop_requested_at: state.stop_requested_at ?? null,
     stopped_at: state.stopped_at ?? null,
-    stale_after_ms: state.stale_after_ms ?? staleMs,
+    stale_after_ms: effectiveStaleMs,
+    tick_ms: state.tick_ms ?? null,
     last_work_result: state.last_work_result ?? null,
     last_error: state.last_error ?? null,
   };

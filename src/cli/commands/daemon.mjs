@@ -15,6 +15,7 @@ import {
   completeTask,
   enqueueTask,
   failTask,
+  isQueueWriteError,
   parseLeaseMs,
   reclaimExpiredLeases,
   readTaskQueue,
@@ -158,6 +159,22 @@ function printMultiEvents(items) {
 function buildDaemonDiagnostics(root, subject, projection) {
   const diagnostics = [];
   const locked = isSubjectLocked(root, subject);
+  if (projection.health?.status === 'worker_zombie' || projection.worker.zombie) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'worker_zombie',
+      message: 'Daemon worker is marked running but its process (PID) is not alive.',
+      action: 'Run `jea daemon start` to start a fresh worker.',
+    });
+  }
+  if (projection.health?.status === 'evolution_stalled') {
+    diagnostics.push({
+      severity: 'error',
+      code: 'evolution_stalled',
+      message: 'Evolution should have started a new cycle on tick but none is open or queued.',
+      action: 'Run `jea daemon start` and inspect daemon events for queue_write_failed or worker_crashed.',
+    });
+  }
   if (projection.worker.stale) {
     diagnostics.push({
       severity: 'warning',
@@ -710,6 +727,35 @@ async function reclaimStaleLeasesForWorker(root, subject) {
   return reclaimed;
 }
 
+function recordLoopFailure(root, subject, { operation, err }) {
+  const errorCode = err?.code ?? (isQueueWriteError(err) ? 'queue_write_failed' : 'unknown');
+  recordDaemonEvent(root, subject, {
+    type: isQueueWriteError(err) ? 'queue_write_failed' : 'heartbeat_tick_failed',
+    status: 'error',
+    operation,
+    error_code: errorCode,
+    error: err?.message || String(err),
+  });
+}
+
+async function safeReclaimStaleLeasesForWorker(root, subject) {
+  try {
+    return await reclaimStaleLeasesForWorker(root, subject);
+  } catch (err) {
+    recordLoopFailure(root, subject, { operation: 'reclaim', err });
+    return [];
+  }
+}
+
+function safeRunHeartbeatTick(root, subject, taskInput) {
+  try {
+    return runHeartbeatTick(root, subject, taskInput);
+  } catch (err) {
+    recordLoopFailure(root, subject, { operation: 'heartbeat_tick', err });
+    return null;
+  }
+}
+
 export async function runDaemonWorker(root, subject, flags = {}) {
   const workerId = flags.worker && flags.worker !== true ? flags.worker : defaultWorkerId();
   const { leaseMs, heartbeatMs, heartbeatStaleMs } = heartbeatDefaults(flags);
@@ -719,12 +765,50 @@ export async function runDaemonWorker(root, subject, flags = {}) {
   const maxIterations = flags['max-iterations'] == null || flags['max-iterations'] === true
     ? null
     : parsePositiveInt(flags['max-iterations'], { name: 'max-iterations', min: 1 });
-  const created = createWorkerState(root, subject, { workerId, staleMs: heartbeatStaleMs });
+  const created = createWorkerState(root, subject, {
+    workerId,
+    staleMs: heartbeatStaleMs,
+    tickMs,
+  });
   if (!created.created) {
     return { started: false, reason: created.reason, state: created.state };
   }
 
   let lockHandle = null;
+  let fatalExit = false;
+  const handleFatal = (label, err) => {
+    if (fatalExit) return;
+    fatalExit = true;
+    try {
+      recordDaemonEvent(root, subject, {
+        type: 'worker_crashed',
+        status: 'error',
+        worker_id: workerId,
+        pid: process.pid,
+        reason: label,
+        error: err?.message || String(err),
+        error_code: err?.code ?? null,
+      });
+      markWorkerStopped(root, subject, {
+        worker_id: workerId,
+        pid: process.pid,
+        stop_reason: 'crashed',
+      });
+    } catch {
+      // best effort
+    }
+    if (lockHandle) {
+      lockHandle.release().catch(() => {});
+    }
+    process.exit(1);
+  };
+  const onUncaughtException = (err) => handleFatal('uncaughtException', err);
+  const onUnhandledRejection = (reason) => {
+    handleFatal('unhandledRejection', reason instanceof Error ? reason : new Error(String(reason)));
+  };
+  process.once('uncaughtException', onUncaughtException);
+  process.once('unhandledRejection', onUnhandledRejection);
+
   try {
     lockHandle = await acquireSubjectLock(root, subject, {
       staleMs: heartbeatStaleMs,
@@ -755,6 +839,11 @@ export async function runDaemonWorker(root, subject, flags = {}) {
     lease_ms: leaseMs,
     tick_ms: tickMs,
   });
+  updateWorkerHeartbeat(root, subject, {
+    worker_id: workerId,
+    pid: process.pid,
+    tick_ms: tickMs,
+  });
 
   let stopping = false;
   const requestLocalStop = () => {
@@ -779,11 +868,11 @@ export async function runDaemonWorker(root, subject, flags = {}) {
         pid: process.pid,
         status: 'running',
       });
-      await reclaimStaleLeasesForWorker(root, subject);
+      await safeReclaimStaleLeasesForWorker(root, subject);
 
       const now = Date.now();
       if (lastTickAt === 0 || now - lastTickAt >= tickMs) {
-        runHeartbeatTick(root, subject, taskInput);
+        safeRunHeartbeatTick(root, subject, taskInput);
         lastTickAt = now;
       }
 
@@ -826,6 +915,8 @@ export async function runDaemonWorker(root, subject, flags = {}) {
       }
     }
   } finally {
+    process.removeListener('uncaughtException', onUncaughtException);
+    process.removeListener('unhandledRejection', onUnhandledRejection);
     process.removeListener('SIGINT', requestLocalStop);
     process.removeListener('SIGTERM', requestLocalStop);
     if (lockHandle) {

@@ -1,9 +1,12 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import lockfile from 'proper-lockfile';
+import { writeJsonAtomic } from './atomic-json-write.mjs';
 import { runtimeForSubject, nowIso, parsePositiveInt } from './evolve-runs.mjs';
 import { CYCLE_STEP_TYPES, stepIdempotencyKey } from './cycle-reducer.mjs';
+
+export { QueueWriteError, isQueueWriteError } from './atomic-json-write.mjs';
 
 export { CYCLE_STEP_TYPES };
 
@@ -17,6 +20,10 @@ export function tasksDirForSubject(root, subject) {
 
 export function pendingTasksPath(root, subject) {
   return join(tasksDirForSubject(root, subject), 'pending_tasks.json');
+}
+
+export function taskQueueLockPath(root, subject) {
+  return join(tasksDirForSubject(root, subject), 'pending_tasks.lock');
 }
 
 function emptyQueue() {
@@ -37,21 +44,29 @@ export function readTaskQueue(root, subject) {
 
 function writeTaskQueue(root, subject, queue) {
   const filePath = pendingTasksPath(root, subject);
-  mkdirSync(dirname(filePath), { recursive: true });
   const next = { ...queue, updated_at: nowIso() };
-  const tmp = `${filePath}.tmp`;
-  writeFileSync(tmp, JSON.stringify(next, null, 2) + '\n', 'utf-8');
-  renameSync(tmp, filePath);
+  writeJsonAtomic(filePath, next);
   return next;
 }
 
+function ensureTaskQueueFiles(root, subject) {
+  const dataPath = pendingTasksPath(root, subject);
+  const lockPath = taskQueueLockPath(root, subject);
+  mkdirSync(dirname(dataPath), { recursive: true });
+  if (!existsSync(dataPath)) {
+    writeJsonAtomic(dataPath, emptyQueue());
+  }
+  if (!existsSync(lockPath)) {
+    writeFileSync(lockPath, '', 'utf-8');
+  }
+}
+
 export function withTaskQueueLock(root, subject, fn) {
-  const filePath = pendingTasksPath(root, subject);
-  mkdirSync(dirname(filePath), { recursive: true });
-  if (!existsSync(filePath)) writeTaskQueue(root, subject, emptyQueue());
+  ensureTaskQueueFiles(root, subject);
+  const lockPath = taskQueueLockPath(root, subject);
   let release;
   try {
-    release = lockfile.lockSync(filePath);
+    release = lockfile.lockSync(lockPath);
   } catch (e) {
     throw new Error(`Task queue is locked for subject ${subject}: ${e?.message || e}`);
   }

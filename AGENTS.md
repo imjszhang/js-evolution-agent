@@ -327,6 +327,16 @@ runtime/subjects/<data_namespace>/data/evolution/cycle-state/
 
 卡住 step 阈值与 worker heartbeat stale 共用（默认 60s，可用 `--heartbeat-stale-ms` 调整）。
 
+### 韧性（队列写入与 worker 存活）
+
+- 任务队列锁文件：`data/evolution/tasks/pending_tasks.lock`（与 `pending_tasks.json` 分离，避免 Windows 上锁与 rename 冲突）。
+- 队列写入对 `EPERM`/`EBUSY` 自动重试；**写失败不会终止 worker**（记 `queue_write_failed` 事件，空闲循环继续）。
+- `jea daemon status` / `doctor` 健康态除 heartbeat 外会校验 **PID 是否存活**：
+  - `worker_zombie`：状态文件为 running 但进程已死 → `ok=false`，应 `jea daemon start`。
+  - `evolution_stalled`：无 open cycle/无 pending，且超过 `tick_ms` 未开新轮 → `ok=false`。
+- Worker 崩溃会尽力写入 `worker_crashed` 事件并将 `worker-state` 标为 `stopped`。
+- `daemon start` 若检测到 zombie（fresh 心跳 + 死 PID），会先清理旧状态再启动新 worker。
+
 ### 观测与诊断
 
 - `jea daemon status [--all | --subjects a,b] [--json]`：查看 worker、队列、健康状态、锁和最近事件。

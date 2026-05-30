@@ -161,6 +161,13 @@ export function listOpenCycles(root, subject) {
   return listCycleStates(root, subject).filter((state) => state.status === 'open');
 }
 
+/** Most recently closed cycle by closed_at, or null. */
+export function getLastClosedCycle(root, subject) {
+  const closed = listCycleStates(root, subject).filter((state) => state.status === 'closed' && state.closed_at);
+  if (!closed.length) return null;
+  return closed.sort((a, b) => String(b.closed_at).localeCompare(String(a.closed_at)))[0];
+}
+
 export function markStepStatus(root, subject, cycleId, step, {
   status = 'done',
   error = null,

@@ -423,6 +423,39 @@ SSE 行为（改后）：
 
 ---
 
+## 12. 韧性 P0（daemon 队列与存活）
+
+### 12.1 问题
+
+Windows 上 `pending_tasks.json` 的 `rename` 在 `reclaim` 时 `EPERM`，未捕获异常导致 **worker 进程退出**；`worker-state` 仍显示 running，status 误报 `idle ok`。
+
+### 12.2 方案（第一性原理）
+
+- **一步失败不杀进程**：队列写重试 + `safeReclaim` / `safeHeartbeatTick`。
+- **锁与数据分离**：`pending_tasks.lock` vs `pending_tasks.json`。
+- **健康看真相在动**：`worker_zombie`、`evolution_stalled`；PID 校验；`tick_ms` 写入 worker-state。
+
+### 12.3 实现
+
+| 模块 | 变更 |
+| --- | --- |
+| [`atomic-json-write.mjs`](../../src/cli/utils/atomic-json-write.mjs) | EPERM/EBUSY 重试；`QueueWriteError` |
+| [`daemon-tasks.mjs`](../../src/cli/utils/daemon-tasks.mjs) | `.lock` 文件；`writeJsonAtomic` |
+| [`daemon.mjs`](../../src/cli/commands/daemon.mjs) | safe 循环；`worker_crashed`；doctor 新诊断 |
+| [`process-alive.mjs`](../../src/cli/utils/process-alive.mjs) | `isProcessAlive` |
+| [`daemon-worker-state.mjs`](../../src/cli/utils/daemon-worker-state.mjs) | zombie 清理；`tick_ms` |
+| [`daemon-projection.mjs`](../../src/cli/utils/daemon-projection.mjs) | 新 health 态 |
+| [`test/daemon-resilience.test.mjs`](../../test/daemon-resilience.test.mjs) | 原子写 / zombie / 锁路径 |
+
+### 12.4 验证
+
+| 项 | 结果 |
+| --- | --- |
+| `test/daemon-resilience.test.mjs` | 6/6 |
+| 全量 `npm test` | **389/389** |
+
+---
+
 ## 附：问题—思考—方案—执行对照
 
 | 阶段 | 内容 |

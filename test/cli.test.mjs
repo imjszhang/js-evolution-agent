@@ -1068,7 +1068,7 @@ describe('daemon task queue foundation', () => {
     const root = makeDaemonProjectRoot();
     const created = createWorkerState(root, 'alpha', {
       workerId: 'worker-test',
-      pid: 123,
+      pid: process.pid,
       staleMs: 1000,
     });
 
@@ -1077,7 +1077,7 @@ describe('daemon task queue foundation', () => {
 
     const duplicate = createWorkerState(root, 'alpha', {
       workerId: 'worker-other',
-      pid: 456,
+      pid: process.pid,
       staleMs: 1000,
     });
     expect(duplicate.created).toBe(false);
