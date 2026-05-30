@@ -1,3 +1,11 @@
+import {
+  PATCH_WORTHY_DAEMON_EVENTS,
+  activeCyclesFingerprint,
+  buildDetailCacheFromData,
+  daemonBarFingerprint,
+  detailCacheNeedsPatch,
+} from './live-state.js';
+
 const timelineEl = document.getElementById('timeline');
 const detailEl = document.getElementById('detail');
 const metaEl = document.getElementById('meta');
@@ -14,6 +22,8 @@ let daemonState = null;
 let activeCycleId = null;
 /** @type {'cycle'|'round'|null} */
 let activeViewMode = null;
+/** @type {ReturnType<typeof buildDetailCacheFromData>|null} */
+let activeDetailCache = null;
 /** @type {Set<string>} */
 const seenCycleIds = new Set();
 /** @type {Set<string>} */
@@ -24,6 +34,13 @@ let eventSource = null;
 let reconnectDelayMs = 5000;
 let reconnectTimer = null;
 let daemonPollTimer = null;
+let loadDaemonTimer = null;
+let patchDetailTimer = null;
+let lastDaemonBarFp = '';
+let lastActiveCyclesFp = '';
+
+const LOAD_DAEMON_DEBOUNCE_MS = 400;
+const PATCH_DETAIL_DEBOUNCE_MS = 500;
 
 const EVENT_LABELS = {
   worker_started: 'Worker 启动',
@@ -225,6 +242,48 @@ function renderActiveCycles() {
   }
 }
 
+function applyDaemonState(next) {
+  if (!next) return null;
+  const barFp = daemonBarFingerprint(next);
+  const cyclesFp = activeCyclesFingerprint(next);
+  const barChanged = barFp !== lastDaemonBarFp;
+  const cyclesChanged = cyclesFp !== lastActiveCyclesFp;
+
+  daemonState = next;
+  if (barChanged) {
+    lastDaemonBarFp = barFp;
+    renderDaemonBar();
+  }
+  if (cyclesChanged) {
+    lastActiveCyclesFp = cyclesFp;
+    renderActiveCycles();
+  }
+  return daemonState;
+}
+
+async function fetchAndApplyDaemon() {
+  try {
+    const res = await fetch('/api/daemon');
+    if (!res.ok) return null;
+    const next = await res.json();
+    return applyDaemonState(next);
+  } catch {
+    return null;
+  }
+}
+
+function scheduleLoadDaemon() {
+  if (loadDaemonTimer) clearTimeout(loadDaemonTimer);
+  loadDaemonTimer = setTimeout(() => {
+    loadDaemonTimer = null;
+    void fetchAndApplyDaemon();
+  }, LOAD_DAEMON_DEBOUNCE_MS);
+}
+
+async function loadDaemon() {
+  return fetchAndApplyDaemon();
+}
+
 function renderTimeline(filter = '') {
   if (!manifest?.rounds) return;
   const q = filter.trim().toLowerCase();
@@ -273,19 +332,6 @@ async function loadManifest() {
   return manifest;
 }
 
-async function loadDaemon() {
-  try {
-    const res = await fetch('/api/daemon');
-    if (!res.ok) return null;
-    daemonState = await res.json();
-    renderDaemonBar();
-    renderActiveCycles();
-    return daemonState;
-  } catch {
-    return null;
-  }
-}
-
 async function loadRecentEvents() {
   try {
     const res = await fetch('/api/events/recent?limit=30');
@@ -310,25 +356,104 @@ async function loadCycleDetail(cycleId) {
   return res.json();
 }
 
-function renderTasksList(tasks) {
-  if (!tasks?.length) return '';
-  const rows = tasks.map((t) => `
-    <tr>
-      <td><code>${t.task_id}</code></td>
-      <td>${t.type}</td>
-      <td>${t.status}</td>
-      <td>${t.attempts ?? 0}</td>
-    </tr>
-  `).join('');
-  return `
-    <section class="panel tasks-panel">
-      <h3>Daemon 任务</h3>
-      <table class="tasks-table">
-        <thead><tr><th>Task</th><th>Type</th><th>Status</th><th>Attempts</th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </section>
+function buildTasksPanelElement(tasks) {
+  const section = document.createElement('section');
+  section.className = 'panel tasks-panel';
+  section.innerHTML = `
+    <h3>Daemon 任务</h3>
+    <table class="tasks-table">
+      <thead><tr><th>Task</th><th>Type</th><th>Status</th><th>Attempts</th></tr></thead>
+      <tbody>${(tasks ?? []).map((t) => `
+        <tr>
+          <td><code>${t.task_id}</code></td>
+          <td>${t.type}</td>
+          <td>${t.status}</td>
+          <td>${t.attempts ?? 0}</td>
+        </tr>
+      `).join('')}</tbody>
+    </table>
   `;
+  return section;
+}
+
+function patchDetailHeader(data) {
+  const header = detailEl.querySelector('.detail-header');
+  if (!header) return;
+
+  let statusTag = header.querySelector('.cycle-status-tag');
+  if (data.cycle_status) {
+    if (!statusTag) {
+      statusTag = document.createElement('span');
+      statusTag.className = 'cycle-status-tag';
+      header.insertBefore(statusTag, header.querySelector('.detail-steps') ?? null);
+    }
+    statusTag.textContent = `status: ${data.cycle_status}`;
+  } else if (statusTag) {
+    statusTag.remove();
+  }
+
+  if (data.steps) {
+    let stepsWrap = header.querySelector('.detail-steps');
+    if (!stepsWrap) {
+      stepsWrap = document.createElement('div');
+      stepsWrap.className = 'detail-steps';
+      header.appendChild(stepsWrap);
+    }
+    stepsWrap.innerHTML = renderStepBadges(data.steps);
+  }
+}
+
+function patchDetailTasks(data) {
+  const existing = detailEl.querySelector('.tasks-panel');
+  const next = buildTasksPanelElement(data.tasks);
+  if (existing) {
+    existing.replaceWith(next);
+  } else {
+    detailEl.appendChild(next);
+  }
+}
+
+function patchDetailDiaryContent(data) {
+  const diaryContent = detailEl.querySelector('.panel.diary .content');
+  if (!diaryContent) return;
+  const diaries = data.diaries ?? [];
+  if (!diaries.length) {
+    diaryContent.innerHTML = '<p class="missing">本轮无关联日记</p>';
+    return;
+  }
+  diaryContent.innerHTML = diaries[0]?.html ?? '<p class="missing">无日记内容</p>';
+}
+
+function patchDetailDom(data, mode, needs) {
+  if (needs.header) patchDetailHeader(data);
+  if (needs.tasks && mode === 'cycle') patchDetailTasks(data);
+  if (needs.diary) patchDetailDiaryContent(data);
+}
+
+async function patchActiveDetailIfNeeded() {
+  if (!activeCycleId || !activeViewMode) return;
+
+  try {
+    const data = activeViewMode === 'cycle'
+      ? await loadCycleDetail(activeCycleId)
+      : await loadRoundDetail(activeCycleId);
+
+    const needs = detailCacheNeedsPatch(activeDetailCache, data, activeViewMode);
+    if (!needs.header && !needs.tasks && !needs.diary) return;
+
+    patchDetailDom(data, activeViewMode, needs);
+    activeDetailCache = buildDetailCacheFromData(data, activeViewMode);
+  } catch {
+    // keep current view on patch failure
+  }
+}
+
+function schedulePatchActiveDetail() {
+  if (patchDetailTimer) clearTimeout(patchDetailTimer);
+  patchDetailTimer = setTimeout(() => {
+    patchDetailTimer = null;
+    void patchActiveDetailIfNeeded();
+  }, PATCH_DETAIL_DEBOUNCE_MS);
 }
 
 function renderDetail(data, { mode = 'round' } = {}) {
@@ -405,19 +530,19 @@ function renderDetail(data, { mode = 'round' } = {}) {
 
   panels.append(reportPanel, diaryPanel);
 
-  const tasksHtml = mode === 'cycle' ? renderTasksList(data.tasks) : '';
-  const tasksEl = document.createElement('div');
-  if (tasksHtml) {
-    tasksEl.innerHTML = tasksHtml;
-    detailEl.replaceChildren(header, panels, tasksEl.firstElementChild);
+  if (mode === 'cycle' && data.tasks?.length) {
+    detailEl.replaceChildren(header, panels, buildTasksPanelElement(data.tasks));
   } else {
     detailEl.replaceChildren(header, panels);
   }
+
+  activeDetailCache = buildDetailCacheFromData(data, mode);
 }
 
 async function selectCycle(cycleId, { scrollTimeline = false } = {}) {
   activeCycleId = cycleId;
   activeViewMode = 'cycle';
+  activeDetailCache = null;
   setHash(cycleId);
   renderTimeline(filterEl.value);
   renderActiveCycles();
@@ -430,6 +555,7 @@ async function selectCycle(cycleId, { scrollTimeline = false } = {}) {
     const data = await loadCycleDetail(cycleId);
     renderDetail(data, { mode: 'cycle' });
   } catch (err) {
+    activeDetailCache = null;
     detailEl.innerHTML = `<p class="missing">${err.message}</p>`;
   }
 }
@@ -437,6 +563,7 @@ async function selectCycle(cycleId, { scrollTimeline = false } = {}) {
 async function selectRound(cycleId, { scrollTimeline = false } = {}) {
   activeCycleId = cycleId;
   activeViewMode = 'round';
+  activeDetailCache = null;
   setHash(cycleId);
   renderTimeline(filterEl.value);
   renderActiveCycles();
@@ -449,6 +576,7 @@ async function selectRound(cycleId, { scrollTimeline = false } = {}) {
     const data = await loadRoundDetail(cycleId);
     renderDetail(data, { mode: 'round' });
   } catch (err) {
+    activeDetailCache = null;
     detailEl.innerHTML = `<p class="missing">${err.message}</p>`;
   }
 }
@@ -467,15 +595,6 @@ function patchManifestRound(cycleId, patch) {
   if (round) Object.assign(round, patch);
 }
 
-function refreshActiveView() {
-  if (!activeCycleId) return;
-  if (activeViewMode === 'cycle') {
-    void selectCycle(activeCycleId);
-  } else if (activeViewMode === 'round') {
-    void selectRound(activeCycleId);
-  }
-}
-
 function handleSsePayload(payload) {
   const event = payload?.event;
   if (event === 'hello') {
@@ -490,15 +609,18 @@ function handleSsePayload(payload) {
   }
   if (event === 'daemon_event') {
     prependFeedEvent(payload);
-    void loadDaemon();
-    if (activeCycleId && payload.cycle_id === activeCycleId) {
-      refreshActiveView();
+    scheduleLoadDaemon();
+    if (
+      activeCycleId
+      && payload.cycle_id === activeCycleId
+      && PATCH_WORTHY_DAEMON_EVENTS.has(payload.event_type)
+    ) {
+      schedulePatchActiveDetail();
     }
     return;
   }
   if (event === 'runtime_updated') {
-    void loadDaemon();
-    refreshActiveView();
+    scheduleLoadDaemon();
     return;
   }
   if (event === 'round_added') {
@@ -511,13 +633,13 @@ function handleSsePayload(payload) {
   }
   if (event === 'round_updated') {
     setLiveStatus('实时已连接', 'connected');
-    void loadDaemon();
+    scheduleLoadDaemon();
     if (payload.has_diary) {
       patchManifestRound(payload.cycle_id, { has_diary: true });
       renderTimeline(filterEl.value);
     }
-    if (activeCycleId === payload.cycle_id) {
-      refreshActiveView();
+    if (activeCycleId === payload.cycle_id && payload.has_diary) {
+      schedulePatchActiveDetail();
     }
   }
 }
@@ -574,7 +696,7 @@ function connectLive() {
 function startDaemonPolling() {
   if (daemonPollTimer) clearInterval(daemonPollTimer);
   daemonPollTimer = setInterval(() => {
-    void loadDaemon();
+    scheduleLoadDaemon();
   }, 15_000);
   if (daemonPollTimer.unref) daemonPollTimer.unref();
 }

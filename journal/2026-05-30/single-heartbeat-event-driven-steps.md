@@ -2,8 +2,8 @@
 
 > 日期：2026-05-30  
 > 项目：js-evolution-agent  
-> 类型：架构设计 / 功能实现（含 parity 补全）  
-> 来源：Cursor Agent 对话（设计 → 实施 → 审查）  
+> 类型：架构设计 / 功能实现（含 parity 补全、Viewer daemon 控制台与阅读体验）
+> 来源：Cursor Agent 对话（设计 → 实施 → 审查 → Viewer 四轮迭代）
 
 ---
 
@@ -17,6 +17,9 @@
 6. [已知差距与风险](#6-已知差距与风险)
 7. [后续演化](#7-后续演化)
 8. [Parity 补全（同日第二轮）](#8-parity-补全同日第二轮)
+9. [全面收尾（同日第三轮）](#9-全面收尾同日第三轮)
+10. [Evolution Viewer Daemon 控制台（同日第四轮）](#10-evolution-viewer-daemon-控制台同日第四轮)
+11. [Viewer 阅读体验 A+B（同日第五轮）](#11-viewer-阅读体验-ab同日第五轮)
 
 ---
 
@@ -247,7 +250,7 @@ jea daemon status --json
 ### 6.3 仍待完成
 
 - ~~evolve manifest 与 cycle-state **未打通**~~ → ✅ 第三轮：`round.cycle_id` best-effort 关联
-- ~~evolution viewer 未做 step 级 UI~~ → ✅ 第三轮
+- ~~evolution viewer 未做 step 级 UI~~ → ✅ 第三轮（详情 step 徽章）；✅ 第四轮（daemon 运行态控制台）；✅ 第五轮（live 更新不闪屏）
 - ~~mock 端到端 step 链测试~~ → ✅ 第三轮 [`test/cycle-e2e.test.mjs`](../../test/cycle-e2e.test.mjs)
 
 ### 6.4 双路径并存（当前推荐）
@@ -271,10 +274,14 @@ jea daemon status --json
 | ~~**P1**~~ | mock 整轮 vs step 链事件序列对比测试 | ✅ [`test/cycle-e2e.test.mjs`](../../test/cycle-e2e.test.mjs) |
 | ~~**P2**~~ | evolve manifest 可选 `cycle_id`；viewer step 级展示 | ✅ |
 | ~~**P2**~~ | 卡住 step 可观测（doctor / status / inbox） | ✅ |
+| ~~**P2**~~ | viewer daemon 运行态控制台（Archive + Runtime 双轨） | ✅ 第四轮 |
+| **P3** | viewer tick 倒计时、checkpoint 面板、Attention 区 | ⏳ Phase 2–4 |
+| **P3** | viewer 侧栏 incremental diff、「暂停 live」 | ⏳ Phase 1.5+ |
 
 ### 7.2 机制化改进
 
-- ~~viewer / `daemon inbox` step 级时间线与卡住告警~~ → ✅ 第三轮（viewer step 徽章 + inbox attention）
+- ~~viewer / `daemon inbox` step 级时间线与卡住告警~~ → ✅ 第三轮（step 徽章 + inbox attention）；✅ 第四轮（daemon-bar / active cycles / event feed）
+- ~~viewer live 更新导致报告区闪烁、滚动回顶~~ → ✅ 第五轮（fingerprint diff + 详情 patch）
 - 与 [beliefs-driven loop](../2026-05-28/beliefs-driven-evolution-loop.md) 对齐：belief_update 仍在 verify 之后
 - 长跑 `agent_run` 与 5min reconcile 窗口：首版保留 step 内 watchdog
 
@@ -340,6 +347,82 @@ jea daemon status --json
 
 ---
 
+## 10. Evolution Viewer Daemon 控制台（同日第四轮）
+
+> 详述见 [`evolution-viewer-daemon-console-phase1.md`](./evolution-viewer-daemon-console-phase1.md)
+
+### 10.1 动机
+
+第三轮 Viewer 只在 **已有 intel report 的详情页** 展示 cycle-state step 徽章，时间线仍以报告为索引。daemon step 主路径下，操作者仍无法回答：**worker 是否在跑、队列里有什么、open cycle 走到哪一步**——必须回 CLI。
+
+### 10.2 实现摘要
+
+| 模块 | 变更 |
+| --- | --- |
+| [`daemon-sse.mjs`](../../src/intelligence/evolution-viewer/daemon-sse.mjs) | daemon 事件白名单；`formatDaemonEventForApi` |
+| [`cycle-detail.mjs`](../../src/intelligence/evolution-viewer/cycle-detail.mjs) | 无 intel report 也可返回 cycle-state + tasks |
+| [`viewer-api.mjs`](../../src/intelligence/evolution-viewer/viewer-api.mjs) | `GET /api/daemon`、`/api/cycles/:id`、`/api/events/recent`；SSE `daemon_event` / `runtime_updated`；watch tasks/worker/cycle-state |
+| [`intel-viewer.mjs`](../../src/cli/commands/intel-viewer.mjs) | serve 传入 `projectRoot` 供 `buildDaemonProjection` |
+| [`tools/evolution-viewer/public/`](../../tools/evolution-viewer/public/) | `#daemon-bar`、`#active-cycles`、`#event-feed`；Archive（已完成轮次）与 Runtime 并列 |
+
+Live API 示例：
+
+```bash
+jea intel viewer serve --subject ai-researcher --open --port 4173
+# GET /api/daemon  GET /api/cycles/:id  GET /api/events/recent
+# SSE: daemon_event, runtime_updated（保留 round_added/updated）
+```
+
+离线 `viewer build` 仍为报告快照，**不含** daemon 控制台。
+
+### 10.3 验证
+
+| 项 | 结果 |
+| --- | --- |
+| [`test/evolution-viewer-live.test.mjs`](../../test/evolution-viewer-live.test.mjs) | 17/17（含 daemon API、cycle 无 report、SSE daemon_event） |
+| 本地 serve | `ai-researcher` subject，`/api/daemon` 返回 worker/queue/open cycles |
+
+---
+
+## 11. Viewer 阅读体验 A+B（同日第五轮）
+
+### 11.1 动机
+
+第四轮接入 live SSE 与 15s 轮询后，前端对 **当前详情** 调用 `refreshActiveView()` → 全量 `selectCycle`/`selectRound`，先清空为「加载中…」再重建 report DOM，导致 **闪烁** 与 **报告 scrollTop 归零**。读长报告时被 periodic `runtime_updated` 打断。
+
+### 11.2 方案与实现
+
+**分区更新**：Live 区（顶栏、active cycles、event feed）可频繁刷新；Reading 区（report/diary 正文）默认不动。
+
+| 项 | 做法 |
+| --- | --- |
+| **A** | 去掉 SSE 路径上的 `refreshActiveView`；`patchActiveDetailIfNeeded()` 仅更新 header steps、status、tasks；diary 0→1 时只 patch diary `.content` |
+| **B** | [`live-state.js`](../../tools/evolution-viewer/public/live-state.js) fingerprint；`loadDaemon` diff 后无变化不重绘；400ms debounce |
+
+SSE 行为（改后）：
+
+| 事件 | 行为 |
+| --- | --- |
+| `runtime_updated` | 仅 `scheduleLoadDaemon()` |
+| `daemon_event` | feed + loadDaemon；同 cycle 且 step 相关 → `schedulePatchActiveDetail()` |
+| `round_updated` | timeline badge + loadDaemon；同 cycle 有 diary → patch diary，**不重建 report** |
+
+### 11.3 验证
+
+| 项 | 结果 |
+| --- | --- |
+| [`test/evolution-viewer-live-state.test.mjs`](../../test/evolution-viewer-live-state.test.mjs) | fingerprint / detailCacheNeedsPatch 单测 |
+| 与 live.test 合计 | **22/22** |
+| 手工 | 长报告滚至中部，daemon 运行 30s+ 无「加载中…」、scroll 保持 |
+
+### 11.4 已知残留
+
+- `round_added` 仍全量重建 timeline（可接受）
+- 侧栏 timeline 未做 incremental diff（Phase C）
+- 无「暂停 live」开关（Phase D）
+
+---
+
 ## 附：问题—思考—方案—执行对照
 
 | 阶段 | 内容 |
@@ -347,4 +430,4 @@ jea daemon status --json
 | 问题 | 如何只保留 5min 心跳，并把 Phase 1→5 改为事件驱动 step，且达到整轮 parity？ |
 | 思考 | 瓶颈在同步链与 exec 产物未落盘；heartbeat 作兜底；step 间需 checkpoint。 |
 | 方案 | 三层架构 + checkpoint + reducer 对齐 + step 为主路径。 |
-| 执行 | 两轮落地：基础设施 → parity 补全；352 测试通过；AGENTS/journal 已更新。 |
+| 执行 | 五轮同日落地：基础设施 → parity → 可观测/viewer 徽章 → **daemon 控制台** → **阅读体验 A+B**；viewer 相关测试 22/22。 |
