@@ -109,6 +109,19 @@ describe('daemon-sse', () => {
   it('formatDaemonEventForApi ignores non-daemon events', () => {
     expect(formatDaemonEventForApi({ type: 'intel_report', cycle_id: 'cycle-x' })).toBeNull();
   });
+
+  it('formatDaemonEventForApi includes evolution mode transition fields', () => {
+    const payload = formatDaemonEventForApi({
+      type: 'evolution_mode_changed',
+      from: 'continuous',
+      to: 'on_demand',
+      source: 'subjects.json',
+      recorded_at: 't',
+    });
+    expect(payload?.from).toBe('continuous');
+    expect(payload?.to).toBe('on_demand');
+    expect(payload?.source).toBe('subjects.json');
+  });
 });
 
 describe('SseHub', () => {
@@ -285,6 +298,8 @@ describe('createViewerApiServer', () => {
     expect(daemon.tasks.counts.pending).toBeGreaterThanOrEqual(1);
     expect(daemon.cycles.open_count).toBeGreaterThanOrEqual(1);
     expect(daemon.tick_ms).toBe(300_000);
+    expect(daemon.evolution_mode).toBe('continuous');
+    expect(daemon.evolution_mode_source).toBeTruthy();
   });
 
   it('GET /api/cycles/:id returns cycle detail without report', async () => {

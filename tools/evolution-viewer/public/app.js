@@ -60,6 +60,22 @@ const EVENT_LABELS = {
   task_lease_renewed: '租约续期',
   task_lease_renew_failed: '租约续期失败',
   stale_lease_reclaimed: '过期租约回收',
+  evolution_mode_changed: '演化模式变更',
+  cycle_start_requested: '开轮请求入队',
+  cycle_start_consumed: '开轮请求已消费',
+  cycle_start_deferred: '开轮请求暂缓',
+};
+
+const EVOLUTION_MODE_LABELS = {
+  continuous: '持续',
+  on_demand: '按需',
+};
+
+const EVOLUTION_MODE_SOURCE_LABELS = {
+  'subjects.json': 'subjects.json',
+  cli: 'CLI 启动参数',
+  env: '环境变量',
+  default: '默认',
 };
 
 function cycleFromHash() {
@@ -149,6 +165,9 @@ function renderStepBadges(steps, { compact = false } = {}) {
 
 function formatEventLabel(ev) {
   const base = EVENT_LABELS[ev.event_type] ?? ev.event_type;
+  if (ev.event_type === 'evolution_mode_changed' && ev.from && ev.to) {
+    return `${base}: ${formatEvolutionMode(ev.from)} → ${formatEvolutionMode(ev.to)}`;
+  }
   const parts = [base];
   if (ev.task_type || ev.step_type) parts.push(ev.task_type ?? ev.step_type);
   if (ev.cycle_id) parts.push(ev.cycle_id);
@@ -174,6 +193,14 @@ function prependFeedEvent(ev) {
   renderEventFeed();
 }
 
+function formatEvolutionMode(mode) {
+  return EVOLUTION_MODE_LABELS[mode] ?? mode ?? 'unknown';
+}
+
+function formatEvolutionModeSource(source) {
+  return EVOLUTION_MODE_SOURCE_LABELS[source] ?? source ?? '';
+}
+
 function renderDaemonBar() {
   if (!daemonBarEl) return;
   if (!daemonState) {
@@ -188,6 +215,10 @@ function renderDaemonBar() {
   const running = daemonState.tasks?.running ?? [];
   const stepTasks = daemonState.tasks?.step_tasks ?? [];
   const current = running[0];
+  const mode = daemonState.evolution_mode;
+  const modeLabel = mode ? formatEvolutionMode(mode) : '未知';
+  const modeSource = formatEvolutionModeSource(daemonState.evolution_mode_source);
+  const pendingRequest = daemonState.cycles?.pending_cycle_start_request ?? null;
 
   let currentText = '无运行中任务';
   if (current) {
@@ -200,12 +231,28 @@ function renderDaemonBar() {
     ? `上次 tick ${formatTimeShort(daemonState.last_tick_at)}`
     : '尚无 tick 记录';
 
+  let pendingPart = '';
+  if (pendingRequest) {
+    const reasons = (pendingRequest.reasons ?? []).join(', ') || 'unknown';
+    const deferred = pendingRequest.deferred_count > 0
+      ? ` · 暂缓 ${pendingRequest.deferred_count} 次`
+      : '';
+    pendingPart = `<span class="daemon-chip cycle-start-pending" title="${reasons}">开轮请求 pending${deferred}</span>`;
+  }
+
+  const modeClass = mode ? `mode-${mode}` : 'mode-unknown';
+  const modeTitle = modeSource
+    ? `来源: ${modeSource}${mode === 'on_demand' ? ' · tick 不会自动开新轮' : mode === 'continuous' ? ' · tick 可自动开新轮' : ''}`
+    : '';
+
   daemonBarEl.innerHTML = `
+    <span class="daemon-chip ${modeClass}" title="${modeTitle}">模式: ${modeLabel}</span>
     <span class="daemon-chip health-${health.status ?? 'unknown'}">Health: ${health.status ?? 'unknown'}</span>
     <span class="daemon-chip worker-${worker.running ? 'on' : 'off'}">Worker: ${worker.running ? '运行中' : '未运行'}${worker.stale ? ' (stale)' : ''}</span>
     <span class="daemon-chip">队列 pending ${counts.pending ?? 0} · running ${counts.running ?? 0}</span>
+    ${pendingPart}
     <span class="daemon-chip">${currentText}</span>
-    <span class="daemon-chip muted">${tickPart}</span>
+    <span class="daemon-chip muted">${tickPart}${modeSource ? ` · ${modeSource}` : ''}</span>
   `;
 }
 
@@ -261,9 +308,19 @@ function applyDaemonState(next) {
   return daemonState;
 }
 
+function patchEvolutionModeFromEvent(payload) {
+  if (!payload || payload.event_type !== 'evolution_mode_changed' || !payload.to) return false;
+  if (!daemonState) daemonState = {};
+  daemonState.evolution_mode = payload.to;
+  if (payload.source) daemonState.evolution_mode_source = payload.source;
+  lastDaemonBarFp = '';
+  applyDaemonState({ ...daemonState });
+  return true;
+}
+
 async function fetchAndApplyDaemon() {
   try {
-    const res = await fetch('/api/daemon');
+    const res = await fetch('/api/daemon', { cache: 'no-store' });
     if (!res.ok) return null;
     const next = await res.json();
     return applyDaemonState(next);
@@ -609,6 +666,7 @@ function handleSsePayload(payload) {
   }
   if (event === 'daemon_event') {
     prependFeedEvent(payload);
+    patchEvolutionModeFromEvent(payload);
     scheduleLoadDaemon();
     if (
       activeCycleId

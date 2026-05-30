@@ -18,6 +18,10 @@ export const DAEMON_SSE_EVENT_TYPES = new Set([
   'task_lease_renewed',
   'task_lease_renew_failed',
   'stale_lease_reclaimed',
+  'evolution_mode_changed',
+  'cycle_start_requested',
+  'cycle_start_consumed',
+  'cycle_start_deferred',
 ]);
 
 const DEFAULT_TICK_MS = 300_000;
@@ -28,7 +32,7 @@ const DEFAULT_TICK_MS = 300_000;
  */
 export function formatDaemonEventForApi(event) {
   if (!event?.type || !DAEMON_SSE_EVENT_TYPES.has(event.type)) return null;
-  return {
+  const payload = {
     event_type: event.type,
     status: event.status ?? null,
     cycle_id: event.cycle_id ?? null,
@@ -39,6 +43,13 @@ export function formatDaemonEventForApi(event) {
     reason: event.reason ?? null,
     error_code: event.error_code ?? null,
   };
+  if (event.type === 'evolution_mode_changed') {
+    payload.from = event.from ?? null;
+    payload.to = event.to ?? null;
+    payload.source = event.source ?? null;
+    payload.trigger = event.trigger ?? null;
+  }
+  return payload;
 }
 
 /**

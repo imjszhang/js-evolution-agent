@@ -23,6 +23,51 @@ describe('live-state fingerprints', () => {
     expect(a).not.toBe(b);
   });
 
+  it('daemonBarFingerprint changes when evolution mode changes', () => {
+    const continuous = daemonBarFingerprint({
+      evolution_mode: 'continuous',
+      evolution_mode_source: 'default',
+      health: { status: 'idle' },
+      worker: { running: true, stale: false },
+      tasks: { counts: { pending: 0, running: 0, failed: 0 }, running: [] },
+      cycles: { pending_cycle_start_request: null },
+      last_tick_at: null,
+    });
+    const onDemand = daemonBarFingerprint({
+      evolution_mode: 'on_demand',
+      evolution_mode_source: 'subjects.json',
+      health: { status: 'idle' },
+      worker: { running: true, stale: false },
+      tasks: { counts: { pending: 0, running: 0, failed: 0 }, running: [] },
+      cycles: { pending_cycle_start_request: null },
+      last_tick_at: null,
+    });
+    expect(continuous).not.toBe(onDemand);
+  });
+
+  it('daemonBarFingerprint changes when pending cycle start request changes', () => {
+    const base = {
+      evolution_mode: 'on_demand',
+      evolution_mode_source: 'subjects.json',
+      health: { status: 'idle' },
+      worker: { running: true, stale: false },
+      tasks: { counts: { pending: 0, running: 0, failed: 0 }, running: [] },
+      last_tick_at: null,
+    };
+    const none = daemonBarFingerprint({ ...base, cycles: { pending_cycle_start_request: null } });
+    const pending = daemonBarFingerprint({
+      ...base,
+      cycles: {
+        pending_cycle_start_request: {
+          request_id: 'req-1',
+          reasons: ['manual'],
+          deferred_count: 0,
+        },
+      },
+    });
+    expect(none).not.toBe(pending);
+  });
+
   it('daemonBarFingerprint changes when queue counts change', () => {
     const idle = daemonBarFingerprint({
       health: { status: 'idle' },

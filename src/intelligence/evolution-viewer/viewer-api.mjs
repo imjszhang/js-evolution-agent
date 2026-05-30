@@ -278,12 +278,16 @@ export function createEvolutionEventsTailer({ runtimeRoot, sse, onInvalidateCach
 /**
  * Watch runtime daemon files and emit runtime_updated SSE (debounced).
  */
-export function createRuntimeWatcher({ runtimeRoot, sse, onRuntimeChange }) {
+export function createRuntimeWatcher({ runtimeRoot, projectRoot = null, sse, onRuntimeChange }) {
   const paths = [
     join(runtimeRoot, 'data', 'evolution', 'tasks', 'pending_tasks.json'),
     join(runtimeRoot, 'data', 'evolution', 'daemon', 'worker-state.json'),
+    join(runtimeRoot, 'data', 'evolution', 'views', 'current-state.json'),
     join(runtimeRoot, 'data', 'evolution', 'cycle-state'),
   ];
+  if (projectRoot) {
+    paths.push(join(projectRoot, 'policies', 'subjects.json'));
+  }
 
   /** @type {import('node:fs').FSWatcher[]} */
   const watchers = [];
@@ -462,6 +466,7 @@ export function createViewerApiServer({ runtime, projectRoot, limit, port, publi
 
   const runtimeWatcher = createRuntimeWatcher({
     runtimeRoot: runtime.runtimeRoot,
+    projectRoot,
     sse,
     onRuntimeChange: () => invalidateRuntimeCaches(),
   });
@@ -500,7 +505,11 @@ export function createViewerApiServer({ runtime, projectRoot, limit, port, publi
       }
 
       if (pathname === '/api/daemon') {
-        jsonResponse(res, 200, getDaemon());
+        res.writeHead(200, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store',
+        });
+        res.end(JSON.stringify(getDaemon()));
         return;
       }
 

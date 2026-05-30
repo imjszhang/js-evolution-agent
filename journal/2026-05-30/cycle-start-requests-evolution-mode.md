@@ -3,7 +3,7 @@
 > 日期：2026-05-30  
 > 项目：js-evolution-agent  
 > 类型：架构设计 / 功能实现  
-> 来源：Cursor Agent 对话（daemon 心跳分析 → 驱动模式讨论 → 最小增量方案 → 落地实现）
+> 来源：Cursor Agent 对话（daemon 心跳分析 → 驱动模式讨论 → 最小增量方案 → 落地实现 → 热加载 / Viewer / CLI 切换）
 
 ---
 
@@ -16,6 +16,8 @@
 5. [验证与测试](#5-验证与测试)
 6. [后续演化](#6-后续演化)
 7. [附：问题—思考—方案—执行对照](#附问题思考方案执行对照)
+
+（§4.5 Worker 热加载 · §4.6 Evolution Viewer 与 SSE）
 
 ---
 
@@ -168,6 +170,9 @@ pending 请求结构示例：
 | [`daemon.mjs`](../../src/cli/commands/daemon.mjs) | idle 消费、`jea daemon cycle request`、`--evolution-mode` |
 | [`intel-briefs.mjs`](../../src/cli/commands/intel-briefs.mjs) | `brief put` 后入队 `operator_brief` |
 | [`daemon-projection.mjs`](../../src/cli/utils/daemon-projection.mjs) | `evolution_mode`、pending 请求摘要；on_demand 下调整 stall 判定 |
+| [`evolution-mode-apply.mjs`](../../src/cli/utils/evolution-mode-apply.mjs) | CLI 写 `subjects.json` + 事件 + worker-state + `current-state` 投影 |
+| [`viewer-api.mjs`](../../src/intelligence/evolution-viewer/viewer-api.mjs) | 监听 `subjects.json` / `current-state.json`；`/api/daemon` no-store |
+| [`tools/evolution-viewer/public/app.js`](../../tools/evolution-viewer/public/app.js) | daemon 栏模式 chip、SSE 即时 patch、`live-state.js` fingerprint |
 
 ### 4.3 数据流
 
@@ -193,18 +198,47 @@ pending 请求结构示例：
 
 - tick 窗口：`safeRunHeartbeatTick`（含 reconcile + 模式相关入队 + process）
 - `workOnce` idle：`safeProcessCycleStartRequests`（仅 process，不入队 tick）
+- **每轮 loop 重读 `subjects.json`**（`refreshWorkerEvolutionMode`）：模式变更写 `evolution_mode_changed` 并更新 `worker-state`；**长 step 执行期间**（`workOnce` 阻塞）热加载会延迟到该 step 结束
 
 ### 4.4 配置与命令
 
 | 入口 | 说明 |
 | --- | --- |
 | `JEA_EVOLUTION_MODE=continuous\|on_demand` | 全局 env（见 [`.env.example`](../../.env.example)） |
-| `jea daemon start --evolution-mode on_demand` | CLI 覆盖 env |
-| `subjects.json` → `evolution.mode` |  per-subject 覆盖（见 [`subjects.example.json`](../../policies/subjects.example.json)） |
+| `jea daemon start --evolution-mode on_demand` | CLI 覆盖 env（**需 restart worker** 才生效） |
+| `subjects.json` → `evolution.mode` | per-subject 覆盖（见 [`subjects.example.json`](../../policies/subjects.example.json)）；**worker 运行中热加载** |
+| `jea daemon evolution-mode show [--json]` | 查看当前 subject 模式与来源 |
+| `jea daemon evolution-mode set continuous\|on_demand [--json]` | 写 `subjects.json`、emit `evolution_mode_changed`、更新 worker-state / `current-state.json` |
 | `jea daemon cycle request [--reason TEXT]` | 显式入队 |
 | `jea intel brief put` | 自动入队 `operator_brief` |
 
-审计事件（`evolution-events.jsonl`）：`cycle_start_requested`、`cycle_start_deferred`、`cycle_start_consumed`；`cycle_due` 增加 `trigger` / `trigger_reasons`。
+审计事件（`evolution-events.jsonl`）：`cycle_start_requested`、`cycle_start_deferred`、`cycle_start_consumed`、**`evolution_mode_changed`**；`cycle_due` 增加 `trigger` / `trigger_reasons`。
+
+### 4.5 Worker 热加载（subjects.json）
+
+| 配置来源 | worker 运行中变更 | 说明 |
+| --- | --- | --- |
+| `policies/subjects.json` → `evolution.mode` | **是** | 下一轮 worker loop 重 `resolveEvolutionMode`；变更时 `recordDaemonEvent(evolution_mode_changed)` + `updateWorkerHeartbeat` |
+| `.env` → `JEA_EVOLUTION_MODE` | **否** | 进程启动时读 env，需 `daemon stop` + `start` |
+| `daemon start --evolution-mode` | **否** | 同上 |
+
+注意：热加载发生在 **loop 迭代开头**。若当前正在跑长耗时 step（如 intel/exec），模式切换会等到 `workOnce` 返回后才生效；操作者可用 `jea daemon evolution-mode set` 立即落盘并推 SSE，或 restart worker 立即对齐。
+
+### 4.6 Evolution Viewer 与 SSE
+
+**问题**：`buildDaemonProjection` 已输出 `evolution_mode`，但旧 viewer 进程 API 无该字段时，前端 fallback 为 `continuous`，造成「配置已是 on_demand、界面仍显示持续」。
+
+**实现**：
+
+| 层 | 行为 |
+| --- | --- |
+| **Daemon 栏** | chip：`模式: 持续`（紫）/ `按需`（黄）；来源 tooltip；pending 开轮请求 chip |
+| **`/api/daemon`** | `Cache-Control: no-store`；每次 projection 重读 `subjects.json` |
+| **文件 watch** | `worker-state.json`、`current-state.json`、**`policies/subjects.json`** → SSE `runtime_updated` → 客户端 debounce 拉 daemon |
+| **SSE 事件** | `evolution_mode_changed` 携带 `from` / `to` / `source`；客户端 **即时 patch** daemon 栏 + 事件流文案「持续 → 按需」 |
+| **fingerprint** | `daemonBarFingerprint` 含 `evolution_mode`、pending 请求，避免无变化时漏重绘 |
+
+**操作注意**：`jea intel viewer serve` 更新代码后需 **重启 viewer 进程**（不必 build）；离线 `dist/` 需 `jea intel viewer build` 后再重启静态服务。
 
 ---
 
@@ -213,21 +247,31 @@ pending 请求结构示例：
 | 项 | 命令 / 文件 | 结果 |
 | --- | --- | --- |
 | 请求队列单测 | `test/cycle-start-requests.test.mjs` | enqueue 合并、consume、defer、continuous/on_demand tick、open cycle 阻塞保留请求 |
-| 演化模式解析 | `test/evolution-mode.test.mjs` | 默认 continuous、subject/env/CLI 优先级 |
+| 演化模式解析 | `test/evolution-mode.test.mjs` | 默认 continuous、subject/env/CLI 优先级、`setSubjectEvolutionMode`、`applyEvolutionModeChange` |
+| 热加载 | `test/evolution-mode-hot-reload.test.mjs` | 改 subjects.json 后 resolve / tick 行为变化 |
+| Viewer live-state | `test/evolution-viewer-live-state.test.mjs` | mode / pending 请求 fingerprint |
+| Viewer API / SSE | `test/evolution-viewer-live.test.mjs` | `/api/daemon` 含 `evolution_mode`；`formatDaemonEventForApi` 含 transition 字段 |
 | dispatch 回归 | `test/cycle-state-dispatch.test.mjs` | 通过 |
-| 全量 | `npm test` | **409/409** 通过（2026-05-30 实施日） |
+| 全量 | `npm test` | **418/418** 通过（含 Viewer / CLI 模式切换增补） |
 
-建议操作者本地冒烟：
+**本地冒烟（`ai-researcher`）**
 
 ```bash
-# 按需模式 + 显式请求
-JEA_EVOLUTION_MODE=on_demand npm run jea -- daemon cycle request --subject ai-researcher
-npm run jea -- daemon start --evolution-mode on_demand --subject ai-researcher --max-iterations 3 --mock
+# 查看 / 切换模式（推荐操作入口）
+npm run jea -- daemon evolution-mode show
+npm run jea -- daemon evolution-mode set on_demand
+npm run jea -- daemon evolution-mode set continuous
 
-# brief 自动入队
-echo '{"summary":"verify X","claims_to_verify":["Y"]}' | npm run jea -- intel brief put --stdin
-npm run jea -- daemon status --json
+# 按需模式 + 显式开轮
+npm run jea -- daemon cycle request
+
+# Viewer（改代码后 restart serve）
+npm run jea -- intel viewer serve --open
+# 另开终端切换模式，浏览器 daemon 栏应 SSE 更新；事件流见 evolution_mode_changed
+curl -s http://127.0.0.1:4173/api/daemon | jq '.evolution_mode, .evolution_mode_source'
 ```
+
+**2026-05-30 联调记录**：`subjects.json` 改 `on_demand` 后 `daemon status` 立即正确；旧 viewer 进程（4173）API 无 `evolution_mode` 字段时 UI 误显持续——重启 viewer 后修复。`jea daemon evolution-mode set` 切换 continuous ↔ on_demand，API 与 `evolution-events.jsonl` 一致。
 
 ---
 
@@ -238,8 +282,9 @@ npm run jea -- daemon status --json
 | P2 | `_inbox` 非空 → 入队 | 外部证据到达时唤醒，仍走同一请求队列 |
 | P2 | `cycle-request.json` drop-in | 脚本/自动化友好入口 |
 | P2 | `pending_decisions` 触发策略 | 需区分 exec-only 续链 vs 完整 intel，避免重复 Decide |
-| P3 | Viewer 展示 pending 请求与 `evolution_mode` | status JSON 已有字段，UI 未接 |
 | P3 | 请求 TTL / 过期审计 | 长期 deferred 除 `cycle_start_blocked` 外可主动 expire |
+| ~~P3~~ | ~~Viewer 展示 pending 请求与 `evolution_mode`~~ | **已完成**（daemon 栏 + SSE + `jea daemon evolution-mode`） |
+| P3 | loop 内长 step 期间更快热加载 | 可选：租约续期路径或 step 边界 re-read mode，减少「改了 subjects.json 但要等 intel 跑完」的延迟 |
 
 与 [`single-heartbeat-event-driven-steps.md`](./single-heartbeat-event-driven-steps.md) 的关系：该 journal 解决 **step 链内** 的事件驱动；本篇解决 **cycle 诞生** 的策略层，二者叠加后 tick 角色更清晰——**兜底 + reconcile +（可选）自动入队**，而非唯一的演化意图来源。
 
@@ -252,4 +297,4 @@ npm run jea -- daemon status --json
 | **问题** | Daemon tick 直接开 cycle，与 brief/按需主体语义冲突；「漏步补偿」与「该不该演化」混在一起。 |
 | **思考** | 开轮与 step 推进应分层；tick 不应等于开轮指令；项目已有多种入列来源但未接到 cycle 诞生；改动应限于请求队列 + 消费，不动 reducer。 |
 | **方案** | `cycle-start-requests.json` + `continuous`/`on_demand`；tick 在 continuous 下入队 `tick` 请求；统一 `processCycleStartRequests`；idle 快速消费；brief/CLI 入列。 |
-| **执行** | 新增 `cycle-start-requests.mjs`、`evolution-mode.mjs`；改 `cycle-dispatch`、`daemon`、`daemon-projection`、`intel-briefs`；更新 `AGENTS.md` / `.env.example` / `subjects.example.json`；测试 409 通过。 |
+| **执行** | 新增 `cycle-start-requests.mjs`、`evolution-mode.mjs`、`evolution-mode-apply.mjs`；改 `cycle-dispatch`、`daemon`、`daemon-projection`、`intel-briefs`、Viewer（`app.js` / `live-state.js` / `viewer-api.mjs` / `daemon-sse.mjs`）；`jea daemon evolution-mode show\|set`；热加载 + SSE；更新 `AGENTS.md` / `.env.example` / `subjects.example.json`；测试 418 通过。 |

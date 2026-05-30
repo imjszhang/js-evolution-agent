@@ -54,6 +54,7 @@ import {
   runHeartbeatTick,
 } from '../utils/cycle-dispatch.mjs';
 import { resolveEvolutionMode } from '../utils/evolution-mode.mjs';
+import { applyEvolutionModeChange } from '../utils/evolution-mode-apply.mjs';
 
 function sleep(ms) {
   if (!ms) return Promise.resolve();
@@ -353,10 +354,7 @@ function printTaskDetails(task) {
   if (task.result) console.log(`result: ${JSON.stringify(task.result)}`);
 }
 
-function taskInputFromFlags(flags, root, subject) {
-  const evolution = root && subject
-    ? resolveEvolutionMode(root, { subject, flags })
-    : { mode: 'continuous', source: 'default' };
+function baseTaskInputFromFlags(flags) {
   return {
     mock: Boolean(flags.mock),
     deepseek: Boolean(flags.deepseek),
@@ -366,6 +364,45 @@ function taskInputFromFlags(flags, root, subject) {
       ? null
       : parsePositiveInt(flags['exec-limit'], { name: 'exec-limit', min: 1 }),
     retries: parsePositiveInt(flags.retries, { name: 'retries', defaultValue: 3, min: 0 }),
+  };
+}
+
+function taskInputFromFlags(flags, root, subject) {
+  const base = baseTaskInputFromFlags(flags);
+  if (!root || !subject) return base;
+  const evolution = resolveEvolutionMode(root, { subject, flags });
+  return {
+    ...base,
+    evolution_mode: evolution.mode,
+    evolution_mode_source: evolution.source,
+  };
+}
+
+export function refreshWorkerEvolutionMode(root, subject, flags, { workerId, pid, lastMode = null } = {}) {
+  const resolved = resolveEvolutionMode(root, { subject, flags });
+  if (lastMode != null && resolved.mode !== lastMode) {
+    recordDaemonEvent(root, subject, {
+      type: 'evolution_mode_changed',
+      status: 'ok',
+      worker_id: workerId,
+      pid,
+      from: lastMode,
+      to: resolved.mode,
+      source: resolved.source,
+    });
+    updateWorkerHeartbeat(root, subject, {
+      worker_id: workerId,
+      pid,
+      evolution_mode: resolved.mode,
+      evolution_mode_source: resolved.source,
+    });
+  }
+  return resolved;
+}
+
+function runtimeTaskInput(base, evolution) {
+  return {
+    ...base,
     evolution_mode: evolution.mode,
     evolution_mode_source: evolution.source,
   };
@@ -883,7 +920,8 @@ export async function runDaemonWorker(root, subject, flags = {}) {
   let iterations = 0;
   let stopReason = 'stopped';
   let lastTickAt = 0;
-  const taskInput = taskInputFromFlags(flags, root, subject);
+  const baseTaskInput = baseTaskInputFromFlags(flags);
+  let lastEvolutionMode = evolution.mode;
   try {
     for (;;) {
       const current = readWorkerState(root, subject);
@@ -891,6 +929,14 @@ export async function runDaemonWorker(root, subject, flags = {}) {
         stopReason = current?.stop_requested_at ? 'stop_requested' : 'signal';
         break;
       }
+      const resolvedEvolution = refreshWorkerEvolutionMode(root, subject, flags, {
+        workerId,
+        pid: process.pid,
+        lastMode: lastEvolutionMode,
+      });
+      lastEvolutionMode = resolvedEvolution.mode;
+      const runtimeInput = runtimeTaskInput(baseTaskInput, resolvedEvolution);
+
       updateWorkerHeartbeat(root, subject, {
         worker_id: workerId,
         pid: process.pid,
@@ -900,7 +946,7 @@ export async function runDaemonWorker(root, subject, flags = {}) {
 
       const now = Date.now();
       if (lastTickAt === 0 || now - lastTickAt >= tickMs) {
-        safeRunHeartbeatTick(root, subject, taskInput);
+        safeRunHeartbeatTick(root, subject, runtimeInput);
         lastTickAt = now;
       }
 
@@ -938,7 +984,7 @@ export async function runDaemonWorker(root, subject, flags = {}) {
       if (result.worked) {
         await sleep(workIntervalMs);
       } else {
-        safeProcessCycleStartRequests(root, subject, taskInput);
+        safeProcessCycleStartRequests(root, subject, runtimeInput);
         const untilTick = Math.max(0, tickMs - (Date.now() - lastTickAt));
         await sleep(Math.min(untilTick, idleIntervalMs));
       }
@@ -1035,6 +1081,52 @@ export async function daemonCommand({ subcommand, flags = {}, args = [], root = 
   });
   const subject = subjects[0];
   const multiSubject = subjects.length > 1 || hasMultiSubjectSelection(flags);
+
+  if (subcommand === 'evolution-mode') {
+    if (multiSubject) {
+      console.error('daemon evolution-mode supports one subject at a time.');
+      return 2;
+    }
+    const [modeCommand, ...modeArgs] = args;
+    if (modeCommand === 'show') {
+      const resolved = resolveEvolutionMode(root, { subject, flags });
+      if (flags.json) {
+        console.log(JSON.stringify({ subject, ...resolved }, null, 2));
+      } else {
+        console.log(`subject: ${subject}`);
+        console.log(`evolution_mode: ${resolved.mode}`);
+        console.log(`source: ${resolved.source}`);
+      }
+      return 0;
+    }
+    if (modeCommand === 'set') {
+      const rawMode = modeArgs[0] || (flags.mode && flags.mode !== true ? String(flags.mode) : null);
+      if (!rawMode) {
+        console.error('Usage: jea daemon evolution-mode set <continuous|on_demand> [--subject NAME] [--json]');
+        return 2;
+      }
+      try {
+        const result = applyEvolutionModeChange(root, subject, rawMode);
+        if (flags.json) {
+          console.log(JSON.stringify({ subject, ...result }, null, 2));
+        } else if (!result.changed) {
+          console.log(`evolution_mode already ${result.mode} (${result.source})`);
+        } else {
+          console.log(`evolution_mode: ${result.previous} -> ${result.mode}`);
+          console.log(`source: ${result.source}`);
+          console.log(`path: ${result.path}`);
+        }
+        return 0;
+      } catch (err) {
+        console.error(err?.message || String(err));
+        return 2;
+      }
+    }
+    console.error('Usage: jea daemon evolution-mode <show|set> ...');
+    console.error('       jea daemon evolution-mode show [--subject NAME] [--json]');
+    console.error('       jea daemon evolution-mode set <continuous|on_demand> [--subject NAME] [--json]');
+    return 2;
+  }
 
   if (subcommand === 'cycle') {
     if (multiSubject) {
@@ -1284,9 +1376,11 @@ export async function daemonCommand({ subcommand, flags = {}, args = [], root = 
   }
 
   {
-    console.error('Usage: jea daemon <enqueue|work|start|stop|status|events|doctor|tasks|inbox|cycle> [--subject NAME] [--subjects a,b | --all] [--json]');
+    console.error('Usage: jea daemon <enqueue|work|start|stop|status|events|doctor|tasks|inbox|cycle|evolution-mode> [--subject NAME] [--subjects a,b | --all] [--json]');
     console.error('       jea daemon enqueue --type intel|exec|verify|...|run_cycle [--idempotency-key KEY]');
     console.error('       jea daemon cycle request [--reason TEXT] [--note TEXT]');
+    console.error('       jea daemon evolution-mode show [--json]');
+    console.error('       jea daemon evolution-mode set <continuous|on_demand> [--json]');
     console.error('       jea daemon work --once');
     console.error('       jea daemon start [--tick-ms N] [--evolution-mode continuous|on_demand] [--interval-ms N] [--idle-interval-ms N] [--heartbeat-ms N]');
     console.error('       jea daemon stop');

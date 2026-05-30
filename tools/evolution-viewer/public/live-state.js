@@ -46,8 +46,18 @@ export function daemonBarFingerprint(state) {
   const health = state.health ?? {};
   const counts = state.tasks?.counts ?? {};
   const running = state.tasks?.running?.[0] ?? null;
+  const pendingRequest = state.cycles?.pending_cycle_start_request ?? null;
   return JSON.stringify({
     health: health.status ?? null,
+    evolution_mode: state.evolution_mode ?? null,
+    evolution_mode_source: state.evolution_mode_source ?? null,
+    pending_cycle_start_request: pendingRequest
+      ? {
+        request_id: pendingRequest.request_id ?? null,
+        reasons: pendingRequest.reasons ?? [],
+        deferred_count: pendingRequest.deferred_count ?? 0,
+      }
+      : null,
     worker_running: Boolean(worker.running),
     worker_stale: Boolean(worker.stale),
     counts: {

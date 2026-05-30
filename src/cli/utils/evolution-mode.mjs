@@ -1,6 +1,15 @@
-import { getSubjectEntry, readSubjectsRegistry, resolveSubjectConfig } from './subjects.mjs';
+import { getSubjectEntry, readSubjectsRegistry, resolveSubjectConfig, writeSubjectsRegistry } from './subjects.mjs';
 
 export const EVOLUTION_MODES = Object.freeze(['continuous', 'on_demand']);
+
+export function normalizeEvolutionMode(raw) {
+  if (raw == null || raw === '') return null;
+  const normalized = String(raw).trim().toLowerCase();
+  if (normalized === 'continuous' || normalized === 'on_demand' || normalized === 'on-demand') {
+    return normalized === 'on-demand' ? 'on_demand' : normalized;
+  }
+  return null;
+}
 
 export function evolutionModeFromEnv(env = process.env) {
   const raw = String(env.JEA_EVOLUTION_MODE || '').trim().toLowerCase();
@@ -66,4 +75,52 @@ export function readSubjectsRegistryEvolutionModes(root) {
     modes[name] = evolutionModeFromSubjectEntry(entry) ?? null;
   }
   return modes;
+}
+
+/**
+ * Persist evolution.mode for a subject in policies/subjects.json (hot-reloadable).
+ * @returns {{ changed: boolean, previous: string, mode: string, source: 'subjects.json', path: string }}
+ */
+export function setSubjectEvolutionMode(root, subject, mode) {
+  const normalized = normalizeEvolutionMode(mode);
+  if (!normalized) {
+    throw new Error(`Invalid evolution mode: ${mode}. Use continuous or on_demand.`);
+  }
+  const registry = readSubjectsRegistry(root);
+  const subjectName = resolveSubjectConfig(root, { subject, allowDefault: true })?.name ?? subject;
+  if (!registry.subjects?.[subjectName]) {
+    throw new Error(`Subject not found in subjects.json: ${subjectName}`);
+  }
+  const previousEntry = registry.subjects[subjectName];
+  const previous = evolutionModeFromSubjectEntry(previousEntry) ?? 'continuous';
+  if (previous === normalized) {
+    return {
+      changed: false,
+      previous,
+      mode: normalized,
+      source: 'subjects.json',
+      path: registry.path,
+    };
+  }
+  const nextEntry = {
+    ...previousEntry,
+    evolution: {
+      ...(previousEntry.evolution && typeof previousEntry.evolution === 'object' ? previousEntry.evolution : {}),
+      mode: normalized,
+    },
+  };
+  const written = writeSubjectsRegistry(root, {
+    default_subject: registry.default_subject,
+    subjects: {
+      ...registry.subjects,
+      [subjectName]: nextEntry,
+    },
+  });
+  return {
+    changed: true,
+    previous,
+    mode: normalized,
+    source: 'subjects.json',
+    path: written.path,
+  };
 }

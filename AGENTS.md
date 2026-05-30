@@ -297,11 +297,15 @@ Daemon 用于 **事件驱动的 step 级演化**。推荐用 `jea daemon start` 
 
 演化模式解析优先级：`policies/subjects.json` 中 `subjects.<name>.evolution.mode` > `jea daemon start --evolution-mode` > env `JEA_EVOLUTION_MODE` > 默认 `continuous`。
 
+**热加载**：daemon worker 运行中修改 `policies/subjects.json` 的 `evolution.mode` **无需 restart**（下一轮 worker loop 重新读盘，通常数秒内 idle 生效；`daemon events` 可见 `evolution_mode_changed`）。修改 `.env` 的 `JEA_EVOLUTION_MODE` 或启动时的 `--evolution-mode` **需** `daemon stop` 后重新 `start` 才生效。
+
 `run_cycle` 整轮任务与 `jea run` 同步链仍保留，供本地调试与兼容；**后台长期运行请优先 step 模式**。
 
 ### 任务与 worker
 
 - `jea daemon start [--mock] [--tick-ms N] [--evolution-mode continuous|on_demand] [--heartbeat-ms N] [--lease-ms N]`：前台 worker；默认 `tick-ms=300000`（5min）。
+- `jea daemon evolution-mode show [--json]`：查看当前 subject 演化模式与来源。
+- `jea daemon evolution-mode set continuous|on_demand [--json]`：写入 `subjects.json` 并 emit `evolution_mode_changed`（viewer SSE / worker 热加载）。
 - `jea daemon cycle request [--reason TEXT] [--note TEXT]`：入队 cycle 启动请求（写入 `data/evolution/cycle-start-requests.json`），由 worker 在前提满足时开轮。
 - `jea daemon work --once [--mock]`：领取并执行一个 task（step 或 `run_cycle`）后退出。
 - `jea daemon enqueue --type <step|run_cycle>`：手动入队 step 任务；step 类型含 `intel`、`exec`、`verify`、`belief_update`、`goals_assess`、`goals_calibrate`、`diary` 等。

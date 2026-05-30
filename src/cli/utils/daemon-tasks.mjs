@@ -136,7 +136,7 @@ export function hasIncompleteEarlierStep(tasks, task) {
     if (item.input?.cycle_id !== cycleId) return false;
     if (!CYCLE_STEP_TYPES.includes(item.type)) return false;
     const otherOrder = CYCLE_STEP_ORDER[item.type] ?? 999;
-    return otherOrder < order && item.status !== 'completed' && item.status !== 'cancelled';
+    return otherOrder < order && (item.status === 'pending' || item.status === 'running');
   });
 }
 

@@ -31,6 +31,7 @@ Commands:
   evolve status [ID]     Show recent or specific evolve run status
   daemon enqueue         Enqueue event-driven daemon tasks
   daemon cycle request   Queue a cycle start request (on_demand mode)
+  daemon evolution-mode  Show or set evolution mode (continuous / on_demand)
   daemon work --once     Execute one daemon task
   daemon start           Run the daemon worker loop in the foreground
                          Supports --evolution-mode continuous|on_demand

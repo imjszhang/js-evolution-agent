@@ -174,10 +174,34 @@ body {
 .daemon-chip.health-stale,
 .daemon-chip.health-blocked,
 .daemon-chip.health-worker_zombie,
-.daemon-chip.health-evolution_stalled {
+.daemon-chip.health-evolution_stalled,
+.daemon-chip.health-cycle_start_blocked {
   background: #fee2e2;
   color: #991b1b;
   border-color: #fecaca;
+}
+
+.daemon-chip.mode-continuous {
+  background: #ede9fe;
+  color: #5b21b6;
+  border-color: #ddd6fe;
+}
+
+.daemon-chip.mode-on_demand {
+  background: #fef3c7;
+  color: #92400e;
+  border-color: #fde68a;
+}
+
+.daemon-chip.mode-unknown {
+  background: #f3f4f6;
+  color: var(--muted);
+}
+
+.daemon-chip.cycle-start-pending {
+  background: #fff7ed;
+  color: #c2410c;
+  border-color: #fed7aa;
 }
 
 .daemon-chip.worker-on {

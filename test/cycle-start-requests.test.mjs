@@ -14,8 +14,9 @@ import {
   processCycleStartRequests,
   runHeartbeatTick,
 } from '../src/cli/utils/cycle-dispatch.mjs';
-import { listOpenCycles } from '../src/cli/utils/cycle-state.mjs';
+import { listOpenCycles, markStepStatus } from '../src/cli/utils/cycle-state.mjs';
 import { readTaskQueue } from '../src/cli/utils/daemon-tasks.mjs';
+import { resolveEvolutionMode } from '../src/cli/utils/evolution-mode.mjs';
 
 function makeRoot() {
   const tempDir = mkdtempSync(join(tmpdir(), 'jea-cycle-req-'));
@@ -126,6 +127,44 @@ describe('cycle-start-requests', () => {
     expect(processed.started).toBe(false);
     expect(processed.reason).toBe('open_cycle_exists');
     expect(readPendingCycleStartRequest(root, 'alpha')?.reasons).toContain('operator_brief');
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('simulated hot reload: on_demand tick does not enqueue tick request', () => {
+    const root = makeRoot();
+    writeJsonFile(join(root, 'policies', 'subjects.json'), {
+      default_subject: 'alpha',
+      subjects: {
+        alpha: {
+          policy: 'subjects/alpha.md',
+          data_namespace: 'alpha',
+          evolution: { mode: 'continuous' },
+        },
+      },
+    });
+    const continuous = resolveEvolutionMode(root, { subject: 'alpha' });
+    const first = runHeartbeatTick(root, 'alpha', { evolution_mode: continuous.mode });
+    expect(first.request_enqueue).toBeTruthy();
+    expect(first.request_process?.started).toBe(true);
+    const cycleId = first.request_process.cycle.cycle_id;
+    markStepStatus(root, 'alpha', cycleId, 'diary', { status: 'done' });
+    expect(listOpenCycles(root, 'alpha')).toHaveLength(0);
+
+    writeJsonFile(join(root, 'policies', 'subjects.json'), {
+      default_subject: 'alpha',
+      subjects: {
+        alpha: {
+          policy: 'subjects/alpha.md',
+          data_namespace: 'alpha',
+          evolution: { mode: 'on_demand' },
+        },
+      },
+    });
+    const onDemand = resolveEvolutionMode(root, { subject: 'alpha' });
+    expect(onDemand.mode).toBe('on_demand');
+    const second = runHeartbeatTick(root, 'alpha', { evolution_mode: onDemand.mode });
+    expect(second.request_enqueue).toBeNull();
+    expect(listOpenCycles(root, 'alpha')).toHaveLength(0);
     rmSync(root, { recursive: true, force: true });
   });
 });
