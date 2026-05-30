@@ -724,6 +724,97 @@ function summarizeSeenItem(item) {
   return hasStandingMemoryPollution(raw) ? structuredEvidenceSummary(item) : raw;
 }
 
+/** ASCII-only clip for machine index lines; never emits Unicode ellipsis. */
+function clipAsciiIndex(value, max = 180) {
+  if (value == null) return '';
+  const s = String(value).replace(/\s+/g, ' ').trim();
+  if (s.length <= max) return s;
+  return `${s.slice(0, max - 3)}...`;
+}
+
+function parseSourceStatementIndexSummary(summary, sourceType = null) {
+  const text = String(summary || '').trim();
+  const normalizedSource = memorySourceType(sourceType);
+  const goalMatch = text.match(/^source claims:\s*(\S+)\s+(\S+)\s*:/i);
+  if (goalMatch) {
+    return `type=${goalMatch[1]} goal_id=${goalMatch[2]}`;
+  }
+  const recordsMatch = text.match(/^source records:\s*(\S+)\s+(\S+)\s*:/i);
+  if (recordsMatch) {
+    const first = recordsMatch[1];
+    const second = recordsMatch[2];
+    if (normalizedSource === 'belief_events' || /^belief-/i.test(second)) {
+      return `change=${first} belief_id=${second}`;
+    }
+    if (normalizedSource === 'evolution_events') {
+      return `type=${first} status=${second}`;
+    }
+    if (/^(assessment|refine|defer|keep|replace|completed|goal_event)$/i.test(first)) {
+      return `type=${first} goal_id=${second}`;
+    }
+    return `type=${first} status=${second}`;
+  }
+  return null;
+}
+
+/**
+ * Standing-memory Evidence index line: structured labels only, no narrative or Unicode ellipsis.
+ */
+export function summarizeEvidenceIndexItem(item) {
+  const fieldSummary = summarizeEvidenceFields(item?.fields);
+  if (fieldSummary) return fieldSummary;
+
+  if (item?.kind === 'structured_status' || item?.evidence_level === 'structured_machine_record') {
+    return structuredEvidenceSummary(item);
+  }
+
+  if (item?.evidence_level === 'source_statement') {
+    const sourceType = item?.source?.source_type ?? item?.source_type ?? null;
+    const parsed = parseSourceStatementIndexSummary(item?.summary, sourceType);
+    if (parsed) return parsed;
+    return structuredEvidenceSummary(item);
+  }
+
+  const rawSummary = String(item?.summary ?? '').trim();
+  if (rawSummary && !hasStandingMemoryPollution(rawSummary) && rawSummary.length <= 180) {
+    return rawSummary;
+  }
+  if (rawSummary) {
+    const sourceType = item?.source?.source_type ?? item?.source_type ?? null;
+    const parsed = parseSourceStatementIndexSummary(rawSummary, sourceType);
+    if (parsed) return parsed;
+  }
+
+  return structuredEvidenceSummary(item);
+}
+
+function isMinimalSafeEvidenceItem(item) {
+  if (summarizeEvidenceFields(item?.fields)) return true;
+  if (item?.kind === 'structured_status') return true;
+  if (item?.evidence_level === 'structured_machine_record') return true;
+  const summary = summarizeEvidenceIndexItem(item);
+  return Boolean(summary)
+    && !/…/.test(summary)
+    && !hasStandingMemoryPollution(summary);
+}
+
+export function buildMinimalSafeAdmission(admission) {
+  const toIndexItem = (item) => ({
+    ...item,
+    source: item.source ?? { source_type: item.source_type, id: item.source_id },
+    fields: item.fields ?? null,
+  });
+  return {
+    ...admission,
+    seen: (admission?.seen ?? [])
+      .filter((item) => isMinimalSafeEvidenceItem(toIndexItem(item)))
+      .map((item) => ({
+        ...item,
+        summary: summarizeEvidenceIndexItem(toIndexItem(item)),
+      })),
+  };
+}
+
 function rememberedPrefix(item) {
   if (item?.kind === 'agent_claim') return 'agent_claim';
   if (item?.kind === 'historical_claim') return 'historical_claim';
@@ -821,6 +912,12 @@ export function buildMemoryAdmission(reportContext) {
   const seen = Array.isArray(brief.seen) ? brief.seen : [];
   const memorySeen = seen.filter((item) => {
     if (item?.evidence_level === 'agent_narrative') return false;
+    if (
+      item?.source?.source_type === 'goal_event'
+      && item?.evidence_level === 'source_statement'
+    ) {
+      return false;
+    }
     if (item?.source?.source_type !== 'action_receipt') return true;
     const status = String(item?.fields?.status ?? '').toLowerCase();
     return status === 'completed' || status === 'succeeded';
@@ -833,7 +930,7 @@ export function buildMemoryAdmission(reportContext) {
     )),
   ];
   return {
-    rule: 'Only memory_admission.seen may appear in the final Evidence section. Completed action_receipt structured status is Evidence; receipt summaries, messages, and agent claims are not Evidence.',
+    rule: 'Only memory_admission.seen may appear in the final Evidence section. Completed action_receipt structured status is Evidence; receipt summaries, messages, and agent claims are not Evidence. Evidence summaries are structured index labels only; source_statement narratives are not copied.',
     seen: memorySeen.map((item) => ({
       source_id: seenSourceId(item),
       source_type: item?.source?.source_type ?? null,
@@ -844,7 +941,8 @@ export function buildMemoryAdmission(reportContext) {
       recorded_at: item?.source?.recorded_at ?? null,
       kind: item?.kind ?? null,
       evidence_level: item?.evidence_level ?? null,
-      summary: summarizeSeenItem(item),
+      fields: item?.fields ?? null,
+      summary: summarizeEvidenceIndexItem(item),
       seen_policy: item?.evidence_level === 'source_statement'
         ? 'source_statement_only'
         : 'direct_field_or_status',
@@ -1038,24 +1136,47 @@ function recordTimestamp(record) {
 }
 
 function summarizeBackfillRecord(sourceType, record) {
-  if (record?.summary) return shortText(record.summary, 260);
   if (sourceType === 'action_receipts') {
-    return shortText(JSON.stringify({
-      action_type: record?.action_type ?? record?.type ?? null,
-      status: record?.status ?? null,
-      success: record?.success ?? null,
-    }), 260);
+    return summarizeEvidenceIndexItem({
+      kind: 'structured_status',
+      evidence_level: 'structured_machine_record',
+      fields: {
+        action_type: record?.action_type ?? record?.type ?? record?.action?.type ?? null,
+        status: record?.status ?? record?.result?.status ?? null,
+        success: record?.success ?? record?.result?.success ?? null,
+      },
+      source: { source_type: 'action_receipt' },
+    });
   }
-  if (sourceType === 'belief_event') {
-    return shortText(`source records: ${record?.change ?? 'update'} ${record?.belief_id ?? ''}: ${record?.reason ?? ''}`, 260);
+  if (sourceType === 'belief_events') {
+    return summarizeEvidenceIndexItem({
+      evidence_level: 'source_statement',
+      summary: `source records: ${record?.change ?? 'update'} ${record?.belief_id ?? ''}: ${record?.reason ?? ''}`,
+      source: { source_type: 'belief_event' },
+    });
   }
   if (sourceType === 'goal_events') {
-    return shortText(`source claims: ${record?.type ?? 'goal_event'} ${record?.goal_id ?? ''}: ${record?.reason ?? ''}`, 260);
+    return summarizeEvidenceIndexItem({
+      evidence_level: 'source_statement',
+      summary: `source claims: ${record?.type ?? 'goal_event'} ${record?.goal_id ?? ''}: ${record?.reason ?? ''}`,
+      source: { source_type: 'goal_event' },
+    });
   }
   if (sourceType === 'evolution_events') {
-    return shortText(record?.summary ?? record?.type ?? JSON.stringify(record ?? {}), 260);
+    const eventStatus = `${record?.type ?? 'event'} ${record?.status ?? ''}`.trim();
+    const statement = record?.summary ?? record?.tldr ?? '';
+    return summarizeEvidenceIndexItem({
+      evidence_level: 'source_statement',
+      summary: statement
+        ? `source records: ${eventStatus}: ${statement}`
+        : `source records: ${eventStatus}:`,
+      source: { source_type: 'evolution_event' },
+    });
   }
-  return shortText(JSON.stringify(record ?? {}), 260);
+  return summarizeEvidenceIndexItem({
+    evidence_level: 'structured_machine_record',
+    summary: clipAsciiIndex(JSON.stringify(record ?? {}), 180),
+  });
 }
 
 function lookupRecordSummary(reportContext, ref) {
@@ -1270,7 +1391,6 @@ export function auditStandingMemoryFreeText({
 
   for (const [sectionName, sectionText] of [
     ['current_state', currentStateText],
-    ['evidence', evidenceText],
     ['remembered', rememberedText],
     ['do_not_treat', doNotTreatText],
   ]) {
@@ -1279,10 +1399,19 @@ export function auditStandingMemoryFreeText({
     }
     if (/…/.test(sectionText)) issues.push(`${sectionName}:unicode_ellipsis`);
     if (/\bfallba…/i.test(sectionText)) issues.push(`${sectionName}:partial_truncation`);
-    if (/\bagent_claim:/i.test(sectionText)) issues.push(`${sectionName}:agent_claim_prefix`);
-    if (hasStandingMemoryPollution(sectionText)) issues.push(`${sectionName}:pollution`);
+    if (sectionName === 'current_state' && /\bagent_claim:/i.test(sectionText)) {
+      issues.push(`${sectionName}:agent_claim_prefix`);
+    }
+    if (sectionName === 'current_state' && hasStandingMemoryPollution(sectionText)) {
+      issues.push(`${sectionName}:pollution`);
+    }
     const openBracket = (sectionText.match(/\[[a-z_]+:[^\]]*$/im) ?? []).length;
     if (openBracket > 0) issues.push(`${sectionName}:incomplete_source_address`);
+  }
+
+  {
+    const openBracket = (evidenceText.match(/\[[a-z_]+:[^\]]*$/im) ?? []).length;
+    if (openBracket > 0) issues.push('evidence:incomplete_source_address');
   }
 
   if (/##\s+Current State/i.test(doNotTreatText)) {
@@ -1573,7 +1702,7 @@ export async function updateStandingMemoryWithAi({
     const raw = await aiClient.chat(prompt);
     const aiBody = stripCodeFence(raw);
     const rawCurrentStateBody = extractCurrentStateBody(aiBody);
-    const typedEvidenceRefs = rollingConfig
+    let typedEvidenceRefs = rollingConfig
       ? applyRollingTypedEvidenceRefs({
         cycleRefs,
         oldMemory,
@@ -1612,19 +1741,24 @@ export async function updateStandingMemoryWithAi({
       language,
     }));
     let usedFallback = false;
+    let fallbackReason = null;
     if (!audit.ok) {
+      const minimalAdmission = buildMinimalSafeAdmission(extendedAdmission);
+      const minimalRefs = buildTypedEvidenceRefsFromAdmission(minimalAdmission);
       text = composeStandingMemoryMarkdown({
         currentStateBody: '- (none)',
         reportContext,
         language,
-        admission: extendedAdmission,
+        admission: minimalAdmission,
       });
       audit = auditStandingMemoryMarkdown({
         text,
-        typedEvidenceRefs,
-        admission: extendedAdmission,
+        typedEvidenceRefs: minimalRefs,
+        admission: minimalAdmission,
       });
+      typedEvidenceRefs = minimalRefs;
       usedFallback = true;
+      fallbackReason = 'primary_audit_failed';
     }
     if (!text.trim()) return { status: 'failed', reason: 'empty-output' };
     if (!audit.ok) return { status: 'failed', reason: `audit-failed:${audit.issues.join(',')}` };
@@ -1649,6 +1783,7 @@ export async function updateStandingMemoryWithAi({
         source_cycle_id: cycleId,
         audit_ok: audit.ok,
         used_fallback: usedFallback,
+        fallback_reason: fallbackReason,
         rolling_update_applied: Boolean(rollingConfig),
         locked_refs_count: lockedRefsCount,
         backfill_refs_count: backfillRefsCount,

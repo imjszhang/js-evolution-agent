@@ -21,6 +21,8 @@ import {
   buildTypedEvidenceRefsFromAdmission,
   composeStandingMemoryMarkdown,
   sanitizeCurrentStateBody,
+  summarizeEvidenceIndexItem,
+  buildMinimalSafeAdmission,
   detectLanguage,
   extractTldr,
   gatherEvidence,
@@ -1382,7 +1384,7 @@ describe('buildIntelReport', () => {
     expect(assessment.proposed_goal.children).toEqual([]);
   });
 
-  it('writes natural language goal events as source claims in standing memory Evidence', async () => {
+  it('excludes goal assessment narratives from standing memory Evidence', async () => {
     const { store, runtime, intelResult } = makeReportFixture();
     store.recordGoalEvent({
       id: 'goal-event-claim',
@@ -1393,8 +1395,15 @@ describe('buildIntelReport', () => {
 
     const outputs = [
       '# 情报报告\n\n目标评估声称 standing_memory cleanup is complete。\n',
-      '## Current State\n\n- cleanup complete [goal_events:goal-event-claim]',
+      '## Current State\n\n- cleanup complete [evolution_events:evt-depth]',
     ];
+    store.recordEvolutionEvent({
+      id: 'evt-depth',
+      type: 'task_completed',
+      status: 'ok',
+      cycle_id: 'cycle-test-1',
+      summary: 'anchor evidence',
+    });
     const fakeAi = { chat: async () => outputs.shift() };
 
     await buildIntelReport({
@@ -1410,8 +1419,10 @@ describe('buildIntelReport', () => {
       memory.text.indexOf('## Evidence'),
       memory.text.indexOf('## Remembered'),
     );
-    expect(evidenceText).toContain('[goal_events:goal-event-claim]');
-    expect(evidenceText).toContain('source claims: assessment bootstrap: standing_memory cleanup is complete');
+    const rememberedText = memory.text.slice(memory.text.indexOf('## Remembered'));
+    expect(evidenceText).not.toContain('[goal_events:goal-event-claim]');
+    expect(evidenceText).not.toContain('standing_memory cleanup is complete');
+    expect(rememberedText).toContain('[goal_events:goal-event-claim]');
   });
 
   it('keeps typed_evidence_refs aligned with Evidence and does not require depth 35', async () => {
@@ -1538,11 +1549,11 @@ describe('buildIntelReport', () => {
     expect(sanitized).not.toContain('no address');
   });
 
-  it('auditStandingMemoryFreeText rejects agent_claim outside Evidence', () => {
+  it('auditStandingMemoryFreeText rejects agent_claim in Current State', () => {
     const text = [
       '## Current State',
       '',
-      '- blocked [evolution_events:evt-1]',
+      '- agent_claim: polluted summary [evolution_events:evt-1]',
       '',
       '## Evidence',
       '',
@@ -1550,7 +1561,7 @@ describe('buildIntelReport', () => {
       '',
       '## Remembered',
       '',
-      '- [action_receipts:receipt-1] agent_claim: polluted summary',
+      '- [action_receipts:receipt-1] (agent_claim_lead_not_fact)',
       '',
       '## Do Not Treat As Seen',
       '',
@@ -1573,15 +1584,15 @@ describe('buildIntelReport', () => {
     expect(audit.issues.some((i) => i.includes('agent_claim_prefix'))).toBe(true);
   });
 
-  it('auditStandingMemoryFreeText rejects polluted Evidence summaries', () => {
+  it('auditStandingMemoryMarkdown rejects polluted Evidence summaries', () => {
     const text = [
       '## Current State',
       '',
-      '- blocked [evolution_events:evt-1]',
+      '- ok [evolution_events:evt-1]',
       '',
       '## Evidence',
       '',
-      '- [evolution_events:evt-1]: free_text_clean=false with unicode ellipsis ...',
+      '- [evolution_events:evt-1]: agent_claim: remote.matchCount=4127',
       '',
       '## Remembered',
       '',
@@ -1590,8 +1601,8 @@ describe('buildIntelReport', () => {
       '## Do Not Treat As Seen',
       '',
       '- (none)',
-    ].join('\n').replace('...', '…');
-    const audit = auditStandingMemoryFreeText({
+    ].join('\n');
+    const audit = auditStandingMemoryMarkdown({
       text,
       typedEvidenceRefs: [{
         source_type: 'evolution_events',
@@ -1600,8 +1611,7 @@ describe('buildIntelReport', () => {
       }],
     });
     expect(audit.ok).toBe(false);
-    expect(audit.issues).toContain('evidence:unicode_ellipsis');
-    expect(audit.issues).toContain('evidence:pollution');
+    expect(audit.issues.some((i) => i.startsWith('evidence_pollution:'))).toBe(true);
   });
 
   it('summarizeDoNotTreatItem avoids embedding standing_memory body', async () => {
@@ -1729,6 +1739,95 @@ describe('buildIntelReport', () => {
     expect(audit.ok).toBe(true);
     expect(text).toContain('[evolution_events:evt-polluted-summary]');
     expect(text).not.toContain('free_text_clean');
+    expect(text).not.toContain('…');
+  });
+
+  it('passes audit for long evolution_diary and goal assessment narratives in admission', () => {
+    const { store, runtime, intelResult } = makeReportFixture();
+    store.recordEvolutionEvent({
+      id: 'evt-diary-long',
+      type: 'evolution_diary',
+      status: 'ok',
+      cycle_id: 'cycle-test-1',
+      summary: '本轮 agent_run 从上一轮 `agent_claim` 提到的 4 条情报开始验证，'.repeat(20),
+    });
+    store.recordGoalEvent({
+      id: 'goal-assess-long',
+      type: 'assessment',
+      goal_id: 'ai-frontier-intel',
+      reason: '依据Cyber-Taoist宪章第四条，当前目标结构已包含成果型子目标 agent-run-activation。'.repeat(20),
+    });
+    store.recordActionReceipt(
+      { type: 'agent_run', description: 'search' },
+      { status: 'completed', success: true },
+      { cycleId: 'cycle-test-1', receiptId: 'receipt-safe-1' },
+    );
+
+    const context = gatherReportContext({ store, runtime, intelResult });
+    context.temporal_decision_brief = buildTemporalDecisionBrief(context);
+    const admission = buildMemoryAdmission(context);
+    const typedEvidenceRefs = buildTypedEvidenceRefsFromAdmission(admission);
+    const receiptRef = typedEvidenceRefs.find((ref) => ref.source_type === 'action_receipts');
+    const text = composeStandingMemoryMarkdown({
+      currentStateBody: `- state ${receiptRef?.source_address ?? '- (none)'}`,
+      reportContext: context,
+      admission,
+    });
+    const audit = auditStandingMemoryMarkdown({ text, typedEvidenceRefs, admission });
+
+    expect(audit.ok).toBe(true);
+    expect(text).not.toContain('…');
+    const evidenceText = text.slice(
+      text.indexOf('## Evidence'),
+      text.indexOf('## Remembered'),
+    );
+    expect(evidenceText).toContain('type=evolution_diary status=ok');
+    expect(evidenceText).not.toContain('[goal_events:goal-assess-long]');
+    expect(summarizeEvidenceIndexItem({
+      evidence_level: 'source_statement',
+      summary: 'source records: evolution_diary ok: agent_claim narrative',
+      source: { source_type: 'evolution_event' },
+    })).toBe('type=evolution_diary status=ok');
+  });
+
+  it('minimal safe admission produces auditable standing memory markdown', () => {
+    const admission = {
+      rule: 'test',
+      seen: [
+        {
+          source_id: 'receipt-1',
+          source_type: 'action_receipt',
+          source_address: '[action_receipts:receipt-1]',
+          kind: 'structured_status',
+          evidence_level: 'structured_machine_record',
+          fields: { action_type: 'agent_run', status: 'completed', success: true },
+          summary: '{"action_type":"agent_run","status":"completed","success":true}',
+          seen_policy: 'direct_field_or_status',
+        },
+        {
+          source_id: 'evt-diary',
+          source_type: 'evolution_event',
+          source_address: '[evolution_events:evt-diary]',
+          evidence_level: 'source_statement',
+          summary: `source records: evolution_diary ok: ${'agent_claim narrative '.repeat(30)}`,
+          seen_policy: 'source_statement_only',
+        },
+      ],
+      remembered: [],
+      do_not_treat_as_seen: [],
+    };
+    const minimal = buildMinimalSafeAdmission(admission);
+    const refs = buildTypedEvidenceRefsFromAdmission(minimal);
+    const text = composeStandingMemoryMarkdown({
+      currentStateBody: '- (none)',
+      reportContext: { temporal_decision_brief: {} },
+      admission: minimal,
+    });
+    const audit = auditStandingMemoryMarkdown({ text, typedEvidenceRefs: refs, admission: minimal });
+    expect(audit.ok).toBe(true);
+    expect(minimal.seen.some((item) => item.source_id === 'receipt-1')).toBe(true);
+    expect(minimal.seen.some((item) => item.source_id === 'evt-diary')).toBe(true);
+    expect(minimal.seen.find((item) => item.source_id === 'evt-diary')?.summary).toBe('type=evolution_diary status=ok');
     expect(text).not.toContain('…');
   });
 
