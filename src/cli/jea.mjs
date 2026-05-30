@@ -70,6 +70,8 @@ Commands:
   goals history          Show recent goal change events
   goals update --file PATH --reason TEXT [--evidence REF] [--cycle ID]
                          Replace active goals and record a goal event
+  goals patch --file PATH --reason TEXT [--evidence REF] [--cycle ID]
+                         Apply goal_patches JSON to active goals (child add/update/remove)
   goals assess [--cycle ID]
                          Ask AI to assess goal calibration and record an assessment event
   beliefs show             Show current actionable beliefs

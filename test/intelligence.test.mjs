@@ -1384,6 +1384,39 @@ describe('buildIntelReport', () => {
     expect(assessment.proposed_goal.children).toEqual([]);
   });
 
+  it('parses goal_patches and drops proposed_goal when patches present', () => {
+    const assessment = parseGoalAssessment(JSON.stringify({
+      status: 'refine',
+      confidence: 'high',
+      reason: 'Add outcome child.',
+      evidence_refs: [{ type: 'intel_report', id: 'c1', ref: 'intel_report:c1' }],
+      goal_patches: [{
+        op: 'add_child',
+        parent_id: null,
+        child: {
+          id: 'child-outcome',
+          name: 'Outcome',
+          intent: 'improve rank',
+          good_signal: 'g',
+          bad_signal: 'b',
+          role: 'outcome',
+        },
+      }],
+      proposed_goal: {
+        id: 'ignored',
+        name: 'Ignored',
+        intent: 'x',
+        good_signal: 'g',
+        bad_signal: 'b',
+      },
+      risk: 'low',
+    }));
+
+    expect(assessment.goal_patches).toHaveLength(1);
+    expect(assessment.goal_patches[0].op).toBe('add_child');
+    expect(assessment.proposed_goal).toBeNull();
+  });
+
   it('excludes goal assessment narratives from standing memory Evidence', async () => {
     const { store, runtime, intelResult } = makeReportFixture();
     store.recordGoalEvent({

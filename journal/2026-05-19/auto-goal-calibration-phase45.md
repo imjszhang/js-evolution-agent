@@ -248,6 +248,17 @@ npm start
 
 ---
 
+## 附录：Goal patches 模式（2026-05-31）
+
+完整复盘见 [`journal/2026-05-31/goal-patch-calibration.md`](../2026-05-31/goal-patch-calibration.md)。
+
+在整棵 `proposed_goal` 之外，Phase 4 可输出 `goal_patches`（`add_child` / `update_child` / `remove_child`），Phase 4.5 经 [`src/intelligence/goal-patches.mjs`](../../src/intelligence/goal-patches.mjs) 机械合并并写 `goal_event` 类型 `patched`。
+
+- 与 `proposed_goal` 互斥；同轮双填时 patches 优先。
+- `remove_child` 前对绑定 `goal_id` 的 active/validated 信念执行 auto-retire（`belief_event` 可追溯）。
+- 自动门槛（balanced）：add/remove 需 `refine`+`high`；update_child 允许 `medium`+。
+- 人工：`jea goals patch --file patches.json --reason "..."`。
+
 ## 附：对话时间线（便于回溯）
 
 1. 分析 `exec-20260519-070109` → 诊断/同步/审批，无策略管道动作。
@@ -255,3 +266,4 @@ npm start
 3. 梳理目标校准代码 → assess 只写 event；update 仅 CLI。
 4. 定方案：Phase 4.5 + 三条件机械门禁 + LLM 只负责 Phase 4 `proposed_goal`。
 5. 实现并测试通过（本文第 4–5 节）。
+6. 增补 goal_patches 单子目标校准（见上附录）。

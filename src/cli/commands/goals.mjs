@@ -5,8 +5,21 @@ import { readJsonSafe, writeJsonFile } from '../utils/files.mjs';
 import { resolveSubjectFromFlags, runtimeInfoForSubject } from '../utils/subjects.mjs';
 import { createIntelligenceStore } from '../../intelligence/store.mjs';
 import { assessGoalsWithAi, normalizeProposedGoalShape } from '../../intelligence/goal-assessor.mjs';
+import { retireBeliefsForGoalIds } from '../../intelligence/belief-updater.mjs';
+import {
+  applyGoalPatches,
+  checkGoalInvariants,
+  childIdsFromGoals,
+  collectRemoveChildGoalIds,
+  normalizeGoalPatches,
+  selectPatchesForAutoApply,
+  validateGoalPatch,
+  validateGoalShape,
+} from '../../intelligence/goal-patches.mjs';
 import { resolveIntelReportRecordPath } from '../../intelligence/report-paths.mjs';
 import { findReportRecord } from './intel.mjs';
+
+export { validateGoalShape };
 
 function numberFlag(flags, name, fallback) {
   const n = Number(flags[name]);
@@ -35,27 +48,6 @@ function readJsonFileStrict(filePath) {
 
 function goalId(goal) {
   return goal?.id ?? goal?.goal_id ?? null;
-}
-
-const REQUIRED_GOAL_STRING_FIELDS = ['id', 'name', 'intent', 'good_signal', 'bad_signal'];
-
-export function validateGoalShape(goal, path = 'proposed_goal') {
-  if (!goal || typeof goal !== 'object' || Array.isArray(goal)) {
-    return { valid: false, reason: 'invalid_proposed_goal', detail: `${path} must be an object` };
-  }
-  for (const field of REQUIRED_GOAL_STRING_FIELDS) {
-    if (typeof goal[field] !== 'string' || !goal[field].trim()) {
-      return { valid: false, reason: 'invalid_proposed_goal', detail: `${path}.${field} must be a non-empty string` };
-    }
-  }
-  if (!Array.isArray(goal.children)) {
-    return { valid: false, reason: 'invalid_proposed_goal', detail: `${path}.children must be an array` };
-  }
-  for (let i = 0; i < goal.children.length; i += 1) {
-    const child = validateGoalShape(goal.children[i], `${path}.children[${i}]`);
-    if (!child.valid) return child;
-  }
-  return { valid: true, reason: null, detail: null };
 }
 
 export function parseEvidenceRefs(value) {
@@ -167,20 +159,215 @@ export function updateGoals(root = getProjectRoot(), flags = {}) {
   return commitGoalUpdate(update);
 }
 
+function calibrateResultBase(cycleId, previousGoal, nextGoal) {
+  return {
+    cycle_id: cycleId,
+    mode: 'none',
+    previous_goal_id: goalId(previousGoal),
+    next_goal_id: goalId(nextGoal),
+    written: 0,
+    applied_patches: [],
+    skipped_patches: [],
+    belief_retirements: [],
+    children_ids_before: childIdsFromGoals(previousGoal),
+    children_ids_after: childIdsFromGoals(previousGoal),
+  };
+}
+
+export function buildGoalPatchUpdate(root = getProjectRoot(), patches, opts = {}) {
+  if (!opts.reason || !String(opts.reason).trim()) {
+    throw new Error('Missing required reason.');
+  }
+  const runtime = runtimeForFlags(root, opts.flags ?? {});
+  const path = activeGoalsPath(runtime);
+  const previousGoal = readJsonSafe(path, null);
+  if (!previousGoal) throw new Error('No active goals found.');
+  const normalized = normalizeGoalPatches(patches);
+  if (!normalized.length) throw new Error('No valid goal patches.');
+
+  for (const patch of normalized) {
+    const v = validateGoalPatch(patch, previousGoal);
+    if (!v.valid) throw new Error(v.detail || v.reason);
+  }
+
+  const event = {
+    type: 'patched',
+    goal_id: goalId(previousGoal),
+    previous_goal: previousGoal,
+    next_goal: null,
+    patches: normalized,
+    reason: String(opts.reason).trim(),
+    evidence_refs: Array.isArray(opts.evidenceRefs) ? opts.evidenceRefs : parseEvidenceRefs(opts.evidence),
+    cycle_id: opts.cycle ?? null,
+    belief_retirements: [],
+  };
+
+  return { runtime, path, previousGoal, patches: normalized, event, opts };
+}
+
+export function commitGoalPatch(build, {
+  store = null,
+  beliefRetirements = [],
+} = {}) {
+  const { runtime, path, previousGoal, patches, event, opts } = build;
+  const intelligenceStore = store ?? opts.store ?? makeStore(runtime);
+  const cycleId = opts.cycle ?? event.cycle_id ?? null;
+
+  const removeIds = collectRemoveChildGoalIds(patches);
+  let belief_retirements = [...beliefRetirements];
+  if (removeIds.length) {
+    const retired = retireBeliefsForGoalIds(intelligenceStore, removeIds, {
+      cycleId,
+      source: 'goal_patch',
+    });
+    belief_retirements = retired.retirements;
+  }
+
+  const nextGoal = applyGoalPatches(previousGoal, patches);
+  const invariants = checkGoalInvariants(nextGoal);
+  if (!invariants.ok) {
+    throw new Error(invariants.detail || invariants.reason);
+  }
+
+  event.next_goal = nextGoal;
+  event.belief_retirements = belief_retirements;
+  writeJsonFile(path, nextGoal);
+  const written = intelligenceStore.recordGoalEvent(event);
+  return {
+    runtime,
+    path,
+    previousGoal,
+    nextGoal,
+    patches,
+    event,
+    written,
+    belief_retirements,
+  };
+}
+
+export function applyGoalPatchesToActive(root = getProjectRoot(), patches, opts = {}) {
+  const build = buildGoalPatchUpdate(root, patches, opts);
+  return commitGoalPatch(build, { store: opts.store });
+}
+
+export function buildGoalPatchFromFlags(root = getProjectRoot(), flags = {}) {
+  if (!flags.file) throw new Error('Missing required --file PATH.');
+  if (!flags.reason || flags.reason === true || !String(flags.reason).trim()) {
+    throw new Error('Missing required --reason TEXT.');
+  }
+  if (!existsSync(flags.file)) throw new Error(`Patch file not found: ${flags.file}`);
+  const raw = readJsonFileStrict(flags.file);
+  const patches = Array.isArray(raw) ? raw : raw?.goal_patches;
+  if (!Array.isArray(patches)) throw new Error('Patch file must be a JSON array or { goal_patches: [] }.');
+  return buildGoalPatchUpdate(root, patches, {
+    reason: flags.reason,
+    evidenceRefs: parseEvidenceRefs(flags.evidence),
+    cycle: flags.cycle ?? null,
+    flags,
+  });
+}
+
+export function patchGoals(root = getProjectRoot(), flags = {}) {
+  const build = buildGoalPatchFromFlags(root, flags);
+  return commitGoalPatch(build);
+}
+
 export function autoCalibrateGoals(root = getProjectRoot(), goalsAssessResult = null, opts = {}) {
   const assessment = goalsAssessResult?.assessment ?? null;
   const cycleId = goalsAssessResult?.report?.cycle_id ?? goalsAssessResult?.event?.cycle_id ?? opts.cycle ?? null;
+  const active = getActiveGoals(root, opts.flags ?? {});
+  const previousGoal = active.goals;
   const proposedGoal = normalizeProposedGoalShape(assessment?.proposed_goal);
-  const base = {
-    cycle_id: cycleId,
-    previous_goal_id: null,
-    next_goal_id: goalId(proposedGoal),
-    written: 0,
-  };
+  const rawPatches = assessment?.goal_patches;
+  const hasProposedGoal = !!proposedGoal;
+  const normalizedPatches = normalizeGoalPatches(rawPatches);
+  const hasPatches = normalizedPatches.length > 0;
+
+  const base = calibrateResultBase(cycleId, previousGoal, previousGoal);
+
   if (!assessment) return { ...base, status: 'skipped', reason: 'no_assessment' };
-  if (assessment.status !== 'refine') return { ...base, status: 'skipped', reason: 'status_not_refine' };
-  if (assessment.confidence !== 'high') return { ...base, status: 'skipped', reason: 'confidence_not_high' };
-  if (!proposedGoal) return { ...base, status: 'skipped', reason: 'no_proposed_goal' };
+
+  if (hasPatches && hasProposedGoal && opts.logger?.warn) {
+    opts.logger.warn('[goals] assessment has both goal_patches and proposed_goal; applying patches only.');
+  }
+
+  if (hasPatches) {
+    const { applicable, skipped } = selectPatchesForAutoApply(normalizedPatches, assessment);
+    if (!applicable.length) {
+      return {
+        ...base,
+        status: 'skipped',
+        reason: 'no_applicable_patches',
+        skipped_patches: skipped,
+      };
+    }
+
+    for (const patch of applicable) {
+      const v = validateGoalPatch(patch, previousGoal);
+      if (!v.valid) {
+        return {
+          ...base,
+          status: 'skipped',
+          reason: v.reason,
+          detail: v.detail,
+          skipped_patches: skipped,
+        };
+      }
+    }
+
+    try {
+      const preview = applyGoalPatches(previousGoal, applicable);
+      const invariants = checkGoalInvariants(preview);
+      if (!invariants.ok) {
+        return {
+          ...base,
+          status: 'skipped',
+          reason: invariants.reason,
+          detail: invariants.detail,
+          skipped_patches: skipped,
+        };
+      }
+
+      const reason = `Applied goal patches from cycle ${cycleId ?? 'unknown'}.`;
+      const build = buildGoalPatchUpdate(root, applicable, {
+        reason,
+        evidenceRefs: goalsAssessResult?.event?.evidence_refs ?? assessment.evidence_refs ?? [],
+        cycle: cycleId,
+        flags: opts.flags,
+      });
+      const result = commitGoalPatch(build, { store: opts.store });
+      return {
+        ...base,
+        status: 'applied',
+        mode: 'patch',
+        reason,
+        previous_goal_id: goalId(result.previousGoal),
+        next_goal_id: goalId(result.nextGoal),
+        written: result.written,
+        active_goals_path: result.path,
+        applied_patches: applicable,
+        skipped_patches: skipped,
+        belief_retirements: result.belief_retirements,
+        children_ids_after: childIdsFromGoals(result.nextGoal),
+      };
+    } catch (e) {
+      return {
+        ...base,
+        status: 'failed',
+        reason: e?.message || String(e),
+      };
+    }
+  }
+
+  if (assessment.status !== 'refine') {
+    return { ...base, status: 'skipped', reason: 'status_not_refine' };
+  }
+  if (assessment.confidence !== 'high') {
+    return { ...base, status: 'skipped', reason: 'confidence_not_high' };
+  }
+  if (!proposedGoal) {
+    return { ...base, status: 'skipped', reason: 'no_proposed_goal' };
+  }
 
   const validation = validateGoalShape(proposedGoal);
   if (!validation.valid) {
@@ -198,11 +385,13 @@ export function autoCalibrateGoals(root = getProjectRoot(), goalsAssessResult = 
     return {
       ...base,
       status: 'applied',
+      mode: 'full_replace',
       reason,
       previous_goal_id: goalId(update.previousGoal),
       next_goal_id: goalId(update.nextGoal),
       written: update.written,
       active_goals_path: update.path,
+      children_ids_after: childIdsFromGoals(update.nextGoal),
     };
   } catch (e) {
     return {
@@ -269,6 +458,7 @@ export async function assessActiveGoals(root = getProjectRoot(), flags = {}, opt
       : (reportRef ? [reportRef] : []),
     assessment: assessed.assessment,
     proposed_goal: assessed.assessment.proposed_goal ?? null,
+    goal_patches: assessed.assessment.goal_patches ?? null,
     cycle_id: resolvedReportRecord.cycle_id ?? null,
     source: assessed.source,
   };
@@ -334,6 +524,11 @@ function printGoalAssessment(result) {
   if (result.event.evidence_refs?.length) {
     console.log(`evidence: ${result.event.evidence_refs.map((r) => r.ref || `${r.type}:${r.id}`).join(', ')}`);
   }
+  if (result.assessment.goal_patches?.length) {
+    console.log('');
+    console.log('goal_patches:');
+    console.log(JSON.stringify(result.assessment.goal_patches, null, 2));
+  }
   if (result.assessment.proposed_goal) {
     console.log('');
     console.log('proposed_goal:');
@@ -376,6 +571,25 @@ export async function goalsCommand({ subcommand, flags = {} } = {}) {
     }
   }
 
+  if (subcommand === 'patch') {
+    try {
+      const result = patchGoals(root, flags);
+      if (flags.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        console.log(`Patched active goals: ${result.path}`);
+        console.log(`Recorded goal event: ${result.written}`);
+        if (result.belief_retirements?.length) {
+          console.log(`Retired beliefs: ${result.belief_retirements.length}`);
+        }
+      }
+      return 0;
+    } catch (e) {
+      console.error(e?.message || String(e));
+      return 2;
+    }
+  }
+
   if (subcommand === 'assess') {
     try {
       const result = await assessActiveGoals(root, flags);
@@ -388,10 +602,11 @@ export async function goalsCommand({ subcommand, flags = {} } = {}) {
     }
   }
 
-  console.error('Usage: jea goals <show|history|update|assess> [...] [--subject NAME]\n' +
+  console.error('Usage: jea goals <show|history|update|patch|assess> [...] [--subject NAME]\n' +
     '  jea goals show [--subject NAME] [--json]\n' +
     '  jea goals history [--subject NAME] [--limit N] [--json]\n' +
     '  jea goals update --file PATH --reason TEXT [--subject NAME] [--evidence REF] [--cycle ID] [--json]\n' +
+    '  jea goals patch --file PATH --reason TEXT [--subject NAME] [--evidence REF] [--cycle ID] [--json]\n' +
     '  jea goals assess [--subject NAME] [--cycle ID] [--json]');
   return 2;
 }

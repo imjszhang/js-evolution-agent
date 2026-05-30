@@ -372,6 +372,53 @@ export async function updateBeliefsWithAi({
   }
 }
 
+/**
+ * Retire active/validated beliefs bound to removed goal child ids (goal patch path).
+ */
+export function retireBeliefsForGoalIds(store, goalIds, {
+  cycleId = null,
+  reason = null,
+  source = 'goal_patch',
+} = {}) {
+  const ids = new Set((goalIds || []).filter(Boolean));
+  if (!ids.size || !store?.readCurrentBeliefs) {
+    return { retirements: [], eventsWritten: 0, currentBeliefs: null };
+  }
+
+  const doc = normalizeCurrentBeliefs(store.readCurrentBeliefs());
+  const updates = [];
+  for (const belief of doc.beliefs || []) {
+    if (!ids.has(belief.goal_id)) continue;
+    if (belief.status !== 'active' && belief.status !== 'validated') continue;
+    updates.push({
+      belief_id: belief.id,
+      change: 'retire',
+      reason: reason || `goal_patch_remove_child:${belief.goal_id}`,
+    });
+  }
+
+  if (!updates.length) {
+    return { retirements: [], eventsWritten: 0, currentBeliefs: doc };
+  }
+
+  const applied = applyBeliefUpdates(doc, updates, { cycleId, source });
+  if (store.recordCurrentBeliefs) {
+    store.recordCurrentBeliefs(applied.currentBeliefs);
+  }
+  let eventsWritten = 0;
+  if (store.recordBeliefEvent) {
+    for (const event of applied.events) {
+      eventsWritten += store.recordBeliefEvent(event);
+    }
+  }
+  const retirements = applied.events.map((event) => ({
+    belief_id: event.belief_id,
+    goal_id: event.after?.goal_id ?? event.before?.goal_id ?? null,
+    cycle_id: cycleId,
+  }));
+  return { retirements, eventsWritten, currentBeliefs: applied.currentBeliefs };
+}
+
 export async function updateActiveBeliefs(root, {
   cycleId = null,
   intelResult = null,

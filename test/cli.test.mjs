@@ -22,9 +22,11 @@ import {
   getActiveGoals,
   getGoalHistory,
   parseEvidenceRefs,
+  patchGoals,
   updateGoals,
   validateGoalShape,
 } from '../src/cli/commands/goals.mjs';
+import { createIntelligenceStore } from '../src/intelligence/store.mjs';
 import { buildIntelSummary, findReportRecord, intelReportCommand } from '../src/cli/commands/intel.mjs';
 import {
   briefList,
@@ -2271,6 +2273,194 @@ describe('goals command helpers', () => {
 
     expect(readJsonSafe(join(runtime.goalsDir, 'active_goals.json'))).toEqual(before);
     expect(getGoalHistory(root, { limit: 10 }).events).toHaveLength(0);
+  });
+
+  it('auto-applies goal patches when refine+high add_child', () => {
+    const root = makeGoalsRoot('jea-goals-auto-patch-add-');
+    const runtime = runtimeInfoForDefaultSubject(root);
+    const seeded = {
+      id: 'bootstrap',
+      name: 'Bootstrap',
+      intent: 'Test hypothesis',
+      good_signal: 'signal',
+      bad_signal: 'noise',
+      children: [{
+        id: 'guard-only',
+        name: 'Guard',
+        intent: 'credential compliance audit each cycle',
+        good_signal: 'ok',
+        bad_signal: 'fail',
+        children: [],
+      }],
+    };
+    applyGoalObject(root, seeded, { reason: 'seed', cycle: 'seed' });
+
+    const result = autoCalibrateGoals(root, {
+      report: { cycle_id: 'cycle-patch-add' },
+      assessment: {
+        status: 'refine',
+        confidence: 'high',
+        goal_patches: [{
+          op: 'add_child',
+          parent_id: null,
+          child: {
+            id: 'outcome-new',
+            name: 'Outcome',
+            intent: 'publish and improve rank',
+            good_signal: 'rank improves',
+            bad_signal: 'no movement',
+            role: 'outcome',
+            children: [],
+          },
+        }],
+        proposed_goal: {
+          id: 'should-not-apply',
+          name: 'Ignored',
+          intent: 'ignored',
+          good_signal: 'g',
+          bad_signal: 'b',
+          children: [],
+        },
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: 'applied',
+      mode: 'patch',
+      written: 1,
+    });
+    const active = readJsonSafe(join(runtime.goalsDir, 'active_goals.json'));
+    expect(active.id).toBe('bootstrap');
+    expect(active.children.map((c) => c.id).sort()).toEqual(['guard-only', 'outcome-new']);
+  });
+
+  it('auto-applies update_child on medium confidence', () => {
+    const root = makeGoalsRoot('jea-goals-auto-patch-update-');
+    const runtime = runtimeInfoForDefaultSubject(root);
+    const seeded = {
+      id: 'bootstrap',
+      name: 'Bootstrap',
+      intent: 'Test',
+      good_signal: 'g',
+      bad_signal: 'b',
+      children: [
+        {
+          id: 'guard-x',
+          name: 'Guard',
+          intent: 'credential audit',
+          good_signal: 'g',
+          bad_signal: 'b',
+          children: [],
+        },
+        {
+          id: 'outcome-x',
+          name: 'Outcome',
+          intent: 'rank publish simulate',
+          good_signal: 'g',
+          bad_signal: 'b',
+          children: [],
+        },
+      ],
+    };
+    applyGoalObject(root, seeded, { reason: 'seed', cycle: 'seed' });
+
+    const result = autoCalibrateGoals(root, {
+      report: { cycle_id: 'cycle-patch-update' },
+      assessment: {
+        status: 'refine',
+        confidence: 'medium',
+        goal_patches: [{
+          op: 'update_child',
+          child_id: 'outcome-x',
+          fields: { intent: 'tighter rank publish loop' },
+        }],
+      },
+    });
+
+    expect(result).toMatchObject({ status: 'applied', mode: 'patch' });
+    const active = readJsonSafe(join(runtime.goalsDir, 'active_goals.json'));
+    expect(active.children.find((c) => c.id === 'outcome-x').intent).toBe('tighter rank publish loop');
+  });
+
+  it('retires beliefs and removes child via goals patch CLI', () => {
+    const root = makeGoalsRoot('jea-goals-patch-belief-');
+    const runtime = runtimeInfoForDefaultSubject(root);
+    const seeded = {
+      id: 'bootstrap',
+      name: 'Bootstrap',
+      intent: 'Test',
+      good_signal: 'g',
+      bad_signal: 'b',
+      children: [
+        {
+          id: 'guard-x',
+          name: 'Guard',
+          intent: 'credential audit',
+          good_signal: 'g',
+          bad_signal: 'b',
+          children: [],
+        },
+        {
+          id: 'outcome-x',
+          name: 'Outcome',
+          intent: 'rank publish',
+          good_signal: 'g',
+          bad_signal: 'b',
+          children: [],
+        },
+        {
+          id: 'stale-child',
+          name: 'Stale',
+          intent: 'old guard task',
+          good_signal: 'g',
+          bad_signal: 'b',
+          children: [],
+        },
+      ],
+    };
+    applyGoalObject(root, seeded, { reason: 'seed', cycle: 'seed' });
+
+    const store = createIntelligenceStore({
+      baseDir: join(runtime.intelligenceDir),
+      timezone: 'Asia/Shanghai',
+    });
+    store.recordCurrentBeliefs({
+      schema_version: 1,
+      updated_at: new Date().toISOString(),
+      source_cycle_id: 'seed',
+      beliefs: [{
+        id: 'belief-stale',
+        goal_id: 'stale-child',
+        claim: 'stale claim',
+        status: 'active',
+        confidence: 'medium',
+        evidence_refs: [],
+      }],
+    });
+
+    const patchPath = join(root, 'patches.json');
+    writeFileSync(patchPath, JSON.stringify([
+      { op: 'remove_child', child_id: 'stale-child' },
+    ]));
+
+    const result = patchGoals(root, {
+      file: patchPath,
+      reason: 'remove stale child',
+      cycle: 'cycle-manual-patch',
+    });
+
+    expect(result.written).toBe(1);
+    expect(result.belief_retirements).toHaveLength(1);
+    expect(result.belief_retirements[0].belief_id).toBe('belief-stale');
+    const active = readJsonSafe(join(runtime.goalsDir, 'active_goals.json'));
+    expect(active.children.map((c) => c.id)).not.toContain('stale-child');
+    const beliefs = store.readCurrentBeliefs();
+    expect(beliefs.beliefs.find((b) => b.id === 'belief-stale').status).toBe('retired');
+    const history = getGoalHistory(root, { limit: 5 });
+    expect(history.events.find((e) => e.type === 'patched')).toMatchObject({
+      type: 'patched',
+      reason: 'remove stale child',
+    });
   });
 
   it('rejects missing required update inputs before writing history', () => {

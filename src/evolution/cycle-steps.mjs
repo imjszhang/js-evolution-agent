@@ -370,16 +370,20 @@ export async function runGoalsCalibrateStep(ctx, { intelResult, goalsAssessResul
     }
     return { skipped: true, goalsCalibrateResult: null };
   }
-  const goalsCalibrateResult = autoCalibrateGoals(ctx.projectRoot, goalsAssessResult);
+  const goalsCalibrateResult = autoCalibrateGoals(ctx.projectRoot, goalsAssessResult, { store });
   store.recordEvolutionEvent({
     type: 'goals_calibrate',
     status: goalsCalibrateResult.status,
     cycle_id: intelResult.cycle_id,
     reason: goalsCalibrateResult.reason,
+    mode: goalsCalibrateResult.mode ?? null,
     previous_goal_id: goalsCalibrateResult.previous_goal_id,
     next_goal_id: goalsCalibrateResult.next_goal_id,
     written: goalsCalibrateResult.written,
     active_goals_path: goalsCalibrateResult.active_goals_path,
+    applied_patches: goalsCalibrateResult.applied_patches ?? [],
+    skipped_patches: goalsCalibrateResult.skipped_patches ?? [],
+    belief_retirements: goalsCalibrateResult.belief_retirements ?? [],
   });
   if (recordState) {
     await recordStepSidecar(recordState.root, recordState.subject, intelResult.cycle_id, 'goals_calibrate', 'done');

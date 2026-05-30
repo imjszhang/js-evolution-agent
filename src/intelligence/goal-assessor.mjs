@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { extractJsonFromText } from '../ai/messages.mjs';
 import { assessGoals, detectLanguage, gatherEvidence } from './report-builder.mjs';
 import { normalizeCurrentBeliefs, partitionBeliefs } from './beliefs.mjs';
+import { normalizeGoalPatches } from './goal-patches.mjs';
 
 const VALID_STATUSES = new Set(['keep', 'refine', 'split', 'replace', 'retire', 'insufficient_evidence']);
 const VALID_CONFIDENCE = new Set(['low', 'medium', 'high']);
@@ -164,6 +165,7 @@ export function fallbackGoalAssessment(reason = 'AI goal assessment unavailable'
     confidence: 'low',
     reason,
     evidence_refs: [],
+    goal_patches: [],
     proposed_goal: null,
     risk: 'Do not change the active goal without a parseable, evidence-backed assessment.',
   };
@@ -250,6 +252,10 @@ export function buildGoalAssessmentPrompt({
 - 如果某个 goal 下 active beliefs 全部 refuted/blocked，或 belief 长期无法产生 evidence，应在 reason 中指出 strategy pressure 或 goal pressure 失衡。
 - 没有可用的 evidence_refs（含 agent_context）时 confidence 必须为 low。
 - reason 必须用中文简述：结合了哪些文献要点 + 哪些情报事实。
+- 局部变化（增删改单个子目标）优先使用 goal_patches，不要同时填写 proposed_goal。仅主目标 intent 换代或整树重组时才用 proposed_goal。
+- goal_patches 与 proposed_goal 互斥；若使用 goal_patches，proposed_goal 必须为 null。
+- split 语义请用 remove_child + add_child 的 patch 列表表达；每个 add_child 的 child 必须带 role: "outcome" 或 "guard"。
+- patch 顺序建议先 remove_child，再 update_child，最后 add_child。
 - 只返回一个 JSON 对象，不要 Markdown，不要代码块。
 
 JSON schema:
@@ -258,6 +264,11 @@ JSON schema:
   "confidence": "low | medium | high",
   "reason": "string",
   "evidence_refs": [{ "type": "intel_report|verify_report|observation|probe_result|retrospective|goal_event|evolution_event|agent_context", "id": "string", "ref": "string" }],
+  "goal_patches": [] | [
+    { "op": "add_child", "parent_id": null, "child": { "id", "name", "intent", "good_signal", "bad_signal", "children": [], "role": "outcome|guard" }, "reason": "string" },
+    { "op": "update_child", "child_id": "string", "fields": { "intent|good_signal|bad_signal": "string" }, "reason": "string" },
+    { "op": "remove_child", "child_id": "string", "reason": "string" }
+  ],
   "proposed_goal": null | {
     "id": "string",
     "name": "string",
@@ -269,7 +280,7 @@ JSON schema:
   "risk": "string"
 }
 
-若建议 refine/split/replace，可将 proposed_goal 填为符合文献的主体目标 JSON 草案；否则使用 null。proposed_goal 必须包含 id、name、intent、good_signal、bad_signal、children；即使没有子目标，也必须写 children: []。若包含子目标，每个子目标也必须使用同样结构。
+若建议 refine/split/replace 且仅需改动子目标，使用 goal_patches（proposed_goal 为 null）。若需整树换代，使用 proposed_goal（goal_patches 为 []）。proposed_goal 必须包含 id、name、intent、good_signal、bad_signal、children；即使没有子目标，也必须写 children: []。若包含子目标，每个子目标也必须使用同样结构。
 
 === 权威文献 agentContextDocs（全文，按加载顺序） ===
 ${authorityBlock}
@@ -300,6 +311,11 @@ Hard constraints:
 - If evidence_refs would be empty, confidence MUST be low.
 - reason MUST briefly name which authority points plus which factual evidence you used (English).
 
+- Prefer goal_patches for local child changes; do not fill proposed_goal in the same response. Use proposed_goal only for root intent replacement or full tree rewrites.
+- goal_patches and proposed_goal are mutually exclusive; when goal_patches is non-empty, proposed_goal must be null.
+- Map split to remove_child plus add_child patches; each add_child child must include role: "outcome" or "guard".
+- Order patches: remove_child first, then update_child, then add_child.
+
 Return one JSON object only. No Markdown. No code fences.
 
 JSON schema:
@@ -308,6 +324,11 @@ JSON schema:
   "confidence": "low | medium | high",
   "reason": "string",
   "evidence_refs": [{ "type": "intel_report|verify_report|observation|probe_result|retrospective|goal_event|evolution_event|agent_context", "id": "string", "ref": "string" }],
+  "goal_patches": [] | [
+    { "op": "add_child", "parent_id": null, "child": { "id", "name", "intent", "good_signal", "bad_signal", "children": [], "role": "outcome|guard" }, "reason": "string" },
+    { "op": "update_child", "child_id": "string", "fields": { "intent|good_signal|bad_signal": "string" }, "reason": "string" },
+    { "op": "remove_child", "child_id": "string", "reason": "string" }
+  ],
   "proposed_goal": null | {
     "id": "string",
     "name": "string",
@@ -319,7 +340,7 @@ JSON schema:
   "risk": "string"
 }
 
-If you recommend refine/split/replace, proposed_goal may be a draft goal JSON consistent with doctrine. Otherwise null. proposed_goal must include id, name, intent, good_signal, bad_signal, and children. If there are no child goals, still write children: []. Any child goal must use the same shape.
+For refine/split/replace that only touch children, use goal_patches with proposed_goal null. For full tree replacement, use proposed_goal with goal_patches []. proposed_goal must include id, name, intent, good_signal, bad_signal, and children. If there are no child goals, still write children: []. Any child goal must use the same shape.
 
 === Authority agentContextDocs (full text, loaded order) ===
 ${authorityBlock}
@@ -344,13 +365,18 @@ export function parseGoalAssessment(raw) {
   const status = VALID_STATUSES.has(parsed.status) ? parsed.status : 'insufficient_evidence';
   const confidence = VALID_CONFIDENCE.has(parsed.confidence) ? parsed.confidence : 'low';
   const refs = Array.isArray(parsed.evidence_refs) ? parsed.evidence_refs : [];
+  const goal_patches = normalizeGoalPatches(parsed.goal_patches);
+  const proposed_goal = goal_patches.length
+    ? null
+    : normalizeProposedGoalShape(parsed.proposed_goal);
 
   return {
     status,
     confidence: refs.length ? confidence : 'low',
     reason: String(parsed.reason || 'No reason provided.'),
     evidence_refs: refs,
-    proposed_goal: normalizeProposedGoalShape(parsed.proposed_goal),
+    goal_patches,
+    proposed_goal,
     risk: String(parsed.risk || ''),
   };
 }

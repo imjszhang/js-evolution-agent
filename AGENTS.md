@@ -275,9 +275,19 @@ Decide 可调度、`Phase 2` 执行的记录型动作，用于落已有结论而
 ## 目标管理
 
 - `jea goals show`：显示当前 active goal hypothesis。
-- `jea goals history [--limit N]`：查看目标变更事件。
-- `jea goals update --file PATH --reason TEXT [--evidence REF] [--cycle ID]`：替换 active goals 并记录目标事件。
-- `jea goals assess [--cycle ID]`：让 AI 评估目标校准情况并记录评估事件。
+- `jea goals history [--limit N]`：查看目标变更事件（含 `assessment`、`updated`、`patched`）。
+- `jea goals update --file PATH --reason TEXT [--evidence REF] [--cycle ID]`：整棵替换 active goals 并记录 `updated` 事件。
+- `jea goals patch --file PATH --reason TEXT [--evidence REF] [--cycle ID]`：应用 `goal_patches` JSON 数组（子目标增删改）；记录 `patched` 事件。`remove_child` 会自动 retire 绑定该 `goal_id` 的 active/validated 信念。
+- `jea goals assess [--cycle ID]`：让 AI 评估目标校准并记录 `assessment` 事件（可含 `goal_patches` 或 `proposed_goal`）。
+
+**Phase 4.5 自动校准**（`goals_calibrate`）：
+
+| 输入 | 自动写盘条件 |
+| --- | --- |
+| `goal_patches`（优先于 `proposed_goal`） | `add_child` / `remove_child`：`refine` + `high`；`update_child`（仅 intent/good/bad_signal）：`refine` + `medium` 或 `high` |
+| 整棵 `proposed_goal` | `refine` + `high` + 结构合法（与改造前相同） |
+
+机械不变量：至少保留一个成果型（outcome）子目标；`add_child` 的 child 需带 `role: outcome|guard`（供审计）。patch 与整棵替换互斥时仅处理 patches。
 
 信念管理：
 
