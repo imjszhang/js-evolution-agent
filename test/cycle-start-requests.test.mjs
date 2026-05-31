@@ -14,8 +14,9 @@ import {
   processCycleStartRequests,
   runHeartbeatTick,
 } from '../src/cli/utils/cycle-dispatch.mjs';
-import { listOpenCycles, markStepStatus } from '../src/cli/utils/cycle-state.mjs';
-import { readTaskQueue } from '../src/cli/utils/daemon-tasks.mjs';
+import { listOpenCycles, createCycle, markStepStatus, writeStepArtifact } from '../src/cli/utils/cycle-state.mjs';
+import { enqueueTask, pendingTasksPath, readTaskQueue } from '../src/cli/utils/daemon-tasks.mjs';
+import { stepIdempotencyKey } from '../src/cli/utils/cycle-reducer.mjs';
 import { resolveEvolutionMode } from '../src/cli/utils/evolution-mode.mjs';
 
 function makeRoot() {
@@ -165,6 +166,28 @@ describe('cycle-start-requests', () => {
     const second = runHeartbeatTick(root, 'alpha', { evolution_mode: onDemand.mode });
     expect(second.request_enqueue).toBeNull();
     expect(listOpenCycles(root, 'alpha')).toHaveLength(0);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('defers request with stalled_open_cycle when step state drift exists', () => {
+    const root = makeRoot();
+    const cycleId = 'cycle-stalled-start-1';
+    createCycle(root, 'alpha', { cycleId, meta: { driver: 'daemon' } });
+    markStepStatus(root, 'alpha', cycleId, 'exec', { status: 'done' });
+    writeStepArtifact(root, 'alpha', cycleId, 'exec', { cycle_id: cycleId, success: true, executed: [] });
+    const key = stepIdempotencyKey('alpha', cycleId, 'exec');
+    enqueueTask(root, 'alpha', { type: 'exec', idempotencyKey: key, input: { cycle_id: cycleId } });
+    const queue = readTaskQueue(root, 'alpha');
+    const target = queue.tasks.find((item) => item.idempotency_key === key);
+    target.status = 'running';
+    target.lease_owner = 'worker-test';
+    target.lease_expires_at = new Date(Date.now() + 300_000).toISOString();
+    writeJsonFile(pendingTasksPath(root, 'alpha'), queue);
+
+    enqueueCycleStartRequest(root, 'alpha', { reason: 'manual' });
+    const processed = processCycleStartRequests(root, 'alpha', { tick_ms: 300_000 });
+    expect(processed.started).toBe(false);
+    expect(processed.reason).toBe('stalled_open_cycle');
     rmSync(root, { recursive: true, force: true });
   });
 });

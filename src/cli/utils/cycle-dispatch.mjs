@@ -1,4 +1,4 @@
-import { enqueueTask, readTaskQueue } from './daemon-tasks.mjs';
+import { enqueueTask, readTaskQueue, completeTask } from './daemon-tasks.mjs';
 import { recordDaemonEvent } from './daemon-events.mjs';
 import {
   nextSteps,
@@ -11,7 +11,9 @@ import {
   abandonCycle,
   createCycle,
   cycleDriver,
+  findStepStateDrift,
   findStuckSteps,
+  isCycleProgressStalled,
   isCycleStale,
   listOpenCycles,
   markStepStatus,
@@ -27,6 +29,8 @@ import {
   summarizePendingCycleStartRequest,
 } from './cycle-start-requests.mjs';
 import { isContinuousEvolutionMode } from './evolution-mode.mjs';
+
+const DEFAULT_TICK_MS = 5 * 60 * 1000;
 
 const deferredEventByRequest = new Map();
 
@@ -166,7 +170,9 @@ export function startCycleFromRequest(root, subject, input = {}, trigger = {}) {
   if (!shouldStartCycleFromTick({ openCycles, throttle: input.throttle, pendingTaskCount })) {
     return {
       started: false,
-      reason: openCycles.length ? 'open_cycle_exists' : pendingTaskCount ? 'pending_tasks' : 'throttled',
+      reason: openCycles.length
+        ? (openCycleStartBlockReason(root, subject, input) ?? 'open_cycle_exists')
+        : (pendingTaskCount ? 'pending_tasks' : 'throttled'),
     };
   }
 
@@ -204,12 +210,53 @@ export function startCycleFromTick(root, subject, input = {}) {
   return startCycleFromRequest(root, subject, input, { reasons: ['tick'] });
 }
 
+function reconcileStepStateDrift(root, subject, cycleState, taskQueue) {
+  const drift = findStepStateDrift(cycleState, { taskQueue, subject, root });
+  const resolved = [];
+  for (const item of drift) {
+    if (!item.artifact_complete) continue;
+    completeTask(root, subject, item.task_id, {
+      exit_code: 0,
+      step_result: { step: item.step, cycle_id: cycleState.cycle_id, ok: true },
+      source: 'artifact_reconcile',
+    });
+    recordDaemonEvent(root, subject, {
+      type: 'step_state_drift_resolved',
+      status: 'ok',
+      cycle_id: cycleState.cycle_id,
+      step_type: item.step,
+      task_id: item.task_id,
+      reason: 'artifact_complete',
+    });
+    resolved.push(item);
+  }
+  return { resolved, taskQueue: readTaskQueue(root, subject) };
+}
+
+function openCycleStartBlockReason(root, subject, input = {}) {
+  const openCycles = listOpenCycles(root, subject);
+  if (!openCycles.length) return null;
+  const queue = readTaskQueue(root, subject);
+  const tickMs = Number(input.tick_ms) > 0 ? Number(input.tick_ms) : DEFAULT_TICK_MS;
+  for (const cycle of openCycles) {
+    if (isCycleProgressStalled(cycle, { taskQueue: queue, subject, root, tickMs })) {
+      return 'stalled_open_cycle';
+    }
+    const drift = findStepStateDrift(cycle, { taskQueue: queue, subject, root });
+    if (drift.length) return 'stalled_open_cycle';
+  }
+  return 'open_cycle_exists';
+}
+
 function cycleStartBlockedReason(root, subject, input = {}) {
   const openCycles = listOpenCycles(root, subject);
   const queue = readTaskQueue(root, subject);
   const pendingTaskCount = queue.tasks.filter((task) => task.status === 'pending').length;
   if (!shouldStartCycleFromTick({ openCycles, throttle: input.throttle, pendingTaskCount })) {
-    return openCycles.length ? 'open_cycle_exists' : pendingTaskCount ? 'pending_tasks' : 'throttled';
+    if (openCycles.length) {
+      return openCycleStartBlockReason(root, subject, input) ?? 'open_cycle_exists';
+    }
+    return pendingTaskCount ? 'pending_tasks' : 'throttled';
   }
   return null;
 }
@@ -324,7 +371,11 @@ export function reconcileOpenCycles(root, subject, input = {}) {
   }
 
   for (const cycleState of openCycles) {
-    const refreshed = reconcileStaleRunningSteps(root, subject, cycleState, taskQueue);
+    let taskQueueFresh = readTaskQueue(root, subject);
+    let refreshed = reconcileStaleRunningSteps(root, subject, cycleState, taskQueueFresh);
+    const driftResult = reconcileStepStateDrift(root, subject, refreshed, taskQueueFresh);
+    taskQueueFresh = driftResult.taskQueue;
+    refreshed = readCycleState(root, subject, cycleState.cycle_id) ?? refreshed;
     const { steps, markSkipped } = reconcileCycle(refreshed, options);
     if (markSkipped?.length) {
       markStepsSkipped(root, subject, cycleState.cycle_id, markSkipped);
@@ -367,8 +418,13 @@ export function runHeartbeatTick(root, subject, input = {}) {
 
 export function buildCycleProjection(root, subject) {
   const open = listOpenCycles(root, subject);
+  const queue = readTaskQueue(root, subject);
   return {
-    open_cycles: open.map(summarizeCycleState),
+    open_cycles: open.map((cycle) => summarizeCycleState(cycle, {
+      taskQueue: queue,
+      subject: cycle.subject ?? subject,
+      root,
+    })),
     open_count: open.length,
     pending_cycle_start_request: summarizePendingCycleStartRequest(readPendingCycleStartRequest(root, subject)),
   };

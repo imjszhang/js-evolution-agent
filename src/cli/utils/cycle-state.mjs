@@ -253,6 +253,78 @@ export function abandonCycle(root, subject, cycleId, { reason = 'stale_abandoned
   });
 }
 
+const TERMINAL_STEP_DRIFT_STATUSES = new Set(['done', 'skipped']);
+
+export function isStepArtifactComplete(root, subject, cycleId, step) {
+  if (!root || !subject || !cycleId || !step) return false;
+  const payload = readStepArtifact(root, subject, cycleId, step);
+  if (!payload) return false;
+  if (step === 'exec') return payload.success === true;
+  if (step === 'intel') return payload.success !== false;
+  if (step === 'belief_update' || step === 'goals_assess' || step === 'goals_calibrate') {
+    return payload.skipped === true || payload.skipped == null;
+  }
+  return true;
+}
+
+export function findStepStateDrift(state, {
+  taskQueue = null,
+  subject = null,
+  root = null,
+  nowMs = Date.now(),
+} = {}) {
+  if (!state?.steps || !taskQueue || !subject) return [];
+  const drift = [];
+  for (const [stepName, info] of Object.entries(state.steps)) {
+    if (!TERMINAL_STEP_DRIFT_STATUSES.has(info?.status)) continue;
+    const task = findCycleStepTask(taskQueue, subject, state.cycle_id, stepName);
+    if (task?.status !== 'running') continue;
+    const stepUpdated = Date.parse(info.updated_at || '');
+    drift.push({
+      cycle_id: state.cycle_id,
+      step: stepName,
+      step_status: info.status,
+      task_id: task.task_id,
+      task_status: task.status,
+      lease_expires_at: task.lease_expires_at ?? null,
+      lease_valid: stepHasValidLease(task, nowMs),
+      artifact_complete: root ? isStepArtifactComplete(root, subject, state.cycle_id, stepName) : false,
+      step_updated_at: info.updated_at ?? null,
+      age_ms: Number.isFinite(stepUpdated) ? nowMs - stepUpdated : null,
+    });
+  }
+  return drift;
+}
+
+export function cycleLastStepProgressAgeMs(state, nowMs = Date.now()) {
+  let latest = null;
+  for (const info of Object.values(state?.steps || {})) {
+    const t = Date.parse(info?.updated_at || '');
+    if (!Number.isFinite(t)) continue;
+    if (latest == null || t > latest) latest = t;
+  }
+  const cycleUpdated = Date.parse(state?.updated_at || '');
+  if (Number.isFinite(cycleUpdated) && (latest == null || cycleUpdated > latest)) {
+    latest = cycleUpdated;
+  }
+  return latest == null ? null : nowMs - latest;
+}
+
+export function isCycleProgressStalled(state, {
+  taskQueue = null,
+  subject = null,
+  root = null,
+  tickMs = 300_000,
+  nowMs = Date.now(),
+} = {}) {
+  if (!state || state.status !== 'open') return false;
+  const drift = findStepStateDrift(state, { taskQueue, subject, root, nowMs });
+  if (drift.some((item) => item.artifact_complete)) return true;
+  if (drift.some((item) => (item.age_ms ?? 0) >= tickMs)) return true;
+  const progressAge = cycleLastStepProgressAgeMs(state, nowMs);
+  return progressAge != null && progressAge >= tickMs * 2;
+}
+
 export function findStuckSteps(state, { taskQueue = null, subject = null, nowMs = Date.now() } = {}) {
   if (!state?.steps || !taskQueue || !subject) return [];
   const stuck = [];
@@ -283,7 +355,12 @@ export function findStuckSteps(state, { taskQueue = null, subject = null, nowMs 
   return stuck;
 }
 
-export function summarizeCycleState(state, { taskQueue = null, subject = null, nowMs = Date.now() } = {}) {
+export function summarizeCycleState(state, {
+  taskQueue = null,
+  subject = null,
+  root = null,
+  nowMs = Date.now(),
+} = {}) {
   if (!state) return null;
   const steps = state.steps || {};
   const stepSummary = {};
@@ -297,6 +374,9 @@ export function summarizeCycleState(state, { taskQueue = null, subject = null, n
   const stuck = taskQueue && resolvedSubject
     ? findStuckSteps(state, { taskQueue, subject: resolvedSubject, nowMs })
     : [];
+  const drift_steps = taskQueue && resolvedSubject
+    ? findStepStateDrift(state, { taskQueue, subject: resolvedSubject, root, nowMs })
+    : [];
   return {
     cycle_id: state.cycle_id,
     subject: state.subject,
@@ -306,6 +386,7 @@ export function summarizeCycleState(state, { taskQueue = null, subject = null, n
     steps: stepSummary,
     running_steps,
     stuck_steps: stuck,
+    drift_steps,
     meta: state.meta,
   };
 }

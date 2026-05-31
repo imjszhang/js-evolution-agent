@@ -5,11 +5,13 @@ import { tmpdir } from 'node:os';
 import { writeJsonFile } from '../src/cli/utils/files.mjs';
 import {
   createCycle,
+  findStepStateDrift,
   findStuckSteps,
   listOpenCycles,
   markStepStatus,
   readCycleState,
   summarizeCycleState,
+  writeStepArtifact,
 } from '../src/cli/utils/cycle-state.mjs';
 import { startCycleFromTick, dispatchCycleEvent, reconcileOpenCycles } from '../src/cli/utils/cycle-dispatch.mjs';
 import { enqueueTask, pendingTasksPath, readTaskQueue } from '../src/cli/utils/daemon-tasks.mjs';
@@ -192,6 +194,43 @@ describe('cycle-state and dispatch', () => {
     reconcileOpenCycles(root, 'alpha');
     const after = readCycleState(root, 'alpha', cycleId);
     expect(after.steps.exec.status).toBe('pending');
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('findStepStateDrift flags done step with valid running task lease', () => {
+    const root = makeRoot();
+    const cycleId = 'cycle-drift-1';
+    createCycle(root, 'alpha', { cycleId, meta: { driver: 'daemon' } });
+    markStepStatus(root, 'alpha', cycleId, 'exec', { status: 'done' });
+    writeStepArtifact(root, 'alpha', cycleId, 'exec', { cycle_id: cycleId, success: true, executed: [] });
+    seedRunningStepTask(root, 'alpha', cycleId, 'exec');
+    const state = readCycleState(root, 'alpha', cycleId);
+    const queue = readTaskQueue(root, 'alpha');
+    const drift = findStepStateDrift(state, { taskQueue: queue, subject: 'alpha', root });
+    expect(drift).toHaveLength(1);
+    expect(drift[0].step).toBe('exec');
+    expect(drift[0].artifact_complete).toBe(true);
+    expect(drift[0].lease_valid).toBe(true);
+    const summary = summarizeCycleState(state, { taskQueue: queue, subject: 'alpha', root });
+    expect(summary.drift_steps).toHaveLength(1);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('reconcileOpenCycles completes drift task and enqueues verify', () => {
+    const root = makeRoot();
+    const cycleId = 'cycle-drift-reconcile-1';
+    createCycle(root, 'alpha', { cycleId, meta: { driver: 'daemon' } });
+    markStepStatus(root, 'alpha', cycleId, 'intel', { status: 'done', metaPatch: { decisions_queued: 0 } });
+    markStepStatus(root, 'alpha', cycleId, 'intel_report', { status: 'done', metaPatch: { intel_report_ready: true } });
+    markStepStatus(root, 'alpha', cycleId, 'exec', { status: 'done' });
+    writeStepArtifact(root, 'alpha', cycleId, 'exec', { cycle_id: cycleId, success: true, executed: [] });
+    const running = seedRunningStepTask(root, 'alpha', cycleId, 'exec');
+
+    reconcileOpenCycles(root, 'alpha');
+    const queue = readTaskQueue(root, 'alpha');
+    const execTask = queue.tasks.find((t) => t.task_id === running.task_id);
+    expect(execTask.status).toBe('completed');
+    expect(queue.tasks.some((t) => t.type === 'verify' && t.input.cycle_id === cycleId)).toBe(true);
     rmSync(root, { recursive: true, force: true });
   });
 });

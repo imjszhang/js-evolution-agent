@@ -13,6 +13,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { writeJsonAtomic, QueueWriteError } from '../src/cli/utils/atomic-json-write.mjs';
 import { buildDaemonProjection } from '../src/cli/utils/daemon-projection.mjs';
 import {
+  createCycle,
+  getLastClosedCycle,
+  markStepStatus,
+  writeStepArtifact,
+} from '../src/cli/utils/cycle-state.mjs';
+import {
   createWorkerState,
   readWorkerState,
   writeWorkerState,
@@ -20,10 +26,11 @@ import {
 import {
   enqueueTask,
   pendingTasksPath,
+  readTaskQueue,
   taskQueueLockPath,
 } from '../src/cli/utils/daemon-tasks.mjs';
 import { writeJsonFile } from '../src/cli/utils/files.mjs';
-import { getLastClosedCycle } from '../src/cli/utils/cycle-state.mjs';
+import { stepIdempotencyKey } from '../src/cli/utils/cycle-reducer.mjs';
 import { isProcessAlive } from '../src/cli/utils/process-alive.mjs';
 
 let tempDir = null;
@@ -156,5 +163,80 @@ describe('getLastClosedCycle', () => {
   it('returns null when no closed cycles', () => {
     const root = makeRoot();
     expect(getLastClosedCycle(root, 'alpha')).toBeNull();
+  });
+});
+
+describe('cycle progress stalled health', () => {
+  it('reports cycle_progress_stalled when open cycle has step drift', () => {
+    const root = makeRoot();
+    const cycleId = 'cycle-health-drift-1';
+    createCycle(root, 'alpha', { cycleId, meta: { driver: 'daemon' } });
+    markStepStatus(root, 'alpha', cycleId, 'exec', { status: 'done' });
+    writeStepArtifact(root, 'alpha', cycleId, 'exec', { cycle_id: cycleId, success: true, executed: [] });
+    const key = stepIdempotencyKey('alpha', cycleId, 'exec');
+    enqueueTask(root, 'alpha', {
+      type: 'exec',
+      idempotencyKey: key,
+      input: { cycle_id: cycleId },
+    });
+    const queue = readTaskQueue(root, 'alpha');
+    const target = queue.tasks.find((item) => item.idempotency_key === key);
+    target.status = 'running';
+    target.lease_owner = 'worker-test';
+    target.lease_expires_at = new Date(Date.now() + 300_000).toISOString();
+    writeJsonFile(pendingTasksPath(root, 'alpha'), queue);
+
+    writeWorkerState(root, 'alpha', {
+      subject: 'alpha',
+      worker_id: 'live-worker',
+      pid: process.pid,
+      status: 'running',
+      started_at: new Date().toISOString(),
+      heartbeat_at: new Date().toISOString(),
+      stop_requested_at: null,
+      stopped_at: null,
+      stale_after_ms: 600_000,
+      tick_ms: 300_000,
+      last_work_result: null,
+      last_error: null,
+    });
+
+    const projection = buildDaemonProjection(root, 'alpha');
+    expect(projection.cycles.drift_steps.length).toBeGreaterThan(0);
+    expect(projection.health.status).toBe('cycle_progress_stalled');
+    expect(projection.health.ok).toBe(false);
+  });
+
+  it('on_demand idle without open cycle stays healthy', () => {
+    const root = makeRoot();
+    writeJsonFile(join(root, 'policies', 'subjects.json'), {
+      default_subject: 'alpha',
+      subjects: {
+        alpha: {
+          policy: 'subjects/alpha.md',
+          data_namespace: 'alpha',
+          evolution: { mode: 'on_demand' },
+        },
+      },
+    });
+    writeWorkerState(root, 'alpha', {
+      subject: 'alpha',
+      worker_id: 'idle-worker',
+      pid: process.pid,
+      status: 'running',
+      started_at: new Date().toISOString(),
+      heartbeat_at: new Date().toISOString(),
+      stop_requested_at: null,
+      stopped_at: null,
+      stale_after_ms: 600_000,
+      tick_ms: 300_000,
+      last_work_result: null,
+      last_error: null,
+    });
+    const projection = buildDaemonProjection(root, 'alpha', {
+      flags: { 'evolution-mode': 'on_demand' },
+    });
+    expect(projection.health.status).toBe('idle');
+    expect(projection.health.ok).toBe(true);
   });
 });

@@ -49,6 +49,7 @@ function makeE2eProjectRoot() {
   }
   linkOrCopy(join(REPO_ROOT, 'src'), join(root, 'src'), { dir: true });
   linkOrCopy(join(REPO_ROOT, 'node_modules'), join(root, 'node_modules'), { dir: true });
+  linkOrCopy(join(REPO_ROOT, 'policies', 'authority'), join(root, 'policies', 'authority'), { dir: true });
 
   mkdirSync(join(root, 'policies', 'subjects'), { recursive: true });
   writeFileSync(join(root, 'policies', 'subjects', 'alpha.md'), '# alpha\n\n## Subject\nalpha', 'utf-8');

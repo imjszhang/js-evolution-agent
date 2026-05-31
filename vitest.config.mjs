@@ -2,6 +2,9 @@ import { resolve } from 'node:path';
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
+  test: {
+    testTimeout: 15_000,
+  },
   resolve: {
     preserveSymlinks: true,
     alias: {

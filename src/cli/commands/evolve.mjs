@@ -22,6 +22,7 @@ import {
   withSubjectLock,
 } from '../utils/evolve-runs.mjs';
 import { SUBJECT_ENV } from '../utils/subjects.mjs';
+import { isStepArtifactComplete } from '../utils/cycle-state.mjs';
 import { enqueueTask } from '../utils/daemon-tasks.mjs';
 import { recordDaemonEvent } from '../utils/daemon-events.mjs';
 import { CYCLE_STEP_TYPES } from '../utils/cycle-reducer.mjs';
@@ -77,6 +78,33 @@ export function parseStepResult(output = '') {
   } catch {
     return null;
   }
+}
+
+export function resolveStepOutcome({
+  step,
+  cycleId,
+  exitCode = 1,
+  output = '',
+  root = null,
+  subject = null,
+} = {}) {
+  const stepResult = parseStepResult(output);
+  const resolvedCycleId = cycleId || stepResult?.cycle_id;
+  if (exitCode === 0) {
+    return { ok: true, source: 'exit_code', stepResult, resolvedCycleId };
+  }
+  if (stepResult?.ok) {
+    return { ok: true, source: 'step_result', stepResult, resolvedCycleId };
+  }
+  if (root && subject && cycleId && step && isStepArtifactComplete(root, subject, cycleId, step)) {
+    return { ok: true, source: 'artifact', stepResult, resolvedCycleId: cycleId };
+  }
+  return {
+    ok: false,
+    stepResult,
+    resolvedCycleId,
+    failure: classifyCycleFailure({ exitCode, output }),
+  };
 }
 
 export function parseExitRecord(output = '') {

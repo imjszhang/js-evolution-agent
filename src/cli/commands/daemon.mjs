@@ -37,7 +37,7 @@ import {
 } from '../utils/daemon-worker-state.mjs';
 import {
   classifyCycleFailure,
-  parseStepResult,
+  resolveStepOutcome,
   runSingleCycle,
   runSingleStep,
   CYCLE_STEP_TYPES,
@@ -46,7 +46,11 @@ import {
   checkSubjectLaneReady,
   printSubjectLaneGuardFailure,
 } from '../utils/subject-lane-guard.mjs';
-import { markStepRunning } from '../utils/cycle-state.mjs';
+import {
+  isStepArtifactComplete,
+  markStepRunning,
+  readCycleState,
+} from '../utils/cycle-state.mjs';
 import {
   dispatchAfterStepCompletion,
   enqueueCycleStartRequestWithEvent,
@@ -173,6 +177,28 @@ function buildDaemonDiagnostics(root, subject, projection) {
       code: 'worker_zombie',
       message: 'Daemon worker is marked running but its process (PID) is not alive.',
       action: 'Run `jea daemon start` to start a fresh worker.',
+    });
+  }
+  if (projection.health?.status === 'cycle_progress_stalled') {
+    diagnostics.push({
+      severity: 'error',
+      code: 'cycle_progress_stalled',
+      message: 'An open cycle exists but no step progress occurred within the expected tick window.',
+      action: 'Wait for watchdog recovery, inspect drift with `jea daemon status --json`, or restart the worker if stuck persists.',
+    });
+  }
+  const driftSteps = projection.cycles?.drift_steps ?? [];
+  if (driftSteps.length > 0) {
+    const summary = driftSteps
+      .slice(0, 5)
+      .map((item) => `${item.cycle_id}:${item.step}`)
+      .join(', ');
+    diagnostics.push({
+      severity: driftSteps.some((item) => item.artifact_complete) ? 'warning' : 'error',
+      code: 'step_state_drift',
+      message: `${driftSteps.length} cycle step(s) have terminal state but a running daemon task (${summary}).`,
+      action: 'Reconcile runs on tick; watchdog should abort hung step runners when checkpoints exist.',
+      drift_steps: driftSteps,
     });
   }
   if (projection.health?.status === 'evolution_stalled') {
@@ -481,6 +507,14 @@ async function workRunCycleStep(root, subject, task, flags) {
         lease_expires_at: renewed.task.lease_expires_at,
       });
     }
+    if (cycleId && isStepArtifactComplete(root, subject, cycleId, step)) {
+      const cycleState = readCycleState(root, subject, cycleId);
+      const stepStatus = cycleState?.steps?.[step]?.status;
+      if (stepStatus === 'done' || stepStatus === 'skipped') {
+        controller?.abort();
+        return;
+      }
+    }
     if (stopping) controller?.abort();
   };
   if (flags.watchdog) {
@@ -500,10 +534,18 @@ async function workRunCycleStep(root, subject, task, flags) {
   });
   if (watchdog) clearInterval(watchdog);
 
-  const stepResult = parseStepResult(result.output);
-  const resolvedCycleId = cycleId || stepResult?.cycle_id;
+  const outcome = resolveStepOutcome({
+    step,
+    cycleId,
+    exitCode: result.exitCode,
+    output: result.output,
+    root,
+    subject,
+  });
+  const stepResult = outcome.stepResult;
+  const resolvedCycleId = outcome.resolvedCycleId;
 
-  if (result.exitCode === 0) {
+  if (outcome.ok) {
     dispatchAfterStepCompletion(root, subject, step, {
       cycle_id: resolvedCycleId,
       status: 'done',
@@ -517,18 +559,23 @@ async function workRunCycleStep(root, subject, task, flags) {
         intel_report_ready: stepResult?.intel_report_ready,
       },
     }, task.input || {});
-    const completed = completeTask(root, subject, task.task_id, { exit_code: 0, step_result: stepResult });
+    const completed = completeTask(root, subject, task.task_id, {
+      exit_code: result.exitCode,
+      step_result: stepResult,
+      source: outcome.source,
+    });
     recordDaemonEvent(root, subject, {
       type: 'task_completed',
       status: 'ok',
       task_id: task.task_id,
       task_type: task.type,
       cycle_id: resolvedCycleId,
+      completion_source: outcome.source,
     });
     return { ok: true, task: completed.task, stepResult };
   }
 
-  const failure = classifyCycleFailure({ exitCode: result.exitCode, output: result.output });
+  const failure = outcome.failure ?? classifyCycleFailure({ exitCode: result.exitCode, output: result.output });
   dispatchAfterStepCompletion(root, subject, step, {
     cycle_id: resolvedCycleId,
     status: 'failed',
@@ -919,9 +966,29 @@ export async function runDaemonWorker(root, subject, flags = {}) {
   process.once('SIGTERM', requestLocalStop);
   let iterations = 0;
   let stopReason = 'stopped';
-  let lastTickAt = 0;
   const baseTaskInput = baseTaskInputFromFlags(flags);
   let lastEvolutionMode = evolution.mode;
+  let tickTimer = null;
+  const runScheduledTick = () => {
+    if (stopping) return;
+    try {
+      const resolvedEvolution = refreshWorkerEvolutionMode(root, subject, flags, {
+        workerId,
+        pid: process.pid,
+        lastMode: lastEvolutionMode,
+      });
+      lastEvolutionMode = resolvedEvolution.mode;
+      const runtimeInput = runtimeTaskInput(baseTaskInput, resolvedEvolution);
+      safeRunHeartbeatTick(root, subject, {
+        ...runtimeInput,
+        tick_ms: tickMs,
+      });
+    } catch (err) {
+      recordLoopFailure(root, subject, { operation: 'heartbeat_tick', err });
+    }
+  };
+  runScheduledTick();
+  tickTimer = setInterval(runScheduledTick, tickMs);
   try {
     for (;;) {
       const current = readWorkerState(root, subject);
@@ -943,12 +1010,6 @@ export async function runDaemonWorker(root, subject, flags = {}) {
         status: 'running',
       });
       await safeReclaimStaleLeasesForWorker(root, subject);
-
-      const now = Date.now();
-      if (lastTickAt === 0 || now - lastTickAt >= tickMs) {
-        safeRunHeartbeatTick(root, subject, runtimeInput);
-        lastTickAt = now;
-      }
 
       const result = await workOnce(root, subject, {
         ...flags,
@@ -984,12 +1045,15 @@ export async function runDaemonWorker(root, subject, flags = {}) {
       if (result.worked) {
         await sleep(workIntervalMs);
       } else {
-        safeProcessCycleStartRequests(root, subject, runtimeInput);
-        const untilTick = Math.max(0, tickMs - (Date.now() - lastTickAt));
-        await sleep(Math.min(untilTick, idleIntervalMs));
+        safeProcessCycleStartRequests(root, subject, {
+          ...runtimeInput,
+          tick_ms: tickMs,
+        });
+        await sleep(idleIntervalMs);
       }
     }
   } finally {
+    if (tickTimer) clearInterval(tickTimer);
     process.removeListener('uncaughtException', onUncaughtException);
     process.removeListener('unhandledRejection', onUnhandledRejection);
     process.removeListener('SIGINT', requestLocalStop);

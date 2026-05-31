@@ -5,7 +5,7 @@ import { runtimeForSubject } from './evolve-runs.mjs';
 import { readTaskQueue, summarizeTaskQueue } from './daemon-tasks.mjs';
 import { readWorkerState, summarizeWorkerState } from './daemon-worker-state.mjs';
 import { buildCycleProjection } from './cycle-dispatch.mjs';
-import { findStuckSteps, getLastClosedCycle, listOpenCycles, summarizeCycleState } from './cycle-state.mjs';
+import { findStuckSteps, findStepStateDrift, getLastClosedCycle, isCycleProgressStalled, listOpenCycles, summarizeCycleState } from './cycle-state.mjs';
 import { readPendingCycleStartRequest } from './cycle-start-requests.mjs';
 import { resolveEvolutionMode } from './evolution-mode.mjs';
 
@@ -45,6 +45,8 @@ function buildDaemonHealth({
   tickMs = DEFAULT_TICK_MS,
   evolutionMode = 'continuous',
   pendingCycleStartRequest = null,
+  progressStalled = false,
+  driftSteps = [],
   nowMs = Date.now(),
 }) {
   const counts = tasks.counts || {};
@@ -99,6 +101,14 @@ function buildDaemonHealth({
       ok = false;
       reasons.push('Pending cycle start request could not be consumed within 2 tick windows');
       suggestions.push('Check open cycles, pending tasks, or worker logs; use `jea daemon status --json` for details.');
+    } else if (progressStalled || (openCount > 0 && driftSteps.length > 0 && worker.running)) {
+      status = 'cycle_progress_stalled';
+      ok = false;
+      reasons.push('Open cycle exists but no step progress within the expected tick window');
+      if (driftSteps.length) {
+        reasons.push(`${driftSteps.length} step state drift item(s) detected (terminal cycle-state with running task)`);
+      }
+      suggestions.push('Wait for watchdog recovery, inspect with `jea daemon doctor`, or restart the worker if stuck persists.');
     } else if (evolutionStalled) {
       status = 'evolution_stalled';
       ok = false;
@@ -206,10 +216,18 @@ export function buildDaemonProjection(root, subject, { store = null, eventLimit 
   const openCycles = listOpenCycles(root, subject);
   const cycleProjection = buildCycleProjection(root, subject);
   const stuckSteps = [];
+  const driftSteps = [];
+  let progressStalled = false;
   let oldestOpenCycleAgeMs = null;
   for (const cycle of openCycles) {
     for (const item of findStuckSteps(cycle, { taskQueue: queue, subject })) {
       stuckSteps.push({ cycle_id: cycle.cycle_id, ...item });
+    }
+    for (const item of findStepStateDrift(cycle, { taskQueue: queue, subject, root })) {
+      driftSteps.push({ cycle_id: cycle.cycle_id, ...item });
+    }
+    if (isCycleProgressStalled(cycle, { taskQueue: queue, subject, root, tickMs })) {
+      progressStalled = true;
     }
     if (cycle.opened_at) {
       const opened = Date.parse(cycle.opened_at);
@@ -225,8 +243,10 @@ export function buildDaemonProjection(root, subject, { store = null, eventLimit 
   const cycles = {
     ...cycleProjection,
     stuck_steps: stuckSteps,
+    drift_steps: driftSteps,
+    progress_stalled: progressStalled,
     oldest_open_cycle_age_ms: oldestOpenCycleAgeMs,
-    recent: openCycles.slice(0, 5).map((cycle) => summarizeCycleState(cycle, { taskQueue: queue, subject })),
+    recent: openCycles.slice(0, 5).map((cycle) => summarizeCycleState(cycle, { taskQueue: queue, subject, root })),
     last_closed_cycle_id: lastClosedCycle?.cycle_id ?? null,
     last_closed_at: lastClosedCycle?.closed_at ?? null,
   };
@@ -250,6 +270,8 @@ export function buildDaemonProjection(root, subject, { store = null, eventLimit 
       tickMs,
       evolutionMode: evolution.mode,
       pendingCycleStartRequest,
+      progressStalled,
+      driftSteps,
     }),
     tasks,
     cycles,
