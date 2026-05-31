@@ -546,19 +546,31 @@ async function workRunCycleStep(root, subject, task, flags) {
   const resolvedCycleId = outcome.resolvedCycleId;
 
   if (outcome.ok) {
-    dispatchAfterStepCompletion(root, subject, step, {
-      cycle_id: resolvedCycleId,
-      status: 'done',
-      ok: true,
-      eventPayload: {
-        decisions_queued: stepResult?.decisions_queued,
-        intel_report_ready: stepResult?.intel_report_ready,
-      },
-      metaPatch: {
-        decisions_queued: stepResult?.decisions_queued,
-        intel_report_ready: stepResult?.intel_report_ready,
-      },
-    }, task.input || {});
+    try {
+      dispatchAfterStepCompletion(root, subject, step, {
+        cycle_id: resolvedCycleId,
+        status: 'done',
+        ok: true,
+        eventPayload: {
+          decisions_queued: stepResult?.decisions_queued,
+          intel_report_ready: stepResult?.intel_report_ready,
+        },
+        metaPatch: {
+          decisions_queued: stepResult?.decisions_queued,
+          intel_report_ready: stepResult?.intel_report_ready,
+        },
+      }, task.input || {});
+    } catch (err) {
+      recordDaemonEvent(root, subject, {
+        type: 'cycle_dispatch_failed',
+        status: 'error',
+        task_id: task.task_id,
+        task_type: task.type,
+        cycle_id: resolvedCycleId,
+        step_type: step,
+        error: err?.message || String(err),
+      });
+    }
     const completed = completeTask(root, subject, task.task_id, {
       exit_code: result.exitCode,
       step_result: stepResult,
@@ -576,12 +588,24 @@ async function workRunCycleStep(root, subject, task, flags) {
   }
 
   const failure = outcome.failure ?? classifyCycleFailure({ exitCode: result.exitCode, output: result.output });
-  dispatchAfterStepCompletion(root, subject, step, {
-    cycle_id: resolvedCycleId,
-    status: 'failed',
-    ok: false,
-    error: failure.message,
-  }, task.input || {});
+  try {
+    dispatchAfterStepCompletion(root, subject, step, {
+      cycle_id: resolvedCycleId,
+      status: 'failed',
+      ok: false,
+      error: failure.message,
+    }, task.input || {});
+  } catch (err) {
+    recordDaemonEvent(root, subject, {
+      type: 'cycle_dispatch_failed',
+      status: 'error',
+      task_id: task.task_id,
+      task_type: task.type,
+      cycle_id: resolvedCycleId,
+      step_type: step,
+      error: err?.message || String(err),
+    });
+  }
 
   if (failure.code === 'daemon_stop_requested') {
     const released = releaseTaskForRetry(root, subject, task.task_id, failure);

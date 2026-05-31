@@ -303,7 +303,9 @@ export function reconcileCycle(cycleState, options = {}) {
   let result = { steps: [], markSkipped: [] };
 
   if (isStepTerminal(cycleState, 'intel') && stepStatus(cycleState, 'intel') === 'done') {
-    if (!isStepTerminal(cycleState, 'intel_report')) {
+    const intelReportPending = !isStepTerminal(cycleState, 'intel_report');
+    const execPending = isStepRunnable(cycleState, 'exec');
+    if (intelReportPending || execPending) {
       result = mergeResults(result, nextSteps({
         type: 'intel_ready',
         cycle_id: cycleId,

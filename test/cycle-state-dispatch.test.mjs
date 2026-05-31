@@ -233,4 +233,18 @@ describe('cycle-state and dispatch', () => {
     expect(queue.tasks.some((t) => t.type === 'verify' && t.input.cycle_id === cycleId)).toBe(true);
     rmSync(root, { recursive: true, force: true });
   });
+
+  it('reconcileOpenCycles enqueues exec when intel pipeline finished but exec task was never created', () => {
+    const root = makeRoot();
+    const cycleId = 'cycle-missing-exec-1';
+    createCycle(root, 'alpha', { cycleId, meta: { driver: 'daemon', decisions_queued: 1, intel_report_ready: true } });
+    markStepStatus(root, 'alpha', cycleId, 'intel', { status: 'done', metaPatch: { decisions_queued: 1 } });
+    markStepStatus(root, 'alpha', cycleId, 'intel_report', { status: 'done', metaPatch: { intel_report_ready: true } });
+
+    const { enqueued } = reconcileOpenCycles(root, 'alpha');
+    expect(enqueued.some((s) => s.type === 'exec')).toBe(true);
+    const queue = readTaskQueue(root, 'alpha');
+    expect(queue.tasks.some((t) => t.type === 'exec' && t.input.cycle_id === cycleId && t.status === 'pending')).toBe(true);
+    rmSync(root, { recursive: true, force: true });
+  });
 });

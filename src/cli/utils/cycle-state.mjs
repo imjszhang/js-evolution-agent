@@ -122,10 +122,23 @@ export function withCycleStateLock(root, subject, cycleId, fn) {
     writeCycleStateFile(filePath, createEmptyCycleState({ cycleId, subject }));
   }
   let release;
-  try {
-    release = lockfile.lockSync(filePath);
-  } catch (e) {
-    throw new Error(`Cycle state is locked for ${subject}/${cycleId}: ${e?.message || e}`);
+  let lastErr;
+  for (let attempt = 0; attempt < 15; attempt++) {
+    try {
+      release = lockfile.lockSync(filePath);
+      lastErr = null;
+      break;
+    } catch (e) {
+      lastErr = e;
+      if (attempt < 14) {
+        const delayMs = Math.min(50 * (attempt + 1), 500);
+        const end = Date.now() + delayMs;
+        while (Date.now() < end) { /* spin */ }
+      }
+    }
+  }
+  if (lastErr) {
+    throw new Error(`Cycle state is locked for ${subject}/${cycleId}: ${lastErr?.message || lastErr}`);
   }
   try {
     const state = readCycleStateFile(filePath);

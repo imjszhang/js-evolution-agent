@@ -125,6 +125,16 @@ describe('cycle-reducer', () => {
     expect(steps.some((s) => s.type === 'verify')).toBe(true);
   });
 
+  it('reconcileCycle enqueues exec when intel and intel_report are done but exec is pending', () => {
+    const state = stateWithSteps('cycle-1', {
+      intel: 'done',
+      intel_report: 'done',
+      exec: 'pending',
+    }, { decisions_queued: 1, intel_report_ready: true });
+    const { steps } = reconcileCycle(state);
+    expect(steps.map((s) => s.type)).toEqual(['exec']);
+  });
+
   it('isStepTerminal covers done failed skipped', () => {
     const state = stateWithSteps('cycle-1', { intel: 'skipped' });
     expect(isStepTerminal(state, 'intel')).toBe(true);
