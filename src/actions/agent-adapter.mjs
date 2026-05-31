@@ -15,19 +15,24 @@ import {
   rawRunSpecFromAction,
 } from './agent-run-spec.mjs';
 import { buildExecutionEnv, streamWithExecutionEnv } from './execution-env.mjs';
+import { resolveAgentRunCycleId } from './agent-run-log.mjs';
 import {
-  appendAgentRunLogRecord,
-  resolveAgentRunCycleId,
-  resolveAgentRunLogPath,
-} from './agent-run-log.mjs';
+  CLAUDE_PROVIDER,
+  CURSOR_PROVIDER,
+  LLM_PROVIDER,
+  agentRunVerbose,
+  buildCursorSendOptions,
+  consumeCursorRunStream,
+  createAgentRunObserver,
+  handleClaudeAssistantMessage,
+  handleClaudeResultMessage,
+  summarizeAgentText,
+} from './agent-run-observer.mjs';
 
-const DEFAULT_PROVIDER = 'llm_only';
-const CLAUDE_PROVIDER = 'claude_code_sdk';
-const CURSOR_PROVIDER = 'cursor_sdk';
+const DEFAULT_PROVIDER = LLM_PROVIDER;
 const AGENT_VERIFICATION_ATTEMPTS = 3;
-// JEA_AGENT_RUN_VERBOSE=1: full assistant text and tool input
-// JEA_AGENT_RUN_LOG=0: disable agent run detail logs (terminal + JSONL)
-// JEA_AGENT_RUN_JSONL=0: disable JSONL persistence only
+// Agent run observability: standard events → terminal + JSONL at
+// data/evolution/agent-runs/<cycle-id>.jsonl (see agent-run-observer.mjs).
 const MODE_GUIDANCE = {
   observe: 'Read and synthesize available context. Do not propose source mutations as completed work.',
   propose: 'Produce a concrete proposal, investigation result, or decision-ready recommendation.',
@@ -43,86 +48,6 @@ function getField(action, field) {
   return action?.params?.[field] ?? action?.[field] ?? null;
 }
 
-function agentRunLogEnabled() {
-  const raw = process.env.JEA_AGENT_RUN_LOG;
-  if (raw == null || raw === '') return true;
-  return !['0', 'false', 'no', 'off'].includes(String(raw).trim().toLowerCase());
-}
-
-function agentRunVerbose() {
-  return ['1', 'true', 'yes', 'on'].includes(String(process.env.JEA_AGENT_RUN_VERBOSE ?? '').trim().toLowerCase());
-}
-
-function resolveAgentLogger(ctx) {
-  const logger = ctx?.host?.logger;
-  if (logger?.info || logger?.warning || logger?.error) {
-    return {
-      info: (msg) => logger.info?.(msg),
-      warning: (msg) => logger.warning?.(msg),
-      error: (msg) => logger.error?.(msg),
-    };
-  }
-  return {
-    info: (msg) => console.log(msg),
-    warning: (msg) => console.warn(msg),
-    error: (msg) => console.error(msg),
-  };
-}
-
-function providerLogTag(provider) {
-  if (provider === CURSOR_PROVIDER) return 'cursor';
-  if (provider === CLAUDE_PROVIDER) return 'claude';
-  return 'llm';
-}
-
-function summarizeAgentText(text, maxLen = 200) {
-  const s = String(text ?? '').trim();
-  if (agentRunVerbose()) return s;
-  if (s.length <= maxLen) return s;
-  return `${s.slice(0, maxLen)}…[+${s.length - maxLen}]`;
-}
-
-function summarizeToolInput(input, maxLen = 120) {
-  if (input == null) return '';
-  let s;
-  try {
-    s = typeof input === 'string' ? input : JSON.stringify(input);
-  } catch {
-    s = String(input);
-  }
-  if (agentRunVerbose()) return s;
-  if (s.length <= maxLen) return s;
-  return `${s.slice(0, maxLen)}…[+${s.length - maxLen}]`;
-}
-
-function formatAgentLogFields(fields = {}) {
-  const parts = [];
-  for (const [key, value] of Object.entries(fields)) {
-    if (value == null || value === '') continue;
-    const v = typeof value === 'string' ? value : JSON.stringify(value);
-    parts.push(`${key}=${v}`);
-  }
-  return parts.join(' ');
-}
-
-function logAgentRun(ctx, provider, event, fields = {}, level = 'info') {
-  if (!agentRunLogEnabled()) return;
-  const tag = providerLogTag(provider);
-  const detail = formatAgentLogFields(fields);
-  const msg = detail ? `[agent:${tag}] ${event} ${detail}` : `[agent:${tag}] ${event}`;
-  resolveAgentLogger(ctx)[level]?.(msg);
-  appendAgentRunLogRecord(ctx, {
-    ts: new Date().toISOString(),
-    provider,
-    event,
-    level,
-    cycle_id: ctx?._agentRunLogMeta?.cycle_id ?? resolveAgentRunCycleId(ctx),
-    action_id: ctx?._agentRunLogMeta?.action_id ?? null,
-    action_type: ctx?._agentRunLogMeta?.action_type ?? null,
-    ...fields,
-  });
-}
-
 function withAgentRunLogMeta(ctx, action) {
   if (!action) return ctx;
   return {
@@ -133,61 +58,6 @@ function withAgentRunLogMeta(ctx, action) {
       action_type: effectiveActionType(action),
     },
   };
-}
-
-function emitAgentRunJsonlPath(ctx, provider) {
-  if (!agentRunLogEnabled()) return;
-  const cycleId = ctx?._agentRunLogMeta?.cycle_id ?? resolveAgentRunCycleId(ctx);
-  const filePath = resolveAgentRunLogPath(ctx, cycleId);
-  if (!filePath) return;
-  const tag = providerLogTag(provider);
-  resolveAgentLogger(ctx).info(`[agent:${tag}] jsonl_path path=${filePath}`);
-}
-
-function logCursorStreamEvent(ctx, event) {
-  if (!agentRunLogEnabled()) return;
-  if (event?.type === 'assistant') {
-    const content = event.message?.content;
-    if (!Array.isArray(content)) return;
-    for (const block of content) {
-      if (block?.type === 'text' || typeof block?.text === 'string') {
-        const text = summarizeAgentText(block.text);
-        if (text) logAgentRun(ctx, CURSOR_PROVIDER, 'assistant_text', { text });
-      } else if (block?.type === 'tool_use' || block?.name) {
-        logAgentRun(ctx, CURSOR_PROVIDER, 'tool_call', {
-          name: block.name ?? block.type ?? 'tool',
-          input: summarizeToolInput(block.input),
-        });
-      }
-    }
-  } else if (agentRunVerbose()) {
-    logAgentRun(ctx, CURSOR_PROVIDER, 'stream_event', { type: event?.type ?? 'unknown' });
-  }
-}
-
-async function consumeCursorRunStream(ctx, run) {
-  if (typeof run?.stream !== 'function') return;
-  try {
-    for await (const event of run.stream()) {
-      logCursorStreamEvent(ctx, event);
-    }
-  } catch (e) {
-    logAgentRun(ctx, CURSOR_PROVIDER, 'stream_error', {
-      error: summarizeAgentText(e?.message || String(e), 300),
-    }, 'warning');
-  }
-}
-
-function logClaudeAssistantMessage(ctx, message) {
-  for (const text of textFromAssistantMessage(message)) {
-    logAgentRun(ctx, CLAUDE_PROVIDER, 'assistant_text', { text: summarizeAgentText(text) });
-  }
-  for (const tool of toolUsesFromAssistantMessage(message)) {
-    logAgentRun(ctx, CLAUDE_PROVIDER, 'tool_call', {
-      name: tool.name,
-      input: summarizeToolInput(tool.input),
-    });
-  }
 }
 
 function normalizeProvider(provider) {
@@ -1134,10 +1004,12 @@ async function runClaudeCodeSdk(action, ctx) {
   let agent = null;
   let validation = { valid: false, missing: ['receipt'], action_type: effectiveActionType(executionAction) };
   let sessionId = null;
+  const obs = createAgentRunObserver(ctx, { provider: CLAUDE_PROVIDER });
 
   async function runTurn(prompt, resumeSessionId = null, turnLabel = 'turn') {
     const turnStarted = Date.now();
-    logAgentRun(ctx, CLAUDE_PROVIDER, 'turn_start', { turn: turnLabel, prompt_chars: prompt.length });
+    obs.beginTurn();
+    obs.emit('turn_start', { turn: turnLabel, prompt_chars: prompt.length });
     const turnOptions = resumeSessionId
       ? { ...options, resume: resumeSessionId }
       : options;
@@ -1150,15 +1022,15 @@ async function runClaudeCodeSdk(action, ctx) {
         assistantTexts.push(...texts);
         turnTexts.push(...texts);
         toolUses.push(...toolUsesFromAssistantMessage(message));
-        logClaudeAssistantMessage(ctx, message);
+        handleClaudeAssistantMessage(obs, message, {
+          textFromAssistant: textFromAssistantMessage,
+          toolUsesFromAssistant: toolUsesFromAssistantMessage,
+        });
       }
       if (message?.type === 'result') {
         resultMessage = message;
         turnResult = message;
-        logAgentRun(ctx, CLAUDE_PROVIDER, 'result', {
-          session_id: message.session_id ?? message.sessionId ?? null,
-          subtype: message.subtype ?? null,
-        });
+        handleClaudeResultMessage(obs, message);
       }
     }
     sessionId ??= turnResult?.session_id ?? turnResult?.sessionId ?? null;
@@ -1168,7 +1040,7 @@ async function runClaudeCodeSdk(action, ctx) {
       subtype: turnResult?.subtype ?? null,
       raw_text: rawText,
     });
-    logAgentRun(ctx, CLAUDE_PROVIDER, 'turn_finished', {
+    obs.endTurn({
       turn: turnLabel,
       duration_ms: Date.now() - turnStarted,
       result_chars: rawText.length,
@@ -1177,8 +1049,8 @@ async function runClaudeCodeSdk(action, ctx) {
   }
 
   const providerStartedAt = Date.now();
-  logAgentRun(ctx, CLAUDE_PROVIDER, 'provider_start', { cwd: options.cwd });
-  emitAgentRunJsonlPath(ctx, CLAUDE_PROVIDER);
+  obs.emit('provider_start', { cwd: options.cwd });
+  obs.emitJsonlPath();
 
   try {
     const initial = await runTurn(translated.prompt, null, 'initial');
@@ -1305,7 +1177,7 @@ async function runClaudeCodeSdk(action, ctx) {
     ];
   }
 
-  logAgentRun(ctx, CLAUDE_PROVIDER, 'provider_finished', {
+  obs.emit('provider_finished', {
     duration_ms: Date.now() - providerStartedAt,
     validation_valid: validation.valid,
   });
@@ -1398,11 +1270,12 @@ async function runCursorSdk(action, ctx) {
   let validation = { valid: false, missing: ['receipt'], action_type: effectiveActionType(executionAction) };
   let sameSession = false;
   const providerStartedAt = Date.now();
-  logAgentRun(ctx, CURSOR_PROVIDER, 'provider_start', {
+  const obs = createAgentRunObserver(ctx, { provider: CURSOR_PROVIDER });
+  obs.emit('provider_start', {
     cwd: options.local?.cwd,
     model: model ?? options.model?.id ?? null,
   });
-  emitAgentRunJsonlPath(ctx, CURSOR_PROVIDER);
+  obs.emitJsonlPath();
 
   try {
     if (typeof Agent.create === 'function') {
@@ -1411,17 +1284,21 @@ async function runCursorSdk(action, ctx) {
 
       async function sendTurn(prompt, turnLabel = 'turn') {
         const turnStarted = Date.now();
-        logAgentRun(ctx, CURSOR_PROVIDER, 'turn_start', { turn: turnLabel, prompt_chars: prompt.length });
-        const run = await cursorAgent.send(prompt);
+        obs.beginTurn();
+        obs.emit('turn_start', { turn: turnLabel, prompt_chars: prompt.length });
+        const sendOptions = buildCursorSendOptions(obs);
+        const run = sendOptions
+          ? await cursorAgent.send(prompt, sendOptions)
+          : await cursorAgent.send(prompt);
         const runId = run?.id ?? null;
-        logAgentRun(ctx, CURSOR_PROVIDER, 'run_id', { run_id: runId, turn: turnLabel });
-        const streamPromise = consumeCursorRunStream(ctx, run);
+        obs.emit('run_bound', { run_id: runId, turn: turnLabel });
+        const streamPromise = consumeCursorRunStream(obs, run);
         const result = await Promise.all([
           typeof run?.wait === 'function' ? run.wait() : Promise.resolve(run),
           streamPromise,
         ]).then(([waitResult]) => waitResult);
         const rawResultText = String(result?.result ?? '').trim();
-        logAgentRun(ctx, CURSOR_PROVIDER, 'turn_finished', {
+        obs.endTurn({
           turn: turnLabel,
           run_id: result?.id ?? runId,
           status: result?.status ?? null,
@@ -1455,10 +1332,11 @@ async function runCursorSdk(action, ctx) {
         ].join('\n'),
       }, roots);
       const promptStarted = Date.now();
-      logAgentRun(ctx, CURSOR_PROVIDER, 'prompt_start', { prompt_chars: prompt.length });
+      obs.emit('turn_start', { turn: 'prompt', prompt_chars: prompt.length });
       runResult = await Agent.prompt(prompt, options);
       rawText = String(runResult?.result ?? '').trim();
-      logAgentRun(ctx, CURSOR_PROVIDER, 'prompt_finished', {
+      obs.emit('turn_finished', {
+        turn: 'prompt',
         run_id: runResult?.id ?? null,
         status: runResult?.status ?? null,
         duration_ms: Date.now() - promptStarted,
@@ -1544,7 +1422,7 @@ async function runCursorSdk(action, ctx) {
     ];
   }
 
-  logAgentRun(ctx, CURSOR_PROVIDER, 'provider_finished', {
+  obs.emit('provider_finished', {
     duration_ms: Date.now() - providerStartedAt,
     validation_valid: validation.valid,
   });
@@ -1576,13 +1454,19 @@ async function runLlmOnly(action, ctx) {
   const objective = getField(action, 'objective') ?? effectiveActionType(action);
   const promptChars = String(prompt.system ?? '').length + String(prompt.user ?? '').length;
   const llmStarted = Date.now();
-  logAgentRun(ctx, DEFAULT_PROVIDER, 'started', {
+  const obs = createAgentRunObserver(ctx, { provider: DEFAULT_PROVIDER });
+  obs.emit('provider_start', {
     objective: summarizeAgentText(objective, 80),
     prompt_chars: promptChars,
   });
-  emitAgentRunJsonlPath(ctx, DEFAULT_PROVIDER);
+  obs.emitJsonlPath();
+  obs.emit('capability_gap', {
+    feature: 'tool_trace',
+    reason: 'llm_only',
+  });
   if (agentRunVerbose()) {
-    logAgentRun(ctx, DEFAULT_PROVIDER, 'prompt', {
+    obs.emit('native_event', {
+      native_type: 'prompt',
       system_chars: String(prompt.system ?? '').length,
       user: summarizeAgentText(prompt.user),
     });
@@ -1591,7 +1475,7 @@ async function runLlmOnly(action, ctx) {
     { role: 'system', content: prompt.system },
     { role: 'user', content: prompt.user },
   ], { thinking: getField(action, 'thinking') ?? 'medium', timeout: getField(action, 'timeout') ?? 180 });
-  logAgentRun(ctx, DEFAULT_PROVIDER, 'finished', {
+  obs.emit('provider_finished', {
     duration_ms: Date.now() - llmStarted,
     response_chars: String(rawText ?? '').length,
   });

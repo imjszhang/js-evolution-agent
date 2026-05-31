@@ -163,9 +163,22 @@ function defaultCursorStreamEvents() {
       message: {
         content: [
           { type: 'text', text: 'Working on the task.' },
-          { type: 'tool_use', name: 'Read', input: { path: 'src/index.mjs' } },
         ],
       },
+    },
+    {
+      type: 'tool_call',
+      call_id: 'call-read-1',
+      name: 'Read',
+      status: 'running',
+      args: { path: 'src/index.mjs' },
+    },
+    {
+      type: 'tool_call',
+      call_id: 'call-read-1',
+      name: 'Read',
+      status: 'completed',
+      result: 'file contents',
     },
   ];
 }
@@ -2125,8 +2138,10 @@ describe('controlled action handlers', () => {
     expect(result.success).toBe(true);
     const infoCalls = ctx.host.logger.info.mock.calls.map(([msg]) => String(msg));
     expect(infoCalls.some((msg) => msg.includes('[agent:cursor]'))).toBe(true);
-    expect(infoCalls.some((msg) => msg.includes('run_id') && msg.includes('cursor-log-initial'))).toBe(true);
-    expect(infoCalls.some((msg) => msg.includes('tool_call') && msg.includes('Read'))).toBe(true);
+    expect(infoCalls.some((msg) => msg.includes('run_bound') && msg.includes('cursor-log-initial'))).toBe(true);
+    expect(infoCalls.some((msg) => msg.includes('tool_started') && msg.includes('Read'))).toBe(true);
+    expect(infoCalls.some((msg) => msg.includes('tool_finished') && msg.includes('Read'))).toBe(true);
+    expect(infoCalls.some((msg) => msg.includes('assistant_segment'))).toBe(true);
     expect(infoCalls.some((msg) => msg.includes('turn_finished'))).toBe(true);
     expect(infoCalls.some((msg) => msg.includes('provider_finished'))).toBe(true);
     expect(infoCalls.some((msg) => msg.includes('jsonl_path'))).toBe(true);
@@ -2134,7 +2149,10 @@ describe('controlled action handlers', () => {
     const jsonlPath = join(ctx.host.dataRoot, 'evolution', 'agent-runs', 'test-cycle.jsonl');
     expect(existsSync(jsonlPath)).toBe(true);
     const rows = readFileSync(jsonlPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line));
-    expect(rows.some((row) => row.event === 'tool_call' && row.name === 'Read')).toBe(true);
+    expect(rows.some((row) => row.event === 'tool_started' && row.name === 'Read')).toBe(true);
+    expect(rows.some((row) => row.event === 'tool_finished' && row.name === 'Read')).toBe(true);
+    expect(rows.some((row) => row.event === 'assistant_segment')).toBe(true);
+    expect(rows.filter((row) => row.event === 'assistant_text')).toHaveLength(0);
     expect(rows.some((row) => row.event === 'provider_finished')).toBe(true);
     expect(rows.every((row) => row.cycle_id === 'test-cycle')).toBe(true);
   });
@@ -2183,14 +2201,16 @@ describe('controlled action handlers', () => {
     expect(result.success).toBe(true);
     const infoCalls = ctx.host.logger.info.mock.calls.map(([msg]) => String(msg));
     expect(infoCalls.some((msg) => msg.includes('[agent:claude]'))).toBe(true);
-    expect(infoCalls.some((msg) => msg.includes('tool_call') && msg.includes('Grep'))).toBe(true);
-    expect(infoCalls.some((msg) => msg.includes('assistant_text'))).toBe(true);
+    expect(infoCalls.some((msg) => msg.includes('tool_started') && msg.includes('Grep'))).toBe(true);
+    expect(infoCalls.some((msg) => msg.includes('assistant_segment'))).toBe(true);
+    expect(infoCalls.some((msg) => msg.includes('session_bound'))).toBe(true);
     expect(infoCalls.some((msg) => msg.includes('provider_finished'))).toBe(true);
 
     const jsonlPath = join(ctx.host.dataRoot, 'evolution', 'agent-runs', 'test-cycle.jsonl');
     expect(existsSync(jsonlPath)).toBe(true);
     const rows = readFileSync(jsonlPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line));
-    expect(rows.some((row) => row.event === 'tool_call' && row.name === 'Grep')).toBe(true);
+    expect(rows.some((row) => row.event === 'tool_started' && row.name === 'Grep')).toBe(true);
+    expect(rows.some((row) => row.event === 'capability_gap' && row.feature === 'tool_lifecycle')).toBe(true);
   });
 
   it('respects JEA_AGENT_RUN_JSONL=0 and skips JSONL persistence', async () => {
