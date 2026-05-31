@@ -15,11 +15,19 @@ import {
   rawRunSpecFromAction,
 } from './agent-run-spec.mjs';
 import { buildExecutionEnv, streamWithExecutionEnv } from './execution-env.mjs';
+import {
+  appendAgentRunLogRecord,
+  resolveAgentRunCycleId,
+  resolveAgentRunLogPath,
+} from './agent-run-log.mjs';
 
 const DEFAULT_PROVIDER = 'llm_only';
 const CLAUDE_PROVIDER = 'claude_code_sdk';
 const CURSOR_PROVIDER = 'cursor_sdk';
 const AGENT_VERIFICATION_ATTEMPTS = 3;
+// JEA_AGENT_RUN_VERBOSE=1: full assistant text and tool input
+// JEA_AGENT_RUN_LOG=0: disable agent run detail logs (terminal + JSONL)
+// JEA_AGENT_RUN_JSONL=0: disable JSONL persistence only
 const MODE_GUIDANCE = {
   observe: 'Read and synthesize available context. Do not propose source mutations as completed work.',
   propose: 'Produce a concrete proposal, investigation result, or decision-ready recommendation.',
@@ -33,6 +41,153 @@ const MAX_PHASE1_REPORT_CHARS = 40000;
 
 function getField(action, field) {
   return action?.params?.[field] ?? action?.[field] ?? null;
+}
+
+function agentRunLogEnabled() {
+  const raw = process.env.JEA_AGENT_RUN_LOG;
+  if (raw == null || raw === '') return true;
+  return !['0', 'false', 'no', 'off'].includes(String(raw).trim().toLowerCase());
+}
+
+function agentRunVerbose() {
+  return ['1', 'true', 'yes', 'on'].includes(String(process.env.JEA_AGENT_RUN_VERBOSE ?? '').trim().toLowerCase());
+}
+
+function resolveAgentLogger(ctx) {
+  const logger = ctx?.host?.logger;
+  if (logger?.info || logger?.warning || logger?.error) {
+    return {
+      info: (msg) => logger.info?.(msg),
+      warning: (msg) => logger.warning?.(msg),
+      error: (msg) => logger.error?.(msg),
+    };
+  }
+  return {
+    info: (msg) => console.log(msg),
+    warning: (msg) => console.warn(msg),
+    error: (msg) => console.error(msg),
+  };
+}
+
+function providerLogTag(provider) {
+  if (provider === CURSOR_PROVIDER) return 'cursor';
+  if (provider === CLAUDE_PROVIDER) return 'claude';
+  return 'llm';
+}
+
+function summarizeAgentText(text, maxLen = 200) {
+  const s = String(text ?? '').trim();
+  if (agentRunVerbose()) return s;
+  if (s.length <= maxLen) return s;
+  return `${s.slice(0, maxLen)}…[+${s.length - maxLen}]`;
+}
+
+function summarizeToolInput(input, maxLen = 120) {
+  if (input == null) return '';
+  let s;
+  try {
+    s = typeof input === 'string' ? input : JSON.stringify(input);
+  } catch {
+    s = String(input);
+  }
+  if (agentRunVerbose()) return s;
+  if (s.length <= maxLen) return s;
+  return `${s.slice(0, maxLen)}…[+${s.length - maxLen}]`;
+}
+
+function formatAgentLogFields(fields = {}) {
+  const parts = [];
+  for (const [key, value] of Object.entries(fields)) {
+    if (value == null || value === '') continue;
+    const v = typeof value === 'string' ? value : JSON.stringify(value);
+    parts.push(`${key}=${v}`);
+  }
+  return parts.join(' ');
+}
+
+function logAgentRun(ctx, provider, event, fields = {}, level = 'info') {
+  if (!agentRunLogEnabled()) return;
+  const tag = providerLogTag(provider);
+  const detail = formatAgentLogFields(fields);
+  const msg = detail ? `[agent:${tag}] ${event} ${detail}` : `[agent:${tag}] ${event}`;
+  resolveAgentLogger(ctx)[level]?.(msg);
+  appendAgentRunLogRecord(ctx, {
+    ts: new Date().toISOString(),
+    provider,
+    event,
+    level,
+    cycle_id: ctx?._agentRunLogMeta?.cycle_id ?? resolveAgentRunCycleId(ctx),
+    action_id: ctx?._agentRunLogMeta?.action_id ?? null,
+    action_type: ctx?._agentRunLogMeta?.action_type ?? null,
+    ...fields,
+  });
+}
+
+function withAgentRunLogMeta(ctx, action) {
+  if (!action) return ctx;
+  return {
+    ...ctx,
+    _agentRunLogMeta: {
+      cycle_id: resolveAgentRunCycleId(ctx, action),
+      action_id: action?.id ?? null,
+      action_type: effectiveActionType(action),
+    },
+  };
+}
+
+function emitAgentRunJsonlPath(ctx, provider) {
+  if (!agentRunLogEnabled()) return;
+  const cycleId = ctx?._agentRunLogMeta?.cycle_id ?? resolveAgentRunCycleId(ctx);
+  const filePath = resolveAgentRunLogPath(ctx, cycleId);
+  if (!filePath) return;
+  const tag = providerLogTag(provider);
+  resolveAgentLogger(ctx).info(`[agent:${tag}] jsonl_path path=${filePath}`);
+}
+
+function logCursorStreamEvent(ctx, event) {
+  if (!agentRunLogEnabled()) return;
+  if (event?.type === 'assistant') {
+    const content = event.message?.content;
+    if (!Array.isArray(content)) return;
+    for (const block of content) {
+      if (block?.type === 'text' || typeof block?.text === 'string') {
+        const text = summarizeAgentText(block.text);
+        if (text) logAgentRun(ctx, CURSOR_PROVIDER, 'assistant_text', { text });
+      } else if (block?.type === 'tool_use' || block?.name) {
+        logAgentRun(ctx, CURSOR_PROVIDER, 'tool_call', {
+          name: block.name ?? block.type ?? 'tool',
+          input: summarizeToolInput(block.input),
+        });
+      }
+    }
+  } else if (agentRunVerbose()) {
+    logAgentRun(ctx, CURSOR_PROVIDER, 'stream_event', { type: event?.type ?? 'unknown' });
+  }
+}
+
+async function consumeCursorRunStream(ctx, run) {
+  if (typeof run?.stream !== 'function') return;
+  try {
+    for await (const event of run.stream()) {
+      logCursorStreamEvent(ctx, event);
+    }
+  } catch (e) {
+    logAgentRun(ctx, CURSOR_PROVIDER, 'stream_error', {
+      error: summarizeAgentText(e?.message || String(e), 300),
+    }, 'warning');
+  }
+}
+
+function logClaudeAssistantMessage(ctx, message) {
+  for (const text of textFromAssistantMessage(message)) {
+    logAgentRun(ctx, CLAUDE_PROVIDER, 'assistant_text', { text: summarizeAgentText(text) });
+  }
+  for (const tool of toolUsesFromAssistantMessage(message)) {
+    logAgentRun(ctx, CLAUDE_PROVIDER, 'tool_call', {
+      name: tool.name,
+      input: summarizeToolInput(tool.input),
+    });
+  }
 }
 
 function normalizeProvider(provider) {
@@ -980,7 +1135,9 @@ async function runClaudeCodeSdk(action, ctx) {
   let validation = { valid: false, missing: ['receipt'], action_type: effectiveActionType(executionAction) };
   let sessionId = null;
 
-  async function runTurn(prompt, resumeSessionId = null) {
+  async function runTurn(prompt, resumeSessionId = null, turnLabel = 'turn') {
+    const turnStarted = Date.now();
+    logAgentRun(ctx, CLAUDE_PROVIDER, 'turn_start', { turn: turnLabel, prompt_chars: prompt.length });
     const turnOptions = resumeSessionId
       ? { ...options, resume: resumeSessionId }
       : options;
@@ -993,10 +1150,15 @@ async function runClaudeCodeSdk(action, ctx) {
         assistantTexts.push(...texts);
         turnTexts.push(...texts);
         toolUses.push(...toolUsesFromAssistantMessage(message));
+        logClaudeAssistantMessage(ctx, message);
       }
       if (message?.type === 'result') {
         resultMessage = message;
         turnResult = message;
+        logAgentRun(ctx, CLAUDE_PROVIDER, 'result', {
+          session_id: message.session_id ?? message.sessionId ?? null,
+          subtype: message.subtype ?? null,
+        });
       }
     }
     sessionId ??= turnResult?.session_id ?? turnResult?.sessionId ?? null;
@@ -1006,11 +1168,20 @@ async function runClaudeCodeSdk(action, ctx) {
       subtype: turnResult?.subtype ?? null,
       raw_text: rawText,
     });
+    logAgentRun(ctx, CLAUDE_PROVIDER, 'turn_finished', {
+      turn: turnLabel,
+      duration_ms: Date.now() - turnStarted,
+      result_chars: rawText.length,
+    });
     return { resultMessage: turnResult, rawText };
   }
 
+  const providerStartedAt = Date.now();
+  logAgentRun(ctx, CLAUDE_PROVIDER, 'provider_start', { cwd: options.cwd });
+  emitAgentRunJsonlPath(ctx, CLAUDE_PROVIDER);
+
   try {
-    const initial = await runTurn(translated.prompt);
+    const initial = await runTurn(translated.prompt, null, 'initial');
     lastRawText = initial.rawText;
     if (initial.resultMessage && initial.resultMessage.subtype === 'error') {
       const parsed = parseAgentJson(ctx?.ai, lastRawText || assistantTexts.join('\n\n'));
@@ -1034,7 +1205,7 @@ async function runClaudeCodeSdk(action, ctx) {
     } else {
       for (let attempt = 1; attempt <= AGENT_VERIFICATION_ATTEMPTS; attempt += 1) {
         const verificationPrompt = buildAgentVerificationPrompt(executionAction, validation, attempt);
-        const verification = await runTurn(verificationPrompt, sessionId);
+        const verification = await runTurn(verificationPrompt, sessionId, `verify-${attempt}`);
         lastRawText = verification.rawText;
         const parsed = parseAgentJson(ctx?.ai, lastRawText || assistantTexts.join('\n\n'));
         agent = normalizeAgentResult(parsed, lastRawText || assistantTexts.join('\n\n'), CLAUDE_PROVIDER);
@@ -1134,6 +1305,11 @@ async function runClaudeCodeSdk(action, ctx) {
     ];
   }
 
+  logAgentRun(ctx, CLAUDE_PROVIDER, 'provider_finished', {
+    duration_ms: Date.now() - providerStartedAt,
+    validation_valid: validation.valid,
+  });
+
   return {
     success: (resultMessage ? resultMessage.subtype !== 'error' : true) && validation.valid,
     message: agent.summary,
@@ -1221,26 +1397,48 @@ async function runCursorSdk(action, ctx) {
   let agentResult = null;
   let validation = { valid: false, missing: ['receipt'], action_type: effectiveActionType(executionAction) };
   let sameSession = false;
+  const providerStartedAt = Date.now();
+  logAgentRun(ctx, CURSOR_PROVIDER, 'provider_start', {
+    cwd: options.local?.cwd,
+    model: model ?? options.model?.id ?? null,
+  });
+  emitAgentRunJsonlPath(ctx, CURSOR_PROVIDER);
 
   try {
     if (typeof Agent.create === 'function') {
       cursorAgent = await Agent.create(options);
       sameSession = true;
 
-      async function sendTurn(prompt) {
+      async function sendTurn(prompt, turnLabel = 'turn') {
+        const turnStarted = Date.now();
+        logAgentRun(ctx, CURSOR_PROVIDER, 'turn_start', { turn: turnLabel, prompt_chars: prompt.length });
         const run = await cursorAgent.send(prompt);
-        const result = typeof run?.wait === 'function' ? await run.wait() : run;
-        runResults.push({
-          id: result?.id ?? run?.id ?? null,
+        const runId = run?.id ?? null;
+        logAgentRun(ctx, CURSOR_PROVIDER, 'run_id', { run_id: runId, turn: turnLabel });
+        const streamPromise = consumeCursorRunStream(ctx, run);
+        const result = await Promise.all([
+          typeof run?.wait === 'function' ? run.wait() : Promise.resolve(run),
+          streamPromise,
+        ]).then(([waitResult]) => waitResult);
+        const rawResultText = String(result?.result ?? '').trim();
+        logAgentRun(ctx, CURSOR_PROVIDER, 'turn_finished', {
+          turn: turnLabel,
+          run_id: result?.id ?? runId,
           status: result?.status ?? null,
-          raw_text: String(result?.result ?? '').trim(),
+          duration_ms: Date.now() - turnStarted,
+          result_chars: rawResultText.length,
+        });
+        runResults.push({
+          id: result?.id ?? runId,
+          status: result?.status ?? null,
+          raw_text: rawResultText,
         });
         return result;
       }
 
-      await sendTurn(translated.prompt);
+      await sendTurn(translated.prompt, 'initial');
       for (let attempt = 1; attempt <= AGENT_VERIFICATION_ATTEMPTS; attempt += 1) {
-        runResult = await sendTurn(buildAgentVerificationPrompt(executionAction, validation, attempt));
+        runResult = await sendTurn(buildAgentVerificationPrompt(executionAction, validation, attempt), `verify-${attempt}`);
         rawText = String(runResult?.result ?? '').trim();
         const parsed = parseAgentJson(ctx?.ai, rawText);
         agentResult = normalizeAgentResult(parsed, rawText, CURSOR_PROVIDER);
@@ -1256,8 +1454,16 @@ async function runCursorSdk(action, ctx) {
           buildAgentVerificationPrompt(executionAction, validation, 1),
         ].join('\n'),
       }, roots);
+      const promptStarted = Date.now();
+      logAgentRun(ctx, CURSOR_PROVIDER, 'prompt_start', { prompt_chars: prompt.length });
       runResult = await Agent.prompt(prompt, options);
       rawText = String(runResult?.result ?? '').trim();
+      logAgentRun(ctx, CURSOR_PROVIDER, 'prompt_finished', {
+        run_id: runResult?.id ?? null,
+        status: runResult?.status ?? null,
+        duration_ms: Date.now() - promptStarted,
+        result_chars: rawText.length,
+      });
       const parsed = parseAgentJson(ctx?.ai, rawText);
       agentResult = normalizeAgentResult(parsed, rawText, CURSOR_PROVIDER);
       validation = validateAgentReceipt(executionAction, agentResult);
@@ -1338,6 +1544,11 @@ async function runCursorSdk(action, ctx) {
     ];
   }
 
+  logAgentRun(ctx, CURSOR_PROVIDER, 'provider_finished', {
+    duration_ms: Date.now() - providerStartedAt,
+    validation_valid: validation.valid,
+  });
+
   return {
     success: (runResult?.status ? runResult.status === 'finished' : true) && validation.valid,
     message: agent.summary,
@@ -1362,10 +1573,28 @@ async function runLlmOnly(action, ctx) {
   const prompt = effectiveActionType(action) === 'agent_run'
     ? buildExecutionPackagePrompt(action, ctx)
     : buildPrompt(action, ctx);
+  const objective = getField(action, 'objective') ?? effectiveActionType(action);
+  const promptChars = String(prompt.system ?? '').length + String(prompt.user ?? '').length;
+  const llmStarted = Date.now();
+  logAgentRun(ctx, DEFAULT_PROVIDER, 'started', {
+    objective: summarizeAgentText(objective, 80),
+    prompt_chars: promptChars,
+  });
+  emitAgentRunJsonlPath(ctx, DEFAULT_PROVIDER);
+  if (agentRunVerbose()) {
+    logAgentRun(ctx, DEFAULT_PROVIDER, 'prompt', {
+      system_chars: String(prompt.system ?? '').length,
+      user: summarizeAgentText(prompt.user),
+    });
+  }
   const rawText = await chatMessages(ai, [
     { role: 'system', content: prompt.system },
     { role: 'user', content: prompt.user },
   ], { thinking: getField(action, 'thinking') ?? 'medium', timeout: getField(action, 'timeout') ?? 180 });
+  logAgentRun(ctx, DEFAULT_PROVIDER, 'finished', {
+    duration_ms: Date.now() - llmStarted,
+    response_chars: String(rawText ?? '').length,
+  });
 
   const parsed = parseAgentJson(ai, rawText);
   const agent = normalizeAgentResult(parsed, rawText, DEFAULT_PROVIDER);
@@ -1401,15 +1630,16 @@ async function runLlmOnly(action, ctx) {
 
 export async function runAgenticAction(action, ctx) {
   const executionAction = applyRunSpecToAction(action, ctx);
+  const logCtx = withAgentRunLogMeta(ctx, executionAction);
   const provider = resolveProvider(executionAction);
-  const roots = resolveAgentExecutionRoots(executionAction, ctx);
+  const roots = resolveAgentExecutionRoots(executionAction, logCtx);
   if (roots.rootMismatch) return rootMismatchResult(executionAction, roots, provider);
-  if (actionRequiresExecutionRoot(executionAction) && actionMissingExecutionRoot(executionAction, ctx)) {
+  if (actionRequiresExecutionRoot(executionAction) && actionMissingExecutionRoot(executionAction, logCtx)) {
     return missingExecutionRootResult(executionAction, provider);
   }
-  if (provider === DEFAULT_PROVIDER) return runLlmOnly(executionAction, ctx);
-  if (provider === CLAUDE_PROVIDER) return runClaudeCodeSdk(executionAction, ctx);
-  if (provider === CURSOR_PROVIDER) return runCursorSdk(executionAction, ctx);
+  if (provider === DEFAULT_PROVIDER) return runLlmOnly(executionAction, logCtx);
+  if (provider === CLAUDE_PROVIDER) return runClaudeCodeSdk(executionAction, logCtx);
+  if (provider === CURSOR_PROVIDER) return runCursorSdk(executionAction, logCtx);
 
   if (provider === 'cli_agent') {
     return {

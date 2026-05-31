@@ -1,4 +1,4 @@
-﻿import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+﻿import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
@@ -67,6 +67,8 @@ const ORIGINAL_ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const ORIGINAL_ANTHROPIC_AUTH_TOKEN = process.env.ANTHROPIC_AUTH_TOKEN;
 const ORIGINAL_CURSOR_API_KEY = process.env.CURSOR_API_KEY;
 const ORIGINAL_JEA_AGENT_PROVIDER = process.env.JEA_AGENT_PROVIDER;
+const ORIGINAL_JEA_AGENT_RUN_LOG = process.env.JEA_AGENT_RUN_LOG;
+const ORIGINAL_JEA_AGENT_RUN_JSONL = process.env.JEA_AGENT_RUN_JSONL;
 const ORIGINAL_AGENTANK_TANK_KEY = process.env.AGENTANK_TANK_KEY;
 const ORIGINAL_JEA_APPROVAL_MODE = process.env.JEA_APPROVAL_MODE;
 
@@ -130,8 +132,17 @@ function makeAgenticCtx(agentResponse = null) {
 function makeAgentProviderCtx(taskPrompt = 'Human task prompt for the code agent.') {
   const ctx = makeCtx();
   const translationCalls = [];
+  const logger = {
+    info: vi.fn(),
+    warning: vi.fn(),
+    error: vi.fn(),
+  };
   return {
     ...ctx,
+    host: {
+      ...ctx.host,
+      logger,
+    },
     ai: {
       translationCalls,
       async chatMessages(messages) {
@@ -145,14 +156,34 @@ function makeAgentProviderCtx(taskPrompt = 'Human task prompt for the code agent
   };
 }
 
-function mockCursorSession(results, onCreate = null) {
+function defaultCursorStreamEvents() {
+  return [
+    {
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'text', text: 'Working on the task.' },
+          { type: 'tool_use', name: 'Read', input: { path: 'src/index.mjs' } },
+        ],
+      },
+    },
+  ];
+}
+
+function mockCursorSession(results, onCreate = null, streamEvents = null) {
   const prompts = [];
   const send = vi.fn(async (prompt) => {
     prompts.push(prompt);
     const result = typeof results === 'function' ? results(prompt, prompts.length) : results.shift();
+    const events = typeof streamEvents === 'function'
+      ? streamEvents(result, prompt, prompts.length)
+      : (streamEvents ?? defaultCursorStreamEvents(result));
     return {
       id: result?.id,
       wait: vi.fn(async () => result),
+      stream: vi.fn(async function* stream() {
+        for (const event of events) yield event;
+      }),
     };
   });
   const dispose = vi.fn(async () => {});
@@ -296,6 +327,17 @@ afterEach(() => {
   } else {
     delete process.env.JEA_AGENT_PROVIDER;
   }
+  if (ORIGINAL_JEA_AGENT_RUN_LOG) {
+    process.env.JEA_AGENT_RUN_LOG = ORIGINAL_JEA_AGENT_RUN_LOG;
+  } else {
+    delete process.env.JEA_AGENT_RUN_LOG;
+  }
+  if (ORIGINAL_JEA_AGENT_RUN_JSONL) {
+    process.env.JEA_AGENT_RUN_JSONL = ORIGINAL_JEA_AGENT_RUN_JSONL;
+  } else {
+    delete process.env.JEA_AGENT_RUN_JSONL;
+  }
+  delete process.env.JEA_AGENT_RUN_VERBOSE;
   if (ORIGINAL_AGENTANK_TANK_KEY) {
     process.env.AGENTANK_TANK_KEY = ORIGINAL_AGENTANK_TANK_KEY;
   } else {
@@ -2054,6 +2096,155 @@ describe('controlled action handlers', () => {
     expect(capturedOptions.local.cwd).toBe(ctx.projectRoot);
     expect(capturedOptions.local.settingSources).toEqual(['project', 'user']);
     expect(verification.status).toBe('improved');
+  });
+
+  it('logs Cursor SDK run stream details to host logger during agent_execute', async () => {
+    process.env.CURSOR_API_KEY = 'cursor-test-key';
+    mockCursorSession([
+      { id: 'cursor-log-initial', status: 'finished', result: 'Initial work.' },
+      {
+        id: 'cursor-log-final',
+        status: 'finished',
+        result: JSON.stringify({
+          status: 'completed',
+          summary: 'Cursor logging test completed.',
+        }),
+      },
+    ]);
+
+    const ctx = makeAgentProviderCtx('Inspect queue for logging test.');
+    const result = await actionHandlers.agent_execute({
+      type: 'agent_execute',
+      params: directAgentParams({
+        provider: 'cursor_sdk',
+        objective: 'Verify agent run logging',
+        mode: 'observe',
+      }),
+    }, ctx);
+
+    expect(result.success).toBe(true);
+    const infoCalls = ctx.host.logger.info.mock.calls.map(([msg]) => String(msg));
+    expect(infoCalls.some((msg) => msg.includes('[agent:cursor]'))).toBe(true);
+    expect(infoCalls.some((msg) => msg.includes('run_id') && msg.includes('cursor-log-initial'))).toBe(true);
+    expect(infoCalls.some((msg) => msg.includes('tool_call') && msg.includes('Read'))).toBe(true);
+    expect(infoCalls.some((msg) => msg.includes('turn_finished'))).toBe(true);
+    expect(infoCalls.some((msg) => msg.includes('provider_finished'))).toBe(true);
+    expect(infoCalls.some((msg) => msg.includes('jsonl_path'))).toBe(true);
+
+    const jsonlPath = join(ctx.host.dataRoot, 'evolution', 'agent-runs', 'test-cycle.jsonl');
+    expect(existsSync(jsonlPath)).toBe(true);
+    const rows = readFileSync(jsonlPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line));
+    expect(rows.some((row) => row.event === 'tool_call' && row.name === 'Read')).toBe(true);
+    expect(rows.some((row) => row.event === 'provider_finished')).toBe(true);
+    expect(rows.every((row) => row.cycle_id === 'test-cycle')).toBe(true);
+  });
+
+  it('logs Claude SDK assistant and tool_use events to host logger', async () => {
+    process.env.JEA_AGENT_PROVIDER = 'claude_code_sdk';
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    vi.mocked(claudeQuery)
+      .mockImplementationOnce(() => streamMessages([
+        {
+          type: 'assistant',
+          message: {
+            content: [
+              { type: 'text', text: 'Reading relevant files.' },
+              { type: 'tool_use', name: 'Grep', input: { pattern: 'pending' } },
+            ],
+          },
+        },
+        {
+          type: 'result',
+          subtype: 'success',
+          session_id: 'claude-log-session',
+          result: 'Completed initial Claude work.',
+        },
+      ]))
+      .mockImplementationOnce(() => streamMessages([
+        {
+          type: 'result',
+          subtype: 'success',
+          session_id: 'claude-log-session',
+          result: JSON.stringify({
+            status: 'completed',
+            summary: 'Claude logging test completed.',
+          }),
+        },
+      ]));
+
+    const ctx = makeAgentProviderCtx();
+    const result = await actionHandlers.agent_execute({
+      type: 'agent_execute',
+      params: directAgentParams({
+        objective: 'Verify Claude agent run logging',
+      }),
+    }, ctx);
+
+    expect(result.success).toBe(true);
+    const infoCalls = ctx.host.logger.info.mock.calls.map(([msg]) => String(msg));
+    expect(infoCalls.some((msg) => msg.includes('[agent:claude]'))).toBe(true);
+    expect(infoCalls.some((msg) => msg.includes('tool_call') && msg.includes('Grep'))).toBe(true);
+    expect(infoCalls.some((msg) => msg.includes('assistant_text'))).toBe(true);
+    expect(infoCalls.some((msg) => msg.includes('provider_finished'))).toBe(true);
+
+    const jsonlPath = join(ctx.host.dataRoot, 'evolution', 'agent-runs', 'test-cycle.jsonl');
+    expect(existsSync(jsonlPath)).toBe(true);
+    const rows = readFileSync(jsonlPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line));
+    expect(rows.some((row) => row.event === 'tool_call' && row.name === 'Grep')).toBe(true);
+  });
+
+  it('respects JEA_AGENT_RUN_JSONL=0 and skips JSONL persistence', async () => {
+    process.env.JEA_AGENT_RUN_JSONL = '0';
+    process.env.CURSOR_API_KEY = 'cursor-test-key';
+    mockCursorSession([
+      { id: 'cursor-no-jsonl-initial', status: 'finished', result: 'Initial work.' },
+      {
+        id: 'cursor-no-jsonl-final',
+        status: 'finished',
+        result: JSON.stringify({ status: 'completed', summary: 'No JSONL test.' }),
+      },
+    ]);
+
+    const ctx = makeAgentProviderCtx();
+    await actionHandlers.agent_execute({
+      type: 'agent_execute',
+      params: directAgentParams({
+        provider: 'cursor_sdk',
+        objective: 'JSONL disabled test',
+        mode: 'observe',
+      }),
+    }, ctx);
+
+    expect(ctx.host.logger.info).toHaveBeenCalled();
+    const jsonlPath = join(ctx.host.dataRoot, 'evolution', 'agent-runs', 'test-cycle.jsonl');
+    expect(existsSync(jsonlPath)).toBe(false);
+  });
+
+  it('respects JEA_AGENT_RUN_LOG=0 and suppresses agent run detail logs', async () => {
+    process.env.JEA_AGENT_RUN_LOG = '0';
+    process.env.CURSOR_API_KEY = 'cursor-test-key';
+    mockCursorSession([
+      { id: 'cursor-silent-initial', status: 'finished', result: 'Silent initial.' },
+      {
+        id: 'cursor-silent-final',
+        status: 'finished',
+        result: JSON.stringify({ status: 'completed', summary: 'Silent test.' }),
+      },
+    ]);
+
+    const ctx = makeAgentProviderCtx();
+    await actionHandlers.agent_execute({
+      type: 'agent_execute',
+      params: directAgentParams({
+        provider: 'cursor_sdk',
+        objective: 'Silent logging test',
+        mode: 'observe',
+      }),
+    }, ctx);
+
+    expect(ctx.host.logger.info).not.toHaveBeenCalled();
+    const jsonlPath = join(ctx.host.dataRoot, 'evolution', 'agent-runs', 'test-cycle.jsonl');
+    expect(existsSync(jsonlPath)).toBe(false);
   });
 
   it('uses JEA_AGENT_PROVIDER as the default agent provider', async () => {
