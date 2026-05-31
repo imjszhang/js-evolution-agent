@@ -8,14 +8,20 @@ import { assessGoalsWithAi, normalizeProposedGoalShape } from '../../intelligenc
 import { retireBeliefsForGoalIds } from '../../intelligence/belief-updater.mjs';
 import {
   applyGoalPatches,
+  buildPartialPatchApply,
   checkGoalInvariants,
   childIdsFromGoals,
   collectRemoveChildGoalIds,
   normalizeGoalPatches,
-  selectPatchesForAutoApply,
   validateGoalPatch,
   validateGoalShape,
 } from '../../intelligence/goal-patches.mjs';
+import {
+  isActionableAssessmentStatus,
+  isGoalAutoApplyEnabled,
+  meetsFullReplaceConfidence,
+  resolveGoalCalibratePolicy,
+} from '../../intelligence/goal-calibrate-policy.mjs';
 import { resolveIntelReportRecordPath } from '../../intelligence/report-paths.mjs';
 import { findReportRecord } from './intel.mjs';
 
@@ -159,18 +165,21 @@ export function updateGoals(root = getProjectRoot(), flags = {}) {
   return commitGoalUpdate(update);
 }
 
-function calibrateResultBase(cycleId, previousGoal, nextGoal) {
+function calibrateResultBase(cycleId, previousGoal, nextGoal, policy = null) {
   return {
     cycle_id: cycleId,
     mode: 'none',
+    calibrate_mode: policy?.mode ?? null,
     previous_goal_id: goalId(previousGoal),
     next_goal_id: goalId(nextGoal),
     written: 0,
     applied_patches: [],
     skipped_patches: [],
     belief_retirements: [],
+    warnings: [],
+    detail: null,
     children_ids_before: childIdsFromGoals(previousGoal),
-    children_ids_after: childIdsFromGoals(previousGoal),
+    children_ids_after: childIdsFromGoals(nextGoal ?? previousGoal),
   };
 }
 
@@ -224,8 +233,9 @@ export function commitGoalPatch(build, {
   }
 
   const nextGoal = applyGoalPatches(previousGoal, patches);
-  const invariants = checkGoalInvariants(nextGoal);
-  if (!invariants.ok) {
+  const policy = opts.policy ?? null;
+  const invariants = checkGoalInvariants(nextGoal, policy);
+  if (invariants.ok === false) {
     throw new Error(invariants.detail || invariants.reason);
   }
 
@@ -272,101 +282,26 @@ export function patchGoals(root = getProjectRoot(), flags = {}) {
   return commitGoalPatch(build);
 }
 
-export function autoCalibrateGoals(root = getProjectRoot(), goalsAssessResult = null, opts = {}) {
-  const assessment = goalsAssessResult?.assessment ?? null;
-  const cycleId = goalsAssessResult?.report?.cycle_id ?? goalsAssessResult?.event?.cycle_id ?? opts.cycle ?? null;
-  const active = getActiveGoals(root, opts.flags ?? {});
-  const previousGoal = active.goals;
-  const proposedGoal = normalizeProposedGoalShape(assessment?.proposed_goal);
-  const rawPatches = assessment?.goal_patches;
-  const hasProposedGoal = !!proposedGoal;
-  const normalizedPatches = normalizeGoalPatches(rawPatches);
-  const hasPatches = normalizedPatches.length > 0;
-
-  const base = calibrateResultBase(cycleId, previousGoal, previousGoal);
-
-  if (!assessment) return { ...base, status: 'skipped', reason: 'no_assessment' };
-
-  if (hasPatches && hasProposedGoal && opts.logger?.warn) {
-    opts.logger.warn('[goals] assessment has both goal_patches and proposed_goal; applying patches only.');
-  }
-
-  if (hasPatches) {
-    const { applicable, skipped } = selectPatchesForAutoApply(normalizedPatches, assessment);
-    if (!applicable.length) {
-      return {
-        ...base,
-        status: 'skipped',
-        reason: 'no_applicable_patches',
-        skipped_patches: skipped,
-      };
-    }
-
-    for (const patch of applicable) {
-      const v = validateGoalPatch(patch, previousGoal);
-      if (!v.valid) {
-        return {
-          ...base,
-          status: 'skipped',
-          reason: v.reason,
-          detail: v.detail,
-          skipped_patches: skipped,
-        };
-      }
-    }
-
-    try {
-      const preview = applyGoalPatches(previousGoal, applicable);
-      const invariants = checkGoalInvariants(preview);
-      if (!invariants.ok) {
-        return {
-          ...base,
-          status: 'skipped',
-          reason: invariants.reason,
-          detail: invariants.detail,
-          skipped_patches: skipped,
-        };
-      }
-
-      const reason = `Applied goal patches from cycle ${cycleId ?? 'unknown'}.`;
-      const build = buildGoalPatchUpdate(root, applicable, {
-        reason,
-        evidenceRefs: goalsAssessResult?.event?.evidence_refs ?? assessment.evidence_refs ?? [],
-        cycle: cycleId,
-        flags: opts.flags,
-      });
-      const result = commitGoalPatch(build, { store: opts.store });
-      return {
-        ...base,
-        status: 'applied',
-        mode: 'patch',
-        reason,
-        previous_goal_id: goalId(result.previousGoal),
-        next_goal_id: goalId(result.nextGoal),
-        written: result.written,
-        active_goals_path: result.path,
-        applied_patches: applicable,
-        skipped_patches: skipped,
-        belief_retirements: result.belief_retirements,
-        children_ids_after: childIdsFromGoals(result.nextGoal),
-      };
-    } catch (e) {
-      return {
-        ...base,
-        status: 'failed',
-        reason: e?.message || String(e),
-      };
-    }
-  }
-
-  if (assessment.status !== 'refine') {
-    return { ...base, status: 'skipped', reason: 'status_not_refine' };
-  }
-  if (assessment.confidence !== 'high') {
-    return { ...base, status: 'skipped', reason: 'confidence_not_high' };
-  }
+function tryApplyProposedGoal(root, {
+  proposedGoal,
+  assessment,
+  policy,
+  cycleId,
+  goalsAssessResult,
+  previousGoal,
+  base,
+  opts,
+}) {
   if (!proposedGoal) {
     return { ...base, status: 'skipped', reason: 'no_proposed_goal' };
+  }
+
+  const replaceStatuses = policy.fullReplaceStatuses ?? new Set(['refine']);
+  if (!replaceStatuses.has(assessment.status)) {
+    return { ...base, status: 'skipped', reason: 'status_not_actionable' };
+  }
+  if (!meetsFullReplaceConfidence(assessment.confidence, policy)) {
+    return { ...base, status: 'skipped', reason: 'confidence_not_high' };
   }
 
   const validation = validateGoalShape(proposedGoal);
@@ -374,8 +309,20 @@ export function autoCalibrateGoals(root = getProjectRoot(), goalsAssessResult = 
     return { ...base, status: 'skipped', reason: validation.reason, detail: validation.detail };
   }
 
+  if (policy.enforceOutcomeInvariants) {
+    const invariants = checkGoalInvariants(proposedGoal, policy);
+    if (!invariants.ok) {
+      return {
+        ...base,
+        status: 'skipped',
+        reason: invariants.reason,
+        detail: invariants.detail,
+      };
+    }
+  }
+
   try {
-    const reason = `Applied high-confidence goal refine from cycle ${cycleId ?? 'unknown'}.`;
+    const reason = `Applied goal ${policy.mode === 'strict' ? 'high-confidence refine' : 'calibration'} from cycle ${cycleId ?? 'unknown'}.`;
     const update = applyGoalObject(root, proposedGoal, {
       reason,
       evidenceRefs: goalsAssessResult?.event?.evidence_refs ?? assessment.evidence_refs ?? [],
@@ -400,6 +347,119 @@ export function autoCalibrateGoals(root = getProjectRoot(), goalsAssessResult = 
       reason: e?.message || String(e),
     };
   }
+}
+
+export function autoCalibrateGoals(root = getProjectRoot(), goalsAssessResult = null, opts = {}) {
+  const assessment = goalsAssessResult?.assessment ?? null;
+  const cycleId = goalsAssessResult?.report?.cycle_id ?? goalsAssessResult?.event?.cycle_id ?? opts.cycle ?? null;
+  const policy = opts.policy ?? resolveGoalCalibratePolicy(opts.env ?? process.env);
+  const active = getActiveGoals(root, opts.flags ?? {});
+  const previousGoal = active.goals;
+  const proposedGoal = normalizeProposedGoalShape(assessment?.proposed_goal);
+  const rawPatches = assessment?.goal_patches;
+  const normalizedPatches = normalizeGoalPatches(rawPatches);
+  const hasPatches = normalizedPatches.length > 0;
+
+  const base = calibrateResultBase(cycleId, previousGoal, previousGoal, policy);
+
+  if (!isGoalAutoApplyEnabled(opts.env ?? process.env)) {
+    return { ...base, status: 'skipped', reason: 'auto_apply_disabled' };
+  }
+
+  if (!assessment) return { ...base, status: 'skipped', reason: 'no_assessment' };
+
+  if (!isActionableAssessmentStatus(assessment.status, policy)) {
+    return { ...base, status: 'skipped', reason: 'status_not_actionable' };
+  }
+
+  if (hasPatches && proposedGoal && opts.logger?.warn) {
+    opts.logger.warn('[goals] assessment has both goal_patches and proposed_goal; trying patches first.');
+  }
+
+  if (hasPatches) {
+    const built = buildPartialPatchApply(previousGoal, normalizedPatches, assessment, policy);
+    const { applicable, skipped, preview, warnings = [] } = built;
+
+    if (!applicable.length) {
+      const inv = built.invariant;
+      if (policy.fallbackProposedGoal && proposedGoal) {
+        return tryApplyProposedGoal(root, {
+          proposedGoal,
+          assessment,
+          policy,
+          cycleId,
+          goalsAssessResult,
+          previousGoal,
+          base,
+          opts,
+        });
+      }
+      return {
+        ...base,
+        status: 'skipped',
+        reason: inv?.reason ?? 'no_applicable_patches',
+        detail: inv?.detail ?? null,
+        skipped_patches: skipped,
+        warnings,
+      };
+    }
+
+    try {
+      const reason = `Applied goal patches from cycle ${cycleId ?? 'unknown'}.`;
+      const build = buildGoalPatchUpdate(root, applicable, {
+        reason,
+        evidenceRefs: goalsAssessResult?.event?.evidence_refs ?? assessment.evidence_refs ?? [],
+        cycle: cycleId,
+        flags: opts.flags,
+      });
+      const result = commitGoalPatch(build, { store: opts.store, policy });
+      const mode = skipped.length > 0 ? 'patch_partial' : 'patch';
+      return {
+        ...base,
+        status: 'applied',
+        mode,
+        reason,
+        previous_goal_id: goalId(result.previousGoal),
+        next_goal_id: goalId(result.nextGoal),
+        written: result.written,
+        active_goals_path: result.path,
+        applied_patches: applicable,
+        skipped_patches: skipped,
+        belief_retirements: result.belief_retirements,
+        warnings,
+        children_ids_after: childIdsFromGoals(result.nextGoal),
+      };
+    } catch (e) {
+      if (policy.fallbackProposedGoal && proposedGoal) {
+        return tryApplyProposedGoal(root, {
+          proposedGoal,
+          assessment,
+          policy,
+          cycleId,
+          goalsAssessResult,
+          previousGoal,
+          base,
+          opts,
+        });
+      }
+      return {
+        ...base,
+        status: 'failed',
+        reason: e?.message || String(e),
+      };
+    }
+  }
+
+  return tryApplyProposedGoal(root, {
+    proposedGoal,
+    assessment,
+    policy,
+    cycleId,
+    goalsAssessResult,
+    previousGoal,
+    base,
+    opts,
+  });
 }
 
 function reportEvidenceRef(reportRecord) {

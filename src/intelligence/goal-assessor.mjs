@@ -366,9 +366,7 @@ export function parseGoalAssessment(raw) {
   const confidence = VALID_CONFIDENCE.has(parsed.confidence) ? parsed.confidence : 'low';
   const refs = Array.isArray(parsed.evidence_refs) ? parsed.evidence_refs : [];
   const goal_patches = normalizeGoalPatches(parsed.goal_patches);
-  const proposed_goal = goal_patches.length
-    ? null
-    : normalizeProposedGoalShape(parsed.proposed_goal);
+  const proposed_goal = normalizeProposedGoalShape(parsed.proposed_goal);
 
   return {
     status,

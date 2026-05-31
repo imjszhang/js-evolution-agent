@@ -3,6 +3,12 @@ import { join } from 'node:path';
 import { getProjectRoot, loadProjectEnv, resolveAuthorityDocsDir } from '../utils/project.mjs';
 import { describeSubjectLockHealth } from '../utils/evolve-runs.mjs';
 import { readSubjectsRegistry } from '../utils/subjects.mjs';
+import {
+  getGoalCalibrateMode,
+  isGoalAutoApplyEnabled,
+  summarizeGoalCalibratePolicy,
+  resolveGoalCalibratePolicy,
+} from '../../intelligence/goal-calibrate-policy.mjs';
 
 function statusLine(ok, label, detail = '') {
   const mark = ok ? 'OK ' : 'WARN';
@@ -33,6 +39,15 @@ export async function doctorCommand() {
   } else {
     statusLine(true, 'JEA_APPROVAL_MODE', approvalMode);
   }
+
+  const calibrateMode = getGoalCalibrateMode(process.env);
+  const rawCalibrateMode = String(process.env.JEA_GOAL_CALIBRATE_MODE ?? '').trim().toLowerCase();
+  if (rawCalibrateMode && rawCalibrateMode !== calibrateMode) {
+    statusLine(false, 'JEA_GOAL_CALIBRATE_MODE', `${process.env.JEA_GOAL_CALIBRATE_MODE} invalid; fallback liberal`);
+  } else {
+    statusLine(true, 'JEA_GOAL_CALIBRATE_MODE', summarizeGoalCalibratePolicy(resolveGoalCalibratePolicy(process.env)));
+  }
+  statusLine(isGoalAutoApplyEnabled(process.env), 'JEA_GOAL_AUTO_APPLY', isGoalAutoApplyEnabled(process.env) ? 'enabled' : 'disabled (assessment only)');
 
   const docsDir = resolveAuthorityDocsDir(root);
   ok = statusLine(existsSync(join(docsDir, 'CONSTITUTION.md')), 'Authority CONSTITUTION.md', docsDir) && ok;

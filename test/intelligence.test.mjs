@@ -1384,7 +1384,7 @@ describe('buildIntelReport', () => {
     expect(assessment.proposed_goal.children).toEqual([]);
   });
 
-  it('parses goal_patches and drops proposed_goal when patches present', () => {
+  it('parses goal_patches and retains proposed_goal for executor fallback', () => {
     const assessment = parseGoalAssessment(JSON.stringify({
       status: 'refine',
       confidence: 'high',
@@ -1403,8 +1403,8 @@ describe('buildIntelReport', () => {
         },
       }],
       proposed_goal: {
-        id: 'ignored',
-        name: 'Ignored',
+        id: 'fallback-goal',
+        name: 'Fallback',
         intent: 'x',
         good_signal: 'g',
         bad_signal: 'b',
@@ -1414,7 +1414,8 @@ describe('buildIntelReport', () => {
 
     expect(assessment.goal_patches).toHaveLength(1);
     expect(assessment.goal_patches[0].op).toBe('add_child');
-    expect(assessment.proposed_goal).toBeNull();
+    expect(assessment.proposed_goal.id).toBe('fallback-goal');
+    expect(assessment.proposed_goal.children).toEqual([]);
   });
 
   it('excludes goal assessment narratives from standing memory Evidence', async () => {

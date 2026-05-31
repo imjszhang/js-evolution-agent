@@ -162,16 +162,32 @@ export function countOutcomeChildren(goals) {
   return n;
 }
 
-export function checkGoalInvariants(nextGoals) {
+export function checkGoalInvariants(nextGoals, policy = null) {
   const shape = validateGoalShape(nextGoals);
   if (!shape.valid) return { ok: false, reason: shape.reason, detail: shape.detail };
 
+  const enforce = policy?.enforceOutcomeInvariants === true;
+  if (!enforce) return { ok: true, reason: null, detail: null };
+
+  const minOutcomes = policy?.minOutcomeChildren ?? 1;
+  const maxOutcomes = policy?.maxOutcomeChildren ?? MAX_OUTCOME_CHILDREN;
   const outcomeCount = countOutcomeChildren(nextGoals);
-  if (outcomeCount < 1) {
-    return { ok: false, reason: 'invariant_fail', detail: 'at least one outcome child required' };
+
+  if (outcomeCount < minOutcomes) {
+    return {
+      ok: false,
+      reason: 'invariant_fail',
+      detail: minOutcomes === 1
+        ? 'at least one outcome child required'
+        : `at least ${minOutcomes} outcome children required`,
+    };
   }
-  if (outcomeCount > MAX_OUTCOME_CHILDREN) {
-    return { ok: false, reason: 'invariant_fail', detail: `at most ${MAX_OUTCOME_CHILDREN} outcome children` };
+  if (maxOutcomes != null && outcomeCount > maxOutcomes) {
+    return {
+      ok: false,
+      reason: 'invariant_fail',
+      detail: `at most ${maxOutcomes} outcome children`,
+    };
   }
   return { ok: true, reason: null, detail: null };
 }
@@ -202,9 +218,21 @@ export function applyGoalPatches(activeGoals, patches) {
   return next;
 }
 
-/** Balanced auto-apply gates: add/remove need refine+high; update_child allows medium+. */
-export function gatePatchForAutoApply(patch, assessment) {
-  if (!assessment || assessment.status !== 'refine') {
+/** Strict gates: add/remove need refine+high; update_child allows medium+. */
+export function gatePatchForAutoApply(patch, assessment, policy = null) {
+  const actionable = policy?.actionableStatuses ?? new Set(['refine']);
+  const status = assessment?.status;
+  if (!assessment || !actionable.has(status)) {
+    return { allowed: false, reason: 'status_not_actionable' };
+  }
+
+  if (policy?.mode === 'liberal' || policy?.allowPatchOnMedium) {
+    const conf = assessment.confidence ?? 'low';
+    if (conf === 'low') return { allowed: false, reason: 'confidence_not_medium' };
+    return { allowed: true, reason: null };
+  }
+
+  if (status !== 'refine') {
     return { allowed: false, reason: 'status_not_refine' };
   }
   const conf = assessment.confidence ?? 'low';
@@ -219,15 +247,86 @@ export function gatePatchForAutoApply(patch, assessment) {
   return { allowed: false, reason: 'invalid_patch' };
 }
 
-export function selectPatchesForAutoApply(patches, assessment) {
+export function selectPatchesForApply(patches, assessment, policy = null) {
   const applicable = [];
   const skipped = [];
   for (const patch of patches) {
-    const gate = gatePatchForAutoApply(patch, assessment);
+    const gate = gatePatchForAutoApply(patch, assessment, policy);
     if (gate.allowed) applicable.push(patch);
     else skipped.push({ patch, reason: gate.reason });
   }
   return { applicable, skipped };
+}
+
+/** @deprecated use selectPatchesForApply */
+export function selectPatchesForAutoApply(patches, assessment) {
+  return selectPatchesForApply(patches, assessment, { mode: 'strict', actionableStatuses: new Set(['refine']) });
+}
+
+/**
+ * Build applicable patch set: full batch (strict) or per-patch accumulation (liberal partial).
+ */
+export function buildPartialPatchApply(previousGoal, patches, assessment, policy = null) {
+  const warnings = [];
+  const gateResult = selectPatchesForApply(patches, assessment, policy);
+  let gateSkipped = gateResult.skipped;
+  let candidatePatches = gateResult.applicable;
+
+  if (!policy?.partialPatchApply) {
+    if (!candidatePatches.length) {
+      return { applicable: [], skipped: gateSkipped, preview: null, warnings };
+    }
+    for (const patch of candidatePatches) {
+      const v = validateGoalPatch(patch, previousGoal);
+      if (!v.valid) {
+        return {
+          applicable: [],
+          skipped: [...gateSkipped, { patch, reason: v.reason, detail: v.detail }],
+          preview: null,
+          warnings,
+        };
+      }
+    }
+    const preview = applyGoalPatches(previousGoal, candidatePatches);
+    const invariants = checkGoalInvariants(preview, policy);
+    if (!invariants.ok) {
+      return {
+        applicable: [],
+        skipped: gateSkipped,
+        preview: null,
+        warnings,
+        invariant: invariants,
+      };
+    }
+    return { applicable: candidatePatches, skipped: gateSkipped, preview, warnings };
+  }
+
+  const sorted = sortPatchesForApply(candidatePatches);
+  const applicable = [];
+  const skipped = [...gateSkipped];
+  let preview = JSON.parse(JSON.stringify(previousGoal));
+  if (!Array.isArray(preview.children)) preview.children = [];
+
+  for (const patch of sorted) {
+    const v = validateGoalPatch(patch, preview);
+    if (!v.valid) {
+      skipped.push({ patch, reason: v.reason, detail: v.detail });
+      continue;
+    }
+    const nextPreview = applyGoalPatches(preview, [patch]);
+    const invariants = checkGoalInvariants(nextPreview, policy);
+    if (!invariants.ok) {
+      skipped.push({ patch, reason: invariants.reason, detail: invariants.detail });
+      continue;
+    }
+    preview = nextPreview;
+    applicable.push(patch);
+  }
+
+  if (!applicable.length) {
+    return { applicable: [], skipped, preview: null, warnings };
+  }
+  return { applicable, skipped, preview, warnings };
 }
 
 export function collectRemoveChildGoalIds(patches) {

@@ -2255,12 +2255,12 @@ describe('goals command helpers', () => {
     expect(autoCalibrateGoals(root, {
       report: { cycle_id: 'cycle-keep' },
       assessment: { status: 'keep', confidence: 'high', proposed_goal: validGoal },
-    })).toMatchObject({ status: 'skipped', reason: 'status_not_refine' });
+    })).toMatchObject({ status: 'skipped', reason: 'status_not_actionable' });
 
     expect(autoCalibrateGoals(root, {
       report: { cycle_id: 'cycle-low' },
       assessment: { status: 'refine', confidence: 'medium', proposed_goal: validGoal },
-    })).toMatchObject({ status: 'skipped', reason: 'confidence_not_high' });
+    }, { env: { JEA_GOAL_CALIBRATE_MODE: 'strict' } })).toMatchObject({ status: 'skipped', reason: 'confidence_not_high' });
 
     expect(autoCalibrateGoals(root, {
       report: { cycle_id: 'cycle-invalid' },
@@ -2273,6 +2273,27 @@ describe('goals command helpers', () => {
 
     expect(readJsonSafe(join(runtime.goalsDir, 'active_goals.json'))).toEqual(before);
     expect(getGoalHistory(root, { limit: 10 }).events).toHaveLength(0);
+  });
+
+  it('liberal auto-applies medium-confidence full_replace', () => {
+    const root = makeGoalsRoot('jea-goals-liberal-medium-');
+    const runtime = runtimeInfoForDefaultSubject(root);
+    const validGoal = {
+      id: 'bootstrap-refined',
+      name: 'Bootstrap refined',
+      intent: 'Make the next step verifiable.',
+      good_signal: 'The next cycle has a concrete signal.',
+      bad_signal: 'The system keeps the old ambiguous target.',
+      children: [],
+    };
+
+    const result = autoCalibrateGoals(root, {
+      report: { cycle_id: 'cycle-low-liberal' },
+      assessment: { status: 'refine', confidence: 'medium', proposed_goal: validGoal },
+    });
+
+    expect(result).toMatchObject({ status: 'applied', mode: 'full_replace', calibrate_mode: 'liberal' });
+    expect(readJsonSafe(join(runtime.goalsDir, 'active_goals.json'))).toEqual(validGoal);
   });
 
   it('auto-applies goal patches when refine+high add_child', () => {
@@ -2461,6 +2482,213 @@ describe('goals command helpers', () => {
       type: 'patched',
       reason: 'remove stale child',
     });
+  });
+
+  it('liberal auto-calibrate applies v28-style double outcome add', () => {
+    const root = makeGoalsRoot('jea-goals-v28-liberal-');
+    const runtime = runtimeInfoForDefaultSubject(root);
+    const seeded = {
+      id: 'win-more-agentank-refined-v28',
+      name: 'Win',
+      intent: 'root',
+      good_signal: 'g',
+      bad_signal: 'b',
+      children: [
+        {
+          id: 'monitor-credential-compliance-v28',
+          name: 'Cred',
+          intent: 'credential compliance',
+          good_signal: 'g',
+          bad_signal: 'b',
+          children: [],
+        },
+        {
+          id: 'guard-memory-audit-v28',
+          name: 'Mem',
+          intent: 'memory audit',
+          good_signal: 'g',
+          bad_signal: 'b',
+          children: [],
+        },
+        {
+          id: 'iterate-skill-with-calibrated-sim-v28',
+          name: 'Iter',
+          intent: 'simulate and rank',
+          good_signal: 'g',
+          bad_signal: 'b',
+          children: [],
+        },
+      ],
+    };
+    applyGoalObject(root, seeded, { reason: 'seed', cycle: 'seed' });
+
+    const patches = [
+      {
+        op: 'add_child',
+        child: {
+          id: 'rank-baseline-v29',
+          name: 'Baseline',
+          intent: 'rank baseline 2634',
+          good_signal: 'g',
+          bad_signal: 'b',
+          role: 'outcome',
+          children: [],
+        },
+      },
+      {
+        op: 'add_child',
+        child: {
+          id: 'publish-pressure-v29',
+          name: 'Publish',
+          intent: 'publish each cycle',
+          good_signal: 'g',
+          bad_signal: 'b',
+          role: 'outcome',
+          children: [],
+        },
+      },
+    ];
+
+    const result = autoCalibrateGoals(root, {
+      report: { cycle_id: 'cycle-v28' },
+      assessment: {
+        status: 'refine',
+        confidence: 'high',
+        goal_patches: patches,
+      },
+    });
+
+    expect(result).toMatchObject({ status: 'applied', mode: 'patch', calibrate_mode: 'liberal' });
+    const active = readJsonSafe(join(runtime.goalsDir, 'active_goals.json'));
+    expect(active.children.map((c) => c.id)).toEqual(expect.arrayContaining([
+      'iterate-skill-with-calibrated-sim-v28',
+      'rank-baseline-v29',
+      'publish-pressure-v29',
+    ]));
+  });
+
+  it('strict mode skips v28-style double outcome add with invariant_fail', () => {
+    const root = makeGoalsRoot('jea-goals-v28-strict-');
+    const runtime = runtimeInfoForDefaultSubject(root);
+    const seeded = {
+      id: 'win-more-agentank-refined-v28',
+      name: 'Win',
+      intent: 'root',
+      good_signal: 'g',
+      bad_signal: 'b',
+      children: [{
+        id: 'iterate-skill-with-calibrated-sim-v28',
+        name: 'Iter',
+        intent: 'rank publish simulate',
+        good_signal: 'g',
+        bad_signal: 'b',
+        children: [],
+      }],
+    };
+    applyGoalObject(root, seeded, { reason: 'seed', cycle: 'seed' });
+
+    const result = autoCalibrateGoals(root, {
+      report: { cycle_id: 'cycle-v28-strict' },
+      assessment: {
+        status: 'refine',
+        confidence: 'high',
+        goal_patches: [
+          {
+            op: 'add_child',
+            child: {
+              id: 'o-b',
+              name: 'B',
+              intent: 'rank',
+              good_signal: 'g',
+              bad_signal: 'b',
+              role: 'outcome',
+              children: [],
+            },
+          },
+          {
+            op: 'add_child',
+            child: {
+              id: 'o-c',
+              name: 'C',
+              intent: 'publish',
+              good_signal: 'g',
+              bad_signal: 'b',
+              role: 'outcome',
+              children: [],
+            },
+          },
+        ],
+      },
+    }, { env: { JEA_GOAL_CALIBRATE_MODE: 'strict' } });
+
+    expect(result).toMatchObject({
+      status: 'skipped',
+      reason: 'invariant_fail',
+      calibrate_mode: 'strict',
+    });
+    expect(readJsonSafe(join(runtime.goalsDir, 'active_goals.json')).children).toHaveLength(1);
+  });
+
+  it('liberal falls back to proposed_goal when all patches invalid', () => {
+    const root = makeGoalsRoot('jea-goals-fallback-');
+    const runtime = runtimeInfoForDefaultSubject(root);
+    const nextGoal = {
+      id: 'bootstrap-refined',
+      name: 'Refined',
+      intent: 'Fallback tree',
+      good_signal: 'g',
+      bad_signal: 'b',
+      children: [],
+    };
+    applyGoalObject(root, {
+      id: 'bootstrap',
+      name: 'Bootstrap',
+      intent: 'Test',
+      good_signal: 'g',
+      bad_signal: 'b',
+      children: [],
+    }, { reason: 'seed', cycle: 'seed' });
+
+    const result = autoCalibrateGoals(root, {
+      report: { cycle_id: 'cycle-fallback' },
+      assessment: {
+        status: 'refine',
+        confidence: 'high',
+        goal_patches: [{ op: 'remove_child', child_id: 'missing-child' }],
+        proposed_goal: nextGoal,
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: 'applied',
+      mode: 'full_replace',
+      next_goal_id: 'bootstrap-refined',
+    });
+    expect(readJsonSafe(join(runtime.goalsDir, 'active_goals.json'))).toEqual(nextGoal);
+  });
+
+  it('skips auto apply when JEA_GOAL_AUTO_APPLY=0', () => {
+    const root = makeGoalsRoot('jea-goals-auto-off-');
+    const runtime = runtimeInfoForDefaultSubject(root);
+    const before = readJsonSafe(join(runtime.goalsDir, 'active_goals.json'));
+    const result = autoCalibrateGoals(root, {
+      report: { cycle_id: 'cycle-off' },
+      assessment: {
+        status: 'refine',
+        confidence: 'high',
+        proposed_goal: {
+          id: 'new-goal',
+          name: 'New',
+          intent: 'x',
+          good_signal: 'g',
+          bad_signal: 'b',
+          children: [],
+        },
+      },
+    }, { env: { JEA_GOAL_AUTO_APPLY: '0' } });
+
+    expect(result).toMatchObject({ status: 'skipped', reason: 'auto_apply_disabled' });
+    expect(readJsonSafe(join(runtime.goalsDir, 'active_goals.json'))).toEqual(before);
   });
 
   it('rejects missing required update inputs before writing history', () => {

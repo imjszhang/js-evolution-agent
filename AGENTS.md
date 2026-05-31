@@ -282,12 +282,20 @@ Decide 可调度、`Phase 2` 执行的记录型动作，用于落已有结论而
 
 **Phase 4.5 自动校准**（`goals_calibrate`）：
 
-| 输入 | 自动写盘条件 |
-| --- | --- |
-| `goal_patches`（优先于 `proposed_goal`） | `add_child` / `remove_child`：`refine` + `high`；`update_child`（仅 intent/good/bad_signal）：`refine` + `medium` 或 `high` |
-| 整棵 `proposed_goal` | `refine` + `high` + 结构合法（与改造前相同） |
+默认策略 **`liberal`**（`JEA_GOAL_CALIBRATE_MODE`，可设 `strict` 恢复保守行为）：
 
-机械不变量：至少保留一个成果型（outcome）子目标；`add_child` 的 child 需带 `role: outcome|guard`（供审计）。patch 与整棵替换互斥时仅处理 patches。
+| 策略 | `goal_patches` | 整棵 `proposed_goal` |
+| --- | --- | --- |
+| **liberal**（默认） | `refine` / `split` / `replace` + 置信度 ≥ `medium`；逐条部分应用；无 outcome 个数上限（除非设 `JEA_GOAL_MAX_OUTCOME_CHILDREN`） | 同上状态 + 置信度 ≥ `medium`；patch 失败时可 fallback |
+| **strict** | 仅 `refine`；`add`/`remove` 需 `high`；`update` 需 `medium+`；整批预览；outcome 1–2 个 | 仅 `refine` + `high` |
+
+环境变量：
+
+- `JEA_GOAL_CALIBRATE_MODE=liberal|strict`（默认 `liberal`）
+- `JEA_GOAL_MAX_OUTCOME_CHILDREN=N`（`0` = 无上限；liberal 默认不限制）
+- `JEA_GOAL_AUTO_APPLY=0`：只写 Phase 4 assessment，Phase 4.5 不落盘
+
+Assessor prompt 仍建议 `goal_patches` 与 `proposed_goal` 互斥；执行器先尝试 patches，失败可在 liberal 下 fallback `proposed_goal`。`add_child` 的 child 建议带 `role: outcome|guard`（供审计）。
 
 信念管理：
 

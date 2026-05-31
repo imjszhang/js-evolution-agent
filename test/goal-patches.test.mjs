@@ -1,13 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
   applyGoalPatches,
+  buildPartialPatchApply,
   checkGoalInvariants,
   classifyChildRole,
   gatePatchForAutoApply,
   normalizeGoalPatches,
-  selectPatchesForAutoApply,
+  selectPatchesForApply,
   validateGoalPatch,
 } from '../src/intelligence/goal-patches.mjs';
+import { resolveGoalCalibratePolicy } from '../src/intelligence/goal-calibrate-policy.mjs';
 
 const rootGoal = {
   id: 'main',
@@ -84,13 +86,15 @@ describe('goal-patches', () => {
     expect(validateGoalPatch(patch, rootGoal).valid).toBe(false);
   });
 
-  it('requires at least one outcome child after remove', () => {
+  it('requires at least one outcome child after remove under strict policy', () => {
+    const strict = resolveGoalCalibratePolicy({ JEA_GOAL_CALIBRATE_MODE: 'strict' });
     const patches = normalizeGoalPatches([
       { op: 'remove_child', child_id: 'outcome-a' },
       { op: 'remove_child', child_id: 'guard-a' },
     ]);
     const next = applyGoalPatches(rootGoal, patches);
-    expect(checkGoalInvariants(next).ok).toBe(false);
+    expect(checkGoalInvariants(next, strict).ok).toBe(false);
+    expect(checkGoalInvariants(next).ok).toBe(true);
   });
 
   it('gates auto-apply by op and confidence (balanced)', () => {
@@ -102,7 +106,7 @@ describe('goal-patches', () => {
     expect(gatePatchForAutoApply(updatePatch, { status: 'keep', confidence: 'high' }).allowed).toBe(false);
   });
 
-  it('selectPatchesForAutoApply splits applicable and skipped', () => {
+  it('selectPatchesForApply liberal allows medium add_child', () => {
     const patches = normalizeGoalPatches([
       { op: 'update_child', child_id: 'outcome-a', fields: { intent: 'new intent text here' } },
       {
@@ -118,13 +122,88 @@ describe('goal-patches', () => {
         },
       },
     ]);
-    const { applicable, skipped } = selectPatchesForAutoApply(patches, {
+    const liberal = resolveGoalCalibratePolicy({ JEA_GOAL_CALIBRATE_MODE: 'liberal' });
+    const { applicable, skipped } = selectPatchesForApply(patches, {
       status: 'refine',
       confidence: 'medium',
-    });
-    expect(applicable).toHaveLength(1);
-    expect(applicable[0].op).toBe('update_child');
-    expect(skipped).toHaveLength(1);
-    expect(skipped[0].reason).toBe('confidence_not_high');
+    }, liberal);
+    expect(applicable).toHaveLength(2);
+    expect(skipped).toHaveLength(0);
+
+    const strict = resolveGoalCalibratePolicy({ JEA_GOAL_CALIBRATE_MODE: 'strict' });
+    const strictResult = selectPatchesForApply(patches, {
+      status: 'refine',
+      confidence: 'medium',
+    }, strict);
+    expect(strictResult.applicable).toHaveLength(1);
+    expect(strictResult.skipped[0].reason).toBe('confidence_not_high');
+  });
+
+  it('buildPartialPatchApply liberal allows three outcome children', () => {
+    const liberal = resolveGoalCalibratePolicy({ JEA_GOAL_CALIBRATE_MODE: 'liberal' });
+    const patches = normalizeGoalPatches([
+      {
+        op: 'add_child',
+        child: {
+          id: 'outcome-b',
+          name: 'B',
+          intent: 'rank baseline',
+          good_signal: 'g',
+          bad_signal: 'b',
+          role: 'outcome',
+        },
+      },
+      {
+        op: 'add_child',
+        child: {
+          id: 'outcome-c',
+          name: 'C',
+          intent: 'publish pressure',
+          good_signal: 'g',
+          bad_signal: 'b',
+          role: 'outcome',
+        },
+      },
+    ]);
+    const built = buildPartialPatchApply(rootGoal, patches, {
+      status: 'refine',
+      confidence: 'high',
+    }, liberal);
+    expect(built.applicable).toHaveLength(2);
+    expect(built.preview.children).toHaveLength(4);
+  });
+
+  it('buildPartialPatchApply strict rejects batch over outcome cap', () => {
+    const strict = resolveGoalCalibratePolicy({ JEA_GOAL_CALIBRATE_MODE: 'strict' });
+    const patches = normalizeGoalPatches([
+      {
+        op: 'add_child',
+        child: {
+          id: 'outcome-b',
+          name: 'B',
+          intent: 'rank',
+          good_signal: 'g',
+          bad_signal: 'b',
+          role: 'outcome',
+        },
+      },
+      {
+        op: 'add_child',
+        child: {
+          id: 'outcome-c',
+          name: 'C',
+          intent: 'publish',
+          good_signal: 'g',
+          bad_signal: 'b',
+          role: 'outcome',
+        },
+      },
+    ]);
+    const built = buildPartialPatchApply(rootGoal, patches, {
+      status: 'refine',
+      confidence: 'high',
+    }, strict);
+    expect(built.applicable).toHaveLength(0);
+    expect(built.invariant?.reason).toBe('invariant_fail');
   });
 });
