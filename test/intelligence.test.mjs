@@ -44,6 +44,7 @@ import {
   buildEvolutionDiary,
   buildEvolutionDiaryContext,
   buildEvolutionDiaryPrompt,
+  gatherDiaryAnchors,
 } from '../src/intelligence/evolution-diary-builder.mjs';
 import { buildTemporalDecisionBrief } from '../src/intelligence/decision-brief.mjs';
 import {
@@ -1990,6 +1991,89 @@ function makeDiaryFixture() {
 }
 
 describe('buildEvolutionDiary', () => {
+  it('gatherDiaryAnchors includes high-confidence operator facts and active goals', () => {
+    const { store, runtime } = makeReportFixture();
+    store.ingest('intel_observations', {
+      id: 'operator-fact-rank',
+      kind: 'operator_fact',
+      source: 'operator',
+      subject: 'test-subject',
+      content: 'standing.rank lower is better; rankScore higher is better',
+      confidence: 'high',
+      created_at: '2026-01-01T00:00:00.000Z',
+    });
+    store.ingest('intel_observations', {
+      id: 'operator-fact-medium',
+      kind: 'operator_fact',
+      source: 'operator',
+      subject: 'test-subject',
+      content: 'should not appear in anchors',
+      confidence: 'medium',
+      created_at: '2026-01-02T00:00:00.000Z',
+    });
+
+    const anchors = gatherDiaryAnchors({ store, runtime });
+
+    expect(anchors.operator_established_facts).toHaveLength(1);
+    expect(anchors.operator_established_facts[0]).toMatchObject({
+      id: 'operator-fact-rank',
+      content: 'standing.rank lower is better; rankScore higher is better',
+    });
+    expect(anchors.active_goals).toMatchObject({ id: 'bootstrap' });
+    expect(anchors.active_goals_flat).toEqual([
+      expect.objectContaining({
+        id: 'bootstrap',
+        good_signal: 'wiring verified',
+        bad_signal: 'lint failed',
+      }),
+    ]);
+  });
+
+  it('gatherDiaryAnchors reads operator guidance Current section when present', () => {
+    const { store, runtime } = makeReportFixture();
+    mkdirSync(join(runtime.runtimeRoot, 'data', 'evolution'), { recursive: true });
+    writeFileSync(
+      join(runtime.runtimeRoot, 'data', 'evolution', 'human_guidance.md'),
+      '# Guidance\n\n## Current\n\nAlways include execution_root in ENOENT explanations.\n\n## Processed\n\n(old)\n',
+    );
+
+    const anchors = gatherDiaryAnchors({ store, runtime });
+
+    expect(anchors.operator_guidance).toContain('execution_root');
+  });
+
+  it('buildEvolutionDiaryContext includes interpretation anchors and prompt guidance', () => {
+    const { store, runtime, intelResult, execResult, verification } = makeDiaryFixture();
+    store.ingest('intel_observations', {
+      id: 'operator-fact-rank',
+      kind: 'operator_fact',
+      source: 'operator',
+      content: 'standing.rank lower is better',
+      confidence: 'high',
+      created_at: '2026-01-01T00:00:00.000Z',
+    });
+
+    const context = buildEvolutionDiaryContext({
+      intelResult,
+      execResult,
+      verification,
+      runtime,
+      store,
+      generatedAt: '2026-05-17T13:08:16+08:00',
+    });
+    const prompt = buildEvolutionDiaryPrompt({
+      context,
+      agentContextDocs: [{ id: 'js-evolution-agent:subject:test', text: '主体策略全文。' }],
+    });
+
+    expect(context.interpretation_anchors.operator_established_facts[0].content)
+      .toContain('standing.rank lower is better');
+    expect(context.interpretation_anchors.active_goals_flat.length).toBeGreaterThan(0);
+    expect(prompt).toContain('interpretation_anchors.operator_established_facts');
+    expect(prompt).toContain('good_signal / bad_signal');
+    expect(prompt).toContain('裸数值 delta');
+  });
+
   it('builds a post-execution prompt scoped away from project journal updates', () => {
     const { store, runtime, intelResult, execResult, verification } = makeDiaryFixture();
     const context = buildEvolutionDiaryContext({

@@ -1,11 +1,101 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { chatMessages } from '../ai/messages.mjs';
 import { detectLanguage, extractTldr } from './report-builder.mjs';
 import { redactSecrets } from './redaction.mjs';
 import { resolveEvolutionDiaryWritePath } from './diary-paths.mjs';
 
 const DIARY_CONTEXT_CHAR_LIMIT = 500000;
+const OPERATOR_FACT_LIMIT = 10;
+const OPERATOR_FACT_LOOKBACK_DAYS = 90;
+
+// Same inclusion rules as decision-brief.mjs operatorFacts().
+function isOperatorFact(record) {
+  return record?.kind === 'operator_fact' || record?.source === 'operator_fact';
+}
+
+function isHighConfidenceOperatorFact(record) {
+  return !record?.confidence || record.confidence === 'high';
+}
+
+function timestampOf(record) {
+  const raw = record?.recorded_at
+    ?? record?.generated_at
+    ?? record?.updated_at
+    ?? record?.created_at
+    ?? record?.timestamp;
+  return Date.parse(raw || '') || 0;
+}
+
+function readActiveGoals(runtime) {
+  if (!runtime?.runtimeRoot) return null;
+  const goalsPath = join(runtime.runtimeRoot, 'data', 'goals', 'active_goals.json');
+  if (!existsSync(goalsPath)) return null;
+  try {
+    return JSON.parse(readFileSync(goalsPath, 'utf-8'));
+  } catch {
+    return null;
+  }
+}
+
+function flattenGoals(goals) {
+  if (!goals) return [];
+  const out = [];
+  const visit = (node) => {
+    if (!node) return;
+    out.push({
+      id: node.id,
+      name: node.name,
+      good_signal: node.good_signal,
+      bad_signal: node.bad_signal,
+    });
+    for (const child of node.children || []) visit(child);
+  };
+  visit(goals);
+  return out;
+}
+
+function readOperatorGuidanceCurrent(runtime) {
+  if (!runtime?.runtimeRoot) return null;
+  const guidancePath = join(runtime.runtimeRoot, 'data', 'evolution', 'human_guidance.md');
+  if (!existsSync(guidancePath)) return null;
+  try {
+    const text = readFileSync(guidancePath, 'utf-8');
+    const match = text.match(/^##\s*Current\s*\n([\s\S]*?)(?=^##\s|\Z)/im);
+    const body = match?.[1]?.trim();
+    return body || null;
+  } catch {
+    return null;
+  }
+}
+
+export function gatherDiaryAnchors({ store = null, runtime = null } = {}) {
+  const observations = safeReadStore(
+    store,
+    'readRecentIntel',
+    { days: OPERATOR_FACT_LOOKBACK_DAYS, limit: 50 },
+    [],
+  );
+  const operatorEstablishedFacts = asArray(observations)
+    .slice()
+    .sort((a, b) => timestampOf(b) - timestampOf(a))
+    .filter((record) => isOperatorFact(record) && isHighConfidenceOperatorFact(record))
+    .slice(0, OPERATOR_FACT_LIMIT)
+    .map((record) => ({
+      id: record.id ?? null,
+      content: record.content ?? record.summary ?? '',
+    }))
+    .filter((record) => record.content);
+
+  const activeGoals = readActiveGoals(runtime);
+
+  return {
+    operator_established_facts: operatorEstablishedFacts,
+    active_goals: activeGoals,
+    active_goals_flat: flattenGoals(activeGoals),
+    operator_guidance: readOperatorGuidanceCurrent(runtime),
+  };
+}
 
 function clip(value, max = DIARY_CONTEXT_CHAR_LIMIT) {
   const text = typeof value === 'string' ? value : JSON.stringify(value ?? null, null, 2);
@@ -96,6 +186,7 @@ export function buildEvolutionDiaryContext({
       verify_report: verifyReportPath ?? null,
       phase1_conversation_context: intelResult?.conversation_context_path ?? null,
     },
+    interpretation_anchors: gatherDiaryAnchors({ store, runtime }),
     phase1: {
       report_source: intelResult?.report?.source ?? null,
       report_tldr: intelResult?.report?.indexRecord?.tldr ?? null,
@@ -220,6 +311,7 @@ export function buildEvolutionDiaryPrompt({
       '- If phase3.semantic is present, treat it as the latest interpretation of the executed receipt. Use it to correct stale report/diary inferences, but do not promote semantic summaries to Seen facts.',
       '- Explicitly record Phase 4 goal assessment and Phase 4.5 goal auto-calibration when present in Machine Context. Include status, confidence, and reason for Phase 4; include status, mode (patch, patch_partial, or full_replace), calibrate_mode, reason, detail, applied_patches, children_ids_before/after, belief_retirements, next_goal_id, and written count for Phase 4.5. If calibration was skipped, state the skipped reason and detail instead of omitting it.',
       '- Explicitly record Phase 3.5 belief update when present in Machine Context. Include status, reason, updates_count, and which beliefs were strengthened, weakened, validated, refuted, created, or retired.',
+      '- When interpreting metrics such as rank or score, follow interpretation_anchors.operator_established_facts. When judging progress vs no progress, use interpretation_anchors.active_goals or active_goals_flat good_signal / bad_signal. Do not infer metric direction from raw numeric delta alone (for example, a lower rank may be improvement). Execution and verification conclusions in phase2/phase3 still override anchors; anchors only interpret them.',
       '- Be readable and candid: say what moved, what did not move, and what the next cycle should remember.',
       '',
       'Suggested sections:',
