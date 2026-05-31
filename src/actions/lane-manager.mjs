@@ -57,11 +57,11 @@ function runGh(args, cwd) {
 }
 
 export function sanitizeBranchPart(value, fallback = 'work') {
-  const text = String(value ?? '').trim()
+  let text = String(value ?? '').trim()
     .replace(/[^a-zA-Z0-9._/-]+/g, '-')
     .replace(/\/{2,}/g, '/')
-    .replace(/^[-/.]+|[-/.]+$/g, '')
     .slice(0, 120);
+  text = text.replace(/^[.\s_/-]+|[.\s_/-]+$/g, '');
   return text || fallback;
 }
 
