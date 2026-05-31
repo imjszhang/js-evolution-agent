@@ -195,6 +195,9 @@ export function nextSteps(event, cycleState = {}, options = {}) {
       break;
 
     case 'exec_done':
+      if (options.isExecArtifactComplete === false) {
+        break;
+      }
       enqueue('verify', 'exec_done');
       break;
 
@@ -315,10 +318,13 @@ export function reconcileCycle(cycleState, options = {}) {
   }
 
   if (execSkippedOrDone(cycleState) && isStepRunnable(cycleState, 'verify')) {
-    const evt = stepStatus(cycleState, 'exec') === 'skipped' ? 'exec_skipped' : 'exec_done';
-    if (stepStatus(cycleState, 'exec') === 'failed') {
+    const execSt = stepStatus(cycleState, 'exec');
+    const execArtifactReady = execSt === 'skipped'
+      || options.isExecArtifactComplete !== false;
+    if (execSt === 'failed') {
       result = mergeResults(result, nextSteps({ type: 'exec_failed', cycle_id: cycleId }, cycleState, options));
-    } else {
+    } else if (execArtifactReady) {
+      const evt = execSt === 'skipped' ? 'exec_skipped' : 'exec_done';
       result = mergeResults(result, nextSteps({ type: evt, cycle_id: cycleId }, cycleState, options));
     }
   }

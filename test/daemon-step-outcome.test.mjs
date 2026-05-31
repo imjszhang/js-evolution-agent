@@ -72,4 +72,32 @@ describe('resolveStepOutcome', () => {
     expect(outcome.ok).toBe(false);
     expect(outcome.failure?.code).toBe('unclassified');
   });
+
+  it('rejects exit 0 without JEA_STEP_RESULT or checkpoint artifact', () => {
+    const outcome = resolveStepOutcome({
+      step: 'exec',
+      cycleId: 'cycle-1',
+      exitCode: 0,
+      output: '[info] running exec\n',
+      root: null,
+      subject: null,
+    });
+    expect(outcome.ok).toBe(false);
+    expect(outcome.failure?.code).toBe('step_result_missing');
+    expect(outcome.failure?.retryable).toBe(true);
+  });
+
+  it('accepts exit 0 when JEA_STEP_RESULT ok is present', () => {
+    const output = 'JEA_STEP_RESULT {"step":"exec","cycle_id":"exec-1","ok":true}\n';
+    const outcome = resolveStepOutcome({
+      step: 'exec',
+      cycleId: 'cycle-1',
+      exitCode: 0,
+      output,
+      root: null,
+      subject: null,
+    });
+    expect(outcome.ok).toBe(true);
+    expect(outcome.source).toBe('step_result');
+  });
 });

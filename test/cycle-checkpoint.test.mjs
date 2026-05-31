@@ -68,6 +68,18 @@ describe('cycle step checkpoints', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  it('does not enqueue verify when exec is done but exec checkpoint is missing', () => {
+    const root = makeRoot();
+    const cycleId = 'cycle-cp-missing-exec';
+    createCycle(root, 'alpha', { cycleId, meta: { driver: 'daemon' } });
+    markStepStatus(root, 'alpha', cycleId, 'intel', { status: 'done', metaPatch: { decisions_queued: 0 } });
+    markStepStatus(root, 'alpha', cycleId, 'intel_report', { status: 'done', metaPatch: { intel_report_ready: true } });
+    markStepStatus(root, 'alpha', cycleId, 'exec', { status: 'done' });
+    const { enqueued } = reconcileOpenCycles(root, 'alpha');
+    expect(enqueued.some((item) => item.type === 'verify')).toBe(false);
+    rmSync(root, { recursive: true, force: true });
+  });
+
   it('reconcile enqueues verify when exec is done but verify pending', () => {
     const root = makeRoot();
     const cycleId = 'cycle-cp-3';

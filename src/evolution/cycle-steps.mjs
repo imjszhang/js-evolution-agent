@@ -108,7 +108,6 @@ export async function runIntelStep(ctx, { cycleId = null, recordState = null } =
   }
   const metaPatch = { decisions_queued: intelResult.decisions_queued?.length ?? 0 };
   if (recordState) {
-    await recordStepSidecar(recordState.root, recordState.subject, resolvedCycleId, 'intel', 'done', metaPatch);
     await persistCheckpoint(recordState, resolvedCycleId, 'intel', {
       cycle_id: resolvedCycleId,
       success: true,
@@ -119,6 +118,7 @@ export async function runIntelStep(ctx, { cycleId = null, recordState = null } =
         indexRecord: intelResult.report.indexRecord,
       } : null,
     });
+    await recordStepSidecar(recordState.root, recordState.subject, resolvedCycleId, 'intel', 'done', metaPatch);
   }
   return {
     cycleId: resolvedCycleId,
@@ -156,15 +156,15 @@ export async function runIntelReportStep(ctx, { intelResult, recordState = null 
     return { intelReportReady: false, failed: true };
   }
   if (recordState) {
-    await recordStepSidecar(recordState.root, recordState.subject, intelResult.cycle_id, 'intel_report', 'done', {
-      intel_report_ready: intelReportReady,
-    });
     await persistCheckpoint(recordState, intelResult.cycle_id, 'intel_report', {
       cycle_id: intelResult.cycle_id,
       intel_report_ready: intelReportReady,
       report_path: intelResult.report?.mdPath ?? null,
       source: intelResult.report?.source ?? null,
       indexRecord: intelResult.report?.indexRecord ?? null,
+    });
+    await recordStepSidecar(recordState.root, recordState.subject, intelResult.cycle_id, 'intel_report', 'done', {
+      intel_report_ready: intelReportReady,
     });
   }
   return { intelReportReady, eventPayload: { intel_report_ready: intelReportReady } };
@@ -196,7 +196,6 @@ export async function runExecStep(ctx, { recordState = null, intelResult = null,
     throw new Error(execResult.error || 'exec pipeline failed');
   }
   if (recordState && artifactCycleId) {
-    await recordStepSidecar(recordState.root, recordState.subject, artifactCycleId, 'exec', 'done');
     await persistCheckpoint(recordState, artifactCycleId, 'exec', {
       cycle_id: execResult.cycle_id,
       intel_cycle_id: intelResult?.cycle_id ?? artifactCycleId,
@@ -204,6 +203,7 @@ export async function runExecStep(ctx, { recordState = null, intelResult = null,
       executed: execResult.executed ?? [],
       error: execResult.error ?? null,
     });
+    await recordStepSidecar(recordState.root, recordState.subject, artifactCycleId, 'exec', 'done');
   }
   return { execResult };
 }
@@ -240,13 +240,13 @@ export async function runVerifyStep(ctx, { intelResult, execResult, recordState 
   });
   if (recordState) {
     const artifactCycleId = stateCycleId(intelResult);
-    await recordStepSidecar(recordState.root, recordState.subject, artifactCycleId, 'verify', 'done');
     await persistCheckpoint(recordState, artifactCycleId, 'verify', {
       cycle_id: execResult.cycle_id,
       report_path: reportPath,
       verified_count: verification.verified?.length ?? 0,
       semantic_status: semanticVerification.status,
     });
+    await recordStepSidecar(recordState.root, recordState.subject, artifactCycleId, 'verify', 'done');
   }
   return { verification, reportPath, semanticVerification };
 }
@@ -449,12 +449,17 @@ export async function runDiaryStep(ctx, {
   }
 }
 
-async function persistCheckpoint(recordState, cycleId, step, payload) {
+const REQUIRED_CHECKPOINT_STEPS = new Set(['intel', 'intel_report', 'exec', 'verify']);
+
+async function persistCheckpoint(recordState, cycleId, step, payload, { required } = {}) {
   if (!recordState?.root || !recordState?.subject || !cycleId) return;
+  const mustPersist = required ?? REQUIRED_CHECKPOINT_STEPS.has(step);
   try {
     writeStepArtifact(recordState.root, recordState.subject, cycleId, step, payload);
-  } catch {
-    // checkpoint must not break step execution
+  } catch (err) {
+    if (mustPersist) {
+      throw new Error(`checkpoint write failed for ${step} (cycle=${cycleId}): ${err?.message || err}`);
+    }
   }
 }
 

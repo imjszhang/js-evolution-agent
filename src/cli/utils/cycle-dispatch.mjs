@@ -15,6 +15,7 @@ import {
   findStuckSteps,
   isCycleProgressStalled,
   isCycleStale,
+  isStepArtifactComplete,
   listOpenCycles,
   markStepStatus,
   markStepsSkipped,
@@ -46,10 +47,14 @@ function shouldRecordDeferredEvent(subject, requestId, blockedReason) {
   return true;
 }
 
-function dispatchOptionsFromInput(input = {}) {
+function dispatchOptionsFromInput(input = {}, root = null, subject = null) {
+  const isExecArtifactComplete = root && subject && input.cycle_id
+    ? isStepArtifactComplete(root, subject, input.cycle_id, 'exec')
+    : undefined;
   return {
     skipBeliefUpdate: Boolean(input.skip_belief_update),
     skipGoalsAssess: Boolean(input.skip_goals_assess),
+    isExecArtifactComplete,
   };
 }
 
@@ -100,7 +105,11 @@ export function dispatchCycleEvent(root, subject, event, { input = {} } = {}) {
   const cycleState = readCycleState(root, subject, cycleId);
   if (!cycleState) return { enqueued: [], skipped: [], error: 'cycle_not_found' };
 
-  const options = dispatchOptionsFromInput({ ...input, ...cycleState.meta });
+  const options = dispatchOptionsFromInput(
+    { ...input, ...cycleState.meta, cycle_id: cycleId },
+    root,
+    subject,
+  );
   const { steps, markSkipped } = nextSteps(event, cycleState, options);
 
   if (markSkipped?.length) {
@@ -343,7 +352,6 @@ export function reconcileOpenCycles(root, subject, input = {}) {
   const staleMs = Number(input.stale_ms) > 0 ? Number(input.stale_ms) : 60_000;
   const taskQueue = readTaskQueue(root, subject);
   let openCycles = listOpenCycles(root, subject);
-  const options = dispatchOptionsFromInput(input);
   const allEnqueued = [];
   const allSkipped = [];
   const abandoned = [];
@@ -376,7 +384,12 @@ export function reconcileOpenCycles(root, subject, input = {}) {
     const driftResult = reconcileStepStateDrift(root, subject, refreshed, taskQueueFresh);
     taskQueueFresh = driftResult.taskQueue;
     refreshed = readCycleState(root, subject, cycleState.cycle_id) ?? refreshed;
-    const { steps, markSkipped } = reconcileCycle(refreshed, options);
+    const reconcileOptions = dispatchOptionsFromInput(
+      { ...input, cycle_id: cycleState.cycle_id },
+      root,
+      subject,
+    );
+    const { steps, markSkipped } = reconcileCycle(refreshed, reconcileOptions);
     if (markSkipped?.length) {
       markStepsSkipped(root, subject, cycleState.cycle_id, markSkipped);
       allSkipped.push(...markSkipped);

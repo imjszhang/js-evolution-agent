@@ -347,6 +347,7 @@ export function buildEvolutionDiaryPrompt({
     '- 如果 phase3.semantic 存在，它是本轮执行 receipt 的最新解释层结论。用它修正旧 report/diary 推断，但不要把 semantic summary 升级成 Seen 事实。',
     '- 如果 Machine Context 中存在 phase4 或 phase4_5，必须显式记录 Phase 4 目标评估与 Phase 4.5 自动校准结果。Phase 4 至少写出 status、confidence、reason；Phase 4.5 至少写出 status、mode（patch、patch_partial 或 full_replace）、calibrate_mode、reason、detail、applied_patches、children_ids 前后变化、belief_retirements、next_goal_id、written。若校准被 skipped，也要写明 skipped reason 与 detail，不要省略。',
     '- 如果 Machine Context 中存在 phase3_5，必须显式记录 Phase 3.5 信念更新结果。至少写出 status、reason、updates_count，以及哪些 belief 被 strengthen/weaken/validate/refute/create/retire。',
+    '- 解读 rank、score 等指标时，遵循 interpretation_anchors.operator_established_facts；判断「是否推进」时对照 interpretation_anchors.active_goals 或 active_goals_flat 的 good_signal / bad_signal，不要仅凭裸数值 delta 推断方向（例如 rank 数值更低可能是改善）。phase2/phase3 的执行与验证结论仍优先于 anchors；anchors 只用于解释它们。',
     '- 文风要像认真复盘的人写给操作者看：清楚、坦诚、可读，说清楚推进了什么、没推进什么、下一轮该记住什么。',
     '- 使用现代汉语书面语，避免文言、玄学散文、典故标题和过度模板化表格。',
     '',

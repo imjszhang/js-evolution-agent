@@ -90,20 +90,26 @@ export function resolveStepOutcome({
 } = {}) {
   const stepResult = parseStepResult(output);
   const resolvedCycleId = cycleId || stepResult?.cycle_id;
-  if (exitCode === 0) {
-    return { ok: true, source: 'exit_code', stepResult, resolvedCycleId };
-  }
   if (stepResult?.ok) {
     return { ok: true, source: 'step_result', stepResult, resolvedCycleId };
   }
   if (root && subject && cycleId && step && isStepArtifactComplete(root, subject, cycleId, step)) {
     return { ok: true, source: 'artifact', stepResult, resolvedCycleId: cycleId };
   }
+  let failure = classifyCycleFailure({ exitCode, output });
+  if (exitCode === 0) {
+    failure = {
+      retryable: true,
+      reason: 'step_result_missing',
+      code: 'step_result_missing',
+      message: 'step exited 0 but produced no JEA_STEP_RESULT ok and no complete checkpoint artifact',
+    };
+  }
   return {
     ok: false,
     stepResult,
     resolvedCycleId,
-    failure: classifyCycleFailure({ exitCode, output }),
+    failure,
   };
 }
 
