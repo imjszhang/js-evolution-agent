@@ -8,6 +8,7 @@ import {
 } from './state.mjs';
 import { getFeishuListenerStatus } from './adapters/feishu/listener.mjs';
 import { resolveFeishuConfig, feishuConfigForApi } from './adapters/feishu/config.mjs';
+import { replyConfigForApi, resolveReplyConfig } from './reply.mjs';
 
 export function buildChannelProjection(root, subject, { heartbeatStaleMs = 60_000, eventLimit = 20 } = {}) {
   const queue = readChannelTaskQueue(root, subject);
@@ -64,6 +65,7 @@ export function buildChannelProjection(root, subject, { heartbeatStaleMs = 60_00
     recent_events: readChannelEvents(root, subject, { limit: eventLimit }),
     feishu: {
       config: feishuConfigForApi(resolveFeishuConfig(root, subject)),
+      reply: replyConfigForApi(resolveReplyConfig(root, subject)),
       listener: getFeishuListenerStatus(root, subject),
     },
   };

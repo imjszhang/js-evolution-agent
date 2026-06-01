@@ -1,6 +1,7 @@
 export const CHANNEL_TASK_TYPES = Object.freeze([
   'channel_inbound',
   'channel_ingest',
+  'channel_reply',
   'channel_watch',
   'channel_notify',
   'channel_retry',

@@ -3,7 +3,12 @@ import { normalizeInboundPayload, sendOutboundMessage, resolveFeishuConfig } fro
 import { tryHandleFeishuBind } from './adapters/feishu/binding.mjs';
 import { recordChannelEvent } from './audit.mjs';
 import { ingestChannelEnvelope } from './ingest.mjs';
-import { collectAttentionSignals, enqueueNotificationsForSignals } from './notify.mjs';
+import { collectAttentionSignals } from './notify.mjs';
+import {
+  decideAndApplyInboundReply,
+  decideAndApplyProactiveReply,
+} from './reply.mjs';
+import { enqueueChannelTask } from './task-queue.mjs';
 import {
   hasSeenMessage,
   listOutboxPending,
@@ -76,6 +81,7 @@ export async function runChannelIngestTask(root, subject, input = {}) {
             file,
             target,
             message_id: envelope.message_id,
+            envelope,
             ingest_result: { kind: 'feishu_bind', ok: bindResult.ok, code: bindResult.code },
           });
           continue;
@@ -93,7 +99,7 @@ export async function runChannelIngestTask(root, subject, input = {}) {
         ingest_kind: result.kind,
       });
       const target = markInboundProcessed(root, subject, file, { envelope, ingest_result: result });
-      processed.push({ file, target, message_id: envelope.message_id, ingest_result: result });
+      processed.push({ file, target, message_id: envelope.message_id, envelope, ingest_result: result });
       recordChannelEvent(root, subject, {
         type: 'channel_message_ingested',
         status: 'ok',
@@ -111,24 +117,99 @@ export async function runChannelIngestTask(root, subject, input = {}) {
       });
     }
   }
-  return { processed, skipped, failed };
+  const replyItems = [
+    ...processed.map((item) => ({
+      message_id: item.message_id,
+      envelope: item.envelope,
+      ingest_result: item.ingest_result,
+    })),
+    ...skipped.map((item) => {
+      const payload = readJsonFile(item.file);
+      return {
+        message_id: item.message_id,
+        envelope: payload?.envelope,
+        ingest_result: null,
+        skipped: item.reason,
+      };
+    }),
+  ].filter((item) => item.envelope);
+  const replyTask = enqueueReplyTaskForItems(root, subject, replyItems);
+  return { processed, skipped, failed, reply_task: replyTask.task ?? null, reply_created: replyTask.created ?? false };
+}
+
+function enqueueReplyTaskForItems(root, subject, items) {
+  if (!items.length) return { created: false, reason: 'no_items' };
+  const messageIds = items
+    .map((item) => item.message_id)
+    .filter(Boolean)
+    .sort()
+    .join('|');
+  return enqueueChannelTask(root, subject, {
+    type: 'channel_reply',
+    priority: 25,
+    input: { items },
+    idempotencyKey: `${subject}:channel_reply:${messageIds || Date.now()}`,
+  });
+}
+
+function enqueueNotifyIfOutboxPending(root, subject) {
+  if (!listOutboxPending(root, subject, { limit: 1 }).length) {
+    return { created: false, reason: 'no_pending_outbox' };
+  }
+  return enqueueChannelTask(root, subject, {
+    type: 'channel_notify',
+    priority: 40,
+    idempotencyKey: `${subject}:channel_notify:pending`,
+  });
+}
+
+export async function runChannelReplyTask(root, subject, input = {}) {
+  const items = Array.isArray(input.items) ? input.items : (input.envelope ? [input] : []);
+  const results = [];
+  for (const item of items) {
+    const { decision, result } = decideAndApplyInboundReply(root, subject, {
+      envelope: item.envelope,
+      ingestResult: item.ingest_result,
+      recentState: { skipped: item.skipped },
+    }, { reason: 'inbound_reply' });
+    results.push({
+      message_id: item.message_id ?? item.envelope?.message_id ?? null,
+      decision,
+      result,
+    });
+  }
+  const notifyTask = enqueueNotifyIfOutboxPending(root, subject);
+  return { results, notify_task: notifyTask.task ?? null, notify_created: notifyTask.created ?? false };
 }
 
 export async function runChannelWatchTask(root, subject, input = {}) {
   const signals = collectAttentionSignals(root, subject);
-  const result = enqueueNotificationsForSignals(root, subject, signals, {
-    target: input.target ?? null,
-    cooldownMs: input.cooldown_ms ?? undefined,
-    dryRun: Boolean(input.dry_run),
-  });
+  const results = [];
+  for (const signal of signals) {
+    const { decision, result } = decideAndApplyProactiveReply(root, subject, { signal }, {
+      dryRun: Boolean(input.dry_run),
+      reason: signal.type,
+    });
+    results.push({ signal, decision, result });
+  }
+  const enqueued = results.filter((item) => item.result?.applied);
+  const skipped = results.filter((item) => item.result?.skipped);
+  const notifyTask = enqueueNotifyIfOutboxPending(root, subject);
   recordChannelEvent(root, subject, {
     type: 'channel_watch_completed',
     status: 'ok',
     signal_count: signals.length,
-    enqueued_count: result.enqueued.length,
-    skipped_count: result.skipped.length,
+    enqueued_count: enqueued.length,
+    skipped_count: skipped.length,
   });
-  return { signals, ...result };
+  return {
+    signals,
+    enqueued,
+    skipped,
+    results,
+    notify_task: notifyTask.task ?? null,
+    notify_created: notifyTask.created ?? false,
+  };
 }
 
 export async function runChannelNotifyTask(root, subject, input = {}) {
@@ -178,6 +259,8 @@ export async function runChannelTask(root, subject, task) {
       return runChannelInboundTask(root, subject, input);
     case 'channel_ingest':
       return runChannelIngestTask(root, subject, input);
+    case 'channel_reply':
+      return runChannelReplyTask(root, subject, input);
     case 'channel_watch':
       return runChannelWatchTask(root, subject, input);
     case 'channel_notify':
