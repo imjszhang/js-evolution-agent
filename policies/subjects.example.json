@@ -21,12 +21,16 @@
           "enabled": true,
           "app_id": "cli_xxxx",
           "app_secret_env": "FEISHU_MY_SUBJECT_APP_SECRET",
-          "default_chat_id": "oc_xxxx",
           "domain": "feishu",
-          "dm_policy": "open",
-          "group_policy": "allowlist",
-          "group_allow_from": [],
-          "require_mention": true
+          "dm_policy": "allowlist",
+          "allow_from": [],
+          "group_policy": "disabled",
+          "require_mention": false,
+          "bind": {
+            "enabled": true,
+            "phrase": "JEA BIND",
+            "token_env": "JEA_CHANNEL_FEISHU_MY_SUBJECT_BIND_TOKEN"
+          }
         }
       },
       "resources": {

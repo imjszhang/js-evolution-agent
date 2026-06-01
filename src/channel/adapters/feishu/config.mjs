@@ -1,4 +1,11 @@
 import { runtimeForSubject } from '../../../cli/utils/evolve-runs.mjs';
+import {
+  readOperatorBinding,
+  resolveBindSettings,
+  mergeOperatorBinding,
+  operatorBindingForApi,
+  DEFAULT_BIND_PHRASE,
+} from './binding.mjs';
 
 const POLICY_OPEN = 'open';
 const POLICY_ALLOWLIST = 'allowlist';
@@ -128,7 +135,9 @@ export function resolveFeishuConfig(root, subject, overrides = {}) {
     ?? block.listenerEnabled
     ?? (enabled && block.listener_enabled !== false);
 
-  return {
+  const bindSettings = resolveBindSettings(block, subject);
+  const operatorBinding = readOperatorBinding(root, subject);
+  const base = {
     subject,
     mock: Boolean(mock),
     enabled: Boolean(enabled),
@@ -151,7 +160,13 @@ export function resolveFeishuConfig(root, subject, overrides = {}) {
     requireMention: block.require_mention ?? block.requireMention ?? true,
     groups: block.groups ?? {},
     textChunkLimit: block.text_chunk_limit ?? 4000,
+    bindEnabled: bindSettings.enabled,
+    bindPhrase: bindSettings.phrase,
+    bindToken: bindSettings.token,
+    bindTokenEnv: bindSettings.tokenEnv,
+    operatorBinding,
   };
+  return mergeOperatorBinding(base, operatorBinding);
 }
 
 export function feishuConfigForApi(config) {
@@ -170,6 +185,8 @@ export function feishuConfigForApi(config) {
     dmPolicy: config.dmPolicy,
     groupPolicy: config.groupPolicy,
     requireMention: config.requireMention,
+    operator: operatorBindingForApi(config.operatorBinding, config),
+    bind_phrase: config.bindPhrase ?? DEFAULT_BIND_PHRASE,
   };
 }
 

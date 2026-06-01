@@ -447,6 +447,17 @@ runtime/subjects/<data_namespace>/data/channel/
 
 出站通知由 `channel_watch` 观察 daemon projection、cycle-state、failed tasks、pending briefs 等生成 attention signals，再由 `channel_notify` 发送。通知去重与冷却在 channel runtime 中审计，不污染 cycle receipt。
 
+### 私聊绑定（`JEA BIND`）
+
+仅私聊、未手填 `ou_` 时，可在 `channels.feishu.bind` 开启口令绑定：
+
+1. `.env` 设置 `JEA_CHANNEL_FEISHU_<SUBJECT>_BIND_TOKEN`（或 `subjects.json` 的 `bind.token_env`）。
+2. 启动 `jea daemon start --subject NAME --domain channel`。
+3. 在飞书里**私聊**机器人，发送：`JEA BIND <口令>`（短语默认 `JEA BIND`，可在 `bind.phrase` 自定义）。
+4. 绑定结果写入 `runtime/subjects/<ns>/data/channel/feishu-operator-binding.json`，并自动作为 `allow_from` / 默认出站目标；`jea channel status --json` 的 `feishu.config.operator` 可查看（open_id 脱敏）。
+
+未绑定前仅接受绑定握手消息；群聊可用 `group_policy: disabled` 关闭。覆盖他人绑定需再次发送带**同一口令**的 `JEA BIND`。
+
 飞书配置按 **subject 隔离**（每个 subject 可绑定不同机器人）。`app_secret` 不要明文写入 `subjects.json`，用 `app_secret_env` 指向环境变量名。
 
 `policies/subjects.json` 示例（`my-subject` 与 `other-subject` 各用各的 bot）：

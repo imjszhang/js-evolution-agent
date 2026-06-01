@@ -1,3 +1,6 @@
+import { parseTextContent } from './parser.mjs';
+import { matchesBindPhrase } from './binding.mjs';
+
 const PolicyType = {
   OPEN: 'open',
   ALLOWLIST: 'allowlist',
@@ -13,6 +16,9 @@ export class FeishuPolicy {
       groupAllowFrom: [],
       requireMention: true,
       groups: {},
+      bindEnabled: false,
+      bindPhrase: 'JEA BIND',
+      bindToken: '',
       ...config,
     };
   }
@@ -87,6 +93,12 @@ export class FeishuPolicy {
    */
   evaluateInbound(event, botOpenId = null) {
     const isGroup = event.chatType === 'group';
+    if (!isGroup && this.config.bindEnabled) {
+      const text = parseTextContent(event.content, event.messageType);
+      if (matchesBindPhrase(text, this.config.bindPhrase)) {
+        return { allowed: true, reason: 'bind_handshake' };
+      }
+    }
     if (isGroup) {
       const groupResult = this.checkGroup({
         chatId: event.chatId,

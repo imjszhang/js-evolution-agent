@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { normalizeInboundPayload, sendOutboundMessage } from './adapters/feishu/index.mjs';
+import { normalizeInboundPayload, sendOutboundMessage, resolveFeishuConfig } from './adapters/feishu/index.mjs';
+import { tryHandleFeishuBind } from './adapters/feishu/binding.mjs';
 import { recordChannelEvent } from './audit.mjs';
 import { ingestChannelEnvelope } from './ingest.mjs';
 import { collectAttentionSignals, enqueueNotificationsForSignals } from './notify.mjs';
@@ -52,6 +53,34 @@ export async function runChannelIngestTask(root, subject, input = {}) {
     }
     try {
       const envelope = await normalizeInboundPayload(payload, input.adapter_options ?? {});
+      const feishuCfg = envelope.channel === 'feishu' ? resolveFeishuConfig(root, subject) : null;
+      if (feishuCfg?.bindEnabled) {
+        const bindEvent = {
+          senderOpenId: envelope.sender_id,
+          senderId: envelope.sender_id,
+          messageId: envelope.message_id,
+          chatId: envelope.chat_id,
+          chatType: envelope.chat_type === 'group' ? 'group' : 'p2p',
+          messageType: envelope.content_type || 'text',
+          content: envelope.content_type === 'text'
+            ? JSON.stringify({ text: envelope.content })
+            : envelope.content,
+        };
+        const bindResult = await tryHandleFeishuBind(root, subject, bindEvent, { config: feishuCfg });
+        if (bindResult.handled) {
+          const target = markInboundProcessed(root, subject, file, {
+            envelope,
+            ingest_result: { kind: 'feishu_bind', ok: bindResult.ok, code: bindResult.code },
+          });
+          processed.push({
+            file,
+            target,
+            message_id: envelope.message_id,
+            ingest_result: { kind: 'feishu_bind', ok: bindResult.ok, code: bindResult.code },
+          });
+          continue;
+        }
+      }
       if (hasSeenMessage(root, subject, envelope.message_id)) {
         const target = markInboundProcessed(root, subject, file, { envelope, skipped: 'duplicate' });
         skipped.push({ file, target, message_id: envelope.message_id, reason: 'duplicate' });

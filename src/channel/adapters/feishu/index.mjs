@@ -5,6 +5,12 @@ import { FeishuClient } from './client.mjs';
 import { FeishuSender } from './sender.mjs';
 
 export { resolveFeishuConfig, feishuConfigForApi, assertFeishuCredentials, subjectEnvSlug } from './config.mjs';
+export {
+  tryHandleFeishuBind,
+  readOperatorBinding,
+  matchesBindPhrase,
+  DEFAULT_BIND_PHRASE,
+} from './binding.mjs';
 export { normalizeInboundPayload, envelopeFromFeishuEvent, envelopeFromMessageContext } from './parser.mjs';
 export { startFeishuListener, stopFeishuListener, getFeishuListenerStatus, stopAllFeishuListeners } from './listener.mjs';
 export { resolveIdType, normalizeTarget } from './sender.mjs';

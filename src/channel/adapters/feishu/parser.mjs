@@ -1,6 +1,6 @@
 import { normalizeChannelEnvelope, nowIso } from '../../types.mjs';
 
-function parseTextContent(content, messageType = 'text') {
+export function parseTextContent(content, messageType = 'text') {
   if (!content) return '';
   if (messageType !== 'text') return String(content);
   try {

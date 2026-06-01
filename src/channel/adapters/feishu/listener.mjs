@@ -6,6 +6,8 @@ import { resolveFeishuConfig } from './config.mjs';
 import { FeishuClient } from './client.mjs';
 import { FeishuPolicy } from './policy.mjs';
 import { FeishuMonitor } from './monitor.mjs';
+import { tryHandleFeishuBind } from './binding.mjs';
+import { resolveFeishuConfig as reloadFeishuConfig } from './config.mjs';
 
 /** @type {Map<string, { monitor: FeishuMonitor, client: FeishuClient, config: object }>} */
 const activeListeners = new Map();
@@ -47,8 +49,23 @@ export async function startFeishuListener(root, subject, options = {}) {
   }
 
   const client = new FeishuClient(config);
-  const policy = new FeishuPolicy(config);
+  let liveConfig = config;
+  const policy = new FeishuPolicy(liveConfig);
   let botOpenId = null;
+
+  function syncPolicyFromConfig(cfg) {
+    policy.updateConfig({
+      dmPolicy: cfg.dmPolicy,
+      allowFrom: cfg.allowFrom,
+      groupPolicy: cfg.groupPolicy,
+      groupAllowFrom: cfg.groupAllowFrom,
+      requireMention: cfg.requireMention,
+      bindEnabled: cfg.bindEnabled,
+      bindPhrase: cfg.bindPhrase,
+      bindToken: cfg.bindToken,
+    });
+  }
+
   const monitor = new FeishuMonitor({
     client,
     policy,
@@ -61,6 +78,14 @@ export async function startFeishuListener(root, subject, options = {}) {
       });
     },
     onMessage: async (event) => {
+      const bindResult = await tryHandleFeishuBind(root, subject, event, { client, config: liveConfig });
+      if (bindResult.handled) {
+        if (bindResult.ok) {
+          liveConfig = reloadFeishuConfig(root, subject);
+          syncPolicyFromConfig(liveConfig);
+        }
+        return;
+      }
       const envelope = envelopeFromFeishuEvent(
         { sender: { sender_id: { open_id: event.senderOpenId, user_id: event.senderId } }, message: {
           message_id: event.messageId,
@@ -92,7 +117,7 @@ export async function startFeishuListener(root, subject, options = {}) {
 
   try {
     await monitor.start();
-    activeListeners.set(key, { monitor, client, config });
+    activeListeners.set(key, { monitor, client, get config() { return liveConfig; } });
     recordChannelEvent(root, subject, {
       type: 'feishu_listener_started',
       status: 'ok',
