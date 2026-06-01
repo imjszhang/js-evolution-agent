@@ -16,6 +16,19 @@
         "run_command": "npm start",
         "github_repo": "owner/repo"
       },
+      "channels": {
+        "feishu": {
+          "enabled": true,
+          "app_id": "cli_xxxx",
+          "app_secret_env": "FEISHU_MY_SUBJECT_APP_SECRET",
+          "default_chat_id": "oc_xxxx",
+          "domain": "feishu",
+          "dm_policy": "open",
+          "group_policy": "allowlist",
+          "group_allow_from": [],
+          "require_mention": true
+        }
+      },
       "resources": {
         "items": {
           "target_repo": {

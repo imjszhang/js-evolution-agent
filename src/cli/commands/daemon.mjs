@@ -59,6 +59,7 @@ import {
 } from '../utils/cycle-dispatch.mjs';
 import { resolveEvolutionMode } from '../utils/evolution-mode.mjs';
 import { applyEvolutionModeChange } from '../utils/evolution-mode-apply.mjs';
+import { startFeishuListener, stopFeishuListener } from '../../channel/adapters/feishu/index.mjs';
 import { runChannelTick } from '../../channel/dispatch.mjs';
 import { recordChannelEvent } from '../../channel/audit.mjs';
 import { isChannelTaskType } from '../../channel/types.mjs';
@@ -1273,6 +1274,21 @@ export async function runChannelDomainWorker(root, subject, flags = {}) {
   };
   runScheduledTick();
   tickTimer = setInterval(runScheduledTick, tickMs);
+
+  let feishuListenerStarted = false;
+  if (!flags['no-feishu-listener']) {
+    const listenerResult = await startFeishuListener(root, subject, flags);
+    feishuListenerStarted = Boolean(listenerResult.started);
+    if (!listenerResult.started
+      && !['listener_disabled', 'mock_mode', 'credentials_missing', 'already_running'].includes(listenerResult.reason)) {
+      recordChannelEvent(root, subject, {
+        type: 'feishu_listener_start_skipped',
+        status: 'not_running',
+        reason: listenerResult.reason,
+      });
+    }
+  }
+
   try {
     for (;;) {
       const current = readChannelWorkerState(root, subject);
@@ -1326,6 +1342,9 @@ export async function runChannelDomainWorker(root, subject, flags = {}) {
     }
   } finally {
     if (tickTimer) clearInterval(tickTimer);
+    if (feishuListenerStarted) {
+      await stopFeishuListener(root, subject);
+    }
     process.removeListener('SIGINT', requestLocalStop);
     process.removeListener('SIGTERM', requestLocalStop);
   }

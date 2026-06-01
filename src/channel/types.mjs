@@ -20,7 +20,7 @@ export function normalizeChannelEnvelope(input = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     throw new Error('Channel envelope must be a JSON object');
   }
-  const channel = String(input.channel ?? 'lark');
+  const channel = String(input.channel ?? 'feishu');
   const messageId = String(input.message_id ?? input.messageId ?? '').trim();
   if (!messageId) throw new Error('Channel envelope requires message_id');
   const chatId = String(input.chat_id ?? input.chatId ?? '').trim();
@@ -29,7 +29,7 @@ export function normalizeChannelEnvelope(input = {}) {
   return {
     schema_version: input.schema_version ?? 1,
     channel,
-    adapter: input.adapter ?? 'openclaw-lark',
+    adapter: input.adapter ?? 'feishu',
     direction: input.direction ?? 'inbound',
     message_id: messageId,
     chat_id: chatId,
@@ -53,7 +53,7 @@ export function normalizeOutboundMessage(input = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     throw new Error('Outbound message must be a JSON object');
   }
-  const channel = String(input.channel ?? 'lark');
+  const channel = String(input.channel ?? 'feishu');
   const target = String(input.target ?? input.to ?? input.chat_id ?? '').trim();
   if (!target) throw new Error('Outbound message requires target');
   const text = String(input.text ?? input.content ?? '').trim();
@@ -63,7 +63,7 @@ export function normalizeOutboundMessage(input = {}) {
     id: input.id ?? null,
     idempotency_key: input.idempotency_key ?? null,
     channel,
-    adapter: input.adapter ?? 'openclaw-lark',
+    adapter: input.adapter ?? 'feishu',
     target,
     text,
     card: input.card ?? null,

@@ -112,7 +112,7 @@ export async function channelCommand({ subcommand, flags = {}, args = [], root =
       return 2;
     }
     const outbound = normalizeOutboundMessage({
-      channel: 'lark',
+      channel: 'feishu',
       target,
       text,
       subject,

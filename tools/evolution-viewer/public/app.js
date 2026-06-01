@@ -82,6 +82,12 @@ const CHANNEL_EVENT_LABELS = {
   channel_message_ingest_failed: '消息分类失败',
   channel_message_sent: '消息已发送',
   channel_message_send_failed: '消息发送失败',
+  channel_message_received: 'Channel 收到消息',
+  feishu_listener_started: 'Feishu 监听启动',
+  feishu_listener_stopped: 'Feishu 监听停止',
+  feishu_listener_connected: 'Feishu 已连接',
+  feishu_listener_disconnected: 'Feishu 已断开',
+  feishu_listener_start_failed: 'Feishu 监听启动失败',
 };
 
 const EVOLUTION_MODE_LABELS = {

@@ -24,7 +24,7 @@ function makeRoot({ channelTarget = 'oc_test' } = {}) {
         policy: 'subjects/alpha.md',
         data_namespace: 'alpha',
         channels: {
-          lark: { default_chat_id: channelTarget },
+          feishu: { default_chat_id: channelTarget },
         },
       },
     },

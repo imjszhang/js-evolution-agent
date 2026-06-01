@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { normalizeInboundPayload, sendOutboundMessage } from './adapters/openclaw-lark.mjs';
+import { normalizeInboundPayload, sendOutboundMessage } from './adapters/feishu/index.mjs';
 import { recordChannelEvent } from './audit.mjs';
 import { ingestChannelEnvelope } from './ingest.mjs';
 import { collectAttentionSignals, enqueueNotificationsForSignals } from './notify.mjs';
@@ -115,7 +115,11 @@ export async function runChannelNotifyTask(root, subject, input = {}) {
     }
     try {
       const outbound = normalizeOutboundMessage(payload);
-      const result = await sendOutboundMessage(outbound, input.adapter_options ?? {});
+      const result = await sendOutboundMessage(outbound, {
+        root,
+        subject,
+        ...(input.adapter_options ?? {}),
+      });
       const target = markOutboxSent(root, subject, file, { outbound, send_result: result });
       sent.push({ file, target, result });
       recordChannelEvent(root, subject, {

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { resolveFeishuConfig } from './adapters/feishu/config.mjs';
 import { buildDaemonProjection } from '../cli/utils/daemon-projection.mjs';
 import { storeForSubject } from '../cli/utils/daemon-events.mjs';
 import { runtimeForSubject } from '../cli/utils/evolve-runs.mjs';
@@ -13,13 +14,7 @@ function hashKey(value) {
 }
 
 function routeTarget(root, subject) {
-  const envTarget = process.env.JEA_CHANNEL_LARK_CHAT_ID;
-  if (envTarget) return envTarget;
-  const entry = runtimeForSubject(root, subject).config;
-  return entry.channels?.lark?.default_chat_id
-    ?? entry.channel?.lark?.default_chat_id
-    ?? entry.channels?.default_chat_id
-    ?? null;
+  return resolveFeishuConfig(root, subject).defaultChatId;
 }
 
 export function collectAttentionSignals(root, subject, { projection = null } = {}) {
@@ -99,7 +94,7 @@ export function enqueueNotificationsForSignals(root, subject, signals, {
       continue;
     }
     const outbound = normalizeOutboundMessage({
-      channel: 'lark',
+      channel: 'feishu',
       target: resolvedTarget,
       text: formatSignalMessage(subject, signal),
       subject,
@@ -110,7 +105,9 @@ export function enqueueNotificationsForSignals(root, subject, signals, {
         signal,
         dry_run: dryRun,
         generated_at: nowIso(),
-        mock: dryRun || process.env.JEA_CHANNEL_LARK_MOCK === '1',
+        mock: dryRun
+          || process.env.JEA_CHANNEL_FEISHU_MOCK === '1'
+          || process.env.JEA_CHANNEL_LARK_MOCK === '1',
       },
     });
     const written = dryRun ? { file: null, message: outbound } : writeOutboxMessage(root, subject, outbound);

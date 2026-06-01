@@ -415,7 +415,7 @@ runtime/subjects/<data_namespace>/data/evolution/cycle-state/
 
 ## Channel 通道
 
-Channel 是 daemon 下与 cycle 平级的通信闭环，负责接收外部消息、写入合适的情报入口，并观察运行态决定是否向外部通道通知。当前首个适配器是 `openclaw-lark`（飞书/Lark），JEA 只做 contract 转换，不重写飞书 SDK 能力。
+Channel 是 daemon 下与 cycle 平级的通信闭环，负责接收外部消息、写入合适的情报入口，并观察运行态决定是否向外部通道通知。当前飞书适配器位于 `src/channel/adapters/feishu/`（基于 `@larksuiteoapi/node-sdk`，参考 Deepseek-Cowork `feishu-module` 的传输层实现，**不**依赖 OpenClaw 或 Cowork AI/ChannelBridge）。
 
 运行时数据位于：
 
@@ -432,7 +432,7 @@ runtime/subjects/<data_namespace>/data/channel/
 
 - `jea channel status [--json]`：查看 channel worker、队列、inbound/outbox 健康。
 - `jea channel events [--limit N] [--json]`：查看 channel 审计事件。
-- `jea channel inbox put [--file PATH | --stdin]`：放入一条 openclaw-lark `MessageContext` / 飞书事件 / JEA channel envelope，等待 `channel_ingest` 分类。
+- `jea channel inbox put [--file PATH | --stdin]`：放入一条飞书事件 / 手工 MessageContext / JEA `ChannelEnvelope`，等待 `channel_ingest` 分类。
 - `jea channel outbox [--json]`：查看待发送消息。
 - `jea channel send --to CHAT_ID --text TEXT [--dry-run]`：手工排队或预览一条出站消息。
 - `jea channel tick`：运行一次 channel dispatcher，按 pending inbound、attention signals、outbox 入队任务。
@@ -446,6 +446,57 @@ runtime/subjects/<data_namespace>/data/channel/
 - 普通外部消息写入 `intel_observations` 作为可推翻 evidence。
 
 出站通知由 `channel_watch` 观察 daemon projection、cycle-state、failed tasks、pending briefs 等生成 attention signals，再由 `channel_notify` 发送。通知去重与冷却在 channel runtime 中审计，不污染 cycle receipt。
+
+飞书配置按 **subject 隔离**（每个 subject 可绑定不同机器人）。`app_secret` 不要明文写入 `subjects.json`，用 `app_secret_env` 指向环境变量名。
+
+`policies/subjects.json` 示例（`my-subject` 与 `other-subject` 各用各的 bot）：
+
+```json
+{
+  "subjects": {
+    "my-subject": {
+      "channels": {
+        "feishu": {
+          "enabled": true,
+          "app_id": "cli_aaaa",
+          "app_secret_env": "FEISHU_MY_SUBJECT_APP_SECRET",
+          "default_chat_id": "oc_aaaa",
+          "dm_policy": "open",
+          "group_policy": "allowlist",
+          "require_mention": true
+        }
+      }
+    },
+    "other-subject": {
+      "channels": {
+        "feishu": {
+          "enabled": true,
+          "app_id": "cli_bbbb",
+          "app_secret_env": "FEISHU_OTHER_SUBJECT_APP_SECRET",
+          "default_chat_id": "oc_bbbb"
+        }
+      }
+    }
+  }
+}
+```
+
+也可用 subject 前缀环境变量（无需在 JSON 里写 `app_id`）：
+
+| 变量模式 | 含义 |
+| --- | --- |
+| `JEA_CHANNEL_FEISHU_<SUBJECT>_APP_ID` | 如 `JEA_CHANNEL_FEISHU_AI_RESEARCHER_APP_ID` |
+| `JEA_CHANNEL_FEISHU_<SUBJECT>_APP_SECRET` | 对应 subject 的 App Secret |
+| `JEA_CHANNEL_FEISHU_<SUBJECT>_DEFAULT_CHAT_ID` | 该 subject 默认出站群 |
+
+全局变量（`JEA_CHANNEL_FEISHU_APP_ID` 等）仅作**未在 subject 块单独配置时**的回退，多主体并行时推荐只用 per-subject 配置。
+
+| 变量 | 含义 |
+| --- | --- |
+| `JEA_CHANNEL_FEISHU_MOCK=1` | 全部 subject 出站 mock |
+| `JEA_CHANNEL_FEISHU_DOMAIN` | 默认域名 `feishu` / `lark` |
+
+`jea daemon start --domain channel` 在凭证齐全时会为**当前 subject** 启动 Feishu WebSocket listener；多 subject 需分别启动 daemon 进程。禁用 listener：`--no-feishu-listener`。
 
 ## Subject 管理
 
