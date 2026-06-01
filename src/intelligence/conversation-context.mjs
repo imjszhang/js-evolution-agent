@@ -1,6 +1,10 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { chatMessages, parseJsonFromText } from '../ai/messages.mjs';
+import {
+  buildPromptCacheMetadata,
+  markPromptCacheInvariant,
+} from '../ai/prompt-cache-metadata.mjs';
 import { redactSecrets } from './redaction.mjs';
 
 const CONTEXT_FILENAME = 'conversation_context.json';
@@ -36,10 +40,12 @@ export function persistPhase1ConversationContext({
   operatorBriefs = [],
   observation = null,
   reportMessages = [],
+  reportPromptCache = null,
   reportMarkdown = '',
   reportSource = null,
   reportPath = null,
   decideMessages = [],
+  decidePromptCache = null,
   rawDecision = '',
   analysis = null,
   actions = [],
@@ -76,11 +82,13 @@ export function persistPhase1ConversationContext({
     },
     report_turn: {
       messages: normalizeMessages(reportMessages),
+      prompt_cache: reportPromptCache,
       response: String(reportMarkdown ?? ''),
       source: reportSource,
     },
     analyze_decide_turn: {
       messages: normalizeMessages(decideMessages),
+      prompt_cache: decidePromptCache,
       response: String(rawDecision ?? ''),
       parsed: analysis,
       actions,
@@ -202,6 +210,17 @@ export async function verifyWithRestoredConversation({
     ...base,
     { role: 'user', content: buildVerificationPrompt({ execResult, mechanicalVerification }) },
   ];
+  const promptCache = buildPromptCacheMetadata({
+    profile: 'semantic_verification',
+    messages,
+    stablePrefix: buildVerificationPrompt({ execResult: {}, mechanicalVerification: {} }),
+    dynamicPayload: JSON.stringify({ execResult, mechanicalVerification }, null, 2),
+  });
+  const promptCacheInvariant = markPromptCacheInvariant({
+    scope: 'semantic_verification',
+    metadata: promptCache,
+    logger,
+  });
 
   try {
     const raw = await chatMessages(aiClient, messages, { thinking: 'low', timeout: 180 });
@@ -212,6 +231,10 @@ export async function verifyWithRestoredConversation({
       source: 'phase1_conversation_context',
       context_path: loaded.path,
       status: 'ok',
+      prompt_cache: {
+        ...promptCache,
+        invariant: promptCacheInvariant,
+      },
       raw_response: safeRaw,
       result: parsed,
     };
@@ -223,6 +246,10 @@ export async function verifyWithRestoredConversation({
       source: 'phase1_conversation_context',
       context_path: loaded.path,
       status: 'failed',
+      prompt_cache: {
+        ...promptCache,
+        invariant: promptCacheInvariant,
+      },
       error,
     };
   }

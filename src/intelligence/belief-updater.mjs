@@ -1,6 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { extractJsonFromText } from '../ai/messages.mjs';
 import {
+  buildPromptCacheMetadata,
+  markPromptCacheInvariant,
+} from '../ai/prompt-cache-metadata.mjs';
+import {
   BELIEF_CHANGES,
   BELIEF_CONFIDENCE,
   BELIEF_STATUSES,
@@ -326,18 +330,35 @@ export async function updateBeliefsWithAi({
     verificationReportPath,
     store,
   });
+  const prompt = buildBeliefUpdatePrompt({ context, language });
+  const stablePrompt = buildBeliefUpdatePrompt({ context: {}, language });
+  const promptCache = buildPromptCacheMetadata({
+    profile: 'belief_update',
+    messages: [{ role: 'user', content: prompt }],
+    stablePrefix: stablePrompt,
+    dynamicPayload: JSON.stringify(context, null, 2),
+  });
+  const promptCacheInvariant = markPromptCacheInvariant({
+    scope: 'belief_update',
+    metadata: promptCache,
+    logger,
+  });
 
   if (!aiClient || typeof aiClient.chat !== 'function') {
     return {
       source: 'fallback',
       context,
+      prompt,
+      prompt_cache: {
+        ...promptCache,
+        invariant: promptCacheInvariant,
+      },
       result: fallbackBeliefUpdate('AI client unavailable.'),
       currentBeliefs: normalizeCurrentBeliefs(store?.readCurrentBeliefs?.() ?? emptyCurrentBeliefs()),
       eventsWritten: 0,
     };
   }
 
-  const prompt = buildBeliefUpdatePrompt({ context, language });
   try {
     const raw = await aiClient.chat(prompt);
     const parsed = parseBeliefUpdate(raw);
@@ -354,6 +375,10 @@ export async function updateBeliefsWithAi({
       source: 'ai',
       context,
       prompt,
+      prompt_cache: {
+        ...promptCache,
+        invariant: promptCacheInvariant,
+      },
       result: parsed,
       currentBeliefs: applied.currentBeliefs,
       eventsWritten,
@@ -365,6 +390,10 @@ export async function updateBeliefsWithAi({
       source: 'fallback',
       context,
       prompt,
+      prompt_cache: {
+        ...promptCache,
+        invariant: promptCacheInvariant,
+      },
       result: fallbackBeliefUpdate(`AI update failed: ${msg}`),
       currentBeliefs: normalizeCurrentBeliefs(store?.readCurrentBeliefs?.() ?? emptyCurrentBeliefs()),
       eventsWritten: 0,

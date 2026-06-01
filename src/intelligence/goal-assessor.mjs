@@ -1,5 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { extractJsonFromText } from '../ai/messages.mjs';
+import {
+  buildPromptCacheMetadata,
+  markPromptCacheInvariant,
+} from '../ai/prompt-cache-metadata.mjs';
 import { assessGoals, detectLanguage, gatherEvidence } from './report-builder.mjs';
 import { normalizeCurrentBeliefs, partitionBeliefs } from './beliefs.mjs';
 import { normalizeGoalPatches } from './goal-patches.mjs';
@@ -456,12 +460,28 @@ export async function assessGoalsWithAi({
     store,
   });
   const prompt = buildGoalAssessmentPrompt({ context, agentContextDocs });
+  const stablePrompt = buildGoalAssessmentPrompt({ context: {}, agentContextDocs });
+  const promptCache = buildPromptCacheMetadata({
+    profile: 'goal_assess',
+    messages: [{ role: 'user', content: prompt }],
+    stablePrefix: stablePrompt,
+    dynamicPayload: JSON.stringify(context, null, 2),
+  });
+  const promptCacheInvariant = markPromptCacheInvariant({
+    scope: 'goal_assess',
+    metadata: promptCache,
+    logger,
+  });
 
   if (!aiClient || typeof aiClient.chat !== 'function') {
     return {
       source: 'fallback',
       context,
       prompt,
+      prompt_cache: {
+        ...promptCache,
+        invariant: promptCacheInvariant,
+      },
       assessment: fallbackGoalAssessment('AI client unavailable.'),
     };
   }
@@ -469,7 +489,16 @@ export async function assessGoalsWithAi({
   try {
     const raw = await aiClient.chat(prompt);
     const assessment = parseGoalAssessment(raw);
-    return { source: 'ai', context, prompt, assessment };
+    return {
+      source: 'ai',
+      context,
+      prompt,
+      prompt_cache: {
+        ...promptCache,
+        invariant: promptCacheInvariant,
+      },
+      assessment,
+    };
   } catch (e) {
     const msg = e?.message || String(e);
     logger?.warn?.(`[goals] AI assessment failed: ${msg}; using fallback`);
@@ -477,6 +506,10 @@ export async function assessGoalsWithAi({
       source: 'fallback',
       context,
       prompt,
+      prompt_cache: {
+        ...promptCache,
+        invariant: promptCacheInvariant,
+      },
       assessment: fallbackGoalAssessment(`AI assessment failed: ${msg}`),
     };
   }

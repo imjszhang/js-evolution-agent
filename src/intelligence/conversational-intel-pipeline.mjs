@@ -8,6 +8,10 @@ import {
   parseJsonFromText,
   serializeMessages,
 } from '../ai/messages.mjs';
+import {
+  buildPromptCacheMetadata,
+  markPromptCacheInvariant,
+} from '../ai/prompt-cache-metadata.mjs';
 import { LocalDecisionQueue } from './decision-queue.mjs';
 import {
   persistIntelReport,
@@ -15,9 +19,9 @@ import {
   updateStandingMemoryWithAi,
 } from './report-builder.mjs';
 import {
-  buildConversationSystemPrompt,
-  buildDecideUserPrompt,
-  buildReportUserPrompt,
+  buildConversationSystemPromptParts,
+  buildDecideUserPromptParts,
+  buildReportUserPromptParts,
 } from './conversation-prompts.mjs';
 
 export function normalizeAnalyzeDecision(analysis = {}) {
@@ -384,11 +388,12 @@ export class ConversationalIntelligencePipeline {
       }
       const reportPromptContext = toPreDecisionReportContext(preparedReport.reportContext);
 
-      const systemPrompt = buildConversationSystemPrompt({
+      const systemPromptParts = buildConversationSystemPromptParts({
         agentContextDocs: this.agentContextDocs,
         actionRegistry: this.actionRegistry,
       });
-      const reportUserPrompt = buildReportUserPrompt({
+      const systemPrompt = systemPromptParts.content;
+      const reportPromptParts = buildReportUserPromptParts({
         cycleId,
         language: preparedReport.language,
         goalsText,
@@ -399,10 +404,22 @@ export class ConversationalIntelligencePipeline {
         observationReport: observation.observation_report,
         reportContext: reportPromptContext,
       });
+      const reportUserPrompt = reportPromptParts.content;
       const reportMessages = [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: reportUserPrompt },
       ];
+      const reportPromptCache = buildPromptCacheMetadata({
+        profile: 'phase1_report',
+        messages: reportMessages,
+        stablePrefix: [systemPromptParts.stablePrefix, reportPromptParts.stablePrefix].join('\n\n--- stable turn ---\n\n'),
+        dynamicPayload: reportPromptParts.dynamicPayload,
+      });
+      const reportPromptCacheInvariant = markPromptCacheInvariant({
+        scope: 'phase1_report',
+        metadata: reportPromptCache,
+        logger: this.host?.logger,
+      });
 
       this._log(`[${cycleId}] phase 2/3: conversational report`);
       logger.startPhase('intel_report');
@@ -442,6 +459,10 @@ export class ConversationalIntelligencePipeline {
           source: persistedReport.source,
           md_path: persistedReport.mdPath,
           language: persistedReport.indexRecord.language,
+          prompt_cache: {
+            ...reportPromptCache,
+            invariant: reportPromptCacheInvariant,
+          },
         },
         prompt: serializeMessages(reportMessages),
         aiResponse: reportMarkdown,
@@ -450,7 +471,7 @@ export class ConversationalIntelligencePipeline {
         error: reportReason,
       });
 
-      const decideUserPrompt = buildDecideUserPrompt({
+      const decidePromptParts = buildDecideUserPromptParts({
         goalsText,
         rules,
         humanGuidance,
@@ -460,11 +481,31 @@ export class ConversationalIntelligencePipeline {
         reportContext: preparedReport.reportContext,
         actionRegistry: this.actionRegistry,
       });
+      const decideUserPrompt = decidePromptParts.content;
       const decideMessages = [
         ...reportMessages,
         { role: 'assistant', content: reportMarkdown },
         { role: 'user', content: decideUserPrompt },
       ];
+      const decidePromptCache = buildPromptCacheMetadata({
+        profile: 'phase1_decide',
+        messages: decideMessages,
+        stablePrefix: [
+          systemPromptParts.stablePrefix,
+          reportPromptParts.stablePrefix,
+          decidePromptParts.stablePrefix,
+        ].join('\n\n--- stable turn ---\n\n'),
+        dynamicPayload: [
+          reportPromptParts.dynamicPayload,
+          reportMarkdown,
+          decidePromptParts.dynamicPayload,
+        ].join('\n\n--- dynamic turn ---\n\n'),
+      });
+      const decidePromptCacheInvariant = markPromptCacheInvariant({
+        scope: 'phase1_decide',
+        metadata: decidePromptCache,
+        logger: this.host?.logger,
+      });
 
       this._log(`[${cycleId}] phase 3/3: analyze + decide`);
       logger.startPhase('analyze_decide');
@@ -515,10 +556,18 @@ export class ConversationalIntelligencePipeline {
         operatorBriefs: operatorBriefsContext,
         observation,
         reportMessages,
+        reportPromptCache: {
+          ...reportPromptCache,
+          invariant: reportPromptCacheInvariant,
+        },
         reportMarkdown,
         reportSource: persistedReport.source,
         reportPath: persistedReport.mdPath,
         decideMessages,
+        decidePromptCache: {
+          ...decidePromptCache,
+          invariant: decidePromptCacheInvariant,
+        },
         rawDecision,
         analysis,
         actions: result.actions,
@@ -528,6 +577,10 @@ export class ConversationalIntelligencePipeline {
           decision: analysis?.decision,
           actions_count: result.actions.length,
           conversation_context_path: result.conversation_context_path,
+          prompt_cache: {
+            ...decidePromptCache,
+            invariant: decidePromptCacheInvariant,
+          },
         },
         prompt: serializeMessages(decideMessages),
         aiResponse: rawDecision,

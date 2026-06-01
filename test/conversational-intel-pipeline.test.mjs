@@ -8,12 +8,15 @@ import {
   it,
 } from 'vitest';
 import { chatMessages } from '../src/ai/messages.mjs';
+import { buildPromptCacheMetadata } from '../src/ai/prompt-cache-metadata.mjs';
 import { createIntelligenceStore } from '../src/intelligence/store.mjs';
 import { ConversationalIntelligencePipeline } from '../src/intelligence/conversational-intel-pipeline.mjs';
 import { verifyWithRestoredConversation } from '../src/intelligence/conversation-context.mjs';
 import {
   buildDecideUserPrompt,
+  buildDecideUserPromptParts,
   buildReportUserPrompt,
+  buildReportUserPromptParts,
 } from '../src/intelligence/conversation-prompts.mjs';
 import { buildSubjectResourceSummary } from '../src/cli/utils/subjects.mjs';
 import {
@@ -170,6 +173,64 @@ describe('conversation prompt constraints', () => {
     expect(decidePrompt).toContain('subject_resources');
     expect(decidePrompt).toContain('agentank_evolver');
   });
+
+  it('keeps cycle-specific report fields out of the stable prompt prefix', () => {
+    const first = buildReportUserPromptParts({
+      cycleId: 'cycle-one',
+      language: 'zh',
+      goalsText: 'goal A',
+      reportContext: { current_cycle: { cycle_id: 'cycle-one' } },
+    });
+    const second = buildReportUserPromptParts({
+      cycleId: 'cycle-two',
+      language: 'zh',
+      goalsText: 'goal B',
+      reportContext: { current_cycle: { cycle_id: 'cycle-two' } },
+    });
+
+    expect(first.stablePrefix).toBe(second.stablePrefix);
+    expect(first.stablePrefix).not.toContain('cycle-one');
+    expect(first.content.indexOf('## Dynamic Cycle Payload')).toBeGreaterThan(first.content.indexOf('必须包含明确的 Cyber-Taoist 分析章节'));
+    expect(first.dynamicPayload).toContain('cycle-one');
+
+    const firstMeta = buildPromptCacheMetadata({
+      profile: 'phase1_report',
+      messages: [{ role: 'user', content: first.content }],
+      stablePrefix: first.stablePrefix,
+      dynamicPayload: first.dynamicPayload,
+    });
+    const secondMeta = buildPromptCacheMetadata({
+      profile: 'phase1_report',
+      messages: [{ role: 'user', content: second.content }],
+      stablePrefix: second.stablePrefix,
+      dynamicPayload: second.dynamicPayload,
+    });
+    expect(firstMeta.stable_prefix_hash).toBe(secondMeta.stable_prefix_hash);
+    expect(firstMeta.dynamic_payload_hash).not.toBe(secondMeta.dynamic_payload_hash);
+  });
+
+  it('keeps Analyze+Decide schema stable while dynamic context changes', () => {
+    const first = buildDecideUserPromptParts({
+      goalsText: 'goal A',
+      operatorBriefs: 'brief A',
+      reportContext: { current_cycle: { cycle_id: 'cycle-one' } },
+      actionRegistry: { toPromptSection: () => '- `agent_run`: Run an execution package' },
+    });
+    const second = buildDecideUserPromptParts({
+      goalsText: 'goal B',
+      operatorBriefs: 'brief B',
+      reportContext: { current_cycle: { cycle_id: 'cycle-two' } },
+      actionRegistry: { toPromptSection: () => '- `agent_run`: Run an execution package' },
+    });
+
+    expect(first.stablePrefix).toBe(second.stablePrefix);
+    expect(first.stablePrefix).toContain('Respond with exactly this JSON shape');
+    expect(first.stablePrefix).toContain('Action taxonomy');
+    expect(first.stablePrefix).toContain('Belief constraints');
+    expect(first.stablePrefix).not.toContain('brief A');
+    expect(first.dynamicPayload).toContain('brief A');
+    expect(first.content.indexOf('## Dynamic Decision Payload')).toBeGreaterThan(first.content.indexOf('Respond with exactly this JSON shape'));
+  });
 });
 
 describe('operator intent briefs', () => {
@@ -319,6 +380,11 @@ describe('ConversationalIntelligencePipeline', () => {
     const context = JSON.parse(readFileSync(result.conversation_context_path, 'utf-8'));
     expect(context.kind).toBe('phase1_conversation_context');
     expect(context.observation.response).toContain('Observation Report');
+    expect(context.report_turn.prompt_cache.profile).toBe('phase1_report');
+    expect(context.report_turn.prompt_cache.stable_prefix_hash).toMatch(/^[a-f0-9]{64}$/);
+    expect(context.analyze_decide_turn.prompt_cache.profile).toBe('phase1_decide');
+    expect(context.analyze_decide_turn.prompt_cache.stable_prefix_chars)
+      .toBeGreaterThan(context.report_turn.prompt_cache.stable_prefix_chars);
     expect(context.restored_conversation.map((m) => m.role))
       .toEqual(['system', 'user', 'assistant', 'user', 'assistant']);
     expect(context.restored_conversation.at(-1).content).toContain('"decision":"execute"');

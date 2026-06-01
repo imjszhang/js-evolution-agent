@@ -1,6 +1,10 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { chatMessages } from '../ai/messages.mjs';
+import {
+  buildPromptCacheMetadata,
+  markPromptCacheInvariant,
+} from '../ai/prompt-cache-metadata.mjs';
 import { detectLanguage, extractTldr } from './report-builder.mjs';
 import { redactSecrets } from './redaction.mjs';
 import { resolveEvolutionDiaryWritePath } from './diary-paths.mjs';
@@ -440,6 +444,7 @@ export function persistEvolutionDiary({
   generatedAt = new Date().toISOString(),
   source = 'ai',
   fallbackReason = null,
+  promptCache = null,
 } = {}) {
   if (!runtime?.runtimeRoot) throw new Error('runtime.runtimeRoot is required');
   const cycleId = context?.cycle?.cycle_id;
@@ -462,9 +467,10 @@ export function persistEvolutionDiary({
     tldr,
     fallback_reason: fallbackReason,
     generated_at: generatedAt,
+    prompt_cache: promptCache,
   };
   store?.recordEvolutionEvent?.(event);
-  return { mdPath, source, markdown: finalMarkdown, tldr, event };
+  return { mdPath, source, markdown: finalMarkdown, tldr, event, prompt_cache: promptCache };
 }
 
 export async function buildEvolutionDiary({
@@ -503,13 +509,29 @@ export async function buildEvolutionDiary({
   let markdown = null;
   let source = 'fallback';
   let fallbackReason = useAi ? null : 'use-ai-disabled';
+  const systemPrompt = 'You write post-execution evolution diaries from provided evidence only. Never invent facts or continue execution.';
+  const prompt = buildEvolutionDiaryPrompt({ context, language, agentContextDocs });
+  const stablePrompt = buildEvolutionDiaryPrompt({ context: {}, language, agentContextDocs });
+  const promptCache = buildPromptCacheMetadata({
+    profile: 'diary',
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: prompt },
+    ],
+    stablePrefix: [systemPrompt, stablePrompt].join('\n\n--- stable turn ---\n\n'),
+    dynamicPayload: JSON.stringify(context, null, 2),
+  });
+  const promptCacheInvariant = markPromptCacheInvariant({
+    scope: 'diary',
+    metadata: promptCache,
+    logger,
+  });
   if (useAi && aiClient) {
     try {
-      const prompt = buildEvolutionDiaryPrompt({ context, language, agentContextDocs });
       const text = await chatMessages(aiClient, [
         {
           role: 'system',
-          content: 'You write post-execution evolution diaries from provided evidence only. Never invent facts or continue execution.',
+          content: systemPrompt,
         },
         { role: 'user', content: prompt },
       ], { thinking: 'low', timeout: 180 });
@@ -541,5 +563,9 @@ export async function buildEvolutionDiary({
     generatedAt,
     source,
     fallbackReason,
+    promptCache: {
+      ...promptCache,
+      invariant: promptCacheInvariant,
+    },
   });
 }
