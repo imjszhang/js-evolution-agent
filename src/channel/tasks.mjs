@@ -5,8 +5,10 @@ import { recordChannelEvent } from './audit.mjs';
 import { ingestChannelEnvelope } from './ingest.mjs';
 import { collectAttentionSignals } from './notify.mjs';
 import {
-  decideAndApplyInboundReply,
-  decideAndApplyProactiveReply,
+  applyReplyDecision,
+  decideInboundReply,
+  decideProactiveReply,
+  refineReplyDecisionWithDraft,
 } from './reply.mjs';
 import { enqueueChannelTask } from './task-queue.mjs';
 import {
@@ -167,11 +169,13 @@ export async function runChannelReplyTask(root, subject, input = {}) {
   const items = Array.isArray(input.items) ? input.items : (input.envelope ? [input] : []);
   const results = [];
   for (const item of items) {
-    const { decision, result } = decideAndApplyInboundReply(root, subject, {
+    const initialDecision = decideInboundReply(root, subject, {
       envelope: item.envelope,
       ingestResult: item.ingest_result,
       recentState: { skipped: item.skipped },
-    }, { reason: 'inbound_reply' });
+    });
+    const decision = await refineReplyDecisionWithDraft(root, subject, initialDecision);
+    const result = applyReplyDecision(root, subject, decision, { reason: 'inbound_reply' });
     results.push({
       message_id: item.message_id ?? item.envelope?.message_id ?? null,
       decision,
@@ -186,7 +190,9 @@ export async function runChannelWatchTask(root, subject, input = {}) {
   const signals = collectAttentionSignals(root, subject);
   const results = [];
   for (const signal of signals) {
-    const { decision, result } = decideAndApplyProactiveReply(root, subject, { signal }, {
+    const initialDecision = decideProactiveReply(root, subject, { signal });
+    const decision = await refineReplyDecisionWithDraft(root, subject, initialDecision);
+    const result = applyReplyDecision(root, subject, decision, {
       dryRun: Boolean(input.dry_run),
       reason: signal.type,
     });

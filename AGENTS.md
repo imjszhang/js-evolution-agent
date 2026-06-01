@@ -445,7 +445,39 @@ runtime/subjects/<data_namespace>/data/channel/
 - 待核实或下一轮关注事项写入 operator brief。
 - 普通外部消息写入 `intel_observations` 作为可推翻 evidence。
 
-出站通知由 `channel_watch` 观察 daemon projection、cycle-state、failed tasks、pending briefs 等生成 attention signals，再由 `channel_notify` 发送。通知去重与冷却在 channel runtime 中审计，不污染 cycle receipt。
+出站通知由 `channel_watch` 观察 daemon projection、cycle-state、failed tasks、pending briefs、cycle completed、requires_human_review、long idle 等生成 attention signals，经 `channel_reply` 决定是否发话与文案，再由 `channel_notify` 发送。通知去重、冷却、防刷屏与回复审计在 channel runtime 中处理，不污染 cycle receipt。
+
+### Channel 回复决策（`channels.feishu.reply`）
+
+入站消息先由 `channel_ingest` 写入 operator brief / operator fact / observation，再由 `channel_reply` 判断是否回复。回复只是外部表达，不会直接授予 `approval_granted`，也不会把回复文本写成事实。默认 `guarded` 模式下：
+
+| 输入/信号 | 默认行为 |
+| --- | --- |
+| `approval_request` | 回复“已记录为下一轮审批意图；不会直接发布或授权” |
+| `verification_request` | 回复“已记录为下一轮核实请求” |
+| `operator_fact` | 回复“已记录为高置信 operator fact” |
+| 普通 `observation` | 默认不回复（除非 `reply_observations: true` 或 `mode: autonomous`） |
+| `task_failed` / `daemon_health` / `cycle_drift` / `cycle_completed` / `requires_human_review` / `long_idle` | 按策略主动通知，受 cooldown 与防刷屏限制 |
+
+可选配置（位于 subject 的 `channels.feishu.reply`）：
+
+```json
+{
+  "mode": "guarded",
+  "on_inbound": true,
+  "proactive": true,
+  "reply_observations": false,
+  "cooldown_ms": 1800000,
+  "max_messages_per_hour": 8,
+  "llm_draft": {
+    "enabled": false,
+    "allowed_reasons": ["proactive_signal", "greeting_ack"],
+    "timeout": 20
+  }
+}
+```
+
+`mode` 可为 `off | audit_only | guarded | autonomous`。`max_messages_per_hour=0` 表示不限制。`llm_draft.enabled` 默认关闭；开启后只为 `allowed_reasons` 中的低风险回复生成草稿，并仍保留“不直接授权、不声称动作已执行、不编造事实”的安全约束。代码更新后需要重启 daemon/channel worker；仅修改 reply 配置通常在下一次读取 subject config 时生效。
 
 ### 私聊绑定（`JEA BIND`）
 

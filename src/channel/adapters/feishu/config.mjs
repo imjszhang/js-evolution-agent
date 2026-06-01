@@ -173,6 +173,13 @@ export function resolveFeishuConfig(root, subject, overrides = {}) {
       reply_observations: replyBlock.reply_observations ?? replyBlock.replyObservations ?? false,
       cooldown_ms: replyBlock.cooldown_ms ?? replyBlock.cooldownMs ?? 30 * 60 * 1000,
       max_messages_per_hour: replyBlock.max_messages_per_hour ?? replyBlock.maxMessagesPerHour ?? 0,
+      llm_draft: {
+        enabled: Boolean(replyBlock.llm_draft?.enabled ?? replyBlock.llmDraft?.enabled ?? false),
+        timeout: replyBlock.llm_draft?.timeout ?? replyBlock.llmDraft?.timeout ?? 20,
+        allowed_reasons: replyBlock.llm_draft?.allowed_reasons
+          ?? replyBlock.llmDraft?.allowedReasons
+          ?? undefined,
+      },
       templates: replyBlock.templates ?? {},
     },
   };
@@ -203,6 +210,12 @@ export function feishuConfigForApi(config) {
       proactive: config.reply.proactive ?? (config.reply.mode !== 'off' && config.reply.mode !== 'audit_only'),
       reply_observations: config.reply.reply_observations,
       cooldown_ms: config.reply.cooldown_ms,
+      max_messages_per_hour: config.reply.max_messages_per_hour,
+      llm_draft: config.reply.llm_draft ? {
+        enabled: Boolean(config.reply.llm_draft.enabled),
+        timeout: config.reply.llm_draft.timeout,
+        allowed_reasons: config.reply.llm_draft.allowed_reasons ?? null,
+      } : null,
     } : null,
   };
 }

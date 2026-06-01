@@ -7,6 +7,7 @@ import { enqueueTask, pendingTasksPath } from '../src/cli/utils/daemon-tasks.mjs
 import { enqueueChannelTask, readChannelTaskQueue, channelPendingTasksPath } from '../src/channel/task-queue.mjs';
 import { writePendingInbound, listOutboxPending, cooldownActive } from '../src/channel/state.mjs';
 import { runChannelIngestTask, runChannelReplyTask, runChannelWatchTask } from '../src/channel/tasks.mjs';
+import { collectAttentionSignals } from '../src/channel/notify.mjs';
 import { readPendingOperatorBriefs, writePendingOperatorBrief } from '../src/intelligence/operator-briefs.mjs';
 import { runtimeForSubject } from '../src/cli/utils/evolve-runs.mjs';
 import { buildChannelProjection } from '../src/channel/projection.mjs';
@@ -14,6 +15,7 @@ import {
   decideInboundReply,
   decideProactiveReply,
   applyReplyDecision,
+  refineReplyDecisionWithDraft,
   resolveReplyConfig,
 } from '../src/channel/reply.mjs';
 
@@ -255,6 +257,66 @@ describe('channel domain', () => {
       expect(proactive.action).toBe('none');
       expect(proactive.reason).toBe('recent_inbound_ack');
     });
+
+    it('rate limits replies when max_messages_per_hour is configured', () => {
+      const root = makeRoot({ reply: { max_messages_per_hour: 1 } });
+      const first = decideInboundReply(root, 'alpha', {
+        envelope: envelopeFromPayload({
+          messageId: 'm-rate-1',
+          chatId: 'oc_test',
+          senderId: 'ou_operator',
+          content: '同意发布 A',
+        }),
+        ingestResult: {
+          kind: 'operator_brief',
+          brief: { id: 'brief-rate-1', kind: 'approval_request', summary: '同意发布 A' },
+        },
+      });
+      const second = decideInboundReply(root, 'alpha', {
+        envelope: envelopeFromPayload({
+          messageId: 'm-rate-2',
+          chatId: 'oc_test',
+          senderId: 'ou_operator',
+          content: '同意发布 B',
+        }),
+        ingestResult: {
+          kind: 'operator_brief',
+          brief: { id: 'brief-rate-2', kind: 'approval_request', summary: '同意发布 B' },
+        },
+      });
+      expect(applyReplyDecision(root, 'alpha', first).applied).toBe(true);
+      const limited = applyReplyDecision(root, 'alpha', second);
+      expect(limited.skipped).toBe(true);
+      expect(limited.reason).toBe('rate_limited');
+    });
+
+    it('optionally refines allowed replies with an LLM draft', async () => {
+      const root = makeRoot({
+        reply: {
+          reply_observations: true,
+          llm_draft: {
+            enabled: true,
+            allowed_reasons: ['greeting_ack'],
+          },
+        },
+      });
+      const decision = decideInboundReply(root, 'alpha', {
+        envelope: envelopeFromPayload({
+          messageId: 'om_greeting123',
+          chatId: 'oc_test',
+          senderId: 'ou_operator',
+          content: '你好',
+        }),
+        ingestResult: { kind: 'observation' },
+      });
+      const refined = await refineReplyDecisionWithDraft(root, 'alpha', decision, {
+        aiClient: {
+          chatMessages: async () => '{"text":"JEA alpha: 收到，我会按当前主体策略处理。"}',
+        },
+      });
+      expect(refined.text).toContain('收到');
+      expect(refined.metadata.llm_draft.used).toBe(true);
+    });
   });
 
   describe('watch notify', () => {
@@ -287,6 +349,28 @@ describe('channel domain', () => {
       expect(decision.action).toBe('send');
       expect(decision.reason).toBe('proactive_signal');
     });
+
+    it('collects cycle completion and long-idle proactive signals', () => {
+      const root = makeRoot();
+      const now = new Date('2026-06-02T01:00:00.000Z');
+      const signals = collectAttentionSignals(root, 'alpha', {
+        projection: {
+          generated_at: now.toISOString(),
+          evolution_mode: 'on_demand',
+          health: { status: 'idle', ok: true, reasons: [] },
+          tasks: {},
+          cycles: {
+            drift_steps: [],
+            last_closed_cycle_id: 'cycle-done-1',
+            last_closed_at: new Date(now.getTime() - 2 * 60 * 60 * 1000).toISOString(),
+            pending_cycle_start_request: null,
+          },
+        },
+      });
+      expect(signals.some((signal) => signal.type === 'cycle_completed')).toBe(true);
+      expect(signals.some((signal) => signal.type === 'long_idle')).toBe(true);
+    });
+
     it('skips low-priority verification brief proactive replies', () => {
       const root = makeRoot();
       const decision = decideProactiveReply(root, 'alpha', {

@@ -19,6 +19,9 @@ function routeTarget(root, subject) {
 
 export function collectAttentionSignals(root, subject, { projection = null } = {}) {
   const store = storeForSubject(root, subject);
+  const recentEvents = store?.readEvolutionEvents
+    ? store.readEvolutionEvents({ limit: 100 }).filter((event) => !event.subject || event.subject === subject)
+    : [];
   const view = projection ?? buildDaemonProjection(root, subject, { store });
   const signals = [];
   if (view.health && view.health.ok === false) {
@@ -49,6 +52,54 @@ export function collectAttentionSignals(root, subject, { projection = null } = {
       summary: 'Cycle-state is terminal while a matching daemon task is still running.',
       key: `cycle_drift:${drift.cycle_id}:${drift.step}`,
       refs: { drift },
+    });
+  }
+  const lastClosedCycleId = view.cycles?.last_closed_cycle_id;
+  if (lastClosedCycleId) {
+    const diaryEvent = recentEvents.find((event) =>
+      event.type === 'evolution_diary' && event.cycle_id === lastClosedCycleId);
+    signals.push({
+      type: 'cycle_completed',
+      severity: 'low',
+      title: `Cycle completed: ${lastClosedCycleId}`,
+      summary: diaryEvent?.tldr || `Cycle ${lastClosedCycleId} has closed.`,
+      key: `cycle_completed:${lastClosedCycleId}`,
+      refs: {
+        cycle_id: lastClosedCycleId,
+        closed_at: view.cycles?.last_closed_at ?? null,
+        diary_path: diaryEvent?.diary_path ?? null,
+      },
+    });
+  }
+  for (const event of recentEvents) {
+    const serialized = JSON.stringify(event);
+    if (!/requires_human_review|requires_approval/i.test(serialized)) continue;
+    const cycleId = event.cycle_id ?? event.id ?? 'unknown';
+    signals.push({
+      type: 'requires_human_review',
+      severity: 'high',
+      title: `Human review required: ${cycleId}`,
+      summary: event.tldr || event.summary || event.error || 'A recent cycle/action indicates human review is required.',
+      key: `human_review:${cycleId}:${event.id ?? event.recorded_at ?? ''}`,
+      refs: { event },
+    });
+  }
+  const generatedMs = Date.parse(view.generated_at ?? '');
+  const lastClosedMs = Date.parse(view.cycles?.last_closed_at ?? '');
+  const idleMs = Number.isFinite(generatedMs) && Number.isFinite(lastClosedMs)
+    ? generatedMs - lastClosedMs
+    : 0;
+  if (view.health?.status === 'idle'
+    && view.evolution_mode === 'on_demand'
+    && !view.cycles?.pending_cycle_start_request
+    && idleMs > 60 * 60 * 1000) {
+    signals.push({
+      type: 'long_idle',
+      severity: 'low',
+      title: 'On-demand daemon idle',
+      summary: `No cycle start request is pending; last closed cycle was about ${Math.round(idleMs / 60000)} minute(s) ago.`,
+      key: `long_idle:${view.cycles?.last_closed_cycle_id ?? 'none'}`,
+      refs: { idle_ms: idleMs, last_closed_cycle_id: view.cycles?.last_closed_cycle_id ?? null },
     });
   }
   const pendingBriefs = readPendingOperatorBriefs(runtimeForSubject(root, subject).runtimeRoot, { limit: 20 });

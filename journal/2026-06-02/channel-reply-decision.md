@@ -225,13 +225,15 @@ npm run jea -- channel status --subject ai-researcher --json
 
 ## 6. 后续演化
 
-| 方向 | 说明 |
-| --- | --- |
-| LLM 生成回复草稿 | 在 `decide*` 之后加结构化 draft 层，仍受模板与安全约束 |
-| `max_messages_per_hour` | 配置项已预留，第二阶段实现防刷屏 |
-| 减少重复通知 | inbound approval ack 与 watch `operator_brief_pending` 可能对同一 brief 双发；可按 brief 创建时间或 source_ref 去重 |
-| 扩展 signal | cycle 完成、requires_human_review、长时间 idle 等 |
-| 文档 | 可选在 AGENTS.md Channel 章节补充 reply 配置与行为表 |
+以下几项已经在同一轮后续收口中落地：
+
+| 方向 | 状态 | 说明 |
+| --- | --- | --- |
+| LLM 生成回复草稿 | 已实现，默认关闭 | `llm_draft.enabled` 开启后，在 `decide*` 之后为 `allowed_reasons` 生成结构化草稿；默认只允许 `proactive_signal`、`greeting_ack`，且保留“不授权、不声称动作执行、不编造事实”的约束 |
+| `max_messages_per_hour` | 已实现 | `channel_reply` 写 outbox 前按最近 1 小时 `channel_reply_enqueued` 计数限流；`0` 表示不限制 |
+| 减少重复通知 | 已实现 | 入站 ack 写入 `reply:brief_ack:<brief_id>` cooldown；`channel_watch` 遇到同一 pending brief 时跳过，原因是 `recent_inbound_ack` |
+| 扩展 signal | 已实现 | `channel_watch` 额外覆盖 `cycle_completed`、`requires_human_review`、`long_idle` |
+| 文档 | 已实现 | `AGENTS.md` Channel 章节补充 reply 配置、默认行为、安全边界与重启说明 |
 
 ---
 

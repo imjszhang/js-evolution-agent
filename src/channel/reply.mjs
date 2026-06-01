@@ -1,11 +1,14 @@
 import { resolveFeishuConfig } from './adapters/feishu/config.mjs';
-import { recordChannelEvent } from './audit.mjs';
+import { recordChannelEvent, readChannelEvents } from './audit.mjs';
 import { cooldownActive, setCooldown, writeOutboxMessage } from './state.mjs';
 import { normalizeOutboundMessage, nowIso } from './types.mjs';
+import { DeepSeekOpenAIClient } from '../ai/deepseek-client.mjs';
+import { chatMessagesJson } from '../ai/messages.mjs';
 
 export const REPLY_MODES = Object.freeze(['off', 'audit_only', 'guarded', 'autonomous']);
 
 const DEFAULT_COOLDOWN_MS = 30 * 60 * 1000;
+const DEFAULT_LLM_DRAFT_REASONS = ['proactive_signal', 'greeting_ack'];
 
 const DEFAULT_TEMPLATES = Object.freeze({
   approval_request: [
@@ -44,6 +47,15 @@ export function resolveReplyConfig(root, subject, overrides = {}) {
     reply_observations: block.reply_observations ?? block.replyObservations ?? false,
     cooldown_ms: Number(block.cooldown_ms ?? block.cooldownMs) || DEFAULT_COOLDOWN_MS,
     max_messages_per_hour: Number(block.max_messages_per_hour ?? block.maxMessagesPerHour) || 0,
+    llm_draft: {
+      enabled: Boolean(block.llm_draft?.enabled ?? block.llmDraft?.enabled ?? false),
+      timeout: Number(block.llm_draft?.timeout ?? block.llmDraft?.timeout) || 20,
+      allowed_reasons: Array.isArray(block.llm_draft?.allowed_reasons)
+        ? block.llm_draft.allowed_reasons
+        : (Array.isArray(block.llmDraft?.allowedReasons)
+          ? block.llmDraft.allowedReasons
+          : DEFAULT_LLM_DRAFT_REASONS),
+    },
     templates: {
       ...DEFAULT_TEMPLATES,
       ...(block.templates ?? {}),
@@ -61,6 +73,11 @@ export function replyConfigForApi(config) {
     reply_observations: config.reply_observations,
     cooldown_ms: config.cooldown_ms,
     max_messages_per_hour: config.max_messages_per_hour,
+    llm_draft: {
+      enabled: Boolean(config.llm_draft?.enabled),
+      timeout: config.llm_draft?.timeout ?? 20,
+      allowed_reasons: config.llm_draft?.allowed_reasons ?? DEFAULT_LLM_DRAFT_REASONS,
+    },
   };
 }
 
@@ -106,6 +123,14 @@ function baseDecision(action, reason, extra = {}) {
 
 function templateFor(config, key, vars) {
   return renderTemplate(config.templates?.[key] ?? DEFAULT_TEMPLATES[key] ?? '', vars);
+}
+
+function recentReplyCount(root, subject, { windowMs = 60 * 60 * 1000, nowMs = Date.now() } = {}) {
+  return readChannelEvents(root, subject, { limit: 500 }).filter((event) => {
+    if (event.type !== 'channel_reply_enqueued') return false;
+    const recorded = Date.parse(event.recorded_at ?? '');
+    return Number.isFinite(recorded) && nowMs - recorded <= windowMs;
+  }).length;
 }
 
 export function decideInboundReply(root, subject, {
@@ -329,6 +354,18 @@ export function applyReplyDecision(root, subject, decision, {
     });
     return { applied: false, skipped: true, reason: 'cooldown', decision };
   }
+  if (replyConfig.max_messages_per_hour > 0
+    && recentReplyCount(root, subject) >= replyConfig.max_messages_per_hour) {
+    recordChannelEvent(root, subject, {
+      type: 'channel_reply_skipped',
+      status: 'ok',
+      skip_reason: 'rate_limited',
+      idempotency_key: idempotencyKey,
+      limit: replyConfig.max_messages_per_hour,
+      ...baseEvent,
+    });
+    return { applied: false, skipped: true, reason: 'rate_limited', decision };
+  }
 
   const outbound = normalizeOutboundMessage({
     channel,
@@ -372,6 +409,82 @@ export function applyReplyDecision(root, subject, decision, {
     ...baseEvent,
   });
   return { applied: true, outbound: written.message, file: written.file, decision };
+}
+
+function canUseLlmDraft(config, decision) {
+  if (!config?.llm_draft?.enabled) return false;
+  if (decision?.action !== 'send' || !decision?.text) return false;
+  const allowed = config.llm_draft.allowed_reasons ?? DEFAULT_LLM_DRAFT_REASONS;
+  return allowed.includes(decision.reason);
+}
+
+function sanitizeDraftText(value, fallback) {
+  const text = String(value ?? '').trim();
+  if (!text) return fallback;
+  if (/approval_granted|已授权发布|直接发布|已经发布/i.test(text)) return fallback;
+  return text.slice(0, 1200);
+}
+
+function createDraftClient() {
+  if (!process.env.DEEPSEEK_API_KEY?.trim()) return null;
+  try {
+    return new DeepSeekOpenAIClient({ timeout: 20 });
+  } catch {
+    return null;
+  }
+}
+
+export async function refineReplyDecisionWithDraft(root, subject, decision, {
+  config = null,
+  aiClient = null,
+} = {}) {
+  const replyConfig = config ?? resolveReplyConfig(root, subject);
+  if (!canUseLlmDraft(replyConfig, decision)) return decision;
+  const client = aiClient ?? createDraftClient();
+  if (!client) {
+    return {
+      ...decision,
+      metadata: { ...(decision.metadata ?? {}), llm_draft: { skipped: true, reason: 'missing_ai_client' } },
+    };
+  }
+  try {
+    const parsed = await chatMessagesJson(client, [
+      {
+        role: 'system',
+        content: [
+          'You draft short Chinese channel replies for js-evolution-agent.',
+          'Return JSON only: {"text":"..."}',
+          'Do not grant approval, do not claim an action has executed, and do not invent facts.',
+          'Keep the reply concise and preserve the original safety boundary.',
+        ].join('\n'),
+      },
+      {
+        role: 'user',
+        content: JSON.stringify({
+          subject,
+          reason: decision.reason,
+          original_text: decision.text,
+          metadata: decision.metadata ?? {},
+        }, null, 2),
+      },
+    ], { thinking: 'low', timeout: replyConfig.llm_draft.timeout });
+    return {
+      ...decision,
+      text: sanitizeDraftText(parsed?.text, decision.text),
+      metadata: {
+        ...(decision.metadata ?? {}),
+        llm_draft: { used: true, reason: decision.reason },
+      },
+    };
+  } catch (err) {
+    return {
+      ...decision,
+      metadata: {
+        ...(decision.metadata ?? {}),
+        llm_draft: { skipped: true, reason: err?.message || String(err) },
+      },
+    };
+  }
 }
 
 export function decideAndApplyInboundReply(root, subject, context, options = {}) {
