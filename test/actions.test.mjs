@@ -25,7 +25,7 @@ import {
   buildSubjectResourceSummary,
 } from '../src/cli/utils/subjects.mjs';
 import { applyRunSpecToAction, validateAgentRunSpec } from '../src/actions/agent-run-spec.mjs';
-import { buildClaudeOptions, buildCursorOptions } from '../src/actions/agent-adapter.mjs';
+import { buildClaudeOptions, buildCursorOptions, buildReasonixOptions } from '../src/actions/agent-adapter.mjs';
 import {
   buildEvidenceContract,
   inferActionResource,
@@ -71,6 +71,14 @@ const ORIGINAL_JEA_AGENT_RUN_LOG = process.env.JEA_AGENT_RUN_LOG;
 const ORIGINAL_JEA_AGENT_RUN_JSONL = process.env.JEA_AGENT_RUN_JSONL;
 const ORIGINAL_AGENTANK_TANK_KEY = process.env.AGENTANK_TANK_KEY;
 const ORIGINAL_JEA_APPROVAL_MODE = process.env.JEA_APPROVAL_MODE;
+const ORIGINAL_DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
+const ORIGINAL_REASONIX_BIN = process.env.REASONIX_BIN;
+const ORIGINAL_JEA_REASONIX_BIN_ARGS = process.env.JEA_REASONIX_BIN_ARGS;
+const ORIGINAL_JEA_REASONIX_MODEL = process.env.JEA_REASONIX_MODEL;
+const ORIGINAL_JEA_REASONIX_CONFIG = process.env.JEA_REASONIX_CONFIG;
+const ORIGINAL_JEA_REASONIX_ALLOW_BASH = process.env.JEA_REASONIX_ALLOW_BASH;
+const ORIGINAL_JEA_REASONIX_TIMEOUT_MS = process.env.JEA_REASONIX_TIMEOUT_MS;
+const ORIGINAL_JEA_REASONIX_MAX_STEPS = process.env.JEA_REASONIX_MAX_STEPS;
 
 async function* streamMessages(messages) {
   for (const message of messages) yield message;
@@ -208,6 +216,15 @@ function mockCursorSession(results, onCreate = null, streamEvents = null) {
     };
   });
   return { prompts, send, dispose };
+}
+
+function installFakeReasonix(ctx, scriptBody) {
+  const scriptPath = join(ctx.projectRoot, 'fake-reasonix.mjs');
+  writeFileSync(scriptPath, scriptBody, 'utf-8');
+  process.env.REASONIX_BIN = process.execPath;
+  process.env.JEA_REASONIX_BIN_ARGS = scriptPath;
+  process.env.DEEPSEEK_API_KEY = 'deepseek-test-key';
+  return scriptPath;
 }
 
 function writeJsonFile(filePath, value) {
@@ -351,10 +368,51 @@ afterEach(() => {
     delete process.env.JEA_AGENT_RUN_JSONL;
   }
   delete process.env.JEA_AGENT_RUN_VERBOSE;
+  delete process.env.FAKE_REASONIX_LOG;
   if (ORIGINAL_AGENTANK_TANK_KEY) {
     process.env.AGENTANK_TANK_KEY = ORIGINAL_AGENTANK_TANK_KEY;
   } else {
     delete process.env.AGENTANK_TANK_KEY;
+  }
+  if (ORIGINAL_DEEPSEEK_API_KEY) {
+    process.env.DEEPSEEK_API_KEY = ORIGINAL_DEEPSEEK_API_KEY;
+  } else {
+    delete process.env.DEEPSEEK_API_KEY;
+  }
+  if (ORIGINAL_REASONIX_BIN) {
+    process.env.REASONIX_BIN = ORIGINAL_REASONIX_BIN;
+  } else {
+    delete process.env.REASONIX_BIN;
+  }
+  if (ORIGINAL_JEA_REASONIX_BIN_ARGS) {
+    process.env.JEA_REASONIX_BIN_ARGS = ORIGINAL_JEA_REASONIX_BIN_ARGS;
+  } else {
+    delete process.env.JEA_REASONIX_BIN_ARGS;
+  }
+  if (ORIGINAL_JEA_REASONIX_MODEL) {
+    process.env.JEA_REASONIX_MODEL = ORIGINAL_JEA_REASONIX_MODEL;
+  } else {
+    delete process.env.JEA_REASONIX_MODEL;
+  }
+  if (ORIGINAL_JEA_REASONIX_CONFIG) {
+    process.env.JEA_REASONIX_CONFIG = ORIGINAL_JEA_REASONIX_CONFIG;
+  } else {
+    delete process.env.JEA_REASONIX_CONFIG;
+  }
+  if (ORIGINAL_JEA_REASONIX_ALLOW_BASH) {
+    process.env.JEA_REASONIX_ALLOW_BASH = ORIGINAL_JEA_REASONIX_ALLOW_BASH;
+  } else {
+    delete process.env.JEA_REASONIX_ALLOW_BASH;
+  }
+  if (ORIGINAL_JEA_REASONIX_TIMEOUT_MS) {
+    process.env.JEA_REASONIX_TIMEOUT_MS = ORIGINAL_JEA_REASONIX_TIMEOUT_MS;
+  } else {
+    delete process.env.JEA_REASONIX_TIMEOUT_MS;
+  }
+  if (ORIGINAL_JEA_REASONIX_MAX_STEPS) {
+    process.env.JEA_REASONIX_MAX_STEPS = ORIGINAL_JEA_REASONIX_MAX_STEPS;
+  } else {
+    delete process.env.JEA_REASONIX_MAX_STEPS;
   }
   vi.clearAllMocks();
 });
@@ -2361,6 +2419,142 @@ describe('controlled action handlers', () => {
     expect(result.provider).toBe('llm_only');
     expect(result.agent.summary).toBe('LLM override completed.');
     expect(Agent.prompt).not.toHaveBeenCalled();
+  });
+
+  it('supports Reasonix CLI as the configured default provider', async () => {
+    process.env.JEA_AGENT_PROVIDER = 'reasonix';
+    const ctx = makeAgentProviderCtx('Reasonix translated task.');
+    const logPath = join(ctx.projectRoot, 'reasonix-calls.jsonl');
+    process.env.FAKE_REASONIX_LOG = logPath;
+    installFakeReasonix(ctx, [
+      "import { appendFileSync, readFileSync } from 'node:fs';",
+      "const input = readFileSync(0, 'utf-8');",
+      "appendFileSync(process.env.FAKE_REASONIX_LOG, `${JSON.stringify({ argv: process.argv.slice(2), input })}\\n`);",
+      "if (input.includes('verification_attempt: 1')) {",
+      "  console.log(JSON.stringify({ status: 'completed', summary: 'Reasonix CLI completed.', outputs: { recommendation: 'keep provider' } }));",
+      "} else {",
+      "  console.log('Initial Reasonix work complete.');",
+      "}",
+      '',
+    ].join('\n'));
+
+    const result = await actionHandlers.agent_execute({
+      type: 'agent_execute',
+      params: directAgentParams({
+        objective: 'Use Reasonix as the configured default provider',
+      }),
+    }, ctx);
+
+    expect(result.success).toBe(true);
+    expect(result.provider).toBe('reasonix_cli');
+    expect(result.agent.summary).toBe('Reasonix CLI completed.');
+    expect(result.agent.outputs.reasonix.run_results).toHaveLength(2);
+    expect(result.agent.outputs.reasonix.capability_gaps).toContain('tool_trace');
+    const calls = readFileSync(logPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line));
+    expect(calls[0].argv).toContain('run');
+    expect(calls[0].argv).not.toContain('--config');
+    expect(calls[0].input).toContain('Reasonix translated task.');
+    expect(calls[0].input).toContain('Reasonix CLI host constraints');
+    expect(calls[1].input).toContain('verification_attempt: 1/3');
+    const infoCalls = ctx.host.logger.info.mock.calls.map(([msg]) => String(msg));
+    expect(infoCalls.some((msg) => msg.includes('[agent:reasonix]'))).toBe(true);
+    expect(infoCalls.some((msg) => msg.includes('capability_gap') && msg.includes('tool_trace'))).toBe(true);
+  });
+
+  it('extracts embedded Reasonix CLI JSON receipts during verification', async () => {
+    const ctx = makeAgentProviderCtx('Reasonix embedded JSON task.');
+    installFakeReasonix(ctx, [
+      "import { readFileSync } from 'node:fs';",
+      "const input = readFileSync(0, 'utf-8');",
+      "if (input.includes('verification_attempt: 1')) {",
+      "  console.log('Done. ' + JSON.stringify({ status: 'completed', summary: 'Embedded Reasonix JSON parsed.', evidence: { observations: ['ok'] } }));",
+      "} else {",
+      "  console.log('Initial work complete.');",
+      "}",
+      '',
+    ].join('\n'));
+
+    const result = await actionHandlers.agent_run({
+      type: 'agent_run',
+      params: {
+        provider: 'deepseek_reasonix',
+        run_spec: {
+          primary_cwd_kind: 'source_root',
+          permission_profile: 'read_only',
+          intent: 'Exercise Reasonix embedded receipt parsing.',
+          context: { why_now: 'provider integration test' },
+          expected_output: ['strict JSON receipt'],
+        },
+      },
+    }, ctx);
+
+    expect(result.success).toBe(true);
+    expect(result.provider).toBe('reasonix_cli');
+    expect(result.agent.raw_receipt_parse_mode).toBe('extracted_json');
+    expect(result.agent.verification_hints).toContain('agent receipt parsed from embedded JSON object');
+  });
+
+  it('defers Reasonix CLI provider when the binary cannot start', async () => {
+    process.env.DEEPSEEK_API_KEY = 'deepseek-test-key';
+    const ctx = makeAgentProviderCtx();
+    process.env.REASONIX_BIN = join(ctx.projectRoot, 'missing-reasonix-bin');
+
+    const result = await actionHandlers.agent_execute({
+      type: 'agent_execute',
+      params: directAgentParams({
+        provider: 'reasonix_cli',
+        objective: 'Try Reasonix without an installed binary',
+      }),
+    }, ctx);
+
+    expect(result.success).toBe(false);
+    expect(result.deferred).toBe(true);
+    expect(result.provider).toBe('reasonix_cli');
+    expect(result.error).toMatch(/ENOENT|not found|no such file/i);
+    expect(result.evidence.provider_failure).toMatchObject({
+      provider: 'reasonix_cli',
+      phase: 'cli_spawn_error',
+    });
+  });
+
+  it('builds conservative Reasonix config from permission profiles', () => {
+    const ctx = makeCtx();
+    process.env.DEEPSEEK_API_KEY = 'deepseek-test-key';
+    const readOnly = buildReasonixOptions({
+      type: 'agent_execute',
+      params: directAgentParams({
+        provider: 'reasonix_cli',
+        cwd: ctx.projectRoot,
+        mode: 'observe',
+      }),
+    }, ctx);
+    const readOnlyConfig = readFileSync(readOnly.configPath, 'utf-8');
+    expect(readOnlyConfig).toContain('mode = "deny"');
+    expect(readOnlyConfig).toContain('"bash(*)"');
+    expect(readOnlyConfig).toContain('"read_file"');
+    expect(readOnlyConfig).not.toContain('"write_file", "edit_file"');
+    readOnly.generatedConfig.cleanup();
+
+    process.env.JEA_REASONIX_ALLOW_BASH = '1';
+    const writeProfile = buildReasonixOptions({
+      type: 'agent_run',
+      params: {
+        provider: 'reasonix_cli',
+        run_spec: {
+          primary_cwd: ctx.projectRoot,
+          permission_profile: 'workspace_write',
+          intent: 'Patch inside the configured workspace.',
+          context: { why_now: 'test config generation' },
+          expected_output: ['changed files'],
+        },
+      },
+    }, ctx);
+    const writeConfig = readFileSync(writeProfile.configPath, 'utf-8');
+    expect(writeConfig).toContain('mode = "allow"');
+    expect(writeConfig).toContain('"write_file"');
+    expect(writeConfig).toContain('"bash"');
+    expect(writeConfig).toContain(`workspace_root = ${JSON.stringify(ctx.projectRoot)}`);
+    writeProfile.generatedConfig.cleanup();
   });
 
   it('supports Claude SDK as the configured default provider', async () => {

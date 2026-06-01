@@ -14,6 +14,7 @@ import {
   createAgentRunObserver,
   handleClaudeAssistantMessage,
   handleCursorSdkMessage,
+  providerLogTag,
 } from '../src/actions/agent-run-observer.mjs';
 
 let tempDir = null;
@@ -171,5 +172,13 @@ describe('agent-run-observer', () => {
     obs.emit('provider_start', {});
     expect(ctx.host.logger.info).not.toHaveBeenCalled();
     expect(jsonlRows(ctx)).toHaveLength(0);
+  });
+
+  it('maps Reasonix provider logs to the reasonix tag', () => {
+    expect(providerLogTag('reasonix_cli')).toBe('reasonix');
+    const ctx = makeCtx();
+    const obs = createAgentRunObserver(ctx, { provider: 'reasonix_cli' });
+    obs.emit('provider_start', { cwd: ctx.host.dataRoot });
+    expect(ctx.host.logger.info.mock.calls[0][0]).toContain('[agent:reasonix]');
   });
 });

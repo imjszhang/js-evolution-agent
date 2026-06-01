@@ -7,6 +7,7 @@ import {
 const CURSOR_PROVIDER = 'cursor_sdk';
 const CLAUDE_PROVIDER = 'claude_code_sdk';
 const LLM_PROVIDER = 'llm_only';
+const REASONIX_PROVIDER = 'reasonix_cli';
 
 export function agentRunLogEnabled() {
   const raw = process.env.JEA_AGENT_RUN_LOG;
@@ -41,6 +42,7 @@ function resolveAgentLogger(ctx) {
 export function providerLogTag(provider) {
   if (provider === CURSOR_PROVIDER) return 'cursor';
   if (provider === CLAUDE_PROVIDER) return 'claude';
+  if (provider === REASONIX_PROVIDER) return 'reasonix';
   return 'llm';
 }
 
@@ -350,4 +352,9 @@ export function handleClaudeResultMessage(obs, message) {
   });
 }
 
-export { CURSOR_PROVIDER, CLAUDE_PROVIDER, LLM_PROVIDER };
+export {
+  CURSOR_PROVIDER,
+  CLAUDE_PROVIDER,
+  LLM_PROVIDER,
+  REASONIX_PROVIDER,
+};

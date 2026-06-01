@@ -1,3 +1,7 @@
+import { spawn } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { chatMessages, parseJsonFromText } from '../ai/messages.mjs';
 import {
   actionMissingExecutionRoot,
@@ -20,6 +24,7 @@ import {
   CLAUDE_PROVIDER,
   CURSOR_PROVIDER,
   LLM_PROVIDER,
+  REASONIX_PROVIDER,
   agentRunVerbose,
   buildCursorSendOptions,
   consumeCursorRunStream,
@@ -31,6 +36,8 @@ import {
 
 const DEFAULT_PROVIDER = LLM_PROVIDER;
 const AGENT_VERIFICATION_ATTEMPTS = 3;
+const REASONIX_DEFAULT_BIN = 'reasonix';
+const REASONIX_DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 // Agent run observability: standard events → terminal + JSONL at
 // data/evolution/agent-runs/<cycle-id>.jsonl (see agent-run-observer.mjs).
 const MODE_GUIDANCE = {
@@ -64,6 +71,7 @@ function normalizeProvider(provider) {
   const value = String(provider ?? DEFAULT_PROVIDER).trim().toLowerCase();
   if (value === 'claude_code' || value === 'claude_agent_sdk') return CLAUDE_PROVIDER;
   if (value === 'cursor' || value === 'cursor_agent') return CURSOR_PROVIDER;
+  if (value === 'reasonix' || value === 'deepseek_reasonix') return REASONIX_PROVIDER;
   return value || DEFAULT_PROVIDER;
 }
 
@@ -101,6 +109,11 @@ function asNumber(value, fallback = null) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function asBool(value, fallback = false) {
+  if (value == null || value === '') return fallback;
+  return ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase());
+}
+
 function compactJson(value) {
   if (value == null || value === '') return 'not provided';
   try {
@@ -108,6 +121,14 @@ function compactJson(value) {
   } catch {
     return String(value);
   }
+}
+
+function tomlString(value) {
+  return JSON.stringify(String(value ?? ''));
+}
+
+function tomlList(values = []) {
+  return `[${values.map((value) => tomlString(value)).join(', ')}]`;
 }
 
 function clipText(value, max = MAX_PHASE1_REPORT_CHARS) {
@@ -901,6 +922,137 @@ export function buildCursorOptions(action, ctx) {
   };
 }
 
+function reasonixEnabledToolsForProfile(profile, allowBash) {
+  if (profile === 'read_only') return ['read_file', 'ls', 'glob', 'grep', 'web_fetch'];
+  const tools = ['read_file', 'write_file', 'edit_file', 'multi_edit', 'ls', 'glob', 'grep', 'web_fetch'];
+  if (allowBash) tools.push('bash');
+  return tools;
+}
+
+function reasonixPermissionModeForProfile(profile) {
+  if (profile === 'read_only') return 'deny';
+  if (profile === 'remote_write_review') return 'ask';
+  return 'allow';
+}
+
+function reasonixDenyRules(profile, allowBash) {
+  const deny = [
+    'bash(rm -rf*)',
+    'bash(git push*)',
+    'bash(gh pr*)',
+    'bash(gh release*)',
+    'bash(npm publish*)',
+  ];
+  if (!allowBash) deny.unshift('bash(*)');
+  if (profile === 'read_only') {
+    deny.push('write_file(*)', 'edit_file(*)', 'multi_edit(*)');
+  }
+  return [...new Set(deny)];
+}
+
+function buildReasonixConfigText({ runSpec, roots, model, allowBash }) {
+  const profile = runSpec.permission_profile ?? 'read_only';
+  const lines = [];
+  if (model) lines.push(`default_model = ${tomlString(model)}`, '');
+  lines.push(
+    '[tools]',
+    `enabled = ${tomlList(reasonixEnabledToolsForProfile(profile, allowBash))}`,
+    '',
+    '[permissions]',
+    `mode = ${tomlString(reasonixPermissionModeForProfile(profile))}`,
+    `deny = ${tomlList(reasonixDenyRules(profile, allowBash))}`,
+    'allow = []',
+    'ask = []',
+    '',
+    '[sandbox]',
+    `workspace_root = ${tomlString(roots.executionCwd)}`,
+    'allow_write = []',
+  );
+  return `${lines.join('\n')}\n`;
+}
+
+function createReasonixTempConfig(opts) {
+  const dir = mkdtempSync(join(tmpdir(), 'jea-reasonix-'));
+  const configPath = join(dir, 'reasonix.toml');
+  writeFileSync(configPath, buildReasonixConfigText(opts), 'utf-8');
+  return {
+    dir,
+    configPath,
+    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+  };
+}
+
+export function buildReasonixOptions(action, ctx) {
+  const executionAction = applyRunSpecToAction(action, ctx);
+  const runSpec = normalizeAgentRunSpec(executionAction, ctx);
+  const roots = resolveAgentExecutionRoots(executionAction, ctx);
+  const binary = String(
+    getField(executionAction, 'reasonixBin')
+      ?? getField(executionAction, 'reasonix_bin')
+      ?? process.env.REASONIX_BIN
+      ?? REASONIX_DEFAULT_BIN,
+  );
+  const binaryArgs = asList(
+    getField(executionAction, 'reasonixBinArgs')
+      ?? getField(executionAction, 'reasonix_bin_args')
+      ?? process.env.JEA_REASONIX_BIN_ARGS,
+    [],
+  );
+  const model = getField(executionAction, 'model') ?? process.env.JEA_REASONIX_MODEL ?? null;
+  const configPath = getField(executionAction, 'reasonixConfig')
+    ?? getField(executionAction, 'reasonix_config')
+    ?? process.env.JEA_REASONIX_CONFIG
+    ?? null;
+  const allowBash = asBool(
+    getField(executionAction, 'reasonixAllowBash')
+      ?? getField(executionAction, 'reasonix_allow_bash')
+      ?? process.env.JEA_REASONIX_ALLOW_BASH,
+    false,
+  );
+  const timeoutMs = asNumber(
+    getField(executionAction, 'timeoutMs')
+      ?? getField(executionAction, 'timeout_ms')
+      ?? process.env.JEA_REASONIX_TIMEOUT_MS,
+    REASONIX_DEFAULT_TIMEOUT_MS,
+  );
+  const maxSteps = asNumber(
+    getField(executionAction, 'maxSteps')
+      ?? getField(executionAction, 'max_steps')
+      ?? process.env.JEA_REASONIX_MAX_STEPS,
+    null,
+  );
+  const generatedConfig = configPath
+    ? null
+    : createReasonixTempConfig({ runSpec, roots, model, allowBash });
+  const effectiveConfigPath = configPath ?? generatedConfig?.configPath ?? null;
+  const args = [...binaryArgs, 'run'];
+  if (model) args.push('--model', String(model));
+  if (maxSteps != null) args.push('--max-steps', String(maxSteps));
+  const executionEnv = buildExecutionEnv(roots.executionCwd, {
+    overrides: effectiveConfigPath ? { REASONIX_CONFIG: effectiveConfigPath } : {},
+  });
+
+  return {
+    binary,
+    args,
+    cwd: roots.executionCwd,
+    env: executionEnv.env,
+    envPath: executionEnv.envPath,
+    envFileExists: executionEnv.envFileExists,
+    envFileError: executionEnv.envFileError,
+    configPath: effectiveConfigPath,
+    configSource: configPath ? 'configured' : 'generated',
+    generatedConfig,
+    allowBash,
+    timeoutMs,
+    maxSteps,
+    runSpec,
+    rootMetadata: rootMetadata(roots),
+    roots,
+    model,
+  };
+}
+
 function cursorStartupFailure(e, CursorAgentError) {
   return Boolean(
     (CursorAgentError && e instanceof CursorAgentError)
@@ -1436,6 +1588,359 @@ async function runCursorSdk(action, ctx) {
   };
 }
 
+function reasonixSpawnFailureIsDeferred(error) {
+  return ['ENOENT', 'EACCES', 'EPERM'].includes(error?.code);
+}
+
+function runReasonixProcess({ binary, args, cwd, env, input, timeoutMs }) {
+  return new Promise((resolvePromise) => {
+    const startedAt = Date.now();
+    let settled = false;
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    let child;
+
+    function finish(result) {
+      if (settled) return;
+      settled = true;
+      resolvePromise({
+        duration_ms: Date.now() - startedAt,
+        stdout,
+        stderr,
+        timed_out: timedOut,
+        ...result,
+      });
+    }
+
+    try {
+      child = spawn(binary, args, {
+        cwd,
+        env,
+        windowsHide: true,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+    } catch (error) {
+      finish({ ok: false, error, spawn_error: true, exit_code: null });
+      return;
+    }
+
+    const timer = timeoutMs > 0
+      ? setTimeout(() => {
+        timedOut = true;
+        child.kill('SIGTERM');
+      }, timeoutMs)
+      : null;
+
+    child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+    child.on('error', (error) => {
+      if (timer) clearTimeout(timer);
+      finish({ ok: false, error, spawn_error: true, exit_code: null });
+    });
+    child.on('close', (exitCode, signal) => {
+      if (timer) clearTimeout(timer);
+      finish({
+        ok: exitCode === 0 && !timedOut,
+        exit_code: exitCode,
+        signal: signal ?? null,
+      });
+    });
+    child.stdin.end(String(input ?? ''));
+  });
+}
+
+function buildReasonixTaskPrompt(taskPrompt, options) {
+  return [
+    taskPrompt,
+    '',
+    'Reasonix CLI host constraints:',
+    `- execution_cwd: ${options.cwd}`,
+    `- permission_profile: ${options.runSpec.permission_profile ?? 'read_only'}`,
+    `- workspace_root: ${options.cwd}`,
+    `- bash_allowed_by_host: ${options.allowBash}`,
+    '- Treat execution_cwd as the only project root for relative paths.',
+    '- Honor the final receipt contract exactly; the host will validate strict JSON.',
+    options.runSpec.permission_profile === 'read_only'
+      ? '- Read-only run: do not write, edit, delete, move, publish, push, or run mutating shell commands.'
+      : '- Write-capable run: keep file mutations inside execution_cwd unless the host prompt explicitly names an additional allowed directory.',
+  ].join('\n');
+}
+
+async function runReasonixCli(action, ctx) {
+  const executionAction = applyRunSpecToAction(action, ctx);
+  const mode = getField(executionAction, 'mode') ?? 'propose';
+  const promptParts = effectiveActionType(executionAction) === 'agent_run'
+    ? buildExecutionPackagePrompt(executionAction, ctx)
+    : buildPrompt(executionAction, ctx);
+  const options = buildReasonixOptions(executionAction, ctx);
+  const cwdFailure = validateExecutionCwd({
+    cwd: options.cwd,
+    shouldValidate: options.roots.cwdWasConfigured || Boolean(options.rootMetadata.authoritative_root),
+    provider: REASONIX_PROVIDER,
+  });
+  if (cwdFailure) {
+    options.generatedConfig?.cleanup();
+    return cwdFailure;
+  }
+
+  if (!options.env.DEEPSEEK_API_KEY?.trim() && !getField(executionAction, 'allow_missing_api_key')) {
+    options.generatedConfig?.cleanup();
+    return {
+      success: false,
+      deferred: true,
+      provider: REASONIX_PROVIDER,
+      error: 'reasonix_cli requires DEEPSEEK_API_KEY',
+      execution_root: options.cwd,
+      root_metadata: options.rootMetadata,
+    };
+  }
+
+  if (mode === 'sandbox_patch' && !options.roots.cwdWasConfigured) {
+    options.generatedConfig?.cleanup();
+    const summary = 'sandbox_patch requires an explicit cwd, sandbox, or worktree before Reasonix CLI execution';
+    return {
+      success: true,
+      message: summary,
+      execution_root: options.cwd,
+      root_metadata: options.rootMetadata,
+      agent: normalizeAgentResult({
+        status: 'requires_human_review',
+        summary,
+        requires_approval: true,
+        verification_hints: ['configure boundary.sandbox, boundary.worktree, or cwd before running sandbox_patch'],
+      }, summary, REASONIX_PROVIDER),
+    };
+  }
+
+  const translated = await translateAgentTaskPrompt(executionAction, ctx, promptParts);
+  if (!translated.ok) {
+    const diagnostic = providerFailureDiagnostic({
+      provider: REASONIX_PROVIDER,
+      phase: 'translate_agent_task_prompt',
+      error: translated.error,
+      promptParts,
+    });
+    options.generatedConfig?.cleanup();
+    return {
+      success: false,
+      deferred: true,
+      provider: REASONIX_PROVIDER,
+      error: translated.error,
+      provider_failure: diagnostic,
+      execution_root: options.cwd,
+      root_metadata: options.rootMetadata,
+    };
+  }
+
+  const obs = createAgentRunObserver(ctx, { provider: REASONIX_PROVIDER });
+  const providerStartedAt = Date.now();
+  const runResults = [];
+  let agent = null;
+  let validation = { valid: false, missing: ['receipt'], action_type: effectiveActionType(executionAction) };
+  let providerFailure = null;
+  obs.emit('provider_start', {
+    cwd: options.cwd,
+    binary: options.binary,
+    model: options.model ?? null,
+    config_source: options.configSource,
+    prompt_chars: translated.prompt.length,
+  });
+  obs.emitJsonlPath();
+  obs.emit('capability_gap', {
+    feature: 'tool_trace',
+    reason: 'reasonix_cli',
+  });
+  obs.emit('native_event', {
+    native_type: 'cli_invocation',
+    command: `${options.binary} ${options.args.join(' ')}`,
+    config_path: options.configPath,
+    permission_profile: options.runSpec.permission_profile,
+    allow_bash: options.allowBash,
+  });
+  const initialPrompt = buildReasonixTaskPrompt(translated.prompt, options);
+
+  async function runTurn(prompt, turnLabel) {
+    const turnStarted = Date.now();
+    obs.beginTurn();
+    obs.emit('turn_start', { turn: turnLabel, prompt_chars: prompt.length });
+    const result = await runReasonixProcess({
+      binary: options.binary,
+      args: options.args,
+      cwd: options.cwd,
+      env: options.env,
+      input: prompt,
+      timeoutMs: options.timeoutMs,
+    });
+    const rawText = String(result.stdout ?? '').trim();
+    if (rawText) {
+      obs.buffer?.appendAssistant(rawText);
+    }
+    if (result.stderr?.trim()) {
+      obs.emit('native_event', {
+        native_type: 'stderr',
+        text: summarizeAgentText(result.stderr, 500),
+      }, result.ok ? 'warning' : 'error');
+    }
+    obs.endTurn({
+      turn: turnLabel,
+      duration_ms: Date.now() - turnStarted,
+      exit_code: result.exit_code,
+      signal: result.signal ?? null,
+      result_chars: rawText.length,
+    });
+    runResults.push({
+      turn: turnLabel,
+      exit_code: result.exit_code,
+      signal: result.signal ?? null,
+      timed_out: result.timed_out,
+      duration_ms: result.duration_ms,
+      raw_text: rawText,
+      stderr: result.stderr ? summarizeAgentText(result.stderr, 1000) : '',
+    });
+    return { ...result, rawText };
+  }
+
+  try {
+    let current = await runTurn(initialPrompt, 'initial');
+    if (!current.ok) {
+      providerFailure = providerFailureDiagnostic({
+        provider: REASONIX_PROVIDER,
+        phase: current.spawn_error ? 'cli_spawn_error' : (current.timed_out ? 'cli_timeout' : 'cli_exit_error'),
+        error: current.error ?? current.stderr ?? `reasonix exited with code ${current.exit_code}`,
+        translatedPrompt: translated.prompt,
+        promptParts,
+        runResults,
+      });
+      agent = normalizeAgentResult({
+        status: current.timed_out ? 'blocked' : 'failed',
+        summary: providerFailure.message,
+        evidence: { provider_failure: providerFailure },
+      }, current.rawText || current.stderr, REASONIX_PROVIDER);
+    } else {
+      for (let attempt = 1; attempt <= AGENT_VERIFICATION_ATTEMPTS; attempt += 1) {
+        const verificationPrompt = buildAgentVerificationPrompt(executionAction, validation, attempt);
+        current = await runTurn(verificationPrompt, `verify-${attempt}`);
+        const parsed = parseAgentJson(ctx?.ai, current.rawText);
+        agent = normalizeAgentResult(parsed, current.rawText, REASONIX_PROVIDER);
+        validation = validateAgentReceipt(executionAction, agent);
+        if (!current.ok) {
+          providerFailure = providerFailureDiagnostic({
+            provider: REASONIX_PROVIDER,
+            phase: current.spawn_error ? 'cli_spawn_error' : (current.timed_out ? 'cli_timeout' : 'cli_exit_error'),
+            error: current.error ?? current.stderr ?? `reasonix exited with code ${current.exit_code}`,
+            translatedPrompt: translated.prompt,
+            promptParts,
+            runResults,
+          });
+          break;
+        }
+        if (validation.valid) break;
+      }
+    }
+  } catch (error) {
+    providerFailure = providerFailureDiagnostic({
+      provider: REASONIX_PROVIDER,
+      phase: 'cli_exception',
+      error,
+      translatedPrompt: translated.prompt,
+      promptParts,
+      runResults,
+    });
+    options.generatedConfig?.cleanup();
+    return {
+      success: false,
+      deferred: reasonixSpawnFailureIsDeferred(error),
+      provider: REASONIX_PROVIDER,
+      error: `Reasonix CLI execution failed: ${error?.message || error}`,
+      provider_failure: providerFailure,
+      execution_root: options.cwd,
+      root_metadata: options.rootMetadata,
+    };
+  } finally {
+    options.generatedConfig?.cleanup();
+  }
+
+  if (!agent) {
+    const last = runResults.at(-1);
+    const parsed = parseAgentJson(ctx?.ai, last?.raw_text ?? '');
+    agent = normalizeAgentResult(parsed, last?.raw_text ?? '', REASONIX_PROVIDER);
+    validation = validateAgentReceipt(executionAction, agent);
+  }
+
+  withAgentLoopOutputs(agent, {
+    taskPrompt: initialPrompt,
+    verificationAttempts: Math.max(0, runResults.length - 1),
+    finalValidation: validation,
+    sameSession: false,
+  });
+  agent.execution_status = agent.execution_status ?? agent.status;
+  agent.schema_status = validation.schema_status;
+  agent.schema_missing = validation.missing;
+  agent.raw_receipt_parse_mode = validation.raw_receipt_parse_mode;
+  if (validation.raw_receipt_parse_mode === 'extracted_json') {
+    agent.verification_hints = [
+      ...agent.verification_hints,
+      'agent receipt parsed from embedded JSON object',
+    ];
+  }
+  if (!validation.valid) {
+    agent.verification_hints = [
+      ...agent.verification_hints,
+      `agent receipt validation missing: ${validation.missing.join(', ')}`,
+    ];
+  }
+  if (providerFailure) {
+    agent.provider_failure = providerFailure;
+    agent.evidence = {
+      ...asObject(agent.evidence),
+      provider_failure: providerFailure,
+    };
+  }
+  agent.outputs = {
+    ...agent.outputs,
+    reasonix: {
+      binary: options.binary,
+      args: options.args,
+      run_results: runResults,
+      options: {
+        cwd: options.cwd,
+        execution_root: options.cwd,
+        root_metadata: options.rootMetadata,
+        run_spec: options.runSpec.present ? options.runSpec : null,
+        lane_execution: providerLaneMetadata(options.runSpec),
+        config_source: options.configSource,
+        config_path: options.configPath,
+        model: options.model,
+        permission_profile: options.runSpec.permission_profile,
+        allow_bash: options.allowBash,
+        timeout_ms: options.timeoutMs,
+        max_steps: options.maxSteps,
+      },
+      capability_gaps: ['tool_trace'],
+      provider_failure: providerFailure,
+    },
+  };
+
+  obs.emit('provider_finished', {
+    duration_ms: Date.now() - providerStartedAt,
+    validation_valid: validation.valid,
+    exit_code: runResults.at(-1)?.exit_code ?? null,
+  });
+
+  return {
+    success: !providerFailure && validation.valid,
+    deferred: providerFailure?.phase === 'cli_spawn_error' ? true : undefined,
+    provider: REASONIX_PROVIDER,
+    message: agent.summary,
+    error: providerFailure?.message ?? null,
+    provider_failure: providerFailure,
+    execution_root: options.cwd,
+    root_metadata: options.rootMetadata,
+    agent,
+  };
+}
+
 async function runLlmOnly(action, ctx) {
   const ai = ctx?.ai;
   const roots = resolveAgentExecutionRoots(action, ctx);
@@ -1524,6 +2029,7 @@ export async function runAgenticAction(action, ctx) {
   if (provider === DEFAULT_PROVIDER) return runLlmOnly(executionAction, logCtx);
   if (provider === CLAUDE_PROVIDER) return runClaudeCodeSdk(executionAction, logCtx);
   if (provider === CURSOR_PROVIDER) return runCursorSdk(executionAction, logCtx);
+  if (provider === REASONIX_PROVIDER) return runReasonixCli(executionAction, logCtx);
 
   if (provider === 'cli_agent') {
     return {
