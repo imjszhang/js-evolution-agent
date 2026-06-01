@@ -255,12 +255,14 @@ export function buildEvolutionDiaryContext({
     phase4: goalsAssessResult ? {
       cycle_id: goalsAssessResult?.report?.cycle_id ?? null,
       status: goalsAssessResult?.assessment?.status ?? null,
+      rule_status: goalsAssessResult?.assessment?.rule_status ?? null,
       confidence: goalsAssessResult?.assessment?.confidence ?? null,
       reason: goalsAssessResult?.assessment?.reason ?? null,
       written: goalsAssessResult?.written ?? null,
     } : null,
     phase4_5: goalsCalibrateResult ? {
       status: goalsCalibrateResult?.status ?? null,
+      rule_status: goalsCalibrateResult?.rule_status ?? null,
       reason: goalsCalibrateResult?.reason ?? null,
       mode: goalsCalibrateResult?.mode ?? null,
       calibrate_mode: goalsCalibrateResult?.calibrate_mode ?? null,
@@ -309,7 +311,7 @@ export function buildEvolutionDiaryPrompt({
       '- Keep the diary scoped to the active subject runtime; never describe it as a `journal/` project update.',
       '- Prefer traceable facts such as cycle id, action type, report path, verification status, and receipt summaries.',
       '- If phase3.semantic is present, treat it as the latest interpretation of the executed receipt. Use it to correct stale report/diary inferences, but do not promote semantic summaries to Seen facts.',
-      '- Explicitly record Phase 4 goal assessment and Phase 4.5 goal auto-calibration when present in Machine Context. Include status, confidence, and reason for Phase 4; include status, mode (patch, patch_partial, or full_replace), calibrate_mode, reason, detail, applied_patches, children_ids_before/after, belief_retirements, next_goal_id, and written count for Phase 4.5. If calibration was skipped, state the skipped reason and detail instead of omitting it.',
+      '- Explicitly record Phase 4 goal assessment and Phase 4.5 goal auto-calibration when present in Machine Context. Include status, rule_status (continue, learn, mutate, stop, or insufficient_evidence), confidence, and reason for Phase 4; include status, rule_status, mode (patch, patch_partial, or full_replace), calibrate_mode, reason, detail, applied_patches, children_ids_before/after, belief_retirements, next_goal_id, and written count for Phase 4.5. If calibration was skipped, state the skipped reason and detail instead of omitting it.',
       '- Explicitly record Phase 3.5 belief update when present in Machine Context. Include status, reason, updates_count, and which beliefs were strengthened, weakened, validated, refuted, created, or retired.',
       '- When interpreting metrics such as rank or score, follow interpretation_anchors.operator_established_facts. When judging progress vs no progress, use interpretation_anchors.active_goals or active_goals_flat good_signal / bad_signal. Do not infer metric direction from raw numeric delta alone (for example, a lower rank may be improvement). Execution and verification conclusions in phase2/phase3 still override anchors; anchors only interpret them.',
       '- Be readable and candid: say what moved, what did not move, and what the next cycle should remember.',
@@ -345,7 +347,7 @@ export function buildEvolutionDiaryPrompt({
     '- 只记录 active subject 的运行时进化，不要写成 `journal/` 项目开发日志。',
     '- 尽量引用可追溯事实，例如 cycle id、action type、报告路径、验证状态、receipt 摘要。',
     '- 如果 phase3.semantic 存在，它是本轮执行 receipt 的最新解释层结论。用它修正旧 report/diary 推断，但不要把 semantic summary 升级成 Seen 事实。',
-    '- 如果 Machine Context 中存在 phase4 或 phase4_5，必须显式记录 Phase 4 目标评估与 Phase 4.5 自动校准结果。Phase 4 至少写出 status、confidence、reason；Phase 4.5 至少写出 status、mode（patch、patch_partial 或 full_replace）、calibrate_mode、reason、detail、applied_patches、children_ids 前后变化、belief_retirements、next_goal_id、written。若校准被 skipped，也要写明 skipped reason 与 detail，不要省略。',
+    '- 如果 Machine Context 中存在 phase4 或 phase4_5，必须显式记录 Phase 4 目标评估与 Phase 4.5 自动校准结果。Phase 4 至少写出 status、rule_status（continue/learn/mutate/stop/insufficient_evidence）、confidence、reason；Phase 4.5 至少写出 status、rule_status、mode（patch、patch_partial 或 full_replace）、calibrate_mode、reason、detail、applied_patches、children_ids 前后变化、belief_retirements、next_goal_id、written。若校准被 skipped，也要写明 skipped reason 与 detail，不要省略。',
     '- 如果 Machine Context 中存在 phase3_5，必须显式记录 Phase 3.5 信念更新结果。至少写出 status、reason、updates_count，以及哪些 belief 被 strengthen/weaken/validate/refute/create/retire。',
     '- 解读 rank、score 等指标时，遵循 interpretation_anchors.operator_established_facts；判断「是否推进」时对照 interpretation_anchors.active_goals 或 active_goals_flat 的 good_signal / bad_signal，不要仅凭裸数值 delta 推断方向（例如 rank 数值更低可能是改善）。phase2/phase3 的执行与验证结论仍优先于 anchors；anchors 只用于解释它们。',
     '- 文风要像认真复盘的人写给操作者看：清楚、坦诚、可读，说清楚推进了什么、没推进什么、下一轮该记住什么。',
@@ -404,11 +406,24 @@ function renderFallbackDiary({ context, generatedAt, reason, language }) {
     lines.push('');
   }
 
+  if (context?.phase4) {
+    lines.push(
+      `## ${t('目标评估', 'Goal Assessment')}`,
+      '',
+      `- ${t('状态', 'status')}: ${context.phase4.status}`,
+      `- ${t('规则状态', 'rule status')}: ${context.phase4.rule_status ?? 'n/a'}`,
+      `- ${t('置信度', 'confidence')}: ${context.phase4.confidence ?? 'n/a'}`,
+      `- ${t('原因', 'reason')}: ${context.phase4.reason ?? 'n/a'}`,
+      '',
+    );
+  }
+
   if (context?.phase4_5) {
     lines.push(
       `## ${t('目标自动校准', 'Goal Auto Calibration')}`,
       '',
       `- ${t('状态', 'status')}: ${context.phase4_5.status}`,
+      `- ${t('规则状态', 'rule status')}: ${context.phase4_5.rule_status ?? 'n/a'}`,
       `- ${t('模式', 'mode')}: ${context.phase4_5.mode ?? 'n/a'}`,
       `- ${t('校准策略', 'calibrate mode')}: ${context.phase4_5.calibrate_mode ?? 'n/a'}`,
       `- ${t('原因', 'reason')}: ${context.phase4_5.reason ?? 'n/a'}`,

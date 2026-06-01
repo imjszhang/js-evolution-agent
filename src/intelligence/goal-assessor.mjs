@@ -3,8 +3,10 @@ import { extractJsonFromText } from '../ai/messages.mjs';
 import { assessGoals, detectLanguage, gatherEvidence } from './report-builder.mjs';
 import { normalizeCurrentBeliefs, partitionBeliefs } from './beliefs.mjs';
 import { normalizeGoalPatches } from './goal-patches.mjs';
+import { mapRuleStatusToAssessmentStatus, normalizeRuleStatus } from './goal-calibrate-policy.mjs';
 
 const VALID_STATUSES = new Set(['keep', 'refine', 'split', 'replace', 'retire', 'insufficient_evidence']);
+const VALID_RULE_STATUSES = new Set(['continue', 'learn', 'mutate', 'stop', 'insufficient_evidence']);
 const VALID_CONFIDENCE = new Set(['low', 'medium', 'high']);
 
 function flattenGoals(goals) {
@@ -78,6 +80,28 @@ function verifyReportId(reportPath) {
   if (!reportPath) return null;
   const filename = String(reportPath).split(/[\\/]/).pop() || '';
   return filename.replace(/\.json$/i, '') || null;
+}
+
+function conversationContextPathForReport(reportRecord) {
+  if (!reportRecord?.md_path || !reportRecord?.cycle_id) return null;
+  const normalized = String(reportRecord.md_path).replace(/\\/g, '/');
+  const marker = '/data/intelligence/reports/';
+  const idx = normalized.indexOf(marker);
+  if (idx < 0) return null;
+  const runtimeRoot = String(reportRecord.md_path).slice(0, idx);
+  return `${runtimeRoot}/data/evolution/records/${reportRecord.cycle_id}/conversation_context.json`;
+}
+
+function readGoalSuggestions(reportRecord) {
+  const path = conversationContextPathForReport(reportRecord);
+  if (!path) return [];
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf-8'));
+    const suggestions = parsed?.analysis?.goal_suggestions;
+    return Array.isArray(suggestions) ? suggestions.slice(0, 8) : [];
+  } catch {
+    return [];
+  }
 }
 
 function summarizeVerificationItem(item) {
@@ -162,6 +186,7 @@ export function summarizeVerificationReport(reportPath) {
 export function fallbackGoalAssessment(reason = 'AI goal assessment unavailable') {
   return {
     status: 'insufficient_evidence',
+    rule_status: 'insufficient_evidence',
     confidence: 'low',
     reason,
     evidence_refs: [],
@@ -209,6 +234,7 @@ export function buildGoalAssessmentContext({
       evidence_retro_count: reportRecord.evidence_retro_count ?? null,
     } : null,
     report_markdown: clip(markdown),
+    goal_suggestions: readGoalSuggestions(reportRecord),
     verification: summarizeVerificationReport(verificationReportPath),
     evidence,
     recent_goal_events: recentGoalEvents,
@@ -230,17 +256,28 @@ export function buildGoalAssessmentPrompt({
   const authorityBlock = formatAgentContextDocs(agentContextDocs);
 
   if (isZh) {
-    return `你是 js-evolution-agent 的目标审计员。你的任务是判断当前目标是否仍是可验证假设，并给出目标校准建议。
+    return `你是 js-evolution-agent 的规则更新审计员。你的任务不是简单判断目标是否“还能验证”，而是依据 Cyber-Taoist 第一性原理判断当前法则是否仍能通过交易产生有效后果，并在失败产生信息时给出目标校准建议。
 
 第一步：请先完整阅读下方「权威文献 agentContextDocs」中的每一份文档全文（Cyber-Taoist 宪章、应用指南与本主体策略等）。**这是你判定的顶层依据：**你的 status、confidence、reason、risk 以及若有 proposed_goal，必须与这些文献相容；不得以情报材料为由提出与文献相冲突的目标。若情报不足以在文献约束下做决定，必须使用 insufficient_evidence。
 
-第二步：在文献约束之内，再结合下方「情报与机器材料」评估目标是否可被当前证据验证或是否需要收敛。
+第二步：在文献约束之内，再结合下方「情报与机器材料」评估当前法则的交易反馈状态。优先回答：当前法则是否仍产生有效交易反馈？失败是否已经形成可沉淀的新信息？守护层是否稳定到足以继续低风险学习？
+
+rule_status 语义：
+- continue：当前目标/法则仍产生有效交易反馈，不改目标。
+- learn：反馈不足、证据缺口或感知滞后阻碍判断，下一轮应自动进入只读学习、诊断、反馈回路校准。
+- mutate：成果指标持续失败且失败已产生信息，旧法则已被后果证伪，应自动更新成果子目标，进入规则更新期。
+- stop：凭据、边界、记忆审计等核心守护失败，暂停成果探索，先恢复核心连续性。
+- insufficient_evidence：情报不足以判断法则状态。
 
 硬约束：
 - 只做判定，不执行修改。
 - 必须以 agentContextDocs 为最高层级约束来判断目标是否合理、可验证、是否偏离主体边界。
 - 没有来自情报侧的可用证据（观察、回顾、报告、事件等）支撑具体结论时：不得轻易建议 replace/split；若仅能依据文献得出「尚需等待证据」，则用 insufficient_evidence，且 confidence 为 low。
 - 能收敛，不扩展；目标越可验证越好；proposed_goal 必须仍符合文献与主体策略。
+- status 保持兼容旧工作流；rule_status 是本轮第一性原理判断。若 rule_status=learn 或 mutate，status 通常应为 refine（整树重组才用 replace）。
+- 不得把“目标正确触发人工介入/停止发布”直接当成 continue/keep。若触发原因是成果法则失败、模拟失真、真实反馈脱钩，且守护层稳定，必须输出 rule_status="learn" 或 rule_status="mutate"，并给出 goal_patches。
+- rule_status="learn" 的 goal_patches 只能描述只读探针、诊断、反馈回路校准、replay/challenge/rank/rankScore 相关性分析；必须显式禁止发布、远端写入和 POST /api/agent/tank/code。
+- rule_status="mutate" 的 goal_patches 应把失败反馈沉淀为新成果法则，例如真实反馈门禁、challenge/replay 相关性门禁、底层行为策略假设验证；不得绕过主体发布审批。
 - 降标或收缩目标只允许作为恢复期策略，不能永久替代原始主目标的成果压力。若当前目标已从「成果目标」（例如胜率、排名、真实反馈改善、策略能力提升）降为「过程目标」（例如凭据合规、审计、仅观察），必须判断这些过程目标是否已经完成、稳定或可持续。
 - 当恢复期子目标已经达成或连续多轮可维持时，不应仅因低标准目标仍可验证就继续 keep；应优先建议 refine，把目标重新升回能推动原始主目标的成果指标。
 - 若 active_goals 的子目标全部是前置条件、合规、审计或观察类任务，而缺少直接衡量主体效果的成果指标，必须在 reason 中明确指出 "goal_pressure_loss"。除非有明确证据表明主体仍处于阻塞恢复期，否则应输出 status="refine"。
@@ -261,6 +298,7 @@ export function buildGoalAssessmentPrompt({
 JSON schema:
 {
   "status": "keep | refine | split | replace | retire | insufficient_evidence",
+  "rule_status": "continue | learn | mutate | stop | insufficient_evidence",
   "confidence": "low | medium | high",
   "reason": "string",
   "evidence_refs": [{ "type": "intel_report|verify_report|observation|probe_result|retrospective|goal_event|evolution_event|agent_context", "id": "string", "ref": "string" }],
@@ -289,17 +327,28 @@ ${authorityBlock}
 ${contextJson}`;
   }
 
-  return `You are the goal auditor for js-evolution-agent. Decide whether the active goal remains a testable hypothesis and whether it should be calibrated.
+  return `You are the rule-update auditor for js-evolution-agent. Do not merely decide whether the active goal is still testable. Using Cyber-Taoist first principles, decide whether the current law still produces useful transaction feedback, and recommend goal calibration when failure has produced information.
 
 Step 1: Read every document below under "Authority agentContextDocs" in full (Cyber-Taoist constitution, skill guide, active subject policy, and any other loaded docs). These are your top-level authority: your status, confidence, reason, risk, and any proposed_goal must be compatible with them. Never recommend goals that contradict these texts. When intelligence is insufficient to decide under those constraints, use insufficient_evidence.
 
-Step 2: Under those constraints, use the structured intelligence block below to judge verifiability and whether goals should narrow.
+Step 2: Under those constraints, use the structured intelligence block below to judge the law/transaction feedback state. First answer: does the current law still produce useful transaction feedback? Has failure produced information that should become a new law? Are guardrails stable enough to continue low-risk learning?
+
+rule_status semantics:
+- continue: the current law/goal still produces useful transaction feedback; do not change goals.
+- learn: feedback is thin, noisy, or blocked by evidence gaps; next cycle should enter read-only learning, diagnostics, or feedback-loop calibration.
+- mutate: outcome metrics keep failing and the failures now contain information; the old law has been falsified and outcome goals should be updated.
+- stop: core guardrails such as credentials, boundary, or memory audit failed; pause outcome exploration and recover continuity first.
+- insufficient_evidence: evidence is too thin to judge the rule state.
 
 Hard constraints:
 - Assess only; do not execute changes.
 - You MUST ground your judgment in agentContextDocs; intelligence is evidence about the world, not a substitute for doctrinal boundaries.
 - Do not recommend broad replace/split without concrete intelligence support; prefer insufficient_evidence with low confidence when facts are thin.
 - Prefer narrowing over expanding; proposed_goal must remain compliant with doctrine and subject policy.
+- Keep status compatible with the old workflow; rule_status is the first-principles rule judgment. If rule_status is learn or mutate, status should usually be refine (use replace only for whole-tree rewrites).
+- Do not treat "the goal correctly triggered human intervention / stopped publishing" as continue/keep. If the trigger came from outcome-law failure, simulation distortion, or real-feedback decoupling, and guardrails are stable, return rule_status="learn" or rule_status="mutate" with goal_patches.
+- For rule_status="learn", goal_patches must be read-only learning, diagnostics, feedback-loop calibration, or replay/challenge/rank/rankScore correlation work; explicitly forbid publishing, remote writes, and POST /api/agent/tank/code.
+- For rule_status="mutate", goal_patches should turn failure feedback into a new outcome law, such as real-feedback gates, challenge/replay correlation gates, or bottom-level behavior hypothesis tests. Do not bypass subject publish approval.
 - Goal downgrading or narrowing is allowed only as a recovery-phase strategy. It must not permanently replace the original top-level outcome pressure. If the active goal has drifted from outcome goals (win rate, rank, real feedback improvement, strategy capability) into process goals (credential hygiene, auditability, observation only), assess whether those process goals are now completed, stable, or sustainable.
 - When recovery subgoals are achieved or repeatedly maintainable, do not keep a low-pressure goal merely because it remains testable. Prefer refine to restore outcome pressure.
 - If all child goals are prerequisite, compliance, audit, or observation work and none directly measures subject effectiveness, explicitly mention "goal_pressure_loss" in reason. Unless evidence shows the subject is still in a blocking recovery phase, return status="refine".
@@ -321,6 +370,7 @@ Return one JSON object only. No Markdown. No code fences.
 JSON schema:
 {
   "status": "keep | refine | split | replace | retire | insufficient_evidence",
+  "rule_status": "continue | learn | mutate | stop | insufficient_evidence",
   "confidence": "low | medium | high",
   "reason": "string",
   "evidence_refs": [{ "type": "intel_report|verify_report|observation|probe_result|retrospective|goal_event|evolution_event|agent_context", "id": "string", "ref": "string" }],
@@ -362,7 +412,13 @@ export function normalizeProposedGoalShape(goal) {
 
 export function parseGoalAssessment(raw) {
   const parsed = extractJsonFromText(raw);
-  const status = VALID_STATUSES.has(parsed.status) ? parsed.status : 'insufficient_evidence';
+  const parsedRuleStatus = normalizeRuleStatus(parsed.rule_status)
+    ?? (VALID_RULE_STATUSES.has(String(parsed.status ?? '').trim().toLowerCase())
+      ? String(parsed.status).trim().toLowerCase()
+      : null);
+  const status = VALID_STATUSES.has(parsed.status)
+    ? parsed.status
+    : mapRuleStatusToAssessmentStatus(parsedRuleStatus, 'insufficient_evidence');
   const confidence = VALID_CONFIDENCE.has(parsed.confidence) ? parsed.confidence : 'low';
   const refs = Array.isArray(parsed.evidence_refs) ? parsed.evidence_refs : [];
   const goal_patches = normalizeGoalPatches(parsed.goal_patches);
@@ -370,6 +426,7 @@ export function parseGoalAssessment(raw) {
 
   return {
     status,
+    rule_status: parsedRuleStatus ?? (status === 'keep' ? 'continue' : (status === 'insufficient_evidence' ? 'insufficient_evidence' : null)),
     confidence: refs.length ? confidence : 'low',
     reason: String(parsed.reason || 'No reason provided.'),
     evidence_refs: refs,

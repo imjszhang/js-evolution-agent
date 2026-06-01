@@ -2275,6 +2275,113 @@ describe('goals command helpers', () => {
     expect(getGoalHistory(root, { limit: 10 }).events).toHaveLength(0);
   });
 
+  it('auto-calibrates keep assessments when rule_status is mutate', () => {
+    const root = makeGoalsRoot('jea-goals-rule-mutate-');
+    const runtime = runtimeInfoForDefaultSubject(root);
+    const seeded = {
+      id: 'bootstrap',
+      name: 'Bootstrap',
+      intent: 'Test',
+      good_signal: 'g',
+      bad_signal: 'b',
+      children: [{
+        id: 'outcome-x',
+        name: 'Outcome',
+        intent: 'old simulation and publish loop',
+        good_signal: 'g',
+        bad_signal: 'b',
+        children: [],
+      }],
+    };
+    applyGoalObject(root, seeded, { reason: 'seed', cycle: 'seed' });
+
+    const result = autoCalibrateGoals(root, {
+      report: { cycle_id: 'cycle-rule-mutate' },
+      assessment: {
+        status: 'keep',
+        rule_status: 'mutate',
+        confidence: 'medium',
+        goal_patches: [{
+          op: 'update_child',
+          child_id: 'outcome-x',
+          fields: {
+            intent: 'replace failed simulation law with real feedback gate calibration',
+          },
+        }],
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: 'applied',
+      mode: 'patch',
+      rule_status: 'mutate',
+    });
+    expect(readJsonSafe(join(runtime.goalsDir, 'active_goals.json'))
+      .children.find((c) => c.id === 'outcome-x').intent)
+      .toContain('real feedback gate');
+  });
+
+  it('learn rule_status only auto-applies low-risk diagnostic patches', () => {
+    const root = makeGoalsRoot('jea-goals-rule-learn-');
+    const runtime = runtimeInfoForDefaultSubject(root);
+    const seeded = {
+      id: 'bootstrap',
+      name: 'Bootstrap',
+      intent: 'Test',
+      good_signal: 'g',
+      bad_signal: 'b',
+      children: [{
+        id: 'outcome-x',
+        name: 'Outcome',
+        intent: 'old loop',
+        good_signal: 'g',
+        bad_signal: 'b',
+        children: [],
+      }],
+    };
+    applyGoalObject(root, seeded, { reason: 'seed', cycle: 'seed' });
+
+    const result = autoCalibrateGoals(root, {
+      report: { cycle_id: 'cycle-rule-learn' },
+      assessment: {
+        status: 'keep',
+        rule_status: 'learn',
+        confidence: 'medium',
+        goal_patches: [
+          {
+            op: 'update_child',
+            child_id: 'outcome-x',
+            fields: {
+              intent: 'read-only diagnostics for replay challenge rankScore feedback correlation; 禁止发布',
+            },
+          },
+          {
+            op: 'add_child',
+            child: {
+              id: 'publish-now',
+              name: 'Publish now',
+              intent: '恢复发布候选',
+              good_signal: 'g',
+              bad_signal: 'b',
+              role: 'outcome',
+              children: [],
+            },
+          },
+        ],
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: 'applied',
+      mode: 'patch_partial',
+      rule_status: 'learn',
+    });
+    expect(result.skipped_patches[0].reason).toBe('learn_patch_not_low_risk');
+    const active = readJsonSafe(join(runtime.goalsDir, 'active_goals.json'));
+    expect(active.children.map((c) => c.id)).not.toContain('publish-now');
+    expect(active.children.find((c) => c.id === 'outcome-x').intent).toContain('read-only diagnostics');
+  });
+
   it('liberal auto-applies medium-confidence full_replace', () => {
     const root = makeGoalsRoot('jea-goals-liberal-medium-');
     const runtime = runtimeInfoForDefaultSubject(root);

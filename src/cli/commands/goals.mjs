@@ -17,9 +17,11 @@ import {
   validateGoalShape,
 } from '../../intelligence/goal-patches.mjs';
 import {
-  isActionableAssessmentStatus,
+  isActionableAssessment,
   isGoalAutoApplyEnabled,
+  mapRuleStatusToAssessmentStatus,
   meetsFullReplaceConfidence,
+  normalizeRuleStatus,
   resolveGoalCalibratePolicy,
 } from '../../intelligence/goal-calibrate-policy.mjs';
 import { resolveIntelReportRecordPath } from '../../intelligence/report-paths.mjs';
@@ -181,6 +183,52 @@ function calibrateResultBase(cycleId, previousGoal, nextGoal, policy = null) {
     children_ids_before: childIdsFromGoals(previousGoal),
     children_ids_after: childIdsFromGoals(nextGoal ?? previousGoal),
   };
+}
+
+function normalizeAssessmentForCalibration(assessment) {
+  const ruleStatus = normalizeRuleStatus(assessment?.rule_status);
+  if (!ruleStatus) return { assessment, rule_status: null };
+  const fallback = assessment?.status ?? 'keep';
+  return {
+    rule_status: ruleStatus,
+    assessment: {
+      ...assessment,
+      status: mapRuleStatusToAssessmentStatus(ruleStatus, fallback),
+      rule_status: ruleStatus,
+    },
+  };
+}
+
+const LEARNING_REQUIRED_KEYWORDS = [
+  'read-only', 'readonly', '只读', 'diagnostic', 'diagnostics', '诊断',
+  'feedback', '反馈', 'calibration', '校准', 'replay', 'challenge',
+  'rankscore', 'rank score', 'live rank', '相关性', 'correlation',
+];
+const LEARNING_FORBIDDEN_KEYWORDS = [
+  'remote write', 'remote_write', 'post /api/agent/tank/code',
+  '/api/agent/tank/code', '候选发布', '恢复发布', 'approval_granted',
+];
+
+function patchText(patch) {
+  return JSON.stringify(patch ?? {}).toLowerCase();
+}
+
+function isLowRiskLearningPatch(patch) {
+  if (!['add_child', 'update_child'].includes(patch?.op)) return false;
+  const text = patchText(patch);
+  if (LEARNING_FORBIDDEN_KEYWORDS.some((keyword) => text.includes(keyword.toLowerCase()))) return false;
+  return LEARNING_REQUIRED_KEYWORDS.some((keyword) => text.includes(keyword.toLowerCase()));
+}
+
+function filterPatchesForRuleStatus(patches, ruleStatus) {
+  if (ruleStatus !== 'learn') return { patches, skipped: [] };
+  const applicable = [];
+  const skipped = [];
+  for (const patch of patches) {
+    if (isLowRiskLearningPatch(patch)) applicable.push(patch);
+    else skipped.push({ patch, reason: 'learn_patch_not_low_risk' });
+  }
+  return { patches: applicable, skipped };
 }
 
 export function buildGoalPatchUpdate(root = getProjectRoot(), patches, opts = {}) {
@@ -350,17 +398,24 @@ function tryApplyProposedGoal(root, {
 }
 
 export function autoCalibrateGoals(root = getProjectRoot(), goalsAssessResult = null, opts = {}) {
-  const assessment = goalsAssessResult?.assessment ?? null;
+  const rawAssessment = goalsAssessResult?.assessment ?? null;
+  const normalizedAssessment = normalizeAssessmentForCalibration(rawAssessment);
+  const assessment = normalizedAssessment.assessment;
+  const ruleStatus = normalizedAssessment.rule_status;
   const cycleId = goalsAssessResult?.report?.cycle_id ?? goalsAssessResult?.event?.cycle_id ?? opts.cycle ?? null;
   const policy = opts.policy ?? resolveGoalCalibratePolicy(opts.env ?? process.env);
   const active = getActiveGoals(root, opts.flags ?? {});
   const previousGoal = active.goals;
   const proposedGoal = normalizeProposedGoalShape(assessment?.proposed_goal);
   const rawPatches = assessment?.goal_patches;
-  const normalizedPatches = normalizeGoalPatches(rawPatches);
+  const patchFilter = filterPatchesForRuleStatus(normalizeGoalPatches(rawPatches), ruleStatus);
+  const normalizedPatches = patchFilter.patches;
   const hasPatches = normalizedPatches.length > 0;
 
-  const base = calibrateResultBase(cycleId, previousGoal, previousGoal, policy);
+  const base = {
+    ...calibrateResultBase(cycleId, previousGoal, previousGoal, policy),
+    rule_status: ruleStatus,
+  };
 
   if (!isGoalAutoApplyEnabled(opts.env ?? process.env)) {
     return { ...base, status: 'skipped', reason: 'auto_apply_disabled' };
@@ -368,7 +423,7 @@ export function autoCalibrateGoals(root = getProjectRoot(), goalsAssessResult = 
 
   if (!assessment) return { ...base, status: 'skipped', reason: 'no_assessment' };
 
-  if (!isActionableAssessmentStatus(assessment.status, policy)) {
+  if (!isActionableAssessment(assessment, policy)) {
     return { ...base, status: 'skipped', reason: 'status_not_actionable' };
   }
 
@@ -376,9 +431,19 @@ export function autoCalibrateGoals(root = getProjectRoot(), goalsAssessResult = 
     opts.logger.warn('[goals] assessment has both goal_patches and proposed_goal; trying patches first.');
   }
 
+  if (!hasPatches && patchFilter.skipped.length && !proposedGoal) {
+    return {
+      ...base,
+      status: 'skipped',
+      reason: 'no_applicable_patches',
+      skipped_patches: patchFilter.skipped,
+    };
+  }
+
   if (hasPatches) {
     const built = buildPartialPatchApply(previousGoal, normalizedPatches, assessment, policy);
     const { applicable, skipped, preview, warnings = [] } = built;
+    const allSkipped = [...patchFilter.skipped, ...skipped];
 
     if (!applicable.length) {
       const inv = built.invariant;
@@ -399,7 +464,7 @@ export function autoCalibrateGoals(root = getProjectRoot(), goalsAssessResult = 
         status: 'skipped',
         reason: inv?.reason ?? 'no_applicable_patches',
         detail: inv?.detail ?? null,
-        skipped_patches: skipped,
+        skipped_patches: allSkipped,
         warnings,
       };
     }
@@ -413,7 +478,7 @@ export function autoCalibrateGoals(root = getProjectRoot(), goalsAssessResult = 
         flags: opts.flags,
       });
       const result = commitGoalPatch(build, { store: opts.store, policy });
-      const mode = skipped.length > 0 ? 'patch_partial' : 'patch';
+      const mode = allSkipped.length > 0 ? 'patch_partial' : 'patch';
       return {
         ...base,
         status: 'applied',
@@ -424,7 +489,7 @@ export function autoCalibrateGoals(root = getProjectRoot(), goalsAssessResult = 
         written: result.written,
         active_goals_path: result.path,
         applied_patches: applicable,
-        skipped_patches: skipped,
+        skipped_patches: allSkipped,
         belief_retirements: result.belief_retirements,
         warnings,
         children_ids_after: childIdsFromGoals(result.nextGoal),
@@ -513,6 +578,7 @@ export async function assessActiveGoals(root = getProjectRoot(), flags = {}, opt
     type: 'assessment',
     goal_id: active.goals.id ?? null,
     reason: assessed.assessment.reason,
+    rule_status: assessed.assessment.rule_status ?? null,
     evidence_refs: assessed.assessment.evidence_refs?.length
       ? assessed.assessment.evidence_refs
       : (reportRef ? [reportRef] : []),

@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   getGoalCalibrateMode,
+  isActionableAssessment,
+  isActionableRuleStatus,
   isGoalAutoApplyEnabled,
+  mapRuleStatusToAssessmentStatus,
   meetsFullReplaceConfidence,
+  normalizeRuleStatus,
   resolveGoalCalibratePolicy,
   summarizeGoalCalibratePolicy,
 } from '../src/intelligence/goal-calibrate-policy.mjs';
@@ -53,5 +57,15 @@ describe('goal-calibrate-policy', () => {
 
   it('summarizeGoalCalibratePolicy is non-empty', () => {
     expect(summarizeGoalCalibratePolicy()).toMatch(/liberal/);
+  });
+
+  it('treats learn and mutate rule statuses as actionable calibration states', () => {
+    const policy = resolveGoalCalibratePolicy({});
+    expect(normalizeRuleStatus('MUTATE')).toBe('mutate');
+    expect(isActionableRuleStatus('learn')).toBe(true);
+    expect(isActionableRuleStatus('continue')).toBe(false);
+    expect(mapRuleStatusToAssessmentStatus('learn', 'keep')).toBe('refine');
+    expect(isActionableAssessment({ status: 'keep', rule_status: 'mutate' }, policy)).toBe(true);
+    expect(isActionableAssessment({ status: 'keep', rule_status: 'stop' }, policy)).toBe(false);
   });
 });

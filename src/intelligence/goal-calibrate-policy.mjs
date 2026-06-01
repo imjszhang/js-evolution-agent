@@ -4,6 +4,8 @@ import { MAX_OUTCOME_CHILDREN } from './goal-patches.mjs';
 
 export const VALID_CALIBRATE_MODES = new Set(['liberal', 'strict']);
 export const ACTIONABLE_ASSESSMENT_STATUSES = new Set(['refine', 'split', 'replace']);
+export const VALID_RULE_STATUSES = new Set(['continue', 'learn', 'mutate', 'stop', 'insufficient_evidence']);
+export const ACTIONABLE_RULE_STATUSES = new Set(['learn', 'mutate']);
 const CONFIDENCE_RANK = { low: 0, medium: 1, high: 2 };
 
 export function isGoalAutoApplyEnabled(env = process.env) {
@@ -65,6 +67,27 @@ export function resolveGoalCalibratePolicy(env = process.env) {
 export function isActionableAssessmentStatus(status, policy) {
   const set = policy?.actionableStatuses ?? ACTIONABLE_ASSESSMENT_STATUSES;
   return set.has(status);
+}
+
+export function normalizeRuleStatus(value) {
+  const raw = String(value ?? '').trim().toLowerCase();
+  return VALID_RULE_STATUSES.has(raw) ? raw : null;
+}
+
+export function isActionableRuleStatus(ruleStatus) {
+  return ACTIONABLE_RULE_STATUSES.has(normalizeRuleStatus(ruleStatus));
+}
+
+export function mapRuleStatusToAssessmentStatus(ruleStatus, fallback = 'keep') {
+  const normalized = normalizeRuleStatus(ruleStatus);
+  if (normalized === 'learn' || normalized === 'mutate') return 'refine';
+  if (normalized === 'insufficient_evidence') return 'insufficient_evidence';
+  return fallback;
+}
+
+export function isActionableAssessment(assessment, policy) {
+  if (isActionableRuleStatus(assessment?.rule_status)) return true;
+  return isActionableAssessmentStatus(assessment?.status, policy);
 }
 
 export function meetsFullReplaceConfidence(confidence, policy) {
