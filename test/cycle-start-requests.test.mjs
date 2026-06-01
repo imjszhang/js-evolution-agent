@@ -111,6 +111,17 @@ describe('cycle-start-requests', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  it('on_demand ignores pending tick-only request left by continuous mode', () => {
+    const root = makeRoot();
+    enqueueCycleStartRequest(root, 'alpha', { reason: 'tick' });
+    const processed = processCycleStartRequests(root, 'alpha', { evolution_mode: 'on_demand' });
+    expect(processed.started).toBe(false);
+    expect(processed.reason).toBe('on_demand_tick_request');
+    expect(listOpenCycles(root, 'alpha')).toHaveLength(0);
+    expect(readPendingCycleStartRequest(root, 'alpha')).toBeNull();
+    rmSync(root, { recursive: true, force: true });
+  });
+
   it('on_demand starts cycle after enqueue', () => {
     const root = makeRoot();
     enqueueCycleStartRequest(root, 'alpha', { reason: 'manual' });

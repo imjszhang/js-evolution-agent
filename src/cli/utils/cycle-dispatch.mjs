@@ -270,10 +270,33 @@ function cycleStartBlockedReason(root, subject, input = {}) {
   return null;
 }
 
+function isTickOnlyCycleStartRequest(request) {
+  const reasons = Array.isArray(request?.reasons) ? request.reasons : [];
+  return reasons.length > 0 && reasons.every((reason) => reason === 'tick');
+}
+
 export function processCycleStartRequests(root, subject, input = {}) {
   const pending = readPendingCycleStartRequest(root, subject);
   if (!pending) {
     return { processed: false, started: false, reason: 'no_request' };
+  }
+
+  if (input.evolution_mode === 'on_demand' && isTickOnlyCycleStartRequest(pending)) {
+    consumeCycleStartRequest(root, subject, pending.request_id);
+    deferredEventByRequest.delete(deferredEventKey(subject, pending.request_id));
+    recordDaemonEvent(root, subject, {
+      type: 'cycle_start_ignored',
+      status: 'skipped',
+      request_id: pending.request_id,
+      trigger_reasons: pending.reasons,
+      reason: 'on_demand_tick_request',
+    });
+    return {
+      processed: true,
+      started: false,
+      reason: 'on_demand_tick_request',
+      request: summarizePendingCycleStartRequest(pending),
+    };
   }
 
   const blockedReason = cycleStartBlockedReason(root, subject, input);
