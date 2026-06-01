@@ -19,13 +19,18 @@ import {
   refineReplyDecisionWithDraft,
   resolveReplyConfig,
 } from '../src/channel/reply.mjs';
+import { resolveSubjectReplyIdentity } from '../src/channel/subject-identity.mjs';
 
 let tempDir = null;
 
-function makeRoot({ channelTarget = 'oc_test', reply = null } = {}) {
+function makeRoot({ channelTarget = 'oc_test', reply = null, policyText = null } = {}) {
   tempDir = mkdtempSync(join(tmpdir(), 'jea-channel-'));
   mkdirSync(join(tempDir, 'policies', 'subjects'), { recursive: true });
-  writeFileSync(join(tempDir, 'policies', 'subjects', 'alpha.md'), '# alpha\n\n## Subject\nalpha', 'utf-8');
+  writeFileSync(
+    join(tempDir, 'policies', 'subjects', 'alpha.md'),
+    policyText ?? '# alpha\n\n## Subject\nalpha 是测试主体。\n\n## Persona\n本主体名为「小测」，表达风格简洁克制。',
+    'utf-8',
+  );
   const feishu = { default_chat_id: channelTarget };
   if (reply) feishu.reply = reply;
   writeJsonFile(join(tempDir, 'policies', 'subjects.json'), {
@@ -326,6 +331,7 @@ describe('channel domain', () => {
           llm_decision: { enabled: true },
         },
       });
+      let capturedMessages = null;
       const decision = await decideInboundReplyWithLlm(root, 'alpha', {
         envelope: envelopeFromPayload({
           messageId: 'om_chat123',
@@ -335,19 +341,32 @@ describe('channel domain', () => {
         }),
         ingestResult: { kind: 'observation', record: { content: '说说你自己吧' } },
         aiClient: {
-          chatMessages: async () => JSON.stringify({
-            action: 'send',
-            text: '我是 alpha 的 channel 入口，可以记录你的意图、事实和核实请求，也能聊聊当前状态。',
-            reason: 'casual_intro',
-            confidence: 'high',
-            risk: 'low',
-          }),
+          chatMessages: async (messages) => {
+            capturedMessages = messages;
+            return JSON.stringify({
+              action: 'send',
+              text: '我是小测，alpha 的 channel 入口，可以记录你的意图、事实和核实请求。',
+              reason: 'casual_intro',
+              confidence: 'high',
+              risk: 'low',
+            });
+          },
         },
       });
       expect(decision.action).toBe('send');
       expect(decision.reason).toBe('llm_autonomous_reply');
-      expect(decision.text).toContain('channel 入口');
+      expect(decision.text).toContain('小测');
       expect(decision.metadata.llm_decision.status).toBe('used');
+      expect(JSON.stringify(capturedMessages)).toContain('小测');
+      expect(JSON.stringify(capturedMessages)).toContain('subject_identity');
+    });
+
+    it('loads subject persona for channel reply prompts', () => {
+      const root = makeRoot();
+      const identity = resolveSubjectReplyIdentity(root, 'alpha');
+      expect(identity.subject).toBe('alpha');
+      expect(identity.subject_description).toContain('测试主体');
+      expect(identity.persona).toContain('小测');
     });
 
     it('falls back when LLM autonomous text violates hard guardrails', async () => {

@@ -1,5 +1,6 @@
 import { resolveFeishuConfig } from './adapters/feishu/config.mjs';
 import { recordChannelEvent, readChannelEvents } from './audit.mjs';
+import { resolveSubjectReplyIdentity } from './subject-identity.mjs';
 import { cooldownActive, setCooldown, writeOutboxMessage } from './state.mjs';
 import { normalizeOutboundMessage, nowIso } from './types.mjs';
 import { DeepSeekOpenAIClient } from '../ai/deepseek-client.mjs';
@@ -341,15 +342,18 @@ export async function decideInboundReplyWithLlm(root, subject, {
   }
 
   try {
+    const subjectIdentity = resolveSubjectReplyIdentity(root, subject);
     const parsed = await chatMessagesJson(client, [
       {
         role: 'system',
         content: [
-          'You are the autonomous Chinese channel reply planner for js-evolution-agent.',
-          'Decide whether to reply and draft the reply. Casual conversation is allowed.',
+          'You are the autonomous Chinese channel reply planner for one js-evolution-agent subject.',
+          'Reply in first person as that subject\'s channel persona, using subject_identity for role, name, and tone.',
+          'Do not present yourself as a generic js-evolution-agent platform assistant.',
+          'Decide whether to reply and draft the reply. Casual conversation is allowed when it fits the persona.',
           'Return JSON only: {"action":"send|none","text":"...","reason":"...","confidence":"low|medium|high","risk":"low|medium|high"}.',
           'The inbound message has already been stored by ingest; do not change its classification.',
-          'You may explain what the agent is and discuss status based only on provided context.',
+          'You may explain what this subject does and discuss status based only on provided context.',
           'Do not grant approval, do not claim actions have executed, do not leak secrets, and do not invent runtime facts.',
         ].join('\n'),
       },
@@ -357,6 +361,7 @@ export async function decideInboundReplyWithLlm(root, subject, {
         role: 'user',
         content: JSON.stringify({
           subject,
+          subject_identity: subjectIdentity,
           message: {
             id: messageId,
             channel: envelope?.channel ?? null,
@@ -626,11 +631,13 @@ export async function refineReplyDecisionWithDraft(root, subject, decision, {
     };
   }
   try {
+    const subjectIdentity = resolveSubjectReplyIdentity(root, subject);
     const parsed = await chatMessagesJson(client, [
       {
         role: 'system',
         content: [
-          'You draft short Chinese channel replies for js-evolution-agent.',
+          'You draft short Chinese channel replies for one js-evolution-agent subject.',
+          'Preserve the subject\'s persona from subject_identity; do not rewrite as a generic platform assistant.',
           'Return JSON only: {"text":"..."}',
           'Do not grant approval, do not claim an action has executed, and do not invent facts.',
           'Keep the reply concise and preserve the original safety boundary.',
@@ -640,6 +647,7 @@ export async function refineReplyDecisionWithDraft(root, subject, decision, {
         role: 'user',
         content: JSON.stringify({
           subject,
+          subject_identity: subjectIdentity,
           reason: decision.reason,
           original_text: decision.text,
           metadata: decision.metadata ?? {},
