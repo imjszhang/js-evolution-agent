@@ -2321,6 +2321,77 @@ describe('goals command helpers', () => {
       .toContain('real feedback gate');
   });
 
+  it('mutate add_child with child parent_id coerces to root and applies', () => {
+    const root = makeGoalsRoot('jea-goals-rule-mutate-parent-');
+    const runtime = runtimeInfoForDefaultSubject(root);
+    const seeded = {
+      id: 'win-more-agentank-refined-v28',
+      name: 'Win',
+      intent: 'root',
+      good_signal: 'g',
+      bad_signal: 'b',
+      children: [
+        {
+          id: 'monitor-credential-compliance-v28',
+          name: 'Cred',
+          intent: 'credential compliance',
+          good_signal: 'g',
+          bad_signal: 'b',
+          children: [],
+        },
+        {
+          id: 'guard-memory-audit-v28',
+          name: 'Mem',
+          intent: 'memory audit',
+          good_signal: 'g',
+          bad_signal: 'b',
+          children: [],
+        },
+        {
+          id: 'iterate-skill-with-calibrated-sim-v28',
+          name: 'Iter',
+          intent: 'simulate and rank',
+          good_signal: 'g',
+          bad_signal: 'b',
+          children: [],
+        },
+      ],
+    };
+    applyGoalObject(root, seeded, { reason: 'seed', cycle: 'seed' });
+
+    const result = autoCalibrateGoals(root, {
+      report: { cycle_id: 'cycle-mutate-parent-coerce' },
+      assessment: {
+        status: 'refine',
+        rule_status: 'mutate',
+        confidence: 'high',
+        goal_patches: [{
+          op: 'add_child',
+          parent_id: 'iterate-skill-with-calibrated-sim-v28',
+          child: {
+            id: 'enforce-switch-on-two-failures',
+            name: 'Force switch guard',
+            intent: 'block freeze publish after two failures without skillType switch',
+            good_signal: 'switch executed',
+            bad_signal: 'freeze publish continues',
+            role: 'guard',
+            children: [],
+          },
+        }],
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: 'applied',
+      mode: 'patch',
+      rule_status: 'mutate',
+    });
+    expect(result.warnings.some((w) => w.includes('iterate-skill-with-calibrated-sim-v28'))).toBe(true);
+    const active = readJsonSafe(join(runtime.goalsDir, 'active_goals.json'));
+    expect(active.children.map((c) => c.id)).toContain('enforce-switch-on-two-failures');
+    expect(active.children).toHaveLength(4);
+  });
+
   it('learn rule_status only auto-applies low-risk diagnostic patches', () => {
     const root = makeGoalsRoot('jea-goals-rule-learn-');
     const runtime = runtimeInfoForDefaultSubject(root);

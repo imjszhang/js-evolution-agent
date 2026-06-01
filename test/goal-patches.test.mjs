@@ -6,6 +6,7 @@ import {
   classifyChildRole,
   gatePatchForAutoApply,
   normalizeGoalPatches,
+  repairFlatGoalTreePatches,
   selectPatchesForApply,
   validateGoalPatch,
 } from '../src/intelligence/goal-patches.mjs';
@@ -68,6 +69,29 @@ describe('goal-patches', () => {
     const next = applyGoalPatches(rootGoal, patches);
     expect(next.children.map((c) => c.id).sort()).toEqual(['outcome-a', 'outcome-b']);
     expect(next.children.find((c) => c.id === 'outcome-a').intent).toBe('updated outcome intent');
+  });
+
+  it('coerces add_child parent_id from child id to root sibling', () => {
+    const patch = normalizeGoalPatches([{
+      op: 'add_child',
+      parent_id: 'outcome-a',
+      child: {
+        id: 'guard-switch',
+        name: 'Switch guard',
+        intent: 'block publish after two failures',
+        good_signal: 'g',
+        bad_signal: 'b',
+        role: 'guard',
+        children: [],
+      },
+    }])[0];
+    const { patches, repairs } = repairFlatGoalTreePatches(rootGoal, [patch]);
+    expect(repairs).toHaveLength(1);
+    expect(repairs[0].from_parent_id).toBe('outcome-a');
+    expect(patches[0].parent_id).toBeNull();
+    expect(validateGoalPatch(patches[0], rootGoal).valid).toBe(true);
+    const next = applyGoalPatches(rootGoal, patches);
+    expect(next.children.map((c) => c.id)).toContain('guard-switch');
   });
 
   it('rejects duplicate child id on add', () => {

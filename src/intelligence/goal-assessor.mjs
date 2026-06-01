@@ -292,6 +292,7 @@ rule_status 语义：
 - 局部变化（增删改单个子目标）优先使用 goal_patches，不要同时填写 proposed_goal。仅主目标 intent 换代或整树重组时才用 proposed_goal。
 - goal_patches 与 proposed_goal 互斥；若使用 goal_patches，proposed_goal 必须为 null。
 - split 语义请用 remove_child + add_child 的 patch 列表表达；每个 add_child 的 child 必须带 role: "outcome" 或 "guard"。
+- 目标树仅有一层子目标（扁平结构，不支持嵌套 children）。add_child 的 parent_id 必须为 null（或根目标 id），不得指向其他 child_id。若守护机制针对特定成果子目标，应作为根级 sibling 添加并在 intent 中写明关联，或使用 update_child 更新该子目标。
 - patch 顺序建议先 remove_child，再 update_child，最后 add_child。
 - 只返回一个 JSON 对象，不要 Markdown，不要代码块。
 
@@ -363,6 +364,7 @@ Hard constraints:
 - Prefer goal_patches for local child changes; do not fill proposed_goal in the same response. Use proposed_goal only for root intent replacement or full tree rewrites.
 - goal_patches and proposed_goal are mutually exclusive; when goal_patches is non-empty, proposed_goal must be null.
 - Map split to remove_child plus add_child patches; each add_child child must include role: "outcome" or "guard".
+- The goal tree is flat (one level of children under root; nested children are not supported). add_child parent_id MUST be null (or the root goal id), never another child_id. Guards tied to a specific outcome child should be added as root-level siblings with intent describing the link, or use update_child on that child.
 - Order patches: remove_child first, then update_child, then add_child.
 
 Return one JSON object only. No Markdown. No code fences.

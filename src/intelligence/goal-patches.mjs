@@ -106,6 +106,34 @@ export function normalizeGoalPatches(patches) {
   return patches.map(normalizeGoalPatch).filter(Boolean);
 }
 
+/**
+ * Active goals are a flat tree: children live only under the root.
+ * Assessors often set parent_id to an existing child id; coerce to root sibling.
+ */
+export function repairFlatGoalTreePatches(activeGoals, patches) {
+  if (!Array.isArray(patches) || !patches.length) {
+    return { patches: patches ?? [], repairs: [] };
+  }
+  const rootId = activeGoals?.id ?? null;
+  const childIds = new Set((activeGoals?.children || []).map((c) => c.id));
+  const repairs = [];
+  const repaired = patches.map((patch) => {
+    if (patch?.op !== 'add_child') return patch;
+    const parentId = patch.parent_id ?? null;
+    if (parentId == null || parentId === rootId) return patch;
+    if (!childIds.has(parentId)) return patch;
+    repairs.push({
+      op: patch.op,
+      child_id: patch.child?.id ?? null,
+      from_parent_id: parentId,
+      to_parent_id: null,
+      reason: 'flat_goal_tree_child_parent_coerced',
+    });
+    return { ...patch, parent_id: null };
+  });
+  return { patches: repaired, repairs };
+}
+
 export function validateGoalPatch(patch, activeGoals) {
   if (!patch?.op) {
     return { valid: false, reason: 'invalid_patch', detail: 'missing op' };
@@ -268,6 +296,11 @@ export function selectPatchesForAutoApply(patches, assessment) {
  */
 export function buildPartialPatchApply(previousGoal, patches, assessment, policy = null) {
   const warnings = [];
+  const repaired = repairFlatGoalTreePatches(previousGoal, patches);
+  patches = repaired.patches;
+  for (const repair of repaired.repairs) {
+    warnings.push(`coerced add_child parent_id ${repair.from_parent_id} → root (flat goal tree)`);
+  }
   const gateResult = selectPatchesForApply(patches, assessment, policy);
   let gateSkipped = gateResult.skipped;
   let candidatePatches = gateResult.applicable;

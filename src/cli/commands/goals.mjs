@@ -13,6 +13,7 @@ import {
   childIdsFromGoals,
   collectRemoveChildGoalIds,
   normalizeGoalPatches,
+  repairFlatGoalTreePatches,
   validateGoalPatch,
   validateGoalShape,
 } from '../../intelligence/goal-patches.mjs';
@@ -239,8 +240,9 @@ export function buildGoalPatchUpdate(root = getProjectRoot(), patches, opts = {}
   const path = activeGoalsPath(runtime);
   const previousGoal = readJsonSafe(path, null);
   if (!previousGoal) throw new Error('No active goals found.');
-  const normalized = normalizeGoalPatches(patches);
+  let normalized = normalizeGoalPatches(patches);
   if (!normalized.length) throw new Error('No valid goal patches.');
+  ({ patches: normalized } = repairFlatGoalTreePatches(previousGoal, normalized));
 
   for (const patch of normalized) {
     const v = validateGoalPatch(patch, previousGoal);
