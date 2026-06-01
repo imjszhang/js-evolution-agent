@@ -168,7 +168,34 @@ runtime/subjects/<data_namespace>/data/evolution/operator_briefs/processed/
 }
 ```
 
-常用字段：`content`（或 `summary`）、`subject`、`confidence`（仅 `high` 或缺省时会进入 Seen；`medium` / `low` 不会升格为 `operator_established_fact`）。没有独立的 `jea intel fact put` 命令；与 generic observation 共用 `intel ingest`。自动化代理在未获操作者明确确认时，不要替其写入 operator fact。
+常用字段：`content`（或 `summary`）、`subject`、`confidence`（仅 `high` 或缺省时会进入 Seen；`medium` / `low` 不会升格为 `operator_established_fact`）、`supersedes`（字符串或字符串数组，指向要被替换的旧 fact `id`）。没有独立的 `jea intel fact put` 命令；与 generic observation 共用 `intel ingest`。自动化代理在未获操作者明确确认时，不要替其写入 operator fact。
+
+**修正或撤回已确立口径**：追加一条新的 `operator_fact`，在 `supersedes` 中列出旧 fact 的 `id`；读取侧（Temporal Decision Brief、diary anchors、`buildContextSummary`）只会把未被 supersede 的高置信 fact 升格为 `operator_established_fact`。旧记录仍保留在 store 中供审计，不要手改 JSONL。
+
+替换示例：
+
+```json
+{
+  "kind": "operator_fact",
+  "source": "operator",
+  "subject": "agentank-tank",
+  "content": "standing.rank lower is better; rankScore higher is better",
+  "confidence": "high",
+  "supersedes": ["operator-fact-rank-score-old-id"]
+}
+```
+
+仅撤回、无新口径时，可写入 withdrawal 类 content，并同样 `supersedes` 旧 id：
+
+```json
+{
+  "kind": "operator_fact",
+  "source": "operator",
+  "content": "Previous operator fact <old_id> is withdrawn; do not use it as an established fact.",
+  "confidence": "high",
+  "supersedes": ["<old_id>"]
+}
+```
 
 ### Operator Guidance（长期约束）
 

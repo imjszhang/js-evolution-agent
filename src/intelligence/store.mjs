@@ -5,6 +5,7 @@ import {
 } from 'js-intel-store';
 import { INTELLIGENCE_SPECS } from './specs.mjs';
 import { redactSecrets } from './redaction.mjs';
+import { prioritizeActiveOperatorFacts } from './operator-facts.mjs';
 
 export const DEFAULT_TIMEZONE = 'Asia/Shanghai';
 
@@ -28,28 +29,6 @@ function formatList(title, records, render) {
   if (!records?.length) return `${title}: none`;
   const lines = records.slice(0, 8).map(render);
   return `${title}:\n${lines.join('\n')}`;
-}
-
-function timestampOf(record) {
-  const raw = record?.recorded_at
-    ?? record?.created_at
-    ?? record?.generated_at
-    ?? record?.updated_at
-    ?? record?.timestamp;
-  return Date.parse(raw || '') || 0;
-}
-
-function isOperatorFact(record) {
-  return record?.kind === 'operator_fact' || record?.source === 'operator_fact';
-}
-
-function prioritizeOperatorFacts(records, limit = 20) {
-  const sorted = asArray(records)
-    .slice()
-    .sort((a, b) => timestampOf(b) - timestampOf(a));
-  const facts = sorted.filter(isOperatorFact);
-  const others = sorted.filter((record) => !isOperatorFact(record));
-  return [...facts, ...others].slice(0, limit);
 }
 
 export class IntelligenceStore {
@@ -244,7 +223,7 @@ export class IntelligenceStore {
   }
 
   buildContextSummary() {
-    const observations = prioritizeOperatorFacts(
+    const observations = prioritizeActiveOperatorFacts(
       this.readRecentIntel({ days: 7, limit: 50 }),
       20,
     );

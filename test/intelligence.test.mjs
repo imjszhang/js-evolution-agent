@@ -48,6 +48,10 @@ import {
 } from '../src/intelligence/evolution-diary-builder.mjs';
 import { buildTemporalDecisionBrief } from '../src/intelligence/decision-brief.mjs';
 import {
+  buildSupersededIds,
+  selectActiveOperatorFacts,
+} from '../src/intelligence/operator-facts.mjs';
+import {
   applyBeliefUpdates,
   buildBeliefUpdateContext,
   parseBeliefUpdate,
@@ -190,6 +194,48 @@ describe('beliefs and decision brief', () => {
     expect(seenText).toContain('operator_established_fact');
     expect(seenText).toContain('standing.rank lower is better');
     expect(brief.source_ordering.some((item) => item.source_type === 'intel_observations')).toBe(true);
+  });
+
+  it('excludes superseded operator facts from seen evidence', () => {
+    const observations = [
+      {
+        id: 'operator-fact-old',
+        kind: 'operator_fact',
+        source: 'operator',
+        content: 'old rank direction',
+        confidence: 'high',
+        created_at: '2026-01-01T00:00:00.000Z',
+      },
+      {
+        id: 'operator-fact-new',
+        kind: 'operator_fact',
+        source: 'operator',
+        content: 'standing.rank lower is better; rankScore higher is better',
+        confidence: 'high',
+        supersedes: ['operator-fact-old'],
+        created_at: '2026-01-02T00:00:00.000Z',
+      },
+    ];
+    expect(buildSupersededIds(observations)).toEqual(new Set(['operator-fact-old']));
+    expect(selectActiveOperatorFacts(observations).map((r) => r.id)).toEqual(['operator-fact-new']);
+
+    const brief = buildTemporalDecisionBrief({
+      generated_at: '2026-05-28T00:00:00.000Z',
+      current_cycle: { cycle_id: 'cycle-test', mode: 'local' },
+      observations,
+      action_receipts: [],
+      probe_results: [],
+      evolution_events: [],
+      goal_events: [],
+      belief_events: [],
+      current_beliefs: normalizeCurrentBeliefs({ beliefs: [] }),
+      recent_report_markdowns: [],
+      standing_memory: { exists: false },
+    });
+
+    const seenText = JSON.stringify(brief.seen);
+    expect(seenText).toContain('standing.rank lower is better');
+    expect(seenText).not.toContain('old rank direction');
   });
 
   it('includes beliefs in gatherReportContext source counts', () => {
@@ -500,6 +546,31 @@ describe('IntelligenceStore', () => {
     const summary = store.buildContextSummary();
     expect(summary).toContain('standing.rank lower is better');
     expect(summary).toContain('rankScore higher is better');
+  });
+
+  it('omits superseded operator facts from context summary', () => {
+    const store = makeStore();
+    store.ingest('intel_observations', {
+      id: 'operator-fact-old',
+      kind: 'operator_fact',
+      source: 'operator',
+      content: 'old rank direction',
+      confidence: 'high',
+      created_at: '2026-01-01T00:00:00.000Z',
+    });
+    store.ingest('intel_observations', {
+      id: 'operator-fact-new',
+      kind: 'operator_fact',
+      source: 'operator',
+      content: 'standing.rank lower is better',
+      confidence: 'high',
+      supersedes: 'operator-fact-old',
+      created_at: '2026-01-02T00:00:00.000Z',
+    });
+
+    const summary = store.buildContextSummary();
+    expect(summary).toContain('standing.rank lower is better');
+    expect(summary).not.toContain('old rank direction');
   });
 
   it('records and reads goal events', () => {
@@ -2027,6 +2098,35 @@ describe('buildEvolutionDiary', () => {
         bad_signal: 'lint failed',
       }),
     ]);
+  });
+
+  it('gatherDiaryAnchors excludes superseded operator facts', () => {
+    const { store, runtime } = makeReportFixture();
+    store.ingest('intel_observations', {
+      id: 'operator-fact-old',
+      kind: 'operator_fact',
+      source: 'operator',
+      content: 'old rank direction',
+      confidence: 'high',
+      created_at: '2026-01-01T00:00:00.000Z',
+    });
+    store.ingest('intel_observations', {
+      id: 'operator-fact-new',
+      kind: 'operator_fact',
+      source: 'operator',
+      content: 'standing.rank lower is better',
+      confidence: 'high',
+      supersedes: ['operator-fact-old'],
+      created_at: '2026-01-02T00:00:00.000Z',
+    });
+
+    const anchors = gatherDiaryAnchors({ store, runtime });
+
+    expect(anchors.operator_established_facts).toHaveLength(1);
+    expect(anchors.operator_established_facts[0]).toMatchObject({
+      id: 'operator-fact-new',
+      content: 'standing.rank lower is better',
+    });
   });
 
   it('gatherDiaryAnchors reads operator guidance Current section when present', () => {

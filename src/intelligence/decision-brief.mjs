@@ -1,6 +1,7 @@
 import {
   partitionBeliefs,
 } from './beliefs.mjs';
+import { selectActiveOperatorFacts } from './operator-facts.mjs';
 
 const DEFAULT_TEXT_LIMIT = 600;
 const DEFAULT_ITEM_LIMIT = 12;
@@ -313,18 +314,8 @@ function beliefFacts(events, limit) {
   });
 }
 
-function isOperatorFact(record) {
-  return record?.kind === 'operator_fact' || record?.source === 'operator_fact';
-}
-
-function isHighConfidence(record) {
-  return !record?.confidence || record.confidence === 'high';
-}
-
 function operatorFacts(observations, limit) {
-  return newestFirst(observations)
-    .filter((record) => isOperatorFact(record) && isHighConfidence(record))
-    .slice(0, limit)
+  return selectActiveOperatorFacts(observations, { limit })
     .map((record) => directFact({
       sourceType: 'intel_observations',
       evidenceLevel: 'operator_established_fact',

@@ -4,28 +4,11 @@ import { chatMessages } from '../ai/messages.mjs';
 import { detectLanguage, extractTldr } from './report-builder.mjs';
 import { redactSecrets } from './redaction.mjs';
 import { resolveEvolutionDiaryWritePath } from './diary-paths.mjs';
+import { selectActiveOperatorFacts } from './operator-facts.mjs';
 
 const DIARY_CONTEXT_CHAR_LIMIT = 500000;
 const OPERATOR_FACT_LIMIT = 10;
 const OPERATOR_FACT_LOOKBACK_DAYS = 90;
-
-// Same inclusion rules as decision-brief.mjs operatorFacts().
-function isOperatorFact(record) {
-  return record?.kind === 'operator_fact' || record?.source === 'operator_fact';
-}
-
-function isHighConfidenceOperatorFact(record) {
-  return !record?.confidence || record.confidence === 'high';
-}
-
-function timestampOf(record) {
-  const raw = record?.recorded_at
-    ?? record?.generated_at
-    ?? record?.updated_at
-    ?? record?.created_at
-    ?? record?.timestamp;
-  return Date.parse(raw || '') || 0;
-}
 
 function readActiveGoals(runtime) {
   if (!runtime?.runtimeRoot) return null;
@@ -76,11 +59,9 @@ export function gatherDiaryAnchors({ store = null, runtime = null } = {}) {
     { days: OPERATOR_FACT_LOOKBACK_DAYS, limit: 50 },
     [],
   );
-  const operatorEstablishedFacts = asArray(observations)
-    .slice()
-    .sort((a, b) => timestampOf(b) - timestampOf(a))
-    .filter((record) => isOperatorFact(record) && isHighConfidenceOperatorFact(record))
-    .slice(0, OPERATOR_FACT_LIMIT)
+  const operatorEstablishedFacts = selectActiveOperatorFacts(observations, {
+    limit: OPERATOR_FACT_LIMIT,
+  })
     .map((record) => ({
       id: record.id ?? null,
       content: record.content ?? record.summary ?? '',
