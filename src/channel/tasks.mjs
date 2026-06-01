@@ -6,7 +6,7 @@ import { ingestChannelEnvelope } from './ingest.mjs';
 import { collectAttentionSignals } from './notify.mjs';
 import {
   applyReplyDecision,
-  decideInboundReply,
+  decideInboundReplyWithLlm,
   decideProactiveReply,
   refineReplyDecisionWithDraft,
 } from './reply.mjs';
@@ -169,7 +169,7 @@ export async function runChannelReplyTask(root, subject, input = {}) {
   const items = Array.isArray(input.items) ? input.items : (input.envelope ? [input] : []);
   const results = [];
   for (const item of items) {
-    const initialDecision = decideInboundReply(root, subject, {
+    const initialDecision = await decideInboundReplyWithLlm(root, subject, {
       envelope: item.envelope,
       ingestResult: item.ingest_result,
       recentState: { skipped: item.skipped },

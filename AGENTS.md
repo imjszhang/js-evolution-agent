@@ -456,7 +456,7 @@ runtime/subjects/<data_namespace>/data/channel/
 | `approval_request` | 回复“已记录为下一轮审批意图；不会直接发布或授权” |
 | `verification_request` | 回复“已记录为下一轮核实请求” |
 | `operator_fact` | 回复“已记录为高置信 operator fact” |
-| 普通 `observation` | 默认不回复（除非 `reply_observations: true` 或 `mode: autonomous`） |
+| 普通 `observation` | 默认不回复；`reply_observations: true` / `mode: autonomous` 可回寒暄；`mode: llm_autonomous` 可由 LLM 自主决定是否闲聊 |
 | `task_failed` / `daemon_health` / `cycle_drift` / `cycle_completed` / `requires_human_review` / `long_idle` | 按策略主动通知，受 cooldown 与防刷屏限制 |
 
 可选配置（位于 subject 的 `channels.feishu.reply`）：
@@ -469,6 +469,11 @@ runtime/subjects/<data_namespace>/data/channel/
   "reply_observations": false,
   "cooldown_ms": 1800000,
   "max_messages_per_hour": 8,
+  "llm_decision": {
+    "enabled": false,
+    "timeout": 20,
+    "thinking": "low"
+  },
   "llm_draft": {
     "enabled": false,
     "allowed_reasons": ["proactive_signal", "greeting_ack"],
@@ -477,7 +482,7 @@ runtime/subjects/<data_namespace>/data/channel/
 }
 ```
 
-`mode` 可为 `off | audit_only | guarded | autonomous`。`max_messages_per_hour=0` 表示不限制。`llm_draft.enabled` 默认关闭；开启后只为 `allowed_reasons` 中的低风险回复生成草稿，并仍保留“不直接授权、不声称动作已执行、不编造事实”的安全约束。代码更新后需要重启 daemon/channel worker；仅修改 reply 配置通常在下一次读取 subject config 时生效。
+`mode` 可为 `off | audit_only | guarded | autonomous | llm_autonomous`。`llm_autonomous` 会让 LLM 为入站消息先产出结构化回复决策（`send|none` + 文案），入库分类不变；硬兜底仍禁止直接授权、声称已执行动作、泄露密钥，并继续受 cooldown / `max_messages_per_hour` 限制。`max_messages_per_hour=0` 表示不限制。`llm_draft.enabled` 默认关闭；开启后只为 `allowed_reasons` 中的低风险回复生成草稿。代码更新后需要重启 daemon/channel worker；仅修改 reply 配置通常在下一次读取 subject config 时生效。
 
 ### 私聊绑定（`JEA BIND`）
 

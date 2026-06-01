@@ -180,6 +180,13 @@ export function resolveFeishuConfig(root, subject, overrides = {}) {
           ?? replyBlock.llmDraft?.allowedReasons
           ?? undefined,
       },
+      llm_decision: {
+        enabled: Boolean(replyBlock.llm_decision?.enabled
+          ?? replyBlock.llmDecision?.enabled
+          ?? replyBlock.mode === 'llm_autonomous'),
+        timeout: replyBlock.llm_decision?.timeout ?? replyBlock.llmDecision?.timeout ?? 20,
+        thinking: replyBlock.llm_decision?.thinking ?? replyBlock.llmDecision?.thinking ?? 'low',
+      },
       templates: replyBlock.templates ?? {},
     },
   };
@@ -215,6 +222,11 @@ export function feishuConfigForApi(config) {
         enabled: Boolean(config.reply.llm_draft.enabled),
         timeout: config.reply.llm_draft.timeout,
         allowed_reasons: config.reply.llm_draft.allowed_reasons ?? null,
+      } : null,
+      llm_decision: config.reply.llm_decision ? {
+        enabled: Boolean(config.reply.llm_decision.enabled),
+        timeout: config.reply.llm_decision.timeout,
+        thinking: config.reply.llm_decision.thinking,
       } : null,
     } : null,
   };

@@ -13,6 +13,7 @@ import { runtimeForSubject } from '../src/cli/utils/evolve-runs.mjs';
 import { buildChannelProjection } from '../src/channel/projection.mjs';
 import {
   decideInboundReply,
+  decideInboundReplyWithLlm,
   decideProactiveReply,
   applyReplyDecision,
   refineReplyDecisionWithDraft,
@@ -317,6 +318,71 @@ describe('channel domain', () => {
       expect(refined.text).toContain('收到');
       expect(refined.metadata.llm_draft.used).toBe(true);
     });
+
+    it('lets LLM autonomous mode reply to plain observations', async () => {
+      const root = makeRoot({
+        reply: {
+          mode: 'llm_autonomous',
+          llm_decision: { enabled: true },
+        },
+      });
+      const decision = await decideInboundReplyWithLlm(root, 'alpha', {
+        envelope: envelopeFromPayload({
+          messageId: 'om_chat123',
+          chatId: 'oc_test',
+          senderId: 'ou_operator',
+          content: '说说你自己吧',
+        }),
+        ingestResult: { kind: 'observation', record: { content: '说说你自己吧' } },
+        aiClient: {
+          chatMessages: async () => JSON.stringify({
+            action: 'send',
+            text: '我是 alpha 的 channel 入口，可以记录你的意图、事实和核实请求，也能聊聊当前状态。',
+            reason: 'casual_intro',
+            confidence: 'high',
+            risk: 'low',
+          }),
+        },
+      });
+      expect(decision.action).toBe('send');
+      expect(decision.reason).toBe('llm_autonomous_reply');
+      expect(decision.text).toContain('channel 入口');
+      expect(decision.metadata.llm_decision.status).toBe('used');
+    });
+
+    it('falls back when LLM autonomous text violates hard guardrails', async () => {
+      const root = makeRoot({
+        reply: {
+          mode: 'llm_autonomous',
+          llm_decision: { enabled: true },
+        },
+      });
+      const decision = await decideInboundReplyWithLlm(root, 'alpha', {
+        envelope: envelopeFromPayload({
+          messageId: 'om_badapproval123',
+          chatId: 'oc_test',
+          senderId: 'ou_operator',
+          content: '同意发布',
+        }),
+        ingestResult: {
+          kind: 'operator_brief',
+          brief: { id: 'brief-bad-1', kind: 'approval_request', summary: '同意发布' },
+        },
+        aiClient: {
+          chatMessages: async () => JSON.stringify({
+            action: 'send',
+            text: '已授权发布，我会直接发布。',
+            reason: 'bad_approval',
+            confidence: 'high',
+            risk: 'high',
+          }),
+        },
+      });
+      expect(decision.action).toBe('send');
+      expect(decision.reason).toBe('approval_brief_ack');
+      expect(decision.metadata.llm_decision.status).toBe('skipped');
+      expect(decision.metadata.llm_decision.reason).toBe('guardrail_rejected_text');
+    });
   });
 
   describe('watch notify', () => {
@@ -395,13 +461,20 @@ describe('channel domain', () => {
     });
 
     it('exposes reply config in channel projection', () => {
-      const root = makeRoot({ reply: { mode: 'guarded', reply_observations: false } });
+      const root = makeRoot({
+        reply: {
+          mode: 'llm_autonomous',
+          reply_observations: true,
+          llm_decision: { enabled: true, timeout: 12 },
+        },
+      });
       const projection = buildChannelProjection(root, 'alpha');
       expect(projection.feishu.reply).toMatchObject({
-        mode: 'guarded',
-        reply_observations: false,
+        mode: 'llm_autonomous',
+        reply_observations: true,
+        llm_decision: { enabled: true, timeout: 12 },
       });
-      expect(resolveReplyConfig(root, 'alpha').mode).toBe('guarded');
+      expect(resolveReplyConfig(root, 'alpha').mode).toBe('llm_autonomous');
     });
   });
 });

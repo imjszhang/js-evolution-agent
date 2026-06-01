@@ -5,7 +5,7 @@ import { normalizeOutboundMessage, nowIso } from './types.mjs';
 import { DeepSeekOpenAIClient } from '../ai/deepseek-client.mjs';
 import { chatMessagesJson } from '../ai/messages.mjs';
 
-export const REPLY_MODES = Object.freeze(['off', 'audit_only', 'guarded', 'autonomous']);
+export const REPLY_MODES = Object.freeze(['off', 'audit_only', 'guarded', 'autonomous', 'llm_autonomous']);
 
 const DEFAULT_COOLDOWN_MS = 30 * 60 * 1000;
 const DEFAULT_LLM_DRAFT_REASONS = ['proactive_signal', 'greeting_ack'];
@@ -56,6 +56,11 @@ export function resolveReplyConfig(root, subject, overrides = {}) {
           ? block.llmDraft.allowedReasons
           : DEFAULT_LLM_DRAFT_REASONS),
     },
+    llm_decision: {
+      enabled: Boolean(block.llm_decision?.enabled ?? block.llmDecision?.enabled ?? mode === 'llm_autonomous'),
+      timeout: Number(block.llm_decision?.timeout ?? block.llmDecision?.timeout) || 20,
+      thinking: block.llm_decision?.thinking ?? block.llmDecision?.thinking ?? 'low',
+    },
     templates: {
       ...DEFAULT_TEMPLATES,
       ...(block.templates ?? {}),
@@ -77,6 +82,11 @@ export function replyConfigForApi(config) {
       enabled: Boolean(config.llm_draft?.enabled),
       timeout: config.llm_draft?.timeout ?? 20,
       allowed_reasons: config.llm_draft?.allowed_reasons ?? DEFAULT_LLM_DRAFT_REASONS,
+    },
+    llm_decision: {
+      enabled: Boolean(config.llm_decision?.enabled),
+      timeout: config.llm_decision?.timeout ?? 20,
+      thinking: config.llm_decision?.thinking ?? 'low',
     },
   };
 }
@@ -235,6 +245,174 @@ export function decideInboundReply(root, subject, {
 
 function hashFallback(value) {
   return String(value || 'unknown').slice(0, 32);
+}
+
+function summarizeIngestResult(ingestResult) {
+  if (!ingestResult) return { kind: null };
+  if (ingestResult.kind === 'operator_brief') {
+    return {
+      kind: ingestResult.kind,
+      brief_kind: ingestResult.brief?.kind ?? null,
+      summary: ingestResult.brief?.summary ?? null,
+      priority: ingestResult.brief?.priority ?? null,
+    };
+  }
+  if (ingestResult.kind === 'operator_fact') {
+    return {
+      kind: ingestResult.kind,
+      content: ingestResult.record?.content ?? null,
+      confidence: ingestResult.record?.confidence ?? null,
+    };
+  }
+  return {
+    kind: ingestResult.kind,
+    content: ingestResult.record?.content ?? null,
+    confidence: ingestResult.record?.confidence ?? null,
+  };
+}
+
+function llmDecisionMetadata(status, extra = {}) {
+  return { llm_decision: { status, ...extra } };
+}
+
+function withLlmDecisionMetadata(decision, status, extra = {}) {
+  return {
+    ...decision,
+    metadata: {
+      ...(decision.metadata ?? {}),
+      ...llmDecisionMetadata(status, extra),
+    },
+  };
+}
+
+function sanitizeAutonomousText(value) {
+  const text = String(value ?? '').trim();
+  if (!text) return null;
+  if (/approval_granted|已授权发布|直接发布|已经发布|已执行发布|已完成发布/i.test(text)) return null;
+  if (/(sk-[a-z0-9]{16,}|api[_-]?key|app[_-]?secret|token\s*[:=])/i.test(text)) return null;
+  return text.slice(0, 1600);
+}
+
+function metadataForInboundDecision(ingestResult, messageId) {
+  if (ingestResult?.kind === 'operator_brief') {
+    return {
+      brief_id: ingestResult.brief?.id ?? null,
+      brief_kind: ingestResult.brief?.kind ?? null,
+      source_message_id: messageId,
+    };
+  }
+  return {
+    ingest_kind: ingestResult?.kind ?? null,
+    source_message_id: messageId,
+  };
+}
+
+export async function decideInboundReplyWithLlm(root, subject, {
+  envelope,
+  ingestResult,
+  config = null,
+  recentState = {},
+  aiClient = null,
+} = {}) {
+  const replyConfig = config ?? resolveReplyConfig(root, subject);
+  const fallback = decideInboundReply(root, subject, {
+    envelope,
+    ingestResult,
+    config: replyConfig,
+    recentState,
+  });
+  if (replyConfig.mode !== 'llm_autonomous' || !replyConfig.llm_decision?.enabled) {
+    return fallback;
+  }
+  if (fallback.reason === 'reply_mode_off'
+    || fallback.reason === 'inbound_reply_disabled'
+    || fallback.reason === 'bind_handled_separately'
+    || fallback.reason === 'duplicate_message'
+    || fallback.reason === 'missing_target') {
+    return fallback;
+  }
+
+  const messageId = envelope?.message_id ?? null;
+  const target = resolveInboundTarget(envelope, replyConfig.feishu);
+  const replyTo = replyToMessageId(envelope);
+  const client = aiClient ?? createDraftClient();
+  if (!client) {
+    return withLlmDecisionMetadata(fallback, 'skipped', { reason: 'missing_ai_client' });
+  }
+
+  try {
+    const parsed = await chatMessagesJson(client, [
+      {
+        role: 'system',
+        content: [
+          'You are the autonomous Chinese channel reply planner for js-evolution-agent.',
+          'Decide whether to reply and draft the reply. Casual conversation is allowed.',
+          'Return JSON only: {"action":"send|none","text":"...","reason":"...","confidence":"low|medium|high","risk":"low|medium|high"}.',
+          'The inbound message has already been stored by ingest; do not change its classification.',
+          'You may explain what the agent is and discuss status based only on provided context.',
+          'Do not grant approval, do not claim actions have executed, do not leak secrets, and do not invent runtime facts.',
+        ].join('\n'),
+      },
+      {
+        role: 'user',
+        content: JSON.stringify({
+          subject,
+          message: {
+            id: messageId,
+            channel: envelope?.channel ?? null,
+            chat_type: envelope?.chat_type ?? null,
+            content: envelope?.content ?? '',
+          },
+          ingest_result: summarizeIngestResult(ingestResult),
+          fallback_decision: {
+            action: fallback.action,
+            reason: fallback.reason,
+            text: fallback.text,
+          },
+        }, null, 2),
+      },
+    ], {
+      thinking: replyConfig.llm_decision.thinking,
+      timeout: replyConfig.llm_decision.timeout,
+    });
+
+    if (parsed?.action !== 'send') {
+      return baseDecision('none', 'llm_autonomous_none', {
+        metadata: {
+          ...metadataForInboundDecision(ingestResult, messageId),
+          ...llmDecisionMetadata('used', {
+            action: parsed?.action ?? 'none',
+            reason: parsed?.reason ?? null,
+            confidence: parsed?.confidence ?? null,
+            risk: parsed?.risk ?? null,
+          }),
+        },
+      });
+    }
+
+    const text = sanitizeAutonomousText(parsed?.text);
+    if (!text) {
+      return withLlmDecisionMetadata(fallback, 'skipped', { reason: 'guardrail_rejected_text' });
+    }
+
+    return baseDecision('send', 'llm_autonomous_reply', {
+      text,
+      target,
+      reply_to_message_id: replyTo,
+      idempotency_key: `reply:inbound:llm:${messageId ?? hashFallback(text)}`,
+      metadata: {
+        ...metadataForInboundDecision(ingestResult, messageId),
+        ...llmDecisionMetadata('used', {
+          action: 'send',
+          reason: parsed?.reason ?? null,
+          confidence: parsed?.confidence ?? null,
+          risk: parsed?.risk ?? null,
+        }),
+      },
+    });
+  } catch (err) {
+    return withLlmDecisionMetadata(fallback, 'skipped', { reason: err?.message || String(err) });
+  }
 }
 
 export function decideProactiveReply(root, subject, {
