@@ -59,6 +59,28 @@ import {
 } from '../utils/cycle-dispatch.mjs';
 import { resolveEvolutionMode } from '../utils/evolution-mode.mjs';
 import { applyEvolutionModeChange } from '../utils/evolution-mode-apply.mjs';
+import { runChannelTick } from '../../channel/dispatch.mjs';
+import { recordChannelEvent } from '../../channel/audit.mjs';
+import { isChannelTaskType } from '../../channel/types.mjs';
+import { runChannelTask } from '../../channel/tasks.mjs';
+import {
+  claimNextChannelTask,
+  completeChannelTask,
+  failChannelTask,
+  reclaimExpiredChannelLeases,
+  releaseChannelTaskForRetry,
+  renewChannelTaskLease,
+} from '../../channel/task-queue.mjs';
+import {
+  createChannelWorkerState,
+  defaultWorkerId as defaultChannelWorkerId,
+  markChannelWorkerStopped,
+  parseHeartbeatMs as parseChannelHeartbeatMs,
+  parseHeartbeatStaleMs as parseChannelHeartbeatStaleMs,
+  readChannelWorkerState,
+  requestChannelWorkerStop,
+  updateChannelWorkerHeartbeat,
+} from '../../channel/worker-state.mjs';
 
 function sleep(ms) {
   if (!ms) return Promise.resolve();
@@ -821,6 +843,90 @@ export async function workOnce(root, subject, flags = {}) {
   }
 }
 
+async function runChannelWorkOnceBody(root, subject, flags = {}) {
+  const workerId = flags.worker || `channel-worker-${process.pid}`;
+  const leaseMs = parseLeaseMs(flags['lease-ms']);
+  const claim = claimNextChannelTask(root, subject, {
+    workerId,
+    leaseMs,
+    type: flags.type && flags.type !== true ? flags.type : null,
+  });
+  for (const task of claim.reclaimed || []) {
+    recordChannelEvent(root, subject, {
+      type: 'channel_stale_lease_reclaimed',
+      status: 'ok',
+      task_id: task.task_id,
+      task_type: task.type,
+      lease_owner: task.previous?.lease_owner,
+      lease_expires_at: task.previous?.lease_expires_at,
+    });
+  }
+  if (!claim.task) {
+    return { worked: false, task: null };
+  }
+  recordChannelEvent(root, subject, {
+    type: 'channel_task_claimed',
+    status: 'ok',
+    task_id: claim.task.task_id,
+    task_type: claim.task.type,
+    lease_owner: claim.task.lease_owner,
+    lease_expires_at: claim.task.lease_expires_at,
+  });
+  if (!isChannelTaskType(claim.task.type)) {
+    const failed = failChannelTask(root, subject, claim.task.task_id, {
+      code: 'unsupported_channel_task_type',
+      reason: claim.task.type,
+      message: `Unsupported channel task type: ${claim.task.type}`,
+    });
+    return { worked: true, ok: false, task: failed.task };
+  }
+  try {
+    const result = await runChannelTask(root, subject, claim.task);
+    const completed = completeChannelTask(root, subject, claim.task.task_id, result);
+    recordChannelEvent(root, subject, {
+      type: 'channel_task_completed',
+      status: 'ok',
+      task_id: claim.task.task_id,
+      task_type: claim.task.type,
+    });
+    return { worked: true, ok: true, task: completed.task, result };
+  } catch (err) {
+    const failure = {
+      code: err?.code ?? 'channel_task_failed',
+      reason: err?.message || String(err),
+      message: err?.message || String(err),
+      retryable: err?.retryable ?? true,
+    };
+    const maxAttempts = Math.max(1, (claim.task.input?.retries ?? 3) + 1);
+    if (failure.retryable && claim.task.attempts < maxAttempts) {
+      const released = releaseChannelTaskForRetry(root, subject, claim.task.task_id, failure);
+      recordChannelEvent(root, subject, {
+        type: 'channel_task_failed',
+        status: 'retry_scheduled',
+        task_id: claim.task.task_id,
+        task_type: claim.task.type,
+        error_code: failure.code,
+        error_reason: failure.reason,
+      });
+      return { worked: true, ok: false, retryable: true, task: released.task, failure };
+    }
+    const failed = failChannelTask(root, subject, claim.task.task_id, failure);
+    recordChannelEvent(root, subject, {
+      type: 'channel_task_failed',
+      status: 'failed',
+      task_id: claim.task.task_id,
+      task_type: claim.task.type,
+      error_code: failure.code,
+      error_reason: failure.reason,
+    });
+    return { worked: true, ok: false, retryable: false, task: failed.task, failure };
+  }
+}
+
+export async function channelWorkOnce(root, subject, flags = {}) {
+  return runChannelWorkOnceBody(root, subject, flags);
+}
+
 function workResultSummary(result) {
   return {
     worked: Boolean(result.worked),
@@ -1101,9 +1207,164 @@ export async function runDaemonWorker(root, subject, flags = {}) {
   return { started: true, reason: stopReason, state: stopped, iterations };
 }
 
+export async function runChannelDomainWorker(root, subject, flags = {}) {
+  const workerId = flags.worker && flags.worker !== true ? String(flags.worker).replace(/^worker-/, 'channel-worker-') : defaultChannelWorkerId().replace(/^worker-/, 'channel-worker-');
+  const leaseMs = parseLeaseMs(flags['lease-ms']);
+  const heartbeatMs = parseChannelHeartbeatMs(flags['channel-heartbeat-ms'] ?? flags['heartbeat-ms']);
+  const heartbeatStaleMs = parseChannelHeartbeatStaleMs(
+    flags['channel-heartbeat-stale-ms'] ?? flags['heartbeat-stale-ms'],
+    Math.max(leaseMs * 2, heartbeatMs * 3, 60_000),
+  );
+  const tickMs = parseTickMs(flags);
+  const workIntervalMs = parsePositiveInt(flags['channel-interval-ms'] ?? flags['interval-ms'], { name: 'channel-interval-ms', defaultValue: 1000, min: 0 });
+  const idleIntervalMs = parsePositiveInt(flags['channel-idle-interval-ms'] ?? flags['idle-interval-ms'], { name: 'channel-idle-interval-ms', defaultValue: 5000, min: 0 });
+  const maxIterations = flags['max-iterations'] == null || flags['max-iterations'] === true
+    ? null
+    : parsePositiveInt(flags['max-iterations'], { name: 'max-iterations', min: 1 });
+  const created = createChannelWorkerState(root, subject, {
+    workerId,
+    staleMs: heartbeatStaleMs,
+    tickMs,
+  });
+  if (!created.created) {
+    return { started: false, reason: created.reason, state: created.state };
+  }
+  recordChannelEvent(root, subject, {
+    type: 'channel_worker_started',
+    status: 'ok',
+    worker_id: workerId,
+    pid: process.pid,
+    heartbeat_ms: heartbeatMs,
+    lease_ms: leaseMs,
+    tick_ms: tickMs,
+  });
+  updateChannelWorkerHeartbeat(root, subject, {
+    worker_id: workerId,
+    pid: process.pid,
+    tick_ms: tickMs,
+  });
+
+  let stopping = false;
+  const requestLocalStop = () => {
+    stopping = true;
+    requestChannelWorkerStop(root, subject, { staleMs: heartbeatStaleMs });
+  };
+  process.once('SIGINT', requestLocalStop);
+  process.once('SIGTERM', requestLocalStop);
+
+  let iterations = 0;
+  let stopReason = 'stopped';
+  let tickTimer = null;
+  const runScheduledTick = () => {
+    if (stopping) return;
+    try {
+      runChannelTick(root, subject, {
+        tick_ms: tickMs,
+        poll_inbound: Boolean(flags['channel-poll-inbound']),
+      });
+    } catch (err) {
+      recordChannelEvent(root, subject, {
+        type: 'channel_tick_failed',
+        status: 'error',
+        error_code: err?.code ?? null,
+        error: err?.message || String(err),
+      });
+    }
+  };
+  runScheduledTick();
+  tickTimer = setInterval(runScheduledTick, tickMs);
+  try {
+    for (;;) {
+      const current = readChannelWorkerState(root, subject);
+      if (stopping || current?.stop_requested_at) {
+        stopReason = current?.stop_requested_at ? 'stop_requested' : 'signal';
+        break;
+      }
+      updateChannelWorkerHeartbeat(root, subject, {
+        worker_id: workerId,
+        pid: process.pid,
+        status: 'running',
+      });
+      const { reclaimed } = reclaimExpiredChannelLeases(root, subject);
+      for (const task of reclaimed) {
+        recordChannelEvent(root, subject, {
+          type: 'channel_stale_lease_reclaimed',
+          status: 'ok',
+          task_id: task.task_id,
+          task_type: task.type,
+          lease_owner: task.previous?.lease_owner,
+        });
+      }
+      const result = await channelWorkOnce(root, subject, {
+        ...flags,
+        worker: workerId,
+        'lease-ms': leaseMs,
+      });
+      iterations += 1;
+      const summary = workResultSummary(result);
+      updateChannelWorkerHeartbeat(root, subject, {
+        worker_id: workerId,
+        pid: process.pid,
+        status: 'running',
+        last_work_result: summary,
+        last_error: summary.error_code ? {
+          code: summary.error_code,
+          task_id: summary.task_id,
+          task_status: summary.task_status,
+        } : null,
+      });
+      if (maxIterations && iterations >= maxIterations) {
+        stopReason = 'max_iterations';
+        break;
+      }
+      const afterWork = readChannelWorkerState(root, subject);
+      if (stopping || afterWork?.stop_requested_at) {
+        stopReason = afterWork?.stop_requested_at ? 'stop_requested' : 'signal';
+        break;
+      }
+      await sleep(result.worked ? workIntervalMs : idleIntervalMs);
+    }
+  } finally {
+    if (tickTimer) clearInterval(tickTimer);
+    process.removeListener('SIGINT', requestLocalStop);
+    process.removeListener('SIGTERM', requestLocalStop);
+  }
+  const stopped = markChannelWorkerStopped(root, subject, {
+    worker_id: workerId,
+    pid: process.pid,
+    stop_reason: stopReason,
+  });
+  recordChannelEvent(root, subject, {
+    type: 'channel_worker_stopped',
+    status: 'ok',
+    worker_id: workerId,
+    pid: process.pid,
+    reason: stopReason,
+  });
+  return { started: true, reason: stopReason, state: stopped, iterations };
+}
+
+export async function runDaemonDomains(root, subject, flags = {}) {
+  const domain = flags.domain && flags.domain !== true ? String(flags.domain) : 'all';
+  if (domain === 'cycle') return runDaemonWorker(root, subject, flags);
+  if (domain === 'channel') return runChannelDomainWorker(root, subject, flags);
+  const [cycle, channel] = await Promise.all([
+    runDaemonWorker(root, subject, { ...flags, domain: 'cycle' }),
+    runChannelDomainWorker(root, subject, { ...flags, domain: 'channel' }),
+  ]);
+  return {
+    started: Boolean(cycle.started || channel.started),
+    reason: [cycle.reason, channel.reason].filter(Boolean).join(','),
+    domains: { cycle, channel },
+  };
+}
+
 function printProjection(projection) {
   console.log(`# Daemon Status: ${projection.subject}`);
   console.log(`health: ${projection.health.status} ok=${projection.health.ok}`);
+  if (projection.channel?.health) {
+    console.log(`channel: ${projection.channel.health.status} ok=${projection.channel.health.ok}`);
+  }
   for (const reason of projection.health.reasons || []) console.log(`reason: ${reason}`);
   console.log(`worker: ${projection.worker.status} pid=${projection.worker.pid ?? 'none'} heartbeat=${projection.worker.heartbeat_at ?? 'none'}`);
   console.log(`tasks: ${projection.tasks.total}`);
@@ -1268,12 +1529,17 @@ export async function daemonCommand({ subcommand, flags = {}, args = [], root = 
       console.error('Usage: jea daemon work --once [--subject NAME]');
       return 2;
     }
-    const laneGuard = checkSubjectLaneReady(root, { subject });
-    if (!laneGuard.ok) {
-      printSubjectLaneGuardFailure(laneGuard, { json: !!flags.json });
-      return 1;
+    const domain = flags.domain && flags.domain !== true ? String(flags.domain) : 'cycle';
+    if (domain !== 'channel') {
+      const laneGuard = checkSubjectLaneReady(root, { subject });
+      if (!laneGuard.ok) {
+        printSubjectLaneGuardFailure(laneGuard, { json: !!flags.json });
+        return 1;
+      }
     }
-    const result = await workOnce(root, subject, flags);
+    const result = domain === 'channel'
+      ? await channelWorkOnce(root, subject, flags)
+      : await workOnce(root, subject, flags);
     if (result.lockError) {
       console.error(result.lockError);
       if (flags.json) console.log(JSON.stringify(result, null, 2));
@@ -1290,12 +1556,15 @@ export async function daemonCommand({ subcommand, flags = {}, args = [], root = 
       console.error('daemon start supports one subject at a time. External orchestrators should start one worker process per subject.');
       return 2;
     }
-    const laneGuard = checkSubjectLaneReady(root, { subject });
-    if (!laneGuard.ok) {
-      printSubjectLaneGuardFailure(laneGuard, { json: !!flags.json });
-      return 1;
+    const domain = flags.domain && flags.domain !== true ? String(flags.domain) : 'all';
+    if (domain !== 'channel') {
+      const laneGuard = checkSubjectLaneReady(root, { subject });
+      if (!laneGuard.ok) {
+        printSubjectLaneGuardFailure(laneGuard, { json: !!flags.json });
+        return 1;
+      }
     }
-    const result = await runDaemonWorker(root, subject, flags);
+    const result = await runDaemonDomains(root, subject, flags);
     if (flags.json) console.log(JSON.stringify(result, null, 2));
     else if (!result.started) console.log(`Daemon worker not started: ${result.reason}`);
     else console.log(`Daemon worker stopped: ${result.reason}`);
@@ -1306,6 +1575,7 @@ export async function daemonCommand({ subcommand, flags = {}, args = [], root = 
     const heartbeatStaleMs = parseHeartbeatStaleMs(flags['heartbeat-stale-ms']);
     const results = subjects.map((name) => {
       const result = requestWorkerStop(root, name, { staleMs: heartbeatStaleMs });
+      const channel = requestChannelWorkerStop(root, name, { staleMs: heartbeatStaleMs });
       recordDaemonEvent(root, name, {
         type: 'worker_stop_requested',
         status: result.requested ? 'ok' : result.reason,
@@ -1313,12 +1583,21 @@ export async function daemonCommand({ subcommand, flags = {}, args = [], root = 
         pid: result.state?.pid,
         reason: result.reason,
       });
-      return { subject: name, ...result };
+      recordChannelEvent(root, name, {
+        type: 'channel_worker_stop_requested',
+        status: channel.requested ? 'ok' : channel.reason,
+        worker_id: channel.state?.worker_id,
+        pid: channel.state?.pid,
+        reason: channel.reason,
+      });
+      return { subject: name, cycle: result, channel };
     });
     if (flags.json) console.log(JSON.stringify(multiSubject ? { subjects: results } : results[0], null, 2));
     else {
       for (const result of results) {
-        console.log(`${result.subject}: ${result.requested ? 'Daemon worker stop requested.' : `Daemon worker not running: ${result.reason}`}`);
+        const cycleText = result.cycle.requested ? 'cycle stop requested' : `cycle ${result.cycle.reason}`;
+        const channelText = result.channel.requested ? 'channel stop requested' : `channel ${result.channel.reason}`;
+        console.log(`${result.subject}: ${cycleText}; ${channelText}`);
       }
     }
     return 0;

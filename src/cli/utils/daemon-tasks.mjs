@@ -14,24 +14,30 @@ const CYCLE_STEP_ORDER = Object.fromEntries(CYCLE_STEP_TYPES.map((step, index) =
 
 export const TASK_STATUSES = new Set(['pending', 'running', 'completed', 'failed', 'cancelled', 'acknowledged']);
 
-export function tasksDirForSubject(root, subject) {
+function resolveDomain(options = {}) {
+  return options.domain ?? {};
+}
+
+export function tasksDirForSubject(root, subject, options = {}) {
+  const domain = resolveDomain(options);
+  if (typeof domain.tasksDir === 'function') return domain.tasksDir(root, subject);
   return join(runtimeForSubject(root, subject).evolutionDir, 'tasks');
 }
 
-export function pendingTasksPath(root, subject) {
-  return join(tasksDirForSubject(root, subject), 'pending_tasks.json');
+export function pendingTasksPath(root, subject, options = {}) {
+  return join(tasksDirForSubject(root, subject, options), 'pending_tasks.json');
 }
 
-export function taskQueueLockPath(root, subject) {
-  return join(tasksDirForSubject(root, subject), 'pending_tasks.lock');
+export function taskQueueLockPath(root, subject, options = {}) {
+  return join(tasksDirForSubject(root, subject, options), 'pending_tasks.lock');
 }
 
 function emptyQueue() {
   return { tasks: [], updated_at: nowIso() };
 }
 
-export function readTaskQueue(root, subject) {
-  const filePath = pendingTasksPath(root, subject);
+export function readTaskQueue(root, subject, options = {}) {
+  const filePath = pendingTasksPath(root, subject, options);
   if (!existsSync(filePath)) return emptyQueue();
   try {
     const data = JSON.parse(readFileSync(filePath, 'utf-8'));
@@ -42,16 +48,16 @@ export function readTaskQueue(root, subject) {
   }
 }
 
-function writeTaskQueue(root, subject, queue) {
-  const filePath = pendingTasksPath(root, subject);
+function writeTaskQueue(root, subject, queue, options = {}) {
+  const filePath = pendingTasksPath(root, subject, options);
   const next = { ...queue, updated_at: nowIso() };
   writeJsonAtomic(filePath, next);
   return next;
 }
 
-function ensureTaskQueueFiles(root, subject) {
-  const dataPath = pendingTasksPath(root, subject);
-  const lockPath = taskQueueLockPath(root, subject);
+function ensureTaskQueueFiles(root, subject, options = {}) {
+  const dataPath = pendingTasksPath(root, subject, options);
+  const lockPath = taskQueueLockPath(root, subject, options);
   mkdirSync(dirname(dataPath), { recursive: true });
   if (!existsSync(dataPath)) {
     writeJsonAtomic(dataPath, emptyQueue());
@@ -61,9 +67,9 @@ function ensureTaskQueueFiles(root, subject) {
   }
 }
 
-export function withTaskQueueLock(root, subject, fn) {
-  ensureTaskQueueFiles(root, subject);
-  const lockPath = taskQueueLockPath(root, subject);
+export function withTaskQueueLock(root, subject, fn, options = {}) {
+  ensureTaskQueueFiles(root, subject, options);
+  const lockPath = taskQueueLockPath(root, subject, options);
   let release;
   try {
     release = lockfile.lockSync(lockPath);
@@ -153,11 +159,13 @@ export function enqueueTask(root, subject, {
   priority = 100,
   idempotencyKey = null,
   input = {},
+  domain = null,
 } = {}) {
   const idempotency_key = idempotencyKey || defaultIdempotencyKey({ subject, type, input });
   const now = nowIso();
+  const options = { domain };
   return withTaskQueueLock(root, subject, () => {
-    const queue = readTaskQueue(root, subject);
+    const queue = readTaskQueue(root, subject, options);
     const existing = queue.tasks.find((task) => task.idempotency_key === idempotency_key && activeTask(task));
     if (existing) return { task: existing, created: false, queue };
     const task = {
@@ -178,8 +186,8 @@ export function enqueueTask(root, subject, {
       last_error_reason: null,
     };
     queue.tasks.push(task);
-    return { task, created: true, queue: writeTaskQueue(root, subject, queue) };
-  });
+    return { task, created: true, queue: writeTaskQueue(root, subject, queue, options) };
+  }, options);
 }
 
 export function expiredLease(task, nowMs = Date.now()) {
@@ -224,21 +232,24 @@ function reclaimExpiredLeasesInQueue(queue, { nowMs = Date.now(), reason = 'leas
   return reclaimed;
 }
 
-export function reclaimExpiredLeases(root, subject, { nowMs = Date.now(), reason = 'lease_expired' } = {}) {
+export function reclaimExpiredLeases(root, subject, { nowMs = Date.now(), reason = 'lease_expired', domain = null } = {}) {
+  const options = { domain };
   return withTaskQueueLock(root, subject, () => {
-    const queue = readTaskQueue(root, subject);
+    const queue = readTaskQueue(root, subject, options);
     const reclaimed = reclaimExpiredLeasesInQueue(queue, { nowMs, reason });
-    return { reclaimed, queue: writeTaskQueue(root, subject, queue) };
-  });
+    return { reclaimed, queue: writeTaskQueue(root, subject, queue, options) };
+  }, options);
 }
 
 export function claimNextTask(root, subject, {
   workerId = `worker-${process.pid}`,
   leaseMs = 5 * 60 * 1000,
   type = null,
+  domain = null,
 } = {}) {
+  const options = { domain };
   return withTaskQueueLock(root, subject, () => {
-    const queue = readTaskQueue(root, subject);
+    const queue = readTaskQueue(root, subject, options);
     const nowMs = Date.now();
     const reclaimed = reclaimExpiredLeasesInQueue(queue, { nowMs });
     const task = queue.tasks
@@ -246,18 +257,18 @@ export function claimNextTask(root, subject, {
       .sort((a, b) => (a.priority ?? 100) - (b.priority ?? 100) || String(a.created_at).localeCompare(String(b.created_at)))
       .find((item) => !hasIncompleteEarlierRound(queue.tasks, item) && !hasIncompleteEarlierStep(queue.tasks, item)) ?? null;
     if (!task) {
-      return { task: null, queue: writeTaskQueue(root, subject, queue), reclaimed };
+      return { task: null, queue: writeTaskQueue(root, subject, queue, options), reclaimed };
     }
     task.status = 'running';
     task.attempts = (task.attempts ?? 0) + 1;
     task.lease_owner = workerId;
     task.lease_expires_at = new Date(nowMs + leaseMs).toISOString();
     task.updated_at = nowIso();
-    return { task, queue: writeTaskQueue(root, subject, queue), reclaimed };
-  });
+    return { task, queue: writeTaskQueue(root, subject, queue, options), reclaimed };
+  }, options);
 }
 
-export function completeTask(root, subject, taskIdValue, result = {}) {
+export function completeTask(root, subject, taskIdValue, result = {}, options = {}) {
   return updateTask(root, subject, taskIdValue, (task) => ({
     ...task,
     status: 'completed',
@@ -266,10 +277,10 @@ export function completeTask(root, subject, taskIdValue, result = {}) {
     result,
     updated_at: nowIso(),
     completed_at: nowIso(),
-  }));
+  }), options);
 }
 
-export function failTask(root, subject, taskIdValue, failure = {}) {
+export function failTask(root, subject, taskIdValue, failure = {}, options = {}) {
   return updateTask(root, subject, taskIdValue, (task) => ({
     ...task,
     status: 'failed',
@@ -280,10 +291,10 @@ export function failTask(root, subject, taskIdValue, failure = {}) {
     last_error_reason: failure.reason ?? failure.last_error_reason ?? null,
     updated_at: nowIso(),
     failed_at: nowIso(),
-  }));
+  }), options);
 }
 
-export function releaseTaskForRetry(root, subject, taskIdValue, failure = {}) {
+export function releaseTaskForRetry(root, subject, taskIdValue, failure = {}, options = {}) {
   return updateTask(root, subject, taskIdValue, (task) => ({
     ...task,
     status: 'pending',
@@ -293,10 +304,10 @@ export function releaseTaskForRetry(root, subject, taskIdValue, failure = {}) {
     last_error_code: failure.code ?? failure.last_error_code ?? null,
     last_error_reason: failure.reason ?? failure.last_error_reason ?? null,
     updated_at: nowIso(),
-  }));
+  }), options);
 }
 
-export function retryTask(root, subject, taskIdValue, failure = {}) {
+export function retryTask(root, subject, taskIdValue, failure = {}, options = {}) {
   return updateTask(root, subject, taskIdValue, (task, queue) => {
     if (task.status === 'running' && !expiredLease(task)) {
       throw new Error(`Task is still running: ${taskIdValue}`);
@@ -318,10 +329,10 @@ export function retryTask(root, subject, taskIdValue, failure = {}) {
       retried_at: nowIso(),
       updated_at: nowIso(),
     };
-  });
+  }, options);
 }
 
-export function cancelTask(root, subject, taskIdValue, reason = 'manual_cancel') {
+export function cancelTask(root, subject, taskIdValue, reason = 'manual_cancel', options = {}) {
   return updateTask(root, subject, taskIdValue, (task) => {
     if (task.status !== 'pending') {
       throw new Error(`Only pending tasks can be cancelled: ${taskIdValue}`);
@@ -337,10 +348,10 @@ export function cancelTask(root, subject, taskIdValue, reason = 'manual_cancel')
       cancelled_at: nowIso(),
       updated_at: nowIso(),
     };
-  });
+  }, options);
 }
 
-export function acknowledgeTask(root, subject, taskIdValue, reason = 'manual_acknowledge') {
+export function acknowledgeTask(root, subject, taskIdValue, reason = 'manual_acknowledge', options = {}) {
   return updateTask(root, subject, taskIdValue, (task) => {
     if (task.status !== 'failed') {
       throw new Error(`Only failed tasks can be acknowledged: ${taskIdValue}`);
@@ -354,15 +365,17 @@ export function acknowledgeTask(root, subject, taskIdValue, reason = 'manual_ack
       acknowledged_reason: reason,
       updated_at: nowIso(),
     };
-  });
+  }, options);
 }
 
 export function renewTaskLease(root, subject, taskIdValue, {
   workerId = `worker-${process.pid}`,
   leaseMs = 5 * 60 * 1000,
+  domain = null,
 } = {}) {
+  const options = { domain };
   return withTaskQueueLock(root, subject, () => {
-    const queue = readTaskQueue(root, subject);
+    const queue = readTaskQueue(root, subject, options);
     const idx = queue.tasks.findIndex((task) => task.task_id === taskIdValue);
     if (idx < 0) {
       return { renewed: false, reason: 'task_not_found', task: null, queue };
@@ -382,19 +395,19 @@ export function renewTaskLease(root, subject, taskIdValue, {
       updated_at: nowIso(),
     };
     queue.tasks[idx] = next;
-    return { renewed: true, task: next, queue: writeTaskQueue(root, subject, queue) };
-  });
+    return { renewed: true, task: next, queue: writeTaskQueue(root, subject, queue, options) };
+  }, options);
 }
 
-export function updateTask(root, subject, taskIdValue, updater) {
+export function updateTask(root, subject, taskIdValue, updater, options = {}) {
   return withTaskQueueLock(root, subject, () => {
-    const queue = readTaskQueue(root, subject);
+    const queue = readTaskQueue(root, subject, options);
     const idx = queue.tasks.findIndex((task) => task.task_id === taskIdValue);
     if (idx < 0) throw new Error(`Task not found: ${taskIdValue}`);
     const task = updater(queue.tasks[idx], queue);
     queue.tasks[idx] = task;
-    return { task, queue: writeTaskQueue(root, subject, queue) };
-  });
+    return { task, queue: writeTaskQueue(root, subject, queue, options) };
+  }, options);
 }
 
 export function summarizeTaskQueue(queue) {

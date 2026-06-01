@@ -16,6 +16,7 @@ import { goalsCommand } from './commands/goals.mjs';
 import { beliefsCommand } from './commands/beliefs.mjs';
 import { evolveCommand } from './commands/evolve.mjs';
 import { daemonCommand } from './commands/daemon.mjs';
+import { channelCommand } from './commands/channel.mjs';
 
 export function helpText() {
   return `Usage: jea <command> [options]
@@ -42,6 +43,10 @@ Commands:
   daemon doctor          Diagnose daemon worker, leases, queue, and subject lock state
   daemon tasks list      List daemon tasks; inspect/retry/cancel are also supported
   daemon inbox           Show latest reports, diaries, verify reports, and health
+  channel status         Show channel worker, inbox, outbox, and task health
+  channel events         Show channel communication audit events
+  channel inbox put      Queue an inbound channel message JSON for ingest
+  channel send           Queue or dry-run an outbound channel message
   data status            Show runtime data status
   data status --json     Show runtime data status as JSON
   data init              Create runtime data directories
@@ -112,6 +117,8 @@ Examples:
   jea daemon events --limit 10
   jea daemon doctor
   jea daemon inbox --all
+  jea channel status
+  jea channel send --to CHAT_ID --text "hello" --dry-run
   jea daemon tasks list --status failed
   jea data init --all
   jea intel summary
@@ -148,6 +155,7 @@ export async function main(argv = process.argv.slice(2)) {
   if (command === 'run') return runCommand({ flags });
   if (command === 'evolve') return evolveCommand({ subcommand, flags, args });
   if (command === 'daemon') return daemonCommand({ subcommand, flags, args });
+  if (command === 'channel') return channelCommand({ subcommand, flags, args });
   if (command === 'data') return dataCommand({ subcommand, flags });
   if (command === 'intel') return intelCommand({ subcommand, flags, args });
   if (command === 'goals') return goalsCommand({ subcommand, flags, args });

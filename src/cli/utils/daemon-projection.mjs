@@ -8,6 +8,7 @@ import { buildCycleProjection } from './cycle-dispatch.mjs';
 import { findStuckSteps, findStepStateDrift, getLastClosedCycle, isCycleProgressStalled, listOpenCycles, summarizeCycleState } from './cycle-state.mjs';
 import { readPendingCycleStartRequest } from './cycle-start-requests.mjs';
 import { resolveEvolutionMode } from './evolution-mode.mjs';
+import { buildChannelProjection } from '../../channel/projection.mjs';
 
 export function daemonViewsDir(root, subject) {
   return join(runtimeForSubject(root, subject).evolutionDir, 'views');
@@ -275,6 +276,7 @@ export function buildDaemonProjection(root, subject, { store = null, eventLimit 
     }),
     tasks,
     cycles,
+    channel: buildChannelProjection(root, subject, { heartbeatStaleMs, eventLimit }),
     recent_events: events.slice(0, eventLimit).map((event) => ({
       id: event.id,
       type: event.type,

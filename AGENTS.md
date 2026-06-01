@@ -411,7 +411,41 @@ runtime/subjects/<data_namespace>/data/evolution/cycle-state/
 - `jea daemon tasks cancel <task_id>`：取消任务。
 - `jea daemon tasks acknowledge <task_id>`：确认已检查过的失败任务（别名 `ack`）。
 
-`jea daemon start` 和 `jea daemon work --once` 保持单 subject 单进程；多主体并行应由外部终端或编排器分别启动。
+`jea daemon start` 默认在同一前台进程内启动平级的 cycle domain 与 channel domain；两者使用独立队列、worker-state 与锁边界，因此 channel 收发不会被长 cycle step 阻塞。可用 `jea daemon start --domain cycle|channel|all` 只启动某个 domain；`jea daemon work --once --domain channel` 只领取 channel task。多主体并行仍应由外部终端或编排器分别启动。
+
+## Channel 通道
+
+Channel 是 daemon 下与 cycle 平级的通信闭环，负责接收外部消息、写入合适的情报入口，并观察运行态决定是否向外部通道通知。当前首个适配器是 `openclaw-lark`（飞书/Lark），JEA 只做 contract 转换，不重写飞书 SDK 能力。
+
+运行时数据位于：
+
+```text
+runtime/subjects/<data_namespace>/data/channel/
+├── worker-state.json
+├── tasks/pending_tasks.json
+├── events.jsonl
+├── inbound/pending|processed|failed/
+└── outbox/pending|sent|failed/
+```
+
+常用命令：
+
+- `jea channel status [--json]`：查看 channel worker、队列、inbound/outbox 健康。
+- `jea channel events [--limit N] [--json]`：查看 channel 审计事件。
+- `jea channel inbox put [--file PATH | --stdin]`：放入一条 openclaw-lark `MessageContext` / 飞书事件 / JEA channel envelope，等待 `channel_ingest` 分类。
+- `jea channel outbox [--json]`：查看待发送消息。
+- `jea channel send --to CHAT_ID --text TEXT [--dry-run]`：手工排队或预览一条出站消息。
+- `jea channel tick`：运行一次 channel dispatcher，按 pending inbound、attention signals、outbox 入队任务。
+- `jea channel doctor [--json]`：诊断 channel worker 与任务队列。
+
+入站分类边界：
+
+- 审批/发布类话语写入 `approval_request` operator brief，并由下一轮 Decide 产出正式 action；不要直接写 `pending_decisions.json`。
+- 已确认长期口径写入 `operator_fact`。
+- 待核实或下一轮关注事项写入 operator brief。
+- 普通外部消息写入 `intel_observations` 作为可推翻 evidence。
+
+出站通知由 `channel_watch` 观察 daemon projection、cycle-state、failed tasks、pending briefs 等生成 attention signals，再由 `channel_notify` 发送。通知去重与冷却在 channel runtime 中审计，不污染 cycle receipt。
 
 ## Subject 管理
 
