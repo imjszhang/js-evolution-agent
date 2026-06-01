@@ -79,6 +79,18 @@ function isGreeting(text) {
   return /^(你好|您好|hi|hello|hey|在吗|在么|在不在)[!！?？。.\s]*$/i.test(normalized);
 }
 
+function isReplyableFeishuMessageId(messageId) {
+  return /^om_[a-zA-Z0-9_-]+$/.test(String(messageId || '').trim());
+}
+
+function replyToMessageId(envelope) {
+  const messageId = envelope?.message_id ?? null;
+  if (envelope?.channel === 'feishu' && !isReplyableFeishuMessageId(messageId)) {
+    return null;
+  }
+  return messageId;
+}
+
 function baseDecision(action, reason, extra = {}) {
   return {
     action,
@@ -118,6 +130,7 @@ export function decideInboundReply(root, subject, {
   }
 
   const messageId = envelope?.message_id ?? null;
+  const replyTo = replyToMessageId(envelope);
   const text = String(envelope?.content ?? '').trim();
   const target = resolveInboundTarget(envelope, replyConfig.feishu);
   if (!target) {
@@ -138,9 +151,9 @@ export function decideInboundReply(root, subject, {
           summary: brief.summary ?? text,
         }),
         target,
-        reply_to_message_id: messageId,
+        reply_to_message_id: replyTo,
         idempotency_key: `reply:inbound:approval:${messageId ?? brief.id}`,
-        metadata: { brief_id: brief.id, brief_kind: brief.kind },
+        metadata: { brief_id: brief.id, brief_kind: brief.kind, source_message_id: messageId },
       });
     }
     if (brief.kind === 'verification_request') {
@@ -150,9 +163,9 @@ export function decideInboundReply(root, subject, {
           summary: brief.summary ?? text,
         }),
         target,
-        reply_to_message_id: messageId,
+        reply_to_message_id: replyTo,
         idempotency_key: `reply:inbound:verification:${messageId ?? brief.id}`,
-        metadata: { brief_id: brief.id, brief_kind: brief.kind },
+        metadata: { brief_id: brief.id, brief_kind: brief.kind, source_message_id: messageId },
       });
     }
     return baseDecision('none', 'unsupported_brief_kind', {
@@ -167,9 +180,9 @@ export function decideInboundReply(root, subject, {
     return baseDecision('send', 'operator_fact_ack', {
       text: templateFor(replyConfig, 'operator_fact', { subject, summary: text }),
       target,
-      reply_to_message_id: messageId,
+      reply_to_message_id: replyTo,
       idempotency_key: `reply:inbound:fact:${messageId ?? hashFallback(text)}`,
-      metadata: { ingest_kind: 'operator_fact' },
+      metadata: { ingest_kind: 'operator_fact', source_message_id: messageId },
     });
   }
 
@@ -179,9 +192,9 @@ export function decideInboundReply(root, subject, {
         return baseDecision('send', 'greeting_ack', {
           text: templateFor(replyConfig, 'greeting', { subject }),
           target,
-          reply_to_message_id: messageId,
+          reply_to_message_id: replyTo,
           idempotency_key: `reply:inbound:greeting:${messageId ?? hashFallback(text)}`,
-          metadata: { ingest_kind: 'observation' },
+          metadata: { ingest_kind: 'observation', source_message_id: messageId },
         });
       }
     }
@@ -228,6 +241,14 @@ export function decideProactiveReply(root, subject, {
     return baseDecision('none', 'low_priority_brief_signal', {
       metadata: { signal_type: signalType },
     });
+  }
+  if (signalType === 'operator_brief_pending' && signal?.refs?.brief_id) {
+    const ackCooldownKey = `reply:brief_ack:${signal.refs.brief_id}`;
+    if (cooldownActive(root, subject, ackCooldownKey)) {
+      return baseDecision('none', 'recent_inbound_ack', {
+        metadata: { signal_type: signalType, signal_key: signal?.key ?? null, brief_id: signal.refs.brief_id },
+      });
+    }
   }
 
   const text = [
@@ -337,6 +358,12 @@ export function applyReplyDecision(root, subject, decision, {
     reply_reason: decision.reason,
     signal_type: decision.metadata?.signal_type ?? null,
   });
+  if (decision.metadata?.brief_id && !decision.metadata?.proactive) {
+    setCooldown(root, subject, `reply:brief_ack:${decision.metadata.brief_id}`, replyConfig.cooldown_ms, {
+      reply_reason: decision.reason,
+      source_message_id: decision.metadata.source_message_id ?? null,
+    });
+  }
   recordChannelEvent(root, subject, {
     type: 'channel_reply_enqueued',
     status: 'ok',

@@ -144,6 +144,26 @@ describe('channel domain', () => {
       expect(listOutboxPending(root, 'alpha', { limit: 10 }).length).toBe(1);
     });
 
+    it('falls back to sendText for non-Feishu message ids', () => {
+      const root = makeRoot();
+      const envelope = envelopeFromPayload({
+        messageId: 'm-manual-approval-1',
+        chatId: 'oc_test',
+        senderId: 'ou_operator',
+        content: '同意发布',
+      });
+      const decision = decideInboundReply(root, 'alpha', {
+        envelope,
+        ingestResult: {
+          kind: 'operator_brief',
+          brief: { id: 'brief-manual-1', kind: 'approval_request', summary: '同意发布' },
+        },
+      });
+      const result = applyReplyDecision(root, 'alpha', decision);
+      expect(result.applied).toBe(true);
+      expect(result.outbound.reply_to_message_id).toBe(null);
+    });
+
     it('enqueues verification acknowledgement replies after ingest', async () => {
       const root = makeRoot();
       const { reply } = await ingestAndReply(root, {
@@ -204,6 +224,36 @@ describe('channel domain', () => {
       expect(second.skipped).toBe(true);
       expect(second.reason).toBe('cooldown');
       expect(cooldownActive(root, 'alpha', decision.idempotency_key)).toBe(true);
+    });
+
+    it('suppresses proactive brief reminders after inbound acknowledgement', () => {
+      const root = makeRoot();
+      const envelope = envelopeFromPayload({
+        messageId: 'om_manualapproval123',
+        chatId: 'oc_test',
+        senderId: 'ou_operator',
+        content: '同意发布',
+      });
+      const decision = decideInboundReply(root, 'alpha', {
+        envelope,
+        ingestResult: {
+          kind: 'operator_brief',
+          brief: { id: 'brief-ack-1', kind: 'approval_request', summary: '同意发布' },
+        },
+      });
+      applyReplyDecision(root, 'alpha', decision);
+      const proactive = decideProactiveReply(root, 'alpha', {
+        signal: {
+          type: 'operator_brief_pending',
+          severity: 'high',
+          title: 'Pending approval_request',
+          summary: '同意发布',
+          key: 'brief:brief-ack-1',
+          refs: { brief_id: 'brief-ack-1' },
+        },
+      });
+      expect(proactive.action).toBe('none');
+      expect(proactive.reason).toBe('recent_inbound_ack');
     });
   });
 
