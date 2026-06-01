@@ -284,6 +284,11 @@ export function createRuntimeWatcher({ runtimeRoot, projectRoot = null, sse, onR
     join(runtimeRoot, 'data', 'evolution', 'daemon', 'worker-state.json'),
     join(runtimeRoot, 'data', 'evolution', 'views', 'current-state.json'),
     join(runtimeRoot, 'data', 'evolution', 'cycle-state'),
+    join(runtimeRoot, 'data', 'channel', 'worker-state.json'),
+    join(runtimeRoot, 'data', 'channel', 'tasks', 'pending_tasks.json'),
+    join(runtimeRoot, 'data', 'channel', 'events.jsonl'),
+    join(runtimeRoot, 'data', 'channel', 'inbound'),
+    join(runtimeRoot, 'data', 'channel', 'outbox'),
   ];
   if (projectRoot) {
     paths.push(join(projectRoot, 'policies', 'subjects.json'));

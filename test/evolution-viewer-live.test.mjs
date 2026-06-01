@@ -300,6 +300,11 @@ describe('createViewerApiServer', () => {
     expect(daemon.tick_ms).toBe(300_000);
     expect(daemon.evolution_mode).toBe('continuous');
     expect(daemon.evolution_mode_source).toBeTruthy();
+    expect(daemon.channel).toBeTruthy();
+    expect(daemon.channel.health).toBeTruthy();
+    expect(daemon.channel.tasks).toBeTruthy();
+    expect(daemon.channel.inbound).toMatchObject({ pending_count: expect.any(Number) });
+    expect(daemon.channel.outbox).toMatchObject({ pending_count: expect.any(Number) });
   });
 
   it('GET /api/cycles/:id returns cycle detail without report', async () => {

@@ -2,6 +2,7 @@ import {
   PATCH_WORTHY_DAEMON_EVENTS,
   activeCyclesFingerprint,
   buildDetailCacheFromData,
+  channelPanelFingerprint,
   daemonBarFingerprint,
   detailCacheNeedsPatch,
 } from './live-state.js';
@@ -13,6 +14,7 @@ const filterEl = document.getElementById('filter');
 const liveStatusEl = document.getElementById('live-status');
 const daemonBarEl = document.getElementById('daemon-bar');
 const activeCyclesEl = document.getElementById('active-cycles');
+const channelPanelEl = document.getElementById('channel-panel');
 const eventFeedEl = document.getElementById('event-feed');
 
 /** @type {{ rounds: object[], subject?: string, namespace?: string, built_at?: string, limit?: number } | null} */
@@ -38,6 +40,7 @@ let loadDaemonTimer = null;
 let patchDetailTimer = null;
 let lastDaemonBarFp = '';
 let lastActiveCyclesFp = '';
+let lastChannelPanelFp = '';
 
 const LOAD_DAEMON_DEBOUNCE_MS = 400;
 const PATCH_DETAIL_DEBOUNCE_MS = 500;
@@ -64,6 +67,21 @@ const EVENT_LABELS = {
   cycle_start_requested: '开轮请求入队',
   cycle_start_consumed: '开轮请求已消费',
   cycle_start_deferred: '开轮请求暂缓',
+};
+
+const CHANNEL_EVENT_LABELS = {
+  channel_worker_started: 'Channel Worker 启动',
+  channel_worker_stop_requested: 'Channel Worker 停止请求',
+  channel_tick: 'Channel tick',
+  channel_task_enqueued: 'Channel 任务入队',
+  channel_task_claimed: 'Channel 任务领取',
+  channel_task_completed: 'Channel 任务完成',
+  channel_inbound_completed: '入站轮询完成',
+  channel_watch_completed: '关注信号扫描',
+  channel_message_ingested: '消息已分类入库',
+  channel_message_ingest_failed: '消息分类失败',
+  channel_message_sent: '消息已发送',
+  channel_message_send_failed: '消息发送失败',
 };
 
 const EVOLUTION_MODE_LABELS = {
@@ -174,6 +192,17 @@ function formatEventLabel(ev) {
   return parts.join(' · ');
 }
 
+function formatChannelEventLabel(ev) {
+  const type = ev.type ?? ev.event_type;
+  const base = CHANNEL_EVENT_LABELS[type] ?? type ?? 'channel';
+  const parts = [base];
+  if (ev.task_type) parts.push(ev.task_type);
+  if (ev.message_id) parts.push(ev.message_id);
+  if (ev.ingest_kind) parts.push(ev.ingest_kind);
+  if (ev.status && ev.status !== 'ok') parts.push(ev.status);
+  return parts.join(' · ');
+}
+
 function renderEventFeed() {
   if (!eventFeedEl) return;
   if (!feedEvents.length) {
@@ -245,6 +274,23 @@ function renderDaemonBar() {
     ? `来源: ${modeSource}${mode === 'on_demand' ? ' · tick 不会自动开新轮' : mode === 'continuous' ? ' · tick 可自动开新轮' : ''}`
     : '';
 
+  const channel = daemonState.channel ?? null;
+  let channelPart = '';
+  if (channel) {
+    const chHealth = channel.health?.status ?? 'unknown';
+    const chWorker = channel.worker ?? {};
+    const chCounts = channel.tasks?.counts ?? {};
+    const inPending = channel.inbound?.pending_count ?? 0;
+    const outPending = channel.outbox?.pending_count ?? 0;
+    channelPart = `
+      <span class="daemon-chip channel-domain">Channel</span>
+      <span class="daemon-chip health-${chHealth}" title="Channel worker 健康">Ch: ${chHealth}</span>
+      <span class="daemon-chip worker-${chWorker.running ? 'on' : 'off'}">Ch Worker: ${chWorker.running ? '运行' : '停止'}${chWorker.stale ? ' (stale)' : ''}</span>
+      <span class="daemon-chip">Ch 队列 ${chCounts.pending ?? 0}/${chCounts.running ?? 0}</span>
+      <span class="daemon-chip${inPending || outPending ? ' channel-attention' : ''}">入 ${inPending} · 出 ${outPending}</span>
+    `;
+  }
+
   daemonBarEl.innerHTML = `
     <span class="daemon-chip ${modeClass}" title="${modeTitle}">模式: ${modeLabel}</span>
     <span class="daemon-chip health-${health.status ?? 'unknown'}">Health: ${health.status ?? 'unknown'}</span>
@@ -252,8 +298,66 @@ function renderDaemonBar() {
     <span class="daemon-chip">队列 pending ${counts.pending ?? 0} · running ${counts.running ?? 0}</span>
     ${pendingPart}
     <span class="daemon-chip">${currentText}</span>
+    ${channelPart}
     <span class="daemon-chip muted">${tickPart}${modeSource ? ` · ${modeSource}` : ''}</span>
   `;
+}
+
+function renderChannelPanel() {
+  if (!channelPanelEl) return;
+  const channel = daemonState?.channel;
+  if (!channel) {
+    channelPanelEl.innerHTML = '<p class="feed-empty">Channel 未初始化</p>';
+    return;
+  }
+
+  const health = channel.health ?? {};
+  const worker = channel.worker ?? {};
+  const counts = channel.tasks?.counts ?? {};
+  const running = channel.tasks?.running ?? [];
+  const failed = channel.tasks?.failed ?? [];
+  const inPending = channel.inbound?.pending_count ?? 0;
+  const outPending = channel.outbox?.pending_count ?? 0;
+  const healthClass = health.status ?? 'unknown';
+  const workerText = worker.running
+    ? `运行中${worker.stale ? ' (stale)' : ''}`
+    : '未运行';
+
+  const statsHtml = `
+    <div class="channel-stats">
+      <span class="channel-stat health-${healthClass}">健康: ${health.status ?? 'unknown'}</span>
+      <span class="channel-stat">Worker: ${workerText}</span>
+      <span class="channel-stat">队列 pending ${counts.pending ?? 0} · running ${counts.running ?? 0}</span>
+      <span class="channel-stat${inPending ? ' channel-stat-warn' : ''}">入站待处理 ${inPending}</span>
+      <span class="channel-stat${outPending ? ' channel-stat-warn' : ''}">出站待发 ${outPending}</span>
+    </div>
+  `;
+
+  let runningHtml = '';
+  if (running.length) {
+    runningHtml = `<div class="channel-subheading">运行中任务</div>${running.map((t) => `
+      <div class="channel-task-row"><code>${t.task_id}</code> · ${t.type}</div>
+    `).join('')}`;
+  }
+
+  let failedHtml = '';
+  if (failed.length) {
+    failedHtml = `<div class="channel-subheading channel-subheading-warn">失败任务</div>${failed.slice(0, 3).map((t) => `
+      <div class="channel-task-row channel-task-failed">${t.type} · ${t.last_error_code ?? 'error'}</div>
+    `).join('')}`;
+  }
+
+  const events = channel.recent_events ?? [];
+  let eventsHtml = '<p class="feed-empty">暂无 Channel 事件</p>';
+  if (events.length) {
+    eventsHtml = events.slice(0, 10).map((ev) => {
+      const time = formatTimeShort(ev.recorded_at);
+      const errClass = ev.status && ev.status !== 'ok' ? ' channel-event-error' : '';
+      return `<div class="feed-row channel-event-row${errClass}"><span class="feed-time">${time}</span><span class="feed-label" title="${ev.type ?? ''}">${formatChannelEventLabel(ev)}</span></div>`;
+    }).join('');
+  }
+
+  channelPanelEl.innerHTML = `${statsHtml}${runningHtml}${failedHtml}<div class="channel-subheading">最近事件</div><div class="channel-event-feed">${eventsHtml}</div>`;
 }
 
 function renderActiveCycles() {
@@ -293,8 +397,10 @@ function applyDaemonState(next) {
   if (!next) return null;
   const barFp = daemonBarFingerprint(next);
   const cyclesFp = activeCyclesFingerprint(next);
+  const channelFp = channelPanelFingerprint(next);
   const barChanged = barFp !== lastDaemonBarFp;
   const cyclesChanged = cyclesFp !== lastActiveCyclesFp;
+  const channelChanged = channelFp !== lastChannelPanelFp;
 
   daemonState = next;
   if (barChanged) {
@@ -304,6 +410,10 @@ function applyDaemonState(next) {
   if (cyclesChanged) {
     lastActiveCyclesFp = cyclesFp;
     renderActiveCycles();
+  }
+  if (channelChanged) {
+    lastChannelPanelFp = channelFp;
+    renderChannelPanel();
   }
   return daemonState;
 }
@@ -784,6 +894,7 @@ async function init() {
 
   renderTimeline();
   renderActiveCycles();
+  renderChannelPanel();
 
   const initial = cycleFromHash();
   if (initial) {

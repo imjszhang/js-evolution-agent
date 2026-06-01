@@ -40,6 +40,33 @@ export function tasksFingerprint(tasks) {
 /**
  * @param {object|null|undefined} state
  */
+function channelSummaryFingerprint(channel) {
+  if (!channel) return null;
+  const worker = channel.worker ?? {};
+  const health = channel.health ?? {};
+  const counts = channel.tasks?.counts ?? {};
+  const running = channel.tasks?.running?.[0] ?? null;
+  const recent = (channel.recent_events ?? []).slice(0, 3).map((ev) => ({
+    type: ev.type ?? ev.event_type ?? null,
+    status: ev.status ?? null,
+    recorded_at: ev.recorded_at ?? null,
+  }));
+  return {
+    health: health.status ?? null,
+    worker_running: Boolean(worker.running),
+    worker_stale: Boolean(worker.stale),
+    counts: {
+      pending: counts.pending ?? 0,
+      running: counts.running ?? 0,
+      failed: counts.failed ?? 0,
+    },
+    running_task: running ? { task_id: running.task_id, type: running.type } : null,
+    inbound_pending: channel.inbound?.pending_count ?? 0,
+    outbox_pending: channel.outbox?.pending_count ?? 0,
+    recent_tail: recent,
+  };
+}
+
 export function daemonBarFingerprint(state) {
   if (!state) return '';
   const worker = state.worker ?? {};
@@ -67,6 +94,43 @@ export function daemonBarFingerprint(state) {
     },
     running_task: running ? { task_id: running.task_id, type: running.type } : null,
     last_tick_at: state.last_tick_at ?? null,
+    channel: channelSummaryFingerprint(state.channel),
+  });
+}
+
+/**
+ * @param {object|null|undefined} state
+ */
+export function channelPanelFingerprint(state) {
+  const channel = state?.channel;
+  if (!channel) return '';
+  const worker = channel.worker ?? {};
+  const health = channel.health ?? {};
+  const counts = channel.tasks?.counts ?? {};
+  const failed = (channel.tasks?.failed ?? []).map((t) => ({
+    task_id: t.task_id,
+    type: t.type,
+    last_error_code: t.last_error_code ?? null,
+  }));
+  const recent = (channel.recent_events ?? []).slice(0, 10).map((ev) => ({
+    id: ev.id ?? null,
+    type: ev.type ?? ev.event_type ?? null,
+    status: ev.status ?? null,
+    task_type: ev.task_type ?? null,
+    message_id: ev.message_id ?? null,
+    recorded_at: ev.recorded_at ?? null,
+  }));
+  return JSON.stringify({
+    health: health.status ?? null,
+    health_ok: health.ok ?? null,
+    worker_running: Boolean(worker.running),
+    worker_stale: Boolean(worker.stale),
+    worker_id: worker.worker_id ?? null,
+    counts,
+    failed,
+    inbound_pending: channel.inbound?.pending_count ?? 0,
+    outbox_pending: channel.outbox?.pending_count ?? 0,
+    recent_events: recent,
   });
 }
 

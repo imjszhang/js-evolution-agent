@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   activeCyclesFingerprint,
   buildDetailCacheFromData,
+  channelPanelFingerprint,
   daemonBarFingerprint,
   detailCacheNeedsPatch,
   stepsFingerprint,
@@ -85,6 +86,61 @@ describe('live-state fingerprints', () => {
       last_tick_at: '2026-05-30T12:00:00.000Z',
     });
     expect(idle).not.toBe(busy);
+  });
+
+  it('daemonBarFingerprint changes when channel inbound pending changes', () => {
+    const base = {
+      health: { status: 'idle' },
+      worker: { running: true, stale: false },
+      tasks: { counts: { pending: 0, running: 0, failed: 0 }, running: [] },
+      last_tick_at: null,
+    };
+    const empty = daemonBarFingerprint({
+      ...base,
+      channel: {
+        health: { status: 'healthy' },
+        worker: { running: true, stale: false },
+        tasks: { counts: { pending: 0, running: 0, failed: 0 }, running: [] },
+        inbound: { pending_count: 0 },
+        outbox: { pending_count: 0 },
+        recent_events: [],
+      },
+    });
+    const inbound = daemonBarFingerprint({
+      ...base,
+      channel: {
+        health: { status: 'healthy' },
+        worker: { running: true, stale: false },
+        tasks: { counts: { pending: 1, running: 0, failed: 0 }, running: [] },
+        inbound: { pending_count: 2 },
+        outbox: { pending_count: 0 },
+        recent_events: [],
+      },
+    });
+    expect(empty).not.toBe(inbound);
+  });
+
+  it('channelPanelFingerprint tracks recent channel events', () => {
+    const base = {
+      channel: {
+        health: { status: 'healthy', ok: true },
+        worker: { running: true, stale: false, worker_id: 'ch-1' },
+        tasks: { counts: { pending: 0, running: 0, failed: 0 }, failed: [] },
+        inbound: { pending_count: 0 },
+        outbox: { pending_count: 0 },
+        recent_events: [{ id: 'e1', type: 'channel_tick', status: 'ok', recorded_at: 't1' }],
+      },
+    };
+    const a = channelPanelFingerprint(base);
+    const b = channelPanelFingerprint({
+      channel: {
+        ...base.channel,
+        recent_events: [
+          { id: 'e2', type: 'channel_message_ingested', status: 'ok', message_id: 'm1', recorded_at: 't2' },
+        ],
+      },
+    });
+    expect(a).not.toBe(b);
   });
 
   it('activeCyclesFingerprint tracks step summary changes', () => {
