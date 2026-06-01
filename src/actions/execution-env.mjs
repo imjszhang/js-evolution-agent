@@ -36,7 +36,7 @@ export function buildExecutionEnv(executionRoot, { baseEnv = process.env, overri
   const loaded = readExecutionEnvFile(executionRoot);
   const env = { ...baseEnv };
   for (const [key, value] of Object.entries(loaded.values)) {
-    if (!hasValue(env[key])) env[key] = value;
+    if (hasValue(value)) env[key] = value;
   }
   for (const [key, value] of Object.entries(overrides ?? {})) {
     if (value == null) delete env[key];

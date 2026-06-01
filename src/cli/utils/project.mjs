@@ -13,7 +13,10 @@ export function getProjectRoot() {
 
 export function loadProjectEnv(root = getProjectRoot()) {
   const envPath = join(root, '.env');
-  if (existsSync(envPath)) loadDotenv({ path: envPath, override: false });
+  if (existsSync(envPath)) {
+    // Project .env is the local source of truth; shell placeholders must not win over it.
+    loadDotenv({ path: envPath, override: true });
+  }
   return envPath;
 }
 

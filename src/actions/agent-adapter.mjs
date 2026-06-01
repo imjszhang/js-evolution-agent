@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -982,6 +982,81 @@ function createReasonixTempConfig(opts) {
   };
 }
 
+const REASONIX_FLAVOR_CACHE = new Map();
+const REASONIX_GO_ARGV_PROMPT_LIMIT = 7000;
+
+function normalizeReasonixFlavorHint(raw) {
+  const value = String(raw ?? '').trim().toLowerCase();
+  if (value === 'npm' || value === 'legacy' || value === '0.x') return 'npm';
+  if (value === 'go' || value === 'v2' || value === 'main-v2') return 'go';
+  return null;
+}
+
+function parseReasonixVersionOutput(stdout, stderr) {
+  const text = `${stdout ?? ''}\n${stderr ?? ''}`.trim();
+  const semver = text.match(/\b(\d+)\.(\d+)\.(\d+)\b/);
+  if (semver && Number(semver[1]) === 0) return 'npm';
+  if (/dev|main-v2/i.test(text) || (semver && Number(semver[1]) >= 1)) return 'go';
+  return null;
+}
+
+function probeReasonixFlavorSync(binary, binaryArgs) {
+  const cacheKey = `${binary}\0${binaryArgs.join('\0')}`;
+  if (REASONIX_FLAVOR_CACHE.has(cacheKey)) return REASONIX_FLAVOR_CACHE.get(cacheKey);
+
+  const hinted = normalizeReasonixFlavorHint(process.env.JEA_REASONIX_FLAVOR);
+  if (hinted) {
+    REASONIX_FLAVOR_CACHE.set(cacheKey, hinted);
+    return hinted;
+  }
+
+  let flavor = 'npm';
+  try {
+    const versionProbe = spawnSync(binary, [...binaryArgs, '--version'], {
+      encoding: 'utf-8',
+      timeout: 5000,
+      windowsHide: true,
+    });
+    const parsed = parseReasonixVersionOutput(versionProbe.stdout, versionProbe.stderr);
+    if (parsed) {
+      flavor = parsed;
+    } else {
+      const helpProbe = spawnSync(binary, [...binaryArgs, 'run', '--help'], {
+        encoding: 'utf-8',
+        timeout: 5000,
+        windowsHide: true,
+      });
+      const help = `${helpProbe.stdout ?? ''}${helpProbe.stderr ?? ''}`;
+      if (/--max-steps\b/.test(help)) flavor = 'go';
+    }
+  } catch {
+    // Conservative default: npm 0.x CLI semantics (argv task, no --max-steps).
+  }
+
+  REASONIX_FLAVOR_CACHE.set(cacheKey, flavor);
+  return flavor;
+}
+
+export async function resolveReasonixFlavor(binary, binaryArgs) {
+  return probeReasonixFlavorSync(binary, binaryArgs);
+}
+
+export function buildReasonixRunBaseArgs({ binaryArgs, model, maxSteps, flavor }) {
+  const args = [...binaryArgs, 'run'];
+  if (model) args.push('--model', String(model));
+  if (flavor === 'go' && maxSteps != null) args.push('--max-steps', String(maxSteps));
+  return args;
+}
+
+export function buildReasonixTurnInvocation(baseRunArgs, prompt, flavor = 'npm') {
+  const text = String(prompt ?? '');
+  if (!text) return { args: [...baseRunArgs], stdinText: null };
+  if (flavor === 'go' && text.length > REASONIX_GO_ARGV_PROMPT_LIMIT) {
+    return { args: [...baseRunArgs], stdinText: text };
+  }
+  return { args: [...baseRunArgs, text], stdinText: null };
+}
+
 export function buildReasonixOptions(action, ctx) {
   const executionAction = applyRunSpecToAction(action, ctx);
   const runSpec = normalizeAgentRunSpec(executionAction, ctx);
@@ -1025,16 +1100,14 @@ export function buildReasonixOptions(action, ctx) {
     ? null
     : createReasonixTempConfig({ runSpec, roots, model, allowBash });
   const effectiveConfigPath = configPath ?? generatedConfig?.configPath ?? null;
-  const args = [...binaryArgs, 'run'];
-  if (model) args.push('--model', String(model));
-  if (maxSteps != null) args.push('--max-steps', String(maxSteps));
   const executionEnv = buildExecutionEnv(roots.executionCwd, {
     overrides: effectiveConfigPath ? { REASONIX_CONFIG: effectiveConfigPath } : {},
   });
 
   return {
     binary,
-    args,
+    binaryArgs,
+    baseRunArgs: buildReasonixRunBaseArgs({ binaryArgs, model, maxSteps: null, flavor: null }),
     cwd: roots.executionCwd,
     env: executionEnv.env,
     envPath: executionEnv.envPath,
@@ -1592,7 +1665,7 @@ function reasonixSpawnFailureIsDeferred(error) {
   return ['ENOENT', 'EACCES', 'EPERM'].includes(error?.code);
 }
 
-function runReasonixProcess({ binary, args, cwd, env, input, timeoutMs }) {
+function runReasonixProcess({ binary, args, cwd, env, stdinText, timeoutMs }) {
   return new Promise((resolvePromise) => {
     const startedAt = Date.now();
     let settled = false;
@@ -1600,6 +1673,7 @@ function runReasonixProcess({ binary, args, cwd, env, input, timeoutMs }) {
     let stderr = '';
     let timedOut = false;
     let child;
+    const useStdin = stdinText != null;
 
     function finish(result) {
       if (settled) return;
@@ -1618,7 +1692,7 @@ function runReasonixProcess({ binary, args, cwd, env, input, timeoutMs }) {
         cwd,
         env,
         windowsHide: true,
-        stdio: ['pipe', 'pipe', 'pipe'],
+        stdio: useStdin ? ['pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'],
       });
     } catch (error) {
       finish({ ok: false, error, spawn_error: true, exit_code: null });
@@ -1646,7 +1720,7 @@ function runReasonixProcess({ binary, args, cwd, env, input, timeoutMs }) {
         signal: signal ?? null,
       });
     });
-    child.stdin.end(String(input ?? ''));
+    if (useStdin) child.stdin.end(String(stdinText));
   });
 }
 
@@ -1739,10 +1813,19 @@ async function runReasonixCli(action, ctx) {
   let agent = null;
   let validation = { valid: false, missing: ['receipt'], action_type: effectiveActionType(executionAction) };
   let providerFailure = null;
+  options.flavor = await resolveReasonixFlavor(options.binary, options.binaryArgs);
+  options.baseRunArgs = buildReasonixRunBaseArgs({
+    binaryArgs: options.binaryArgs,
+    model: options.model,
+    maxSteps: options.maxSteps,
+    flavor: options.flavor,
+  });
+
   obs.emit('provider_start', {
     cwd: options.cwd,
     binary: options.binary,
     model: options.model ?? null,
+    flavor: options.flavor,
     config_source: options.configSource,
     prompt_chars: translated.prompt.length,
   });
@@ -1753,8 +1836,9 @@ async function runReasonixCli(action, ctx) {
   });
   obs.emit('native_event', {
     native_type: 'cli_invocation',
-    command: `${options.binary} ${options.args.join(' ')}`,
+    command: `${options.binary} ${options.baseRunArgs.join(' ')} <task>`,
     config_path: options.configPath,
+    flavor: options.flavor,
     permission_profile: options.runSpec.permission_profile,
     allow_bash: options.allowBash,
   });
@@ -1764,12 +1848,13 @@ async function runReasonixCli(action, ctx) {
     const turnStarted = Date.now();
     obs.beginTurn();
     obs.emit('turn_start', { turn: turnLabel, prompt_chars: prompt.length });
+    const invocation = buildReasonixTurnInvocation(options.baseRunArgs, prompt, options.flavor);
     const result = await runReasonixProcess({
       binary: options.binary,
-      args: options.args,
+      args: invocation.args,
       cwd: options.cwd,
       env: options.env,
-      input: prompt,
+      stdinText: invocation.stdinText,
       timeoutMs: options.timeoutMs,
     });
     const rawText = String(result.stdout ?? '').trim();
@@ -1901,7 +1986,8 @@ async function runReasonixCli(action, ctx) {
     ...agent.outputs,
     reasonix: {
       binary: options.binary,
-      args: options.args,
+      base_run_args: options.baseRunArgs,
+      flavor: options.flavor,
       run_results: runResults,
       options: {
         cwd: options.cwd,
@@ -1912,10 +1998,11 @@ async function runReasonixCli(action, ctx) {
         config_source: options.configSource,
         config_path: options.configPath,
         model: options.model,
+        flavor: options.flavor,
         permission_profile: options.runSpec.permission_profile,
         allow_bash: options.allowBash,
         timeout_ms: options.timeoutMs,
-        max_steps: options.maxSteps,
+        max_steps: options.flavor === 'go' ? options.maxSteps : null,
       },
       capability_gaps: ['tool_trace'],
       provider_failure: providerFailure,

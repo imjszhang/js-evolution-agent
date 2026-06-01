@@ -25,7 +25,7 @@ import {
   buildSubjectResourceSummary,
 } from '../src/cli/utils/subjects.mjs';
 import { applyRunSpecToAction, validateAgentRunSpec } from '../src/actions/agent-run-spec.mjs';
-import { buildClaudeOptions, buildCursorOptions, buildReasonixOptions } from '../src/actions/agent-adapter.mjs';
+import { buildClaudeOptions, buildCursorOptions, buildReasonixOptions, buildReasonixRunBaseArgs, buildReasonixTurnInvocation } from '../src/actions/agent-adapter.mjs';
 import {
   buildEvidenceContract,
   inferActionResource,
@@ -218,12 +218,33 @@ function mockCursorSession(results, onCreate = null, streamEvents = null) {
   return { prompts, send, dispose };
 }
 
+function fakeReasonixTaskReaderLines() {
+  return [
+    "function readReasonixTask() {",
+    "  const args = process.argv.slice(2);",
+    "  const runIdx = args.indexOf('run');",
+    "  const tail = runIdx >= 0 ? args.slice(runIdx + 1) : args;",
+    "  const positional = [];",
+    "  for (let i = 0; i < tail.length; i += 1) {",
+    "    const token = tail[i];",
+    "    if (token === '--model') { i += 1; continue; }",
+    "    if (token.startsWith('--')) continue;",
+    "    positional.push(token);",
+    "  }",
+    "  if (positional.length) return positional.join(' ');",
+    "  try { return readFileSync(0, 'utf-8'); } catch { return ''; }",
+    "}",
+    "const input = readReasonixTask();",
+  ];
+}
+
 function installFakeReasonix(ctx, scriptBody) {
   const scriptPath = join(ctx.projectRoot, 'fake-reasonix.mjs');
   writeFileSync(scriptPath, scriptBody, 'utf-8');
   process.env.REASONIX_BIN = process.execPath;
   process.env.JEA_REASONIX_BIN_ARGS = scriptPath;
   process.env.DEEPSEEK_API_KEY = 'deepseek-test-key';
+  process.env.JEA_REASONIX_FLAVOR = 'npm';
   return scriptPath;
 }
 
@@ -1590,7 +1611,7 @@ describe('controlled action handlers', () => {
     expect(result.args).not.toContain('--secret');
   });
 
-  it('loads configured external action env from the tool root without overriding process env', async () => {
+  it('loads configured external action env from the tool root, overriding stale process env for tool-defined keys', async () => {
     const ctx = makeCtx();
     installConfiguredActionProject(ctx);
     const toolRoot = join(ctx.projectRoot, 'tool');
@@ -1613,8 +1634,9 @@ describe('controlled action handlers', () => {
 
     const result = await runConfiguredExternalAction({ type: 'configured_sync' }, ctx);
 
-    expect(result.hostKeyVisible).toBe('host-key');
+    expect(result.hostKeyVisible).toBe('tool-root-key');
     expect(result.toolOnlyVisible).toBe('tool-value');
+    expect(process.env.AGENTANK_TANK_KEY).toBe('host-key');
   });
 
   it('does not expose handlers for unconfigured external actions', () => {
@@ -2428,7 +2450,7 @@ describe('controlled action handlers', () => {
     process.env.FAKE_REASONIX_LOG = logPath;
     installFakeReasonix(ctx, [
       "import { appendFileSync, readFileSync } from 'node:fs';",
-      "const input = readFileSync(0, 'utf-8');",
+      ...fakeReasonixTaskReaderLines(),
       "appendFileSync(process.env.FAKE_REASONIX_LOG, `${JSON.stringify({ argv: process.argv.slice(2), input })}\\n`);",
       "if (input.includes('verification_attempt: 1')) {",
       "  console.log(JSON.stringify({ status: 'completed', summary: 'Reasonix CLI completed.', outputs: { recommendation: 'keep provider' } }));",
@@ -2453,8 +2475,9 @@ describe('controlled action handlers', () => {
     const calls = readFileSync(logPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line));
     expect(calls[0].argv).toContain('run');
     expect(calls[0].argv).not.toContain('--config');
+    expect(calls[0].argv.some((arg) => arg.includes('Reasonix translated task.'))).toBe(true);
+    expect(calls[0].argv.some((arg) => arg.includes('Reasonix CLI host constraints'))).toBe(true);
     expect(calls[0].input).toContain('Reasonix translated task.');
-    expect(calls[0].input).toContain('Reasonix CLI host constraints');
     expect(calls[1].input).toContain('verification_attempt: 1/3');
     const infoCalls = ctx.host.logger.info.mock.calls.map(([msg]) => String(msg));
     expect(infoCalls.some((msg) => msg.includes('[agent:reasonix]'))).toBe(true);
@@ -2465,7 +2488,7 @@ describe('controlled action handlers', () => {
     const ctx = makeAgentProviderCtx('Reasonix embedded JSON task.');
     installFakeReasonix(ctx, [
       "import { readFileSync } from 'node:fs';",
-      "const input = readFileSync(0, 'utf-8');",
+      ...fakeReasonixTaskReaderLines(),
       "if (input.includes('verification_attempt: 1')) {",
       "  console.log('Done. ' + JSON.stringify({ status: 'completed', summary: 'Embedded Reasonix JSON parsed.', evidence: { observations: ['ok'] } }));",
       "} else {",
@@ -2515,6 +2538,30 @@ describe('controlled action handlers', () => {
       provider: 'reasonix_cli',
       phase: 'cli_spawn_error',
     });
+  });
+
+  it('passes Reasonix task via argv for npm flavor and stdin for oversized go prompts', () => {
+    const base = buildReasonixRunBaseArgs({
+      binaryArgs: ['fake.mjs'],
+      model: 'deepseek-flash',
+      maxSteps: 12,
+      flavor: 'npm',
+    });
+    expect(base).toEqual(['fake.mjs', 'run', '--model', 'deepseek-flash']);
+    expect(buildReasonixRunBaseArgs({
+      binaryArgs: ['reasonix'],
+      model: 'deepseek-flash',
+      maxSteps: 12,
+      flavor: 'go',
+    })).toEqual(['reasonix', 'run', '--model', 'deepseek-flash', '--max-steps', '12']);
+
+    const npmInvocation = buildReasonixTurnInvocation(base, 'hello npm task', 'npm');
+    expect(npmInvocation.args.at(-1)).toBe('hello npm task');
+    expect(npmInvocation.stdinText).toBeNull();
+
+    const goInvocation = buildReasonixTurnInvocation(base, 'x'.repeat(8000), 'go');
+    expect(goInvocation.args).toEqual(base);
+    expect(goInvocation.stdinText?.length).toBe(8000);
   });
 
   it('builds conservative Reasonix config from permission profiles', () => {
@@ -2796,7 +2843,7 @@ describe('controlled action handlers', () => {
     expect(verification.status).toBe('improved');
   });
 
-  it('loads Claude SDK execution env from the execution cwd without overriding process env', async () => {
+  it('loads Claude SDK execution env from the execution cwd, overriding stale process env for execution-defined keys', async () => {
     process.env.ANTHROPIC_API_KEY = 'test-key';
     process.env.AGENTANK_TANK_KEY = 'host-key';
     const ctx = makeAgentProviderCtx('Please verify execution environment visibility.');
@@ -2809,10 +2856,10 @@ describe('controlled action handlers', () => {
     ].join('\n'), 'utf-8');
 
     const seenEnv = [];
-    vi.mocked(claudeQuery).mockImplementation(() => {
+    vi.mocked(claudeQuery).mockImplementation((args) => {
       seenEnv.push({
-        agentank: process.env.AGENTANK_TANK_KEY,
-        executionOnly: process.env.EXECUTION_ONLY_TOKEN,
+        agentank: args.options?.env?.AGENTANK_TANK_KEY ?? process.env.AGENTANK_TANK_KEY,
+        executionOnly: args.options?.env?.EXECUTION_ONLY_TOKEN ?? process.env.EXECUTION_ONLY_TOKEN,
       });
       if (seenEnv.length === 1) {
         return streamMessages([
@@ -2843,12 +2890,12 @@ describe('controlled action handlers', () => {
 
     expect(result.success).toBe(true);
     expect(seenEnv).toEqual([
-      { agentank: 'host-key', executionOnly: 'execution-only' },
-      { agentank: 'host-key', executionOnly: 'execution-only' },
+      { agentank: 'execution-root-key', executionOnly: 'execution-only' },
+      { agentank: 'execution-root-key', executionOnly: 'execution-only' },
     ]);
     expect(process.env.AGENTANK_TANK_KEY).toBe('host-key');
     expect(process.env.EXECUTION_ONLY_TOKEN).toBeUndefined();
-    expect(vi.mocked(claudeQuery).mock.calls[0][0].options.env.AGENTANK_TANK_KEY).toBe('host-key');
+    expect(vi.mocked(claudeQuery).mock.calls[0][0].options.env.AGENTANK_TANK_KEY).toBe('execution-root-key');
     expect(vi.mocked(claudeQuery).mock.calls[0][0].options.env.EXECUTION_ONLY_TOKEN).toBe('execution-only');
   });
 
