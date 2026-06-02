@@ -68,6 +68,11 @@ export function listPendingInbound(root, subject, { limit = 20 } = {}) {
   return listJsonFiles(channelInboundPendingDir(root, subject)).slice(0, Math.max(0, limit));
 }
 
+export function listRecentInboundProcessed(root, subject, { limit = 10 } = {}) {
+  const files = listJsonFiles(channelInboundProcessedDir(root, subject));
+  return files.slice(-Math.max(0, limit)).reverse();
+}
+
 export function markInboundProcessed(root, subject, file, payload = null) {
   const dir = ensureDir(channelInboundProcessedDir(root, subject));
   const target = join(dir, `${timestampForFilename()}-${basename(file)}`);

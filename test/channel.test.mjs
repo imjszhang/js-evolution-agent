@@ -11,6 +11,12 @@ import { collectAttentionSignals } from '../src/channel/notify.mjs';
 import { readPendingOperatorBriefs, writePendingOperatorBrief } from '../src/intelligence/operator-briefs.mjs';
 import { runtimeForSubject } from '../src/cli/utils/evolve-runs.mjs';
 import { buildChannelProjection } from '../src/channel/projection.mjs';
+import { runChannelTick } from '../src/channel/dispatch.mjs';
+import { runChannelPresenceTask } from '../src/channel/presence.mjs';
+import { buildPresenceContext } from '../src/channel/presence-context.mjs';
+import { planPresenceDeterministic, planPresenceWithLlm } from '../src/channel/presence-planner.mjs';
+import { executePresencePlan } from '../src/channel/presence-executor.mjs';
+import { resolvePresenceConfig, shouldUseLegacyReplyPipeline } from '../src/channel/presence-config.mjs';
 import {
   decideInboundReply,
   decideInboundReplyWithLlm,
@@ -23,7 +29,12 @@ import { resolveSubjectReplyIdentity } from '../src/channel/subject-identity.mjs
 
 let tempDir = null;
 
-function makeRoot({ channelTarget = 'oc_test', reply = null, policyText = null } = {}) {
+function makeRoot({
+  channelTarget = 'oc_test',
+  reply = null,
+  presence = null,
+  policyText = null,
+} = {}) {
   tempDir = mkdtempSync(join(tmpdir(), 'jea-channel-'));
   mkdirSync(join(tempDir, 'policies', 'subjects'), { recursive: true });
   writeFileSync(
@@ -33,13 +44,15 @@ function makeRoot({ channelTarget = 'oc_test', reply = null, policyText = null }
   );
   const feishu = { default_chat_id: channelTarget };
   if (reply) feishu.reply = reply;
+  const channels = { feishu };
+  if (presence) channels.presence = presence;
   writeJsonFile(join(tempDir, 'policies', 'subjects.json'), {
     default_subject: 'alpha',
     subjects: {
       alpha: {
         policy: 'subjects/alpha.md',
         data_namespace: 'alpha',
-        channels: { feishu },
+        channels,
       },
     },
   });
@@ -494,6 +507,122 @@ describe('channel domain', () => {
         llm_decision: { enabled: true, timeout: 12 },
       });
       expect(resolveReplyConfig(root, 'alpha').mode).toBe('llm_autonomous');
+    });
+  });
+
+  describe('presence loop', () => {
+    it('builds presence context without requiring feishu-only modules', () => {
+      const root = makeRoot({
+        presence: {
+          enabled: true,
+          planner: 'deterministic',
+          default_target: 'oc_presence_only',
+          legacy_reply: false,
+        },
+      });
+      const ctx = buildPresenceContext(root, 'alpha');
+      expect(ctx.subject).toBe('alpha');
+      expect(ctx.identity.persona).toContain('小测');
+      expect(ctx.presence.enabled).toBe(true);
+    });
+
+    it('runChannelTick enqueues channel_presence when presence is enabled', () => {
+      const root = makeRoot({
+        presence: { enabled: true, planner: 'deterministic', legacy_reply: false },
+      });
+      const tick = runChannelTick(root, 'alpha');
+      const created = tick.enqueued.filter((item) => item?.created);
+      expect(created.some((item) => item.task?.type === 'channel_presence')).toBe(true);
+      expect(created.some((item) => item.task?.type === 'channel_watch')).toBe(false);
+    });
+
+    it('skips legacy reply pipeline when presence is enabled', () => {
+      const root = makeRoot({
+        presence: { enabled: true, legacy_reply: false },
+      });
+      expect(shouldUseLegacyReplyPipeline(root, 'alpha')).toBe(false);
+    });
+
+    it('acks approval via presence loop and writes outbox', async () => {
+      const root = makeRoot({
+        presence: {
+          enabled: true,
+          planner: 'deterministic',
+          legacy_reply: false,
+          default_target: 'oc_operator',
+        },
+      });
+      writePendingInbound(root, 'alpha', {
+        messageId: 'om_presence_approval',
+        chatId: 'oc_operator',
+        senderId: 'ou_operator',
+        content: '同意发布候选',
+        contentType: 'text',
+      });
+      const result = await runChannelPresenceTask(root, 'alpha', { run_ingest: true });
+      expect(result.plan.stance).toBe('speak');
+      expect(result.execution.applied).toBeGreaterThan(0);
+      expect(listOutboxPending(root, 'alpha', { limit: 5 }).length).toBeGreaterThan(0);
+      expect(result.ingest_pass?.reply_skipped).toBe(true);
+    });
+
+    it('records silence when there is nothing to express', async () => {
+      const root = makeRoot({
+        presence: { enabled: true, planner: 'deterministic', legacy_reply: false },
+      });
+      const ctx = buildPresenceContext(root, 'alpha');
+      const plan = planPresenceDeterministic(ctx);
+      const execution = await executePresencePlan(root, 'alpha', plan);
+      expect(plan.stance).toBe('silence');
+      expect(execution.skipped).toBeGreaterThan(0);
+    });
+
+    it('llm planner can reply to plain observations', async () => {
+      const root = makeRoot({
+        presence: {
+          enabled: true,
+          planner: 'llm',
+          legacy_reply: false,
+          default_target: 'oc_operator',
+        },
+      });
+      const ctx = buildPresenceContext(root, 'alpha');
+      ctx.channel.recent_ingested = [{
+        message_id: 'om_llm_obs',
+        channel: 'test',
+        content: '说说你自己',
+        ingest_kind: 'observation',
+      }];
+      ctx.presence = resolvePresenceConfig(root, 'alpha');
+      const plan = await planPresenceWithLlm(ctx, {
+        aiClient: {
+          chatMessages: async () => JSON.stringify({
+            stance: 'speak',
+            reason: 'intro',
+            actions: [{
+              type: 'send_message',
+              target: 'channel_default',
+              text: '我是小测，alpha 的外部接口。',
+              reason: 'casual_intro',
+            }],
+            memory: { summary: 'greeted operator' },
+          }),
+        },
+      });
+      expect(plan.stance).toBe('speak');
+      expect(plan.actions[0].text).toContain('小测');
+    });
+
+    it('exposes presence config in channel projection', () => {
+      const root = makeRoot({
+        presence: { enabled: true, planner: 'llm', max_actions_per_tick: 3 },
+      });
+      const projection = buildChannelProjection(root, 'alpha');
+      expect(projection.presence.config).toMatchObject({
+        enabled: true,
+        planner: 'llm',
+        max_actions_per_tick: 3,
+      });
     });
   });
 });

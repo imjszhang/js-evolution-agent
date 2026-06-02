@@ -14,6 +14,9 @@ import {
 } from './adapters/feishu/listener.mjs';
 import { resolveFeishuConfig, feishuConfigForApi } from './adapters/feishu/config.mjs';
 import { replyConfigForApi, resolveReplyConfig } from './reply.mjs';
+import { presenceConfigForApi, resolvePresenceConfig } from './presence-config.mjs';
+import { readJsonSafe } from '../cli/utils/files.mjs';
+import { channelPresenceStatePath } from './paths.mjs';
 
 export function buildChannelProjection(root, subject, { heartbeatStaleMs = 60_000, eventLimit = 20 } = {}) {
   const queue = readChannelTaskQueue(root, subject);
@@ -73,6 +76,10 @@ export function buildChannelProjection(root, subject, { heartbeatStaleMs = 60_00
       pending_files: pendingOutbox,
     },
     recent_events: readChannelEvents(root, subject, { limit: eventLimit }),
+    presence: {
+      config: presenceConfigForApi(resolvePresenceConfig(root, subject)),
+      state: readJsonSafe(channelPresenceStatePath(root, subject), null),
+    },
     feishu: {
       config: feishuConfigForApi(feishuConfig),
       reply: replyConfigForApi(resolveReplyConfig(root, subject)),

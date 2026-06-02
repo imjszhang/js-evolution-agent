@@ -515,9 +515,38 @@ channel worker 每轮 loop 会：
 - 待核实或下一轮关注事项写入 operator brief。
 - 普通外部消息写入 `intel_observations` 作为可推翻 evidence。
 
-出站通知由 `channel_watch` 观察 daemon projection、cycle-state、failed tasks、pending briefs、cycle completed、requires_human_review、long idle 等生成 attention signals，经 `channel_reply` 决定是否发话与文案，再由 `channel_notify` 发送。通知去重、冷却、防刷屏与回复审计在 channel runtime 中处理，不污染 cycle receipt。
+出站由 `channel_notify` 发送 outbox；表达决策见下文 presence loop 或 legacy `channel_reply` / `channel_watch`。
 
-### Channel 回复决策（`channels.feishu.reply`）
+### Channel Presence Loop（`channels.presence`，transport-agnostic）
+
+Channel 可由 **presence loop** 驱动（`channel_presence` 任务），而非仅“有消息才回复”。每轮 tick/worker 周期主体感知 channel + daemon + intelligence 摘要，再决定说、问、报、等或沉默。飞书只是 transport adapter；presence 模块不依赖 Feishu。
+
+启用后 `runChannelTick` 入队 `channel_presence`（默认不再单独入队 `channel_watch`）；`channel_ingest` 可在 presence 任务内执行且默认 **不** 再自动入队 `channel_reply`（除非 `legacy_reply: true`）。
+
+`policies/subjects.json` 示例：
+
+```json
+"channels": {
+  "presence": {
+    "enabled": true,
+    "planner": "deterministic",
+    "max_actions_per_tick": 2,
+    "cooldown_ms": 1800000,
+    "max_messages_per_hour": 8,
+    "legacy_reply": false,
+    "default_target": "oc_xxx"
+  }
+}
+```
+
+- `planner`: `deterministic`（规则）或 `llm`（DeepSeek，需 `DEEPSEEK_API_KEY`）。
+- `legacy_reply`: `true` 时保留旧 `channel_reply` / `channel_watch` 管线；`false` 时由 presence 统一表达。
+- 状态：`data/channel/presence-state.json`；事件：`channel_presence_decided` / `channel_presence_silenced` / `channel_presence_action_applied`。
+- 允许动作：`send_message`（写 outbox）、`write_operator_brief`、`record_observation`、`silence`；**不能**直接 `approval_granted` 或改 decision queue。
+
+### Channel 回复决策（`channels.feishu.reply`，legacy）
+
+未启用 `channels.presence` 时，入站消息先由 `channel_ingest` 写入 operator brief / operator fact / observation，再由 `channel_reply` 判断是否回复。启用 presence 且 `legacy_reply: false` 时，本节仅作 Feishu reply 配置参考，主动/入站表达以 presence 为准。出站通知在 legacy 模式下仍可由 `channel_watch` 观察 daemon projection 等生成 attention signals，经 `channel_reply` 决定是否发话，再由 `channel_notify` 发送。
 
 入站消息先由 `channel_ingest` 写入 operator brief / operator fact / observation，再由 `channel_reply` 判断是否回复。回复只是外部表达，不会直接授予 `approval_granted`，也不会把回复文本写成事实。默认 `guarded` 模式下：
 

@@ -24,6 +24,8 @@ import {
   writePendingInbound,
 } from './state.mjs';
 import { normalizeOutboundMessage } from './types.mjs';
+import { shouldUseLegacyReplyPipeline } from './presence-config.mjs';
+import { runChannelPresenceTask } from './presence.mjs';
 
 function readJsonStrict(file) {
   return JSON.parse(readFileSync(file, 'utf-8'));
@@ -135,8 +137,19 @@ export async function runChannelIngestTask(root, subject, input = {}) {
       };
     }),
   ].filter((item) => item.envelope);
-  const replyTask = enqueueReplyTaskForItems(root, subject, replyItems);
-  return { processed, skipped, failed, reply_task: replyTask.task ?? null, reply_created: replyTask.created ?? false };
+  let replyTask = { created: false, task: null };
+  const useLegacyReply = !input.skip_reply && shouldUseLegacyReplyPipeline(root, subject);
+  if (useLegacyReply && replyItems.length) {
+    replyTask = enqueueReplyTaskForItems(root, subject, replyItems);
+  }
+  return {
+    processed,
+    skipped,
+    failed,
+    reply_task: replyTask.task ?? null,
+    reply_created: replyTask.created ?? false,
+    reply_skipped: !useLegacyReply,
+  };
 }
 
 function enqueueReplyTaskForItems(root, subject, items) {
@@ -265,6 +278,8 @@ export async function runChannelTask(root, subject, task) {
       return runChannelInboundTask(root, subject, input);
     case 'channel_ingest':
       return runChannelIngestTask(root, subject, input);
+    case 'channel_presence':
+      return runChannelPresenceTask(root, subject, input);
     case 'channel_reply':
       return runChannelReplyTask(root, subject, input);
     case 'channel_watch':

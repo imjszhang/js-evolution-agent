@@ -7,6 +7,7 @@ import {
   writePendingInbound,
 } from '../../state.mjs';
 import { enqueueChannelTask } from '../../task-queue.mjs';
+import { isPresenceEnabled } from '../../presence-config.mjs';
 import { envelopeFromFeishuEvent } from './parser.mjs';
 import { resolveFeishuConfig } from './config.mjs';
 import { FeishuClient } from './client.mjs';
@@ -169,10 +170,14 @@ async function createAndStartListener(root, subject, config, { reloadReason = nu
         chat_id: envelope.chat_id,
         channel: 'feishu',
       });
+      const presenceOn = isPresenceEnabled(root, subject);
       enqueueChannelTask(root, subject, {
-        type: 'channel_ingest',
-        priority: 20,
-        idempotencyKey: `${subject}:channel_ingest:feishu:${envelope.message_id}`,
+        type: presenceOn ? 'channel_presence' : 'channel_ingest',
+        priority: presenceOn ? 15 : 20,
+        input: presenceOn ? { run_ingest: true } : {},
+        idempotencyKey: presenceOn
+          ? `${subject}:channel_presence:feishu:${envelope.message_id}`
+          : `${subject}:channel_ingest:feishu:${envelope.message_id}`,
       });
     },
   });

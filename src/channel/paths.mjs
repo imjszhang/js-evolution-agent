@@ -68,3 +68,7 @@ export function channelReloadRequestPath(root, subject) {
 export function channelReloadStatePath(root, subject) {
   return join(channelDirForSubject(root, subject), 'reload-state.json');
 }
+
+export function channelPresenceStatePath(root, subject) {
+  return join(channelDirForSubject(root, subject), 'presence-state.json');
+}

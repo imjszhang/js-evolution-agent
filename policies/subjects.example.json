@@ -17,6 +17,13 @@
         "github_repo": "owner/repo"
       },
       "channels": {
+        "presence": {
+          "enabled": true,
+          "planner": "deterministic",
+          "max_actions_per_tick": 2,
+          "cooldown_ms": 1800000,
+          "legacy_reply": false
+        },
         "feishu": {
           "enabled": true,
           "app_id_env": "JEA_CHANNEL_FEISHU_MY_SUBJECT_APP_ID",
