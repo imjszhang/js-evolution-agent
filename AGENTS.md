@@ -509,9 +509,15 @@ runtime/subjects/<data_namespace>/data/channel/
           "app_id": "cli_aaaa",
           "app_secret_env": "FEISHU_MY_SUBJECT_APP_SECRET",
           "default_chat_id": "oc_aaaa",
-          "dm_policy": "open",
+          "dm_policy": "allowlist",
+          "allow_from": [],
           "group_policy": "allowlist",
-          "require_mention": true
+          "require_mention": true,
+          "bind": {
+            "enabled": true,
+            "phrase": "JEA BIND",
+            "token_env": "JEA_CHANNEL_FEISHU_MY_SUBJECT_BIND_TOKEN"
+          }
         }
       }
     },
@@ -533,9 +539,12 @@ runtime/subjects/<data_namespace>/data/channel/
 
 | 变量模式 | 含义 |
 | --- | --- |
-| `JEA_CHANNEL_FEISHU_<SUBJECT>_APP_ID` | 如 `JEA_CHANNEL_FEISHU_AI_RESEARCHER_APP_ID` |
-| `JEA_CHANNEL_FEISHU_<SUBJECT>_APP_SECRET` | 对应 subject 的 App Secret |
+| `JEA_CHANNEL_FEISHU_<SUBJECT>_APP_ID` | 如 subject `my-subject` → `JEA_CHANNEL_FEISHU_MY_SUBJECT_APP_ID` |
+| `JEA_CHANNEL_FEISHU_<SUBJECT>_APP_SECRET` | 对应 subject 的 App Secret（或与 `app_secret_env` 如 `FEISHU_MY_SUBJECT_APP_SECRET` 配合） |
 | `JEA_CHANNEL_FEISHU_<SUBJECT>_DEFAULT_CHAT_ID` | 该 subject 默认出站群 |
+| `JEA_CHANNEL_FEISHU_<SUBJECT>_BIND_TOKEN` | 私聊 `JEA BIND` 口令（或与 `bind.token_env` 配合） |
+
+`<SUBJECT>` 为 subject id 的 env slug：非字母数字替换为 `_` 并大写（见 `subjectEnvSlug()`）。
 
 全局变量（`JEA_CHANNEL_FEISHU_APP_ID` 等）仅作**未在 subject 块单独配置时**的回退，多主体并行时推荐只用 per-subject 配置。
 

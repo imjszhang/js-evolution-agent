@@ -75,7 +75,7 @@ describe('feishu adapter', () => {
   });
 
   it('subjectEnvSlug normalizes subject names for env vars', () => {
-    expect(subjectEnvSlug('ai-researcher')).toBe('AI_RESEARCHER');
+    expect(subjectEnvSlug('my-subject')).toBe('MY_SUBJECT');
   });
 
   it('normalizeTarget strips chat/user prefixes', () => {
