@@ -101,6 +101,41 @@ function unhandledSignals(context) {
   return (context.attention_signals ?? []).filter((s) => !s.presence_handled);
 }
 
+function isOperatorBriefAckAction(action) {
+  if (action?.type !== 'speech_intent') return false;
+  const kind = action.content_requirements?.kind;
+  return kind === 'approval_ack' || kind === 'verification_ack';
+}
+
+/**
+ * Deterministic ack for newly classified operator_brief (approval / verification).
+ */
+export function planPresenceOperatorBriefFastAck(context) {
+  if (context.presence?.fast_ack_operator_brief === false) return null;
+  const hasPendingBrief = (context.channel?.new_messages ?? []).some((item) => {
+    if (item.ingest_kind !== 'operator_brief' || item.presence_handled) return false;
+    const briefKind = item.brief_kind ?? 'approval_request';
+    return briefKind === 'approval_request' || briefKind === 'verification_request';
+  });
+  if (!hasPendingBrief) return null;
+
+  const plan = planPresenceDeterministic(context);
+  const ackActions = (plan.actions ?? []).filter(isOperatorBriefAckAction);
+  if (!ackActions.length) return null;
+
+  return {
+    ...plan,
+    stance: 'speak',
+    reason: plan.reason ?? 'operator_brief_fast_ack',
+    actions: ackActions,
+    presence_targets: buildPresenceTargets(context, {
+      messageIds: ackActions.map((a) => a.reply_to_message_id).filter(Boolean),
+    }),
+    planner: 'deterministic_fast_ack',
+    fast_ack: true,
+  };
+}
+
 /**
  * Rule-based presence deliberation (no transport coupling).
  */
@@ -310,9 +345,22 @@ export async function planPresenceWithLlm(context, { aiClient = null } = {}) {
   }
 }
 
-export async function planPresence(context, { aiClient = null } = {}) {
+export async function planPresence(context, { aiClient = null, skipFastAck = false } = {}) {
   if (context.presence?.planner === 'llm') {
+    if (!skipFastAck) {
+      const fastAck = planPresenceOperatorBriefFastAck(context);
+      if (fastAck) return fastAck;
+    }
     return planPresenceWithLlm(context, { aiClient });
   }
   return planPresenceDeterministic(context);
+}
+
+/** Deterministic plan used when LLM decision times out or is unavailable. */
+export function planPresenceDecisionFallback(context) {
+  return {
+    ...planPresenceDeterministic(context),
+    planner: 'deterministic_fallback',
+    decision_fallback: true,
+  };
 }

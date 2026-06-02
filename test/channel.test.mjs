@@ -33,7 +33,12 @@ import { cancelDeprecatedChannelTasks } from '../src/channel/queue-cleanup.mjs';
 import { appendChannelEvent, listPendingChannelEvents, summarizeChannelEventQueue } from '../src/channel/event-queue.mjs';
 import { runChannelSpeechGenerationTask, runPresenceReactor } from '../src/channel/presence-reactor.mjs';
 import { buildPresenceContext } from '../src/channel/presence-context.mjs';
-import { planPresenceDeterministic, planPresenceWithLlm } from '../src/channel/presence-planner.mjs';
+import {
+  planPresence,
+  planPresenceDeterministic,
+  planPresenceOperatorBriefFastAck,
+  planPresenceWithLlm,
+} from '../src/channel/presence-planner.mjs';
 import { executePresenceDecisionPlan } from '../src/channel/presence-decision-executor.mjs';
 import { resolvePresenceConfig } from '../src/channel/presence-config.mjs';
 import { resolveSubjectReplyIdentity } from '../src/channel/subject-identity.mjs';
@@ -536,6 +541,22 @@ describe('channel domain', () => {
     });
   });
 
+  describe('presence config', () => {
+    it('decision_timeout_ms is at least llm timeout', () => {
+      const root = makeRoot({ presence: { planner: 'llm', llm: { timeout: 25 } } });
+      const cfg = resolvePresenceConfig(root, 'alpha');
+      expect(cfg.decision_timeout_ms).toBeGreaterThanOrEqual(25_000);
+      expect(cfg.decision_timeout_ms).toBeGreaterThanOrEqual(cfg.llm.timeout * 1000);
+      expect(cfg.timeout_ms).toBeGreaterThanOrEqual(cfg.decision_timeout_ms);
+    });
+
+    it('raises default decision timeout above legacy 15s floor', () => {
+      const root = makeRoot({ presence: { planner: 'llm' } });
+      const cfg = resolvePresenceConfig(root, 'alpha');
+      expect(cfg.decision_timeout_ms).toBeGreaterThanOrEqual(30_000);
+    });
+  });
+
   describe('async reactor', () => {
     it('presence reactor does not drain inbound (classifier owns ingest)', async () => {
       const root = makeRoot({ presence: { enabled: true, planner: 'deterministic' } });
@@ -588,25 +609,77 @@ describe('channel domain', () => {
       expect(gen.generated).toBeGreaterThan(0);
     });
 
-    it('decision timeout does not apply late speech side effects', async () => {
+    it('llm planner fast-acks operator_brief without calling slow LLM', async () => {
       const root = makeRoot({
         presence: {
           enabled: true,
           planner: 'llm',
           default_target: 'oc_operator',
-          decision_timeout_ms: 1,
         },
       });
       writePendingInbound(root, 'alpha', {
-        messageId: 'om_timeout_no_apply',
+        messageId: 'om_fast_ack',
         chatId: 'oc_operator',
         senderId: 'ou_operator',
         content: '同意发布',
         contentType: 'text',
       });
-      requestPresenceReactor(root, 'alpha', {
-        reason: 'manual_inbox_added',
-        event: { type: 'manual_inbox_added' },
+      await runChannelClassifierTask(root, 'alpha');
+      let llmCalled = false;
+      const slowClient = {
+        chatMessages: () => {
+          llmCalled = true;
+          return new Promise((resolve) => setTimeout(() => resolve(JSON.stringify({
+            stance: 'speak',
+            reason: 'late',
+            actions: [],
+          })), 500));
+        },
+      };
+      const ctx = buildPresenceContext(root, 'alpha');
+      const plan = await planPresence(ctx, { aiClient: slowClient });
+      expect(llmCalled).toBe(false);
+      expect(plan.planner).toBe('deterministic_fast_ack');
+      expect(plan.stance).toBe('speak');
+      expect(plan.actions.some((a) => a.content_requirements?.kind === 'approval_ack')).toBe(true);
+    });
+
+    it('planPresenceOperatorBriefFastAck returns null for ignore-only inbound', async () => {
+      const root = makeRoot({ presence: { enabled: true, planner: 'llm' } });
+      const ctx = buildPresenceContext(root, 'alpha');
+      ctx.channel.new_messages = [{
+        message_id: 'om_ignore_only',
+        ingest_kind: 'ignore',
+        brief_kind: null,
+        content: '回句话',
+        presence_handled: false,
+      }];
+      expect(planPresenceOperatorBriefFastAck(ctx)).toBeNull();
+    });
+
+    it('decision timeout applies deterministic fallback ack for operator_brief', async () => {
+      const root = makeRoot({
+        presence: {
+          enabled: true,
+          planner: 'llm',
+          default_target: 'oc_operator',
+          llm: { timeout: 0.001 },
+          decision_timeout_ms: 1,
+          fast_ack_operator_brief: false,
+        },
+      });
+      writePendingInbound(root, 'alpha', {
+        messageId: 'om_timeout_fallback_ack',
+        chatId: 'oc_operator',
+        senderId: 'ou_operator',
+        content: '同意发布',
+        contentType: 'text',
+      });
+      await runChannelClassifierTask(root, 'alpha');
+      appendChannelEvent(root, 'alpha', {
+        type: 'inbound_classified',
+        reason: 'test',
+        event_ref: 'om_timeout_fallback_ack',
       });
 
       const slowClient = {
@@ -616,17 +689,66 @@ describe('channel domain', () => {
           actions: [{
             type: 'speech_intent',
             target: 'channel_default',
-            content_requirements: { kind: 'greeting_ack' },
+            content_requirements: { kind: 'custom', text_hint: 'late reply' },
+            reason: 'late_ack',
+            reply_to_message_id: 'om_timeout_fallback_ack',
+          }],
+        })), 200)),
+      };
+
+      const result = await runPresenceReactor(root, 'alpha', { aiClient: slowClient, force: true });
+      expect(result.timeout).toBe(true);
+      expect(result.fallback_applied).toBe(true);
+      expect(result.plan.planner).toBe('deterministic_fallback');
+      expect(result.plan.stance).toBe('speak');
+      expect(summarizeChannelEventQueue(root, 'alpha').pending_speech_generation).toBeGreaterThan(0);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      expect(listOutboxPending(root, 'alpha', { limit: 5 }).length).toBe(0);
+    });
+
+    it('decision timeout on observation does not apply late LLM speech side effects', async () => {
+      const root = makeRoot({
+        presence: {
+          enabled: true,
+          planner: 'llm',
+          default_target: 'oc_operator',
+          llm: { timeout: 0.001 },
+          decision_timeout_ms: 1,
+          fast_ack_operator_brief: false,
+        },
+      });
+      writePendingInbound(root, 'alpha', {
+        messageId: 'om_timeout_no_apply',
+        chatId: 'oc_operator',
+        senderId: 'ou_operator',
+        content: '随便记录一下当前没有明确指令',
+        contentType: 'text',
+      });
+      await runChannelClassifierTask(root, 'alpha');
+      appendChannelEvent(root, 'alpha', {
+        type: 'inbound_classified',
+        reason: 'test',
+        event_ref: 'om_timeout_no_apply',
+      });
+
+      const slowClient = {
+        chatMessages: () => new Promise((resolve) => setTimeout(() => resolve(JSON.stringify({
+          stance: 'speak',
+          reason: 'late',
+          actions: [{
+            type: 'speech_intent',
+            target: 'channel_default',
+            content_requirements: { kind: 'custom', text_hint: 'late' },
             reason: 'late_ack',
             reply_to_message_id: 'om_timeout_no_apply',
           }],
-        })), 50)),
+        })), 200)),
       };
 
-      const result = await runPresenceReactor(root, 'alpha', { aiClient: slowClient });
+      const result = await runPresenceReactor(root, 'alpha', { aiClient: slowClient, force: true });
       expect(result.timeout).toBe(true);
-      await new Promise((resolve) => setTimeout(resolve, 80));
       expect(summarizeChannelEventQueue(root, 'alpha').pending_speech_generation).toBe(0);
+      await new Promise((resolve) => setTimeout(resolve, 250));
       expect(listOutboxPending(root, 'alpha', { limit: 5 })).toHaveLength(0);
     });
 

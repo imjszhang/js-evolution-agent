@@ -8,7 +8,7 @@ import {
   supersedePendingChannelEvents,
 } from './event-queue.mjs';
 import { buildPresenceContext } from './presence-context.mjs';
-import { planPresence } from './presence-planner.mjs';
+import { planPresence, planPresenceDecisionFallback } from './presence-planner.mjs';
 import { executePresenceDecisionPlan } from './presence-decision-executor.mjs';
 import { resolvePresenceConfig } from './presence-config.mjs';
 import {
@@ -95,22 +95,34 @@ export async function runPresenceReactor(root, subject, input = {}) {
   const tickId = input.tick_id ?? new Date().toISOString().slice(0, 16);
 
   try {
-    const prepareDecision = async () => {
-      const context = buildPresenceContext(root, subject, { tickId });
-      context.presence = presenceConfig;
-      const plan = await planPresence(context, { aiClient: input.aiClient ?? null });
-      return { context, plan };
-    };
+    const context = buildPresenceContext(root, subject, { tickId });
+    context.presence = presenceConfig;
 
-    const prepared = await runWithTimeout(
-      () => prepareDecision(),
-      presenceConfig.decision_timeout_ms,
-      'presence_decision',
-    );
-    const execution = await executePresenceDecisionPlan(root, subject, prepared.plan, {
+    let plan;
+    let decisionTimedOut = false;
+    try {
+      plan = await runWithTimeout(
+        () => planPresence(context, { aiClient: input.aiClient ?? null }),
+        presenceConfig.decision_timeout_ms,
+        'presence_decision',
+      );
+    } catch (err) {
+      if (!(err instanceof ChannelTimeoutError)) throw err;
+      decisionTimedOut = true;
+      recordChannelEvent(root, subject, {
+        type: 'channel_presence_timeout',
+        status: 'error',
+        phase: 'decision',
+        run_id: runId,
+        label: err.label,
+      });
+      plan = planPresenceDecisionFallback(context);
+    }
+
+    const execution = await executePresenceDecisionPlan(root, subject, plan, {
       presenceConfig,
       dryRun: Boolean(input.dry_run),
-      context: prepared.context,
+      context,
     });
 
     completePresenceRun(root, subject, { runId });
@@ -121,50 +133,50 @@ export async function runPresenceReactor(root, subject, input = {}) {
     const speechTask = enqueueSpeechGenerationIfPending(root, subject);
     const notifyTask = enqueueNotifyIfOutboxPending(root, subject);
 
+    if (decisionTimedOut && plan.decision_fallback) {
+      recordChannelEvent(root, subject, {
+        type: 'channel_presence_fallback_applied',
+        status: 'ok',
+        run_id: runId,
+        planner: plan.planner,
+        stance: plan.stance,
+        speech_queued: execution.speech_queued,
+      });
+    }
+
     recordChannelEvent(root, subject, {
       type: 'channel_presence_completed',
       status: 'ok',
       tick_id: tickId,
       run_id: runId,
-      stance: prepared.plan.stance,
-      planner: prepared.plan.planner,
+      stance: plan.stance,
+      planner: plan.planner,
       applied: execution.applied,
       speech_queued: execution.speech_queued,
       skipped: execution.skipped,
       claimed_events: claimed.length,
+      decision_timed_out: decisionTimedOut || undefined,
+      fallback_applied: decisionTimedOut && plan.decision_fallback ? true : undefined,
     });
 
     return {
       run_id: runId,
       claimed_events: claimed.length,
-      plan: prepared.plan,
+      plan,
       execution,
       speech_task: speechTask.task ?? null,
       notify_task: notifyTask.task ?? null,
+      timeout: decisionTimedOut || undefined,
+      fallback_applied: decisionTimedOut && plan.decision_fallback ? true : undefined,
       context_summary: {
-        pending_inbound: prepared.context.channel.pending_unclassified_count,
-        new_messages: prepared.context.channel.new_messages.length,
+        pending_inbound: context.channel.pending_unclassified_count,
+        new_messages: context.channel.new_messages.length,
       },
     };
   } catch (err) {
     failPresenceRun(root, subject, { runId, error: err?.message || String(err) });
     if (claimed.length) {
       markChannelEventsFailed(root, subject, claimed.map((e) => e.id), { error: err?.message || String(err) });
-    }
-    if (err instanceof ChannelTimeoutError) {
-      recordChannelEvent(root, subject, {
-        type: 'channel_presence_timeout',
-        status: 'error',
-        phase: 'decision',
-        run_id: runId,
-        label: err.label,
-      });
-      return {
-        run_id: runId,
-        timeout: true,
-        reason: err.message,
-        claimed_events: claimed.length,
-      };
     }
     throw err;
   }
