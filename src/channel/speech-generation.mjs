@@ -1,5 +1,6 @@
 import { chatMessagesJson } from '../ai/messages.mjs';
 import { DeepSeekOpenAIClient } from '../ai/deepseek-client.mjs';
+import { runWithTimeout } from './async-utils.mjs';
 import { recordChannelEvent } from './audit.mjs';
 import { resolveSubjectReplyIdentity } from './subject-identity.mjs';
 import { normalizeOutboundMessage } from './types.mjs';
@@ -134,7 +135,11 @@ export async function generateSpeechAndWriteOutbox(root, subject, intent, {
   const effectivePlanner = planner ?? cfg.planner ?? 'deterministic';
   let text = null;
   if (effectivePlanner === 'llm') {
-    text = await renderLlmSpeech(root, subject, intent, context, { aiClient, presenceConfig: cfg });
+    text = await runWithTimeout(
+      () => renderLlmSpeech(root, subject, intent, context, { aiClient, presenceConfig: cfg }),
+      cfg.speech_generation_timeout_ms ?? 30_000,
+      'speech_generation',
+    );
   } else {
     text = renderDeterministicSpeech(intent, subject);
   }

@@ -28,7 +28,7 @@ import {
 } from '../src/channel/wake.mjs';
 import { cancelDeprecatedChannelTasks } from '../src/channel/queue-cleanup.mjs';
 import { appendChannelEvent, listPendingChannelEvents, summarizeChannelEventQueue } from '../src/channel/event-queue.mjs';
-import { runChannelSpeechGenerationTask } from '../src/channel/presence-reactor.mjs';
+import { runChannelSpeechGenerationTask, runPresenceReactor } from '../src/channel/presence-reactor.mjs';
 import { buildPresenceContext } from '../src/channel/presence-context.mjs';
 import { planPresenceDeterministic, planPresenceWithLlm } from '../src/channel/presence-planner.mjs';
 import { executePresenceDecisionPlan } from '../src/channel/presence-decision-executor.mjs';
@@ -423,6 +423,72 @@ describe('channel domain', () => {
   });
 
   describe('async reactor', () => {
+    it('presence reactor does not claim speech generation events', async () => {
+      const root = makeRoot({ presence: { enabled: true, planner: 'deterministic' } });
+      appendChannelEvent(root, 'alpha', {
+        type: 'speech_generation_requested',
+        payload: {
+          intent_id: 'intent-boundary',
+          target: 'channel_default',
+          reason: 'boundary',
+          content_requirements: { kind: 'greeting_ack' },
+        },
+      });
+      appendChannelEvent(root, 'alpha', {
+        type: 'timer_tick',
+        payload_summary: { tick_id: 'boundary-tick' },
+      });
+
+      const result = await runPresenceReactor(root, 'alpha');
+      expect(result.claimed_events).toBe(1);
+      expect(summarizeChannelEventQueue(root, 'alpha').pending_speech_generation).toBe(1);
+
+      const gen = await runChannelSpeechGenerationTask(root, 'alpha');
+      expect(gen.generated).toBeGreaterThan(0);
+    });
+
+    it('decision timeout does not apply late speech side effects', async () => {
+      const root = makeRoot({
+        presence: {
+          enabled: true,
+          planner: 'llm',
+          default_target: 'oc_operator',
+          decision_timeout_ms: 1,
+        },
+      });
+      writePendingInbound(root, 'alpha', {
+        messageId: 'om_timeout_no_apply',
+        chatId: 'oc_operator',
+        senderId: 'ou_operator',
+        content: '同意发布',
+        contentType: 'text',
+      });
+      requestPresenceReactor(root, 'alpha', {
+        reason: 'manual_inbox_added',
+        event: { type: 'manual_inbox_added' },
+      });
+
+      const slowClient = {
+        chatMessages: () => new Promise((resolve) => setTimeout(() => resolve(JSON.stringify({
+          stance: 'speak',
+          reason: 'late',
+          actions: [{
+            type: 'speech_intent',
+            target: 'channel_default',
+            content_requirements: { kind: 'greeting_ack' },
+            reason: 'late_ack',
+            reply_to_message_id: 'om_timeout_no_apply',
+          }],
+        })), 50)),
+      };
+
+      const result = await runPresenceReactor(root, 'alpha', { aiClient: slowClient });
+      expect(result.timeout).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(summarizeChannelEventQueue(root, 'alpha').pending_speech_generation).toBe(0);
+      expect(listOutboxPending(root, 'alpha', { limit: 5 })).toHaveLength(0);
+    });
+
     it('speech generation writes outbox after decision', async () => {
       const root = makeRoot({
         presence: { enabled: true, planner: 'deterministic', default_target: 'oc_operator' },

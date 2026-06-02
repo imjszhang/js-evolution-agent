@@ -37,7 +37,7 @@ export function enqueueNotifyIfOutboxPending(root, subject) {
     return { created: false, reason: 'no_pending_outbox' };
   }
   return enqueueIfNeeded(root, subject, 'channel_notify', {
-    priority: 40,
+    priority: 10,
     idempotencyKey: NOTIFY_IDEMPOTENCY(subject),
     reason: 'pending_outbox',
   });

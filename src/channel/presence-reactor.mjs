@@ -25,6 +25,15 @@ import {
 } from './wake.mjs';
 import { runSpeechGenerationForEvent } from './speech-generation.mjs';
 
+const PRESENCE_REACTOR_EVENT_TYPES = Object.freeze([
+  'timer_tick',
+  'feishu_message_received',
+  'manual_inbox_added',
+  'presence_wake',
+  'presence_run_requested',
+  'daemon_attention',
+]);
+
 /**
  * Bounded presence reactor: claim events → drain inbound → decide → queue speech generation.
  */
@@ -70,7 +79,7 @@ export async function runPresenceReactor(root, subject, input = {}) {
   const claimed = claimChannelEvents(root, subject, {
     runId,
     limit: input.event_limit ?? 20,
-    types: input.event_types ?? null,
+    types: input.event_types ?? PRESENCE_REACTOR_EVENT_TYPES,
   });
 
   if (!claimed.length && !input.force && !input.allow_empty_claim) {
@@ -86,7 +95,7 @@ export async function runPresenceReactor(root, subject, input = {}) {
   const tickId = input.tick_id ?? new Date().toISOString().slice(0, 16);
 
   try {
-    const work = async () => {
+    const prepareDecision = async () => {
       const ingestPass = await drainChannelInbound(root, subject, {
         limit: input.ingest_limit ?? 10,
         adapter_options: input.adapter_options ?? {},
@@ -94,19 +103,19 @@ export async function runPresenceReactor(root, subject, input = {}) {
       const context = buildPresenceContext(root, subject, { tickId, ingestPass });
       context.presence = presenceConfig;
       const plan = await planPresence(context, { aiClient: input.aiClient ?? null });
-      const execution = await executePresenceDecisionPlan(root, subject, plan, {
-        presenceConfig,
-        dryRun: Boolean(input.dry_run),
-        context,
-      });
-      return { ingestPass, context, plan, execution };
+      return { ingestPass, context, plan };
     };
 
-    const result = await runWithTimeout(
-      () => work(),
+    const prepared = await runWithTimeout(
+      () => prepareDecision(),
       presenceConfig.decision_timeout_ms,
       'presence_decision',
     );
+    const execution = await executePresenceDecisionPlan(root, subject, prepared.plan, {
+      presenceConfig,
+      dryRun: Boolean(input.dry_run),
+      context: prepared.context,
+    });
 
     completePresenceRun(root, subject, { runId });
     if (claimed.length) {
@@ -121,25 +130,25 @@ export async function runPresenceReactor(root, subject, input = {}) {
       status: 'ok',
       tick_id: tickId,
       run_id: runId,
-      stance: result.plan.stance,
-      planner: result.plan.planner,
-      applied: result.execution.applied,
-      speech_queued: result.execution.speech_queued,
-      skipped: result.execution.skipped,
+      stance: prepared.plan.stance,
+      planner: prepared.plan.planner,
+      applied: execution.applied,
+      speech_queued: execution.speech_queued,
+      skipped: execution.skipped,
       claimed_events: claimed.length,
     });
 
     return {
       run_id: runId,
       claimed_events: claimed.length,
-      ingest_pass: result.ingestPass,
-      plan: result.plan,
-      execution: result.execution,
+      ingest_pass: prepared.ingestPass,
+      plan: prepared.plan,
+      execution,
       speech_task: speechTask.task ?? null,
       notify_task: notifyTask.task ?? null,
       context_summary: {
-        pending_inbound: result.context.channel.pending_inbound_count,
-        new_messages: result.context.channel.new_messages.length,
+        pending_inbound: prepared.context.channel.pending_inbound_count,
+        new_messages: prepared.context.channel.new_messages.length,
       },
     };
   } catch (err) {
@@ -155,6 +164,12 @@ export async function runPresenceReactor(root, subject, input = {}) {
         run_id: runId,
         label: err.label,
       });
+      return {
+        run_id: runId,
+        timeout: true,
+        reason: err.message,
+        claimed_events: claimed.length,
+      };
     }
     throw err;
   }
@@ -184,17 +199,13 @@ export async function runChannelSpeechGenerationTask(root, subject, input = {}) 
 
   for (const event of claimed) {
     try {
-      const result = await runWithTimeout(
-        () => runSpeechGenerationForEvent(root, subject, event, {
-          presenceConfig,
-          context,
-          aiClient: input.aiClient ?? null,
-          dryRun: Boolean(input.dry_run),
-          planner: presenceConfig.planner,
-        }),
-        presenceConfig.speech_generation_timeout_ms,
-        'speech_generation',
-      );
+      const result = await runSpeechGenerationForEvent(root, subject, event, {
+        presenceConfig,
+        context,
+        aiClient: input.aiClient ?? null,
+        dryRun: Boolean(input.dry_run),
+        planner: presenceConfig.planner,
+      });
       if (result.ok) {
         markChannelEventsHandled(root, subject, [event.id]);
         generated.push({ event_id: event.id, result });

@@ -366,7 +366,7 @@ npm run test -- test/channel.test.mjs
     → speech_generation_requested 事件
   → channel_speech_generation (speech_generation_timeout_ms, persona LLM)
     → outbox
-  → channel_notify（独立，tick 见 outbox 即入队）
+  → channel_notify（独立任务；tick 见 outbox 即入队，单 worker 下执行仍串行）
 ```
 
 ### 新模块
@@ -385,8 +385,8 @@ npm run test -- test/channel.test.mjs
 
 ### 验证
 
-- `npm run test -- test/channel.test.mjs`（含 event wake 合并、decision 不写 outbox、speech gen 写 outbox、timeout 不挡 notify）
-- 全量 `npm test` 555 passed
+- `npm run test -- test/channel.test.mjs`（含 event wake 合并、presence 不 claim speech event、decision timeout 不落 speech/outbox 副作用、speech gen 写 outbox、timeout 不挡 notify）
+- 全量 `npm test` 556+ passed
 
 ---
 

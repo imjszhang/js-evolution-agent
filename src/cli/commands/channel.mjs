@@ -5,8 +5,8 @@ import { buildChannelProjection } from '../../channel/projection.mjs';
 import { readChannelEvents } from '../../channel/audit.mjs';
 import { writePendingInbound, listPendingInbound, listOutboxPending, writeOutboxMessage } from '../../channel/state.mjs';
 import { normalizeOutboundMessage } from '../../channel/types.mjs';
-import { enqueueChannelTask, readChannelTaskQueue } from '../../channel/task-queue.mjs';
-import { requestPresenceReactor } from '../../channel/wake.mjs';
+import { readChannelTaskQueue } from '../../channel/task-queue.mjs';
+import { enqueueNotifyIfOutboxPending, requestPresenceReactor } from '../../channel/wake.mjs';
 import { runChannelTick } from '../../channel/dispatch.mjs';
 import { runChannelNotifyTask } from '../../channel/tasks.mjs';
 import { runChannelPresenceTask } from '../../channel/presence.mjs';
@@ -187,12 +187,9 @@ export async function channelCommand({ subcommand, flags = {}, args = [], root =
       return 0;
     }
     const written = writeOutboxMessage(root, subject, outbound);
-    enqueueChannelTask(root, subject, {
-      type: 'channel_notify',
-      priority: 40,
-      idempotencyKey: `${subject}:channel_notify:manual`,
-    });
-    if (flags.json) console.log(JSON.stringify(written, null, 2));
+    const notify = enqueueNotifyIfOutboxPending(root, subject);
+    const result = { ...written, notify_task: notify.task ?? null, notify_created: notify.created ?? false };
+    if (flags.json) console.log(JSON.stringify(result, null, 2));
     else console.log(`queued outbound -> ${written.file}`);
     return 0;
   }

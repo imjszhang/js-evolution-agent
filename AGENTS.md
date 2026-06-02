@@ -525,7 +525,7 @@ channel worker 每轮 loop 会：
 - 待核实或下一轮关注事项写入 operator brief。
 - 普通外部消息写入 `intel_observations` 作为可推翻 evidence。
 
-出站由 **`channel_notify`** 独立 flush（不等待 presence 思考）；**所有对外表达**由 presence reactor 两阶段产出：`speech_intent`（决策）→ `channel_speech_generation`（人设/LLM 生成正文）→ outbox。旧 `channel_reply` / `channel_watch` / **`channel_ingest`** 任务类型已废弃；队列中若仍有，`jea channel doctor` 会提示 cancel。
+出站由 **`channel_notify`** 独立任务 flush（outbox 有货即可入队，不依赖 presence 决策完成）；**所有对外表达**由 presence reactor 两阶段产出：`speech_intent`（决策）→ `channel_speech_generation`（人设/LLM 生成正文）→ outbox。旧 `channel_reply` / `channel_watch` / **`channel_ingest`** 任务类型已废弃；队列中若仍有，`jea channel doctor` 会提示 cancel。
 
 ### Channel Presence Loop（`channels.presence`，transport-agnostic，async reactor）
 
@@ -540,7 +540,7 @@ channel worker 每轮 loop 会：
 
 **内容生成**（`channel_speech_generation` → `runChannelSpeechGenerationTask`）：按 subject persona + `content_requirements` 生成最终文本，成功后 `writeOutboxMessage`；失败/超时记 `channel_speech_generation_failed` / `channel_presence_timeout`，不写 outbox。
 
-`runChannelTick`：append `timer_tick` + wake reactor；有 pending outbox 时**直接**入队 `channel_notify`（与 presence 并行）。`jea channel presence run`（CLI）在单进程内会串联 decision + speech generation，便于本地验收；daemon 下两任务分离，避免 notify 被长 LLM 阻塞。
+`runChannelTick`：append `timer_tick` + wake reactor；有 pending outbox 时**直接**入队 `channel_notify`（优先级高于 presence/speech）。`jea channel presence run`（CLI）在单进程内会串联 decision + speech generation，便于本地验收；daemon 下 decision / speech / notify 是独立任务，但单 worker 仍串行执行，若要求 notify 不被 LLM 任务占用，应单独运行 notify worker / type-filter worker。
 
 事件队列与审计 `events.jsonl` 分离。`jea channel status --json` 的 `presence.event_queue` / `presence.reactor` / `presence.pending_speech_generation` 可观测 reactor 与待生成话术。
 
