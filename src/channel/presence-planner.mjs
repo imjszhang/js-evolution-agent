@@ -2,10 +2,11 @@ import { chatMessagesJson } from '../ai/messages.mjs';
 import { DeepSeekOpenAIClient } from '../ai/deepseek-client.mjs';
 import { nowIso } from './types.mjs';
 import { buildPresenceSignalKey } from './state.mjs';
+import { normalizeSpeechIntent, speechIntentFromDeterministic } from './speech-intent.mjs';
 
 export const PRESENCE_STANCES = Object.freeze(['speak', 'silence', 'ask', 'report', 'wait']);
 export const PRESENCE_ACTION_TYPES = Object.freeze([
-  'send_message',
+  'speech_intent',
   'write_operator_brief',
   'record_observation',
   'silence',
@@ -35,40 +36,6 @@ function emptyPlan(reason, context, extra = {}) {
   };
 }
 
-function ackText(subject, kind, summary) {
-  if (kind === 'approval_request') {
-    return [
-      `${subject}: 已记录为下一轮审批意图。`,
-      '不会直接发布或授权；需下一轮 Decide 显式产出 approval_granted。',
-      summary ? `来源：${summary}` : '',
-    ].filter(Boolean).join('\n');
-  }
-  if (kind === 'verification_request') {
-    return [
-      `${subject}: 已记录为下一轮核实请求。`,
-      summary ? `内容：${summary}` : '',
-    ].filter(Boolean).join('\n');
-  }
-  if (kind === 'operator_fact') {
-    return [
-      `${subject}: 已记录为高置信 operator fact。`,
-      summary ? `内容：${summary}` : '',
-    ].filter(Boolean).join('\n');
-  }
-  return `${subject}: 已收到并记录。`;
-}
-
-function signalText(subject, signal) {
-  return [
-    `${subject}: ${signal.title ?? 'Attention'}`,
-    '',
-    signal.summary ?? '',
-    '',
-    `severity: ${signal.severity ?? 'medium'}`,
-    `type: ${signal.type}`,
-  ].filter(Boolean).join('\n');
-}
-
 function isGreeting(text) {
   const normalized = String(text || '').trim().toLowerCase();
   return /^(你好|您好|hi|hello|hey|在吗|在么|在不在)[!！?？。.\s]*$/i.test(normalized);
@@ -85,23 +52,26 @@ function sanitizeLlmText(value) {
 function normalizeAction(raw, subject) {
   if (!raw || typeof raw !== 'object') return null;
   const type = String(raw.type ?? '').trim();
-  if (!PRESENCE_ACTION_TYPES.includes(type)) return null;
   if (type === 'silence') {
     return { type: 'silence', reason: String(raw.reason ?? 'silence') };
+  }
+  if (type === 'speech_intent') {
+    return normalizeSpeechIntent(raw, subject);
   }
   if (type === 'send_message') {
     const text = sanitizeLlmText(raw.text);
     if (!text) return null;
-    return {
-      type: 'send_message',
+    return normalizeSpeechIntent({
+      type: 'speech_intent',
       target: raw.target ?? 'channel_default',
-      text,
+      reason: String(raw.reason ?? 'presence_reply'),
       reply_to_message_id: raw.reply_to_message_id ?? null,
       signal_key: raw.signal_key ?? null,
-      reason: String(raw.reason ?? 'presence_reply'),
       idempotency_key: raw.idempotency_key ?? null,
-    };
+      content_requirements: { kind: 'custom', text_hint: text },
+    }, subject);
   }
+  if (!PRESENCE_ACTION_TYPES.includes(type)) return null;
   if (type === 'write_operator_brief') {
     const summary = String(raw.summary ?? '').trim();
     if (!summary) return null;
@@ -147,38 +117,41 @@ export function planPresenceDeterministic(context) {
     const kind = item.ingest_kind;
     if (kind === 'operator_brief') {
       const briefKind = item.brief_kind ?? 'approval_request';
-      actions.push({
-        type: 'send_message',
+      const ackKind = briefKind === 'verification_request' ? 'verification_ack' : 'approval_ack';
+      actions.push(speechIntentFromDeterministic({
+        subject,
         target: 'operator',
-        text: ackText(subject, briefKind, item.content),
-        reply_to_message_id: item.message_id,
         reason: `${briefKind}_ack`,
+        reply_to_message_id: item.message_id,
         idempotency_key: `presence:ack:${item.message_id}`,
-      });
+        kind: ackKind,
+        summary: item.content,
+      }));
       handledMessageIds.add(item.message_id);
       continue;
     }
     if (kind === 'operator_fact') {
-      actions.push({
-        type: 'send_message',
+      actions.push(speechIntentFromDeterministic({
+        subject,
         target: 'operator',
-        text: ackText(subject, 'operator_fact', item.content),
-        reply_to_message_id: item.message_id,
         reason: 'operator_fact_ack',
+        reply_to_message_id: item.message_id,
         idempotency_key: `presence:fact:${item.message_id}`,
-      });
+        kind: 'operator_fact_ack',
+        summary: item.content,
+      }));
       handledMessageIds.add(item.message_id);
       continue;
     }
     if (kind === 'observation' && isGreeting(item.content)) {
-      actions.push({
-        type: 'send_message',
+      actions.push(speechIntentFromDeterministic({
+        subject,
         target: 'operator',
-        text: `${subject}: 我在，channel 正常运行。你的消息已入库，等待下一轮 intel 处理。`,
-        reply_to_message_id: item.message_id,
         reason: 'greeting_ack',
+        reply_to_message_id: item.message_id,
         idempotency_key: `presence:greeting:${item.message_id}`,
-      });
+        kind: 'greeting_ack',
+      }));
       handledMessageIds.add(item.message_id);
     }
   }
@@ -192,14 +165,15 @@ export function planPresenceDeterministic(context) {
     if (cooldownHit) continue;
     if (['task_failed', 'daemon_health', 'cycle_drift', 'requires_human_review'].includes(signal.type)
       || (signal.type === 'operator_brief_pending' && signal.severity === 'high')) {
-      actions.push({
-        type: 'send_message',
+      actions.push(speechIntentFromDeterministic({
+        subject,
         target: 'channel_default',
-        text: signalText(subject, signal),
         reason: 'proactive_signal',
         signal_key: key,
         idempotency_key: `presence:signal:${key}`,
-      });
+        kind: 'proactive_signal',
+        signal,
+      }));
       handledSignalKeys.add(key);
     }
   }
@@ -208,11 +182,11 @@ export function planPresenceDeterministic(context) {
     return emptyPlan('nothing_to_express', context);
   }
 
-  const hasSend = actions.some((a) => a.type === 'send_message');
+  const hasSpeak = actions.some((a) => a.type === 'speech_intent');
   return {
-    stance: hasSend ? 'speak' : 'silence',
-    reason: hasSend ? 'deterministic_express' : 'silence',
-    actions: hasSend ? actions : [{ type: 'silence', reason: 'deterministic_silence' }],
+    stance: hasSpeak ? 'speak' : 'silence',
+    reason: hasSpeak ? 'deterministic_express' : 'silence',
+    actions: hasSpeak ? actions : [{ type: 'silence', reason: 'deterministic_silence' }],
     presence_targets: buildPresenceTargets(context, {
       messageIds: [...handledMessageIds],
       signalKeys: [...handledSignalKeys],
@@ -253,8 +227,8 @@ export async function planPresenceWithLlm(context, { aiClient = null } = {}) {
           'Speak in first person as the subject persona from subject_identity.',
           'Return JSON only:',
           '{"stance":"speak|silence|ask|report|wait","reason":"...","actions":[...]}',
-          'Allowed action types: send_message, write_operator_brief, record_observation, silence.',
-          'send_message fields: target (operator|channel_default|chat_id), text, reply_to_message_id, reason, idempotency_key.',
+          'Allowed action types: speech_intent, write_operator_brief, record_observation, silence.',
+          'speech_intent fields: target, content_requirements (kind, summary), reply_to_message_id, reason, idempotency_key. Do NOT include final message text.',
           'channel.new_messages are the only inbound items that may need a new reply.',
           'channel.background_messages and items marked presence_handled are context only — do not reply again.',
           'attention_signals with presence_handled=true are context only — do not proactively notify again.',

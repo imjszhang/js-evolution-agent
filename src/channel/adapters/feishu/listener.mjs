@@ -6,7 +6,7 @@ import {
   writeChannelReloadState,
   writePendingInbound,
 } from '../../state.mjs';
-import { enqueueChannelTask } from '../../task-queue.mjs';
+import { requestPresenceReactor } from '../../wake.mjs';
 import { envelopeFromFeishuEvent } from './parser.mjs';
 import { resolveFeishuConfig } from './config.mjs';
 import { FeishuClient } from './client.mjs';
@@ -169,11 +169,17 @@ async function createAndStartListener(root, subject, config, { reloadReason = nu
         chat_id: envelope.chat_id,
         channel: 'feishu',
       });
-      enqueueChannelTask(root, subject, {
-        type: 'channel_presence',
-        priority: 15,
-        input: { run_ingest: true },
-        idempotencyKey: `${subject}:channel_presence:feishu:${envelope.message_id}`,
+      requestPresenceReactor(root, subject, {
+        reason: 'feishu_message_received',
+        event: {
+          type: 'feishu_message_received',
+          reason: 'feishu_ws',
+          event_ref: envelope.message_id,
+          payload_summary: {
+            message_id: envelope.message_id,
+            chat_id: envelope.chat_id,
+          },
+        },
       });
     },
   });

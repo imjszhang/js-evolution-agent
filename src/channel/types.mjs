@@ -1,7 +1,7 @@
 export const CHANNEL_TASK_TYPES = Object.freeze([
   'channel_inbound',
-  'channel_ingest',
   'channel_presence',
+  'channel_speech_generation',
   'channel_notify',
   'channel_retry',
 ]);
@@ -9,6 +9,7 @@ export const CHANNEL_TASK_TYPES = Object.freeze([
 export const DEPRECATED_CHANNEL_TASK_TYPES = Object.freeze([
   'channel_reply',
   'channel_watch',
+  'channel_ingest',
 ]);
 
 export function isChannelTaskType(type) {

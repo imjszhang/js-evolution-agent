@@ -447,11 +447,12 @@ runtime/subjects/<data_namespace>/data/channel/
 - `jea channel feishu register --subject NAME [--write-env] [--force]`：仅注册应用并拿凭据，不写 reload 请求、不自动生成 BIND 口令。
 - `jea channel status [--json]`：查看 channel worker、队列、inbound/outbox 健康。
 - `jea channel events [--limit N] [--json]`：查看 channel 审计事件。
-- `jea channel inbox put [--file PATH | --stdin]`：放入一条飞书事件 / 手工 MessageContext / JEA `ChannelEnvelope`，等待 `channel_ingest` 分类。
+- `jea channel inbox put [--file PATH | --stdin]`：放入 inbound 并 `requestPresenceReactor`（append `manual_inbox_added` 事件 + 唤醒 reactor）。
 - `jea channel outbox [--json]`：查看待发送消息。
 - `jea channel send --to CHAT_ID --text TEXT [--dry-run]`：手工排队或预览一条出站消息。
 - `jea channel tick`：运行一次 channel dispatcher，按 pending inbound、attention signals、outbox 入队任务。
-- `jea channel doctor [--json]`：诊断 channel worker 与任务队列。
+- `jea channel doctor [--json]`：诊断 channel worker 与任务队列；`--purge-deprecated --yes` 取消队列中 pending 的废弃任务。
+- `jea channel queue purge-deprecated [--yes]`：预览或取消 `channel_ingest` / `channel_reply` / `channel_watch` pending 任务。
 
 ### 飞书快速部署（新 subject）
 
@@ -524,13 +525,24 @@ channel worker 每轮 loop 会：
 - 待核实或下一轮关注事项写入 operator brief。
 - 普通外部消息写入 `intel_observations` 作为可推翻 evidence。
 
-出站由 `channel_notify` 发送 outbox；**所有对外表达**由 presence loop（`channel_presence`）统一决策。旧 `channel_reply` / `channel_watch` 任务类型已移除；队列中若仍有此类任务，`jea channel doctor` 会提示取消。
+出站由 **`channel_notify`** 独立 flush（不等待 presence 思考）；**所有对外表达**由 presence reactor 两阶段产出：`speech_intent`（决策）→ `channel_speech_generation`（人设/LLM 生成正文）→ outbox。旧 `channel_reply` / `channel_watch` / **`channel_ingest`** 任务类型已废弃；队列中若仍有，`jea channel doctor` 会提示 cancel。
 
-### Channel Presence Loop（`channels.presence`，transport-agnostic）
+### Channel Presence Loop（`channels.presence`，transport-agnostic，async reactor）
 
-Channel 由 **presence loop** 驱动（`channel_presence` 任务），而非“有消息才回复”。tick、飞书 listener、`jea channel inbox put` 均入队 `channel_presence`；任务内可先跑 `channel_ingest`（分类入库），再由 planner 决定说、问、报、等或沉默。飞书只是 transport adapter。
+外部刺激（tick、飞书 listener、`jea channel inbox put`）**只** append 到 `data/channel/event-queue/pending_events.json` 并 `requestPresenceReactor`（幂等键 `${subject}:channel_presence:reactor`），**不**在 listener/tick 路径跑 LLM。
 
-`runChannelTick` 每轮入队 `channel_presence`；有待发 outbox 时另入队 `channel_notify`。`channel_ingest` 仅作为 presence 内部步骤或独立调试，**不会**再自动入队回复任务。
+**Bounded reactor**（`channel_presence` 任务 → `runPresenceReactor`）：
+
+1. claim 一批 channel events（合并多 wake）
+2. `drainChannelInbound`（原 ingest，在 observe 阶段）
+3. `planPresence` → `speech_intent` / brief / observation / silence（**不写 outbox**）
+4. 对 `speech_intent` append `speech_generation_requested` 事件，入队 `channel_speech_generation`
+
+**内容生成**（`channel_speech_generation` → `runChannelSpeechGenerationTask`）：按 subject persona + `content_requirements` 生成最终文本，成功后 `writeOutboxMessage`；失败/超时记 `channel_speech_generation_failed` / `channel_presence_timeout`，不写 outbox。
+
+`runChannelTick`：append `timer_tick` + wake reactor；有 pending outbox 时**直接**入队 `channel_notify`（与 presence 并行）。`jea channel presence run`（CLI）在单进程内会串联 decision + speech generation，便于本地验收；daemon 下两任务分离，避免 notify 被长 LLM 阻塞。
+
+事件队列与审计 `events.jsonl` 分离。`jea channel status --json` 的 `presence.event_queue` / `presence.reactor` / `presence.pending_speech_generation` 可观测 reactor 与待生成话术。
 
 `policies/subjects.json` 示例：
 
@@ -542,18 +554,24 @@ Channel 由 **presence loop** 驱动（`channel_presence` 任务），而非“�
     "max_actions_per_tick": 2,
     "cooldown_ms": 1800000,
     "max_messages_per_hour": 8,
+    "timeout_ms": 60000,
+    "decision_timeout_ms": 15000,
+    "speech_generation_timeout_ms": 30000,
     "default_target": "oc_xxx"
   }
 }
 ```
 
-- `enabled`: 默认 `true`；设为 `false` 时 presence 任务跳过表达（仍可做 ingest）。
-- `planner`: `deterministic`（规则）或 `llm`（DeepSeek，需 `DEEPSEEK_API_KEY`）；LLM 引用 `affordances.operator_commands` 中的真实 CLI，禁止自造命令。
-- `cooldown_ms` / `max_messages_per_hour`: 出站节流。
-- 游标：`data/channel/presence-state.json`（handled message/signal，非长期对话记忆）。
-- 交互记忆：写入 `intel_observations`（`source: channel_presence`），与 evolution cycle 共用。
-- 事件：`channel_presence_decided` / `channel_presence_silenced` / `channel_presence_action_applied` / `channel_presence_completed`。
-- 允许动作：`send_message`（写 outbox）、`write_operator_brief`、`record_observation`、`silence`；**不能**直接 `approval_granted` 或改 decision queue。
+- `enabled`: 设为 `false` 时 reactor 跳过表达（仍可 drain inbound）。
+- `planner`: `deterministic`（规则决定 `speech_intent` + 模板生成）或 `llm`（决策与生成均可调 DeepSeek）。
+- `timeout_ms` / `decision_timeout_ms` / `speech_generation_timeout_ms`: reactor 与两阶段 deadline；超时记 audit，worker 不永久卡死。
+- `cooldown_ms` / `max_messages_per_hour`: 出站节流（按 `channel_speech_generated` 计数）。
+- 游标 + reactor：`presence-state.json`（`handled_*`、`reactor.status|deadline_at|event_ids`、`pending_speech_generation`）。
+- 交互记忆：`intel_observations`（`source: channel_presence`）。
+- 审计：`channel_wake_requested` / `channel_presence_decided` / `channel_speech_generated` / `channel_presence_completed` / `channel_presence_timeout` 等。
+- 决策动作：`speech_intent`（仅意图）、`write_operator_brief`、`record_observation`、`silence`；**不能**直接 `approval_granted` 或改 decision queue。
+
+**生产建议**：`jea daemon start --domain channel` 单进程内 presence 与 notify 共享 worker；长期无人值守可拆两进程（cycle 已推荐分 domain），确保 outbox flush 不被 speech LLM 拖住。升级 channel 代码后需重启 channel daemon。
 
 手工跑一轮：`npm run jea -- channel presence run --subject NAME`。`jea channel work` 仅保留 `notify` 子命令（发送 pending outbox）。
 

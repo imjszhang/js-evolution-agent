@@ -15,6 +15,7 @@ export function resolvePresenceConfig(root, subject, overrides = {}) {
   };
   const enabled = block.enabled !== false && block.enabled !== 'false';
   const planner = PRESENCE_PLANNERS.includes(block.planner) ? block.planner : 'deterministic';
+  const llmTimeoutSec = Number(block.llm?.timeout ?? block.llm_timeout ?? 25) || 25;
   return {
     enabled,
     planner,
@@ -22,8 +23,12 @@ export function resolvePresenceConfig(root, subject, overrides = {}) {
     max_actions_per_tick: Math.max(0, Number(block.max_actions_per_tick ?? block.maxActionsPerTick) || 2),
     cooldown_ms: Number(block.cooldown_ms ?? block.cooldownMs) || DEFAULT_COOLDOWN_MS,
     max_messages_per_hour: Number(block.max_messages_per_hour ?? block.maxMessagesPerHour) || 0,
+    timeout_ms: Number(block.timeout_ms ?? block.timeoutMs) || 60_000,
+    decision_timeout_ms: Number(block.decision_timeout_ms ?? block.decisionTimeoutMs) || 15_000,
+    speech_generation_timeout_ms: Number(block.speech_generation_timeout_ms ?? block.speechGenerationTimeoutMs)
+      || llmTimeoutSec * 1000,
     llm: {
-      timeout: Number(block.llm?.timeout ?? block.llm_timeout ?? 25) || 25,
+      timeout: llmTimeoutSec,
       thinking: block.llm?.thinking ?? block.llm_thinking ?? 'low',
     },
     default_transport: block.default_transport ?? block.defaultTransport ?? null,
@@ -43,6 +48,9 @@ export function presenceConfigForApi(config) {
     max_actions_per_tick: config.max_actions_per_tick,
     cooldown_ms: config.cooldown_ms,
     max_messages_per_hour: config.max_messages_per_hour,
+    timeout_ms: config.timeout_ms,
+    decision_timeout_ms: config.decision_timeout_ms,
+    speech_generation_timeout_ms: config.speech_generation_timeout_ms,
     default_transport: config.default_transport,
   };
 }

@@ -6,9 +6,11 @@ import { readChannelEvents } from '../../channel/audit.mjs';
 import { writePendingInbound, listPendingInbound, listOutboxPending, writeOutboxMessage } from '../../channel/state.mjs';
 import { normalizeOutboundMessage } from '../../channel/types.mjs';
 import { enqueueChannelTask, readChannelTaskQueue } from '../../channel/task-queue.mjs';
+import { requestPresenceReactor } from '../../channel/wake.mjs';
 import { runChannelTick } from '../../channel/dispatch.mjs';
 import { runChannelNotifyTask } from '../../channel/tasks.mjs';
 import { runChannelPresenceTask } from '../../channel/presence.mjs';
+import { cancelDeprecatedChannelTasks } from '../../channel/queue-cleanup.mjs';
 import { channelFeishuCommand } from './channel-feishu.mjs';
 import { resolveFeishuConfig } from '../../channel/adapters/feishu/config.mjs';
 
@@ -79,7 +81,7 @@ function buildFeishuDoctorHints(root, subject, projection) {
   }
   if (projection.tasks.deprecated?.length) {
     hints.push(
-      '队列中存在已废弃的 channel_reply/channel_watch 任务。请 jea daemon tasks cancel 后依赖 channel_presence 重新表达。',
+      '队列中存在已废弃的 channel_reply/channel_watch/channel_ingest 任务。执行 jea channel queue purge-deprecated --yes（或 doctor --purge-deprecated --yes）后重启 channel daemon。',
     );
   }
   if (!projection.presence?.config?.enabled) {
@@ -130,13 +132,21 @@ export async function channelCommand({ subcommand, flags = {}, args = [], root =
         return 2;
       }
       const written = writePendingInbound(root, subject, payload, { label: flags.name ?? 'manual' });
-      const task = enqueueChannelTask(root, subject, {
-        type: 'channel_presence',
-        priority: 15,
-        input: { run_ingest: true },
-        idempotencyKey: `${subject}:channel_presence:manual`,
+      const wake = requestPresenceReactor(root, subject, {
+        reason: 'manual_inbox_added',
+        event: {
+          type: 'manual_inbox_added',
+          reason: flags.name ?? 'manual',
+          payload_summary: { file: written.file },
+        },
       });
-      const result = { subject, ...written, task: task.task, created: task.created };
+      const result = {
+        subject,
+        ...written,
+        task: wake.reactor_task,
+        created: wake.reactor_created,
+        event: wake.event,
+      };
       if (flags.json) console.log(JSON.stringify(result, null, 2));
       else console.log(`queued channel inbound -> ${written.file}`);
       return 0;
@@ -188,9 +198,12 @@ export async function channelCommand({ subcommand, flags = {}, args = [], root =
   }
 
   if (subcommand === 'tick') {
-    const result = runChannelTick(root, subject, { poll_inbound: Boolean(flags['poll-inbound']) });
+    const result = runChannelTick(root, subject);
     if (flags.json) console.log(JSON.stringify(result, null, 2));
-    else console.log(`channel tick enqueued ${result.enqueued.filter((item) => item?.created).length} task(s)`);
+    else {
+      const count = result.enqueued.filter((item) => item?.created || item?.reactor_created).length;
+      console.log(`channel tick enqueued ${count} wake/task(s)`);
+    }
     return 0;
   }
 
@@ -213,8 +226,8 @@ export async function channelCommand({ subcommand, flags = {}, args = [], root =
       return 2;
     }
     const result = await runChannelPresenceTask(root, subject, {
-      run_ingest: flags['no-ingest'] !== true && flags['no-ingest'] !== 'true',
       dry_run: Boolean(flags['dry-run']),
+      skip_speech_generation: Boolean(flags['decision-only']),
     });
     if (flags.json) console.log(JSON.stringify(result, null, 2));
     else {
@@ -227,7 +240,33 @@ export async function channelCommand({ subcommand, flags = {}, args = [], root =
     return 0;
   }
 
+  if (subcommand === 'queue') {
+    const action = args[0] ?? 'list';
+    if (action === 'purge-deprecated') {
+      const dryRun = !flags.yes;
+      const result = cancelDeprecatedChannelTasks(root, subject, { dryRun });
+      if (flags.json) console.log(JSON.stringify(result, null, 2));
+      else if (dryRun) {
+        const n = result.would_cancel?.length ?? 0;
+        console.log(n ? `would cancel ${n} deprecated task(s); re-run with --yes` : 'no pending deprecated tasks');
+        for (const t of result.would_cancel ?? []) console.log(`  ${t.type} ${t.task_id}`);
+      } else {
+        console.log(`cancelled ${result.cancelled.length} deprecated task(s)`);
+        for (const t of result.cancelled) console.log(`  ${t.type} ${t.task_id}`);
+        if (result.still_running?.length) {
+          console.log(`still running (manual cancel): ${result.still_running.map((t) => t.type).join(', ')}`);
+        }
+      }
+      return 0;
+    }
+    console.error('Usage: jea channel queue purge-deprecated [--yes] [--json]');
+    return 2;
+  }
+
   if (subcommand === 'doctor') {
+    if (flags['purge-deprecated'] && flags.yes) {
+      cancelDeprecatedChannelTasks(root, subject);
+    }
     const projection = buildChannelProjection(root, subject, {
       heartbeatStaleMs: parseHeartbeatStaleMs(flags['heartbeat-stale-ms']),
     });
@@ -248,6 +287,6 @@ export async function channelCommand({ subcommand, flags = {}, args = [], root =
     return projection.health.ok ? 0 : 1;
   }
 
-  console.error('Usage: jea channel <status|events|inbox|outbox|send|tick|work|presence|doctor|feishu> [--subject NAME] [--json]');
+  console.error('Usage: jea channel <status|events|inbox|outbox|send|tick|work|presence|queue|doctor|feishu> [--subject NAME] [--json]');
   return 2;
 }

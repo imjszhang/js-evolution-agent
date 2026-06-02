@@ -17,10 +17,12 @@ import { presenceConfigForApi, resolvePresenceConfig } from './presence-config.m
 import { readJsonSafe } from '../cli/utils/files.mjs';
 import { channelPresenceStatePath } from './paths.mjs';
 import { DEPRECATED_CHANNEL_TASK_TYPES } from './types.mjs';
+import { summarizeChannelEventQueue } from './event-queue.mjs';
 
 function listDeprecatedQueueTasks(queue) {
   return (queue.tasks ?? [])
-    .filter((task) => DEPRECATED_CHANNEL_TASK_TYPES.includes(task.type))
+    .filter((task) => DEPRECATED_CHANNEL_TASK_TYPES.includes(task.type)
+      && ['pending', 'running'].includes(task.status))
     .map((task) => ({
       task_id: task.task_id,
       type: task.type,
@@ -102,6 +104,9 @@ export function buildChannelProjection(root, subject, { heartbeatStaleMs = 60_00
     presence: {
       config: presenceConfigForApi(resolvePresenceConfig(root, subject)),
       state: readJsonSafe(channelPresenceStatePath(root, subject), null),
+      event_queue: summarizeChannelEventQueue(root, subject),
+      reactor: readJsonSafe(channelPresenceStatePath(root, subject), null)?.reactor ?? null,
+      pending_speech_generation: readJsonSafe(channelPresenceStatePath(root, subject), null)?.pending_speech_generation ?? [],
     },
     feishu: {
       config: feishuConfigForApi(feishuConfig),

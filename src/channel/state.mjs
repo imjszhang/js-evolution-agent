@@ -232,12 +232,23 @@ export function writeChannelReloadState(root, subject, patch = {}) {
 
 export const PRESENCE_HANDLED_CURSOR_LIMIT = 200;
 
+const DEFAULT_REACTOR_STATE = Object.freeze({
+  status: 'idle',
+  current_run_id: null,
+  started_at: null,
+  deadline_at: null,
+  event_ids: [],
+  last_error: null,
+});
+
 const DEFAULT_PRESENCE_STATE = Object.freeze({
   handled_messages: {},
   handled_signals: {},
   last_presence_tick_at: null,
   last_spoken_at: null,
   last_plan: null,
+  reactor: { ...DEFAULT_REACTOR_STATE },
+  pending_speech_generation: [],
 });
 
 function trimPresenceHandledMap(map, limit = PRESENCE_HANDLED_CURSOR_LIMIT) {
@@ -254,7 +265,73 @@ export function readPresenceState(root, subject) {
     ...raw,
     handled_messages: { ...(raw.handled_messages ?? {}) },
     handled_signals: { ...(raw.handled_signals ?? {}) },
+    reactor: {
+      ...DEFAULT_REACTOR_STATE,
+      ...(raw.reactor ?? {}),
+      event_ids: Array.isArray(raw.reactor?.event_ids) ? [...raw.reactor.event_ids] : [],
+    },
+    pending_speech_generation: Array.isArray(raw.pending_speech_generation)
+      ? [...raw.pending_speech_generation]
+      : [],
   };
+}
+
+export function isPresenceRunExpired(state, { nowMs = Date.now() } = {}, config = {}) {
+  const deadline = Date.parse(state?.reactor?.deadline_at ?? '');
+  if (!Number.isFinite(deadline)) return false;
+  return nowMs > deadline;
+}
+
+export function beginPresenceRun(root, subject, { runId, eventIds = [], deadlineAt = null } = {}) {
+  return writePresenceState(root, subject, {
+    reactor: {
+      status: 'planning',
+      current_run_id: runId ?? null,
+      started_at: nowIso(),
+      deadline_at: deadlineAt,
+      event_ids: eventIds,
+      last_error: null,
+    },
+  });
+}
+
+export function completePresenceRun(root, subject, { runId = null } = {}) {
+  const current = readPresenceState(root, subject);
+  if (runId && current.reactor?.current_run_id && current.reactor.current_run_id !== runId) {
+    return current;
+  }
+  return writePresenceState(root, subject, {
+    reactor: {
+      ...DEFAULT_REACTOR_STATE,
+      status: 'idle',
+    },
+  });
+}
+
+export function failPresenceRun(root, subject, { runId = null, error = null } = {}) {
+  const current = readPresenceState(root, subject);
+  if (runId && current.reactor?.current_run_id && current.reactor.current_run_id !== runId) {
+    return current;
+  }
+  return writePresenceState(root, subject, {
+    reactor: {
+      ...current.reactor,
+      status: 'failed',
+      last_error: error ?? current.reactor?.last_error ?? 'failed',
+    },
+  });
+}
+
+export function trackPendingSpeechGeneration(root, subject, entry) {
+  const current = readPresenceState(root, subject);
+  const pending = [...(current.pending_speech_generation ?? []), entry].slice(-50);
+  return writePresenceState(root, subject, { pending_speech_generation: pending });
+}
+
+export function clearPendingSpeechGeneration(root, subject, intentId) {
+  const current = readPresenceState(root, subject);
+  const pending = (current.pending_speech_generation ?? []).filter((e) => e.intent_id !== intentId);
+  return writePresenceState(root, subject, { pending_speech_generation: pending });
 }
 
 export function buildPresenceSignalKey(signal) {

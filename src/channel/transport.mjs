@@ -22,11 +22,16 @@ export function resolveDefaultTransport(root, subject, { explicit = null } = {})
  * Resolve outbound target from planner hint: operator | channel_default | explicit id.
  * Feishu-specific resolution is delegated only when transport is feishu.
  */
+const TARGET_ALIASES = new Set(['operator', 'channel_default', 'feishu', 'lark', 'default']);
+
 export async function resolveOutboundTarget(root, subject, hint, { transport = null } = {}) {
   const resolvedTransport = transport ?? resolveDefaultTransport(root, subject);
-  const normalized = String(hint ?? 'channel_default').trim();
-  if (normalized && normalized !== 'operator' && normalized !== 'channel_default') {
-    return { transport: resolvedTransport, target: normalized };
+  const normalized = String(hint ?? 'channel_default').trim().toLowerCase();
+  if (normalized === 'feishu' || normalized === 'lark') {
+    return resolveOutboundTarget(root, subject, 'channel_default', { transport: normalized === 'lark' ? 'lark' : resolvedTransport });
+  }
+  if (normalized && !TARGET_ALIASES.has(normalized)) {
+    return { transport: resolvedTransport, target: String(hint).trim() };
   }
   const entry = getSubjectEntry(root, subject);
   const presenceTarget = entry?.channels?.presence?.default_target

@@ -166,7 +166,8 @@ flowchart TD
 | [`presence-config.mjs`](../../src/channel/presence-config.mjs) | 解析 `channels.presence`；`shouldUseLegacyReplyPipeline` |
 | [`presence-context.mjs`](../../src/channel/presence-context.mjs) | 聚合 identity、daemon、signals、briefs、goals/beliefs、**new/background messages**、**recent_presence_interactions**、**affordances** |
 | [`presence-planner.mjs`](../../src/channel/presence-planner.mjs) | 仅对 `new_messages` / 未 handled signals 规划；LLM 禁止自造 CLI |
-| [`presence-executor.mjs`](../../src/channel/presence-executor.mjs) | 执行动作、写 intelligence、同步游标、审计 |
+| [`presence-decision-executor.mjs`](../../src/channel/presence-decision-executor.mjs) | 决策落盘（brief/沉默/speech_intent 入队） |
+| [`speech-generation.mjs`](../../src/channel/speech-generation.mjs) | 话术生成并写 outbox |
 | [`presence-memory.mjs`](../../src/channel/presence-memory.mjs) | `recordPresenceInteraction`、从 store 读近期 presence 交互 |
 | [`presence-affordances.mjs`](../../src/channel/presence-affordances.mjs) | grounded `operator_commands`（evolution-mode、cycle request、brief put 等） |
 | [`presence.mjs`](../../src/channel/presence.mjs) | `runChannelPresenceTask` 编排 |
@@ -347,6 +348,45 @@ npm run test -- test/channel.test.mjs
 
 - Cycle 队列与 channel 队列仍分离；channel 通过 `buildDaemonProjection` 只读 cycle 状态生成 attention signals。
 - `domain=all` 默认语义未改；后续可选 supervisor 子进程化，不在本轮范围。
+
+---
+
+## 9. Async Channel Presence（2026-06-02）
+
+### 动机
+
+`channel_presence` 在 worker 内 **await 整轮 LLM**，会阻塞同进程的 `channel_notify`；且「决定发话」与「生成发话正文」混在一处，难以超时恢复。
+
+### 架构
+
+```text
+刺激 → event-queue (pending_events.json) → requestPresenceReactor
+  → channel_presence (bounded reactor, decision_timeout_ms)
+    → drainChannelInbound → planPresence → speech_intent / silence / brief
+    → speech_generation_requested 事件
+  → channel_speech_generation (speech_generation_timeout_ms, persona LLM)
+    → outbox
+  → channel_notify（独立，tick 见 outbox 即入队）
+```
+
+### 新模块
+
+| 文件 | 职责 |
+| --- | --- |
+| `event-queue.mjs` | append / claim / handled / failed |
+| `wake.mjs` | `requestPresenceReactor`、notify/speech 入队 helper |
+| `presence-reactor.mjs` | `runPresenceReactor`、`runChannelSpeechGenerationTask` |
+| `presence-decision-executor.mjs` | 决策落盘，**不**写 outbox |
+| `speech-intent.mjs` / `speech-generation.mjs` | 两阶段表达 |
+| `inbound-drain.mjs` | 原 ingest 逻辑 |
+| `async-utils.mjs` | `runWithTimeout` |
+
+`channel_ingest` 任务类型已废弃；`presence-state.reactor` 记录 run_id / deadline / event_ids。
+
+### 验证
+
+- `npm run test -- test/channel.test.mjs`（含 event wake 合并、decision 不写 outbox、speech gen 写 outbox、timeout 不挡 notify）
+- 全量 `npm test` 555 passed
 
 ---
 

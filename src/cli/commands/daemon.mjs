@@ -1264,10 +1264,7 @@ export async function runChannelDomainWorker(root, subject, flags = {}) {
   const runScheduledTick = () => {
     if (stopping) return;
     try {
-      runChannelTick(root, subject, {
-        tick_ms: tickMs,
-        poll_inbound: Boolean(flags['channel-poll-inbound']),
-      });
+      runChannelTick(root, subject, { tick_ms: tickMs });
     } catch (err) {
       recordChannelEvent(root, subject, {
         type: 'channel_tick_failed',

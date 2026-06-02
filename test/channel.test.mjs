@@ -15,16 +15,23 @@ import {
 import { createIntelligenceStore } from '../src/intelligence/store.mjs';
 import { isPresenceInteractionRecord } from '../src/channel/presence-memory.mjs';
 import { resolvePresenceAffordances } from '../src/channel/presence-affordances.mjs';
-import { runChannelIngestTask, runChannelTask, runChannelNotifyTask } from '../src/channel/tasks.mjs';
+import { drainChannelInbound, runChannelTask, runChannelNotifyTask } from '../src/channel/tasks.mjs';
 import { collectAttentionSignals } from '../src/channel/notify.mjs';
 import { readPendingOperatorBriefs } from '../src/intelligence/operator-briefs.mjs';
 import { runtimeForSubject } from '../src/cli/utils/evolve-runs.mjs';
 import { buildChannelProjection } from '../src/channel/projection.mjs';
 import { runChannelTick } from '../src/channel/dispatch.mjs';
 import { runChannelPresenceTask } from '../src/channel/presence.mjs';
+import {
+  requestPresenceReactor,
+  PRESENCE_REACTOR_IDEMPOTENCY,
+} from '../src/channel/wake.mjs';
+import { cancelDeprecatedChannelTasks } from '../src/channel/queue-cleanup.mjs';
+import { appendChannelEvent, listPendingChannelEvents, summarizeChannelEventQueue } from '../src/channel/event-queue.mjs';
+import { runChannelSpeechGenerationTask } from '../src/channel/presence-reactor.mjs';
 import { buildPresenceContext } from '../src/channel/presence-context.mjs';
 import { planPresenceDeterministic, planPresenceWithLlm } from '../src/channel/presence-planner.mjs';
-import { executePresencePlan } from '../src/channel/presence-executor.mjs';
+import { executePresenceDecisionPlan } from '../src/channel/presence-decision-executor.mjs';
 import { resolvePresenceConfig } from '../src/channel/presence-config.mjs';
 import { resolveSubjectReplyIdentity } from '../src/channel/subject-identity.mjs';
 
@@ -78,13 +85,25 @@ describe('channel domain', () => {
       expect(readChannelTaskQueue(root, 'alpha').tasks.map((task) => task.type)).toEqual(['channel_presence']);
     });
 
-    it('rejects deprecated channel_reply and channel_watch tasks', async () => {
+    it('purges pending deprecated tasks from queue', () => {
       const root = makeRoot();
-      const { task } = enqueueChannelTask(root, 'alpha', {
-        type: 'channel_reply',
-        idempotencyKey: 'deprecated-reply',
-      });
-      await expect(runChannelTask(root, 'alpha', task)).rejects.toThrow(/Deprecated channel task type/);
+      enqueueChannelTask(root, 'alpha', { type: 'channel_ingest', idempotencyKey: 'purge-ingest' });
+      enqueueChannelTask(root, 'alpha', { type: 'channel_watch', idempotencyKey: 'purge-watch' });
+      const result = cancelDeprecatedChannelTasks(root, 'alpha');
+      expect(result.cancelled.length).toBe(2);
+      const queue = readChannelTaskQueue(root, 'alpha');
+      expect(queue.tasks.filter((t) => t.status === 'pending' && t.type === 'channel_ingest')).toHaveLength(0);
+    });
+
+    it('rejects deprecated channel_reply, channel_watch, and channel_ingest tasks', async () => {
+      const root = makeRoot();
+      for (const type of ['channel_reply', 'channel_ingest']) {
+        const { task } = enqueueChannelTask(root, 'alpha', {
+          type,
+          idempotencyKey: `deprecated-${type}`,
+        });
+        await expect(runChannelTask(root, 'alpha', task)).rejects.toThrow(/Deprecated channel task type/);
+      }
     });
   });
 
@@ -100,7 +119,7 @@ describe('channel domain', () => {
         contentType: 'text',
       });
 
-      const result = await runChannelIngestTask(root, 'alpha', { limit: 5 });
+      const result = await drainChannelInbound(root, 'alpha', { limit: 5 });
       expect(result.processed).toHaveLength(1);
       expect(result.reply_created).toBeUndefined();
       const runtime = runtimeForSubject(root, 'alpha');
@@ -118,10 +137,10 @@ describe('channel domain', () => {
         content: '请下一轮核实 A',
       };
       writePendingInbound(root, 'alpha', payload);
-      await runChannelIngestTask(root, 'alpha', { limit: 5 });
+      await drainChannelInbound(root, 'alpha', { limit: 5 });
       writePendingInbound(root, 'alpha', payload);
 
-      const result = await runChannelIngestTask(root, 'alpha', { limit: 5 });
+      const result = await drainChannelInbound(root, 'alpha', { limit: 5 });
       expect(result.processed).toHaveLength(0);
       expect(result.skipped).toHaveLength(1);
     });
@@ -163,7 +182,7 @@ describe('channel domain', () => {
       }];
       const plan = planPresenceDeterministic(ctx);
       expect(plan.stance).toBe('speak');
-      expect(plan.actions.some((a) => a.type === 'send_message' && a.reason === 'proactive_signal')).toBe(true);
+      expect(plan.actions.some((a) => a.type === 'speech_intent' && a.reason === 'proactive_signal')).toBe(true);
     });
   });
 
@@ -235,15 +254,47 @@ describe('channel domain', () => {
       expect(cmd.cmd).toContain('--subject alpha');
     });
 
-    it('runChannelTick always enqueues channel_presence', () => {
+    it('runChannelTick wakes presence reactor via event queue', () => {
       const root = makeRoot({
         presence: { enabled: true, planner: 'deterministic' },
       });
       const tick = runChannelTick(root, 'alpha');
-      const created = tick.enqueued.filter((item) => item?.created);
-      expect(created.some((item) => item.task?.type === 'channel_presence')).toBe(true);
-      expect(created.some((item) => item.task?.type === 'channel_watch')).toBe(false);
-      expect(created.some((item) => item.task?.type === 'channel_ingest')).toBe(false);
+      expect(tick.enqueued.some((item) => item.reactor_created || item.reactor_task?.type === 'channel_presence')).toBe(true);
+      expect(listPendingChannelEvents(root, 'alpha', { type: 'timer_tick' }).length).toBeGreaterThan(0);
+      const queue = readChannelTaskQueue(root, 'alpha');
+      expect(queue.tasks.filter((t) => t.type === 'channel_presence').length).toBeLessThanOrEqual(1);
+      expect(queue.tasks.some((t) => t.idempotency_key === PRESENCE_REACTOR_IDEMPOTENCY('alpha'))).toBe(true);
+    });
+
+    it('multiple wakes merge into one reactor task', () => {
+      const root = makeRoot({ presence: { enabled: true } });
+      requestPresenceReactor(root, 'alpha', { reason: 'a', event: { type: 'feishu_message_received', event_ref: 'm1' } });
+      requestPresenceReactor(root, 'alpha', { reason: 'b', event: { type: 'feishu_message_received', event_ref: 'm2' } });
+      const queue = readChannelTaskQueue(root, 'alpha');
+      const presenceTasks = queue.tasks.filter((t) => t.type === 'channel_presence');
+      expect(presenceTasks.length).toBe(1);
+      expect(listPendingChannelEvents(root, 'alpha').length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('decision phase queues speech_intent without writing outbox', async () => {
+      const root = makeRoot({
+        presence: { enabled: true, planner: 'deterministic', default_target: 'oc_operator' },
+      });
+      writePendingInbound(root, 'alpha', {
+        messageId: 'om_decision_only',
+        chatId: 'oc_operator',
+        content: '同意发布',
+        contentType: 'text',
+      });
+      const { executePresenceDecisionPlan } = await import('../src/channel/presence-decision-executor.mjs');
+      const { buildPresenceContext } = await import('../src/channel/presence-context.mjs');
+      const { planPresenceDeterministic } = await import('../src/channel/presence-planner.mjs');
+      await drainChannelInbound(root, 'alpha', { limit: 5 });
+      const ctx = buildPresenceContext(root, 'alpha');
+      const plan = planPresenceDeterministic(ctx);
+      await executePresenceDecisionPlan(root, 'alpha', plan, { presenceConfig: ctx.presence, context: ctx });
+      expect(listOutboxPending(root, 'alpha', { limit: 5 }).length).toBe(0);
+      expect(summarizeChannelEventQueue(root, 'alpha').pending_speech_generation).toBeGreaterThan(0);
     });
 
     it('acks approval via presence loop and writes outbox', async () => {
@@ -261,7 +312,7 @@ describe('channel domain', () => {
         content: '同意发布候选',
         contentType: 'text',
       });
-      const result = await runChannelPresenceTask(root, 'alpha', { run_ingest: true });
+      const result = await runChannelPresenceTask(root, 'alpha');
       expect(result.plan.stance).toBe('speak');
       expect(result.execution.applied).toBeGreaterThan(0);
       expect(listOutboxPending(root, 'alpha', { limit: 5 }).length).toBeGreaterThan(0);
@@ -285,12 +336,14 @@ describe('channel domain', () => {
         content: '同意发布',
         contentType: 'text',
       });
-      const first = await runChannelPresenceTask(root, 'alpha', { run_ingest: true });
+      const first = await runChannelPresenceTask(root, 'alpha');
       expect(first.plan.stance).toBe('speak');
-      const second = await runChannelPresenceTask(root, 'alpha', { run_ingest: false });
+      const outboxAfterFirst = listOutboxPending(root, 'alpha', { limit: 10 }).length;
+      expect(outboxAfterFirst).toBeGreaterThan(0);
+      const second = await runChannelPresenceTask(root, 'alpha');
       expect(second.plan.stance).toBe('silence');
       expect(second.plan.reason).toBe('nothing_to_express');
-      expect(listOutboxPending(root, 'alpha', { limit: 10 }).length).toBe(1);
+      expect(listOutboxPending(root, 'alpha', { limit: 10 }).length).toBe(outboxAfterFirst);
     });
 
     it('records silence when there is nothing to express', async () => {
@@ -299,7 +352,7 @@ describe('channel domain', () => {
       });
       const ctx = buildPresenceContext(root, 'alpha');
       const plan = planPresenceDeterministic(ctx);
-      const execution = await executePresencePlan(root, 'alpha', plan, { context: ctx });
+      const execution = await executePresenceDecisionPlan(root, 'alpha', plan, { context: ctx });
       expect(plan.stance).toBe('silence');
       expect(execution.skipped).toBeGreaterThan(0);
     });
@@ -318,7 +371,7 @@ describe('channel domain', () => {
         content: '你好',
         contentType: 'text',
       });
-      await runChannelPresenceTask(root, 'alpha', { run_ingest: true });
+      await runChannelPresenceTask(root, 'alpha');
       const ctx = buildPresenceContext(root, 'alpha');
       expect(ctx.channel.recent_presence_interactions.length).toBeGreaterThan(0);
       expect(readPresenceState(root, 'alpha').handled_messages.om_intel_memory).toBeDefined();
@@ -348,9 +401,9 @@ describe('channel domain', () => {
             stance: 'speak',
             reason: 'intro',
             actions: [{
-              type: 'send_message',
+              type: 'speech_intent',
               target: 'channel_default',
-              text: '我是小测，alpha 的外部接口。',
+              content_requirements: { kind: 'custom', text_hint: '我是小测，alpha 的外部接口。' },
               reason: 'casual_intro',
               reply_to_message_id: 'om_llm_obs',
             }],
@@ -358,14 +411,62 @@ describe('channel domain', () => {
         },
       });
       expect(plan.stance).toBe('speak');
-      expect(plan.actions[0].text).toContain('小测');
+      expect(plan.actions[0].content_requirements?.text_hint).toContain('小测');
     });
 
     it('skips expression when presence.enabled is false', async () => {
       const root = makeRoot({ presence: { enabled: false } });
-      const result = await runChannelPresenceTask(root, 'alpha', { run_ingest: false });
+      const result = await runChannelPresenceTask(root, 'alpha', { skip_speech_generation: true });
       expect(result.skipped).toBe(true);
       expect(result.reason).toBe('presence_disabled');
+    });
+  });
+
+  describe('async reactor', () => {
+    it('speech generation writes outbox after decision', async () => {
+      const root = makeRoot({
+        presence: { enabled: true, planner: 'deterministic', default_target: 'oc_operator' },
+      });
+      appendChannelEvent(root, 'alpha', {
+        type: 'speech_generation_requested',
+        payload: {
+          intent_id: 'intent-test-1',
+          target: 'channel_default',
+          reason: 'test_ack',
+          content_requirements: { kind: 'greeting_ack' },
+          idempotency_key: 'presence:test:greeting',
+        },
+      });
+      const gen = await runChannelSpeechGenerationTask(root, 'alpha');
+      expect(gen.generated).toBeGreaterThan(0);
+      expect(listOutboxPending(root, 'alpha', { limit: 5 }).length).toBeGreaterThan(0);
+    });
+
+    it('speech generation timeout does not block notify', async () => {
+      const root = makeRoot({ presence: { enabled: true, planner: 'llm', speech_generation_timeout_ms: 1 } });
+      const { writeOutboxMessage } = await import('../src/channel/state.mjs');
+      const { normalizeOutboundMessage } = await import('../src/channel/types.mjs');
+      writeOutboxMessage(root, 'alpha', normalizeOutboundMessage({
+        channel: 'feishu',
+        target: 'oc_test',
+        text: 'already queued',
+        subject: 'alpha',
+      }));
+      appendChannelEvent(root, 'alpha', {
+        type: 'speech_generation_requested',
+        payload: {
+          intent_id: 'intent-slow',
+          target: 'channel_default',
+          reason: 'slow',
+          content_requirements: { kind: 'custom', text_hint: 'x' },
+        },
+      });
+      const slowClient = {
+        chatMessages: () => new Promise((resolve) => setTimeout(() => resolve(JSON.stringify({ text: 'late' })), 500)),
+      };
+      await expect(runChannelSpeechGenerationTask(root, 'alpha', { aiClient: slowClient })).resolves.toBeDefined();
+      const notify = await runChannelNotifyTask(root, 'alpha', { limit: 5 });
+      expect(notify.sent.length).toBeGreaterThan(0);
     });
   });
 
