@@ -84,6 +84,7 @@ import {
   parseHeartbeatStaleMs as parseChannelHeartbeatStaleMs,
   readChannelWorkerState,
   requestChannelWorkerStop,
+  safeUpdateChannelWorkerHeartbeat,
   updateChannelWorkerHeartbeat,
 } from '../../channel/worker-state.mjs';
 
@@ -1309,7 +1310,7 @@ export async function runChannelDomainWorker(root, subject, flags = {}) {
           });
         }
       }
-      updateChannelWorkerHeartbeat(root, subject, {
+      safeUpdateChannelWorkerHeartbeat(root, subject, {
         worker_id: workerId,
         pid: process.pid,
         status: 'running',
@@ -1331,7 +1332,7 @@ export async function runChannelDomainWorker(root, subject, flags = {}) {
       });
       iterations += 1;
       const summary = workResultSummary(result);
-      updateChannelWorkerHeartbeat(root, subject, {
+      safeUpdateChannelWorkerHeartbeat(root, subject, {
         worker_id: workerId,
         pid: process.pid,
         status: 'running',

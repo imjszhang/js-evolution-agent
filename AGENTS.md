@@ -413,6 +413,15 @@ runtime/subjects/<data_namespace>/data/evolution/cycle-state/
 
 `jea daemon start` 默认在同一前台进程内启动平级的 cycle domain 与 channel domain；两者使用独立队列、worker-state 与锁边界，因此 channel 收发不会被长 cycle step 阻塞。可用 `jea daemon start --domain cycle|channel|all` 只启动某个 domain；`jea daemon work --once --domain channel` 只领取 channel task。多主体并行仍应由外部终端或编排器分别启动。
 
+**长期运行建议（故障隔离）**：`domain=all` 时 cycle 与 channel 共享同一 Node 进程；channel 侧未捕获异常可能拖垮 cycle worker。生产或无人值守环境推荐分两个终端/进程启动：
+
+```powershell
+jea daemon start --subject NAME --domain cycle
+jea daemon start --subject NAME --domain channel
+```
+
+Channel worker-state 写入已使用与 task queue 相同的原子重试写入；loop 内心跳写失败会记 `channel_worker_state_write_failed` 并降级继续，不会直接终止 cycle domain。
+
 ## Channel 通道
 
 Channel 是 daemon 下与 cycle 平级的通信闭环，负责接收外部消息、写入合适的情报入口，并观察运行态决定是否向外部通道通知。当前飞书适配器位于 `src/channel/adapters/feishu/`（基于 `@larksuiteoapi/node-sdk`，参考 Deepseek-Cowork `feishu-module` 的传输层实现，**不**依赖 OpenClaw 或 Cowork AI/ChannelBridge）。

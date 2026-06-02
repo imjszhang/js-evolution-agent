@@ -322,13 +322,33 @@ npm run test -- test/channel.test.mjs
 | ~~对话记忆~~ | ✅ 已并入 unified intelligence + presence-state 游标（本节 5） |
 | Adapter registry | 将 inbound/outbound 收成按 `channel` 路由的 registry，弱化 listener 对 presence 的特殊分支 |
 | Worker 与 tick 协同 | idle 时也可按较短 interval 触发 presence（不仅 5min tick），强化「持续在场」 |
+| ~~Daemon/Channel 韧性~~ | ✅ channel worker-state 原子重试写入；loop 心跳写失败降级；长期运行推荐 `--domain cycle` / `--domain channel` 分进程（见 §8） |
 | 合并 legacy | presence 稳定后默认 `legacy_reply: false`，逐步废弃 `channel_reply` / `channel_watch` 中心地位 |
 | Viewer | `channel_presence_*` 事件中文标签；presence-state 游标与 `channel_presence` intelligence 面板 |
 | LLM 输出校验 | 可选 post-check：回复中的 `npm run jea` 子串必须匹配 affordances 菜单 |
 
 ---
 
-## 附：本轮对话问题—思考—方案—执行对照
+## 8. Daemon/Channel 韧性（2026-06-02 增补）
+
+### 问题
+
+`domain=all` 下 cycle 与 channel 在同一 Node 进程内 `Promise.all` 并行。Channel worker 写 `data/channel/worker-state.json` 时若 Windows 上 `rename` 返回 `EPERM`，旧实现会冒泡为 `uncaughtException`，整个 daemon（含正在跑的 cycle step）一起退出。
+
+### 修复
+
+| 层 | 改动 |
+| --- | --- |
+| 写入可靠性 | `src/channel/worker-state.mjs` 改用 `writeJsonAtomic`（与 evolution task queue 一致，重试 `EPERM`/`EBUSY`/`EACCES`） |
+| 故障降级 | `safeUpdateChannelWorkerHeartbeat()`：loop 内心跳写失败记 `channel_worker_state_write_failed`，不杀进程；create/start 阶段仍 fail-fast |
+| 运行隔离 | 长期运行推荐分进程：`jea daemon start --domain cycle` 与 `--domain channel` 各开一终端 |
+
+### 架构不变量
+
+- Cycle 队列与 channel 队列仍分离；channel 通过 `buildDaemonProjection` 只读 cycle 状态生成 attention signals。
+- `domain=all` 默认语义未改；后续可选 supervisor 子进程化，不在本轮范围。
+
+---
 
 | 阶段 | 内容 |
 | --- | --- |

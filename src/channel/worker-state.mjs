@@ -1,5 +1,7 @@
 import { existsSync } from 'node:fs';
-import { readJsonSafe, writeJsonFile } from '../cli/utils/files.mjs';
+import { readJsonSafe } from '../cli/utils/files.mjs';
+import { writeJsonAtomic } from '../cli/utils/atomic-json-write.mjs';
+import { recordChannelEvent } from './audit.mjs';
 import {
   defaultWorkerId,
   isWorkerFresh,
@@ -22,8 +24,22 @@ export function readChannelWorkerState(root, subject) {
 }
 
 export function writeChannelWorkerState(root, subject, state) {
-  writeJsonFile(channelWorkerStatePath(root, subject), state);
+  writeJsonAtomic(channelWorkerStatePath(root, subject), state);
   return state;
+}
+
+export function safeUpdateChannelWorkerHeartbeat(root, subject, patch = {}) {
+  try {
+    return updateChannelWorkerHeartbeat(root, subject, patch);
+  } catch (err) {
+    recordChannelEvent(root, subject, {
+      type: 'channel_worker_state_write_failed',
+      status: 'error',
+      error_code: err?.code ?? null,
+      error: err?.message || String(err),
+    });
+    return null;
+  }
 }
 
 export function createChannelWorkerState(root, subject, {
