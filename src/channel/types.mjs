@@ -2,16 +2,21 @@ export const CHANNEL_TASK_TYPES = Object.freeze([
   'channel_inbound',
   'channel_ingest',
   'channel_presence',
-  'channel_reply',
-  'channel_watch',
   'channel_notify',
   'channel_retry',
 ]);
 
-export const CHANNEL_DIRECTIONS = new Set(['inbound', 'outbound']);
+export const DEPRECATED_CHANNEL_TASK_TYPES = Object.freeze([
+  'channel_reply',
+  'channel_watch',
+]);
 
 export function isChannelTaskType(type) {
   return CHANNEL_TASK_TYPES.includes(type);
+}
+
+export function isDeprecatedChannelTaskType(type) {
+  return DEPRECATED_CHANNEL_TASK_TYPES.includes(type);
 }
 
 export function nowIso() {

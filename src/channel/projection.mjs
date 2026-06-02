@@ -13,10 +13,20 @@ import {
   getFeishuListenerStatus,
 } from './adapters/feishu/listener.mjs';
 import { resolveFeishuConfig, feishuConfigForApi } from './adapters/feishu/config.mjs';
-import { replyConfigForApi, resolveReplyConfig } from './reply.mjs';
 import { presenceConfigForApi, resolvePresenceConfig } from './presence-config.mjs';
 import { readJsonSafe } from '../cli/utils/files.mjs';
 import { channelPresenceStatePath } from './paths.mjs';
+import { DEPRECATED_CHANNEL_TASK_TYPES } from './types.mjs';
+
+function listDeprecatedQueueTasks(queue) {
+  return (queue.tasks ?? [])
+    .filter((task) => DEPRECATED_CHANNEL_TASK_TYPES.includes(task.type))
+    .map((task) => ({
+      task_id: task.task_id,
+      type: task.type,
+      status: task.status,
+    }));
+}
 
 export function buildChannelProjection(root, subject, { heartbeatStaleMs = 60_000, eventLimit = 20 } = {}) {
   const queue = readChannelTaskQueue(root, subject);
@@ -30,11 +40,23 @@ export function buildChannelProjection(root, subject, { heartbeatStaleMs = 60_00
   const reloadState = readChannelReloadState(root, subject);
   const reloadRequest = readChannelReloadRequest(root, subject);
   const expectedFingerprint = feishuListenerConfigFingerprint(feishuConfig);
+  const deprecatedTasks = listDeprecatedQueueTasks(queue);
   const health = (() => {
-    if (worker.zombie) return { status: 'worker_zombie', ok: false, reasons: ['Channel worker pid is not alive'] };
-    if (worker.stale) return { status: 'stale', ok: false, reasons: ['Channel worker heartbeat is stale'] };
+    const reasons = [];
+    if (worker.zombie) reasons.push('Channel worker pid is not alive');
+    if (worker.stale) reasons.push('Channel worker heartbeat is stale');
     if ((summary.counts.pending ?? 0) > 0 && !worker.running) {
-      return { status: 'blocked', ok: false, reasons: ['Channel tasks are pending without a fresh worker'] };
+      reasons.push('Channel tasks are pending without a fresh worker');
+    }
+    if (deprecatedTasks.length) {
+      reasons.push(`Deprecated channel tasks in queue: ${deprecatedTasks.map((t) => t.type).join(', ')}`);
+    }
+    if (reasons.length) {
+      return {
+        status: worker.zombie ? 'worker_zombie' : (worker.stale ? 'stale' : 'blocked'),
+        ok: false,
+        reasons,
+      };
     }
     return { status: worker.running ? 'healthy' : 'idle', ok: true, reasons: [] };
   })();
@@ -46,6 +68,7 @@ export function buildChannelProjection(root, subject, { heartbeatStaleMs = 60_00
     tasks: {
       total: summary.total,
       counts: summary.counts,
+      deprecated: deprecatedTasks,
       next_task: summary.next_task ? {
         task_id: summary.next_task.task_id,
         type: summary.next_task.type,
@@ -82,7 +105,6 @@ export function buildChannelProjection(root, subject, { heartbeatStaleMs = 60_00
     },
     feishu: {
       config: feishuConfigForApi(feishuConfig),
-      reply: replyConfigForApi(resolveReplyConfig(root, subject)),
       listener: {
         ...listenerStatus,
         expected_config_fingerprint: expectedFingerprint,

@@ -89,7 +89,8 @@ export function resolveFeishuConfig(root, subject, overrides = {}) {
   const prefixed = subjectPrefixedEnvNames(subject);
 
   const mock = overrides.mock
-    ?? envFlag(block.mock)
+    ?? (block.mock === true || block.mock === 'true')
+    ?? (typeof block.mock === 'string' && !/^(true|false|1|0)$/i.test(block.mock) ? envFlag(block.mock) : false)
     ?? envFlag(readEnv(prefixed.mock))
     ?? envFlag('JEA_CHANNEL_FEISHU_MOCK')
     ?? envFlag('JEA_CHANNEL_LARK_MOCK');
@@ -137,7 +138,6 @@ export function resolveFeishuConfig(root, subject, overrides = {}) {
 
   const bindSettings = resolveBindSettings(block, subject);
   const operatorBinding = readOperatorBinding(root, subject);
-  const replyBlock = block.reply ?? {};
   const base = {
     subject,
     mock: Boolean(mock),
@@ -166,29 +166,6 @@ export function resolveFeishuConfig(root, subject, overrides = {}) {
     bindToken: bindSettings.token,
     bindTokenEnv: bindSettings.tokenEnv,
     operatorBinding,
-    reply: {
-      mode: replyBlock.mode ?? 'guarded',
-      on_inbound: replyBlock.on_inbound ?? replyBlock.onInbound ?? true,
-      proactive: replyBlock.proactive,
-      reply_observations: replyBlock.reply_observations ?? replyBlock.replyObservations ?? false,
-      cooldown_ms: replyBlock.cooldown_ms ?? replyBlock.cooldownMs ?? 30 * 60 * 1000,
-      max_messages_per_hour: replyBlock.max_messages_per_hour ?? replyBlock.maxMessagesPerHour ?? 0,
-      llm_draft: {
-        enabled: Boolean(replyBlock.llm_draft?.enabled ?? replyBlock.llmDraft?.enabled ?? false),
-        timeout: replyBlock.llm_draft?.timeout ?? replyBlock.llmDraft?.timeout ?? 20,
-        allowed_reasons: replyBlock.llm_draft?.allowed_reasons
-          ?? replyBlock.llmDraft?.allowedReasons
-          ?? undefined,
-      },
-      llm_decision: {
-        enabled: Boolean(replyBlock.llm_decision?.enabled
-          ?? replyBlock.llmDecision?.enabled
-          ?? replyBlock.mode === 'llm_autonomous'),
-        timeout: replyBlock.llm_decision?.timeout ?? replyBlock.llmDecision?.timeout ?? 20,
-        thinking: replyBlock.llm_decision?.thinking ?? replyBlock.llmDecision?.thinking ?? 'low',
-      },
-      templates: replyBlock.templates ?? {},
-    },
   };
   return mergeOperatorBinding(base, operatorBinding);
 }
@@ -211,24 +188,6 @@ export function feishuConfigForApi(config) {
     requireMention: config.requireMention,
     operator: operatorBindingForApi(config.operatorBinding, config),
     bind_phrase: config.bindPhrase ?? DEFAULT_BIND_PHRASE,
-    reply: config.reply ? {
-      mode: config.reply.mode,
-      on_inbound: config.reply.on_inbound,
-      proactive: config.reply.proactive ?? (config.reply.mode !== 'off' && config.reply.mode !== 'audit_only'),
-      reply_observations: config.reply.reply_observations,
-      cooldown_ms: config.reply.cooldown_ms,
-      max_messages_per_hour: config.reply.max_messages_per_hour,
-      llm_draft: config.reply.llm_draft ? {
-        enabled: Boolean(config.reply.llm_draft.enabled),
-        timeout: config.reply.llm_draft.timeout,
-        allowed_reasons: config.reply.llm_draft.allowed_reasons ?? null,
-      } : null,
-      llm_decision: config.reply.llm_decision ? {
-        enabled: Boolean(config.reply.llm_decision.enabled),
-        timeout: config.reply.llm_decision.timeout,
-        thinking: config.reply.llm_decision.thinking,
-      } : null,
-    } : null,
   };
 }
 

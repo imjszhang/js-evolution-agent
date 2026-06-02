@@ -7,8 +7,7 @@ import { writePendingInbound, listPendingInbound, listOutboxPending, writeOutbox
 import { normalizeOutboundMessage } from '../../channel/types.mjs';
 import { enqueueChannelTask, readChannelTaskQueue } from '../../channel/task-queue.mjs';
 import { runChannelTick } from '../../channel/dispatch.mjs';
-import { runChannelWatchTask, runChannelNotifyTask } from '../../channel/tasks.mjs';
-import { isPresenceEnabled } from '../../channel/presence-config.mjs';
+import { runChannelNotifyTask } from '../../channel/tasks.mjs';
 import { runChannelPresenceTask } from '../../channel/presence.mjs';
 import { channelFeishuCommand } from './channel-feishu.mjs';
 import { resolveFeishuConfig } from '../../channel/adapters/feishu/config.mjs';
@@ -52,6 +51,9 @@ function printStatus(projection) {
   if (projection.presence?.config) {
     console.log(`presence: enabled=${projection.presence.config.enabled} planner=${projection.presence.config.planner ?? '-'}`);
   }
+  if (projection.tasks.deprecated?.length) {
+    console.log(`deprecated tasks: ${projection.tasks.deprecated.map((t) => `${t.type}(${t.status})`).join(', ')}`);
+  }
 }
 
 function buildFeishuDoctorHints(root, subject, projection) {
@@ -74,6 +76,14 @@ function buildFeishuDoctorHints(root, subject, projection) {
   }
   if (projection.feishu?.listener?.fingerprint_stale) {
     hints.push('飞书 listener 使用的配置 fingerprint 已过期；等待 channel daemon reload 或检查 reload-state。');
+  }
+  if (projection.tasks.deprecated?.length) {
+    hints.push(
+      '队列中存在已废弃的 channel_reply/channel_watch 任务。请 jea daemon tasks cancel 后依赖 channel_presence 重新表达。',
+    );
+  }
+  if (!projection.presence?.config?.enabled) {
+    hints.push('channels.presence.enabled 为 false；channel 不会自动表达。请启用 presence 或检查 subjects.json。');
   }
   return hints;
 }
@@ -120,14 +130,11 @@ export async function channelCommand({ subcommand, flags = {}, args = [], root =
         return 2;
       }
       const written = writePendingInbound(root, subject, payload, { label: flags.name ?? 'manual' });
-      const presenceOn = isPresenceEnabled(root, subject);
       const task = enqueueChannelTask(root, subject, {
-        type: presenceOn ? 'channel_presence' : 'channel_ingest',
-        priority: presenceOn ? 15 : 20,
-        input: presenceOn ? { run_ingest: true } : {},
-        idempotencyKey: presenceOn
-          ? `${subject}:channel_presence:manual`
-          : `${subject}:channel_ingest:manual`,
+        type: 'channel_presence',
+        priority: 15,
+        input: { run_ingest: true },
+        idempotencyKey: `${subject}:channel_presence:manual`,
       });
       const result = { subject, ...written, task: task.task, created: task.created };
       if (flags.json) console.log(JSON.stringify(result, null, 2));
@@ -188,13 +195,15 @@ export async function channelCommand({ subcommand, flags = {}, args = [], root =
   }
 
   if (subcommand === 'work') {
-    const action = args[0] ?? 'watch';
-    const result = action === 'notify'
-      ? await runChannelNotifyTask(root, subject, flags)
-      : await runChannelWatchTask(root, subject, flags);
-    if (flags.json) console.log(JSON.stringify(result, null, 2));
-    else console.log(`channel ${action} complete`);
-    return 0;
+    const action = args[0] ?? 'notify';
+    if (action === 'notify') {
+      const result = await runChannelNotifyTask(root, subject, flags);
+      if (flags.json) console.log(JSON.stringify(result, null, 2));
+      else console.log('channel notify complete');
+      return 0;
+    }
+    console.error('Usage: jea channel work notify [--json]');
+    return 2;
   }
 
   if (subcommand === 'presence') {
@@ -239,6 +248,6 @@ export async function channelCommand({ subcommand, flags = {}, args = [], root =
     return projection.health.ok ? 0 : 1;
   }
 
-  console.error('Usage: jea channel <status|events|inbox|outbox|send|tick|work|doctor|feishu> [--subject NAME] [--json]');
+  console.error('Usage: jea channel <status|events|inbox|outbox|send|tick|work|presence|doctor|feishu> [--subject NAME] [--json]');
   return 2;
 }

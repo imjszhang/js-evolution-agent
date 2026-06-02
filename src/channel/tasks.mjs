@@ -3,13 +3,6 @@ import { normalizeInboundPayload, sendOutboundMessage, resolveFeishuConfig } fro
 import { tryHandleFeishuBind } from './adapters/feishu/binding.mjs';
 import { recordChannelEvent } from './audit.mjs';
 import { ingestChannelEnvelope } from './ingest.mjs';
-import { collectAttentionSignals } from './notify.mjs';
-import {
-  applyReplyDecision,
-  decideInboundReplyWithLlm,
-  decideProactiveReply,
-  refineReplyDecisionWithDraft,
-} from './reply.mjs';
 import { enqueueChannelTask } from './task-queue.mjs';
 import {
   hasSeenMessage,
@@ -23,8 +16,7 @@ import {
   readJsonFile,
   writePendingInbound,
 } from './state.mjs';
-import { normalizeOutboundMessage } from './types.mjs';
-import { shouldUseLegacyReplyPipeline } from './presence-config.mjs';
+import { normalizeOutboundMessage, isDeprecatedChannelTaskType } from './types.mjs';
 import { runChannelPresenceTask } from './presence.mjs';
 
 function readJsonStrict(file) {
@@ -121,50 +113,11 @@ export async function runChannelIngestTask(root, subject, input = {}) {
       });
     }
   }
-  const replyItems = [
-    ...processed.map((item) => ({
-      message_id: item.message_id,
-      envelope: item.envelope,
-      ingest_result: item.ingest_result,
-    })),
-    ...skipped.map((item) => {
-      const payload = readJsonFile(item.file);
-      return {
-        message_id: item.message_id,
-        envelope: payload?.envelope,
-        ingest_result: null,
-        skipped: item.reason,
-      };
-    }),
-  ].filter((item) => item.envelope);
-  let replyTask = { created: false, task: null };
-  const useLegacyReply = !input.skip_reply && shouldUseLegacyReplyPipeline(root, subject);
-  if (useLegacyReply && replyItems.length) {
-    replyTask = enqueueReplyTaskForItems(root, subject, replyItems);
-  }
   return {
     processed,
     skipped,
     failed,
-    reply_task: replyTask.task ?? null,
-    reply_created: replyTask.created ?? false,
-    reply_skipped: !useLegacyReply,
   };
-}
-
-function enqueueReplyTaskForItems(root, subject, items) {
-  if (!items.length) return { created: false, reason: 'no_items' };
-  const messageIds = items
-    .map((item) => item.message_id)
-    .filter(Boolean)
-    .sort()
-    .join('|');
-  return enqueueChannelTask(root, subject, {
-    type: 'channel_reply',
-    priority: 25,
-    input: { items },
-    idempotencyKey: `${subject}:channel_reply:${messageIds || Date.now()}`,
-  });
 }
 
 function enqueueNotifyIfOutboxPending(root, subject) {
@@ -176,59 +129,6 @@ function enqueueNotifyIfOutboxPending(root, subject) {
     priority: 40,
     idempotencyKey: `${subject}:channel_notify:pending`,
   });
-}
-
-export async function runChannelReplyTask(root, subject, input = {}) {
-  const items = Array.isArray(input.items) ? input.items : (input.envelope ? [input] : []);
-  const results = [];
-  for (const item of items) {
-    const initialDecision = await decideInboundReplyWithLlm(root, subject, {
-      envelope: item.envelope,
-      ingestResult: item.ingest_result,
-      recentState: { skipped: item.skipped },
-    });
-    const decision = await refineReplyDecisionWithDraft(root, subject, initialDecision);
-    const result = applyReplyDecision(root, subject, decision, { reason: 'inbound_reply' });
-    results.push({
-      message_id: item.message_id ?? item.envelope?.message_id ?? null,
-      decision,
-      result,
-    });
-  }
-  const notifyTask = enqueueNotifyIfOutboxPending(root, subject);
-  return { results, notify_task: notifyTask.task ?? null, notify_created: notifyTask.created ?? false };
-}
-
-export async function runChannelWatchTask(root, subject, input = {}) {
-  const signals = collectAttentionSignals(root, subject);
-  const results = [];
-  for (const signal of signals) {
-    const initialDecision = decideProactiveReply(root, subject, { signal });
-    const decision = await refineReplyDecisionWithDraft(root, subject, initialDecision);
-    const result = applyReplyDecision(root, subject, decision, {
-      dryRun: Boolean(input.dry_run),
-      reason: signal.type,
-    });
-    results.push({ signal, decision, result });
-  }
-  const enqueued = results.filter((item) => item.result?.applied);
-  const skipped = results.filter((item) => item.result?.skipped);
-  const notifyTask = enqueueNotifyIfOutboxPending(root, subject);
-  recordChannelEvent(root, subject, {
-    type: 'channel_watch_completed',
-    status: 'ok',
-    signal_count: signals.length,
-    enqueued_count: enqueued.length,
-    skipped_count: skipped.length,
-  });
-  return {
-    signals,
-    enqueued,
-    skipped,
-    results,
-    notify_task: notifyTask.task ?? null,
-    notify_created: notifyTask.created ?? false,
-  };
 }
 
 export async function runChannelNotifyTask(root, subject, input = {}) {
@@ -273,6 +173,11 @@ export async function runChannelNotifyTask(root, subject, input = {}) {
 
 export async function runChannelTask(root, subject, task) {
   const input = task.input ?? {};
+  if (isDeprecatedChannelTaskType(task.type)) {
+    throw new Error(
+      `Deprecated channel task type "${task.type}". Cancel the task and use channel_presence instead.`,
+    );
+  }
   switch (task.type) {
     case 'channel_inbound':
       return runChannelInboundTask(root, subject, input);
@@ -280,10 +185,6 @@ export async function runChannelTask(root, subject, task) {
       return runChannelIngestTask(root, subject, input);
     case 'channel_presence':
       return runChannelPresenceTask(root, subject, input);
-    case 'channel_reply':
-      return runChannelReplyTask(root, subject, input);
-    case 'channel_watch':
-      return runChannelWatchTask(root, subject, input);
     case 'channel_notify':
     case 'channel_retry':
       return runChannelNotifyTask(root, subject, input);
@@ -291,3 +192,5 @@ export async function runChannelTask(root, subject, task) {
       throw new Error(`Unsupported channel task type: ${task.type}`);
   }
 }
+
+export { enqueueNotifyIfOutboxPending };

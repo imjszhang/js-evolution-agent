@@ -509,7 +509,7 @@ channel worker 每轮 loop 会：
 
 - 重新加载项目根 `.env`（`loadProjectEnv`）。
 - 消费 `reload-request.json`。
-- 调用 `ensureFeishuListener()`：凭据/domain/listener 开关变化时自动重启 WS listener；仅 allowlist、reply、bind、operator binding 变化时只刷新 policy，不重连。
+- 调用 `ensureFeishuListener()`：凭据/domain/listener 开关变化时自动重启 WS listener；仅 allowlist、bind、operator binding 变化时只刷新 policy，不重连。
 
 因此 **setup 写入 `.env` 后，已运行的 `jea daemon start --domain channel` 通常无需重启**；数秒内应出现 `feishu_listener_started` 或 `channel_config_reloaded` 事件。
 
@@ -524,13 +524,13 @@ channel worker 每轮 loop 会：
 - 待核实或下一轮关注事项写入 operator brief。
 - 普通外部消息写入 `intel_observations` 作为可推翻 evidence。
 
-出站由 `channel_notify` 发送 outbox；表达决策见下文 presence loop 或 legacy `channel_reply` / `channel_watch`。
+出站由 `channel_notify` 发送 outbox；**所有对外表达**由 presence loop（`channel_presence`）统一决策。旧 `channel_reply` / `channel_watch` 任务类型已移除；队列中若仍有此类任务，`jea channel doctor` 会提示取消。
 
 ### Channel Presence Loop（`channels.presence`，transport-agnostic）
 
-Channel 可由 **presence loop** 驱动（`channel_presence` 任务），而非仅“有消息才回复”。每轮 tick/worker 周期主体感知 channel + daemon + intelligence 摘要，再决定说、问、报、等或沉默。飞书只是 transport adapter；presence 模块不依赖 Feishu。
+Channel 由 **presence loop** 驱动（`channel_presence` 任务），而非“有消息才回复”。tick、飞书 listener、`jea channel inbox put` 均入队 `channel_presence`；任务内可先跑 `channel_ingest`（分类入库），再由 planner 决定说、问、报、等或沉默。飞书只是 transport adapter。
 
-启用后 `runChannelTick` 入队 `channel_presence`（默认不再单独入队 `channel_watch`）；`channel_ingest` 可在 presence 任务内执行且默认 **不** 再自动入队 `channel_reply`（除非 `legacy_reply: true`）。
+`runChannelTick` 每轮入队 `channel_presence`；有待发 outbox 时另入队 `channel_notify`。`channel_ingest` 仅作为 presence 内部步骤或独立调试，**不会**再自动入队回复任务。
 
 `policies/subjects.json` 示例：
 
@@ -538,61 +538,36 @@ Channel 可由 **presence loop** 驱动（`channel_presence` 任务），而非�
 "channels": {
   "presence": {
     "enabled": true,
-    "planner": "deterministic",
+    "planner": "llm",
     "max_actions_per_tick": 2,
     "cooldown_ms": 1800000,
     "max_messages_per_hour": 8,
-    "legacy_reply": false,
     "default_target": "oc_xxx"
   }
 }
 ```
 
-- `planner`: `deterministic`（规则）或 `llm`（DeepSeek，需 `DEEPSEEK_API_KEY`）。
-- `legacy_reply`: `true` 时保留旧 `channel_reply` / `channel_watch` 管线；`false` 时由 presence 统一表达。
-- 状态：`data/channel/presence-state.json`；事件：`channel_presence_decided` / `channel_presence_silenced` / `channel_presence_action_applied`。
+- `enabled`: 默认 `true`；设为 `false` 时 presence 任务跳过表达（仍可做 ingest）。
+- `planner`: `deterministic`（规则）或 `llm`（DeepSeek，需 `DEEPSEEK_API_KEY`）；LLM 引用 `affordances.operator_commands` 中的真实 CLI，禁止自造命令。
+- `cooldown_ms` / `max_messages_per_hour`: 出站节流。
+- 游标：`data/channel/presence-state.json`（handled message/signal，非长期对话记忆）。
+- 交互记忆：写入 `intel_observations`（`source: channel_presence`），与 evolution cycle 共用。
+- 事件：`channel_presence_decided` / `channel_presence_silenced` / `channel_presence_action_applied` / `channel_presence_completed`。
 - 允许动作：`send_message`（写 outbox）、`write_operator_brief`、`record_observation`、`silence`；**不能**直接 `approval_granted` 或改 decision queue。
 
-### Channel 回复决策（`channels.feishu.reply`，legacy）
+手工跑一轮：`npm run jea -- channel presence run --subject NAME`。`jea channel work` 仅保留 `notify` 子命令（发送 pending outbox）。
 
-未启用 `channels.presence` 时，入站消息先由 `channel_ingest` 写入 operator brief / operator fact / observation，再由 `channel_reply` 判断是否回复。启用 presence 且 `legacy_reply: false` 时，本节仅作 Feishu reply 配置参考，主动/入站表达以 presence 为准。出站通知在 legacy 模式下仍可由 `channel_watch` 观察 daemon projection 等生成 attention signals，经 `channel_reply` 决定是否发话，再由 `channel_notify` 发送。
-
-入站消息先由 `channel_ingest` 写入 operator brief / operator fact / observation，再由 `channel_reply` 判断是否回复。回复只是外部表达，不会直接授予 `approval_granted`，也不会把回复文本写成事实。默认 `guarded` 模式下：
+确定性 planner 默认行为（与旧 guarded reply 类似）：
 
 | 输入/信号 | 默认行为 |
 | --- | --- |
-| `approval_request` | 回复“已记录为下一轮审批意图；不会直接发布或授权” |
-| `verification_request` | 回复“已记录为下一轮核实请求” |
-| `operator_fact` | 回复“已记录为高置信 operator fact” |
-| 普通 `observation` | 默认不回复；`reply_observations: true` / `mode: autonomous` 可回寒暄；`mode: llm_autonomous` 可由 LLM 自主决定是否闲聊 |
-| `task_failed` / `daemon_health` / `cycle_drift` / `cycle_completed` / `requires_human_review` / `long_idle` | 按策略主动通知，受 cooldown 与防刷屏限制 |
+| 新入站 `approval_request` | ack「已记录为下一轮审批意图」 |
+| 新入站 `verification_request` | ack「已记录为下一轮核实请求」 |
+| 新入站 `operator_fact` | ack「已记录为高置信 operator fact」 |
+| 新入站寒暄类 `observation` | 简短在场确认 |
+| 未 handled 的 `task_failed` / `daemon_health` / `cycle_drift` / `requires_human_review` 等 | 主动通知（受 cooldown） |
 
-可选配置（位于 subject 的 `channels.feishu.reply`）：
-
-```json
-{
-  "mode": "guarded",
-  "on_inbound": true,
-  "proactive": true,
-  "reply_observations": false,
-  "cooldown_ms": 1800000,
-  "max_messages_per_hour": 8,
-  "llm_decision": {
-    "enabled": false,
-    "timeout": 20,
-    "thinking": "low"
-  },
-  "llm_draft": {
-    "enabled": false,
-    "allowed_reasons": ["proactive_signal", "greeting_ack"],
-    "timeout": 20
-  }
-}
-```
-
-`mode` 可为 `off | audit_only | guarded | autonomous | llm_autonomous`。`llm_autonomous` 会让 LLM 为入站消息先产出结构化回复决策（`send|none` + 文案），入库分类不变；硬兜底仍禁止直接授权、声称已执行动作、泄露密钥，并继续受 cooldown / `max_messages_per_hour` 限制。`max_messages_per_hour=0` 表示不限制。`llm_draft.enabled` 默认关闭；开启后只为 `allowed_reasons` 中的低风险回复生成草稿。
-
-修改 `channels.feishu.reply` 或 allowlist/bind 后，运行中的 channel daemon 会在下一轮 loop 热刷新 policy，**通常无需重启**。修改 `app_id` / `app_secret` 或关闭 listener 时，daemon 会自动重建 WS 连接。升级 JEA 代码本身仍需重启 daemon 进程。
+修改 `channels.presence` 或 allowlist/bind 后，运行中的 channel daemon 会在下一轮 loop 读盘生效。修改 `app_id` / `app_secret` 或关闭 listener 时，daemon 会自动重建 WS 连接。**升级 JEA 代码后需重启 channel daemon。**
 
 ### 私聊绑定（`JEA BIND`）
 

@@ -323,7 +323,7 @@ npm run test -- test/channel.test.mjs
 | Adapter registry | 将 inbound/outbound 收成按 `channel` 路由的 registry，弱化 listener 对 presence 的特殊分支 |
 | Worker 与 tick 协同 | idle 时也可按较短 interval 触发 presence（不仅 5min tick），强化「持续在场」 |
 | ~~Daemon/Channel 韧性~~ | ✅ channel worker-state 原子重试写入；loop 心跳写失败降级；长期运行推荐 `--domain cycle` / `--domain channel` 分进程（见 §8） |
-| 合并 legacy | presence 稳定后默认 `legacy_reply: false`，逐步废弃 `channel_reply` / `channel_watch` 中心地位 |
+| ~~合并 legacy~~ | ✅ 已移除 `channel_reply` / `channel_watch` / `reply.mjs` / `channels.feishu.reply`；tick/listener/inbox 统一入队 `channel_presence` |
 | Viewer | `channel_presence_*` 事件中文标签；presence-state 游标与 `channel_presence` intelligence 面板 |
 | LLM 输出校验 | 可选 post-check：回复中的 `npm run jea` 子串必须匹配 affordances 菜单 |
 
@@ -355,4 +355,4 @@ npm run test -- test/channel.test.mjs
 | 问题 | 理解 Channel 与 worker；用户要 subject **活过来**、由 **channel loop 驱动**；记忆不能与 cycle 分离；试运行出现重复回复与自造 CLI |
 | 思考 | event-driven 管线不够；LLM 不能仅润色模板；记忆应进 intelligence；`recent_ingested` 需拆 new/background；CLI 需 affordances 锚定 |
 | 方案 | `channel_presence` + `channels.presence`；Memory Unification：`presence-state` 游标 + `intel_observations` 交互事实 + planner/executor 去重 |
-| 执行 | presence 模块族 + `state.mjs` 游标 API + `presence-memory` / `presence-affordances`；测试 31/31；`agentank-tank` 已配置 presence |
+| 执行 | presence 模块族 + Memory Unification；legacy cleanup 移除 reply/watch 管线；`agentank-tank` 已配置 presence |

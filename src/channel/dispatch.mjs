@@ -2,7 +2,6 @@ import { enqueueChannelTask, readChannelTaskQueue } from './task-queue.mjs';
 import { listOutboxPending, listPendingInbound } from './state.mjs';
 import { collectAttentionSignals } from './notify.mjs';
 import { recordChannelEvent } from './audit.mjs';
-import { isPresenceEnabled } from './presence-config.mjs';
 
 function hasActiveTask(queue, type) {
   return (queue.tasks ?? []).some((task) => task.type === type && ['pending', 'running'].includes(task.status));
@@ -32,21 +31,21 @@ function enqueueIfNeeded(root, subject, type, { priority = 100, input = {}, reas
 export function runChannelTick(root, subject, input = {}) {
   const tickId = input.tick_id ?? new Date().toISOString().slice(0, 16);
   const enqueued = [];
-  const presenceOn = isPresenceEnabled(root, subject);
-  if (presenceOn) {
+
+  enqueued.push(enqueueIfNeeded(root, subject, 'channel_presence', {
+    priority: 15,
+    input: { tick_id: tickId, run_ingest: true },
+    reason: 'presence_loop',
+  }));
+
+  if (listPendingInbound(root, subject, { limit: 1 }).length) {
     enqueued.push(enqueueIfNeeded(root, subject, 'channel_presence', {
-      priority: 15,
+      priority: 14,
       input: { tick_id: tickId, run_ingest: true },
-      reason: 'presence_loop',
-    }));
-  }
-  if (!presenceOn && listPendingInbound(root, subject, { limit: 1 }).length) {
-    enqueued.push(enqueueIfNeeded(root, subject, 'channel_ingest', {
-      priority: 20,
-      input: { tick_id: tickId },
       reason: 'pending_inbound',
     }));
   }
+
   if (input.poll_inbound) {
     enqueued.push(enqueueIfNeeded(root, subject, 'channel_inbound', {
       priority: 10,
@@ -54,14 +53,9 @@ export function runChannelTick(root, subject, input = {}) {
       reason: 'poll_inbound',
     }));
   }
+
   const signals = collectAttentionSignals(root, subject);
-  if (signals.length && !presenceOn) {
-    enqueued.push(enqueueIfNeeded(root, subject, 'channel_watch', {
-      priority: 30,
-      input: { tick_id: tickId },
-      reason: 'attention_signals',
-    }));
-  }
+
   if (listOutboxPending(root, subject, { limit: 1 }).length) {
     enqueued.push(enqueueIfNeeded(root, subject, 'channel_notify', {
       priority: 40,
@@ -69,6 +63,7 @@ export function runChannelTick(root, subject, input = {}) {
       reason: 'pending_outbox',
     }));
   }
+
   recordChannelEvent(root, subject, {
     type: 'channel_tick',
     status: 'ok',
