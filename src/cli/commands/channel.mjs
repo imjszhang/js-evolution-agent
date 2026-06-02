@@ -8,6 +8,8 @@ import { normalizeOutboundMessage } from '../../channel/types.mjs';
 import { enqueueChannelTask, readChannelTaskQueue } from '../../channel/task-queue.mjs';
 import { runChannelTick } from '../../channel/dispatch.mjs';
 import { runChannelWatchTask, runChannelNotifyTask } from '../../channel/tasks.mjs';
+import { isPresenceEnabled } from '../../channel/presence-config.mjs';
+import { runChannelPresenceTask } from '../../channel/presence.mjs';
 import { channelFeishuCommand } from './channel-feishu.mjs';
 import { resolveFeishuConfig } from '../../channel/adapters/feishu/config.mjs';
 
@@ -46,6 +48,9 @@ function printStatus(projection) {
   }
   if (projection.feishu?.reload?.pending) {
     console.log('feishu reload: pending');
+  }
+  if (projection.presence?.config) {
+    console.log(`presence: enabled=${projection.presence.config.enabled} planner=${projection.presence.config.planner ?? '-'}`);
   }
 }
 
@@ -115,10 +120,14 @@ export async function channelCommand({ subcommand, flags = {}, args = [], root =
         return 2;
       }
       const written = writePendingInbound(root, subject, payload, { label: flags.name ?? 'manual' });
+      const presenceOn = isPresenceEnabled(root, subject);
       const task = enqueueChannelTask(root, subject, {
-        type: 'channel_ingest',
-        priority: 20,
-        idempotencyKey: `${subject}:channel_ingest:manual`,
+        type: presenceOn ? 'channel_presence' : 'channel_ingest',
+        priority: presenceOn ? 15 : 20,
+        input: presenceOn ? { run_ingest: true } : {},
+        idempotencyKey: presenceOn
+          ? `${subject}:channel_presence:manual`
+          : `${subject}:channel_ingest:manual`,
       });
       const result = { subject, ...written, task: task.task, created: task.created };
       if (flags.json) console.log(JSON.stringify(result, null, 2));
@@ -185,6 +194,27 @@ export async function channelCommand({ subcommand, flags = {}, args = [], root =
       : await runChannelWatchTask(root, subject, flags);
     if (flags.json) console.log(JSON.stringify(result, null, 2));
     else console.log(`channel ${action} complete`);
+    return 0;
+  }
+
+  if (subcommand === 'presence') {
+    const action = args[0] ?? 'run';
+    if (action !== 'run') {
+      console.error('Usage: jea channel presence [run] [--json] [--dry-run]');
+      return 2;
+    }
+    const result = await runChannelPresenceTask(root, subject, {
+      run_ingest: flags['no-ingest'] !== true && flags['no-ingest'] !== 'true',
+      dry_run: Boolean(flags['dry-run']),
+    });
+    if (flags.json) console.log(JSON.stringify(result, null, 2));
+    else {
+      console.log(`presence: stance=${result.plan?.stance} planner=${result.plan?.planner} applied=${result.execution?.applied}`);
+      if (result.plan?.llm) console.log(`llm: ${result.plan.llm.status}${result.plan.llm.reason ? ` (${result.plan.llm.reason})` : ''}`);
+    }
+    if (result.notify_created) {
+      await runChannelNotifyTask(root, subject, { limit: flags.limit ?? 10 });
+    }
     return 0;
   }
 
