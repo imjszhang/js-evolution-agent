@@ -162,7 +162,10 @@ export function initChannelCoordinatorState(root, subject, {
       heartbeat_at: nowIso(),
       stop_requested_at: null,
       stopped_at: null,
+      pid,
+      worker_id: `channel-coordinator-${pid}`,
     };
+    delete state.stop_reason;
     for (const role of roles) {
       if (state.workers?.[role]) {
         state.workers[role] = {
@@ -218,6 +221,10 @@ export function createChannelRoleWorkerState(root, subject, {
     state.heartbeat_at = now;
     state.stop_requested_at = null;
     state.stopped_at = null;
+    state.pid = pid;
+    if (state.coordinator) state.coordinator.pid = pid;
+    state.worker_id = `channel-coordinator-${pid}`;
+    delete state.stop_reason;
     writeChannelWorkerState(root, subject, state);
     return { created: true, role, state: state.workers[role] };
   });
@@ -244,6 +251,13 @@ export function updateChannelRoleWorkerHeartbeat(root, subject, role, patch = {}
       status: patch.status || previous.status || 'running',
     };
     state.heartbeat_at = nowIso();
+    if (state.coordinator) {
+      const coordPid = state.coordinator.pid ?? patch.pid ?? state.pid ?? null;
+      if (coordPid != null) {
+        state.pid = coordPid;
+        state.worker_id = `channel-coordinator-${coordPid}`;
+      }
+    }
     writeChannelWorkerState(root, subject, state);
     return state.workers[role];
   });
