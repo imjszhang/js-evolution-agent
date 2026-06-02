@@ -5,7 +5,16 @@ import { join } from 'node:path';
 import { writeJsonFile } from '../src/cli/utils/files.mjs';
 import { enqueueTask, pendingTasksPath } from '../src/cli/utils/daemon-tasks.mjs';
 import { enqueueChannelTask, readChannelTaskQueue, channelPendingTasksPath } from '../src/channel/task-queue.mjs';
-import { writePendingInbound, listOutboxPending, cooldownActive } from '../src/channel/state.mjs';
+import {
+  writePendingInbound,
+  listOutboxPending,
+  cooldownActive,
+  readPresenceState,
+  isPresenceMessageHandled,
+} from '../src/channel/state.mjs';
+import { createIntelligenceStore } from '../src/intelligence/store.mjs';
+import { isPresenceInteractionRecord } from '../src/channel/presence-memory.mjs';
+import { resolvePresenceAffordances } from '../src/channel/presence-affordances.mjs';
 import { runChannelIngestTask, runChannelReplyTask, runChannelWatchTask } from '../src/channel/tasks.mjs';
 import { collectAttentionSignals } from '../src/channel/notify.mjs';
 import { readPendingOperatorBriefs, writePendingOperatorBrief } from '../src/intelligence/operator-briefs.mjs';
@@ -511,6 +520,15 @@ describe('channel domain', () => {
   });
 
   describe('presence loop', () => {
+    function readPresenceIntel(root) {
+      const runtime = runtimeForSubject(root, 'alpha');
+      const store = createIntelligenceStore({
+        baseDir: join(runtime.runtimeRoot, 'data', 'intelligence'),
+        timezone: 'Asia/Shanghai',
+      });
+      return store.readRecentIntel({ days: 7, limit: 50 }).filter(isPresenceInteractionRecord);
+    }
+
     it('builds presence context without requiring feishu-only modules', () => {
       const root = makeRoot({
         presence: {
@@ -524,6 +542,18 @@ describe('channel domain', () => {
       expect(ctx.subject).toBe('alpha');
       expect(ctx.identity.persona).toContain('小测');
       expect(ctx.presence.enabled).toBe(true);
+      expect(ctx.channel.new_messages).toEqual([]);
+      expect(ctx.channel.background_messages).toEqual([]);
+      expect(ctx.affordances.operator_commands.length).toBeGreaterThan(0);
+      expect(ctx.channel.recent_presence_interactions).toEqual([]);
+    });
+
+    it('exposes grounded affordances with evolution-mode CLI', () => {
+      const root = makeRoot({ presence: { enabled: true } });
+      const affordances = resolvePresenceAffordances(root, 'alpha');
+      const cmd = affordances.operator_commands.find((c) => c.id === 'daemon_evolution_mode_continuous');
+      expect(cmd.cmd).toContain('daemon evolution-mode set continuous');
+      expect(cmd.cmd).toContain('--subject alpha');
     });
 
     it('runChannelTick enqueues channel_presence when presence is enabled', () => {
@@ -564,6 +594,33 @@ describe('channel domain', () => {
       expect(result.execution.applied).toBeGreaterThan(0);
       expect(listOutboxPending(root, 'alpha', { limit: 5 }).length).toBeGreaterThan(0);
       expect(result.ingest_pass?.reply_skipped).toBe(true);
+      expect(isPresenceMessageHandled(root, 'alpha', 'om_presence_approval')).toBe(true);
+      const intel = readPresenceIntel(root);
+      expect(intel.some((r) => r.source === 'channel_presence' && r.interaction_kind === 'send_message')).toBe(true);
+    });
+
+    it('does not reply again to handled inbound messages', async () => {
+      const root = makeRoot({
+        presence: {
+          enabled: true,
+          planner: 'deterministic',
+          legacy_reply: false,
+          default_target: 'oc_operator',
+        },
+      });
+      writePendingInbound(root, 'alpha', {
+        messageId: 'om_presence_dedup',
+        chatId: 'oc_operator',
+        senderId: 'ou_operator',
+        content: '同意发布',
+        contentType: 'text',
+      });
+      const first = await runChannelPresenceTask(root, 'alpha', { run_ingest: true });
+      expect(first.plan.stance).toBe('speak');
+      const second = await runChannelPresenceTask(root, 'alpha', { run_ingest: false });
+      expect(second.plan.stance).toBe('silence');
+      expect(second.plan.reason).toBe('nothing_to_express');
+      expect(listOutboxPending(root, 'alpha', { limit: 10 }).length).toBe(1);
     });
 
     it('records silence when there is nothing to express', async () => {
@@ -577,6 +634,26 @@ describe('channel domain', () => {
       expect(execution.skipped).toBeGreaterThan(0);
     });
 
+    it('recent_presence_interactions come from unified intelligence', async () => {
+      const root = makeRoot({
+        presence: {
+          enabled: true,
+          planner: 'deterministic',
+          default_target: 'oc_operator',
+        },
+      });
+      writePendingInbound(root, 'alpha', {
+        messageId: 'om_intel_memory',
+        chatId: 'oc_operator',
+        content: '你好',
+        contentType: 'text',
+      });
+      await runChannelPresenceTask(root, 'alpha', { run_ingest: true });
+      const ctx = buildPresenceContext(root, 'alpha');
+      expect(ctx.channel.recent_presence_interactions.length).toBeGreaterThan(0);
+      expect(readPresenceState(root, 'alpha').handled_messages.om_intel_memory).toBeDefined();
+    });
+
     it('llm planner can reply to plain observations', async () => {
       const root = makeRoot({
         presence: {
@@ -587,12 +664,14 @@ describe('channel domain', () => {
         },
       });
       const ctx = buildPresenceContext(root, 'alpha');
-      ctx.channel.recent_ingested = [{
+      ctx.channel.new_messages = [{
         message_id: 'om_llm_obs',
         channel: 'test',
         content: '说说你自己',
         ingest_kind: 'observation',
+        presence_handled: false,
       }];
+      ctx.channel.background_messages = [];
       ctx.presence = resolvePresenceConfig(root, 'alpha');
       const plan = await planPresenceWithLlm(ctx, {
         aiClient: {
@@ -604,8 +683,8 @@ describe('channel domain', () => {
               target: 'channel_default',
               text: '我是小测，alpha 的外部接口。',
               reason: 'casual_intro',
+              reply_to_message_id: 'om_llm_obs',
             }],
-            memory: { summary: 'greeted operator' },
           }),
         },
       });

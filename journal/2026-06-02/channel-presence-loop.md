@@ -3,7 +3,7 @@
 > 日期：2026-06-02  
 > 项目：js-evolution-agent  
 > 类型：架构设计 / 功能实现  
-> 来源：Cursor Agent 对话
+> 来源：Cursor Agent 对话（含同日 **Presence Memory Unification** 增补）
 
 ---
 
@@ -13,9 +13,10 @@
 2. [分析过程](#2-分析过程)
 3. [方案设计](#3-方案设计)
 4. [实现要点](#4-实现要点)
-5. [验证与测试](#5-验证与测试)
-6. [后续演化](#6-后续演化)
-7. [附：本轮对话问题—思考—方案—执行对照](#附本轮对话问题思考方案执行对照)
+5. [Presence Memory Unification](#5-presence-memory-unification)
+6. [验证与测试](#6-验证与测试)
+7. [后续演化](#7-后续演化)
+8. [附：本轮对话问题—思考—方案—执行对照](#附本轮对话问题思考方案执行对照)
 
 ---
 
@@ -31,11 +32,13 @@
 
 若继续以 `inbound → ingest → reply` 为中心，即使用 LLM 润色，主体仍像后台任务系统在「收到才动」。这与「活过来」的目标不一致。
 
+**同日后续约束**：外部交互记忆不能与 evolution cycle 分离。Channel 只是同一 subject intelligence 的对外感官与表达；长期记忆进 `intel_observations`，`presence-state.json` 只承担游标、去重与节流机械态。
+
 ---
 
 ## 2. 分析过程
 
-### 2.1 现有 Channel 管线（实现前）
+### 2.1 现有 Channel 管线（presence 实现前）
 
 | 环节 | 行为 |
 | --- | --- |
@@ -65,13 +68,23 @@ Channel = subject 的外部交互循环
 
 ```text
 channel loop 周期性苏醒
-→ observe（channel + daemon + memory + 新消息）
+→ observe（channel + daemon + unified intelligence + 新消息）
 → deliberate（presence planner）
 → act（send / brief / observation / silence）
-→ remember（presence-state + events）
+→ remember（intel_observations + presence-state 游标）
 ```
 
-### 2.4 硬约束（不变）
+### 2.4 Presence 试运行暴露的问题
+
+在 `agentank-tank` 上启用 `planner: llm` 后观察到：
+
+| 现象 | 根因 |
+| --- | --- |
+| 反复围绕旧入站消息发言 | context 用 `recent_ingested` 全量列表，未区分「本轮需回复」与「已处理背景」 |
+| LLM 自造 CLI（如 `jea daemon mode continuous`） | prompt 无 grounded 命令菜单 |
+| 历史 `task_failed` 等 signal 反复 proactive | signal 无 handled 游标，仅靠 cooldown 不足 |
+
+### 2.5 硬约束（不变）
 
 | 约束 | 含义 |
 | --- | --- |
@@ -80,6 +93,7 @@ channel loop 周期性苏醒
 | 不与 Feishu 耦合 | presence 核心模块不 import `adapters/feishu/*`；transport 仅发送层解析 |
 | 可审计 | 沉默也要记 `channel_presence_silenced` |
 | 与 legacy 共存 | `channels.presence.legacy_reply` 控制是否保留旧 `channel_reply` 管线 |
+| 记忆不分叉 | operator brief / operator fact 仍走既有入口；presence 不替代 Decide |
 
 ---
 
@@ -96,6 +110,8 @@ flowchart TD
   exec --> silence[Silence + audit]
   exec --> outbox[Outbox]
   exec --> brief[Brief / Observation]
+  exec --> intel[intel_observations]
+  exec --> cursor[presence-state cursors]
   outbox --> notify[channel_notify]
   notify --> adapter[Transport adapter]
 ```
@@ -111,7 +127,9 @@ flowchart TD
 | 旧 watch/reply | `legacy_reply: false` 时跳过 watch 入队、ingest 不入队 reply | 防双重回复；旧路径保留给未迁移 subject |
 | Planner | `deterministic` + `llm` | 无 API key 时规则可跑；有 key 时 LLM 以 persona 做 presence deliberation |
 | 动作集合 | `send_message` / `write_operator_brief` / `record_observation` / `silence` | 收窄执行面，硬边界在 executor |
-| Target 解析 | `operator` \| `channel_default` \| 显式 id | [`transport.mjs`](../../src/channel/transport.mjs) 懒加载 Feishu config，presence 模块不依赖飞书 |
+| Target 解析 | `operator` \| `channel_default` \| 显式 id | [`transport.mjs`](../../src/channel/transport.mjs) 懒加载 Feishu config |
+| 长期记忆 | `intel_observations`（`source: channel_presence`） | cycle 与 channel 共享同一 intelligence |
+| 机械去重 | `presence-state.json` 仅游标 | `handled_messages` / `handled_signals`，上限 200 条 |
 
 ### PresencePlan 形状
 
@@ -120,11 +138,16 @@ flowchart TD
   "stance": "speak | silence | ask | report | wait",
   "reason": "short reason",
   "actions": [
-    { "type": "send_message", "target": "operator", "text": "..." }
+    { "type": "send_message", "target": "operator", "text": "...", "reply_to_message_id": "om_xxx" }
   ],
-  "memory": { "summary": "why spoke or stayed silent" }
+  "presence_targets": {
+    "messages": ["om_xxx"],
+    "signals": ["task_failed:task-id"]
+  }
 }
 ```
+
+执行后不再把 `memory.summary` 长期写入 `presence-state`；交互摘要写入 intelligence。
 
 ---
 
@@ -136,21 +159,39 @@ flowchart TD
 
 [`listener.mjs`](../../src/channel/adapters/feishu/listener.mjs)：presence 开启时 WS 消息入队 `channel_presence` 而非 `channel_ingest`（adapter 层仅此一处耦合，核心 planner 无 Feishu import）。
 
-### 新增模块
+### 模块一览
 
 | 文件 | 职责 |
 | --- | --- |
 | [`presence-config.mjs`](../../src/channel/presence-config.mjs) | 解析 `channels.presence`；`shouldUseLegacyReplyPipeline` |
-| [`presence-context.mjs`](../../src/channel/presence-context.mjs) | 聚合 identity、daemon projection、channel 事件、briefs、goals/beliefs、attention signals、轻量 intel 摘要 |
-| [`presence-planner.mjs`](../../src/channel/presence-planner.mjs) | `planPresenceDeterministic` / `planPresenceWithLlm` |
-| [`presence-executor.mjs`](../../src/channel/presence-executor.mjs) | 校验动作、写 outbox/brief/observation、cooldown、审计事件 |
+| [`presence-context.mjs`](../../src/channel/presence-context.mjs) | 聚合 identity、daemon、signals、briefs、goals/beliefs、**new/background messages**、**recent_presence_interactions**、**affordances** |
+| [`presence-planner.mjs`](../../src/channel/presence-planner.mjs) | 仅对 `new_messages` / 未 handled signals 规划；LLM 禁止自造 CLI |
+| [`presence-executor.mjs`](../../src/channel/presence-executor.mjs) | 执行动作、写 intelligence、同步游标、审计 |
+| [`presence-memory.mjs`](../../src/channel/presence-memory.mjs) | `recordPresenceInteraction`、从 store 读近期 presence 交互 |
+| [`presence-affordances.mjs`](../../src/channel/presence-affordances.mjs) | grounded `operator_commands`（evolution-mode、cycle request、brief put 等） |
 | [`presence.mjs`](../../src/channel/presence.mjs) | `runChannelPresenceTask` 编排 |
 | [`transport.mjs`](../../src/channel/transport.mjs) | `resolveDefaultTransport` / `resolveOutboundTarget` |
+| [`state.mjs`](../../src/channel/state.mjs) | `readPresenceState`、`markPresenceMessageHandled`、`markPresenceSignalHandled` 等 |
 
 ### 任务与状态
 
 - `CHANNEL_TASK_TYPES` 增加 `channel_presence`（[`types.mjs`](../../src/channel/types.mjs)）。
-- `data/channel/presence-state.json`（[`paths.mjs`](../../src/channel/presence-state.mjs)）。
+- `data/channel/presence-state.json`（[`paths.mjs`](../../src/channel/paths.mjs)）——**仅游标**，示例：
+
+```json
+{
+  "handled_messages": {
+    "om_xxx": { "handled_at": "...", "outcome": "sent|silenced|brief_written" }
+  },
+  "handled_signals": {
+    "task_failed:task-id": { "handled_at": "...", "outcome": "sent|silenced" }
+  },
+  "last_presence_tick_at": "...",
+  "last_spoken_at": "...",
+  "last_plan": { "stance": "silence", "reason": "...", "at": "..." }
+}
+```
+
 - 审计事件：`channel_presence_decided`、`channel_presence_silenced`、`channel_presence_action_applied`、`channel_presence_completed`。
 
 ### 配置示例
@@ -159,7 +200,7 @@ flowchart TD
 "channels": {
   "presence": {
     "enabled": true,
-    "planner": "deterministic",
+    "planner": "llm",
     "max_actions_per_tick": 2,
     "cooldown_ms": 1800000,
     "max_messages_per_hour": 8,
@@ -169,7 +210,7 @@ flowchart TD
 }
 ```
 
-[`subjects.example.json`](../../policies/subjects.example.json) 与 [`AGENTS.md`](../../AGENTS.md) 已补充 presence 说明。
+`agentank-tank` 已在 [`policies/subjects.json`](../../policies/subjects.json) 启用 presence（`planner: llm`）。[`AGENTS.md`](../../AGENTS.md) 与 [`subjects.example.json`](../../policies/subjects.example.json) 已补充 presence 说明。
 
 ### 与 legacy 的关系
 
@@ -181,38 +222,109 @@ flowchart TD
 
 ---
 
-## 5. 验证与测试
+## 5. Presence Memory Unification
+
+### 目标
+
+Channel presence 成为**同一 subject memory** 的外部感知与表达循环，而不是在 channel runtime 另建长期对话记忆。
+
+### 数据流
+
+```mermaid
+flowchart LR
+  inbound[Inbound] --> ingest[channel_ingest]
+  ingest --> memory[Unified Intelligence]
+  presence[channel_presence] --> cursor[presence-state]
+  memory --> context[Presence Context]
+  cursor --> context
+  context --> planner[Planner]
+  planner --> executor[Executor]
+  executor --> memoryWrite[intel_observations]
+  executor --> cursorWrite[mark handled]
+  executor --> outbox[Outbox]
+```
+
+### Context 变化（`schema_version: 2`）
+
+| 字段 | 含义 |
+| --- | --- |
+| `channel.new_messages` | 未在 `handled_messages` 中的近期入站，**可触发新回复** |
+| `channel.background_messages` | 已 handled，仅作上下文 |
+| `channel.recent_presence_interactions` | 从 intelligence 读 `source=channel_presence` 的近期观测 |
+| `affordances.operator_commands` | LLM 引用 CLI 的唯一来源 |
+| `attention_signals[].presence_handled` | signal 是否已表达过 |
+
+### Executor 写入 intelligence
+
+| 场景 | `interaction_kind` | 节流 |
+| --- | --- | --- |
+| `send_message` 成功 | `send_message` | 每次发送一条 |
+| `write_operator_brief` 成功 | `write_operator_brief` | 每次一条 |
+| 有意义的 `silence`（有新消息/未处理 signal） | `silence` | 不记录 `nothing_to_express` |
+
+观测形状示例：
+
+```json
+{
+  "kind": "observation",
+  "source": "channel_presence",
+  "interaction_kind": "send_message",
+  "content": "Subject sent channel message (approval_request_ack). Text: ... In reply to message om_xxx.",
+  "confidence": "medium",
+  "tags": ["channel", "presence"],
+  "evidence_refs": ["channel:message:om_xxx", "outbox:..."]
+}
+```
+
+### Grounded affordances
+
+[`presence-affordances.mjs`](../../src/channel/presence-affordances.mjs) 提供真实命令，例如：
+
+```text
+npm run jea -- daemon evolution-mode set continuous --subject <subject>
+npm run jea -- daemon cycle request --subject <subject>
+npm run jea -- intel brief put --subject <subject> --file <path>
+```
+
+LLM system prompt 硬性要求：涉及 CLI 时只能引用 `affordances.operator_commands` 中的 `cmd` 字段。
+
+---
+
+## 6. 验证与测试
 
 ```powershell
 npm run test -- test/channel.test.mjs
 ```
 
-结果：**28 passed**（含 7 个 presence 用例）。
+结果：**31 passed**（含 11 个 presence / memory 相关用例）。
 
 覆盖点：
 
-- `buildPresenceContext` 不依赖 Feishu-only 模块路径。
+- `buildPresenceContext`：`new_messages` / `background_messages` / `affordances` / `recent_presence_interactions`。
 - `runChannelTick` 在 presence 开启时入队 `channel_presence`、不入队 `channel_watch`。
-- `shouldUseLegacyReplyPipeline` 在 `legacy_reply: false` 时为 false。
-- 审批类入站经 presence + ingest 写 outbox，`reply_skipped` 为 true。
-- 无表达需求时 `stance: silence` 并记审计。
-- LLM planner mock 可对 observation 产出 `send_message`。
-- `buildChannelProjection` 暴露 `presence.config`。
+- 审批类入站经 presence 写 outbox，并写入 `channel_presence` intelligence、标记 `handled_messages`。
+- **同一 message 第二轮 `stance: silence`，不重复 outbox**。
+- 问候类入站后 `recent_presence_interactions` 来自 intelligence（非 presence-state）。
+- `resolvePresenceAffordances` 含 `daemon evolution-mode set` 命令。
+- LLM planner mock 使用 `new_messages` 而非全量 `recent_ingested`。
+- 无表达需求时 `stance: silence`。
 
-配置陷阱（已修）：`enabled` 曾误用「缺省即 true」，已改为 **仅 `enabled: true` 时开启**，避免未配置 subject 破坏旧 ingest/reply 测试。
+配置陷阱（已修）：`enabled` 曾误用「缺省即 true」，已改为 **仅 `enabled: true` 时开启**。
+
+生产试运行注意：修改 presence 相关 **代码** 后需重启 channel daemon；仅改 `subjects.json` / reload 不足以加载新模块。
 
 ---
 
-## 6. 后续演化
+## 7. 后续演化
 
 | 方向 | 说明 |
 | --- | --- |
-| 生产 subject 启用 | 在目标 subject（如 `agentank-tank`）的 `policies/subjects.json` 加 `channels.presence`，`planner: llm` 需 `DEEPSEEK_API_KEY` |
-| Adapter registry | 将 `normalizeInboundPayload` / `sendOutboundMessage` 收成按 `channel` 路由的 registry，进一步去掉 listener 对 presence 分支的特殊判断 |
-| 对话记忆 | presence context 可增加「最近 channel 多轮对话」专用 store，而不只依赖 processed inbound 快照 |
-| Worker 与 tick 协同 | 考虑 idle 时也按较短 interval 触发 presence（不仅 5min tick），强化「持续在场」 |
+| ~~对话记忆~~ | ✅ 已并入 unified intelligence + presence-state 游标（本节 5） |
+| Adapter registry | 将 inbound/outbound 收成按 `channel` 路由的 registry，弱化 listener 对 presence 的特殊分支 |
+| Worker 与 tick 协同 | idle 时也可按较短 interval 触发 presence（不仅 5min tick），强化「持续在场」 |
 | 合并 legacy | presence 稳定后默认 `legacy_reply: false`，逐步废弃 `channel_reply` / `channel_watch` 中心地位 |
-| Viewer | `channel_presence_*` 事件中文标签与 presence-state 面板 |
+| Viewer | `channel_presence_*` 事件中文标签；presence-state 游标与 `channel_presence` intelligence 面板 |
+| LLM 输出校验 | 可选 post-check：回复中的 `npm run jea` 子串必须匹配 affordances 菜单 |
 
 ---
 
@@ -220,7 +332,7 @@ npm run test -- test/channel.test.mjs
 
 | 阶段 | 内容 |
 | --- | --- |
-| 问题 | 理解 Channel 消息处理与 worker 主循环；评估 LLM 模式是否过复杂；明确用户要的是 subject 通过 channel **活过来**，且由 **channel loop 驱动**而非消息驱动 |
-| 思考 | 旧管线是 event-driven（有消息才 ingest/reply）；把 LLM 收成「文案生成器」会背离「主体在场」；正确抽象是 **Presence Loop**：observe → deliberate → act/silence |
-| 方案 | 新增 transport-agnostic `channel_presence`；`channels.presence` 配置；deterministic + LLM planner；受限 executor；`legacy_reply` 门控旧管线 |
-| 执行 | 落地 5 个 presence 模块 + dispatch/tasks/types/paths/projection/listener/AGENTS/example；测试 28/28；journal 本篇 |
+| 问题 | 理解 Channel 与 worker；用户要 subject **活过来**、由 **channel loop 驱动**；记忆不能与 cycle 分离；试运行出现重复回复与自造 CLI |
+| 思考 | event-driven 管线不够；LLM 不能仅润色模板；记忆应进 intelligence；`recent_ingested` 需拆 new/background；CLI 需 affordances 锚定 |
+| 方案 | `channel_presence` + `channels.presence`；Memory Unification：`presence-state` 游标 + `intel_observations` 交互事实 + planner/executor 去重 |
+| 执行 | presence 模块族 + `state.mjs` 游标 API + `presence-memory` / `presence-affordances`；测试 31/31；`agentank-tank` 已配置 presence |

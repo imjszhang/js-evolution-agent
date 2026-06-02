@@ -48,6 +48,7 @@ export async function runChannelPresenceTask(root, subject, input = {}) {
   const execution = await executePresencePlan(root, subject, plan, {
     presenceConfig,
     dryRun: Boolean(input.dry_run),
+    context,
   });
 
   const notifyTask = enqueueNotifyIfOutboxPending(root, subject);
@@ -66,6 +67,8 @@ export async function runChannelPresenceTask(root, subject, input = {}) {
     context_summary: {
       pending_inbound: context.channel.pending_inbound_count,
       signal_count: context.attention_signals.length,
+      new_messages: context.channel.new_messages.length,
+      background_messages: context.channel.background_messages.length,
       recent_ingested: context.channel.recent_ingested.length,
     },
     ingest_pass: ingestPass,

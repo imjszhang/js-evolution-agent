@@ -1,0 +1,63 @@
+/**
+ * Grounded operator affordances for presence LLM (no invented CLI).
+ */
+export function resolvePresenceAffordances(root, subject) {
+  const subj = subject;
+  return {
+    capabilities: [
+      'Acknowledge inbound messages already ingested (brief, fact, observation).',
+      'Queue outbound messages via channel outbox (transport adapter sends).',
+      'Write operator intent briefs for the next intel cycle (not approval_granted).',
+      'Record observations into unified intelligence.',
+      'Stay silent when nothing new requires expression.',
+    ],
+    boundaries: [
+      'Cannot grant approval_granted or modify pending_decisions.json.',
+      'Cannot change evolution mode, daemon config, or subject policy directly.',
+      'Cannot claim remote publish or code execution already completed.',
+      'CLI commands in replies must come from operator_commands only.',
+    ],
+    operator_commands: [
+      {
+        id: 'daemon_evolution_mode_continuous',
+        purpose: 'Set subject to continuous evolution (daemon auto-opens cycles).',
+        cmd: `npm run jea -- daemon evolution-mode set continuous --subject ${subj}`,
+      },
+      {
+        id: 'daemon_evolution_mode_on_demand',
+        purpose: 'Set subject to on-demand evolution (no auto cycle start on tick).',
+        cmd: `npm run jea -- daemon evolution-mode set on_demand --subject ${subj}`,
+      },
+      {
+        id: 'daemon_evolution_mode_show',
+        purpose: 'Show current evolution mode and source.',
+        cmd: `npm run jea -- daemon evolution-mode show --subject ${subj}`,
+      },
+      {
+        id: 'daemon_cycle_request',
+        purpose: 'Request starting a new evolution cycle on next worker tick.',
+        cmd: `npm run jea -- daemon cycle request --subject ${subj}`,
+      },
+      {
+        id: 'intel_brief_put',
+        purpose: 'Submit operator intent brief for next intel cycle (approval, verification, etc.).',
+        cmd: `npm run jea -- intel brief put --subject ${subj} --file <path-to-brief.json>`,
+      },
+      {
+        id: 'channel_status',
+        purpose: 'Inspect channel worker, queues, and Feishu listener reload state.',
+        cmd: `npm run jea -- channel status --subject ${subj} --json`,
+      },
+      {
+        id: 'channel_presence_run',
+        purpose: 'Run one presence loop iteration (ingest + plan + execute).',
+        cmd: `npm run jea -- channel presence run --subject ${subj}`,
+      },
+      {
+        id: 'daemon_status',
+        purpose: 'Inspect cycle daemon worker health and open cycles.',
+        cmd: `npm run jea -- daemon status --subject ${subj} --json`,
+      },
+    ],
+  };
+}

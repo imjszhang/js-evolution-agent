@@ -19,6 +19,7 @@ import {
   channelOutboxFailedDir,
   channelOutboxPendingDir,
   channelOutboxSentDir,
+  channelPresenceStatePath,
   channelReloadRequestPath,
   channelReloadStatePath,
 } from './paths.mjs';
@@ -227,4 +228,108 @@ export function writeChannelReloadState(root, subject, patch = {}) {
   };
   writeJsonFile(channelReloadStatePath(root, subject), next);
   return next;
+}
+
+export const PRESENCE_HANDLED_CURSOR_LIMIT = 200;
+
+const DEFAULT_PRESENCE_STATE = Object.freeze({
+  handled_messages: {},
+  handled_signals: {},
+  last_presence_tick_at: null,
+  last_spoken_at: null,
+  last_plan: null,
+});
+
+function trimPresenceHandledMap(map, limit = PRESENCE_HANDLED_CURSOR_LIMIT) {
+  const entries = Object.entries(map ?? {});
+  if (entries.length <= limit) return { ...(map ?? {}) };
+  const sorted = entries.sort((a, b) => String(b[1]?.handled_at ?? '').localeCompare(String(a[1]?.handled_at ?? '')));
+  return Object.fromEntries(sorted.slice(0, limit));
+}
+
+export function readPresenceState(root, subject) {
+  const raw = readJsonSafe(channelPresenceStatePath(root, subject), {});
+  return {
+    ...DEFAULT_PRESENCE_STATE,
+    ...raw,
+    handled_messages: { ...(raw.handled_messages ?? {}) },
+    handled_signals: { ...(raw.handled_signals ?? {}) },
+  };
+}
+
+export function buildPresenceSignalKey(signal) {
+  if (!signal || typeof signal !== 'object') return 'unknown';
+  if (signal.key) return String(signal.key);
+  const parts = [signal.type];
+  if (signal.task_id) parts.push(signal.task_id);
+  else if (signal.cycle_id) parts.push(signal.cycle_id);
+  else if (signal.id) parts.push(signal.id);
+  return parts.join(':');
+}
+
+export function isPresenceMessageHandled(root, subject, messageId) {
+  if (!messageId) return false;
+  return Boolean(readPresenceState(root, subject).handled_messages?.[messageId]);
+}
+
+export function isPresenceSignalHandled(root, subject, signalKey) {
+  if (!signalKey) return false;
+  return Boolean(readPresenceState(root, subject).handled_signals?.[signalKey]);
+}
+
+export function writePresenceState(root, subject, patch = {}) {
+  const current = readPresenceState(root, subject);
+  const mergedMessages = patch.handled_messages
+    ? { ...current.handled_messages, ...patch.handled_messages }
+    : current.handled_messages;
+  const mergedSignals = patch.handled_signals
+    ? { ...current.handled_signals, ...patch.handled_signals }
+    : current.handled_signals;
+  const { handled_messages: _hm, handled_signals: _hs, ...restPatch } = patch;
+  const next = {
+    ...current,
+    ...restPatch,
+    subject,
+    handled_messages: trimPresenceHandledMap(mergedMessages),
+    handled_signals: trimPresenceHandledMap(mergedSignals),
+    updated_at: nowIso(),
+  };
+  writeJsonFile(channelPresenceStatePath(root, subject), next);
+  return next;
+}
+
+export function markPresenceMessageHandled(root, subject, messageId, meta = {}) {
+  if (!messageId) return readPresenceState(root, subject);
+  return writePresenceState(root, subject, {
+    handled_messages: {
+      [messageId]: { handled_at: nowIso(), ...meta },
+    },
+  });
+}
+
+export function markPresenceSignalHandled(root, subject, signalKey, meta = {}) {
+  if (!signalKey) return readPresenceState(root, subject);
+  return writePresenceState(root, subject, {
+    handled_signals: {
+      [signalKey]: { handled_at: nowIso(), ...meta },
+    },
+  });
+}
+
+export function markPresenceMessagesHandled(root, subject, messageIds, meta = {}) {
+  if (!messageIds?.length) return readPresenceState(root, subject);
+  const patch = {};
+  for (const id of messageIds) {
+    if (id) patch[id] = { handled_at: nowIso(), ...meta };
+  }
+  return writePresenceState(root, subject, { handled_messages: patch });
+}
+
+export function markPresenceSignalsHandled(root, subject, signalKeys, meta = {}) {
+  if (!signalKeys?.length) return readPresenceState(root, subject);
+  const patch = {};
+  for (const key of signalKeys) {
+    if (key) patch[key] = { handled_at: nowIso(), ...meta };
+  }
+  return writePresenceState(root, subject, { handled_signals: patch });
 }

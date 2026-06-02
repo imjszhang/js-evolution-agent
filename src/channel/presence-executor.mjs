@@ -7,12 +7,20 @@ import {
   cooldownActive,
   setCooldown,
   writeOutboxMessage,
+  writePresenceState,
+  markPresenceMessageHandled,
+  markPresenceSignalHandled,
+  markPresenceMessagesHandled,
+  markPresenceSignalsHandled,
+  buildPresenceSignalKey,
 } from './state.mjs';
-import { writeJsonFile } from '../cli/utils/files.mjs';
-import { channelPresenceStatePath } from './paths.mjs';
 import { normalizeOutboundMessage, nowIso } from './types.mjs';
 import { resolveOutboundTarget } from './transport.mjs';
 import { PRESENCE_ACTION_TYPES } from './presence-planner.mjs';
+import {
+  recordPresenceInteraction,
+  shouldRecordSilenceObservation,
+} from './presence-memory.mjs';
 
 function recentPresenceSendCount(root, subject, { windowMs = 60 * 60 * 1000, nowMs = Date.now() } = {}) {
   return readChannelEvents(root, subject, { limit: 500 }).filter((event) => {
@@ -33,17 +41,109 @@ function validateAction(action) {
   return { ok: true };
 }
 
+function createIntelligenceStoreForSubject(root, subject) {
+  const runtime = runtimeForSubject(root, subject);
+  return createIntelligenceStore({
+    baseDir: join(runtime.runtimeRoot, 'data', 'intelligence'),
+    timezone: 'Asia/Shanghai',
+  });
+}
+
+function summarizeInteractionText(action, plan, { outboundFile = null } = {}) {
+  if (action.type === 'send_message') {
+    const preview = String(action.text ?? '').slice(0, 400);
+    const parts = [
+      `Subject sent channel message (${action.reason ?? 'presence_reply'}).`,
+      preview ? `Text: ${preview}` : '',
+    ];
+    if (action.reply_to_message_id) parts.push(`In reply to message ${action.reply_to_message_id}.`);
+    if (action.signal_key) parts.push(`Triggered by signal ${action.signal_key}.`);
+    if (outboundFile) parts.push(`Outbox: ${outboundFile}`);
+    return parts.filter(Boolean).join(' ');
+  }
+  if (action.type === 'write_operator_brief') {
+    return [
+      `Subject wrote operator brief (${action.kind ?? 'verification_request'}) via presence.`,
+      action.summary ? `Summary: ${String(action.summary).slice(0, 400)}` : '',
+      action.reply_to_message_id ? `From message ${action.reply_to_message_id}.` : '',
+    ].filter(Boolean).join(' ');
+  }
+  if (plan?.stance === 'silence') {
+    return [
+      `Subject chose silence (${plan.reason ?? 'silence'}).`,
+      plan.presence_targets?.messages?.length
+        ? `Deferred messages: ${plan.presence_targets.messages.join(', ')}.`
+        : '',
+      plan.presence_targets?.signals?.length
+        ? `Deferred signals: ${plan.presence_targets.signals.join(', ')}.`
+        : '',
+    ].filter(Boolean).join(' ');
+  }
+  return null;
+}
+
+function collectCursorTargets(plan, context) {
+  const messages = new Set(plan?.presence_targets?.messages ?? []);
+  const signals = new Set(plan?.presence_targets?.signals ?? []);
+
+  for (const action of plan?.actions ?? []) {
+    if (action.reply_to_message_id) messages.add(action.reply_to_message_id);
+    if (action.signal_key) signals.add(action.signal_key);
+    const idempotency = action.idempotency_key ?? '';
+    if (idempotency.startsWith('presence:signal:')) {
+      signals.add(idempotency.slice('presence:signal:'.length));
+    }
+  }
+
+  if (plan?.stance === 'silence') {
+    for (const item of context?.channel?.new_messages ?? []) {
+      if (item.message_id) messages.add(item.message_id);
+    }
+    for (const signal of context?.attention_signals ?? []) {
+      if (!signal.presence_handled) {
+        signals.add(signal.presence_signal_key ?? buildPresenceSignalKey(signal));
+      }
+    }
+  }
+
+  return {
+    messages: [...messages].filter(Boolean),
+    signals: [...signals].filter(Boolean),
+  };
+}
+
+function applyPresenceCursors(root, subject, plan, context, outcome) {
+  const { messages, signals } = collectCursorTargets(plan, context);
+  const meta = { outcome, reason: plan.reason, planner: plan.planner };
+  if (messages.length) markPresenceMessagesHandled(root, subject, messages, meta);
+  if (signals.length) markPresenceSignalsHandled(root, subject, signals, meta);
+  const patch = { last_presence_tick_at: nowIso() };
+  if (outcome === 'sent' || outcome === 'speak') {
+    patch.last_spoken_at = nowIso();
+  }
+  patch.last_plan = {
+    stance: plan.stance,
+    reason: plan.reason,
+    planner: plan.planner,
+    at: nowIso(),
+  };
+  return writePresenceState(root, subject, patch);
+}
+
 /**
  * Apply a presence plan with transport-agnostic outbox writes.
  */
 export async function executePresencePlan(root, subject, plan, {
   presenceConfig = null,
   dryRun = false,
+  context = null,
 } = {}) {
   const cfg = presenceConfig ?? plan.presence ?? {};
   const cooldownMs = cfg.cooldown_ms ?? 30 * 60 * 1000;
   const maxPerHour = cfg.max_messages_per_hour ?? 0;
   const results = [];
+  const store = createIntelligenceStoreForSubject(root, subject);
+  const runtime = runtimeForSubject(root, subject);
 
   recordChannelEvent(root, subject, {
     type: 'channel_presence_decided',
@@ -60,9 +160,20 @@ export async function executePresencePlan(root, subject, plan, {
       type: 'channel_presence_silenced',
       status: 'ok',
       reason: plan.reason,
-      memory_summary: plan.memory?.summary ?? null,
     });
-    writePresenceState(root, subject, { last_plan: plan, last_results: results });
+    if (!dryRun && shouldRecordSilenceObservation(context, plan)) {
+      const content = summarizeInteractionText({ type: 'silence' }, plan);
+      recordPresenceInteraction(store, {
+        interaction_kind: 'silence',
+        content,
+        confidence: 'medium',
+        evidence_refs: (plan.presence_targets?.messages ?? []).map((id) => `channel:message:${id}`),
+        tags: ['silence'],
+      });
+    }
+    if (!dryRun) {
+      applyPresenceCursors(root, subject, plan, context, 'silenced');
+    }
     return { applied: 0, skipped: 1, results, plan };
   }
 
@@ -75,12 +186,6 @@ export async function executePresencePlan(root, subject, plan, {
     });
     return { applied: 0, skipped: true, reason: 'rate_limited', results, plan };
   }
-
-  const runtime = runtimeForSubject(root, subject);
-  const store = createIntelligenceStore({
-    baseDir: join(runtime.runtimeRoot, 'data', 'intelligence'),
-    timezone: 'Asia/Shanghai',
-  });
 
   for (const action of plan.actions ?? []) {
     const check = validateAction(action);
@@ -118,6 +223,7 @@ export async function executePresencePlan(root, subject, plan, {
           planner: plan.planner,
           stance: plan.stance,
           dry_run: dryRun,
+          signal_key: action.signal_key ?? null,
         },
       });
       if (dryRun) {
@@ -136,6 +242,29 @@ export async function executePresencePlan(root, subject, plan, {
         target: routed.target,
         reason: action.reason,
       });
+      const interactionContent = summarizeInteractionText(action, plan, { outboundFile: written.file });
+      recordPresenceInteraction(store, {
+        interaction_kind: 'send_message',
+        content: interactionContent,
+        confidence: 'medium',
+        evidence_refs: [
+          action.reply_to_message_id ? `channel:message:${action.reply_to_message_id}` : null,
+          action.signal_key ? `channel:signal:${action.signal_key}` : null,
+          written.file ? `outbox:${written.file}` : null,
+        ].filter(Boolean),
+      });
+      if (action.reply_to_message_id) {
+        markPresenceMessageHandled(root, subject, action.reply_to_message_id, {
+          outcome: 'sent',
+          reason: action.reason,
+        });
+      }
+      if (action.signal_key) {
+        markPresenceSignalHandled(root, subject, action.signal_key, {
+          outcome: 'sent',
+          reason: action.reason,
+        });
+      }
       results.push({ action, applied: true, outbound: written.message, file: written.file });
       continue;
     }
@@ -158,6 +287,21 @@ export async function executePresencePlan(root, subject, plan, {
         action_type: 'write_operator_brief',
         brief_id: brief.id,
       });
+      recordPresenceInteraction(store, {
+        interaction_kind: 'write_operator_brief',
+        content: summarizeInteractionText(action, plan),
+        confidence: 'medium',
+        evidence_refs: [
+          `brief:${brief.id}`,
+          action.reply_to_message_id ? `channel:message:${action.reply_to_message_id}` : null,
+        ].filter(Boolean),
+      });
+      if (action.reply_to_message_id) {
+        markPresenceMessageHandled(root, subject, action.reply_to_message_id, {
+          outcome: 'brief_written',
+          brief_id: brief.id,
+        });
+      }
       results.push({ action, applied: true, brief_id: brief.id });
       continue;
     }
@@ -167,34 +311,25 @@ export async function executePresencePlan(root, subject, plan, {
         results.push({ action, applied: false, dry_run: true });
         continue;
       }
-      const written = store.ingest('intel_observations', [{
-        kind: 'observation',
-        source: 'channel_presence',
+      const written = recordPresenceInteraction(store, {
+        interaction_kind: 'record_observation',
         content: action.content,
         confidence: action.confidence ?? 'medium',
-        recorded_at: nowIso(),
-        tags: ['channel', 'presence'],
-      }]);
+      });
       recordChannelEvent(root, subject, {
         type: 'channel_presence_action_applied',
         status: 'ok',
         action_type: 'record_observation',
-        written,
+        written: written.written,
       });
       results.push({ action, applied: true, written });
     }
   }
 
-  writePresenceState(root, subject, {
-    last_plan: {
-      stance: plan.stance,
-      reason: plan.reason,
-      planner: plan.planner,
-      at: nowIso(),
-    },
-    last_results: results,
-    memory: plan.memory ?? null,
-  });
+  if (!dryRun) {
+    const hadSend = results.some((r) => r.applied && r.action?.type === 'send_message');
+    applyPresenceCursors(root, subject, plan, context, hadSend ? 'speak' : 'acted');
+  }
 
   return {
     applied: results.filter((r) => r.applied).length,
@@ -202,13 +337,4 @@ export async function executePresencePlan(root, subject, plan, {
     results,
     plan,
   };
-}
-
-export function writePresenceState(root, subject, patch = {}) {
-  const path = channelPresenceStatePath(root, subject);
-  writeJsonFile(path, {
-    subject,
-    updated_at: nowIso(),
-    ...patch,
-  });
 }
