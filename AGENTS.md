@@ -495,7 +495,7 @@ runtime/subjects/<data_namespace>/data/channel/
 
 未绑定前仅接受绑定握手消息；群聊可用 `group_policy: disabled` 关闭。覆盖他人绑定需再次发送带**同一口令**的 `JEA BIND`。
 
-飞书配置按 **subject 隔离**（每个 subject 可绑定不同机器人）。`app_secret` 不要明文写入 `subjects.json`，用 `app_secret_env` 指向环境变量名。
+飞书配置按 **subject 隔离**（每个 subject 可绑定不同机器人）。`app_secret` 不要明文写入 `subjects.json`，用 `app_secret_env` 指向环境变量名；`app_id` 可写在 JSON，或用 `app_id_env` / `JEA_CHANNEL_FEISHU_<SUBJECT>_APP_ID` 从环境读取。
 
 `policies/subjects.json` 示例（`my-subject` 与 `other-subject` 各用各的 bot）：
 
@@ -506,9 +506,8 @@ runtime/subjects/<data_namespace>/data/channel/
       "channels": {
         "feishu": {
           "enabled": true,
-          "app_id": "cli_aaaa",
+          "app_id_env": "JEA_CHANNEL_FEISHU_MY_SUBJECT_APP_ID",
           "app_secret_env": "FEISHU_MY_SUBJECT_APP_SECRET",
-          "default_chat_id": "oc_aaaa",
           "dm_policy": "allowlist",
           "allow_from": [],
           "group_policy": "allowlist",
@@ -535,12 +534,20 @@ runtime/subjects/<data_namespace>/data/channel/
 }
 ```
 
-也可用 subject 前缀环境变量（无需在 JSON 里写 `app_id`）：
+`.env` 与上表 `my-subject` 对应的最小凭证示例：
+
+```env
+JEA_CHANNEL_FEISHU_MY_SUBJECT_APP_ID=cli_aaaa
+FEISHU_MY_SUBJECT_APP_SECRET=REPLACE_WITH_YOUR_APP_SECRET
+JEA_CHANNEL_FEISHU_MY_SUBJECT_BIND_TOKEN=choose-a-long-random-token
+```
+
+也可用 subject 前缀环境变量（无需在 JSON 里写 `app_id` / `app_id_env`）：
 
 | 变量模式 | 含义 |
 | --- | --- |
-| `JEA_CHANNEL_FEISHU_<SUBJECT>_APP_ID` | 如 subject `my-subject` → `JEA_CHANNEL_FEISHU_MY_SUBJECT_APP_ID` |
-| `JEA_CHANNEL_FEISHU_<SUBJECT>_APP_SECRET` | 对应 subject 的 App Secret（或与 `app_secret_env` 如 `FEISHU_MY_SUBJECT_APP_SECRET` 配合） |
+| `JEA_CHANNEL_FEISHU_<SUBJECT>_APP_ID` | App ID（或与 `app_id_env` 配合）；如 `my-subject` → `JEA_CHANNEL_FEISHU_MY_SUBJECT_APP_ID` |
+| `FEISHU_<SUBJECT>_APP_SECRET` 或 `JEA_CHANNEL_FEISHU_<SUBJECT>_APP_SECRET` | App Secret（或与 `app_secret_env` 配合） |
 | `JEA_CHANNEL_FEISHU_<SUBJECT>_DEFAULT_CHAT_ID` | 该 subject 默认出站群 |
 | `JEA_CHANNEL_FEISHU_<SUBJECT>_BIND_TOKEN` | 私聊 `JEA BIND` 口令（或与 `bind.token_env` 配合） |
 

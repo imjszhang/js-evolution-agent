@@ -19,7 +19,7 @@
       "channels": {
         "feishu": {
           "enabled": true,
-          "app_id": "cli_xxxx",
+          "app_id_env": "JEA_CHANNEL_FEISHU_MY_SUBJECT_APP_ID",
           "app_secret_env": "FEISHU_MY_SUBJECT_APP_SECRET",
           "domain": "feishu",
           "dm_policy": "allowlist",
