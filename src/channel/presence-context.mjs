@@ -12,8 +12,9 @@ import { resolveSubjectReplyIdentity } from './subject-identity.mjs';
 import { readChannelEvents } from './audit.mjs';
 import {
   listOutboxPending,
-  listPendingInbound,
+  countPendingInbound,
   listRecentInboundProcessed,
+  summarizeUnclassifiedInbound,
   readCooldown,
   readJsonFile,
   readPresenceState,
@@ -111,6 +112,7 @@ export function buildPresenceContext(root, subject, {
   const presenceState = readPresenceState(root, subject);
   const recentIngested = summarizeRecentIngested(root, subject, { limit: limits.ingested ?? 8 });
   const { new_messages, background_messages } = partitionIngestedByHandled(root, subject, recentIngested);
+  const unclassified = summarizeUnclassifiedInbound(root, subject, { previewLimit: 0 });
   const attentionSignals = annotateAttentionSignals(root, subject, rawSignals.slice(0, limits.signals ?? 12));
 
   let goals = null;
@@ -154,7 +156,9 @@ export function buildPresenceContext(root, subject, {
     identity,
     affordances: resolvePresenceAffordances(root, subject),
     channel: {
-      pending_inbound_count: listPendingInbound(root, subject, { limit: 1 }).length,
+      pending_unclassified_count: unclassified.pending_unclassified_count,
+      oldest_unclassified_at: unclassified.oldest_unclassified_at,
+      pending_inbound_count: countPendingInbound(root, subject),
       pending_outbox_count: listOutboxPending(root, subject, { limit: 1 }).length,
       recent_ingested: recentIngested,
       new_messages,

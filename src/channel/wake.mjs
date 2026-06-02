@@ -1,11 +1,13 @@
 import { recordChannelEvent } from './audit.mjs';
 import { appendChannelEvent, listPendingChannelEvents } from './event-queue.mjs';
 import { enqueueChannelTask, readChannelTaskQueue } from './task-queue.mjs';
-import { listOutboxPending } from './state.mjs';
+import { countPendingInbound, listOutboxPending } from './state.mjs';
+import { CHANNEL_TASK_DEFAULT_PRIORITY } from './types.mjs';
 
 export const PRESENCE_REACTOR_IDEMPOTENCY = (subject) => `${subject}:channel_presence:reactor`;
 export const SPEECH_GENERATION_IDEMPOTENCY = (subject) => `${subject}:channel_speech_generation:pending`;
 export const NOTIFY_IDEMPOTENCY = (subject) => `${subject}:channel_notify:pending`;
+export const CLASSIFIER_IDEMPOTENCY = (subject) => `${subject}:channel_classifier:pending`;
 
 function hasActiveTask(queue, type) {
   return (queue.tasks ?? []).some((task) => task.type === type && ['pending', 'running'].includes(task.status));
@@ -37,7 +39,7 @@ export function enqueueNotifyIfOutboxPending(root, subject) {
     return { created: false, reason: 'no_pending_outbox' };
   }
   return enqueueIfNeeded(root, subject, 'channel_notify', {
-    priority: 10,
+    priority: CHANNEL_TASK_DEFAULT_PRIORITY.channel_notify,
     idempotencyKey: NOTIFY_IDEMPOTENCY(subject),
     reason: 'pending_outbox',
   });
@@ -47,9 +49,20 @@ export function enqueueSpeechGenerationIfPending(root, subject) {
   const pending = listPendingChannelEvents(root, subject, { limit: 1, type: 'speech_generation_requested' });
   if (!pending.length) return { created: false, reason: 'no_pending_speech_generation' };
   return enqueueIfNeeded(root, subject, 'channel_speech_generation', {
-    priority: 20,
+    priority: CHANNEL_TASK_DEFAULT_PRIORITY.channel_speech_generation,
     idempotencyKey: SPEECH_GENERATION_IDEMPOTENCY(subject),
     reason: 'pending_speech_generation',
+  });
+}
+
+export function enqueueClassifierIfPendingInbound(root, subject) {
+  if (countPendingInbound(root, subject) <= 0) {
+    return { created: false, reason: 'no_pending_inbound' };
+  }
+  return enqueueIfNeeded(root, subject, 'channel_classifier', {
+    priority: CHANNEL_TASK_DEFAULT_PRIORITY.channel_classifier,
+    idempotencyKey: CLASSIFIER_IDEMPOTENCY(subject),
+    reason: 'pending_inbound',
   });
 }
 
@@ -74,7 +87,7 @@ export function requestPresenceReactor(root, subject, { reason = 'wake', event =
   });
 
   const reactorTask = enqueueIfNeeded(root, subject, 'channel_presence', {
-    priority: 15,
+    priority: CHANNEL_TASK_DEFAULT_PRIORITY.channel_presence,
     idempotencyKey: PRESENCE_REACTOR_IDEMPOTENCY(subject),
     reason: reason ?? 'presence_reactor',
   });

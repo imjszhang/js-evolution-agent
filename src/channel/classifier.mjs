@@ -1,0 +1,330 @@
+import { chatMessagesJson } from '../ai/messages.mjs';
+import { DeepSeekOpenAIClient } from '../ai/deepseek-client.mjs';
+import { normalizeInboundPayload, resolveFeishuConfig } from './adapters/feishu/index.mjs';
+import { tryHandleFeishuBind } from './adapters/feishu/binding.mjs';
+import { recordChannelEvent } from './audit.mjs';
+import { runWithTimeout, ChannelTimeoutError } from './async-utils.mjs';
+import { resolveClassifierConfig } from './classifier-config.mjs';
+import {
+  classifyChannelEnvelope,
+  decisionFromClassifierItem,
+  ingestChannelEnvelope,
+} from './ingest.mjs';
+import {
+  hasSeenMessage,
+  listPendingInboundBatch,
+  markInboundFailed,
+  markInboundProcessed,
+  markMessageSeen,
+  readJsonFile,
+} from './state.mjs';
+import { requestPresenceReactor } from './wake.mjs';
+
+function createLlmClient(config) {
+  if (!process.env.DEEPSEEK_API_KEY?.trim()) return null;
+  try {
+    return new DeepSeekOpenAIClient({ timeout: config.llm?.timeout ?? 25 });
+  } catch {
+    return null;
+  }
+}
+
+function normalizeClassifierItems(parsed, expectedIds) {
+  const items = Array.isArray(parsed?.items) ? parsed.items : [];
+  const byId = new Map();
+  for (const raw of items) {
+    const messageId = String(raw?.message_id ?? '').trim();
+    if (!messageId || !expectedIds.has(messageId)) continue;
+    if (byId.has(messageId)) continue;
+    byId.set(messageId, raw);
+  }
+  return byId;
+}
+
+async function classifyBatchWithLlm(entries, { aiClient = null, config } = {}) {
+  const client = aiClient ?? createLlmClient(config);
+  if (!client) {
+    return { status: 'skipped', reason: 'missing_ai_client', items: null };
+  }
+  const payload = entries.map(({ envelope }) => ({
+    message_id: envelope.message_id,
+    channel: envelope.channel,
+    chat_type: envelope.chat_type,
+    content: String(envelope.content ?? '').slice(0, 2000),
+    received_at: envelope.received_at,
+  }));
+  const expectedIds = new Set(payload.map((p) => p.message_id));
+  try {
+    const parsed = await chatMessagesJson(client, [
+      {
+        role: 'system',
+        content: [
+          'You classify inbound operator channel messages for js-evolution-agent.',
+          'Return JSON only: {"items":[...]}',
+          'Each item: message_id, classification, confidence, summary, claims_to_verify, operator_fact_content, rationale, safety_flags.',
+          'classification must be one of: approval_request, verification_request, operator_fact, observation, ignore.',
+          'Use approval_request only when the operator clearly approves or requests publish/release.',
+          'Use verification_request when they ask to verify/check/investigate something next cycle.',
+          'Use operator_fact only when they explicitly ask to remember/confirm a long-term fact (high confidence).',
+          'When uncertain, use observation.',
+          'Never output approval_granted or claim execution already happened.',
+        ].join('\n'),
+      },
+      {
+        role: 'user',
+        content: JSON.stringify({ messages: payload }, null, 2),
+      },
+    ], {
+      thinking: config.llm?.thinking ?? 'low',
+      timeout: config.llm?.timeout ?? 25,
+    });
+    return { status: 'used', items: normalizeClassifierItems(parsed, expectedIds) };
+  } catch (err) {
+    return { status: 'error', reason: err?.message || String(err), items: null };
+  }
+}
+
+function classifyBatchDeterministic(entries) {
+  const byId = new Map();
+  for (const { envelope } of entries) {
+    const decision = classifyChannelEnvelope(envelope);
+    let classification = 'observation';
+    if (decision.kind === 'operator_brief') {
+      classification = decision.brief?.kind === 'approval_request' ? 'approval_request' : 'verification_request';
+    } else if (decision.kind === 'operator_fact') {
+      classification = 'operator_fact';
+    }
+    byId.set(envelope.message_id, {
+      message_id: envelope.message_id,
+      classification,
+      confidence: classification === 'operator_fact' ? 'high' : 'medium',
+      summary: String(envelope.content ?? '').slice(0, 500),
+      rationale: 'deterministic_fallback',
+    });
+  }
+  return { status: 'deterministic', items: byId };
+}
+
+async function resolveBatchClassifications(entries, config, { aiClient = null } = {}) {
+  if (config.mode === 'mock' || config.mode === 'deterministic') {
+    return classifyBatchDeterministic(entries);
+  }
+  const llm = await classifyBatchWithLlm(entries, { aiClient, config });
+  if (llm.status === 'used' && llm.items) return llm;
+  if (config.mode === 'llm' && config.fallback === 'retry') {
+    return llm;
+  }
+  return classifyBatchDeterministic(entries);
+}
+
+async function mechanicalPreprocess(root, subject, file, adapterOptions, feishuCfg) {
+  const payload = readJsonFile(file);
+  if (!payload) {
+    return { ok: false, mechanical: true, target: markInboundFailed(root, subject, file, 'parse_error') };
+  }
+  try {
+    const envelope = await normalizeInboundPayload(payload, adapterOptions);
+    if (feishuCfg?.bindEnabled) {
+      const bindEvent = {
+        senderOpenId: envelope.sender_id,
+        senderId: envelope.sender_id,
+        messageId: envelope.message_id,
+        chatId: envelope.chat_id,
+        chatType: envelope.chat_type === 'group' ? 'group' : 'p2p',
+        messageType: envelope.content_type || 'text',
+        content: envelope.content_type === 'text'
+          ? JSON.stringify({ text: envelope.content })
+          : envelope.content,
+      };
+      const bindResult = await tryHandleFeishuBind(root, subject, bindEvent, { config: feishuCfg });
+      if (bindResult.handled) {
+        const target = markInboundProcessed(root, subject, file, {
+          envelope,
+          ingest_result: { kind: 'feishu_bind', ok: bindResult.ok, code: bindResult.code },
+        });
+        return {
+          ok: true,
+          mechanical: true,
+          file,
+          envelope,
+          ingest_result: { kind: 'feishu_bind', ok: bindResult.ok, code: bindResult.code },
+          target,
+        };
+      }
+    }
+    if (hasSeenMessage(root, subject, envelope.message_id)) {
+      const target = markInboundProcessed(root, subject, file, { envelope, skipped: 'duplicate' });
+      return { ok: true, mechanical: true, file, envelope, skipped: 'duplicate', target };
+    }
+    return { ok: true, mechanical: false, file, envelope, payload };
+  } catch (err) {
+    const target = markInboundFailed(root, subject, file, err?.message || String(err), payload);
+    return { ok: false, mechanical: true, file, error: err?.message || String(err), target };
+  }
+}
+
+/**
+ * Fixed-interval batch inbound classifier (LLM or deterministic).
+ */
+export async function runChannelClassifierTask(root, subject, input = {}) {
+  const config = resolveClassifierConfig(root, subject);
+  if (!config.enabled) {
+    return { skipped: true, reason: 'classifier_disabled' };
+  }
+
+  const batchSize = input.batch_size ?? config.batch_size;
+  const files = listPendingInboundBatch(root, subject, { limit: batchSize });
+  if (!files.length) {
+    return { skipped: true, reason: 'no_pending_inbound', processed: 0 };
+  }
+
+  const feishuCfg = resolveFeishuConfig(root, subject);
+  const mechanical = [];
+  const forLlm = [];
+
+  for (const file of files) {
+    const result = await mechanicalPreprocess(root, subject, file, input.adapter_options ?? {}, feishuCfg);
+    if (result.mechanical) {
+      mechanical.push(result);
+      if (result.envelope?.message_id && result.ingest_result?.kind && !result.skipped) {
+        markMessageSeen(root, subject, result.envelope.message_id, {
+          channel: result.envelope.channel,
+          chat_id: result.envelope.chat_id,
+          ingest_kind: result.ingest_result.kind,
+        });
+      }
+      continue;
+    }
+    if (result.ok && result.envelope) {
+      forLlm.push({ file: result.file, envelope: result.envelope });
+    }
+  }
+
+  let classificationResult = { status: 'empty', items: new Map() };
+  if (forLlm.length) {
+    const runClassify = () => resolveBatchClassifications(forLlm, config, { aiClient: input.aiClient ?? null });
+    try {
+      classificationResult = await runWithTimeout(runClassify, config.timeout_ms, 'channel_classifier');
+    } catch (err) {
+      if (err instanceof ChannelTimeoutError) {
+        recordChannelEvent(root, subject, {
+          type: 'channel_classifier_timeout',
+          status: 'error',
+          batch_size: forLlm.length,
+        });
+        if (config.fallback === 'retry') {
+          return { ok: false, timeout: true, retryable: true, pending_llm: forLlm.length, mechanical: mechanical.length };
+        }
+        classificationResult = classifyBatchDeterministic(forLlm);
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  if (classificationResult.status === 'error' && config.fallback === 'retry') {
+    return {
+      ok: false,
+      retryable: true,
+      reason: classificationResult.reason,
+      pending_llm: forLlm.length,
+      mechanical: mechanical.length,
+    };
+  }
+
+  const itemsById = classificationResult.items ?? new Map();
+  const processed = [];
+  const failed = [];
+
+  for (const { file, envelope } of forLlm) {
+    const item = itemsById.get(envelope.message_id);
+    if (!item) {
+      if (config.fallback === 'retry') {
+        failed.push({ file, message_id: envelope.message_id, reason: 'missing_classification' });
+        continue;
+      }
+      const fallbackItem = {
+        message_id: envelope.message_id,
+        classification: 'observation',
+        confidence: 'medium',
+        summary: envelope.content,
+        rationale: 'missing_llm_item_fallback',
+      };
+      try {
+        const decision = decisionFromClassifierItem(fallbackItem, envelope);
+        const ingestResult = ingestChannelEnvelope(root, subject, envelope, { decision });
+        markMessageSeen(root, subject, envelope.message_id, {
+          channel: envelope.channel,
+          chat_id: envelope.chat_id,
+          ingest_kind: ingestResult.kind,
+        });
+        const target = markInboundProcessed(root, subject, file, { envelope, ingest_result: ingestResult, classifier: fallbackItem });
+        processed.push({ file, message_id: envelope.message_id, ingest_result: ingestResult, target });
+      } catch (err) {
+        failed.push({ file, message_id: envelope.message_id, reason: err?.message || String(err) });
+      }
+      continue;
+    }
+    try {
+      const decision = decisionFromClassifierItem(item, envelope);
+      const ingestResult = ingestChannelEnvelope(root, subject, envelope, { decision });
+      if (ingestResult.kind !== 'ignore') {
+        markMessageSeen(root, subject, envelope.message_id, {
+          channel: envelope.channel,
+          chat_id: envelope.chat_id,
+          ingest_kind: ingestResult.kind,
+        });
+      }
+      const target = markInboundProcessed(root, subject, file, {
+        envelope,
+        ingest_result: ingestResult,
+        classifier: item,
+      });
+      processed.push({ file, message_id: envelope.message_id, ingest_result: ingestResult, target });
+      recordChannelEvent(root, subject, {
+        type: 'channel_message_ingested',
+        status: 'ok',
+        message_id: envelope.message_id,
+        channel: envelope.channel,
+        ingest_kind: ingestResult.kind,
+        classifier_mode: config.mode,
+      });
+    } catch (err) {
+      const target = markInboundFailed(root, subject, file, err?.message || String(err), { envelope });
+      failed.push({ file, message_id: envelope.message_id, reason: err?.message || String(err), target });
+    }
+  }
+
+  if (processed.length) {
+    requestPresenceReactor(root, subject, {
+      reason: 'inbound_classified',
+      event: {
+        type: 'inbound_classified',
+        payload_summary: { count: processed.length },
+      },
+    });
+  }
+
+  recordChannelEvent(root, subject, {
+    type: 'channel_classifier_completed',
+    status: 'ok',
+    mode: config.mode,
+    classifier_status: classificationResult.status,
+    batch_requested: files.length,
+    mechanical: mechanical.length,
+    classified: processed.length,
+    failed: failed.length,
+    remaining_pending: listPendingInboundBatch(root, subject, { limit: 1 }).length,
+  });
+
+  return {
+    ok: true,
+    mode: config.mode,
+    classifier_status: classificationResult.status,
+    mechanical: mechanical.length,
+    classified: processed.length,
+    failed: failed.length,
+    processed,
+    failed_items: failed,
+  };
+}

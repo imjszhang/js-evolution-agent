@@ -65,6 +65,7 @@ import {
   getFeishuListenerStatus,
 } from '../../channel/adapters/feishu/index.mjs';
 import { runChannelTick } from '../../channel/dispatch.mjs';
+import { resolveChannelDomainRoles, runChannelDomainWorkerMulti } from '../../channel/domain-worker.mjs';
 import { recordChannelEvent } from '../../channel/audit.mjs';
 import { isChannelTaskType } from '../../channel/types.mjs';
 import { runChannelTask } from '../../channel/tasks.mjs';
@@ -852,10 +853,14 @@ export async function workOnce(root, subject, flags = {}) {
 async function runChannelWorkOnceBody(root, subject, flags = {}) {
   const workerId = flags.worker || `channel-worker-${process.pid}`;
   const leaseMs = parseLeaseMs(flags['lease-ms']);
+  const types = flags.types ?? (flags['channel-task-types'] && flags['channel-task-types'] !== true
+    ? String(flags['channel-task-types']).split(',').map((s) => s.trim()).filter(Boolean)
+    : null);
   const claim = claimNextChannelTask(root, subject, {
     workerId,
     leaseMs,
     type: flags.type && flags.type !== true ? flags.type : null,
+    types,
   });
   for (const task of claim.reclaimed || []) {
     recordChannelEvent(root, subject, {
@@ -1213,7 +1218,7 @@ export async function runDaemonWorker(root, subject, flags = {}) {
   return { started: true, reason: stopReason, state: stopped, iterations };
 }
 
-export async function runChannelDomainWorker(root, subject, flags = {}) {
+async function runChannelDomainWorkerSingle(root, subject, flags = {}) {
   const workerId = flags.worker && flags.worker !== true ? String(flags.worker).replace(/^worker-/, 'channel-worker-') : defaultChannelWorkerId().replace(/^worker-/, 'channel-worker-');
   const leaseMs = parseLeaseMs(flags['lease-ms']);
   const heartbeatMs = parseChannelHeartbeatMs(flags['channel-heartbeat-ms'] ?? flags['heartbeat-ms']);
@@ -1372,6 +1377,36 @@ export async function runChannelDomainWorker(root, subject, flags = {}) {
     reason: stopReason,
   });
   return { started: true, reason: stopReason, state: stopped, iterations };
+}
+
+export async function runChannelDomainWorker(root, subject, flags = {}) {
+  const roles = resolveChannelDomainRoles(flags);
+  const tickMs = parseTickMs(flags);
+  const leaseMs = parseLeaseMs(flags['lease-ms']);
+  const heartbeatStaleMs = parseChannelHeartbeatStaleMs(
+    flags['channel-heartbeat-stale-ms'] ?? flags['heartbeat-stale-ms'],
+    Math.max(leaseMs * 2, parseChannelHeartbeatMs(flags['channel-heartbeat-ms'] ?? flags['heartbeat-ms']) * 3, 60_000),
+  );
+  const workIntervalMs = parsePositiveInt(flags['channel-interval-ms'] ?? flags['interval-ms'], { name: 'channel-interval-ms', defaultValue: 1000, min: 0 });
+  const idleIntervalMs = parsePositiveInt(flags['channel-idle-interval-ms'] ?? flags['idle-interval-ms'], { name: 'channel-idle-interval-ms', defaultValue: 5000, min: 0 });
+  const maxIterations = flags['max-iterations'] == null || flags['max-iterations'] === true
+    ? null
+    : parsePositiveInt(flags['max-iterations'], { name: 'max-iterations', min: 1 });
+
+  if (roles.length === 1 && roles[0] === 'all') {
+    return runChannelDomainWorkerSingle(root, subject, flags);
+  }
+
+  return runChannelDomainWorkerMulti(root, subject, flags, {
+    roles,
+    tickMs,
+    leaseMs,
+    heartbeatStaleMs,
+    workIntervalMs,
+    idleIntervalMs,
+    maxIterations,
+    channelWorkOnce: channelWorkOnce,
+  });
 }
 
 export async function runDaemonDomains(root, subject, flags = {}) {

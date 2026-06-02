@@ -420,6 +420,16 @@ jea daemon start --subject NAME --domain cycle
 jea daemon start --subject NAME --domain channel
 ```
 
+`jea daemon start --domain channel` **默认**在同一进程内启动四个 channel role worker（`notify`、`presence`、`speech`、`classifier`），共享同一任务队列但按任务类型隔离领取，避免 LLM 分类/话术生成阻塞 outbox flush。高级用法：
+
+```powershell
+jea daemon start --subject NAME --domain channel --channel-role presence
+jea daemon start --subject NAME --domain channel --channel-roles notify,classifier
+jea daemon start --subject NAME --domain channel --channel-role all
+```
+
+`worker-state.json` 的 `workers` map 记录各 role 的 `worker_id` / `pid` / `heartbeat_at`；`jea channel status --json` 可见 `workers.roles[]` 与 `classifier` 配置。
+
 Channel worker-state 写入已使用与 task queue 相同的原子重试写入；loop 内心跳写失败会记 `channel_worker_state_write_failed` 并降级继续，不会直接终止 cycle domain。
 
 ## Channel 通道
@@ -518,29 +528,58 @@ channel worker 每轮 loop 会：
 
 `channel status --json` 的 `feishu.reload` 字段可查看 pending reload、`last_error`、`config_fingerprint`。
 
-入站分类边界：
+入站分类边界（由 **`channel_classifier`** 批量 LLM/规则分类，不再在 presence 内同步正则分类）：
 
-- 审批/发布类话语写入 `approval_request` operator brief，并由下一轮 Decide 产出正式 action；不要直接写 `pending_decisions.json`。
-- 已确认长期口径写入 `operator_fact`。
-- 待核实或下一轮关注事项写入 operator brief。
-- 普通外部消息写入 `intel_observations` 作为可推翻 evidence。
+- 审批/发布类话语 → `approval_request` operator brief（软意图，非 `approval_granted`）。
+- 已确认长期口径 → `operator_fact`（高置信且措辞明确时；否则降级为 observation）。
+- 待核实或下一轮关注 → `verification_request` brief。
+- 普通外部消息 → `intel_observations` 作为可推翻 evidence。
+- 飞书 listener / `inbox put` 只写 `inbound/pending`；分类由 classifier role 按固定 `interval_ms` 批量处理（`batch_size` 上限，旧到新，超出留待下批）。
 
 出站由 **`channel_notify`** 独立任务 flush（outbox 有货即可入队，不依赖 presence 决策完成）；**所有对外表达**由 presence reactor 两阶段产出：`speech_intent`（决策）→ `channel_speech_generation`（人设/LLM 生成正文）→ outbox。旧 `channel_reply` / `channel_watch` / **`channel_ingest`** 任务类型已废弃；队列中若仍有，`jea channel doctor` 会提示 cancel。
 
+### Channel Classifier（`channels.classifier`，固定频率批量）
+
+**`channel_classifier` 任务**（classifier role worker 领取）：
+
+1. 从 `inbound/pending` 按时间顺序取最多 `batch_size` 条
+2. BIND / duplicate 机械处理（不进 LLM batch）
+3. LLM（或 `deterministic` 回退）批量输出受限 schema：`approval_request` / `verification_request` / `operator_fact` / `observation` / `ignore`
+4. 写入 brief / fact / observation 并移到 `processed`；失败按 `fallback` 保留 pending 或降级 observation
+5. 分类完成后 `requestPresenceReactor`（`inbound_classified`）
+
+协调器按 `classifier.interval_ms` 调度入队（幂等键 `${subject}:channel_classifier:pending`）；与 presence tick（默认 5min）独立。
+
+`policies/subjects.json` 示例：
+
+```json
+"classifier": {
+  "enabled": true,
+  "mode": "llm",
+  "interval_ms": 30000,
+  "batch_size": 20,
+  "timeout_ms": 25000,
+  "fallback": "observation"
+}
+```
+
+- `mode`: `llm` | `deterministic` | `mock`（无 API key 时 deterministic 回退）
+- `fallback`: `observation`（批内缺项降级）| `retry`（保留 pending 下轮重试）
+
 ### Channel Presence Loop（`channels.presence`，transport-agnostic，async reactor）
 
-外部刺激（tick、飞书 listener、`jea channel inbox put`）**只** append 到 `data/channel/event-queue/pending_events.json` 并 `requestPresenceReactor`（幂等键 `${subject}:channel_presence:reactor`），**不**在 listener/tick 路径跑 LLM。
+外部刺激（tick、飞书 listener、`jea channel inbox put`）append 到 `event-queue` 并 `requestPresenceReactor`；**不在** presence 路径分类 inbound。
 
 **Bounded reactor**（`channel_presence` 任务 → `runPresenceReactor`）：
 
 1. claim 一批 channel events（合并多 wake）
-2. `drainChannelInbound`（原 ingest，在 observe 阶段）
+2. `buildPresenceContext`（读**已分类** processed、pending unclassified 计数、daemon signals 等）
 3. `planPresence` → `speech_intent` / brief / observation / silence（**不写 outbox**）
 4. 对 `speech_intent` append `speech_generation_requested` 事件，入队 `channel_speech_generation`
 
-**内容生成**（`channel_speech_generation` → `runChannelSpeechGenerationTask`）：按 subject persona + `content_requirements` 生成最终文本，成功后 `writeOutboxMessage`；失败/超时记 `channel_speech_generation_failed` / `channel_presence_timeout`，不写 outbox。
+**内容生成**（`channel_speech_generation` → `runChannelSpeechGenerationTask`，speech role worker）：按 subject persona + `content_requirements` 生成最终文本，成功后 `writeOutboxMessage`；失败/超时记 `channel_speech_generation_failed` / `channel_presence_timeout`，不写 outbox。
 
-`runChannelTick`：append `timer_tick` + wake reactor；有 pending outbox 时**直接**入队 `channel_notify`（优先级高于 presence/speech）。`jea channel presence run`（CLI）在单进程内会串联 decision + speech generation，便于本地验收；daemon 下 decision / speech / notify 是独立任务，但单 worker 仍串行执行，若要求 notify 不被 LLM 任务占用，应单独运行 notify worker / type-filter worker。
+`runChannelTick`：presence tick（`timer_tick` + wake reactor + notify）；classifier tick 单独按 `interval_ms` 入队 classifier。默认多 role 下 notify / presence / speech / classifier **并行领取**，互不阻塞。
 
 事件队列与审计 `events.jsonl` 分离。`jea channel status --json` 的 `presence.event_queue` / `presence.reactor` / `presence.pending_speech_generation` 可观测 reactor 与待生成话术。
 
@@ -562,7 +601,7 @@ channel worker 每轮 loop 会：
 }
 ```
 
-- `enabled`: 设为 `false` 时 reactor 跳过表达（仍可 drain inbound）。
+- `enabled`: 设为 `false` 时 reactor 跳过表达（inbound 仍由 classifier 处理，若 classifier 启用）。
 - `planner`: `deterministic`（规则决定 `speech_intent` + 模板生成）或 `llm`（决策与生成均可调 DeepSeek）。
 - `timeout_ms` / `decision_timeout_ms` / `speech_generation_timeout_ms`: reactor 与两阶段 deadline；超时记 audit，worker 不永久卡死。
 - `cooldown_ms` / `max_messages_per_hour`: 出站节流（按 `channel_speech_generated` 计数）。
@@ -571,7 +610,7 @@ channel worker 每轮 loop 会：
 - 审计：`channel_wake_requested` / `channel_presence_decided` / `channel_speech_generated` / `channel_presence_completed` / `channel_presence_timeout` 等。
 - 决策动作：`speech_intent`（仅意图）、`write_operator_brief`、`record_observation`、`silence`；**不能**直接 `approval_granted` 或改 decision queue。
 
-**生产建议**：`jea daemon start --domain channel` 单进程内 presence 与 notify 共享 worker；长期无人值守可拆两进程（cycle 已推荐分 domain），确保 outbox flush 不被 speech LLM 拖住。升级 channel 代码后需重启 channel daemon。
+**生产建议**：默认已分 role worker；仅需调试时用 `--channel-role` 启动子集。`--channel-role all` 恢复单 worker 消费全部任务类型。升级 channel 代码后需重启 channel daemon。
 
 手工跑一轮：`npm run jea -- channel presence run --subject NAME`。`jea channel work` 仅保留 `notify` 子命令（发送 pending outbox）。
 

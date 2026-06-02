@@ -65,8 +65,49 @@ export function writePendingInbound(root, subject, payload, { label = 'message' 
   return { file };
 }
 
+export function listAllPendingInbound(root, subject) {
+  return listJsonFiles(channelInboundPendingDir(root, subject));
+}
+
 export function listPendingInbound(root, subject, { limit = 20 } = {}) {
-  return listJsonFiles(channelInboundPendingDir(root, subject)).slice(0, Math.max(0, limit));
+  return listAllPendingInbound(root, subject).slice(0, Math.max(0, limit));
+}
+
+/** Oldest pending inbound files first (filename timestamp prefix). */
+export function listPendingInboundBatch(root, subject, { limit = 20 } = {}) {
+  return listAllPendingInbound(root, subject).slice(0, Math.max(0, limit));
+}
+
+export function countPendingInbound(root, subject) {
+  return listAllPendingInbound(root, subject).length;
+}
+
+export function summarizeUnclassifiedInbound(root, subject, { previewLimit = 0 } = {}) {
+  const files = listAllPendingInbound(root, subject);
+  const oldestFile = files[0] ?? null;
+  let oldest_at = null;
+  if (oldestFile) {
+    const payload = readJsonFile(oldestFile);
+    oldest_at = payload?.received_at
+      ?? payload?.envelope?.received_at
+      ?? null;
+  }
+  const preview = [];
+  if (previewLimit > 0) {
+    for (const file of files.slice(0, previewLimit)) {
+      const payload = readJsonFile(file);
+      preview.push({
+        file,
+        message_id: payload?.message_id ?? payload?.messageId ?? payload?.envelope?.message_id ?? null,
+        received_at: payload?.received_at ?? payload?.envelope?.received_at ?? null,
+      });
+    }
+  }
+  return {
+    pending_unclassified_count: files.length,
+    oldest_unclassified_at: oldest_at,
+    preview,
+  };
 }
 
 export function listRecentInboundProcessed(root, subject, { limit = 10 } = {}) {

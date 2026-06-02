@@ -16,6 +16,9 @@ import { createIntelligenceStore } from '../src/intelligence/store.mjs';
 import { isPresenceInteractionRecord } from '../src/channel/presence-memory.mjs';
 import { resolvePresenceAffordances } from '../src/channel/presence-affordances.mjs';
 import { drainChannelInbound, runChannelTask, runChannelNotifyTask } from '../src/channel/tasks.mjs';
+import { runChannelClassifierTask } from '../src/channel/classifier.mjs';
+import { claimNextChannelTask } from '../src/channel/task-queue.mjs';
+import { resolveChannelWorkerTaskTypes, taskTypesForChannelRole } from '../src/channel/channel-roles.mjs';
 import { collectAttentionSignals } from '../src/channel/notify.mjs';
 import { readPendingOperatorBriefs } from '../src/intelligence/operator-briefs.mjs';
 import { runtimeForSubject } from '../src/cli/utils/evolve-runs.mjs';
@@ -34,6 +37,12 @@ import { planPresenceDeterministic, planPresenceWithLlm } from '../src/channel/p
 import { executePresenceDecisionPlan } from '../src/channel/presence-decision-executor.mjs';
 import { resolvePresenceConfig } from '../src/channel/presence-config.mjs';
 import { resolveSubjectReplyIdentity } from '../src/channel/subject-identity.mjs';
+import {
+  createChannelRoleWorkerState,
+  initChannelCoordinatorState,
+  readChannelWorkerState,
+  requestChannelWorkerStop,
+} from '../src/channel/worker-state.mjs';
 
 let tempDir = null;
 
@@ -52,6 +61,12 @@ function makeRoot({
   const channels = {
     feishu: { default_chat_id: channelTarget, mock: true },
     presence,
+    classifier: {
+      enabled: true,
+      mode: 'deterministic',
+      interval_ms: 30_000,
+      batch_size: 5,
+    },
   };
   writeJsonFile(join(tempDir, 'policies', 'subjects.json'), {
     default_subject: 'alpha',
@@ -74,6 +89,29 @@ describe('channel domain', () => {
   });
 
   describe('task domain', () => {
+    it('claimNextChannelTask filters by types array', () => {
+      const root = makeRoot();
+      enqueueChannelTask(root, 'alpha', { type: 'channel_notify', idempotencyKey: 'n1', priority: 10 });
+      enqueueChannelTask(root, 'alpha', { type: 'channel_classifier', idempotencyKey: 'c1', priority: 50 });
+      const notifyClaim = claimNextChannelTask(root, 'alpha', {
+        workerId: 'notify-worker',
+        types: taskTypesForChannelRole('notify'),
+      });
+      expect(notifyClaim.task?.type).toBe('channel_notify');
+      const classifierClaim = claimNextChannelTask(root, 'alpha', {
+        workerId: 'classifier-worker',
+        types: taskTypesForChannelRole('classifier'),
+      });
+      expect(classifierClaim.task?.type).toBe('channel_classifier');
+    });
+
+    it('--channel-task-types resolves to custom task filters', () => {
+      const taskTypes = resolveChannelWorkerTaskTypes({
+        'channel-task-types': 'channel_presence,channel_classifier',
+      }, 'custom');
+      expect(taskTypes).toEqual(['channel_presence', 'channel_classifier']);
+    });
+
     it('uses a separate queue from cycle tasks', () => {
       const root = makeRoot();
       enqueueTask(root, 'alpha', { type: 'run_cycle', idempotencyKey: 'cycle-task' });
@@ -105,10 +143,67 @@ describe('channel domain', () => {
         await expect(runChannelTask(root, 'alpha', task)).rejects.toThrow(/Deprecated channel task type/);
       }
     });
+
+    it('reports multi-role channel worker state without aggregate zombie false positive', () => {
+      const root = makeRoot();
+      initChannelCoordinatorState(root, 'alpha', {
+        pid: process.pid,
+        roles: ['notify', 'presence'],
+        tickMs: 300_000,
+        staleMs: 60_000,
+      });
+      createChannelRoleWorkerState(root, 'alpha', {
+        role: 'notify',
+        workerId: 'notify-worker',
+        pid: process.pid,
+        staleMs: 60_000,
+      });
+      createChannelRoleWorkerState(root, 'alpha', {
+        role: 'presence',
+        workerId: 'presence-worker',
+        pid: process.pid,
+        staleMs: 60_000,
+      });
+      const projection = buildChannelProjection(root, 'alpha');
+      expect(projection.workers.running_count).toBe(2);
+      expect(projection.health.ok).toBe(true);
+      expect(projection.health.reasons.join('\n')).not.toMatch(/zombie/i);
+    });
+
+    it('clears aggregate stop marker when coordinator starts again', () => {
+      const root = makeRoot();
+      initChannelCoordinatorState(root, 'alpha', {
+        pid: process.pid,
+        roles: ['presence'],
+        tickMs: 300_000,
+      });
+      createChannelRoleWorkerState(root, 'alpha', {
+        role: 'presence',
+        workerId: 'presence-worker',
+        pid: process.pid,
+      });
+      requestChannelWorkerStop(root, 'alpha');
+      expect(readChannelWorkerState(root, 'alpha').stop_requested_at).toBeTruthy();
+      initChannelCoordinatorState(root, 'alpha', {
+        pid: process.pid,
+        roles: ['presence'],
+        tickMs: 300_000,
+      });
+      createChannelRoleWorkerState(root, 'alpha', {
+        role: 'presence',
+        workerId: 'presence-worker-2',
+        pid: process.pid,
+        allowedTaskTypes: ['channel_presence'],
+      });
+      const state = readChannelWorkerState(root, 'alpha');
+      expect(state.stop_requested_at).toBeNull();
+      expect(state.workers.presence.stop_requested_at).toBeNull();
+      expect(state.workers.presence.status).toBe('running');
+    });
   });
 
-  describe('inbound ingest', () => {
-    it('turns approval messages into operator briefs without enqueueing reply', async () => {
+  describe('inbound classifier', () => {
+    it('turns approval messages into operator briefs via channel_classifier', async () => {
       const root = makeRoot();
       writePendingInbound(root, 'alpha', {
         messageId: 'm-approval-1',
@@ -119,9 +214,8 @@ describe('channel domain', () => {
         contentType: 'text',
       });
 
-      const result = await drainChannelInbound(root, 'alpha', { limit: 5 });
-      expect(result.processed).toHaveLength(1);
-      expect(result.reply_created).toBeUndefined();
+      const result = await runChannelClassifierTask(root, 'alpha');
+      expect(result.classified).toBe(1);
       const runtime = runtimeForSubject(root, 'alpha');
       const briefs = readPendingOperatorBriefs(runtime.runtimeRoot, { limit: 5 }).briefs;
       expect(briefs).toHaveLength(1);
@@ -137,12 +231,29 @@ describe('channel domain', () => {
         content: '请下一轮核实 A',
       };
       writePendingInbound(root, 'alpha', payload);
-      await drainChannelInbound(root, 'alpha', { limit: 5 });
+      await runChannelClassifierTask(root, 'alpha');
       writePendingInbound(root, 'alpha', payload);
 
-      const result = await drainChannelInbound(root, 'alpha', { limit: 5 });
-      expect(result.processed).toHaveLength(0);
-      expect(result.skipped).toHaveLength(1);
+      const result = await runChannelClassifierTask(root, 'alpha');
+      expect(result.mechanical).toBe(1);
+      expect(result.classified).toBe(0);
+    });
+
+    it('respects batch_size and leaves overflow for next batch', async () => {
+      const root = makeRoot({
+        presence: { enabled: true, planner: 'deterministic' },
+      });
+      for (let i = 0; i < 7; i += 1) {
+        writePendingInbound(root, 'alpha', {
+          messageId: `m-batch-${i}`,
+          chatId: 'oc_test',
+          content: `消息 ${i}`,
+        });
+      }
+      const first = await runChannelClassifierTask(root, 'alpha');
+      expect(first.classified).toBe(5);
+      const second = await runChannelClassifierTask(root, 'alpha');
+      expect(second.classified).toBe(2);
     });
   });
 
@@ -289,7 +400,7 @@ describe('channel domain', () => {
       const { executePresenceDecisionPlan } = await import('../src/channel/presence-decision-executor.mjs');
       const { buildPresenceContext } = await import('../src/channel/presence-context.mjs');
       const { planPresenceDeterministic } = await import('../src/channel/presence-planner.mjs');
-      await drainChannelInbound(root, 'alpha', { limit: 5 });
+      await runChannelClassifierTask(root, 'alpha');
       const ctx = buildPresenceContext(root, 'alpha');
       const plan = planPresenceDeterministic(ctx);
       await executePresenceDecisionPlan(root, 'alpha', plan, { presenceConfig: ctx.presence, context: ctx });
@@ -312,6 +423,7 @@ describe('channel domain', () => {
         content: '同意发布候选',
         contentType: 'text',
       });
+      await runChannelClassifierTask(root, 'alpha');
       const result = await runChannelPresenceTask(root, 'alpha');
       expect(result.plan.stance).toBe('speak');
       expect(result.execution.applied).toBeGreaterThan(0);
@@ -336,6 +448,7 @@ describe('channel domain', () => {
         content: '同意发布',
         contentType: 'text',
       });
+      await runChannelClassifierTask(root, 'alpha');
       const first = await runChannelPresenceTask(root, 'alpha');
       expect(first.plan.stance).toBe('speak');
       const outboxAfterFirst = listOutboxPending(root, 'alpha', { limit: 10 }).length;
@@ -371,6 +484,7 @@ describe('channel domain', () => {
         content: '你好',
         contentType: 'text',
       });
+      await runChannelClassifierTask(root, 'alpha');
       await runChannelPresenceTask(root, 'alpha');
       const ctx = buildPresenceContext(root, 'alpha');
       expect(ctx.channel.recent_presence_interactions.length).toBeGreaterThan(0);
@@ -423,6 +537,33 @@ describe('channel domain', () => {
   });
 
   describe('async reactor', () => {
+    it('presence reactor does not drain inbound (classifier owns ingest)', async () => {
+      const root = makeRoot({ presence: { enabled: true, planner: 'deterministic' } });
+      writePendingInbound(root, 'alpha', {
+        messageId: 'om_no_drain',
+        chatId: 'oc_test',
+        content: '同意发布',
+      });
+      const result = await runPresenceReactor(root, 'alpha', { force: true, allow_empty_claim: true });
+      expect(result.skipped).toBeFalsy();
+      const pending = (await import('../src/channel/state.mjs')).listAllPendingInbound(root, 'alpha');
+      expect(pending.length).toBe(1);
+    });
+
+    it('presence reactor claims inbound_classified wake after classifier completes', async () => {
+      const root = makeRoot({ presence: { enabled: true, planner: 'deterministic' } });
+      writePendingInbound(root, 'alpha', {
+        messageId: 'om_classified_wake',
+        chatId: 'oc_operator',
+        content: '同意发布候选',
+      });
+      await runChannelClassifierTask(root, 'alpha');
+      expect(listPendingChannelEvents(root, 'alpha', { type: 'inbound_classified' })).toHaveLength(1);
+      const result = await runPresenceReactor(root, 'alpha');
+      expect(result.claimed_events).toBe(1);
+      expect(result.plan.stance).toBe('speak');
+    });
+
     it('presence reactor does not claim speech generation events', async () => {
       const root = makeRoot({ presence: { enabled: true, planner: 'deterministic' } });
       appendChannelEvent(root, 'alpha', {

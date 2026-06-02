@@ -2,9 +2,20 @@ export const CHANNEL_TASK_TYPES = Object.freeze([
   'channel_inbound',
   'channel_presence',
   'channel_speech_generation',
+  'channel_classifier',
   'channel_notify',
   'channel_retry',
 ]);
+
+/** Default task priority by type (lower = sooner). */
+export const CHANNEL_TASK_DEFAULT_PRIORITY = Object.freeze({
+  channel_notify: 10,
+  channel_retry: 10,
+  channel_presence: 15,
+  channel_speech_generation: 20,
+  channel_classifier: 50,
+  channel_inbound: 60,
+});
 
 export const DEPRECATED_CHANNEL_TASK_TYPES = Object.freeze([
   'channel_reply',

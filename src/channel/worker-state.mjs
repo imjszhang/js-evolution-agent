@@ -1,4 +1,6 @@
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
+import lockfile from 'proper-lockfile';
 import { readJsonSafe } from '../cli/utils/files.mjs';
 import { writeJsonAtomic } from '../cli/utils/atomic-json-write.mjs';
 import { recordChannelEvent } from './audit.mjs';
@@ -11,16 +13,94 @@ import {
   summarizeWorkerState,
 } from '../cli/utils/daemon-worker-state.mjs';
 import { isProcessAlive } from '../cli/utils/process-alive.mjs';
+import { taskTypesForChannelRole } from './channel-roles.mjs';
 import { channelWorkerStatePath } from './paths.mjs';
 import { nowIso } from './types.mjs';
 
 export { defaultWorkerId, parseHeartbeatMs, parseHeartbeatStaleMs, summarizeWorkerState };
 
+function channelWorkerStateLockPath(root, subject) {
+  return `${channelWorkerStatePath(root, subject)}.lock`;
+}
+
+function withChannelWorkerStateLock(root, subject, fn) {
+  const lockPath = channelWorkerStateLockPath(root, subject);
+  mkdirSync(dirname(lockPath), { recursive: true });
+  if (!existsSync(lockPath)) {
+    writeFileSync(lockPath, '', 'utf-8');
+  }
+  let release = null;
+  try {
+    release = lockfile.lockSync(lockPath);
+    return fn();
+  } finally {
+    if (release) release();
+  }
+}
+
+function safeRoleTaskTypes(role, worker) {
+  if (worker?.allowed_task_types !== undefined) return worker.allowed_task_types;
+  try {
+    return taskTypesForChannelRole(role);
+  } catch {
+    return null;
+  }
+}
+
+function emptyAggregateState(subject) {
+  return {
+    subject,
+    domain: 'channel',
+    schema_version: 2,
+    workers: {},
+    coordinator: null,
+    worker_id: null,
+    pid: null,
+    status: 'stopped',
+    started_at: null,
+    heartbeat_at: null,
+    stop_requested_at: null,
+    stopped_at: null,
+    stale_after_ms: 60_000,
+    tick_ms: null,
+    last_work_result: null,
+    last_error: null,
+  };
+}
+
+function migrateLegacyState(raw) {
+  if (!raw || typeof raw !== 'object') return emptyAggregateState(null);
+  if (raw.workers && typeof raw.workers === 'object') return raw;
+  const legacyRole = raw.role ?? 'legacy';
+  const workers = {};
+  if (raw.worker_id || raw.status) {
+    workers[legacyRole] = {
+      role: legacyRole,
+      worker_id: raw.worker_id,
+      pid: raw.pid,
+      status: raw.status,
+      started_at: raw.started_at,
+      heartbeat_at: raw.heartbeat_at,
+      stop_requested_at: raw.stop_requested_at,
+      stopped_at: raw.stopped_at,
+      allowed_task_types: raw.allowed_task_types ?? null,
+      last_work_result: raw.last_work_result ?? null,
+      last_error: raw.last_error ?? null,
+    };
+  }
+  return {
+    ...emptyAggregateState(raw.subject),
+    ...raw,
+    schema_version: 2,
+    workers,
+  };
+}
+
 export function readChannelWorkerState(root, subject) {
   const filePath = channelWorkerStatePath(root, subject);
   if (!existsSync(filePath)) return null;
   const state = readJsonSafe(filePath, null);
-  return state && typeof state === 'object' ? state : null;
+  return state && typeof state === 'object' ? migrateLegacyState(state) : null;
 }
 
 export function writeChannelWorkerState(root, subject, state) {
@@ -28,13 +108,155 @@ export function writeChannelWorkerState(root, subject, state) {
   return state;
 }
 
-export function safeUpdateChannelWorkerHeartbeat(root, subject, patch = {}) {
+export function summarizeChannelWorkersState(raw, { staleMs = 60_000 } = {}) {
+  const state = migrateLegacyState(raw);
+  const roles = Object.entries(state.workers ?? {}).map(([role, worker]) => {
+    const summary = summarizeWorkerState(worker, { staleMs: worker.stale_after_ms ?? staleMs });
+    return {
+      role,
+      ...summary,
+      allowed_task_types: safeRoleTaskTypes(role, worker),
+    };
+  });
+  const running = roles.filter((r) => r.running);
+  const fresh = roles.filter((r) => r.fresh);
+  const zombies = roles.filter((r) => r.zombie);
+  const stale = roles.filter((r) => r.stale);
+  return {
+    schema_version: 2,
+    coordinator: state.coordinator,
+    roles,
+    running_count: running.length,
+    fresh_count: fresh.length,
+    zombie_count: zombies.length,
+    stale_count: stale.length,
+    ok: zombies.length === 0 && stale.length === 0,
+    status: running.length ? (zombies.length ? 'worker_zombie' : (stale.length ? 'stale' : 'healthy')) : 'idle',
+  };
+}
+
+export function initChannelCoordinatorState(root, subject, {
+  pid = process.pid,
+  tickMs = null,
+  classifierIntervalMs = null,
+  roles = [],
+  staleMs = 60_000,
+} = {}) {
+  return withChannelWorkerStateLock(root, subject, () => {
+    const previous = readChannelWorkerState(root, subject) || emptyAggregateState(subject);
+    const state = {
+      ...previous,
+      subject,
+      domain: 'channel',
+      schema_version: 2,
+      stale_after_ms: staleMs,
+      tick_ms: tickMs,
+      coordinator: {
+        pid,
+        started_at: nowIso(),
+        roles,
+        tick_ms: tickMs,
+        classifier_interval_ms: classifierIntervalMs,
+      },
+      status: 'running',
+      heartbeat_at: nowIso(),
+      stop_requested_at: null,
+      stopped_at: null,
+    };
+    for (const role of roles) {
+      if (state.workers?.[role]) {
+        state.workers[role] = {
+          ...state.workers[role],
+          stop_requested_at: null,
+          stopped_at: null,
+        };
+      }
+    }
+    writeChannelWorkerState(root, subject, state);
+    return state;
+  });
+}
+
+export function createChannelRoleWorkerState(root, subject, {
+  role,
+  workerId = defaultWorkerId(),
+  pid = process.pid,
+  staleMs = 60_000,
+  tickMs = null,
+  allowedTaskTypes = null,
+} = {}) {
+  return withChannelWorkerStateLock(root, subject, () => {
+    const state = readChannelWorkerState(root, subject) || emptyAggregateState(subject);
+    const existing = state.workers?.[role];
+    if (existing && isWorkerZombie(existing, { staleMs })) {
+      state.workers[role] = {
+        ...existing,
+        status: 'stopped',
+        stopped_at: nowIso(),
+        stop_reason: 'zombie_pid_dead',
+      };
+    } else if (existing?.status === 'running' && isWorkerFresh(existing, { staleMs }) && isProcessAlive(existing.pid)) {
+      return { created: false, reason: 'already_running', role, state: existing };
+    }
+    const now = nowIso();
+    state.workers[role] = {
+      role,
+      worker_id: workerId,
+      pid,
+      status: 'running',
+      started_at: now,
+      heartbeat_at: now,
+      stop_requested_at: null,
+      stopped_at: null,
+      stale_after_ms: staleMs,
+      tick_ms: tickMs,
+      allowed_task_types: allowedTaskTypes ?? safeRoleTaskTypes(role, null),
+      last_work_result: null,
+      last_error: null,
+    };
+    state.status = 'running';
+    state.heartbeat_at = now;
+    state.stop_requested_at = null;
+    state.stopped_at = null;
+    writeChannelWorkerState(root, subject, state);
+    return { created: true, role, state: state.workers[role] };
+  });
+}
+
+/** Backward-compatible single-worker create (all tasks). */
+export function createChannelWorkerState(root, subject, options = {}) {
+  return createChannelRoleWorkerState(root, subject, {
+    ...options,
+    role: options.role ?? 'all',
+    workerId: options.workerId ?? defaultWorkerId().replace(/^worker-/, 'channel-worker-'),
+  });
+}
+
+export function updateChannelRoleWorkerHeartbeat(root, subject, role, patch = {}) {
+  return withChannelWorkerStateLock(root, subject, () => {
+    const state = readChannelWorkerState(root, subject) || emptyAggregateState(subject);
+    const previous = state.workers?.[role] || {};
+    state.workers[role] = {
+      ...previous,
+      ...patch,
+      role,
+      heartbeat_at: nowIso(),
+      status: patch.status || previous.status || 'running',
+    };
+    state.heartbeat_at = nowIso();
+    writeChannelWorkerState(root, subject, state);
+    return state.workers[role];
+  });
+}
+
+export function safeUpdateChannelRoleWorkerHeartbeat(root, subject, role, patch = {}) {
   try {
-    return updateChannelWorkerHeartbeat(root, subject, patch);
+    return updateChannelRoleWorkerHeartbeat(root, subject, role, patch);
   } catch (err) {
     recordChannelEvent(root, subject, {
       type: 'channel_worker_state_write_failed',
       status: 'error',
+      role,
       error_code: err?.code ?? null,
       error: err?.message || String(err),
     });
@@ -42,105 +264,109 @@ export function safeUpdateChannelWorkerHeartbeat(root, subject, patch = {}) {
   }
 }
 
-export function createChannelWorkerState(root, subject, {
-  workerId = defaultWorkerId(),
-  pid = process.pid,
-  staleMs = 60_000,
-  tickMs = null,
-} = {}) {
-  const existing = readChannelWorkerState(root, subject);
-  if (existing && isWorkerZombie(existing, { staleMs })) {
-    markChannelWorkerStopped(root, subject, {
-      worker_id: existing.worker_id,
-      pid: existing.pid,
-      stop_reason: 'zombie_pid_dead',
-    });
-  } else if (existing && isWorkerFresh(existing, { staleMs }) && isProcessAlive(existing.pid)) {
-    return { created: false, reason: 'already_running', state: existing };
-  }
-  const now = nowIso();
-  const state = {
-    subject,
-    domain: 'channel',
-    worker_id: workerId,
-    pid,
-    status: 'running',
-    started_at: now,
-    heartbeat_at: now,
-    stop_requested_at: null,
-    stopped_at: null,
-    stale_after_ms: staleMs,
-    tick_ms: tickMs,
-    last_work_result: null,
-    last_error: null,
-  };
-  writeChannelWorkerState(root, subject, state);
-  return { created: true, state };
+export function safeUpdateChannelWorkerHeartbeat(root, subject, patch = {}) {
+  const role = patch.role ?? 'all';
+  return safeUpdateChannelRoleWorkerHeartbeat(root, subject, role, patch);
 }
 
 export function updateChannelWorkerHeartbeat(root, subject, patch = {}) {
-  const previous = readChannelWorkerState(root, subject) || {};
-  const state = {
-    ...previous,
-    ...patch,
-    subject,
-    domain: 'channel',
-    status: patch.status || previous.status || 'running',
-    heartbeat_at: nowIso(),
-  };
-  writeChannelWorkerState(root, subject, state);
-  return state;
+  const role = patch.role ?? 'all';
+  return updateChannelRoleWorkerHeartbeat(root, subject, role, patch);
 }
 
-export function requestChannelWorkerStop(root, subject, { staleMs = 60_000 } = {}) {
-  const previous = readChannelWorkerState(root, subject);
-  const now = nowIso();
-  if (!previous) {
-    const state = {
-      subject,
-      domain: 'channel',
-      worker_id: null,
-      pid: null,
-      status: 'stopped',
-      started_at: null,
-      heartbeat_at: null,
-      stop_requested_at: now,
-      stopped_at: now,
-      stale_after_ms: staleMs,
-      last_work_result: null,
-      last_error: null,
+export function requestChannelRoleWorkerStop(root, subject, role, { staleMs = 60_000 } = {}) {
+  return withChannelWorkerStateLock(root, subject, () => {
+    const state = readChannelWorkerState(root, subject) || emptyAggregateState(subject);
+    const now = nowIso();
+    const previous = state.workers?.[role];
+    if (!previous) {
+      return { requested: false, reason: 'not_running', role, state: null };
+    }
+    const effectiveStaleMs = previous.stale_after_ms ?? staleMs;
+    const fresh = isWorkerFresh(previous, { staleMs: effectiveStaleMs });
+    state.workers[role] = {
+      ...previous,
+      status: fresh ? 'stopping' : 'stopped',
+      stop_requested_at: previous.stop_requested_at || now,
+      stopped_at: fresh ? previous.stopped_at ?? null : now,
     };
     writeChannelWorkerState(root, subject, state);
-    return { requested: false, reason: 'not_running', state };
+    return {
+      requested: fresh,
+      role,
+      reason: fresh ? 'stop_requested' : 'stale_worker_marked_stopped',
+      state: state.workers[role],
+    };
+  });
+}
+
+export function requestChannelWorkerStop(root, subject, { staleMs = 60_000, role = null } = {}) {
+  if (role) {
+    return requestChannelRoleWorkerStop(root, subject, role, { staleMs });
   }
-  const effectiveStaleMs = previous.stale_after_ms ?? staleMs;
-  const fresh = isWorkerFresh(previous, { staleMs: effectiveStaleMs });
-  const state = {
-    ...previous,
-    domain: 'channel',
-    status: fresh ? 'stopping' : 'stopped',
-    stop_requested_at: previous.stop_requested_at || now,
-    stopped_at: fresh ? previous.stopped_at ?? null : now,
-    stale_after_ms: effectiveStaleMs,
-  };
-  writeChannelWorkerState(root, subject, state);
-  return {
-    requested: fresh,
-    reason: fresh ? 'stop_requested' : 'stale_worker_marked_stopped',
-    state,
-  };
+  return withChannelWorkerStateLock(root, subject, () => {
+    const state = readChannelWorkerState(root, subject);
+    const now = nowIso();
+    if (!state) {
+      const empty = emptyAggregateState(subject);
+      empty.stop_requested_at = now;
+      empty.stopped_at = now;
+      writeChannelWorkerState(root, subject, empty);
+      return { requested: false, reason: 'not_running', state: empty };
+    }
+    const migrated = migrateLegacyState(state);
+    let anyRequested = false;
+    for (const key of Object.keys(migrated.workers ?? {})) {
+      const previous = migrated.workers[key];
+      const effectiveStaleMs = previous.stale_after_ms ?? staleMs;
+      const fresh = isWorkerFresh(previous, { staleMs: effectiveStaleMs });
+      migrated.workers[key] = {
+        ...previous,
+        status: fresh ? 'stopping' : 'stopped',
+        stop_requested_at: previous.stop_requested_at || now,
+        stopped_at: fresh ? previous.stopped_at ?? null : now,
+      };
+      anyRequested = anyRequested || fresh;
+    }
+    migrated.stop_requested_at = migrated.stop_requested_at || now;
+    migrated.status = anyRequested ? 'stopping' : 'stopped';
+    if (!anyRequested) migrated.stopped_at = now;
+    writeChannelWorkerState(root, subject, migrated);
+    return {
+      requested: anyRequested,
+      reason: anyRequested ? 'stop_requested' : 'stale_worker_marked_stopped',
+      state: migrated,
+    };
+  });
+}
+
+export function markChannelRoleWorkerStopped(root, subject, role, patch = {}) {
+  return withChannelWorkerStateLock(root, subject, () => {
+    const state = readChannelWorkerState(root, subject) || emptyAggregateState(subject);
+    const previous = state.workers?.[role] || {};
+    state.workers[role] = {
+      ...previous,
+      ...patch,
+      role,
+      status: 'stopped',
+      stopped_at: nowIso(),
+    };
+    const anyRunning = Object.values(state.workers ?? {}).some((w) => w.status === 'running' || w.status === 'stopping');
+    if (!anyRunning) {
+      state.status = 'stopped';
+      state.stopped_at = nowIso();
+    }
+    writeChannelWorkerState(root, subject, state);
+    return state.workers[role];
+  });
 }
 
 export function markChannelWorkerStopped(root, subject, patch = {}) {
-  const previous = readChannelWorkerState(root, subject) || {};
-  const state = {
-    ...previous,
-    ...patch,
-    subject,
-    domain: 'channel',
-    status: 'stopped',
-    stopped_at: nowIso(),
-  };
-  writeChannelWorkerState(root, subject, state);
-  return state;
+  const role = patch.role ?? 'all';
+  return markChannelRoleWorkerStopped(root, subject, role, patch);
+}
+
+export function isChannelRoleStopRequested(root, subject, role) {
+  const state = readChannelWorkerState(root, subject);
+  return Boolean(state?.workers?.[role]?.stop_requested_at || state?.stop_requested_at);
 }

@@ -241,19 +241,29 @@ export function reclaimExpiredLeases(root, subject, { nowMs = Date.now(), reason
   }, options);
 }
 
+function resolveClaimTypeFilter({ type = null, types = null } = {}) {
+  if (Array.isArray(types) && types.length) {
+    return new Set(types.map((t) => String(t).trim()).filter(Boolean));
+  }
+  if (type) return new Set([String(type)]);
+  return null;
+}
+
 export function claimNextTask(root, subject, {
   workerId = `worker-${process.pid}`,
   leaseMs = 5 * 60 * 1000,
   type = null,
+  types = null,
   domain = null,
 } = {}) {
+  const allowedTypes = resolveClaimTypeFilter({ type, types });
   const options = { domain };
   return withTaskQueueLock(root, subject, () => {
     const queue = readTaskQueue(root, subject, options);
     const nowMs = Date.now();
     const reclaimed = reclaimExpiredLeasesInQueue(queue, { nowMs });
     const task = queue.tasks
-      .filter((item) => item.status === 'pending' && (!type || item.type === type))
+      .filter((item) => item.status === 'pending' && (!allowedTypes || allowedTypes.has(item.type)))
       .sort((a, b) => (a.priority ?? 100) - (b.priority ?? 100) || String(a.created_at).localeCompare(String(b.created_at)))
       .find((item) => !hasIncompleteEarlierRound(queue.tasks, item) && !hasIncompleteEarlierStep(queue.tasks, item)) ?? null;
     if (!task) {

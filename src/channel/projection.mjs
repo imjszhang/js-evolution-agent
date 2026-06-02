@@ -1,6 +1,7 @@
 import { summarizeWorkerState } from '../cli/utils/daemon-worker-state.mjs';
 import { summarizeChannelTaskQueue, readChannelTaskQueue } from './task-queue.mjs';
-import { readChannelWorkerState } from './worker-state.mjs';
+import { readChannelWorkerState, summarizeChannelWorkersState } from './worker-state.mjs';
+import { classifierConfigForApi, resolveClassifierConfig } from './classifier-config.mjs';
 import { readChannelEvents } from './audit.mjs';
 import {
   listOutboxPending,
@@ -34,7 +35,25 @@ export function buildChannelProjection(root, subject, { heartbeatStaleMs = 60_00
   const queue = readChannelTaskQueue(root, subject);
   const summary = summarizeChannelTaskQueue(queue);
   const rawWorker = readChannelWorkerState(root, subject);
-  const worker = summarizeWorkerState(rawWorker, { staleMs: heartbeatStaleMs });
+  const workers = summarizeChannelWorkersState(rawWorker, { staleMs: heartbeatStaleMs });
+  const legacyWorker = rawWorker?.workers ? null : rawWorker;
+  const worker = legacyWorker
+    ? summarizeWorkerState(legacyWorker, { staleMs: heartbeatStaleMs })
+    : {
+      status: workers.status,
+      running: workers.running_count > 0,
+      fresh: workers.fresh_count > 0,
+      stale: workers.stale_count > 0,
+      zombie: workers.zombie_count > 0,
+      pid_alive: workers.running_count > 0,
+      pid: rawWorker?.coordinator?.pid ?? null,
+      worker_id: null,
+      heartbeat_at: rawWorker?.heartbeat_at ?? null,
+      stop_requested_at: rawWorker?.stop_requested_at ?? null,
+      tick_ms: rawWorker?.tick_ms ?? null,
+      last_work_result: null,
+      last_error: null,
+    };
   const pendingInbound = listPendingInbound(root, subject, { limit: 20 });
   const pendingOutbox = listOutboxPending(root, subject, { limit: 20 });
   const feishuConfig = resolveFeishuConfig(root, subject);
@@ -45,9 +64,11 @@ export function buildChannelProjection(root, subject, { heartbeatStaleMs = 60_00
   const deprecatedTasks = listDeprecatedQueueTasks(queue);
   const health = (() => {
     const reasons = [];
-    if (worker.zombie) reasons.push('Channel worker pid is not alive');
-    if (worker.stale) reasons.push('Channel worker heartbeat is stale');
-    if ((summary.counts.pending ?? 0) > 0 && !worker.running) {
+    if (legacyWorker && worker.zombie) reasons.push('Channel worker pid is not alive');
+    if (legacyWorker && worker.stale) reasons.push('Channel worker heartbeat is stale');
+    if (workers.zombie_count) reasons.push(`${workers.zombie_count} channel role worker(s) zombie`);
+    if (workers.stale_count) reasons.push(`${workers.stale_count} channel role worker(s) stale`);
+    if ((summary.counts.pending ?? 0) > 0 && !worker.running && !workers.running_count) {
       reasons.push('Channel tasks are pending without a fresh worker');
     }
     if (deprecatedTasks.length) {
@@ -55,7 +76,7 @@ export function buildChannelProjection(root, subject, { heartbeatStaleMs = 60_00
     }
     if (reasons.length) {
       return {
-        status: worker.zombie ? 'worker_zombie' : (worker.stale ? 'stale' : 'blocked'),
+        status: workers.zombie_count || worker.zombie ? 'worker_zombie' : (workers.stale_count || worker.stale ? 'stale' : 'blocked'),
         ok: false,
         reasons,
       };
@@ -67,6 +88,8 @@ export function buildChannelProjection(root, subject, { heartbeatStaleMs = 60_00
     generated_at: new Date().toISOString(),
     health,
     worker,
+    workers,
+    classifier: classifierConfigForApi(resolveClassifierConfig(root, subject)),
     tasks: {
       total: summary.total,
       counts: summary.counts,

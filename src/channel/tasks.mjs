@@ -13,6 +13,7 @@ import {
 } from './state.mjs';
 import { normalizeOutboundMessage, isDeprecatedChannelTaskType } from './types.mjs';
 import { runChannelPresenceTask, runChannelSpeechGenerationTask } from './presence.mjs';
+import { runChannelClassifierTask } from './classifier.mjs';
 import { enqueueNotifyIfOutboxPending } from './wake.mjs';
 
 function readJsonStrict(file) {
@@ -88,6 +89,8 @@ export async function runChannelTask(root, subject, task) {
       return runChannelInboundTask(root, subject, input);
     case 'channel_presence':
       return runChannelPresenceTask(root, subject, { ...input, skip_speech_generation: true });
+    case 'channel_classifier':
+      return runChannelClassifierTask(root, subject, input);
     case 'channel_speech_generation':
       return runChannelSpeechGenerationTask(root, subject, input);
     case 'channel_notify':

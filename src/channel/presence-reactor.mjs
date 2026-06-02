@@ -7,7 +7,6 @@ import {
   markChannelEventsHandled,
   supersedePendingChannelEvents,
 } from './event-queue.mjs';
-import { drainChannelInbound } from './inbound-drain.mjs';
 import { buildPresenceContext } from './presence-context.mjs';
 import { planPresence } from './presence-planner.mjs';
 import { executePresenceDecisionPlan } from './presence-decision-executor.mjs';
@@ -28,6 +27,7 @@ import { runSpeechGenerationForEvent } from './speech-generation.mjs';
 const PRESENCE_REACTOR_EVENT_TYPES = Object.freeze([
   'timer_tick',
   'feishu_message_received',
+  'inbound_classified',
   'manual_inbox_added',
   'presence_wake',
   'presence_run_requested',
@@ -35,7 +35,7 @@ const PRESENCE_REACTOR_EVENT_TYPES = Object.freeze([
 ]);
 
 /**
- * Bounded presence reactor: claim events → drain inbound → decide → queue speech generation.
+ * Bounded presence reactor: claim events → decide → queue speech generation.
  */
 export async function runPresenceReactor(root, subject, input = {}) {
   const presenceConfig = resolvePresenceConfig(root, subject);
@@ -96,14 +96,10 @@ export async function runPresenceReactor(root, subject, input = {}) {
 
   try {
     const prepareDecision = async () => {
-      const ingestPass = await drainChannelInbound(root, subject, {
-        limit: input.ingest_limit ?? 10,
-        adapter_options: input.adapter_options ?? {},
-      });
-      const context = buildPresenceContext(root, subject, { tickId, ingestPass });
+      const context = buildPresenceContext(root, subject, { tickId });
       context.presence = presenceConfig;
       const plan = await planPresence(context, { aiClient: input.aiClient ?? null });
-      return { ingestPass, context, plan };
+      return { context, plan };
     };
 
     const prepared = await runWithTimeout(
@@ -141,13 +137,12 @@ export async function runPresenceReactor(root, subject, input = {}) {
     return {
       run_id: runId,
       claimed_events: claimed.length,
-      ingest_pass: prepared.ingestPass,
       plan: prepared.plan,
       execution,
       speech_task: speechTask.task ?? null,
       notify_task: notifyTask.task ?? null,
       context_summary: {
-        pending_inbound: prepared.context.channel.pending_inbound_count,
+        pending_inbound: prepared.context.channel.pending_unclassified_count,
         new_messages: prepared.context.channel.new_messages.length,
       },
     };
