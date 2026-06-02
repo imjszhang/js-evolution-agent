@@ -8,6 +8,8 @@ import { normalizeOutboundMessage } from '../../channel/types.mjs';
 import { enqueueChannelTask, readChannelTaskQueue } from '../../channel/task-queue.mjs';
 import { runChannelTick } from '../../channel/dispatch.mjs';
 import { runChannelWatchTask, runChannelNotifyTask } from '../../channel/tasks.mjs';
+import { channelFeishuCommand } from './channel-feishu.mjs';
+import { resolveFeishuConfig } from '../../channel/adapters/feishu/config.mjs';
 
 function runtimeForFlags(root, flags = {}) {
   const config = resolveSubjectFromFlags(root, flags);
@@ -39,11 +41,46 @@ function printStatus(projection) {
   console.log(`tasks: pending=${projection.tasks.counts.pending ?? 0} running=${projection.tasks.counts.running ?? 0} failed=${projection.tasks.counts.failed ?? 0}`);
   console.log(`inbound pending: ${projection.inbound.pending_count}`);
   console.log(`outbox pending: ${projection.outbox.pending_count}`);
+  if (projection.feishu?.listener?.running != null) {
+    console.log(`feishu listener: running=${projection.feishu.listener.running} connected=${projection.feishu.listener.connected}`);
+  }
+  if (projection.feishu?.reload?.pending) {
+    console.log('feishu reload: pending');
+  }
+}
+
+function buildFeishuDoctorHints(root, subject, projection) {
+  const hints = [];
+  const feishu = resolveFeishuConfig(root, subject);
+  if (!feishu.mock && (!feishu.appId || !feishu.appSecret)) {
+    hints.push(`缺少飞书凭据。运行: npm run jea -- channel feishu setup --subject ${subject} --write-env`);
+  }
+  if (projection.worker.running && feishu.listenerEnabled && !feishu.mock && feishu.appId && feishu.appSecret) {
+    const listener = projection.feishu?.listener ?? {};
+    if (!listener.running) {
+      hints.push('Channel worker 正在运行，但飞书 listener 未启动。等待 reload 或查看 channel events / reload-state。');
+    }
+  }
+  if (projection.feishu?.reload?.pending) {
+    hints.push('存在待处理的 channel reload 请求；运行中的 channel daemon 会在下一轮 loop 自动消费。');
+  }
+  if (projection.feishu?.reload?.last_error) {
+    hints.push(`上次 listener reload 失败: ${projection.feishu.reload.last_error}`);
+  }
+  if (projection.feishu?.listener?.fingerprint_stale) {
+    hints.push('飞书 listener 使用的配置 fingerprint 已过期；等待 channel daemon reload 或检查 reload-state。');
+  }
+  return hints;
 }
 
 export async function channelCommand({ subcommand, flags = {}, args = [], root = getProjectRoot() } = {}) {
   const runtime = runtimeForFlags(root, flags);
   const subject = runtime.subject;
+
+  if (subcommand === 'feishu') {
+    const action = args[0] ?? 'setup';
+    return channelFeishuCommand({ action, flags, root, subject });
+  }
 
   if (subcommand === 'status' || !subcommand) {
     const projection = buildChannelProjection(root, subject, {
@@ -155,19 +192,23 @@ export async function channelCommand({ subcommand, flags = {}, args = [], root =
     const projection = buildChannelProjection(root, subject, {
       heartbeatStaleMs: parseHeartbeatStaleMs(flags['heartbeat-stale-ms']),
     });
+    const hints = buildFeishuDoctorHints(root, subject, projection);
     const diagnostics = {
       subject,
       health: projection.health,
       queue: readChannelTaskQueue(root, subject),
+      feishu: projection.feishu,
+      hints,
     };
     if (flags.json) console.log(JSON.stringify(diagnostics, null, 2));
     else {
       printStatus(projection);
       for (const reason of projection.health.reasons ?? []) console.log(`reason: ${reason}`);
+      for (const hint of hints) console.log(`hint: ${hint}`);
     }
     return projection.health.ok ? 0 : 1;
   }
 
-  console.error('Usage: jea channel <status|events|inbox|outbox|send|tick|work|doctor> [--subject NAME] [--json]');
+  console.error('Usage: jea channel <status|events|inbox|outbox|send|tick|work|doctor|feishu> [--subject NAME] [--json]');
   return 2;
 }

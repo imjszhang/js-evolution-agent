@@ -12,7 +12,16 @@ export {
   DEFAULT_BIND_PHRASE,
 } from './binding.mjs';
 export { normalizeInboundPayload, envelopeFromFeishuEvent, envelopeFromMessageContext } from './parser.mjs';
-export { startFeishuListener, stopFeishuListener, getFeishuListenerStatus, stopAllFeishuListeners } from './listener.mjs';
+export {
+  startFeishuListener,
+  stopFeishuListener,
+  getFeishuListenerStatus,
+  stopAllFeishuListeners,
+  feishuListenerConfigFingerprint,
+  ensureFeishuListener,
+  reloadFeishuListener,
+  refreshChannelFeishuListener,
+} from './listener.mjs';
 export { resolveIdType, normalizeTarget } from './sender.mjs';
 
 /** @type {Map<string, import('./sender.mjs').FeishuSender>} */

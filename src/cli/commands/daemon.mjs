@@ -59,7 +59,11 @@ import {
 } from '../utils/cycle-dispatch.mjs';
 import { resolveEvolutionMode } from '../utils/evolution-mode.mjs';
 import { applyEvolutionModeChange } from '../utils/evolution-mode-apply.mjs';
-import { startFeishuListener, stopFeishuListener } from '../../channel/adapters/feishu/index.mjs';
+import {
+  stopFeishuListener,
+  refreshChannelFeishuListener,
+  getFeishuListenerStatus,
+} from '../../channel/adapters/feishu/index.mjs';
 import { runChannelTick } from '../../channel/dispatch.mjs';
 import { recordChannelEvent } from '../../channel/audit.mjs';
 import { isChannelTaskType } from '../../channel/types.mjs';
@@ -1275,16 +1279,13 @@ export async function runChannelDomainWorker(root, subject, flags = {}) {
   runScheduledTick();
   tickTimer = setInterval(runScheduledTick, tickMs);
 
-  let feishuListenerStarted = false;
   if (!flags['no-feishu-listener']) {
-    const listenerResult = await startFeishuListener(root, subject, flags);
-    feishuListenerStarted = Boolean(listenerResult.started);
-    if (!listenerResult.started
-      && !['listener_disabled', 'mock_mode', 'credentials_missing', 'already_running'].includes(listenerResult.reason)) {
+    const initialEnsure = await refreshChannelFeishuListener(root, subject, flags);
+    if (initialEnsure.action === 'start_failed' || initialEnsure.action === 'reload_failed') {
       recordChannelEvent(root, subject, {
         type: 'feishu_listener_start_skipped',
         status: 'not_running',
-        reason: listenerResult.reason,
+        reason: initialEnsure.reason ?? initialEnsure.action,
       });
     }
   }
@@ -1295,6 +1296,18 @@ export async function runChannelDomainWorker(root, subject, flags = {}) {
       if (stopping || current?.stop_requested_at) {
         stopReason = current?.stop_requested_at ? 'stop_requested' : 'signal';
         break;
+      }
+      if (!flags['no-feishu-listener']) {
+        try {
+          await refreshChannelFeishuListener(root, subject, flags);
+        } catch (err) {
+          recordChannelEvent(root, subject, {
+            type: 'channel_config_reload_failed',
+            status: 'error',
+            error: err?.message || String(err),
+            error_code: err?.code ?? null,
+          });
+        }
       }
       updateChannelWorkerHeartbeat(root, subject, {
         worker_id: workerId,
@@ -1342,7 +1355,7 @@ export async function runChannelDomainWorker(root, subject, flags = {}) {
     }
   } finally {
     if (tickTimer) clearInterval(tickTimer);
-    if (feishuListenerStarted) {
+    if (getFeishuListenerStatus(root, subject).running) {
       await stopFeishuListener(root, subject);
     }
     process.removeListener('SIGINT', requestLocalStop);

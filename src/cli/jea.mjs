@@ -44,6 +44,9 @@ Commands:
   daemon tasks list      List daemon tasks; inspect/retry/cancel are also supported
   daemon inbox           Show latest reports, diaries, verify reports, and health
   channel status         Show channel worker, inbox, outbox, and task health
+  channel feishu setup   Scan to create Feishu app (shows QR + opens PNG on Windows)
+  channel feishu register
+                         Register Feishu app credentials only (no reload request)
   channel events         Show channel communication audit events
   channel inbox put      Queue an inbound channel message JSON for ingest
   channel send           Queue or dry-run an outbound channel message

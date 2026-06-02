@@ -60,3 +60,11 @@ export function channelOutboxFailedDir(root, subject) {
 export function channelCooldownPath(root, subject) {
   return join(channelDirForSubject(root, subject), 'cooldown.json');
 }
+
+export function channelReloadRequestPath(root, subject) {
+  return join(channelDirForSubject(root, subject), 'reload-request.json');
+}
+
+export function channelReloadStatePath(root, subject) {
+  return join(channelDirForSubject(root, subject), 'reload-state.json');
+}

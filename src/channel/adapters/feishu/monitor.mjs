@@ -40,8 +40,18 @@ export class FeishuMonitor {
 
   async stop() {
     this._isRunning = false;
+    const wsClient = this._wsClient;
     this._wsClient = null;
     this._eventDispatcher = null;
+    if (wsClient) {
+      try {
+        if (typeof wsClient.stop === 'function') await wsClient.stop();
+        else if (typeof wsClient.close === 'function') await wsClient.close();
+        else if (typeof wsClient.shutdown === 'function') await wsClient.shutdown();
+      } catch (err) {
+        console.error('[FeishuMonitor] stop error:', err?.message || err);
+      }
+    }
     this.onConnectionChange({ connected: false });
   }
 

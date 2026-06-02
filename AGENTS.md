@@ -424,12 +424,18 @@ runtime/subjects/<data_namespace>/data/channel/
 ├── worker-state.json
 ├── tasks/pending_tasks.json
 ├── events.jsonl
+├── reload-request.json          # setup 完成后写入；daemon 消费后移除
+├── reload-state.json            # 最近一次 listener reload 状态
+├── feishu-operator-binding.json # JEA BIND 结果
+├── feishu-register-qr.png       # setup 扫码注册时生成的二维码图片
 ├── inbound/pending|processed|failed/
 └── outbox/pending|sent|failed/
 ```
 
 常用命令：
 
+- `jea channel feishu setup --subject NAME [--write-env] [--init-subject-config]`：一键扫码注册飞书应用、写入 subject 凭据 env、生成 BIND 口令、写入 reload 请求（推荐新 subject 首选入口）。
+- `jea channel feishu register --subject NAME [--write-env] [--force]`：仅注册应用并拿凭据，不写 reload 请求、不自动生成 BIND 口令。
 - `jea channel status [--json]`：查看 channel worker、队列、inbound/outbox 健康。
 - `jea channel events [--limit N] [--json]`：查看 channel 审计事件。
 - `jea channel inbox put [--file PATH | --stdin]`：放入一条飞书事件 / 手工 MessageContext / JEA `ChannelEnvelope`，等待 `channel_ingest` 分类。
@@ -437,6 +443,70 @@ runtime/subjects/<data_namespace>/data/channel/
 - `jea channel send --to CHAT_ID --text TEXT [--dry-run]`：手工排队或预览一条出站消息。
 - `jea channel tick`：运行一次 channel dispatcher，按 pending inbound、attention signals、outbox 入队任务。
 - `jea channel doctor [--json]`：诊断 channel worker 与任务队列。
+
+### 飞书快速部署（新 subject）
+
+依赖 `@larksuiteoapi/node-sdk`（`registerApp` 需 ≥ 1.61.1）与 `qrcode`（终端/PNG 二维码）。若 `npm install` 遇 peer 冲突，可用 `npm install --legacy-peer-deps`。
+
+典型流程：
+
+```powershell
+jea subject init my-bot
+jea data init --all --subject my-bot
+jea channel feishu setup --subject my-bot --write-env --init-subject-config
+jea daemon start --subject my-bot --domain channel
+```
+
+setup 会：
+
+1. 调用 SDK `registerApp()`，在终端打印 ASCII 二维码，并保存/打开 PNG：`runtime/subjects/<ns>/data/channel/feishu-register-qr.png`。
+2. 将 `client_id` / `client_secret` 写入 `.env` 的 `JEA_CHANNEL_FEISHU_<SUBJECT>_APP_ID` / `_APP_SECRET`（同名 key 已存在且值不同需 `--force`）。
+3. 若未配置 BIND 口令，自动生成 `JEA_CHANNEL_FEISHU_<SUBJECT>_BIND_TOKEN`。
+4. 可选 `--init-subject-config` 写入 `subjects.json` 最小 `channels.feishu` skeleton（Secret 不进 JSON）。
+5. 写入 `reload-request.json`，供运行中的 channel daemon 热加载。
+
+扫码完成后，在飞书**私聊**新机器人发送：
+
+```text
+JEA BIND <口令>
+```
+
+口令来自 `.env` 的 `JEA_CHANNEL_FEISHU_<SUBJECT>_BIND_TOKEN`（setup 会生成）。绑定成功后写入 `feishu-operator-binding.json`，并作为默认出站目标。
+
+setup/register 可选参数：
+
+| 参数 | 含义 |
+| --- | --- |
+| `--write-env` | 写入/更新项目根 `.env`（setup 默认开启；register 默认只打印） |
+| `--force` | 覆盖 `.env` 中已有同名 key |
+| `--init-subject-config` | 自动补齐 `subjects.json` 的 `channels.feishu` skeleton |
+| `--no-qr` | 不渲染终端二维码 |
+| `--no-qr-image` | 不生成 PNG |
+| `--no-open-qr` | 生成 PNG 但不自动用系统查看器打开 |
+| `--json` | 机器可读输出（不打印二维码） |
+
+验收建议：
+
+```powershell
+jea channel doctor --subject my-bot
+jea channel events --subject my-bot --limit 20
+```
+
+`channel status` 里的 `feishu.listener.running` 在**独立 CLI 进程**中查询时可能为 `false`（listener 状态在 daemon 进程内存中）；以 `channel events` 中的 `feishu_listener_started` / `feishu_listener_connected` / `channel_message_received` 为准。
+
+### 配置热更新（channel daemon 运行中）
+
+channel worker 每轮 loop 会：
+
+- 重新加载项目根 `.env`（`loadProjectEnv`）。
+- 消费 `reload-request.json`。
+- 调用 `ensureFeishuListener()`：凭据/domain/listener 开关变化时自动重启 WS listener；仅 allowlist、reply、bind、operator binding 变化时只刷新 policy，不重连。
+
+因此 **setup 写入 `.env` 后，已运行的 `jea daemon start --domain channel` 通常无需重启**；数秒内应出现 `feishu_listener_started` 或 `channel_config_reloaded` 事件。
+
+仍会触发 listener 重建的变化：`app_id`、`app_secret`、`domain`、`encrypt_key`、`verification_token`、`enabled` / `listenerEnabled` 开关。
+
+`channel status --json` 的 `feishu.reload` 字段可查看 pending reload、`last_error`、`config_fingerprint`。
 
 入站分类边界：
 
@@ -482,16 +552,18 @@ runtime/subjects/<data_namespace>/data/channel/
 }
 ```
 
-`mode` 可为 `off | audit_only | guarded | autonomous | llm_autonomous`。`llm_autonomous` 会让 LLM 为入站消息先产出结构化回复决策（`send|none` + 文案），入库分类不变；硬兜底仍禁止直接授权、声称已执行动作、泄露密钥，并继续受 cooldown / `max_messages_per_hour` 限制。`max_messages_per_hour=0` 表示不限制。`llm_draft.enabled` 默认关闭；开启后只为 `allowed_reasons` 中的低风险回复生成草稿。代码更新后需要重启 daemon/channel worker；仅修改 reply 配置通常在下一次读取 subject config 时生效。
+`mode` 可为 `off | audit_only | guarded | autonomous | llm_autonomous`。`llm_autonomous` 会让 LLM 为入站消息先产出结构化回复决策（`send|none` + 文案），入库分类不变；硬兜底仍禁止直接授权、声称已执行动作、泄露密钥，并继续受 cooldown / `max_messages_per_hour` 限制。`max_messages_per_hour=0` 表示不限制。`llm_draft.enabled` 默认关闭；开启后只为 `allowed_reasons` 中的低风险回复生成草稿。
+
+修改 `channels.feishu.reply` 或 allowlist/bind 后，运行中的 channel daemon 会在下一轮 loop 热刷新 policy，**通常无需重启**。修改 `app_id` / `app_secret` 或关闭 listener 时，daemon 会自动重建 WS 连接。升级 JEA 代码本身仍需重启 daemon 进程。
 
 ### 私聊绑定（`JEA BIND`）
 
-仅私聊、未手填 `ou_` 时，可在 `channels.feishu.bind` 开启口令绑定：
+仅私聊、未手填 `ou_` 时，可在 `channels.feishu.bind` 开启口令绑定。推荐用 `jea channel feishu setup` 自动生成 BIND 口令并写入 `.env`；也可手工设置。
 
 1. `.env` 设置 `JEA_CHANNEL_FEISHU_<SUBJECT>_BIND_TOKEN`（或 `subjects.json` 的 `bind.token_env`）。
-2. 启动 `jea daemon start --subject NAME --domain channel`。
+2. 启动 `jea daemon start --subject NAME --domain channel`（若已在运行，setup 写 env 后会通过 reload 热加载，通常无需重启）。
 3. 在飞书里**私聊**机器人，发送：`JEA BIND <口令>`（短语默认 `JEA BIND`，可在 `bind.phrase` 自定义）。
-4. 绑定结果写入 `runtime/subjects/<ns>/data/channel/feishu-operator-binding.json`，并自动作为 `allow_from` / 默认出站目标；`jea channel status --json` 的 `feishu.config.operator` 可查看（open_id 脱敏）。
+4. 绑定结果写入 `runtime/subjects/<ns>/data/channel/feishu-operator-binding.json`，并自动作为 `allow_from` / 默认出站目标；`jea channel status --json` 的 `feishu.config.operator` 可查看（open_id 脱敏）。成功时 events 可见 `feishu_operator_bound`。
 
 未绑定前仅接受绑定握手消息；群聊可用 `group_policy: disabled` 关闭。覆盖他人绑定需再次发送带**同一口令**的 `JEA BIND`。
 
@@ -560,7 +632,7 @@ JEA_CHANNEL_FEISHU_MY_SUBJECT_BIND_TOKEN=choose-a-long-random-token
 | `JEA_CHANNEL_FEISHU_MOCK=1` | 全部 subject 出站 mock |
 | `JEA_CHANNEL_FEISHU_DOMAIN` | 默认域名 `feishu` / `lark` |
 
-`jea daemon start --domain channel` 在凭证齐全时会为**当前 subject** 启动 Feishu WebSocket listener；多 subject 需分别启动 daemon 进程。禁用 listener：`--no-feishu-listener`。
+`jea daemon start --domain channel` 在凭证齐全时会为**当前 subject** 启动 Feishu WebSocket listener；多 subject 需分别启动 daemon 进程。禁用 listener：`--no-feishu-listener`。listener 是否在运行，优先看 `jea channel events` 中的 `feishu_listener_*` 事件，而非独立 CLI 进程的 `channel status`。
 
 ## Subject 管理
 
@@ -615,6 +687,7 @@ npm run reset-data
 - 本地验证优先使用 `jea run --mock` 或 `jea daemon work --once --mock`。
 - 涉及删除或重置数据的命令，例如 `jea data reset --yes`，必须确认当前 subject 和 namespace。
 - 多主体并行时，用 `jea daemon status --all`、`jea daemon doctor --all` 和 `jea daemon inbox --all` 做总览。
+- 新 subject 接飞书机器人：先 `jea subject init` + `jea data init --all`，再 `jea channel feishu setup --subject NAME --write-env --init-subject-config`，然后 `jea daemon start --domain channel`，最后在飞书私聊 `JEA BIND <口令>`；用 `jea channel events` 验收收消息与 ingest。
 - 自动化脚本需要结构化输出时，优先使用带 `--json` 的命令。
 - 发布/基线校准等人工作业：先读最新 evolution diary 与 verify report，再用 `jea intel brief put` 提交意图，然后 `jea daemon enqueue --type run_cycle` 或 `jea run`；用 `jea intel brief list` / `processed` 确认 brief 是否已被消费。
 - 已确认的领域口径或术语定义（非待验证命题）：用 `jea intel ingest --source intel_observations` 写入 `operator_fact`；待核实或单轮优先级调整仍用 `jea intel brief put`。

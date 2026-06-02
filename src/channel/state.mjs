@@ -19,6 +19,8 @@ import {
   channelOutboxFailedDir,
   channelOutboxPendingDir,
   channelOutboxSentDir,
+  channelReloadRequestPath,
+  channelReloadStatePath,
 } from './paths.mjs';
 
 function ensureDir(dir) {
@@ -171,4 +173,53 @@ export function markOutboxFailed(root, subject, file, reason, payload = {}) {
 
 export function ensureParent(filePath) {
   mkdirSync(dirname(filePath), { recursive: true });
+}
+
+export function writeChannelReloadRequest(root, subject, payload = {}) {
+  const file = channelReloadRequestPath(root, subject);
+  ensureParent(file);
+  const record = {
+    reason: payload.reason ?? 'reload_requested',
+    changed: Array.isArray(payload.changed) ? payload.changed : [],
+    requested_at: payload.requested_at ?? nowIso(),
+    ...payload,
+  };
+  writeJsonFile(file, record);
+  return { file, request: record };
+}
+
+export function readChannelReloadRequest(root, subject) {
+  return readJsonSafe(channelReloadRequestPath(root, subject), null);
+}
+
+export function consumeChannelReloadRequest(root, subject) {
+  const file = channelReloadRequestPath(root, subject);
+  if (!existsSync(file)) return null;
+  const request = readJsonSafe(file, null);
+  try {
+    renameSync(file, `${file}.processed-${timestampForFilename()}`);
+  } catch {
+    writeJsonFile(file, { ...(request ?? {}), consumed_at: nowIso() });
+  }
+  return request;
+}
+
+export function readChannelReloadState(root, subject) {
+  return readJsonSafe(channelReloadStatePath(root, subject), {
+    last_reload_at: null,
+    last_reload_reason: null,
+    last_error: null,
+    config_fingerprint: null,
+  });
+}
+
+export function writeChannelReloadState(root, subject, patch = {}) {
+  const current = readChannelReloadState(root, subject);
+  const next = {
+    ...current,
+    ...patch,
+    updated_at: nowIso(),
+  };
+  writeJsonFile(channelReloadStatePath(root, subject), next);
+  return next;
 }

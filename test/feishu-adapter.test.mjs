@@ -7,6 +7,7 @@ import {
   sendOutboundMessage,
   resolveFeishuConfig,
   subjectEnvSlug,
+  feishuListenerConfigFingerprint,
 } from '../src/channel/adapters/feishu/index.mjs';
 import { resolveIdType, normalizeTarget } from '../src/channel/adapters/feishu/sender.mjs';
 import { FeishuPolicy } from '../src/channel/adapters/feishu/policy.mjs';
@@ -76,6 +77,24 @@ describe('feishu adapter', () => {
 
   it('subjectEnvSlug normalizes subject names for env vars', () => {
     expect(subjectEnvSlug('my-subject')).toBe('MY_SUBJECT');
+  });
+
+  it('feishuListenerConfigFingerprint changes when credentials change', () => {
+    const base = {
+      enabled: true,
+      listenerEnabled: true,
+      mock: false,
+      appId: 'cli_a',
+      appSecret: 'secret-a',
+      domain: 'feishu',
+      connectionMode: 'websocket',
+      encryptKey: '',
+      verificationToken: '',
+    };
+    const first = feishuListenerConfigFingerprint(base);
+    const second = feishuListenerConfigFingerprint({ ...base, appSecret: 'secret-b' });
+    expect(first).not.toBe(second);
+    expect(feishuListenerConfigFingerprint(base)).toBe(first);
   });
 
   it('normalizeTarget strips chat/user prefixes', () => {
