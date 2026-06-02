@@ -1,7 +1,8 @@
 import { resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { getProjectRoot } from '../utils/project.mjs';
-import { resolveSubjectFromFlags, runtimeInfoForSubject } from '../utils/subjects.mjs';
+import { resolveSubjectFromFlags, resolveDefaultSubjectName, runtimeInfoForSubject } from '../utils/subjects.mjs';
+import { selectSubjects } from '../utils/subject-selection.mjs';
 import {
   DEFAULT_VIEWER_LIMIT,
   buildEvolutionViewerForRuntime,
@@ -63,22 +64,51 @@ export async function intelViewerBuild(root, flags = {}) {
   return 0;
 }
 
+function viewerServeSelectAll(flags = {}) {
+  const hasExplicit = Boolean(
+    (flags.subject && flags.subject !== true) || (flags.subjects && flags.subjects !== true),
+  );
+  return Boolean(flags.all) || !hasExplicit;
+}
+
 export async function intelViewerServe(root, flags = {}) {
   const port = numberFlag(flags, 'port', DEFAULT_PORT);
   const limit = numberFlag(flags, 'limit', DEFAULT_LIMIT);
-  const config = resolveSubjectFromFlags(root, flags);
-  const runtime = runtimeInfoForSubject(root, config);
   const publicDir = flags.public ? resolve(flags.public) : evolutionViewerPublicDir(root);
 
-  const apiCtx = createViewerApiServer({ runtime, projectRoot: root, limit, port, publicDir });
+  const subjectNames = selectSubjects(root, {
+    subject: flags.subject,
+    subjects: flags.subjects,
+    all: viewerServeSelectAll(flags),
+  });
+  const registryDefault = resolveDefaultSubjectName(root);
+  const orderedNames = [...subjectNames].sort((a, b) => {
+    if (a === registryDefault) return -1;
+    if (b === registryDefault) return 1;
+    return a.localeCompare(b);
+  });
+  const runtimes = orderedNames.map((name) => runtimeInfoForSubject(root, name));
+
+  const apiCtx = createViewerApiServer({
+    runtimes,
+    projectRoot: root,
+    limit,
+    port,
+    publicDir,
+  });
   await new Promise((resolveListen) => apiCtx.server.listen(port, '127.0.0.1', resolveListen));
 
   const url = `http://127.0.0.1:${port}/`;
   const eventsUrl = `${url}events`;
 
   console.log(`Evolution viewer API: ${url}`);
-  console.log(`  subject: ${runtime.subject}`);
-  console.log(`  runtime: ${runtime.runtimeRoot}`);
+  if (runtimes.length === 1) {
+    console.log(`  subject: ${runtimes[0].subject}`);
+    console.log(`  runtime: ${runtimes[0].runtimeRoot}`);
+  } else {
+    console.log(`  subjects: ${runtimes.map((r) => r.subject).join(', ')}`);
+    console.log(`  default_subject: ${apiCtx.defaultSubject}`);
+  }
   console.log(`  events: ${eventsUrl}`);
   console.log(`  limit: ${limit}`);
   console.log('Press Ctrl+C to stop.');
@@ -103,9 +133,10 @@ export async function intelViewerCommand(root, flags = {}, args = []) {
   if (action === 'build') return intelViewerBuild(root, flags);
   if (action === 'serve') return intelViewerServe(root, flags);
   console.error(
-    'Usage: jea intel viewer <build|serve> [--subject NAME] [--limit N] [--out PATH] [--port N] [--open]\n' +
+    'Usage: jea intel viewer <build|serve> [--subject NAME] [--subjects a,b | --all] [--limit N] [--out PATH] [--port N] [--open]\n' +
     '  jea intel viewer build [--subject NAME] [--limit 50] [--out PATH]\n' +
-    '  jea intel viewer serve [--port 4173] [--open] [--limit N] [--subject NAME]',
+    '  jea intel viewer serve [--port 4173] [--open] [--limit N] [--subject NAME] [--subjects a,b]\n' +
+    '    (default: all registered subjects; --subject/--subjects limit scope)',
   );
   return 2;
 }

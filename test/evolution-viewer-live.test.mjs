@@ -60,6 +60,29 @@ function setupViewerFixture(baseRoot, subject = TEST_SUBJECT) {
   return { projectRoot: baseRoot, runtimeRoot, subject, dataNamespace: subject };
 }
 
+function setupMultiSubjectFixture(baseRoot, subjects = [TEST_SUBJECT, 'live-test-b']) {
+  mkdirSync(join(baseRoot, 'policies', 'subjects'), { recursive: true });
+  const registry = { default_subject: subjects[0], subjects: {} };
+  for (const subject of subjects) {
+    writeFileSync(
+      join(baseRoot, 'policies', 'subjects', `${subject}.md`),
+      `# ${subject}\n\n## Subject\n${subject}`,
+      'utf-8',
+    );
+    registry.subjects[subject] = {
+      policy: `subjects/${subject}.md`,
+      data_namespace: subject,
+    };
+    mkdirSync(join(baseRoot, 'runtime', 'subjects', subject), { recursive: true });
+  }
+  writeFileSync(join(baseRoot, 'policies', 'subjects.json'), JSON.stringify(registry), 'utf-8');
+  return subjects.map((subject) => ({
+    runtimeRoot: join(baseRoot, 'runtime', 'subjects', subject),
+    subject,
+    dataNamespace: subject,
+  }));
+}
+
 describe('formatSseMessage', () => {
   it('formats SSE event lines', () => {
     const msg = formatSseMessage('round_added', { cycle_id: 'cycle-x' });
@@ -269,7 +292,23 @@ describe('createViewerApiServer', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it('GET /api/manifest returns rounds metadata', async () => {
+  it('GET /api/subjects returns subject list and summaries', async () => {
+    const body = await httpGetJson(port, '/api/subjects');
+    expect(body.default_subject).toBe(TEST_SUBJECT);
+    expect(body.subjects).toHaveLength(1);
+    expect(body.subjects[0].subject).toBe(TEST_SUBJECT);
+    expect(body.subjects[0].namespace).toBe(TEST_SUBJECT);
+    expect(body.subjects[0].health).toBeTruthy();
+  });
+
+  it('GET /api/subjects/:subject/manifest returns rounds metadata', async () => {
+    const manifest = await httpGetJson(port, `/api/subjects/${TEST_SUBJECT}/manifest`);
+    expect(manifest.round_count).toBeGreaterThanOrEqual(1);
+    expect(manifest.subject).toBe('live-test');
+    expect(manifest.rounds[0].cycle_id).toBe('cycle-20260528-100000');
+  });
+
+  it('GET /api/manifest returns rounds metadata (legacy)', async () => {
     const manifest = await httpGetJson(port, '/api/manifest');
     expect(manifest.round_count).toBeGreaterThanOrEqual(1);
     expect(manifest.subject).toBe('live-test');
@@ -334,18 +373,20 @@ describe('createViewerApiServer', () => {
     expect(body).toContain('live-test');
   });
 
-  it('broadcasts round_added when evolution-events line appended', async () => {
+  it('broadcasts round_added with subject when evolution-events line appended', async () => {
     const eventsDir = join(runtimeRoot, 'data', 'intelligence', 'evolution_events');
     mkdirSync(eventsDir, { recursive: true });
     const eventsPath = join(eventsDir, 'evolution-events.jsonl');
 
     let seen = '';
+    let seenSubject = '';
     const waitAdded = new Promise((resolve) => {
       const orig = apiCtx.sse.broadcast.bind(apiCtx.sse);
       apiCtx.sse.broadcast = (event, data) => {
         orig(event, data);
         if (event === 'round_added') {
           seen = event;
+          seenSubject = data.subject;
           resolve();
         }
       };
@@ -364,6 +405,7 @@ describe('createViewerApiServer', () => {
       new Promise((_, reject) => setTimeout(() => reject(new Error('no round_added')), 5000)),
     ]);
     expect(seen).toBe('round_added');
+    expect(seenSubject).toBe(TEST_SUBJECT);
   });
 
   it('broadcasts daemon_event when daemon_tick appended', async () => {
@@ -437,5 +479,55 @@ describe('createViewerApiServer', () => {
       new Promise((_, reject) => setTimeout(() => reject(new Error('no round_updated')), 5000)),
     ]);
     expect(seen).toBe('round_updated');
+  });
+});
+
+describe('createViewerApiServer multi-subject', () => {
+  let root;
+  let port;
+  /** @type {ReturnType<createViewerApiServer>} */
+  let apiCtx;
+  const SECOND_SUBJECT = 'live-test-b';
+
+  beforeEach(async () => {
+    root = mkdtempSync(join(tmpdir(), 'jea-viewer-multi-'));
+    const runtimes = setupMultiSubjectFixture(root);
+    port = 41830 + Math.floor(Math.random() * 100);
+    apiCtx = createViewerApiServer({
+      runtimes,
+      projectRoot: root,
+      limit: 5,
+      port,
+      publicDir: evolutionViewerPublicDir(projectRoot),
+    });
+    await new Promise((resolve) => apiCtx.server.listen(port, '127.0.0.1', resolve));
+  });
+
+  afterEach(async () => {
+    if (apiCtx) await apiCtx.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('GET /api/subjects lists all runtimes', async () => {
+    const body = await httpGetJson(port, '/api/subjects');
+    expect(body.default_subject).toBe(TEST_SUBJECT);
+    expect(body.subjects).toHaveLength(2);
+    const names = body.subjects.map((s) => s.subject).sort();
+    expect(names).toEqual([SECOND_SUBJECT, TEST_SUBJECT].sort());
+  });
+
+  it('GET /api/subjects/:subject/daemon is isolated per subject', async () => {
+    createWorkerState(root, TEST_SUBJECT, { workerId: 'w-a', staleMs: 60_000 });
+    const daemonA = await httpGetJson(port, `/api/subjects/${TEST_SUBJECT}/daemon`);
+    const daemonB = await httpGetJson(port, `/api/subjects/${SECOND_SUBJECT}/daemon`);
+    expect(daemonA.worker.running).toBe(true);
+    expect(daemonB.worker.running).toBe(false);
+  });
+
+  it('legacy /api/daemon uses default subject', async () => {
+    createWorkerState(root, TEST_SUBJECT, { workerId: 'w-default', staleMs: 60_000 });
+    const daemon = await httpGetJson(port, '/api/daemon');
+    expect(daemon.subject).toBe(TEST_SUBJECT);
+    expect(daemon.worker.running).toBe(true);
   });
 });

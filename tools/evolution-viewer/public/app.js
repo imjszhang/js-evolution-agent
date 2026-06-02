@@ -12,35 +12,42 @@ const detailEl = document.getElementById('detail');
 const metaEl = document.getElementById('meta');
 const filterEl = document.getElementById('filter');
 const liveStatusEl = document.getElementById('live-status');
+const subjectOverviewEl = document.getElementById('subject-overview');
 const daemonBarEl = document.getElementById('daemon-bar');
 const activeCyclesEl = document.getElementById('active-cycles');
 const channelPanelEl = document.getElementById('channel-panel');
 const eventFeedEl = document.getElementById('event-feed');
 
-/** @type {{ rounds: object[], subject?: string, namespace?: string, built_at?: string, limit?: number } | null} */
-let manifest = null;
-/** @type {object|null} */
-let daemonState = null;
+/** @type {{ subject: string, namespace: string, health?: string }[]} */
+let subjectsList = [];
+let defaultSubject = null;
+let activeSubject = null;
+
+/** @type {Record<string, object>} */
+const manifestsBySubject = {};
+/** @type {Record<string, object>} */
+const daemonBySubject = {};
+/** @type {Record<string, object[]>} */
+const feedEventsBySubject = {};
+/** @type {Record<string, Set<string>>} */
+const seenCycleIdsBySubject = {};
+/** @type {Record<string, Set<string>>} */
+const newCycleIdsBySubject = {};
+/** @type {Record<string, { bar: string, cycles: string, channel: string }>} */
+const panelFpBySubject = {};
+
 let activeCycleId = null;
 /** @type {'cycle'|'round'|null} */
 let activeViewMode = null;
 /** @type {ReturnType<typeof buildDetailCacheFromData>|null} */
 let activeDetailCache = null;
-/** @type {Set<string>} */
-const seenCycleIds = new Set();
-/** @type {Set<string>} */
-const newCycleIds = new Set();
-/** @type {object[]} */
-let feedEvents = [];
+
 let eventSource = null;
 let reconnectDelayMs = 5000;
 let reconnectTimer = null;
 let daemonPollTimer = null;
 let loadDaemonTimer = null;
 let patchDetailTimer = null;
-let lastDaemonBarFp = '';
-let lastActiveCyclesFp = '';
-let lastChannelPanelFp = '';
 
 const LOAD_DAEMON_DEBOUNCE_MS = 400;
 const PATCH_DETAIL_DEBOUNCE_MS = 500;
@@ -105,6 +112,65 @@ const EVOLUTION_MODE_SOURCE_LABELS = {
   default: '默认',
 };
 
+function isMultiSubject() {
+  return subjectsList.length > 1;
+}
+
+function getManifest() {
+  return activeSubject ? manifestsBySubject[activeSubject] ?? null : null;
+}
+
+function getDaemonState() {
+  return activeSubject ? daemonBySubject[activeSubject] ?? null : null;
+}
+
+function getFeedEvents() {
+  if (!activeSubject) return [];
+  if (!feedEventsBySubject[activeSubject]) feedEventsBySubject[activeSubject] = [];
+  return feedEventsBySubject[activeSubject];
+}
+
+function getSeenCycleIds() {
+  if (!activeSubject) return new Set();
+  if (!seenCycleIdsBySubject[activeSubject]) seenCycleIdsBySubject[activeSubject] = new Set();
+  return seenCycleIdsBySubject[activeSubject];
+}
+
+function getNewCycleIds() {
+  if (!activeSubject) return new Set();
+  if (!newCycleIdsBySubject[activeSubject]) newCycleIdsBySubject[activeSubject] = new Set();
+  return newCycleIdsBySubject[activeSubject];
+}
+
+function getPanelFp() {
+  if (!activeSubject) return { bar: '', cycles: '', channel: '' };
+  if (!panelFpBySubject[activeSubject]) {
+    panelFpBySubject[activeSubject] = { bar: '', cycles: '', channel: '' };
+  }
+  return panelFpBySubject[activeSubject];
+}
+
+function subjectApiBase(subject) {
+  return `/api/subjects/${encodeURIComponent(subject)}`;
+}
+
+function subjectFromQuery() {
+  const params = new URLSearchParams(location.search);
+  const raw = params.get('subject')?.trim();
+  return raw || null;
+}
+
+function setSubjectQuery(subject) {
+  const params = new URLSearchParams(location.search);
+  if (subject) params.set('subject', subject);
+  else params.delete('subject');
+  const qs = params.toString();
+  const next = `${location.pathname}${qs ? `?${qs}` : ''}${location.hash}`;
+  if (`${location.pathname}${location.search}${location.hash}` !== next) {
+    history.replaceState(null, '', next);
+  }
+}
+
 function cycleFromHash() {
   const raw = location.hash.replace(/^#/, '').trim();
   return raw || null;
@@ -140,12 +206,14 @@ function truncate(text, max = 120) {
 }
 
 function updateMeta(extra = '') {
+  const manifest = getManifest();
   if (!manifest) return;
   const parts = [
     manifest.subject,
     manifest.namespace,
     `共 ${manifest.round_count ?? manifest.rounds?.length ?? 0} 轮`,
     manifest.built_at ? `更新于 ${formatWhen(manifest.built_at)}` : '',
+    isMultiSubject() ? `${subjectsList.length} 个 subject` : '',
     extra,
   ].filter(Boolean);
   metaEl.textContent = parts.join(' · ');
@@ -214,6 +282,7 @@ function formatChannelEventLabel(ev) {
 
 function renderEventFeed() {
   if (!eventFeedEl) return;
+  const feedEvents = getFeedEvents();
   if (!feedEvents.length) {
     eventFeedEl.innerHTML = '<p class="feed-empty">暂无 daemon 事件</p>';
     return;
@@ -224,11 +293,12 @@ function renderEventFeed() {
   }).join('');
 }
 
-function prependFeedEvent(ev) {
-  if (!ev?.event_type) return;
-  feedEvents.unshift(ev);
-  if (feedEvents.length > 50) feedEvents.length = 50;
-  renderEventFeed();
+function prependFeedEvent(ev, subject = activeSubject) {
+  if (!ev?.event_type || !subject) return;
+  if (!feedEventsBySubject[subject]) feedEventsBySubject[subject] = [];
+  feedEventsBySubject[subject].unshift(ev);
+  if (feedEventsBySubject[subject].length > 50) feedEventsBySubject[subject].length = 50;
+  if (subject === activeSubject) renderEventFeed();
 }
 
 function formatEvolutionMode(mode) {
@@ -239,8 +309,50 @@ function formatEvolutionModeSource(source) {
   return EVOLUTION_MODE_SOURCE_LABELS[source] ?? source ?? '';
 }
 
+function renderSubjectOverview() {
+  if (!subjectOverviewEl) return;
+  if (!isMultiSubject()) {
+    subjectOverviewEl.classList.add('hidden');
+    subjectOverviewEl.innerHTML = '';
+    return;
+  }
+  subjectOverviewEl.classList.remove('hidden');
+  subjectOverviewEl.innerHTML = subjectsList.map((summary) => {
+    const healthClass = summary.health ?? 'unknown';
+    const active = summary.subject === activeSubject ? ' active' : '';
+    const daemon = daemonBySubject[summary.subject];
+    const workerOn = daemon?.worker?.running ?? summary.worker_running;
+    const openCycles = daemon?.cycles?.open_count ?? summary.open_cycles ?? 0;
+    const pending = daemon?.tasks?.counts?.pending ?? summary.pending_tasks ?? 0;
+    const running = daemon?.tasks?.counts?.running ?? summary.running_tasks ?? 0;
+    const inPending = daemon?.channel?.inbound?.pending_count ?? summary.channel_inbound_pending ?? 0;
+    const outPending = daemon?.channel?.outbox?.pending_count ?? summary.channel_outbox_pending ?? 0;
+    return `
+      <button type="button" class="daemon-card${active}" data-subject="${summary.subject}" aria-pressed="${summary.subject === activeSubject}">
+        <span class="daemon-card-title">${summary.subject}</span>
+        <span class="daemon-card-meta">${summary.namespace ?? ''}</span>
+        <span class="daemon-card-stats">
+          <span class="daemon-chip health-${healthClass}">${healthClass}</span>
+          <span class="daemon-chip worker-${workerOn ? 'on' : 'off'}">${workerOn ? 'Worker 运行' : 'Worker 停'}</span>
+          <span class="daemon-chip">open ${openCycles}</span>
+          <span class="daemon-chip">${pending}/${running}</span>
+          ${inPending || outPending ? `<span class="daemon-chip channel-attention">Ch ${inPending}/${outPending}</span>` : ''}
+        </span>
+      </button>
+    `;
+  }).join('');
+
+  for (const btn of subjectOverviewEl.querySelectorAll('.daemon-card')) {
+    btn.addEventListener('click', () => {
+      const subject = btn.dataset.subject;
+      if (subject && subject !== activeSubject) void setActiveSubject(subject, { preserveHash: true });
+    });
+  }
+}
+
 function renderDaemonBar() {
   if (!daemonBarEl) return;
+  const daemonState = getDaemonState();
   if (!daemonState) {
     daemonBarEl.classList.add('hidden');
     return;
@@ -300,7 +412,12 @@ function renderDaemonBar() {
     `;
   }
 
+  const subjectChip = isMultiSubject()
+    ? `<span class="daemon-chip muted">Subject: ${activeSubject}</span>`
+    : '';
+
   daemonBarEl.innerHTML = `
+    ${subjectChip}
     <span class="daemon-chip ${modeClass}" title="${modeTitle}">模式: ${modeLabel}</span>
     <span class="daemon-chip health-${health.status ?? 'unknown'}">Health: ${health.status ?? 'unknown'}</span>
     <span class="daemon-chip worker-${worker.running ? 'on' : 'off'}">Worker: ${worker.running ? '运行中' : '未运行'}${worker.stale ? ' (stale)' : ''}</span>
@@ -314,7 +431,7 @@ function renderDaemonBar() {
 
 function renderChannelPanel() {
   if (!channelPanelEl) return;
-  const channel = daemonState?.channel;
+  const channel = getDaemonState()?.channel;
   if (!channel) {
     channelPanelEl.innerHTML = '<p class="feed-empty">Channel 未初始化</p>';
     return;
@@ -371,7 +488,7 @@ function renderChannelPanel() {
 
 function renderActiveCycles() {
   if (!activeCyclesEl) return;
-  const cycles = daemonState?.cycles?.recent ?? [];
+  const cycles = getDaemonState()?.cycles?.recent ?? [];
   if (!cycles.length) {
     activeCyclesEl.innerHTML = '<p class="feed-empty">无 open cycle</p>';
     return;
@@ -402,67 +519,85 @@ function renderActiveCycles() {
   }
 }
 
-function applyDaemonState(next) {
-  if (!next) return null;
+function applyDaemonState(subject, next) {
+  if (!subject || !next) return null;
+  if (!panelFpBySubject[subject]) {
+    panelFpBySubject[subject] = { bar: '', cycles: '', channel: '' };
+  }
+  const fp = panelFpBySubject[subject];
   const barFp = daemonBarFingerprint(next);
   const cyclesFp = activeCyclesFingerprint(next);
   const channelFp = channelPanelFingerprint(next);
-  const barChanged = barFp !== lastDaemonBarFp;
-  const cyclesChanged = cyclesFp !== lastActiveCyclesFp;
-  const channelChanged = channelFp !== lastChannelPanelFp;
+  const barChanged = barFp !== fp.bar;
+  const cyclesChanged = cyclesFp !== fp.cycles;
+  const channelChanged = channelFp !== fp.channel;
 
-  daemonState = next;
-  if (barChanged) {
-    lastDaemonBarFp = barFp;
-    renderDaemonBar();
+  daemonBySubject[subject] = next;
+  if (subject === activeSubject) {
+    if (barChanged) {
+      fp.bar = barFp;
+      renderDaemonBar();
+    }
+    if (cyclesChanged) {
+      fp.cycles = cyclesFp;
+      renderActiveCycles();
+    }
+    if (channelChanged) {
+      fp.channel = channelFp;
+      renderChannelPanel();
+    }
   }
-  if (cyclesChanged) {
-    lastActiveCyclesFp = cyclesFp;
-    renderActiveCycles();
-  }
-  if (channelChanged) {
-    lastChannelPanelFp = channelFp;
-    renderChannelPanel();
-  }
-  return daemonState;
+  renderSubjectOverview();
+  return next;
 }
 
 function patchEvolutionModeFromEvent(payload) {
+  const subject = payload?.subject ?? activeSubject;
+  if (!subject) return false;
   if (!payload || payload.event_type !== 'evolution_mode_changed' || !payload.to) return false;
-  if (!daemonState) daemonState = {};
-  daemonState.evolution_mode = payload.to;
-  if (payload.source) daemonState.evolution_mode_source = payload.source;
-  lastDaemonBarFp = '';
-  applyDaemonState({ ...daemonState });
+  const state = daemonBySubject[subject] ?? {};
+  state.evolution_mode = payload.to;
+  if (payload.source) state.evolution_mode_source = payload.source;
+  const fp = panelFpBySubject[subject];
+  if (fp) fp.bar = '';
+  applyDaemonState(subject, { ...state });
   return true;
 }
 
-async function fetchAndApplyDaemon() {
+async function fetchDaemonForSubject(subject) {
   try {
-    const res = await fetch('/api/daemon', { cache: 'no-store' });
+    const res = await fetch(`${subjectApiBase(subject)}/daemon`, { cache: 'no-store' });
     if (!res.ok) return null;
     const next = await res.json();
-    return applyDaemonState(next);
+    return applyDaemonState(subject, next);
   } catch {
     return null;
   }
 }
 
-function scheduleLoadDaemon() {
+function scheduleLoadDaemon(subject = activeSubject) {
+  if (!subject) return;
   if (loadDaemonTimer) clearTimeout(loadDaemonTimer);
   loadDaemonTimer = setTimeout(() => {
     loadDaemonTimer = null;
-    void fetchAndApplyDaemon();
+    void fetchDaemonForSubject(subject);
+    if (isMultiSubject()) {
+      for (const s of subjectsList) {
+        if (s.subject !== subject) void fetchDaemonForSubject(s.subject);
+      }
+    }
   }, LOAD_DAEMON_DEBOUNCE_MS);
 }
 
-async function loadDaemon() {
-  return fetchAndApplyDaemon();
+async function loadDaemon(subject = activeSubject) {
+  return fetchDaemonForSubject(subject);
 }
 
 function renderTimeline(filter = '') {
+  const manifest = getManifest();
   if (!manifest?.rounds) return;
   const q = filter.trim().toLowerCase();
+  const newCycleIds = getNewCycleIds();
   timelineEl.innerHTML = '';
 
   for (const round of manifest.rounds) {
@@ -490,13 +625,16 @@ function renderTimeline(filter = '') {
   }
 }
 
-async function loadManifest() {
-  const res = await fetch('/api/manifest');
-  if (!res.ok) throw new Error('无法加载 /api/manifest');
+async function loadManifest(subject = activeSubject) {
+  const res = await fetch(`${subjectApiBase(subject)}/manifest`);
+  if (!res.ok) throw new Error(`无法加载 manifest: ${subject}`);
   const next = await res.json();
-  const prevIds = new Set(manifest?.rounds?.map((r) => r.cycle_id) ?? []);
-  manifest = next;
-  for (const round of manifest.rounds ?? []) {
+  const prev = manifestsBySubject[subject];
+  const prevIds = new Set(prev?.rounds?.map((r) => r.cycle_id) ?? []);
+  manifestsBySubject[subject] = next;
+  const seenCycleIds = getSeenCycleIds();
+  const newCycleIds = getNewCycleIds();
+  for (const round of next.rounds ?? []) {
     if (!seenCycleIds.has(round.cycle_id)) {
       seenCycleIds.add(round.cycle_id);
       if (prevIds.size > 0 && !prevIds.has(round.cycle_id)) {
@@ -504,30 +642,30 @@ async function loadManifest() {
       }
     }
   }
-  updateMeta();
-  return manifest;
+  if (subject === activeSubject) updateMeta();
+  return next;
 }
 
-async function loadRecentEvents() {
+async function loadRecentEvents(subject = activeSubject) {
   try {
-    const res = await fetch('/api/events/recent?limit=30');
+    const res = await fetch(`${subjectApiBase(subject)}/events/recent?limit=30`);
     if (!res.ok) return;
     const data = await res.json();
-    feedEvents = data.events ?? [];
-    renderEventFeed();
+    feedEventsBySubject[subject] = data.events ?? [];
+    if (subject === activeSubject) renderEventFeed();
   } catch {
     // ignore
   }
 }
 
-async function loadRoundDetail(cycleId) {
-  const res = await fetch(`/api/rounds/${encodeURIComponent(cycleId)}`);
+async function loadRoundDetail(cycleId, subject = activeSubject) {
+  const res = await fetch(`${subjectApiBase(subject)}/rounds/${encodeURIComponent(cycleId)}`);
   if (!res.ok) throw new Error(`无法加载轮次详情: ${res.status}`);
   return res.json();
 }
 
-async function loadCycleDetail(cycleId) {
-  const res = await fetch(`/api/cycles/${encodeURIComponent(cycleId)}`);
+async function loadCycleDetail(cycleId, subject = activeSubject) {
+  const res = await fetch(`${subjectApiBase(subject)}/cycles/${encodeURIComponent(cycleId)}`);
   if (!res.ok) throw new Error(`无法加载 cycle 详情: ${res.status}`);
   return res.json();
 }
@@ -607,7 +745,7 @@ function patchDetailDom(data, mode, needs) {
 }
 
 async function patchActiveDetailIfNeeded() {
-  if (!activeCycleId || !activeViewMode) return;
+  if (!activeCycleId || !activeViewMode || !activeSubject) return;
 
   try {
     const data = activeViewMode === 'cycle'
@@ -758,7 +896,7 @@ async function selectRound(cycleId, { scrollTimeline = false } = {}) {
 }
 
 async function selectById(cycleId, opts = {}) {
-  const cycleRes = await fetch(`/api/cycles/${encodeURIComponent(cycleId)}`);
+  const cycleRes = await fetch(`${subjectApiBase(activeSubject)}/cycles/${encodeURIComponent(cycleId)}`);
   if (cycleRes.ok) {
     await selectCycle(cycleId, opts);
     return;
@@ -766,15 +904,31 @@ async function selectById(cycleId, opts = {}) {
   await selectRound(cycleId, opts);
 }
 
-function patchManifestRound(cycleId, patch) {
-  const round = manifest?.rounds?.find((r) => r.cycle_id === cycleId);
+function patchManifestRound(cycleId, patch, subject = activeSubject) {
+  const round = manifestsBySubject[subject]?.rounds?.find((r) => r.cycle_id === cycleId);
   if (round) Object.assign(round, patch);
+}
+
+function eventSubject(payload) {
+  return payload?.subject ?? defaultSubject ?? activeSubject;
 }
 
 function handleSsePayload(payload) {
   const event = payload?.event;
+  const subject = eventSubject(payload);
+
   if (event === 'hello') {
     setLiveStatus('实时已连接', 'connected');
+    if (payload.default_subject) defaultSubject = payload.default_subject;
+    if (Array.isArray(payload.subjects) && payload.subjects.length) {
+      subjectsList = payload.subjects.map((s) => ({
+        subject: s.subject,
+        namespace: s.namespace,
+      }));
+    }
+    if (!activeSubject && defaultSubject) {
+      void setActiveSubject(subjectFromQuery() || defaultSubject, { skipQueryUpdate: true });
+    }
     updateMeta('实时');
     return;
   }
@@ -784,11 +938,12 @@ function handleSsePayload(payload) {
     return;
   }
   if (event === 'daemon_event') {
-    prependFeedEvent(payload);
+    prependFeedEvent(payload, subject);
     patchEvolutionModeFromEvent(payload);
-    scheduleLoadDaemon();
+    scheduleLoadDaemon(subject);
     if (
-      activeCycleId
+      subject === activeSubject
+      && activeCycleId
       && payload.cycle_id === activeCycleId
       && PATCH_WORTHY_DAEMON_EVENTS.has(payload.event_type)
     ) {
@@ -797,25 +952,33 @@ function handleSsePayload(payload) {
     return;
   }
   if (event === 'runtime_updated') {
-    scheduleLoadDaemon();
+    scheduleLoadDaemon(subject);
     return;
   }
   if (event === 'round_added') {
     setLiveStatus('实时已连接', 'connected');
-    void loadManifest().then(() => {
-      renderTimeline(filterEl.value);
-      updateMeta('实时');
-    });
+    if (subject === activeSubject) {
+      void loadManifest(subject).then(() => {
+        renderTimeline(filterEl.value);
+        updateMeta('实时');
+      });
+    } else {
+      void loadManifest(subject);
+    }
     return;
   }
   if (event === 'round_updated') {
     setLiveStatus('实时已连接', 'connected');
-    scheduleLoadDaemon();
+    scheduleLoadDaemon(subject);
     if (payload.has_diary) {
-      patchManifestRound(payload.cycle_id, { has_diary: true });
-      renderTimeline(filterEl.value);
+      patchManifestRound(payload.cycle_id, { has_diary: true }, subject);
+      if (subject === activeSubject) renderTimeline(filterEl.value);
     }
-    if (activeCycleId === payload.cycle_id && payload.has_diary) {
+    if (
+      subject === activeSubject
+      && activeCycleId === payload.cycle_id
+      && payload.has_diary
+    ) {
       schedulePatchActiveDetail();
     }
   }
@@ -873,26 +1036,88 @@ function connectLive() {
 function startDaemonPolling() {
   if (daemonPollTimer) clearInterval(daemonPollTimer);
   daemonPollTimer = setInterval(() => {
-    scheduleLoadDaemon();
+    scheduleLoadDaemon(activeSubject);
   }, 15_000);
   if (daemonPollTimer.unref) daemonPollTimer.unref();
 }
 
+async function loadSubjectsIndex() {
+  const res = await fetch('/api/subjects');
+  if (!res.ok) throw new Error('无法加载 /api/subjects');
+  const data = await res.json();
+  defaultSubject = data.default_subject;
+  subjectsList = data.subjects ?? [];
+  return data;
+}
+
+async function refreshActiveSubjectPanels() {
+  if (!activeSubject) return;
+  panelFpBySubject[activeSubject] = { bar: '', cycles: '', channel: '' };
+  await loadManifest(activeSubject);
+  await loadDaemon(activeSubject);
+  await loadRecentEvents(activeSubject);
+  renderTimeline(filterEl.value);
+  renderActiveCycles();
+  renderChannelPanel();
+  renderDaemonBar();
+  renderSubjectOverview();
+  updateMeta('');
+}
+
+async function setActiveSubject(subject, { preserveHash = false, skipQueryUpdate = false } = {}) {
+  if (!subject || !subjectsList.some((s) => s.subject === subject)) return;
+  activeSubject = subject;
+  if (!skipQueryUpdate) setSubjectQuery(subject);
+  activeCycleId = null;
+  activeViewMode = null;
+  activeDetailCache = null;
+  if (!preserveHash) setHash('');
+  await refreshActiveSubjectPanels();
+
+  const initial = preserveHash ? cycleFromHash() : null;
+  if (initial) {
+    await selectById(initial);
+  } else {
+    const daemonState = getDaemonState();
+    if (daemonState?.cycles?.recent?.[0]?.cycle_id) {
+      await selectCycle(daemonState.cycles.recent[0].cycle_id);
+    } else {
+      const manifest = getManifest();
+      if (manifest?.rounds?.[0]?.cycle_id) {
+        await selectRound(manifest.rounds[0].cycle_id);
+      } else {
+        detailEl.innerHTML = '<p class="placeholder">从左侧选择一轮或进行中的 cycle。</p>';
+      }
+    }
+  }
+}
+
 async function init() {
   try {
-    await loadManifest();
+    await loadSubjectsIndex();
   } catch {
     metaEl.textContent = '无法连接 viewer API，请运行 jea intel viewer serve';
     return;
   }
 
-  for (const round of manifest.rounds ?? []) {
-    seenCycleIds.add(round.cycle_id);
-  }
-  updateMeta('');
+  const querySubject = subjectFromQuery();
+  const initialSubject = querySubject && subjectsList.some((s) => s.subject === querySubject)
+    ? querySubject
+    : defaultSubject;
 
-  await loadDaemon();
-  await loadRecentEvents();
+  for (const s of subjectsList) {
+    seenCycleIdsBySubject[s.subject] = new Set();
+    newCycleIdsBySubject[s.subject] = new Set();
+    panelFpBySubject[s.subject] = { bar: '', cycles: '', channel: '' };
+  }
+
+  await setActiveSubject(initialSubject, { preserveHash: true, skipQueryUpdate: !querySubject });
+  if (querySubject) setSubjectQuery(initialSubject);
+
+  for (const round of getManifest()?.rounds ?? []) {
+    getSeenCycleIds().add(round.cycle_id);
+  }
+
   startDaemonPolling();
 
   filterEl.addEventListener('input', () => renderTimeline(filterEl.value));
@@ -900,19 +1125,6 @@ async function init() {
     const id = cycleFromHash();
     if (id && id !== activeCycleId) void selectById(id);
   });
-
-  renderTimeline();
-  renderActiveCycles();
-  renderChannelPanel();
-
-  const initial = cycleFromHash();
-  if (initial) {
-    await selectById(initial);
-  } else if (daemonState?.cycles?.recent?.[0]?.cycle_id) {
-    await selectCycle(daemonState.cycles.recent[0].cycle_id);
-  } else if (manifest.rounds?.[0]?.cycle_id) {
-    await selectRound(manifest.rounds[0].cycle_id);
-  }
 
   connectLive();
 }

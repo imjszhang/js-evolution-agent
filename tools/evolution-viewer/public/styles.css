@@ -251,6 +251,66 @@ body {
   display: none;
 }
 
+.subject-overview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.subject-overview.hidden {
+  display: none;
+}
+
+.daemon-card {
+  flex: 1 1 200px;
+  max-width: 280px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.daemon-card:hover {
+  border-color: #a5b4fc;
+}
+
+.daemon-card.active {
+  border-color: #7c3aed;
+  box-shadow: 0 0 0 2px rgba(124, 58, 237, 0.15);
+}
+
+.daemon-card-title {
+  display: block;
+  font-weight: 600;
+  font-size: 0.9rem;
+  margin-bottom: 4px;
+}
+
+.daemon-card-meta {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.daemon-card-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  font-size: 0.72rem;
+}
+
+.daemon-card-stats .daemon-chip {
+  font-size: 0.72rem;
+  padding: 1px 6px;
+}
+
 .daemon-chip {
   display: inline-block;
   padding: 2px 8px;

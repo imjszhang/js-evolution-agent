@@ -215,6 +215,6 @@ export async function intelCommand({ subcommand, flags = {}, args = [] } = {}) {
     '  jea intel inbox drain [--dir PATH] [--json]\n' +
     '  jea intel brief <put|list|processed> [--file PATH | --stdin] [--json]\n' +
     '  jea intel viewer build [--subject NAME] [--limit N] [--out PATH]\n' +
-    '  jea intel viewer serve [--port N] [--open] [--limit N] [--subject NAME]');
+    '  jea intel viewer serve [--port N] [--open] [--limit N] [--subject NAME] [--subjects a,b] (default: all subjects)');
   return 2;
 }
