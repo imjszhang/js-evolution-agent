@@ -14,6 +14,7 @@ import {
 import { createIntelligenceStore } from '../src/intelligence/store.mjs';
 import { isPresenceInteractionRecord } from '../src/channel/presence-memory.mjs';
 import { resolvePresenceAffordances } from '../src/channel/presence-affordances.mjs';
+import { readChannelEvents } from '../src/channel/audit.mjs';
 import { drainChannelInbound, runChannelInboundTask, runChannelTask, runChannelNotifyTask } from '../src/channel/tasks.mjs';
 import { runChannelClassifierTask } from '../src/channel/classifier.mjs';
 import { claimNextChannelTask } from '../src/channel/task-queue.mjs';
@@ -58,6 +59,7 @@ let tempDir = null;
 
 function makeRoot({
   channelTarget = 'oc_test',
+  feishu = {},
   presence = { enabled: true, planner: 'deterministic' },
   classifier = {
     enabled: true,
@@ -75,7 +77,7 @@ function makeRoot({
     'utf-8',
   );
   const channels = {
-    feishu: { default_chat_id: channelTarget, mock: true },
+    feishu: { default_chat_id: channelTarget, mock: true, ...feishu },
     presence,
     classifier,
   };
@@ -1134,6 +1136,112 @@ describe('channel domain', () => {
       expect(queue.tasks.some((task) => task.type === 'channel_control_action')).toBe(true);
     });
 
+    it('classifier enqueues multiple control actions from one batch', async () => {
+      const root = makeRoot();
+      writeOperatorBinding(root, 'alpha', 'ou_operator');
+      writePendingInbound(root, 'alpha', {
+        messageId: 'om_ctrl_batch_1',
+        chatId: 'oc_operator',
+        senderId: 'ou_operator',
+        content: '切换为按需进化',
+      });
+      writePendingInbound(root, 'alpha', {
+        messageId: 'om_ctrl_batch_2',
+        chatId: 'oc_operator',
+        senderId: 'ou_operator',
+        content: '当前进化模式是什么',
+      });
+
+      await runChannelClassifierTask(root, 'alpha');
+
+      const queue = readChannelTaskQueue(root, 'alpha');
+      const controlTasks = queue.tasks.filter((task) =>
+        task.type === 'channel_control_action' && task.status === 'pending');
+      expect(controlTasks).toHaveLength(2);
+      expect(new Set(controlTasks.map((task) => task.idempotency_key)).size).toBe(2);
+    });
+
+    it('executor records failed audit for unknown control action', async () => {
+      const root = makeRoot({
+        classifier: {
+          enabled: true,
+          mode: 'llm',
+          interval_ms: 30_000,
+          batch_size: 5,
+        },
+      });
+      writePendingInbound(root, 'alpha', {
+        messageId: 'om_ctrl_unknown',
+        chatId: 'oc_operator',
+        senderId: 'ou_operator',
+        content: '执行一个不存在的控制动作',
+      });
+      const aiClient = {
+        chatMessages: () => JSON.stringify({
+          items: [{
+            message_id: 'om_ctrl_unknown',
+            classification: 'control_request',
+            confidence: 'high',
+            summary: '执行一个不存在的控制动作',
+            action_id: 'unknown_action',
+            params: {},
+          }],
+        }),
+      };
+
+      await runChannelClassifierTask(root, 'alpha', { aiClient });
+      const claim = claimNextChannelTask(root, 'alpha', {
+        workerId: 'control-worker',
+        types: taskTypesForChannelRole('control'),
+      });
+      const result = await runChannelTask(root, 'alpha', claim.task);
+
+      expect(result.ok).toBe(false);
+      expect(result.reason).toBe('unknown_action');
+      expect(readChannelEvents(root, 'alpha', { limit: 10 }).some((event) =>
+        event.type === 'channel_control_action_failed' && event.reason === 'unknown_action')).toBe(true);
+    });
+
+    it('executor records failed audit for low confidence control action', async () => {
+      const root = makeRoot({
+        classifier: {
+          enabled: true,
+          mode: 'llm',
+          interval_ms: 30_000,
+          batch_size: 5,
+        },
+      });
+      writePendingInbound(root, 'alpha', {
+        messageId: 'om_ctrl_low_conf',
+        chatId: 'oc_operator',
+        senderId: 'ou_operator',
+        content: '可能切换为按需进化',
+      });
+      const aiClient = {
+        chatMessages: () => JSON.stringify({
+          items: [{
+            message_id: 'om_ctrl_low_conf',
+            classification: 'control_request',
+            confidence: 'medium',
+            summary: '可能切换为按需进化',
+            action_id: 'daemon_evolution_mode_set',
+            params: { mode: 'on_demand' },
+          }],
+        }),
+      };
+
+      await runChannelClassifierTask(root, 'alpha', { aiClient });
+      const claim = claimNextChannelTask(root, 'alpha', {
+        workerId: 'control-worker',
+        types: taskTypesForChannelRole('control'),
+      });
+      const result = await runChannelTask(root, 'alpha', claim.task);
+
+      expect(result.ok).toBe(false);
+      expect(result.reason).toBe('low_confidence');
+      expect(resolveEvolutionMode(root, { subject: 'alpha' }).mode).toBe('continuous');
+    });
+
     it('control executor applies evolution mode for bound operator', async () => {
       const root = makeRoot();
       writeOperatorBinding(root, 'alpha', 'ou_operator');
@@ -1170,6 +1278,25 @@ describe('channel domain', () => {
       expect(result.ok).toBe(false);
       expect(result.reason).toBe('operator_not_bound');
       expect(resolveEvolutionMode(root, { subject: 'alpha' }).mode).toBe('continuous');
+    });
+
+    it('control executor authorizes write actions via allow_from without binding', async () => {
+      const root = makeRoot({ feishu: { allow_from: ['ou_operator'] } });
+      writePendingInbound(root, 'alpha', {
+        messageId: 'om_ctrl_allowlist',
+        chatId: 'oc_operator',
+        senderId: 'ou_operator',
+        content: '切换为按需进化',
+      });
+      await runChannelClassifierTask(root, 'alpha');
+      const claim = claimNextChannelTask(root, 'alpha', {
+        workerId: 'control-worker',
+        types: taskTypesForChannelRole('control'),
+      });
+      const result = await runChannelTask(root, 'alpha', claim.task);
+
+      expect(result.ok).toBe(true);
+      expect(resolveEvolutionMode(root, { subject: 'alpha' }).mode).toBe('on_demand');
     });
 
     it('control executor queues cycle start request', async () => {

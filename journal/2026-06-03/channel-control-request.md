@@ -92,18 +92,18 @@ flowchart TB
 | 分类名 | `control_request`（通用） | 一个分类承载多种本地控制，避免 schema 膨胀 |
 | 执行位置 | `channel_control_action` + control role | Classifier 只识别意图；executor 校验并执行 |
 | 动作注册 | 白名单 `action_id`，禁止任意 shell | LLM 只能输出注册过的 id + params |
-| 授权 | 写类 action 需 Feishu operator binding + high confidence | 降低误触发与未绑定滥用 |
+| 授权 | 写类 action 需 Feishu operator binding 或 allowlist + high confidence | 降低误触发与未授权滥用 |
 | Presence 唤醒 | control 完成后才 `requestExpressionRecompute` | 避免先 ack、后执行导致回复与事实不一致 |
 | 任务优先级 | `channel_control_action` = 12，高于 presence(15) | 执行结果先入审计，再驱动回复 |
 | 首批 action | mode set/show、cycle request | 覆盖用户最常用本地控制，风险可控 |
 
 ### 首批注册动作
 
-| action_id | 含义 | 写操作 | 需要 binding |
+| action_id | 含义 | 写操作 | 需要授权 |
 | --- | --- | --- | --- |
-| `daemon_evolution_mode_set` | 切换 `continuous` / `on_demand` | 是 | 是 |
+| `daemon_evolution_mode_set` | 切换 `continuous` / `on_demand` | 是 | binding 或 allowlist |
 | `daemon_evolution_mode_show` | 查看当前 mode/source | 否 | 否 |
-| `daemon_cycle_request` | 入队 cycle start request | 是 | 是 |
+| `daemon_cycle_request` | 入队 cycle start request | 是 | binding 或 allowlist |
 
 仍不可通过 channel 自动执行：`approval_granted`、远端发布、凭据、subject policy、`pending_decisions.json` 直写。
 
@@ -114,8 +114,8 @@ flowchart TB
 ### 数据流摘要
 
 1. Classifier（LLM 或 deterministic）输出 `control_request` + `action_id` + `params` + `confidence`
-2. [`src/channel/ingest.mjs`](../../src/channel/ingest.mjs) 校验后入队 `channel_control_action`，**不**直接改配置
-3. [`src/channel/control-executor.mjs`](../../src/channel/control-executor.mjs) 校验注册、置信度、参数、operator 身份后执行
+2. [`src/channel/ingest.mjs`](../../src/channel/ingest.mjs) 入队 `channel_control_action`，**不**直接改配置；未知 action / 低置信 / 非法参数也交给 executor 统一失败审计
+3. [`src/channel/control-executor.mjs`](../../src/channel/control-executor.mjs) 校验注册、置信度、参数、operator binding 或 allowlist 授权后执行
 4. 写 `channel_control_action_completed` / `channel_control_action_failed` 审计事件
 5. `requestExpressionRecompute(reason: control_action_completed|failed)` → Presence 从审计事件生成 `reply.control_action` → `control_action_ack` 话术
 
@@ -146,13 +146,13 @@ notify / control / presence / speech / classifier
 
 ### 幂等与审计
 
-- task idempotency：`control:<subject>:<message_id>:<action_id>`
+- task idempotency：`control:<subject>:<message_id>:<action_id>`；control action 按幂等键去重，不按任务类型 singleton，允许同批多条控制请求各自入队
 - 失败 reason：`unknown_action`、`invalid_params`、`low_confidence`、`operator_not_bound`、`unauthorized_sender`
 - mode set 若目标与当前一致：no-op success，不报错
 
 ### 飞书使用示例
 
-1. 私聊完成 `JEA BIND <口令>`
+1. 私聊完成 `JEA BIND <口令>`，或确保操作者在 subject 的 Feishu allowlist 中
 2. 发送：`切换为按需进化` / `切换为持续进化` / `启动一轮进化` / `当前进化模式是什么`
 3. 验收：`jea channel events --limit 20`、`jea daemon evolution-mode show`
 
@@ -164,14 +164,16 @@ notify / control / presence / speech / classifier
 npm test -- test/channel.test.mjs
 ```
 
-结果：**56 passed**（实现前为 46，新增 control_request 相关用例）。
+结果：**60 passed**（实现前为 46，新增并补强 control_request 相关用例）。
 
 覆盖要点：
 
 - `parseControlRequestFromText` / `classifyChannelEnvelope` 识别进化模式与开轮短语
 - classifier 只入队 `channel_control_action`，不直接改 mode
 - 已绑定 operator 执行 `daemon_evolution_mode_set` 后 `subjects.json` mode 变化
-- 未绑定写类 action 失败且 mode 不变
+- 同批多条 control_request 都能按各自幂等键入队
+- 未知 action / 低置信控制请求进入 executor 失败审计
+- 未绑定且不在 allowlist 的写类 action 失败且 mode 不变；allowlist 授权可执行写类 action
 - `daemon_cycle_request` 写入 pending cycle start request
 - control 任务优先级高于 presence；executor 完成后 presence 产出 `control_action_ack`
 
@@ -184,7 +186,7 @@ npm test -- test/channel.test.mjs
 | 方向 | 说明 |
 | --- | --- |
 | 扩展 registry | `presence_enable/disable`、`classifier_mode_set` 等，仍走同一 `control_request` 分类 |
-| 群聊控制 | 当前写类 action 依赖私聊 BIND；群聊需额外 allowlist 策略 |
+| 群聊控制 | 当前已支持 allowlist 授权；群聊仍可继续细化 chat/sender 双重策略 |
 | 误触发熔断 | registry 层可临时禁用写类 action，只保留 show |
 | 与 brief 边界 | 「启动一轮」走 control；审批/核实仍走 brief，避免语义混用 |
 | viewer | channel events 面板可突出 `channel_control_action_*` |
@@ -197,5 +199,5 @@ npm test -- test/channel.test.mjs
 | --- | --- |
 | 问题 | 飞书能否切换进化模式？Classifier 能否像「启动一轮进化」那样执行本地控制？ |
 | 思考 | 现有 Classifier 只有 brief/fact/observation；brief 可顺带 cycle start，但无 evolution mode 路径；Presence 只能贴 CLI，不能写配置 |
-| 方案 | 通用 `control_request` + 白名单 registry + `channel_control_action` executor + control role；写类需 binding；Presence 只回复 executor 审计结果 |
-| 执行 | 新增 `control-actions.mjs`、`control-executor.mjs`；扩展 classifier/ingest/types/roles/wake/presence 链路；56 项 channel 测试通过；更新 AGENTS.md |
+| 方案 | 通用 `control_request` + 白名单 registry + `channel_control_action` executor + control role；写类需 binding 或 allowlist；Presence 只回复 executor 审计结果 |
+| 执行 | 新增 `control-actions.mjs`、`control-executor.mjs`；扩展 classifier/ingest/types/roles/wake/presence 链路；修复同批多 control 入队与失败审计；60 项 channel 测试通过；更新 AGENTS.md |

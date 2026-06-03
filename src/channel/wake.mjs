@@ -10,13 +10,25 @@ export const NOTIFY_IDEMPOTENCY = (subject) => `${subject}:channel_notify:pendin
 export const CLASSIFIER_IDEMPOTENCY = (subject) => `${subject}:channel_classifier:pending`;
 export const CONTROL_ACTION_IDEMPOTENCY = (subject) => `${subject}:channel_control_action:pending`;
 
-function hasActiveTask(queue, type) {
-  return (queue.tasks ?? []).some((task) => task.type === type && ['pending', 'running'].includes(task.status));
+function hasActiveTask(queue, type, idempotencyKey = null) {
+  return (queue.tasks ?? []).some((task) => {
+    if (!['pending', 'running'].includes(task.status)) return false;
+    if (idempotencyKey) return task.idempotency_key === idempotencyKey;
+    return task.type === type;
+  });
 }
 
-function enqueueIfNeeded(root, subject, type, { priority = 100, input = {}, idempotencyKey = null, reason = null } = {}) {
+function enqueueIfNeeded(root, subject, type, {
+  priority = 100,
+  input = {},
+  idempotencyKey = null,
+  reason = null,
+  singleton = true,
+} = {}) {
   const queue = readChannelTaskQueue(root, subject);
-  if (hasActiveTask(queue, type)) return { created: false, reason: 'active_task_exists' };
+  if (hasActiveTask(queue, type, singleton ? null : idempotencyKey)) {
+    return { created: false, reason: singleton ? 'active_task_exists' : 'idempotent_task_exists' };
+  }
   const result = enqueueChannelTask(root, subject, {
     type,
     priority,
@@ -66,6 +78,7 @@ export function enqueueControlAction(root, subject, request = {}) {
     idempotencyKey,
     input: { request: { ...request, idempotency_key: idempotencyKey } },
     reason: 'control_request',
+    singleton: false,
   });
 }
 

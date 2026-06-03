@@ -5,9 +5,6 @@ import { runtimeForSubject } from '../cli/utils/evolve-runs.mjs';
 import { enqueueCycleStartRequestWithEvent } from '../cli/utils/cycle-dispatch.mjs';
 import {
   buildControlRequestFromParsed,
-  confidenceMeetsMinimum,
-  getControlAction,
-  isRegisteredControlActionId,
   parseControlRequestFromText,
 } from './control-actions.mjs';
 import { enqueueControlAction } from './wake.mjs';
@@ -81,70 +78,11 @@ export function decisionFromClassifierItem(item, envelope) {
 
   if (classification === 'control_request') {
     const actionId = String(item?.action_id ?? '').trim();
-    const action = getControlAction(actionId);
-    if (!isRegisteredControlActionId(actionId) || !action) {
-      return {
-        kind: 'observation',
-        record: {
-          kind: 'observation',
-          source: 'channel',
-          content: text,
-          confidence: 'medium',
-          tags: ['channel', envelopeNorm.channel, 'classifier_downgraded_control'],
-          recorded_at: nowIso(),
-          channel_source: sourceRef,
-          metadata: {
-            channel_envelope: envelopeNorm,
-            classifier: item,
-            downgrade_reason: 'unknown_control_action',
-          },
-        },
-      };
-    }
-    if (!confidenceMeetsMinimum(confidence, action.min_confidence)) {
-      return {
-        kind: 'observation',
-        record: {
-          kind: 'observation',
-          source: 'channel',
-          content: text,
-          confidence: 'medium',
-          tags: ['channel', envelopeNorm.channel, 'classifier_downgraded_control'],
-          recorded_at: nowIso(),
-          channel_source: sourceRef,
-          metadata: {
-            channel_envelope: envelopeNorm,
-            classifier: item,
-            downgrade_reason: 'control_request_requires_high_confidence',
-          },
-        },
-      };
-    }
-    const paramsResult = action.validateParams(item?.params ?? {});
-    if (!paramsResult.ok) {
-      return {
-        kind: 'observation',
-        record: {
-          kind: 'observation',
-          source: 'channel',
-          content: text,
-          confidence: 'medium',
-          tags: ['channel', envelopeNorm.channel, 'classifier_downgraded_control'],
-          recorded_at: nowIso(),
-          channel_source: sourceRef,
-          metadata: {
-            channel_envelope: envelopeNorm,
-            classifier: item,
-            downgrade_reason: paramsResult.reason ?? 'invalid_control_params',
-          },
-        },
-      };
-    }
     return {
       kind: 'control_request',
       request: buildControlRequestFromParsed(envelopeNorm, {
         action_id: actionId,
-        params: paramsResult.params ?? {},
+        params: item?.params ?? {},
       }, {
         confidence,
         classifier: item,

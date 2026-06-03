@@ -146,6 +146,8 @@ export function buildControlRequestFromParsed(envelope, parsed, { confidence = '
     summary: String(envelopeNorm.content ?? '').trim() || parsed.action_id,
     source_ref: sourceRef,
     message_id: envelopeNorm.message_id ?? null,
+    chat_id: envelopeNorm.chat_id ?? null,
+    chat_type: envelopeNorm.chat_type ?? null,
     sender_id: envelopeNorm.sender_id ?? null,
     channel: envelopeNorm.channel ?? null,
     classifier,

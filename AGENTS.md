@@ -573,15 +573,15 @@ Classifier 识别 `control_request` 后**不直接执行**配置变更，而是�
 
 首批注册动作：
 
-| action_id | 含义 | 写操作 | 需要 operator binding |
+| action_id | 含义 | 写操作 | 需要授权 |
 | --- | --- | --- | --- |
-| `daemon_evolution_mode_set` | 切换 `continuous` / `on_demand` | 是 | 是 |
+| `daemon_evolution_mode_set` | 切换 `continuous` / `on_demand` | 是 | operator binding 或 allowlist |
 | `daemon_evolution_mode_show` | 查看当前 evolution mode | 否 | 否 |
-| `daemon_cycle_request` | 入队 cycle start request | 是 | 是 |
+| `daemon_cycle_request` | 入队 cycle start request | 是 | operator binding 或 allowlist |
 
 约束：
 
-- Classifier 只能输出注册过的 `action_id` + 明确 `params`；高置信才允许写类 action。
+- Classifier 只能输出注册过的 `action_id` + 明确 `params`；高置信才允许写类 action；未知 action / 低置信 / 非法参数会进入 control executor 失败审计，而不是静默降级。
 - Presence planner **不能**直接改 evolution mode；只能基于 control executor 的审计事件回复结果。
 - 远端发布、`approval_granted`、凭据、subject policy 仍不可通过 channel 自动执行。
 
