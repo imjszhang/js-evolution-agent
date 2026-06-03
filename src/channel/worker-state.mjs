@@ -222,8 +222,12 @@ export function createChannelRoleWorkerState(root, subject, {
     state.stop_requested_at = null;
     state.stopped_at = null;
     state.pid = pid;
-    if (state.coordinator) state.coordinator.pid = pid;
-    state.worker_id = `channel-coordinator-${pid}`;
+    if (state.coordinator) {
+      state.coordinator.pid = pid;
+      state.worker_id = `channel-coordinator-${state.coordinator.pid}`;
+    } else {
+      state.worker_id = workerId;
+    }
     delete state.stop_reason;
     writeChannelWorkerState(root, subject, state);
     return { created: true, role, state: state.workers[role] };

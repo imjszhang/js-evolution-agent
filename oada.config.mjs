@@ -40,6 +40,7 @@ function readRequiredFile(fullPath, hint) {
 
 function buildAgentContextDocs(root) {
   const docsDir = resolveDocsDir(root);
+  // Governance only: SUBJECT.md (or legacy flat .md). SOUL.md is not injected as authority.
   const subjectPolicy = readSubjectPolicy(root, resolveSubjectConfig(root));
   return [
     {

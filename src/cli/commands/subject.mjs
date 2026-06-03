@@ -7,23 +7,23 @@ import {
 import {
   createSubject,
   diagnoseSubjectRuntimeConfig,
+  diagnoseSubjectWorkspace,
   ensureSubjectsRegistry,
   listRegisteredSubjects,
   readSubjectPolicy,
+  readSubjectSoul,
   resolveDefaultSubjectName,
   resolveSubjectRepoLane,
+  resolveSubjectSoulPath,
   resolveSubjectFromFlags,
   runtimeInfoForSubject,
   setDefaultSubject,
 } from '../utils/subjects.mjs';
+import { extractMarkdownSection } from '../utils/markdown-sections.mjs';
 
-export function extractMarkdownSection(text, heading) {
-  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const re = new RegExp(`(?:^|\\n)## ${escaped}\\s*\\n([\\s\\S]*?)(?=\\n## |$)`);
-  return text.match(re)?.[1]?.trim() || '';
-}
+export { extractMarkdownSection };
 
-function printSubject(policy, runtime, { defaultSubject = null } = {}) {
+function printSubject(root, policy, runtime, { defaultSubject = null } = {}) {
   const repoLane = resolveSubjectRepoLane(policy.text, {
     root: getProjectRoot(),
     subject: policy.config.name,
@@ -32,6 +32,8 @@ function printSubject(policy, runtime, { defaultSubject = null } = {}) {
   const defaultLabel = defaultSubject && defaultSubject === policy.config.name ? ' (default)' : '';
   console.log(`# Subject: ${policy.config.name}${defaultLabel}`);
   console.log(`policy: ${policy.file}`);
+  const soulPath = resolveSubjectSoulPath(root, policy.config);
+  if (soulPath) console.log(`soul: ${soulPath}`);
   console.log(`data namespace: ${runtime.dataNamespace}`);
   console.log(`runtime root: ${runtime.runtimeRoot}`);
   console.log(`data root: ${runtime.dataRoot}`);
@@ -127,10 +129,15 @@ export async function subjectCommand({ subcommand, flags = {}, args = [] } = {})
     }
     const defaultSubject = resolveDefaultSubjectName(root);
     if (flags.json) {
+      const soul = readSubjectSoul(root, config);
+      const workspace = diagnoseSubjectWorkspace(root, config);
       console.log(JSON.stringify({
         config,
         default_subject: defaultSubject,
         file: policy.file,
+        soul_file: soul.file,
+        soul_source: soul.source,
+        workspace,
         runtime,
         repoLane: resolveSubjectRepoLane(policy.text, {
           root,
@@ -141,7 +148,7 @@ export async function subjectCommand({ subcommand, flags = {}, args = [] } = {})
         coreLayer: extractMarkdownSection(policy.text, 'Core Layer'),
       }, null, 2));
     } else {
-      printSubject(policy, runtime, { defaultSubject });
+      printSubject(root, policy, runtime, { defaultSubject });
     }
     return 0;
   }
@@ -222,6 +229,7 @@ export async function subjectCommand({ subcommand, flags = {}, args = [] } = {})
     if (flags.json) console.log(JSON.stringify({ ...result, config, runtime }, null, 2));
     else {
       console.log(`${result.written ? 'created' : 'skipped'}: ${result.file}`);
+      if (result.soul_file) console.log(`soul: ${result.soul_file}`);
       if (config) {
         console.log(`default subject: ${config.name}`);
         console.log(`data namespace: ${runtime.dataNamespace}`);
@@ -242,15 +250,28 @@ export async function subjectCommand({ subcommand, flags = {}, args = [] } = {})
       subject: config.name,
       config,
     });
+    const workspaceCheck = diagnoseSubjectWorkspace(root, config);
+    const soul = readSubjectSoul(root, config);
     const result = {
       subject: config.name,
       default_subject: resolveDefaultSubjectName(root),
       file: policy.file,
+      soul_file: soul.file,
+      soul_source: soul.source,
+      workspace: {
+        dir: workspaceCheck.workspace_dir,
+        has_soul: workspaceCheck.has_soul,
+        has_legacy_flat: workspaceCheck.has_legacy_flat,
+      },
       ...policyCheck,
-      diagnostics: runtimeCheck.diagnostics,
+      diagnostics: [
+        ...workspaceCheck.diagnostics,
+        ...runtimeCheck.diagnostics,
+      ],
       runtime_ok: runtimeCheck.ok,
+      workspace_ok: workspaceCheck.diagnostics.every((d) => d.severity !== 'error'),
     };
-    result.ok = policyCheck.ok && runtimeCheck.ok;
+    result.ok = policyCheck.ok && runtimeCheck.ok && result.workspace_ok;
     if (flags.json) console.log(JSON.stringify(result, null, 2));
     else {
       console.log(`# Subject Check`);

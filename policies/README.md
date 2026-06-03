@@ -10,7 +10,9 @@
 | `authority/` | 跨 subject 共享的 Cyber-Taoist 权威文献（`CONSTITUTION.md`、`GUIDE.md`） | 可提交；见 `authority/README.md` |
 | `subjects.example.json` | 可提交的 `subjects.json` 示例 | 新增结构化字段时先更新这里 |
 | `subjects.json` | 本地 subject registry | 通常是本地状态；按当前机器路径配置 |
-| `subjects/*.md` | 每个 subject 的语义 policy | 由 `jea subject init` 生成或手工维护；描述主体、边界和人工审批规则 |
+| `subjects/<id>/SUBJECT.md` | 每个 subject 的治理 policy（权威文献） | 描述主体、边界和人工审批规则；进入 `agentContextDocs` |
+| `subjects/<id>/SOUL.md` | 每个 subject 的 channel persona（表达） | 人设与对外语气；**不**进入演化权威文献，仅供 channel presence / speech |
+| `subjects/<id>.md` | 旧版单文件 policy（兼容） | 仍可读；若与 workspace 并存，优先 `SUBJECT.md` |
 | `goals/<name>.json` | 本地 goal 源文件（可选） | `jea goals update --file` 的输入；运行时读 `runtime/.../active_goals.json` |
 | `active-subject.json` | 旧版 active subject 状态（若存在） | 仅兼容旧数据；新流程使用 `subjects.json` |
 
@@ -29,12 +31,12 @@ npm run jea -- subject check --subject <name>
 这会创建或更新：
 
 - `policies/subjects.json`：注册 subject，并可设置为 default。
-- `policies/subjects/<name>.md`：创建主体 policy。
+- `policies/subjects/<name>/SUBJECT.md` 与 `SOUL.md`：创建主体 workspace。
 - `runtime/subjects/<data_namespace>/`：初始化该 subject 的运行时数据。
 
 如果要手工创建，也应按同样顺序：
 
-1. 在 `policies/subjects/` 下创建 `<name>.md`。
+1. 在 `policies/subjects/<name>/` 下创建 `SUBJECT.md`（治理）与 `SOUL.md`（persona）。
 2. 在 `policies/subjects.json` 的 `subjects` 中登记该 subject。
 3. 如需要外部目标仓库，补充 `lane` 和 `resources`。
 4. 运行 `jea subject check --subject <name>` 校验。
@@ -69,7 +71,7 @@ Copy-Item policies\subjects.example.json policies\subjects.json
 然后修改：
 
 - `default_subject`：当前默认 subject 名称。
-- `subjects.<name>.policy`：主体 policy 路径，通常是 `subjects/<name>.md`。
+- `subjects.<name>.policy`：治理 policy 路径，通常是 `subjects/<name>/SUBJECT.md`。
 - `subjects.<name>.data_namespace`：运行时数据命名空间，通常等于 subject 名。
 - `subjects.<name>.lane`：目标仓库、分支和验证命令。
 - `subjects.<name>.resources`：外部资源 root、alias 和路径映射。
@@ -139,9 +141,11 @@ Copy-Item policies\subjects.example.json policies\subjects.json
 
 `subject_runtime` 和 `source_root` 不需要写进 `roots`：它们由运行时和宿主源码根自动解析。
 
-## subject policy 的创建方式
+## subject workspace 的创建方式
 
-`subjects/<name>.md` 只写语义和边界，不写机器配置。建议保留这些章节：
+`SUBJECT.md` 只写语义和边界，不写机器配置。`SOUL.md` 只写对外人设与表达约束（参考 OpenClaw SOUL 模板结构：Who I Am / Purpose / Operate / What I will not do），**不得**在 SOUL 中声明发布授权、凭据使用或审批放行。
+
+`SUBJECT.md` 建议保留这些章节：
 
 ```markdown
 # <name> 项目指导
@@ -168,7 +172,7 @@ Copy-Item policies\subjects.example.json policies\subjects.json
 - 说明敏感读取、越界写入和核心层修改必须先审批。
 ```
 
-主体 Markdown policy 会进入 agent context；因此应避免写入本地绝对路径、密钥、机器专属分支策略或会频繁变化的运行参数。
+`SUBJECT.md` 会进入 agent context 作为权威文献；因此应避免写入本地绝对路径、密钥、机器专属分支策略或会频繁变化的运行参数。`SOUL.md` 仅供 channel 表达，不参与 Decide / goals 的治理约束。
 
 不要在 subject policy 中维护 subject-specific action 菜单（例如 `sync/generate/simulate/publish` 等独立 action type）。这类业务能力应通过 `subjects.json` 的 `lane` / `resources` 配置，或 `runtime/subjects/<namespace>/data/config/actions.json` 中的 configured external actions 表达；Intel 阶段默认用 `agent_run` 承载复杂任务，用记录型 action 落证据。
 

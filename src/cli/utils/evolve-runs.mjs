@@ -23,7 +23,7 @@ import {
   resolveDefaultSubjectName,
   sanitizeSubjectName,
   subjectConfigToLegacy,
-  subjectFile,
+  subjectPolicyExists,
 } from './subjects.mjs';
 import { listCycleStates } from './cycle-state.mjs';
 
@@ -71,8 +71,9 @@ export function normalizeEvolveSubjects(root, { subject = null, subjects = null 
   const selected = explicit.length ? explicit : [fallback];
   const unique = [...new Set(selected)];
   for (const name of unique) {
-    const file = subjectFile(root, name);
-    if (!existsSync(file)) throw new Error(`Subject policy not found: ${file}`);
+    if (!subjectPolicyExists(root, name)) {
+      throw new Error(`Subject policy not found for: ${name}`);
+    }
   }
   return unique;
 }

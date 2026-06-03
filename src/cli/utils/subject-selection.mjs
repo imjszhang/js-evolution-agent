@@ -1,10 +1,9 @@
-import { existsSync } from 'node:fs';
 import {
   listSubjectPolicyFiles,
   resolveDefaultSubjectName,
   resolveSubjectConfig,
   sanitizeSubjectName,
-  subjectFile,
+  subjectPolicyExists,
 } from './subjects.mjs';
 
 function parseSubjectList(value) {
@@ -41,8 +40,9 @@ export function selectSubjects(root, {
   }
   if (requirePolicy) {
     for (const name of names) {
-      const file = subjectFile(root, name);
-      if (!existsSync(file)) throw new Error(`Subject policy not found: ${file}`);
+      if (!subjectPolicyExists(root, name)) {
+        throw new Error(`Subject policy not found for: ${name}`);
+      }
       try {
         resolveSubjectConfig(root, { subject: name, allowDefault: false });
       } catch (e) {

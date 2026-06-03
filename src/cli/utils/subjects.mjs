@@ -27,8 +27,48 @@ export function subjectsRegistryFile(root) {
   return join(root, 'policies', 'subjects.json');
 }
 
+export const SUBJECT_POLICY_FILENAME = 'SUBJECT.md';
+export const SOUL_POLICY_FILENAME = 'SOUL.md';
+
+/** @deprecated Legacy flat policy path; prefer subjectWorkspaceDir + SUBJECT.md */
 export function subjectFile(root, name) {
   return join(subjectsDir(root), `${sanitizeSubjectName(name)}.md`);
+}
+
+export function subjectWorkspaceDir(root, name) {
+  return join(subjectsDir(root), sanitizeSubjectName(name));
+}
+
+export function defaultSubjectPolicyRelPath(name) {
+  const subject = sanitizeSubjectName(name);
+  return `subjects/${subject}/${SUBJECT_POLICY_FILENAME}`;
+}
+
+export function defaultSubjectSoulRelPath(name) {
+  const subject = sanitizeSubjectName(name);
+  return `subjects/${subject}/${SOUL_POLICY_FILENAME}`;
+}
+
+export function subjectGovernanceFile(root, name) {
+  return join(subjectWorkspaceDir(root, name), SUBJECT_POLICY_FILENAME);
+}
+
+export function subjectSoulFile(root, name) {
+  return join(subjectWorkspaceDir(root, name), SOUL_POLICY_FILENAME);
+}
+
+function extractMarkdownSection(text, heading) {
+  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`(?:^|\\n)## ${escaped}\\s*\\n([\\s\\S]*?)(?=\\n## |$)`);
+  return text.match(re)?.[1]?.trim() || '';
+}
+
+/** True if workspace SUBJECT.md or legacy flat .md exists. */
+export function subjectPolicyExists(root, name) {
+  const subject = sanitizeSubjectName(name);
+  if (existsSync(subjectGovernanceFile(root, subject))) return true;
+  if (existsSync(subjectFile(root, subject))) return true;
+  return false;
 }
 
 export function sanitizeSubjectName(name) {
@@ -42,7 +82,7 @@ export function sanitizeSubjectName(name) {
 export function defaultSubjectEntry(name = DEFAULT_SUBJECT) {
   const subject = sanitizeSubjectName(name);
   return {
-    policy: `subjects/${subject}.md`,
+    policy: defaultSubjectPolicyRelPath(subject),
     data_namespace: subject,
   };
 }
@@ -51,7 +91,7 @@ export function subjectConfigToLegacy(config) {
   const subject = config?.name ?? config?.active ?? DEFAULT_SUBJECT;
   return {
     active: subject,
-    policy: config?.policy ?? `subjects/${subject}.md`,
+    policy: config?.policy ?? defaultSubjectPolicyRelPath(subject),
     data_namespace: config?.data_namespace ?? subject,
   };
 }
@@ -70,7 +110,7 @@ export function normalizeRegistryEntry(name, entry = {}) {
   return {
     ...entry,
     name: subject,
-    policy: entry.policy ?? `subjects/${subject}.md`,
+    policy: entry.policy ?? defaultSubjectPolicyRelPath(subject),
     data_namespace: entry.data_namespace ?? subject,
   };
 }
@@ -82,7 +122,7 @@ function registryFromLegacyActive(legacy) {
     default_subject: name,
     subjects: {
       [name]: {
-        policy: legacy.policy ?? `subjects/${name}.md`,
+        policy: legacy.policy ?? defaultSubjectPolicyRelPath(name),
         data_namespace: legacy.data_namespace ?? name,
       },
     },
@@ -143,17 +183,31 @@ export function ensureSubjectsRegistry(root, { language = getLanguage() } = {}) 
 
   const registry = readSubjectsRegistry(root);
 
-  const destination = subjectFile(root, DEFAULT_SUBJECT);
+  const workspaceDir = subjectWorkspaceDir(root, DEFAULT_SUBJECT);
+  const subjectPath = subjectGovernanceFile(root, DEFAULT_SUBJECT);
+  const soulPath = subjectSoulFile(root, DEFAULT_SUBJECT);
   let subjectWritten = false;
-  if (!existsSync(destination)) {
-    writeFileSync(destination, buildDefaultSubjectPolicy(language), 'utf-8');
+  let soulWritten = false;
+  if (!existsSync(subjectPath)) {
+    mkdirSync(workspaceDir, { recursive: true });
+    writeFileSync(subjectPath, buildDefaultSubjectPolicy(language), 'utf-8');
     subjectWritten = true;
+  }
+  if (!existsSync(soulPath)) {
+    mkdirSync(workspaceDir, { recursive: true });
+    writeFileSync(soulPath, buildDefaultSubjectSoul(language), 'utf-8');
+    soulWritten = true;
   }
 
   return {
     registry,
     registryWritten: !existed,
-    subject: { file: destination, written: subjectWritten },
+    subject: {
+      file: subjectPath,
+      soul_file: soulPath,
+      workspace: workspaceDir,
+      written: subjectWritten || soulWritten,
+    },
   };
 }
 
@@ -164,7 +218,7 @@ export function getSubjectEntry(root, name) {
   if (entry) {
     return normalizeRegistryEntry(subject, entry);
   }
-  if (existsSync(subjectFile(root, subject))) {
+  if (subjectPolicyExists(root, subject)) {
     return normalizeRegistryEntry(subject, defaultSubjectEntry(subject));
   }
   return null;
@@ -273,14 +327,110 @@ export function runtimeInfoForDefaultSubject(root) {
 
 export function resolveSubjectPolicyPath(root, config) {
   const legacy = subjectConfigToLegacy(config);
-  const configured = resolve(root, 'policies', legacy.policy || '');
+  const subject = legacy.active || DEFAULT_SUBJECT;
   const policiesRoot = resolve(root, 'policies');
-  if (configured.startsWith(policiesRoot) && existsSync(configured)) return configured;
 
-  const fallback = subjectFile(root, legacy.active || DEFAULT_SUBJECT);
-  if (existsSync(fallback)) return fallback;
+  if (legacy.policy) {
+    const configured = resolve(policiesRoot, legacy.policy);
+    if (configured.startsWith(policiesRoot) && existsSync(configured)) return configured;
+  }
+
+  const workspaceSubject = subjectGovernanceFile(root, subject);
+  if (existsSync(workspaceSubject)) return workspaceSubject;
+
+  const flat = subjectFile(root, subject);
+  if (existsSync(flat)) return flat;
 
   return join(root, 'policies', 'project-guidance.md');
+}
+
+export function resolveSubjectSoulPath(root, subjectOrConfig) {
+  const config = typeof subjectOrConfig === 'string'
+    ? resolveSubjectConfig(root, { subject: subjectOrConfig })
+    : subjectOrConfig;
+  const soulPath = subjectSoulFile(root, config.name);
+  if (existsSync(soulPath)) return soulPath;
+  return null;
+}
+
+export function readSubjectSoul(root, subjectOrConfig) {
+  const config = typeof subjectOrConfig === 'string'
+    ? resolveSubjectConfig(root, { subject: subjectOrConfig })
+    : subjectOrConfig;
+  const soulPath = resolveSubjectSoulPath(root, config);
+  if (soulPath) {
+    return {
+      config,
+      file: soulPath,
+      text: readTextSafe(soulPath),
+      source: 'soul_file',
+    };
+  }
+  const policy = readSubjectPolicy(root, config);
+  const legacyPersona = extractMarkdownSection(policy.text, 'Persona');
+  if (legacyPersona) {
+    return {
+      config,
+      file: null,
+      text: legacyPersona,
+      source: 'legacy_persona_section',
+    };
+  }
+  return {
+    config,
+    file: null,
+    text: '',
+    source: 'missing',
+  };
+}
+
+export function diagnoseSubjectWorkspace(root, subjectOrConfig) {
+  const config = typeof subjectOrConfig === 'string'
+    ? resolveSubjectConfig(root, { subject: subjectOrConfig })
+    : subjectOrConfig;
+  const subject = config.name;
+  const diagnostics = [];
+  const workspaceDir = subjectWorkspaceDir(root, subject);
+  const subjectPath = subjectGovernanceFile(root, subject);
+  const soulPath = subjectSoulFile(root, subject);
+  const flatPath = subjectFile(root, subject);
+  const hasWorkspace = existsSync(subjectPath);
+  const hasSoul = existsSync(soulPath);
+  const hasFlat = existsSync(flatPath);
+  const configuredPath = resolveSubjectPolicyPath(root, config);
+
+  if (!hasWorkspace && !hasFlat && !existsSync(configuredPath)) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'subject_policy_missing',
+      message: 'No SUBJECT.md, workspace, or legacy subjects/<id>.md policy found',
+    });
+  }
+  if (hasWorkspace && hasFlat) {
+    diagnostics.push({
+      severity: 'warning',
+      code: 'legacy_flat_policy_coexists',
+      message: 'Workspace SUBJECT.md takes priority over subjects/<id>.md',
+    });
+  }
+  if ((hasWorkspace || hasFlat) && !hasSoul && !extractMarkdownSection(readSubjectPolicy(root, config).text, 'Persona')) {
+    diagnostics.push({
+      severity: 'warning',
+      code: 'soul_missing',
+      message: 'SOUL.md is missing and no legacy ## Persona section; channel persona may be empty',
+    });
+  }
+  return {
+    subject,
+    workspace_dir: workspaceDir,
+    subject_file: subjectPath,
+    soul_file: soulPath,
+    legacy_flat_file: flatPath,
+    has_workspace: hasWorkspace,
+    has_soul: hasSoul,
+    has_legacy_flat: hasFlat,
+    diagnostics,
+  };
 }
 
 export function readSubjectPolicy(root, subjectOrConfig) {
@@ -302,9 +452,8 @@ export function readDefaultSubjectPolicy(root) {
 
 export function setDefaultSubject(root, name) {
   const subject = sanitizeSubjectName(name);
-  const file = subjectFile(root, subject);
-  if (!existsSync(file)) {
-    throw new Error(`Subject policy not found: ${file}`);
+  if (!subjectPolicyExists(root, subject)) {
+    throw new Error(`Subject policy not found for: ${subject} (expected workspace SUBJECT.md or legacy .md)`);
   }
   const registry = readSubjectsRegistry(root);
   const next = {
@@ -316,6 +465,7 @@ export function setDefaultSubject(root, name) {
   };
   writeSubjectsRegistry(root, next);
   const config = normalizeRegistryEntry(subject, next.subjects[subject]);
+  const file = resolveSubjectPolicyPath(root, config);
   return { config, active: subjectConfigToLegacy(config), file };
 }
 
@@ -1007,10 +1157,18 @@ export function resolveSubjectRepoLane(policyText = '', {
 export function listSubjectPolicyFiles(root) {
   const dir = subjectsDir(root);
   if (!existsSync(dir)) return [];
-  return readdirSync(dir, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith('.md'))
-    .map((entry) => basename(entry.name, '.md'))
-    .sort();
+  const names = new Set();
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isFile() && entry.name.endsWith('.md')) {
+      names.add(basename(entry.name, '.md'));
+      continue;
+    }
+    if (entry.isDirectory()) {
+      const subjectPath = join(dir, entry.name, SUBJECT_POLICY_FILENAME);
+      if (existsSync(subjectPath)) names.add(entry.name);
+    }
+  }
+  return [...names].sort();
 }
 
 /** @deprecated use listSubjectPolicyFiles */
@@ -1044,6 +1202,15 @@ export function buildDefaultSubjectPolicy(language = getLanguage()) {
   return t('policy.defaultSubjectTemplate', { generatedAt: generatedAt() }, language);
 }
 
+export function buildSubjectSoulTemplate(name, { language = getLanguage() } = {}) {
+  const subject = sanitizeSubjectName(name);
+  return t('policy.soulTemplate', { generatedAt: generatedAt(), subject }, language);
+}
+
+export function buildDefaultSubjectSoul(language = getLanguage()) {
+  return t('policy.defaultSoulTemplate', { generatedAt: generatedAt() }, language);
+}
+
 export function ensureSubjectLayout(root) {
   mkdirSync(subjectsDir(root), { recursive: true });
   mkdirSync(templatesDir(root), { recursive: true });
@@ -1056,12 +1223,32 @@ export function ensureSubjectLayout(root) {
 export function createSubject(root, name, { template = 'project', force = false, language = getLanguage() } = {}) {
   const subject = sanitizeSubjectName(name);
   ensureSubjectLayout(root);
-  const file = subjectFile(root, subject);
-  const existed = existsSync(file);
+  const workspaceDir = subjectWorkspaceDir(root, subject);
+  const subjectPath = subjectGovernanceFile(root, subject);
+  const soulPath = subjectSoulFile(root, subject);
+  const existed = existsSync(subjectPath);
   if (existed && !force) {
-    return { name: subject, file, written: false, skipped: true, existed };
+    return {
+      name: subject,
+      file: subjectPath,
+      soul_file: soulPath,
+      workspace: workspaceDir,
+      written: false,
+      skipped: true,
+      existed,
+    };
   }
-  writeFileSync(file, buildSubjectPolicyTemplate(subject, { template, language }), 'utf-8');
-  registerSubject(root, subject);
-  return { name: subject, file, written: true, skipped: false, existed };
+  mkdirSync(workspaceDir, { recursive: true });
+  writeFileSync(subjectPath, buildSubjectPolicyTemplate(subject, { template, language }), 'utf-8');
+  writeFileSync(soulPath, buildSubjectSoulTemplate(subject, { language }), 'utf-8');
+  registerSubject(root, subject, { policy: defaultSubjectPolicyRelPath(subject) });
+  return {
+    name: subject,
+    file: subjectPath,
+    soul_file: soulPath,
+    workspace: workspaceDir,
+    written: true,
+    skipped: false,
+    existed,
+  };
 }

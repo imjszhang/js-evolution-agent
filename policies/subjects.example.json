@@ -2,7 +2,7 @@
   "default_subject": "my-subject",
   "subjects": {
     "my-subject": {
-      "policy": "subjects/my-subject.md",
+      "policy": "subjects/my-subject/SUBJECT.md",
       "data_namespace": "my-subject",
       "evolution": {
         "mode": "on_demand"

@@ -60,6 +60,11 @@ import {
   createSubject,
   ensureSubjectsRegistry,
   buildDefaultSubjectPolicy,
+  readSubjectPolicy,
+  readSubjectSoul,
+  subjectGovernanceFile,
+  subjectSoulFile,
+  diagnoseSubjectWorkspace,
   buildSubjectResourceSummary,
   diagnoseSubjectRuntimeConfig,
   normalizeStructuredResourceItems,
@@ -249,6 +254,9 @@ describe('subject management', () => {
     ensureSubjectsRegistry(root);
     const created = createSubject(root, 'my-product');
     expect(created.written).toBe(true);
+    expect(existsSync(created.file)).toBe(true);
+    expect(existsSync(created.soul_file)).toBe(true);
+    expect(readSubjectSoul(root, 'my-product').source).toBe('soul_file');
     const active = setDefaultSubject(root, 'my-product');
     expect(active.active.active).toBe('my-product');
     const policy = readDefaultSubjectPolicy(root);
@@ -2034,7 +2042,47 @@ describe('data initialization', () => {
     expect(result.seed.observationCount).toBe(1);
     expect(result.policies).not.toBeNull();
     expect(existsSync(join(root, 'policies', 'subjects.json'))).toBe(true);
-    expect(existsSync(join(root, 'policies', 'subjects', 'js-evolution-agent.md'))).toBe(true);
+    expect(existsSync(subjectGovernanceFile(root, 'js-evolution-agent'))).toBe(true);
+    expect(existsSync(subjectSoulFile(root, 'js-evolution-agent'))).toBe(true);
+  });
+
+  it('reads SOUL.md for channel persona and legacy ## Persona fallback', () => {
+    const root = makeProjectRoot();
+    mkdirSync(join(root, 'policies', 'subjects'), { recursive: true });
+    writeFileSync(join(root, 'policies', 'subjects', 'legacy-voice.md'), [
+      '# legacy-voice',
+      '',
+      '## Subject',
+      'legacy voice subject',
+      '',
+      '## Persona',
+      '旧版人格段落',
+    ].join('\n'), 'utf-8');
+    writeJsonFile(join(root, 'policies', 'subjects.json'), {
+      default_subject: 'legacy-voice',
+      subjects: {
+        'legacy-voice': {
+          policy: 'subjects/legacy-voice.md',
+          data_namespace: 'legacy-voice',
+        },
+      },
+    });
+    const soul = readSubjectSoul(root, 'legacy-voice');
+    expect(soul.source).toBe('legacy_persona_section');
+    expect(soul.text).toContain('旧版人格段落');
+    const workspace = diagnoseSubjectWorkspace(root, resolveSubjectConfig(root, { subject: 'legacy-voice' }));
+    expect(workspace.has_legacy_flat).toBe(true);
+    expect(workspace.diagnostics.some((d) => d.code === 'soul_missing')).toBe(false);
+  });
+
+  it('lists workspace subjects alongside legacy flat policies', () => {
+    const root = makeProjectRoot();
+    createSubject(root, 'workspace-one');
+    mkdirSync(join(root, 'policies', 'subjects'), { recursive: true });
+    writeFileSync(join(root, 'policies', 'subjects', 'flat-only.md'), '# flat\n\n## Subject\nflat', 'utf-8');
+    const names = listSubjects(root);
+    expect(names).toContain('workspace-one');
+    expect(names).toContain('flat-only');
   });
 
   it('backs up data without overwriting by default', () => {

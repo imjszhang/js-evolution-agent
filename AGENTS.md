@@ -206,7 +206,7 @@ runtime/subjects/<data_namespace>/data/evolution/operator_briefs/processed/
 
 ### 主体策略与权威文档
 
-- `policies/subjects/<name>.md`：`Off-Limits Without Human Approval` 等审批与安全边界；用 `jea subject check` 校验结构。
+- `policies/subjects/<name>/SUBJECT.md`：`Off-Limits Without Human Approval` 等审批与安全边界；`SOUL.md` 为 channel persona（不参与治理权威文献）；用 `jea subject check` 校验结构。
 - `policies/subjects.json`：lane、resource root 等机器可读配置。
 - `policies/authority/CONSTITUTION.md`、`policies/authority/GUIDE.md`、`oada.config.mjs`：Phase 1 权威文档，优先级高于情报材料。
 
@@ -271,7 +271,7 @@ Decide 可调度、`Phase 2` 执行的记录型动作，用于落已有结论而
 其他需人工介入的场景：
 
 - **核心层变更**：`core_apply` 默认受 `JEA_CORE_APPLY_POLICY=review` 约束；`request_core_review` 只落审批请求，不执行变更。
-- **主体边界**：`policies/subjects/<name>.md` 的 Off-Limits Without Human Approval 定义各 subject 的审批规则（凭据、远端发布、越界写入等）；AGENTS.md 不重复主体语义，用 `jea subject check` 校验 policy 结构。
+- **主体边界**：`policies/subjects/<name>/SUBJECT.md` 的 Off-Limits Without Human Approval 定义各 subject 的审批规则（凭据、远端发布、越界写入等）；AGENTS.md 不重复主体语义，用 `jea subject check` 校验 policy 结构。
 
 自动化代理在未获操作者明确确认时，不要替其提交发布/基线校准类 brief，也不要在 action 上伪造 `approval_granted`。
 
