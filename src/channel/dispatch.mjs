@@ -1,18 +1,14 @@
 import { recordChannelEvent } from './audit.mjs';
 import { resolveClassifierConfig } from './classifier-config.mjs';
-import { requestPresenceReactor, enqueueNotifyIfOutboxPending, enqueueClassifierIfPendingInbound } from './wake.mjs';
+import { requestExpressionRecompute, enqueueNotifyIfOutboxPending, enqueueClassifierIfPendingInbound } from './wake.mjs';
 
 export function runChannelPresenceTick(root, subject, input = {}) {
   const tickId = input.tick_id ?? new Date().toISOString().slice(0, 16);
   const enqueued = [];
 
-  enqueued.push(requestPresenceReactor(root, subject, {
+  enqueued.push(requestExpressionRecompute(root, subject, {
     reason: 'timer_tick',
-    event: {
-      type: 'timer_tick',
-      reason: 'channel_tick',
-      payload_summary: { tick_id: tickId },
-    },
+    payload_summary: { tick_id: tickId },
   }));
 
   if (enqueueNotifyIfOutboxPending(root, subject).created) {

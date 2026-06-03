@@ -18,7 +18,7 @@ import {
   markMessageSeen,
   readJsonFile,
 } from './state.mjs';
-import { requestPresenceReactor } from './wake.mjs';
+import { requestExpressionRecompute } from './wake.mjs';
 
 function createLlmClient(config) {
   if (!process.env.DEEPSEEK_API_KEY?.trim()) return null;
@@ -296,12 +296,9 @@ export async function runChannelClassifierTask(root, subject, input = {}) {
   }
 
   if (processed.length) {
-    requestPresenceReactor(root, subject, {
+    requestExpressionRecompute(root, subject, {
       reason: 'inbound_classified',
-      event: {
-        type: 'inbound_classified',
-        payload_summary: { count: processed.length },
-      },
+      payload_summary: { count: processed.length },
     });
   }
 

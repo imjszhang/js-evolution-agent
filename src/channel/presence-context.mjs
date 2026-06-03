@@ -18,10 +18,9 @@ import {
   readCooldown,
   readJsonFile,
   readPresenceState,
-  isPresenceMessageHandled,
-  isPresenceSignalHandled,
   buildPresenceSignalKey,
 } from './state.mjs';
+import { buildExpressionCandidates, candidateIdForMessage, candidateIdForSignal } from './expression-candidates.mjs';
 import { collectAttentionSignals } from './notify.mjs';
 import { resolvePresenceConfig } from './presence-config.mjs';
 import { resolveDefaultTransport } from './transport.mjs';
@@ -57,6 +56,8 @@ function annotatePresenceEligibility(item, extra = {}) {
 }
 
 function partitionIngestedByHandled(root, subject, ingested) {
+  const presenceState = readPresenceState(root, subject);
+  const handled = presenceState.handled_candidates ?? {};
   const new_messages = [];
   const background_messages = [];
   const ignored_messages = [];
@@ -65,23 +66,32 @@ function partitionIngestedByHandled(root, subject, ingested) {
       ignored_messages.push(annotatePresenceEligibility(item, { presence_handled: false }));
       continue;
     }
-    const id = item.message_id;
-    if (id && isPresenceMessageHandled(root, subject, id)) {
-      background_messages.push(annotatePresenceEligibility(item, { presence_handled: true }));
+    const candidateId = candidateIdForMessage(item);
+    if (!candidateId || handled[candidateId]) {
+      background_messages.push(annotatePresenceEligibility(item, {
+        presence_handled: Boolean(candidateId && handled[candidateId]),
+        candidate_id: candidateId,
+      }));
     } else {
-      new_messages.push(annotatePresenceEligibility(item, { presence_handled: false }));
+      new_messages.push(annotatePresenceEligibility(item, {
+        presence_handled: false,
+        candidate_id: candidateId,
+      }));
     }
   }
   return { new_messages, background_messages, ignored_messages };
 }
 
 function annotateAttentionSignals(root, subject, signals) {
+  const handled = readPresenceState(root, subject).handled_candidates ?? {};
   return signals.map((signal) => {
     const key = buildPresenceSignalKey(signal);
+    const candidateId = candidateIdForSignal({ ...signal, presence_signal_key: key });
     return {
       ...signal,
       presence_signal_key: key,
-      presence_handled: isPresenceSignalHandled(root, subject, key),
+      candidate_id: candidateId,
+      presence_handled: Boolean(candidateId && handled[candidateId]),
     };
   });
 }
@@ -159,7 +169,7 @@ export function buildPresenceContext(root, subject, {
     }
   }
 
-  return {
+  const context = {
     schema_version: 2,
     subject,
     generated_at: nowIso(),
@@ -187,8 +197,8 @@ export function buildPresenceContext(root, subject, {
       presence_cursors: {
         last_presence_tick_at: presenceState.last_presence_tick_at,
         last_spoken_at: presenceState.last_spoken_at,
-        handled_message_count: Object.keys(presenceState.handled_messages ?? {}).length,
-        handled_signal_count: Object.keys(presenceState.handled_signals ?? {}).length,
+        handled_candidate_count: Object.keys(presenceState.handled_candidates ?? {}).length,
+        handled_candidates: presenceState.handled_candidates ?? {},
       },
     },
     daemon: {
@@ -220,7 +230,11 @@ export function buildPresenceContext(root, subject, {
       respect_cooldown: true,
       background_messages_are_context_only: true,
       ignored_messages_are_context_only: true,
-      handled_messages_and_signals_are_context_only: true,
+      handled_candidates_are_context_only: true,
     },
   };
+  context.expression = {
+    candidates: buildExpressionCandidates(context),
+  };
+  return context;
 }

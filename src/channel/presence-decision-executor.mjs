@@ -6,14 +6,10 @@ import { recordChannelEvent, readChannelEvents } from './audit.mjs';
 import {
   cooldownActive,
   writePresenceState,
-  markPresenceMessageHandled,
-  markPresenceSignalsHandled,
-  markPresenceMessagesHandled,
-  buildPresenceSignalKey,
+  markExpressionCandidatesHandled,
 } from './state.mjs';
 import { nowIso } from './types.mjs';
 import { PRESENCE_ACTION_TYPES } from './presence-planner.mjs';
-import { isPresenceReplyEligible } from './presence-context.mjs';
 import {
   recordPresenceInteraction,
   shouldRecordSilenceObservation,
@@ -61,53 +57,23 @@ function summarizeInteractionText(action, plan) {
       action.summary ? `Summary: ${String(action.summary).slice(0, 400)}` : '',
     ].filter(Boolean).join(' ');
   }
-  if (plan?.stance === 'silence') {
+  if (plan?.kind === 'silence') {
     return `Subject chose silence (${plan.reason ?? 'silence'}).`;
   }
   return null;
 }
 
-function collectCursorTargets(plan, context) {
-  const messages = new Set(plan?.presence_targets?.messages ?? []);
-  const signals = new Set(plan?.presence_targets?.signals ?? []);
-
-  for (const action of plan?.actions ?? []) {
-    if (action.reply_to_message_id) messages.add(action.reply_to_message_id);
-    if (action.signal_key) signals.add(action.signal_key);
-    const idempotency = action.idempotency_key ?? '';
-    if (idempotency.startsWith('presence:signal:')) {
-      signals.add(idempotency.slice('presence:signal:'.length));
-    }
-  }
-
-  if (plan?.stance === 'silence') {
-    for (const item of context?.channel?.new_messages ?? []) {
-      if (item.message_id && isPresenceReplyEligible(item)) messages.add(item.message_id);
-    }
-    for (const signal of context?.attention_signals ?? []) {
-      if (!signal.presence_handled) {
-        signals.add(signal.presence_signal_key ?? buildPresenceSignalKey(signal));
-      }
-    }
-  }
-
-  return {
-    messages: [...messages].filter(Boolean),
-    signals: [...signals].filter(Boolean),
-  };
-}
-
-function applyPresenceCursors(root, subject, plan, context, outcome) {
-  const { messages, signals } = collectCursorTargets(plan, context);
+function applyExpressionCursors(root, subject, plan, outcome, extra = {}) {
+  const candidateIds = [...new Set(plan?.candidate_ids ?? [])].filter(Boolean);
   const meta = { outcome, reason: plan.reason, planner: plan.planner };
-  if (messages.length) markPresenceMessagesHandled(root, subject, messages, meta);
-  if (signals.length) markPresenceSignalsHandled(root, subject, signals, meta);
+  if (candidateIds.length) markExpressionCandidatesHandled(root, subject, candidateIds, { ...meta, ...extra });
   const patch = { last_presence_tick_at: nowIso() };
-  if (outcome === 'sent' || outcome === 'speak') {
+  if (outcome === 'speech_queued' || outcome === 'speak' || outcome === 'sent') {
     patch.last_spoken_at = nowIso();
   }
   patch.last_plan = {
-    stance: plan.stance,
+    kind: plan.kind,
+    candidate_ids: candidateIds,
     reason: plan.reason,
     planner: plan.planner,
     at: nowIso(),
@@ -131,32 +97,44 @@ export async function executePresenceDecisionPlan(root, subject, plan, {
   const runtime = runtimeForSubject(root, subject);
 
   recordChannelEvent(root, subject, {
-    type: 'channel_presence_decided',
+    type: 'channel_expression_planned',
     status: 'ok',
-    stance: plan.stance,
+    plan_kind: plan.kind,
     reason: plan.reason,
     planner: plan.planner ?? 'deterministic',
-    action_count: plan.actions?.length ?? 0,
+    candidate_count: plan.candidate_ids?.length ?? 0,
+    intent_count: plan.intents?.length ?? 0,
     llm: plan.llm ?? null,
   });
 
-  if (plan.stance === 'silence' || (plan.actions?.length === 1 && plan.actions[0]?.type === 'silence')) {
+  if (plan.kind === 'no_op') {
     recordChannelEvent(root, subject, {
-      type: 'channel_presence_silenced',
+      type: 'channel_expression_noop',
       status: 'ok',
       reason: plan.reason,
+    });
+    if (!dryRun) applyExpressionCursors(root, subject, plan, 'no_op');
+    return { applied: 0, skipped: 0, speech_queued: 0, results, plan };
+  }
+
+  if (plan.kind === 'silence') {
+    recordChannelEvent(root, subject, {
+      type: 'channel_expression_silenced',
+      status: 'ok',
+      reason: plan.reason,
+      candidate_ids: plan.candidate_ids ?? [],
     });
     if (!dryRun && shouldRecordSilenceObservation(context, plan)) {
       recordPresenceInteraction(store, {
         interaction_kind: 'silence',
         content: summarizeInteractionText({ type: 'silence' }, plan),
         confidence: 'medium',
-        evidence_refs: (plan.presence_targets?.messages ?? []).map((id) => `channel:message:${id}`),
+        evidence_refs: (plan.candidate_ids ?? []).map((id) => `expression:${id}`),
         tags: ['silence'],
       });
     }
     if (!dryRun) {
-      applyPresenceCursors(root, subject, plan, context, 'silenced');
+      applyExpressionCursors(root, subject, plan, 'silenced');
     }
     return { applied: 0, skipped: 1, speech_queued: 0, results, plan };
   }
@@ -173,7 +151,7 @@ export async function executePresenceDecisionPlan(root, subject, plan, {
 
   let speechQueued = 0;
 
-  for (const action of plan.actions ?? []) {
+  for (const action of plan.actions ?? plan.intents ?? []) {
     const check = validateAction(action);
     if (!check.ok) {
       results.push({ action, skipped: true, reason: check.reason });
@@ -197,7 +175,7 @@ export async function executePresenceDecisionPlan(root, subject, plan, {
       }
       const payload = buildSpeechGenerationEventPayload(action, {
         contextSummary: {
-          stance: plan.stance,
+          kind: plan.kind,
           planner: plan.planner,
         },
       });
@@ -208,6 +186,7 @@ export async function executePresenceDecisionPlan(root, subject, plan, {
         payload,
         payload_summary: {
           intent_id: action.intent_id,
+          candidate_id: action.candidate_id ?? null,
           reason: action.reason,
           target: action.target,
         },
@@ -218,8 +197,7 @@ export async function executePresenceDecisionPlan(root, subject, plan, {
         content: summarizeInteractionText(action, plan),
         confidence: 'medium',
         evidence_refs: [
-          action.reply_to_message_id ? `channel:message:${action.reply_to_message_id}` : null,
-          action.signal_key ? `channel:signal:${action.signal_key}` : null,
+          action.candidate_id ? `expression:${action.candidate_id}` : null,
         ].filter(Boolean),
       });
       results.push({ action, applied: true, queued: true, intent_id: action.intent_id });
@@ -250,12 +228,6 @@ export async function executePresenceDecisionPlan(root, subject, plan, {
         confidence: 'medium',
         evidence_refs: [`brief:${brief.id}`],
       });
-      if (action.reply_to_message_id) {
-        markPresenceMessageHandled(root, subject, action.reply_to_message_id, {
-          outcome: 'brief_written',
-          brief_id: brief.id,
-        });
-      }
       results.push({ action, applied: true, brief_id: brief.id });
       continue;
     }
@@ -282,7 +254,7 @@ export async function executePresenceDecisionPlan(root, subject, plan, {
 
   if (!dryRun) {
     const hadSpeech = results.some((r) => r.applied && r.action?.type === 'speech_intent');
-    applyPresenceCursors(root, subject, plan, context, hadSpeech ? 'speak' : 'acted');
+    applyExpressionCursors(root, subject, plan, hadSpeech ? 'speech_queued' : 'acted');
     if (speechQueued) {
       enqueueSpeechGenerationIfPending(root, subject);
     }

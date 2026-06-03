@@ -1,11 +1,8 @@
 import { chatMessagesJson } from '../ai/messages.mjs';
 import { DeepSeekOpenAIClient } from '../ai/deepseek-client.mjs';
-import { nowIso } from './types.mjs';
-import { buildPresenceSignalKey } from './state.mjs';
-import { isPresenceReplyEligible } from './presence-context.mjs';
 import { normalizeSpeechIntent, speechIntentFromDeterministic } from './speech-intent.mjs';
 
-export const PRESENCE_STANCES = Object.freeze(['speak', 'silence', 'ask', 'report', 'wait']);
+export const PRESENCE_PLAN_KINDS = Object.freeze(['no_op', 'speak', 'silence', 'act']);
 export const PRESENCE_ACTION_TYPES = Object.freeze([
   'speech_intent',
   'write_operator_brief',
@@ -13,37 +10,16 @@ export const PRESENCE_ACTION_TYPES = Object.freeze([
   'silence',
 ]);
 
-function replyEligibleNewMessages(context) {
-  return (context.channel?.new_messages ?? []).filter(isPresenceReplyEligible);
-}
-
-function buildPresenceTargets(context, { messageIds = [], signalKeys = [] } = {}) {
-  const messages = messageIds.length
-    ? messageIds
-    : replyEligibleNewMessages(context).map((m) => m.message_id).filter(Boolean);
-  const signals = signalKeys.length
-    ? signalKeys
-    : (context.attention_signals ?? [])
-      .filter((s) => !s.presence_handled)
-      .map((s) => s.presence_signal_key ?? buildPresenceSignalKey(s))
-      .filter(Boolean);
-  return { messages, signals };
-}
-
-function emptyPlan(reason, context, extra = {}) {
+function noOpPlan(reason, extra = {}) {
   return {
-    stance: 'silence',
+    kind: 'no_op',
     reason,
-    actions: [{ type: 'silence', reason }],
-    presence_targets: buildPresenceTargets(context),
+    candidate_ids: [],
+    intents: [],
+    actions: [],
     planner: 'deterministic',
     ...extra,
   };
-}
-
-function isGreeting(text) {
-  const normalized = String(text || '').trim().toLowerCase();
-  return /^(你好|您好|hi|hello|hey|在吗|在么|在不在)[!！?？。.\s]*$/i.test(normalized);
 }
 
 function sanitizeLlmText(value) {
@@ -68,6 +44,7 @@ function normalizeAction(raw, subject) {
     if (!text) return null;
     return normalizeSpeechIntent({
       type: 'speech_intent',
+      candidate_id: raw.candidate_id ?? null,
       target: raw.target ?? 'channel_default',
       reason: String(raw.reason ?? 'presence_reply'),
       reply_to_message_id: raw.reply_to_message_id ?? null,
@@ -102,137 +79,62 @@ function normalizeAction(raw, subject) {
   return null;
 }
 
-function unhandledSignals(context) {
-  return (context.attention_signals ?? []).filter((s) => !s.presence_handled);
+function candidates(context) {
+  return context.expression?.candidates ?? [];
 }
 
-function isOperatorBriefAckAction(action) {
-  if (action?.type !== 'speech_intent') return false;
-  const kind = action.content_requirements?.kind;
-  return kind === 'approval_ack' || kind === 'verification_ack';
+function intentFromCandidate(context, candidate) {
+  return speechIntentFromDeterministic({
+    subject: context.subject,
+    candidate_id: candidate.id,
+    target: candidate.target,
+    reason: candidate.recommended_intent,
+    reply_to_message_id: candidate.reply_to_message_id ?? null,
+    signal_key: candidate.signal_key ?? null,
+    idempotency_key: `expression:${candidate.id}`,
+    kind: candidate.recommended_intent,
+    summary: candidate.summary,
+    signal: candidate.signal ?? null,
+  });
+}
+
+function speakPlan(context, selected, { planner = 'deterministic', reason = 'deterministic_express', extra = {} } = {}) {
+  const intents = selected.map((candidate) => intentFromCandidate(context, candidate)).filter(Boolean);
+  if (!intents.length) return noOpPlan('no_valid_intents', { planner, ...extra });
+  return {
+    kind: 'speak',
+    reason,
+    candidate_ids: selected.map((candidate) => candidate.id),
+    intents,
+    actions: intents,
+    planner,
+    ...extra,
+  };
 }
 
 /**
- * Deterministic ack for newly classified operator_brief (approval / verification).
+ * Fast deterministic ack for approval / verification candidates.
  */
 export function planPresenceOperatorBriefFastAck(context) {
   if (context.presence?.fast_ack_operator_brief === false) return null;
-  const hasPendingBrief = (context.channel?.new_messages ?? []).some((item) => {
-    if (item.ingest_kind !== 'operator_brief' || item.presence_handled) return false;
-    const briefKind = item.brief_kind ?? 'approval_request';
-    return briefKind === 'approval_request' || briefKind === 'verification_request';
-  });
-  if (!hasPendingBrief) return null;
-
-  const plan = planPresenceDeterministic(context);
-  const ackActions = (plan.actions ?? []).filter(isOperatorBriefAckAction);
-  if (!ackActions.length) return null;
-
-  return {
-    ...plan,
-    stance: 'speak',
-    reason: plan.reason ?? 'operator_brief_fast_ack',
-    actions: ackActions,
-    presence_targets: buildPresenceTargets(context, {
-      messageIds: ackActions.map((a) => a.reply_to_message_id).filter(Boolean),
-    }),
+  const selected = candidates(context).filter((candidate) =>
+    candidate.kind === 'reply.approval_request' || candidate.kind === 'reply.verification_request');
+  if (!selected.length) return null;
+  return speakPlan(context, selected.slice(0, context.presence?.max_actions_per_tick ?? 2), {
     planner: 'deterministic_fast_ack',
-    fast_ack: true,
-  };
+    reason: 'operator_brief_fast_ack',
+    extra: { fast_ack: true },
+  });
 }
 
 /**
- * Rule-based presence deliberation (no transport coupling).
+ * Rule-based expression deliberation.
  */
 export function planPresenceDeterministic(context) {
-  const subject = context.subject;
-  const actions = [];
-  const handledMessageIds = new Set();
-  const handledSignalKeys = new Set();
   const maxActions = context.presence?.max_actions_per_tick ?? 2;
-
-  for (const item of context.channel?.new_messages ?? []) {
-    if (actions.length >= maxActions) break;
-    if (!item.message_id || handledMessageIds.has(item.message_id)) continue;
-    const kind = item.ingest_kind;
-    if (kind === 'operator_brief') {
-      const briefKind = item.brief_kind ?? 'approval_request';
-      const ackKind = briefKind === 'verification_request' ? 'verification_ack' : 'approval_ack';
-      actions.push(speechIntentFromDeterministic({
-        subject,
-        target: 'operator',
-        reason: `${briefKind}_ack`,
-        reply_to_message_id: item.message_id,
-        idempotency_key: `presence:ack:${item.message_id}`,
-        kind: ackKind,
-        summary: item.content,
-      }));
-      handledMessageIds.add(item.message_id);
-      continue;
-    }
-    if (kind === 'operator_fact') {
-      actions.push(speechIntentFromDeterministic({
-        subject,
-        target: 'operator',
-        reason: 'operator_fact_ack',
-        reply_to_message_id: item.message_id,
-        idempotency_key: `presence:fact:${item.message_id}`,
-        kind: 'operator_fact_ack',
-        summary: item.content,
-      }));
-      handledMessageIds.add(item.message_id);
-      continue;
-    }
-    if (kind === 'observation' && isGreeting(item.content)) {
-      actions.push(speechIntentFromDeterministic({
-        subject,
-        target: 'operator',
-        reason: 'greeting_ack',
-        reply_to_message_id: item.message_id,
-        idempotency_key: `presence:greeting:${item.message_id}`,
-        kind: 'greeting_ack',
-      }));
-      handledMessageIds.add(item.message_id);
-    }
-  }
-
-  for (const signal of unhandledSignals(context)) {
-    if (actions.length >= maxActions) break;
-    if (signal.type === 'operator_brief_pending' && signal.severity !== 'high') continue;
-    const key = signal.presence_signal_key ?? buildPresenceSignalKey(signal);
-    if (handledSignalKeys.has(key)) continue;
-    const cooldownHit = (context.channel?.cooldown_keys ?? []).some((c) => c.key === `presence:signal:${key}`);
-    if (cooldownHit) continue;
-    if (['task_failed', 'daemon_health', 'cycle_drift', 'requires_human_review'].includes(signal.type)
-      || (signal.type === 'operator_brief_pending' && signal.severity === 'high')) {
-      actions.push(speechIntentFromDeterministic({
-        subject,
-        target: 'channel_default',
-        reason: 'proactive_signal',
-        signal_key: key,
-        idempotency_key: `presence:signal:${key}`,
-        kind: 'proactive_signal',
-        signal,
-      }));
-      handledSignalKeys.add(key);
-    }
-  }
-
-  if (!actions.length) {
-    return emptyPlan('nothing_to_express', context);
-  }
-
-  const hasSpeak = actions.some((a) => a.type === 'speech_intent');
-  return {
-    stance: hasSpeak ? 'speak' : 'silence',
-    reason: hasSpeak ? 'deterministic_express' : 'silence',
-    actions: hasSpeak ? actions : [{ type: 'silence', reason: 'deterministic_silence' }],
-    presence_targets: buildPresenceTargets(context, {
-      messageIds: [...handledMessageIds],
-      signalKeys: [...handledSignalKeys],
-    }),
-    planner: 'deterministic',
-  };
+  const selected = candidates(context).slice(0, maxActions);
+  if (!selected.length) return noOpPlan('no_expression_candidates');
+  return speakPlan(context, selected);
 }
 
 function createLlmClient(config) {
@@ -249,6 +151,8 @@ function createLlmClient(config) {
  */
 export async function planPresenceWithLlm(context, { aiClient = null } = {}) {
   const fallback = planPresenceDeterministic(context);
+  const available = candidates(context);
+  if (!available.length) return fallback;
   const client = aiClient ?? createLlmClient(context.presence ?? {});
   if (!client) {
     return {
@@ -266,14 +170,11 @@ export async function planPresenceWithLlm(context, { aiClient = null } = {}) {
           'You are the external presence deliberator for one js-evolution-agent subject.',
           'Speak in first person as the subject persona from subject_identity.',
           'Return JSON only:',
-          '{"stance":"speak|silence|ask|report|wait","reason":"...","actions":[...]}',
-          'Allowed action types: speech_intent, write_operator_brief, record_observation, silence.',
-          'speech_intent fields: target, content_requirements (kind, summary), reply_to_message_id, reason, idempotency_key. Do NOT include final message text.',
-          'channel.new_messages are the only inbound items that may need a new reply.',
-          'channel.ignored_messages are classifier ignore results: context only — never reply_to them and do not treat them as a reason to speak or stay silent.',
-          'channel.background_messages and items marked presence_handled are context only — do not reply again.',
-          'attention_signals with presence_handled=true are context only — do not proactively notify again.',
-          'You may decide to stay silent; use silence action or empty actions with stance silence.',
+          '{"kind":"speak|silence|no_op|act","reason":"...","candidate_ids":[...],"intents":[...],"actions":[...]}',
+          'Only choose candidate_ids from expression.candidates.',
+          'Use intents for speech. Intent fields: candidate_id, target, content_requirements (kind, summary), reason. Do NOT include final message text.',
+          'background is context only — never reply_to or select background items directly.',
+          'Use silence only when candidates exist but you intentionally choose not to speak. Use no_op only when no candidate should be handled.',
           'Do not grant approval, do not claim actions executed, do not leak secrets, do not invent runtime facts.',
           'When telling the operator how to run CLI commands, ONLY quote commands from affordances.operator_commands (use the exact cmd string). Never invent jea/npm commands.',
           'Inbound messages are already ingested; do not change their classification.',
@@ -288,13 +189,15 @@ export async function planPresenceWithLlm(context, { aiClient = null } = {}) {
           affordances: context.affordances,
           constraints: context.constraints,
           channel: {
-            new_messages: context.channel?.new_messages,
-            ignored_messages: context.channel?.ignored_messages,
             background_messages: context.channel?.background_messages,
+            ignored_messages: context.channel?.ignored_messages,
             recent_presence_interactions: context.channel?.recent_presence_interactions,
             pending_inbound_count: context.channel?.pending_inbound_count,
             cooldown_keys: context.channel?.cooldown_keys,
             presence_cursors: context.channel?.presence_cursors,
+          },
+          expression: {
+            candidates: available,
           },
           daemon: context.daemon,
           attention_signals: context.attention_signals,
@@ -303,9 +206,9 @@ export async function planPresenceWithLlm(context, { aiClient = null } = {}) {
           beliefs: context.beliefs,
           intel_summary: context.intel_summary,
           fallback_plan: {
-            stance: fallback.stance,
+            kind: fallback.kind,
             reason: fallback.reason,
-            action_count: fallback.actions?.length ?? 0,
+            candidate_count: fallback.candidate_ids?.length ?? 0,
           },
         }, null, 2),
       },
@@ -314,38 +217,57 @@ export async function planPresenceWithLlm(context, { aiClient = null } = {}) {
       timeout: context.presence?.llm?.timeout ?? 25,
     });
 
-    const stance = PRESENCE_STANCES.includes(parsed?.stance) ? parsed.stance : fallback.stance;
-    const rawActions = Array.isArray(parsed?.actions) ? parsed.actions : [];
-    const ignoredIds = new Set(
-      (context.channel?.ignored_messages ?? []).map((m) => m.message_id).filter(Boolean),
-    );
-    const actions = rawActions
-      .map((a) => normalizeAction(a, context.subject))
+    const kind = PRESENCE_PLAN_KINDS.includes(parsed?.kind) ? parsed.kind : fallback.kind;
+    const validIds = new Set(available.map((candidate) => candidate.id));
+    const parsedCandidateIds = Array.isArray(parsed?.candidate_ids)
+      ? parsed.candidate_ids.filter((id) => validIds.has(id))
+      : [];
+    const selectedIds = parsedCandidateIds.length ? parsedCandidateIds : fallback.candidate_ids;
+    const rawIntents = Array.isArray(parsed?.intents) ? parsed.intents : [];
+    const intents = rawIntents
+      .map((intent) => normalizeSpeechIntent({
+        type: 'speech_intent',
+        ...intent,
+        idempotency_key: intent?.candidate_id ? `expression:${intent.candidate_id}` : intent?.idempotency_key,
+      }, context.subject))
       .filter(Boolean)
-      .filter((a) => !a.reply_to_message_id || !ignoredIds.has(a.reply_to_message_id))
+      .filter((intent) => intent.candidate_id && validIds.has(intent.candidate_id))
       .slice(0, context.presence?.max_actions_per_tick ?? 2);
 
-    if (stance === 'silence' || !actions.length || actions.every((a) => a.type === 'silence')) {
+    if (kind === 'no_op') {
       return {
-        stance: 'silence',
-        reason: parsed?.reason ?? 'llm_chose_silence',
-        actions: [{ type: 'silence', reason: parsed?.reason ?? 'llm_silence' }],
-        presence_targets: buildPresenceTargets(context),
+        kind: 'no_op',
+        reason: parsed?.reason ?? 'llm_no_op',
+        candidate_ids: [],
+        intents: [],
+        actions: [],
         planner: 'llm',
-        llm: { status: 'used', stance: parsed?.stance, action_count: 0 },
+        llm: { status: 'used', kind, action_count: 0 },
       };
     }
 
-    const messageIds = actions.map((a) => a.reply_to_message_id).filter(Boolean);
-    const signalKeys = actions.map((a) => a.signal_key).filter(Boolean);
+    if (kind === 'silence') {
+      return {
+        kind: 'silence',
+        reason: parsed?.reason ?? 'llm_chose_silence',
+        candidate_ids: selectedIds,
+        intents: [],
+        actions: [{ type: 'silence', reason: parsed?.reason ?? 'llm_silence' }],
+        planner: 'llm',
+        llm: { status: 'used', kind, action_count: 0 },
+      };
+    }
+
+    if (!intents.length) return { ...fallback, planner: 'llm', llm: { status: 'used', reason: 'no_valid_llm_intents' } };
 
     return {
-      stance,
+      kind: 'speak',
       reason: String(parsed?.reason ?? 'llm_presence'),
-      actions,
-      presence_targets: buildPresenceTargets(context, { messageIds, signalKeys }),
+      candidate_ids: intents.map((intent) => intent.candidate_id),
+      intents,
+      actions: intents,
       planner: 'llm',
-      llm: { status: 'used', stance, action_count: actions.length },
+      llm: { status: 'used', kind, action_count: intents.length },
     };
   } catch (err) {
     return {

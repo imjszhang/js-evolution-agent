@@ -283,8 +283,7 @@ const DEFAULT_REACTOR_STATE = Object.freeze({
 });
 
 const DEFAULT_PRESENCE_STATE = Object.freeze({
-  handled_messages: {},
-  handled_signals: {},
+  handled_candidates: {},
   last_presence_tick_at: null,
   last_spoken_at: null,
   last_plan: null,
@@ -304,8 +303,7 @@ export function readPresenceState(root, subject) {
   return {
     ...DEFAULT_PRESENCE_STATE,
     ...raw,
-    handled_messages: { ...(raw.handled_messages ?? {}) },
-    handled_signals: { ...(raw.handled_signals ?? {}) },
+    handled_candidates: { ...(raw.handled_candidates ?? {}) },
     reactor: {
       ...DEFAULT_REACTOR_STATE,
       ...(raw.reactor ?? {}),
@@ -385,69 +383,42 @@ export function buildPresenceSignalKey(signal) {
   return parts.join(':');
 }
 
-export function isPresenceMessageHandled(root, subject, messageId) {
-  if (!messageId) return false;
-  return Boolean(readPresenceState(root, subject).handled_messages?.[messageId]);
-}
-
-export function isPresenceSignalHandled(root, subject, signalKey) {
-  if (!signalKey) return false;
-  return Boolean(readPresenceState(root, subject).handled_signals?.[signalKey]);
+export function isExpressionCandidateHandled(root, subject, candidateId) {
+  if (!candidateId) return false;
+  return Boolean(readPresenceState(root, subject).handled_candidates?.[candidateId]);
 }
 
 export function writePresenceState(root, subject, patch = {}) {
   const current = readPresenceState(root, subject);
-  const mergedMessages = patch.handled_messages
-    ? { ...current.handled_messages, ...patch.handled_messages }
-    : current.handled_messages;
-  const mergedSignals = patch.handled_signals
-    ? { ...current.handled_signals, ...patch.handled_signals }
-    : current.handled_signals;
-  const { handled_messages: _hm, handled_signals: _hs, ...restPatch } = patch;
+  const mergedCandidates = patch.handled_candidates
+    ? { ...current.handled_candidates, ...patch.handled_candidates }
+    : current.handled_candidates;
+  const { handled_candidates: _hc, ...restPatch } = patch;
   const next = {
     ...current,
     ...restPatch,
     subject,
-    handled_messages: trimPresenceHandledMap(mergedMessages),
-    handled_signals: trimPresenceHandledMap(mergedSignals),
+    handled_candidates: trimPresenceHandledMap(mergedCandidates),
     updated_at: nowIso(),
   };
   writeJsonFile(channelPresenceStatePath(root, subject), next);
   return next;
 }
 
-export function markPresenceMessageHandled(root, subject, messageId, meta = {}) {
-  if (!messageId) return readPresenceState(root, subject);
+export function markExpressionCandidateHandled(root, subject, candidateId, meta = {}) {
+  if (!candidateId) return readPresenceState(root, subject);
   return writePresenceState(root, subject, {
-    handled_messages: {
-      [messageId]: { handled_at: nowIso(), ...meta },
+    handled_candidates: {
+      [candidateId]: { handled_at: nowIso(), ...meta },
     },
   });
 }
 
-export function markPresenceSignalHandled(root, subject, signalKey, meta = {}) {
-  if (!signalKey) return readPresenceState(root, subject);
-  return writePresenceState(root, subject, {
-    handled_signals: {
-      [signalKey]: { handled_at: nowIso(), ...meta },
-    },
-  });
-}
-
-export function markPresenceMessagesHandled(root, subject, messageIds, meta = {}) {
-  if (!messageIds?.length) return readPresenceState(root, subject);
+export function markExpressionCandidatesHandled(root, subject, candidateIds, meta = {}) {
+  if (!candidateIds?.length) return readPresenceState(root, subject);
   const patch = {};
-  for (const id of messageIds) {
+  for (const id of candidateIds) {
     if (id) patch[id] = { handled_at: nowIso(), ...meta };
   }
-  return writePresenceState(root, subject, { handled_messages: patch });
-}
-
-export function markPresenceSignalsHandled(root, subject, signalKeys, meta = {}) {
-  if (!signalKeys?.length) return readPresenceState(root, subject);
-  const patch = {};
-  for (const key of signalKeys) {
-    if (key) patch[key] = { handled_at: nowIso(), ...meta };
-  }
-  return writePresenceState(root, subject, { handled_signals: patch });
+  return writePresenceState(root, subject, { handled_candidates: patch });
 }

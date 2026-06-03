@@ -25,11 +25,7 @@ import {
 import { runSpeechGenerationForEvent } from './speech-generation.mjs';
 
 const PRESENCE_REACTOR_EVENT_TYPES = Object.freeze([
-  'timer_tick',
-  'inbound_classified',
-  'presence_wake',
-  'presence_run_requested',
-  'daemon_attention',
+  'expression_recompute_requested',
 ]);
 
 /**
@@ -70,7 +66,7 @@ export async function runPresenceReactor(root, subject, input = {}) {
     }
   }
 
-  supersedePendingChannelEvents(root, subject, { type: 'timer_tick', keepLatest: true });
+  supersedePendingChannelEvents(root, subject, { type: 'expression_recompute_requested', keepLatest: true });
 
   const runId = input.run_id ?? `presence-run-${randomUUID().slice(0, 8)}`;
   const deadlineAt = new Date(Date.now() + presenceConfig.timeout_ms).toISOString();
@@ -137,7 +133,7 @@ export async function runPresenceReactor(root, subject, input = {}) {
         status: 'ok',
         run_id: runId,
         planner: plan.planner,
-        stance: plan.stance,
+        plan_kind: plan.kind,
         speech_queued: execution.speech_queued,
       });
     }
@@ -147,7 +143,7 @@ export async function runPresenceReactor(root, subject, input = {}) {
       status: 'ok',
       tick_id: tickId,
       run_id: runId,
-      stance: plan.stance,
+      plan_kind: plan.kind,
       planner: plan.planner,
       applied: execution.applied,
       speech_queued: execution.speech_queued,
@@ -168,7 +164,7 @@ export async function runPresenceReactor(root, subject, input = {}) {
       fallback_applied: decisionTimedOut && plan.decision_fallback ? true : undefined,
       context_summary: {
         pending_inbound: context.channel.pending_unclassified_count,
-        new_messages: context.channel.new_messages.length,
+        candidates: context.expression?.candidates?.length ?? 0,
       },
     };
   } catch (err) {

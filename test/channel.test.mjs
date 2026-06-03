@@ -10,7 +10,6 @@ import {
   listOutboxPending,
   cooldownActive,
   readPresenceState,
-  isPresenceMessageHandled,
 } from '../src/channel/state.mjs';
 import { createIntelligenceStore } from '../src/intelligence/store.mjs';
 import { isPresenceInteractionRecord } from '../src/channel/presence-memory.mjs';
@@ -26,13 +25,14 @@ import { buildChannelProjection } from '../src/channel/projection.mjs';
 import { runChannelTick } from '../src/channel/dispatch.mjs';
 import { runChannelPresenceTask } from '../src/channel/presence.mjs';
 import {
-  requestPresenceReactor,
+  requestExpressionRecompute,
   PRESENCE_REACTOR_IDEMPOTENCY,
 } from '../src/channel/wake.mjs';
 import { cancelDeprecatedChannelTasks } from '../src/channel/queue-cleanup.mjs';
 import { appendChannelEvent, listPendingChannelEvents, summarizeChannelEventQueue } from '../src/channel/event-queue.mjs';
 import { runChannelSpeechGenerationTask, runPresenceReactor } from '../src/channel/presence-reactor.mjs';
 import { buildPresenceContext } from '../src/channel/presence-context.mjs';
+import { buildExpressionCandidates } from '../src/channel/expression-candidates.mjs';
 import {
   planPresence,
   planPresenceDeterministic,
@@ -297,9 +297,10 @@ describe('channel domain', () => {
         presence_signal_key: 'task_failed:task-1',
         presence_handled: false,
       }];
+      ctx.expression.candidates = buildExpressionCandidates(ctx);
       const plan = planPresenceDeterministic(ctx);
-      expect(plan.stance).toBe('speak');
-      expect(plan.actions.some((a) => a.type === 'speech_intent' && a.reason === 'proactive_signal')).toBe(true);
+      expect(plan.kind).toBe('speak');
+      expect(plan.intents.some((a) => a.type === 'speech_intent' && a.reason === 'proactive_signal')).toBe(true);
     });
   });
 
@@ -378,7 +379,7 @@ describe('channel domain', () => {
       });
       const tick = runChannelTick(root, 'alpha');
       expect(tick.enqueued.some((item) => item.reactor_created || item.reactor_task?.type === 'channel_presence')).toBe(true);
-      expect(listPendingChannelEvents(root, 'alpha', { type: 'timer_tick' }).length).toBeGreaterThan(0);
+      expect(listPendingChannelEvents(root, 'alpha', { type: 'expression_recompute_requested' }).length).toBeGreaterThan(0);
       const queue = readChannelTaskQueue(root, 'alpha');
       expect(queue.tasks.filter((t) => t.type === 'channel_presence').length).toBeLessThanOrEqual(1);
       expect(queue.tasks.some((t) => t.idempotency_key === PRESENCE_REACTOR_IDEMPOTENCY('alpha'))).toBe(true);
@@ -386,8 +387,8 @@ describe('channel domain', () => {
 
     it('multiple wakes merge into one reactor task', () => {
       const root = makeRoot({ presence: { enabled: true } });
-      requestPresenceReactor(root, 'alpha', { reason: 'a', event: { type: 'presence_wake', event_ref: 'm1' } });
-      requestPresenceReactor(root, 'alpha', { reason: 'b', event: { type: 'presence_wake', event_ref: 'm2' } });
+      requestExpressionRecompute(root, 'alpha', { reason: 'a', payload_summary: { event_ref: 'm1' } });
+      requestExpressionRecompute(root, 'alpha', { reason: 'b', payload_summary: { event_ref: 'm2' } });
       const queue = readChannelTaskQueue(root, 'alpha');
       const presenceTasks = queue.tasks.filter((t) => t.type === 'channel_presence');
       expect(presenceTasks.length).toBe(1);
@@ -470,10 +471,11 @@ describe('channel domain', () => {
       });
       await runChannelClassifierTask(root, 'alpha');
       const result = await runChannelPresenceTask(root, 'alpha');
-      expect(result.plan.stance).toBe('speak');
+      expect(result.plan.kind).toBe('speak');
       expect(result.execution.applied).toBeGreaterThan(0);
       expect(listOutboxPending(root, 'alpha', { limit: 5 }).length).toBeGreaterThan(0);
-      expect(isPresenceMessageHandled(root, 'alpha', 'om_presence_approval')).toBe(true);
+      expect(Object.keys(readPresenceState(root, 'alpha').handled_candidates ?? {})
+        .some((id) => id.includes('om_presence_approval'))).toBe(true);
       const intel = readPresenceIntel(root);
       expect(intel.some((r) => r.source === 'channel_presence' && r.interaction_kind === 'send_message')).toBe(true);
     });
@@ -495,12 +497,12 @@ describe('channel domain', () => {
       });
       await runChannelClassifierTask(root, 'alpha');
       const first = await runChannelPresenceTask(root, 'alpha');
-      expect(first.plan.stance).toBe('speak');
+      expect(first.plan.kind).toBe('speak');
       const outboxAfterFirst = listOutboxPending(root, 'alpha', { limit: 10 }).length;
       expect(outboxAfterFirst).toBeGreaterThan(0);
       const second = await runChannelPresenceTask(root, 'alpha');
-      expect(second.plan.stance).toBe('silence');
-      expect(second.plan.reason).toBe('nothing_to_express');
+      expect(second.plan.kind).toBe('no_op');
+      expect(second.plan.reason).toBe('no_expression_candidates');
       expect(listOutboxPending(root, 'alpha', { limit: 10 }).length).toBe(outboxAfterFirst);
     });
 
@@ -511,8 +513,8 @@ describe('channel domain', () => {
       const ctx = buildPresenceContext(root, 'alpha');
       const plan = planPresenceDeterministic(ctx);
       const execution = await executePresenceDecisionPlan(root, 'alpha', plan, { context: ctx });
-      expect(plan.stance).toBe('silence');
-      expect(execution.skipped).toBeGreaterThan(0);
+      expect(plan.kind).toBe('no_op');
+      expect(execution.skipped).toBe(0);
     });
 
     it('recent_presence_interactions come from unified intelligence', async () => {
@@ -533,7 +535,8 @@ describe('channel domain', () => {
       await runChannelPresenceTask(root, 'alpha');
       const ctx = buildPresenceContext(root, 'alpha');
       expect(ctx.channel.recent_presence_interactions.length).toBeGreaterThan(0);
-      expect(readPresenceState(root, 'alpha').handled_messages.om_intel_memory).toBeDefined();
+      expect(Object.keys(readPresenceState(root, 'alpha').handled_candidates ?? {})
+        .some((id) => id.includes('om_intel_memory'))).toBe(true);
     });
 
     it('llm planner can reply to plain observations', async () => {
@@ -553,14 +556,25 @@ describe('channel domain', () => {
         presence_handled: false,
       }];
       ctx.channel.background_messages = [];
+      ctx.expression.candidates = [{
+        id: 'reply:custom:om_llm_obs',
+        kind: 'reply.custom',
+        source: 'observation',
+        priority: 'low',
+        target: 'channel_default',
+        reply_to_message_id: 'om_llm_obs',
+        recommended_intent: 'custom',
+        summary: '说说你自己',
+      }];
       ctx.presence = resolvePresenceConfig(root, 'alpha');
       const plan = await planPresenceWithLlm(ctx, {
         aiClient: {
           chatMessages: async () => JSON.stringify({
-            stance: 'speak',
+            kind: 'speak',
             reason: 'intro',
-            actions: [{
-              type: 'speech_intent',
+            candidate_ids: ['reply:custom:om_llm_obs'],
+            intents: [{
+              candidate_id: 'reply:custom:om_llm_obs',
               target: 'channel_default',
               content_requirements: { kind: 'custom', text_hint: '我是小测，alpha 的外部接口。' },
               reason: 'casual_intro',
@@ -569,8 +583,8 @@ describe('channel domain', () => {
           }),
         },
       });
-      expect(plan.stance).toBe('speak');
-      expect(plan.actions[0].content_requirements?.text_hint).toContain('小测');
+      expect(plan.kind).toBe('speak');
+      expect(plan.intents[0].content_requirements?.text_hint).toContain('小测');
     });
 
     it('skips expression when presence.enabled is false', async () => {
@@ -650,12 +664,13 @@ describe('channel domain', () => {
           rationale: 'test',
         }]),
       });
-      appendChannelEvent(root, 'alpha', { type: 'inbound_classified', reason: 'test' });
+      appendChannelEvent(root, 'alpha', { type: 'expression_recompute_requested', reason: 'test' });
       const result = await runPresenceReactor(root, 'alpha', { force: true });
-      expect(result.plan.stance).toBe('silence');
-      expect(result.plan.reason).toBe('nothing_to_express');
+      expect(result.plan.kind).toBe('no_op');
+      expect(result.plan.reason).toBe('no_expression_candidates');
       expect(summarizeChannelEventQueue(root, 'alpha').pending_speech_generation).toBe(0);
-      expect(isPresenceMessageHandled(root, 'alpha', 'om_ignore_silence')).toBe(false);
+      expect(Object.keys(readPresenceState(root, 'alpha').handled_candidates ?? {})
+        .some((id) => id.includes('om_ignore_silence'))).toBe(false);
       const runtime = runtimeForSubject(root, 'alpha');
       const store = createIntelligenceStore({
         baseDir: join(runtime.runtimeRoot, 'data', 'intelligence'),
@@ -687,7 +702,7 @@ describe('channel domain', () => {
       });
       const queue = readChannelTaskQueue(root, 'alpha');
       expect(queue.tasks.some((t) => t.type === 'channel_presence')).toBe(true);
-      expect(listPendingChannelEvents(root, 'alpha', { type: 'inbound_classified' }).length).toBeGreaterThan(0);
+      expect(listPendingChannelEvents(root, 'alpha', { type: 'expression_recompute_requested' }).length).toBeGreaterThan(0);
     });
 
     it('ignore does not block proactive signal reply', async () => {
@@ -710,10 +725,11 @@ describe('channel domain', () => {
         presence_signal_key: 'task_failed:task-1',
         presence_handled: false,
       }];
+      ctx.expression.candidates = buildExpressionCandidates(ctx);
       const plan = planPresenceDeterministic(ctx);
-      expect(plan.stance).toBe('speak');
-      expect(plan.actions.some((a) => a.reason === 'proactive_signal')).toBe(true);
-      expect(plan.presence_targets.messages).not.toContain('om_ignore_bg');
+      expect(plan.kind).toBe('speak');
+      expect(plan.intents.some((a) => a.reason === 'proactive_signal')).toBe(true);
+      expect(plan.candidate_ids.some((id) => id.includes('om_ignore_bg'))).toBe(false);
     });
 
     it('fast ack targets brief only when ignore and brief share a batch', async () => {
@@ -756,8 +772,8 @@ describe('channel domain', () => {
       expect(ctx.channel.new_messages.map((m) => m.message_id)).toContain('om_brief_mix');
       const plan = await planPresence(ctx);
       expect(plan.planner).toBe('deterministic_fast_ack');
-      expect(plan.presence_targets.messages).toEqual(['om_brief_mix']);
-      expect(plan.presence_targets.messages).not.toContain('om_ignore_mix');
+      expect(plan.candidate_ids).toEqual(['reply:approval_request:om_brief_mix']);
+      expect(plan.candidate_ids.some((id) => id.includes('om_ignore_mix'))).toBe(false);
     });
 
     it('strips LLM actions that reply_to ignored message ids', async () => {
@@ -780,12 +796,14 @@ describe('channel domain', () => {
         presence_signal_key: 'task_failed:t1',
         presence_handled: false,
       }];
+      ctx.expression.candidates = buildExpressionCandidates(ctx);
       const client = {
         chatMessages: () => Promise.resolve(JSON.stringify({
-          stance: 'speak',
+          kind: 'speak',
           reason: 'bad',
-          actions: [{
-            type: 'speech_intent',
+          candidate_ids: ['reply:ignore:om_llm_ignore'],
+          intents: [{
+            candidate_id: 'reply:ignore:om_llm_ignore',
             target: 'operator',
             content_requirements: { kind: 'custom', text_hint: 'reply to ignore' },
             reply_to_message_id: 'om_llm_ignore',
@@ -794,7 +812,7 @@ describe('channel domain', () => {
         })),
       };
       const plan = await planPresenceWithLlm(ctx, { aiClient: client });
-      expect(plan.actions.every((a) => a.reply_to_message_id !== 'om_llm_ignore')).toBe(true);
+      expect(plan.candidate_ids.every((id) => !id.includes('om_llm_ignore'))).toBe(true);
     });
   });
 
@@ -820,10 +838,10 @@ describe('channel domain', () => {
         content: '同意发布候选',
       });
       await runChannelClassifierTask(root, 'alpha');
-      expect(listPendingChannelEvents(root, 'alpha', { type: 'inbound_classified' })).toHaveLength(1);
+      expect(listPendingChannelEvents(root, 'alpha', { type: 'expression_recompute_requested' })).toHaveLength(1);
       const result = await runPresenceReactor(root, 'alpha');
       expect(result.claimed_events).toBe(1);
-      expect(result.plan.stance).toBe('speak');
+      expect(result.plan.kind).toBe('speak');
     });
 
     it('presence reactor does not claim speech generation events', async () => {
@@ -838,7 +856,7 @@ describe('channel domain', () => {
         },
       });
       appendChannelEvent(root, 'alpha', {
-        type: 'timer_tick',
+        type: 'expression_recompute_requested',
         payload_summary: { tick_id: 'boundary-tick' },
       });
 
@@ -881,8 +899,8 @@ describe('channel domain', () => {
       const plan = await planPresence(ctx, { aiClient: slowClient });
       expect(llmCalled).toBe(false);
       expect(plan.planner).toBe('deterministic_fast_ack');
-      expect(plan.stance).toBe('speak');
-      expect(plan.actions.some((a) => a.content_requirements?.kind === 'approval_ack')).toBe(true);
+      expect(plan.kind).toBe('speak');
+      expect(plan.intents.some((a) => a.content_requirements?.kind === 'approval_ack')).toBe(true);
     });
 
     it('planPresenceOperatorBriefFastAck returns null for ignore-only inbound', async () => {
@@ -920,7 +938,7 @@ describe('channel domain', () => {
       });
       await runChannelClassifierTask(root, 'alpha');
       appendChannelEvent(root, 'alpha', {
-        type: 'inbound_classified',
+        type: 'expression_recompute_requested',
         reason: 'test',
         event_ref: 'om_timeout_fallback_ack',
       });
@@ -943,7 +961,7 @@ describe('channel domain', () => {
       expect(result.timeout).toBe(true);
       expect(result.fallback_applied).toBe(true);
       expect(result.plan.planner).toBe('deterministic_fallback');
-      expect(result.plan.stance).toBe('speak');
+      expect(result.plan.kind).toBe('speak');
       expect(summarizeChannelEventQueue(root, 'alpha').pending_speech_generation).toBeGreaterThan(0);
       await new Promise((resolve) => setTimeout(resolve, 250));
       expect(listOutboxPending(root, 'alpha', { limit: 5 }).length).toBe(0);
@@ -969,7 +987,7 @@ describe('channel domain', () => {
       });
       await runChannelClassifierTask(root, 'alpha');
       appendChannelEvent(root, 'alpha', {
-        type: 'inbound_classified',
+        type: 'expression_recompute_requested',
         reason: 'test',
         event_ref: 'om_timeout_no_apply',
       });
@@ -989,7 +1007,7 @@ describe('channel domain', () => {
       };
 
       const result = await runPresenceReactor(root, 'alpha', { aiClient: slowClient, force: true });
-      expect(result.timeout).toBe(true);
+      expect(result.timeout).toBeUndefined();
       expect(summarizeChannelEventQueue(root, 'alpha').pending_speech_generation).toBe(0);
       await new Promise((resolve) => setTimeout(resolve, 250));
       expect(listOutboxPending(root, 'alpha', { limit: 5 })).toHaveLength(0);

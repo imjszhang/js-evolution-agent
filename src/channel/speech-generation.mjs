@@ -9,8 +9,7 @@ import {
   cooldownActive,
   setCooldown,
   writeOutboxMessage,
-  markPresenceMessageHandled,
-  markPresenceSignalHandled,
+  markExpressionCandidateHandled,
   clearPendingSpeechGeneration,
   trackPendingSpeechGeneration,
 } from './state.mjs';
@@ -169,6 +168,7 @@ export async function generateSpeechAndWriteOutbox(root, subject, intent, {
     metadata: {
       presence: true,
       speech_intent_id: intent.intent_id,
+      candidate_id: intent.candidate_id ?? null,
       planner: effectivePlanner,
       dry_run: dryRun,
       signal_key: intent.signal_key ?? null,
@@ -190,22 +190,16 @@ export async function generateSpeechAndWriteOutbox(root, subject, intent, {
     content: `Subject sent channel message (${intent.reason}). Text: ${text.slice(0, 400)}`,
     confidence: 'medium',
     evidence_refs: [
-      intent.reply_to_message_id ? `channel:message:${intent.reply_to_message_id}` : null,
-      intent.signal_key ? `channel:signal:${intent.signal_key}` : null,
+      intent.candidate_id ? `expression:${intent.candidate_id}` : null,
       written.file ? `outbox:${written.file}` : null,
     ].filter(Boolean),
   });
 
-  if (intent.reply_to_message_id) {
-    markPresenceMessageHandled(root, subject, intent.reply_to_message_id, {
+  if (intent.candidate_id) {
+    markExpressionCandidateHandled(root, subject, intent.candidate_id, {
       outcome: 'sent',
       reason: intent.reason,
-    });
-  }
-  if (intent.signal_key) {
-    markPresenceSignalHandled(root, subject, intent.signal_key, {
-      outcome: 'sent',
-      reason: intent.reason,
+      intent_id: intent.intent_id,
     });
   }
 
@@ -215,6 +209,7 @@ export async function generateSpeechAndWriteOutbox(root, subject, intent, {
     type: 'channel_speech_generated',
     status: 'ok',
     intent_id: intent.intent_id,
+    candidate_id: intent.candidate_id ?? null,
     idempotency_key: idempotencyKey,
     target: routed.target,
     reason: intent.reason,
@@ -236,6 +231,7 @@ export async function runSpeechGenerationForEvent(root, subject, event, options 
   const payload = event.payload ?? event.payload_summary ?? {};
   const intent = {
     intent_id: payload.intent_id ?? event.id,
+    candidate_id: payload.candidate_id ?? null,
     target: payload.target ?? 'channel_default',
     reason: payload.reason ?? 'presence_reply',
     reply_to_message_id: payload.reply_to_message_id ?? null,
@@ -247,6 +243,7 @@ export async function runSpeechGenerationForEvent(root, subject, event, options 
 
   trackPendingSpeechGeneration(root, subject, {
     intent_id: intent.intent_id,
+    candidate_id: intent.candidate_id,
     event_id: event.id,
     requested_at: event.created_at,
   });

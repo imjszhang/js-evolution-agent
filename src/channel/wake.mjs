@@ -66,30 +66,24 @@ export function enqueueClassifierIfPendingInbound(root, subject) {
   });
 }
 
-/**
- * Append channel event and ensure a single active presence reactor task.
- */
-export function requestPresenceReactor(root, subject, { reason = 'wake', event = null } = {}) {
-  const appended = event
-    ? appendChannelEvent(root, subject, event)
-    : appendChannelEvent(root, subject, {
-      type: 'presence_wake',
-      reason,
-      payload_summary: { reason },
-    });
+export function requestExpressionRecompute(root, subject, { reason = 'wake', payload_summary = null } = {}) {
+  const appended = appendChannelEvent(root, subject, {
+    type: 'expression_recompute_requested',
+    reason,
+    payload_summary: payload_summary ?? { reason },
+  });
 
   recordChannelEvent(root, subject, {
-    type: 'channel_wake_requested',
+    type: 'channel_expression_recompute_requested',
     status: 'ok',
     reason,
     event_id: appended.id,
-    event_type: appended.type,
   });
 
   const reactorTask = enqueueIfNeeded(root, subject, 'channel_presence', {
     priority: CHANNEL_TASK_DEFAULT_PRIORITY.channel_presence,
     idempotencyKey: PRESENCE_REACTOR_IDEMPOTENCY(subject),
-    reason: reason ?? 'presence_reactor',
+    reason: reason ?? 'expression_recompute',
   });
 
   return {

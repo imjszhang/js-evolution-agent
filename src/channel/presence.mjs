@@ -1,7 +1,7 @@
-import { appendChannelEvent } from './event-queue.mjs';
 import { listPendingChannelEvents } from './event-queue.mjs';
 import { runPresenceReactor, runChannelSpeechGenerationTask } from './presence-reactor.mjs';
 import { resolvePresenceConfig } from './presence-config.mjs';
+import { requestExpressionRecompute } from './wake.mjs';
 
 /**
  * Subject presence loop entry (reactor task handler).
@@ -14,8 +14,7 @@ export async function runChannelPresenceTask(root, subject, input = {}) {
 
   const pending = listPendingChannelEvents(root, subject, { limit: 1 });
   if (!pending.length) {
-    appendChannelEvent(root, subject, {
-      type: 'presence_run_requested',
+    requestExpressionRecompute(root, subject, {
       reason: input.reason ?? 'direct_run',
       payload_summary: { tick_id: input.tick_id ?? null },
     });

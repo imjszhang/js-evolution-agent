@@ -28,6 +28,7 @@ export function normalizeSpeechIntent(raw, subject) {
   return {
     type: 'speech_intent',
     intent_id: intentId,
+    candidate_id: raw.candidate_id ?? null,
     target: raw.target ?? 'channel_default',
     reason: String(raw.reason ?? 'presence_reply'),
     reply_to_message_id: raw.reply_to_message_id ?? null,
@@ -45,6 +46,7 @@ export function normalizeSpeechIntent(raw, subject) {
 
 export function speechIntentFromDeterministic({
   subject,
+  candidate_id,
   target,
   reason,
   reply_to_message_id,
@@ -56,6 +58,7 @@ export function speechIntentFromDeterministic({
 }) {
   return normalizeSpeechIntent({
     type: 'speech_intent',
+    candidate_id,
     target,
     reason,
     reply_to_message_id,
@@ -75,6 +78,7 @@ export function speechIntentFromDeterministic({
 export function buildSpeechGenerationEventPayload(intent, { contextSummary = null } = {}) {
   return {
     intent_id: intent.intent_id,
+    candidate_id: intent.candidate_id ?? null,
     target: intent.target,
     reason: intent.reason,
     reply_to_message_id: intent.reply_to_message_id,
