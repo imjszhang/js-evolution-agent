@@ -13,6 +13,7 @@ import {
 } from './state.mjs';
 import { nowIso } from './types.mjs';
 import { PRESENCE_ACTION_TYPES } from './presence-planner.mjs';
+import { isPresenceReplyEligible } from './presence-context.mjs';
 import {
   recordPresenceInteraction,
   shouldRecordSilenceObservation,
@@ -81,7 +82,7 @@ function collectCursorTargets(plan, context) {
 
   if (plan?.stance === 'silence') {
     for (const item of context?.channel?.new_messages ?? []) {
-      if (item.message_id) messages.add(item.message_id);
+      if (item.message_id && isPresenceReplyEligible(item)) messages.add(item.message_id);
     }
     for (const signal of context?.attention_signals ?? []) {
       if (!signal.presence_handled) {

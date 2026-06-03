@@ -1,4 +1,5 @@
 import { nowIso } from './types.mjs';
+import { isPresenceReplyEligible } from './presence-context.mjs';
 
 export function isPresenceInteractionRecord(record) {
   if (!record || typeof record !== 'object') return false;
@@ -27,7 +28,10 @@ export function readRecentPresenceInteractions(store, { limit = 12, days = 14 } 
 export function shouldRecordSilenceObservation(context, plan) {
   if (plan?.reason === 'nothing_to_express') return false;
   const messages = plan?.presence_targets?.messages
-    ?? (context?.channel?.new_messages ?? []).map((m) => m.message_id).filter(Boolean);
+    ?? (context?.channel?.new_messages ?? [])
+      .filter(isPresenceReplyEligible)
+      .map((m) => m.message_id)
+      .filter(Boolean);
   const signals = plan?.presence_targets?.signals ?? [];
   return messages.length > 0 || signals.length > 0;
 }

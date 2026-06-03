@@ -107,6 +107,7 @@ async function renderLlmSpeech(root, subject, intent, context, { aiClient = null
         affordances: context?.affordances,
         channel: {
           new_messages: context?.channel?.new_messages,
+          ignored_messages: context?.channel?.ignored_messages,
           background_messages: context?.channel?.background_messages,
           recent_presence_interactions: context?.channel?.recent_presence_interactions,
         },

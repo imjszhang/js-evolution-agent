@@ -46,18 +46,33 @@ function summarizeRecentIngested(root, subject, { limit = 8 } = {}) {
   return items;
 }
 
+/** Classifier ignore is visible to presence but must not drive reply / silence cursors. */
+export function isPresenceReplyEligible(item) {
+  return item?.ingest_kind != null && item.ingest_kind !== 'ignore';
+}
+
+function annotatePresenceEligibility(item, extra = {}) {
+  const presence_eligible = isPresenceReplyEligible(item);
+  return { ...item, presence_eligible, ...extra };
+}
+
 function partitionIngestedByHandled(root, subject, ingested) {
   const new_messages = [];
   const background_messages = [];
+  const ignored_messages = [];
   for (const item of ingested) {
+    if (item.ingest_kind === 'ignore') {
+      ignored_messages.push(annotatePresenceEligibility(item, { presence_handled: false }));
+      continue;
+    }
     const id = item.message_id;
     if (id && isPresenceMessageHandled(root, subject, id)) {
-      background_messages.push({ ...item, presence_handled: true });
+      background_messages.push(annotatePresenceEligibility(item, { presence_handled: true }));
     } else {
-      new_messages.push({ ...item, presence_handled: false });
+      new_messages.push(annotatePresenceEligibility(item, { presence_handled: false }));
     }
   }
-  return { new_messages, background_messages };
+  return { new_messages, background_messages, ignored_messages };
 }
 
 function annotateAttentionSignals(root, subject, signals) {
@@ -111,7 +126,7 @@ export function buildPresenceContext(root, subject, {
   const identity = resolveSubjectReplyIdentity(root, subject);
   const presenceState = readPresenceState(root, subject);
   const recentIngested = summarizeRecentIngested(root, subject, { limit: limits.ingested ?? 8 });
-  const { new_messages, background_messages } = partitionIngestedByHandled(root, subject, recentIngested);
+  const { new_messages, background_messages, ignored_messages } = partitionIngestedByHandled(root, subject, recentIngested);
   const unclassified = summarizeUnclassifiedInbound(root, subject, { previewLimit: 0 });
   const attentionSignals = annotateAttentionSignals(root, subject, rawSignals.slice(0, limits.signals ?? 12));
 
@@ -163,6 +178,7 @@ export function buildPresenceContext(root, subject, {
       recent_ingested: recentIngested,
       new_messages,
       background_messages,
+      ignored_messages,
       recent_presence_interactions: readRecentPresenceInteractions(store, {
         limit: limits.presence_interactions ?? 12,
       }),
@@ -203,6 +219,7 @@ export function buildPresenceContext(root, subject, {
       cannot_modify_decision_queue: true,
       respect_cooldown: true,
       background_messages_are_context_only: true,
+      ignored_messages_are_context_only: true,
       handled_messages_and_signals_are_context_only: true,
     },
   };

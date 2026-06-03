@@ -54,6 +54,12 @@ let tempDir = null;
 function makeRoot({
   channelTarget = 'oc_test',
   presence = { enabled: true, planner: 'deterministic' },
+  classifier = {
+    enabled: true,
+    mode: 'deterministic',
+    interval_ms: 30_000,
+    batch_size: 5,
+  },
   policyText = null,
 } = {}) {
   tempDir = mkdtempSync(join(tmpdir(), 'jea-channel-'));
@@ -66,12 +72,7 @@ function makeRoot({
   const channels = {
     feishu: { default_chat_id: channelTarget, mock: true },
     presence,
-    classifier: {
-      enabled: true,
-      mode: 'deterministic',
-      interval_ms: 30_000,
-      batch_size: 5,
-    },
+    classifier,
   };
   writeJsonFile(join(tempDir, 'policies', 'subjects.json'), {
     default_subject: 'alpha',
@@ -358,6 +359,7 @@ describe('channel domain', () => {
       expect(ctx.presence.enabled).toBe(true);
       expect(ctx.channel.new_messages).toEqual([]);
       expect(ctx.channel.background_messages).toEqual([]);
+      expect(ctx.channel.ignored_messages).toEqual([]);
       expect(ctx.affordances.operator_commands.length).toBeGreaterThan(0);
       expect(ctx.channel.recent_presence_interactions).toEqual([]);
     });
@@ -557,6 +559,207 @@ describe('channel domain', () => {
     });
   });
 
+  describe('ignore presence boundary', () => {
+    function llmClassifierClient(itemsByMessageId) {
+      return {
+        chatMessages: () => Promise.resolve(JSON.stringify({ items: Object.values(itemsByMessageId) })),
+      };
+    }
+
+    it('places classifier ignore in ignored_messages not new_messages', async () => {
+      const root = makeRoot({
+        classifier: { enabled: true, mode: 'llm', interval_ms: 30_000, batch_size: 5 },
+        presence: { enabled: true, planner: 'deterministic' },
+      });
+      writePendingInbound(root, 'alpha', {
+        messageId: 'om_ctx_ignore',
+        chatId: 'oc_test',
+        content: '回句话',
+        contentType: 'text',
+      });
+      await runChannelClassifierTask(root, 'alpha', {
+        aiClient: llmClassifierClient([{
+          message_id: 'om_ctx_ignore',
+          classification: 'ignore',
+          confidence: 'medium',
+          summary: '回句话',
+          rationale: 'test',
+        }]),
+      });
+      const ctx = buildPresenceContext(root, 'alpha');
+      expect(ctx.channel.recent_ingested.some((m) => m.message_id === 'om_ctx_ignore')).toBe(true);
+      expect(ctx.channel.ignored_messages.map((m) => m.message_id)).toContain('om_ctx_ignore');
+      expect(ctx.channel.new_messages).toEqual([]);
+    });
+
+    it('ignore-only does not queue speech or mark ignore handled on silence', async () => {
+      const root = makeRoot({
+        classifier: { enabled: true, mode: 'llm', interval_ms: 30_000, batch_size: 5 },
+        presence: { enabled: true, planner: 'deterministic' },
+      });
+      writePendingInbound(root, 'alpha', {
+        messageId: 'om_ignore_silence',
+        chatId: 'oc_test',
+        content: '随便噪音',
+        contentType: 'text',
+      });
+      await runChannelClassifierTask(root, 'alpha', {
+        aiClient: llmClassifierClient([{
+          message_id: 'om_ignore_silence',
+          classification: 'ignore',
+          confidence: 'medium',
+          summary: '随便噪音',
+          rationale: 'test',
+        }]),
+      });
+      appendChannelEvent(root, 'alpha', { type: 'inbound_classified', reason: 'test' });
+      const result = await runPresenceReactor(root, 'alpha', { force: true });
+      expect(result.plan.stance).toBe('silence');
+      expect(result.plan.reason).toBe('nothing_to_express');
+      expect(summarizeChannelEventQueue(root, 'alpha').pending_speech_generation).toBe(0);
+      expect(isPresenceMessageHandled(root, 'alpha', 'om_ignore_silence')).toBe(false);
+      const runtime = runtimeForSubject(root, 'alpha');
+      const store = createIntelligenceStore({
+        baseDir: join(runtime.runtimeRoot, 'data', 'intelligence'),
+        timezone: 'Asia/Shanghai',
+      });
+      const intel = store.readRecentIntel({ days: 7, limit: 50 }).filter(isPresenceInteractionRecord);
+      expect(intel.some((r) => r.interaction_kind === 'silence')).toBe(false);
+    });
+
+    it('still wakes presence when batch is ignore-only', async () => {
+      const root = makeRoot({
+        classifier: { enabled: true, mode: 'llm', interval_ms: 30_000, batch_size: 5 },
+        presence: { enabled: true, planner: 'deterministic' },
+      });
+      writePendingInbound(root, 'alpha', {
+        messageId: 'om_ignore_wake',
+        chatId: 'oc_test',
+        content: 'noop',
+        contentType: 'text',
+      });
+      await runChannelClassifierTask(root, 'alpha', {
+        aiClient: llmClassifierClient([{
+          message_id: 'om_ignore_wake',
+          classification: 'ignore',
+          confidence: 'medium',
+          summary: 'noop',
+          rationale: 'test',
+        }]),
+      });
+      const queue = readChannelTaskQueue(root, 'alpha');
+      expect(queue.tasks.some((t) => t.type === 'channel_presence')).toBe(true);
+      expect(listPendingChannelEvents(root, 'alpha', { type: 'inbound_classified' }).length).toBeGreaterThan(0);
+    });
+
+    it('ignore does not block proactive signal reply', async () => {
+      const root = makeRoot({ presence: { enabled: true, planner: 'deterministic' } });
+      const ctx = buildPresenceContext(root, 'alpha');
+      ctx.channel.new_messages = [];
+      ctx.channel.ignored_messages = [{
+        message_id: 'om_ignore_bg',
+        ingest_kind: 'ignore',
+        content: '回句话',
+        presence_eligible: false,
+        presence_handled: false,
+      }];
+      ctx.attention_signals = [{
+        type: 'task_failed',
+        severity: 'medium',
+        title: 'Task failed: intel',
+        summary: 'boom',
+        key: 'task_failed:task-1',
+        presence_signal_key: 'task_failed:task-1',
+        presence_handled: false,
+      }];
+      const plan = planPresenceDeterministic(ctx);
+      expect(plan.stance).toBe('speak');
+      expect(plan.actions.some((a) => a.reason === 'proactive_signal')).toBe(true);
+      expect(plan.presence_targets.messages).not.toContain('om_ignore_bg');
+    });
+
+    it('fast ack targets brief only when ignore and brief share a batch', async () => {
+      const root = makeRoot({
+        classifier: { enabled: true, mode: 'llm', interval_ms: 30_000, batch_size: 5 },
+        presence: { enabled: true, planner: 'llm', default_target: 'oc_operator' },
+      });
+      writePendingInbound(root, 'alpha', {
+        messageId: 'om_ignore_mix',
+        chatId: 'oc_operator',
+        content: '回句话',
+        contentType: 'text',
+      });
+      writePendingInbound(root, 'alpha', {
+        messageId: 'om_brief_mix',
+        chatId: 'oc_operator',
+        content: '同意发布',
+        contentType: 'text',
+      });
+      await runChannelClassifierTask(root, 'alpha', {
+        aiClient: llmClassifierClient([
+          {
+            message_id: 'om_ignore_mix',
+            classification: 'ignore',
+            confidence: 'medium',
+            summary: '回句话',
+            rationale: 'test',
+          },
+          {
+            message_id: 'om_brief_mix',
+            classification: 'approval_request',
+            confidence: 'high',
+            summary: '同意发布',
+            rationale: 'test',
+          },
+        ]),
+      });
+      const ctx = buildPresenceContext(root, 'alpha');
+      expect(ctx.channel.ignored_messages.map((m) => m.message_id)).toContain('om_ignore_mix');
+      expect(ctx.channel.new_messages.map((m) => m.message_id)).toContain('om_brief_mix');
+      const plan = await planPresence(ctx);
+      expect(plan.planner).toBe('deterministic_fast_ack');
+      expect(plan.presence_targets.messages).toEqual(['om_brief_mix']);
+      expect(plan.presence_targets.messages).not.toContain('om_ignore_mix');
+    });
+
+    it('strips LLM actions that reply_to ignored message ids', async () => {
+      const root = makeRoot({ presence: { enabled: true, planner: 'llm' } });
+      const ctx = buildPresenceContext(root, 'alpha');
+      ctx.channel.new_messages = [];
+      ctx.channel.ignored_messages = [{
+        message_id: 'om_llm_ignore',
+        ingest_kind: 'ignore',
+        content: '回句话',
+        presence_eligible: false,
+        presence_handled: false,
+      }];
+      ctx.attention_signals = [{
+        type: 'task_failed',
+        severity: 'medium',
+        title: 'Task failed',
+        summary: 'boom',
+        key: 'task_failed:t1',
+        presence_signal_key: 'task_failed:t1',
+        presence_handled: false,
+      }];
+      const client = {
+        chatMessages: () => Promise.resolve(JSON.stringify({
+          stance: 'speak',
+          reason: 'bad',
+          actions: [{
+            type: 'speech_intent',
+            target: 'operator',
+            content_requirements: { kind: 'custom', text_hint: 'reply to ignore' },
+            reply_to_message_id: 'om_llm_ignore',
+            reason: 'should_drop',
+          }],
+        })),
+      };
+      const plan = await planPresenceWithLlm(ctx, { aiClient: client });
+      expect(plan.actions.every((a) => a.reply_to_message_id !== 'om_llm_ignore')).toBe(true);
+    });
+  });
+
   describe('async reactor', () => {
     it('presence reactor does not drain inbound (classifier owns ingest)', async () => {
       const root = makeRoot({ presence: { enabled: true, planner: 'deterministic' } });
@@ -647,12 +850,14 @@ describe('channel domain', () => {
     it('planPresenceOperatorBriefFastAck returns null for ignore-only inbound', async () => {
       const root = makeRoot({ presence: { enabled: true, planner: 'llm' } });
       const ctx = buildPresenceContext(root, 'alpha');
-      ctx.channel.new_messages = [{
+      ctx.channel.new_messages = [];
+      ctx.channel.ignored_messages = [{
         message_id: 'om_ignore_only',
         ingest_kind: 'ignore',
         brief_kind: null,
         content: '回句话',
         presence_handled: false,
+        presence_eligible: false,
       }];
       expect(planPresenceOperatorBriefFastAck(ctx)).toBeNull();
     });

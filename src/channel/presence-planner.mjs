@@ -2,6 +2,7 @@ import { chatMessagesJson } from '../ai/messages.mjs';
 import { DeepSeekOpenAIClient } from '../ai/deepseek-client.mjs';
 import { nowIso } from './types.mjs';
 import { buildPresenceSignalKey } from './state.mjs';
+import { isPresenceReplyEligible } from './presence-context.mjs';
 import { normalizeSpeechIntent, speechIntentFromDeterministic } from './speech-intent.mjs';
 
 export const PRESENCE_STANCES = Object.freeze(['speak', 'silence', 'ask', 'report', 'wait']);
@@ -12,10 +13,14 @@ export const PRESENCE_ACTION_TYPES = Object.freeze([
   'silence',
 ]);
 
+function replyEligibleNewMessages(context) {
+  return (context.channel?.new_messages ?? []).filter(isPresenceReplyEligible);
+}
+
 function buildPresenceTargets(context, { messageIds = [], signalKeys = [] } = {}) {
   const messages = messageIds.length
     ? messageIds
-    : (context.channel?.new_messages ?? []).map((m) => m.message_id).filter(Boolean);
+    : replyEligibleNewMessages(context).map((m) => m.message_id).filter(Boolean);
   const signals = signalKeys.length
     ? signalKeys
     : (context.attention_signals ?? [])
@@ -265,6 +270,7 @@ export async function planPresenceWithLlm(context, { aiClient = null } = {}) {
           'Allowed action types: speech_intent, write_operator_brief, record_observation, silence.',
           'speech_intent fields: target, content_requirements (kind, summary), reply_to_message_id, reason, idempotency_key. Do NOT include final message text.',
           'channel.new_messages are the only inbound items that may need a new reply.',
+          'channel.ignored_messages are classifier ignore results: context only — never reply_to them and do not treat them as a reason to speak or stay silent.',
           'channel.background_messages and items marked presence_handled are context only — do not reply again.',
           'attention_signals with presence_handled=true are context only — do not proactively notify again.',
           'You may decide to stay silent; use silence action or empty actions with stance silence.',
@@ -283,6 +289,7 @@ export async function planPresenceWithLlm(context, { aiClient = null } = {}) {
           constraints: context.constraints,
           channel: {
             new_messages: context.channel?.new_messages,
+            ignored_messages: context.channel?.ignored_messages,
             background_messages: context.channel?.background_messages,
             recent_presence_interactions: context.channel?.recent_presence_interactions,
             pending_inbound_count: context.channel?.pending_inbound_count,
@@ -309,9 +316,13 @@ export async function planPresenceWithLlm(context, { aiClient = null } = {}) {
 
     const stance = PRESENCE_STANCES.includes(parsed?.stance) ? parsed.stance : fallback.stance;
     const rawActions = Array.isArray(parsed?.actions) ? parsed.actions : [];
+    const ignoredIds = new Set(
+      (context.channel?.ignored_messages ?? []).map((m) => m.message_id).filter(Boolean),
+    );
     const actions = rawActions
       .map((a) => normalizeAction(a, context.subject))
       .filter(Boolean)
+      .filter((a) => !a.reply_to_message_id || !ignoredIds.has(a.reply_to_message_id))
       .slice(0, context.presence?.max_actions_per_tick ?? 2);
 
     if (stance === 'silence' || !actions.length || actions.every((a) => a.type === 'silence')) {
