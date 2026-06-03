@@ -6,7 +6,7 @@ import { readChannelEvents } from '../../channel/audit.mjs';
 import { writePendingInbound, listPendingInbound, listOutboxPending, writeOutboxMessage } from '../../channel/state.mjs';
 import { normalizeOutboundMessage } from '../../channel/types.mjs';
 import { readChannelTaskQueue } from '../../channel/task-queue.mjs';
-import { enqueueNotifyIfOutboxPending, requestPresenceReactor } from '../../channel/wake.mjs';
+import { enqueueClassifierIfPendingInbound, enqueueNotifyIfOutboxPending } from '../../channel/wake.mjs';
 import { runChannelTick } from '../../channel/dispatch.mjs';
 import { runChannelNotifyTask } from '../../channel/tasks.mjs';
 import { runChannelPresenceTask } from '../../channel/presence.mjs';
@@ -132,20 +132,13 @@ export async function channelCommand({ subcommand, flags = {}, args = [], root =
         return 2;
       }
       const written = writePendingInbound(root, subject, payload, { label: flags.name ?? 'manual' });
-      const wake = requestPresenceReactor(root, subject, {
-        reason: 'manual_inbox_added',
-        event: {
-          type: 'manual_inbox_added',
-          reason: flags.name ?? 'manual',
-          payload_summary: { file: written.file },
-        },
-      });
+      const classifier = enqueueClassifierIfPendingInbound(root, subject);
       const result = {
         subject,
         ...written,
-        task: wake.reactor_task,
-        created: wake.reactor_created,
-        event: wake.event,
+        task: classifier.task ?? null,
+        created: classifier.created ?? false,
+        reason: classifier.reason ?? null,
       };
       if (flags.json) console.log(JSON.stringify(result, null, 2));
       else console.log(`queued channel inbound -> ${written.file}`);

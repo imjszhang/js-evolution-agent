@@ -14,7 +14,7 @@ import {
 import { normalizeOutboundMessage, isDeprecatedChannelTaskType } from './types.mjs';
 import { runChannelPresenceTask, runChannelSpeechGenerationTask } from './presence.mjs';
 import { runChannelClassifierTask } from './classifier.mjs';
-import { enqueueNotifyIfOutboxPending } from './wake.mjs';
+import { enqueueClassifierIfPendingInbound, enqueueNotifyIfOutboxPending } from './wake.mjs';
 
 function readJsonStrict(file) {
   return JSON.parse(readFileSync(file, 'utf-8'));
@@ -34,7 +34,10 @@ export async function runChannelInboundTask(root, subject, input = {}) {
     status: 'ok',
     queued_count: queued,
   });
-  return { queued };
+  const classifier = queued > 0
+    ? enqueueClassifierIfPendingInbound(root, subject)
+    : { created: false, reason: 'no_queued_inbound' };
+  return { queued, classifier_task: classifier.task ?? null, classifier_created: classifier.created ?? false };
 }
 
 export async function runChannelNotifyTask(root, subject, input = {}) {

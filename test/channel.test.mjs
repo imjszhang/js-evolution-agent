@@ -15,7 +15,7 @@ import {
 import { createIntelligenceStore } from '../src/intelligence/store.mjs';
 import { isPresenceInteractionRecord } from '../src/channel/presence-memory.mjs';
 import { resolvePresenceAffordances } from '../src/channel/presence-affordances.mjs';
-import { drainChannelInbound, runChannelTask, runChannelNotifyTask } from '../src/channel/tasks.mjs';
+import { drainChannelInbound, runChannelInboundTask, runChannelTask, runChannelNotifyTask } from '../src/channel/tasks.mjs';
 import { runChannelClassifierTask } from '../src/channel/classifier.mjs';
 import { claimNextChannelTask } from '../src/channel/task-queue.mjs';
 import { resolveChannelWorkerTaskTypes, taskTypesForChannelRole } from '../src/channel/channel-roles.mjs';
@@ -386,12 +386,50 @@ describe('channel domain', () => {
 
     it('multiple wakes merge into one reactor task', () => {
       const root = makeRoot({ presence: { enabled: true } });
-      requestPresenceReactor(root, 'alpha', { reason: 'a', event: { type: 'feishu_message_received', event_ref: 'm1' } });
-      requestPresenceReactor(root, 'alpha', { reason: 'b', event: { type: 'feishu_message_received', event_ref: 'm2' } });
+      requestPresenceReactor(root, 'alpha', { reason: 'a', event: { type: 'presence_wake', event_ref: 'm1' } });
+      requestPresenceReactor(root, 'alpha', { reason: 'b', event: { type: 'presence_wake', event_ref: 'm2' } });
       const queue = readChannelTaskQueue(root, 'alpha');
       const presenceTasks = queue.tasks.filter((t) => t.type === 'channel_presence');
       expect(presenceTasks.length).toBe(1);
       expect(listPendingChannelEvents(root, 'alpha').length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('raw inbound events are not claimed directly by presence', async () => {
+      const root = makeRoot({ presence: { enabled: true, planner: 'deterministic' } });
+      appendChannelEvent(root, 'alpha', {
+        type: 'feishu_message_received',
+        reason: 'legacy_raw_inbound',
+        event_ref: 'om_raw',
+      });
+      appendChannelEvent(root, 'alpha', {
+        type: 'manual_inbox_added',
+        reason: 'legacy_manual_inbound',
+        event_ref: 'om_manual',
+      });
+
+      const result = await runPresenceReactor(root, 'alpha');
+      expect(result.skipped).toBe(true);
+      expect(result.reason).toBe('no_pending_events');
+      expect(listPendingChannelEvents(root, 'alpha', { type: 'feishu_message_received' })).toHaveLength(1);
+      expect(listPendingChannelEvents(root, 'alpha', { type: 'manual_inbox_added' })).toHaveLength(1);
+    });
+
+    it('channel_inbound task queues classifier instead of presence', async () => {
+      const root = makeRoot({ presence: { enabled: true, planner: 'deterministic' } });
+      const file = join(tempDir, 'manual-inbound.json');
+      writeFileSync(file, JSON.stringify({
+        messageId: 'om_inbound_routes_classifier',
+        chatId: 'oc_operator',
+        content: '同意发布',
+        contentType: 'text',
+      }), 'utf-8');
+
+      const result = await runChannelInboundTask(root, 'alpha', { files: [file], label: 'test' });
+      expect(result.queued).toBe(1);
+      expect(result.classifier_created).toBe(true);
+      const queue = readChannelTaskQueue(root, 'alpha');
+      expect(queue.tasks.some((t) => t.type === 'channel_classifier')).toBe(true);
+      expect(queue.tasks.some((t) => t.type === 'channel_presence')).toBe(false);
     });
 
     it('decision phase queues speech_intent without writing outbox', async () => {

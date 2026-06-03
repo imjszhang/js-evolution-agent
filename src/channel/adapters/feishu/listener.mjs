@@ -6,7 +6,7 @@ import {
   writeChannelReloadState,
   writePendingInbound,
 } from '../../state.mjs';
-import { requestPresenceReactor } from '../../wake.mjs';
+import { enqueueClassifierIfPendingInbound } from '../../wake.mjs';
 import { envelopeFromFeishuEvent } from './parser.mjs';
 import { resolveFeishuConfig } from './config.mjs';
 import { FeishuClient } from './client.mjs';
@@ -169,18 +169,7 @@ async function createAndStartListener(root, subject, config, { reloadReason = nu
         chat_id: envelope.chat_id,
         channel: 'feishu',
       });
-      requestPresenceReactor(root, subject, {
-        reason: 'feishu_message_received',
-        event: {
-          type: 'feishu_message_received',
-          reason: 'feishu_ws',
-          event_ref: envelope.message_id,
-          payload_summary: {
-            message_id: envelope.message_id,
-            chat_id: envelope.chat_id,
-          },
-        },
-      });
+      enqueueClassifierIfPendingInbound(root, subject);
     },
   });
 

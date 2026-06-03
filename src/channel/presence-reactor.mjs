@@ -26,9 +26,7 @@ import { runSpeechGenerationForEvent } from './speech-generation.mjs';
 
 const PRESENCE_REACTOR_EVENT_TYPES = Object.freeze([
   'timer_tick',
-  'feishu_message_received',
   'inbound_classified',
-  'manual_inbox_added',
   'presence_wake',
   'presence_run_requested',
   'daemon_attention',
