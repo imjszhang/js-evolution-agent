@@ -420,7 +420,7 @@ jea daemon start --subject NAME --domain cycle
 jea daemon start --subject NAME --domain channel
 ```
 
-`jea daemon start --domain channel` **默认**在同一进程内启动四个 channel role worker（`notify`、`presence`、`speech`、`classifier`），共享同一任务队列但按任务类型隔离领取，避免 LLM 分类/话术生成阻塞 outbox flush。高级用法：
+`jea daemon start --domain channel` **默认**在同一进程内启动五个 channel role worker（`notify`、`control`、`presence`、`speech`、`classifier`），共享同一任务队列但按任务类型隔离领取，避免 LLM 分类/话术生成阻塞 outbox flush。高级用法：
 
 ```powershell
 jea daemon start --subject NAME --domain channel --channel-role presence
@@ -533,6 +533,7 @@ channel worker 每轮 loop 会：
 - 审批/发布类话语 → `approval_request` operator brief（软意图，非 `approval_granted`）。
 - 已确认长期口径 → `operator_fact`（高置信且措辞明确时；否则降级为 observation）。
 - 待核实或下一轮关注 → `verification_request` brief。
+- 明确的本地控制命令 → `control_request`（见下文 Channel Control Actions）。
 - 普通外部消息 → `intel_observations` 作为可推翻 evidence。
 - 飞书 listener / `inbox put` 只写 `inbound/pending`；分类由 classifier role 按固定 `interval_ms` 批量处理（`batch_size` 上限，旧到新，超出留待下批）。
 
@@ -544,9 +545,9 @@ channel worker 每轮 loop 会：
 
 1. 从 `inbound/pending` 按时间顺序取最多 `batch_size` 条
 2. BIND / duplicate 机械处理（不进 LLM batch）
-3. LLM（或 `deterministic` 回退）批量输出受限 schema：`approval_request` / `verification_request` / `operator_fact` / `observation` / `ignore`
-4. 写入 brief / fact / observation 并移到 `processed`；失败按 `fallback` 保留 pending 或降级 observation
-5. 分类完成后 `requestExpressionRecompute`（`reason: inbound_classified`）
+3. LLM（或 `deterministic` 回退）批量输出受限 schema：`approval_request` / `verification_request` / `operator_fact` / `control_request` / `observation` / `ignore`
+4. 写入 brief / fact / control task / observation 并移到 `processed`；失败按 `fallback` 保留 pending 或降级 observation
+5. 非 `control_request` 分类完成后 `requestExpressionRecompute`（`reason: inbound_classified`）；`control_request` 由 control executor 完成后唤醒 presence
 
 协调器按 `classifier.interval_ms` 调度入队（幂等键 `${subject}:channel_classifier:pending`）；与 presence tick（默认 5min）独立。
 
@@ -566,6 +567,26 @@ channel worker 每轮 loop 会：
 - `mode`: `llm` | `deterministic` | `mock`（无 API key 时 deterministic 回退）
 - `fallback`: `observation`（批内缺项降级）| `retry`（保留 pending 下轮重试）
 
+### Channel Control Actions（`control_request` + `channel_control_action`）
+
+Classifier 识别 `control_request` 后**不直接执行**配置变更，而是入队 `channel_control_action` 任务，由 **control role worker** 通过白名单 registry 执行。
+
+首批注册动作：
+
+| action_id | 含义 | 写操作 | 需要 operator binding |
+| --- | --- | --- | --- |
+| `daemon_evolution_mode_set` | 切换 `continuous` / `on_demand` | 是 | 是 |
+| `daemon_evolution_mode_show` | 查看当前 evolution mode | 否 | 否 |
+| `daemon_cycle_request` | 入队 cycle start request | 是 | 是 |
+
+约束：
+
+- Classifier 只能输出注册过的 `action_id` + 明确 `params`；高置信才允许写类 action。
+- Presence planner **不能**直接改 evolution mode；只能基于 control executor 的审计事件回复结果。
+- 远端发布、`approval_granted`、凭据、subject policy 仍不可通过 channel 自动执行。
+
+默认 channel daemon roles：`notify` / `control` / `presence` / `speech` / `classifier`。升级后需重启 channel daemon。
+
 ### Channel Presence Loop（`channels.presence`，transport-agnostic，async reactor）
 
 外部刺激只请求「表达状态重算」：飞书 listener / `jea channel inbox put` 先写 `inbound/pending` 并入队 classifier；classifier 完成、presence tick、daemon attention 等统一 append `expression_recompute_requested` 并入队 `channel_presence`。**Presence 不读取 raw inbound，也不在 presence 路径分类 inbound。**
@@ -580,7 +601,7 @@ channel worker 每轮 loop 会：
 
 **内容生成**（`channel_speech_generation` → `runChannelSpeechGenerationTask`，speech role worker）：按 subject persona + `content_requirements` 生成最终文本，成功后 `writeOutboxMessage`；失败/超时记 `channel_speech_generation_failed` / `channel_presence_timeout`，不写 outbox。
 
-`runChannelTick`：presence tick（`reason: timer_tick` 的表达重算 + notify）；classifier tick 单独按 `interval_ms` 入队 classifier。默认多 role 下 notify / presence / speech / classifier **并行领取**，互不阻塞。
+`runChannelTick`：presence tick（`reason: timer_tick` 的表达重算 + notify）；classifier tick 单独按 `interval_ms` 入队 classifier。默认多 role 下 notify / control / presence / speech / classifier **并行领取**，互不阻塞。
 
 事件队列与审计 `events.jsonl` 分离。`jea channel status --json` 的 `presence.event_queue` / `presence.reactor` / `presence.pending_speech_generation` 可观测 reactor 与待生成话术。
 

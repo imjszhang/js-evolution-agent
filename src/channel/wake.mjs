@@ -8,6 +8,7 @@ export const PRESENCE_REACTOR_IDEMPOTENCY = (subject) => `${subject}:channel_pre
 export const SPEECH_GENERATION_IDEMPOTENCY = (subject) => `${subject}:channel_speech_generation:pending`;
 export const NOTIFY_IDEMPOTENCY = (subject) => `${subject}:channel_notify:pending`;
 export const CLASSIFIER_IDEMPOTENCY = (subject) => `${subject}:channel_classifier:pending`;
+export const CONTROL_ACTION_IDEMPOTENCY = (subject) => `${subject}:channel_control_action:pending`;
 
 function hasActiveTask(queue, type) {
   return (queue.tasks ?? []).some((task) => task.type === type && ['pending', 'running'].includes(task.status));
@@ -52,6 +53,19 @@ export function enqueueSpeechGenerationIfPending(root, subject) {
     priority: CHANNEL_TASK_DEFAULT_PRIORITY.channel_speech_generation,
     idempotencyKey: SPEECH_GENERATION_IDEMPOTENCY(subject),
     reason: 'pending_speech_generation',
+  });
+}
+
+export function enqueueControlAction(root, subject, request = {}) {
+  const actionId = String(request.action_id ?? 'unknown').trim();
+  const messageId = String(request.message_id ?? 'unknown').trim();
+  const idempotencyKey = request.idempotency_key
+    ?? `control:${subject}:${messageId}:${actionId}`;
+  return enqueueIfNeeded(root, subject, 'channel_control_action', {
+    priority: CHANNEL_TASK_DEFAULT_PRIORITY.channel_control_action,
+    idempotencyKey,
+    input: { request: { ...request, idempotency_key: idempotencyKey } },
+    reason: 'control_request',
   });
 }
 

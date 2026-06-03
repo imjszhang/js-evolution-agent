@@ -84,6 +84,17 @@ function candidates(context) {
 }
 
 function intentFromCandidate(context, candidate) {
+  const contentRequirements = candidate.kind === 'reply.control_action'
+    ? {
+      kind: 'control_action_ack',
+      summary: candidate.control_result ?? candidate.summary,
+      action_id: candidate.control_result?.action_id ?? null,
+    }
+    : {
+      kind: candidate.recommended_intent,
+      summary: candidate.summary,
+      signal: candidate.signal ?? null,
+    };
   return speechIntentFromDeterministic({
     subject: context.subject,
     candidate_id: candidate.id,
@@ -93,7 +104,7 @@ function intentFromCandidate(context, candidate) {
     signal_key: candidate.signal_key ?? null,
     idempotency_key: `expression:${candidate.id}`,
     kind: candidate.recommended_intent,
-    summary: candidate.summary,
+    summary: contentRequirements,
     signal: candidate.signal ?? null,
   });
 }
@@ -110,6 +121,16 @@ function speakPlan(context, selected, { planner = 'deterministic', reason = 'det
     planner,
     ...extra,
   };
+}
+
+export function planPresenceControlActionFastAck(context) {
+  const selected = candidates(context).filter((candidate) => candidate.kind === 'reply.control_action');
+  if (!selected.length) return null;
+  return speakPlan(context, selected.slice(0, context.presence?.max_actions_per_tick ?? 2), {
+    planner: 'deterministic_control_ack',
+    reason: 'control_action_fast_ack',
+    extra: { fast_ack: true },
+  });
 }
 
 /**
@@ -281,11 +302,15 @@ export async function planPresenceWithLlm(context, { aiClient = null } = {}) {
 export async function planPresence(context, { aiClient = null, skipFastAck = false } = {}) {
   if (context.presence?.planner === 'llm') {
     if (!skipFastAck) {
+      const controlAck = planPresenceControlActionFastAck(context);
+      if (controlAck) return controlAck;
       const fastAck = planPresenceOperatorBriefFastAck(context);
       if (fastAck) return fastAck;
     }
     return planPresenceWithLlm(context, { aiClient });
   }
+  const controlAck = planPresenceControlActionFastAck(context);
+  if (controlAck) return controlAck;
   return planPresenceDeterministic(context);
 }
 

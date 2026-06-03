@@ -12,6 +12,12 @@ export function isGreeting(text) {
   return /^(你好|您好|hi|hello|hey|在吗|在么|在不在)[!！?？。.\s]*$/i.test(normalized);
 }
 
+export function candidateIdForControlActionEvent(event = {}) {
+  const messageId = event?.message_id;
+  if (!messageId) return null;
+  return `reply:control_action:${messageId}`;
+}
+
 export function candidateIdForMessage(item = {}) {
   if (!item?.message_id) return null;
   if (item.ingest_kind === 'operator_brief') {
@@ -39,6 +45,32 @@ export function candidateIdForSignal(signal = {}) {
     return `notify:${signal.type}:${key}`;
   }
   return null;
+}
+
+function candidateFromControlActionEvent(event, handled) {
+  const id = candidateIdForControlActionEvent(event);
+  if (!id || handled[id]) return null;
+  const ok = event.type === 'channel_control_action_completed';
+  return {
+    id,
+    kind: 'reply.control_action',
+    source: 'control_request',
+    priority: 'high',
+    target: 'operator',
+    reply_to_message_id: event.message_id,
+    recommended_intent: 'control_action_ack',
+    summary: event.summary ?? event.action_id ?? 'control action',
+    control_result: {
+      ok,
+      action_id: event.action_id ?? null,
+      reason: event.reason ?? null,
+      mode: event.mode ?? null,
+      changed: event.changed ?? null,
+      request_id: event.request_id ?? null,
+      error: event.error ?? null,
+    },
+    source_ref: `channel:control:${event.message_id}`,
+  };
 }
 
 function candidateFromMessage(item, handled) {
@@ -131,6 +163,12 @@ export function buildExpressionCandidates(context = {}) {
 
   for (const signal of context.attention_signals ?? []) {
     const candidate = candidateFromSignal(signal, handled);
+    if (candidate && !cooldownActive(context, candidate)) candidates.push(candidate);
+  }
+
+  for (const event of context.channel?.recent_events ?? []) {
+    if (!['channel_control_action_completed', 'channel_control_action_failed'].includes(event.type)) continue;
+    const candidate = candidateFromControlActionEvent(event, handled);
     if (candidate && !cooldownActive(context, candidate)) candidates.push(candidate);
   }
 

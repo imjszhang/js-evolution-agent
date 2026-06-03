@@ -13,7 +13,7 @@ export function resolvePresenceAffordances(root, subject) {
     ],
     boundaries: [
       'Cannot grant approval_granted or modify pending_decisions.json.',
-      'Cannot change evolution mode, daemon config, or subject policy directly.',
+      'Presence planner cannot execute control actions directly; only the channel control executor may run registered control_request actions.',
       'Cannot claim remote publish or code execution already completed.',
       'CLI commands in replies must come from operator_commands only.',
     ],

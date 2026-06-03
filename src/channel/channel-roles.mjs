@@ -1,11 +1,12 @@
 import { CHANNEL_TASK_TYPES } from './types.mjs';
 
-export const CHANNEL_ROLES = Object.freeze(['notify', 'presence', 'speech', 'classifier', 'custom', 'all']);
+export const CHANNEL_ROLES = Object.freeze(['notify', 'control', 'presence', 'speech', 'classifier', 'custom', 'all']);
 
-export const DEFAULT_CHANNEL_ROLES = Object.freeze(['notify', 'presence', 'speech', 'classifier']);
+export const DEFAULT_CHANNEL_ROLES = Object.freeze(['notify', 'control', 'presence', 'speech', 'classifier']);
 
 const ROLE_TASK_TYPES = Object.freeze({
   notify: ['channel_notify', 'channel_retry'],
+  control: ['channel_control_action'],
   presence: ['channel_presence'],
   speech: ['channel_speech_generation'],
   classifier: ['channel_classifier'],

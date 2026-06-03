@@ -36,6 +36,22 @@ function ackText(subject, kind, summary) {
       summary ? `内容：${summary}` : '',
     ].filter(Boolean).join('\n');
   }
+  if (kind === 'control_action_ack') {
+    const result = summary?.control_result ?? summary;
+    if (result && typeof result === 'object') {
+      if (result.ok === false) {
+        return [
+          `${subject}: 控制请求未能执行。`,
+          result.reason ? `原因：${result.reason}` : '',
+          result.action_id ? `动作：${result.action_id}` : '',
+        ].filter(Boolean).join('\n');
+      }
+      return [
+        `${subject}: 控制请求已执行。`,
+        result.summary ?? result.mode ?? result.action_id ?? '',
+      ].filter(Boolean).join('\n');
+    }
+  }
   if (kind === 'greeting_ack') {
     return `${subject}: 我在，channel 正常运行。你的消息已入库，等待下一轮 intel 处理。`;
   }

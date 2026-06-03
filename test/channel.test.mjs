@@ -17,7 +17,7 @@ import { resolvePresenceAffordances } from '../src/channel/presence-affordances.
 import { drainChannelInbound, runChannelInboundTask, runChannelTask, runChannelNotifyTask } from '../src/channel/tasks.mjs';
 import { runChannelClassifierTask } from '../src/channel/classifier.mjs';
 import { claimNextChannelTask } from '../src/channel/task-queue.mjs';
-import { resolveChannelWorkerTaskTypes, taskTypesForChannelRole } from '../src/channel/channel-roles.mjs';
+import { resolveChannelWorkerTaskTypes, taskTypesForChannelRole, DEFAULT_CHANNEL_ROLES } from '../src/channel/channel-roles.mjs';
 import { collectAttentionSignals } from '../src/channel/notify.mjs';
 import { readPendingOperatorBriefs } from '../src/intelligence/operator-briefs.mjs';
 import { runtimeForSubject } from '../src/cli/utils/evolve-runs.mjs';
@@ -42,6 +42,11 @@ import {
 import { executePresenceDecisionPlan } from '../src/channel/presence-decision-executor.mjs';
 import { resolvePresenceConfig } from '../src/channel/presence-config.mjs';
 import { resolveSubjectReplyIdentity } from '../src/channel/subject-identity.mjs';
+import { CHANNEL_TASK_DEFAULT_PRIORITY } from '../src/channel/types.mjs';
+import { parseControlRequestFromText } from '../src/channel/control-actions.mjs';
+import { classifyChannelEnvelope } from '../src/channel/ingest.mjs';
+import { resolveEvolutionMode } from '../src/cli/utils/evolution-mode.mjs';
+import { readPendingCycleStartRequest } from '../src/cli/utils/cycle-start-requests.mjs';
 import {
   createChannelRoleWorkerState,
   initChannelCoordinatorState,
@@ -88,6 +93,16 @@ function makeRoot({
   return tempDir;
 }
 
+function writeOperatorBinding(root, subject, openId = 'ou_operator') {
+  const { runtimeRoot } = runtimeForSubject(root, subject);
+  writeJsonFile(join(runtimeRoot, 'data', 'channel', 'feishu-operator-binding.json'), {
+    schema_version: 1,
+    subject,
+    open_id: openId,
+    bound_at: new Date().toISOString(),
+  });
+}
+
 describe('channel domain', () => {
   afterEach(() => {
     if (tempDir) rmSync(tempDir, { recursive: true, force: true });
@@ -116,6 +131,31 @@ describe('channel domain', () => {
         'channel-task-types': 'channel_presence,channel_classifier',
       }, 'custom');
       expect(taskTypes).toEqual(['channel_presence', 'channel_classifier']);
+    });
+
+    it('default channel roles include control worker', () => {
+      expect(DEFAULT_CHANNEL_ROLES).toContain('control');
+      expect(taskTypesForChannelRole('control')).toEqual(['channel_control_action']);
+    });
+
+    it('channel_control_action priority is higher than channel_presence', () => {
+      expect(CHANNEL_TASK_DEFAULT_PRIORITY.channel_control_action)
+        .toBeLessThan(CHANNEL_TASK_DEFAULT_PRIORITY.channel_presence);
+    });
+
+    it('claimNextChannelTask can claim channel_control_action for control role', () => {
+      const root = makeRoot();
+      enqueueChannelTask(root, 'alpha', {
+        type: 'channel_control_action',
+        idempotencyKey: 'ctrl1',
+        priority: CHANNEL_TASK_DEFAULT_PRIORITY.channel_control_action,
+        input: { request: { action_id: 'daemon_evolution_mode_show' } },
+      });
+      const claim = claimNextChannelTask(root, 'alpha', {
+        workerId: 'control-worker',
+        types: taskTypesForChannelRole('control'),
+      });
+      expect(claim.task?.type).toBe('channel_control_action');
     });
 
     it('uses a separate queue from cycle tasks', () => {
@@ -1057,6 +1097,121 @@ describe('channel domain', () => {
       await expect(runChannelSpeechGenerationTask(root, 'alpha', { aiClient: slowClient })).resolves.toBeDefined();
       const notify = await runChannelNotifyTask(root, 'alpha', { limit: 5 });
       expect(notify.sent.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('control_request', () => {
+    it('parseControlRequestFromText recognizes evolution mode and cycle commands', () => {
+      expect(parseControlRequestFromText('切换为按需进化')?.action_id).toBe('daemon_evolution_mode_set');
+      expect(parseControlRequestFromText('切换为按需进化')?.params?.mode).toBe('on_demand');
+      expect(parseControlRequestFromText('切换为 continuous 模式')?.params?.mode).toBe('continuous');
+      expect(parseControlRequestFromText('启动一轮进化')?.action_id).toBe('daemon_cycle_request');
+      expect(parseControlRequestFromText('当前进化模式是什么')?.action_id).toBe('daemon_evolution_mode_show');
+    });
+
+    it('classifyChannelEnvelope maps explicit control phrases to control_request', () => {
+      const decision = classifyChannelEnvelope({
+        message_id: 'om_ctrl',
+        chat_id: 'oc_test',
+        content: '切换为按需进化',
+      });
+      expect(decision.kind).toBe('control_request');
+      expect(decision.request.action_id).toBe('daemon_evolution_mode_set');
+    });
+
+    it('classifier enqueues channel_control_action instead of changing mode directly', async () => {
+      const root = makeRoot();
+      writeOperatorBinding(root, 'alpha', 'ou_operator');
+      writePendingInbound(root, 'alpha', {
+        messageId: 'om_ctrl_enqueue',
+        chatId: 'oc_operator',
+        senderId: 'ou_operator',
+        content: '切换为按需进化',
+      });
+      await runChannelClassifierTask(root, 'alpha');
+      expect(resolveEvolutionMode(root, { subject: 'alpha' }).mode).toBe('continuous');
+      const queue = readChannelTaskQueue(root, 'alpha');
+      expect(queue.tasks.some((task) => task.type === 'channel_control_action')).toBe(true);
+    });
+
+    it('control executor applies evolution mode for bound operator', async () => {
+      const root = makeRoot();
+      writeOperatorBinding(root, 'alpha', 'ou_operator');
+      writePendingInbound(root, 'alpha', {
+        messageId: 'om_ctrl_exec',
+        chatId: 'oc_operator',
+        senderId: 'ou_operator',
+        content: '切换为按需进化',
+      });
+      await runChannelClassifierTask(root, 'alpha');
+      const claim = claimNextChannelTask(root, 'alpha', {
+        workerId: 'control-worker',
+        types: taskTypesForChannelRole('control'),
+      });
+      const result = await runChannelTask(root, 'alpha', claim.task);
+      expect(result.ok).toBe(true);
+      expect(resolveEvolutionMode(root, { subject: 'alpha' }).mode).toBe('on_demand');
+    });
+
+    it('control executor rejects write actions without operator binding', async () => {
+      const root = makeRoot();
+      writePendingInbound(root, 'alpha', {
+        messageId: 'om_ctrl_unbound',
+        chatId: 'oc_operator',
+        senderId: 'ou_operator',
+        content: '切换为按需进化',
+      });
+      await runChannelClassifierTask(root, 'alpha');
+      const claim = claimNextChannelTask(root, 'alpha', {
+        workerId: 'control-worker',
+        types: taskTypesForChannelRole('control'),
+      });
+      const result = await runChannelTask(root, 'alpha', claim.task);
+      expect(result.ok).toBe(false);
+      expect(result.reason).toBe('operator_not_bound');
+      expect(resolveEvolutionMode(root, { subject: 'alpha' }).mode).toBe('continuous');
+    });
+
+    it('control executor queues cycle start request', async () => {
+      const root = makeRoot();
+      writeOperatorBinding(root, 'alpha', 'ou_operator');
+      writePendingInbound(root, 'alpha', {
+        messageId: 'om_ctrl_cycle',
+        chatId: 'oc_operator',
+        senderId: 'ou_operator',
+        content: '启动一轮进化',
+      });
+      await runChannelClassifierTask(root, 'alpha');
+      const claim = claimNextChannelTask(root, 'alpha', {
+        workerId: 'control-worker',
+        types: taskTypesForChannelRole('control'),
+      });
+      const result = await runChannelTask(root, 'alpha', claim.task);
+      expect(result.ok).toBe(true);
+      expect(readPendingCycleStartRequest(root, 'alpha')).toBeTruthy();
+    });
+
+    it('presence replies after control action completes', async () => {
+      const root = makeRoot({
+        presence: { enabled: true, planner: 'deterministic', default_target: 'oc_operator' },
+      });
+      writeOperatorBinding(root, 'alpha', 'ou_operator');
+      writePendingInbound(root, 'alpha', {
+        messageId: 'om_ctrl_ack',
+        chatId: 'oc_operator',
+        senderId: 'ou_operator',
+        content: '切换为按需进化',
+      });
+      await runChannelClassifierTask(root, 'alpha');
+      const claim = claimNextChannelTask(root, 'alpha', {
+        workerId: 'control-worker',
+        types: taskTypesForChannelRole('control'),
+      });
+      await runChannelTask(root, 'alpha', claim.task);
+      const reactor = await runPresenceReactor(root, 'alpha', { force: true, allow_empty_claim: true });
+      expect(reactor.plan.kind).toBe('speak');
+      expect(reactor.plan.intents.some((intent) =>
+        intent.content_requirements?.kind === 'control_action_ack')).toBe(true);
     });
   });
 

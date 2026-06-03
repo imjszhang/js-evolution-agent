@@ -4,6 +4,7 @@ export const SPEECH_INTENT_KINDS = Object.freeze([
   'approval_ack',
   'verification_ack',
   'operator_fact_ack',
+  'control_action_ack',
   'greeting_ack',
   'proactive_signal',
   'custom',

@@ -6,7 +6,7 @@ import { resolveEvolutionMode, setSubjectEvolutionMode } from './evolution-mode.
 /**
  * Update subjects.json evolution.mode and emit side effects for operators / viewer SSE.
  */
-export function applyEvolutionModeChange(root, subject, mode, { recordEvent = true } = {}) {
+export function applyEvolutionModeChange(root, subject, mode, { recordEvent = true, trigger = 'cli' } = {}) {
   const before = resolveEvolutionMode(root, { subject });
   const result = setSubjectEvolutionMode(root, subject, mode);
   const after = resolveEvolutionMode(root, { subject });
@@ -18,7 +18,7 @@ export function applyEvolutionModeChange(root, subject, mode, { recordEvent = tr
       from: before.mode,
       to: after.mode,
       source: after.source,
-      trigger: 'cli',
+      trigger,
     });
   }
 

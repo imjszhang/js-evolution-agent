@@ -3,6 +3,14 @@ import { createIntelligenceStore } from '../intelligence/store.mjs';
 import { writePendingOperatorBrief } from '../intelligence/operator-briefs.mjs';
 import { runtimeForSubject } from '../cli/utils/evolve-runs.mjs';
 import { enqueueCycleStartRequestWithEvent } from '../cli/utils/cycle-dispatch.mjs';
+import {
+  buildControlRequestFromParsed,
+  confidenceMeetsMinimum,
+  getControlAction,
+  isRegisteredControlActionId,
+  parseControlRequestFromText,
+} from './control-actions.mjs';
+import { enqueueControlAction } from './wake.mjs';
 import { normalizeChannelEnvelope, nowIso } from './types.mjs';
 
 function makeStore(root, subject) {
@@ -17,6 +25,7 @@ const CLASSIFIER_OUTPUT_TYPES = new Set([
   'approval_request',
   'verification_request',
   'operator_fact',
+  'control_request',
   'observation',
   'ignore',
 ]);
@@ -67,6 +76,79 @@ export function decisionFromClassifierItem(item, envelope) {
         priority: 'medium',
         metadata: { source_ref: sourceRef, channel_envelope: envelopeNorm, classifier: item },
       },
+    };
+  }
+
+  if (classification === 'control_request') {
+    const actionId = String(item?.action_id ?? '').trim();
+    const action = getControlAction(actionId);
+    if (!isRegisteredControlActionId(actionId) || !action) {
+      return {
+        kind: 'observation',
+        record: {
+          kind: 'observation',
+          source: 'channel',
+          content: text,
+          confidence: 'medium',
+          tags: ['channel', envelopeNorm.channel, 'classifier_downgraded_control'],
+          recorded_at: nowIso(),
+          channel_source: sourceRef,
+          metadata: {
+            channel_envelope: envelopeNorm,
+            classifier: item,
+            downgrade_reason: 'unknown_control_action',
+          },
+        },
+      };
+    }
+    if (!confidenceMeetsMinimum(confidence, action.min_confidence)) {
+      return {
+        kind: 'observation',
+        record: {
+          kind: 'observation',
+          source: 'channel',
+          content: text,
+          confidence: 'medium',
+          tags: ['channel', envelopeNorm.channel, 'classifier_downgraded_control'],
+          recorded_at: nowIso(),
+          channel_source: sourceRef,
+          metadata: {
+            channel_envelope: envelopeNorm,
+            classifier: item,
+            downgrade_reason: 'control_request_requires_high_confidence',
+          },
+        },
+      };
+    }
+    const paramsResult = action.validateParams(item?.params ?? {});
+    if (!paramsResult.ok) {
+      return {
+        kind: 'observation',
+        record: {
+          kind: 'observation',
+          source: 'channel',
+          content: text,
+          confidence: 'medium',
+          tags: ['channel', envelopeNorm.channel, 'classifier_downgraded_control'],
+          recorded_at: nowIso(),
+          channel_source: sourceRef,
+          metadata: {
+            channel_envelope: envelopeNorm,
+            classifier: item,
+            downgrade_reason: paramsResult.reason ?? 'invalid_control_params',
+          },
+        },
+      };
+    }
+    return {
+      kind: 'control_request',
+      request: buildControlRequestFromParsed(envelopeNorm, {
+        action_id: actionId,
+        params: paramsResult.params ?? {},
+      }, {
+        confidence,
+        classifier: item,
+      }),
     };
   }
 
@@ -154,6 +236,14 @@ export function classifyChannelEnvelope(envelopeInput = {}) {
     };
   }
 
+  const parsedControl = parseControlRequestFromText(text);
+  if (parsedControl) {
+    return {
+      kind: 'control_request',
+      request: buildControlRequestFromParsed(envelope, parsedControl, { confidence: 'high' }),
+    };
+  }
+
   if (/事实|确认|口径|baseline|fact|confirmed|已确认|记住/.test(lower)) {
     return {
       kind: 'operator_fact',
@@ -221,6 +311,22 @@ export function ingestChannelEnvelope(root, subject, envelopeInput, { classifica
       file,
       brief,
       cycle_start_request: cycleRequest.request,
+    };
+  }
+  if (resolved.kind === 'control_request') {
+    const request = {
+      ...resolved.request,
+      idempotency_key: resolved.request.idempotency_key
+        ?? `control:${subject}:${envelope.message_id}:${resolved.request.action_id}`,
+    };
+    const enqueueResult = enqueueControlAction(root, subject, request);
+    return {
+      kind: 'control_request',
+      written: 1,
+      request,
+      control_task: enqueueResult.task ?? null,
+      control_created: enqueueResult.created ?? false,
+      control_reason: enqueueResult.reason ?? null,
     };
   }
   const store = makeStore(root, subject);

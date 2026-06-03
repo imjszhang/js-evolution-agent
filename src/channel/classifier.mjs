@@ -61,11 +61,16 @@ async function classifyBatchWithLlm(entries, { aiClient = null, config } = {}) {
         content: [
           'You classify inbound operator channel messages for js-evolution-agent.',
           'Return JSON only: {"items":[...]}',
-          'Each item: message_id, classification, confidence, summary, claims_to_verify, operator_fact_content, rationale, safety_flags.',
-          'classification must be one of: approval_request, verification_request, operator_fact, observation, ignore.',
+          'Each item: message_id, classification, confidence, summary, claims_to_verify, operator_fact_content, action_id, params, rationale, safety_flags.',
+          'classification must be one of: approval_request, verification_request, operator_fact, control_request, observation, ignore.',
           'Use approval_request only when the operator clearly approves or requests publish/release.',
           'Use verification_request when they ask to verify/check/investigate something next cycle.',
           'Use operator_fact only when they explicitly ask to remember/confirm a long-term fact (high confidence).',
+          'Use control_request only for explicit local control commands with registered action_id:',
+          '- daemon_evolution_mode_set + params.mode continuous|on_demand when switching evolution mode.',
+          '- daemon_evolution_mode_show when asking current evolution mode.',
+          '- daemon_cycle_request when explicitly asking to start/request a new evolution cycle.',
+          'For control_request, confidence must be high and params must be explicit.',
           'When uncertain, use observation.',
           'Never output approval_granted or claim execution already happened.',
         ].join('\n'),
@@ -93,12 +98,16 @@ function classifyBatchDeterministic(entries) {
       classification = decision.brief?.kind === 'approval_request' ? 'approval_request' : 'verification_request';
     } else if (decision.kind === 'operator_fact') {
       classification = 'operator_fact';
+    } else if (decision.kind === 'control_request') {
+      classification = 'control_request';
     }
     byId.set(envelope.message_id, {
       message_id: envelope.message_id,
       classification,
-      confidence: classification === 'operator_fact' ? 'high' : 'medium',
+      confidence: classification === 'operator_fact' || classification === 'control_request' ? 'high' : 'medium',
       summary: String(envelope.content ?? '').slice(0, 500),
+      action_id: decision.request?.action_id ?? null,
+      params: decision.request?.params ?? null,
       rationale: 'deterministic_fallback',
     });
   }
@@ -296,10 +305,13 @@ export async function runChannelClassifierTask(root, subject, input = {}) {
   }
 
   if (processed.length) {
-    requestExpressionRecompute(root, subject, {
-      reason: 'inbound_classified',
-      payload_summary: { count: processed.length },
-    });
+    const shouldWakePresence = processed.some((entry) => entry.ingest_result?.kind !== 'control_request');
+    if (shouldWakePresence) {
+      requestExpressionRecompute(root, subject, {
+        reason: 'inbound_classified',
+        payload_summary: { count: processed.length },
+      });
+    }
   }
 
   recordChannelEvent(root, subject, {
