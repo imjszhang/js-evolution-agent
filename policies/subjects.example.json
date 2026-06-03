@@ -19,9 +19,16 @@
       "channels": {
         "presence": {
           "enabled": true,
-          "planner": "deterministic",
+          "planner": "llm",
           "max_actions_per_tick": 2,
-          "cooldown_ms": 1800000
+          "cooldown_ms": 1800000,
+          "max_messages_per_hour": 8,
+          "decision_timeout_ms": 30000,
+          "speech_generation_timeout_ms": 25000,
+          "llm": {
+            "timeout": 25,
+            "thinking": "low"
+          }
         },
         "feishu": {
           "enabled": true,
