@@ -120,6 +120,8 @@ export function channelPanelFingerprint(state) {
     message_id: ev.message_id ?? null,
     recorded_at: ev.recorded_at ?? null,
   }));
+  const workers = channel.workers ?? {};
+  const presence = channel.presence ?? {};
   return JSON.stringify({
     health: health.status ?? null,
     health_ok: health.ok ?? null,
@@ -131,6 +133,12 @@ export function channelPanelFingerprint(state) {
     inbound_pending: channel.inbound?.pending_count ?? 0,
     outbox_pending: channel.outbox?.pending_count ?? 0,
     recent_events: recent,
+    workers_running: workers.running_count ?? 0,
+    reactor_status: presence.reactor?.status ?? null,
+    pending_speech: (presence.pending_speech_generation ?? []).length,
+    classifier_mode: channel.classifier?.mode ?? null,
+    feishu_listener: Boolean(channel.feishu?.listener?.running),
+    feishu_reload_pending: Boolean(channel.feishu?.reload?.pending),
   });
 }
 
@@ -171,6 +179,24 @@ export function buildDetailCacheFromData(data, mode) {
  * @param {object} data
  * @param {'cycle'|'round'} mode
  */
+/**
+ * @param {object|null|undefined} obs
+ */
+export function observabilityFingerprint(obs) {
+  if (!obs) return '';
+  const items = (obs.attention?.items ?? []).slice(0, 12).map((item) => ({
+    severity: item.severity,
+    kind: item.kind,
+    title: item.title,
+  }));
+  return JSON.stringify({
+    summary: obs.attention?.summary ?? null,
+    items,
+    pending_briefs: obs.operator_inputs?.pending_count ?? 0,
+    pending_speech: obs.channel_diagnostics?.presence?.pending_speech_generation?.length ?? 0,
+  });
+}
+
 export function detailCacheNeedsPatch(cache, data, mode) {
   if (!cache || cache.cycle_id !== data.cycle_id || cache.mode !== mode) {
     return { header: true, tasks: mode === 'cycle', diary: true };

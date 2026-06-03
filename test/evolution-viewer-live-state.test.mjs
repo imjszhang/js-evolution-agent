@@ -5,6 +5,7 @@ import {
   channelPanelFingerprint,
   daemonBarFingerprint,
   detailCacheNeedsPatch,
+  observabilityFingerprint,
   stepsFingerprint,
   tasksFingerprint,
 } from '../tools/evolution-viewer/public/live-state.js';
@@ -190,5 +191,57 @@ describe('live-state fingerprints', () => {
     }, 'round');
     expect(diaryAdded.diary).toBe(true);
     expect(diaryAdded.header).toBe(false);
+  });
+
+  it('observabilityFingerprint changes when attention items change', () => {
+    const base = observabilityFingerprint({
+      attention: {
+        summary: { count: 1, highest_severity: 'info' },
+        items: [{ severity: 'info', kind: 'pending_speech', title: '待生成话术' }],
+      },
+      operator_inputs: { pending_count: 0 },
+      channel_diagnostics: { presence: { pending_speech_generation: [] } },
+    });
+    const critical = observabilityFingerprint({
+      attention: {
+        summary: { count: 1, highest_severity: 'critical' },
+        items: [{ severity: 'critical', kind: 'stuck_step', title: 'Step 卡住' }],
+      },
+      operator_inputs: { pending_count: 0 },
+      channel_diagnostics: { presence: { pending_speech_generation: [] } },
+    });
+    expect(base).not.toBe(critical);
+  });
+
+  it('channelPanelFingerprint includes presence and feishu signals', () => {
+    const a = channelPanelFingerprint({
+      channel: {
+        health: { status: 'healthy', ok: true },
+        worker: { running: true, stale: false },
+        tasks: { counts: { pending: 0, running: 0 }, failed: [], running: [] },
+        inbound: { pending_count: 0 },
+        outbox: { pending_count: 0 },
+        recent_events: [],
+        workers: { running_count: 2, roles: [{ role: 'presence', running: true }] },
+        presence: { reactor: { status: 'running' }, pending_speech_generation: [{ id: '1' }] },
+        classifier: { mode: 'llm' },
+        feishu: { listener: { running: true }, reload: { pending: false } },
+      },
+    });
+    const b = channelPanelFingerprint({
+      channel: {
+        health: { status: 'healthy', ok: true },
+        worker: { running: true, stale: false },
+        tasks: { counts: { pending: 0, running: 0 }, failed: [], running: [] },
+        inbound: { pending_count: 0 },
+        outbox: { pending_count: 0 },
+        recent_events: [],
+        workers: { running_count: 0, roles: [] },
+        presence: { reactor: { status: 'idle' }, pending_speech_generation: [] },
+        classifier: { mode: 'llm' },
+        feishu: { listener: { running: false }, reload: { pending: true } },
+      },
+    });
+    expect(a).not.toBe(b);
   });
 });

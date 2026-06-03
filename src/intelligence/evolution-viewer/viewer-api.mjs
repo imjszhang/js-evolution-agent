@@ -13,6 +13,10 @@ import {
   readTickHints,
 } from './daemon-sse.mjs';
 import { buildIntelToExecMapFromRuntimeSync } from './event-pairing.mjs';
+import {
+  buildSubjectObservability,
+  cycleDiagnosticsForId,
+} from './observability-projection.mjs';
 
 const PING_INTERVAL_MS = 25_000;
 const DEFAULT_CACHE_SIZE = 30;
@@ -133,9 +137,18 @@ function evolutionEventsPath(runtimeRoot) {
  * @param {object} runtime
  * @param {object} daemon
  */
-export function daemonSummaryFromProjection(runtime, daemon) {
+export function daemonSummaryFromProjection(runtime, daemon, { runtimeRoot = null } = {}) {
   const counts = daemon.tasks?.counts ?? {};
   const channel = daemon.channel ?? {};
+  let attention = { count: 0, highest_severity: null, critical: 0, warning: 0, info: 0 };
+  if (runtimeRoot) {
+    const obs = buildSubjectObservability({
+      subject: runtime.subject,
+      runtimeRoot,
+      daemon,
+    });
+    attention = obs.attention.summary;
+  }
   return {
     subject: runtime.subject,
     namespace: runtime.dataNamespace,
@@ -150,6 +163,7 @@ export function daemonSummaryFromProjection(runtime, daemon) {
     channel_inbound_pending: channel.inbound?.pending_count ?? 0,
     channel_outbox_pending: channel.outbox?.pending_count ?? 0,
     last_tick_at: daemon.last_tick_at ?? null,
+    attention,
   };
 }
 
@@ -447,11 +461,14 @@ function createSubjectContext(runtime, projectRoot, catalogLimit) {
   let catalogCacheAt = 0;
   let daemonCache = null;
   let daemonCacheAt = 0;
+  let observabilityCache = null;
+  let observabilityCacheAt = 0;
   const CATALOG_TTL_MS = 2000;
 
   function invalidateRuntimeCaches(cycleId = null) {
     catalogCacheAt = 0;
     daemonCacheAt = 0;
+    observabilityCacheAt = 0;
     if (cycleId) {
       detailCache.delete(cycleId);
       cycleDetailCache.delete(cycleId);
@@ -496,6 +513,21 @@ function createSubjectContext(runtime, projectRoot, catalogLimit) {
     return detail;
   }
 
+  function getObservability(force = false) {
+    const now = Date.now();
+    if (!force && observabilityCache && now - observabilityCacheAt < CATALOG_TTL_MS) {
+      return observabilityCache;
+    }
+    const daemon = getDaemon(force);
+    observabilityCache = buildSubjectObservability({
+      subject: runtime.subject,
+      runtimeRoot: runtime.runtimeRoot,
+      daemon,
+    });
+    observabilityCacheAt = now;
+    return observabilityCache;
+  }
+
   function getCycleDetail(cycleId) {
     const cached = cycleDetailCache.get(cycleId);
     if (cached) return cached;
@@ -507,7 +539,13 @@ function createSubjectContext(runtime, projectRoot, catalogLimit) {
       cycleId,
       diariesByIntel: catalog._diariesByIntel,
     });
-    if (detail) cycleDetailCache.set(cycleId, detail);
+    if (!detail) return null;
+    const obs = getObservability();
+    detail.diagnostics = cycleDiagnosticsForId(cycleId, obs);
+    detail.observability_attention = (obs.attention?.items ?? []).filter(
+      (item) => item.refs?.cycle_id === cycleId,
+    );
+    cycleDetailCache.set(cycleId, detail);
     return detail;
   }
 
@@ -518,6 +556,7 @@ function createSubjectContext(runtime, projectRoot, catalogLimit) {
     invalidateRuntimeCaches,
     getCatalog,
     getDaemon,
+    getObservability,
     getRoundDetail,
     getCycleDetail,
     bumpDaemonCache,
@@ -526,6 +565,7 @@ function createSubjectContext(runtime, projectRoot, catalogLimit) {
       cycleDetailCache.clear();
       catalogCacheAt = 0;
       daemonCacheAt = 0;
+      observabilityCacheAt = 0;
     },
   };
 }
@@ -638,7 +678,7 @@ export function createViewerApiServer({ runtime, runtimes, projectRoot, limit, p
         const summaries = runtimeList.map((rt) => {
           const ctx = contexts.get(rt.subject);
           const daemon = ctx.getDaemon();
-          return daemonSummaryFromProjection(rt, daemon);
+          return daemonSummaryFromProjection(rt, daemon, { runtimeRoot: rt.runtimeRoot });
         });
         jsonResponse(res, 200, {
           default_subject: defaultSubject,
@@ -678,6 +718,14 @@ export function createViewerApiServer({ runtime, runtimes, projectRoot, limit, p
             subject: subjectName,
             events: readRecentDaemonEvents(ctx.store, subjectName, effectiveLimit),
           });
+          return;
+        }
+        if (rest === 'observability') {
+          res.writeHead(200, {
+            'Content-Type': 'application/json; charset=utf-8',
+            'Cache-Control': 'no-store',
+          });
+          res.end(JSON.stringify(ctx.getObservability()));
           return;
         }
         const roundScoped = rest.match(/^rounds\/([^/]+)$/);
@@ -721,6 +769,15 @@ export function createViewerApiServer({ runtime, runtimes, projectRoot, limit, p
           'Cache-Control': 'no-store',
         });
         res.end(JSON.stringify(legacyCtx.getDaemon()));
+        return;
+      }
+
+      if (pathname === '/api/observability') {
+        res.writeHead(200, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store',
+        });
+        res.end(JSON.stringify(legacyCtx.getObservability()));
         return;
       }
 

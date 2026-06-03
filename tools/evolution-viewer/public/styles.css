@@ -251,6 +251,182 @@ body {
   display: none;
 }
 
+.attention-panel {
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 8px;
+  font-size: 0.82rem;
+}
+
+.attention-panel.hidden {
+  display: none;
+}
+
+.attention-header {
+  margin-bottom: 8px;
+}
+
+.attention-title {
+  font-weight: 600;
+}
+
+.attention-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.attention-item {
+  padding: 8px 0;
+  border-top: 1px solid #fde68a;
+}
+
+.attention-item:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+.attention-item.severity-critical {
+  border-left: 3px solid #dc2626;
+  padding-left: 8px;
+}
+
+.attention-item.severity-warning {
+  border-left: 3px solid #d97706;
+  padding-left: 8px;
+}
+
+.attention-item-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+}
+
+.attention-severity {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.attention-subject {
+  font-size: 0.75rem;
+  color: #1d4ed8;
+}
+
+.attention-item-title {
+  font-weight: 600;
+}
+
+.attention-summary {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.attention-cmd {
+  display: block;
+  margin-top: 4px;
+  padding: 4px 6px;
+  background: #f3f4f6;
+  border-radius: 4px;
+  font-size: 0.72rem;
+  word-break: break-all;
+}
+
+.daemon-chip.attention-critical {
+  background: #fef2f2;
+  color: #991b1b;
+  border-color: #fecaca;
+}
+
+.daemon-chip.attention-warning {
+  background: #fff7ed;
+  color: #c2410c;
+  border-color: #fed7aa;
+}
+
+.daemon-chip.attention-info {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border-color: #bfdbfe;
+}
+
+.channel-details {
+  margin: 8px 0;
+  font-size: 0.78rem;
+}
+
+.channel-details summary {
+  cursor: pointer;
+  color: #1d4ed8;
+  font-weight: 500;
+}
+
+.channel-details-body {
+  padding: 6px 0 4px 8px;
+  border-left: 2px solid var(--border);
+}
+
+.channel-role-row,
+.channel-detail-line {
+  margin: 2px 0;
+}
+
+.channel-role-name {
+  font-weight: 600;
+}
+
+.channel-role-meta.stale {
+  color: #c2410c;
+}
+
+.channel-role-meta.zombie {
+  color: #991b1b;
+}
+
+.channel-detail-muted {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.diagnostics-panel {
+  border-left: 4px solid #d97706;
+  margin-bottom: 12px;
+}
+
+.diagnostics-panel h3 {
+  margin-top: 0;
+}
+
+.diag-block {
+  margin: 8px 0;
+  font-size: 0.85rem;
+}
+
+.diag-block ul {
+  margin: 4px 0 0;
+  padding-left: 1.2rem;
+}
+
+.diag-critical {
+  color: #991b1b;
+}
+
+.diag-warning {
+  color: #c2410c;
+}
+
+.tasks-table .task-row-failed td {
+  color: #991b1b;
+}
+
 .subject-overview {
   display: flex;
   flex-wrap: wrap;

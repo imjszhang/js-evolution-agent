@@ -299,6 +299,12 @@ describe('createViewerApiServer', () => {
     expect(body.subjects[0].subject).toBe(TEST_SUBJECT);
     expect(body.subjects[0].namespace).toBe(TEST_SUBJECT);
     expect(body.subjects[0].health).toBeTruthy();
+    expect(body.subjects[0].attention).toMatchObject({
+      count: expect.any(Number),
+      critical: expect.any(Number),
+      warning: expect.any(Number),
+      info: expect.any(Number),
+    });
   });
 
   it('GET /api/subjects/:subject/manifest returns rounds metadata', async () => {
@@ -352,6 +358,32 @@ describe('createViewerApiServer', () => {
     expect(detail.cycle_id).toBe(openCycle.cycle_id);
     expect(detail.has_report).toBe(false);
     expect(detail.steps.intel.status).toBe('pending');
+    expect(detail.diagnostics).toMatchObject({
+      stuck_steps: expect.any(Array),
+      drift_steps: expect.any(Array),
+    });
+    expect(detail.observability_attention).toEqual(expect.any(Array));
+  });
+
+  it('GET /api/subjects/:subject/observability returns read-only projection', async () => {
+    createWorkerState(root, TEST_SUBJECT, { workerId: 'viewer-obs', staleMs: 60_000 });
+    const obs = await httpGetJson(port, `/api/subjects/${TEST_SUBJECT}/observability`);
+    expect(obs.schema_version).toBe(1);
+    expect(obs.subject).toBe(TEST_SUBJECT);
+    expect(obs.attention.items).toEqual(expect.any(Array));
+    expect(obs.attention.summary).toMatchObject({ count: expect.any(Number) });
+    expect(obs.cycle_diagnostics).toMatchObject({
+      open_count: expect.any(Number),
+      stuck_steps: expect.any(Array),
+      drift_steps: expect.any(Array),
+    });
+    expect(obs.operator_inputs).toMatchObject({ pending_count: expect.any(Number) });
+  });
+
+  it('GET /api/observability returns default subject projection (legacy)', async () => {
+    const obs = await httpGetJson(port, '/api/observability');
+    expect(obs.subject).toBe(TEST_SUBJECT);
+    expect(obs.attention.summary).toBeTruthy();
   });
 
   it('GET /api/events/recent returns daemon events', async () => {

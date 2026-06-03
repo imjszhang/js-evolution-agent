@@ -5,6 +5,7 @@ import {
   channelPanelFingerprint,
   daemonBarFingerprint,
   detailCacheNeedsPatch,
+  observabilityFingerprint,
 } from './live-state.js';
 
 const timelineEl = document.getElementById('timeline');
@@ -14,6 +15,7 @@ const filterEl = document.getElementById('filter');
 const liveStatusEl = document.getElementById('live-status');
 const subjectOverviewEl = document.getElementById('subject-overview');
 const daemonBarEl = document.getElementById('daemon-bar');
+const attentionPanelEl = document.getElementById('attention-panel');
 const activeCyclesEl = document.getElementById('active-cycles');
 const channelPanelEl = document.getElementById('channel-panel');
 const eventFeedEl = document.getElementById('event-feed');
@@ -33,7 +35,9 @@ const feedEventsBySubject = {};
 const seenCycleIdsBySubject = {};
 /** @type {Record<string, Set<string>>} */
 const newCycleIdsBySubject = {};
-/** @type {Record<string, { bar: string, cycles: string, channel: string }>} */
+/** @type {Record<string, object|null>} */
+const observabilityBySubject = {};
+/** @type {Record<string, { bar: string, cycles: string, channel: string, attention: string }>} */
 const panelFpBySubject = {};
 
 let activeCycleId = null;
@@ -47,9 +51,11 @@ let reconnectDelayMs = 5000;
 let reconnectTimer = null;
 let daemonPollTimer = null;
 let loadDaemonTimer = null;
+let loadObservabilityTimer = null;
 let patchDetailTimer = null;
 
 const LOAD_DAEMON_DEBOUNCE_MS = 400;
+const LOAD_OBSERVABILITY_DEBOUNCE_MS = 400;
 const PATCH_DETAIL_DEBOUNCE_MS = 500;
 
 const EVENT_LABELS = {
@@ -147,13 +153,23 @@ function getNewCycleIds() {
   return newCycleIdsBySubject[activeSubject];
 }
 
+function getObservability() {
+  return activeSubject ? observabilityBySubject[activeSubject] ?? null : null;
+}
+
 function getPanelFp() {
-  if (!activeSubject) return { bar: '', cycles: '', channel: '' };
+  if (!activeSubject) return { bar: '', cycles: '', channel: '', attention: '' };
   if (!panelFpBySubject[activeSubject]) {
-    panelFpBySubject[activeSubject] = { bar: '', cycles: '', channel: '' };
+    panelFpBySubject[activeSubject] = { bar: '', cycles: '', channel: '', attention: '' };
   }
   return panelFpBySubject[activeSubject];
 }
+
+const ATTENTION_SEVERITY_LABELS = {
+  critical: '严重',
+  warning: '警告',
+  info: '提示',
+};
 
 function subjectApiBase(subject) {
   return `/api/subjects/${encodeURIComponent(subject)}`;
@@ -204,6 +220,15 @@ function formatTimeShort(iso) {
   }
 }
 
+function escapeHtml(text) {
+  if (text == null) return '';
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 function truncate(text, max = 120) {
   const s = String(text ?? '').replace(/\s+/g, ' ').trim();
   if (s.length <= max) return s;
@@ -252,11 +277,14 @@ function renderStepBadges(steps, { compact = false } = {}) {
       const raw = steps[name];
       const status = typeof raw === 'string' ? raw : (raw.status ?? 'pending');
       const label = labels[name] ?? name;
+      const err = typeof raw === 'object' && raw?.error ? String(raw.error).slice(0, 80) : '';
       if (compact) {
         const sym = status === 'done' ? '✓' : status === 'running' ? '▶' : status === 'failed' ? '✗' : '·';
-        return `<span class="step-dot step-${status}" title="${label}: ${status}">${sym}</span>`;
+        const errHint = err ? ` — ${err}` : '';
+        return `<span class="step-dot step-${status}" title="${label}: ${status}${errHint}">${sym}</span>`;
       }
-      return `<span class="step-badge step-${status}" title="${name}">${label}: ${status}</span>`;
+      const errPart = err ? ` (${err})` : '';
+      return `<span class="step-badge step-${status}" title="${name}">${label}: ${status}${errPart}</span>`;
     });
   if (!items.length) return '';
   const cls = compact ? 'step-dots' : 'step-badges';
@@ -332,6 +360,12 @@ function renderSubjectOverview() {
     const running = daemon?.tasks?.counts?.running ?? summary.running_tasks ?? 0;
     const inPending = daemon?.channel?.inbound?.pending_count ?? summary.channel_inbound_pending ?? 0;
     const outPending = daemon?.channel?.outbox?.pending_count ?? summary.channel_outbox_pending ?? 0;
+    const att = summary.attention
+      ?? observabilityBySubject[summary.subject]?.attention?.summary
+      ?? null;
+    const attChip = att?.count > 0 && att.highest_severity
+      ? `<span class="daemon-chip attention-${att.highest_severity}" title="${att.critical ?? 0} 严重 · ${att.warning ?? 0} 警告 · ${att.info ?? 0} 提示">关注 ${att.count}</span>`
+      : '';
     return `
       <button type="button" class="daemon-card${active}" data-subject="${summary.subject}" aria-pressed="${summary.subject === activeSubject}">
         <span class="daemon-card-title">${summary.subject}</span>
@@ -341,6 +375,7 @@ function renderSubjectOverview() {
           <span class="daemon-chip worker-${workerOn ? 'on' : 'off'}">${workerOn ? 'Worker 运行' : 'Worker 停'}</span>
           <span class="daemon-chip">open ${openCycles}</span>
           <span class="daemon-chip">${pending}/${running}</span>
+          ${attChip}
           ${inPending || outPending ? `<span class="daemon-chip channel-attention">Ch ${inPending}/${outPending}</span>` : ''}
         </span>
       </button>
@@ -434,9 +469,116 @@ function renderDaemonBar() {
   `;
 }
 
+function collectAttentionItems() {
+  const items = [];
+  if (isMultiSubject()) {
+    for (const s of subjectsList) {
+      for (const item of observabilityBySubject[s.subject]?.attention?.items ?? []) {
+        items.push(item);
+      }
+    }
+  } else {
+    for (const item of getObservability()?.attention?.items ?? []) {
+      items.push(item);
+    }
+  }
+  const order = { critical: 0, warning: 1, info: 2 };
+  return items
+    .sort((a, b) => (order[a.severity] ?? 9) - (order[b.severity] ?? 9))
+    .slice(0, 24);
+}
+
+function renderAttentionPanel() {
+  if (!attentionPanelEl) return;
+  const items = collectAttentionItems();
+  if (!items.length) {
+    attentionPanelEl.classList.add('hidden');
+    attentionPanelEl.innerHTML = '';
+    return;
+  }
+  attentionPanelEl.classList.remove('hidden');
+  attentionPanelEl.innerHTML = `
+    <div class="attention-header">
+      <span class="attention-title">待关注 (${items.length})</span>
+    </div>
+    <ul class="attention-list">
+      ${items.map((item) => `
+        <li class="attention-item severity-${item.severity ?? 'info'}">
+          <div class="attention-item-head">
+            <span class="attention-severity">${ATTENTION_SEVERITY_LABELS[item.severity] ?? item.severity}</span>
+            ${isMultiSubject() && item.subject ? `<span class="attention-subject">${escapeHtml(item.subject)}</span>` : ''}
+            <span class="attention-item-title">${escapeHtml(item.title)}</span>
+          </div>
+          ${item.summary ? `<p class="attention-summary">${escapeHtml(item.summary)}</p>` : ''}
+          ${item.suggested_command ? `<code class="attention-cmd">${escapeHtml(item.suggested_command)}</code>` : ''}
+        </li>
+      `).join('')}
+    </ul>
+  `;
+}
+
+function formatChannelRoleWorkers(workers) {
+  const roles = workers?.roles ?? [];
+  if (!roles.length) return '<p class="channel-detail-muted">无分 role worker 记录</p>';
+  return roles.map((r) => {
+    const stale = r.stale ? ' stale' : '';
+    const zombie = r.zombie ? ' zombie' : '';
+    return `<div class="channel-role-row"><span class="channel-role-name">${escapeHtml(r.role)}</span> <span class="channel-role-meta${stale}${zombie}">${r.running ? '运行' : '停'} · pid ${r.pid_alive ? '✓' : '✗'}${stale ? ' · stale' : ''}${zombie ? ' · zombie' : ''}</span></div>`;
+  }).join('');
+}
+
+function renderChannelPresenceDetails(channel) {
+  if (!channel) return '';
+  const workers = channel.workers ?? {};
+  const classifier = channel.classifier ?? {};
+  const presence = channel.presence ?? {};
+  const reactor = presence.reactor ?? null;
+  const pendingSpeech = presence.pending_speech_generation ?? [];
+  const feishu = channel.feishu ?? {};
+  const listener = feishu.listener ?? {};
+  const reload = feishu.reload ?? {};
+
+  const classifierLine = classifier.enabled === false
+    ? 'Classifier: 已禁用'
+    : `Classifier: ${classifier.mode ?? '—'} · 间隔 ${classifier.interval_ms ?? '—'}ms · batch ${classifier.batch_size ?? '—'}`;
+
+  const reactorStatus = reactor?.status ?? 'idle';
+  const reactorDeadline = reactor?.deadline_at
+    ? ` · 截止 ${formatTimeShort(reactor.deadline_at)}`
+    : '';
+
+  const listenerLine = listener.running
+    ? `Feishu WS: 运行${listener.fingerprint_stale ? ' (配置过期)' : ''}`
+    : 'Feishu WS: 未运行';
+  const reloadLine = reload.pending
+    ? `热加载 pending: ${escapeHtml(reload.request?.reason ?? 'reload')}`
+    : reload.last_error
+      ? `上次热加载错误: ${escapeHtml(String(reload.last_error).slice(0, 80))}`
+      : '';
+
+  return `
+    <details class="channel-details">
+      <summary>Presence / Classifier / Feishu</summary>
+      <div class="channel-details-body">
+        <div class="channel-subheading">Role workers (${workers.running_count ?? 0} 运行)</div>
+        ${formatChannelRoleWorkers(workers)}
+        <div class="channel-subheading">Classifier</div>
+        <p class="channel-detail-line">${escapeHtml(classifierLine)}</p>
+        <div class="channel-subheading">Presence reactor</div>
+        <p class="channel-detail-line">${escapeHtml(reactorStatus)}${reactorDeadline}</p>
+        ${pendingSpeech.length ? `<p class="channel-detail-line channel-stat-warn">待生成话术 ${pendingSpeech.length}</p>` : ''}
+        <div class="channel-subheading">Feishu</div>
+        <p class="channel-detail-line">${escapeHtml(listenerLine)}</p>
+        ${reloadLine ? `<p class="channel-detail-line">${reloadLine}</p>` : ''}
+      </div>
+    </details>
+  `;
+}
+
 function renderChannelPanel() {
   if (!channelPanelEl) return;
-  const channel = getDaemonState()?.channel;
+  const channel = getDaemonState()?.channel
+    ?? getObservability()?.channel_diagnostics;
   if (!channel) {
     channelPanelEl.innerHTML = '<p class="feed-empty">Channel 未初始化</p>';
     return;
@@ -447,8 +589,8 @@ function renderChannelPanel() {
   const counts = channel.tasks?.counts ?? {};
   const running = channel.tasks?.running ?? [];
   const failed = channel.tasks?.failed ?? [];
-  const inPending = channel.inbound?.pending_count ?? 0;
-  const outPending = channel.outbox?.pending_count ?? 0;
+  const inPending = channel.inbound?.pending_count ?? channel.inbound_pending ?? 0;
+  const outPending = channel.outbox?.pending_count ?? channel.outbox_pending ?? 0;
   const healthClass = health.status ?? 'unknown';
   const workerText = worker.running
     ? `运行中${worker.stale ? ' (stale)' : ''}`
@@ -467,14 +609,14 @@ function renderChannelPanel() {
   let runningHtml = '';
   if (running.length) {
     runningHtml = `<div class="channel-subheading">运行中任务</div>${running.map((t) => `
-      <div class="channel-task-row"><code>${t.task_id}</code> · ${t.type}</div>
+      <div class="channel-task-row"><code>${escapeHtml(t.task_id)}</code> · ${escapeHtml(t.type)}</div>
     `).join('')}`;
   }
 
   let failedHtml = '';
   if (failed.length) {
     failedHtml = `<div class="channel-subheading channel-subheading-warn">失败任务</div>${failed.slice(0, 3).map((t) => `
-      <div class="channel-task-row channel-task-failed">${t.type} · ${t.last_error_code ?? 'error'}</div>
+      <div class="channel-task-row channel-task-failed">${escapeHtml(t.type)} · ${escapeHtml(t.last_error_code ?? 'error')}</div>
     `).join('')}`;
   }
 
@@ -484,11 +626,15 @@ function renderChannelPanel() {
     eventsHtml = events.slice(0, 10).map((ev) => {
       const time = formatTimeShort(ev.recorded_at);
       const errClass = ev.status && ev.status !== 'ok' ? ' channel-event-error' : '';
-      return `<div class="feed-row channel-event-row${errClass}"><span class="feed-time">${time}</span><span class="feed-label" title="${ev.type ?? ''}">${formatChannelEventLabel(ev)}</span></div>`;
+      return `<div class="feed-row channel-event-row${errClass}"><span class="feed-time">${time}</span><span class="feed-label" title="${escapeHtml(ev.type ?? '')}">${formatChannelEventLabel(ev)}</span></div>`;
     }).join('');
   }
 
-  channelPanelEl.innerHTML = `${statsHtml}${runningHtml}${failedHtml}<div class="channel-subheading">最近事件</div><div class="channel-event-feed">${eventsHtml}</div>`;
+  const presenceDetails = renderChannelPresenceDetails(
+    getDaemonState()?.channel ?? null,
+  );
+
+  channelPanelEl.innerHTML = `${statsHtml}${presenceDetails}${runningHtml}${failedHtml}<div class="channel-subheading">最近事件</div><div class="channel-event-feed">${eventsHtml}</div>`;
 }
 
 function renderActiveCycles() {
@@ -524,10 +670,56 @@ function renderActiveCycles() {
   }
 }
 
+function applyObservabilityState(subject, next) {
+  if (!subject || !next) return null;
+  if (!panelFpBySubject[subject]) {
+    panelFpBySubject[subject] = { bar: '', cycles: '', channel: '', attention: '' };
+  }
+  const fp = panelFpBySubject[subject];
+  const attFp = observabilityFingerprint(next);
+  const changed = attFp !== fp.attention;
+  observabilityBySubject[subject] = next;
+  if (subject === activeSubject && changed) {
+    fp.attention = attFp;
+    renderAttentionPanel();
+  }
+  renderSubjectOverview();
+  return next;
+}
+
+async function fetchObservabilityForSubject(subject) {
+  try {
+    const res = await fetch(`${subjectApiBase(subject)}/observability`, { cache: 'no-store' });
+    if (!res.ok) return null;
+    const next = await res.json();
+    return applyObservabilityState(subject, next);
+  } catch {
+    return null;
+  }
+}
+
+function scheduleLoadObservability(subject = activeSubject) {
+  if (!subject) return;
+  if (loadObservabilityTimer) clearTimeout(loadObservabilityTimer);
+  loadObservabilityTimer = setTimeout(() => {
+    loadObservabilityTimer = null;
+    void fetchObservabilityForSubject(subject);
+    if (isMultiSubject()) {
+      for (const s of subjectsList) {
+        if (s.subject !== subject) void fetchObservabilityForSubject(s.subject);
+      }
+    }
+  }, LOAD_OBSERVABILITY_DEBOUNCE_MS);
+}
+
+async function loadObservability(subject = activeSubject) {
+  return fetchObservabilityForSubject(subject);
+}
+
 function applyDaemonState(subject, next) {
   if (!subject || !next) return null;
   if (!panelFpBySubject[subject]) {
-    panelFpBySubject[subject] = { bar: '', cycles: '', channel: '' };
+    panelFpBySubject[subject] = { bar: '', cycles: '', channel: '', attention: '' };
   }
   const fp = panelFpBySubject[subject];
   const barFp = daemonBarFingerprint(next);
@@ -675,19 +867,66 @@ async function loadCycleDetail(cycleId, subject = activeSubject) {
   return res.json();
 }
 
+function buildCycleDiagnosticsPanel(data) {
+  const section = document.createElement('section');
+  section.className = 'panel diagnostics-panel';
+  const diag = data.diagnostics ?? {};
+  const attention = data.observability_attention ?? [];
+  const stuck = diag.stuck_steps ?? [];
+  const drift = diag.drift_steps ?? [];
+  const obs = getObservability();
+  const failedTasks = (obs?.cycle_diagnostics?.failed_tasks ?? [])
+    .filter((t) => t.cycle_id === data.cycle_id || !t.cycle_id)
+    .slice(0, 5);
+  const suggestions = obs?.cycle_diagnostics?.health_suggestions ?? [];
+
+  const parts = [];
+  if (stuck.length) {
+    parts.push(`<div class="diag-block diag-critical"><strong>卡住 step</strong><ul>${stuck.map((s) => `
+      <li><code>${escapeHtml(s.step)}</code> — ${escapeHtml(s.reason ?? '')}</li>
+    `).join('')}</ul></div>`);
+  }
+  if (drift.length) {
+    parts.push(`<div class="diag-block diag-warning"><strong>漂移 step</strong><ul>${drift.map((d) => `
+      <li><code>${escapeHtml(d.step)}</code> — ${escapeHtml(d.reason ?? '')}</li>
+    `).join('')}</ul></div>`);
+  }
+  if (attention.length) {
+    parts.push(`<div class="diag-block"><strong>本 cycle 相关关注</strong><ul>${attention.map((a) => `
+      <li class="severity-${a.severity}">${escapeHtml(a.title)}: ${escapeHtml(a.summary)}</li>
+    `).join('')}</ul></div>`);
+  }
+  if (failedTasks.length) {
+    parts.push(`<div class="diag-block diag-warning"><strong>失败任务</strong><ul>${failedTasks.map((t) => `
+      <li><code>${escapeHtml(t.task_id)}</code> ${escapeHtml(t.type)} — ${escapeHtml(t.last_error_code ?? t.last_error ?? '')}</li>
+    `).join('')}</ul></div>`);
+  }
+  if (suggestions.length) {
+    parts.push(`<div class="diag-block"><strong>建议</strong><ul>${suggestions.slice(0, 3).map((s) => `
+      <li><code>${escapeHtml(s)}</code></li>
+    `).join('')}</ul></div>`);
+  }
+
+  if (!parts.length) return null;
+
+  section.innerHTML = `<h3>Cycle 诊断</h3>${parts.join('')}`;
+  return section;
+}
+
 function buildTasksPanelElement(tasks) {
   const section = document.createElement('section');
   section.className = 'panel tasks-panel';
   section.innerHTML = `
     <h3>Daemon 任务</h3>
     <table class="tasks-table">
-      <thead><tr><th>Task</th><th>Type</th><th>Status</th><th>Attempts</th></tr></thead>
+      <thead><tr><th>Task</th><th>Type</th><th>Status</th><th>Attempts</th><th>Error</th></tr></thead>
       <tbody>${(tasks ?? []).map((t) => `
-        <tr>
-          <td><code>${t.task_id}</code></td>
-          <td>${t.type}</td>
-          <td>${t.status}</td>
+        <tr class="${t.status === 'failed' ? 'task-row-failed' : ''}">
+          <td><code>${escapeHtml(t.task_id)}</code></td>
+          <td>${escapeHtml(t.type)}</td>
+          <td>${escapeHtml(t.status)}</td>
           <td>${t.attempts ?? 0}</td>
+          <td>${escapeHtml(t.last_error_code ?? t.last_error ?? '')}</td>
         </tr>
       `).join('')}</tbody>
     </table>
@@ -849,11 +1088,16 @@ function renderDetail(data, { mode = 'round' } = {}) {
 
   panels.append(reportPanel, diaryPanel);
 
-  if (mode === 'cycle' && data.tasks?.length) {
-    detailEl.replaceChildren(header, panels, buildTasksPanelElement(data.tasks));
-  } else {
-    detailEl.replaceChildren(header, panels);
+  const children = [header];
+  if (mode === 'cycle') {
+    const diagPanel = buildCycleDiagnosticsPanel(data);
+    if (diagPanel) children.push(diagPanel);
   }
+  children.push(panels);
+  if (mode === 'cycle' && data.tasks?.length) {
+    children.push(buildTasksPanelElement(data.tasks));
+  }
+  detailEl.replaceChildren(...children);
 
   activeDetailCache = buildDetailCacheFromData(data, mode);
 }
@@ -946,6 +1190,7 @@ function handleSsePayload(payload) {
     prependFeedEvent(payload, subject);
     patchEvolutionModeFromEvent(payload);
     scheduleLoadDaemon(subject);
+    scheduleLoadObservability(subject);
     if (
       subject === activeSubject
       && activeCycleId
@@ -958,6 +1203,7 @@ function handleSsePayload(payload) {
   }
   if (event === 'runtime_updated') {
     scheduleLoadDaemon(subject);
+    scheduleLoadObservability(subject);
     return;
   }
   if (event === 'round_added') {
@@ -1042,6 +1288,7 @@ function startDaemonPolling() {
   if (daemonPollTimer) clearInterval(daemonPollTimer);
   daemonPollTimer = setInterval(() => {
     scheduleLoadDaemon(activeSubject);
+    scheduleLoadObservability(activeSubject);
   }, 15_000);
   if (daemonPollTimer.unref) daemonPollTimer.unref();
 }
@@ -1057,14 +1304,18 @@ async function loadSubjectsIndex() {
 
 async function refreshActiveSubjectPanels() {
   if (!activeSubject) return;
-  panelFpBySubject[activeSubject] = { bar: '', cycles: '', channel: '' };
+  panelFpBySubject[activeSubject] = { bar: '', cycles: '', channel: '', attention: '' };
   await loadManifest(activeSubject);
-  await loadDaemon(activeSubject);
+  await Promise.all([
+    loadDaemon(activeSubject),
+    loadObservability(activeSubject),
+  ]);
   await loadRecentEvents(activeSubject);
   renderTimeline(filterEl.value);
   renderActiveCycles();
   renderChannelPanel();
   renderDaemonBar();
+  renderAttentionPanel();
   renderSubjectOverview();
   updateMeta('');
 }
@@ -1113,10 +1364,15 @@ async function init() {
   for (const s of subjectsList) {
     seenCycleIdsBySubject[s.subject] = new Set();
     newCycleIdsBySubject[s.subject] = new Set();
-    panelFpBySubject[s.subject] = { bar: '', cycles: '', channel: '' };
+    panelFpBySubject[s.subject] = { bar: '', cycles: '', channel: '', attention: '' };
   }
 
   await setActiveSubject(initialSubject, { preserveHash: true, skipQueryUpdate: !querySubject });
+  if (isMultiSubject()) {
+    for (const s of subjectsList) {
+      if (s.subject !== activeSubject) void fetchObservabilityForSubject(s.subject);
+    }
+  }
   if (querySubject) setSubjectQuery(initialSubject);
 
   for (const round of getManifest()?.rounds ?? []) {
