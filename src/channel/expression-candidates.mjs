@@ -13,6 +13,12 @@ export function candidateIdForControlActionEvent(event = {}) {
   return `reply:control_action:${messageId}`;
 }
 
+export function candidateIdForAgentRunEvent(event = {}) {
+  const runId = event?.channel_agent_run_id;
+  if (!runId) return null;
+  return `reply:agent_run:${runId}`;
+}
+
 export function candidateIdForMessage(item = {}) {
   if (!item?.message_id) return null;
   if (item.ingest_kind === 'operator_brief') {
@@ -65,6 +71,33 @@ function candidateFromControlActionEvent(event, handled) {
       error: event.error ?? null,
     },
     source_ref: `channel:control:${event.message_id}`,
+  };
+}
+
+function candidateFromAgentRunEvent(event, handled) {
+  const id = candidateIdForAgentRunEvent(event);
+  if (!id || handled[id]) return null;
+  const ok = event.type === 'channel_agent_run_completed' && event.status === 'ok';
+  return {
+    id,
+    kind: 'reply.agent_run',
+    source: 'channel_agent_run',
+    priority: ok ? 'medium' : 'high',
+    target: 'operator',
+    reply_to_message_id: event.reply_to_message_id ?? null,
+    recommended_intent: 'custom',
+    summary: event.summary ?? event.error ?? event.reason ?? 'channel agent run finished',
+    agent_result: {
+      ok,
+      channel_agent_run_id: event.channel_agent_run_id ?? null,
+      provider: event.provider ?? null,
+      status: event.result_status ?? event.status ?? null,
+      summary: event.summary ?? null,
+      reason: event.reason ?? null,
+      error: event.error ?? null,
+      observations_written: event.observations_written ?? null,
+    },
+    source_ref: `channel:agent_run:${event.channel_agent_run_id}`,
   };
 }
 
@@ -168,8 +201,12 @@ export function buildExpressionCandidates(context = {}) {
   }
 
   for (const event of context.channel?.recent_events ?? []) {
-    if (!['channel_control_action_completed', 'channel_control_action_failed'].includes(event.type)) continue;
-    const candidate = candidateFromControlActionEvent(event, handled);
+    let candidate = null;
+    if (['channel_control_action_completed', 'channel_control_action_failed'].includes(event.type)) {
+      candidate = candidateFromControlActionEvent(event, handled);
+    } else if (['channel_agent_run_completed', 'channel_agent_run_failed'].includes(event.type)) {
+      candidate = candidateFromAgentRunEvent(event, handled);
+    }
     if (candidate && !cooldownActive(context, candidate)) candidates.push(candidate);
   }
 

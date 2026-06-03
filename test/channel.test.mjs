@@ -16,6 +16,7 @@ import { isPresenceInteractionRecord } from '../src/channel/presence-memory.mjs'
 import { resolvePresenceAffordances } from '../src/channel/presence-affordances.mjs';
 import { readChannelEvents } from '../src/channel/audit.mjs';
 import { drainChannelInbound, runChannelInboundTask, runChannelTask, runChannelNotifyTask } from '../src/channel/tasks.mjs';
+import { runChannelAgentRunTask } from '../src/channel/agent-runner.mjs';
 import { runChannelClassifierTask } from '../src/channel/classifier.mjs';
 import { claimNextChannelTask } from '../src/channel/task-queue.mjs';
 import { resolveChannelWorkerTaskTypes, taskTypesForChannelRole, DEFAULT_CHANNEL_ROLES } from '../src/channel/channel-roles.mjs';
@@ -138,11 +139,15 @@ describe('channel domain', () => {
 
     it('default channel roles include control worker', () => {
       expect(DEFAULT_CHANNEL_ROLES).toContain('control');
+      expect(DEFAULT_CHANNEL_ROLES).toContain('agent');
       expect(taskTypesForChannelRole('control')).toEqual(['channel_control_action']);
+      expect(taskTypesForChannelRole('agent')).toEqual(['channel_agent_run']);
     });
 
     it('channel_control_action priority is higher than channel_presence', () => {
       expect(CHANNEL_TASK_DEFAULT_PRIORITY.channel_control_action)
+        .toBeLessThan(CHANNEL_TASK_DEFAULT_PRIORITY.channel_presence);
+      expect(CHANNEL_TASK_DEFAULT_PRIORITY.channel_agent_run)
         .toBeLessThan(CHANNEL_TASK_DEFAULT_PRIORITY.channel_presence);
     });
 
@@ -161,6 +166,28 @@ describe('channel domain', () => {
       expect(claim.task?.type).toBe('channel_control_action');
     });
 
+    it('claimNextChannelTask can claim channel_agent_run for agent role', () => {
+      const root = makeRoot();
+      enqueueChannelTask(root, 'alpha', {
+        type: 'channel_agent_run',
+        idempotencyKey: 'agent1',
+        priority: CHANNEL_TASK_DEFAULT_PRIORITY.channel_agent_run,
+        input: {
+          request: {
+            channel_agent_run_id: 'channel-agent-test-1',
+            objective: 'Summarize recent channel events',
+            mode: 'observe',
+            permission_profile: 'read_only',
+          },
+        },
+      });
+      const claim = claimNextChannelTask(root, 'alpha', {
+        workerId: 'agent-worker',
+        types: taskTypesForChannelRole('agent'),
+      });
+      expect(claim.task?.type).toBe('channel_agent_run');
+    });
+
     it('uses a separate queue from cycle tasks', () => {
       const root = makeRoot();
       enqueueTask(root, 'alpha', { type: 'run_cycle', idempotencyKey: 'cycle-task' });
@@ -170,6 +197,57 @@ describe('channel domain', () => {
       expect(existsSync(channelPendingTasksPath(root, 'alpha'))).toBe(true);
       expect(pendingTasksPath(root, 'alpha')).not.toBe(channelPendingTasksPath(root, 'alpha'));
       expect(readChannelTaskQueue(root, 'alpha').tasks.map((task) => task.type)).toEqual(['channel_presence']);
+    });
+
+    it('runChannelTask routes channel_agent_run and wakes presence after completion', async () => {
+      const root = makeRoot();
+      const { task } = enqueueChannelTask(root, 'alpha', {
+        type: 'channel_agent_run',
+        idempotencyKey: 'agent-route',
+        input: {
+          request: {
+            channel_agent_run_id: 'channel-agent-route',
+            candidate_id: 'reply:message:agent-route',
+            reply_to_message_id: 'agent-route',
+            objective: 'Summarize recent channel events',
+            mode: 'observe',
+            permission_profile: 'read_only',
+          },
+          mock_result: {
+            success: true,
+            status: 'completed',
+            provider: 'mock',
+            message: 'channel agent completed',
+          },
+        },
+      });
+      const result = await runChannelTask(root, 'alpha', task);
+      expect(result.ok).toBe(true);
+      expect(readChannelEvents(root, 'alpha', { limit: 5 }).some((event) =>
+        event.type === 'channel_agent_run_completed' && event.channel_agent_run_id === 'channel-agent-route')).toBe(true);
+      expect(listPendingChannelEvents(root, 'alpha', { type: 'expression_recompute_requested' }).length).toBeGreaterThan(0);
+      const ctx = buildPresenceContext(root, 'alpha');
+      expect(ctx.expression.candidates.some((candidate) =>
+        candidate.kind === 'reply.agent_run' && candidate.agent_result?.channel_agent_run_id === 'channel-agent-route')).toBe(true);
+      const plan = planPresenceDeterministic(ctx);
+      expect(plan.actions[0].content_requirements?.kind).toBe('agent_run_result');
+      expect(plan.actions[0].content_requirements?.summary?.agent_result?.summary).toBe('channel agent completed');
+    });
+
+    it('runChannelAgentRunTask reports validation failures without executing an agent', async () => {
+      const root = makeRoot();
+      const result = await runChannelAgentRunTask(root, 'alpha', {
+        request: {
+          channel_agent_run_id: 'channel-agent-invalid',
+          objective: 'Mutate files',
+          mode: 'sandbox_patch',
+          permission_profile: 'workspace_write',
+        },
+      });
+      expect(result.ok).toBe(false);
+      expect(result.reason).toBe('unsupported_agent_mode');
+      expect(readChannelEvents(root, 'alpha', { limit: 5 }).some((event) =>
+        event.type === 'channel_agent_run_failed' && event.channel_agent_run_id === 'channel-agent-invalid')).toBe(true);
     });
 
     it('purges pending deprecated tasks from queue', () => {
@@ -856,6 +934,108 @@ describe('channel domain', () => {
       expect(pending.briefs.some((brief) => brief.summary === '跑完后帮我看 rank')).toBe(true);
       const request = readPendingCycleStartRequest(root, 'alpha');
       expect(request?.reasons).toContain('channel_presence_operator_brief');
+    });
+
+    it('llm planner can request async agent and keep acknowledgement speech', async () => {
+      const root = makeRoot({
+        presence: {
+          enabled: true,
+          planner: 'llm',
+          default_target: 'oc_operator',
+        },
+      });
+      const ctx = buildPresenceContext(root, 'alpha');
+      ctx.expression.candidates = [{
+        id: 'reply:message:om_agent_llm',
+        kind: 'reply.message',
+        source: 'observation',
+        priority: 'medium',
+        target: 'channel_default',
+        reply_to_message_id: 'om_agent_llm',
+        recommended_intent: 'custom',
+        summary: '帮我异步查一下最近失败原因',
+      }];
+      ctx.presence = resolvePresenceConfig(root, 'alpha');
+      const plan = await planPresenceWithLlm(ctx, {
+        aiClient: {
+          chatMessages: async () => JSON.stringify({
+            kind: 'act',
+            reason: 'needs_async_agent',
+            candidate_ids: ['reply:message:om_agent_llm'],
+            actions: [{
+              type: 'start_agent_async',
+              candidate_id: 'reply:message:om_agent_llm',
+              reply_to_message_id: 'om_agent_llm',
+              objective: 'Investigate the latest channel/cycle failure signals and summarize likely causes.',
+              mode: 'observe',
+              permission_profile: 'read_only',
+            }, {
+              type: 'speech_intent',
+              candidate_id: 'reply:message:om_agent_llm',
+              target: 'channel_default',
+              reason: 'agent_started_ack',
+              reply_to_message_id: 'om_agent_llm',
+              content_requirements: {
+                kind: 'custom',
+                text_hint: '告知用户已启动异步 agent，完成后会通知。',
+              },
+            }],
+          }),
+        },
+      });
+      expect(plan.actions.map((action) => action.type)).toContain('start_agent_async');
+      expect(plan.actions.map((action) => action.type)).toContain('speech_intent');
+      expect(plan.actions.find((action) => action.type === 'start_agent_async')?.permission_profile).toBe('read_only');
+    });
+
+    it('presence executor queues async agent and acknowledgement speech without touching cycle queue', async () => {
+      const root = makeRoot({
+        presence: { enabled: true, planner: 'deterministic', default_target: 'oc_operator' },
+      });
+      const plan = {
+        kind: 'act',
+        reason: 'manual_agent_test',
+        candidate_ids: ['reply:message:om_agent_exec'],
+        planner: 'test',
+        actions: [{
+          type: 'start_agent_async',
+          candidate_id: 'reply:message:om_agent_exec',
+          reply_to_message_id: 'om_agent_exec',
+          target: 'channel_default',
+          objective: 'Read recent channel state and summarize next diagnostic step.',
+          mode: 'observe',
+          permission_profile: 'read_only',
+          boundary: { write_allowed: false },
+          reason: 'needs_async_agent',
+        }],
+      };
+      const ctx = buildPresenceContext(root, 'alpha');
+      const execution = await executePresenceDecisionPlan(root, 'alpha', plan, { context: ctx });
+      expect(execution.results.some((result) => result.action?.type === 'start_agent_async' && result.queued)).toBe(true);
+      expect(readChannelTaskQueue(root, 'alpha').tasks.some((task) => task.type === 'channel_agent_run')).toBe(true);
+      expect(summarizeChannelEventQueue(root, 'alpha').pending_speech_generation).toBeGreaterThan(0);
+      expect(existsSync(pendingTasksPath(root, 'alpha'))).toBe(false);
+    });
+
+    it('presence executor rejects high-risk async agent parameters', async () => {
+      const root = makeRoot();
+      const plan = {
+        kind: 'act',
+        reason: 'reject_high_risk_agent',
+        candidate_ids: ['reply:message:om_agent_reject'],
+        planner: 'test',
+        actions: [{
+          type: 'start_agent_async',
+          candidate_id: 'reply:message:om_agent_reject',
+          objective: 'Publish the release',
+          mode: 'sandbox_patch',
+          permission_profile: 'workspace_write',
+          approval_granted: true,
+        }],
+      };
+      const execution = await executePresenceDecisionPlan(root, 'alpha', plan, { context: buildPresenceContext(root, 'alpha') });
+      expect(execution.results[0].skipped).toBe(true);
+      expect(readChannelTaskQueue(root, 'alpha').tasks.some((task) => task.type === 'channel_agent_run')).toBe(false);
     });
 
     it('llm planner can silence plain observations and mark them handled', async () => {

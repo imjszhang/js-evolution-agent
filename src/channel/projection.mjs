@@ -31,6 +31,26 @@ function listDeprecatedQueueTasks(queue) {
     }));
 }
 
+function summarizeAgentRunTasks(queue) {
+  const rows = (queue.tasks ?? []).filter((task) => task.type === 'channel_agent_run');
+  return {
+    pending: rows.filter((task) => task.status === 'pending').length,
+    running: rows.filter((task) => task.status === 'running').map((task) => ({
+      task_id: task.task_id,
+      lease_owner: task.lease_owner,
+      lease_expires_at: task.lease_expires_at,
+      channel_agent_run_id: task.input?.request?.channel_agent_run_id ?? null,
+      candidate_id: task.input?.request?.candidate_id ?? null,
+    })),
+    failed: rows.filter((task) => task.status === 'failed').slice(0, 5).map((task) => ({
+      task_id: task.task_id,
+      attempts: task.attempts,
+      channel_agent_run_id: task.input?.request?.channel_agent_run_id ?? null,
+      last_error: task.last_error,
+    })),
+  };
+}
+
 export function buildChannelProjection(root, subject, { heartbeatStaleMs = 60_000, eventLimit = 20 } = {}) {
   const queue = readChannelTaskQueue(root, subject);
   const summary = summarizeChannelTaskQueue(queue);
@@ -114,6 +134,7 @@ export function buildChannelProjection(root, subject, { heartbeatStaleMs = 60_00
         last_error_code: task.last_error_code,
         last_error: task.last_error,
       })),
+      agent_runs: summarizeAgentRunTasks(queue),
     },
     inbound: {
       pending_count: pendingInbound.length,

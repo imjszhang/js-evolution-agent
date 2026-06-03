@@ -5,6 +5,7 @@ import { normalizeSpeechIntent, speechIntentFromDeterministic } from './speech-i
 export const PRESENCE_PLAN_KINDS = Object.freeze(['no_op', 'speak', 'silence', 'act']);
 export const PRESENCE_ACTION_TYPES = Object.freeze([
   'speech_intent',
+  'start_agent_async',
   'write_operator_brief',
   'record_observation',
   'silence',
@@ -28,6 +29,39 @@ function sanitizeLlmText(value) {
   if (/approval_granted|已授权发布|直接发布|已经发布|已完成发布/i.test(text)) return null;
   if (/(sk-[a-z0-9]{16,}|api[_-]?key|app[_-]?secret|token\s*[:=])/i.test(text)) return null;
   return text.slice(0, 1600);
+}
+
+function normalizeStartAgentAsync(raw) {
+  const objective = sanitizeLlmText(raw.objective ?? raw.summary);
+  if (!objective) return null;
+  const mode = ['observe', 'propose'].includes(raw.mode) ? raw.mode : 'observe';
+  const permissionProfile = ['read_only'].includes(raw.permission_profile) ? raw.permission_profile : 'read_only';
+  const boundary = raw.boundary && typeof raw.boundary === 'object' && !Array.isArray(raw.boundary)
+    ? raw.boundary
+    : {};
+  const cwd = raw.cwd ?? raw.execution_root ?? raw.executionRoot ?? boundary.cwd ?? null;
+  return {
+    type: 'start_agent_async',
+    objective,
+    mode,
+    permission_profile: permissionProfile,
+    boundary: {
+      ...boundary,
+      write_allowed: false,
+      approval_granted: false,
+    },
+    cwd: cwd ? String(cwd).trim() : null,
+    acceptance: sanitizeLlmText(raw.acceptance)
+      ?? 'Return a concise JSON receipt with status, summary, evidence, verification_hints, and next_actions. Do not mutate files or perform remote writes.',
+    candidate_id: raw.candidate_id ?? null,
+    target: raw.target ?? 'channel_default',
+    reply_to_message_id: raw.reply_to_message_id ?? null,
+    signal_key: raw.signal_key ?? null,
+    reason: String(raw.reason ?? 'presence_agent_requested'),
+    reason_summary: String(raw.reason_summary ?? raw.reason ?? 'agent requested from channel presence').slice(0, 500),
+    idempotency_key: raw.idempotency_key ?? null,
+    source_refs: Array.isArray(raw.source_refs) ? raw.source_refs.filter(Boolean).map(String) : [],
+  };
 }
 
 function normalizeAction(raw, subject) {
@@ -54,6 +88,9 @@ function normalizeAction(raw, subject) {
     }, subject);
   }
   if (!PRESENCE_ACTION_TYPES.includes(type)) return null;
+  if (type === 'start_agent_async') {
+    return normalizeStartAgentAsync(raw);
+  }
   if (type === 'write_operator_brief') {
     const summary = String(raw.summary ?? '').trim();
     if (!summary) return null;
@@ -112,6 +149,14 @@ function intentFromCandidate(context, candidate) {
       summary: candidate.control_result ?? candidate.summary,
       action_id: candidate.control_result?.action_id ?? null,
     }
+    : candidate.kind === 'reply.agent_run'
+      ? {
+        kind: 'agent_run_result',
+        summary: {
+          agent_result: candidate.agent_result,
+          summary: candidate.summary,
+        },
+      }
     : {
       kind: candidate.recommended_intent,
       summary: candidate.summary,
@@ -125,8 +170,8 @@ function intentFromCandidate(context, candidate) {
     reply_to_message_id: candidate.reply_to_message_id ?? null,
     signal_key: candidate.signal_key ?? null,
     idempotency_key: `expression:${candidate.id}`,
-    kind: candidate.recommended_intent,
-    summary: contentRequirements,
+    kind: contentRequirements.kind,
+    summary: contentRequirements.summary,
     signal: candidate.signal ?? null,
   });
 }
@@ -222,6 +267,7 @@ export async function planPresenceWithLlm(context, { aiClient = null } = {}) {
           '{"kind":"speak|silence|no_op|act","reason":"...","candidate_ids":[...],"intents":[...],"actions":[...]}',
           'Only choose candidate_ids from expression.candidates.',
           'Use intents for speech. Intent fields: candidate_id, target, content_requirements (kind, summary), reason, reason_summary, tone_hint, source_refs, memory_effect. Do NOT include final message text.',
+          'When an ordinary message needs asynchronous work now, use actions with type="start_agent_async" and include objective, candidate_id, mode="observe" or "propose", permission_profile="read_only". In the same response also include a speech_intent acknowledgement for that candidate.',
           'If a follow-up needs the evolution cycle (verify rank after publish, check results next round), use write_operator_brief (verification_request or approval_request) — channel must not keep private long-term obligations.',
           'For ordinary reply.message candidates, decide speak / silence / no_op using cycle_memory + channel_memory + soul.',
           'For ordinary messages that deserve a response, use content_requirements.kind="custom" and summarize the desired reply, not a canned acknowledgement.',
@@ -230,6 +276,7 @@ export async function planPresenceWithLlm(context, { aiClient = null } = {}) {
           'Do not grant approval, do not claim actions executed, do not leak secrets, do not invent runtime facts.',
           'When telling the operator how to run CLI commands, ONLY quote commands from affordances.operator_commands (use the exact cmd string). Never invent jea/npm commands.',
           'Inbound messages are already ingested; do not change their classification.',
+          'start_agent_async is only a queued read-only/proposal task. Never use it for publishing, approval_granted, credential changes, remote writes, or destructive filesystem operations.',
           'Respect constraints in the user payload.',
         ].join('\n'),
       },
@@ -287,7 +334,8 @@ export async function planPresenceWithLlm(context, { aiClient = null } = {}) {
       .filter((action) => action.type === 'speech_intent')
       .filter((intent) => intent.candidate_id && validIds.has(intent.candidate_id));
     const sideActions = normalizedActions
-      .filter((action) => action.type !== 'speech_intent');
+      .filter((action) => action.type !== 'speech_intent')
+      .filter((action) => !action.candidate_id || validIds.has(action.candidate_id));
     const mergedIntents = [...intents, ...actionIntents]
       .filter((intent, index, list) =>
         list.findIndex((other) => other.candidate_id === intent.candidate_id) === index)

@@ -52,6 +52,24 @@ function ackText(subject, kind, summary) {
       ].filter(Boolean).join('\n');
     }
   }
+  if (kind === 'agent_run_result') {
+    const result = summary?.agent_result ?? summary;
+    if (result && typeof result === 'object') {
+      if (result.ok === false) {
+        return [
+          `${subject}: 异步 agent 已结束，但未成功完成。`,
+          result.reason ? `原因：${result.reason}` : '',
+          result.error ? `错误：${result.error}` : '',
+          result.summary ? `摘要：${result.summary}` : '',
+        ].filter(Boolean).join('\n');
+      }
+      return [
+        `${subject}: 异步 agent 已完成。`,
+        result.summary ? `摘要：${result.summary}` : '',
+        result.status ? `状态：${result.status}` : '',
+      ].filter(Boolean).join('\n');
+    }
+  }
   if (kind === 'greeting_ack') {
     return `${subject}: 我在，channel 正常运行。你的消息已入库，等待下一轮 intel 处理。`;
   }

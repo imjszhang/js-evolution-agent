@@ -1,15 +1,17 @@
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { createIntelligenceStore } from '../intelligence/store.mjs';
 import { writePendingOperatorBrief } from '../intelligence/operator-briefs.mjs';
 import { runtimeForSubject } from '../cli/utils/evolve-runs.mjs';
 import { enqueueCycleStartRequestWithEvent } from '../cli/utils/cycle-dispatch.mjs';
 import { recordChannelEvent, readChannelEvents } from './audit.mjs';
+import { enqueueChannelTask } from './task-queue.mjs';
 import {
   cooldownActive,
   writePresenceState,
   markExpressionCandidatesHandled,
 } from './state.mjs';
-import { nowIso } from './types.mjs';
+import { CHANNEL_TASK_DEFAULT_PRIORITY, nowIso } from './types.mjs';
 import { PRESENCE_ACTION_TYPES } from './presence-planner.mjs';
 import {
   recordPresenceInteraction,
@@ -17,7 +19,7 @@ import {
   formatPresenceInteractionContent,
 } from './presence-memory.mjs';
 import { appendChannelEvent } from './event-queue.mjs';
-import { buildSpeechGenerationEventPayload } from './speech-intent.mjs';
+import { buildSpeechGenerationEventPayload, speechIntentFromDeterministic } from './speech-intent.mjs';
 import { enqueueSpeechGenerationIfPending } from './wake.mjs';
 
 export function createIntelligenceStoreForSubject(root, subject) {
@@ -36,11 +38,26 @@ function recentSpeechIntentCount(root, subject, { windowMs = 60 * 60 * 1000, now
   }).length;
 }
 
+function validateStartAgentAsync(action) {
+  if (!String(action.objective ?? '').trim()) return { ok: false, reason: 'missing_objective' };
+  if (!['observe', 'propose'].includes(action.mode)) return { ok: false, reason: 'unsupported_agent_mode' };
+  if ((action.permission_profile ?? 'read_only') !== 'read_only') {
+    return { ok: false, reason: 'unsupported_permission_profile' };
+  }
+  if (action.approval_granted || action.approved || action.boundary?.approval_granted) {
+    return { ok: false, reason: 'approval_granted_not_allowed' };
+  }
+  return { ok: true };
+}
+
 function validateAction(action) {
   if (!action || typeof action !== 'object') return { ok: false, reason: 'invalid_action' };
   if (!PRESENCE_ACTION_TYPES.includes(action.type)) return { ok: false, reason: 'unsupported_action_type' };
   if (action.type === 'speech_intent') {
     if (!action.content_requirements) return { ok: false, reason: 'missing_content_requirements' };
+  }
+  if (action.type === 'start_agent_async') {
+    return validateStartAgentAsync(action);
   }
   return { ok: true };
 }
@@ -51,6 +68,15 @@ function interactionContentForAction(action, plan) {
       why: action.reason,
       reason_summary: action.reason_summary ?? action.reason,
       summary: action.content_requirements?.summary ?? action.content_requirements?.kind,
+      candidate_id: action.candidate_id,
+      planner: plan?.planner,
+    });
+  }
+  if (action.type === 'start_agent_async') {
+    return formatPresenceInteractionContent('start_agent_async', {
+      why: action.reason,
+      reason_summary: action.reason_summary ?? action.reason,
+      summary: action.objective,
       candidate_id: action.candidate_id,
       planner: plan?.planner,
     });
@@ -89,6 +115,68 @@ function applyExpressionCursors(root, subject, plan, outcome, extra = {}) {
     at: nowIso(),
   };
   return writePresenceState(root, subject, patch);
+}
+
+function queueSpeechIntent(root, subject, store, plan, action, { dryRun = false } = {}) {
+  const idempotencyKey = action.idempotency_key ?? `presence:speech:${action.intent_id}`;
+  if (cooldownActive(root, subject, idempotencyKey)) {
+    return { queued: false, result: { action, skipped: true, reason: 'cooldown' } };
+  }
+  if (dryRun) {
+    return { queued: false, result: { action, applied: false, dry_run: true } };
+  }
+  const payload = buildSpeechGenerationEventPayload(action, {
+    contextSummary: {
+      kind: plan.kind,
+      planner: plan.planner,
+    },
+    planReason: plan.reason,
+  });
+  appendChannelEvent(root, subject, {
+    type: 'speech_generation_requested',
+    reason: action.reason,
+    event_ref: action.intent_id,
+    payload,
+    payload_summary: {
+      intent_id: action.intent_id,
+      candidate_id: action.candidate_id ?? null,
+      reason: action.reason,
+      target: action.target,
+    },
+  });
+  recordPresenceInteraction(store, {
+    interaction_kind: 'speech_intent',
+    content: interactionContentForAction(action, plan),
+    confidence: 'medium',
+    evidence_refs: [
+      action.candidate_id ? `expression:${action.candidate_id}` : null,
+    ].filter(Boolean),
+  });
+  return { queued: true, result: { action, applied: true, queued: true, intent_id: action.intent_id } };
+}
+
+function agentStartedAckIntent(subject, action) {
+  return speechIntentFromDeterministic({
+    subject,
+    candidate_id: action.candidate_id ?? null,
+    target: action.target ?? 'channel_default',
+    reason: 'agent_started_ack',
+    reply_to_message_id: action.reply_to_message_id ?? null,
+    signal_key: action.signal_key ?? null,
+    idempotency_key: action.candidate_id
+      ? `presence:agent_started_ack:${action.candidate_id}`
+      : `presence:agent_started_ack:${action.idempotency_key ?? action.objective}`,
+    kind: 'custom',
+    summary: {
+      kind: 'agent_started_ack',
+      summary: '已启动一个异步 agent 处理该请求；完成后会再通知结果。',
+      objective: action.objective,
+    },
+    reason_summary: action.reason_summary ?? 'acknowledge asynchronous agent start',
+    tone_hint: 'brief, clear, no execution result claim',
+    source_refs: action.source_refs ?? [],
+    memory_effect: 'record_agent_started_ack',
+  });
 }
 
 /**
@@ -161,7 +249,12 @@ export async function executePresenceDecisionPlan(root, subject, plan, {
 
   let speechQueued = 0;
 
-  for (const action of plan.actions ?? plan.intents ?? []) {
+  const plannedActions = plan.actions ?? plan.intents ?? [];
+  const speechCandidateIds = new Set(plannedActions
+    .filter((action) => action?.type === 'speech_intent' && action.candidate_id)
+    .map((action) => action.candidate_id));
+
+  for (const action of plannedActions) {
     const check = validateAction(action);
     if (!check.ok) {
       results.push({ action, skipped: true, reason: check.reason });
@@ -174,44 +267,82 @@ export async function executePresenceDecisionPlan(root, subject, plan, {
     }
 
     if (action.type === 'speech_intent') {
-      const idempotencyKey = action.idempotency_key ?? `presence:speech:${action.intent_id}`;
-      if (cooldownActive(root, subject, idempotencyKey)) {
-        results.push({ action, skipped: true, reason: 'cooldown' });
-        continue;
-      }
+      const queued = queueSpeechIntent(root, subject, store, plan, action, { dryRun });
+      if (queued.queued) speechQueued += 1;
+      results.push(queued.result);
+      continue;
+    }
+
+    if (action.type === 'start_agent_async') {
+      const channelAgentRunId = action.channel_agent_run_id ?? `channel-agent-run-${randomUUID()}`;
+      const idempotencyKey = action.idempotency_key
+        ?? (action.candidate_id
+          ? `channel-agent:${subject}:${action.candidate_id}`
+          : `channel-agent:${subject}:${channelAgentRunId}`);
       if (dryRun) {
-        results.push({ action, applied: false, dry_run: true });
+        results.push({ action, applied: false, dry_run: true, channel_agent_run_id: channelAgentRunId });
         continue;
       }
-      const payload = buildSpeechGenerationEventPayload(action, {
-        contextSummary: {
-          kind: plan.kind,
-          planner: plan.planner,
+      const queued = enqueueChannelTask(root, subject, {
+        type: 'channel_agent_run',
+        priority: CHANNEL_TASK_DEFAULT_PRIORITY.channel_agent_run,
+        idempotencyKey,
+        input: {
+          request: {
+            ...action,
+            subject,
+            channel_agent_run_id: channelAgentRunId,
+            idempotency_key: idempotencyKey,
+            source: 'channel_presence',
+            planner: plan.planner ?? 'deterministic',
+            plan_reason: plan.reason ?? null,
+          },
         },
-        planReason: plan.reason,
       });
-      appendChannelEvent(root, subject, {
-        type: 'speech_generation_requested',
+      recordChannelEvent(root, subject, {
+        type: 'channel_agent_run_requested',
+        status: 'ok',
+        channel_agent_run_id: channelAgentRunId,
+        task_id: queued.task?.task_id ?? null,
+        created: queued.created ?? false,
+        candidate_id: action.candidate_id ?? null,
         reason: action.reason,
-        event_ref: action.intent_id,
-        payload,
-        payload_summary: {
-          intent_id: action.intent_id,
-          candidate_id: action.candidate_id ?? null,
-          reason: action.reason,
-          target: action.target,
-        },
       });
-      speechQueued += 1;
+      recordChannelEvent(root, subject, {
+        type: 'channel_presence_action_applied',
+        status: 'ok',
+        action_type: 'start_agent_async',
+        channel_agent_run_id: channelAgentRunId,
+        task_id: queued.task?.task_id ?? null,
+        queued: true,
+        created: queued.created ?? false,
+      });
       recordPresenceInteraction(store, {
-        interaction_kind: 'speech_intent',
+        interaction_kind: 'start_agent_async',
         content: interactionContentForAction(action, plan),
         confidence: 'medium',
         evidence_refs: [
           action.candidate_id ? `expression:${action.candidate_id}` : null,
+          `channel_agent_run:${channelAgentRunId}`,
         ].filter(Boolean),
       });
-      results.push({ action, applied: true, queued: true, intent_id: action.intent_id });
+      results.push({
+        action,
+        applied: true,
+        queued: true,
+        channel_agent_run_id: channelAgentRunId,
+        task_id: queued.task?.task_id ?? null,
+        created: queued.created ?? false,
+      });
+      if (!action.candidate_id || !speechCandidateIds.has(action.candidate_id)) {
+        const ack = agentStartedAckIntent(subject, action);
+        const ackQueued = queueSpeechIntent(root, subject, store, plan, ack, { dryRun });
+        if (ackQueued.queued) speechQueued += 1;
+        results.push({
+          ...ackQueued.result,
+          generated_for_action: 'start_agent_async',
+        });
+      }
       continue;
     }
 

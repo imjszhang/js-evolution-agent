@@ -1,6 +1,7 @@
 export const CHANNEL_TASK_TYPES = Object.freeze([
   'channel_inbound',
   'channel_control_action',
+  'channel_agent_run',
   'channel_presence',
   'channel_speech_generation',
   'channel_classifier',
@@ -13,6 +14,7 @@ export const CHANNEL_TASK_DEFAULT_PRIORITY = Object.freeze({
   channel_notify: 10,
   channel_retry: 10,
   channel_control_action: 12,
+  channel_agent_run: 14,
   channel_presence: 15,
   channel_speech_generation: 20,
   channel_classifier: 50,

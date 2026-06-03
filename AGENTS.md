@@ -420,7 +420,7 @@ jea daemon start --subject NAME --domain cycle
 jea daemon start --subject NAME --domain channel
 ```
 
-`jea daemon start --domain channel` **默认**在同一进程内启动五个 channel role worker（`notify`、`control`、`presence`、`speech`、`classifier`），共享同一任务队列但按任务类型隔离领取，避免 LLM 分类/话术生成阻塞 outbox flush。高级用法：
+`jea daemon start --domain channel` **默认**在同一进程内启动六个 channel role worker（`notify`、`control`、`agent`、`presence`、`speech`、`classifier`），共享同一任务队列但按任务类型隔离领取，避免 LLM 分类、异步 agent 调查、话术生成阻塞 outbox flush。高级用法：
 
 ```powershell
 jea daemon start --subject NAME --domain channel --channel-role presence
@@ -585,7 +585,7 @@ Classifier 识别 `control_request` 后**不直接执行**配置变更，而是�
 - Presence planner **不能**直接改 evolution mode；只能基于 control executor 的审计事件回复结果。
 - 远端发布、`approval_granted`、凭据、subject policy 仍不可通过 channel 自动执行。
 
-默认 channel daemon roles：`notify` / `control` / `presence` / `speech` / `classifier`。升级后需重启 channel daemon。
+默认 channel daemon roles：`notify` / `control` / `agent` / `presence` / `speech` / `classifier`。升级后需重启 channel daemon。
 
 ### Channel Presence Loop（`channels.presence`，transport-agnostic，async reactor）
 
@@ -601,7 +601,7 @@ Classifier 识别 `control_request` 后**不直接执行**配置变更，而是�
 
 **内容生成**（`channel_speech_generation` → `runChannelSpeechGenerationTask`，speech role worker）：按 subject persona + `content_requirements` 生成最终文本，成功后 `writeOutboxMessage`；失败/超时记 `channel_speech_generation_failed` / `channel_presence_timeout`，不写 outbox。
 
-`runChannelTick`：presence tick（`reason: timer_tick` 的表达重算 + notify）；classifier tick 单独按 `interval_ms` 入队 classifier。默认多 role 下 notify / control / presence / speech / classifier **并行领取**，互不阻塞。
+`runChannelTick`：presence tick（`reason: timer_tick` 的表达重算 + notify）；classifier tick 单独按 `interval_ms` 入队 classifier。默认多 role 下 notify / control / agent / presence / speech / classifier **并行领取**，互不阻塞。
 
 事件队列与审计 `events.jsonl` 分离。`jea channel status --json` 的 `presence.event_queue` / `presence.reactor` / `presence.pending_speech_generation` 可观测 reactor 与待生成话术。
 
@@ -630,7 +630,7 @@ Classifier 识别 `control_request` 后**不直接执行**配置变更，而是�
 - 游标 + reactor：`presence-state.json`（`handled_candidates`、`reactor.status|deadline_at|event_ids`、`pending_speech_generation`）。
 - 交互记忆：`intel_observations`（`source: channel_presence`）。
 - 审计：`channel_expression_recompute_requested` / `channel_expression_planned` / `channel_expression_noop` / `channel_expression_silenced` / `channel_speech_generated` / `channel_presence_completed` / `channel_presence_timeout` 等。
-- 决策动作：`speech_intent`（仅意图）、`write_operator_brief`、`record_observation`；表达计划可为 `no_op` / `speak` / `silence` / `act`，**不能**直接 `approval_granted` 或改 decision queue。
+- 决策动作：`speech_intent`（仅意图）、`start_agent_async`（只入队只读 `channel_agent_run`）、`write_operator_brief`、`record_observation`；表达计划可为 `no_op` / `speak` / `silence` / `act`，**不能**直接 `approval_granted` 或改 decision queue。
 
 **生产建议**：默认已分 role worker；仅需调试时用 `--channel-role` 启动子集。`--channel-role all` 恢复单 worker 消费全部任务类型。升级 channel 代码后需重启 channel daemon。
 

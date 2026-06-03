@@ -15,6 +15,7 @@ import { normalizeOutboundMessage, isDeprecatedChannelTaskType } from './types.m
 import { runChannelPresenceTask, runChannelSpeechGenerationTask } from './presence.mjs';
 import { runChannelClassifierTask } from './classifier.mjs';
 import { runChannelControlActionTask } from './control-executor.mjs';
+import { runChannelAgentRunTask } from './agent-runner.mjs';
 import { enqueueClassifierIfPendingInbound, enqueueNotifyIfOutboxPending } from './wake.mjs';
 
 function readJsonStrict(file) {
@@ -97,6 +98,8 @@ export async function runChannelTask(root, subject, task) {
       return runChannelClassifierTask(root, subject, input);
     case 'channel_control_action':
       return runChannelControlActionTask(root, subject, input);
+    case 'channel_agent_run':
+      return runChannelAgentRunTask(root, subject, input);
     case 'channel_speech_generation':
       return runChannelSpeechGenerationTask(root, subject, input);
     case 'channel_notify':
