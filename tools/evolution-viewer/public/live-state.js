@@ -171,6 +171,7 @@ export function buildDetailCacheFromData(data, mode) {
     tasks_fp: mode === 'cycle' ? tasksFingerprint(data.tasks) : '',
     diary_count: diaries.length,
     has_report: Boolean(data.has_report ?? data.report_html),
+    report_fp: data.report_html ?? '',
   };
 }
 
@@ -182,6 +183,29 @@ export function buildDetailCacheFromData(data, mode) {
 /**
  * @param {object|null|undefined} obs
  */
+/**
+ * Fingerprint for ops home dashboard re-render.
+ * @param {object|null|undefined} params
+ */
+export function opsHomeFingerprint(params) {
+  if (!params) return '';
+  return JSON.stringify({
+    daemon: params.daemon_fp ?? '',
+    obs: params.obs_fp ?? '',
+    feed_len: params.feed_len ?? 0,
+    manifest_count: params.manifest_count ?? 0,
+  });
+}
+
+/**
+ * @param {string|null|undefined} hashCycleId
+ * @param {string|null|undefined} activeCycleId
+ */
+export function resolveViewMode(hashCycleId, activeCycleId) {
+  if (hashCycleId || activeCycleId) return 'reading';
+  return 'ops';
+}
+
 export function observabilityFingerprint(obs) {
   if (!obs) return '';
   const items = (obs.attention?.items ?? []).slice(0, 12).map((item) => ({
@@ -199,11 +223,12 @@ export function observabilityFingerprint(obs) {
 
 export function detailCacheNeedsPatch(cache, data, mode) {
   if (!cache || cache.cycle_id !== data.cycle_id || cache.mode !== mode) {
-    return { header: true, tasks: mode === 'cycle', diary: true };
+    return { header: true, report: true, tasks: mode === 'cycle', diary: true };
   }
   const next = buildDetailCacheFromData(data, mode);
   return {
     header: cache.steps_fp !== next.steps_fp || cache.cycle_status !== next.cycle_status,
+    report: cache.report_fp !== next.report_fp,
     tasks: mode === 'cycle' && cache.tasks_fp !== next.tasks_fp,
     diary: cache.diary_count !== next.diary_count,
   };

@@ -6,6 +6,8 @@ import {
   daemonBarFingerprint,
   detailCacheNeedsPatch,
   observabilityFingerprint,
+  opsHomeFingerprint,
+  resolveViewMode,
   stepsFingerprint,
   tasksFingerprint,
 } from '../tools/evolution-viewer/public/live-state.js';
@@ -164,6 +166,7 @@ describe('live-state fingerprints', () => {
       cycle_status: 'open',
       steps: { intel: { status: 'running' } },
       diaries: [],
+      report_html: '<p>old</p>',
     }, 'round');
 
     const same = detailCacheNeedsPatch(cache, {
@@ -171,8 +174,10 @@ describe('live-state fingerprints', () => {
       cycle_status: 'open',
       steps: { intel: { status: 'running', updated_at: 'x' } },
       diaries: [],
+      report_html: '<p>old</p>',
     }, 'round');
     expect(same.header).toBe(false);
+    expect(same.report).toBe(false);
     expect(same.diary).toBe(false);
 
     const stepsChanged = detailCacheNeedsPatch(cache, {
@@ -180,17 +185,42 @@ describe('live-state fingerprints', () => {
       cycle_status: 'open',
       steps: { intel: { status: 'done' } },
       diaries: [],
+      report_html: '<p>old</p>',
     }, 'round');
     expect(stepsChanged.header).toBe(true);
+
+    const reportChanged = detailCacheNeedsPatch(cache, {
+      cycle_id: 'cycle-1',
+      cycle_status: 'open',
+      steps: { intel: { status: 'running' } },
+      diaries: [],
+      report_html: '<p>new</p>',
+    }, 'round');
+    expect(reportChanged.report).toBe(true);
+    expect(reportChanged.header).toBe(false);
 
     const diaryAdded = detailCacheNeedsPatch(cache, {
       cycle_id: 'cycle-1',
       cycle_status: 'open',
       steps: { intel: { status: 'running' } },
       diaries: [{ exec_id: 'exec-1', html: '<p>x</p>' }],
+      report_html: '<p>old</p>',
     }, 'round');
     expect(diaryAdded.diary).toBe(true);
     expect(diaryAdded.header).toBe(false);
+  });
+
+  it('resolveViewMode returns ops without hash or active cycle', () => {
+    expect(resolveViewMode(null, null)).toBe('ops');
+    expect(resolveViewMode('', null)).toBe('ops');
+    expect(resolveViewMode('cycle-1', null)).toBe('reading');
+    expect(resolveViewMode(null, 'cycle-1')).toBe('reading');
+  });
+
+  it('opsHomeFingerprint changes when daemon or observability changes', () => {
+    const a = opsHomeFingerprint({ daemon_fp: 'a', obs_fp: 'b', feed_len: 1, manifest_count: 2 });
+    const b = opsHomeFingerprint({ daemon_fp: 'a', obs_fp: 'c', feed_len: 1, manifest_count: 2 });
+    expect(a).not.toBe(b);
   });
 
   it('observabilityFingerprint changes when attention items change', () => {

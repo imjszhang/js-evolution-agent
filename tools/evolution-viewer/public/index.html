@@ -6,38 +6,38 @@
   <title>Evolution Viewer</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
-<body>
+<body data-view="ops">
   <header class="topbar">
-    <h1>Evolution Viewer</h1>
-    <div id="subject-overview" class="subject-overview hidden" aria-label="Daemon 总览"></div>
-    <div id="daemon-bar" class="daemon-bar hidden" aria-live="polite"></div>
-    <div id="attention-panel" class="attention-panel hidden" aria-live="polite" aria-label="待关注事项"></div>
+    <div class="topbar-row">
+      <div class="topbar-brand">
+        <button type="button" id="back-to-ops" class="btn btn-back hidden" aria-label="返回运维总览">← 运维总览</button>
+        <h1>Evolution Viewer</h1>
+        <p id="live-status" class="live-status" aria-live="polite"></p>
+      </div>
+    </div>
+    <div id="subject-overview" class="subject-overview hidden" aria-label="Subject 切换"></div>
     <p id="meta" class="meta"></p>
-    <p id="live-status" class="live-status" aria-live="polite"></p>
-    <input type="search" id="filter" placeholder="筛选 cycle_id 或摘要…" autocomplete="off" />
   </header>
-  <div class="layout">
-    <aside class="sidebar-wrap">
+  <div class="layout" id="app-layout">
+    <aside class="sidebar-wrap" aria-label="导航">
       <div class="sidebar-section">
         <h2 class="sidebar-heading">进行中</h2>
         <div id="active-cycles" class="active-cycles" aria-label="进行中的 cycle"></div>
       </div>
-      <div class="sidebar-section channel-section">
-        <h2 class="sidebar-heading">Channel</h2>
-        <div id="channel-panel" class="channel-panel" aria-live="polite" aria-label="Channel 运行态"></div>
-      </div>
       <div class="sidebar-section sidebar-section-grow">
-        <h2 class="sidebar-heading">已完成轮次</h2>
+        <div class="sidebar-heading-row">
+          <h2 class="sidebar-heading">历史轮次</h2>
+          <input type="search" id="filter" class="sidebar-filter" placeholder="筛选…" autocomplete="off" aria-label="筛选 cycle" />
+        </div>
         <div class="sidebar" id="timeline" aria-label="演化轮次"></div>
       </div>
-      <div class="sidebar-section event-feed-section">
-        <h2 class="sidebar-heading">Daemon 事件</h2>
-        <div id="event-feed" class="event-feed" aria-live="polite"></div>
-      </div>
     </aside>
-    <main class="detail" id="detail">
-      <p class="placeholder">从左侧选择一轮或进行中的 cycle，或打开带 <code>#cycle-…</code> 的链接。</p>
-    </main>
+    <div class="main-stage">
+      <main id="ops-home" class="ops-home" aria-label="运维总览"></main>
+      <main id="cycle-reader" class="cycle-reader hidden" aria-label="轮次阅读">
+        <div id="detail" class="detail-inner"></div>
+      </main>
+    </div>
   </div>
   <script src="app.js" type="module"></script>
 </body>
