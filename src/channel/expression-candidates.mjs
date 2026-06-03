@@ -7,11 +7,6 @@ const NOTIFY_SIGNAL_TYPES = new Set([
   'requires_human_review',
 ]);
 
-export function isGreeting(text) {
-  const normalized = String(text || '').trim().toLowerCase();
-  return /^(你好|您好|hi|hello|hey|在吗|在么|在不在)[!！?？。.\s]*$/i.test(normalized);
-}
-
 export function candidateIdForControlActionEvent(event = {}) {
   const messageId = event?.message_id;
   if (!messageId) return null;
@@ -29,8 +24,8 @@ export function candidateIdForMessage(item = {}) {
   if (item.ingest_kind === 'operator_fact') {
     return `reply:operator_fact:${item.message_id}`;
   }
-  if (item.ingest_kind === 'observation' && isGreeting(item.content)) {
-    return `reply:greeting:${item.message_id}`;
+  if (item.ingest_kind === 'observation') {
+    return `reply:message:${item.message_id}`;
   }
   return null;
 }
@@ -105,16 +100,22 @@ function candidateFromMessage(item, handled) {
       source_ref: `channel:message:${item.message_id}`,
     };
   }
-  if (item.ingest_kind === 'observation' && isGreeting(item.content)) {
+  if (item.ingest_kind === 'observation') {
     return {
       id,
-      kind: 'reply.greeting',
+      kind: 'reply.message',
       source: 'observation',
       priority: 'low',
       target: 'operator',
       reply_to_message_id: item.message_id,
-      recommended_intent: 'greeting_ack',
+      recommended_intent: 'custom',
       summary: item.content,
+      message: {
+        id: item.message_id,
+        channel: item.channel ?? null,
+        content: item.content,
+        ingest_kind: item.ingest_kind,
+      },
       source_ref: `channel:message:${item.message_id}`,
     };
   }

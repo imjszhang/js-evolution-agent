@@ -111,6 +111,7 @@ async function renderLlmSpeech(root, subject, intent, context, { aiClient = null
         'Do not grant approval, do not claim actions executed, do not leak secrets.',
         'Only reference CLI commands from affordances.operator_commands when needed.',
         'Follow content_requirements and risk_constraints in the user payload.',
+        'For custom ordinary-message replies, follow subject_identity.soul and the recent channel context instead of emitting a generic acknowledgement.',
       ].join('\n'),
     },
     {
@@ -125,6 +126,9 @@ async function renderLlmSpeech(root, subject, intent, context, { aiClient = null
           ignored_messages: context?.channel?.ignored_messages,
           background_messages: context?.channel?.background_messages,
           recent_presence_interactions: context?.channel?.recent_presence_interactions,
+        },
+        expression: {
+          candidates: context?.expression?.candidates,
         },
         attention_signals: context?.attention_signals,
       }, null, 2),

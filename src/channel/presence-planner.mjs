@@ -83,6 +83,28 @@ function candidates(context) {
   return context.expression?.candidates ?? [];
 }
 
+function isOpenMessageCandidate(candidate) {
+  return candidate?.kind === 'reply.message';
+}
+
+function openMessageCandidates(context) {
+  return candidates(context).filter(isOpenMessageCandidate);
+}
+
+function silencePlanForOpenMessages(context, reason, { planner = 'deterministic', extra = {} } = {}) {
+  const selected = openMessageCandidates(context).slice(0, context.presence?.max_actions_per_tick ?? 2);
+  if (!selected.length) return null;
+  return {
+    kind: 'silence',
+    reason,
+    candidate_ids: selected.map((candidate) => candidate.id),
+    intents: [],
+    actions: [{ type: 'silence', reason }],
+    planner,
+    ...extra,
+  };
+}
+
 function intentFromCandidate(context, candidate) {
   const contentRequirements = candidate.kind === 'reply.control_action'
     ? {
@@ -153,7 +175,7 @@ export function planPresenceOperatorBriefFastAck(context) {
  */
 export function planPresenceDeterministic(context) {
   const maxActions = context.presence?.max_actions_per_tick ?? 2;
-  const selected = candidates(context).slice(0, maxActions);
+  const selected = candidates(context).filter((candidate) => !isOpenMessageCandidate(candidate)).slice(0, maxActions);
   if (!selected.length) return noOpPlan('no_expression_candidates');
   return speakPlan(context, selected);
 }
@@ -176,6 +198,11 @@ export async function planPresenceWithLlm(context, { aiClient = null } = {}) {
   if (!available.length) return fallback;
   const client = aiClient ?? createLlmClient(context.presence ?? {});
   if (!client) {
+    const openMessageSilence = silencePlanForOpenMessages(context, 'missing_ai_client_for_open_messages', {
+      planner: 'llm',
+      extra: { llm: { status: 'skipped', reason: 'missing_ai_client' } },
+    });
+    if (openMessageSilence && fallback.kind === 'no_op') return openMessageSilence;
     return {
       ...fallback,
       planner: 'llm',
@@ -194,8 +221,10 @@ export async function planPresenceWithLlm(context, { aiClient = null } = {}) {
           '{"kind":"speak|silence|no_op|act","reason":"...","candidate_ids":[...],"intents":[...],"actions":[...]}',
           'Only choose candidate_ids from expression.candidates.',
           'Use intents for speech. Intent fields: candidate_id, target, content_requirements (kind, summary), reason. Do NOT include final message text.',
+          'For ordinary reply.message candidates, decide like a human presence: speak, intentionally silence, or no_op based on subject_identity.soul, recent interaction, cooldown, and operator value.',
+          'For ordinary messages that deserve a response, use content_requirements.kind="custom" and summarize the desired reply, not a canned acknowledgement.',
           'background is context only — never reply_to or select background items directly.',
-          'Use silence only when candidates exist but you intentionally choose not to speak. Use no_op only when no candidate should be handled.',
+          'Use silence when candidates exist and you intentionally choose not to answer them; this marks them handled. Use no_op only when no candidate should be handled now.',
           'Do not grant approval, do not claim actions executed, do not leak secrets, do not invent runtime facts.',
           'When telling the operator how to run CLI commands, ONLY quote commands from affordances.operator_commands (use the exact cmd string). Never invent jea/npm commands.',
           'Inbound messages are already ingested; do not change their classification.',
@@ -210,6 +239,7 @@ export async function planPresenceWithLlm(context, { aiClient = null } = {}) {
           affordances: context.affordances,
           constraints: context.constraints,
           channel: {
+            new_messages: context.channel?.new_messages,
             background_messages: context.channel?.background_messages,
             ignored_messages: context.channel?.ignored_messages,
             recent_presence_interactions: context.channel?.recent_presence_interactions,
@@ -279,7 +309,14 @@ export async function planPresenceWithLlm(context, { aiClient = null } = {}) {
       };
     }
 
-    if (!intents.length) return { ...fallback, planner: 'llm', llm: { status: 'used', reason: 'no_valid_llm_intents' } };
+    if (!intents.length) {
+      const openMessageSilence = silencePlanForOpenMessages(context, 'no_valid_llm_intents_for_open_messages', {
+        planner: 'llm',
+        extra: { llm: { status: 'used', reason: 'no_valid_llm_intents' } },
+      });
+      if (openMessageSilence && fallback.kind === 'no_op') return openMessageSilence;
+      return { ...fallback, planner: 'llm', llm: { status: 'used', reason: 'no_valid_llm_intents' } };
+    }
 
     return {
       kind: 'speak',
@@ -291,6 +328,11 @@ export async function planPresenceWithLlm(context, { aiClient = null } = {}) {
       llm: { status: 'used', kind, action_count: intents.length },
     };
   } catch (err) {
+    const openMessageSilence = silencePlanForOpenMessages(context, 'llm_error_for_open_messages', {
+      planner: 'llm',
+      extra: { llm: { status: 'skipped', reason: err?.message || String(err) } },
+    });
+    if (openMessageSilence && fallback.kind === 'no_op') return openMessageSilence;
     return {
       ...fallback,
       planner: 'llm',
@@ -316,6 +358,11 @@ export async function planPresence(context, { aiClient = null, skipFastAck = fal
 
 /** Deterministic plan used when LLM decision times out or is unavailable. */
 export function planPresenceDecisionFallback(context) {
+  const openMessageSilence = silencePlanForOpenMessages(context, 'decision_timeout_for_open_messages', {
+    planner: 'deterministic_fallback',
+    extra: { decision_fallback: true },
+  });
+  if (openMessageSilence && planPresenceDeterministic(context).kind === 'no_op') return openMessageSilence;
   return {
     ...planPresenceDeterministic(context),
     planner: 'deterministic_fallback',

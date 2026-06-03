@@ -303,6 +303,76 @@ describe('channel domain', () => {
       const second = await runChannelClassifierTask(root, 'alpha');
       expect(second.classified).toBe(2);
     });
+
+    it('downgrades LLM ignore for ordinary direct text to observation by default', async () => {
+      const root = makeRoot({
+        classifier: { enabled: true, mode: 'llm', interval_ms: 30_000, batch_size: 5 },
+        presence: { enabled: true, planner: 'llm', default_target: 'oc_operator' },
+      });
+      writePendingInbound(root, 'alpha', {
+        messageId: 'm-ignore-direct-text-downgrade',
+        chatId: 'oc_operator',
+        senderId: 'ou_operator',
+        chatType: 'p2p',
+        content: '我刚看到一条消息',
+        contentType: 'text',
+      });
+      const result = await runChannelClassifierTask(root, 'alpha', {
+        aiClient: {
+          chatMessages: async () => JSON.stringify({
+            items: [{
+              message_id: 'm-ignore-direct-text-downgrade',
+              classification: 'ignore',
+              confidence: 'high',
+              summary: 'Ordinary direct text.',
+              rationale: 'not an operator action',
+            }],
+          }),
+        },
+      });
+      expect(result.classified).toBe(1);
+      expect(result.processed[0].ingest_result.kind).toBe('observation');
+      expect(result.processed[0].ingest_result.record.content).toBe('我刚看到一条消息');
+      expect(result.processed[0].ingest_result.record.metadata.downgrade_reason)
+        .toBe('ignore_default_observation');
+      const ctx = buildPresenceContext(root, 'alpha');
+      expect(ctx.channel.new_messages.map((m) => m.message_id)).toContain('m-ignore-direct-text-downgrade');
+      expect(ctx.expression.candidates.map((candidate) => candidate.id))
+        .toContain('reply:message:m-ignore-direct-text-downgrade');
+    });
+
+    it('keeps explicit LLM ignore as context-only for non-conversation noise', async () => {
+      const root = makeRoot({
+        classifier: { enabled: true, mode: 'llm', interval_ms: 30_000, batch_size: 5 },
+        presence: { enabled: true, planner: 'llm', default_target: 'oc_operator' },
+      });
+      writePendingInbound(root, 'alpha', {
+        messageId: 'm-ignore-noise',
+        chatId: 'oc_operator',
+        senderId: 'ou_operator',
+        chatType: 'p2p',
+        content: 'noop',
+        contentType: 'text',
+      });
+      const result = await runChannelClassifierTask(root, 'alpha', {
+        aiClient: {
+          chatMessages: async () => JSON.stringify({
+            items: [{
+              message_id: 'm-ignore-noise',
+              classification: 'ignore',
+              confidence: 'high',
+              summary: 'noop',
+              rationale: 'test noise',
+            }],
+          }),
+        },
+      });
+      expect(result.classified).toBe(1);
+      expect(result.processed[0].ingest_result.kind).toBe('ignore');
+      const ctx = buildPresenceContext(root, 'alpha');
+      expect(ctx.channel.ignored_messages.map((m) => m.message_id)).toContain('m-ignore-noise');
+      expect(ctx.expression.candidates.map((candidate) => candidate.id)).not.toContain('reply:message:m-ignore-noise');
+    });
   });
 
   describe('attention signals', () => {
@@ -570,7 +640,7 @@ describe('channel domain', () => {
       writePendingInbound(root, 'alpha', {
         messageId: 'om_intel_memory',
         chatId: 'oc_operator',
-        content: '你好',
+        content: '同意发布',
         contentType: 'text',
       });
       await runChannelClassifierTask(root, 'alpha');
@@ -579,6 +649,33 @@ describe('channel domain', () => {
       expect(ctx.channel.recent_presence_interactions.length).toBeGreaterThan(0);
       expect(Object.keys(readPresenceState(root, 'alpha').handled_candidates ?? {})
         .some((id) => id.includes('om_intel_memory'))).toBe(true);
+    });
+
+    it('builds expression candidates for plain observations', async () => {
+      const root = makeRoot({
+        classifier: { enabled: true, mode: 'llm', interval_ms: 30_000, batch_size: 5 },
+        presence: {
+          enabled: true,
+          planner: 'llm',
+          default_target: 'oc_operator',
+        },
+      });
+      writePendingInbound(root, 'alpha', {
+        messageId: 'om_plain_observation',
+        chatId: 'oc_operator',
+        senderId: 'ou_operator',
+        content: '聊聊你自己',
+        contentType: 'text',
+      });
+      await runChannelClassifierTask(root, 'alpha');
+      const ctx = buildPresenceContext(root, 'alpha');
+      expect(ctx.channel.new_messages.map((m) => m.message_id)).toContain('om_plain_observation');
+      expect(ctx.expression.candidates).toContainEqual(expect.objectContaining({
+        id: 'reply:message:om_plain_observation',
+        kind: 'reply.message',
+        recommended_intent: 'custom',
+        summary: '聊聊你自己',
+      }));
     });
 
     it('llm planner can reply to plain observations', async () => {
@@ -599,8 +696,8 @@ describe('channel domain', () => {
       }];
       ctx.channel.background_messages = [];
       ctx.expression.candidates = [{
-        id: 'reply:custom:om_llm_obs',
-        kind: 'reply.custom',
+        id: 'reply:message:om_llm_obs',
+        kind: 'reply.message',
         source: 'observation',
         priority: 'low',
         target: 'channel_default',
@@ -614,9 +711,9 @@ describe('channel domain', () => {
           chatMessages: async () => JSON.stringify({
             kind: 'speak',
             reason: 'intro',
-            candidate_ids: ['reply:custom:om_llm_obs'],
+            candidate_ids: ['reply:message:om_llm_obs'],
             intents: [{
-              candidate_id: 'reply:custom:om_llm_obs',
+              candidate_id: 'reply:message:om_llm_obs',
               target: 'channel_default',
               content_requirements: { kind: 'custom', text_hint: '我是小测，alpha 的外部接口。' },
               reason: 'casual_intro',
@@ -627,6 +724,54 @@ describe('channel domain', () => {
       });
       expect(plan.kind).toBe('speak');
       expect(plan.intents[0].content_requirements?.text_hint).toContain('小测');
+    });
+
+    it('llm planner can silence plain observations and mark them handled', async () => {
+      const root = makeRoot({
+        presence: {
+          enabled: true,
+          planner: 'llm',
+          default_target: 'oc_operator',
+          fast_ack_operator_brief: false,
+        },
+      });
+      writePendingInbound(root, 'alpha', {
+        messageId: 'om_llm_silence_obs',
+        chatId: 'oc_operator',
+        senderId: 'ou_operator',
+        content: '嗯',
+        contentType: 'text',
+      });
+      await runChannelClassifierTask(root, 'alpha', {
+        aiClient: {
+          chatMessages: async () => JSON.stringify({
+            items: [{
+              message_id: 'om_llm_silence_obs',
+              classification: 'observation',
+              confidence: 'medium',
+              summary: '嗯',
+              rationale: 'short acknowledgement',
+            }],
+          }),
+        },
+      });
+      const ctx = buildPresenceContext(root, 'alpha');
+      const plan = await planPresenceWithLlm(ctx, {
+        aiClient: {
+          chatMessages: async () => JSON.stringify({
+            kind: 'silence',
+            reason: 'short_ack_needs_no_reply',
+            candidate_ids: ['reply:message:om_llm_silence_obs'],
+            intents: [],
+          }),
+        },
+      });
+      expect(plan.kind).toBe('silence');
+      await executePresenceDecisionPlan(root, 'alpha', plan, { context: ctx });
+      const handled = readPresenceState(root, 'alpha').handled_candidates ?? {};
+      expect(handled['reply:message:om_llm_silence_obs']?.outcome).toBe('silenced');
+      const nextCtx = buildPresenceContext(root, 'alpha');
+      expect(nextCtx.expression.candidates.some((c) => c.id === 'reply:message:om_llm_silence_obs')).toBe(false);
     });
 
     it('skips expression when presence.enabled is false', async () => {
@@ -668,7 +813,7 @@ describe('channel domain', () => {
       writePendingInbound(root, 'alpha', {
         messageId: 'om_ctx_ignore',
         chatId: 'oc_test',
-        content: '回句话',
+        content: 'noop',
         contentType: 'text',
       });
       await runChannelClassifierTask(root, 'alpha', {
@@ -676,7 +821,7 @@ describe('channel domain', () => {
           message_id: 'om_ctx_ignore',
           classification: 'ignore',
           confidence: 'medium',
-          summary: '回句话',
+          summary: 'noop',
           rationale: 'test',
         }]),
       });
@@ -782,7 +927,7 @@ describe('channel domain', () => {
       writePendingInbound(root, 'alpha', {
         messageId: 'om_ignore_mix',
         chatId: 'oc_operator',
-        content: '回句话',
+        content: 'noop',
         contentType: 'text',
       });
       writePendingInbound(root, 'alpha', {
@@ -797,7 +942,7 @@ describe('channel domain', () => {
             message_id: 'om_ignore_mix',
             classification: 'ignore',
             confidence: 'medium',
-            summary: '回句话',
+            summary: 'noop',
             rationale: 'test',
           },
           {
@@ -1049,8 +1194,13 @@ describe('channel domain', () => {
       };
 
       const result = await runPresenceReactor(root, 'alpha', { aiClient: slowClient, force: true });
-      expect(result.timeout).toBeUndefined();
+      expect(result.timeout).toBe(true);
+      expect(result.fallback_applied).toBe(true);
+      expect(result.plan.kind).toBe('silence');
+      expect(result.plan.candidate_ids).toContain('reply:message:om_timeout_no_apply');
       expect(summarizeChannelEventQueue(root, 'alpha').pending_speech_generation).toBe(0);
+      expect(readPresenceState(root, 'alpha').handled_candidates?.['reply:message:om_timeout_no_apply']?.outcome)
+        .toBe('silenced');
       await new Promise((resolve) => setTimeout(resolve, 250));
       expect(listOutboxPending(root, 'alpha', { limit: 5 })).toHaveLength(0);
     });

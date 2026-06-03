@@ -27,6 +27,40 @@ const CLASSIFIER_OUTPUT_TYPES = new Set([
   'ignore',
 ]);
 
+function isIgnorableClassifierIgnore(envelope, text) {
+  const content = String(envelope.content ?? text ?? '').trim();
+  const contentType = String(envelope.content_type ?? 'text').toLowerCase();
+  if (!content && !(envelope.resources ?? []).length) return true;
+  if (contentType !== 'text') return true;
+  if (envelope.chat_type === 'group' && !(envelope.mentions ?? []).length) return true;
+  return /^(noop|noise|test noise|n\/a|null|undefined|[.。…\s_-]+)$/i.test(content);
+}
+
+function observationFromClassifier(envelopeNorm, item, {
+  content,
+  confidence = 'medium',
+  downgradeReason = null,
+} = {}) {
+  const sourceRef = `channel:${envelopeNorm.channel}:${envelopeNorm.message_id}`;
+  const metadata = { channel_envelope: envelopeNorm, classifier: item };
+  if (downgradeReason) metadata.downgrade_reason = downgradeReason;
+  return {
+    kind: 'observation',
+    record: {
+      kind: 'observation',
+      source: 'channel',
+      content: String(content ?? envelopeNorm.content ?? '').trim(),
+      confidence: confidence === 'high' ? 'high' : 'medium',
+      tags: downgradeReason
+        ? ['channel', envelopeNorm.channel, 'classifier_downgraded_ignore']
+        : ['channel', envelopeNorm.channel],
+      recorded_at: nowIso(),
+      channel_source: sourceRef,
+      metadata,
+    },
+  };
+}
+
 /**
  * Map LLM/deterministic classifier item to ingest decision shape.
  */
@@ -41,6 +75,13 @@ export function decisionFromClassifierItem(item, envelope) {
   const confidence = String(item?.confidence ?? 'medium').trim().toLowerCase();
 
   if (classification === 'ignore') {
+    if (!isIgnorableClassifierIgnore(envelopeNorm, text)) {
+      return observationFromClassifier(envelopeNorm, item, {
+        content: envelopeNorm.content || text,
+        confidence: 'medium',
+        downgradeReason: 'ignore_default_observation',
+      });
+    }
     return { kind: 'ignore', record: null };
   }
 
@@ -139,17 +180,7 @@ export function decisionFromClassifierItem(item, envelope) {
   }
 
   return {
-    kind: 'observation',
-    record: {
-      kind: 'observation',
-      source: 'channel',
-      content: text,
-      confidence: confidence === 'high' ? 'high' : 'medium',
-      tags: ['channel', envelopeNorm.channel],
-      recorded_at: nowIso(),
-      channel_source: sourceRef,
-      metadata: { channel_envelope: envelopeNorm, classifier: item },
-    },
+    ...observationFromClassifier(envelopeNorm, item, { content: text, confidence }),
   };
 }
 
