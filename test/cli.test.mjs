@@ -64,6 +64,7 @@ import {
   readSubjectSoul,
   subjectGovernanceFile,
   subjectSoulFile,
+  subjectsRegistryFile,
   diagnoseSubjectWorkspace,
   buildSubjectResourceSummary,
   diagnoseSubjectRuntimeConfig,
@@ -78,6 +79,7 @@ import {
   resolveSubjectConfig,
   readDefaultSubjectPolicy,
   setDefaultSubject,
+  migrateSubjectsToRuntime,
 } from '../src/cli/utils/subjects.mjs';
 import {
   appendRunEvent,
@@ -262,7 +264,7 @@ describe('subject management', () => {
     const policy = readDefaultSubjectPolicy(root);
     expect(policy.active.active).toBe('my-product');
     expect(policy.text).toContain('## Subject');
-    expect(readJsonSafe(join(root, 'policies', 'subjects.json')).default_subject).toBe('my-product');
+    expect(readJsonSafe(subjectsRegistryFile(root)).default_subject).toBe('my-product');
   });
 
   it('reads legacy active-subject.json when subjects.json is missing', () => {
@@ -283,6 +285,39 @@ describe('subject management', () => {
     const policy = readDefaultSubjectPolicy(root);
     expect(policy.active.active).toBe('legacy-agent');
     expect(runtimeInfoForDefaultSubject(root).dataNamespace).toBe('legacy-agent');
+  });
+
+  it('migrates legacy subject registry and workspace into runtime layout', () => {
+    const root = makeProjectRoot();
+    mkdirSync(join(root, 'policies', 'subjects', 'legacy-agent'), { recursive: true });
+    writeFileSync(join(root, 'policies', 'subjects', 'legacy-agent', 'SUBJECT.md'), [
+      '# legacy-agent',
+      '',
+      '## Subject',
+      'legacy subject',
+    ].join('\n'), 'utf-8');
+    writeFileSync(join(root, 'policies', 'subjects', 'legacy-agent', 'SOUL.md'), 'legacy soul', 'utf-8');
+    writeJsonFile(join(root, 'policies', 'subjects.json'), {
+      default_subject: 'legacy-agent',
+      subjects: {
+        'legacy-agent': {
+          policy: 'subjects/legacy-agent/SUBJECT.md',
+          data_namespace: 'legacy-agent',
+        },
+      },
+    });
+
+    const result = migrateSubjectsToRuntime(root);
+
+    expect(result.migrated).toBe(true);
+    expect(existsSync(join(root, 'runtime', 'subjects', 'legacy-agent', 'SUBJECT.md'))).toBe(true);
+    expect(existsSync(join(root, 'runtime', 'subjects', 'legacy-agent', 'SOUL.md'))).toBe(true);
+    const registry = readJsonSafe(subjectsRegistryFile(root));
+    expect(registry.default_subject).toBe('legacy-agent');
+    expect(registry.subjects['legacy-agent'].policy).toBe('SUBJECT.md');
+    const policy = readDefaultSubjectPolicy(root);
+    expect(policy.file).toBe(join(root, 'runtime', 'subjects', 'legacy-agent', 'SUBJECT.md'));
+    expect(readSubjectSoul(root, 'legacy-agent').file).toBe(join(root, 'runtime', 'subjects', 'legacy-agent', 'SOUL.md'));
   });
 
   it('resolves active subject runtime paths from data namespace', () => {
@@ -2041,7 +2076,7 @@ describe('data initialization', () => {
     expect(result.goals.written).toBe(true);
     expect(result.seed.observationCount).toBe(1);
     expect(result.policies).not.toBeNull();
-    expect(existsSync(join(root, 'policies', 'subjects.json'))).toBe(true);
+    expect(existsSync(subjectsRegistryFile(root))).toBe(true);
     expect(existsSync(subjectGovernanceFile(root, 'js-evolution-agent'))).toBe(true);
     expect(existsSync(subjectSoulFile(root, 'js-evolution-agent'))).toBe(true);
   });

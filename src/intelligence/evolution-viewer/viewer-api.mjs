@@ -359,6 +359,7 @@ export function createRuntimeWatcher({
     join(runtimeRoot, 'data', 'channel', 'outbox'),
   ];
   if (projectRoot && watchSubjectsJson) {
+    paths.push(join(projectRoot, 'runtime', 'subjects', 'registry.json'));
     paths.push(join(projectRoot, 'policies', 'subjects.json'));
   }
 

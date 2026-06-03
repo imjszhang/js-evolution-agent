@@ -10,6 +10,7 @@ import {
   diagnoseSubjectWorkspace,
   ensureSubjectsRegistry,
   listRegisteredSubjects,
+  migrateSubjectsToRuntime,
   readSubjectPolicy,
   readSubjectSoul,
   resolveDefaultSubjectName,
@@ -95,6 +96,23 @@ function printLaneStatus(status) {
   if (status.errors.length) console.log(`errors: ${status.errors.join('; ')}`);
 }
 
+function printMigrationResult(result) {
+  if (!result.migrated) {
+    console.log(`Migration skipped: ${result.reason}`);
+    console.log(`legacy registry: ${result.legacy_registry}`);
+    console.log(`target registry: ${result.target_registry}`);
+    return;
+  }
+  console.log(`# Subject Runtime Layout Migration`);
+  console.log(`legacy registry: ${result.legacy_registry}`);
+  console.log(`target registry: ${result.target_registry}`);
+  for (const item of result.subjects) {
+    console.log(`- ${item.subject} -> ${item.workspace}`);
+    console.log(`  SUBJECT.md: ${item.subject_file.copied ? 'copied' : item.subject_file.reason}`);
+    console.log(`  SOUL.md: ${item.soul_file.copied ? 'copied' : item.soul_file.reason}`);
+  }
+}
+
 export async function subjectCommand({ subcommand, flags = {}, args = [] } = {}) {
   const root = getProjectRoot();
 
@@ -172,7 +190,7 @@ export async function subjectCommand({ subcommand, flags = {}, args = [] } = {})
         console.log(`policy: ${result.file}`);
         console.log(`data namespace: ${runtime.dataNamespace}`);
         console.log(`runtime root: ${runtime.runtimeRoot}`);
-        console.log('Tip: `jea subject use` now sets the default subject in policies/subjects.json.');
+        console.log('Tip: `jea subject use` now sets the default subject in runtime/subjects/registry.json.');
         console.log('Tip: initialize this subject with `jea data init --all --subject ' + result.config.name + '` before running.');
       }
       return 0;
@@ -240,6 +258,13 @@ export async function subjectCommand({ subcommand, flags = {}, args = [] } = {})
     return 0;
   }
 
+  if (subcommand === 'migrate-runtime-layout') {
+    const result = migrateSubjectsToRuntime(root, { force: !!flags.force });
+    if (flags.json) console.log(JSON.stringify(result, null, 2));
+    else printMigrationResult(result);
+    return result.migrated || result.reason === 'legacy_registry_missing' ? 0 : 1;
+  }
+
   if (subcommand === 'check') {
     ensureSubjectsRegistry(root);
     const config = resolveSubjectFromFlags(root, flags);
@@ -288,7 +313,7 @@ export async function subjectCommand({ subcommand, flags = {}, args = [] } = {})
   if (!subcommand) return subjectCommand({ subcommand: 'show', flags, args });
 
   {
-    console.error('Usage: jea subject <list|show|lane|init|use|default|check> [--subject NAME]');
+    console.error('Usage: jea subject <list|show|lane|init|use|default|check|migrate-runtime-layout> [--subject NAME]');
     return 2;
   }
 }

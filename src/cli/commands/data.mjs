@@ -130,7 +130,7 @@ export function backupData(root, flags = {}) {
   const name = String(flags.name || `data-${timestampForPath()}`)
     .replace(/[\\/]/g, '-')
     .replace(/\s+/g, '-');
-  const source = relative(root, runtime.dataRoot);
+  const source = relative(root, runtime.runtimeRoot);
   const destination = join('backups', 'subjects', runtime.dataNamespace, name);
   const result = copyProjectDir(root, source, destination, { force: !!flags.force });
   return {
@@ -156,7 +156,7 @@ function printInitResult(result, root, language = getLanguage()) {
       : t('data.init.exists', {}, language);
     const policyRel = relative(root, subject.file);
     console.log(`  ${t('data.init.policies', {}, language)}:`);
-    console.log(`    - policies/subjects.json: ${registryLabel}`);
+    console.log(`    - ${relative(root, registry.path)}: ${registryLabel}`);
     console.log(`    - ${policyRel}: ${subjectLabel}`);
   }
   for (const dir of result.directories) {

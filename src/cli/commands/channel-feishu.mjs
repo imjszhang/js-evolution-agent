@@ -94,7 +94,7 @@ function maybeInitSubjectConfig(root, subject, flags = {}) {
   const registry = readSubjectsRegistry(root);
   const entry = registry.subjects?.[subject];
   if (!entry) {
-    throw new Error(`Subject not found in subjects.json: ${subject}`);
+    throw new Error(`Subject not found in runtime/subjects/registry.json: ${subject}`);
   }
   if (entry.channels?.feishu || entry.channels?.lark) {
     return { initialized: false, reason: 'already_configured' };
@@ -126,7 +126,7 @@ function ensureSubjectHasFeishuBlock(root, subject, flags = {}) {
   }
   return {
     ok: false,
-    message: `Subject "${subject}" has no channels.feishu block in policies/subjects.json. `
+    message: `Subject "${subject}" has no channels.feishu block in runtime/subjects/registry.json. `
       + 'Add one manually or rerun with --init-subject-config.',
   };
 }
@@ -141,7 +141,7 @@ function buildCredentialUpdates(subject, credentials) {
 
 function printNextSteps(subject, { bindPhrase = 'JEA BIND' } = {}) {
   console.log('\n下一步:');
-  console.log(`1. 确认 policies/subjects.json 已启用 channels.feishu`);
+  console.log(`1. 确认 runtime/subjects/registry.json 已启用 channels.feishu`);
   console.log(`2. 在飞书私聊机器人发送: ${bindPhrase} <口令>`);
   console.log(`3. 运行: npm run jea -- channel doctor --subject ${subject}`);
   console.log(`4. 启动: npm run jea -- daemon start --subject ${subject} --domain channel`);
@@ -160,7 +160,7 @@ export async function channelFeishuRegisterCommand({
     return 2;
   }
   if (blockCheck.initialized) {
-    console.log(`已写入 subjects.json channels.feishu skeleton -> ${blockCheck.path}`);
+    console.log(`已写入 runtime subject registry channels.feishu skeleton -> ${blockCheck.path}`);
   }
 
   let result;

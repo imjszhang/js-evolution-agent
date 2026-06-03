@@ -206,8 +206,8 @@ runtime/subjects/<data_namespace>/data/evolution/operator_briefs/processed/
 
 ### 主体策略与权威文档
 
-- `policies/subjects/<name>/SUBJECT.md`：`Off-Limits Without Human Approval` 等审批与安全边界；`SOUL.md` 为 channel persona（不参与治理权威文献）；用 `jea subject check` 校验结构。
-- `policies/subjects.json`：lane、resource root 等机器可读配置。
+- `runtime/subjects/<data_namespace>/SUBJECT.md`：`Off-Limits Without Human Approval` 等审批与安全边界；`SOUL.md` 为 channel persona（不参与治理权威文献）；用 `jea subject check` 校验结构。
+- `runtime/subjects/registry.json`：lane、resource root 等机器可读配置。
 - `policies/authority/CONSTITUTION.md`、`policies/authority/GUIDE.md`、`oada.config.mjs`：Phase 1 权威文档，优先级高于情报材料。
 
 ### 通用情报写入（Evidence，非 operator_fact）
@@ -271,7 +271,7 @@ Decide 可调度、`Phase 2` 执行的记录型动作，用于落已有结论而
 其他需人工介入的场景：
 
 - **核心层变更**：`core_apply` 默认受 `JEA_CORE_APPLY_POLICY=review` 约束；`request_core_review` 只落审批请求，不执行变更。
-- **主体边界**：`policies/subjects/<name>/SUBJECT.md` 的 Off-Limits Without Human Approval 定义各 subject 的审批规则（凭据、远端发布、越界写入等）；AGENTS.md 不重复主体语义，用 `jea subject check` 校验 policy 结构。
+- **主体边界**：`runtime/subjects/<data_namespace>/SUBJECT.md` 的 Off-Limits Without Human Approval 定义各 subject 的审批规则（凭据、远端发布、越界写入等）；AGENTS.md 不重复主体语义，用 `jea subject check` 校验 policy 结构。
 
 自动化代理在未获操作者明确确认时，不要替其提交发布/基线校准类 brief，也不要在 action 上伪造 `approval_granted`。
 
@@ -342,9 +342,9 @@ Daemon 用于 **事件驱动的 step 级演化**。推荐用 `jea daemon start` 
 
 **step 完成以 checkpoint 为准**：cycle-state / `cycle-state/<id>/<step>.json` 为完成依据；若子进程 hang 但 checkpoint 已写入，watchdog（约每 `heartbeat-ms`）会终止 runner 并按产物完成 task；tick reconcile 会修复「cycle-state 已 terminal 但 task 仍 running」的 drift。
 
-演化模式解析优先级：`policies/subjects.json` 中 `subjects.<name>.evolution.mode` > `jea daemon start --evolution-mode` > env `JEA_EVOLUTION_MODE` > 默认 `continuous`。
+演化模式解析优先级：`runtime/subjects/registry.json` 中 `subjects.<name>.evolution.mode` > `jea daemon start --evolution-mode` > env `JEA_EVOLUTION_MODE` > 默认 `continuous`。
 
-**热加载**：daemon worker 运行中修改 `policies/subjects.json` 的 `evolution.mode` **无需 restart**（下一轮 worker loop 重新读盘，通常数秒内 idle 生效；`daemon events` 可见 `evolution_mode_changed`）。修改 `.env` 的 `JEA_EVOLUTION_MODE` 或启动时的 `--evolution-mode` **需** `daemon stop` 后重新 `start` 才生效。
+**热加载**：daemon worker 运行中修改 `runtime/subjects/registry.json` 的 `evolution.mode` **无需 restart**（下一轮 worker loop 重新读盘，通常数秒内 idle 生效；`daemon events` 可见 `evolution_mode_changed`）。修改 `.env` 的 `JEA_EVOLUTION_MODE` 或启动时的 `--evolution-mode` **需** `daemon stop` 后重新 `start` 才生效。
 
 `run_cycle` 整轮任务与 `jea run` 同步链仍保留，供本地调试与兼容；**后台长期运行请优先 step 模式**。
 
@@ -551,7 +551,7 @@ channel worker 每轮 loop 会：
 
 协调器按 `classifier.interval_ms` 调度入队（幂等键 `${subject}:channel_classifier:pending`）；与 presence tick（默认 5min）独立。
 
-`policies/subjects.json` 示例：
+`runtime/subjects/registry.json` 示例：
 
 ```json
 "classifier": {
@@ -605,7 +605,7 @@ Classifier 识别 `control_request` 后**不直接执行**配置变更，而是�
 
 事件队列与审计 `events.jsonl` 分离。`jea channel status --json` 的 `presence.event_queue` / `presence.reactor` / `presence.pending_speech_generation` 可观测 reactor 与待生成话术。
 
-`policies/subjects.json` 示例：
+`runtime/subjects/registry.json` 示例：
 
 ```json
 "channels": {
@@ -661,7 +661,7 @@ Classifier 识别 `control_request` 后**不直接执行**配置变更，而是�
 
 飞书配置按 **subject 隔离**（每个 subject 可绑定不同机器人）。`app_secret` 不要明文写入 `subjects.json`，用 `app_secret_env` 指向环境变量名；`app_id` 可写在 JSON，或用 `app_id_env` / `JEA_CHANNEL_FEISHU_<SUBJECT>_APP_ID` 从环境读取。
 
-`policies/subjects.json` 示例（`my-subject` 与 `other-subject` 各用各的 bot）：
+`runtime/subjects/registry.json` 示例（`my-subject` 与 `other-subject` 各用各的 bot）：
 
 ```json
 {
@@ -733,12 +733,12 @@ Subject 决定策略、命名空间和运行时路径。
 - `jea subject list`：列出 registry 中的 subjects 与 default subject。
 - `jea subject show [--subject NAME]`：显示 subject、core layer、namespace 和 runtime paths；无 `--subject` 时使用 default subject。
 - `jea subject init <name> [--use]`：从模板创建新 subject 并写入 registry；`--use` 同时设为 default。
-- `jea subject use <name>` / `jea subject default <name>`：更新 `policies/subjects.json` 中的 default subject。
+- `jea subject use <name>` / `jea subject default <name>`：更新 `runtime/subjects/registry.json` 中的 default subject。
 - `jea subject check [--subject NAME]`：校验 subject policy。
 - `jea subject lane status|init [--subject NAME]`：检查或初始化目标仓库 lane。
 - `jea run --subject NAME`：显式指定单轮演化主体；`jea evolve` / `jea daemon` 已支持 `--subject` / `--subjects` / `--all`。
 
-`policies/subjects.json` 是本地 registry，可承载机器可读的 `lane` 与 `resources` 字段；字段形态参考 `policies/subjects.example.json`。主体 Markdown policy 只保留主体语义、安全边界和人工审批规则，不维护 repo、branch、resource root、resource mapping 等机器字段。
+`runtime/subjects/registry.json` 是本地 registry，可承载机器可读的 `lane` 与 `resources` 字段；字段形态参考 `policies/subjects.example.json`。主体 Markdown policy 只保留主体语义、安全边界和人工审批规则，不维护 repo、branch、resource root、resource mapping 等机器字段。
 
 创建或切换 subject 后，通常先执行：
 

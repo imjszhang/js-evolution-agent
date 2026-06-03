@@ -11,6 +11,7 @@ import {
   setSubjectEvolutionMode,
 } from '../src/cli/utils/evolution-mode.mjs';
 import { applyEvolutionModeChange } from '../src/cli/utils/evolution-mode-apply.mjs';
+import { subjectsRegistryFile } from '../src/cli/utils/subjects.mjs';
 
 function makeRoot({ subjectMode = null } = {}) {
   const tempDir = mkdtempSync(join(tmpdir(), 'jea-evolution-mode-'));
@@ -42,6 +43,24 @@ describe('evolution-mode', () => {
     const resolved = resolveEvolutionMode(root, { subject: 'alpha', flags: {}, env: {} });
     expect(resolved.mode).toBe('on_demand');
     expect(resolved.source).toBe('subjects.json');
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('reports runtime registry source when runtime registry exists', () => {
+    const root = makeRoot();
+    writeJsonFile(subjectsRegistryFile(root), {
+      default_subject: 'alpha',
+      subjects: {
+        alpha: {
+          policy: 'subjects/alpha.md',
+          data_namespace: 'alpha',
+          evolution: { mode: 'on_demand' },
+        },
+      },
+    });
+    const resolved = resolveEvolutionMode(root, { subject: 'alpha', flags: {}, env: {} });
+    expect(resolved.mode).toBe('on_demand');
+    expect(resolved.source).toBe('runtime-registry.json');
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -96,7 +115,8 @@ describe('evolution-mode', () => {
     expect(result.changed).toBe(true);
     expect(result.previous).toBe('continuous');
     expect(result.mode).toBe('on_demand');
-    const registry = readJsonSafe(join(root, 'policies', 'subjects.json'), null);
+    expect(result.source).toBe('runtime-registry.json');
+    const registry = readJsonSafe(subjectsRegistryFile(root), null);
     expect(registry.subjects.alpha.evolution.mode).toBe('on_demand');
     rmSync(root, { recursive: true, force: true });
   });

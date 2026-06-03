@@ -6,7 +6,7 @@ const DEFAULT_INTERVAL_MS = 30_000;
 const DEFAULT_BATCH_SIZE = 20;
 
 /**
- * Transport-agnostic inbound classifier config from policies/subjects.json channels.classifier.
+ * Transport-agnostic inbound classifier config from runtime/subjects/registry.json channels.classifier.
  */
 export function resolveClassifierConfig(root, subject, overrides = {}) {
   const entry = getSubjectEntry(root, subject);

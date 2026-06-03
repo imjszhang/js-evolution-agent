@@ -148,6 +148,7 @@ const EVOLUTION_MODE_LABELS = {
 };
 
 const EVOLUTION_MODE_SOURCE_LABELS = {
+  'runtime-registry.json': 'runtime/subjects/registry.json',
   'subjects.json': 'subjects.json',
   cli: 'CLI \u542f\u52a8\u53c2\u6570',
   env: '\u73af\u5883\u53d8\u91cf',

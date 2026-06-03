@@ -111,9 +111,9 @@ This project uses [DeepSeek's OpenAI-compatible Chat Completions API](https://ap
 
 By default, `oada.config.mjs` reads Cyber-Taoist Markdown from this repository's `policies/authority/`, plus:
 
-- the subject policy selected by `JEA_SUBJECT`, `--subject`, or `policies/subjects.json` default
+- the subject policy selected by `JEA_SUBJECT`, `--subject`, or `runtime/subjects/registry.json` default
 
-`policies/project-guidance.md` is kept as a compatibility entry. New subject policies live under `policies/subjects/`.
+`policies/project-guidance.md` is kept as a compatibility entry. New subject policies live under `runtime/subjects/<data_namespace>/`.
 
 To override the authority docs directory:
 
@@ -124,21 +124,21 @@ jea run
 
 ## Subjects
 
-Cyber-Taoist analysis requires a defined subject. `js-evolution-agent` manages subjects as policy files:
+Cyber-Taoist analysis requires a defined subject. `js-evolution-agent` keeps local subject configuration in runtime:
 
 ```text
-policies/
-  subjects.json
-  subjects.example.json
+runtime/
   subjects/
-    js-evolution-agent.md
-  templates/
-    project.md
+    registry.json
+    <data_namespace>/
+      SUBJECT.md
+      SOUL.md
+      data/
 ```
 
-`policies/subjects.json` registers known subjects and optional `default_subject` for interactive CLI convenience. It may also carry structured `lane` and `resources` fields for machine-readable repo, branch, command, resource-root, and resource-rule configuration. Use `policies/subjects.example.json` as the copyable shape for those fields.
+`runtime/subjects/registry.json` registers known subjects and optional `default_subject` for interactive CLI convenience. It may also carry structured `lane` and `resources` fields for machine-readable repo, branch, command, resource-root, and resource-rule configuration. Use `policies/subjects.example.json` as the copyable shape for those fields.
 
-`policies/subjects.json`, legacy `policies/active-subject.json`, and `policies/subjects/*.md` are local state and are ignored by Git by default. Commit examples, templates, and stable project defaults, not operator-specific registry files. `policies/project-guidance.md` remains the committed compatibility/default policy.
+`runtime/subjects/registry.json`, subject workspace files, legacy `policies/active-subject.json`, and legacy `policies/subjects/*.md` are local state and are ignored by Git by default. Commit examples, templates, and stable project defaults, not operator-specific registry files. `policies/project-guidance.md` remains the committed compatibility/default policy.
 
 Common commands:
 
@@ -182,13 +182,15 @@ Runtime data is isolated by subject namespace:
 
 ```text
 runtime/subjects/<data_namespace>/
+  SUBJECT.md
+  SOUL.md
   data/
     evolution/
     intelligence/
     goals/
 ```
 
-`policies/subjects.json` registers subjects and optional `default_subject`. Explicit selection uses `--subject NAME` or `JEA_SUBJECT`. `jea run`, `jea data status/init/reset/backup`, `jea intel summary`, `jea audit queue`, and `jea actions check` resolve the subject through that order. Legacy `policies/active-subject.json` is still read when `subjects.json` is missing.
+`runtime/subjects/registry.json` registers subjects and optional `default_subject`. Explicit selection uses `--subject NAME` or `JEA_SUBJECT`. `jea run`, `jea data status/init/reset/backup`, `jea intel summary`, `jea audit queue`, and `jea actions check` resolve the subject through that order. Legacy `policies/subjects.json` and `policies/active-subject.json` are still read when the runtime registry is missing.
 
 Use `init` for a non-destructive first setup:
 
@@ -198,7 +200,7 @@ jea data init --all
 
 This creates:
 
-- `policies/subjects/` layout if needed and, when `--all` only: `policies/subjects.json` plus a localized `policies/subjects/js-evolution-agent.md` generated from `JEA_LANGUAGE` when that subject file is missing (same rules as `jea subject list`)
+- `runtime/subjects/registry.json` plus localized `runtime/subjects/<data_namespace>/SUBJECT.md` and `SOUL.md` generated from `JEA_LANGUAGE` when missing (same rules as `jea subject list`)
 
 - `runtime/subjects/<data_namespace>/data/evolution`
 - `runtime/subjects/<data_namespace>/data/intelligence`

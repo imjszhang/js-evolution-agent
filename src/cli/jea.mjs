@@ -99,9 +99,11 @@ Commands:
   subject lane status    Check the subject target repo lane (--subject NAME)
   subject lane init      Create the subject lane from its base branch (--subject NAME)
   subject init <name>    Create a subject policy from a template
-  subject use <name>     Set the default subject in policies/subjects.json
+  subject use <name>     Set the default subject in runtime/subjects/registry.json
   subject default <name> Same as subject use
   subject check          Validate a subject policy (--subject NAME)
+  subject migrate-runtime-layout
+                         Copy legacy policies/subjects layout into runtime/subjects
   actions list           List registered action types
   actions check          Check pending decisions for unknown action types
   help                   Show this help

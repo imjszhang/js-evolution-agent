@@ -41,7 +41,7 @@ export function evolutionModeFromFlags(flags = {}) {
 }
 
 /**
- * Priority: subjects.json evolution.mode > CLI --evolution-mode > JEA_EVOLUTION_MODE > continuous
+ * Priority: runtime subject registry evolution.mode > CLI --evolution-mode > JEA_EVOLUTION_MODE > continuous
  */
 export function resolveEvolutionMode(root, { subject = null, flags = {}, env = process.env } = {}) {
   const config = subject
@@ -51,7 +51,7 @@ export function resolveEvolutionMode(root, { subject = null, flags = {}, env = p
   const entry = subjectName ? getSubjectEntry(root, subjectName) : null;
   const fromSubject = evolutionModeFromSubjectEntry(entry);
   if (fromSubject) {
-    return { mode: fromSubject, source: 'subjects.json' };
+    return { mode: fromSubject, source: config.registrySource || 'subjects.json' };
   }
   const fromFlags = evolutionModeFromFlags(flags);
   if (fromFlags) {
@@ -78,8 +78,8 @@ export function readSubjectsRegistryEvolutionModes(root) {
 }
 
 /**
- * Persist evolution.mode for a subject in policies/subjects.json (hot-reloadable).
- * @returns {{ changed: boolean, previous: string, mode: string, source: 'subjects.json', path: string }}
+ * Persist evolution.mode for a subject in runtime/subjects/registry.json (hot-reloadable).
+ * @returns {{ changed: boolean, previous: string, mode: string, source: string, path: string }}
  */
 export function setSubjectEvolutionMode(root, subject, mode) {
   const normalized = normalizeEvolutionMode(mode);
@@ -89,7 +89,7 @@ export function setSubjectEvolutionMode(root, subject, mode) {
   const registry = readSubjectsRegistry(root);
   const subjectName = resolveSubjectConfig(root, { subject, allowDefault: true })?.name ?? subject;
   if (!registry.subjects?.[subjectName]) {
-    throw new Error(`Subject not found in subjects.json: ${subjectName}`);
+    throw new Error(`Subject not found in runtime/subjects/registry.json: ${subjectName}`);
   }
   const previousEntry = registry.subjects[subjectName];
   const previous = evolutionModeFromSubjectEntry(previousEntry) ?? 'continuous';
@@ -98,7 +98,7 @@ export function setSubjectEvolutionMode(root, subject, mode) {
       changed: false,
       previous,
       mode: normalized,
-      source: 'subjects.json',
+      source: registry.source,
       path: registry.path,
     };
   }
@@ -120,7 +120,7 @@ export function setSubjectEvolutionMode(root, subject, mode) {
     changed: true,
     previous,
     mode: normalized,
-    source: 'subjects.json',
+    source: 'runtime-registry.json',
     path: written.path,
   };
 }
