@@ -10,7 +10,6 @@
   <header class="topbar">
     <div class="topbar-row">
       <div class="topbar-brand">
-        <button type="button" id="back-to-ops" class="btn btn-back hidden" aria-label="返回运维总览">← 运维总览</button>
         <h1>Evolution Viewer</h1>
         <p id="live-status" class="live-status" aria-live="polite"></p>
       </div>
@@ -35,6 +34,17 @@
     <div class="main-stage">
       <main id="ops-home" class="ops-home" aria-label="运维总览"></main>
       <main id="cycle-reader" class="cycle-reader hidden" aria-label="轮次阅读">
+        <header class="reader-nav">
+          <div class="reader-nav-start">
+            <button type="button" id="back-to-ops" class="reader-back-btn" aria-label="返回运维总览">
+              <span class="reader-back-icon" aria-hidden="true">←</span>
+              <span>运维总览</span>
+            </button>
+            <span class="reader-nav-sep" aria-hidden="true">/</span>
+            <span id="reader-nav-cycle" class="reader-nav-cycle"></span>
+          </div>
+          <span id="reader-nav-meta" class="reader-nav-meta hidden"></span>
+        </header>
         <div id="detail" class="detail-inner"></div>
       </main>
     </div>

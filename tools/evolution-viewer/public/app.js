@@ -14,6 +14,8 @@ const detailEl = document.getElementById('detail');
 const opsHomeEl = document.getElementById('ops-home');
 const cycleReaderEl = document.getElementById('cycle-reader');
 const backToOpsBtn = document.getElementById('back-to-ops');
+const readerNavCycleEl = document.getElementById('reader-nav-cycle');
+const readerNavMetaEl = document.getElementById('reader-nav-meta');
 const metaEl = document.getElementById('meta');
 const filterEl = document.getElementById('filter');
 const liveStatusEl = document.getElementById('live-status');
@@ -61,69 +63,95 @@ const LOAD_DAEMON_DEBOUNCE_MS = 400;
 const LOAD_OBSERVABILITY_DEBOUNCE_MS = 400;
 const PATCH_DETAIL_DEBOUNCE_MS = 500;
 
+const STEP_ORDER = [
+  'intel', 'intel_report', 'exec', 'verify', 'belief_update',
+  'goals_assess', 'goals_calibrate', 'diary',
+];
+
+const STEP_LABELS = {
+  intel: 'Intel',
+  intel_report: 'Report',
+  exec: 'Exec',
+  verify: 'Verify',
+  belief_update: 'Beliefs',
+  goals_assess: 'Goals',
+  goals_calibrate: 'Calibrate',
+  diary: 'Diary',
+};
+
+const STEP_STATUS_LABELS = {
+  done: 'done',
+  running: 'running',
+  failed: 'failed',
+  skipped: 'skipped',
+  pending: 'pending',
+};
+
+const CHANNEL_ROLES = ['notify', 'control', 'presence', 'speech', 'classifier'];
+
 const EVENT_LABELS = {
-  worker_started: 'Worker 启动',
-  worker_stopped: 'Worker 停止',
-  worker_start_failed: 'Worker 启动失败',
-  daemon_tick: '心跳 tick',
-  cycle_due: '新 cycle',
-  cycle_step_enqueued: '步骤入队',
-  cycle_event_dispatched: '事件分发',
-  cycle_step_completed: '步骤完成',
+  worker_started: 'Worker \u542f\u52a8',
+  worker_stopped: 'Worker \u505c\u6b62',
+  worker_start_failed: 'Worker \u542f\u52a8\u5931\u8d25',
+  daemon_tick: '\u5fc3\u8df3 tick',
+  cycle_due: '\u5230\u70b9 cycle',
+  cycle_step_enqueued: '\u6b65\u9aa4\u5165\u961f',
+  cycle_event_dispatched: '\u4e8b\u4ef6\u5206\u53d1',
+  cycle_step_completed: '\u6b65\u9aa4\u5b8c\u6210',
   cycle_reconciled: 'Reconcile',
-  cycle_abandoned: 'Cycle 放弃',
-  task_enqueued: '任务入队',
-  task_claimed: '任务领取',
-  task_completed: '任务完成',
-  task_failed: '任务失败',
-  task_lease_renewed: '租约续期',
-  task_lease_renew_failed: '租约续期失败',
-  stale_lease_reclaimed: '过期租约回收',
-  evolution_mode_changed: '演化模式变更',
-  cycle_start_requested: '开轮请求入队',
-  cycle_start_consumed: '开轮请求已消费',
-  cycle_start_deferred: '开轮请求暂缓',
+  cycle_abandoned: 'Cycle \u653e\u5f03',
+  task_enqueued: '\u4efb\u52a1\u5165\u961f',
+  task_claimed: '\u4efb\u52a1\u9886\u53d6',
+  task_completed: '\u4efb\u52a1\u5b8c\u6210',
+  task_failed: '\u4efb\u52a1\u5931\u8d25',
+  task_lease_renewed: '\u79df\u7ea6\u7eed\u671f',
+  task_lease_renew_failed: '\u79df\u7ea6\u7eed\u671f\u5931\u8d25',
+  stale_lease_reclaimed: '\u8fc7\u671f\u79df\u7ea6\u56de\u6536',
+  evolution_mode_changed: '\u6f14\u5316\u6a21\u5f0f\u53d8\u66f4',
+  cycle_start_requested: '\u5f00\u8f6e\u8bf7\u6c42\u5165\u961f',
+  cycle_start_consumed: '\u5f00\u8f6e\u8bf7\u6c42\u5df2\u6d88\u8d39',
+  cycle_start_deferred: '\u5f00\u8f6e\u8bf7\u6c42\u6682\u7f13',
 };
 
 const CHANNEL_EVENT_LABELS = {
-  channel_worker_started: 'Channel Worker 启动',
-  channel_worker_stop_requested: 'Channel Worker 停止请求',
+  channel_worker_started: 'Channel Worker \u542f\u52a8',
+  channel_worker_stop_requested: 'Channel Worker \u505c\u6b62\u8bf7\u6c42',
   channel_tick: 'Channel tick',
-  channel_task_enqueued: 'Channel 任务入队',
-  channel_task_claimed: 'Channel 任务领取',
-  channel_task_completed: 'Channel 任务完成',
-  channel_inbound_completed: '入站轮询完成',
-  channel_message_ingested: '消息已分类入库',
-  channel_message_ingest_failed: '消息分类失败',
-  channel_expression_recompute_requested: '表达重算请求',
-  channel_expression_planned: '表达计划',
-  channel_expression_noop: '表达无动作',
-  channel_expression_silenced: '表达沉默',
-  channel_presence_completed: 'Presence 完成',
-  channel_presence_timeout: 'Presence 超时',
-  channel_speech_generated: '话术已生成',
-  channel_speech_generation_failed: '话术生成失败',
-  channel_deprecated_tasks_purged: '废弃任务已清理',
-  channel_message_sent: '消息已发送',
-  channel_message_send_failed: '消息发送失败',
-  channel_message_received: 'Channel 收到消息',
-  feishu_listener_started: 'Feishu 监听启动',
-  feishu_listener_stopped: 'Feishu 监听停止',
-  feishu_listener_connected: 'Feishu 已连接',
-  feishu_listener_disconnected: 'Feishu 已断开',
-  feishu_listener_start_failed: 'Feishu 监听启动失败',
+  channel_task_enqueued: 'Channel \u4efb\u52a1\u5165\u961f',
+  channel_task_claimed: 'Channel \u4efb\u52a1\u9886\u53d6',
+  channel_task_completed: 'Channel \u4efb\u52a1\u5b8c\u6210',
+  channel_inbound_completed: '\u5165\u7ad9\u8f6e\u8be2\u5b8c\u6210',
+  channel_message_ingested: '\u6d88\u606f\u5df2\u5206\u7c7b\u5165\u5e93',
+  channel_message_ingest_failed: '\u6d88\u606f\u5206\u7c7b\u5931\u8d25',
+  channel_expression_recompute_requested: '\u8868\u8fbe\u91cd\u7b97\u8bf7\u6c42',
+  channel_expression_planned: '\u8868\u8fbe\u8ba1\u5212',
+  channel_expression_noop: '\u8868\u8fbe\u65e0\u52a8\u4f5c',
+  channel_expression_silenced: '\u8868\u8fbe\u6c89\u9ed8',
+  channel_presence_completed: 'Presence \u5b8c\u6210',
+  channel_presence_timeout: 'Presence \u8d85\u65f6',
+  channel_speech_generated: '\u8bdd\u672f\u5df2\u751f\u6210',
+  channel_speech_generation_failed: '\u8bdd\u672f\u751f\u6210\u5931\u8d25',
+  channel_deprecated_tasks_purged: '\u5e9f\u5f03\u4efb\u52a1\u5df2\u6e05\u9664',
+  channel_message_sent: '\u6d88\u606f\u5df2\u53d1\u9001',
+  channel_message_send_failed: '\u6d88\u606f\u53d1\u9001\u5931\u8d25',
+  channel_message_received: 'Channel \u6536\u5230\u6d88\u606f',
+  feishu_listener_started: 'Feishu \u76d1\u542c\u542f\u52a8',
+  feishu_listener_stopped: 'Feishu \u76d1\u542c\u505c\u6b62',
+  feishu_listener_connected: 'Feishu \u5df2\u8fde\u63a5',
+  feishu_listener_disconnected: 'Feishu \u5df2\u65ad\u5f00',
+  feishu_listener_start_failed: 'Feishu \u76d1\u542c\u542f\u52a8\u5931\u8d25',
 };
 
 const EVOLUTION_MODE_LABELS = {
-  continuous: '持续',
-  on_demand: '按需',
+  continuous: '\u6301\u7eed',
+  on_demand: '\u6309\u9700',
 };
 
 const EVOLUTION_MODE_SOURCE_LABELS = {
   'subjects.json': 'subjects.json',
-  cli: 'CLI 启动参数',
-  env: '环境变量',
-  default: '默认',
+  cli: 'CLI \u542f\u52a8\u53c2\u6570',
+  env: '\u73af\u5883\u53d8\u91cf',
+  default: '\u9ed8\u8ba4',
 };
 
 function isMultiSubject() {
@@ -168,18 +196,30 @@ function getPanelFp() {
   return panelFpBySubject[activeSubject];
 }
 
+function updateReaderNav({ cycleId = '', meta = '', loading = false } = {}) {
+  if (readerNavCycleEl) {
+    readerNavCycleEl.textContent = cycleId || (loading ? '\u2026' : '');
+  }
+  if (readerNavMetaEl) {
+    const text = loading ? '\u52a0\u8f7d\u4e2d\u2026' : meta;
+    readerNavMetaEl.textContent = text;
+    readerNavMetaEl.classList.toggle('hidden', !text);
+    readerNavMetaEl.classList.toggle('is-loading', loading);
+  }
+}
+
 function setViewMode(mode) {
   viewMode = mode;
   document.body.dataset.view = mode;
   if (opsHomeEl) opsHomeEl.classList.toggle('hidden', mode !== 'ops');
   if (cycleReaderEl) cycleReaderEl.classList.toggle('hidden', mode !== 'reading');
-  if (backToOpsBtn) backToOpsBtn.classList.toggle('hidden', mode !== 'reading');
 }
 
 function goToOpsHome() {
   activeCycleId = null;
   activeViewMode = null;
   activeDetailCache = null;
+  updateReaderNav();
   setHash('');
   setViewMode('ops');
   renderTimeline(filterEl?.value ?? '');
@@ -198,9 +238,9 @@ function navigateToCycle(cycleId, subject = activeSubject) {
 }
 
 const ATTENTION_SEVERITY_LABELS = {
-  critical: '严重',
-  warning: '警告',
-  info: '提示',
+  critical: '\u4e25\u91cd',
+  warning: '\u8b66\u544a',
+  info: '\u63d0\u793a',
 };
 
 function subjectApiBase(subject) {
@@ -235,7 +275,7 @@ function setHash(cycleId) {
 }
 
 function formatWhen(iso) {
-  if (!iso) return '';
+  if (!iso) return '\u2014';
   try {
     return new Date(iso).toLocaleString('zh-CN', { hour12: false });
   } catch {
@@ -244,7 +284,7 @@ function formatWhen(iso) {
 }
 
 function formatTimeShort(iso) {
-  if (!iso) return '';
+  if (!iso) return '\u2014';
   try {
     return new Date(iso).toLocaleTimeString('zh-CN', { hour12: false });
   } catch {
@@ -253,7 +293,7 @@ function formatTimeShort(iso) {
 }
 
 function escapeHtml(text) {
-  if (text == null) return '';
+  if (text == null) return '\u2014';
   return String(text)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -264,7 +304,7 @@ function escapeHtml(text) {
 function truncate(text, max = 120) {
   const s = String(text ?? '').replace(/\s+/g, ' ').trim();
   if (s.length <= max) return s;
-  return `${s.slice(0, max)}…`;
+  return `${s.slice(0, max)}\u2026`;
 }
 
 function updateMeta(extra = '') {
@@ -273,12 +313,12 @@ function updateMeta(extra = '') {
   const parts = [
     manifest.subject,
     manifest.namespace,
-    `共 ${manifest.round_count ?? manifest.rounds?.length ?? 0} 轮`,
-    manifest.built_at ? `更新于 ${formatWhen(manifest.built_at)}` : '',
-    isMultiSubject() ? `${subjectsList.length} 个 subject` : '',
+    `\u5171 ${manifest.round_count ?? manifest.rounds?.length ?? 0} \u8f6e`,
+    manifest.built_at ? `\u66f4\u65b0\u4e8e ${formatWhen(manifest.built_at)}` : '',
+    isMultiSubject() ? `${subjectsList.length} \u4e2a subject` : '',
     extra,
   ].filter(Boolean);
-  metaEl.textContent = parts.join(' · ');
+  metaEl.textContent = parts.join(' \u00b7 ');
 }
 
 function setLiveStatus(text, state = '') {
@@ -288,50 +328,86 @@ function setLiveStatus(text, state = '') {
 }
 
 function renderStepBadges(steps, { compact = false } = {}) {
-  if (!steps || typeof steps !== 'object') return '';
-  const order = [
-    'intel', 'intel_report', 'exec', 'verify', 'belief_update',
-    'goals_assess', 'goals_calibrate', 'diary',
-  ];
-  const labels = {
-    intel: 'Intel',
-    intel_report: 'Report',
-    exec: 'Exec',
-    verify: 'Verify',
-    belief_update: 'Beliefs',
-    goals_assess: 'Goals',
-    goals_calibrate: 'Calibrate',
-    diary: 'Diary',
-  };
-  const items = order
+  if (!steps || typeof steps !== 'object') return '\u2014';
+  const items = STEP_ORDER
     .filter((name) => steps[name])
     .map((name) => {
       const raw = steps[name];
       const status = typeof raw === 'string' ? raw : (raw.status ?? 'pending');
-      const label = labels[name] ?? name;
+      const label = STEP_LABELS[name] ?? name;
       const err = typeof raw === 'object' && raw?.error ? String(raw.error).slice(0, 80) : '';
       if (compact) {
-        const sym = status === 'done' ? '✓' : status === 'running' ? '▶' : status === 'failed' ? '✗' : '·';
-        const errHint = err ? ` — ${err}` : '';
+        const sym = status === 'done' ? 'ok' : status === 'running' ? 'run' : status === 'failed' ? 'x' : '-';
+        const errHint = err ? ` - ${err}` : '';
         return `<span class="step-dot step-${status}" title="${label}: ${status}${errHint}">${sym}</span>`;
       }
       const errPart = err ? ` (${err})` : '';
       return `<span class="step-badge step-${status}" title="${name}">${label}: ${status}${errPart}</span>`;
     });
-  if (!items.length) return '';
+  if (!items.length) return '\u2014';
   const cls = compact ? 'step-dots' : 'step-badges';
   return `<div class="${cls}">${items.join('')}</div>`;
+}
+
+function stepStatus(steps, name) {
+  const raw = steps?.[name];
+  if (!raw) return 'pending';
+  return typeof raw === 'string' ? raw : (raw.status ?? 'pending');
+}
+
+function normalizeCycleSteps(cycle) {
+  const stepsObj = {};
+  for (const [name, status] of Object.entries(cycle?.steps ?? {})) {
+    stepsObj[name] = { status: typeof status === 'string' ? status : (status?.status ?? 'pending') };
+  }
+  return stepsObj;
+}
+
+function activeStepName(steps) {
+  for (const name of STEP_ORDER) {
+    if (stepStatus(steps, name) === 'running') return name;
+  }
+  for (const name of STEP_ORDER) {
+    if (stepStatus(steps, name) === 'failed') return name;
+  }
+  for (const name of STEP_ORDER) {
+    if (stepStatus(steps, name) === 'pending') return name;
+  }
+  return null;
+}
+
+function runningStepLabel(cycles) {
+  for (const cycle of cycles ?? []) {
+    const steps = normalizeCycleSteps(cycle);
+    const running = STEP_ORDER.find((name) => stepStatus(steps, name) === 'running');
+    if (running) return `${STEP_LABELS[running] ?? running} @ ${cycle.cycle_id}`;
+  }
+  return '\u2014';
+}
+
+function failedTaskCount(tasks) {
+  if (!Array.isArray(tasks)) return 0;
+  return tasks.filter((t) => t.status === 'failed').length;
+}
+
+function severitySummary(summary = {}) {
+  if (!summary.count) return '0';
+  const parts = [];
+  if (summary.critical) parts.push(`${summary.critical} \u4e25\u91cd`);
+  if (summary.warning) parts.push(`${summary.warning} \u8b66\u544a`);
+  if (summary.info) parts.push(`${summary.info} \u63d0\u793a`);
+  return parts.length ? parts.join(' / ') : String(summary.count);
 }
 
 function formatEventLabel(ev) {
   const base = EVENT_LABELS[ev.event_type] ?? ev.event_type;
   if (ev.event_type === 'evolution_mode_changed' && ev.from && ev.to) {
-    return `${base}: ${formatEvolutionMode(ev.from)} → ${formatEvolutionMode(ev.to)}`;
+    return `${base}: ${formatEvolutionMode(ev.from)} \u2192 ${formatEvolutionMode(ev.to)}`;
   }
   const parts = [base];
   if (ev.task_type || ev.step_type) parts.push(ev.task_type ?? ev.step_type);
   if (ev.cycle_id) parts.push(ev.cycle_id);
-  return parts.join(' · ');
+  return parts.join(' \u00b7 ');
 }
 
 function formatChannelEventLabel(ev) {
@@ -342,16 +418,42 @@ function formatChannelEventLabel(ev) {
   if (ev.message_id) parts.push(ev.message_id);
   if (ev.ingest_kind) parts.push(ev.ingest_kind);
   if (ev.status && ev.status !== 'ok') parts.push(ev.status);
-  return parts.join(' · ');
+  return parts.join(' \u00b7 ');
+}
+
+function eventCategory(ev) {
+  const type = ev.event_type ?? ev.type ?? '';
+  if (/failed|error|crashed|blocked|timeout|zombie/.test(type) || ev.status === 'failed') return 'error';
+  if (type.startsWith('channel_') || type.startsWith('feishu_')) return 'channel';
+  if (type.startsWith('task_') || type.includes('lease')) return 'task';
+  if (type.startsWith('cycle_') || ev.cycle_id) return 'cycle';
+  if (type.startsWith('worker_') || type.includes('health') || type === 'daemon_tick') return 'health';
+  return 'system';
+}
+
+function shouldShowEventByDefault(ev) {
+  const type = ev.event_type ?? ev.type ?? '';
+  if (eventCategory(ev) === 'error') return true;
+  if (type === 'daemon_tick' || type === 'task_lease_renewed') return false;
+  return true;
 }
 
 function renderEventFeedHtml(events, limit = 20) {
   if (!events?.length) {
-    return '<p class="feed-empty">暂无 daemon 事件</p>';
+    return '<p class="feed-empty">\u6682\u65e0 daemon \u4e8b\u4ef6</p>';
   }
-  return events.slice(0, limit).map((ev) => {
+  const filtered = events.filter(shouldShowEventByDefault);
+  const visible = (filtered.length ? filtered : events).slice(0, limit);
+  return visible.map((ev) => {
     const time = formatTimeShort(ev.recorded_at);
-    return `<div class="feed-row"><span class="feed-time">${time}</span><span class="feed-label">${escapeHtml(formatEventLabel(ev))}</span></div>`;
+    const category = eventCategory(ev);
+    const label = formatEventLabel(ev);
+    const rawType = ev.event_type ?? ev.type ?? 'event';
+    return `<div class="feed-row event-${category}">
+      <span class="feed-time">${time}</span>
+      <span class="feed-type">${escapeHtml(rawType)}</span>
+      <span class="feed-label" title="${escapeHtml(label)}">${escapeHtml(label)}</span>
+    </div>`;
   }).join('');
 }
 
@@ -387,23 +489,27 @@ function renderSubjectOverview() {
     const openCycles = daemon?.cycles?.open_count ?? summary.open_cycles ?? 0;
     const pending = daemon?.tasks?.counts?.pending ?? summary.pending_tasks ?? 0;
     const running = daemon?.tasks?.counts?.running ?? summary.running_tasks ?? 0;
+    const failed = daemon?.tasks?.counts?.failed ?? summary.failed_tasks ?? 0;
     const inPending = daemon?.channel?.inbound?.pending_count ?? summary.channel_inbound_pending ?? 0;
     const outPending = daemon?.channel?.outbox?.pending_count ?? summary.channel_outbox_pending ?? 0;
     const att = summary.attention
       ?? observabilityBySubject[summary.subject]?.attention?.summary
       ?? null;
+    const mode = daemon?.evolution_mode ?? summary.evolution_mode ?? 'unknown';
+    const attentionClass = att?.highest_severity ? ` has-attention attention-${att.highest_severity}` : '';
     const attChip = att?.count > 0 && att.highest_severity
-      ? `<span class="daemon-chip attention-${att.highest_severity}" title="${att.critical ?? 0} 严重 · ${att.warning ?? 0} 警告 · ${att.info ?? 0} 提示">关注 ${att.count}</span>`
+      ? `<span class="daemon-chip attention-${att.highest_severity}" title="${att.critical ?? 0} \u4e25\u91cd \u00b7 ${att.warning ?? 0} \u8b66\u544a \u00b7 ${att.info ?? 0} \u63d0\u793a">\u5f85\u5173\u6ce8 ${att.count}</span>`
       : '';
     return `
-      <button type="button" class="daemon-card${active}" data-subject="${summary.subject}" aria-pressed="${summary.subject === activeSubject}">
+      <button type="button" class="daemon-card${active}${attentionClass}" data-subject="${summary.subject}" aria-pressed="${summary.subject === activeSubject}">
         <span class="daemon-card-title">${summary.subject}</span>
         <span class="daemon-card-meta">${summary.namespace ?? ''}</span>
         <span class="daemon-card-stats">
           <span class="daemon-chip health-${healthClass}">${healthClass}</span>
-          <span class="daemon-chip worker-${workerOn ? 'on' : 'off'}">${workerOn ? 'Worker 运行' : 'Worker 停'}</span>
+          <span class="daemon-chip mode-${mode}">${escapeHtml(formatEvolutionMode(mode))}</span>
+          <span class="daemon-chip worker-${workerOn ? 'on' : 'off'}">${workerOn ? 'Worker \u8fd0\u884c' : 'Worker \u505c\u6b62'}</span>
           <span class="daemon-chip">open ${openCycles}</span>
-          <span class="daemon-chip">${pending}/${running}</span>
+          <span class="daemon-chip${failed ? ' attention-warning' : ''}">Q ${pending}/${running}/${failed}</span>
           ${attChip}
           ${inPending || outPending ? `<span class="daemon-chip channel-attention">Ch ${inPending}/${outPending}</span>` : ''}
         </span>
@@ -452,25 +558,36 @@ function collectAttentionItems() {
 
 function renderAttentionBoardHtml(items) {
   if (!items.length) {
-    return '<p class="card-empty">当前无待关注事项</p>';
+    return '<p class="card-empty">\u5f53\u524d\u65e0\u5f85\u5173\u6ce8\u4e8b\u9879</p>';
   }
-  return `<ul class="attention-board-list">${items.map((item) => {
-    const cycleId = item.refs?.cycle_id;
-    const clickable = cycleId ? ' attention-item-clickable' : '';
-    const dataAttrs = cycleId
-      ? ` data-cycle-id="${escapeHtml(cycleId)}" data-subject="${escapeHtml(item.subject ?? activeSubject ?? '')}"`
-      : '';
-    return `
-      <li class="attention-board-item severity-${item.severity ?? 'info'}${clickable}"${dataAttrs} role="${cycleId ? 'button' : 'listitem'}" tabindex="${cycleId ? '0' : '-1'}">
-        <div class="attention-item-head">
-          <span class="attention-severity">${ATTENTION_SEVERITY_LABELS[item.severity] ?? item.severity}</span>
-          ${isMultiSubject() && item.subject ? `<span class="attention-subject">${escapeHtml(item.subject)}</span>` : ''}
-          <span class="attention-item-title">${escapeHtml(item.title)}</span>
-        </div>
-        ${item.summary ? `<p class="attention-summary">${escapeHtml(item.summary)}</p>` : ''}
-        ${item.suggested_command ? `<code class="attention-cmd">${escapeHtml(item.suggested_command)}</code>` : ''}
-      </li>`;
-  }).join('')}</ul>`;
+  const groups = ['critical', 'warning', 'info']
+    .map((severity) => ({
+      severity,
+      items: items.filter((item) => (item.severity ?? 'info') === severity),
+    }))
+    .filter((group) => group.items.length);
+
+  return `<div class="attention-board-groups">${groups.map((group) => `
+    <section class="attention-group severity-${group.severity}">
+      <h4 class="attention-group-title">${ATTENTION_SEVERITY_LABELS[group.severity] ?? group.severity} <span>${group.items.length}</span></h4>
+      <ul class="attention-board-list">${group.items.map((item) => {
+        const cycleId = item.refs?.cycle_id;
+        const clickable = cycleId ? ' attention-item-clickable' : '';
+        const dataAttrs = cycleId
+          ? ` data-cycle-id="${escapeHtml(cycleId)}" data-subject="${escapeHtml(item.subject ?? activeSubject ?? '')}"`
+          : '';
+        return `
+          <li class="attention-board-item severity-${item.severity ?? 'info'}${clickable}"${dataAttrs} role="${cycleId ? 'button' : 'listitem'}" tabindex="${cycleId ? '0' : '-1'}">
+            <div class="attention-item-head">
+              <span class="attention-severity">${ATTENTION_SEVERITY_LABELS[item.severity] ?? item.severity}</span>
+              ${isMultiSubject() && item.subject ? `<span class="attention-subject">${escapeHtml(item.subject)}</span>` : ''}
+              <span class="attention-item-title">${escapeHtml(item.title)}</span>
+            </div>
+            ${item.summary ? `<p class="attention-summary">${escapeHtml(item.summary)}</p>` : ''}
+            ${item.suggested_command ? `<code class="attention-cmd">${escapeHtml(item.suggested_command)}</code>` : ''}
+          </li>`;
+      }).join('')}</ul>
+    </section>`).join('')}</div>`;
 }
 
 function bindAttentionBoardClicks(root) {
@@ -492,16 +609,29 @@ function bindAttentionBoardClicks(root) {
 
 function formatChannelRoleWorkers(workers) {
   const roles = workers?.roles ?? [];
-  if (!roles.length) return '<p class="channel-detail-muted">无分 role worker 记录</p>';
+  if (!roles.length) return '<p class="channel-detail-muted">\u65e0 role worker \u8bb0\u5f55</p>';
   return roles.map((r) => {
     const stale = r.stale ? ' stale' : '';
     const zombie = r.zombie ? ' zombie' : '';
-    return `<div class="channel-role-row"><span class="channel-role-name">${escapeHtml(r.role)}</span> <span class="channel-role-meta${stale}${zombie}">${r.running ? '运行' : '停'} · pid ${r.pid_alive ? '✓' : '✗'}${stale ? ' · stale' : ''}${zombie ? ' · zombie' : ''}</span></div>`;
+    return `<div class="channel-role-row"><span class="channel-role-name">${escapeHtml(r.role)}</span> <span class="channel-role-meta${stale}${zombie}">${r.running ? '\u8fd0\u884c' : '\u505c\u6b62'} \u00b7 pid ${r.pid_alive ? '\u5b58\u6d3b' : '\u6b7b'}${stale ? ' \u00b7 stale' : ''}${zombie ? ' \u00b7 zombie' : ''}</span></div>`;
   }).join('');
 }
 
+function renderChannelRoleChips(channel) {
+  const roles = channel?.workers?.roles ?? [];
+  const byRole = new Map(roles.map((role) => [role.role, role]));
+  return `<div class="channel-role-chips">${CHANNEL_ROLES.map((roleName) => {
+    const role = byRole.get(roleName);
+    const state = role?.running ? 'on' : role?.zombie ? 'zombie' : role?.stale ? 'stale' : 'off';
+    const title = role
+      ? `${roleName}: ${state}${role.pid_alive === false ? ' ? pid dead' : ''}`
+      : `${roleName}: no worker record`;
+    return `<span class="channel-role-chip role-${state}" title="${escapeHtml(title)}">${roleName}</span>`;
+  }).join('')}</div>`;
+}
+
 function renderChannelPresenceDetails(channel) {
-  if (!channel) return '';
+  if (!channel) return '\u2014';
   const workers = channel.workers ?? {};
   const classifier = channel.classifier ?? {};
   const presence = channel.presence ?? {};
@@ -512,34 +642,34 @@ function renderChannelPresenceDetails(channel) {
   const reload = feishu.reload ?? {};
 
   const classifierLine = classifier.enabled === false
-    ? 'Classifier: 已禁用'
-    : `Classifier: ${classifier.mode ?? '—'} · 间隔 ${classifier.interval_ms ?? '—'}ms · batch ${classifier.batch_size ?? '—'}`;
+    ? 'Classifier: \u5df2\u7981\u7528'
+    : `Classifier: ${classifier.mode ?? '\u9ed8\u8ba4'} \u00b7 \u95f4\u9694 ${classifier.interval_ms ?? '\u2014'}ms \u00b7 batch ${classifier.batch_size ?? '\u2014'}`;
 
   const reactorStatus = reactor?.status ?? 'idle';
   const reactorDeadline = reactor?.deadline_at
-    ? ` · 截止 ${formatTimeShort(reactor.deadline_at)}`
+    ? ` \u00b7 \u622a\u6b62 ${formatTimeShort(reactor.deadline_at)}`
     : '';
 
   const listenerLine = listener.running
-    ? `Feishu WS: 运行${listener.fingerprint_stale ? ' (配置过期)' : ''}`
-    : 'Feishu WS: 未运行';
+    ? `Feishu WS: \u8fd0\u884c\u4e2d${listener.fingerprint_stale ? ' (\u914d\u7f6e\u8fc7\u671f)' : ''}`
+    : 'Feishu WS: \u672a\u8fde\u63a5';
   const reloadLine = reload.pending
-    ? `热加载 pending: ${escapeHtml(reload.request?.reason ?? 'reload')}`
+    ? `\u70ed\u52a0\u8f7d pending: ${escapeHtml(reload.request?.reason ?? 'reload')}`
     : reload.last_error
-      ? `上次热加载错误: ${escapeHtml(String(reload.last_error).slice(0, 80))}`
+      ? `\u4e0a\u6b21\u70ed\u52a0\u8f7d\u9519\u8bef: ${escapeHtml(String(reload.last_error).slice(0, 80))}`
       : '';
 
   return `
     <details class="channel-details">
       <summary>Presence / Classifier / Feishu</summary>
       <div class="channel-details-body">
-        <div class="channel-subheading">Role workers (${workers.running_count ?? 0} 运行)</div>
+        <div class="channel-subheading">Role workers (${workers.running_count ?? 0} \u8fd0\u884c\u4e2d)</div>
         ${formatChannelRoleWorkers(workers)}
         <div class="channel-subheading">Classifier</div>
         <p class="channel-detail-line">${escapeHtml(classifierLine)}</p>
         <div class="channel-subheading">Presence reactor</div>
         <p class="channel-detail-line">${escapeHtml(reactorStatus)}${reactorDeadline}</p>
-        ${pendingSpeech.length ? `<p class="channel-detail-line channel-stat-warn">待生成话术 ${pendingSpeech.length}</p>` : ''}
+        ${pendingSpeech.length ? `<p class="channel-detail-line channel-stat-warn">\u5f85\u751f\u6210\u8bdd\u672f ${pendingSpeech.length}</p>` : ''}
         <div class="channel-subheading">Feishu</div>
         <p class="channel-detail-line">${escapeHtml(listenerLine)}</p>
         ${reloadLine ? `<p class="channel-detail-line">${reloadLine}</p>` : ''}
@@ -551,7 +681,7 @@ function renderChannelPresenceDetails(channel) {
 function renderChannelSummaryCardHtml() {
   const channel = getDaemonState()?.channel ?? getObservability()?.channel_diagnostics;
   if (!channel) {
-    return '<section class="ops-card"><h3 class="ops-card-title">Channel</h3><p class="card-empty">未初始化</p></section>';
+    return '<section class="ops-card"><h3 class="ops-card-title">Channel</h3><p class="card-empty">Channel \u672a\u521d\u59cb\u5316</p></section>';
   }
   const health = channel.health ?? {};
   const worker = channel.worker ?? {};
@@ -560,18 +690,26 @@ function renderChannelSummaryCardHtml() {
   const outPending = channel.outbox?.pending_count ?? channel.outbox_pending ?? 0;
   const presence = channel.presence ?? getObservability()?.channel_diagnostics?.presence;
   const pendingSpeech = presence?.pending_speech_generation?.length ?? 0;
+  const failed = counts.failed ?? channel.tasks?.failed?.length ?? 0;
+  const reactorStatus = presence?.reactor?.status ?? 'idle';
+  const listener = channel.feishu?.listener ?? {};
+  const reload = channel.feishu?.reload ?? {};
   const presenceDetails = renderChannelPresenceDetails(getDaemonState()?.channel ?? null);
   return `
     <section class="ops-card ops-card-channel">
       <h3 class="ops-card-title">Channel</h3>
       <div class="kpi-row kpi-row-compact">
         <span class="kpi-pill health-${health.status ?? 'unknown'}">${escapeHtml(health.status ?? 'unknown')}</span>
-        <span class="kpi-pill">${worker.running ? 'Worker 运行' : 'Worker 停'}${worker.stale ? ' · stale' : ''}</span>
-        <span class="kpi-pill">队列 ${counts.pending ?? 0}/${counts.running ?? 0}</span>
-        <span class="kpi-pill${inPending ? ' kpi-warn' : ''}">入站 ${inPending}</span>
-        <span class="kpi-pill${outPending ? ' kpi-warn' : ''}">出站 ${outPending}</span>
-        ${pendingSpeech ? `<span class="kpi-pill kpi-warn">话术 pending ${pendingSpeech}</span>` : ''}
+        <span class="kpi-pill">${worker.running ? 'Worker \u8fd0\u884c' : 'Worker \u505c\u6b62'}${worker.stale ? ' \u00b7 stale' : ''}</span>
+        <span class="kpi-pill${failed ? ' kpi-warn' : ''}">Q ${counts.pending ?? 0}/${counts.running ?? 0}/${failed}</span>
+        <span class="kpi-pill${inPending ? ' kpi-warn' : ''}">\u5165\u7ad9 ${inPending}</span>
+        <span class="kpi-pill${outPending ? ' kpi-warn' : ''}">\u51fa\u7ad9 ${outPending}</span>
+        ${pendingSpeech ? `<span class="kpi-pill kpi-warn">\u8bdd\u672f pending ${pendingSpeech}</span>` : ''}
+        <span class="kpi-pill reactor-${reactorStatus}">Presence ${escapeHtml(reactorStatus)}</span>
+        <span class="kpi-pill${listener.running ? '' : ' kpi-warn'}">Feishu ${listener.running ? 'WS on' : 'WS off'}</span>
+        ${reload.pending ? '<span class="kpi-pill kpi-warn">reload pending</span>' : ''}
       </div>
+      ${renderChannelRoleChips(getDaemonState()?.channel ?? channel)}
       ${presenceDetails}
     </section>`;
 }
@@ -579,9 +717,9 @@ function renderChannelSummaryCardHtml() {
 function renderOpenCyclesTableHtml() {
   const cycles = getDaemonState()?.cycles?.recent ?? getObservability()?.cycle_diagnostics?.recent ?? [];
   if (!cycles.length) {
-    return '<p class="card-empty">无 open cycle</p>';
+    return '<p class="card-empty">\u6682\u65e0 open cycle</p>';
   }
-  return `<table class="ops-table"><thead><tr><th>Cycle</th><th>状态</th><th>Steps</th><th></th></tr></thead><tbody>
+  return `<table class="ops-table"><thead><tr><th>Cycle</th><th>\u72b6\u6001</th><th>Steps</th><th></th></tr></thead><tbody>
     ${cycles.map((cycle) => {
       const stepsObj = {};
       for (const [name, status] of Object.entries(cycle.steps ?? {})) {
@@ -591,7 +729,7 @@ function renderOpenCyclesTableHtml() {
         <td><code>${escapeHtml(cycle.cycle_id)}</code></td>
         <td>${escapeHtml(cycle.status ?? 'open')}</td>
         <td>${renderStepBadges(stepsObj, { compact: true })}</td>
-        <td><button type="button" class="btn btn-sm btn-primary" data-open-cycle="${escapeHtml(cycle.cycle_id)}">查看</button></td>
+        <td><button type="button" class="btn btn-sm btn-primary" data-open-cycle="${escapeHtml(cycle.cycle_id)}">\u6253\u5f00</button></td>
       </tr>`;
     }).join('')}
   </tbody></table>`;
@@ -601,9 +739,9 @@ function renderOperatorBriefsHtml() {
   const inputs = getObservability()?.operator_inputs;
   const briefs = inputs?.recent ?? [];
   if (!briefs.length && !(inputs?.pending_count > 0)) {
-    return '<p class="card-empty">无 pending brief</p>';
+    return '<p class="card-empty">\u6682\u65e0 pending brief</p>';
   }
-  const header = `<p class="ops-card-meta">Pending ${inputs?.pending_count ?? 0}${inputs?.stale_pending_count ? ` · 超时 ${inputs.stale_pending_count}` : ''}</p>`;
+  const header = `<p class="ops-card-meta">Pending ${inputs?.pending_count ?? 0}${inputs?.stale_pending_count ? ` \u00b7 \u542b\u8fc7\u671f ${inputs.stale_pending_count}` : ''}</p>`;
   const list = briefs.length
     ? `<ul class="brief-list">${briefs.map((b) => `
       <li><span class="brief-kind">${escapeHtml(b.kind ?? '')}</span> ${escapeHtml(b.summary ?? '')}
@@ -613,18 +751,81 @@ function renderOperatorBriefsHtml() {
   return header + list;
 }
 
+function renderOpsPostureHtml(items) {
+  const daemon = getDaemonState();
+  const obs = getObservability();
+  if (!daemon) {
+    return '<p class="card-empty">\u65e0\u6cd5\u52a0\u8f7d daemon \u72b6\u6001</p>';
+  }
+  const cycles = daemon.cycles?.recent ?? [];
+  const current = cycles[0] ?? null;
+  const steps = current ? normalizeCycleSteps(current) : {};
+  const activeStep = activeStepName(steps);
+  const stuck = daemon.cycles?.stuck_steps ?? obs?.cycle_diagnostics?.stuck_steps ?? [];
+  const drift = daemon.cycles?.drift_steps ?? obs?.cycle_diagnostics?.drift_steps ?? [];
+  const failed = daemon.tasks?.counts?.failed ?? 0;
+  const pendingBriefs = obs?.operator_inputs?.pending_count ?? 0;
+  const attention = obs?.attention?.summary ?? {};
+  const suggestions = obs?.cycle_diagnostics?.health_suggestions ?? [];
+
+  let nextAction = '\u7cfb\u7edf\u8fd0\u884c\u6b63\u5e38\uff0c\u53ef\u67e5\u770b\u6700\u65b0\u8f6e\u6b21\u6216\u4e8b\u4ef6\u6d41\u3002';
+  let tone = 'ok';
+  if (items.some((item) => item.severity === 'critical')) {
+    nextAction = '\u5b58\u5728\u4e25\u91cd\u5f85\u5173\u6ce8\u9879\uff0c\u8bf7\u5148\u5904\u7406\u3002';
+    tone = 'critical';
+  } else if (stuck.length) {
+    nextAction = `\u68c0\u67e5\u5361\u4f4f\u7684 step\uff1a${stuck[0].step ?? ''}\u3002`;
+    tone = 'critical';
+  } else if (drift.length) {
+    nextAction = `\u4fee\u590d drift step\uff1a${drift[0].step ?? ''}\u3002`;
+    tone = 'warning';
+  } else if (failed) {
+    nextAction = '\u5904\u7406\u5931\u8d25\u4efb\u52a1\uff1a\u67e5\u770b daemon \u4efb\u52a1\u961f\u5217\u3002';
+    tone = 'warning';
+  } else if (pendingBriefs) {
+    nextAction = '\u6709\u5f85\u5904\u7406 operator brief\uff0c\u53ef\u5728\u9605\u8bfb\u89c6\u56fe\u6216\u4e0b\u4e00\u8f6e\u6d88\u8d39\u3002';
+    tone = 'info';
+  } else if (current && activeStep) {
+    nextAction = `\u7ee7\u7eed\u5173\u6ce8\u5f53\u524d cycle \u7684 ${STEP_LABELS[activeStep] ?? activeStep} \u9636\u6bb5\u3002`;
+    tone = stepStatus(steps, activeStep) === 'failed' ? 'warning' : 'info';
+  } else if (suggestions.length) {
+    nextAction = suggestions[0];
+    tone = 'info';
+  }
+
+  return `
+    <div class="posture-card posture-${tone}">
+      <div class="posture-main">
+        <span class="posture-label">\u5f53\u524d\u6001\u52bf</span>
+        <strong>${escapeHtml(nextAction)}</strong>
+        <span class="posture-meta">${escapeHtml(activeSubject ?? '')} \u00b7 ${escapeHtml(formatEvolutionMode(daemon.evolution_mode))} \u00b7 \u5f85\u5173\u6ce8 ${severitySummary(attention)}</span>
+      </div>
+      <div class="posture-facts">
+        <span><strong>${daemon.cycles?.open_count ?? 0}</strong> open</span>
+        <span><strong>${current?.cycle_id ? escapeHtml(current.cycle_id) : '\u2014'}</strong> current</span>
+        <span><strong>${activeStep ? escapeHtml(STEP_LABELS[activeStep] ?? activeStep) : '\u2014'}</strong> step</span>
+        <span><strong>${stuck.length}/${drift.length}</strong> stuck/drift</span>
+      </div>
+    </div>`;
+}
+
 function renderKpiStripHtml() {
   const daemon = getDaemonState();
   const obs = getObservability();
   if (!daemon) {
-    return '<p class="card-empty">无法加载 daemon 状态</p>';
+    return '<p class="card-empty">\u65e0\u6cd5\u52a0\u8f7d daemon \u72b6\u6001</p>';
   }
   const health = daemon.health ?? {};
   const worker = daemon.worker ?? {};
   const counts = daemon.tasks?.counts ?? {};
   const att = obs?.attention?.summary ?? {};
   const mode = daemon.evolution_mode;
-  const modeLabel = mode ? formatEvolutionMode(mode) : '—';
+  const modeLabel = mode ? formatEvolutionMode(mode) : '\u2014';
+  const cycles = daemon.cycles?.recent ?? [];
+  const channel = daemon.channel ?? obs?.channel_diagnostics ?? {};
+  const pendingSpeech = channel.presence?.pending_speech_generation?.length ?? 0;
+  const channelIn = channel.inbound?.pending_count ?? channel.inbound_pending ?? 0;
+  const channelOut = channel.outbox?.pending_count ?? channel.outbox_pending ?? 0;
   return `
     <div class="kpi-strip">
       <div class="kpi-card health-${health.status ?? 'unknown'}">
@@ -633,23 +834,31 @@ function renderKpiStripHtml() {
       </div>
       <div class="kpi-card">
         <span class="kpi-label">Worker</span>
-        <span class="kpi-value">${worker.running ? '运行' : '停止'}${worker.stale ? ' · stale' : ''}</span>
+        <span class="kpi-value">${worker.running ? '\u8fd0\u884c' : '\u505c\u6b62'}${worker.stale ? ' \u00b7 stale' : ''}</span>
       </div>
       <div class="kpi-card">
         <span class="kpi-label">Open cycles</span>
         <span class="kpi-value">${daemon.cycles?.open_count ?? 0}</span>
       </div>
       <div class="kpi-card">
-        <span class="kpi-label">队列</span>
-        <span class="kpi-value">P ${counts.pending ?? 0} / R ${counts.running ?? 0}</span>
+        <span class="kpi-label">\u961f\u5217</span>
+        <span class="kpi-value">P ${counts.pending ?? 0} / R ${counts.running ?? 0} / F ${counts.failed ?? 0}</span>
       </div>
       <div class="kpi-card">
-        <span class="kpi-label">演化模式</span>
+        <span class="kpi-label">Running step</span>
+        <span class="kpi-value">${escapeHtml(runningStepLabel(cycles))}</span>
+      </div>
+      <div class="kpi-card">
+        <span class="kpi-label">\u6f14\u5316\u6a21\u5f0f</span>
         <span class="kpi-value mode-${mode ?? 'unknown'}">${escapeHtml(modeLabel)}</span>
       </div>
       <div class="kpi-card${att.highest_severity ? ` severity-${att.highest_severity}` : ''}">
-        <span class="kpi-label">待关注</span>
-        <span class="kpi-value">${att.count ?? 0}</span>
+        <span class="kpi-label">\u961f\u5217</span>
+        <span class="kpi-value">${escapeHtml(severitySummary(att))}</span>
+      </div>
+      <div class="kpi-card${channelIn || channelOut || pendingSpeech ? ' severity-warning' : ''}">
+        <span class="kpi-label">Channel</span>
+        <span class="kpi-value">I ${channelIn} / O ${channelOut}${pendingSpeech ? ` / S ${pendingSpeech}` : ''}</span>
       </div>
     </div>`;
 }
@@ -664,17 +873,18 @@ function renderOpsHome() {
   opsHomeEl.innerHTML = `
     <div class="ops-home-inner">
       <div class="ops-home-header">
-        <h2 class="ops-home-title">运维总览</h2>
-        <p class="ops-home-subtitle">${escapeHtml(activeSubject ?? '')} · 选择左侧轮次或下方条目进入阅读视图</p>
+        <h2 class="ops-home-title">\u8fd0\u7ef4\u603b\u89c8</h2>
+        <p class="ops-home-subtitle">${escapeHtml(activeSubject ?? '')} \u00b7 \u9009\u62e9\u5de6\u4fa7\u8f6e\u6b21\u6216\u4e0b\u65b9\u6761\u76ee\u8fdb\u5165\u9605\u8bfb\u89c6\u56fe</p>
       </div>
       ${renderKpiStripHtml()}
+      ${renderOpsPostureHtml(items)}
       <div class="ops-grid">
         <section class="ops-card ops-card-span-2 ops-card-attention">
-          <h3 class="ops-card-title">待关注 <span class="ops-badge">${items.length}</span></h3>
+          <h3 class="ops-card-title">\u5f85\u5173\u6ce8 <span class="ops-badge">${items.length}</span></h3>
           ${renderAttentionBoardHtml(items)}
         </section>
         <section class="ops-card">
-          <h3 class="ops-card-title">进行中 Cycle</h3>
+          <h3 class="ops-card-title">\u8fdb\u884c\u4e2d Cycle</h3>
           ${renderOpenCyclesTableHtml()}
         </section>
         ${renderChannelSummaryCardHtml()}
@@ -683,15 +893,15 @@ function renderOpsHome() {
           ${renderOperatorBriefsHtml()}
         </section>
         <section class="ops-card ops-card-events">
-          <h3 class="ops-card-title">最近 Daemon 事件</h3>
+          <h3 class="ops-card-title">\u6700\u8fd1 Daemon \u4e8b\u4ef6</h3>
           <div class="ops-event-feed">${renderEventFeedHtml(getFeedEvents(), 25)}</div>
         </section>
         ${latestRound ? `
         <section class="ops-card ops-card-quick">
-          <h3 class="ops-card-title">最近完成轮次</h3>
+          <h3 class="ops-card-title">\u6700\u8fd1\u5b8c\u6210\u8f6e\u6b21</h3>
           <p class="ops-quick-line"><code>${escapeHtml(latestRound.cycle_id)}</code></p>
           <p class="ops-quick-tldr">${escapeHtml(truncate(latestRound.tldr, 160))}</p>
-          <button type="button" class="btn btn-sm btn-primary" data-open-cycle="${escapeHtml(latestRound.cycle_id)}">阅读报告</button>
+          <button type="button" class="btn btn-sm btn-primary" data-open-cycle="${escapeHtml(latestRound.cycle_id)}">\u9605\u8bfb\u62a5\u544a</button>
         </section>` : ''}
       </div>
     </div>`;
@@ -717,7 +927,7 @@ function renderActiveCycles() {
   if (!activeCyclesEl) return;
   const cycles = getDaemonState()?.cycles?.recent ?? [];
   if (!cycles.length) {
-    activeCyclesEl.innerHTML = '<p class="feed-empty">无 open cycle</p>';
+    activeCyclesEl.innerHTML = '<p class="feed-empty">\u6682\u65e0 open cycle</p>';
     return;
   }
 
@@ -738,7 +948,7 @@ function renderActiveCycles() {
 
     btn.innerHTML = `
       <span class="cycle-id">${cycle.cycle_id}</span>
-      <span class="when">${formatWhen(cycle.opened_at)} · ${cycle.status ?? 'open'}</span>
+      <span class="when">${formatWhen(cycle.opened_at)} \u00b7 ${cycle.status ?? 'open'}</span>
       ${renderStepBadges(stepsObj, { compact: true })}
     `;
     btn.addEventListener('click', () => selectCycle(cycle.cycle_id));
@@ -868,10 +1078,10 @@ function renderTimeline(filter = '') {
     btn.className = classes.join(' ');
     btn.dataset.cycleId = round.cycle_id;
     btn.innerHTML = `
-      <span class="cycle-id">${round.cycle_id}${newCycleIds.has(round.cycle_id) ? ' <span class="new-tag">新</span>' : ''}</span>
+      <span class="cycle-id">${round.cycle_id}${newCycleIds.has(round.cycle_id) ? ' <span class="new-tag">\u65b0</span>' : ''}</span>
       <span class="when">${formatWhen(round.generated_at)}</span>
       ${round.tldr ? `<span class="tldr">${truncate(round.tldr)}</span>` : ''}
-      <span class="badge ${round.has_diary ? '' : 'none'}">${round.has_diary ? '有日记' : '无日记'}</span>
+      <span class="badge ${round.has_diary ? '' : 'none'}">${round.has_diary ? '\u6709\u65e5\u8bb0' : '\u65e0\u65e5\u8bb0'}</span>
     `;
     btn.addEventListener('click', () => {
       newCycleIds.delete(round.cycle_id);
@@ -883,7 +1093,7 @@ function renderTimeline(filter = '') {
 
 async function loadManifest(subject = activeSubject) {
   const res = await fetch(`${subjectApiBase(subject)}/manifest`);
-  if (!res.ok) throw new Error(`无法加载 manifest: ${subject}`);
+  if (!res.ok) throw new Error(`\u65e0\u6cd5\u52a0\u8f7d manifest: ${subject}`);
   const next = await res.json();
   const prev = manifestsBySubject[subject];
   const prevIds = new Set(prev?.rounds?.map((r) => r.cycle_id) ?? []);
@@ -919,13 +1129,13 @@ async function loadRecentEvents(subject = activeSubject) {
 
 async function loadRoundDetail(cycleId, subject = activeSubject) {
   const res = await fetch(`${subjectApiBase(subject)}/rounds/${encodeURIComponent(cycleId)}`);
-  if (!res.ok) throw new Error(`无法加载轮次详情: ${res.status}`);
+  if (!res.ok) throw new Error(`\u65e0\u6cd5\u52a0\u8f7d\u8f6e\u6b21\u8be6\u60c5: ${res.status}`);
   return res.json();
 }
 
 async function loadCycleDetail(cycleId, subject = activeSubject) {
   const res = await fetch(`${subjectApiBase(subject)}/cycles/${encodeURIComponent(cycleId)}`);
-  if (!res.ok) throw new Error(`无法加载 cycle 详情: ${res.status}`);
+  if (!res.ok) throw new Error(`\u65e0\u6cd5\u52a0\u8f7d cycle \u8be6\u60c5: ${res.status}`);
   return res.json();
 }
 
@@ -944,42 +1154,127 @@ function buildCycleDiagnosticsPanel(data) {
 
   const parts = [];
   if (stuck.length) {
-    parts.push(`<div class="diag-block diag-critical"><strong>卡住 step</strong><ul>${stuck.map((s) => `
-      <li><code>${escapeHtml(s.step)}</code> — ${escapeHtml(s.reason ?? '')}</li>
+    parts.push(`<div class="diag-block diag-critical"><strong>\u5361\u4f4f step</strong><ul>${stuck.map((s) => `
+      <li><code>${escapeHtml(s.step)}</code> \u2014 ${escapeHtml(s.reason ?? '')}</li>
     `).join('')}</ul></div>`);
   }
   if (drift.length) {
-    parts.push(`<div class="diag-block diag-warning"><strong>漂移 step</strong><ul>${drift.map((d) => `
-      <li><code>${escapeHtml(d.step)}</code> — ${escapeHtml(d.reason ?? '')}</li>
+    parts.push(`<div class="diag-block diag-warning"><strong>Drift step</strong><ul>${drift.map((d) => `
+      <li><code>${escapeHtml(d.step)}</code> \u2014 ${escapeHtml(d.reason ?? '')}</li>
     `).join('')}</ul></div>`);
   }
   if (attention.length) {
-    parts.push(`<div class="diag-block"><strong>本 cycle 相关关注</strong><ul>${attention.map((a) => `
+    parts.push(`<div class="diag-block"><strong>\u672c cycle \u76f8\u5173\u5173\u6ce8</strong><ul>${attention.map((a) => `
       <li class="severity-${a.severity}">${escapeHtml(a.title)}: ${escapeHtml(a.summary)}</li>
     `).join('')}</ul></div>`);
   }
   if (failedTasks.length) {
-    parts.push(`<div class="diag-block diag-warning"><strong>失败任务</strong><ul>${failedTasks.map((t) => `
-      <li><code>${escapeHtml(t.task_id)}</code> ${escapeHtml(t.type)} — ${escapeHtml(t.last_error_code ?? t.last_error ?? '')}</li>
+    parts.push(`<div class="diag-block diag-warning"><strong>\u5931\u8d25\u4efb\u52a1</strong><ul>${failedTasks.map((t) => `
+      <li><code>${escapeHtml(t.task_id)}</code> ${escapeHtml(t.type)} \u2014 ${escapeHtml(t.last_error_code ?? t.last_error ?? '')}</li>
     `).join('')}</ul></div>`);
   }
   if (suggestions.length) {
-    parts.push(`<div class="diag-block"><strong>建议</strong><ul>${suggestions.slice(0, 3).map((s) => `
+    parts.push(`<div class="diag-block"><strong>\u5efa\u8bae</strong><ul>${suggestions.slice(0, 3).map((s) => `
       <li><code>${escapeHtml(s)}</code></li>
     `).join('')}</ul></div>`);
   }
 
   if (!parts.length) return null;
 
-  section.innerHTML = `<h3>Cycle 诊断</h3>${parts.join('')}`;
+  section.innerHTML = `<h3>Cycle \u8bca\u65ad</h3>${parts.join('')}`;
   return section;
 }
 
-function buildTasksPanelElement(tasks) {
+function readerOpsMetrics(data) {
+  const diag = data.diagnostics ?? {};
+  const tasks = data.tasks ?? [];
+  const attention = data.observability_attention ?? [];
+  const obs = getObservability();
+  const failedGlobal = (obs?.cycle_diagnostics?.failed_tasks ?? [])
+    .filter((t) => t.cycle_id === data.cycle_id || !t.cycle_id);
+  const stuck = diag.stuck_steps?.length ?? 0;
+  const drift = diag.drift_steps?.length ?? 0;
+  const failed = tasks.filter((t) => t.status === 'failed').length + failedGlobal.length;
+  return {
+    stuck,
+    drift,
+    attention: attention.length,
+    tasks: tasks.length,
+    failed,
+    suggestions: obs?.cycle_diagnostics?.health_suggestions?.length ?? 0,
+  };
+}
+
+function readerOpsSummaryBadges(data) {
+  const m = readerOpsMetrics(data);
+  const parts = [];
+  if (m.stuck) parts.push(`${m.stuck} \u5361\u4f4f`);
+  if (m.drift) parts.push(`${m.drift} drift`);
+  if (m.attention) parts.push(`${m.attention} \u5173\u6ce8`);
+  if (m.failed) parts.push(`${m.failed} \u5931\u8d25`);
+  else if (m.tasks) parts.push(`${m.tasks} \u4efb\u52a1`);
+  return parts.join(' \u00b7 ');
+}
+
+function readerOpsHasIssue(data) {
+  const m = readerOpsMetrics(data);
+  return m.stuck + m.drift + m.attention + m.failed + m.suggestions > 0;
+}
+
+function buildReaderOpsPanel(data) {
+  const diagPanel = buildCycleDiagnosticsPanel(data);
+  const tasksPanel = data.tasks?.length
+    ? buildTasksPanelElement(data.tasks, { compact: true })
+    : null;
+  if (!diagPanel && !tasksPanel) return null;
+
+  const details = document.createElement('details');
+  details.className = 'reader-ops-panel';
+  details.open = readerOpsHasIssue(data);
+
+  const summary = document.createElement('summary');
+  summary.className = 'reader-ops-summary';
+  summary.innerHTML = `
+    <span class="reader-ops-title">\u8fd0\u7ef4\u4fe1\u606f</span>
+    <span class="reader-ops-badges">${escapeHtml(readerOpsSummaryBadges(data))}</span>
+  `;
+  details.appendChild(summary);
+
+  const body = document.createElement('div');
+  body.className = 'reader-ops-body';
+  if (diagPanel) body.appendChild(diagPanel);
+  if (tasksPanel) body.appendChild(tasksPanel);
+  details.appendChild(body);
+  return details;
+}
+
+function buildTasksPanelElement(tasks, { compact = false } = {}) {
   const section = document.createElement('section');
   section.className = 'panel tasks-panel';
+  if (!tasks?.length) {
+    section.innerHTML = '<h3>Daemon \u4efb\u52a1</h3><p class="reader-ops-empty">\u6682\u65e0\u4efb\u52a1</p>';
+    return section;
+  }
+  if (compact) {
+    section.innerHTML = `
+      <h3>Daemon \u4efb\u52a1</h3>
+      <ul class="reader-task-list">${tasks.map((t) => `
+        <li class="reader-task-item status-${String(t.status ?? 'unknown').replace(/[^a-z0-9_-]/gi, '')}">
+          <div class="reader-task-head">
+            <span class="reader-task-type">${escapeHtml(t.type)}</span>
+            <span class="reader-task-status">${escapeHtml(t.status)}</span>
+          </div>
+          <code class="reader-task-id">${escapeHtml(t.task_id)}</code>
+          ${t.last_error || t.last_error_code
+            ? `<p class="reader-task-error">${escapeHtml(t.last_error_code ?? t.last_error ?? '')}</p>`
+            : ''}
+        </li>
+      `).join('')}</ul>
+    `;
+    return section;
+  }
   section.innerHTML = `
-    <h3>Daemon 任务</h3>
+    <h3>Daemon \u4efb\u52a1</h3>
     <table class="tasks-table">
       <thead><tr><th>Task</th><th>Type</th><th>Status</th><th>Attempts</th><th>Error</th></tr></thead>
       <tbody>${(tasks ?? []).map((t) => `
@@ -996,21 +1291,77 @@ function buildTasksPanelElement(tasks) {
   return section;
 }
 
+function manifestTldr(cycleId) {
+  const round = getManifest()?.rounds?.find((r) => r.cycle_id === cycleId);
+  return round?.tldr ?? '';
+}
+
+function renderCycleProgressRail(data) {
+  const steps = data.steps ?? {};
+  const stuckSteps = new Set((data.diagnostics?.stuck_steps ?? []).map((s) => s.step));
+  const driftSteps = new Set((data.diagnostics?.drift_steps ?? []).map((s) => s.step));
+  const activeName = activeStepName(steps);
+  const nodes = STEP_ORDER
+    .filter((name) => steps[name] || data.cycle_status)
+    .map((name) => {
+      const status = stepStatus(steps, name);
+      const flags = [
+        stuckSteps.has(name) ? 'stuck' : '',
+        driftSteps.has(name) ? 'drift' : '',
+        activeName === name ? 'active' : '',
+      ].filter(Boolean);
+      const flagText = flags.filter((f) => f !== 'active').join(' / ');
+      return `<div class="progress-step step-${status}${flags.map((f) => ` is-${f}`).join('')}">
+        <span class="progress-step-dot"></span>
+        <span class="progress-step-label">${escapeHtml(STEP_LABELS[name] ?? name)}</span>
+        <span class="progress-step-status">${escapeHtml(STEP_STATUS_LABELS[status] ?? status)}</span>
+        ${flagText ? `<span class="progress-step-flag">${escapeHtml(flagText)}</span>` : ''}
+      </div>`;
+    });
+  if (!nodes.length) return '\u2014';
+  return `<div class="cycle-progress-rail" aria-label="Cycle progress">${nodes.join('')}</div>`;
+}
+
+function renderCycleSummaryHtml(data, mode = 'round') {
+  const diaries = data.diaries ?? [];
+  const tasks = data.tasks ?? [];
+  const failed = failedTaskCount(tasks);
+  const stuck = data.diagnostics?.stuck_steps?.length ?? 0;
+  const drift = data.diagnostics?.drift_steps?.length ?? 0;
+  const attention = data.observability_attention?.length ?? 0;
+  const tldr = data.tldr ?? manifestTldr(data.cycle_id);
+  const latestDiary = diaries[0]?.exec_id ?? '';
+  const hasReport = Boolean(data.has_report ?? data.report_html);
+  const summary = tldr || `${mode} \u00b7 \u62a5\u544a ${hasReport ? '\u6709' : '\u65e0'} \u00b7 \u65e5\u8bb0 ${diaries.length}`;
+
+  return `<section class="cycle-summary-card">
+    <div class="cycle-summary-main">
+      <span class="cycle-summary-label">\u8f6e\u6b21\u6458\u8981</span>
+      <strong>${escapeHtml(truncate(summary, 220))}</strong>
+      <span class="cycle-summary-meta">${escapeHtml(data.cycle_id ?? '')}${data.cycle_status ? ` \u00b7 ${escapeHtml(data.cycle_status)}` : ''}</span>
+    </div>
+    <div class="cycle-summary-facts">
+      <span><strong>${hasReport ? 'yes' : 'no'}</strong> report</span>
+      <span><strong>${diaries.length}</strong> diaries</span>
+      <span><strong>${failed}</strong> failed tasks</span>
+      <span><strong>${stuck}/${drift}</strong> stuck/drift</span>
+      <span><strong>${attention}</strong> attention</span>
+      ${latestDiary ? `<span><strong>${escapeHtml(latestDiary)}</strong> latest diary</span>` : ''}
+    </div>
+  </section>`;
+}
+
 function patchDetailHeader(data) {
   const header = detailEl.querySelector('.detail-header');
   if (!header) return;
 
-  let statusTag = header.querySelector('.cycle-status-tag');
-  if (data.cycle_status) {
-    if (!statusTag) {
-      statusTag = document.createElement('span');
-      statusTag.className = 'cycle-status-tag';
-      header.insertBefore(statusTag, header.querySelector('.detail-steps') ?? null);
-    }
-    statusTag.textContent = `status: ${data.cycle_status}`;
-  } else if (statusTag) {
-    statusTag.remove();
-  }
+  updateReaderNav({
+    cycleId: data.cycle_id ?? activeCycleId ?? '',
+    meta: data.cycle_status ?? '',
+  });
+
+  const statusTag = header.querySelector('.cycle-status-tag');
+  if (statusTag) statusTag.remove();
 
   if (data.steps) {
     let stepsWrap = header.querySelector('.detail-steps');
@@ -1021,39 +1372,33 @@ function patchDetailHeader(data) {
     }
     stepsWrap.innerHTML = renderStepBadges(data.steps);
   }
+
+  const progress = detailEl.querySelector('.cycle-progress-rail');
+  if (progress) progress.outerHTML = renderCycleProgressRail(data);
+  const summary = detailEl.querySelector('.cycle-summary-card');
+  if (summary) summary.outerHTML = renderCycleSummaryHtml(data, activeViewMode ?? 'round');
 }
 
-function patchDetailTasks(data) {
-  const existing = detailEl.querySelector('.tasks-panel');
-  const next = buildTasksPanelElement(data.tasks);
-  if (existing) {
-    existing.replaceWith(next);
-    return;
-  }
-  let details = detailEl.querySelector('.reader-aside-details');
-  if (!details) {
-    let aside = detailEl.querySelector('.reader-aside');
-    if (!aside) {
-      aside = document.createElement('aside');
-      aside.className = 'reader-aside';
-      aside.setAttribute('aria-label', '诊断与任务');
-      detailEl.querySelector('.reader-layout')?.appendChild(aside);
+function patchReaderOpsPanel(data) {
+  if (activeViewMode !== 'cycle') return;
+  const existing = detailEl.querySelector('.reader-ops-panel');
+  const next = buildReaderOpsPanel(data);
+  if (next) {
+    if (existing) {
+      next.open = existing.open;
+      existing.replaceWith(next);
+    } else {
+      detailEl.querySelector('.panels')?.before(next);
     }
-    details = document.createElement('details');
-    details.className = 'reader-aside-details';
-    details.open = true;
-    const summary = document.createElement('summary');
-    summary.textContent = '诊断与任务';
-    details.appendChild(summary);
-    aside?.appendChild(details);
+  } else if (existing) {
+    existing.remove();
   }
-  details.appendChild(next);
 }
 
 function patchDetailReportContent(data) {
   const reportContent = detailEl.querySelector('.panel.report .content');
   if (!reportContent) return;
-  reportContent.innerHTML = data.report_html ?? '<p class="missing">无报告内容</p>';
+  reportContent.innerHTML = data.report_html ?? '<p class="missing">\u65e0\u62a5\u544a\u5185\u5bb9</p>';
 }
 
 function patchDetailDiaryContent(data) {
@@ -1061,16 +1406,16 @@ function patchDetailDiaryContent(data) {
   if (!diaryContent) return;
   const diaries = data.diaries ?? [];
   if (!diaries.length) {
-    diaryContent.innerHTML = '<p class="missing">本轮无关联日记</p>';
+    diaryContent.innerHTML = '<p class="missing">\u672c\u8f6e\u65e0\u5173\u8054\u65e5\u8bb0</p>';
     return;
   }
-  diaryContent.innerHTML = diaries[0]?.html ?? '<p class="missing">无日记内容</p>';
+  diaryContent.innerHTML = diaries[0]?.html ?? '<p class="missing">\u65e0\u65e5\u8bb0\u5185\u5bb9</p>';
 }
 
 function patchDetailDom(data, mode, needs) {
-  if (needs.header) patchDetailHeader(data);
+  if (needs.header || needs.tasks || needs.diary) patchDetailHeader(data);
   if (needs.report) patchDetailReportContent(data);
-  if (needs.tasks && mode === 'cycle') patchDetailTasks(data);
+  if (mode === 'cycle' && (needs.header || needs.tasks)) patchReaderOpsPanel(data);
   if (needs.diary) patchDetailDiaryContent(data);
 }
 
@@ -1106,13 +1451,10 @@ function renderDetail(data, { mode = 'round' } = {}) {
 
   const header = document.createElement('div');
   header.className = 'detail-header';
-  header.innerHTML = `<h2>${data.cycle_id}</h2>`;
-  if (data.cycle_status) {
-    const statusSpan = document.createElement('span');
-    statusSpan.className = 'cycle-status-tag';
-    statusSpan.textContent = `status: ${data.cycle_status}`;
-    header.appendChild(statusSpan);
-  }
+  updateReaderNav({
+    cycleId: data.cycle_id,
+    meta: data.cycle_status ?? '',
+  });
   if (data.steps) {
     const stepsWrap = document.createElement('div');
     stepsWrap.className = 'detail-steps';
@@ -1124,7 +1466,7 @@ function renderDetail(data, { mode = 'round' } = {}) {
     const selectWrap = document.createElement('div');
     selectWrap.className = 'diary-select';
     const label = document.createElement('label');
-    label.textContent = '日记';
+    label.textContent = '\u65e5\u8bb0';
     const select = document.createElement('select');
     diaries.forEach((d, i) => {
       const opt = document.createElement('option');
@@ -1141,75 +1483,56 @@ function renderDetail(data, { mode = 'round' } = {}) {
   } else if (diaries.length === 1) {
     const span = document.createElement('span');
     span.className = 'diary-select';
-    span.innerHTML = `<label>日记</label> <code>${diaries[0].exec_id}</code>`;
+    span.innerHTML = `<label>\u65e5\u8bb0</label> <code>${diaries[0].exec_id}</code>`;
     header.appendChild(span);
   }
+
+  const progressWrap = document.createElement('div');
+  progressWrap.innerHTML = renderCycleProgressRail(data);
+  const progressRail = progressWrap.firstElementChild;
+
+  const summaryWrap = document.createElement('div');
+  summaryWrap.innerHTML = renderCycleSummaryHtml(data, mode);
+  const summaryCard = summaryWrap.firstElementChild;
 
   const panels = document.createElement('div');
   panels.className = 'panels';
 
   const reportPanel = document.createElement('section');
   reportPanel.className = 'panel report';
-  reportPanel.innerHTML = '<h3>情报报告</h3>';
+  reportPanel.innerHTML = '<h3>\u60c5\u62a5\u62a5\u544a</h3>';
   const reportContent = document.createElement('div');
   reportContent.className = 'content';
-  reportContent.innerHTML = data.report_html ?? '<p class="missing">无报告内容</p>';
+  reportContent.innerHTML = data.report_html ?? '<p class="missing">\u65e0\u62a5\u544a\u5185\u5bb9</p>';
   reportPanel.appendChild(reportContent);
 
   const diaryPanel = document.createElement('section');
   diaryPanel.className = 'panel diary';
-  diaryPanel.innerHTML = '<h3>进化日记</h3>';
+  diaryPanel.innerHTML = '<h3>\u8fdb\u5316\u65e5\u8bb0</h3>';
   const diaryContent = document.createElement('div');
   diaryContent.className = 'content';
   diaryPanel.appendChild(diaryContent);
 
   function updateDiaryPanel() {
     if (!diaries.length) {
-      diaryContent.innerHTML = '<p class="missing">本轮无关联日记</p>';
+      diaryContent.innerHTML = '<p class="missing">\u672c\u8f6e\u65e0\u5173\u8054\u65e5\u8bb0</p>';
       return;
     }
-    diaryContent.innerHTML = diaries[diaryIndex]?.html ?? '<p class="missing">无日记内容</p>';
+    diaryContent.innerHTML = diaries[diaryIndex]?.html ?? '<p class="missing">\u65e0\u65e5\u8bb0\u5185\u5bb9</p>';
   }
   updateDiaryPanel();
 
   panels.append(reportPanel, diaryPanel);
 
-  const layout = document.createElement('div');
-  layout.className = 'reader-layout';
+  const opsPanel = mode === 'cycle' ? buildReaderOpsPanel(data) : null;
 
-  const mainCol = document.createElement('div');
-  mainCol.className = 'reader-main';
-  mainCol.appendChild(panels);
-  layout.appendChild(mainCol);
-
-  const asideCol = document.createElement('aside');
-  asideCol.className = 'reader-aside';
-  asideCol.setAttribute('aria-label', '诊断与任务');
-
-  if (mode === 'cycle') {
-    const diagPanel = buildCycleDiagnosticsPanel(data);
-    const tasksPanel = data.tasks?.length ? buildTasksPanelElement(data.tasks) : null;
-    if (diagPanel || tasksPanel) {
-      const block = document.createElement('details');
-      block.className = 'reader-aside-details';
-      const hasIssue = Boolean(
-        (data.diagnostics?.stuck_steps?.length)
-        || (data.diagnostics?.drift_steps?.length)
-        || (data.observability_attention?.length)
-        || (data.tasks ?? []).some((t) => t.status === 'failed'),
-      );
-      block.open = hasIssue;
-      const summary = document.createElement('summary');
-      summary.textContent = '诊断与任务';
-      block.appendChild(summary);
-      if (diagPanel) block.appendChild(diagPanel);
-      if (tasksPanel) block.appendChild(tasksPanel);
-      asideCol.appendChild(block);
-    }
-  }
-  if (asideCol.childElementCount) layout.appendChild(asideCol);
-
-  detailEl.replaceChildren(header, layout);
+  detailEl.replaceChildren(
+    header,
+    ...(progressRail ? [progressRail] : []),
+    summaryCard,
+    ...(opsPanel ? [opsPanel] : []),
+    panels,
+  );
 
   activeDetailCache = buildDetailCacheFromData(data, mode);
 }
@@ -1226,12 +1549,14 @@ async function selectCycle(cycleId, { scrollTimeline = false } = {}) {
     const btn = activeCyclesEl?.querySelector(`[data-cycle-id="${cycleId}"]`);
     btn?.scrollIntoView({ block: 'nearest' });
   }
-  detailEl.innerHTML = '<p class="placeholder">加载中…</p>';
+  updateReaderNav({ cycleId, loading: true });
+  detailEl.innerHTML = '<p class="placeholder">\u52a0\u8f7d\u4e2d\u2026</p>';
   try {
     const data = await loadCycleDetail(cycleId);
     renderDetail(data, { mode: 'cycle' });
   } catch (err) {
     activeDetailCache = null;
+    updateReaderNav({ cycleId, meta: err.message });
     detailEl.innerHTML = `<p class="missing">${err.message}</p>`;
   }
 }
@@ -1248,12 +1573,14 @@ async function selectRound(cycleId, { scrollTimeline = false } = {}) {
     const btn = timelineEl.querySelector(`[data-cycle-id="${cycleId}"]`);
     btn?.scrollIntoView({ block: 'nearest' });
   }
-  detailEl.innerHTML = '<p class="placeholder">加载中…</p>';
+  updateReaderNav({ cycleId, loading: true });
+  detailEl.innerHTML = '<p class="placeholder">\u52a0\u8f7d\u4e2d\u2026</p>';
   try {
     const data = await loadRoundDetail(cycleId);
     renderDetail(data, { mode: 'round' });
   } catch (err) {
     activeDetailCache = null;
+    updateReaderNav({ cycleId, meta: err.message });
     detailEl.innerHTML = `<p class="missing">${err.message}</p>`;
   }
 }
@@ -1281,7 +1608,7 @@ function handleSsePayload(payload) {
   const subject = eventSubject(payload);
 
   if (event === 'hello') {
-    setLiveStatus('实时已连接', 'connected');
+    setLiveStatus('\u5b9e\u65f6\u5df2\u8fde\u63a5', 'connected');
     if (payload.default_subject) defaultSubject = payload.default_subject;
     if (Array.isArray(payload.subjects) && payload.subjects.length) {
       subjectsList = payload.subjects.map((s) => ({
@@ -1292,12 +1619,12 @@ function handleSsePayload(payload) {
     if (!activeSubject && defaultSubject) {
       void setActiveSubject(subjectFromQuery() || defaultSubject, { skipQueryUpdate: true });
     }
-    updateMeta('实时');
+    updateMeta('\u5df2\u66f4\u65b0');
     return;
   }
   if (event === 'ping') return;
   if (event === 'error') {
-    setLiveStatus(`错误: ${payload.message ?? 'unknown'}`, 'error');
+    setLiveStatus(`\u9519\u8bef: ${payload.message ?? 'unknown'}`, 'error');
     return;
   }
   if (event === 'daemon_event') {
@@ -1321,11 +1648,11 @@ function handleSsePayload(payload) {
     return;
   }
   if (event === 'round_added') {
-    setLiveStatus('实时已连接', 'connected');
+    setLiveStatus('\u5b9e\u65f6\u5df2\u8fde\u63a5', 'connected');
     if (subject === activeSubject) {
       void loadManifest(subject).then(() => {
         renderTimeline(filterEl.value);
-        updateMeta('实时');
+        updateMeta('\u5df2\u66f4\u65b0');
         if (viewMode === 'ops') scheduleRenderOpsHome();
       });
     } else {
@@ -1334,7 +1661,7 @@ function handleSsePayload(payload) {
     return;
   }
   if (event === 'round_updated') {
-    setLiveStatus('实时已连接', 'connected');
+    setLiveStatus('\u5b9e\u65f6\u5df2\u8fde\u63a5', 'connected');
     scheduleLoadDaemon(subject);
     if (payload.has_diary) {
       patchManifestRound(payload.cycle_id, { has_diary: true }, subject);
@@ -1353,7 +1680,7 @@ function handleSsePayload(payload) {
 
 function scheduleReconnect() {
   if (reconnectTimer) return;
-  setLiveStatus(`已断开，${Math.round(reconnectDelayMs / 1000)}s 后重连`, 'disconnected');
+  setLiveStatus(`\u5df2\u65ad\u5f00\uff0c${Math.round(reconnectDelayMs / 1000)}s \u540e\u91cd\u8fde`, 'disconnected');
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
     connectLive();
@@ -1369,7 +1696,7 @@ function connectLive() {
   try {
     eventSource = new EventSource('/events');
   } catch {
-    setLiveStatus('实时不可用', 'error');
+    setLiveStatus('\u5b9e\u65f6\u4e0d\u53ef\u7528', 'error');
     return;
   }
 
@@ -1390,7 +1717,7 @@ function connectLive() {
 
   eventSource.onopen = () => {
     reconnectDelayMs = 5000;
-    setLiveStatus('实时连接中…', 'connecting');
+    setLiveStatus('\u5b9e\u65f6\u8fde\u63a5\u4e2d\u2026', 'connecting');
   };
 
   eventSource.onerror = () => {
@@ -1411,7 +1738,7 @@ function startDaemonPolling() {
 
 async function loadSubjectsIndex() {
   const res = await fetch('/api/subjects');
-  if (!res.ok) throw new Error('无法加载 /api/subjects');
+  if (!res.ok) throw new Error('\u65e0\u6cd5\u52a0\u8f7d /api/subjects');
   const data = await res.json();
   defaultSubject = data.default_subject;
   subjectsList = data.subjects ?? [];
@@ -1456,7 +1783,7 @@ async function init() {
   try {
     await loadSubjectsIndex();
   } catch {
-    metaEl.textContent = '无法连接 viewer API，请运行 jea intel viewer serve';
+    metaEl.textContent = '\u65e0\u6cd5\u8fde\u63a5 viewer API\uff0c\u8bf7\u8fd0\u884c jea intel viewer serve';
     return;
   }
 

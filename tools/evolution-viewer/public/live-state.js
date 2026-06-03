@@ -63,6 +63,18 @@ function channelSummaryFingerprint(channel) {
     running_task: running ? { task_id: running.task_id, type: running.type } : null,
     inbound_pending: channel.inbound?.pending_count ?? 0,
     outbox_pending: channel.outbox?.pending_count ?? 0,
+    workers_running: channel.workers?.running_count ?? 0,
+    role_states: (channel.workers?.roles ?? []).map((role) => ({
+      role: role.role,
+      running: Boolean(role.running),
+      stale: Boolean(role.stale),
+      zombie: Boolean(role.zombie),
+      pid_alive: role.pid_alive ?? null,
+    })),
+    reactor_status: channel.presence?.reactor?.status ?? null,
+    pending_speech: (channel.presence?.pending_speech_generation ?? []).length,
+    feishu_listener: Boolean(channel.feishu?.listener?.running),
+    feishu_reload_pending: Boolean(channel.feishu?.reload?.pending),
     recent_tail: recent,
   };
 }
