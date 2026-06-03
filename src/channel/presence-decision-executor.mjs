@@ -2,6 +2,7 @@ import { join } from 'node:path';
 import { createIntelligenceStore } from '../intelligence/store.mjs';
 import { writePendingOperatorBrief } from '../intelligence/operator-briefs.mjs';
 import { runtimeForSubject } from '../cli/utils/evolve-runs.mjs';
+import { enqueueCycleStartRequestWithEvent } from '../cli/utils/cycle-dispatch.mjs';
 import { recordChannelEvent, readChannelEvents } from './audit.mjs';
 import {
   cooldownActive,
@@ -13,6 +14,7 @@ import { PRESENCE_ACTION_TYPES } from './presence-planner.mjs';
 import {
   recordPresenceInteraction,
   shouldRecordSilenceObservation,
+  formatPresenceInteractionContent,
 } from './presence-memory.mjs';
 import { appendChannelEvent } from './event-queue.mjs';
 import { buildSpeechGenerationEventPayload } from './speech-intent.mjs';
@@ -43,22 +45,30 @@ function validateAction(action) {
   return { ok: true };
 }
 
-function summarizeInteractionText(action, plan) {
+function interactionContentForAction(action, plan) {
   if (action.type === 'speech_intent') {
-    const preview = JSON.stringify(action.content_requirements ?? {}).slice(0, 400);
-    return [
-      `Subject decided to speak (${action.reason ?? 'presence_reply'}).`,
-      preview ? `Requirements: ${preview}` : '',
-    ].filter(Boolean).join(' ');
+    return formatPresenceInteractionContent('speech_intent', {
+      why: action.reason,
+      reason_summary: action.reason_summary ?? action.reason,
+      summary: action.content_requirements?.summary ?? action.content_requirements?.kind,
+      candidate_id: action.candidate_id,
+      planner: plan?.planner,
+    });
   }
   if (action.type === 'write_operator_brief') {
-    return [
-      `Subject wrote operator brief (${action.kind ?? 'verification_request'}) via presence.`,
-      action.summary ? `Summary: ${String(action.summary).slice(0, 400)}` : '',
-    ].filter(Boolean).join(' ');
+    return formatPresenceInteractionContent('write_operator_brief', {
+      why: 'follow_up_needs_cycle_loop',
+      brief_kind: action.kind ?? 'verification_request',
+      summary: action.summary,
+      planner: plan?.planner,
+    });
   }
   if (plan?.kind === 'silence') {
-    return `Subject chose silence (${plan.reason ?? 'silence'}).`;
+    return formatPresenceInteractionContent('silence', {
+      why: plan.reason ?? 'silence',
+      candidate_id: (plan.candidate_ids ?? [])[0] ?? null,
+      planner: plan?.planner,
+    });
   }
   return null;
 }
@@ -127,7 +137,7 @@ export async function executePresenceDecisionPlan(root, subject, plan, {
     if (!dryRun && shouldRecordSilenceObservation(context, plan)) {
       recordPresenceInteraction(store, {
         interaction_kind: 'silence',
-        content: summarizeInteractionText({ type: 'silence' }, plan),
+        content: interactionContentForAction({ type: 'silence' }, plan),
         confidence: 'medium',
         evidence_refs: (plan.candidate_ids ?? []).map((id) => `expression:${id}`),
         tags: ['silence'],
@@ -178,6 +188,7 @@ export async function executePresenceDecisionPlan(root, subject, plan, {
           kind: plan.kind,
           planner: plan.planner,
         },
+        planReason: plan.reason,
       });
       appendChannelEvent(root, subject, {
         type: 'speech_generation_requested',
@@ -194,7 +205,7 @@ export async function executePresenceDecisionPlan(root, subject, plan, {
       speechQueued += 1;
       recordPresenceInteraction(store, {
         interaction_kind: 'speech_intent',
-        content: summarizeInteractionText(action, plan),
+        content: interactionContentForAction(action, plan),
         confidence: 'medium',
         evidence_refs: [
           action.candidate_id ? `expression:${action.candidate_id}` : null,
@@ -216,19 +227,24 @@ export async function executePresenceDecisionPlan(root, subject, plan, {
         priority: action.priority ?? 'medium',
         created_by: `channel:presence:${subject}`,
       });
+      const cycleRequest = enqueueCycleStartRequestWithEvent(root, subject, {
+        reason: 'channel_presence_operator_brief',
+        meta: { brief_ids: [brief.id] },
+      });
       recordChannelEvent(root, subject, {
         type: 'channel_presence_action_applied',
         status: 'ok',
         action_type: 'write_operator_brief',
         brief_id: brief.id,
+        cycle_request_id: cycleRequest.request?.request_id ?? null,
       });
       recordPresenceInteraction(store, {
         interaction_kind: 'write_operator_brief',
-        content: summarizeInteractionText(action, plan),
+        content: interactionContentForAction(action, plan),
         confidence: 'medium',
         evidence_refs: [`brief:${brief.id}`],
       });
-      results.push({ action, applied: true, brief_id: brief.id });
+      results.push({ action, applied: true, brief_id: brief.id, cycle_start_request: cycleRequest.request });
       continue;
     }
 

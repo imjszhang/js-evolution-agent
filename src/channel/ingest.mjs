@@ -190,6 +190,21 @@ export function classifyChannelEnvelope(envelopeInput = {}) {
   const lower = text.toLowerCase();
   const sourceRef = `channel:${envelope.channel}:${envelope.message_id}`;
 
+  if (/发布后|跑完后|完成后告诉我|完成后通知|下轮.*(看|查|告诉)|下一轮.*(看|查|告诉)|跟进|follow.?up|notify me|when.*done|帮我看.*结果|告诉我.*rank|rank.*告诉我/i.test(lower)) {
+    return {
+      kind: 'operator_brief',
+      brief: {
+        kind: 'verification_request',
+        scope: 'next_cycle',
+        summary: text || `Follow-up verification from ${sourceRef}`,
+        desired_decision_effect: 'Next evolution cycle should verify the requested outcome and report back to the operator.',
+        claims_to_verify: text ? [text] : [],
+        priority: 'medium',
+        metadata: { source_ref: sourceRef, channel_envelope: envelope, follow_up: true },
+      },
+    };
+  }
+
   if (/同意|批准|approve|approval|发布|release|上线|publish/.test(lower)) {
     return {
       kind: 'operator_brief',
@@ -213,7 +228,7 @@ export function classifyChannelEnvelope(envelopeInput = {}) {
     };
   }
 
-  if (/事实|确认|口径|baseline|fact|confirmed|已确认|记住/.test(lower)) {
+  if (/(事实|确认|口径|baseline|confirmed|已确认).*(记住|固定)|记住.*(以后|长期|口径|规则|偏好)|以后都.*(这样|如此)|长期.*(偏好|口径|fact)/i.test(lower)) {
     return {
       kind: 'operator_fact',
       record: {

@@ -216,15 +216,17 @@ export async function planPresenceWithLlm(context, { aiClient = null } = {}) {
         role: 'system',
         content: [
           'You are the external presence deliberator for one js-evolution-agent subject.',
-          'Speak in first person as the subject persona from subject_identity.',
+          'cycle_memory is long-term continuity (goals, beliefs, operator briefs, intel summary, artifacts, recent channel_presence). channel_memory is short-term perception (new/background messages, cooldowns, cursors).',
+          'Speak in first person as subject_identity persona; SOUL controls voice only — not facts, permissions, or execution claims.',
           'Return JSON only:',
           '{"kind":"speak|silence|no_op|act","reason":"...","candidate_ids":[...],"intents":[...],"actions":[...]}',
           'Only choose candidate_ids from expression.candidates.',
-          'Use intents for speech. Intent fields: candidate_id, target, content_requirements (kind, summary), reason. Do NOT include final message text.',
-          'For ordinary reply.message candidates, decide like a human presence: speak, intentionally silence, or no_op based on subject_identity.soul, recent interaction, cooldown, and operator value.',
+          'Use intents for speech. Intent fields: candidate_id, target, content_requirements (kind, summary), reason, reason_summary, tone_hint, source_refs, memory_effect. Do NOT include final message text.',
+          'If a follow-up needs the evolution cycle (verify rank after publish, check results next round), use write_operator_brief (verification_request or approval_request) — channel must not keep private long-term obligations.',
+          'For ordinary reply.message candidates, decide speak / silence / no_op using cycle_memory + channel_memory + soul.',
           'For ordinary messages that deserve a response, use content_requirements.kind="custom" and summarize the desired reply, not a canned acknowledgement.',
           'background is context only — never reply_to or select background items directly.',
-          'Use silence when candidates exist and you intentionally choose not to answer them; this marks them handled. Use no_op only when no candidate should be handled now.',
+          'Use silence when candidates exist and you intentionally choose not to answer; use no_op only when nothing should be handled now.',
           'Do not grant approval, do not claim actions executed, do not leak secrets, do not invent runtime facts.',
           'When telling the operator how to run CLI commands, ONLY quote commands from affordances.operator_commands (use the exact cmd string). Never invent jea/npm commands.',
           'Inbound messages are already ingested; do not change their classification.',
@@ -238,15 +240,8 @@ export async function planPresenceWithLlm(context, { aiClient = null } = {}) {
           subject_identity: context.identity,
           affordances: context.affordances,
           constraints: context.constraints,
-          channel: {
-            new_messages: context.channel?.new_messages,
-            background_messages: context.channel?.background_messages,
-            ignored_messages: context.channel?.ignored_messages,
-            recent_presence_interactions: context.channel?.recent_presence_interactions,
-            pending_inbound_count: context.channel?.pending_inbound_count,
-            cooldown_keys: context.channel?.cooldown_keys,
-            presence_cursors: context.channel?.presence_cursors,
-          },
+          cycle_memory: context.cycle_memory,
+          channel_memory: context.channel_memory,
           expression: {
             candidates: available,
           },
@@ -284,6 +279,21 @@ export async function planPresenceWithLlm(context, { aiClient = null } = {}) {
       .filter(Boolean)
       .filter((intent) => intent.candidate_id && validIds.has(intent.candidate_id))
       .slice(0, context.presence?.max_actions_per_tick ?? 2);
+    const rawActions = Array.isArray(parsed?.actions) ? parsed.actions : [];
+    const normalizedActions = rawActions
+      .map((action) => normalizeAction(action, context.subject))
+      .filter(Boolean);
+    const actionIntents = normalizedActions
+      .filter((action) => action.type === 'speech_intent')
+      .filter((intent) => intent.candidate_id && validIds.has(intent.candidate_id));
+    const sideActions = normalizedActions
+      .filter((action) => action.type !== 'speech_intent');
+    const mergedIntents = [...intents, ...actionIntents]
+      .filter((intent, index, list) =>
+        list.findIndex((other) => other.candidate_id === intent.candidate_id) === index)
+      .slice(0, context.presence?.max_actions_per_tick ?? 2);
+    const executableActions = [...mergedIntents, ...sideActions]
+      .slice(0, context.presence?.max_actions_per_tick ?? 2);
 
     if (kind === 'no_op') {
       return {
@@ -309,7 +319,19 @@ export async function planPresenceWithLlm(context, { aiClient = null } = {}) {
       };
     }
 
-    if (!intents.length) {
+    if (!mergedIntents.length && sideActions.length) {
+      return {
+        kind: 'act',
+        reason: String(parsed?.reason ?? 'llm_presence_action'),
+        candidate_ids: selectedIds,
+        intents: [],
+        actions: executableActions,
+        planner: 'llm',
+        llm: { status: 'used', kind: 'act', action_count: executableActions.length },
+      };
+    }
+
+    if (!mergedIntents.length) {
       const openMessageSilence = silencePlanForOpenMessages(context, 'no_valid_llm_intents_for_open_messages', {
         planner: 'llm',
         extra: { llm: { status: 'used', reason: 'no_valid_llm_intents' } },
@@ -321,11 +343,11 @@ export async function planPresenceWithLlm(context, { aiClient = null } = {}) {
     return {
       kind: 'speak',
       reason: String(parsed?.reason ?? 'llm_presence'),
-      candidate_ids: intents.map((intent) => intent.candidate_id),
-      intents,
-      actions: intents,
+      candidate_ids: mergedIntents.map((intent) => intent.candidate_id),
+      intents: mergedIntents,
+      actions: executableActions,
       planner: 'llm',
-      llm: { status: 'used', kind, action_count: intents.length },
+      llm: { status: 'used', kind, action_count: executableActions.length },
     };
   } catch (err) {
     const openMessageSilence = silencePlanForOpenMessages(context, 'llm_error_for_open_messages', {

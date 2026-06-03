@@ -13,7 +13,7 @@ import {
   clearPendingSpeechGeneration,
   trackPendingSpeechGeneration,
 } from './state.mjs';
-import { recordPresenceInteraction } from './presence-memory.mjs';
+import { recordPresenceInteraction, formatPresenceInteractionContent } from './presence-memory.mjs';
 import { createIntelligenceStoreForSubject } from './presence-decision-executor.mjs';
 
 function ackText(subject, kind, summary) {
@@ -106,12 +106,14 @@ async function renderLlmSpeech(root, subject, intent, context, { aiClient = null
       role: 'system',
       content: [
         'You generate the final outbound channel message text for one js-evolution-agent subject.',
+        'cycle_memory holds long-term continuity; channel_memory holds current perception. SOUL controls voice only — not facts or permissions.',
         'Speak in first person as the subject persona.',
         'Return JSON only: {"text":"..."}',
+        'Use speech_intent.reason_summary and tone_hint for why/how to sound; do not invent facts beyond cycle_memory.',
         'Do not grant approval, do not claim actions executed, do not leak secrets.',
         'Only reference CLI commands from affordances.operator_commands when needed.',
         'Follow content_requirements and risk_constraints in the user payload.',
-        'For custom ordinary-message replies, follow subject_identity.soul and the recent channel context instead of emitting a generic acknowledgement.',
+        'For custom ordinary-message replies, follow subject_identity.soul and cycle_memory.recent_channel_presence instead of a generic acknowledgement.',
       ].join('\n'),
     },
     {
@@ -119,14 +121,19 @@ async function renderLlmSpeech(root, subject, intent, context, { aiClient = null
       content: JSON.stringify({
         subject,
         subject_identity: identity,
-        speech_intent: intent,
-        affordances: context?.affordances,
-        channel: {
-          new_messages: context?.channel?.new_messages,
-          ignored_messages: context?.channel?.ignored_messages,
-          background_messages: context?.channel?.background_messages,
-          recent_presence_interactions: context?.channel?.recent_presence_interactions,
+        speech_intent: {
+          reason: intent.reason,
+          reason_summary: intent.reason_summary,
+          tone_hint: intent.tone_hint,
+          source_refs: intent.source_refs,
+          memory_effect: intent.memory_effect,
+          content_requirements: intent.content_requirements,
+          risk_constraints: intent.risk_constraints,
+          candidate_id: intent.candidate_id,
         },
+        affordances: context?.affordances,
+        cycle_memory: context?.cycle_memory,
+        channel_memory: context?.channel_memory,
         expression: {
           candidates: context?.expression?.candidates,
         },
@@ -207,11 +214,17 @@ export async function generateSpeechAndWriteOutbox(root, subject, intent, {
   const store = createIntelligenceStoreForSubject(root, subject);
   recordPresenceInteraction(store, {
     interaction_kind: 'send_message',
-    content: `Subject sent channel message (${intent.reason}). Text: ${text.slice(0, 400)}`,
+    content: formatPresenceInteractionContent('send_message', {
+      why: intent.reason_summary ?? intent.reason,
+      content_summary: text.slice(0, 400),
+      candidate_id: intent.candidate_id,
+      outbox_ref: written.file ? `outbox:${written.file}` : null,
+    }),
     confidence: 'medium',
     evidence_refs: [
       intent.candidate_id ? `expression:${intent.candidate_id}` : null,
       written.file ? `outbox:${written.file}` : null,
+      ...(intent.source_refs ?? []),
     ].filter(Boolean),
   });
 
@@ -254,6 +267,10 @@ export async function runSpeechGenerationForEvent(root, subject, event, options 
     candidate_id: payload.candidate_id ?? null,
     target: payload.target ?? 'channel_default',
     reason: payload.reason ?? 'presence_reply',
+    reason_summary: payload.reason_summary ?? payload.reason ?? null,
+    tone_hint: payload.tone_hint ?? null,
+    source_refs: payload.source_refs ?? [],
+    memory_effect: payload.memory_effect ?? 'record_said',
     reply_to_message_id: payload.reply_to_message_id ?? null,
     signal_key: payload.signal_key ?? null,
     idempotency_key: payload.idempotency_key ?? null,

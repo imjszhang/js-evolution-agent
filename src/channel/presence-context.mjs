@@ -25,7 +25,7 @@ import { collectAttentionSignals } from './notify.mjs';
 import { resolvePresenceConfig } from './presence-config.mjs';
 import { resolveDefaultTransport } from './transport.mjs';
 import { resolvePresenceAffordances } from './presence-affordances.mjs';
-import { readRecentPresenceInteractions } from './presence-memory.mjs';
+import { readRecentPresenceInteractions, partitionPresenceInteractions } from './presence-memory.mjs';
 import { nowIso } from './types.mjs';
 
 function summarizeRecentIngested(root, subject, { limit = 8 } = {}) {
@@ -169,8 +169,13 @@ export function buildPresenceContext(root, subject, {
     }
   }
 
+  const recentPresenceInteractions = readRecentPresenceInteractions(store, {
+    limit: limits.presence_interactions ?? 12,
+  });
+  const recentChannelPresence = partitionPresenceInteractions(recentPresenceInteractions);
+
   const context = {
-    schema_version: 2,
+    schema_version: 3,
     subject,
     generated_at: nowIso(),
     tick_id: tickId,
@@ -189,9 +194,7 @@ export function buildPresenceContext(root, subject, {
       new_messages,
       background_messages,
       ignored_messages,
-      recent_presence_interactions: readRecentPresenceInteractions(store, {
-        limit: limits.presence_interactions ?? 12,
-      }),
+      recent_presence_interactions: recentPresenceInteractions,
       recent_events: readChannelEvents(root, subject, { limit: limits.events ?? 15 }),
       cooldown_keys: summarizeCooldownKeys(root, subject),
       presence_cursors: {
@@ -231,6 +234,35 @@ export function buildPresenceContext(root, subject, {
       background_messages_are_context_only: true,
       ignored_messages_are_context_only: true,
       handled_candidates_are_context_only: true,
+    },
+    cycle_memory: {
+      operator_briefs: summarizeOperatorBriefsForContext(pendingBriefs.briefs ?? []),
+      intel_summary: lightIntelSummary(store),
+      goals: goals?.goals ?? goals ?? null,
+      beliefs: beliefSummaries,
+      artifacts: artifacts ? {
+        latest_report: artifacts.latest_intel_report?.path ?? null,
+        latest_diary: artifacts.latest_evolution_diary?.path ?? null,
+        latest_verify: artifacts.latest_verify_report?.path ?? null,
+        attention: artifacts.attention ?? null,
+      } : null,
+      recent_channel_presence: recentChannelPresence,
+    },
+    channel_memory: {
+      recent_ingested: recentIngested,
+      new_messages,
+      background_messages,
+      ignored_messages,
+      cooldowns: summarizeCooldownKeys(root, subject),
+      presence_cursors: {
+        last_presence_tick_at: presenceState.last_presence_tick_at,
+        last_spoken_at: presenceState.last_spoken_at,
+        handled_candidate_count: Object.keys(presenceState.handled_candidates ?? {}).length,
+        handled_candidates: presenceState.handled_candidates ?? {},
+      },
+      pending_inbound_count: countPendingInbound(root, subject),
+      pending_outbox_count: listOutboxPending(root, subject, { limit: 1 }).length,
+      pending_unclassified_count: unclassified.pending_unclassified_count,
     },
   };
   context.expression = {

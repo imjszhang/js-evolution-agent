@@ -46,6 +46,7 @@ import { resolveSubjectReplyIdentity } from '../src/channel/subject-identity.mjs
 import { CHANNEL_TASK_DEFAULT_PRIORITY } from '../src/channel/types.mjs';
 import { parseControlRequestFromText } from '../src/channel/control-actions.mjs';
 import { classifyChannelEnvelope } from '../src/channel/ingest.mjs';
+import { buildSpeechGenerationEventPayload, speechIntentFromDeterministic } from '../src/channel/speech-intent.mjs';
 import { resolveEvolutionMode } from '../src/cli/utils/evolution-mode.mjs';
 import { readPendingCycleStartRequest } from '../src/cli/utils/cycle-start-requests.mjs';
 import {
@@ -629,6 +630,91 @@ describe('channel domain', () => {
       expect(execution.skipped).toBe(0);
     });
 
+    it('buildPresenceContext exposes cycle_memory and channel_memory with legacy fields', async () => {
+      const root = makeRoot({ presence: { enabled: true, planner: 'deterministic' } });
+      const ctx = buildPresenceContext(root, 'alpha');
+      expect(ctx.schema_version).toBe(3);
+      expect(ctx.cycle_memory).toBeDefined();
+      expect(ctx.channel_memory).toBeDefined();
+      expect(ctx.cycle_memory).toHaveProperty('operator_briefs');
+      expect(ctx.cycle_memory).toHaveProperty('intel_summary');
+      expect(ctx.cycle_memory.recent_channel_presence).toHaveProperty('recent_said');
+      expect(ctx.channel_memory).toHaveProperty('new_messages');
+      expect(ctx.channel_memory.cooldowns).toBeDefined();
+      expect(ctx.operator_briefs).toEqual(ctx.cycle_memory.operator_briefs);
+      expect(ctx.intel_summary).toBe(ctx.cycle_memory.intel_summary);
+      expect(ctx.channel.recent_presence_interactions)
+        .toEqual(ctx.cycle_memory.recent_channel_presence.all);
+    });
+
+    it('speech intent payload carries reason_summary and tone_hint', () => {
+      const intent = speechIntentFromDeterministic({
+        subject: 'alpha',
+        candidate_id: 'reply:message:om_test',
+        target: 'channel_default',
+        reason: 'operator_brief_fast_ack',
+        kind: 'approval_ack',
+        summary: '同意发布',
+      });
+      const payload = buildSpeechGenerationEventPayload(intent, { planReason: 'fast_ack' });
+      expect(payload.reason_summary).toBeTruthy();
+      expect(payload.tone_hint).toBeTruthy();
+      expect(payload.source_refs).toContain('expression:reply:message:om_test');
+      expect(payload.memory_effect).toBe('record_said');
+    });
+
+    it('classifyChannelEnvelope maps follow-up phrases to verification_request', () => {
+      const decision = classifyChannelEnvelope({
+        message_id: 'om_followup',
+        chat_id: 'oc_test',
+        content: '发布后告诉我 rank 变化',
+      });
+      expect(decision.kind).toBe('operator_brief');
+      expect(decision.brief.kind).toBe('verification_request');
+      expect(decision.brief.metadata?.follow_up).toBe(true);
+    });
+
+    it('send_message presence observation uses structured why and summary', async () => {
+      const root = makeRoot({
+        presence: { enabled: true, planner: 'deterministic', default_target: 'oc_operator' },
+      });
+      writePendingInbound(root, 'alpha', {
+        messageId: 'om_struct_obs',
+        chatId: 'oc_operator',
+        content: '同意发布',
+      });
+      await runChannelClassifierTask(root, 'alpha');
+      await runChannelPresenceTask(root, 'alpha');
+      await runChannelSpeechGenerationTask(root, 'alpha');
+      const intel = readPresenceIntel(root);
+      const sent = intel.find((r) => r.interaction_kind === 'send_message');
+      expect(sent).toBeDefined();
+      expect(sent.content).toMatch(/interaction=send_message/);
+      expect(sent.content).toMatch(/content_summary=/);
+      expect(sent.content).toMatch(/why=/);
+    });
+
+    it('decision phase speech_generation_requested payload includes deliberation fields', async () => {
+      const root = makeRoot({
+        presence: { enabled: true, planner: 'deterministic', default_target: 'oc_operator' },
+      });
+      writePendingInbound(root, 'alpha', {
+        messageId: 'om_payload_fields',
+        chatId: 'oc_operator',
+        content: '同意发布',
+      });
+      await runChannelClassifierTask(root, 'alpha');
+      const { executePresenceDecisionPlan } = await import('../src/channel/presence-decision-executor.mjs');
+      const { planPresenceDeterministic } = await import('../src/channel/presence-planner.mjs');
+      const ctx = buildPresenceContext(root, 'alpha');
+      const plan = planPresenceDeterministic(ctx);
+      await executePresenceDecisionPlan(root, 'alpha', plan, { presenceConfig: ctx.presence, context: ctx });
+      const events = listPendingChannelEvents(root, 'alpha', { type: 'speech_generation_requested' });
+      expect(events.length).toBeGreaterThan(0);
+      expect(events[0].payload.reason_summary).toBeTruthy();
+      expect(events[0].payload.tone_hint).toBeTruthy();
+    });
+
     it('recent_presence_interactions come from unified intelligence', async () => {
       const root = makeRoot({
         presence: {
@@ -724,6 +810,52 @@ describe('channel domain', () => {
       });
       expect(plan.kind).toBe('speak');
       expect(plan.intents[0].content_requirements?.text_hint).toContain('小测');
+    });
+
+    it('llm planner can write operator brief actions for follow-ups', async () => {
+      const root = makeRoot({
+        presence: {
+          enabled: true,
+          planner: 'llm',
+          default_target: 'oc_operator',
+          fast_ack_operator_brief: false,
+        },
+      });
+      const ctx = buildPresenceContext(root, 'alpha');
+      ctx.expression.candidates = [{
+        id: 'reply:message:om_followup_llm',
+        kind: 'reply.message',
+        source: 'observation',
+        priority: 'medium',
+        target: 'channel_default',
+        reply_to_message_id: 'om_followup_llm',
+        recommended_intent: 'custom',
+        summary: '跑完后帮我看 rank',
+      }];
+      ctx.presence = resolvePresenceConfig(root, 'alpha');
+      const plan = await planPresenceWithLlm(ctx, {
+        aiClient: {
+          chatMessages: async () => JSON.stringify({
+            kind: 'act',
+            reason: 'followup_needs_cycle',
+            candidate_ids: ['reply:message:om_followup_llm'],
+            actions: [{
+              type: 'write_operator_brief',
+              kind: 'verification_request',
+              summary: '跑完后帮我看 rank',
+              priority: 'medium',
+            }],
+          }),
+        },
+      });
+      expect(plan.kind).toBe('act');
+      expect(plan.actions[0].type).toBe('write_operator_brief');
+      await executePresenceDecisionPlan(root, 'alpha', plan, { context: ctx });
+      const runtime = runtimeForSubject(root, 'alpha');
+      const pending = readPendingOperatorBriefs(runtime.runtimeRoot, { limit: 10 });
+      expect(pending.briefs.some((brief) => brief.summary === '跑完后帮我看 rank')).toBe(true);
+      const request = readPendingCycleStartRequest(root, 'alpha');
+      expect(request?.reasons).toContain('channel_presence_operator_brief');
     });
 
     it('llm planner can silence plain observations and mark them handled', async () => {

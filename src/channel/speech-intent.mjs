@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { defaultDeliberationHints } from './presence-memory.mjs';
 
 export const SPEECH_INTENT_KINDS = Object.freeze([
   'approval_ack',
@@ -10,8 +11,28 @@ export const SPEECH_INTENT_KINDS = Object.freeze([
   'custom',
 ]);
 
+export const SPEECH_DELIBERATION_FIELDS = Object.freeze([
+  'reason_summary',
+  'tone_hint',
+  'source_refs',
+  'memory_effect',
+]);
+
 export function createSpeechIntentId() {
   return `speech-intent-${randomUUID()}`;
+}
+
+function normalizeDeliberation(raw, { reason, candidate_id } = {}) {
+  const defaults = defaultDeliberationHints({ reason, candidate_id });
+  const sourceRefs = Array.isArray(raw?.source_refs)
+    ? raw.source_refs.filter(Boolean).map(String)
+    : defaults.source_refs;
+  return {
+    reason_summary: String(raw?.reason_summary ?? defaults.reason_summary).slice(0, 500),
+    tone_hint: String(raw?.tone_hint ?? defaults.tone_hint).slice(0, 300),
+    source_refs: sourceRefs.length ? sourceRefs : defaults.source_refs,
+    memory_effect: String(raw?.memory_effect ?? defaults.memory_effect).slice(0, 80),
+  };
 }
 
 /**
@@ -26,12 +47,18 @@ export function normalizeSpeechIntent(raw, subject) {
   const contentRequirements = raw.content_requirements ?? null;
   if (!contentRequirements) return null;
 
+  const reason = String(raw.reason ?? 'presence_reply');
+  const deliberation = normalizeDeliberation(raw, {
+    reason,
+    candidate_id: raw.candidate_id ?? null,
+  });
+
   return {
     type: 'speech_intent',
     intent_id: intentId,
     candidate_id: raw.candidate_id ?? null,
     target: raw.target ?? 'channel_default',
-    reason: String(raw.reason ?? 'presence_reply'),
+    reason,
     reply_to_message_id: raw.reply_to_message_id ?? null,
     signal_key: raw.signal_key ?? null,
     idempotency_key: raw.idempotency_key ?? `presence:speech:${intentId}`,
@@ -41,6 +68,7 @@ export function normalizeSpeechIntent(raw, subject) {
       no_execution_claims: true,
       no_secrets: true,
     },
+    ...deliberation,
     subject,
   };
 }
@@ -56,7 +84,12 @@ export function speechIntentFromDeterministic({
   kind,
   summary = null,
   signal = null,
+  reason_summary = null,
+  tone_hint = null,
+  source_refs = null,
+  memory_effect = null,
 }) {
+  const deliberation = defaultDeliberationHints({ reason, candidate_id });
   return normalizeSpeechIntent({
     type: 'speech_intent',
     candidate_id,
@@ -73,10 +106,17 @@ export function speechIntentFromDeterministic({
         : null,
       subject,
     },
+    reason_summary: reason_summary ?? deliberation.reason_summary,
+    tone_hint: tone_hint ?? deliberation.tone_hint,
+    source_refs: source_refs ?? deliberation.source_refs,
+    memory_effect: memory_effect ?? deliberation.memory_effect,
   }, subject);
 }
 
-export function buildSpeechGenerationEventPayload(intent, { contextSummary = null } = {}) {
+export function buildSpeechGenerationEventPayload(intent, {
+  contextSummary = null,
+  planReason = null,
+} = {}) {
   return {
     intent_id: intent.intent_id,
     candidate_id: intent.candidate_id ?? null,
@@ -87,6 +127,13 @@ export function buildSpeechGenerationEventPayload(intent, { contextSummary = nul
     idempotency_key: intent.idempotency_key,
     content_requirements: intent.content_requirements,
     risk_constraints: intent.risk_constraints,
-    context_summary: contextSummary,
+    reason_summary: intent.reason_summary ?? intent.reason ?? null,
+    tone_hint: intent.tone_hint ?? null,
+    source_refs: intent.source_refs ?? [],
+    memory_effect: intent.memory_effect ?? 'record_said',
+    context_summary: {
+      ...(contextSummary && typeof contextSummary === 'object' ? contextSummary : {}),
+      plan_reason: planReason ?? contextSummary?.reason ?? null,
+    },
   };
 }
