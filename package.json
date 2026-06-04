@@ -17,7 +17,9 @@
     "reset-data": "node --preserve-symlinks src/cli/jea.mjs data reset --yes",
     "test": "node --preserve-symlinks ./node_modules/vitest/vitest.mjs run",
     "viewer:build": "node --preserve-symlinks src/cli/jea.mjs intel viewer build",
-    "viewer:serve": "node --preserve-symlinks src/cli/jea.mjs intel viewer serve --open"
+    "viewer:serve": "node --preserve-symlinks src/cli/jea.mjs intel viewer serve --open",
+    "viewer:serve:win": "powershell -ExecutionPolicy Bypass -File scripts/viewer-serve-win.ps1 -Launch",
+    "daemon:start:detached": "powershell -ExecutionPolicy Bypass -File scripts/daemon-start-detached-win.ps1"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.139",
