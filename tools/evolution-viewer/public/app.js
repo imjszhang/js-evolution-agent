@@ -414,6 +414,13 @@ function isActiveBlockingAttention(item) {
   return item?.status === 'active' && item.blocking !== false;
 }
 
+function isAcknowledgeableAttention(item) {
+  if (!item || (item.status !== 'needs_ack' && item.category !== 'history')) return false;
+  if (item.kind === 'task_failed') return Boolean(item.refs?.task_id);
+  if (item.kind === 'channel_health') return true;
+  return false;
+}
+
 function formatEventLabel(ev) {
   const base = tDynamic('events', ev.event_type, ev.event_type);
   if (ev.event_type === 'evolution_mode_changed' && ev.from && ev.to) {
@@ -597,12 +604,21 @@ function renderAttentionBoardHtml(items) {
 
   return `<div class="attention-board-groups">${groups.map((group) => `
     <section class="attention-group severity-${group.items[0]?.severity ?? 'info'}">
-      <h4 class="attention-group-title">${escapeHtml(group.label)} <span>${group.items.length}</span></h4>
+      <h4 class="attention-group-title">
+        <span>${escapeHtml(group.label)} <span>${group.items.length}</span></span>
+        ${group.id === 'history' && group.items.some(isAcknowledgeableAttention)
+    ? `<button type="button" class="btn btn-sm" data-ack-all-attention="1" data-ack-subject="${escapeHtml(activeSubject ?? '')}">${t('ops.acknowledgeAll')}</button>`
+    : ''}
+      </h4>
       <ul class="attention-board-list">${group.items.map((item) => {
         const cycleId = item.refs?.cycle_id;
+        const ackable = isAcknowledgeableAttention(item);
         const clickable = cycleId ? ' attention-item-clickable' : '';
         const dataAttrs = cycleId
           ? ` data-cycle-id="${escapeHtml(cycleId)}" data-subject="${escapeHtml(item.subject ?? activeSubject ?? '')}"`
+          : '';
+        const ackAttrs = ackable
+          ? ` data-ack-attention="1" data-ack-kind="${escapeHtml(item.kind)}" data-ack-task-id="${escapeHtml(item.refs?.task_id ?? '')}" data-ack-subject="${escapeHtml(item.subject ?? activeSubject ?? '')}"`
           : '';
         return `
           <li class="attention-board-item severity-${item.severity ?? 'info'}${clickable}"${dataAttrs} role="${cycleId ? 'button' : 'listitem'}" tabindex="${cycleId ? '0' : '-1'}">
@@ -614,6 +630,7 @@ function renderAttentionBoardHtml(items) {
             </div>
             ${item.summary ? `<p class="attention-summary">${escapeHtml(item.summary)}</p>` : ''}
             ${item.suggested_command ? `<code class="attention-cmd">${escapeHtml(item.suggested_command)}</code>` : ''}
+            ${ackable ? `<button type="button" class="btn btn-sm" ${ackAttrs}>${t('ops.acknowledge')}</button>` : ''}
           </li>`;
       }).join('')}</ul>
     </section>`).join('')}</div>`;
@@ -621,6 +638,66 @@ function renderAttentionBoardHtml(items) {
 
 function bindAttentionBoardClicks(root) {
   if (!root) return;
+  for (const btn of root.querySelectorAll('[data-ack-all-attention]')) {
+    btn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const subject = btn.dataset.ackSubject || activeSubject;
+      if (!subject) return;
+      btn.disabled = true;
+      const originalText = btn.textContent;
+      btn.textContent = t('ops.acknowledgingAll');
+      try {
+        const res = await fetch(`${subjectApiBase(subject)}/attention/ack`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ all: true }),
+        });
+        if (!res.ok) throw new Error(`ack all failed: ${res.status}`);
+        await Promise.all([
+          fetchDaemonForSubject(subject),
+          fetchObservabilityForSubject(subject),
+        ]);
+        if (subject === activeSubject && viewMode === 'ops') renderOpsHome();
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = originalText;
+        console.warn(err);
+      }
+    });
+  }
+  for (const btn of root.querySelectorAll('[data-ack-attention]')) {
+    btn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const subject = btn.dataset.ackSubject || activeSubject;
+      if (!subject) return;
+      btn.disabled = true;
+      const originalText = btn.textContent;
+      btn.textContent = t('ops.acknowledging');
+      try {
+        const res = await fetch(`${subjectApiBase(subject)}/attention/ack`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            kind: btn.dataset.ackKind,
+            task_id: btn.dataset.ackTaskId || null,
+          }),
+        });
+        if (!res.ok) throw new Error(`ack failed: ${res.status}`);
+        await Promise.all([
+          fetchDaemonForSubject(subject),
+          fetchObservabilityForSubject(subject),
+        ]);
+        if (subject === activeSubject && viewMode === 'ops') renderOpsHome();
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = originalText;
+        // Keep the button visible; the suggested command remains available for manual fallback.
+        console.warn(err);
+      }
+    });
+  }
   for (const el of root.querySelectorAll('.attention-item-clickable')) {
     el.addEventListener('click', () => {
       const cycleId = el.dataset.cycleId;

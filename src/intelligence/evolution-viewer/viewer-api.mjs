@@ -4,8 +4,11 @@ import { readFile } from 'node:fs/promises';
 import { join, extname, resolve, relative, basename } from 'node:path';
 import { createIntelligenceStore } from '../store.mjs';
 import { buildDaemonProjection } from '../../cli/utils/daemon-projection.mjs';
+import { acknowledgeTask } from '../../cli/utils/daemon-tasks.mjs';
+import { recordDaemonEvent } from '../../cli/utils/daemon-events.mjs';
 import { buildChannelProjection } from '../../channel/projection.mjs';
-import { readChannelEvents } from '../../channel/audit.mjs';
+import { readChannelEvents, recordChannelEvent } from '../../channel/audit.mjs';
+import { requestChannelWorkerStop } from '../../channel/worker-state.mjs';
 import {
   channelInboundPendingDir,
   channelInboundProcessedDir,
@@ -615,6 +618,32 @@ function jsonResponse(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
+function readRequestJson(req, { maxBytes = 16 * 1024 } = {}) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    req.setEncoding('utf-8');
+    req.on('data', (chunk) => {
+      body += chunk;
+      if (body.length > maxBytes) {
+        reject(new Error('request body too large'));
+        req.destroy();
+      }
+    });
+    req.on('end', () => {
+      if (!body.trim()) {
+        resolve({});
+        return;
+      }
+      try {
+        resolve(JSON.parse(body));
+      } catch {
+        reject(new Error('invalid json body'));
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
 function buildDaemonApiResponse(projectRoot, runtime, store) {
   const projection = buildDaemonProjection(projectRoot, runtime.subject, {
     store,
@@ -729,6 +758,79 @@ function createSubjectContext(runtime, projectRoot, catalogLimit) {
     return buildChannelProjection(projectRoot, runtime.subject, { eventLimit: 30 });
   }
 
+  function acknowledgeAttentionItem(request = {}) {
+    const obs = getObservability(true);
+    const kind = String(request.kind ?? '').trim();
+    const taskId = request.task_id ? String(request.task_id).trim() : null;
+    const item = (obs.attention?.items ?? []).find((candidate) => {
+      if (candidate.kind !== kind) return false;
+      if (candidate.status !== 'needs_ack' && candidate.category !== 'history') return false;
+      if (taskId) return candidate.refs?.task_id === taskId;
+      return kind === 'channel_health';
+    });
+    if (!item) {
+      return { ok: false, status: 404, error: 'acknowledgeable attention item not found' };
+    }
+
+    if (kind === 'task_failed') {
+      if (!taskId) return { ok: false, status: 400, error: 'task_id required' };
+      const acknowledged = acknowledgeTask(projectRoot, runtime.subject, taskId, 'viewer_attention_acknowledge');
+      recordDaemonEvent(projectRoot, runtime.subject, {
+        type: 'task_acknowledged',
+        status: 'ok',
+        task_id: acknowledged.task.task_id,
+        task_type: acknowledged.task.type,
+        source: 'viewer',
+      });
+      invalidateRuntimeCaches();
+      return { ok: true, action: 'daemon_task_acknowledged', task: acknowledged.task };
+    }
+
+    if (kind === 'channel_health') {
+      const result = requestChannelWorkerStop(projectRoot, runtime.subject);
+      recordChannelEvent(projectRoot, runtime.subject, {
+        type: 'channel_attention_acknowledged',
+        status: 'ok',
+        attention_kind: kind,
+        action: 'channel_worker_stale_marked_stopped',
+        reason: result.reason,
+      });
+      invalidateRuntimeCaches();
+      return { ok: true, action: 'channel_worker_stale_acknowledged', result };
+    }
+
+    return { ok: false, status: 400, error: `unsupported attention kind: ${kind}` };
+  }
+
+  function acknowledgeAttentionItems(request = {}) {
+    if (!request.all) return acknowledgeAttentionItem(request);
+    const obs = getObservability(true);
+    const items = (obs.attention?.items ?? [])
+      .filter((item) => (item.status === 'needs_ack' || item.category === 'history')
+        && (item.kind === 'channel_health' || (item.kind === 'task_failed' && item.refs?.task_id)));
+    const results = [];
+    for (const item of items) {
+      const result = acknowledgeAttentionItem({
+        kind: item.kind,
+        task_id: item.refs?.task_id ?? null,
+      });
+      results.push({
+        kind: item.kind,
+        task_id: item.refs?.task_id ?? null,
+        ...result,
+      });
+    }
+    const failed = results.filter((result) => !result.ok);
+    return {
+      ok: failed.length === 0,
+      status: failed.length ? 207 : 200,
+      action: 'attention_bulk_acknowledged',
+      acknowledged: results.filter((result) => result.ok).length,
+      failed: failed.length,
+      results,
+    };
+  }
+
   function getChannelEvents(limit = 50) {
     return readChannelEvents(projectRoot, runtime.subject, { limit });
   }
@@ -780,6 +882,7 @@ function createSubjectContext(runtime, projectRoot, catalogLimit) {
     getCycleDetail,
     getChannel,
     getChannelEvents,
+    acknowledgeAttentionItems,
     listChannelInbound,
     listChannelOutbox,
     bumpDaemonCache,
@@ -959,6 +1062,24 @@ export function createViewerApiServer({ runtime, runtimes, projectRoot, limit, p
             'Cache-Control': 'no-store',
           });
           res.end(JSON.stringify(ctx.getObservability()));
+          return;
+        }
+        if (rest === 'attention/ack') {
+          if (req.method !== 'POST') {
+            jsonResponse(res, 405, { error: 'method not allowed' });
+            return;
+          }
+          try {
+            const body = await readRequestJson(req);
+            const result = ctx.acknowledgeAttentionItems(body);
+            if (!result.ok) {
+              jsonResponse(res, result.status ?? 400, result);
+              return;
+            }
+            jsonResponse(res, 200, result);
+          } catch (err) {
+            jsonResponse(res, 400, { ok: false, error: err?.message || String(err) });
+          }
           return;
         }
         if (rest === 'channel') {
