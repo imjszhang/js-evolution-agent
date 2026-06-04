@@ -181,7 +181,7 @@ messages.push(normalizeOutboundMessage({
   target: routed.target,
   text: body,
   reason: 'channel_deliverable_body',
-  idempotency_key: `channel-deliverable:${subject}:${deliverable.deliverable_id}:2-body`,
+  idempotency_key: `channel-deliverable:${subject}:${deliveryKey}:2-body`,
   metadata: { ...baseMeta, part: 'body' },
 }));
 ```
@@ -192,11 +192,13 @@ outbox 消息按文件名升序发送，文件名是 `时间戳-key`。时间戳
 
 修复：在 idempotency key 里加序号（`1-card` / `2-body`），保证摘要卡片永远先发。
 
-### 5.3 一处可接受的局限（未改）
+### 5.3 幂等窗口补齐
 
 `deliverable_id` 每次执行随机生成，outbox 文件名带时间戳、不按 key 去重。因此若同一 `channel_agent_run` 任务在「成功 dispatch 之后」才失败并被重试，理论上可能重复投递。
 
-但 deferred 不抛异常、不触发重试，dispatch 之后再抛异常的窗口极小，且这与旧 speech 通道特性一致。判定为可接受，留作后续机制化（用 `channel_agent_run_id` 作幂等键 + outbox 层去重）。
+后续已补齐这层机制：交付消息的 outbox `idempotency_key` 改为优先使用稳定的 `channel_agent_run_id`，不再依赖每次新生成的 `deliverable_id`；`writeOutboxMessage` 在 pending / sent outbox 中按 key 查重，命中后不再写第二条消息。
+
+这样即使同一 `channel_agent_run` 被重试，也会复用同一组交付 key，避免重复投递。
 
 ---
 
@@ -207,8 +209,11 @@ outbox 消息按文件名升序发送，文件名是 `时间戳-key`。时间戳
 - `persistChannelDeliverable`：写 MD 原文、写索引、写 observation。
 - `resolveDeliverablePath` / `extractDeliverableTldr`。
 - `renderDeliveryToOutbox`：短内容单卡片；中内容卡片+全文（断言 `messages[1].text === body` 全文保真）。
+- `renderDeliveryToOutbox`：交付 outbox key 优先使用稳定的 `channel_agent_run_id`。
+- `writeOutboxMessage`：pending / sent outbox 中按 `idempotency_key` 去重。
 - `renderDeliveryCard`：status 映射卡片头部颜色（completed=green / failed=red）。
 - `runChannelTask`：agent run 完成后落交付物、写 outbox、记审计事件，且 presence 候选**不**再出现 `reply.agent_run`。
+- `channel deliverables` CLI：可 list 索引记录，也可按 `deliverable_id` / `channel_agent_run_id` show Markdown 正文。
 - `intelligence` spec 列表新增 `channel_deliverables`。
 
 运行结果：
@@ -216,7 +221,7 @@ outbox 消息按文件名升序发送，文件名是 `时间戳-key`。时间戳
 ```bash
 npx vitest run test/channel.test.mjs
 # Test Files  1 passed (1)
-#      Tests  102 passed (102)
+#      Tests  105 passed (105)
 ```
 
 逻辑复查后的两处修正不破坏任何已有断言（测试不校验 `reply_to` 与具体 key 字符串），全量 channel 测试绿。
@@ -225,9 +230,7 @@ npx vitest run test/channel.test.mjs
 
 ## 7. 后续演化
 
-- **幂等机制化**：用 `channel_agent_run_id` 作 outbox 幂等键并在 outbox 层去重，彻底消除任务重试的重复投递窗口（见 5.3）。
 - **卡片线程化**：飞书当前不支持 `replyCard`，交付暂未挂在原消息线程下。后续若 adapter 支持 reply 卡片，可让摘要卡片回复原请求消息。
-- **交付物检索入口**：`readChannelDeliverables` 已就绪，可补一个 CLI（如 `jea channel deliverables list`）方便操作者回看历史交付。
 - **多通道渲染**：`delivery-renderer` 目前主要面向飞书卡片，后续接入其它通道时可按 transport 扩展渲染分支。
 
 ---
@@ -239,4 +242,4 @@ npx vitest run test/channel.test.mjs
 | 问题 | agent run 的完整结果被 speech 通道当成「一句通知」转述，保真度丢失；操作者要求把结果作为「交付物」原样投递 |
 | 思考 | 真正的瓶颈不是飞书工具集，而是系统里缺少「交付物」一等公民；speech 通道的 LLM 改写、人设、限流三重约束对「交付」是致命的；情报库 `intel_reports` 已有可复用范式 |
 | 方案 | 建一条快车道：agent 原文落 MD（frontmatter+原文）→ 写索引 + observation → 按通道渲染飞书卡片 → 直接进 outbox/notify；completion 事件标记 `delivered`，presence 跳过避免重复打扰 |
-| 执行 | 新增 `deliverable.mjs`、`delivery-renderer.mjs`，改 `agent-runner.mjs` 快车道、`specs.mjs`/`store.mjs` 注册交付物源、`expression-candidates`/`presence-decision-executor` 跳过已投递候选；复查修复全文 body 丢失与卡片顺序两个真实 bug；102 个 channel 测试通过 |
+| 执行 | 新增 `deliverable.mjs`、`delivery-renderer.mjs`，改 `agent-runner.mjs` 快车道、`specs.mjs`/`store.mjs` 注册交付物源、`expression-candidates`/`presence-decision-executor` 跳过已投递候选；复查修复全文 body 丢失与卡片顺序两个真实 bug；补齐 outbox 幂等去重与 `channel deliverables` 检索入口；105 个 channel 测试通过 |

@@ -189,13 +189,43 @@ export function setCooldown(root, subject, key, ttlMs, meta = {}) {
 export function writeOutboxMessage(root, subject, message) {
   const dir = ensureDir(channelOutboxPendingDir(root, subject));
   const key = safeFilenamePart(message.idempotency_key ?? message.id ?? randomUUID());
+  const existing = findOutboxByIdempotencyKey(root, subject, message.idempotency_key);
+  if (existing) {
+    return {
+      file: existing.file,
+      message: existing.payload?.outbound ?? existing.payload,
+      created: false,
+      duplicate: true,
+      existing_status: existing.status,
+    };
+  }
   const file = join(dir, `${timestampForFilename()}-${key}.json`);
   writeFileSync(file, JSON.stringify(message, null, 2), 'utf-8');
-  return { file, message };
+  return { file, message, created: true, duplicate: false };
 }
 
 export function listOutboxPending(root, subject, { limit = 20 } = {}) {
   return listJsonFiles(channelOutboxPendingDir(root, subject)).slice(0, Math.max(0, limit));
+}
+
+function outboxPayloadIdempotencyKey(payload) {
+  return payload?.idempotency_key ?? payload?.outbound?.idempotency_key ?? null;
+}
+
+export function findOutboxByIdempotencyKey(root, subject, idempotencyKey) {
+  if (!idempotencyKey) return null;
+  for (const [status, dir] of [
+    ['pending', channelOutboxPendingDir(root, subject)],
+    ['sent', channelOutboxSentDir(root, subject)],
+  ]) {
+    for (const file of listJsonFiles(dir)) {
+      const payload = readJsonFile(file);
+      if (outboxPayloadIdempotencyKey(payload) === idempotencyKey) {
+        return { status, file, payload };
+      }
+    }
+  }
+  return null;
 }
 
 export function markOutboxSent(root, subject, file, payload = {}) {

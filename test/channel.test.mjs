@@ -7,7 +7,9 @@ import { enqueueTask, pendingTasksPath } from '../src/cli/utils/daemon-tasks.mjs
 import { enqueueChannelTask, readChannelTaskQueue, channelPendingTasksPath } from '../src/channel/task-queue.mjs';
 import {
   writePendingInbound,
+  writeOutboxMessage,
   listOutboxPending,
+  markOutboxSent,
   cooldownActive,
   readPresenceState,
   readJsonFile,
@@ -63,6 +65,7 @@ import { parseControlRequestFromText } from '../src/channel/control-actions.mjs'
 import { classifyChannelEnvelope, decisionFromClassifierItem } from '../src/channel/ingest.mjs';
 import { buildSpeechGenerationEventPayload, speechIntentFromDeterministic } from '../src/channel/speech-intent.mjs';
 import { resolveEvolutionMode } from '../src/cli/utils/evolution-mode.mjs';
+import { channelCommand } from '../src/cli/commands/channel.mjs';
 import { readPendingCycleStartRequest } from '../src/cli/utils/cycle-start-requests.mjs';
 import {
   createChannelRoleWorkerState,
@@ -125,6 +128,18 @@ function writeOperatorBinding(root, subject, openId = 'ou_operator') {
     open_id: openId,
     bound_at: new Date().toISOString(),
   });
+}
+
+async function captureConsoleLog(fn) {
+  const originalLog = console.log;
+  const lines = [];
+  console.log = (...args) => lines.push(args.join(' '));
+  try {
+    const result = await fn();
+    return { result, output: lines.join('\n') };
+  } finally {
+    console.log = originalLog;
+  }
 }
 
 describe('channel domain', () => {
@@ -368,6 +383,41 @@ describe('channel domain', () => {
         && obs.metadata?.deliverable_id === deliverable.deliverable_id)).toBe(true);
     });
 
+    it('channel deliverables CLI lists records and shows Markdown content', async () => {
+      const root = makeRoot();
+      const runtime = runtimeForSubject(root, 'alpha');
+      const store = createIntelligenceStore({ baseDir: runtime.intelligenceDir, timezone: 'Asia/Shanghai' });
+      const deliverable = persistChannelDeliverable(root, 'alpha', {
+        channel_agent_run_id: 'channel-agent-cli',
+        objective: 'CLI 检索测试',
+      }, {
+        success: true,
+        status: 'completed',
+        provider: 'cursor_sdk',
+        agent: { raw_response: '# CLI 交付\n\n完整 Markdown 正文。' },
+      }, { store });
+
+      const listed = await captureConsoleLog(() => channelCommand({
+        subcommand: 'deliverables',
+        args: ['list'],
+        flags: {},
+        root,
+      }));
+      expect(listed.result).toBe(0);
+      expect(listed.output).toContain(deliverable.deliverable_id);
+      expect(listed.output).toContain('CLI 检索测试');
+
+      const shown = await captureConsoleLog(() => channelCommand({
+        subcommand: 'deliverables',
+        args: ['show', 'channel-agent-cli'],
+        flags: {},
+        root,
+      }));
+      expect(shown.result).toBe(0);
+      expect(shown.output).toContain('# CLI 交付');
+      expect(shown.output).toContain('完整 Markdown 正文。');
+    });
+
     it('resolveDeliverablePath lays deliverables out by date and extractDeliverableTldr summarizes', () => {
       const root = makeRoot();
       const path = resolveDeliverablePath(root, 'alpha', 'delivery-20260604-192200-abcd', {
@@ -411,6 +461,60 @@ describe('channel domain', () => {
       expect(rendered.messages[1].card).toBeNull();
       expect(rendered.messages[1].text).toBe(body);
       expect(rendered.messages[1].metadata.part).toBe('body');
+    });
+
+    it('renderDeliveryToOutbox uses stable channel_agent_run_id for delivery idempotency keys', async () => {
+      const root = makeRoot();
+      const rendered = await renderDeliveryToOutbox(root, 'alpha', {
+        deliverable_id: 'delivery-random-a',
+        channel_agent_run_id: 'channel-agent-stable',
+        objective: '长报告',
+        status: 'completed',
+        provider: 'cursor_sdk',
+        body: 'A'.repeat(3000),
+        tldr: 'long',
+      });
+      expect(rendered.messages.map((message) => message.idempotency_key)).toEqual([
+        'channel-deliverable:alpha:channel-agent-stable:1-card',
+        'channel-deliverable:alpha:channel-agent-stable:2-body',
+      ]);
+      expect(rendered.messages[0].metadata.deliverable_id).toBe('delivery-random-a');
+      expect(rendered.messages[0].metadata.channel_agent_run_id).toBe('channel-agent-stable');
+    });
+
+    it('writeOutboxMessage deduplicates idempotency keys across pending and sent outbox', () => {
+      const root = makeRoot();
+      const first = writeOutboxMessage(root, 'alpha', {
+        channel: 'feishu',
+        target: 'oc_test',
+        text: 'first',
+        idempotency_key: 'outbox-key-1',
+      });
+      expect(first.created).toBe(true);
+      const pendingDuplicate = writeOutboxMessage(root, 'alpha', {
+        channel: 'feishu',
+        target: 'oc_test',
+        text: 'duplicate pending',
+        idempotency_key: 'outbox-key-1',
+      });
+      expect(pendingDuplicate.created).toBe(false);
+      expect(pendingDuplicate.duplicate).toBe(true);
+      expect(pendingDuplicate.existing_status).toBe('pending');
+
+      markOutboxSent(root, 'alpha', first.file, {
+        outbound: first.message,
+        send_result: { ok: true },
+      });
+      const sentDuplicate = writeOutboxMessage(root, 'alpha', {
+        channel: 'feishu',
+        target: 'oc_test',
+        text: 'duplicate sent',
+        idempotency_key: 'outbox-key-1',
+      });
+      expect(sentDuplicate.created).toBe(false);
+      expect(sentDuplicate.duplicate).toBe(true);
+      expect(sentDuplicate.existing_status).toBe('sent');
+      expect(listOutboxPending(root, 'alpha')).toHaveLength(0);
     });
 
     it('renderDeliveryCard reflects status via header template', () => {

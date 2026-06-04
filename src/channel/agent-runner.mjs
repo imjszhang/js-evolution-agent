@@ -204,10 +204,18 @@ export async function runChannelAgentRunTask(root, subject, input = {}) {
       });
       const rendered = await renderDeliveryToOutbox(root, subject, deliverable, request);
       const messages = rendered.messages ?? [];
-      for (const message of messages) writeOutboxMessage(root, subject, message);
+      const writes = messages.map((message) => writeOutboxMessage(root, subject, message));
       if (messages.length) {
         const notify = enqueueNotifyIfOutboxPending(root, subject);
-        dispatch = { format: rendered.format, count: messages.length, notify_created: notify.created ?? false };
+        const writtenCount = writes.filter((write) => write.created).length;
+        const duplicateCount = writes.filter((write) => write.duplicate).length;
+        dispatch = {
+          format: rendered.format,
+          count: messages.length,
+          written_count: writtenCount,
+          duplicate_count: duplicateCount,
+          notify_created: notify.created ?? false,
+        };
         recordChannelEvent(root, subject, {
           type: 'channel_deliverable_dispatched',
           status: 'ok',
@@ -215,6 +223,8 @@ export async function runChannelAgentRunTask(root, subject, input = {}) {
           deliverable_id: deliverable.deliverable_id,
           delivery_format: rendered.format,
           outbox_count: messages.length,
+          written_count: writtenCount,
+          duplicate_count: duplicateCount,
           target: rendered.target ?? null,
         });
       } else {

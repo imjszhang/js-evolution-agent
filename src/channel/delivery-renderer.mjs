@@ -65,8 +65,10 @@ export async function renderDeliveryToOutbox(root, subject, deliverable, request
   const baseMeta = {
     channel_deliverable: true,
     deliverable_id: deliverable.deliverable_id,
+    channel_agent_run_id: deliverable.channel_agent_run_id ?? null,
     delivery_format: format,
   };
+  const deliveryKey = deliverable.channel_agent_run_id || deliverable.deliverable_id;
 
   const messages = [];
 
@@ -82,7 +84,7 @@ export async function renderDeliveryToOutbox(root, subject, deliverable, request
     text: deliverable.tldr || deliverable.objective || 'agent deliverable',
     subject,
     reason: 'channel_deliverable',
-    idempotency_key: `channel-deliverable:${subject}:${deliverable.deliverable_id}:1-card`,
+    idempotency_key: `channel-deliverable:${subject}:${deliveryKey}:1-card`,
     metadata: { ...baseMeta, part: 'card' },
   }));
 
@@ -95,7 +97,7 @@ export async function renderDeliveryToOutbox(root, subject, deliverable, request
       text: body,
       subject,
       reason: 'channel_deliverable_body',
-      idempotency_key: `channel-deliverable:${subject}:${deliverable.deliverable_id}:2-body`,
+      idempotency_key: `channel-deliverable:${subject}:${deliveryKey}:2-body`,
       metadata: { ...baseMeta, part: 'body' },
     }));
   }

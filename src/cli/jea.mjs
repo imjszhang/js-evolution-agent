@@ -50,6 +50,7 @@ Commands:
   channel events         Show channel communication audit events
   channel inbox put      Queue an inbound channel message JSON for ingest
   channel send           Queue or dry-run an outbound channel message
+  channel deliverables   List or show channel agent-run deliverables
   data status            Show runtime data status
   data status --json     Show runtime data status as JSON
   data init              Create runtime data directories
@@ -124,6 +125,8 @@ Examples:
   jea daemon inbox --all
   jea channel status
   jea channel send --to CHAT_ID --text "hello" --dry-run
+  jea channel deliverables list
+  jea channel deliverables show delivery-20260604-120000-abcd
   jea daemon tasks list --status failed
   jea data init --all
   jea intel summary

@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from 'node:fs';
 import { getProjectRoot } from '../utils/project.mjs';
 import { resolveSubjectFromFlags, runtimeInfoForSubject } from '../utils/subjects.mjs';
 import { parseHeartbeatStaleMs } from '../utils/daemon-worker-state.mjs';
@@ -13,6 +14,7 @@ import { runChannelPresenceTask } from '../../channel/presence.mjs';
 import { cancelDeprecatedChannelTasks } from '../../channel/queue-cleanup.mjs';
 import { channelFeishuCommand } from './channel-feishu.mjs';
 import { resolveFeishuConfig } from '../../channel/adapters/feishu/config.mjs';
+import { createIntelligenceStore } from '../../intelligence/store.mjs';
 
 function runtimeForFlags(root, flags = {}) {
   const config = resolveSubjectFromFlags(root, flags);
@@ -55,6 +57,40 @@ function printStatus(projection) {
   }
   if (projection.tasks.deprecated?.length) {
     console.log(`deprecated tasks: ${projection.tasks.deprecated.map((t) => `${t.type}(${t.status})`).join(', ')}`);
+  }
+}
+
+function createChannelStore(runtime) {
+  return createIntelligenceStore({
+    baseDir: runtime.intelligenceDir,
+    timezone: 'Asia/Shanghai',
+  });
+}
+
+function parseLimit(flags, fallback = 20) {
+  const limit = Number(flags.limit);
+  return Number.isFinite(limit) ? limit : fallback;
+}
+
+function findDeliverableRecord(records, id) {
+  return records.find((record) => (
+    record?.deliverable_id === id
+    || record?.channel_agent_run_id === id
+    || record?.id === id
+  )) ?? null;
+}
+
+function printDeliverableList(records) {
+  if (!records.length) {
+    console.log('(none)');
+    return;
+  }
+  for (const record of records) {
+    const created = record.created_at ?? record.recorded_at ?? '?';
+    const id = record.deliverable_id ?? record.id ?? '?';
+    const status = record.status ?? '-';
+    const objective = String(record.objective ?? record.tldr ?? '').replace(/\s+/g, ' ').slice(0, 120);
+    console.log(`${created} ${id} status=${status}${objective ? ` ${objective}` : ''}`);
   }
 }
 
@@ -157,6 +193,42 @@ export async function channelCommand({ subcommand, flags = {}, args = [], root =
     else if (!files.length) console.log('(none)');
     else files.forEach((file) => console.log(file));
     return 0;
+  }
+
+  if (subcommand === 'deliverables') {
+    const action = args[0] ?? 'list';
+    const store = createChannelStore(runtime);
+    if (action === 'list') {
+      const deliverables = store.readChannelDeliverables({ limit: parseLimit(flags, 20) });
+      if (flags.json) console.log(JSON.stringify({ subject, deliverables }, null, 2));
+      else printDeliverableList(deliverables);
+      return 0;
+    }
+    if (action === 'show') {
+      const id = args[1] ?? (flags.id && flags.id !== true ? flags.id : null);
+      if (!id) {
+        console.error('Usage: jea channel deliverables show <deliverable_id|channel_agent_run_id> [--json]');
+        return 2;
+      }
+      const records = store.readChannelDeliverables({ limit: parseLimit(flags, 1000) });
+      const record = findDeliverableRecord(records, id);
+      if (!record) {
+        console.error(`Channel deliverable not found: ${id}`);
+        return 1;
+      }
+      const markdown = record.md_path && existsSync(record.md_path)
+        ? readFileSync(record.md_path, 'utf-8')
+        : null;
+      if (flags.json) console.log(JSON.stringify({ subject, deliverable: record, markdown }, null, 2));
+      else if (markdown) console.log(markdown);
+      else {
+        console.log(`Deliverable found, but Markdown file is missing: ${record.md_path ?? '(no md_path)'}`);
+        console.log(JSON.stringify(record, null, 2));
+      }
+      return 0;
+    }
+    console.error('Usage: jea channel deliverables [list|show <id>] [--limit N] [--json]');
+    return 2;
   }
 
   if (subcommand === 'send') {
@@ -277,6 +349,6 @@ export async function channelCommand({ subcommand, flags = {}, args = [], root =
     return projection.health.ok ? 0 : 1;
   }
 
-  console.error('Usage: jea channel <status|events|inbox|outbox|send|tick|work|presence|queue|doctor|feishu> [--subject NAME] [--json]');
+  console.error('Usage: jea channel <status|events|inbox|outbox|deliverables|send|tick|work|presence|queue|doctor|feishu> [--subject NAME] [--json]');
   return 2;
 }
