@@ -33,6 +33,7 @@ import {
   hasRichFormatting,
 } from '../src/channel/delivery-renderer.mjs';
 import { FeishuSender } from '../src/channel/adapters/feishu/sender.mjs';
+import { planDocumentInsertions } from '../src/channel/adapters/feishu/client.mjs';
 import { runChannelClassifierTask } from '../src/channel/classifier.mjs';
 import { claimNextChannelTask } from '../src/channel/task-queue.mjs';
 import { resolveChannelWorkerTaskTypes, taskTypesForChannelRole, DEFAULT_CHANNEL_ROLES } from '../src/channel/channel-roles.mjs';
@@ -726,6 +727,66 @@ describe('channel domain', () => {
       expect(calls[0][1].folderToken).toBe('fld_test');
       expect(calls[1][0]).toBe('sendText');
       expect(calls[1][1].text).toContain('https://example.feishu.cn/docx/docx_test');
+    });
+
+    it('planDocumentInsertions keeps nested table blocks as descendants (no orphan 400)', () => {
+      // Simulates docx convert output for markdown containing a table: a
+      // first-level table container plus its nested row/cell/text children.
+      const converted = {
+        first_level_block_ids: ['h1', 'tbl'],
+        blocks: [
+          { block_id: 'page', parent_id: null, block_type: 1, children: ['h1', 'tbl'] },
+          { block_id: 'h1', parent_id: 'page', block_type: 3, heading1: {} },
+          {
+            block_id: 'tbl',
+            parent_id: 'page',
+            block_type: 31,
+            table: { property: { column_size: 2, row_size: 1, column_width: [365, 365], merge_info: [{ col_span: 1, row_span: 1 }] } },
+            children: ['cell1', 'cell2'],
+          },
+          { block_id: 'cell1', parent_id: 'tbl', block_type: 32, table_cell: {}, children: ['t1'] },
+          { block_id: 'cell2', parent_id: 'tbl', block_type: 32, table_cell: {}, children: ['t2'] },
+          { block_id: 't1', parent_id: 'cell1', block_type: 2, text: {} },
+          { block_id: 't2', parent_id: 'cell2', block_type: 2, text: {} },
+        ],
+      };
+
+      const batches = planDocumentInsertions(converted);
+      expect(batches).toHaveLength(1);
+      const [batch] = batches;
+      expect(batch.children_id).toEqual(['h1', 'tbl']);
+      expect(batch.index).toBe(0);
+
+      const ids = batch.descendants.map((b) => b.block_id);
+      // The whole table subtree must be present so the container is not orphaned.
+      expect(ids).toEqual(expect.arrayContaining(['h1', 'tbl', 'cell1', 'cell2', 't1', 't2']));
+      // The page/root block must NOT be inserted.
+      expect(ids).not.toContain('page');
+      // parent_id is stripped, but block_id + children wiring is preserved.
+      expect(batch.descendants.every((b) => !('parent_id' in b))).toBe(true);
+      const table = batch.descendants.find((b) => b.block_id === 'tbl');
+      expect(table.children).toEqual(['cell1', 'cell2']);
+      // Read-only table props must be stripped or Feishu rejects with 1770001.
+      expect(table.table.property).toEqual({ column_size: 2, row_size: 1 });
+      expect(table.table.property).not.toHaveProperty('column_width');
+      expect(table.table.property).not.toHaveProperty('merge_info');
+    });
+
+    it('planDocumentInsertions chunks first-level blocks and keeps order', () => {
+      const ids = Array.from({ length: 5 }, (_, i) => `b${i}`);
+      const converted = {
+        first_level_block_ids: ids,
+        blocks: ids.map((id) => ({ block_id: id, parent_id: 'page', block_type: 2, text: {} })),
+      };
+      const batches = planDocumentInsertions(converted, { batchSize: 2 });
+      expect(batches.map((b) => b.children_id)).toEqual([['b0', 'b1'], ['b2', 'b3'], ['b4']]);
+      expect(batches.map((b) => b.index)).toEqual([0, 2, 4]);
+    });
+
+    it('planDocumentInsertions returns empty for unusable convert output', () => {
+      expect(planDocumentInsertions({})).toEqual([]);
+      expect(planDocumentInsertions({ blocks: [], first_level_block_ids: [] })).toEqual([]);
+      expect(planDocumentInsertions({ blocks: [{ block_id: 'x', block_type: 2 }] })).toEqual([]);
     });
 
     it('purges pending deprecated tasks from queue', () => {

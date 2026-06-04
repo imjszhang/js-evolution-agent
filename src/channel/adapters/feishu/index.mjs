@@ -90,13 +90,33 @@ export async function sendOutboundMessage(outbound, options = {}) {
 
   const sender = await getSender(cfg);
   if (message.document) {
-    const result = await sender.sendDocumentDelivery(message.target, message.document);
-    return {
-      messageId: result.messageIds?.[0],
-      chatId: message.target,
-      chunks: result.chunks,
-      document: result.document,
-    };
+    try {
+      const result = await sender.sendDocumentDelivery(message.target, message.document);
+      return {
+        messageId: result.messageIds?.[0],
+        chatId: message.target,
+        chunks: result.chunks,
+        document: result.document,
+      };
+    } catch (docErr) {
+      // Defense-in-depth: never silently lose the content if the docx API fails.
+      // Fall back to delivering the markdown body as a chunked text message.
+      const title = message.document.title ? `${message.document.title}\n\n` : '';
+      const body = message.document.markdown
+        ?? message.document.message_text
+        ?? message.text
+        ?? '';
+      const fallbackText = `${title}${body}`.trim();
+      if (!fallbackText) throw docErr;
+      const result = await sender.sendText(message.target, fallbackText);
+      return {
+        messageId: result.messageIds?.[0],
+        chatId: message.target,
+        chunks: result.chunks,
+        document_fallback: 'text',
+        document_error: docErr?.message || String(docErr),
+      };
+    }
   }
   if (message.card) {
     const result = await sender.sendCard(message.target, message.card);

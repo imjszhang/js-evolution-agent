@@ -37,14 +37,80 @@ function documentUrl(documentId, { domain = 'feishu', docBaseUrl = null } = {}) 
   return `${host}/docx/${documentId}`;
 }
 
-function stripConvertedBlock(block = {}) {
-  const {
-    block_id: _blockId,
-    parent_id: _parentId,
-    children: _children,
-    ...rest
-  } = block;
+function sanitizeTableProperty(property = {}) {
+  // `column_width` and `merge_info` are read-only / auto-assigned at creation;
+  // the descendant API rejects (1770001 invalid param) tables that carry them.
+  // Markdown tables never contain merged cells, so dropping these is safe.
+  const { column_width: _columnWidth, merge_info: _mergeInfo, ...rest } = property;
   return rest;
+}
+
+function toDescendantBlock(block = {}) {
+  const { parent_id: _parentId, ...rest } = block;
+  if (rest.block_type === 31 && rest.table?.property) {
+    rest.table = { ...rest.table, property: sanitizeTableProperty(rest.table.property) };
+  }
+  return rest;
+}
+
+function collectSubtree(byId, rootIds) {
+  const out = [];
+  const seen = new Set();
+  const queue = [...rootIds];
+  while (queue.length) {
+    const id = queue.shift();
+    if (!id || seen.has(id) || !byId.has(id)) continue;
+    seen.add(id);
+    const block = byId.get(id);
+    out.push(block);
+    const children = Array.isArray(block.children) ? block.children : [];
+    for (const childId of children) {
+      if (!seen.has(childId)) queue.push(childId);
+    }
+  }
+  return out;
+}
+
+/**
+ * Turn a docx `convert` response into ordered descendant-insertion batches.
+ *
+ * The convert API returns a *flat* list of blocks where container blocks (e.g.
+ * tables, quote containers, lists) reference their nested children by id via the
+ * `children` field. Those nested blocks live elsewhere in the same flat array.
+ * Inserting first-level container blocks through the flat `documentBlockChildren`
+ * API (which only accepts self-contained children) makes Feishu reject the
+ * request with HTTP 400. The descendant API accepts the full subtree, so we
+ * collect every block reachable from the first-level ids and submit them as
+ * `descendants`, with `children_id` selecting the top-level blocks.
+ *
+ * @param {{ blocks?: Array, first_level_block_ids?: string[] }} converted
+ * @param {{ batchSize?: number }} [options]
+ * @returns {Array<{ children_id: string[], index: number, descendants: Array }>}
+ */
+export function planDocumentInsertions(converted = {}, { batchSize = 40 } = {}) {
+  const blocks = Array.isArray(converted.blocks) ? converted.blocks : [];
+  const firstLevel = Array.isArray(converted.first_level_block_ids)
+    ? converted.first_level_block_ids.filter(Boolean)
+    : [];
+  if (!blocks.length || !firstLevel.length) return [];
+
+  const byId = new Map();
+  for (const block of blocks) {
+    if (block?.block_id) byId.set(block.block_id, block);
+  }
+
+  const size = Math.max(1, batchSize);
+  const batches = [];
+  let inserted = 0;
+  for (let i = 0; i < firstLevel.length; i += size) {
+    const chunkFirst = firstLevel.slice(i, i + size).filter((id) => byId.has(id));
+    if (!chunkFirst.length) continue;
+    const descendants = collectSubtree(byId, chunkFirst).map(toDescendantBlock);
+    if (!descendants.length) continue;
+    batches.push({ children_id: chunkFirst, index: inserted, descendants });
+    inserted += chunkFirst.length;
+  }
+  return batches;
 }
 
 function plainMarkdownBlock(markdown) {
@@ -232,7 +298,7 @@ export class FeishuClient {
     const documentId = document.document_id;
     if (!documentId) throw new Error('Create Feishu document failed: missing document_id');
 
-    let blocks = [];
+    let insertions = [];
     try {
       const convertResponse = assertOk(await client.docx.document.convert({
         data: {
@@ -240,18 +306,33 @@ export class FeishuClient {
           content: String(markdown ?? ''),
         },
       }), 'Convert Markdown to Feishu document blocks');
-      const converted = convertResponse.data ?? {};
-      const firstLevel = new Set(converted.first_level_block_ids ?? []);
-      const convertedBlocks = converted.blocks ?? [];
-      blocks = convertedBlocks
-        .filter((block) => !firstLevel.size || firstLevel.has(block?.block_id))
-        .map(stripConvertedBlock)
-        .filter((block) => block?.block_type);
+      insertions = planDocumentInsertions(convertResponse.data ?? {});
     } catch {
-      blocks = [plainMarkdownBlock(markdown)];
+      insertions = [];
     }
 
-    if (blocks.length) {
+    if (insertions.length) {
+      // Nested blocks (tables, quote containers, lists) require the descendant
+      // API; the flat children API rejects orphaned container blocks with 400.
+      for (const batch of insertions) {
+        assertOk(await client.docx.documentBlockDescendant.create({
+          path: {
+            document_id: documentId,
+            block_id: documentId,
+          },
+          params: {
+            client_token: randomUUID(),
+          },
+          data: {
+            children_id: batch.children_id,
+            index: batch.index,
+            descendants: batch.descendants,
+          },
+        }), 'Insert Feishu document blocks');
+      }
+    } else {
+      // Conversion failed or produced nothing usable: drop the raw markdown into
+      // a single self-contained text block so the document is never empty.
       assertOk(await client.docx.documentBlockChildren.create({
         path: {
           document_id: documentId,
@@ -261,9 +342,9 @@ export class FeishuClient {
           client_token: randomUUID(),
         },
         data: {
-          children: blocks,
+          children: [plainMarkdownBlock(markdown)],
         },
-      }), 'Insert Feishu document blocks');
+      }), 'Insert Feishu document fallback block');
     }
 
     return {

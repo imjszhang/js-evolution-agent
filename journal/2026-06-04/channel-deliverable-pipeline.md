@@ -315,3 +315,22 @@ npx vitest run test/channel.test.mjs
 
 - 接入真实 provider 时，agent 即可自主探索运行时目录并产出 `deliverable.content` 人话正文。
 - 新增 image / file / rich_text / PDF / video 等介质时，仅扩展 `resolveDeliveryItems` 与 adapter 发送方法。
+
+## 9. 飞书云文档含表格时 400 根因修复（2026-06-05）
+
+### 9.1 现象
+
+操作者请求「最近进化结果完整发飞书」触发 agent run，交付物 `delivery-20260604-164828-d2d3` 已正确按 `document` 路由进 outbox（`channel_deliverable_dispatched fmt=document`），但 notify worker 发送时飞书 API 返回 **HTTP 400 / code 1770001 invalid param**，消息落入 `outbox/failed`。之后操作者追问「怎么没用飞书文档」被 classifier 当成普通 observation，presence 仅回话术且 persona 幻觉式声称「无权限」（与真实原因无关）。
+
+### 9.2 根因
+
+`createDocumentFromMarkdown`（`src/channel/adapters/feishu/client.mjs`）旧逻辑把 `docx.document.convert` 结果 `filter(first_level)` + 删 `children` 后用扁平的 `documentBlockChildren.create` 插入。markdown 含**表格**时，convert 返回嵌套块（table 31 → cell 32 → text 2），扁平插入会把表格容器变成孤儿块 → 400。
+
+改用 descendant API 后仍 400，逐步定位（create ✅ / convert ✅ / 仅非表格块 ✅ / 仅表格块 ❌）确认真正元凶：convert 返回的 **table block 携带只读字段 `table.property.column_width` 与 `merge_info`**，descendant 创建接口拒绝。剥离这两个字段后表格成功写入（markdown 表格无合并单元格，丢弃安全）。
+
+### 9.3 修复
+
+- `client.mjs`：新增可测纯函数 `planDocumentInsertions(converted)`，BFS 收集 first-level 子树为 `descendants`、`children_id` 选顶层、`index` 顺序分批（默认 40/批），并在 `toDescendantBlock` 中对 table 块 `sanitizeTableProperty`（剥离 `column_width`/`merge_info`）。改用 `docx.documentBlockDescendant.create` 插入；convert 失败时回退单个纯文本块。
+- `adapters/feishu/index.mjs`：`sendOutboundMessage` 对 document 增加防御性兜底——若 docx API 仍失败，则把 `title + markdown` 当作文本分块发送，绝不静默丢内容（返回带 `document_fallback: 'text'`）。
+- 测试：`planDocumentInsertions` 三个用例（表格子树保留 + property 清洗、分批与顺序、空输入），`test/channel.test.mjs` 114 passed。
+- 真机验证：用原失败的表格交付物 payload 经真实代码路径重发，成功创建飞书云文档并发给操作者（`document` 路径，无 fallback）。
