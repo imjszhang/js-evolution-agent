@@ -46,7 +46,7 @@ import { resolvePresenceConfig } from '../src/channel/presence-config.mjs';
 import { resolveSubjectReplyIdentity } from '../src/channel/subject-identity.mjs';
 import { CHANNEL_TASK_DEFAULT_PRIORITY } from '../src/channel/types.mjs';
 import { parseControlRequestFromText } from '../src/channel/control-actions.mjs';
-import { classifyChannelEnvelope } from '../src/channel/ingest.mjs';
+import { classifyChannelEnvelope, decisionFromClassifierItem } from '../src/channel/ingest.mjs';
 import { buildSpeechGenerationEventPayload, speechIntentFromDeterministic } from '../src/channel/speech-intent.mjs';
 import { resolveEvolutionMode } from '../src/cli/utils/evolution-mode.mjs';
 import { readPendingCycleStartRequest } from '../src/cli/utils/cycle-start-requests.mjs';
@@ -56,6 +56,12 @@ import {
   readChannelWorkerState,
   requestChannelWorkerStop,
 } from '../src/channel/worker-state.mjs';
+import {
+  inferDeterministicUnderstanding,
+  normalizeUnderstanding,
+  candidateNeedsImmediateAction,
+  candidateEligibleForDeterministicAgent,
+} from '../src/channel/classifier-understanding.mjs';
 
 let tempDir = null;
 
@@ -1801,6 +1807,171 @@ describe('channel domain', () => {
       expect(reactor.plan.kind).toBe('speak');
       expect(reactor.plan.intents.some((intent) =>
         intent.content_requirements?.kind === 'control_action_ack')).toBe(true);
+    });
+  });
+
+  describe('classifier understanding', () => {
+    it('inferDeterministicUnderstanding detects immediate investigation phrases', () => {
+      const u = inferDeterministicUnderstanding(
+        { content: '帮我查一下最近几轮演化日志有没有报错' },
+        'observation',
+      );
+      expect(u.needs_immediate_action).toBe(true);
+      expect(u.temporal).toBe('now');
+      expect(u.action_hint).toBeTruthy();
+    });
+
+    it('inferDeterministicUnderstanding does not trigger on vague opinion phrasing', () => {
+      const opinion = inferDeterministicUnderstanding(
+        { content: '你怎么看这个方向，我看现在先不用动' },
+        'observation',
+      );
+      expect(opinion.needs_immediate_action).toBe(false);
+      expect(opinion.action_hint).toBeNull();
+    });
+
+    it('normalizeUnderstanding preserves LLM fields', () => {
+      const u = normalizeUnderstanding({
+        user_intent: '查 rank',
+        needs_immediate_action: true,
+        action_hint: 'Read verify report and rank',
+        temporal: 'now',
+        complexity: 'low',
+      });
+      expect(u.needs_immediate_action).toBe(true);
+      expect(u.action_hint).toContain('rank');
+    });
+
+    it('normalizeUnderstanding does not override explicit LLM no-action judgment', () => {
+      const u = normalizeUnderstanding({
+        user_intent: '讨论方向，不需要立刻行动',
+        needs_immediate_action: false,
+        temporal: 'ongoing',
+        complexity: 'medium',
+      }, {
+        envelope: { content: '你怎么看这个方向，我看现在先不用动' },
+        classification: 'observation',
+      });
+      expect(u.needs_immediate_action).toBe(false);
+      expect(u.temporal).toBe('ongoing');
+    });
+
+    it('deterministic agent eligibility is limited to reply candidates', () => {
+      const understanding = {
+        user_intent: '查状态',
+        needs_immediate_action: true,
+        temporal: 'now',
+        complexity: 'low',
+        action_hint: 'Check status',
+      };
+      expect(candidateEligibleForDeterministicAgent({
+        kind: 'reply.message',
+        summary: '帮我查状态',
+        understanding,
+      })).toBe(true);
+      expect(candidateEligibleForDeterministicAgent({
+        kind: 'notify.task_failed',
+        summary: '任务失败',
+        understanding,
+      })).toBe(false);
+    });
+
+    it('passthrough understanding from classifier to expression candidates', async () => {
+      const root = makeRoot({
+        classifier: { enabled: true, mode: 'deterministic', batch_size: 5 },
+        presence: { enabled: true, planner: 'deterministic' },
+      });
+      writePendingInbound(root, 'alpha', {
+        messageId: 'om_understanding_passthrough',
+        chatId: 'oc_operator',
+        content: '帮我查一下最近日志有没有报错',
+      });
+      await runChannelClassifierTask(root, 'alpha');
+      const ctx = buildPresenceContext(root, 'alpha');
+      const ingested = ctx.channel.new_messages.find((m) => m.message_id === 'om_understanding_passthrough');
+      expect(ingested?.understanding?.needs_immediate_action).toBe(true);
+      const candidate = ctx.expression.candidates.find((c) => c.id === 'reply:message:om_understanding_passthrough');
+      expect(candidate?.understanding?.needs_immediate_action).toBe(true);
+    });
+
+    it('operator brief fast ack bypasses when needs_immediate_action', () => {
+      const root = makeRoot({ presence: { enabled: true, planner: 'llm' } });
+      const ctx = buildPresenceContext(root, 'alpha');
+      ctx.expression.candidates = [{
+        id: 'reply:approval_request:om_compound',
+        kind: 'reply.approval_request',
+        summary: '同意发布，但先帮我查一下 rank',
+        recommended_intent: 'approval_ack',
+        understanding: {
+          user_intent: '先查 rank 再审批',
+          needs_immediate_action: true,
+          temporal: 'now',
+          complexity: 'low',
+          action_hint: 'Check rank before approval',
+        },
+      }];
+      expect(planPresenceOperatorBriefFastAck(ctx)).toBeNull();
+      expect(candidateNeedsImmediateAction(ctx.expression.candidates[0])).toBe(true);
+    });
+
+    it('operator brief fast ack applies when no immediate action', async () => {
+      const root = makeRoot({
+        presence: { enabled: true, planner: 'llm' },
+        classifier: { enabled: true, mode: 'deterministic' },
+      });
+      writePendingInbound(root, 'alpha', {
+        messageId: 'om_fast_ack_only',
+        chatId: 'oc_operator',
+        content: '同意发布',
+      });
+      await runChannelClassifierTask(root, 'alpha');
+      const ctx = buildPresenceContext(root, 'alpha');
+      const plan = planPresenceOperatorBriefFastAck(ctx);
+      expect(plan).not.toBeNull();
+      expect(plan.planner).toBe('deterministic_fast_ack');
+      const candidate = ctx.expression.candidates.find((c) => c.id === 'reply:approval_request:om_fast_ack_only');
+      expect(candidate?.understanding?.needs_immediate_action).not.toBe(true);
+    });
+
+    it('deterministic planner starts agent from understanding on observation', async () => {
+      const root = makeRoot({
+        presence: { enabled: true, planner: 'deterministic' },
+        classifier: { enabled: true, mode: 'deterministic' },
+      });
+      writePendingInbound(root, 'alpha', {
+        messageId: 'om_det_agent',
+        chatId: 'oc_operator',
+        content: '帮我分析一下最近 verify 报告',
+      });
+      await runChannelClassifierTask(root, 'alpha');
+      const ctx = buildPresenceContext(root, 'alpha');
+      const plan = planPresenceDeterministic(ctx);
+      expect(plan.kind).toBe('act');
+      expect(plan.actions.some((a) => a.type === 'start_agent_async')).toBe(true);
+      expect(plan.actions.some((a) => a.type === 'speech_intent')).toBe(true);
+      const execution = await executePresenceDecisionPlan(root, 'alpha', plan, { context: ctx });
+      expect(execution.results.some((r) => r.queued || r.applied)).toBeTruthy();
+    });
+
+    it('decisionFromClassifierItem attaches understanding to brief metadata', () => {
+      const envelope = {
+        message_id: 'om_meta',
+        channel: 'feishu',
+        chat_id: 'oc_operator',
+        content: '帮我查 rank',
+      };
+      const decision = decisionFromClassifierItem({
+        classification: 'verification_request',
+        summary: '查 rank',
+        understanding: {
+          user_intent: '查 rank',
+          needs_immediate_action: true,
+          action_hint: 'Check rank',
+          temporal: 'now',
+          complexity: 'low',
+        },
+      }, envelope);
+      expect(decision.brief.metadata.understanding.needs_immediate_action).toBe(true);
     });
   });
 

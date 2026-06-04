@@ -1,6 +1,10 @@
 import { chatMessagesJson } from '../ai/messages.mjs';
 import { DeepSeekOpenAIClient } from '../ai/deepseek-client.mjs';
 import { normalizeSpeechIntent, speechIntentFromDeterministic } from './speech-intent.mjs';
+import {
+  candidateEligibleForDeterministicAgent,
+  candidateNeedsImmediateAction,
+} from './classifier-understanding.mjs';
 
 export const PRESENCE_PLAN_KINDS = Object.freeze(['no_op', 'speak', 'silence', 'act']);
 export const PRESENCE_ACTION_TYPES = Object.freeze([
@@ -208,10 +212,44 @@ export function planPresenceOperatorBriefFastAck(context) {
   const selected = candidates(context).filter((candidate) =>
     candidate.kind === 'reply.approval_request' || candidate.kind === 'reply.verification_request');
   if (!selected.length) return null;
+  if (selected.some((candidate) => candidateNeedsImmediateAction(candidate))) {
+    return null;
+  }
   return speakPlan(context, selected.slice(0, context.presence?.max_actions_per_tick ?? 2), {
     planner: 'deterministic_fast_ack',
     reason: 'operator_brief_fast_ack',
     extra: { fast_ack: true },
+  });
+}
+
+function agentAsyncActionFromCandidate(candidate, subject) {
+  const u = candidate.understanding;
+  const objective = String(u?.action_hint ?? u?.user_intent ?? candidate.summary ?? '').trim();
+  if (!objective) return null;
+  return normalizeStartAgentAsync({
+    type: 'start_agent_async',
+    objective,
+    mode: 'observe',
+    permission_profile: 'read_only',
+    candidate_id: candidate.id,
+    target: candidate.target ?? 'channel_default',
+    reply_to_message_id: candidate.reply_to_message_id ?? null,
+    reason: 'deterministic_understanding_agent',
+    reason_summary: `Read-only investigation: ${objective.slice(0, 200)}`,
+    idempotency_key: `expression:${candidate.id}`,
+  });
+}
+
+function agentStartedAckIntent(context, candidate) {
+  return speechIntentFromDeterministic({
+    subject: context.subject,
+    candidate_id: candidate.id,
+    target: candidate.target ?? 'channel_default',
+    reason: 'agent_started_ack',
+    reply_to_message_id: candidate.reply_to_message_id ?? null,
+    idempotency_key: `expression:${candidate.id}`,
+    kind: 'custom',
+    summary: '已收到，正在异步调查，完成后会通知你。',
   });
 }
 
@@ -220,7 +258,28 @@ export function planPresenceOperatorBriefFastAck(context) {
  */
 export function planPresenceDeterministic(context) {
   const maxActions = context.presence?.max_actions_per_tick ?? 2;
-  const selected = candidates(context).filter((candidate) => !isOpenMessageCandidate(candidate)).slice(0, maxActions);
+  const all = candidates(context);
+  const agentCandidates = all.filter(candidateEligibleForDeterministicAgent).slice(0, maxActions);
+  if (agentCandidates.length) {
+    const actions = [];
+    for (const candidate of agentCandidates) {
+      const agentAction = agentAsyncActionFromCandidate(candidate, context.subject);
+      if (agentAction) actions.push(agentAction);
+      const ack = agentStartedAckIntent(context, candidate);
+      if (ack) actions.push(ack);
+    }
+    if (actions.length) {
+      return {
+        kind: 'act',
+        reason: 'deterministic_understanding_agent',
+        candidate_ids: agentCandidates.map((c) => c.id),
+        intents: actions.filter((a) => a.type === 'speech_intent'),
+        actions: actions.slice(0, maxActions * 2),
+        planner: 'deterministic',
+      };
+    }
+  }
+  const selected = all.filter((candidate) => !isOpenMessageCandidate(candidate)).slice(0, maxActions);
   if (!selected.length) return noOpPlan('no_expression_candidates');
   return speakPlan(context, selected);
 }
@@ -266,6 +325,11 @@ export async function planPresenceWithLlm(context, { aiClient = null } = {}) {
           'Return JSON only:',
           '{"kind":"speak|silence|no_op|act","reason":"...","candidate_ids":[...],"intents":[...],"actions":[...]}',
           'Only choose candidate_ids from expression.candidates.',
+          'Candidates may include understanding: user_intent, needs_immediate_action, action_hint, temporal (now|next_cycle|ongoing), complexity (low|medium|high). This is the classifier structured read of the message — prefer it over guessing from summary alone.',
+          'When understanding.needs_immediate_action is true and temporal is "now", prefer start_agent_async (read-only) plus a speech_intent ack for that candidate.',
+          'When understanding.temporal is "next_cycle", prefer write_operator_brief rather than start_agent_async.',
+          'Use understanding.action_hint as the agent objective when starting start_agent_async.',
+          'When understanding.complexity is "high", prefer speak to ask a clarifying question or write_operator_brief instead of start_agent_async.',
           'Use intents for speech. Intent fields: candidate_id, target, content_requirements (kind, summary), reason, reason_summary, tone_hint, source_refs, memory_effect. Do NOT include final message text.',
           'When an ordinary message needs asynchronous work now, use actions with type="start_agent_async" and include objective, candidate_id, mode="observe" or "propose", permission_profile="read_only". In the same response also include a speech_intent acknowledgement for that candidate.',
           'If a follow-up needs the evolution cycle (verify rank after publish, check results next round), use write_operator_brief (verification_request or approval_request) — channel must not keep private long-term obligations.',

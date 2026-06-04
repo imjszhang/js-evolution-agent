@@ -19,6 +19,10 @@ import {
   readJsonFile,
 } from './state.mjs';
 import { requestExpressionRecompute } from './wake.mjs';
+import {
+  inferDeterministicUnderstanding,
+  normalizeUnderstanding,
+} from './classifier-understanding.mjs';
 
 function createLlmClient(config) {
   if (!process.env.DEEPSEEK_API_KEY?.trim()) return null;
@@ -29,14 +33,26 @@ function createLlmClient(config) {
   }
 }
 
-function normalizeClassifierItems(parsed, expectedIds) {
+function normalizeClassifierItems(parsed, expectedIds, entriesById = new Map()) {
   const items = Array.isArray(parsed?.items) ? parsed.items : [];
   const byId = new Map();
   for (const raw of items) {
     const messageId = String(raw?.message_id ?? '').trim();
     if (!messageId || !expectedIds.has(messageId)) continue;
     if (byId.has(messageId)) continue;
-    byId.set(messageId, raw);
+    const classification = String(raw?.classification ?? 'observation').trim().toLowerCase();
+    const envelope = entriesById.get(messageId)?.envelope ?? null;
+    const understanding = normalizeUnderstanding(raw?.understanding, {
+      envelope,
+      classification,
+    });
+    byId.set(messageId, {
+      ...raw,
+      message_id: messageId,
+      understanding: understanding ?? (envelope
+        ? inferDeterministicUnderstanding(envelope, classification)
+        : null),
+    });
   }
   return byId;
 }
@@ -54,6 +70,7 @@ async function classifyBatchWithLlm(entries, { aiClient = null, config } = {}) {
     received_at: envelope.received_at,
   }));
   const expectedIds = new Set(payload.map((p) => p.message_id));
+  const entriesById = new Map(entries.map((e) => [e.envelope.message_id, e]));
   try {
     const parsed = await chatMessagesJson(client, [
       {
@@ -61,10 +78,17 @@ async function classifyBatchWithLlm(entries, { aiClient = null, config } = {}) {
         content: [
           'You classify inbound operator channel messages for js-evolution-agent.',
           'Return JSON only: {"items":[...]}',
-          'Each item: message_id, classification, confidence, summary, claims_to_verify, operator_fact_content, action_id, params, rationale, safety_flags.',
+          'Each item: message_id, classification, confidence, summary, claims_to_verify, operator_fact_content, action_id, params, rationale, safety_flags, understanding.',
+          'understanding object (required for every non-ignore item):',
+          '- user_intent: string, what the operator wants in plain language',
+          '- needs_immediate_action: boolean, true if they want the system to act now (e.g. 帮我看/查/检查/分析/找/调查), not only record for next cycle',
+          '- action_hint: string|null, concise hint for a read-only investigation if needs_immediate_action',
+          '- temporal: "now" | "next_cycle" | "ongoing" — use next_cycle when they say 下一轮/之后/发布后/跑完后/follow-up',
+          '- complexity: "low" | "medium" | "high"',
           'classification must be one of: approval_request, verification_request, operator_fact, control_request, observation, ignore.',
           'Use approval_request only when the operator clearly approves or requests publish/release.',
           'Use verification_request when they ask to verify/check/investigate something next cycle, or for follow-ups (e.g. tell me rank after publish, check results when the run finishes).',
+          'If they ask to check/investigate NOW (帮我看一下/查一下), set needs_immediate_action true and temporal now even if classification is verification_request or approval_request.',
           'Use operator_fact only when they explicitly ask to remember a long-term preference or established fact (high confidence); otherwise use observation.',
           'Use control_request only for explicit local control commands with registered action_id:',
           '- daemon_evolution_mode_set + params.mode continuous|on_demand when switching evolution mode.',
@@ -74,7 +98,7 @@ async function classifyBatchWithLlm(entries, { aiClient = null, config } = {}) {
           'Default to observation for any non-empty inbound message that is not one of the specific classes above.',
           'Do NOT use ignore merely because a message is not an operator action.',
           'Use ignore only when a message is clearly ignorable: empty/no-content noise, irrelevant group background, duplicates, transport artifacts, or content that should be context-only and never directly answered.',
-          'When uncertain, use observation.',
+          'When uncertain, use observation with needs_immediate_action false unless they clearly ask for immediate help.',
           'Never output approval_granted or claim execution already happened.',
         ].join('\n'),
       },
@@ -86,7 +110,7 @@ async function classifyBatchWithLlm(entries, { aiClient = null, config } = {}) {
       thinking: config.llm?.thinking ?? 'low',
       timeout: config.llm?.timeout ?? 25,
     });
-    return { status: 'used', items: normalizeClassifierItems(parsed, expectedIds) };
+    return { status: 'used', items: normalizeClassifierItems(parsed, expectedIds, entriesById) };
   } catch (err) {
     return { status: 'error', reason: err?.message || String(err), items: null };
   }
@@ -112,6 +136,7 @@ function classifyBatchDeterministic(entries) {
       action_id: decision.request?.action_id ?? null,
       params: decision.request?.params ?? null,
       rationale: 'deterministic_fallback',
+      understanding: inferDeterministicUnderstanding(envelope, classification),
     });
   }
   return { status: 'deterministic', items: byId };
@@ -261,6 +286,7 @@ export async function runChannelClassifierTask(root, subject, input = {}) {
         confidence: 'medium',
         summary: envelope.content,
         rationale: 'missing_llm_item_fallback',
+        understanding: inferDeterministicUnderstanding(envelope, 'observation'),
       };
       try {
         const decision = decisionFromClassifierItem(fallbackItem, envelope);

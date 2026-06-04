@@ -545,8 +545,8 @@ channel worker 每轮 loop 会：
 
 1. 从 `inbound/pending` 按时间顺序取最多 `batch_size` 条
 2. BIND / duplicate 机械处理（不进 LLM batch）
-3. LLM（或 `deterministic` 回退）批量输出受限 schema：`approval_request` / `verification_request` / `operator_fact` / `control_request` / `observation` / `ignore`
-4. 写入 brief / fact / control task / observation 并移到 `processed`；失败按 `fallback` 保留 pending 或降级 observation
+3. LLM（或 `deterministic` 回退）批量输出受限 schema：`approval_request` / `verification_request` / `operator_fact` / `control_request` / `observation` / `ignore`，以及每条非 `ignore` 项的 **`understanding`** 对象（`user_intent`、`needs_immediate_action`、`action_hint`、`temporal`、`complexity`）；deterministic 回退用规则推断同等字段
+4. 写入 brief / fact / control task / observation 并移到 `processed`（`classifier.understanding` 保留在 processed JSON）；失败按 `fallback` 保留 pending 或降级 observation
 5. 非 `control_request` 分类完成后 `requestExpressionRecompute`（`reason: inbound_classified`）；`control_request` 由 control executor 完成后唤醒 presence
 
 协调器按 `classifier.interval_ms` 调度入队（幂等键 `${subject}:channel_classifier:pending`）；与 presence tick（默认 5min）独立。
@@ -631,6 +631,7 @@ Classifier 识别 `control_request` 后**不直接执行**配置变更，而是�
 - 交互记忆：`intel_observations`（`source: channel_presence`）。
 - 审计：`channel_expression_recompute_requested` / `channel_expression_planned` / `channel_expression_noop` / `channel_expression_silenced` / `channel_speech_generated` / `channel_presence_completed` / `channel_presence_timeout` 等。
 - 决策动作：`speech_intent`（仅意图）、`start_agent_async`（只入队只读 `channel_agent_run`）、`write_operator_brief`、`record_observation`；表达计划可为 `no_op` / `speak` / `silence` / `act`，**不能**直接 `approval_granted` 或改 decision queue。
+- **Classifier understanding**：`expression.candidates` 可携带 `understanding`（来自 `inbound/processed` 的 `classifier` 字段）。LLM planner 据此决定 agent / brief；`needs_immediate_action=true` 时 **跳过** approval/verification 的 fast ack，进入完整审议；deterministic planner 在 `temporal=now` 且非 high complexity 时可自动 `start_agent_async`。
 
 **生产建议**：默认已分 role worker；仅需调试时用 `--channel-role` 启动子集。`--channel-role all` 恢复单 worker 消费全部任务类型。升级 channel 代码后需重启 channel daemon。
 
@@ -640,8 +641,9 @@ Classifier 识别 `control_request` 后**不直接执行**配置变更，而是�
 
 | 输入/信号 | 默认行为 |
 | --- | --- |
-| 新入站 `approval_request` | ack「已记录为下一轮审批意图」 |
-| 新入站 `verification_request` | ack「已记录为下一轮核实请求」 |
+| 新入站 `approval_request` | fast ack「已记录为下一轮审批意图」（若 `understanding.needs_immediate_action` 则改走 LLM 审议，可同时 agent） |
+| 新入站 `verification_request` | fast ack「已记录为下一轮核实请求」（同上） |
+| 新入站需立刻调查的 `observation` | deterministic：`start_agent_async` + ack（当 understanding 满足 now + 非 high） |
 | 新入站 `operator_fact` | ack「已记录为高置信 operator fact」 |
 | 新入站寒暄类 `observation` | 简短在场确认 |
 | 未 handled 的 `task_failed` / `daemon_health` / `cycle_drift` / `requires_human_review` 等 | 主动通知（受 cooldown） |

@@ -9,6 +9,13 @@ import {
 } from './control-actions.mjs';
 import { enqueueControlAction } from './wake.mjs';
 import { normalizeChannelEnvelope, nowIso } from './types.mjs';
+import { extractUnderstandingFromClassifierItem } from './classifier-understanding.mjs';
+
+function metadataWithUnderstanding(base, item, envelope, classification) {
+  const understanding = extractUnderstandingFromClassifierItem(item, envelope);
+  if (!understanding) return base;
+  return { ...base, understanding };
+}
 
 function makeStore(root, subject) {
   const runtime = runtimeForSubject(root, subject);
@@ -42,7 +49,12 @@ function observationFromClassifier(envelopeNorm, item, {
   downgradeReason = null,
 } = {}) {
   const sourceRef = `channel:${envelopeNorm.channel}:${envelopeNorm.message_id}`;
-  const metadata = { channel_envelope: envelopeNorm, classifier: item };
+  const metadata = metadataWithUnderstanding(
+    { channel_envelope: envelopeNorm, classifier: item },
+    item,
+    envelopeNorm,
+    'observation',
+  );
   if (downgradeReason) metadata.downgrade_reason = downgradeReason;
   return {
     kind: 'observation',
@@ -96,7 +108,12 @@ export function decisionFromClassifierItem(item, envelope) {
           ?? 'Treat this as operator intent only; next Decide must verify context and produce any approval_granted action explicitly.',
         suggested_actions: ['agent_run'],
         priority: 'high',
-        metadata: { source_ref: sourceRef, channel_envelope: envelopeNorm, classifier: item },
+        metadata: metadataWithUnderstanding(
+          { source_ref: sourceRef, channel_envelope: envelopeNorm, classifier: item },
+          item,
+          envelopeNorm,
+          'approval_request',
+        ),
       },
     };
   }
@@ -112,7 +129,12 @@ export function decisionFromClassifierItem(item, envelope) {
           ? item.claims_to_verify
           : (text ? [text] : []),
         priority: 'medium',
-        metadata: { source_ref: sourceRef, channel_envelope: envelopeNorm, classifier: item },
+        metadata: metadataWithUnderstanding(
+          { source_ref: sourceRef, channel_envelope: envelopeNorm, classifier: item },
+          item,
+          envelopeNorm,
+          'verification_request',
+        ),
       },
     };
   }
@@ -143,7 +165,12 @@ export function decisionFromClassifierItem(item, envelope) {
           tags: ['channel', envelopeNorm.channel, 'classifier_downgraded_fact'],
           recorded_at: nowIso(),
           channel_source: sourceRef,
-          metadata: { channel_envelope: envelopeNorm, classifier: item, downgrade_reason: 'operator_fact_requires_high_confidence' },
+          metadata: metadataWithUnderstanding(
+            { channel_envelope: envelopeNorm, classifier: item, downgrade_reason: 'operator_fact_requires_high_confidence' },
+            item,
+            envelopeNorm,
+            'operator_fact',
+          ),
         },
       };
     }
@@ -160,7 +187,12 @@ export function decisionFromClassifierItem(item, envelope) {
           tags: ['channel', envelopeNorm.channel, 'classifier_downgraded_fact'],
           recorded_at: nowIso(),
           channel_source: sourceRef,
-          metadata: { channel_envelope: envelopeNorm, classifier: item, downgrade_reason: 'operator_fact_not_explicit' },
+          metadata: metadataWithUnderstanding(
+            { channel_envelope: envelopeNorm, classifier: item, downgrade_reason: 'operator_fact_not_explicit' },
+            item,
+            envelopeNorm,
+            'operator_fact',
+          ),
         },
       };
     }
@@ -174,7 +206,12 @@ export function decisionFromClassifierItem(item, envelope) {
         confidence: 'high',
         recorded_at: nowIso(),
         channel_source: sourceRef,
-        metadata: { channel_envelope: envelopeNorm, classifier: item },
+        metadata: metadataWithUnderstanding(
+          { channel_envelope: envelopeNorm, classifier: item },
+          item,
+          envelopeNorm,
+          'operator_fact',
+        ),
       },
     };
   }

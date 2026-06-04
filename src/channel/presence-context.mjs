@@ -33,6 +33,10 @@ function summarizeRecentIngested(root, subject, { limit = 8 } = {}) {
   for (const file of listRecentInboundProcessed(root, subject, { limit })) {
     const payload = readJsonFile(file);
     if (!payload?.envelope) continue;
+    const understanding = payload.classifier?.understanding
+      ?? payload.ingest_result?.brief?.metadata?.understanding
+      ?? payload.ingest_result?.record?.metadata?.understanding
+      ?? null;
     items.push({
       message_id: payload.envelope.message_id,
       channel: payload.envelope.channel,
@@ -40,6 +44,7 @@ function summarizeRecentIngested(root, subject, { limit = 8 } = {}) {
       ingest_kind: payload.ingest_result?.kind ?? null,
       brief_kind: payload.ingest_result?.brief?.kind ?? null,
       processed_file: file,
+      understanding,
     });
   }
   return items;

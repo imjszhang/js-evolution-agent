@@ -101,6 +101,11 @@ function candidateFromAgentRunEvent(event, handled) {
   };
 }
 
+function attachUnderstanding(candidate, item) {
+  if (!item?.understanding) return candidate;
+  return { ...candidate, understanding: item.understanding };
+}
+
 function candidateFromMessage(item, handled) {
   const id = candidateIdForMessage(item);
   if (!id || handled[id]) return null;
@@ -108,7 +113,7 @@ function candidateFromMessage(item, handled) {
     const briefKind = item.brief_kind === 'verification_request'
       ? 'verification_request'
       : 'approval_request';
-    return {
+    return attachUnderstanding({
       id,
       kind: `reply.${briefKind}`,
       source: 'operator_brief',
@@ -118,10 +123,10 @@ function candidateFromMessage(item, handled) {
       recommended_intent: briefKind === 'verification_request' ? 'verification_ack' : 'approval_ack',
       summary: item.content,
       source_ref: `channel:message:${item.message_id}`,
-    };
+    }, item);
   }
   if (item.ingest_kind === 'operator_fact') {
-    return {
+    return attachUnderstanding({
       id,
       kind: 'reply.operator_fact',
       source: 'operator_fact',
@@ -131,10 +136,10 @@ function candidateFromMessage(item, handled) {
       recommended_intent: 'operator_fact_ack',
       summary: item.content,
       source_ref: `channel:message:${item.message_id}`,
-    };
+    }, item);
   }
   if (item.ingest_kind === 'observation') {
-    return {
+    return attachUnderstanding({
       id,
       kind: 'reply.message',
       source: 'observation',
@@ -150,7 +155,7 @@ function candidateFromMessage(item, handled) {
         ingest_kind: item.ingest_kind,
       },
       source_ref: `channel:message:${item.message_id}`,
-    };
+    }, item);
   }
   return null;
 }
