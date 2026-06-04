@@ -89,8 +89,11 @@ function printDeliverableList(records) {
     const created = record.created_at ?? record.recorded_at ?? '?';
     const id = record.deliverable_id ?? record.id ?? '?';
     const status = record.status ?? '-';
-    const objective = String(record.objective ?? record.tldr ?? '').replace(/\s+/g, ' ').slice(0, 120);
-    console.log(`${created} ${id} status=${status}${objective ? ` ${objective}` : ''}`);
+    const type = record.deliverable_type ?? 'message';
+    const label = String(record.title ?? record.objective ?? record.tldr ?? '')
+      .replace(/\s+/g, ' ')
+      .slice(0, 120);
+    console.log(`${created} ${id} status=${status} type=${type}${label ? ` ${label}` : ''}`);
   }
 }
 

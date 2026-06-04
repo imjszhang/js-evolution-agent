@@ -97,6 +97,7 @@ function candidateFromAgentRunEvent(event, handled) {
     recommended_intent: 'custom',
     already_delivered: isAgentRunEventDelivered(event),
     deliverable_id: event.deliverable_id ?? null,
+    deliverable_type: event.deliverable_type ?? null,
     summary: event.summary ?? event.error ?? event.reason ?? 'channel agent run finished',
     agent_result: {
       ok,
@@ -104,6 +105,8 @@ function candidateFromAgentRunEvent(event, handled) {
       provider: event.provider ?? null,
       status: event.result_status ?? event.status ?? null,
       summary: event.summary ?? null,
+      deliverable_type: event.deliverable_type ?? null,
+      follow_up_hint: event.follow_up_hint ?? null,
       deferred,
       reason,
       error: event.error ?? null,

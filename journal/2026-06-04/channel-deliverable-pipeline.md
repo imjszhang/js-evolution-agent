@@ -249,3 +249,69 @@ npx vitest run test/channel.test.mjs
 | 思考 | 真正的瓶颈不是飞书工具集，而是系统里缺少「交付物」一等公民；speech 通道的 LLM 改写、人设、限流三重约束对「交付」是致命的；情报库 `intel_reports` 已有可复用范式 |
 | 方案 | 建一条快车道：agent 原文落 MD（frontmatter+原文）→ 写索引 + observation → 按通道渲染飞书文档 outbound → 直接进 outbox/notify；completion 事件标记 `delivered`，presence 跳过避免重复打扰 |
 | 执行 | 新增 `deliverable.mjs`、`delivery-renderer.mjs`，改 `agent-runner.mjs` 快车道、`specs.mjs`/`store.mjs` 注册交付物源、`expression-candidates`/`presence-decision-executor` 跳过已投递候选；补齐 outbox 幂等去重与 `channel deliverables` 检索入口；参考 `openclaw-lark` 增加 Feishu 文档创建与链接投递；105 个 channel 测试通过 |
+
+---
+
+## 8. 第二轮：输出契约与通用交付物协议改造
+
+### 8.1 问题
+
+操作者通过飞书提问后，channel agent run 把**系统 JSON receipt 原样**当成交付物正文投递，操作者收到的是 JSON 而不是人话。
+
+### 8.2 定位澄清
+
+明确 channel agent run 的真实用途：**运行时情报查询 agent**。
+
+- 操作者提问 → agent 在运行时数据目录（`runtime.dataRoot`）中自主探索（`Read/Grep/Glob`）→ 产出面向操作者的交付物。
+- agent provider（claude/cursor/reasonix）为主，`llm_only` 为保底。
+- 权限保持 `read_only`、工具保持只读、cwd 保持 `dataRoot` 不变。
+- 真正的「做事」仍走 evolution cycle 的 `agent_run`（完整 cwd / 写权限 / 审批），channel 不是第二条执行管线。
+
+### 8.3 三层改造
+
+**1) Agent 输出契约（`agent-runner.mjs`）**
+
+`acceptance` / `run_spec.expected_output` / `context` 从「Return a strict JSON receipt」改为情报查询助理契约，附运行时目录结构（`RUNTIME_LAYOUT`）与 deliverable 契约（`DELIVERABLE_CONTRACT`）。agent 在 receipt 顶层附带 `deliverable`，自己决定交付形态：
+
+```text
+{
+  status, confidence, sources[], follow_up_hint,
+  deliverable: { type, title, content, summary, url, data, reason }
+}
+type ∈ document | message | link | data | none
+```
+
+`MockAIClient` 默认响应同步为新契约。
+
+**2) 持久化层（`deliverable.mjs`）**
+
+- 新增 `parseAgentReceipt` / `resolveDeliverableSpec`：从 `agent.raw_response` 解析 deliverable 契约（严格 JSON + 嵌入 JSON 提取）。
+- `resolveBody` 三级 fallback：`deliverable.content` → 自由文本 `raw_response` → summary/message。
+- frontmatter / 索引扩充 `deliverable_type`、`title`、`confidence`、`sources`、`follow_up_hint`、`url`。
+- `type=none`：跳过 `.md`，仍写索引（`delivery_status=skipped`）与 observation，供审计。
+
+**3) 通用交付物投递协议（`delivery-renderer.mjs`）**
+
+引入 delivery item 抽象 `{ medium, payload, fallback_medium, fallback_payload }`，两阶段：
+
+- `resolveDeliveryItems(deliverable)`：按 `type` + 内容特征（`hasRichFormatting`：长度 / 代码块 / 表格 / 多级标题）决定介质。`message` 短文本→`text`，长/富格式自动升级为 `document`；`link`→带链接的 `text`；`data` 小→`text`、大→`document`；`none`→无 item。
+- adapter 能力降级：`DEFAULT_CHANNEL_CAPABILITIES`（feishu = `text` + `document`），不支持的介质自动降级到 fallback。未来 image/PDF/video 只需扩展 medium 与 adapter 分支，不动 agent 契约。
+
+idempotency key 升级为 `channel-deliverable:<subject>:<key>:<medium>:<index>`。
+
+**下游消费**：`channel_agent_run_completed` 事件扩充 `deliverable_type`/`confidence`/`follow_up_hint`；`expression-candidates` 在 agent_run 候选上携带 `deliverable_type`，供 presence 对 `none`/低置信交付物决定是否补充表达。
+
+### 8.4 验证
+
+```bash
+npx vitest run test/channel.test.mjs
+# Test Files  1 passed (1)
+#      Tests  111 passed (111)
+```
+
+端到端（agentank-tank，真实飞书）：`scripts/test-channel-deliverable-pipeline.mjs` 用 document 契约的 mock receipt 驱动 `runChannelAgentRunTask`，确认链路 persist → 按 `type=document` 路由 → 写 outbox → daemon notify worker 创建飞书云文档并向操作者（`ou_…`）发送链接（`channel_message_sent`，key `…:document:0`）。随后 presence LLM 智能 `silence` 了重复候选，下游消费按预期工作。
+
+### 8.5 后续
+
+- 接入真实 provider 时，agent 即可自主探索运行时目录并产出 `deliverable.content` 人话正文。
+- 新增 image / file / rich_text / PDF / video 等介质时，仅扩展 `resolveDeliveryItems` 与 adapter 发送方法。

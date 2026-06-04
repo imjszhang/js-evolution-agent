@@ -27,7 +27,11 @@ import {
   resolveDeliverablePath,
   extractDeliverableTldr,
 } from '../src/channel/deliverable.mjs';
-import { renderDeliveryToOutbox } from '../src/channel/delivery-renderer.mjs';
+import {
+  renderDeliveryToOutbox,
+  resolveDeliveryItems,
+  hasRichFormatting,
+} from '../src/channel/delivery-renderer.mjs';
 import { FeishuSender } from '../src/channel/adapters/feishu/sender.mjs';
 import { runChannelClassifierTask } from '../src/channel/classifier.mjs';
 import { claimNextChannelTask } from '../src/channel/task-queue.mjs';
@@ -254,13 +258,26 @@ describe('channel domain', () => {
             status: 'completed',
             provider: 'mock',
             message: 'channel agent completed',
-            agent: { raw_response: '# 调研结果\n\nagentank 当前排名稳定。' },
+            agent: {
+              raw_response: JSON.stringify({
+                status: 'completed',
+                deliverable: {
+                  type: 'document',
+                  title: '排名调研结果',
+                  content: '# 调研结果\n\nagentank 当前排名稳定。\n\n## 详情\n\n基于最近三轮情报，rank 无显著变化。',
+                  summary: '排名稳定，无需动作',
+                },
+                sources: [{ file: 'data/intelligence/memory/standing_memory.json', what: 'rank 基线' }],
+                confidence: 0.7,
+              }),
+            },
           },
         },
       });
       const result = await runChannelTask(root, 'alpha', task);
       expect(result.ok).toBe(true);
       expect(result.deliverable?.deliverable_id).toMatch(/^delivery-/);
+      expect(result.deliverable.type).toBe('document');
       expect(existsSync(result.deliverable.md_path)).toBe(true);
       expect(result.dispatch?.count).toBeGreaterThan(0);
 
@@ -278,6 +295,7 @@ describe('channel domain', () => {
       expect(events.some((event) =>
         event.type === 'channel_agent_run_completed'
         && event.channel_agent_run_id === 'channel-agent-route'
+        && event.deliverable_type === 'document'
         && event.delivered === true)).toBe(true);
       expect(listPendingChannelEvents(root, 'alpha', { type: 'expression_recompute_requested' }).length).toBeGreaterThan(0);
 
@@ -384,6 +402,91 @@ describe('channel domain', () => {
         && obs.metadata?.deliverable_id === deliverable.deliverable_id)).toBe(true);
     });
 
+    it('persistChannelDeliverable parses a structured deliverable contract from the agent receipt', () => {
+      const root = makeRoot();
+      const runtime = runtimeForSubject(root, 'alpha');
+      const store = createIntelligenceStore({ baseDir: runtime.intelligenceDir, timezone: 'Asia/Shanghai' });
+      const deliverable = persistChannelDeliverable(root, 'alpha', {
+        channel_agent_run_id: 'channel-agent-structured',
+        objective: '查询当前 rank',
+      }, {
+        success: true,
+        status: 'completed',
+        provider: 'cursor_sdk',
+        agent: {
+          raw_response: JSON.stringify({
+            status: 'completed',
+            deliverable: {
+              type: 'message',
+              title: '当前排名',
+              content: '当前排名为第 12 位。',
+              summary: '排名第 12 位',
+            },
+            sources: [{ file: 'data/intelligence/memory/standing_memory.json', what: 'rank 基线' }],
+            confidence: 0.9,
+            follow_up_hint: '如需历史趋势可提交 brief 让下一轮验证',
+          }),
+        },
+      }, { store });
+
+      expect(deliverable.type).toBe('message');
+      expect(deliverable.title).toBe('当前排名');
+      expect(deliverable.body).toBe('当前排名为第 12 位。');
+      expect(deliverable.summary).toBe('排名第 12 位');
+      expect(deliverable.confidence).toBe(0.9);
+      expect(deliverable.sources).toEqual([{ file: 'data/intelligence/memory/standing_memory.json', what: 'rank 基线' }]);
+      expect(deliverable.follow_up_hint).toContain('下一轮验证');
+      const md = readFileSync(deliverable.md_path, 'utf-8');
+      expect(md).toContain('deliverable_type: "message"');
+      expect(md).toContain('当前排名为第 12 位。');
+
+      const index = store.readChannelDeliverables({ limit: 5 });
+      expect(index.some((record) =>
+        record.deliverable_id === deliverable.deliverable_id
+        && record.deliverable_type === 'message'
+        && record.title === '当前排名'
+        && record.confidence === 0.9)).toBe(true);
+    });
+
+    it('persistChannelDeliverable skips the .md file for a none deliverable but still indexes it', () => {
+      const root = makeRoot();
+      const runtime = runtimeForSubject(root, 'alpha');
+      const store = createIntelligenceStore({ baseDir: runtime.intelligenceDir, timezone: 'Asia/Shanghai' });
+      const deliverable = persistChannelDeliverable(root, 'alpha', {
+        channel_agent_run_id: 'channel-agent-none',
+        objective: '查询不存在的数据',
+      }, {
+        success: true,
+        status: 'no_data',
+        provider: 'cursor_sdk',
+        agent: {
+          raw_response: JSON.stringify({
+            status: 'no_data',
+            deliverable: {
+              type: 'none',
+              summary: '未找到相关信息',
+            },
+          }),
+        },
+      }, { store });
+
+      expect(deliverable.type).toBe('none');
+      expect(deliverable.md_path).toBeNull();
+
+      const index = store.readChannelDeliverables({ limit: 5 });
+      expect(index.some((record) =>
+        record.deliverable_id === deliverable.deliverable_id
+        && record.deliverable_type === 'none'
+        && record.delivery_status === 'skipped'
+        && record.md_path === null)).toBe(true);
+
+      const observations = store.engine.readSource('intel_observations', { limit: 10 });
+      expect(observations.some((obs) =>
+        obs.kind === 'channel_deliverable'
+        && obs.metadata?.deliverable_id === deliverable.deliverable_id
+        && obs.metadata?.deliverable_type === 'none')).toBe(true);
+    });
+
     it('channel deliverables CLI lists records and shows Markdown content', async () => {
       const root = makeRoot();
       const runtime = runtimeForSubject(root, 'alpha');
@@ -428,42 +531,101 @@ describe('channel domain', () => {
       expect(extractDeliverableTldr('# Title\n\nFirst line.\nSecond line.')).toBe('Title First line. Second line.');
     });
 
-    it('renderDeliveryToOutbox emits a Feishu document delivery message', async () => {
+    it('renderDeliveryToOutbox emits a Feishu document delivery for document deliverables', async () => {
       const root = makeRoot();
       const rendered = await renderDeliveryToOutbox(root, 'alpha', {
         deliverable_id: 'delivery-short',
         channel_agent_run_id: 'channel-agent-doc',
+        type: 'document',
+        title: '调研排名',
         objective: '调研排名',
         status: 'completed',
         provider: 'cursor_sdk',
         body: '排名稳定，无需动作。',
         tldr: '排名稳定',
       }, { reply_to_message_id: 'om_x' });
-      expect(rendered.format).toBe('feishu_doc');
+      expect(rendered.format).toBe('document');
       expect(rendered.messages).toHaveLength(1);
       expect(rendered.messages[0].card).toBeNull();
       expect(rendered.messages[0].document.title).toBe('调研排名');
       expect(rendered.messages[0].document.markdown).toContain('排名稳定，无需动作。');
       expect(rendered.messages[0].metadata.channel_deliverable).toBe(true);
+      expect(rendered.messages[0].metadata.deliverable_type).toBe('document');
       expect(rendered.messages[0].metadata.part).toBe('document');
       expect(rendered.target).toBe('oc_test');
     });
 
-    it('renderDeliveryToOutbox keeps long content in the document markdown', async () => {
+    it('renderDeliveryToOutbox sends a plain text message for a short message deliverable', async () => {
+      const root = makeRoot();
+      const rendered = await renderDeliveryToOutbox(root, 'alpha', {
+        deliverable_id: 'delivery-msg',
+        channel_agent_run_id: 'channel-agent-msg',
+        type: 'message',
+        title: '快速回答',
+        status: 'completed',
+        provider: 'cursor_sdk',
+        body: '当前排名为第 12 位，较昨日无变化。',
+        summary: '排名第 12 位',
+      });
+      expect(rendered.format).toBe('text');
+      expect(rendered.messages).toHaveLength(1);
+      expect(rendered.messages[0].document).toBeNull();
+      expect(rendered.messages[0].text).toContain('当前排名为第 12 位');
+      expect(rendered.messages[0].metadata.deliverable_type).toBe('message');
+      expect(rendered.messages[0].idempotency_key).toBe('channel-deliverable:alpha:channel-agent-msg:text:0');
+    });
+
+    it('renderDeliveryToOutbox upgrades a long message deliverable to a document', async () => {
       const root = makeRoot();
       const body = 'A'.repeat(3000);
       const rendered = await renderDeliveryToOutbox(root, 'alpha', {
         deliverable_id: 'delivery-medium',
-        objective: '长报告',
+        type: 'message',
+        title: '长报告',
         status: 'completed',
         provider: 'cursor_sdk',
         body,
         tldr: 'long',
       });
-      expect(rendered.format).toBe('feishu_doc');
+      expect(rendered.format).toBe('document');
       expect(rendered.messages).toHaveLength(1);
       expect(rendered.messages[0].document.markdown).toContain(body);
-      expect(rendered.messages[0].metadata.delivery_format).toBe('feishu_doc');
+      expect(rendered.messages[0].metadata.delivery_format).toBe('document');
+    });
+
+    it('renderDeliveryToOutbox sends a link deliverable as a text message with the url', async () => {
+      const root = makeRoot();
+      const rendered = await renderDeliveryToOutbox(root, 'alpha', {
+        deliverable_id: 'delivery-link',
+        channel_agent_run_id: 'channel-agent-link',
+        type: 'link',
+        title: '查看 viewer',
+        status: 'completed',
+        provider: 'cursor_sdk',
+        summary: '已生成在线视图',
+        url: 'https://example.com/viewer#cycle-1',
+        body: '',
+      });
+      expect(rendered.format).toBe('text');
+      expect(rendered.messages).toHaveLength(1);
+      expect(rendered.messages[0].document).toBeNull();
+      expect(rendered.messages[0].text).toContain('https://example.com/viewer#cycle-1');
+      expect(rendered.messages[0].text).toContain('已生成在线视图');
+    });
+
+    it('renderDeliveryToOutbox emits no messages for a none deliverable', async () => {
+      const root = makeRoot();
+      const rendered = await renderDeliveryToOutbox(root, 'alpha', {
+        deliverable_id: 'delivery-none',
+        channel_agent_run_id: 'channel-agent-none',
+        type: 'none',
+        status: 'no_data',
+        provider: 'cursor_sdk',
+        body: '',
+        summary: '',
+      });
+      expect(rendered.messages).toHaveLength(0);
+      expect(rendered.reason).toBe('no_delivery_items');
     });
 
     it('renderDeliveryToOutbox uses stable channel_agent_run_id for delivery idempotency keys', async () => {
@@ -471,17 +633,34 @@ describe('channel domain', () => {
       const rendered = await renderDeliveryToOutbox(root, 'alpha', {
         deliverable_id: 'delivery-random-a',
         channel_agent_run_id: 'channel-agent-stable',
-        objective: '长报告',
+        type: 'document',
+        title: '长报告',
         status: 'completed',
         provider: 'cursor_sdk',
         body: 'A'.repeat(3000),
         tldr: 'long',
       });
       expect(rendered.messages.map((message) => message.idempotency_key)).toEqual([
-        'channel-deliverable:alpha:channel-agent-stable:document',
+        'channel-deliverable:alpha:channel-agent-stable:document:0',
       ]);
       expect(rendered.messages[0].metadata.deliverable_id).toBe('delivery-random-a');
       expect(rendered.messages[0].metadata.channel_agent_run_id).toBe('channel-agent-stable');
+    });
+
+    it('resolveDeliveryItems and hasRichFormatting route by type and content', () => {
+      expect(hasRichFormatting('short answer')).toBe(false);
+      expect(hasRichFormatting('```\ncode\n```')).toBe(true);
+      expect(hasRichFormatting('# A\n\n## B\n\ntext')).toBe(true);
+
+      const messageItems = resolveDeliveryItems({ type: 'message', body: 'hi there' });
+      expect(messageItems).toHaveLength(1);
+      expect(messageItems[0].medium).toBe('text');
+
+      const docItems = resolveDeliveryItems({ type: 'document', body: '# Report', title: 'R' });
+      expect(docItems[0].medium).toBe('document');
+
+      const noneItems = resolveDeliveryItems({ type: 'none', summary: '' });
+      expect(noneItems).toHaveLength(0);
     });
 
     it('writeOutboxMessage deduplicates idempotency keys across pending and sent outbox', () => {

@@ -24,6 +24,9 @@ export {
 } from './listener.mjs';
 export { resolveIdType, normalizeTarget } from './sender.mjs';
 
+/** Delivery media the Feishu adapter can carry directly (others fall back to text). */
+export const FEISHU_SUPPORTED_MEDIA = Object.freeze(['text', 'document']);
+
 /** @type {Map<string, import('./sender.mjs').FeishuSender>} */
 const senderCache = new Map();
 
