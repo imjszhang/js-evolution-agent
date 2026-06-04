@@ -34,9 +34,9 @@ function Get-WorkerRunning {
   }
 }
 
-if ($StopFirst -or $Force) {
+if ($StopFirst -or ($Force -and (Get-WorkerRunning))) {
   Invoke-Jea daemon stop --subject $Subject | Out-Host
-  foreach ($i in 1..20) {
+  foreach ($i in 1..45) {
     if (-not (Get-WorkerRunning)) { break }
     Start-Sleep -Seconds 1
   }
