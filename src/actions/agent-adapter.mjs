@@ -38,6 +38,8 @@ const DEFAULT_PROVIDER = LLM_PROVIDER;
 const AGENT_VERIFICATION_ATTEMPTS = 3;
 const REASONIX_DEFAULT_BIN = 'reasonix';
 const REASONIX_DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
+const CURSOR_DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
+const CURSOR_DISPOSE_TIMEOUT_MS = 10 * 1000;
 // Agent run observability: standard events → terminal + JSONL at
 // data/evolution/agent-runs/<cycle-id>.jsonl (see agent-run-observer.mjs).
 const MODE_GUIDANCE = {
@@ -116,6 +118,50 @@ function asNumber(value, fallback = null) {
 function asBool(value, fallback = false) {
   if (value == null || value === '') return fallback;
   return ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase());
+}
+
+function cursorTimeoutMs(action, ctx) {
+  return asNumber(
+    getField(action, 'cursorTimeoutMs')
+      ?? getField(action, 'cursor_timeout_ms')
+      ?? getField(action, 'timeoutMs')
+      ?? getField(action, 'timeout_ms')
+      ?? envValue(ctx, 'JEA_CURSOR_AGENT_TIMEOUT_MS')
+      ?? envValue(ctx, 'CURSOR_AGENT_TIMEOUT_MS'),
+    CURSOR_DEFAULT_TIMEOUT_MS,
+  );
+}
+
+function cursorTimeoutError(label, timeoutMs) {
+  const error = new Error(`${label} timed out after ${timeoutMs}ms`);
+  error.code = 'cursor_run_timeout';
+  error.timeout_ms = timeoutMs;
+  return error;
+}
+
+function isCursorTimeoutError(error) {
+  return error?.code === 'cursor_run_timeout';
+}
+
+function withTimeout(promise, timeoutMs, label, onTimeout = null) {
+  const ms = Number(timeoutMs);
+  if (!Number.isFinite(ms) || ms <= 0) return promise;
+  let timer = null;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        try {
+          onTimeout?.();
+        } catch {
+          // Timeout reporting must not mask the timeout itself.
+        }
+        reject(cursorTimeoutError(label, ms));
+      }, ms);
+    }),
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
 }
 
 function compactJson(value) {
@@ -1495,17 +1541,24 @@ async function runCursorSdk(action, ctx) {
   let agentResult = null;
   let validation = { valid: false, missing: ['receipt'], action_type: effectiveActionType(executionAction) };
   let sameSession = false;
+  const timeoutMs = cursorTimeoutMs(executionAction, ctx);
   const providerStartedAt = Date.now();
   const obs = createAgentRunObserver(ctx, { provider: CURSOR_PROVIDER });
   obs.emit('provider_start', {
     cwd: options.local?.cwd,
     model: model ?? options.model?.id ?? null,
+    timeout_ms: timeoutMs,
   });
   obs.emitJsonlPath();
 
   try {
     if (typeof Agent.create === 'function') {
-      cursorAgent = await Agent.create(options);
+      cursorAgent = await withTimeout(
+        Agent.create(options),
+        timeoutMs,
+        'cursor_sdk Agent.create',
+        () => obs.emit('run_timeout', { phase: 'agent_create', timeout_ms: timeoutMs }, 'warning'),
+      );
       sameSession = true;
 
       async function sendTurn(prompt, turnLabel = 'turn') {
@@ -1519,10 +1572,33 @@ async function runCursorSdk(action, ctx) {
         const runId = run?.id ?? null;
         obs.emit('run_bound', { run_id: runId, turn: turnLabel });
         const streamPromise = consumeCursorRunStream(obs, run);
-        const result = await Promise.all([
+        const result = await withTimeout(Promise.all([
           typeof run?.wait === 'function' ? run.wait() : Promise.resolve(run),
           streamPromise,
-        ]).then(([waitResult]) => waitResult);
+        ]).then(([waitResult]) => waitResult), timeoutMs, `cursor_sdk ${turnLabel}`, () => {
+          obs.emit('run_timeout', {
+            run_id: runId,
+            turn: turnLabel,
+            timeout_ms: timeoutMs,
+            open_tools: [...obs.openTools.values()].map((tool) => tool.name),
+          }, 'warning');
+          obs.checkOpenTools('timeout');
+          if (typeof run?.supports === 'function' && !run.supports('cancel')) {
+            obs.emit('run_cancel_skipped', {
+              run_id: runId,
+              reason: typeof run?.unsupportedReason === 'function' ? run.unsupportedReason('cancel') : 'unsupported',
+            }, 'warning');
+            return;
+          }
+          if (typeof run?.cancel === 'function') {
+            Promise.resolve(run.cancel())
+              .then(() => obs.emit('run_cancelled', { run_id: runId, reason: 'timeout' }))
+              .catch((err) => obs.emit('run_cancel_failed', {
+                run_id: runId,
+                error: summarizeAgentText(err?.message || String(err), 300),
+              }, 'warning'));
+          }
+        });
         const rawResultText = String(result?.result ?? '').trim();
         obs.endTurn({
           turn: turnLabel,
@@ -1559,7 +1635,12 @@ async function runCursorSdk(action, ctx) {
       }, roots);
       const promptStarted = Date.now();
       obs.emit('turn_start', { turn: 'prompt', prompt_chars: prompt.length });
-      runResult = await Agent.prompt(prompt, options);
+      runResult = await withTimeout(
+        Agent.prompt(prompt, options),
+        timeoutMs,
+        'cursor_sdk Agent.prompt',
+        () => obs.emit('run_timeout', { phase: 'agent_prompt', timeout_ms: timeoutMs }, 'warning'),
+      );
       rawText = String(runResult?.result ?? '').trim();
       obs.emit('turn_finished', {
         turn: 'prompt',
@@ -1579,16 +1660,34 @@ async function runCursorSdk(action, ctx) {
     }
   } catch (e) {
     const deferred = cursorStartupFailure(e, CursorAgentError);
+    const timedOut = isCursorTimeoutError(e);
     return {
       success: false,
-      deferred,
+      deferred: deferred && !timedOut,
       provider: CURSOR_PROVIDER,
       error: `Cursor SDK execution failed: ${e?.message || e}`,
-      retryable: Boolean(e?.isRetryable),
+      retryable: timedOut || Boolean(e?.isRetryable),
+      provider_failure: timedOut ? {
+        provider: CURSOR_PROVIDER,
+        phase: 'cursor_sdk_timeout',
+        timeout_ms: e.timeout_ms ?? timeoutMs,
+        retryable: true,
+      } : undefined,
     };
   } finally {
     if (cursorAgent && typeof cursorAgent[Symbol.asyncDispose] === 'function') {
-      await cursorAgent[Symbol.asyncDispose]();
+      try {
+        await withTimeout(
+          cursorAgent[Symbol.asyncDispose](),
+          CURSOR_DISPOSE_TIMEOUT_MS,
+          'cursor_sdk asyncDispose',
+          () => obs.emit('dispose_timeout', { timeout_ms: CURSOR_DISPOSE_TIMEOUT_MS }, 'warning'),
+        );
+      } catch (e) {
+        obs.emit('dispose_failed', {
+          error: summarizeAgentText(e?.message || String(e), 300),
+        }, 'warning');
+      }
     }
   }
 
@@ -1632,6 +1731,7 @@ async function runCursorSdk(action, ctx) {
         lane_execution: providerLaneMetadata(runSpec),
         settingSources: options.local.settingSources,
         model,
+        timeout_ms: timeoutMs,
       },
     },
   };
