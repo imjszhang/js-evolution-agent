@@ -504,6 +504,10 @@ function formatEvolutionMode(mode) {
   return tDynamic('evolutionMode', mode, mode ?? 'unknown');
 }
 
+function formatHealthStatus(status) {
+  return tDynamic('healthStatus', status, status ?? 'unknown');
+}
+
 function formatEvolutionModeSource(source) {
   return tDynamic('modeSource', source, source ?? '');
 }
@@ -546,7 +550,7 @@ function renderSubjectOverview() {
         <span class="daemon-card-title">${summary.subject}</span>
         <span class="daemon-card-meta">${summary.namespace ?? ''}</span>
         <span class="daemon-card-stats">
-          <span class="daemon-chip health-${healthClass}">${healthClass}</span>
+          <span class="daemon-chip health-${healthClass}">${escapeHtml(formatHealthStatus(healthClass))}</span>
           <span class="daemon-chip mode-${mode}">${escapeHtml(formatEvolutionMode(mode))}</span>
           <span class="daemon-chip worker-${workerOn ? 'on' : 'off'}">${workerOn ? t('channel.workerRunning') : t('channel.workerStopped')}</span>
           <span class="daemon-chip">open ${openCycles}</span>
@@ -899,7 +903,7 @@ function renderKpiStripHtml() {
     <div class="kpi-strip">
       <div class="kpi-card health-${health.status ?? 'unknown'}">
         <span class="kpi-label">${t('kpi.health')}</span>
-        <span class="kpi-value">${escapeHtml(health.status ?? 'unknown')}</span>
+        <span class="kpi-value">${escapeHtml(formatHealthStatus(health.status ?? 'unknown'))}</span>
       </div>
       <div class="kpi-card">
         <span class="kpi-label">${t('kpi.worker')}</span>

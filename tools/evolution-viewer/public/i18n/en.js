@@ -54,7 +54,18 @@ export default {
   evolutionMode: {
     continuous: 'Continuous',
     on_demand: 'On demand',
-    unknown: 'unknown',
+    unknown: 'Not set',
+  },
+  healthStatus: {
+    healthy: 'Healthy',
+    idle: 'Idle',
+    stopped: 'Stopped',
+    stale: 'Stale',
+    worker_zombie: 'Zombie worker',
+    cycle_progress_stalled: 'Progress stalled',
+    evolution_stalled: 'Evolution stalled',
+    blocked: 'Blocked',
+    unknown: 'Status unknown',
   },
   modeSource: {
     'runtime-registry.json': 'runtime/subjects/registry.json',

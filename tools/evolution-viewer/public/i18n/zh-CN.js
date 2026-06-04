@@ -54,7 +54,18 @@ export default {
   evolutionMode: {
     continuous: '持续',
     on_demand: '按需',
-    unknown: 'unknown',
+    unknown: '未设置',
+  },
+  healthStatus: {
+    healthy: '健康',
+    idle: '空闲',
+    stopped: '已停止',
+    stale: '过期',
+    worker_zombie: '僵尸进程',
+    cycle_progress_stalled: '进展停滞',
+    evolution_stalled: '演化停滞',
+    blocked: '阻塞',
+    unknown: '状态未知',
   },
   modeSource: {
     'runtime-registry.json': 'runtime/subjects/registry.json',
