@@ -64,6 +64,20 @@ export async function sendOutboundMessage(outbound, options = {}) {
     : resolveFeishuConfig(process.cwd(), process.env.JEA_SUBJECT || 'default'));
 
   if (cfg.mock || message.metadata?.mock) {
+    if (message.document) {
+      return {
+        messageId: `mock-${Date.now()}`,
+        chatId: message.target,
+        chunks: 1,
+        document: {
+          documentId: `mock-doc-${Date.now()}`,
+          title: message.document.title ?? null,
+          url: message.document.url ?? `mock://feishu-doc/${message.document.title ?? 'deliverable'}`,
+          mock: true,
+        },
+        mock: true,
+      };
+    }
     return {
       messageId: `mock-${Date.now()}`,
       chatId: message.target,
@@ -72,6 +86,15 @@ export async function sendOutboundMessage(outbound, options = {}) {
   }
 
   const sender = await getSender(cfg);
+  if (message.document) {
+    const result = await sender.sendDocumentDelivery(message.target, message.document);
+    return {
+      messageId: result.messageIds?.[0],
+      chatId: message.target,
+      chunks: result.chunks,
+      document: result.document,
+    };
+  }
   if (message.card) {
     const result = await sender.sendCard(message.target, message.card);
     return {

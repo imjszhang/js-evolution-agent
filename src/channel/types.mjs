@@ -80,7 +80,8 @@ export function normalizeOutboundMessage(input = {}) {
   const target = String(input.target ?? input.to ?? input.chat_id ?? '').trim();
   if (!target) throw new Error('Outbound message requires target');
   const text = String(input.text ?? input.content ?? '').trim();
-  if (!text && !input.card) throw new Error('Outbound message requires text or card');
+  const document = input.document ?? input.doc ?? null;
+  if (!text && !input.card && !document) throw new Error('Outbound message requires text, card, or document');
   return {
     schema_version: input.schema_version ?? 1,
     id: input.id ?? null,
@@ -90,6 +91,7 @@ export function normalizeOutboundMessage(input = {}) {
     target,
     text,
     card: input.card ?? null,
+    document,
     reply_to_message_id: input.reply_to_message_id ?? input.replyToMessageId ?? null,
     thread_id: input.thread_id ?? input.threadId ?? null,
     reply_in_thread: Boolean(input.reply_in_thread ?? input.replyInThread ?? false),

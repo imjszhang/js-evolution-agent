@@ -67,4 +67,24 @@ export class FeishuSender {
     const result = await this.client.sendCard({ receiveId, receiveIdType, card });
     return { success: true, messageId: result.messageId };
   }
+
+  async sendDocumentDelivery(to, document = {}) {
+    const created = await this.client.createDocumentFromMarkdown({
+      title: document.title,
+      markdown: document.markdown,
+      folderToken: document.folder_token ?? document.folderToken ?? this.config.docFolderToken,
+      docBaseUrl: document.doc_base_url ?? document.docBaseUrl ?? this.config.docBaseUrl,
+    });
+    const summary = document.message_text
+      ?? document.messageText
+      ?? `交付物已生成：${created.title || document.title || created.documentId}`;
+    const message = String(summary).includes(created.url) ? String(summary) : `${summary}\n${created.url}`;
+    const sent = await this.sendText(to, message);
+    return {
+      success: true,
+      document: created,
+      messageIds: sent.messageIds,
+      chunks: sent.chunks,
+    };
+  }
 }

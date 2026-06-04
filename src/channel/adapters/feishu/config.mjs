@@ -45,6 +45,8 @@ function subjectPrefixedEnvNames(subject) {
     appId: `JEA_CHANNEL_FEISHU_${slug}_APP_ID`,
     appSecret: `JEA_CHANNEL_FEISHU_${slug}_APP_SECRET`,
     defaultChatId: `JEA_CHANNEL_FEISHU_${slug}_DEFAULT_CHAT_ID`,
+    docFolderToken: `JEA_CHANNEL_FEISHU_${slug}_DOC_FOLDER_TOKEN`,
+    docBaseUrl: `JEA_CHANNEL_FEISHU_${slug}_DOC_BASE_URL`,
     mock: `JEA_CHANNEL_FEISHU_${slug}_MOCK`,
   };
 }
@@ -122,6 +124,22 @@ export function resolveFeishuConfig(root, subject, overrides = {}) {
     legacyEnvNames: ['JEA_CHANNEL_LARK_CHAT_ID'],
   });
 
+  const docFolderResolved = resolveCredentialField({
+    subject,
+    blockValue: overrides.docFolderToken ?? block.doc_folder_token ?? block.docFolderToken,
+    blockEnvKey: block.doc_folder_token_env ?? block.docFolderTokenEnv,
+    subjectEnvName: prefixed.docFolderToken,
+    globalEnvNames: ['JEA_CHANNEL_FEISHU_DOC_FOLDER_TOKEN'],
+  });
+
+  const docBaseUrlResolved = resolveCredentialField({
+    subject,
+    blockValue: overrides.docBaseUrl ?? block.doc_base_url ?? block.docBaseUrl,
+    blockEnvKey: block.doc_base_url_env ?? block.docBaseUrlEnv,
+    subjectEnvName: prefixed.docBaseUrl,
+    globalEnvNames: ['JEA_CHANNEL_FEISHU_DOC_BASE_URL'],
+  });
+
   const domain = overrides.domain
     ?? block.domain
     ?? readEnv(`JEA_CHANNEL_FEISHU_${subjectEnvSlug(subject)}_DOMAIN`)
@@ -154,6 +172,8 @@ export function resolveFeishuConfig(root, subject, overrides = {}) {
     encryptKey: block.encrypt_key ?? block.encryptKey ?? '',
     verificationToken: block.verification_token ?? block.verificationToken ?? '',
     defaultChatId: defaultChatResolved.value || null,
+    docFolderToken: docFolderResolved.value || null,
+    docBaseUrl: docBaseUrlResolved.value || null,
     dmPolicy: block.dm_policy ?? block.dmPolicy ?? POLICY_OPEN,
     allowFrom: Array.isArray(block.allow_from) ? block.allow_from : (block.allowFrom ?? []),
     groupPolicy: block.group_policy ?? block.groupPolicy ?? POLICY_ALLOWLIST,
@@ -183,6 +203,8 @@ export function feishuConfigForApi(config) {
     hasAppSecret: Boolean(config.appSecret),
     credentialSources: config.credentialSources ?? {},
     defaultChatId: config.defaultChatId,
+    docFolderToken: config.docFolderToken ? `***${String(config.docFolderToken).slice(-4)}` : null,
+    docBaseUrl: config.docBaseUrl ?? null,
     dmPolicy: config.dmPolicy,
     groupPolicy: config.groupPolicy,
     requireMention: config.requireMention,

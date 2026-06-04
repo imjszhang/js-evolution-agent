@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 let LarkModule = null;
 
 async function loadLarkSdk() {
@@ -15,6 +17,47 @@ async function loadLarkSdk() {
 function domainFor(Lark, domain) {
   if (domain === 'lark') return Lark.Domain?.Lark ?? Lark.Domain?.Lark;
   return Lark.Domain?.Feishu ?? Lark.Domain?.Feishu;
+}
+
+function assertOk(response, action) {
+  if (response?.code !== 0) {
+    throw new Error(`${action} failed: ${response?.msg || `code ${response?.code}`}`);
+  }
+  return response;
+}
+
+function documentUrl(documentId, { domain = 'feishu', docBaseUrl = null } = {}) {
+  if (docBaseUrl) {
+    const base = String(docBaseUrl).trim();
+    if (base.includes('{document_id}')) return base.replaceAll('{document_id}', documentId);
+    if (base.includes('{doc_id}')) return base.replaceAll('{doc_id}', documentId);
+    return `${base.replace(/\/+$/, '')}/docx/${documentId}`;
+  }
+  const host = domain === 'lark' ? 'https://www.larksuite.com' : 'https://www.feishu.cn';
+  return `${host}/docx/${documentId}`;
+}
+
+function stripConvertedBlock(block = {}) {
+  const {
+    block_id: _blockId,
+    parent_id: _parentId,
+    children: _children,
+    ...rest
+  } = block;
+  return rest;
+}
+
+function plainMarkdownBlock(markdown) {
+  return {
+    block_type: 2,
+    text: {
+      elements: [{
+        text_run: {
+          content: String(markdown ?? ''),
+        },
+      }],
+    },
+  };
 }
 
 export class FeishuClient {
@@ -170,5 +213,65 @@ export class FeishuClient {
       throw new Error(`Send card failed: ${response.msg || `code ${response.code}`}`);
     }
     return { messageId: response.data?.message_id, success: true };
+  }
+
+  async createDocumentFromMarkdown({
+    title,
+    markdown,
+    folderToken = null,
+    docBaseUrl = null,
+  } = {}) {
+    const client = await this.getClient();
+    const createResponse = assertOk(await client.docx.document.create({
+      data: {
+        title: String(title || 'Agent 交付物').slice(0, 200),
+        folder_token: folderToken || undefined,
+      },
+    }), 'Create Feishu document');
+    const document = createResponse.data?.document ?? {};
+    const documentId = document.document_id;
+    if (!documentId) throw new Error('Create Feishu document failed: missing document_id');
+
+    let blocks = [];
+    try {
+      const convertResponse = assertOk(await client.docx.document.convert({
+        data: {
+          content_type: 'markdown',
+          content: String(markdown ?? ''),
+        },
+      }), 'Convert Markdown to Feishu document blocks');
+      const converted = convertResponse.data ?? {};
+      const firstLevel = new Set(converted.first_level_block_ids ?? []);
+      const convertedBlocks = converted.blocks ?? [];
+      blocks = convertedBlocks
+        .filter((block) => !firstLevel.size || firstLevel.has(block?.block_id))
+        .map(stripConvertedBlock)
+        .filter((block) => block?.block_type);
+    } catch {
+      blocks = [plainMarkdownBlock(markdown)];
+    }
+
+    if (blocks.length) {
+      assertOk(await client.docx.documentBlockChildren.create({
+        path: {
+          document_id: documentId,
+          block_id: documentId,
+        },
+        params: {
+          client_token: randomUUID(),
+        },
+        data: {
+          children: blocks,
+        },
+      }), 'Insert Feishu document blocks');
+    }
+
+    return {
+      success: true,
+      documentId,
+      revisionId: document.revision_id ?? null,
+      title: document.title ?? title ?? null,
+      url: documentUrl(documentId, { domain: this.config.domain, docBaseUrl }),
+    };
   }
 }

@@ -47,7 +47,7 @@
 
 > Markdown 内容由模板生成 这个感觉有点问题，我希望 **agent run 的完整结果**。
 
-所以本轮目标很清楚：建一条**与对话通道解耦的交付管线**，把 agent 的原始输出落成 markdown 交付物，归档、入情报库，再按通道渲染成飞书卡片送达。
+所以本轮目标很清楚：建一条**与对话通道解耦的交付管线**，把 agent 的原始输出落成 markdown 交付物，归档、入情报库，再按通道渲染成飞书文档并发送链接。
 
 ---
 
@@ -94,7 +94,7 @@
 ```text
 channel_agent_run 完成
   -> persistChannelDeliverable   落 MD + 索引 + observation
-  -> renderDeliveryToOutbox      按通道渲染成飞书卡片(+全文)
+  -> renderDeliveryToOutbox      按通道渲染成飞书文档 outbound
   -> writeOutboxMessage          写 outbox
   -> enqueueNotifyIfOutboxPending 直接排 notify
   -> completion 事件标记 delivered:true
@@ -110,8 +110,8 @@ channel_agent_run 完成
 | 投递路径 | 快车道，绕过 speech 生成 | 避开 LLM 改写、人设、限流三重约束 |
 | 与 presence 的关系 | completion 事件带 `delivered:true`，presence 跳过 | 防止「快车道已投递」+「presence 又 speak」重复打扰 |
 | 入情报库 | 索引记录 + 一条 observation | 让交付结果成为后续轮次可引用的证据 |
-| 通道渲染 | 短=单卡片；中=卡片+全文；超长=卡片+归档提示 | 飞书卡片有长度上限，全文必须保真 |
-| 失败/deferred | 同样落交付物并以红色卡片如实投递 | 如实告知胜过 speech 通道的幻觉式转述 |
+| 通道渲染 | 飞书文档 + 普通文本链接 | 长报告天然适合文档承载，不再受卡片长度和分片顺序限制 |
+| 失败/deferred | 同样落交付物并生成文档链接 | 如实告知胜过 speech 通道的幻觉式转述 |
 
 ### 备选方案对比
 
@@ -119,7 +119,7 @@ channel_agent_run 完成
 | --- | --- |
 | 继续用 speech 通道传结果 | LLM 改写 + 截断 + 限流，保真度无法保证 |
 | 模板渲染 MD | 操作者明确否定，要 agent 原文 |
-| 直接调飞书文档 API | 当前 adapter 不支持，且偏离「交付物一等公民」的抽象 |
+| 只在 agent_run 内直接调飞书文档 API | 会把投递能力塞进 agent 工具集；最终选择在 channel adapter 层支持文档交付 |
 
 ---
 
@@ -130,7 +130,9 @@ channel_agent_run 完成
 | 文件 | 职责 |
 | --- | --- |
 | [`src/channel/deliverable.mjs`](../../src/channel/deliverable.mjs) | 把 agent 原始输出落成 MD（frontmatter+原文），写索引、写 observation，抽取 TLDR |
-| [`src/channel/delivery-renderer.mjs`](../../src/channel/delivery-renderer.mjs) | 把交付物渲染成 outbox 消息（飞书卡片 / 卡片+全文），按正文长度选格式 |
+| [`src/channel/delivery-renderer.mjs`](../../src/channel/delivery-renderer.mjs) | 把交付物渲染成 `document` outbox 消息，由 Feishu adapter 创建云文档 |
+| [`src/channel/adapters/feishu/client.mjs`](../../src/channel/adapters/feishu/client.mjs) | 调用 `docx.document.create` 创建文档，并用 `docx.document.convert(content_type=markdown)` 转换 Markdown 块 |
+| [`src/channel/adapters/feishu/sender.mjs`](../../src/channel/adapters/feishu/sender.mjs) | 负责创建飞书文档，并向目标会话发送文档链接 |
 | [`src/channel/agent-runner.mjs`](../../src/channel/agent-runner.mjs) | 快车道编排：持久化→渲染→写 outbox→排 notify，并在 completion 事件标记 `delivered` |
 | [`src/intelligence/specs.mjs`](../../src/intelligence/specs.mjs) | 新增 `channel_deliverables` 的 `append_jsonl` spec |
 | [`src/intelligence/store.mjs`](../../src/intelligence/store.mjs) | 新增 `recordChannelDeliverable` / `readChannelDeliverables` |
@@ -156,41 +158,44 @@ runtime/subjects/<ns>/data/intelligence/intel_observations/...   # 一条可被�
 1. completion 事件携带 `delivered:true`（`!!dispatch`，即真正写了 outbox 才算）。
 2. `expression-candidates` 过滤 `already_delivered` 候选；`presence-decision-executor` 把这些候选标记为 handled，推进游标但不生成话术。
 
-注意一个细分流：**执行后返回失败/deferred 的 run 会被如实投递（红卡片）→ presence 跳过**；而 **validation 失败或 `agent_execute` 抛异常**（`channel_agent_run_failed`，无 `delivered`）**仍走 presence 通知**。两条路各管一段，不冲突。
+注意一个细分流：**执行后返回失败/deferred 的 run 会被如实落成文档并投递链接 → presence 跳过**；而 **validation 失败或 `agent_execute` 抛异常**（`channel_agent_run_failed`，无 `delivered`）**仍走 presence 通知**。两条路各管一段，不冲突。
 
 ---
 
 ## 5. 逻辑审查与修正
 
-实现完成后做了一遍专门的逻辑复查，发现并修了两个**真实问题**，都在通道渲染环节。
+实现完成后继续复查，操作者进一步要求：**交付物不要用飞书卡片，要支持飞书文档**，并参考 `openclaw-lark` 的文档工具。
 
-### 5.1 全文 body 内容丢失（严重）
+这个要求改变了投递层的最终形态。
 
-`card+text` 格式里，全文 body 消息原先带了 `reply_to_message_id`，会被路由到 `FeishuSender.replyText`。
+### 5.1 从卡片迁移到飞书文档
 
-而这个方法有个隐藏行为：**只发送第一个分片，静默丢弃后续分片**。
+原先的卡片方案虽然能把内容送出去，但它仍然有两个问题：
 
-body 最长可达 6000 字符，超过 4000 字符分片上限的部分会**直接丢失**——这恰恰违背了「交付要保真」的初衷。
+- 卡片不是报告载体，长内容需要截断或拆分。
+- 卡片投递解决的是“消息展示”，不是“交付物沉淀”。
 
-修复：全文 body 不带 reply，改走 `sendText`（发送所有分片）。卡片作为摘要头条，全文作为后续完整消息。
+参考 `openclaw-lark` 后，关键启发是：文档能力应该被抽象成“从 Markdown 创建云文档”，而不是让 agent 自己在运行过程中调用飞书 API。
 
-```javascript
-// 不带 reply_to_message_id，确保全文多分片完整送达
-messages.push(normalizeOutboundMessage({
-  channel: routed.transport,
-  target: routed.target,
-  text: body,
-  reason: 'channel_deliverable_body',
-  idempotency_key: `channel-deliverable:${subject}:${deliveryKey}:2-body`,
-  metadata: { ...baseMeta, part: 'body' },
-}));
+因此最新实现改为：
+
+```text
+Markdown deliverable
+  -> document outbound
+  -> FeishuSender.createDocumentFromMarkdown()
+  -> 发送文档链接到会话
 ```
 
-### 5.2 卡片与全文顺序不确定
+### 5.2 文档创建路径
 
-outbox 消息按文件名升序发送，文件名是 `时间戳-key`。时间戳相同时由 key 决定，而 `body` 字典序排在 `card` 前面——结果可能**先发全文、再发摘要卡片**。
+JEA 当前 channel 凭据是机器人应用凭据，不是 `openclaw-lark` MCP 工具里的 UAT 用户令牌。因此这里没有直接复刻 MCP `create-doc`，而是在 Feishu adapter 内走 SDK：
 
-修复：在 idempotency key 里加序号（`1-card` / `2-body`），保证摘要卡片永远先发。
+- `docx.document.create` 创建新版文档。
+- `docx.document.convert(content_type=markdown)` 把 Markdown 转成文档块。
+- `docx.documentBlockChildren.create` 插入转换后的块。
+- 最后发送普通文本链接，而不是 interactive card。
+
+文档目录可通过 `doc_folder_token` / `JEA_CHANNEL_FEISHU_<SUBJECT>_DOC_FOLDER_TOKEN` 配置；文档 URL 前缀可通过 `doc_base_url` / `JEA_CHANNEL_FEISHU_<SUBJECT>_DOC_BASE_URL` 配置。
 
 ### 5.3 幂等窗口补齐
 
@@ -208,10 +213,10 @@ outbox 消息按文件名升序发送，文件名是 `时间戳-key`。时间戳
 
 - `persistChannelDeliverable`：写 MD 原文、写索引、写 observation。
 - `resolveDeliverablePath` / `extractDeliverableTldr`。
-- `renderDeliveryToOutbox`：短内容单卡片；中内容卡片+全文（断言 `messages[1].text === body` 全文保真）。
-- `renderDeliveryToOutbox`：交付 outbox key 优先使用稳定的 `channel_agent_run_id`。
+- `renderDeliveryToOutbox`：生成 `document` outbound，正文完整写入文档 Markdown。
+- `renderDeliveryToOutbox`：交付 outbox key 优先使用稳定的 `channel_agent_run_id`，格式为 `...:document`。
 - `writeOutboxMessage`：pending / sent outbox 中按 `idempotency_key` 去重。
-- `renderDeliveryCard`：status 映射卡片头部颜色（completed=green / failed=red）。
+- `FeishuSender`：创建飞书文档后发送文档链接。
 - `runChannelTask`：agent run 完成后落交付物、写 outbox、记审计事件，且 presence 候选**不**再出现 `reply.agent_run`。
 - `channel deliverables` CLI：可 list 索引记录，也可按 `deliverable_id` / `channel_agent_run_id` show Markdown 正文。
 - `intelligence` spec 列表新增 `channel_deliverables`。
@@ -224,14 +229,15 @@ npx vitest run test/channel.test.mjs
 #      Tests  105 passed (105)
 ```
 
-逻辑复查后的两处修正不破坏任何已有断言（测试不校验 `reply_to` 与具体 key 字符串），全量 channel 测试绿。
+切换到飞书文档交付后，全量 channel 测试绿。
 
 ---
 
 ## 7. 后续演化
 
-- **卡片线程化**：飞书当前不支持 `replyCard`，交付暂未挂在原消息线程下。后续若 adapter 支持 reply 卡片，可让摘要卡片回复原请求消息。
-- **多通道渲染**：`delivery-renderer` 目前主要面向飞书卡片，后续接入其它通道时可按 transport 扩展渲染分支。
+- **权限与分享**：当前实现创建文档并发送链接，后续可补充文档权限/分享策略，确保目标会话成员稳定可读。
+- **MCP/UAT 路径**：若未来 channel 具备用户授权令牌，可复用 `openclaw-lark` 的 MCP `create-doc` 路径，支持更完整的文档导入能力。
+- **多通道渲染**：`delivery-renderer` 目前面向飞书文档，后续接入其它通道时可按 transport 扩展渲染分支。
 
 ---
 
@@ -241,5 +247,5 @@ npx vitest run test/channel.test.mjs
 | --- | --- |
 | 问题 | agent run 的完整结果被 speech 通道当成「一句通知」转述，保真度丢失；操作者要求把结果作为「交付物」原样投递 |
 | 思考 | 真正的瓶颈不是飞书工具集，而是系统里缺少「交付物」一等公民；speech 通道的 LLM 改写、人设、限流三重约束对「交付」是致命的；情报库 `intel_reports` 已有可复用范式 |
-| 方案 | 建一条快车道：agent 原文落 MD（frontmatter+原文）→ 写索引 + observation → 按通道渲染飞书卡片 → 直接进 outbox/notify；completion 事件标记 `delivered`，presence 跳过避免重复打扰 |
-| 执行 | 新增 `deliverable.mjs`、`delivery-renderer.mjs`，改 `agent-runner.mjs` 快车道、`specs.mjs`/`store.mjs` 注册交付物源、`expression-candidates`/`presence-decision-executor` 跳过已投递候选；复查修复全文 body 丢失与卡片顺序两个真实 bug；补齐 outbox 幂等去重与 `channel deliverables` 检索入口；105 个 channel 测试通过 |
+| 方案 | 建一条快车道：agent 原文落 MD（frontmatter+原文）→ 写索引 + observation → 按通道渲染飞书文档 outbound → 直接进 outbox/notify；completion 事件标记 `delivered`，presence 跳过避免重复打扰 |
+| 执行 | 新增 `deliverable.mjs`、`delivery-renderer.mjs`，改 `agent-runner.mjs` 快车道、`specs.mjs`/`store.mjs` 注册交付物源、`expression-candidates`/`presence-decision-executor` 跳过已投递候选；补齐 outbox 幂等去重与 `channel deliverables` 检索入口；参考 `openclaw-lark` 增加 Feishu 文档创建与链接投递；105 个 channel 测试通过 |

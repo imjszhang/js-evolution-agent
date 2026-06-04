@@ -27,7 +27,8 @@ import {
   resolveDeliverablePath,
   extractDeliverableTldr,
 } from '../src/channel/deliverable.mjs';
-import { renderDeliveryToOutbox, renderDeliveryCard } from '../src/channel/delivery-renderer.mjs';
+import { renderDeliveryToOutbox } from '../src/channel/delivery-renderer.mjs';
+import { FeishuSender } from '../src/channel/adapters/feishu/sender.mjs';
 import { runChannelClassifierTask } from '../src/channel/classifier.mjs';
 import { claimNextChannelTask } from '../src/channel/task-queue.mjs';
 import { resolveChannelWorkerTaskTypes, taskTypesForChannelRole, DEFAULT_CHANNEL_ROLES } from '../src/channel/channel-roles.mjs';
@@ -281,7 +282,7 @@ describe('channel domain', () => {
       expect(listPendingChannelEvents(root, 'alpha', { type: 'expression_recompute_requested' }).length).toBeGreaterThan(0);
 
       const outbox = listOutboxPending(root, 'alpha').map((file) => readJsonFile(file));
-      expect(outbox.some((message) => message.card && message.metadata?.channel_deliverable)).toBe(true);
+      expect(outbox.some((message) => message.document && message.metadata?.channel_deliverable)).toBe(true);
 
       // Delivered agent runs are dispatched directly; presence must not re-speak them.
       const ctx = buildPresenceContext(root, 'alpha');
@@ -427,24 +428,28 @@ describe('channel domain', () => {
       expect(extractDeliverableTldr('# Title\n\nFirst line.\nSecond line.')).toBe('Title First line. Second line.');
     });
 
-    it('renderDeliveryToOutbox emits a card for short content', async () => {
+    it('renderDeliveryToOutbox emits a Feishu document delivery message', async () => {
       const root = makeRoot();
       const rendered = await renderDeliveryToOutbox(root, 'alpha', {
         deliverable_id: 'delivery-short',
+        channel_agent_run_id: 'channel-agent-doc',
         objective: '调研排名',
         status: 'completed',
         provider: 'cursor_sdk',
         body: '排名稳定，无需动作。',
         tldr: '排名稳定',
       }, { reply_to_message_id: 'om_x' });
-      expect(rendered.format).toBe('card');
+      expect(rendered.format).toBe('feishu_doc');
       expect(rendered.messages).toHaveLength(1);
-      expect(rendered.messages[0].card).toBeTruthy();
+      expect(rendered.messages[0].card).toBeNull();
+      expect(rendered.messages[0].document.title).toBe('调研排名');
+      expect(rendered.messages[0].document.markdown).toContain('排名稳定，无需动作。');
       expect(rendered.messages[0].metadata.channel_deliverable).toBe(true);
+      expect(rendered.messages[0].metadata.part).toBe('document');
       expect(rendered.target).toBe('oc_test');
     });
 
-    it('renderDeliveryToOutbox emits card plus full-text body for medium content', async () => {
+    it('renderDeliveryToOutbox keeps long content in the document markdown', async () => {
       const root = makeRoot();
       const body = 'A'.repeat(3000);
       const rendered = await renderDeliveryToOutbox(root, 'alpha', {
@@ -455,12 +460,10 @@ describe('channel domain', () => {
         body,
         tldr: 'long',
       });
-      expect(rendered.format).toBe('card+text');
-      expect(rendered.messages).toHaveLength(2);
-      expect(rendered.messages[0].card).toBeTruthy();
-      expect(rendered.messages[1].card).toBeNull();
-      expect(rendered.messages[1].text).toBe(body);
-      expect(rendered.messages[1].metadata.part).toBe('body');
+      expect(rendered.format).toBe('feishu_doc');
+      expect(rendered.messages).toHaveLength(1);
+      expect(rendered.messages[0].document.markdown).toContain(body);
+      expect(rendered.messages[0].metadata.delivery_format).toBe('feishu_doc');
     });
 
     it('renderDeliveryToOutbox uses stable channel_agent_run_id for delivery idempotency keys', async () => {
@@ -475,8 +478,7 @@ describe('channel domain', () => {
         tldr: 'long',
       });
       expect(rendered.messages.map((message) => message.idempotency_key)).toEqual([
-        'channel-deliverable:alpha:channel-agent-stable:1-card',
-        'channel-deliverable:alpha:channel-agent-stable:2-body',
+        'channel-deliverable:alpha:channel-agent-stable:document',
       ]);
       expect(rendered.messages[0].metadata.deliverable_id).toBe('delivery-random-a');
       expect(rendered.messages[0].metadata.channel_agent_run_id).toBe('channel-agent-stable');
@@ -517,9 +519,34 @@ describe('channel domain', () => {
       expect(listOutboxPending(root, 'alpha')).toHaveLength(0);
     });
 
-    it('renderDeliveryCard reflects status via header template', () => {
-      expect(renderDeliveryCard({ objective: 'x', status: 'completed', deliverable_id: 'd1', provider: 'p' }, { bodyForCard: 'ok' }).header.template).toBe('green');
-      expect(renderDeliveryCard({ objective: 'x', status: 'failed', deliverable_id: 'd2', provider: 'p' }, { bodyForCard: 'err' }).header.template).toBe('red');
+    it('FeishuSender creates a document and sends its link for deliverables', async () => {
+      const calls = [];
+      const sender = new FeishuSender({
+        async createDocumentFromMarkdown(payload) {
+          calls.push(['createDocumentFromMarkdown', payload]);
+          return {
+            success: true,
+            documentId: 'docx_test',
+            title: payload.title,
+            url: 'https://example.feishu.cn/docx/docx_test',
+          };
+        },
+        async sendText(payload) {
+          calls.push(['sendText', payload]);
+          return { success: true, messageId: 'om_doc_link' };
+        },
+      }, { docFolderToken: 'fld_test' });
+
+      const result = await sender.sendDocumentDelivery('oc_test', {
+        title: '测试交付',
+        markdown: '# 正文',
+      });
+
+      expect(result.document.documentId).toBe('docx_test');
+      expect(calls[0][0]).toBe('createDocumentFromMarkdown');
+      expect(calls[0][1].folderToken).toBe('fld_test');
+      expect(calls[1][0]).toBe('sendText');
+      expect(calls[1][1].text).toContain('https://example.feishu.cn/docx/docx_test');
     });
 
     it('purges pending deprecated tasks from queue', () => {
