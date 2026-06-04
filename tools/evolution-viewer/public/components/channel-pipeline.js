@@ -3,7 +3,7 @@ import { t, onLocaleChange } from '../i18n.js';
 import { escapeHtml, truncate, formatTimeShort } from './util.js';
 
 const STAGES = [
-  { id: 'feishu', label: 'channel.stageFeishu' },
+  { id: 'transport', label: 'channel.stageTransport' },
   { id: 'inbound', label: 'channel.stageInbound' },
   { id: 'classifier', label: 'channel.stageClassifier' },
   { id: 'presence', label: 'channel.stagePresence' },
@@ -27,12 +27,35 @@ function eventStage(type) {
   if (/expression|presence/.test(type)) return 'presence';
   if (/speech/.test(type)) return 'speech';
   if (/message_sent|notify|message_send/.test(type)) return 'notify';
-  if (/feishu_listener/.test(type)) return 'feishu';
+  if (/feishu_listener|listener/.test(type)) return 'transport';
   return null;
 }
 
 function countByType(rows, type) {
   return (rows ?? []).filter((r) => r.type === type).length;
+}
+
+function transportDisplayModel(ch = {}) {
+  const listener = ch.feishu?.listener ?? {};
+  const status = listener.display_status ?? (listener.running ? 'running' : 'off');
+  switch (status) {
+    case 'connected':
+    case 'running':
+      return { badge: t('channel.transportOn'), state: 'on', line: t('channel.transportWsRunning') };
+    case 'not_observed':
+      return { badge: t('channel.transportManagedBadge'), state: 'active', line: t('channel.transportManaged') };
+    case 'credentials_missing':
+      return { badge: t('channel.transportCredentialsMissingBadge'), state: 'warn', line: t('channel.transportCredentialsMissing') };
+    case 'disabled':
+      return { badge: t('channel.transportDisabledBadge'), state: 'idle', line: t('channel.transportDisabled') };
+    case 'mock':
+      return { badge: t('channel.transportMockBadge'), state: 'idle', line: t('channel.transportMock') };
+    case 'error':
+      return { badge: t('channel.nodeFailed', { count: 1 }), state: 'error', line: t('channel.transportReloadError') };
+    case 'off':
+    default:
+      return { badge: t('channel.transportOff'), state: 'idle', line: t('channel.transportWsOff') };
+  }
 }
 
 class ChannelPipeline extends HTMLElement {
@@ -75,9 +98,8 @@ class ChannelPipeline extends HTMLElement {
     const failed = ch.tasks?.failed ?? [];
     const presence = ch.presence ?? {};
     switch (stageId) {
-      case 'feishu': {
-        const on = Boolean(ch.feishu?.listener?.running);
-        return { badge: on ? t('channel.feishuOn') : t('channel.feishuOff'), state: on ? 'on' : 'idle' };
+      case 'transport': {
+        return transportDisplayModel(ch);
       }
       case 'inbound': {
         const n = ch.inbound?.pending_count ?? 0;
@@ -206,9 +228,19 @@ class ChannelPipeline extends HTMLElement {
   _renderStageInfo(stageId) {
     const ch = this._channel ?? {};
     const lines = [];
-    if (stageId === 'feishu') {
-      const l = ch.feishu?.listener ?? {};
-      lines.push(l.running ? t('channel.feishuWsRunning') : t('channel.feishuWsOff'));
+    if (stageId === 'transport') {
+      const model = transportDisplayModel(ch);
+      const cfg = ch.feishu?.config ?? {};
+      const reload = ch.feishu?.reload ?? {};
+      lines.push(t('channel.transportAdapter', { adapter: cfg.enabled || cfg.listenerEnabled || ch.feishu ? 'Feishu' : t('common.none') }));
+      lines.push(model.line);
+      if (ch.feishu?.listener?.display_status === 'credentials_missing') {
+        lines.push(t('channel.transportCredentialLine', {
+          app: cfg.hasAppId ? t('common.yes') : t('common.no'),
+          secret: cfg.hasAppSecret ? t('common.yes') : t('common.no'),
+        }));
+      }
+      if (reload.last_error) lines.push(t('channel.reloadErrorLine', { error: reload.last_error }));
     } else if (stageId === 'classifier') {
       const c = ch.classifier ?? {};
       lines.push(c.enabled === false
@@ -220,7 +252,7 @@ class ChannelPipeline extends HTMLElement {
       const n = ch.presence?.pending_speech_generation?.length ?? 0;
       lines.push(n ? t('channel.pendingSpeech', { count: n }) : t('channel.pendingSpeechEmpty'));
     } else if (stageId === 'notify') {
-      lines.push(ch.feishu?.listener?.running ? t('channel.feishuOn') : t('channel.feishuOff'));
+      lines.push(transportDisplayModel(ch).line);
     }
     if (!lines.length) return `<p class="cpl-detail-empty">${escapeHtml(t('channel.nodeEmpty'))}</p>`;
     return lines.map((l) => `<p class="cpl-detail-line">${escapeHtml(l)}</p>`).join('');

@@ -52,6 +52,28 @@ function summarizeAgentRunTasks(queue) {
   };
 }
 
+function resolveFeishuListenerDisplay({ config, listenerStatus, reloadState, worker, workers }) {
+  if (!config?.enabled) return { display_status: 'disabled', display_reason: 'feishu_disabled' };
+  if (config.mock) return { display_status: 'mock', display_reason: 'feishu_mock' };
+  if (!config.listenerEnabled) return { display_status: 'disabled', display_reason: 'listener_disabled' };
+  if (listenerStatus?.running) {
+    return {
+      display_status: listenerStatus.connected ? 'connected' : 'running',
+      display_reason: listenerStatus.connected ? 'listener_connected' : 'listener_running',
+    };
+  }
+  if (worker?.running || workers?.running_count > 0) {
+    return { display_status: 'not_observed', display_reason: 'listener_process_local' };
+  }
+  if (!config.appId || !config.appSecret) {
+    return { display_status: 'credentials_missing', display_reason: 'credentials_missing' };
+  }
+  if (reloadState?.last_error) {
+    return { display_status: 'error', display_reason: 'reload_error' };
+  }
+  return { display_status: 'off', display_reason: 'listener_not_running' };
+}
+
 export function buildChannelProjection(root, subject, { heartbeatStaleMs = 60_000, eventLimit = 20 } = {}) {
   const queue = readChannelTaskQueue(root, subject);
   const summary = summarizeChannelTaskQueue(queue);
@@ -161,6 +183,13 @@ export function buildChannelProjection(root, subject, { heartbeatStaleMs = 60_00
       config: feishuConfigForApi(feishuConfig),
       listener: {
         ...listenerStatus,
+        ...resolveFeishuListenerDisplay({
+          config: feishuConfig,
+          listenerStatus,
+          reloadState,
+          worker,
+          workers,
+        }),
         expected_config_fingerprint: expectedFingerprint,
         fingerprint_stale: Boolean(
           listenerStatus.running
