@@ -131,6 +131,17 @@ export class IntelligenceStore {
     return records?.[0] ?? null;
   }
 
+  recordChannelDeliverable(record) {
+    return this.engine.ingest('channel_deliverables', redactSecrets(withId({
+      recorded_at: new Date().toISOString(),
+      ...record,
+    }, 'deliverable')));
+  }
+
+  readChannelDeliverables({ limit = 20 } = {}) {
+    return this.engine.readSource('channel_deliverables', { limit });
+  }
+
   recordGoalEvent(event) {
     return this.engine.ingest('goal_events', redactSecrets(withId({
       recorded_at: new Date().toISOString(),

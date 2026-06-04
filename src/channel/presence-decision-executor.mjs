@@ -19,6 +19,7 @@ import {
   formatPresenceInteractionContent,
 } from './presence-memory.mjs';
 import { appendChannelEvent } from './event-queue.mjs';
+import { deliveredAgentRunCandidateIds } from './expression-candidates.mjs';
 import { buildSpeechGenerationEventPayload, speechIntentFromDeterministic } from './speech-intent.mjs';
 import { enqueueSpeechGenerationIfPending } from './wake.mjs';
 
@@ -307,6 +308,23 @@ export async function executePresenceDecisionPlan(root, subject, plan, {
     intent_count: plan.intents?.length ?? 0,
     llm: plan.llm ?? null,
   });
+
+  // Agent-run deliverables are dispatched to outbox by the agent runner.
+  // Mark their candidates handled so the cursor advances without re-speaking.
+  if (!dryRun && context) {
+    const deliveredIds = deliveredAgentRunCandidateIds(context);
+    if (deliveredIds.length) {
+      markExpressionCandidatesHandled(root, subject, deliveredIds, {
+        outcome: 'delivered',
+        reason: 'channel_deliverable_dispatched',
+      });
+      recordChannelEvent(root, subject, {
+        type: 'channel_deliverable_candidates_handled',
+        status: 'ok',
+        candidate_ids: deliveredIds,
+      });
+    }
+  }
 
   if (plan.kind === 'no_op') {
     recordChannelEvent(root, subject, {

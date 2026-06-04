@@ -5,7 +5,10 @@ import { runtimeForSubject } from '../cli/utils/evolve-runs.mjs';
 import { resolveEffectiveEnv } from '../actions/execution-env.mjs';
 import { actionHandlers } from '../actions/handlers.mjs';
 import { recordChannelEvent } from './audit.mjs';
-import { requestExpressionRecompute } from './wake.mjs';
+import { requestExpressionRecompute, enqueueNotifyIfOutboxPending } from './wake.mjs';
+import { writeOutboxMessage } from './state.mjs';
+import { persistChannelDeliverable } from './deliverable.mjs';
+import { renderDeliveryToOutbox } from './delivery-renderer.mjs';
 
 const DEFAULT_AGENT_PROVIDER = 'llm_only';
 
@@ -184,7 +187,59 @@ export async function runChannelAgentRunTask(root, subject, input = {}) {
 
   try {
     const result = input.mock_result ?? await actionHandlers.agent_execute(action, ctx);
-    const observationsWritten = recordResultObservation(store, subject, request, result);
+
+    let deliverable = null;
+    let dispatch = null;
+    let observationsWritten = 0;
+    try {
+      deliverable = persistChannelDeliverable(root, subject, request, result, { store });
+      observationsWritten = deliverable.observations_written ?? 0;
+      recordChannelEvent(root, subject, {
+        type: 'channel_deliverable_persisted',
+        status: 'ok',
+        channel_agent_run_id: action.id,
+        deliverable_id: deliverable.deliverable_id,
+        md_path: deliverable.md_path,
+        result_status: deliverable.status,
+      });
+      const rendered = await renderDeliveryToOutbox(root, subject, deliverable, request);
+      const messages = rendered.messages ?? [];
+      for (const message of messages) writeOutboxMessage(root, subject, message);
+      if (messages.length) {
+        const notify = enqueueNotifyIfOutboxPending(root, subject);
+        dispatch = { format: rendered.format, count: messages.length, notify_created: notify.created ?? false };
+        recordChannelEvent(root, subject, {
+          type: 'channel_deliverable_dispatched',
+          status: 'ok',
+          channel_agent_run_id: action.id,
+          deliverable_id: deliverable.deliverable_id,
+          delivery_format: rendered.format,
+          outbox_count: messages.length,
+          target: rendered.target ?? null,
+        });
+      } else {
+        recordChannelEvent(root, subject, {
+          type: 'channel_deliverable_dispatch_skipped',
+          status: 'ok',
+          channel_agent_run_id: action.id,
+          deliverable_id: deliverable.deliverable_id,
+          reason: rendered.reason ?? 'no_messages',
+        });
+      }
+    } catch (deliverErr) {
+      recordChannelEvent(root, subject, {
+        type: 'channel_deliverable_failed',
+        status: 'error',
+        channel_agent_run_id: action.id,
+        deliverable_id: deliverable?.deliverable_id ?? null,
+        error: deliverErr?.message || String(deliverErr),
+      });
+    }
+
+    if (!deliverable) {
+      observationsWritten = recordResultObservation(store, subject, request, result);
+    }
+
     recordChannelEvent(root, subject, {
       type: 'channel_agent_run_completed',
       status: result?.success ? 'ok' : 'error',
@@ -198,6 +253,8 @@ export async function runChannelAgentRunTask(root, subject, input = {}) {
       error: result?.error ?? null,
       reason: result?.deferred ? 'provider_deferred' : null,
       observations_written: observationsWritten,
+      deliverable_id: deliverable?.deliverable_id ?? null,
+      delivered: !!dispatch,
     });
     requestExpressionRecompute(root, subject, {
       reason: 'channel_agent_run_completed',
@@ -206,9 +263,18 @@ export async function runChannelAgentRunTask(root, subject, input = {}) {
         ok: !!result?.success,
         status: result?.status ?? null,
         deferred: !!result?.deferred,
+        deliverable_id: deliverable?.deliverable_id ?? null,
+        delivered: !!dispatch,
       },
     });
-    return { ok: !!result?.success, action, result, observations_written: observationsWritten };
+    return {
+      ok: !!result?.success,
+      action,
+      result,
+      observations_written: observationsWritten,
+      deliverable,
+      dispatch,
+    };
   } catch (err) {
     recordChannelEvent(root, subject, {
       type: 'channel_agent_run_failed',

@@ -1,0 +1,242 @@
+# Channel Deliverable 管线：agent 跑出的结果是交付物，不是一句通知
+
+> 日期：2026-06-04  
+> 项目：js-evolution-agent  
+> 类型：架构设计 / 功能实现  
+> 来源：Cursor Agent 对话
+
+---
+
+## 目录
+
+1. [背景与动机](#1-背景与动机)
+2. [分析过程](#2-分析过程)
+3. [方案设计](#3-方案设计)
+4. [实现要点](#4-实现要点)
+5. [逻辑审查与修正](#5-逻辑审查与修正)
+6. [验证与测试](#6-验证与测试)
+7. [后续演化](#7-后续演化)
+8. [附：本轮对话问题—思考—方案—执行对照](#附本轮对话问题思考方案执行对照)
+
+---
+
+## 1. 背景与动机
+
+上一轮工作（[Channel Presence 异步 Agent](./channel-presence-async-agent.md)）解决了「用户一句话能异步触发 agent 调查，但不拖住对话回路」。
+
+这一轮要解决的是它的**下半场**：**agent 跑完了，结果怎么交给用户？**
+
+现状是这样的：用户在飞书发一条调研请求，presence 异步启动 `channel_agent_run`，agent 跑完后唤醒 presence，由 `speech_intent` → `speech_generation` 生成一句话回复。
+
+操作者一针见血地指出问题：
+
+> 现在会调用 speak intent 来生成消息，但这个更像是**通知**，而不是主体执行 agent run 后的**交付**。
+
+这是两个完全不同的东西。
+
+- **通知**：人设化、口语化、受字数和节奏限制的一句话，告诉你「我看了一下，大概是……」。
+- **交付**：agent 真正产出的完整结果，应该原样、结构化地给到用户。
+
+把 agent 的完整调研结果塞进 speech 通道，会被 LLM 二次改写、截断、套上人设语气——**内容保真度直接丢失**。用户要的是 agent 写的报告，不是主体对报告的转述。
+
+操作者进一步明确了形态：
+
+> 交付物应该统一为 **markdown 格式文件**（先保存到运行时特定目录，要归档，要入情报库），至于最后发送给用户的是飞书卡片，还是其它什么的形式应该设计一个机制。
+
+并且特别强调：
+
+> Markdown 内容由模板生成 这个感觉有点问题，我希望 **agent run 的完整结果**。
+
+所以本轮目标很清楚：建一条**与对话通道解耦的交付管线**，把 agent 的原始输出落成 markdown 交付物，归档、入情报库，再按通道渲染成飞书卡片送达。
+
+---
+
+## 2. 分析过程
+
+### 2.1 真正的问题不是「飞书不支持文档」
+
+对话最初是从「为什么 agent run 里不能用飞书文档功能」切入的。但顺着代码读下去，发现这是个伪命题。
+
+`channel_agent_run` 走的是通用 `agent_execute`，只给 `Read/Grep/Glob` 这类只读工具，本来就不该、也不需要直接调飞书文档 API。真正卡住体验的，是结果的**投递方式**，而不是 agent 的**工具集**。
+
+所以问题被重新定义：
+
+> 真正的问题不是 agent 能不能写飞书文档，而是 agent 的产出在系统里**没有「交付物」这个一等公民**——它只能借 speech 通道这条为「说话」设计的路出去。
+
+### 2.2 speech 通道的三个硬约束
+
+复用 speech 通道做交付，会撞上三堵墙：
+
+| 约束 | 后果 |
+| --- | --- |
+| LLM 二次生成 | agent 原文被改写，保真度丢失 |
+| 人设 + 字数限制 | 长报告被截断，结构被压平 |
+| cooldown / 限流 | 交付被节流当成「主动发言」对待 |
+
+这些约束对「说话」是合理的，对「交付」是致命的。
+
+### 2.3 系统里已经有可复用的「交付物」范式
+
+不需要从零造。情报库里的 `intel_reports` 已经是一个成熟范式：**一份 MD 文件 + 一条 jsonl 索引记录**。
+
+交付物完全可以照抄这个模式：
+
+- MD 文件存正文（agent 原始输出）。
+- jsonl 索引存元信息，便于检索。
+- 再补一条 observation 进情报库，让交付结果可被后续轮次引用。
+
+---
+
+## 3. 方案设计
+
+核心是一条「快车道」：agent 完成后**绕过 presence 的 speech 生成**，直接持久化 → 渲染 → 投递。
+
+```text
+channel_agent_run 完成
+  -> persistChannelDeliverable   落 MD + 索引 + observation
+  -> renderDeliveryToOutbox      按通道渲染成飞书卡片(+全文)
+  -> writeOutboxMessage          写 outbox
+  -> enqueueNotifyIfOutboxPending 直接排 notify
+  -> completion 事件标记 delivered:true
+       -> presence 跳过该候选，不再 speak
+```
+
+### 关键决策
+
+| 决策 | 选择 | 理由 |
+| --- | --- | --- |
+| 交付正文来源 | `result.agent.raw_response` 原文 | 操作者明确要 agent 完整结果，拒绝模板生成 |
+| 交付物形态 | MD 文件（YAML frontmatter + 原文正文） | 与 `intel_reports` 范式一致，可归档可检索 |
+| 投递路径 | 快车道，绕过 speech 生成 | 避开 LLM 改写、人设、限流三重约束 |
+| 与 presence 的关系 | completion 事件带 `delivered:true`，presence 跳过 | 防止「快车道已投递」+「presence 又 speak」重复打扰 |
+| 入情报库 | 索引记录 + 一条 observation | 让交付结果成为后续轮次可引用的证据 |
+| 通道渲染 | 短=单卡片；中=卡片+全文；超长=卡片+归档提示 | 飞书卡片有长度上限，全文必须保真 |
+| 失败/deferred | 同样落交付物并以红色卡片如实投递 | 如实告知胜过 speech 通道的幻觉式转述 |
+
+### 备选方案对比
+
+| 方案 | 为什么没选 |
+| --- | --- |
+| 继续用 speech 通道传结果 | LLM 改写 + 截断 + 限流，保真度无法保证 |
+| 模板渲染 MD | 操作者明确否定，要 agent 原文 |
+| 直接调飞书文档 API | 当前 adapter 不支持，且偏离「交付物一等公民」的抽象 |
+
+---
+
+## 4. 实现要点
+
+### 关键模块
+
+| 文件 | 职责 |
+| --- | --- |
+| [`src/channel/deliverable.mjs`](../../src/channel/deliverable.mjs) | 把 agent 原始输出落成 MD（frontmatter+原文），写索引、写 observation，抽取 TLDR |
+| [`src/channel/delivery-renderer.mjs`](../../src/channel/delivery-renderer.mjs) | 把交付物渲染成 outbox 消息（飞书卡片 / 卡片+全文），按正文长度选格式 |
+| [`src/channel/agent-runner.mjs`](../../src/channel/agent-runner.mjs) | 快车道编排：持久化→渲染→写 outbox→排 notify，并在 completion 事件标记 `delivered` |
+| [`src/intelligence/specs.mjs`](../../src/intelligence/specs.mjs) | 新增 `channel_deliverables` 的 `append_jsonl` spec |
+| [`src/intelligence/store.mjs`](../../src/intelligence/store.mjs) | 新增 `recordChannelDeliverable` / `readChannelDeliverables` |
+| [`src/channel/expression-candidates.mjs`](../../src/channel/expression-candidates.mjs) | 过滤掉 `already_delivered` 的 agent run 候选，不再交给 planner |
+| [`src/channel/presence-decision-executor.mjs`](../../src/channel/presence-decision-executor.mjs) | 把已投递候选标记为 handled，推进 presence 游标 |
+
+### 关键数据流
+
+交付物落盘后分布在两处，沿用情报库范式：
+
+```text
+runtime/subjects/<ns>/data/channel/deliverables/<date>/<id>.md   # 正文（agent 原文）
+runtime/subjects/<ns>/data/intelligence/channel_deliverables/index.jsonl  # 索引
+runtime/subjects/<ns>/data/intelligence/intel_observations/...   # 一条可被引用的 observation
+```
+
+### 防重复打扰的闭环
+
+这是整条管线最容易出错的地方。快车道投递后，presence 仍会收到 `channel_agent_run_completed` 事件，如果不处理就会**二次 speak**。
+
+闭环靠两个动作：
+
+1. completion 事件携带 `delivered:true`（`!!dispatch`，即真正写了 outbox 才算）。
+2. `expression-candidates` 过滤 `already_delivered` 候选；`presence-decision-executor` 把这些候选标记为 handled，推进游标但不生成话术。
+
+注意一个细分流：**执行后返回失败/deferred 的 run 会被如实投递（红卡片）→ presence 跳过**；而 **validation 失败或 `agent_execute` 抛异常**（`channel_agent_run_failed`，无 `delivered`）**仍走 presence 通知**。两条路各管一段，不冲突。
+
+---
+
+## 5. 逻辑审查与修正
+
+实现完成后做了一遍专门的逻辑复查，发现并修了两个**真实问题**，都在通道渲染环节。
+
+### 5.1 全文 body 内容丢失（严重）
+
+`card+text` 格式里，全文 body 消息原先带了 `reply_to_message_id`，会被路由到 `FeishuSender.replyText`。
+
+而这个方法有个隐藏行为：**只发送第一个分片，静默丢弃后续分片**。
+
+body 最长可达 6000 字符，超过 4000 字符分片上限的部分会**直接丢失**——这恰恰违背了「交付要保真」的初衷。
+
+修复：全文 body 不带 reply，改走 `sendText`（发送所有分片）。卡片作为摘要头条，全文作为后续完整消息。
+
+```javascript
+// 不带 reply_to_message_id，确保全文多分片完整送达
+messages.push(normalizeOutboundMessage({
+  channel: routed.transport,
+  target: routed.target,
+  text: body,
+  reason: 'channel_deliverable_body',
+  idempotency_key: `channel-deliverable:${subject}:${deliverable.deliverable_id}:2-body`,
+  metadata: { ...baseMeta, part: 'body' },
+}));
+```
+
+### 5.2 卡片与全文顺序不确定
+
+outbox 消息按文件名升序发送，文件名是 `时间戳-key`。时间戳相同时由 key 决定，而 `body` 字典序排在 `card` 前面——结果可能**先发全文、再发摘要卡片**。
+
+修复：在 idempotency key 里加序号（`1-card` / `2-body`），保证摘要卡片永远先发。
+
+### 5.3 一处可接受的局限（未改）
+
+`deliverable_id` 每次执行随机生成，outbox 文件名带时间戳、不按 key 去重。因此若同一 `channel_agent_run` 任务在「成功 dispatch 之后」才失败并被重试，理论上可能重复投递。
+
+但 deferred 不抛异常、不触发重试，dispatch 之后再抛异常的窗口极小，且这与旧 speech 通道特性一致。判定为可接受，留作后续机制化（用 `channel_agent_run_id` 作幂等键 + outbox 层去重）。
+
+---
+
+## 6. 验证与测试
+
+`test/channel.test.mjs` 与 `test/intelligence.test.mjs` 同步更新，覆盖：
+
+- `persistChannelDeliverable`：写 MD 原文、写索引、写 observation。
+- `resolveDeliverablePath` / `extractDeliverableTldr`。
+- `renderDeliveryToOutbox`：短内容单卡片；中内容卡片+全文（断言 `messages[1].text === body` 全文保真）。
+- `renderDeliveryCard`：status 映射卡片头部颜色（completed=green / failed=red）。
+- `runChannelTask`：agent run 完成后落交付物、写 outbox、记审计事件，且 presence 候选**不**再出现 `reply.agent_run`。
+- `intelligence` spec 列表新增 `channel_deliverables`。
+
+运行结果：
+
+```bash
+npx vitest run test/channel.test.mjs
+# Test Files  1 passed (1)
+#      Tests  102 passed (102)
+```
+
+逻辑复查后的两处修正不破坏任何已有断言（测试不校验 `reply_to` 与具体 key 字符串），全量 channel 测试绿。
+
+---
+
+## 7. 后续演化
+
+- **幂等机制化**：用 `channel_agent_run_id` 作 outbox 幂等键并在 outbox 层去重，彻底消除任务重试的重复投递窗口（见 5.3）。
+- **卡片线程化**：飞书当前不支持 `replyCard`，交付暂未挂在原消息线程下。后续若 adapter 支持 reply 卡片，可让摘要卡片回复原请求消息。
+- **交付物检索入口**：`readChannelDeliverables` 已就绪，可补一个 CLI（如 `jea channel deliverables list`）方便操作者回看历史交付。
+- **多通道渲染**：`delivery-renderer` 目前主要面向飞书卡片，后续接入其它通道时可按 transport 扩展渲染分支。
+
+---
+
+## 附：本轮对话问题—思考—方案—执行对照
+
+| 阶段 | 内容 |
+| --- | --- |
+| 问题 | agent run 的完整结果被 speech 通道当成「一句通知」转述，保真度丢失；操作者要求把结果作为「交付物」原样投递 |
+| 思考 | 真正的瓶颈不是飞书工具集，而是系统里缺少「交付物」一等公民；speech 通道的 LLM 改写、人设、限流三重约束对「交付」是致命的；情报库 `intel_reports` 已有可复用范式 |
+| 方案 | 建一条快车道：agent 原文落 MD（frontmatter+原文）→ 写索引 + observation → 按通道渲染飞书卡片 → 直接进 outbox/notify；completion 事件标记 `delivered`，presence 跳过避免重复打扰 |
+| 执行 | 新增 `deliverable.mjs`、`delivery-renderer.mjs`，改 `agent-runner.mjs` 快车道、`specs.mjs`/`store.mjs` 注册交付物源、`expression-candidates`/`presence-decision-executor` 跳过已投递候选；复查修复全文 body 丢失与卡片顺序两个真实 bug；102 个 channel 测试通过 |

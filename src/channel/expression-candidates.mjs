@@ -19,6 +19,13 @@ export function candidateIdForAgentRunEvent(event = {}) {
   return `reply:agent_run:${runId}`;
 }
 
+export function isAgentRunEventDelivered(event = {}) {
+  // Only treat as delivered when the deliverable was actually dispatched to
+  // outbox. A persisted-but-not-dispatched deliverable (e.g. no target) should
+  // still flow through presence so it is not silently dropped.
+  return Boolean(event?.delivered);
+}
+
 export function candidateIdForMessage(item = {}) {
   if (!item?.message_id) return null;
   if (item.ingest_kind === 'operator_brief') {
@@ -88,6 +95,8 @@ function candidateFromAgentRunEvent(event, handled) {
     target: 'operator',
     reply_to_message_id: event.reply_to_message_id ?? null,
     recommended_intent: 'custom',
+    already_delivered: isAgentRunEventDelivered(event),
+    deliverable_id: event.deliverable_id ?? null,
     summary: event.summary ?? event.error ?? event.reason ?? 'channel agent run finished',
     agent_result: {
       ok,
@@ -214,9 +223,28 @@ export function buildExpressionCandidates(context = {}) {
       candidate = candidateFromControlActionEvent(event, handled);
     } else if (['channel_agent_run_completed', 'channel_agent_run_failed'].includes(event.type)) {
       candidate = candidateFromAgentRunEvent(event, handled);
+      // Deliverables are dispatched to outbox directly by the agent runner.
+      // Skip producing a speech candidate to avoid a duplicate notification.
+      if (candidate?.already_delivered) candidate = null;
     }
     if (candidate && !cooldownActive(context, candidate)) candidates.push(candidate);
   }
 
   return candidates.sort((a, b) => priorityWeight(b.priority) - priorityWeight(a.priority));
+}
+
+/**
+ * Candidate ids for agent runs whose deliverable was already dispatched to outbox.
+ * These should be marked handled so the presence cursor advances without speaking.
+ */
+export function deliveredAgentRunCandidateIds(context = {}) {
+  const handled = context.channel?.presence_cursors?.handled_candidates ?? {};
+  const ids = [];
+  for (const event of context.channel?.recent_events ?? []) {
+    if (!['channel_agent_run_completed', 'channel_agent_run_failed'].includes(event.type)) continue;
+    if (!isAgentRunEventDelivered(event)) continue;
+    const id = candidateIdForAgentRunEvent(event);
+    if (id && !handled[id]) ids.push(id);
+  }
+  return [...new Set(ids)];
 }

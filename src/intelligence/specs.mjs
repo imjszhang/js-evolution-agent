@@ -53,6 +53,13 @@ export const INTELLIGENCE_SPECS = [
     filename: 'index.jsonl',
   }),
   new DataSourceSpec({
+    name: 'channel_deliverables',
+    description: 'Index of channel agent-run deliverables (one MD file per delivery, summary in this jsonl).',
+    storageType: 'append_jsonl',
+    subdir: 'channel_deliverables',
+    filename: 'index.jsonl',
+  }),
+  new DataSourceSpec({
     name: 'goal_events',
     description: 'Append-only history of goal hypothesis changes and their evidence.',
     storageType: 'append_jsonl',

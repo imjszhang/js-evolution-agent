@@ -1,5 +1,5 @@
 import { describe, expect, it, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { writeJsonFile } from '../src/cli/utils/files.mjs';
@@ -20,6 +20,12 @@ import { resolvePresenceAffordances } from '../src/channel/presence-affordances.
 import { readChannelEvents, recordChannelEvent } from '../src/channel/audit.mjs';
 import { drainChannelInbound, runChannelInboundTask, runChannelTask, runChannelNotifyTask } from '../src/channel/tasks.mjs';
 import { runChannelAgentRunTask } from '../src/channel/agent-runner.mjs';
+import {
+  persistChannelDeliverable,
+  resolveDeliverablePath,
+  extractDeliverableTldr,
+} from '../src/channel/deliverable.mjs';
+import { renderDeliveryToOutbox, renderDeliveryCard } from '../src/channel/delivery-renderer.mjs';
 import { runChannelClassifierTask } from '../src/channel/classifier.mjs';
 import { claimNextChannelTask } from '../src/channel/task-queue.mjs';
 import { resolveChannelWorkerTaskTypes, taskTypesForChannelRole, DEFAULT_CHANNEL_ROLES } from '../src/channel/channel-roles.mjs';
@@ -213,7 +219,7 @@ describe('channel domain', () => {
       expect(readChannelTaskQueue(root, 'alpha').tasks.map((task) => task.type)).toEqual(['channel_presence']);
     });
 
-    it('runChannelTask routes channel_agent_run and wakes presence after completion', async () => {
+    it('runChannelTask routes channel_agent_run and delivers result to outbox', async () => {
       const root = makeRoot();
       const { task } = enqueueChannelTask(root, 'alpha', {
         type: 'channel_agent_run',
@@ -232,24 +238,40 @@ describe('channel domain', () => {
             status: 'completed',
             provider: 'mock',
             message: 'channel agent completed',
+            agent: { raw_response: '# 调研结果\n\nagentank 当前排名稳定。' },
           },
         },
       });
       const result = await runChannelTask(root, 'alpha', task);
       expect(result.ok).toBe(true);
-      expect(readChannelEvents(root, 'alpha', { limit: 10 }).some((event) =>
+      expect(result.deliverable?.deliverable_id).toMatch(/^delivery-/);
+      expect(existsSync(result.deliverable.md_path)).toBe(true);
+      expect(result.dispatch?.count).toBeGreaterThan(0);
+
+      const events = readChannelEvents(root, 'alpha', { limit: 20 });
+      expect(events.some((event) =>
         event.type === 'channel_agent_run_started'
         && event.channel_agent_run_id === 'channel-agent-route'
         && event.provider === 'llm_only')).toBe(true);
-      expect(readChannelEvents(root, 'alpha', { limit: 5 }).some((event) =>
-        event.type === 'channel_agent_run_completed' && event.channel_agent_run_id === 'channel-agent-route')).toBe(true);
+      expect(events.some((event) =>
+        event.type === 'channel_deliverable_persisted'
+        && event.channel_agent_run_id === 'channel-agent-route')).toBe(true);
+      expect(events.some((event) =>
+        event.type === 'channel_deliverable_dispatched'
+        && event.outbox_count >= 1)).toBe(true);
+      expect(events.some((event) =>
+        event.type === 'channel_agent_run_completed'
+        && event.channel_agent_run_id === 'channel-agent-route'
+        && event.delivered === true)).toBe(true);
       expect(listPendingChannelEvents(root, 'alpha', { type: 'expression_recompute_requested' }).length).toBeGreaterThan(0);
+
+      const outbox = listOutboxPending(root, 'alpha').map((file) => readJsonFile(file));
+      expect(outbox.some((message) => message.card && message.metadata?.channel_deliverable)).toBe(true);
+
+      // Delivered agent runs are dispatched directly; presence must not re-speak them.
       const ctx = buildPresenceContext(root, 'alpha');
       expect(ctx.expression.candidates.some((candidate) =>
-        candidate.kind === 'reply.agent_run' && candidate.agent_result?.channel_agent_run_id === 'channel-agent-route')).toBe(true);
-      const plan = planPresenceDeterministic(ctx);
-      expect(plan.actions[0].content_requirements?.kind).toBe('agent_run_result');
-      expect(plan.actions[0].content_requirements?.summary?.agent_result?.summary).toBe('channel agent completed');
+        candidate.kind === 'reply.agent_run')).toBe(false);
     });
 
     it('runChannelAgentRunTask reports validation failures without executing an agent', async () => {
@@ -307,6 +329,93 @@ describe('channel domain', () => {
         if (previousProvider == null) delete process.env.JEA_AGENT_PROVIDER;
         else process.env.JEA_AGENT_PROVIDER = previousProvider;
       }
+    });
+
+    it('persistChannelDeliverable writes raw agent output as Markdown plus index and observation', () => {
+      const root = makeRoot();
+      const runtime = runtimeForSubject(root, 'alpha');
+      const store = createIntelligenceStore({ baseDir: runtime.intelligenceDir, timezone: 'Asia/Shanghai' });
+      const deliverable = persistChannelDeliverable(root, 'alpha', {
+        channel_agent_run_id: 'channel-agent-persist',
+        reply_to_message_id: 'om_request',
+        objective: '调研 agentank 排名',
+      }, {
+        success: true,
+        status: 'completed',
+        provider: 'cursor_sdk',
+        message: 'short summary',
+        agent: { raw_response: '# 调研结果\n\n详细分析正文。', confidence: 0.8 },
+      }, { store });
+
+      expect(deliverable.deliverable_id).toMatch(/^delivery-/);
+      expect(existsSync(deliverable.md_path)).toBe(true);
+      const md = readFileSync(deliverable.md_path, 'utf-8');
+      expect(md).toContain('deliverable_id:');
+      expect(md).toContain('channel_agent_run_id: "channel-agent-persist"');
+      // Body is the agent raw output verbatim, not a template rewrite.
+      expect(md).toContain('# 调研结果\n\n详细分析正文。');
+
+      const index = store.readChannelDeliverables({ limit: 5 });
+      expect(index.some((record) =>
+        record.deliverable_id === deliverable.deliverable_id
+        && record.md_path === deliverable.md_path
+        && record.status === 'completed'
+        && record.provider === 'cursor_sdk')).toBe(true);
+
+      const observations = store.engine.readSource('intel_observations', { limit: 10 });
+      expect(observations.some((obs) =>
+        obs.kind === 'channel_deliverable'
+        && obs.metadata?.deliverable_id === deliverable.deliverable_id)).toBe(true);
+    });
+
+    it('resolveDeliverablePath lays deliverables out by date and extractDeliverableTldr summarizes', () => {
+      const root = makeRoot();
+      const path = resolveDeliverablePath(root, 'alpha', 'delivery-20260604-192200-abcd', {
+        createdAt: '2026-06-04T11:22:00.000Z',
+      });
+      expect(path.replace(/\\/g, '/')).toContain('channel/deliverables/2026/06/2026-06-04/delivery-20260604-192200-abcd.md');
+      expect(extractDeliverableTldr('# Title\n\nFirst line.\nSecond line.')).toBe('Title First line. Second line.');
+    });
+
+    it('renderDeliveryToOutbox emits a card for short content', async () => {
+      const root = makeRoot();
+      const rendered = await renderDeliveryToOutbox(root, 'alpha', {
+        deliverable_id: 'delivery-short',
+        objective: '调研排名',
+        status: 'completed',
+        provider: 'cursor_sdk',
+        body: '排名稳定，无需动作。',
+        tldr: '排名稳定',
+      }, { reply_to_message_id: 'om_x' });
+      expect(rendered.format).toBe('card');
+      expect(rendered.messages).toHaveLength(1);
+      expect(rendered.messages[0].card).toBeTruthy();
+      expect(rendered.messages[0].metadata.channel_deliverable).toBe(true);
+      expect(rendered.target).toBe('oc_test');
+    });
+
+    it('renderDeliveryToOutbox emits card plus full-text body for medium content', async () => {
+      const root = makeRoot();
+      const body = 'A'.repeat(3000);
+      const rendered = await renderDeliveryToOutbox(root, 'alpha', {
+        deliverable_id: 'delivery-medium',
+        objective: '长报告',
+        status: 'completed',
+        provider: 'cursor_sdk',
+        body,
+        tldr: 'long',
+      });
+      expect(rendered.format).toBe('card+text');
+      expect(rendered.messages).toHaveLength(2);
+      expect(rendered.messages[0].card).toBeTruthy();
+      expect(rendered.messages[1].card).toBeNull();
+      expect(rendered.messages[1].text).toBe(body);
+      expect(rendered.messages[1].metadata.part).toBe('body');
+    });
+
+    it('renderDeliveryCard reflects status via header template', () => {
+      expect(renderDeliveryCard({ objective: 'x', status: 'completed', deliverable_id: 'd1', provider: 'p' }, { bodyForCard: 'ok' }).header.template).toBe('green');
+      expect(renderDeliveryCard({ objective: 'x', status: 'failed', deliverable_id: 'd2', provider: 'p' }, { bodyForCard: 'err' }).header.template).toBe('red');
     });
 
     it('purges pending deprecated tasks from queue', () => {
