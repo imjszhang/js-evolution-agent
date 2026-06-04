@@ -18,7 +18,7 @@ import {
   normalizeAgentRunSpec,
   rawRunSpecFromAction,
 } from './agent-run-spec.mjs';
-import { buildExecutionEnv, streamWithExecutionEnv } from './execution-env.mjs';
+import { buildExecutionEnv } from './execution-env.mjs';
 import { resolveAgentRunCycleId } from './agent-run-log.mjs';
 import {
   CLAUDE_PROVIDER,
@@ -55,6 +55,10 @@ function getField(action, field) {
   return action?.params?.[field] ?? action?.[field] ?? null;
 }
 
+function envValue(ctx, key) {
+  return ctx?.env?.[key] ?? process.env[key];
+}
+
 function withAgentRunLogMeta(ctx, action) {
   if (!action) return ctx;
   return {
@@ -75,10 +79,10 @@ function normalizeProvider(provider) {
   return value || DEFAULT_PROVIDER;
 }
 
-function resolveProvider(action) {
+function resolveProvider(action, ctx) {
   return normalizeProvider(
     getField(action, 'provider')
-      ?? process.env.JEA_AGENT_PROVIDER
+      ?? envValue(ctx, 'JEA_AGENT_PROVIDER')
       ?? DEFAULT_PROVIDER,
   );
 }
@@ -825,16 +829,16 @@ export function buildClaudeOptions(action, ctx) {
   const settingSources = asList(
     getField(executionAction, 'settingSources')
       ?? getField(executionAction, 'setting_sources')
-      ?? process.env.CLAUDE_AGENT_SETTING_SOURCES,
+      ?? envValue(ctx, 'CLAUDE_AGENT_SETTING_SOURCES'),
     ['user', 'project', 'local'],
   );
 
   const permissionMode = getField(executionAction, 'permissionMode')
     ?? getField(executionAction, 'permission_mode')
-    ?? process.env.CLAUDE_AGENT_PERMISSION_MODE
+    ?? envValue(ctx, 'CLAUDE_AGENT_PERMISSION_MODE')
     ?? defaults.permissionMode;
 
-  const executionEnv = buildExecutionEnv(roots.executionCwd);
+  const executionEnv = buildExecutionEnv(roots.executionCwd, { baseEnv: ctx?.env ?? process.env });
   const options = {
     cwd: roots.executionCwd,
     env: executionEnv.env,
@@ -843,7 +847,7 @@ export function buildClaudeOptions(action, ctx) {
     disallowedTools: asList(getField(executionAction, 'disallowedTools') ?? getField(executionAction, 'disallowed_tools'), []),
     permissionMode,
     maxTurns: asNumber(
-      getField(executionAction, 'maxTurns') ?? getField(executionAction, 'max_turns') ?? process.env.CLAUDE_AGENT_MAX_TURNS,
+      getField(executionAction, 'maxTurns') ?? getField(executionAction, 'max_turns') ?? envValue(ctx, 'CLAUDE_AGENT_MAX_TURNS'),
       defaults.maxTurns,
     ),
     settingSources,
@@ -859,7 +863,7 @@ export function buildClaudeOptions(action, ctx) {
     options.allowDangerouslySkipPermissions = true;
   }
 
-  const model = getField(executionAction, 'model') ?? process.env.CLAUDE_AGENT_MODEL;
+  const model = getField(executionAction, 'model') ?? envValue(ctx, 'CLAUDE_AGENT_MODEL');
   if (model) options.model = String(model);
 
   return {
@@ -896,13 +900,13 @@ export function buildCursorOptions(action, ctx) {
   const settingSources = asList(
     getField(executionAction, 'settingSources')
       ?? getField(executionAction, 'setting_sources')
-      ?? process.env.CURSOR_AGENT_SETTING_SOURCES,
+      ?? envValue(ctx, 'CURSOR_AGENT_SETTING_SOURCES'),
     [],
   );
-  const model = String(getField(executionAction, 'model') ?? process.env.CURSOR_AGENT_MODEL ?? 'composer-2');
-  const executionEnv = buildExecutionEnv(roots.executionCwd);
+  const model = String(getField(executionAction, 'model') ?? envValue(ctx, 'CURSOR_AGENT_MODEL') ?? 'composer-2');
+  const executionEnv = buildExecutionEnv(roots.executionCwd, { baseEnv: ctx?.env ?? process.env });
   const options = {
-    apiKey: process.env.CURSOR_API_KEY,
+    apiKey: envValue(ctx, 'CURSOR_API_KEY'),
     model: { id: model },
     local: {
       cwd: roots.executionCwd,
@@ -1000,15 +1004,11 @@ function parseReasonixVersionOutput(stdout, stderr) {
   return null;
 }
 
-function probeReasonixFlavorSync(binary, binaryArgs) {
+function probeReasonixFlavorSync(binary, binaryArgs, env = process.env) {
   const cacheKey = `${binary}\0${binaryArgs.join('\0')}`;
+  const hinted = normalizeReasonixFlavorHint(env?.JEA_REASONIX_FLAVOR);
+  if (hinted) return hinted;
   if (REASONIX_FLAVOR_CACHE.has(cacheKey)) return REASONIX_FLAVOR_CACHE.get(cacheKey);
-
-  const hinted = normalizeReasonixFlavorHint(process.env.JEA_REASONIX_FLAVOR);
-  if (hinted) {
-    REASONIX_FLAVOR_CACHE.set(cacheKey, hinted);
-    return hinted;
-  }
 
   let flavor = 'npm';
   try {
@@ -1037,8 +1037,8 @@ function probeReasonixFlavorSync(binary, binaryArgs) {
   return flavor;
 }
 
-export async function resolveReasonixFlavor(binary, binaryArgs) {
-  return probeReasonixFlavorSync(binary, binaryArgs);
+export async function resolveReasonixFlavor(binary, binaryArgs, env = process.env) {
+  return probeReasonixFlavorSync(binary, binaryArgs, env);
 }
 
 export function buildReasonixRunBaseArgs({ binaryArgs, model, maxSteps, flavor }) {
@@ -1064,36 +1064,36 @@ export function buildReasonixOptions(action, ctx) {
   const binary = String(
     getField(executionAction, 'reasonixBin')
       ?? getField(executionAction, 'reasonix_bin')
-      ?? process.env.REASONIX_BIN
+      ?? envValue(ctx, 'REASONIX_BIN')
       ?? REASONIX_DEFAULT_BIN,
   );
   const binaryArgs = asList(
     getField(executionAction, 'reasonixBinArgs')
       ?? getField(executionAction, 'reasonix_bin_args')
-      ?? process.env.JEA_REASONIX_BIN_ARGS,
+      ?? envValue(ctx, 'JEA_REASONIX_BIN_ARGS'),
     [],
   );
-  const model = getField(executionAction, 'model') ?? process.env.JEA_REASONIX_MODEL ?? null;
+  const model = getField(executionAction, 'model') ?? envValue(ctx, 'JEA_REASONIX_MODEL') ?? null;
   const configPath = getField(executionAction, 'reasonixConfig')
     ?? getField(executionAction, 'reasonix_config')
-    ?? process.env.JEA_REASONIX_CONFIG
+    ?? envValue(ctx, 'JEA_REASONIX_CONFIG')
     ?? null;
   const allowBash = asBool(
     getField(executionAction, 'reasonixAllowBash')
       ?? getField(executionAction, 'reasonix_allow_bash')
-      ?? process.env.JEA_REASONIX_ALLOW_BASH,
+      ?? envValue(ctx, 'JEA_REASONIX_ALLOW_BASH'),
     false,
   );
   const timeoutMs = asNumber(
     getField(executionAction, 'timeoutMs')
       ?? getField(executionAction, 'timeout_ms')
-      ?? process.env.JEA_REASONIX_TIMEOUT_MS,
+      ?? envValue(ctx, 'JEA_REASONIX_TIMEOUT_MS'),
     REASONIX_DEFAULT_TIMEOUT_MS,
   );
   const maxSteps = asNumber(
     getField(executionAction, 'maxSteps')
       ?? getField(executionAction, 'max_steps')
-      ?? process.env.JEA_REASONIX_MAX_STEPS,
+      ?? envValue(ctx, 'JEA_REASONIX_MAX_STEPS'),
     null,
   );
   const generatedConfig = configPath
@@ -1101,6 +1101,7 @@ export function buildReasonixOptions(action, ctx) {
     : createReasonixTempConfig({ runSpec, roots, model, allowBash });
   const effectiveConfigPath = configPath ?? generatedConfig?.configPath ?? null;
   const executionEnv = buildExecutionEnv(roots.executionCwd, {
+    baseEnv: ctx?.env ?? process.env,
     overrides: effectiveConfigPath ? { REASONIX_CONFIG: effectiveConfigPath } : {},
   });
 
@@ -1176,8 +1177,8 @@ async function runClaudeCodeSdk(action, ctx) {
   if (cwdFailure) return cwdFailure;
 
   const hasAnthropicCreds = Boolean(
-    process.env.ANTHROPIC_API_KEY?.trim()
-      || process.env.ANTHROPIC_AUTH_TOKEN?.trim(),
+    envValue(ctx, 'ANTHROPIC_API_KEY')?.trim()
+      || envValue(ctx, 'ANTHROPIC_AUTH_TOKEN')?.trim(),
   );
   if (!hasAnthropicCreds && !getField(executionAction, 'allow_missing_api_key')) {
     return {
@@ -1240,7 +1241,7 @@ async function runClaudeCodeSdk(action, ctx) {
       : options;
     let turnResult = null;
     const turnTexts = [];
-    for await (const message of streamWithExecutionEnv(options.cwd, () => query({ prompt, options: turnOptions }))) {
+    for await (const message of query({ prompt, options: turnOptions })) {
       messages.push(message);
       if (message?.type === 'assistant') {
         const texts = textFromAssistantMessage(message);
@@ -1441,7 +1442,7 @@ async function runCursorSdk(action, ctx) {
   });
   if (cwdFailure) return cwdFailure;
 
-  if (!process.env.CURSOR_API_KEY?.trim() && !getField(executionAction, 'allow_missing_api_key')) {
+  if (!envValue(ctx, 'CURSOR_API_KEY')?.trim() && !getField(executionAction, 'allow_missing_api_key')) {
     return {
       success: false,
       deferred: true,
@@ -1813,7 +1814,7 @@ async function runReasonixCli(action, ctx) {
   let agent = null;
   let validation = { valid: false, missing: ['receipt'], action_type: effectiveActionType(executionAction) };
   let providerFailure = null;
-  options.flavor = await resolveReasonixFlavor(options.binary, options.binaryArgs);
+  options.flavor = await resolveReasonixFlavor(options.binary, options.binaryArgs, ctx?.env ?? process.env);
   options.baseRunArgs = buildReasonixRunBaseArgs({
     binaryArgs: options.binaryArgs,
     model: options.model,
@@ -2107,7 +2108,7 @@ async function runLlmOnly(action, ctx) {
 export async function runAgenticAction(action, ctx) {
   const executionAction = applyRunSpecToAction(action, ctx);
   const logCtx = withAgentRunLogMeta(ctx, executionAction);
-  const provider = resolveProvider(executionAction);
+  const provider = resolveProvider(executionAction, logCtx);
   const roots = resolveAgentExecutionRoots(executionAction, logCtx);
   if (roots.rootMismatch) return rootMismatchResult(executionAction, roots, provider);
   if (actionRequiresExecutionRoot(executionAction) && actionMissingExecutionRoot(executionAction, logCtx)) {

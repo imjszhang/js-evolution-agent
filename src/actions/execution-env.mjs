@@ -45,6 +45,15 @@ export function buildExecutionEnv(executionRoot, { baseEnv = process.env, overri
   return { env, envPath: loaded.envPath, envFileExists: loaded.exists, envFileError: loaded.error ?? null };
 }
 
+export function resolveEffectiveEnv(envDir, { baseEnv = process.env } = {}) {
+  const loaded = readExecutionEnvFile(envDir);
+  const env = { ...baseEnv };
+  for (const [key, value] of Object.entries(loaded.values)) {
+    if (hasValue(value)) env[key] = value;
+  }
+  return { env, envPath: loaded.envPath, envFileExists: loaded.exists, envFileError: loaded.error ?? null };
+}
+
 function applyProcessEnv(env) {
   const previous = new Map();
   const added = new Set();

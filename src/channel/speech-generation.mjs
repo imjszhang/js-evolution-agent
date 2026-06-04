@@ -56,6 +56,16 @@ function ackText(subject, kind, summary) {
     const result = summary?.agent_result ?? summary;
     if (result && typeof result === 'object') {
       if (result.ok === false) {
+        if (result.deferred) {
+          return [
+            `${subject}: 异步 agent 未能启动完成。`,
+            result.provider ? `provider: ${result.provider}` : '',
+            '这是 provider 配置或运行环境延迟问题，不代表已开人工审核单。',
+            result.reason ? `原因：${result.reason}` : '',
+            result.error ? `错误：${result.error}` : '',
+            result.summary ? `摘要：${result.summary}` : '',
+          ].filter(Boolean).join('\n');
+        }
         return [
           `${subject}: 异步 agent 已结束，但未成功完成。`,
           result.reason ? `原因：${result.reason}` : '',
@@ -94,6 +104,7 @@ function sanitizeGeneratedText(value) {
   if (!text) return null;
   if (/approval_granted|已授权发布|已经发布|已完成发布/i.test(text)) return null;
   if (/直接发布|直接授权/.test(text) && !/不会|不得|不能|无需|不会/i.test(text)) return null;
+  if (/human_review:evt-[a-z0-9-]+|已记录此事件|已创建人工审核单/i.test(text)) return null;
   if (/(sk-[a-z0-9]{16,}|api[_-]?key|app[_-]?secret|token\s*[:=])/i.test(text)) return null;
   return text.slice(0, 1600);
 }
@@ -129,6 +140,8 @@ async function renderLlmSpeech(root, subject, intent, context, { aiClient = null
         'Return JSON only: {"text":"..."}',
         'Use speech_intent.reason_summary and tone_hint for why/how to sound; do not invent facts beyond cycle_memory.',
         'Do not grant approval, do not claim actions executed, do not leak secrets.',
+        'Do not invent event IDs, human_review references, tickets, approvals, or audit records not explicitly present in the payload.',
+        'For deferred provider/configuration failures, say the agent did not start or complete due to provider configuration/runtime, not that a human review was created.',
         'Only reference CLI commands from affordances.operator_commands when needed.',
         'Follow content_requirements and risk_constraints in the user payload.',
         'For custom ordinary-message replies, follow subject_identity.soul and cycle_memory.recent_channel_presence instead of a generic acknowledgement.',

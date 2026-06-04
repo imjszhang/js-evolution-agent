@@ -78,6 +78,8 @@ function candidateFromAgentRunEvent(event, handled) {
   const id = candidateIdForAgentRunEvent(event);
   if (!id || handled[id]) return null;
   const ok = event.type === 'channel_agent_run_completed' && event.status === 'ok';
+  const deferred = Boolean(event.deferred);
+  const reason = event.reason ?? (deferred ? 'provider_deferred' : null);
   return {
     id,
     kind: 'reply.agent_run',
@@ -93,7 +95,8 @@ function candidateFromAgentRunEvent(event, handled) {
       provider: event.provider ?? null,
       status: event.result_status ?? event.status ?? null,
       summary: event.summary ?? null,
-      reason: event.reason ?? null,
+      deferred,
+      reason,
       error: event.error ?? null,
       observations_written: event.observations_written ?? null,
     },

@@ -1,8 +1,13 @@
+import { MockAIClient } from 'js-evolution-engine';
 import { createIntelligenceStore } from '../intelligence/store.mjs';
+import { DeepSeekOpenAIClient } from '../ai/deepseek-client.mjs';
 import { runtimeForSubject } from '../cli/utils/evolve-runs.mjs';
+import { resolveEffectiveEnv } from '../actions/execution-env.mjs';
 import { actionHandlers } from '../actions/handlers.mjs';
 import { recordChannelEvent } from './audit.mjs';
 import { requestExpressionRecompute } from './wake.mjs';
+
+const DEFAULT_AGENT_PROVIDER = 'llm_only';
 
 function asObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
@@ -32,7 +37,30 @@ function createStore(runtime) {
   });
 }
 
-function buildAction(root, subject, runtime, request, validation) {
+function envBool(value) {
+  if (value == null || value === '') return false;
+  return ['1', 'true', 'yes', 'on', 'enabled'].includes(String(value).trim().toLowerCase());
+}
+
+function createAiFromEnv(env = {}) {
+  if (envBool(env.JEA_FORCE_MOCK)) {
+    return new MockAIClient({ defaultResponse: '{"status":"completed","summary":"mock channel agent run","evidence":{},"outputs":{}}' });
+  }
+  if (!String(env.DEEPSEEK_API_KEY ?? '').trim()) return null;
+  try {
+    return new DeepSeekOpenAIClient({
+      apiKey: env.DEEPSEEK_API_KEY,
+      baseURL: env.DEEPSEEK_BASE_URL,
+      model: env.DEEPSEEK_MODEL,
+      thinkingEnabled: envBool(env.DEEPSEEK_THINKING),
+      reasoningEffort: env.DEEPSEEK_REASONING_EFFORT,
+    });
+  } catch {
+    return null;
+  }
+}
+
+function buildAction(root, subject, runtime, request, validation, env = {}) {
   const runId = request.channel_agent_run_id ?? `channel-agent-run-${Date.now()}`;
   const boundary = {
     ...asObject(request.boundary),
@@ -46,7 +74,7 @@ function buildAction(root, subject, runtime, request, validation) {
     type: 'agent_execute',
     description: `Channel presence agent run for ${subject}`,
     params: {
-      provider: request.provider ?? undefined,
+      provider: request.provider ?? env.JEA_AGENT_PROVIDER ?? DEFAULT_AGENT_PROVIDER,
       mode: validation.mode,
       permission_profile: validation.permissionProfile,
       objective: String(request.objective).trim(),
@@ -77,9 +105,11 @@ function buildAction(root, subject, runtime, request, validation) {
   };
 }
 
-function buildContext(root, subject, runtime, store, request) {
+function buildContext(root, subject, runtime, store, request, effectiveEnv = {}) {
   return {
     projectRoot: root,
+    env: effectiveEnv,
+    ai: request.ai ?? createAiFromEnv(effectiveEnv),
     host: {
       sourceRoot: root,
       runtimeRoot: runtime.runtimeRoot,
@@ -134,8 +164,9 @@ export async function runChannelAgentRunTask(root, subject, input = {}) {
 
   const runtime = runtimeForSubject(root, subject);
   const store = createStore(runtime);
-  const action = buildAction(root, subject, runtime, request, validation);
-  const ctx = buildContext(root, subject, runtime, store, request);
+  const { env: effectiveEnv, envPath, envFileExists, envFileError } = resolveEffectiveEnv(runtime.runtimeRoot);
+  const action = buildAction(root, subject, runtime, request, validation, effectiveEnv);
+  const ctx = buildContext(root, subject, runtime, store, request, effectiveEnv);
 
   recordChannelEvent(root, subject, {
     type: 'channel_agent_run_started',
@@ -143,6 +174,12 @@ export async function runChannelAgentRunTask(root, subject, input = {}) {
     channel_agent_run_id: action.id,
     candidate_id: request.candidate_id ?? null,
     objective: action.params.objective,
+    provider: action.params.provider ?? null,
+    runtime_env: {
+      path: envPath,
+      exists: envFileExists,
+      error: envFileError,
+    },
   });
 
   try {
@@ -157,6 +194,9 @@ export async function runChannelAgentRunTask(root, subject, input = {}) {
       provider: result?.provider ?? null,
       result_status: result?.status ?? null,
       summary: result?.message ?? null,
+      deferred: !!result?.deferred,
+      error: result?.error ?? null,
+      reason: result?.deferred ? 'provider_deferred' : null,
       observations_written: observationsWritten,
     });
     requestExpressionRecompute(root, subject, {
@@ -165,6 +205,7 @@ export async function runChannelAgentRunTask(root, subject, input = {}) {
         channel_agent_run_id: action.id,
         ok: !!result?.success,
         status: result?.status ?? null,
+        deferred: !!result?.deferred,
       },
     });
     return { ok: !!result?.success, action, result, observations_written: observationsWritten };

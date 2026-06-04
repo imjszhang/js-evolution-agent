@@ -195,7 +195,7 @@ flowchart TD
 | --- | --- |
 | validate | 拒绝非 observe/propose、非 read_only、审批授权 |
 | buildAction | 构造 `agent_execute`，默认 `cwd = runtime.dataRoot` |
-| buildContext | 注入 host store / resources；**不在 ctx 上设置 `cycleId`**，避免 action receipt 被误标为 cycle |
+| buildContext | 注入 `ctx.env`（`resolveEffectiveEnv(runtimeRoot)`）、`ctx.ai`（`createAiFromEnv`）；**不在 ctx 上设置 `cycleId`**，避免 action receipt 被误标为 cycle。详见 [channel-agent-runtime-env](channel-agent-runtime-env.md) |
 | execute | `actionHandlers.agent_execute()` |
 | audit | `channel_agent_run_started / completed / failed` |
 | observe | 普通 `intel_observations`（`source: channel_agent_run`），非 operator fact |
@@ -233,7 +233,7 @@ channel_agent_run_completed / failed
 
 ## 5. 逻辑审查与修正
 
-实现完成后做了一轮逻辑审查，发现并修正了三个问题。
+实现完成后做了一轮逻辑审查，发现并修正了三个问题（2026-06-04 当日后续又修了 agent 执行上下文与 runtime `.env`，见 [channel-agent-runtime-env](channel-agent-runtime-env.md)）。
 
 | 问题 | 风险 | 修正 |
 | --- | --- | --- |
@@ -255,8 +255,8 @@ channel_agent_run_completed / failed
 
 | 命令 | 结果 |
 | --- | --- |
-| `npm run test -- test/channel.test.mjs` | 76 passed（含 agent_run_result intent 断言） |
-| `npm run test` | 36 files，618 tests passed |
+| `npm run test -- test/channel.test.mjs` | 87 passed（含 agent_run_result、runtime `.env` 覆盖断言） |
+| `npm run test` | 36 files，629 tests passed |
 | `ReadLints`（`src/channel` + `test/channel.test.mjs` + `AGENTS.md`） | 无诊断错误 |
 
 测试覆盖要点：
@@ -284,6 +284,7 @@ channel_agent_run_completed / failed
 | viewer 展示 | 利用 `tasks.agent_runs` 在 channel panel 展示 pending/running |
 | action receipt 索引 | 可为 channel agent run 增加专用 receipt 字段或 source tag，与 cycle receipt 彻底区分 |
 | role 部署 | 升级后需重启 channel daemon，加载默认 `agent` role |
+| runtime env 与 `ctx.ai` | 见 [channel-agent-runtime-env](channel-agent-runtime-env.md)：修复 channel agent 必然 deferred 与误导话术 |
 
 ---
 

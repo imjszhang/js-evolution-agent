@@ -229,6 +229,10 @@ describe('channel domain', () => {
       });
       const result = await runChannelTask(root, 'alpha', task);
       expect(result.ok).toBe(true);
+      expect(readChannelEvents(root, 'alpha', { limit: 10 }).some((event) =>
+        event.type === 'channel_agent_run_started'
+        && event.channel_agent_run_id === 'channel-agent-route'
+        && event.provider === 'llm_only')).toBe(true);
       expect(readChannelEvents(root, 'alpha', { limit: 5 }).some((event) =>
         event.type === 'channel_agent_run_completed' && event.channel_agent_run_id === 'channel-agent-route')).toBe(true);
       expect(listPendingChannelEvents(root, 'alpha', { type: 'expression_recompute_requested' }).length).toBeGreaterThan(0);
@@ -254,6 +258,47 @@ describe('channel domain', () => {
       expect(result.reason).toBe('unsupported_agent_mode');
       expect(readChannelEvents(root, 'alpha', { limit: 5 }).some((event) =>
         event.type === 'channel_agent_run_failed' && event.channel_agent_run_id === 'channel-agent-invalid')).toBe(true);
+    });
+
+    it('runChannelAgentRunTask uses subject runtime .env over global agent env', async () => {
+      const root = makeRoot();
+      const { runtimeRoot } = runtimeForSubject(root, 'alpha');
+      writeFileSync(
+        join(runtimeRoot, '.env'),
+        [
+          'JEA_AGENT_PROVIDER=llm_only',
+          'JEA_FORCE_MOCK=1',
+        ].join('\n'),
+        'utf-8',
+      );
+      const previousProvider = process.env.JEA_AGENT_PROVIDER;
+      process.env.JEA_AGENT_PROVIDER = 'cursor_sdk';
+      try {
+        const result = await runChannelAgentRunTask(root, 'alpha', {
+          request: {
+            channel_agent_run_id: 'channel-agent-runtime-env',
+            objective: 'Summarize recent channel events',
+            mode: 'observe',
+            permission_profile: 'read_only',
+          },
+        });
+        expect(result.ok).toBe(true);
+        expect(result.result.provider).toBe('llm_only');
+        const events = readChannelEvents(root, 'alpha', { limit: 10 });
+        expect(events.some((event) =>
+          event.type === 'channel_agent_run_started'
+          && event.channel_agent_run_id === 'channel-agent-runtime-env'
+          && event.provider === 'llm_only'
+          && event.runtime_env?.exists === true)).toBe(true);
+        expect(events.some((event) =>
+          event.type === 'channel_agent_run_completed'
+          && event.channel_agent_run_id === 'channel-agent-runtime-env'
+          && event.provider === 'llm_only'
+          && event.status === 'ok')).toBe(true);
+      } finally {
+        if (previousProvider == null) delete process.env.JEA_AGENT_PROVIDER;
+        else process.env.JEA_AGENT_PROVIDER = previousProvider;
+      }
     });
 
     it('purges pending deprecated tasks from queue', () => {
