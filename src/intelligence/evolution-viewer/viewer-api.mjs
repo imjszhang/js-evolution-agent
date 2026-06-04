@@ -986,10 +986,11 @@ export function createViewerApiServer({ runtime, runtimes, projectRoot, limit, p
         const catalog = manifestForApi(defaultCtx.getCatalog(false, limit));
         const subjectEntries = runtimeList.map((rt) => {
           const ctx = contexts.get(rt.subject);
+          const daemon = ctx.getDaemon();
+          const summary = daemonSummaryFromProjection(rt, daemon, { runtimeRoot: rt.runtimeRoot });
           const m = manifestForApi(ctx.getCatalog(false, limit));
           return {
-            subject: rt.subject,
-            namespace: rt.dataNamespace,
+            ...summary,
             round_count: m.round_count ?? m.rounds?.length ?? 0,
           };
         });

@@ -570,6 +570,16 @@ function renderSubjectOverview() {
   }
 }
 
+function mergeSubjectSummaries(nextSubjects = []) {
+  const previous = new Map(subjectsList.map((subject) => [subject.subject, subject]));
+  subjectsList = nextSubjects
+    .filter((subject) => subject?.subject)
+    .map((subject) => ({
+      ...(previous.get(subject.subject) ?? {}),
+      ...subject,
+    }));
+}
+
 let opsHomeRenderTimer = null;
 const OPS_HOME_DEBOUNCE_MS = 120;
 
@@ -1702,10 +1712,7 @@ function handleSsePayload(payload) {
     setLiveStatus('live.connected', null, 'connected');
     if (payload.default_subject) defaultSubject = payload.default_subject;
     if (Array.isArray(payload.subjects) && payload.subjects.length) {
-      subjectsList = payload.subjects.map((s) => ({
-        subject: s.subject,
-        namespace: s.namespace,
-      }));
+      mergeSubjectSummaries(payload.subjects);
     }
     if (!activeSubject && defaultSubject) {
       void setActiveSubject(subjectFromQuery() || defaultSubject, { skipQueryUpdate: true });
@@ -1838,7 +1845,7 @@ async function loadSubjectsIndex() {
   if (!res.ok) throw new Error(t('errors.loadSubjects'));
   const data = await res.json();
   defaultSubject = data.default_subject;
-  subjectsList = data.subjects ?? [];
+  mergeSubjectSummaries(data.subjects ?? []);
   return data;
 }
 
