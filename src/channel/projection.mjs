@@ -8,6 +8,8 @@ import {
   listPendingInbound,
   readChannelReloadRequest,
   readChannelReloadState,
+  readPresenceState,
+  reconcilePendingSpeechGeneration,
 } from './state.mjs';
 import {
   feishuListenerConfigFingerprint,
@@ -16,7 +18,6 @@ import {
 import { resolveFeishuConfig, feishuConfigForApi } from './adapters/feishu/config.mjs';
 import { presenceConfigForApi, resolvePresenceConfig } from './presence-config.mjs';
 import { readJsonSafe } from '../cli/utils/files.mjs';
-import { channelPresenceStatePath } from './paths.mjs';
 import { DEPRECATED_CHANNEL_TASK_TYPES } from './types.mjs';
 import { summarizeChannelEventQueue } from './event-queue.mjs';
 
@@ -145,13 +146,17 @@ export function buildChannelProjection(root, subject, { heartbeatStaleMs = 60_00
       pending_files: pendingOutbox,
     },
     recent_events: readChannelEvents(root, subject, { limit: eventLimit }),
-    presence: {
-      config: presenceConfigForApi(resolvePresenceConfig(root, subject)),
-      state: readJsonSafe(channelPresenceStatePath(root, subject), null),
-      event_queue: summarizeChannelEventQueue(root, subject),
-      reactor: readJsonSafe(channelPresenceStatePath(root, subject), null)?.reactor ?? null,
-      pending_speech_generation: readJsonSafe(channelPresenceStatePath(root, subject), null)?.pending_speech_generation ?? [],
-    },
+    presence: (() => {
+      reconcilePendingSpeechGeneration(root, subject);
+      const presenceState = readPresenceState(root, subject);
+      return {
+        config: presenceConfigForApi(resolvePresenceConfig(root, subject)),
+        state: presenceState,
+        event_queue: summarizeChannelEventQueue(root, subject),
+        reactor: presenceState.reactor ?? null,
+        pending_speech_generation: presenceState.pending_speech_generation ?? [],
+      };
+    })(),
     feishu: {
       config: feishuConfigForApi(feishuConfig),
       listener: {

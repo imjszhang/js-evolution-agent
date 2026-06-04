@@ -17,6 +17,7 @@ import {
   failPresenceRun,
   isPresenceRunExpired,
   readPresenceState,
+  reconcilePendingSpeechGeneration,
 } from './state.mjs';
 import {
   enqueueNotifyIfOutboxPending,
@@ -182,6 +183,7 @@ export async function runPresenceReactor(root, subject, input = {}) {
 export async function runChannelSpeechGenerationTask(root, subject, input = {}) {
   const presenceConfig = resolvePresenceConfig(root, subject);
   const runId = input.run_id ?? `speech-gen-${randomUUID().slice(0, 8)}`;
+  reconcilePendingSpeechGeneration(root, subject);
   const claimed = claimChannelEvents(root, subject, {
     runId,
     limit: input.limit ?? 5,

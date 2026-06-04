@@ -11,6 +11,8 @@ import {
   cooldownActive,
   readPresenceState,
   readJsonFile,
+  reconcilePendingSpeechGeneration,
+  trackPendingSpeechGeneration,
 } from '../src/channel/state.mjs';
 import { createIntelligenceStore } from '../src/intelligence/store.mjs';
 import { isPresenceInteractionRecord } from '../src/channel/presence-memory.mjs';
@@ -32,7 +34,12 @@ import {
   PRESENCE_REACTOR_IDEMPOTENCY,
 } from '../src/channel/wake.mjs';
 import { cancelDeprecatedChannelTasks } from '../src/channel/queue-cleanup.mjs';
-import { appendChannelEvent, listPendingChannelEvents, summarizeChannelEventQueue } from '../src/channel/event-queue.mjs';
+import {
+  appendChannelEvent,
+  listPendingChannelEvents,
+  markChannelEventsFailed,
+  summarizeChannelEventQueue,
+} from '../src/channel/event-queue.mjs';
 import { runChannelSpeechGenerationTask, runPresenceReactor } from '../src/channel/presence-reactor.mjs';
 import { buildPresenceContext } from '../src/channel/presence-context.mjs';
 import { buildExpressionCandidates } from '../src/channel/expression-candidates.mjs';
@@ -1872,6 +1879,52 @@ describe('channel domain', () => {
       expect(gen.generated).toBeGreaterThan(0);
       const pending = listOutboxPending(root, 'alpha', { limit: 5 });
       expect(readJsonFile(pending[0])?.text).toBe('alpha: 已收到并记录。');
+    });
+
+    it('clears pending_speech_generation when speech generation fails', async () => {
+      const root = makeRoot({
+        feishu: { default_chat_id: null, mock: true },
+        presence: { enabled: true, planner: 'deterministic' },
+      });
+      const event = appendChannelEvent(root, 'alpha', {
+        type: 'speech_generation_requested',
+        payload: {
+          intent_id: 'intent-missing-target',
+          target: 'operator',
+          reason: 'approval_request_ack',
+          content_requirements: { kind: 'approval_ack', summary: 'test' },
+        },
+      });
+      trackPendingSpeechGeneration(root, 'alpha', {
+        intent_id: 'intent-missing-target',
+        event_id: event.id,
+        requested_at: event.created_at,
+      });
+
+      const gen = await runChannelSpeechGenerationTask(root, 'alpha');
+      expect(gen.failed).toBeGreaterThan(0);
+      expect(readPresenceState(root, 'alpha').pending_speech_generation).toHaveLength(0);
+    });
+
+    it('reconcilePendingSpeechGeneration drops entries for failed speech events', () => {
+      const root = makeRoot({ presence: { enabled: true, planner: 'deterministic' } });
+      const event = appendChannelEvent(root, 'alpha', {
+        type: 'speech_generation_requested',
+        payload: { intent_id: 'intent-stale', target: 'channel_default', reason: 'stale' },
+      });
+      trackPendingSpeechGeneration(root, 'alpha', {
+        intent_id: 'intent-stale',
+        event_id: event.id,
+        requested_at: event.created_at,
+      });
+      markChannelEventsFailed(root, 'alpha', [event.id], { error: 'empty_or_guarded_text' });
+
+      const { changed, state } = reconcilePendingSpeechGeneration(root, 'alpha');
+      expect(changed).toBe(true);
+      expect(state.pending_speech_generation).toHaveLength(0);
+
+      const projection = buildChannelProjection(root, 'alpha');
+      expect(projection.presence.pending_speech_generation).toHaveLength(0);
     });
 
     it('speech generation timeout does not block notify', async () => {

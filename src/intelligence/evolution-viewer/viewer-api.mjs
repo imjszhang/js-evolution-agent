@@ -12,7 +12,7 @@ import {
   channelOutboxPendingDir,
   channelOutboxSentDir,
 } from '../../channel/paths.mjs';
-import { listJsonFiles, readJsonFile } from '../../channel/state.mjs';
+import { listJsonFiles, readJsonFile, reconcilePendingSpeechGeneration } from '../../channel/state.mjs';
 import { buildManifest, manifestForApi } from './round-catalog.mjs';
 import { buildRoundDetail } from './round-detail.mjs';
 import { buildCycleDetail } from './cycle-detail.mjs';
@@ -672,8 +672,19 @@ function createSubjectContext(runtime, projectRoot, catalogLimit) {
     daemonCacheAt = 0;
   }
 
+  function invalidateCachesIfPendingSpeechReconciled() {
+    const { changed } = reconcilePendingSpeechGeneration(projectRoot, runtime.subject);
+    if (!changed) return false;
+    daemonCacheAt = 0;
+    observabilityCacheAt = 0;
+    return true;
+  }
+
   function getDaemon(force = false) {
     const now = Date.now();
+    if (invalidateCachesIfPendingSpeechReconciled()) {
+      force = true;
+    }
     if (!force && daemonCache && now - daemonCacheAt < CATALOG_TTL_MS) {
       return daemonCache;
     }
@@ -698,6 +709,9 @@ function createSubjectContext(runtime, projectRoot, catalogLimit) {
 
   function getObservability(force = false) {
     const now = Date.now();
+    if (invalidateCachesIfPendingSpeechReconciled()) {
+      force = true;
+    }
     if (!force && observabilityCache && now - observabilityCacheAt < CATALOG_TTL_MS) {
       return observabilityCache;
     }

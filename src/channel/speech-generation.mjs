@@ -354,12 +354,25 @@ export async function runSpeechGenerationForEvent(root, subject, event, options 
   });
 
   try {
-    return await generateSpeechAndWriteOutbox(root, subject, intent, options);
+    const result = await generateSpeechAndWriteOutbox(root, subject, intent, options);
+    if (!result.ok) {
+      clearPendingSpeechGeneration(root, subject, intent.intent_id);
+      recordChannelEvent(root, subject, {
+        type: 'channel_speech_generation_failed',
+        status: 'error',
+        intent_id: intent.intent_id,
+        candidate_id: intent.candidate_id ?? null,
+        error: result.reason ?? 'generation_failed',
+      });
+    }
+    return result;
   } catch (err) {
+    clearPendingSpeechGeneration(root, subject, intent.intent_id);
     recordChannelEvent(root, subject, {
       type: 'channel_speech_generation_failed',
       status: 'error',
       intent_id: intent.intent_id,
+      candidate_id: intent.candidate_id ?? null,
       error: err?.message || String(err),
     });
     throw err;

@@ -127,6 +127,11 @@ export function supersedePendingChannelEvents(root, subject, { type, keepLatest 
   return toSupersede;
 }
 
+export function getChannelEvent(root, subject, eventId) {
+  if (!eventId) return null;
+  return readQueue(root, subject).events.find((event) => event.id === eventId) ?? null;
+}
+
 export function summarizeChannelEventQueue(root, subject) {
   const queue = readQueue(root, subject);
   const counts = { pending: 0, claimed: 0, handled: 0, failed: 0, superseded: 0 };

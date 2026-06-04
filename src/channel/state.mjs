@@ -9,7 +9,10 @@ import {
 import { basename, dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { readJsonSafe, writeJsonFile } from '../cli/utils/files.mjs';
+import { getChannelEvent } from './event-queue.mjs';
 import { nowIso } from './types.mjs';
+
+const ACTIVE_SPEECH_EVENT_STATUSES = new Set(['pending', 'claimed']);
 import {
   channelCooldownPath,
   channelDedupPath,
@@ -371,6 +374,31 @@ export function clearPendingSpeechGeneration(root, subject, intentId) {
   const current = readPresenceState(root, subject);
   const pending = (current.pending_speech_generation ?? []).filter((e) => e.intent_id !== intentId);
   return writePresenceState(root, subject, { pending_speech_generation: pending });
+}
+
+/**
+ * Drop pending_speech_generation rows whose event is missing or no longer active.
+ * Heals stale viewer counts after failed or completed speech generation.
+ */
+export function reconcilePendingSpeechGeneration(root, subject) {
+  const current = readPresenceState(root, subject);
+  const entries = current.pending_speech_generation ?? [];
+  if (!entries.length) {
+    return { changed: false, state: current };
+  }
+
+  const kept = entries.filter((entry) => {
+    if (!entry.event_id) return false;
+    const event = getChannelEvent(root, subject, entry.event_id);
+    if (!event) return false;
+    return ACTIVE_SPEECH_EVENT_STATUSES.has(event.status);
+  });
+
+  if (kept.length === entries.length) {
+    return { changed: false, state: current };
+  }
+  const state = writePresenceState(root, subject, { pending_speech_generation: kept });
+  return { changed: true, state };
 }
 
 export function buildPresenceSignalKey(signal) {
