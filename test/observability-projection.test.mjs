@@ -82,4 +82,71 @@ describe('observability projection', () => {
     expect(obs.attention.summary.active_count).toBeGreaterThan(0);
     expect(obs.attention.summary.highest_active_severity).toBe('critical');
   });
+
+  it('marks stale idle channel workers as historical when no channel work is pending', () => {
+    const obs = buildSubjectObservability({
+      subject: 'alpha',
+      runtimeRoot: '/tmp/missing-runtime',
+      daemon: baseDaemon({
+        channel: {
+          health: {
+            status: 'stale',
+            ok: false,
+            reasons: ['1 channel role worker(s) stale'],
+          },
+          tasks: {
+            counts: { completed: 2 },
+            running: [],
+            failed: [],
+          },
+          inbound: { pending_count: 0 },
+          outbox: { pending_count: 0 },
+          feishu: { reload: { pending: false } },
+        },
+      }),
+    });
+
+    expect(obs.attention.summary.active_count).toBe(0);
+    expect(obs.attention.summary.historical_count).toBe(1);
+    expect(obs.attention.summary.highest_active_severity).toBeNull();
+    expect(obs.attention.items[0]).toMatchObject({
+      kind: 'channel_health',
+      status: 'needs_ack',
+      category: 'history',
+      blocking: false,
+    });
+  });
+
+  it('keeps stale channel health active when channel tasks are pending', () => {
+    const obs = buildSubjectObservability({
+      subject: 'alpha',
+      runtimeRoot: '/tmp/missing-runtime',
+      daemon: baseDaemon({
+        channel: {
+          health: {
+            status: 'stale',
+            ok: false,
+            reasons: ['Channel tasks are pending without a fresh worker'],
+          },
+          tasks: {
+            counts: { pending: 1 },
+            running: [],
+            failed: [],
+          },
+          inbound: { pending_count: 0 },
+          outbox: { pending_count: 0 },
+          feishu: { reload: { pending: false } },
+        },
+      }),
+    });
+
+    expect(obs.attention.summary.active_count).toBe(1);
+    expect(obs.attention.summary.highest_active_severity).toBe('critical');
+    expect(obs.attention.items[0]).toMatchObject({
+      kind: 'channel_health',
+      status: 'active',
+      category: 'current',
+      blocking: true,
+    });
+  });
 });

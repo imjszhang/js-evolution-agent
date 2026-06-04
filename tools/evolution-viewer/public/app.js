@@ -524,9 +524,15 @@ function renderSubjectOverview() {
       ?? observabilityBySubject[summary.subject]?.attention?.summary
       ?? null;
     const mode = daemon?.evolution_mode ?? summary.evolution_mode ?? 'unknown';
-    const attentionClass = att?.highest_severity ? ` has-attention attention-${att.highest_severity}` : '';
-    const attChip = att?.count > 0 && att.highest_severity
-      ? `<span class="daemon-chip attention-${att.highest_severity}" title="${att.critical ?? 0} ${t('severity.critical')} · ${att.warning ?? 0} ${t('severity.warning')} · ${att.info ?? 0} ${t('severity.info')}">${t('kpi.attention')} ${att.count}</span>`
+    const activeSeverity = att?.highest_active_severity
+      ?? (att?.active_count == null ? att?.highest_severity : null);
+    const activeCount = att?.active_count ?? att?.count ?? 0;
+    const historicalCount = att?.historical_count ?? 0;
+    const attentionClass = activeSeverity ? ` has-attention attention-${activeSeverity}` : '';
+    const attChip = activeCount > 0 && activeSeverity
+      ? `<span class="daemon-chip attention-${activeSeverity}" title="${att.active_critical ?? att.critical ?? 0} ${t('severity.critical')} · ${att.active_warning ?? att.warning ?? 0} ${t('severity.warning')} · ${att.active_info ?? att.info ?? 0} ${t('severity.info')}">${t('kpi.attention')} ${activeCount}</span>`
+      : historicalCount > 0
+        ? `<span class="daemon-chip" title="${t('posture.historicalOnly', { count: historicalCount })}">${t('posture.historyAck', { count: historicalCount })}</span>`
       : '';
     return `
       <button type="button" class="daemon-card${active}${attentionClass}" data-subject="${summary.subject}" aria-pressed="${summary.subject === activeSubject}">
@@ -537,7 +543,7 @@ function renderSubjectOverview() {
           <span class="daemon-chip mode-${mode}">${escapeHtml(formatEvolutionMode(mode))}</span>
           <span class="daemon-chip worker-${workerOn ? 'on' : 'off'}">${workerOn ? t('channel.workerRunning') : t('channel.workerStopped')}</span>
           <span class="daemon-chip">open ${openCycles}</span>
-          <span class="daemon-chip${failed ? ' attention-warning' : ''}">Q ${pending}/${running}/${failed}</span>
+          <span class="daemon-chip">Q ${pending}/${running}/${failed}</span>
           ${attChip}
           ${inPending || outPending ? `<span class="daemon-chip channel-attention">Ch ${inPending}/${outPending}</span>` : ''}
         </span>
@@ -566,18 +572,7 @@ function scheduleRenderOpsHome() {
 }
 
 function collectAttentionItems() {
-  const items = [];
-  if (isMultiSubject()) {
-    for (const s of subjectsList) {
-      for (const item of observabilityBySubject[s.subject]?.attention?.items ?? []) {
-        items.push(item);
-      }
-    }
-  } else {
-    for (const item of getObservability()?.attention?.items ?? []) {
-      items.push(item);
-    }
-  }
+  const items = [...(getObservability()?.attention?.items ?? [])];
   const order = { critical: 0, warning: 1, info: 2 };
   return items
     .sort((a, b) => (order[a.severity] ?? 9) - (order[b.severity] ?? 9))
@@ -735,7 +730,7 @@ function renderOperatorBriefsHtml() {
   return header + list;
 }
 
-function renderOpsPostureHtml(items) {
+function renderOpsPostureHtml() {
   const daemon = getDaemonState();
   const obs = getObservability();
   if (!daemon) {
@@ -750,8 +745,10 @@ function renderOpsPostureHtml(items) {
   const pendingBriefs = obs?.operator_inputs?.pending_count ?? 0;
   const attention = obs?.attention?.summary ?? {};
   const suggestions = obs?.cycle_diagnostics?.health_suggestions ?? [];
-  const activeItems = items.filter(isActiveBlockingAttention);
-  const historicalAttention = attention.historical_count ?? items.filter((item) => item.category === 'history' || item.status === 'needs_ack').length;
+  const subjectAttentionItems = obs?.attention?.items ?? [];
+  const activeItems = subjectAttentionItems.filter(isActiveBlockingAttention);
+  const historicalAttention = attention.historical_count
+    ?? subjectAttentionItems.filter((item) => item.category === 'history' || item.status === 'needs_ack').length;
   const activeFailed = activeItems.filter((item) => item.kind === 'task_failed' || item.kind === 'channel_task_failed').length;
 
   let nextAction = t('posture.ok');
@@ -774,11 +771,11 @@ function renderOpsPostureHtml(items) {
   } else if (current && activeStep) {
     nextAction = t('posture.activeStep', { step: STEP_LABELS[activeStep] ?? activeStep });
     tone = stepStatus(steps, activeStep) === 'failed' ? 'warning' : 'info';
-  } else if (suggestions.length) {
-    nextAction = suggestions[0];
-    tone = 'info';
   } else if (historicalAttention) {
     nextAction = t('posture.historicalOnly', { count: historicalAttention });
+    tone = 'info';
+  } else if (suggestions.length) {
+    nextAction = suggestions[0];
     tone = 'info';
   }
 
@@ -872,7 +869,7 @@ function renderOpsHome() {
         <p class="ops-home-subtitle">${t('app.opsSubtitle', { subject: activeSubject ?? '' })}</p>
       </div>
       ${renderKpiStripHtml()}
-      ${renderOpsPostureHtml(items)}
+      ${renderOpsPostureHtml()}
       <div class="ops-grid">
         <section class="ops-card ops-card-span-2 ops-card-attention">
           <h3 class="ops-card-title">${t('ops.attention')} <span class="ops-badge">${items.length}</span></h3>

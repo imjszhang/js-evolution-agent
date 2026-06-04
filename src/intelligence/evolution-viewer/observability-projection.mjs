@@ -177,10 +177,22 @@ function attentionFromChannel(subject, channel) {
   const items = [];
   if (!channel) return items;
   if (channel.health?.ok === false) {
+    const historicalStale = channel.health?.status === 'stale'
+      && !((channel.tasks?.counts?.pending ?? 0) > 0)
+      && !((channel.tasks?.running ?? []).length)
+      && !((channel.tasks?.failed ?? []).length)
+      && !((channel.inbound?.pending_count ?? 0) > 0)
+      && !((channel.outbox?.pending_count ?? 0) > 0)
+      && !channel.feishu?.reload?.pending;
     pushAttention(items, {
-      severity: 'critical',
+      severity: historicalStale ? 'warning' : 'critical',
       kind: 'channel_health',
-      title: `Channel: ${channel.health.status ?? 'unhealthy'}`,
+      status: historicalStale ? 'needs_ack' : 'active',
+      category: historicalStale ? 'history' : 'current',
+      blocking: !historicalStale,
+      title: historicalStale
+        ? `历史 Channel 状态: ${channel.health.status ?? 'unhealthy'}`
+        : `Channel: ${channel.health.status ?? 'unhealthy'}`,
       summary: (channel.health.reasons ?? []).join(' · '),
       subject,
       suggested_command: `npm run jea -- channel doctor --subject ${subject} --json`,
