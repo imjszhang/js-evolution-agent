@@ -85,6 +85,7 @@ const LOAD_DAEMON_DEBOUNCE_MS = 400;
 const LOAD_OBSERVABILITY_DEBOUNCE_MS = 400;
 const PATCH_DETAIL_DEBOUNCE_MS = 500;
 const CHANNEL_EVENT_BUFFER = 80;
+const SEVERITY_ORDER = { critical: 0, warning: 1, info: 2 };
 
 const STEP_ORDER = [
   'intel', 'intel_report', 'exec', 'verify', 'belief_update',
@@ -401,6 +402,18 @@ function severitySummary(summary = {}) {
   return parts.length ? parts.join(' / ') : String(summary.count);
 }
 
+function attentionPostureSummary(summary = {}) {
+  const active = summary.active_count ?? summary.count ?? 0;
+  const historical = summary.historical_count ?? 0;
+  if (!active && historical) return t('posture.attentionHistorical', { count: historical });
+  if (historical) return `${severitySummary({ ...summary, count: active, critical: summary.active_critical, warning: summary.active_warning, info: summary.active_info })} · ${t('posture.historyAck', { count: historical })}`;
+  return severitySummary(summary);
+}
+
+function isActiveBlockingAttention(item) {
+  return item?.status === 'active' && item.blocking !== false;
+}
+
 function formatEventLabel(ev) {
   const base = tDynamic('events', ev.event_type, ev.event_type);
   if (ev.event_type === 'evolution_mode_changed' && ev.from && ev.to) {
@@ -575,16 +588,21 @@ function renderAttentionBoardHtml(items) {
   if (!items.length) {
     return `<p class="card-empty">${t('ops.attentionEmpty')}</p>`;
   }
-  const groups = ['critical', 'warning', 'info']
-    .map((severity) => ({
-      severity,
-      items: items.filter((item) => (item.severity ?? 'info') === severity),
+  const groupDefs = [
+    { id: 'current', label: t('ops.currentAttention'), items: items.filter(isActiveBlockingAttention) },
+    { id: 'history', label: t('ops.historyAttention'), items: items.filter((item) => item.category === 'history' || item.status === 'needs_ack') },
+    { id: 'info', label: t('ops.infoAttention'), items: items.filter((item) => !isActiveBlockingAttention(item) && item.category !== 'history' && item.status !== 'needs_ack') },
+  ];
+  const groups = groupDefs
+    .map((group) => ({
+      ...group,
+      items: group.items.sort((a, b) => (SEVERITY_ORDER[a.severity] ?? 9) - (SEVERITY_ORDER[b.severity] ?? 9)),
     }))
     .filter((group) => group.items.length);
 
   return `<div class="attention-board-groups">${groups.map((group) => `
-    <section class="attention-group severity-${group.severity}">
-      <h4 class="attention-group-title">${tDynamic('severity', group.severity, group.severity)} <span>${group.items.length}</span></h4>
+    <section class="attention-group severity-${group.items[0]?.severity ?? 'info'}">
+      <h4 class="attention-group-title">${escapeHtml(group.label)} <span>${group.items.length}</span></h4>
       <ul class="attention-board-list">${group.items.map((item) => {
         const cycleId = item.refs?.cycle_id;
         const clickable = cycleId ? ' attention-item-clickable' : '';
@@ -595,6 +613,7 @@ function renderAttentionBoardHtml(items) {
           <li class="attention-board-item severity-${item.severity ?? 'info'}${clickable}"${dataAttrs} role="${cycleId ? 'button' : 'listitem'}" tabindex="${cycleId ? '0' : '-1'}">
             <div class="attention-item-head">
               <span class="attention-severity">${tDynamic('severity', item.severity, item.severity)}</span>
+              ${item.status === 'needs_ack' ? `<span class="attention-subject">${t('ops.needsAck')}</span>` : ''}
               ${isMultiSubject() && item.subject ? `<span class="attention-subject">${escapeHtml(item.subject)}</span>` : ''}
               <span class="attention-item-title">${escapeHtml(item.title)}</span>
             </div>
@@ -728,14 +747,16 @@ function renderOpsPostureHtml(items) {
   const activeStep = activeStepName(steps);
   const stuck = daemon.cycles?.stuck_steps ?? obs?.cycle_diagnostics?.stuck_steps ?? [];
   const drift = daemon.cycles?.drift_steps ?? obs?.cycle_diagnostics?.drift_steps ?? [];
-  const failed = daemon.tasks?.counts?.failed ?? 0;
   const pendingBriefs = obs?.operator_inputs?.pending_count ?? 0;
   const attention = obs?.attention?.summary ?? {};
   const suggestions = obs?.cycle_diagnostics?.health_suggestions ?? [];
+  const activeItems = items.filter(isActiveBlockingAttention);
+  const historicalAttention = attention.historical_count ?? items.filter((item) => item.category === 'history' || item.status === 'needs_ack').length;
+  const activeFailed = activeItems.filter((item) => item.kind === 'task_failed' || item.kind === 'channel_task_failed').length;
 
   let nextAction = t('posture.ok');
   let tone = 'ok';
-  if (items.some((item) => item.severity === 'critical')) {
+  if (activeItems.some((item) => item.severity === 'critical')) {
     nextAction = t('posture.critical');
     tone = 'critical';
   } else if (stuck.length) {
@@ -744,7 +765,7 @@ function renderOpsPostureHtml(items) {
   } else if (drift.length) {
     nextAction = t('posture.drift', { step: drift[0].step ?? '' });
     tone = 'warning';
-  } else if (failed) {
+  } else if (activeFailed) {
     nextAction = t('posture.failed');
     tone = 'warning';
   } else if (pendingBriefs) {
@@ -756,6 +777,9 @@ function renderOpsPostureHtml(items) {
   } else if (suggestions.length) {
     nextAction = suggestions[0];
     tone = 'info';
+  } else if (historicalAttention) {
+    nextAction = t('posture.historicalOnly', { count: historicalAttention });
+    tone = 'info';
   }
 
   return `
@@ -763,7 +787,7 @@ function renderOpsPostureHtml(items) {
       <div class="posture-main">
         <span class="posture-label">${t('posture.label')}</span>
         <strong>${escapeHtml(nextAction)}</strong>
-        <span class="posture-meta">${escapeHtml(activeSubject ?? '')} · ${escapeHtml(formatEvolutionMode(daemon.evolution_mode))} · ${t('posture.attentionLabel')} ${severitySummary(attention)}</span>
+        <span class="posture-meta">${escapeHtml(activeSubject ?? '')} · ${escapeHtml(formatEvolutionMode(daemon.evolution_mode))} · ${t('posture.attentionLabel')} ${attentionPostureSummary(attention)}</span>
       </div>
       <div class="posture-facts">
         <span><strong>${daemon.cycles?.open_count ?? 0}</strong> ${t('posture.open')}</span>
@@ -784,6 +808,12 @@ function renderKpiStripHtml() {
   const worker = daemon.worker ?? {};
   const counts = daemon.tasks?.counts ?? {};
   const att = obs?.attention?.summary ?? {};
+  const activeAtt = {
+    count: att.active_count ?? att.count ?? 0,
+    critical: att.active_critical ?? att.critical ?? 0,
+    warning: att.active_warning ?? att.warning ?? 0,
+    info: att.active_info ?? att.info ?? 0,
+  };
   const mode = daemon.evolution_mode;
   const modeLabel = mode ? formatEvolutionMode(mode) : t('common.dash');
   const cycles = daemon.cycles?.recent ?? [];
@@ -817,9 +847,9 @@ function renderKpiStripHtml() {
         <span class="kpi-label">${t('kpi.evolutionMode')}</span>
         <span class="kpi-value mode-${mode ?? 'unknown'}">${escapeHtml(modeLabel)}</span>
       </div>
-      <div class="kpi-card${att.highest_severity ? ` severity-${att.highest_severity}` : ''}">
+      <div class="kpi-card${att.highest_active_severity ? ` severity-${att.highest_active_severity}` : ''}">
         <span class="kpi-label">${t('kpi.attention')}</span>
-        <span class="kpi-value">${escapeHtml(severitySummary(att))}</span>
+        <span class="kpi-value">${escapeHtml(attentionPostureSummary({ ...activeAtt, historical_count: att.historical_count ?? 0 }))}</span>
       </div>
       <div class="kpi-card${channelIn || channelOut || pendingSpeech ? ' severity-warning' : ''}">
         <span class="kpi-label">${t('kpi.channel')}</span>

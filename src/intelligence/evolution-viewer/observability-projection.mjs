@@ -9,9 +9,14 @@ const STALE_BRIEF_MS = 30 * 60 * 1000;
  */
 function pushAttention(items, item) {
   if (!item?.title) return;
+  const status = item.status ?? 'active';
+  const blocking = item.blocking ?? status === 'active';
   items.push({
     severity: item.severity ?? 'info',
     kind: item.kind ?? 'general',
+    status,
+    category: item.category ?? (status === 'needs_ack' ? 'history' : 'current'),
+    blocking,
     title: item.title,
     summary: item.summary ?? '',
     subject: item.subject,
@@ -25,19 +30,43 @@ function pushAttention(items, item) {
  */
 export function summarizeAttention(items) {
   if (!items?.length) {
-    return { count: 0, highest_severity: null, critical: 0, warning: 0, info: 0 };
+    return {
+      count: 0,
+      active_count: 0,
+      historical_count: 0,
+      blocking_count: 0,
+      highest_severity: null,
+      highest_active_severity: null,
+      critical: 0,
+      warning: 0,
+      info: 0,
+    };
   }
   const sorted = [...items].sort(
     (a, b) => (SEVERITY_ORDER[a.severity] ?? 9) - (SEVERITY_ORDER[b.severity] ?? 9),
   );
+  const activeItems = items.filter((item) => item.status === 'active' && item.blocking !== false);
+  const activeSorted = [...activeItems].sort(
+    (a, b) => (SEVERITY_ORDER[a.severity] ?? 9) - (SEVERITY_ORDER[b.severity] ?? 9),
+  );
   const counts = { critical: 0, warning: 0, info: 0 };
+  const activeCounts = { active_critical: 0, active_warning: 0, active_info: 0 };
   for (const item of items) {
     if (counts[item.severity] != null) counts[item.severity] += 1;
+    if (item.status === 'active' && item.blocking !== false) {
+      const key = `active_${item.severity}`;
+      if (activeCounts[key] != null) activeCounts[key] += 1;
+    }
   }
   return {
     count: items.length,
+    active_count: activeItems.length,
+    historical_count: items.filter((item) => item.category === 'history' || item.status === 'needs_ack').length,
+    blocking_count: activeItems.length,
     highest_severity: sorted[0]?.severity ?? null,
+    highest_active_severity: activeSorted[0]?.severity ?? null,
     ...counts,
+    ...activeCounts,
   };
 }
 
@@ -102,13 +131,25 @@ function attentionFromCycles(subject, cycles) {
   return items;
 }
 
-function attentionFromTasks(subject, tasks) {
+function daemonIsCurrentlyHealthy(health, cycles) {
+  return health?.ok !== false
+    && !cycles?.open_count
+    && !cycles?.progress_stalled
+    && !(cycles?.stuck_steps ?? []).length
+    && !(cycles?.drift_steps ?? []).length;
+}
+
+function attentionFromTasks(subject, tasks, { health = null, cycles = null } = {}) {
   const items = [];
+  const historicalOnly = daemonIsCurrentlyHealthy(health, cycles);
   for (const task of tasks?.failed ?? []) {
     pushAttention(items, {
       severity: 'warning',
       kind: 'task_failed',
-      title: `任务失败: ${task.type}`,
+      status: historicalOnly ? 'needs_ack' : 'active',
+      category: historicalOnly ? 'history' : 'current',
+      blocking: !historicalOnly,
+      title: historicalOnly ? `历史失败任务: ${task.type}` : `任务失败: ${task.type}`,
       summary: `${task.task_id}: ${task.last_error_code ?? task.last_error ?? 'error'}`,
       subject,
       refs: { task_id: task.task_id },
@@ -119,6 +160,9 @@ function attentionFromTasks(subject, tasks) {
     pushAttention(items, {
       severity: 'critical',
       kind: 'task_lease_expired',
+      status: 'active',
+      category: 'current',
+      blocking: true,
       title: `租约过期: ${task.type}`,
       summary: task.task_id,
       subject,
@@ -315,7 +359,7 @@ export function buildSubjectObservability({ subject, runtimeRoot, daemon }) {
   const attentionItems = [
     ...attentionFromDaemonHealth(subject, daemon?.health),
     ...attentionFromCycles(subject, daemon?.cycles),
-    ...attentionFromTasks(subject, daemon?.tasks),
+    ...attentionFromTasks(subject, daemon?.tasks, { health: daemon?.health, cycles: daemon?.cycles }),
     ...attentionFromChannel(subject, daemon?.channel),
     ...attentionFromBriefs(subject, operator_inputs),
   ].sort((a, b) => (SEVERITY_ORDER[a.severity] ?? 9) - (SEVERITY_ORDER[b.severity] ?? 9));
