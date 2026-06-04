@@ -21,6 +21,7 @@ import {
   buildPresenceSignalKey,
 } from './state.mjs';
 import { buildExpressionCandidates, candidateIdForMessage, candidateIdForSignal } from './expression-candidates.mjs';
+import { DEFAULT_CHANNEL_CAPABILITIES } from './delivery-renderer.mjs';
 import { collectAttentionSignals } from './notify.mjs';
 import { resolvePresenceConfig } from './presence-config.mjs';
 import { resolveDefaultTransport } from './transport.mjs';
@@ -101,6 +102,30 @@ function annotateAttentionSignals(root, subject, signals) {
   });
 }
 
+/**
+ * Recent deliverables with their *true* delivery outcome (status records merged
+ * onto the append-only index). Grounds the planner in facts so it can answer
+ * "why didn't I get the doc?" truthfully instead of guessing about permissions.
+ */
+function summarizeRecentDeliverables(store, { limit = 5 } = {}) {
+  let records = [];
+  try {
+    records = store.readChannelDeliverables({ limit });
+  } catch {
+    records = [];
+  }
+  return records.map((record) => ({
+    deliverable_id: record.deliverable_id ?? null,
+    title: record.title ?? record.objective ?? null,
+    deliverable_type: record.deliverable_type ?? null,
+    status: record.status ?? null,
+    delivery_status: record.delivery_status ?? 'pending',
+    delivery_format: record.delivery_format ?? null,
+    delivery_error: record.delivery_error ?? null,
+    created_at: record.created_at ?? record.recorded_at ?? null,
+  }));
+}
+
 function summarizeCooldownKeys(root, subject, { limit = 20 } = {}) {
   const state = readCooldown(root, subject);
   const entries = Object.entries(state.keys ?? {})
@@ -178,6 +203,7 @@ export function buildPresenceContext(root, subject, {
     limit: limits.presence_interactions ?? 12,
   });
   const recentChannelPresence = partitionPresenceInteractions(recentPresenceInteractions);
+  const recentDeliverables = summarizeRecentDeliverables(store, { limit: limits.deliverables ?? 5 });
 
   const context = {
     schema_version: 3,
@@ -200,6 +226,8 @@ export function buildPresenceContext(root, subject, {
       background_messages,
       ignored_messages,
       recent_presence_interactions: recentPresenceInteractions,
+      recent_deliverables: recentDeliverables,
+      delivery_capabilities: DEFAULT_CHANNEL_CAPABILITIES,
       recent_events: readChannelEvents(root, subject, { limit: limits.events ?? 15 }),
       cooldown_keys: summarizeCooldownKeys(root, subject),
       presence_cursors: {

@@ -31,6 +31,74 @@ function formatList(title, records, render) {
   return `${title}:\n${lines.join('\n')}`;
 }
 
+/**
+ * Overlay delivery-outcome status records onto deliverable index records.
+ *
+ * The index is append-only (one record per deliverable, written with
+ * `delivery_status: pending`); actual send results land later in a separate
+ * append-only status source. This merges the latest status per delivery item
+ * onto each deliverable so readers see the true `sent`/`failed`/`partial` state
+ * without mutating the append-only index. Pure / side-effect free.
+ *
+ * @param {Array<object>} deliverables
+ * @param {Array<object>} statuses
+ * @returns {Array<object>}
+ */
+export function mergeDeliverableDeliveryStatus(deliverables = [], statuses = []) {
+  if (!Array.isArray(deliverables) || !deliverables.length) return deliverables;
+  if (!Array.isArray(statuses) || !statuses.length) return deliverables;
+
+  const byDeliverable = new Map();
+  for (const status of statuses) {
+    const deliverableId = status?.deliverable_id;
+    if (!deliverableId) continue;
+    let items = byDeliverable.get(deliverableId);
+    if (!items) {
+      items = new Map();
+      byDeliverable.set(deliverableId, items);
+    }
+    // Append order is chronological, so a later record for the same item wins.
+    items.set(status.item_index ?? 0, status);
+  }
+
+  return deliverables.map((deliverable) => {
+    const items = byDeliverable.get(deliverable?.deliverable_id);
+    if (!items || !items.size) return deliverable;
+    const list = [...items.values()];
+    const anySent = list.some((s) => s.delivery_status === 'sent');
+    const anyFailed = list.some((s) => s.delivery_status === 'failed');
+    const overall = anyFailed && anySent
+      ? 'partial'
+      : anyFailed
+        ? 'failed'
+        : anySent
+          ? 'sent'
+          : deliverable.delivery_status;
+    const sentItems = list.filter((s) => s.delivery_status === 'sent');
+    const primary = sentItems.find((s) => s.delivery_format === 'document')
+      ?? sentItems[0]
+      ?? list[list.length - 1];
+    const lastFailed = [...list].reverse().find((s) => s.delivery_status === 'failed');
+    return {
+      ...deliverable,
+      delivery_status: overall,
+      delivery_channel: primary?.delivery_channel ?? deliverable.delivery_channel ?? null,
+      delivery_format: primary?.delivery_format ?? deliverable.delivery_format ?? null,
+      delivery_message_id: primary?.delivery_message_id ?? deliverable.delivery_message_id ?? null,
+      delivery_error: anyFailed ? (lastFailed?.error ?? null) : null,
+      delivery_updated_at: list[list.length - 1]?.recorded_at ?? null,
+      delivery_items: list.map((s) => ({
+        item_index: s.item_index ?? 0,
+        medium: s.medium ?? null,
+        status: s.delivery_status ?? null,
+        format: s.delivery_format ?? null,
+        message_id: s.delivery_message_id ?? null,
+        error: s.error ?? null,
+      })),
+    };
+  });
+}
+
 export class IntelligenceStore {
   constructor({
     baseDir,
@@ -138,8 +206,22 @@ export class IntelligenceStore {
     }, 'deliverable')));
   }
 
-  readChannelDeliverables({ limit = 20 } = {}) {
-    return this.engine.readSource('channel_deliverables', { limit });
+  recordChannelDeliverableStatus(record) {
+    return this.engine.ingest('channel_deliverable_status', redactSecrets(withId({
+      recorded_at: new Date().toISOString(),
+      ...record,
+    }, 'deliverable-status')));
+  }
+
+  readChannelDeliverableStatuses({ limit = 500 } = {}) {
+    return this.engine.readSource('channel_deliverable_status', { limit });
+  }
+
+  readChannelDeliverables({ limit = 20, mergeStatus = true, statusLimit = 500 } = {}) {
+    const records = this.engine.readSource('channel_deliverables', { limit });
+    if (!mergeStatus) return records;
+    const statuses = this.engine.readSource('channel_deliverable_status', { limit: statusLimit });
+    return mergeDeliverableDeliveryStatus(records, statuses);
   }
 
   recordGoalEvent(event) {

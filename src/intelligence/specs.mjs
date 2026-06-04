@@ -60,6 +60,13 @@ export const INTELLIGENCE_SPECS = [
     filename: 'index.jsonl',
   }),
   new DataSourceSpec({
+    name: 'channel_deliverable_status',
+    description: 'Append-only delivery outcome updates (sent/failed per item) merged onto the deliverable index at read time.',
+    storageType: 'append_jsonl',
+    subdir: 'channel_deliverables',
+    filename: 'status.jsonl',
+  }),
+  new DataSourceSpec({
     name: 'goal_events',
     description: 'Append-only history of goal hypothesis changes and their evidence.',
     storageType: 'append_jsonl',

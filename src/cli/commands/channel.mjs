@@ -90,10 +90,12 @@ function printDeliverableList(records) {
     const id = record.deliverable_id ?? record.id ?? '?';
     const status = record.status ?? '-';
     const type = record.deliverable_type ?? 'message';
+    const delivery = record.delivery_status ?? 'pending';
+    const format = record.delivery_format ? `/${record.delivery_format}` : '';
     const label = String(record.title ?? record.objective ?? record.tldr ?? '')
       .replace(/\s+/g, ' ')
       .slice(0, 120);
-    console.log(`${created} ${id} status=${status} type=${type}${label ? ` ${label}` : ''}`);
+    console.log(`${created} ${id} status=${status} type=${type} delivery=${delivery}${format}${label ? ` ${label}` : ''}`);
   }
 }
 

@@ -7,6 +7,8 @@ export function resolvePresenceAffordances(root, subject) {
     capabilities: [
       'Acknowledge inbound messages already ingested (brief, fact, observation).',
       'Queue outbound messages via channel outbox (transport adapter sends).',
+      'Trigger a read-only intelligence agent run (start_agent_async) for questions that need investigation; its deliverable is delivered automatically.',
+      'Rich agent-run deliverables (tables, code, long reports) are delivered as Feishu documents automatically; short answers go as text. The channel supports both text and document delivery.',
       'Write operator intent briefs for the next intel cycle (not approval_granted).',
       'Record observations into unified intelligence.',
       'Stay silent when nothing new requires expression.',
@@ -15,6 +17,7 @@ export function resolvePresenceAffordances(root, subject) {
       'Cannot grant approval_granted or modify pending_decisions.json.',
       'Presence planner cannot execute control actions directly; only the channel control executor may run registered control_request actions.',
       'Cannot claim remote publish or code execution already completed.',
+      'Do NOT claim you lack permission to create or send Feishu documents — document delivery is supported and automatic for rich deliverables. If a document was expected but not received, consult channel.recent_deliverables.delivery_status / delivery_error for the real reason instead of guessing.',
       'CLI commands in replies must come from operator_commands only.',
     ],
     operator_commands: [

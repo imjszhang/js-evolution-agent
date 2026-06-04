@@ -16,7 +16,7 @@ import {
   reconcilePendingSpeechGeneration,
   trackPendingSpeechGeneration,
 } from '../src/channel/state.mjs';
-import { createIntelligenceStore } from '../src/intelligence/store.mjs';
+import { createIntelligenceStore, mergeDeliverableDeliveryStatus } from '../src/intelligence/store.mjs';
 import { isPresenceInteractionRecord } from '../src/channel/presence-memory.mjs';
 import { resolvePresenceAffordances } from '../src/channel/presence-affordances.mjs';
 import { readChannelEvents, recordChannelEvent } from '../src/channel/audit.mjs';
@@ -26,6 +26,7 @@ import {
   persistChannelDeliverable,
   resolveDeliverablePath,
   extractDeliverableTldr,
+  createDeliverableStore,
 } from '../src/channel/deliverable.mjs';
 import {
   renderDeliveryToOutbox,
@@ -592,6 +593,11 @@ describe('channel domain', () => {
       expect(rendered.messages).toHaveLength(1);
       expect(rendered.messages[0].document.markdown).toContain(body);
       expect(rendered.messages[0].metadata.delivery_format).toBe('document');
+      // Renderer is the authority: a declared message with rich content is
+      // upgraded to a document and the override is surfaced for auditing.
+      expect(rendered.declared_type).toBe('message');
+      expect(rendered.resolved_medium).toBe('document');
+      expect(rendered.type_overridden).toBe(true);
     });
 
     it('renderDeliveryToOutbox sends a link deliverable as a text message with the url', async () => {
@@ -662,6 +668,90 @@ describe('channel domain', () => {
 
       const noneItems = resolveDeliveryItems({ type: 'none', summary: '' });
       expect(noneItems).toHaveLength(0);
+    });
+
+    it('mergeDeliverableDeliveryStatus overlays sent/failed/partial onto the index', () => {
+      const deliverables = [
+        { deliverable_id: 'd-sent', delivery_status: 'pending' },
+        { deliverable_id: 'd-failed', delivery_status: 'pending' },
+        { deliverable_id: 'd-partial', delivery_status: 'pending' },
+        { deliverable_id: 'd-untouched', delivery_status: 'pending' },
+      ];
+      const statuses = [
+        { deliverable_id: 'd-sent', item_index: 0, delivery_status: 'sent', delivery_channel: 'feishu', delivery_format: 'document', delivery_message_id: 'om_1', recorded_at: '2026-06-05T00:00:00Z' },
+        { deliverable_id: 'd-failed', item_index: 0, delivery_status: 'failed', delivery_format: 'document', error: 'HTTP 400', recorded_at: '2026-06-05T00:00:01Z' },
+        { deliverable_id: 'd-partial', item_index: 0, delivery_status: 'sent', delivery_format: 'text', delivery_message_id: 'om_2', recorded_at: '2026-06-05T00:00:02Z' },
+        { deliverable_id: 'd-partial', item_index: 1, delivery_status: 'failed', delivery_format: 'document', error: 'boom', recorded_at: '2026-06-05T00:00:03Z' },
+      ];
+      const merged = mergeDeliverableDeliveryStatus(deliverables, statuses);
+      const byId = Object.fromEntries(merged.map((m) => [m.deliverable_id, m]));
+
+      expect(byId['d-sent'].delivery_status).toBe('sent');
+      expect(byId['d-sent'].delivery_format).toBe('document');
+      expect(byId['d-sent'].delivery_message_id).toBe('om_1');
+      expect(byId['d-sent'].delivery_error).toBeNull();
+
+      expect(byId['d-failed'].delivery_status).toBe('failed');
+      expect(byId['d-failed'].delivery_error).toBe('HTTP 400');
+
+      expect(byId['d-partial'].delivery_status).toBe('partial');
+      expect(byId['d-partial'].delivery_items).toHaveLength(2);
+
+      // No status records -> left unchanged.
+      expect(byId['d-untouched'].delivery_status).toBe('pending');
+      expect(byId['d-untouched'].delivery_items).toBeUndefined();
+    });
+
+    it('mergeDeliverableDeliveryStatus keeps the latest status per item (last write wins)', () => {
+      const merged = mergeDeliverableDeliveryStatus(
+        [{ deliverable_id: 'd1', delivery_status: 'pending' }],
+        [
+          { deliverable_id: 'd1', item_index: 0, delivery_status: 'failed', error: 'transient', recorded_at: '2026-06-05T00:00:00Z' },
+          { deliverable_id: 'd1', item_index: 0, delivery_status: 'sent', delivery_format: 'document', delivery_message_id: 'om_retry', recorded_at: '2026-06-05T00:01:00Z' },
+        ],
+      );
+      expect(merged[0].delivery_status).toBe('sent');
+      expect(merged[0].delivery_message_id).toBe('om_retry');
+    });
+
+    it('runChannelNotifyTask records delivery outcome merged into the deliverable index', async () => {
+      const root = makeRoot();
+      const store = createDeliverableStore(root, 'alpha');
+      // Seed a deliverable index record (as persistChannelDeliverable would).
+      store.recordChannelDeliverable({
+        deliverable_id: 'delivery-notify-1',
+        channel_agent_run_id: 'car-notify-1',
+        title: 'Notify 验证',
+        deliverable_type: 'document',
+        status: 'completed',
+        delivery_status: 'pending',
+      });
+      // Queue a deliverable outbox message (mock send so no real Feishu call).
+      writeOutboxMessage(root, 'alpha', {
+        channel: 'feishu',
+        target: 'oc_test',
+        text: '交付物已生成',
+        document: { title: 'Notify 验证', markdown: '# body', message_text: '交付物已生成' },
+        idempotency_key: 'channel-deliverable:alpha:car-notify-1:document:0',
+        metadata: {
+          channel_deliverable: true,
+          deliverable_id: 'delivery-notify-1',
+          channel_agent_run_id: 'car-notify-1',
+          delivery_format: 'document',
+          delivery_item: 'document',
+          item_index: 0,
+          mock: true,
+        },
+      });
+
+      const notify = await runChannelNotifyTask(root, 'alpha', { limit: 5 });
+      expect(notify.sent).toHaveLength(1);
+
+      const merged = store.readChannelDeliverables({ limit: 10 });
+      const record = merged.find((d) => d.deliverable_id === 'delivery-notify-1');
+      expect(record.delivery_status).toBe('sent');
+      expect(record.delivery_format).toBe('document');
+      expect(record.delivery_channel).toBe('feishu');
     });
 
     it('writeOutboxMessage deduplicates idempotency keys across pending and sent outbox', () => {

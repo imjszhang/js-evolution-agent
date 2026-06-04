@@ -193,5 +193,20 @@ export async function renderDeliveryToOutbox(root, subject, deliverable, request
   });
 
   const format = items.length === 1 ? items[0].medium : 'mixed';
-  return { messages, format, items, target: routed.target, transport: routed.transport };
+  // The renderer is the authority on medium: a deliverable the agent declared as
+  // a plain `message` but whose content is rich gets upgraded to a document.
+  // Surface that override so it can be audited (agent type-judgement quality).
+  const declaredType = deliverable.type ?? 'message';
+  const primaryMedium = items[0]?.medium ?? null;
+  const typeOverridden = declaredType !== 'document' && primaryMedium === 'document';
+  return {
+    messages,
+    format,
+    items,
+    target: routed.target,
+    transport: routed.transport,
+    declared_type: declaredType,
+    resolved_medium: primaryMedium,
+    type_overridden: typeOverridden,
+  };
 }

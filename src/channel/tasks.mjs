@@ -16,6 +16,7 @@ import { runChannelPresenceTask, runChannelSpeechGenerationTask } from './presen
 import { runChannelClassifierTask } from './classifier.mjs';
 import { runChannelControlActionTask } from './control-executor.mjs';
 import { runChannelAgentRunTask } from './agent-runner.mjs';
+import { createDeliverableStore, recordDeliveryOutcome } from './deliverable.mjs';
 import { enqueueClassifierIfPendingInbound, enqueueNotifyIfOutboxPending } from './wake.mjs';
 
 function readJsonStrict(file) {
@@ -46,6 +47,11 @@ export async function runChannelNotifyTask(root, subject, input = {}) {
   const files = listOutboxPending(root, subject, { limit: input.limit ?? 10 });
   const sent = [];
   const failed = [];
+  let deliverableStore = null;
+  const deliverableStoreFor = () => {
+    if (!deliverableStore) deliverableStore = createDeliverableStore(root, subject);
+    return deliverableStore;
+  };
   for (const file of files) {
     const payload = readJsonFile(file);
     if (!payload) {
@@ -53,6 +59,7 @@ export async function runChannelNotifyTask(root, subject, input = {}) {
       failed.push({ file, target, reason: 'parse_error' });
       continue;
     }
+    const meta = payload.metadata ?? {};
     try {
       const outbound = normalizeOutboundMessage(payload);
       const result = await sendOutboundMessage(outbound, {
@@ -69,14 +76,46 @@ export async function runChannelNotifyTask(root, subject, input = {}) {
         idempotency_key: outbound.idempotency_key,
         target: outbound.target,
       });
+      if (meta.deliverable_id) {
+        // Record the *actual* medium used: a document that fell back to text
+        // must be reported as text, not as the originally requested document.
+        const actualFormat = result?.document
+          ? 'document'
+          : result?.document_fallback
+            ? 'text'
+            : meta.delivery_format ?? meta.delivery_item ?? null;
+        recordDeliveryOutcome(root, subject, {
+          deliverable_id: meta.deliverable_id,
+          channel_agent_run_id: meta.channel_agent_run_id ?? null,
+          item_index: meta.item_index ?? 0,
+          medium: meta.delivery_item ?? meta.medium ?? null,
+          delivery_status: 'sent',
+          delivery_channel: outbound.channel ?? payload.channel ?? null,
+          delivery_format: actualFormat,
+          delivery_message_id: result?.messageId ?? null,
+        }, { store: deliverableStoreFor() });
+      }
     } catch (err) {
-      const target = markOutboxFailed(root, subject, file, err?.message || String(err), payload);
-      failed.push({ file, target, reason: err?.message || String(err) });
+      const reason = err?.message || String(err);
+      const target = markOutboxFailed(root, subject, file, reason, payload);
+      failed.push({ file, target, reason });
       recordChannelEvent(root, subject, {
         type: 'channel_message_send_failed',
         status: 'error',
-        error: err?.message || String(err),
+        error: reason,
       });
+      if (meta.deliverable_id) {
+        recordDeliveryOutcome(root, subject, {
+          deliverable_id: meta.deliverable_id,
+          channel_agent_run_id: meta.channel_agent_run_id ?? null,
+          item_index: meta.item_index ?? 0,
+          medium: meta.delivery_item ?? meta.medium ?? null,
+          delivery_status: 'failed',
+          delivery_channel: payload.channel ?? null,
+          delivery_format: meta.delivery_format ?? meta.delivery_item ?? null,
+          error: reason,
+        }, { store: deliverableStoreFor() });
+      }
     }
   }
   return { sent, failed };

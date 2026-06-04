@@ -90,6 +90,7 @@ describe('intelligence specs', () => {
       'probe_results',
       'intel_reports',
       'channel_deliverables',
+      'channel_deliverable_status',
       'goal_events',
       'standing_memory',
       'claim_ledger',

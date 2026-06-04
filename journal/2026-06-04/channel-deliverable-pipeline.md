@@ -334,3 +334,5 @@ npx vitest run test/channel.test.mjs
 - `adapters/feishu/index.mjs`：`sendOutboundMessage` 对 document 增加防御性兜底——若 docx API 仍失败，则把 `title + markdown` 当作文本分块发送，绝不静默丢内容（返回带 `document_fallback: 'text'`）。
 - 测试：`planDocumentInsertions` 三个用例（表格子树保留 + property 清洗、分批与顺序、空输入），`test/channel.test.mjs` 114 passed。
 - 真机验证：用原失败的表格交付物 payload 经真实代码路径重发，成功创建飞书云文档并发给操作者（`document` 路径，无 fallback）。
+
+> **完整复盘**（含投递状态回写、类型仲裁、presence 事实注入）：见 [`journal/2026-06-05/channel-deliverable-delivery-observability.md`](../2026-06-05/channel-deliverable-delivery-observability.md)。

@@ -236,6 +236,32 @@ function createStore(runtime) {
   });
 }
 
+/** Store rooted at the subject's intelligence dir (same baseDir as the deliverable index). */
+export function createDeliverableStore(root, subject) {
+  return createStore(runtimeForSubject(root, subject));
+}
+
+/**
+ * Append a delivery-outcome status record for a deliverable item so the
+ * append-only index can reflect the true sent/failed state when read back.
+ * No-op unless `outcome.deliverable_id` is present.
+ */
+export function recordDeliveryOutcome(root, subject, outcome = {}, { store = null } = {}) {
+  if (!outcome?.deliverable_id) return null;
+  const activeStore = store ?? createDeliverableStore(root, subject);
+  return activeStore.recordChannelDeliverableStatus({
+    deliverable_id: outcome.deliverable_id,
+    channel_agent_run_id: outcome.channel_agent_run_id ?? null,
+    item_index: outcome.item_index ?? 0,
+    medium: outcome.medium ?? null,
+    delivery_status: outcome.delivery_status ?? null,
+    delivery_channel: outcome.delivery_channel ?? null,
+    delivery_format: outcome.delivery_format ?? null,
+    delivery_message_id: outcome.delivery_message_id ?? null,
+    error: outcome.error ?? null,
+  });
+}
+
 /**
  * Persist a channel agent-run result as a deliverable.
  *
