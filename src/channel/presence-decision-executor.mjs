@@ -155,7 +155,100 @@ function queueSpeechIntent(root, subject, store, plan, action, { dryRun = false 
   return { queued: true, result: { action, applied: true, queued: true, intent_id: action.intent_id } };
 }
 
-function agentStartedAckIntent(subject, action) {
+function agentStartKey(action = {}) {
+  return action.candidate_id ?? action.idempotency_key ?? action.channel_agent_run_id ?? action.objective ?? null;
+}
+
+function contentText(value) {
+  try {
+    return JSON.stringify(value ?? {});
+  } catch {
+    return String(value ?? '');
+  }
+}
+
+function speechClaimsAgentState(action = {}) {
+  const req = action.content_requirements ?? {};
+  const kind = String(req.kind ?? req.summary?.kind ?? '').trim();
+  if (kind === 'agent_started_ack' || kind === 'agent_not_started_ack' || kind === 'agent_run_result') return true;
+  const text = [
+    kind,
+    action.reason,
+    action.reason_summary,
+    action.tone_hint,
+    contentText(req),
+  ].join('\n');
+  return /(已|已经|重新|重启|启动|开始|后台).{0,20}(agent|调研|任务)|cursor_sdk|provider.{0,12}(deferred|限制)|deferred|限制未能执行/i.test(text);
+}
+
+function speechHasAgentResultEvidence(action = {}) {
+  const req = action.content_requirements ?? {};
+  if (req.kind !== 'agent_run_result') return false;
+  const result = req.summary?.agent_result ?? req.summary ?? null;
+  return Boolean(result && typeof result === 'object' && result.channel_agent_run_id);
+}
+
+function agentNotStartedAckIntent(subject, action) {
+  return speechIntentFromDeterministic({
+    subject,
+    candidate_id: action.candidate_id ?? null,
+    target: action.target ?? 'channel_default',
+    reason: 'agent_not_started_ack',
+    reply_to_message_id: action.reply_to_message_id ?? null,
+    signal_key: action.signal_key ?? null,
+    idempotency_key: action.candidate_id
+      ? `presence:agent_not_started_ack:${action.candidate_id}`
+      : `presence:agent_not_started_ack:${action.idempotency_key ?? action.intent_id ?? action.reason}`,
+    kind: 'agent_not_started_ack',
+    summary: {
+      kind: 'agent_not_started_ack',
+      summary: '已收到调研请求，但尚未启动异步 agent。',
+      requested_summary: action.content_requirements?.summary ?? null,
+    },
+    reason_summary: 'acknowledge agent request without claiming execution',
+    tone_hint: 'brief, clear, no execution claim',
+    source_refs: action.source_refs ?? [],
+    memory_effect: 'record_agent_not_started_ack',
+  });
+}
+
+function bindSpeechToAgentStart(subject, action, agentStarts) {
+  if (!speechClaimsAgentState(action)) return action;
+  if (speechHasAgentResultEvidence(action)) return action;
+  const key = agentStartKey(action);
+  const start = key ? agentStarts.get(key) : null;
+  if (!start) return agentNotStartedAckIntent(subject, action);
+  return speechIntentFromDeterministic({
+    subject,
+    candidate_id: action.candidate_id ?? null,
+    target: action.target ?? 'channel_default',
+    reason: 'agent_started_ack',
+    reply_to_message_id: action.reply_to_message_id ?? null,
+    signal_key: action.signal_key ?? null,
+    idempotency_key: action.idempotency_key ?? (action.candidate_id
+      ? `presence:agent_started_ack:${action.candidate_id}`
+      : `presence:agent_started_ack:${start.channel_agent_run_id}`),
+    kind: 'agent_started_ack',
+    summary: {
+      kind: 'agent_started_ack',
+      summary: '已启动一个异步 agent 处理该请求；完成后会再通知结果。',
+      objective: start.objective ?? action.content_requirements?.summary?.objective ?? null,
+      channel_agent_run_id: start.channel_agent_run_id,
+      task_id: start.task_id ?? null,
+      queued: true,
+      created: start.created ?? false,
+    },
+    reason_summary: action.reason_summary ?? 'acknowledge asynchronous agent start',
+    tone_hint: 'brief, clear, no execution result claim',
+    source_refs: [
+      ...(action.source_refs ?? []),
+      `channel_agent_run:${start.channel_agent_run_id}`,
+    ],
+    memory_effect: 'record_agent_started_ack',
+  });
+}
+
+function agentStartedAckIntent(subject, action, start = {}) {
   return speechIntentFromDeterministic({
     subject,
     candidate_id: action.candidate_id ?? null,
@@ -166,15 +259,22 @@ function agentStartedAckIntent(subject, action) {
     idempotency_key: action.candidate_id
       ? `presence:agent_started_ack:${action.candidate_id}`
       : `presence:agent_started_ack:${action.idempotency_key ?? action.objective}`,
-    kind: 'custom',
+    kind: 'agent_started_ack',
     summary: {
       kind: 'agent_started_ack',
       summary: '已启动一个异步 agent 处理该请求；完成后会再通知结果。',
       objective: action.objective,
+      channel_agent_run_id: start.channel_agent_run_id ?? action.channel_agent_run_id ?? null,
+      task_id: start.task_id ?? null,
+      queued: true,
+      created: start.created ?? false,
     },
     reason_summary: action.reason_summary ?? 'acknowledge asynchronous agent start',
     tone_hint: 'brief, clear, no execution result claim',
-    source_refs: action.source_refs ?? [],
+    source_refs: [
+      ...(action.source_refs ?? []),
+      start.channel_agent_run_id ? `channel_agent_run:${start.channel_agent_run_id}` : null,
+    ].filter(Boolean),
     memory_effect: 'record_agent_started_ack',
   });
 }
@@ -250,6 +350,8 @@ export async function executePresenceDecisionPlan(root, subject, plan, {
   let speechQueued = 0;
 
   const plannedActions = plan.actions ?? plan.intents ?? [];
+  const pendingSpeechActions = [];
+  const successfulAgentStarts = new Map();
   const speechCandidateIds = new Set(plannedActions
     .filter((action) => action?.type === 'speech_intent' && action.candidate_id)
     .map((action) => action.candidate_id));
@@ -267,9 +369,7 @@ export async function executePresenceDecisionPlan(root, subject, plan, {
     }
 
     if (action.type === 'speech_intent') {
-      const queued = queueSpeechIntent(root, subject, store, plan, action, { dryRun });
-      if (queued.queued) speechQueued += 1;
-      results.push(queued.result);
+      pendingSpeechActions.push(action);
       continue;
     }
 
@@ -326,6 +426,23 @@ export async function executePresenceDecisionPlan(root, subject, plan, {
           `channel_agent_run:${channelAgentRunId}`,
         ].filter(Boolean),
       });
+      const startRecord = {
+        channel_agent_run_id: channelAgentRunId,
+        task_id: queued.task?.task_id ?? null,
+        created: queued.created ?? false,
+        candidate_id: action.candidate_id ?? null,
+        idempotency_key: idempotencyKey,
+        objective: action.objective,
+      };
+      for (const key of [
+        action.candidate_id,
+        action.idempotency_key,
+        idempotencyKey,
+        channelAgentRunId,
+        action.objective,
+      ].filter(Boolean)) {
+        successfulAgentStarts.set(key, startRecord);
+      }
       results.push({
         action,
         applied: true,
@@ -335,7 +452,7 @@ export async function executePresenceDecisionPlan(root, subject, plan, {
         created: queued.created ?? false,
       });
       if (!action.candidate_id || !speechCandidateIds.has(action.candidate_id)) {
-        const ack = agentStartedAckIntent(subject, action);
+        const ack = agentStartedAckIntent(subject, action, startRecord);
         const ackQueued = queueSpeechIntent(root, subject, store, plan, ack, { dryRun });
         if (ackQueued.queued) speechQueued += 1;
         results.push({
@@ -397,6 +514,17 @@ export async function executePresenceDecisionPlan(root, subject, plan, {
       });
       results.push({ action, applied: true, written });
     }
+  }
+
+  for (const action of pendingSpeechActions) {
+    const guardedAction = bindSpeechToAgentStart(subject, action, successfulAgentStarts);
+    const queued = queueSpeechIntent(root, subject, store, plan, guardedAction, { dryRun });
+    if (queued.queued) speechQueued += 1;
+    results.push({
+      ...queued.result,
+      guarded_from_action: guardedAction === action ? null : action,
+      guard_reason: guardedAction === action ? null : 'agent_state_claim_requires_audit_event',
+    });
   }
 
   if (!dryRun) {

@@ -52,6 +52,21 @@ function ackText(subject, kind, summary) {
       ].filter(Boolean).join('\n');
     }
   }
+  if (kind === 'agent_started_ack') {
+    const result = summary?.agent_result ?? summary;
+    return [
+      `${subject}: 已启动异步 agent。`,
+      result?.channel_agent_run_id ? `任务：${result.channel_agent_run_id}` : '',
+      result?.summary ?? '完成后会再通知结果。',
+    ].filter(Boolean).join('\n');
+  }
+  if (kind === 'agent_not_started_ack') {
+    return [
+      `${subject}: 已收到调研请求，但尚未启动异步 agent。`,
+      '我不会声称任务已启动，直到系统写入 channel_agent_run_requested 事件。',
+      summary?.requested_summary ? `请求：${summary.requested_summary}` : '',
+    ].filter(Boolean).join('\n');
+  }
   if (kind === 'agent_run_result') {
     const result = summary?.agent_result ?? summary;
     if (result && typeof result === 'object') {
@@ -99,20 +114,32 @@ function ackText(subject, kind, summary) {
   return `${subject}: 已收到并记录。`;
 }
 
-function sanitizeGeneratedText(value) {
+function agentStateClaimAllowed(text, intent = {}) {
+  const req = intent.content_requirements ?? {};
+  const kind = req.kind;
+  const agentResult = req.summary?.agent_result ?? req.summary ?? {};
+  const claimsStart = /(已|已经|重新|重启|启动|开始|后台).{0,20}(agent|调研|任务)/i.test(text);
+  const claimsDeferred = /cursor_sdk|provider.{0,12}(deferred|限制)|deferred|限制未能执行/i.test(text);
+  if (claimsStart && kind !== 'agent_started_ack') return false;
+  if (claimsDeferred && !(kind === 'agent_run_result' && agentResult?.deferred === true)) return false;
+  return true;
+}
+
+function sanitizeGeneratedText(value, intent = null) {
   const text = String(value ?? '').trim();
   if (!text) return null;
   if (/approval_granted|已授权发布|已经发布|已完成发布/i.test(text)) return null;
   if (/直接发布|直接授权/.test(text) && !/不会|不得|不能|无需|不会/i.test(text)) return null;
   if (/human_review:evt-[a-z0-9-]+|已记录此事件|已创建人工审核单/i.test(text)) return null;
+  if (intent && !agentStateClaimAllowed(text, intent)) return null;
   if (/(sk-[a-z0-9]{16,}|api[_-]?key|app[_-]?secret|token\s*[:=])/i.test(text)) return null;
   return text.slice(0, 1600);
 }
 
 function renderDeterministicSpeech(intent, subject) {
   const req = intent.content_requirements ?? {};
-  if (req.text_hint) return sanitizeGeneratedText(req.text_hint);
-  return sanitizeGeneratedText(ackText(subject, req.kind, req.summary ?? req));
+  if (req.text_hint) return sanitizeGeneratedText(req.text_hint, intent);
+  return sanitizeGeneratedText(ackText(subject, req.kind, req.summary ?? req), intent);
 }
 
 function createLlmClient(config) {
@@ -141,7 +168,9 @@ async function renderLlmSpeech(root, subject, intent, context, { aiClient = null
         'Use speech_intent.reason_summary and tone_hint for why/how to sound; do not invent facts beyond cycle_memory.',
         'Do not grant approval, do not claim actions executed, do not leak secrets.',
         'Do not invent event IDs, human_review references, tickets, approvals, or audit records not explicitly present in the payload.',
+        'Do not say an async agent was started, restarted, or queued unless speech_intent.content_requirements.kind is agent_started_ack and includes channel_agent_run_id.',
         'For deferred provider/configuration failures, say the agent did not start or complete due to provider configuration/runtime, not that a human review was created.',
+        'Do not mention cursor_sdk/provider deferred unless content_requirements.kind is agent_run_result and agent_result.deferred is true.',
         'Only reference CLI commands from affordances.operator_commands when needed.',
         'Follow content_requirements and risk_constraints in the user payload.',
         'For custom ordinary-message replies, follow subject_identity.soul and cycle_memory.recent_channel_presence instead of a generic acknowledgement.',
@@ -176,7 +205,7 @@ async function renderLlmSpeech(root, subject, intent, context, { aiClient = null
     timeout: cfg.llm?.timeout ?? 25,
   });
 
-  return sanitizeGeneratedText(parsed?.text) ?? renderDeterministicSpeech(intent, subject);
+  return sanitizeGeneratedText(parsed?.text, intent) ?? renderDeterministicSpeech(intent, subject);
 }
 
 /**
