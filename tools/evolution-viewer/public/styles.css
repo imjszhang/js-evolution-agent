@@ -92,7 +92,8 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 8px 12px;
 }
 
 .topbar-brand {
@@ -1255,19 +1256,126 @@ body {
 
 .subject-overview {
   display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-bottom: 10px;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .subject-overview.hidden {
   display: none;
 }
 
+/* ---- Collapsed pill bar ---- */
+.subject-pills {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.subject-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+  font: inherit;
+  font-size: 0.78rem;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.subject-pill:hover {
+  border-color: #a5b4fc;
+  background: var(--accent-soft);
+}
+
+.subject-pill.active {
+  border-color: #7c3aed;
+  background: var(--accent-soft);
+  font-weight: 600;
+}
+
+.subject-pill-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.health-dot-healthy { background: #059669; }
+.health-dot-idle { background: #6366f1; }
+.health-dot-stale,
+.health-dot-blocked,
+.health-dot-worker_zombie,
+.health-dot-evolution_stalled,
+.health-dot-cycle_start_blocked { background: #dc2626; }
+.health-dot-unknown { background: #9ca3af; }
+
+.subject-pill-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.subject-pill-badge {
+  font-size: 0.65rem;
+  font-weight: 600;
+  padding: 0 5px;
+  border-radius: 999px;
+  line-height: 1.4;
+}
+
+.subject-pill-badge.attention-critical { background: #fee2e2; color: #991b1b; }
+.subject-pill-badge.attention-warning { background: #fff7ed; color: #c2410c; }
+.subject-pill-badge.attention-info { background: #eff6ff; color: #1d4ed8; }
+
+/* ---- Toggle button ---- */
+.subject-toggle {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 0.8rem;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s;
+}
+
+.subject-toggle:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* ---- Expanded: overview takes full row ---- */
+.subject-overview.expanded {
+  flex-basis: 100%;
+  order: 99;
+}
+
+.subject-cards-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .daemon-card {
-  flex: 1 1 200px;
-  max-width: 280px;
-  padding: 10px 12px;
+  flex: 1 1 180px;
+  max-width: 260px;
+  padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--panel);
@@ -1290,15 +1398,15 @@ body {
 .daemon-card-title {
   display: block;
   font-weight: 600;
-  font-size: 0.9rem;
-  margin-bottom: 4px;
+  font-size: 0.82rem;
+  margin-bottom: 2px;
 }
 
 .daemon-card-meta {
   display: block;
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   color: var(--muted);
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 
 .daemon-card-stats {
@@ -2395,5 +2503,9 @@ body {
   .reader-nav {
     padding: 0 14px;
     min-height: 42px;
+  }
+  .subject-overview {
+    flex-basis: 100%;
+    order: 99;
   }
 }

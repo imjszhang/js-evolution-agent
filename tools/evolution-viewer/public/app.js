@@ -512,6 +512,21 @@ function formatEvolutionModeSource(source) {
   return tDynamic('modeSource', source, source ?? '');
 }
 
+let subjectOverviewExpanded = false;
+
+function subjectBadgeIndicators(summary) {
+  const daemon = daemonBySubject[summary.subject];
+  const healthClass = summary.health ?? 'unknown';
+  const att = summary.attention
+    ?? observabilityBySubject[summary.subject]?.attention?.summary
+    ?? null;
+  const activeSeverity = att?.highest_active_severity
+    ?? (att?.active_count == null ? att?.highest_severity : null);
+  const activeCount = att?.active_count ?? att?.count ?? 0;
+  const failed = daemon?.tasks?.counts?.failed ?? summary.failed_tasks ?? 0;
+  return { healthClass, activeSeverity, activeCount, failed };
+}
+
 function renderSubjectOverview() {
   if (!subjectOverviewEl) return;
   if (!isMultiSubject()) {
@@ -520,7 +535,39 @@ function renderSubjectOverview() {
     return;
   }
   subjectOverviewEl.classList.remove('hidden');
-  subjectOverviewEl.innerHTML = subjectsList.map((summary) => {
+
+  subjectOverviewEl.classList.toggle('expanded', subjectOverviewExpanded);
+  if (subjectOverviewExpanded) {
+    renderSubjectOverviewExpanded();
+  } else {
+    renderSubjectOverviewCollapsed();
+  }
+}
+
+function renderSubjectOverviewCollapsed() {
+  const pills = subjectsList.map((summary) => {
+    const active = summary.subject === activeSubject ? ' active' : '';
+    const { healthClass, activeSeverity, activeCount, failed } = subjectBadgeIndicators(summary);
+    const healthDot = `<span class="subject-pill-dot health-dot-${healthClass}" aria-label="${escapeHtml(formatHealthStatus(healthClass))}"></span>`;
+    const badges = [];
+    if (activeCount > 0 && activeSeverity) {
+      badges.push(`<span class="subject-pill-badge attention-${activeSeverity}">${activeCount}</span>`);
+    }
+    if (failed > 0) {
+      badges.push(`<span class="subject-pill-badge attention-critical">${failed}F</span>`);
+    }
+    return `<button type="button" class="subject-pill${active}" data-subject="${summary.subject}" aria-pressed="${summary.subject === activeSubject}">${healthDot}<span class="subject-pill-name">${escapeHtml(summary.subject)}</span>${badges.join('')}</button>`;
+  }).join('');
+
+  subjectOverviewEl.innerHTML =
+    `<div class="subject-pills">${pills}</div>` +
+    `<button type="button" class="subject-toggle" aria-label="Expand" title="Expand">▾</button>`;
+
+  bindSubjectOverviewEvents();
+}
+
+function renderSubjectOverviewExpanded() {
+  const cards = subjectsList.map((summary) => {
     const healthClass = summary.health ?? 'unknown';
     const active = summary.subject === activeSubject ? ' active' : '';
     const daemon = daemonBySubject[summary.subject];
@@ -562,7 +609,22 @@ function renderSubjectOverview() {
     `;
   }).join('');
 
-  for (const btn of subjectOverviewEl.querySelectorAll('.daemon-card')) {
+  subjectOverviewEl.innerHTML =
+    `<div class="subject-cards-wrap">${cards}</div>` +
+    `<button type="button" class="subject-toggle expanded" aria-label="Collapse" title="Collapse">▴</button>`;
+
+  bindSubjectOverviewEvents();
+}
+
+function bindSubjectOverviewEvents() {
+  const toggle = subjectOverviewEl.querySelector('.subject-toggle');
+  if (toggle) {
+    toggle.addEventListener('click', () => {
+      subjectOverviewExpanded = !subjectOverviewExpanded;
+      renderSubjectOverview();
+    });
+  }
+  for (const btn of subjectOverviewEl.querySelectorAll('.subject-pill, .daemon-card')) {
     btn.addEventListener('click', () => {
       const subject = btn.dataset.subject;
       if (subject && subject !== activeSubject) void setActiveSubject(subject, { preserveHash: false });
