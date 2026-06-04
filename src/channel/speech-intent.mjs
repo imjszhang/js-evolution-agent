@@ -38,6 +38,17 @@ function normalizeDeliberation(raw, { reason, candidate_id } = {}) {
   };
 }
 
+function normalizeContentRequirements(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const kind = SPEECH_INTENT_KINDS.includes(value.kind) ? value.kind : 'custom';
+  if (kind === value.kind) return { ...value, kind };
+  return {
+    kind: 'custom',
+    summary: value,
+    text_hint: typeof value.text_hint === 'string' ? value.text_hint : null,
+  };
+}
+
 /**
  * Normalize planner action into a speech intent (decision phase — no final text).
  */
@@ -47,7 +58,7 @@ export function normalizeSpeechIntent(raw, subject) {
   if (type !== 'speech_intent') return null;
 
   const intentId = raw.intent_id ?? createSpeechIntentId();
-  const contentRequirements = raw.content_requirements ?? null;
+  const contentRequirements = normalizeContentRequirements(raw.content_requirements);
   if (!contentRequirements) return null;
 
   const reason = String(raw.reason ?? 'presence_reply');
@@ -65,7 +76,7 @@ export function normalizeSpeechIntent(raw, subject) {
     reply_to_message_id: raw.reply_to_message_id ?? null,
     signal_key: raw.signal_key ?? null,
     idempotency_key: raw.idempotency_key ?? `presence:speech:${intentId}`,
-    content_requirements: contentRequirements ?? { kind: 'custom' },
+    content_requirements: contentRequirements,
     risk_constraints: raw.risk_constraints ?? {
       no_approval_grant: true,
       no_execution_claims: true,

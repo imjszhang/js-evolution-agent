@@ -15,7 +15,7 @@ import {
 import { createIntelligenceStore } from '../src/intelligence/store.mjs';
 import { isPresenceInteractionRecord } from '../src/channel/presence-memory.mjs';
 import { resolvePresenceAffordances } from '../src/channel/presence-affordances.mjs';
-import { readChannelEvents } from '../src/channel/audit.mjs';
+import { readChannelEvents, recordChannelEvent } from '../src/channel/audit.mjs';
 import { drainChannelInbound, runChannelInboundTask, runChannelTask, runChannelNotifyTask } from '../src/channel/tasks.mjs';
 import { runChannelAgentRunTask } from '../src/channel/agent-runner.mjs';
 import { runChannelClassifierTask } from '../src/channel/classifier.mjs';
@@ -1040,6 +1040,57 @@ describe('channel domain', () => {
       expect(plan.actions.find((action) => action.type === 'start_agent_async')?.permission_profile).toBe('read_only');
     });
 
+    it('llm planner preserves agent run result evidence for reply.agent_run candidates', async () => {
+      const root = makeRoot({
+        presence: {
+          enabled: true,
+          planner: 'llm',
+          default_target: 'oc_operator',
+        },
+      });
+      const ctx = buildPresenceContext(root, 'alpha');
+      ctx.expression.candidates = [{
+        id: 'reply:agent_run:channel-agent-result',
+        kind: 'reply.agent_run',
+        source: 'channel_agent_run',
+        priority: 'medium',
+        target: 'operator',
+        recommended_intent: 'custom',
+        summary: 'Agent completed report',
+        agent_result: {
+          ok: true,
+          channel_agent_run_id: 'channel-agent-result',
+          provider: 'cursor_sdk',
+          status: 'completed',
+          summary: 'Agent completed report',
+          deferred: false,
+        },
+        source_ref: 'channel:agent_run:channel-agent-result',
+      }];
+      const plan = await planPresenceWithLlm(ctx, {
+        aiClient: {
+          chatMessages: async () => JSON.stringify({
+            kind: 'speak',
+            reason: 'report_agent_result',
+            candidate_ids: ['reply:agent_run:channel-agent-result'],
+            intents: [{
+              candidate_id: 'reply:agent_run:channel-agent-result',
+              target: 'channel_default',
+              reason: 'custom_agent_result',
+              content_requirements: {
+                kind: 'custom',
+                summary: '调研完成，向操作者交付结果。',
+              },
+            }],
+          }),
+        },
+      });
+      expect(plan.actions[0].content_requirements.kind).toBe('agent_run_result');
+      expect(plan.actions[0].content_requirements.summary.agent_result.channel_agent_run_id)
+        .toBe('channel-agent-result');
+      expect(plan.actions[0].source_refs).toContain('channel:agent_run:channel-agent-result');
+    });
+
     it('presence executor queues async agent and acknowledgement speech without touching cycle queue', async () => {
       const root = makeRoot({
         presence: { enabled: true, planner: 'deterministic', default_target: 'oc_operator' },
@@ -1067,6 +1118,52 @@ describe('channel domain', () => {
       expect(readChannelTaskQueue(root, 'alpha').tasks.some((task) => task.type === 'channel_agent_run')).toBe(true);
       expect(summarizeChannelEventQueue(root, 'alpha').pending_speech_generation).toBeGreaterThan(0);
       expect(existsSync(pendingTasksPath(root, 'alpha'))).toBe(false);
+    });
+
+    it('presence speech rate limit does not block async agent action', async () => {
+      const root = makeRoot({
+        presence: {
+          enabled: true,
+          planner: 'deterministic',
+          default_target: 'oc_operator',
+          max_messages_per_hour: 1,
+        },
+      });
+      recordChannelEvent(root, 'alpha', {
+        type: 'channel_speech_generated',
+        status: 'ok',
+        intent_id: 'recent-speech',
+      });
+      const plan = {
+        kind: 'act',
+        reason: 'rate_limited_agent_test',
+        candidate_ids: ['reply:message:om_agent_rate_limited'],
+        planner: 'test',
+        actions: [{
+          type: 'start_agent_async',
+          candidate_id: 'reply:message:om_agent_rate_limited',
+          target: 'channel_default',
+          objective: 'Read recent channel state.',
+          mode: 'observe',
+          permission_profile: 'read_only',
+          reason: 'needs_async_agent',
+        }, {
+          type: 'speech_intent',
+          candidate_id: 'reply:message:om_agent_rate_limited',
+          target: 'channel_default',
+          reason: 'agent_started_ack',
+          content_requirements: {
+            kind: 'custom',
+            text_hint: '已启动异步 agent。',
+          },
+        }],
+      };
+      const execution = await executePresenceDecisionPlan(root, 'alpha', plan, { context: buildPresenceContext(root, 'alpha') });
+      expect(execution.results.some((result) => result.action?.type === 'start_agent_async' && result.queued)).toBe(true);
+      expect(execution.results.some((result) => result.action?.type === 'speech_intent' && result.skipped && result.reason === 'rate_limited'))
+        .toBe(true);
+      expect(readChannelTaskQueue(root, 'alpha').tasks.some((task) => task.type === 'channel_agent_run')).toBe(true);
+      expect(summarizeChannelEventQueue(root, 'alpha').pending_speech_generation).toBe(0);
     });
 
     it('presence executor binds agent started speech to a real queued agent task', async () => {
@@ -1706,6 +1803,69 @@ describe('channel domain', () => {
         aiClient: {
           chatMessages: async () => JSON.stringify({
             text: '已重新启动异步调研任务，但 agent provider cursor_sdk 再次 deferred。',
+          }),
+        },
+      });
+      expect(gen.generated).toBeGreaterThan(0);
+      const pending = listOutboxPending(root, 'alpha', { limit: 5 });
+      expect(readJsonFile(pending[0])?.text).toBe('alpha: 已收到并记录。');
+    });
+
+    it('speech generation allows evidenced deferred provider result', async () => {
+      const root = makeRoot({
+        presence: { enabled: true, planner: 'llm', default_target: 'oc_operator' },
+      });
+      appendChannelEvent(root, 'alpha', {
+        type: 'speech_generation_requested',
+        payload: {
+          intent_id: 'intent-agent-evidenced-deferred',
+          target: 'channel_default',
+          reason: 'agent_run_result',
+          content_requirements: {
+            kind: 'agent_run_result',
+            summary: {
+              agent_result: {
+                ok: false,
+                deferred: true,
+                provider: 'cursor_sdk',
+                channel_agent_run_id: 'channel-agent-deferred',
+                reason: 'provider_deferred',
+              },
+            },
+          },
+          idempotency_key: 'presence:test:evidenced-deferred',
+        },
+      });
+      const gen = await runChannelSpeechGenerationTask(root, 'alpha', {
+        aiClient: {
+          chatMessages: async () => JSON.stringify({
+            text: 'agent provider cursor_sdk deferred，任务未完成。',
+          }),
+        },
+      });
+      expect(gen.generated).toBeGreaterThan(0);
+      const pending = listOutboxPending(root, 'alpha', { limit: 5 });
+      expect(readJsonFile(pending[0])?.text).toContain('cursor_sdk deferred');
+    });
+
+    it('speech generation rejects unevidenced agent completion claims in custom text', async () => {
+      const root = makeRoot({
+        presence: { enabled: true, planner: 'llm', default_target: 'oc_operator' },
+      });
+      appendChannelEvent(root, 'alpha', {
+        type: 'speech_generation_requested',
+        payload: {
+          intent_id: 'intent-agent-false-complete',
+          target: 'channel_default',
+          reason: 'custom_reply',
+          content_requirements: { kind: 'custom', summary: '普通回复' },
+          idempotency_key: 'presence:test:false-complete',
+        },
+      });
+      const gen = await runChannelSpeechGenerationTask(root, 'alpha', {
+        aiClient: {
+          chatMessages: async () => JSON.stringify({
+            text: '调研完了，任务完成。',
           }),
         },
       });

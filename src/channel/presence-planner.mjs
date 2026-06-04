@@ -248,9 +248,33 @@ function agentStartedAckIntent(context, candidate) {
     reason: 'agent_started_ack',
     reply_to_message_id: candidate.reply_to_message_id ?? null,
     idempotency_key: `expression:${candidate.id}`,
-    kind: 'custom',
-    summary: '已收到，正在异步调查，完成后会通知你。',
+    kind: 'agent_started_ack',
+    summary: {
+      kind: 'agent_started_ack',
+      summary: '已收到，正在异步调查，完成后会通知你。',
+    },
   });
+}
+
+function intentWithCandidateEvidence(intent, candidate) {
+  if (!intent || !candidate) return intent;
+  if (candidate.kind !== 'reply.agent_run') return intent;
+  return {
+    ...intent,
+    content_requirements: {
+      ...(intent.content_requirements ?? {}),
+      kind: 'agent_run_result',
+      summary: {
+        agent_result: candidate.agent_result,
+        summary: candidate.summary,
+      },
+      subject: intent.content_requirements?.subject ?? intent.subject,
+    },
+    source_refs: [
+      ...(intent.source_refs ?? []),
+      candidate.source_ref,
+    ].filter(Boolean),
+  };
 }
 
 /**
@@ -376,6 +400,7 @@ export async function planPresenceWithLlm(context, { aiClient = null } = {}) {
 
     const kind = PRESENCE_PLAN_KINDS.includes(parsed?.kind) ? parsed.kind : fallback.kind;
     const validIds = new Set(available.map((candidate) => candidate.id));
+    const candidateById = new Map(available.map((candidate) => [candidate.id, candidate]));
     const parsedCandidateIds = Array.isArray(parsed?.candidate_ids)
       ? parsed.candidate_ids.filter((id) => validIds.has(id))
       : [];
@@ -389,6 +414,7 @@ export async function planPresenceWithLlm(context, { aiClient = null } = {}) {
       }, context.subject))
       .filter(Boolean)
       .filter((intent) => intent.candidate_id && validIds.has(intent.candidate_id))
+      .map((intent) => intentWithCandidateEvidence(intent, candidateById.get(intent.candidate_id)))
       .slice(0, context.presence?.max_actions_per_tick ?? 2);
     const rawActions = Array.isArray(parsed?.actions) ? parsed.actions : [];
     const normalizedActions = rawActions
@@ -396,7 +422,8 @@ export async function planPresenceWithLlm(context, { aiClient = null } = {}) {
       .filter(Boolean);
     const actionIntents = normalizedActions
       .filter((action) => action.type === 'speech_intent')
-      .filter((intent) => intent.candidate_id && validIds.has(intent.candidate_id));
+      .filter((intent) => intent.candidate_id && validIds.has(intent.candidate_id))
+      .map((intent) => intentWithCandidateEvidence(intent, candidateById.get(intent.candidate_id)));
     const sideActions = normalizedActions
       .filter((action) => action.type !== 'speech_intent')
       .filter((action) => !action.candidate_id || validIds.has(action.candidate_id));

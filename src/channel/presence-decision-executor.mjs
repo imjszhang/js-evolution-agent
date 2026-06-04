@@ -117,8 +117,11 @@ function applyExpressionCursors(root, subject, plan, outcome, extra = {}) {
   return writePresenceState(root, subject, patch);
 }
 
-function queueSpeechIntent(root, subject, store, plan, action, { dryRun = false } = {}) {
+function queueSpeechIntent(root, subject, store, plan, action, { dryRun = false, rateLimited = false } = {}) {
   const idempotencyKey = action.idempotency_key ?? `presence:speech:${action.intent_id}`;
+  if (rateLimited) {
+    return { queued: false, result: { action, skipped: true, reason: 'rate_limited' } };
+  }
   if (cooldownActive(root, subject, idempotencyKey)) {
     return { queued: false, result: { action, skipped: true, reason: 'cooldown' } };
   }
@@ -288,7 +291,7 @@ export async function executePresenceDecisionPlan(root, subject, plan, {
   dryRun = false,
   context = null,
 } = {}) {
-  const cfg = presenceConfig ?? plan.presence ?? {};
+  const cfg = presenceConfig ?? plan.presence ?? context?.presence ?? {};
   const maxPerHour = cfg.max_messages_per_hour ?? 0;
   const results = [];
   const store = createIntelligenceStoreForSubject(root, subject);
@@ -337,14 +340,14 @@ export async function executePresenceDecisionPlan(root, subject, plan, {
     return { applied: 0, skipped: 1, speech_queued: 0, results, plan };
   }
 
-  if (maxPerHour > 0 && recentSpeechIntentCount(root, subject) >= maxPerHour) {
+  const speechRateLimited = maxPerHour > 0 && recentSpeechIntentCount(root, subject) >= maxPerHour;
+  if (speechRateLimited) {
     recordChannelEvent(root, subject, {
       type: 'channel_presence_skipped',
       status: 'ok',
       skip_reason: 'rate_limited',
       limit: maxPerHour,
     });
-    return { applied: 0, skipped: true, reason: 'rate_limited', speech_queued: 0, results, plan };
   }
 
   let speechQueued = 0;
@@ -453,7 +456,7 @@ export async function executePresenceDecisionPlan(root, subject, plan, {
       });
       if (!action.candidate_id || !speechCandidateIds.has(action.candidate_id)) {
         const ack = agentStartedAckIntent(subject, action, startRecord);
-        const ackQueued = queueSpeechIntent(root, subject, store, plan, ack, { dryRun });
+        const ackQueued = queueSpeechIntent(root, subject, store, plan, ack, { dryRun, rateLimited: speechRateLimited });
         if (ackQueued.queued) speechQueued += 1;
         results.push({
           ...ackQueued.result,
@@ -518,7 +521,7 @@ export async function executePresenceDecisionPlan(root, subject, plan, {
 
   for (const action of pendingSpeechActions) {
     const guardedAction = bindSpeechToAgentStart(subject, action, successfulAgentStarts);
-    const queued = queueSpeechIntent(root, subject, store, plan, guardedAction, { dryRun });
+    const queued = queueSpeechIntent(root, subject, store, plan, guardedAction, { dryRun, rateLimited: speechRateLimited });
     if (queued.queued) speechQueued += 1;
     results.push({
       ...queued.result,

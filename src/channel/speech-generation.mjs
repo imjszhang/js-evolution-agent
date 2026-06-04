@@ -118,10 +118,18 @@ function agentStateClaimAllowed(text, intent = {}) {
   const req = intent.content_requirements ?? {};
   const kind = req.kind;
   const agentResult = req.summary?.agent_result ?? req.summary ?? {};
-  const claimsStart = /(已|已经|重新|重启|启动|开始|后台).{0,20}(agent|调研|任务)/i.test(text);
-  const claimsDeferred = /cursor_sdk|provider.{0,12}(deferred|限制)|deferred|限制未能执行/i.test(text);
-  if (claimsStart && kind !== 'agent_started_ack') return false;
-  if (claimsDeferred && !(kind === 'agent_run_result' && agentResult?.deferred === true)) return false;
+  const startedRunId = req.summary?.channel_agent_run_id ?? agentResult?.channel_agent_run_id ?? null;
+  const resultRunId = agentResult?.channel_agent_run_id ?? null;
+  const negated = /(尚未|未能|没有|不会|不能|无法|不代表|不是).{0,16}(启动|完成|结束|deferred|限制|审核|审查)/i.test(text);
+  const claimsStart = !negated && /(已|已经|重新|重启|启动|开始|后台).{0,20}(agent|调研|任务)/i.test(text);
+  const claimsDeferred = !negated && /cursor_sdk|provider.{0,12}(deferred|限制)|deferred|限制未能执行/i.test(text);
+  const claimsResult = !negated
+    && !/完成后/.test(text)
+    && (/(调研|任务|agent).{0,16}(已完成|完成了|完了|已结束|结束了)/i.test(text)
+      || /已完成.{0,16}(调研|任务|agent)/i.test(text));
+  if (claimsStart && !(kind === 'agent_started_ack' && startedRunId)) return false;
+  if (claimsDeferred && !(kind === 'agent_run_result' && agentResult?.deferred === true && resultRunId)) return false;
+  if (claimsResult && !(kind === 'agent_run_result' && resultRunId)) return false;
   return true;
 }
 
