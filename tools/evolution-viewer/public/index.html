@@ -10,35 +10,36 @@
   <header class="topbar">
     <div class="topbar-row">
       <div class="topbar-brand">
-        <h1>Evolution Viewer</h1>
+        <h1 data-i18n="app.title">Evolution Viewer</h1>
         <p id="live-status" class="live-status" aria-live="polite"></p>
       </div>
+      <div id="locale-switch" class="locale-switch" role="group" data-i18n-aria="locale.switchLabel"></div>
     </div>
-    <div id="subject-overview" class="subject-overview hidden" aria-label="Subject 切换"></div>
+    <div id="subject-overview" class="subject-overview hidden" data-i18n-aria="kpi.channel"></div>
     <p id="meta" class="meta"></p>
   </header>
   <div class="layout" id="app-layout">
-    <aside class="sidebar-wrap" aria-label="导航">
+    <aside class="sidebar-wrap" data-i18n-aria="nav.navAriaLabel">
       <div class="sidebar-section">
-        <h2 class="sidebar-heading">进行中</h2>
-        <div id="active-cycles" class="active-cycles" aria-label="进行中的 cycle"></div>
+        <h2 class="sidebar-heading" data-i18n="nav.inProgress">进行中</h2>
+        <div id="active-cycles" class="active-cycles" data-i18n-aria="nav.inProgress"></div>
       </div>
       <div class="sidebar-section sidebar-section-grow">
         <div class="sidebar-heading-row">
-          <h2 class="sidebar-heading">历史轮次</h2>
-          <input type="search" id="filter" class="sidebar-filter" placeholder="筛选…" autocomplete="off" aria-label="筛选 cycle" />
+          <h2 class="sidebar-heading" data-i18n="nav.history">历史轮次</h2>
+          <input type="search" id="filter" class="sidebar-filter" data-i18n-placeholder="nav.filterPlaceholder" autocomplete="off" data-i18n-aria="nav.history" />
         </div>
-        <div class="sidebar" id="timeline" aria-label="演化轮次"></div>
+        <div class="sidebar" id="timeline" data-i18n-aria="nav.history"></div>
       </div>
     </aside>
     <div class="main-stage">
-      <main id="ops-home" class="ops-home" aria-label="运维总览"></main>
-      <main id="cycle-reader" class="cycle-reader hidden" aria-label="轮次阅读">
+      <main id="ops-home" class="ops-home" data-i18n-aria="app.opsTitle"></main>
+      <main id="cycle-reader" class="cycle-reader hidden" data-i18n-aria="detail.reportTitle">
         <header class="reader-nav">
           <div class="reader-nav-start">
-            <button type="button" id="back-to-ops" class="reader-back-btn" aria-label="返回运维总览">
+            <button type="button" id="back-to-ops" class="reader-back-btn" data-i18n-aria="nav.backToOps">
               <span class="reader-back-icon" aria-hidden="true">←</span>
-              <span>运维总览</span>
+              <span data-i18n="nav.opsHome">运维总览</span>
             </button>
             <span class="reader-nav-sep" aria-hidden="true">/</span>
             <span id="reader-nav-cycle" class="reader-nav-cycle"></span>

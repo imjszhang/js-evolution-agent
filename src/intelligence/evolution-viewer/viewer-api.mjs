@@ -1,9 +1,18 @@
 import { createServer } from 'node:http';
 import { existsSync, readFileSync, statSync, watch } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { join, extname, resolve, relative } from 'node:path';
+import { join, extname, resolve, relative, basename } from 'node:path';
 import { createIntelligenceStore } from '../store.mjs';
 import { buildDaemonProjection } from '../../cli/utils/daemon-projection.mjs';
+import { buildChannelProjection } from '../../channel/projection.mjs';
+import { readChannelEvents } from '../../channel/audit.mjs';
+import {
+  channelInboundPendingDir,
+  channelInboundProcessedDir,
+  channelOutboxPendingDir,
+  channelOutboxSentDir,
+} from '../../channel/paths.mjs';
+import { listJsonFiles, readJsonFile } from '../../channel/state.mjs';
 import { buildManifest, manifestForApi } from './round-catalog.mjs';
 import { buildRoundDetail } from './round-detail.mjs';
 import { buildCycleDetail } from './cycle-detail.mjs';
@@ -336,6 +345,179 @@ export function createEvolutionEventsTailer({
   return { start, stop, readNewBytes, path };
 }
 
+function channelEventsFilePath(runtimeRoot) {
+  return join(runtimeRoot, 'data', 'channel', 'events.jsonl');
+}
+
+/**
+ * Map a channel audit record to an SSE payload.
+ * @param {object} event
+ * @returns {object|null}
+ */
+export function formatChannelEventForApi(event) {
+  if (!event?.type) return null;
+  return {
+    id: event.id ?? null,
+    event_type: event.type,
+    type: event.type,
+    status: event.status ?? null,
+    task_id: event.task_id ?? null,
+    task_type: event.task_type ?? null,
+    message_id: event.message_id ?? null,
+    ingest_kind: event.ingest_kind ?? null,
+    reason: event.reason ?? null,
+    recorded_at: event.recorded_at ?? event.timestamp ?? null,
+  };
+}
+
+/**
+ * Tail channel/events.jsonl and emit channel_event SSE on new lines.
+ */
+export function createChannelEventsTailer({ runtimeRoot, subjectMeta, sse, onChannelEvent }) {
+  const path = channelEventsFilePath(runtimeRoot);
+  let offset = 0;
+  let partial = '';
+  /** @type {import('node:fs').FSWatcher | null} */
+  let watcher = null;
+
+  function syncOffsetToEnd() {
+    if (!existsSync(path)) {
+      offset = 0;
+      return;
+    }
+    try {
+      offset = statSync(path).size;
+    } catch {
+      offset = 0;
+    }
+  }
+
+  function processChunk(chunk) {
+    partial += chunk;
+    const lines = partial.split('\n');
+    partial = lines.pop() ?? '';
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      let event;
+      try {
+        event = JSON.parse(trimmed);
+      } catch {
+        continue;
+      }
+      const payload = formatChannelEventForApi(event);
+      if (!payload) continue;
+      const enriched = withSubjectMeta(subjectMeta, { event: 'channel_event', ...payload });
+      sse.broadcast('channel_event', enriched);
+      onChannelEvent?.(enriched);
+    }
+  }
+
+  function readNewBytes() {
+    if (!existsSync(path)) return;
+    try {
+      const size = statSync(path).size;
+      if (size < offset) {
+        offset = 0;
+        partial = '';
+      }
+      if (size <= offset) return;
+      const fd = readFileSync(path);
+      const slice = fd.subarray(offset, size);
+      offset = size;
+      processChunk(slice.toString('utf-8'));
+    } catch {
+      // ignore read races
+    }
+  }
+
+  function start() {
+    syncOffsetToEnd();
+    if (!existsSync(path)) return;
+    try {
+      watcher = watch(path, () => readNewBytes());
+    } catch {
+      // ignore
+    }
+  }
+
+  function stop() {
+    if (watcher) {
+      try {
+        watcher.close();
+      } catch {
+        // ignore
+      }
+      watcher = null;
+    }
+  }
+
+  return { start, stop, readNewBytes, path };
+}
+
+function truncateText(value, max = 120) {
+  const s = String(value ?? '').replace(/\s+/g, ' ').trim();
+  if (s.length <= max) return s;
+  return `${s.slice(0, max)}…`;
+}
+
+/**
+ * @param {object|null} payload
+ * @param {string} file
+ */
+function summarizeInboundFile(payload, file) {
+  const env = payload?.envelope ?? payload ?? {};
+  const cls = payload?.classifier ?? null;
+  const understanding = cls?.understanding ?? null;
+  return {
+    file: basename(file),
+    message_id: payload?.message_id ?? env.message_id ?? env.messageId ?? null,
+    sender: env.sender_id ?? env.sender?.id ?? env.open_id ?? null,
+    chat_id: env.chat_id ?? env.chatId ?? null,
+    received_at: payload?.received_at ?? env.received_at ?? null,
+    text: truncateText(env.text ?? env.content ?? payload?.text ?? '', 140),
+    classification: cls?.classification ?? cls?.kind ?? null,
+    understanding: understanding
+      ? {
+        user_intent: understanding.user_intent ?? null,
+        needs_immediate_action: understanding.needs_immediate_action ?? null,
+        temporal: understanding.temporal ?? null,
+        complexity: understanding.complexity ?? null,
+      }
+      : null,
+  };
+}
+
+/**
+ * @param {object|null} payload
+ * @param {string} file
+ */
+function summarizeOutboxFile(payload, file) {
+  const out = payload?.outbound ?? payload ?? {};
+  return {
+    file: basename(file),
+    to: out.chat_id ?? out.to ?? null,
+    text: truncateText(out.text ?? '', 140),
+    speech_intent_id: payload?.metadata?.speech_intent_id ?? out.metadata?.speech_intent_id ?? null,
+    message_id: payload?.send_result?.messageId ?? payload?.send_result?.message_id ?? null,
+    sent_at: payload?.sent_at ?? null,
+    failed_at: payload?.failed_at ?? null,
+    reason: payload?.reason ?? null,
+  };
+}
+
+/**
+ * @param {string} dir
+ * @param {(payload: object|null, file: string) => object} summarize
+ * @param {number} limit
+ */
+function summarizeChannelDir(dir, summarize, limit) {
+  return listJsonFiles(dir)
+    .slice(-Math.max(0, limit))
+    .reverse()
+    .map((file) => summarize(readJsonFile(file, null), file));
+}
+
 /**
  * Watch runtime daemon files and emit runtime_updated SSE (debounced).
  */
@@ -529,6 +711,28 @@ function createSubjectContext(runtime, projectRoot, catalogLimit) {
     return observabilityCache;
   }
 
+  function getChannel(force = false) {
+    return buildChannelProjection(projectRoot, runtime.subject, { eventLimit: 30 });
+  }
+
+  function getChannelEvents(limit = 50) {
+    return readChannelEvents(projectRoot, runtime.subject, { limit });
+  }
+
+  function listChannelInbound(status = 'pending', limit = 20) {
+    const dir = status === 'processed'
+      ? channelInboundProcessedDir(projectRoot, runtime.subject)
+      : channelInboundPendingDir(projectRoot, runtime.subject);
+    return summarizeChannelDir(dir, summarizeInboundFile, limit);
+  }
+
+  function listChannelOutbox(status = 'pending', limit = 20) {
+    const dir = status === 'sent'
+      ? channelOutboxSentDir(projectRoot, runtime.subject)
+      : channelOutboxPendingDir(projectRoot, runtime.subject);
+    return summarizeChannelDir(dir, summarizeOutboxFile, limit);
+  }
+
   function getCycleDetail(cycleId) {
     const cached = cycleDetailCache.get(cycleId);
     if (cached) return cached;
@@ -560,6 +764,10 @@ function createSubjectContext(runtime, projectRoot, catalogLimit) {
     getObservability,
     getRoundDetail,
     getCycleDetail,
+    getChannel,
+    getChannelEvents,
+    listChannelInbound,
+    listChannelOutbox,
     bumpDaemonCache,
     clearCaches() {
       detailCache.clear();
@@ -612,6 +820,7 @@ export function createViewerApiServer({ runtime, runtimes, projectRoot, limit, p
   sse.start();
 
   const tailers = [];
+  const channelTailers = [];
   const runtimeWatchers = [];
   const multiSubject = runtimeList.length > 1;
 
@@ -628,6 +837,15 @@ export function createViewerApiServer({ runtime, runtimes, projectRoot, limit, p
     });
     tailer.start();
     tailers.push(tailer);
+
+    const channelTailer = createChannelEventsTailer({
+      runtimeRoot: rt.runtimeRoot,
+      subjectMeta: ctx.subjectMeta,
+      sse,
+      onChannelEvent: () => ctx.bumpDaemonCache(),
+    });
+    channelTailer.start();
+    channelTailers.push(channelTailer);
 
     const runtimeWatcher = createRuntimeWatcher({
       runtimeRoot: rt.runtimeRoot,
@@ -729,6 +947,45 @@ export function createViewerApiServer({ runtime, runtimes, projectRoot, limit, p
           res.end(JSON.stringify(ctx.getObservability()));
           return;
         }
+        if (rest === 'channel') {
+          res.writeHead(200, {
+            'Content-Type': 'application/json; charset=utf-8',
+            'Cache-Control': 'no-store',
+          });
+          res.end(JSON.stringify(ctx.getChannel()));
+          return;
+        }
+        if (rest === 'channel/events') {
+          const reqLimit = Number(url.searchParams.get('limit'));
+          const effectiveLimit = Number.isFinite(reqLimit) && reqLimit > 0 ? reqLimit : 50;
+          jsonResponse(res, 200, {
+            subject: subjectName,
+            events: ctx.getChannelEvents(effectiveLimit),
+          });
+          return;
+        }
+        if (rest === 'channel/inbound') {
+          const status = url.searchParams.get('status') === 'processed' ? 'processed' : 'pending';
+          const reqLimit = Number(url.searchParams.get('limit'));
+          const effectiveLimit = Number.isFinite(reqLimit) && reqLimit > 0 ? reqLimit : 20;
+          jsonResponse(res, 200, {
+            subject: subjectName,
+            status,
+            files: ctx.listChannelInbound(status, effectiveLimit),
+          });
+          return;
+        }
+        if (rest === 'channel/outbox') {
+          const status = url.searchParams.get('status') === 'sent' ? 'sent' : 'pending';
+          const reqLimit = Number(url.searchParams.get('limit'));
+          const effectiveLimit = Number.isFinite(reqLimit) && reqLimit > 0 ? reqLimit : 20;
+          jsonResponse(res, 200, {
+            subject: subjectName,
+            status,
+            files: ctx.listChannelOutbox(status, effectiveLimit),
+          });
+          return;
+        }
         const roundScoped = rest.match(/^rounds\/([^/]+)$/);
         if (roundScoped) {
           const cycleId = roundScoped[1];
@@ -792,6 +1049,49 @@ export function createViewerApiServer({ runtime, runtimes, projectRoot, limit, p
         return;
       }
 
+      if (pathname === '/api/channel') {
+        res.writeHead(200, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store',
+        });
+        res.end(JSON.stringify(legacyCtx.getChannel()));
+        return;
+      }
+
+      if (pathname === '/api/channel/events') {
+        const reqLimit = Number(url.searchParams.get('limit'));
+        const effectiveLimit = Number.isFinite(reqLimit) && reqLimit > 0 ? reqLimit : 50;
+        jsonResponse(res, 200, {
+          subject: legacySubject,
+          events: legacyCtx.getChannelEvents(effectiveLimit),
+        });
+        return;
+      }
+
+      if (pathname === '/api/channel/inbound') {
+        const status = url.searchParams.get('status') === 'processed' ? 'processed' : 'pending';
+        const reqLimit = Number(url.searchParams.get('limit'));
+        const effectiveLimit = Number.isFinite(reqLimit) && reqLimit > 0 ? reqLimit : 20;
+        jsonResponse(res, 200, {
+          subject: legacySubject,
+          status,
+          files: legacyCtx.listChannelInbound(status, effectiveLimit),
+        });
+        return;
+      }
+
+      if (pathname === '/api/channel/outbox') {
+        const status = url.searchParams.get('status') === 'sent' ? 'sent' : 'pending';
+        const reqLimit = Number(url.searchParams.get('limit'));
+        const effectiveLimit = Number.isFinite(reqLimit) && reqLimit > 0 ? reqLimit : 20;
+        jsonResponse(res, 200, {
+          subject: legacySubject,
+          status,
+          files: legacyCtx.listChannelOutbox(status, effectiveLimit),
+        });
+        return;
+      }
+
       const cycleMatch = pathname.match(/^\/api\/cycles\/([^/]+)$/);
       if (cycleMatch) {
         const cycleId = cycleMatch[1];
@@ -829,6 +1129,7 @@ export function createViewerApiServer({ runtime, runtimes, projectRoot, limit, p
     sse,
     tailer: tailers[0],
     tailers,
+    channelTailers,
     runtimeWatcher: runtimeWatchers[0],
     runtimeWatchers,
     defaultSubject,
@@ -838,6 +1139,7 @@ export function createViewerApiServer({ runtime, runtimes, projectRoot, limit, p
     },
     async close() {
       for (const tailer of tailers) tailer.stop();
+      for (const tailer of channelTailers) tailer.stop();
       for (const watcher of runtimeWatchers) watcher.stop();
       sse.stop();
       await new Promise((resolveClose, reject) => {
