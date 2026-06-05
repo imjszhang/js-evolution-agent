@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { sendOutboundMessage } from './adapters/feishu/index.mjs';
+import { resolveOutboundAdapter } from './adapter-registry.mjs';
 import { recordChannelEvent } from './audit.mjs';
 import { drainChannelInbound } from './inbound-drain.mjs';
 import { enqueueChannelTask } from './task-queue.mjs';
@@ -62,7 +62,8 @@ export async function runChannelNotifyTask(root, subject, input = {}) {
     const meta = payload.metadata ?? {};
     try {
       const outbound = normalizeOutboundMessage(payload);
-      const result = await sendOutboundMessage(outbound, {
+      const adapter = await resolveOutboundAdapter(outbound.channel);
+      const result = await adapter.module.sendOutboundMessage(outbound, {
         root,
         subject,
         ...(input.adapter_options ?? {}),
@@ -74,6 +75,8 @@ export async function runChannelNotifyTask(root, subject, input = {}) {
         status: 'ok',
         outbound_id: outbound.id,
         idempotency_key: outbound.idempotency_key,
+        channel: outbound.channel,
+        adapter: adapter.id,
         target: outbound.target,
       });
       if (meta.deliverable_id) {

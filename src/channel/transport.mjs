@@ -45,5 +45,20 @@ export async function resolveOutboundTarget(root, subject, hint, { transport = n
     const target = cfg?.defaultChatId ?? cfg?.operatorBinding?.open_id ?? null;
     if (target) return { transport: resolvedTransport, target };
   }
+  if (resolvedTransport === 'bridge-intent' || resolvedTransport === 'openclaw-intent') {
+    const bridge = entry?.channels?.[resolvedTransport]
+      ?? entry?.channels?.['bridge-intent']
+      ?? entry?.channels?.openclaw
+      ?? {};
+    const target = bridge.default_target
+      ?? bridge.defaultTarget
+      ?? bridge.target
+      ?? bridge.agent_id
+      ?? bridge.agentId
+      ?? bridge.openclaw_agent_id
+      ?? bridge.openclawAgentId
+      ?? subject;
+    return { transport: resolvedTransport, target: String(target) };
+  }
   return { transport: resolvedTransport, target: null };
 }

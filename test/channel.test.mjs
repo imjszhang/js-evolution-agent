@@ -1,5 +1,5 @@
 import { describe, expect, it, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { writeJsonFile } from '../src/cli/utils/files.mjs';
@@ -35,6 +35,7 @@ import {
 } from '../src/channel/delivery-renderer.mjs';
 import { FeishuSender } from '../src/channel/adapters/feishu/sender.mjs';
 import { planDocumentInsertions } from '../src/channel/adapters/feishu/client.mjs';
+import { bridgeIntentDir } from '../src/channel/adapters/bridge-intent/index.mjs';
 import { runChannelClassifierTask } from '../src/channel/classifier.mjs';
 import { claimNextChannelTask } from '../src/channel/task-queue.mjs';
 import { resolveChannelWorkerTaskTypes, taskTypesForChannelRole, DEFAULT_CHANNEL_ROLES } from '../src/channel/channel-roles.mjs';
@@ -99,6 +100,7 @@ function makeRoot({
     interval_ms: 30_000,
     batch_size: 5,
   },
+  additionalChannels = {},
   policyText = null,
 } = {}) {
   tempDir = mkdtempSync(join(tmpdir(), 'jea-channel-'));
@@ -112,6 +114,7 @@ function makeRoot({
     feishu: { default_chat_id: channelTarget, mock: true, ...feishu },
     presence,
     classifier,
+    ...additionalChannels,
   };
   writeJsonFile(join(tempDir, 'policies', 'subjects.json'), {
     default_subject: 'alpha',
@@ -752,6 +755,40 @@ describe('channel domain', () => {
       expect(record.delivery_status).toBe('sent');
       expect(record.delivery_format).toBe('document');
       expect(record.delivery_channel).toBe('feishu');
+    });
+
+    it('runChannelNotifyTask can route outbox messages to bridge-intent adapter', async () => {
+      const root = makeRoot({
+        presence: {
+          enabled: true,
+          planner: 'deterministic',
+          default_transport: 'bridge-intent',
+        },
+        additionalChannels: {
+          'bridge-intent': { target: 'jea-alpha' },
+        },
+      });
+      writeOutboxMessage(root, 'alpha', {
+        channel: 'bridge-intent',
+        target: 'jea-alpha',
+        text: 'Alpha 完成了一次表达意图。',
+        subject: 'alpha',
+        idempotency_key: 'bridge-intent-test-1',
+        metadata: { presence: true },
+      });
+
+      const notify = await runChannelNotifyTask(root, 'alpha', { limit: 5 });
+      expect(notify.sent).toHaveLength(1);
+      expect(notify.failed).toHaveLength(0);
+
+      const pendingDir = join(bridgeIntentDir(root, 'alpha'), 'pending');
+      const files = readdirSync(pendingDir).filter((name) => name.endsWith('.json'));
+      expect(files).toHaveLength(1);
+      const intent = JSON.parse(readFileSync(join(pendingDir, files[0]), 'utf-8'));
+      expect(intent.type).toBe('channel_outbound_intent');
+      expect(intent.subject).toBe('alpha');
+      expect(intent.target).toBe('jea-alpha');
+      expect(intent.outbound.text).toContain('Alpha 完成');
     });
 
     it('writeOutboxMessage deduplicates idempotency keys across pending and sent outbox', () => {
