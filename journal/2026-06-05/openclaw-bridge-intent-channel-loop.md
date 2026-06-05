@@ -1,7 +1,7 @@
-# OpenClaw Bridge Intent：让 Channel Loop 正常运行，但把表达权交给 OpenClaw
+# OpenClaw Bridge Intent：从通道意图到一键部署的 JEA/OpenClaw 接入
 
 > 日期：2026-06-05  
-> 项目：js-evolution-agent（Channel Loop / OpenClaw Bridge）  
+> 项目：js-evolution-agent（Channel Loop / OpenClaw Bridge / CLI Deploy）  
 > 类型：架构设计 / 功能实现 / 调研分析  
 > 来源：Cursor Agent 对话
 
@@ -42,6 +42,14 @@
 > **Channel Loop 继续完整运行，但它的出站不再直接面向用户，而是生成给 OpenClaw Agent Loop 消费的表达意图。**
 
 OpenClaw 负责多通道接入与最终对外表达。JEA 负责把信息消化成系统级意图。
+
+第一步已经让 Channel Loop 能把出站内容写成 `bridge-intent` 文件。但这还不够。
+
+如果每次切换 OpenClaw 模式都要手动改 `runtime/subjects/registry.json`、手写 `AGENTS.md`、创建 intent 目录、再拼 OpenClaw 配置片段，这个能力就还只是“内部机制”，不是一个可部署的功能。
+
+因此第二阶段目标变成：
+
+> **把 OpenClaw bridge 变成 JEA 的独立部署功能，并且部署后可以和原有 Feishu 模式自由切换。**
 
 ---
 
@@ -100,6 +108,37 @@ runChannelNotifyTask
 
 这就是本轮最小改造点。
 
+### 2.4 第二个关键发现：部署与切换本质是 registry 状态切换
+
+继续看 CLI 和 subject registry 后，发现 JEA 已有一套非常适合做 deploy 的模式：
+
+- CLI 入口 `src/cli/jea.mjs` 是手动路由；
+- 命令文件导出 `*Command()`；
+- subject 配置通过 `readSubjectsRegistry()` / `writeSubjectsRegistry()` 原子写回；
+- `channel feishu setup` 已经有“读 registry → 合并 channels 配置 → 写回”的先例。
+
+所以 deploy 不需要新守护进程，也不需要直接修改 OpenClaw 配置。
+
+真正要切换的是：
+
+```json
+{
+  "channels": {
+    "presence": {
+      "default_transport": "bridge-intent"
+    }
+  }
+}
+```
+
+而 undeploy 则恢复部署前的 transport：
+
+- 如果部署前没有显式 transport，就删除 `default_transport` 字段，回到默认 Feishu fallback；
+- 如果部署前有显式 transport，就恢复原值；
+- 重复 deploy 不应把“原值”覆盖成 `bridge-intent`。
+
+这个重复 deploy 的边界后来被专门补了测试，因为它决定了“自由切换”是不是真的可靠。
+
 ---
 
 ## 3. 方案设计
@@ -153,6 +192,27 @@ JEA 继续完成“想清楚该说什么”。OpenClaw 负责“什么时候、�
 
 如果不配置，默认仍走现有 Feishu 路径。
 
+### 3.4 部署命令设计
+
+第二阶段把上面的配置切换封装成 `jea bridge` 命令组：
+
+```bash
+jea bridge deploy --subject alpha --agent-id jea-alpha
+jea bridge undeploy --subject alpha
+jea bridge status --subject alpha
+jea bridge intents list --subject alpha --status pending
+```
+
+关键决策：
+
+| 决策 | 选择 | 理由 |
+| --- | --- | --- |
+| 部署入口 | 新增顶层 `jea bridge` | 这是跨 OpenClaw 的部署功能，不属于 Feishu 子命令 |
+| 是否自动改 OpenClaw 配置 | 否，只生成 `openclaw-config-snippet.json5` | 避免越权修改另一个产品的用户配置 |
+| 模式切换 | 修改 `channels.presence.default_transport` | 与现有 transport 解析机制一致 |
+| undeploy 恢复 | 记录首次部署前 `previous_transport` | 支持从任意旧 transport 切回，不只是假定 Feishu |
+| `AGENTS.md` 覆盖策略 | 默认不覆盖，`--force` 才重写 | 保护用户后续手工调整的 OpenClaw agent 指南 |
+
 ---
 
 ## 4. 实现要点
@@ -160,14 +220,25 @@ JEA 继续完成“想清楚该说什么”。OpenClaw 负责“什么时候、�
 ### 项目结构
 
 ```text
-src/channel/
-├── adapter-registry.mjs
-├── tasks.mjs
-├── transport.mjs
-└── adapters/
-    ├── feishu/
-    └── bridge-intent/
-        └── index.mjs
+src/
+├── channel/
+│   ├── adapter-registry.mjs
+│   ├── tasks.mjs
+│   ├── transport.mjs
+│   └── adapters/
+│       ├── feishu/
+│       └── bridge-intent/
+│           └── index.mjs
+├── bridge/
+│   └── openclaw/
+│       ├── deploy.mjs
+│       ├── status.mjs
+│       └── templates/
+│           └── AGENTS.md.mjs
+└── cli/
+    ├── jea.mjs
+    └── commands/
+        └── bridge.mjs
 ```
 
 ### 关键模块
@@ -178,7 +249,13 @@ src/channel/
 | [`src/channel/adapters/bridge-intent/index.mjs`](../../src/channel/adapters/bridge-intent/index.mjs) | 将 outbound message 写为 OpenClaw bridge intent 文件 |
 | [`src/channel/tasks.mjs`](../../src/channel/tasks.mjs) | `runChannelNotifyTask()` 从硬编码 Feishu 改为 adapter dispatch |
 | [`src/channel/transport.mjs`](../../src/channel/transport.mjs) | 支持 `bridge-intent` / `openclaw-intent` 的 target 解析 |
+| [`src/bridge/openclaw/deploy.mjs`](../../src/bridge/openclaw/deploy.mjs) | 实现 deploy/undeploy：切换 transport、生成 `AGENTS.md`、写 bridge 配置与 OpenClaw 配置片段 |
+| [`src/bridge/openclaw/status.mjs`](../../src/bridge/openclaw/status.mjs) | 读取 bridge 状态并统计 pending/delivered/skipped intent |
+| [`src/bridge/openclaw/templates/AGENTS.md.mjs`](../../src/bridge/openclaw/templates/AGENTS.md.mjs) | 生成 OpenClaw Agent 的 workspace 行为指南 |
+| [`src/cli/commands/bridge.mjs`](../../src/cli/commands/bridge.mjs) | 注册 `deploy`、`undeploy`、`status`、`intents list` 子命令 |
+| [`src/cli/jea.mjs`](../../src/cli/jea.mjs) | 将 `bridge` 注册为顶层 CLI 命令，并更新 help text |
 | [`test/channel.test.mjs`](../../test/channel.test.mjs) | 增加 bridge-intent notify 路由测试 |
+| [`test/cli.test.mjs`](../../test/cli.test.mjs) | 增加 bridge deploy/undeploy/status/intents 测试 |
 
 ### intent 文件形态
 
@@ -208,11 +285,34 @@ runtime/subjects/<subject>/data/bridge/openclaw/intents/pending/*.json
 
 这不是最终用户消息，而是给 OpenClaw Agent Loop 的“待表达意图”。
 
+### deploy 产物
+
+`jea bridge deploy` 会在 subject runtime 下生成：
+
+```text
+runtime/subjects/<subject>/
+├── AGENTS.md
+└── data/bridge/openclaw/
+    ├── config.json
+    ├── intents/
+    │   ├── pending/
+    │   └── delivered/
+    └── openclaw-config-snippet.json5
+```
+
+其中 `AGENTS.md` 明确告诉 OpenClaw Agent：
+
+- 如何读取 JEA runtime；
+- 如何消费 `intents/pending/`；
+- 表达成功后如何移动到 `intents/delivered/`；
+- 哪些用户输入应通过 `jea channel inbox put --stdin` 喂回 JEA classifier；
+- 不得直接修改 evolution/intelligence/goals/channel runtime 数据。
+
 ---
 
 ## 5. 验证与测试
 
-本轮运行了聚焦测试：
+第一阶段运行了聚焦测试：
 
 ```bash
 npm test -- test/channel.test.mjs
@@ -239,26 +339,48 @@ No linter errors found.
 4. 确认 outbox 被标记为 sent；
 5. 确认 `data/bridge/openclaw/intents/pending/` 中生成 intent 文件。
 
+第二阶段实现 deploy 命令组后，扩展为运行：
+
+```bash
+npm test -- test/cli.test.mjs test/channel.test.mjs
+```
+
+最终结果：
+
+```text
+Test Files  2 passed (2)
+Tests       248 passed (248)
+```
+
+新增测试覆盖了：
+
+1. `deploy` 会把 `presence.default_transport` 写成 `bridge-intent`；
+2. `deploy` 会生成 `AGENTS.md`、intent 目录和 OpenClaw 配置片段；
+3. 重复 deploy 不覆盖已有 `AGENTS.md`；
+4. `undeploy` 能恢复默认 Feishu fallback；
+5. `undeploy` 能恢复部署前的显式 transport；
+6. `status` 与 `intents list` 能读取 bridge 状态和 pending intent。
+
 ---
 
 ## 6. 后续演化
 
-下一步不应该急着接 OpenClaw SDK。更稳的路径是继续把边界做清楚：
+下一步不应该急着接 OpenClaw SDK。更稳的路径是继续把运行边界做实：
 
-1. **定义 OpenClaw Agent 的消费规约**  
-   编写 subject workspace 内的 `AGENTS.md`，约定 heartbeat 或对话回合如何读取 `data/bridge/openclaw/intents/pending/`、如何标记 delivered、何时静默。
+1. **真机部署一个 subject**
+   运行 `jea bridge deploy --subject <name> --agent-id <id>`，把生成的 `openclaw-config-snippet.json5` 合入 OpenClaw，验证 Gateway 能加载该 agent workspace。
 
-2. **增加 delivered / skipped 状态机**  
-   当前只写 `pending`。后续 OpenClaw bridge 或 agent 消费后，应移动到 `delivered/` 或 `skipped/`，避免重复表达。
+2. **验证 OpenClaw Agent 消费 intent**
+   让 JEA Channel Loop 产生一条真实 presence intent，确认 OpenClaw heartbeat 能读取、表达并移动到 `delivered/`。
 
-3. **实现入站桥接规约**  
-   OpenClaw Agent 收到用户消息后，可以通过 `jea channel inbox put` 把原始输入喂给 JEA classifier。这个方向不需要改 Channel Loop，但需要写清楚 Agent 行为指南。
+3. **补 skipped / archived 状态**
+   当前 deploy 创建 `pending/` 和 `delivered/`，status 已能统计 `skipped/`。后续应明确 OpenClaw Agent 何时把过期或重复 intent 移到 `skipped/`。
 
-4. **补 bridge 命令组**  
-   后续可新增 `jea bridge openclaw init/status`，负责生成 OpenClaw agent workspace 指南、检查 intent 队列、输出建议配置。
+4. **让 `bridge status` 更会诊断**
+   未来可检查 `AGENTS.md` 是否存在、OpenClaw 配置片段是否过期、当前 channel daemon 是否仍在用旧 transport。
 
 5. **保留 Feishu 直连能力**  
-   `bridge-intent` 是新增 transport，不是替换 Feishu。需要继续保证默认配置下现有 Feishu channel 行为不变。
+   `bridge-intent` 是新增 transport，不是替换 Feishu。需要继续保证默认配置下现有 Feishu channel 行为不变，并让 `undeploy` 保持可靠。
 
 ---
 
@@ -267,7 +389,7 @@ No linter errors found.
 | 阶段 | 内容 |
 | --- | --- |
 | 问题 | 希望 JEA 介入 OpenClaw 生态，但不让 OpenClaw 替代 JEA Channel Loop |
-| 思考 | Channel Loop 的价值是分类、presence、speech、control；OpenClaw 的价值是通用通道和最终对话表达 |
-| 方案 | 把 Channel Loop 出站改为 adapter dispatch，新增 `bridge-intent` adapter，把回复写成 OpenClaw Agent 可消费的 intent |
-| 执行 | 新增 adapter registry 和 bridge adapter，改造 notify worker，补 transport target 解析与测试 |
-| 验证 | `npm test -- test/channel.test.mjs` 通过，118 个测试全部成功 |
+| 思考 | Channel Loop 的价值是分类、presence、speech、control；OpenClaw 的价值是通用通道和最终对话表达；部署能力的本质是安全切换 transport |
+| 方案 | 把 Channel Loop 出站改为 adapter dispatch，新增 `bridge-intent` adapter；再新增 `jea bridge deploy/undeploy/status` 把这套能力做成可切换部署功能 |
+| 执行 | 新增 adapter registry、bridge adapter、deploy/status 模块、AGENTS 模板和 CLI 命令；补 deploy/undeploy 恢复逻辑 |
+| 验证 | `npm test -- test/cli.test.mjs test/channel.test.mjs` 通过，248 个测试全部成功 |

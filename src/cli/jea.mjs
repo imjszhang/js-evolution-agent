@@ -17,6 +17,7 @@ import { beliefsCommand } from './commands/beliefs.mjs';
 import { evolveCommand } from './commands/evolve.mjs';
 import { daemonCommand } from './commands/daemon.mjs';
 import { channelCommand } from './commands/channel.mjs';
+import { bridgeCommand } from './commands/bridge.mjs';
 
 export function helpText() {
   return `Usage: jea <command> [options]
@@ -51,6 +52,10 @@ Commands:
   channel inbox put      Queue an inbound channel message JSON for ingest
   channel send           Queue or dry-run an outbound channel message
   channel deliverables   List or show channel agent-run deliverables
+  bridge deploy          Deploy OpenClaw bridge mode for a subject
+  bridge undeploy        Switch a subject back to the original Feishu transport
+  bridge status          Show OpenClaw bridge mode and intent queue status
+  bridge intents list    List OpenClaw bridge intent files
   data status            Show runtime data status
   data status --json     Show runtime data status as JSON
   data init              Create runtime data directories
@@ -127,6 +132,8 @@ Examples:
   jea channel send --to CHAT_ID --text "hello" --dry-run
   jea channel deliverables list
   jea channel deliverables show delivery-20260604-120000-abcd
+  jea bridge deploy --subject agentank-tank --agent-id jea-agentank-tank
+  jea bridge status --subject agentank-tank
   jea daemon tasks list --status failed
   jea data init --all
   jea intel summary
@@ -164,6 +171,7 @@ export async function main(argv = process.argv.slice(2)) {
   if (command === 'evolve') return evolveCommand({ subcommand, flags, args });
   if (command === 'daemon') return daemonCommand({ subcommand, flags, args });
   if (command === 'channel') return channelCommand({ subcommand, flags, args });
+  if (command === 'bridge') return bridgeCommand({ subcommand, flags, args });
   if (command === 'data') return dataCommand({ subcommand, flags });
   if (command === 'intel') return intelCommand({ subcommand, flags, args });
   if (command === 'goals') return goalsCommand({ subcommand, flags, args });

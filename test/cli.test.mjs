@@ -143,6 +143,15 @@ import {
   intelligenceReportsRoot,
   resolveIntelReportPath,
 } from '../src/intelligence/report-paths.mjs';
+import { bridgeCommand } from '../src/cli/commands/bridge.mjs';
+import {
+  deployOpenClawBridge,
+  undeployOpenClawBridge,
+} from '../src/bridge/openclaw/deploy.mjs';
+import {
+  getOpenClawBridgeStatus,
+  listOpenClawBridgeIntents,
+} from '../src/bridge/openclaw/status.mjs';
 
 let tempDir = null;
 const originalJeaLanguage = process.env.JEA_LANGUAGE;
@@ -199,6 +208,117 @@ describe('subject extraction', () => {
     ].join('\n');
     expect(extractMarkdownSection(text, 'Subject')).toBe('The subject is agent.');
     expect(extractMarkdownSection(text, 'Core Layer')).toBe('- Trust');
+  });
+});
+
+describe('openclaw bridge deploy', () => {
+  function makeBridgeProjectRoot() {
+    tempDir = mkdtempSync(join(tmpdir(), 'jea-bridge-'));
+    writeJsonFile(join(tempDir, 'runtime', 'subjects', 'registry.json'), {
+      default_subject: 'alpha',
+      subjects: {
+        alpha: {
+          policy: 'SUBJECT.md',
+          data_namespace: 'alpha',
+          channels: {
+            feishu: { mock: true, default_chat_id: 'oc_test' },
+            presence: { enabled: true, planner: 'deterministic' },
+          },
+        },
+      },
+    });
+    mkdirSync(join(tempDir, 'runtime', 'subjects', 'alpha'), { recursive: true });
+    writeFileSync(join(tempDir, 'runtime', 'subjects', 'alpha', 'SUBJECT.md'), '# alpha\n', 'utf-8');
+    writeFileSync(join(tempDir, 'runtime', 'subjects', 'alpha', 'SOUL.md'), '# soul\n', 'utf-8');
+    return tempDir;
+  }
+
+  it('deploys bridge-intent mode and writes OpenClaw workspace files', () => {
+    const root = makeBridgeProjectRoot();
+    const deployed = deployOpenClawBridge(root, {
+      subject: 'alpha',
+      agentId: 'jea-alpha',
+      target: 'jea-alpha',
+    });
+
+    const registry = readJsonSafe(join(root, 'runtime', 'subjects', 'registry.json'));
+    expect(registry.subjects.alpha.channels.presence.default_transport).toBe('bridge-intent');
+    expect(registry.subjects.alpha.channels['bridge-intent'].target).toBe('jea-alpha');
+    expect(existsSync(join(root, 'runtime', 'subjects', 'alpha', 'AGENTS.md'))).toBe(true);
+    expect(existsSync(join(deployed.intents_dir, 'pending'))).toBe(true);
+    expect(existsSync(join(deployed.intents_dir, 'delivered'))).toBe(true);
+    expect(existsSync(deployed.openclaw_config_snippet)).toBe(true);
+
+    const status = getOpenClawBridgeStatus(root, { subject: 'alpha' });
+    expect(status.deployed).toBe(true);
+    expect(status.mode).toBe('bridge-intent');
+    expect(status.agent_id).toBe('jea-alpha');
+  });
+
+  it('deploy is idempotent and keeps existing AGENTS.md unless forced', () => {
+    const root = makeBridgeProjectRoot();
+    deployOpenClawBridge(root, { subject: 'alpha', agentId: 'jea-alpha' });
+    const agentsPath = join(root, 'runtime', 'subjects', 'alpha', 'AGENTS.md');
+    writeFileSync(agentsPath, '# custom bridge instructions\n', 'utf-8');
+
+    const second = deployOpenClawBridge(root, { subject: 'alpha', agentId: 'jea-alpha' });
+    expect(second.already_deployed).toBe(true);
+    expect(second.agents_md.skipped).toBe(true);
+    expect(readFileSync(agentsPath, 'utf-8')).toBe('# custom bridge instructions\n');
+
+    undeployOpenClawBridge(root, { subject: 'alpha' });
+    const registry = readJsonSafe(join(root, 'runtime', 'subjects', 'registry.json'));
+    expect(registry.subjects.alpha.channels.presence.default_transport).toBeUndefined();
+  });
+
+  it('undeploy switches presence transport back to feishu', () => {
+    const root = makeBridgeProjectRoot();
+    deployOpenClawBridge(root, { subject: 'alpha', agentId: 'jea-alpha' });
+    const result = undeployOpenClawBridge(root, { subject: 'alpha' });
+
+    const registry = readJsonSafe(join(root, 'runtime', 'subjects', 'registry.json'));
+    expect(registry.subjects.alpha.channels.presence.default_transport).toBeUndefined();
+    expect(result.restored_transport).toBe('feishu');
+    const status = getOpenClawBridgeStatus(root, { subject: 'alpha' });
+    expect(status.deployed).toBe(false);
+    expect(status.mode).toBe('feishu');
+  });
+
+  it('undeploy restores a previously explicit transport', () => {
+    const root = makeBridgeProjectRoot();
+    const registryPath = join(root, 'runtime', 'subjects', 'registry.json');
+    const registry = readJsonSafe(registryPath);
+    registry.subjects.alpha.channels.presence.default_transport = 'custom-channel';
+    writeJsonFile(registryPath, registry);
+
+    deployOpenClawBridge(root, { subject: 'alpha', agentId: 'jea-alpha' });
+    deployOpenClawBridge(root, { subject: 'alpha', agentId: 'jea-alpha' });
+    const result = undeployOpenClawBridge(root, { subject: 'alpha' });
+
+    const restored = readJsonSafe(registryPath);
+    expect(restored.subjects.alpha.channels.presence.default_transport).toBe('custom-channel');
+    expect(result.restored_transport).toBe('custom-channel');
+  });
+
+  it('bridge command prints status and lists intents', async () => {
+    const root = makeBridgeProjectRoot();
+    const deployed = deployOpenClawBridge(root, { subject: 'alpha', agentId: 'jea-alpha' });
+    writeJsonFile(join(deployed.intents_dir, 'pending', 'intent-1.json'), {
+      generated_at: '2026-06-05T00:00:00Z',
+      outbound: { text: 'hello from bridge' },
+    });
+
+    const status = await captureConsole(() => bridgeCommand({
+      subcommand: 'status',
+      flags: { subject: 'alpha' },
+      root,
+    }));
+    expect(status.code).toBe(0);
+    expect(status.stdout).toContain('mode: bridge-intent');
+
+    const list = listOpenClawBridgeIntents(root, { subject: 'alpha', status: 'pending' });
+    expect(list.intents).toHaveLength(1);
+    expect(list.intents[0].payload.outbound.text).toBe('hello from bridge');
   });
 });
 
