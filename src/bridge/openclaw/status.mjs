@@ -20,6 +20,26 @@ function countJsonFiles(dir) {
   return listJsonFiles(dir).length;
 }
 
+function summarizeIntentPayload(payload = {}) {
+  const outbound = payload?.outbound ?? {};
+  const metadata = {
+    ...(payload?.metadata ?? {}),
+    ...(outbound?.metadata ?? {}),
+  };
+  return {
+    intent_id: payload?.intent_id ?? outbound?.idempotency_key ?? null,
+    generated_at: payload?.generated_at ?? outbound?.created_at ?? null,
+    target: payload?.target ?? outbound?.target ?? null,
+    channel: payload?.channel ?? outbound?.channel ?? null,
+    text: outbound?.text ?? payload?.text ?? '',
+    deliverable_id: metadata.deliverable_id ?? null,
+    channel_agent_run_id: metadata.channel_agent_run_id ?? null,
+    delivery_format: metadata.delivery_format ?? metadata.delivery_item ?? null,
+    item_index: metadata.item_index ?? null,
+    channel_deliverable: Boolean(metadata.channel_deliverable),
+  };
+}
+
 export function getOpenClawBridgeStatus(root, {
   subject = null,
 } = {}) {
@@ -58,19 +78,36 @@ export function listOpenClawBridgeIntents(root, {
   subject = null,
   status = 'pending',
   limit = 20,
+  deliverableId = null,
 } = {}) {
   const bridgeStatus = getOpenClawBridgeStatus(root, { subject });
   const safeStatus = ['pending', 'delivered', 'skipped'].includes(status) ? status : 'pending';
   const dir = join(bridgeStatus.intents.dir, safeStatus);
-  const files = listJsonFiles(dir).slice(-Math.max(0, Number(limit) || 20)).reverse();
+  const needle = deliverableId ? String(deliverableId) : null;
+  const intents = listJsonFiles(dir)
+    .map((file) => {
+      const payload = readJsonSafe(file, null);
+      const summary = summarizeIntentPayload(payload);
+      return {
+        file,
+        name: basename(file),
+        summary,
+        payload,
+      };
+    })
+    .filter((item) => {
+      if (!needle) return true;
+      return item.summary.deliverable_id === needle
+        || item.summary.channel_agent_run_id === needle
+        || item.summary.intent_id === needle;
+    })
+    .slice(-Math.max(0, Number(limit) || 20))
+    .reverse();
   return {
     subject: bridgeStatus.subject,
     status: safeStatus,
     dir,
-    intents: files.map((file) => ({
-      file,
-      name: basename(file),
-      payload: readJsonSafe(file, null),
-    })),
+    deliverable_id: needle,
+    intents,
   };
 }

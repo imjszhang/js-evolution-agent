@@ -50,10 +50,14 @@ function printIntentList(result) {
     return;
   }
   for (const item of result.intents) {
-    const payload = item.payload ?? {};
-    const generated = payload.generated_at ?? payload.outbound?.created_at ?? '-';
-    const text = payload.outbound?.text ?? payload.text ?? '';
+    const summary = item.summary ?? {};
+    const generated = summary.generated_at ?? '-';
+    const text = summary.text ?? '';
     console.log(`${generated} ${item.name}`);
+    if (summary.deliverable_id) console.log(`  deliverable_id: ${summary.deliverable_id}`);
+    if (summary.channel_agent_run_id) console.log(`  channel_agent_run_id: ${summary.channel_agent_run_id}`);
+    if (summary.delivery_format) console.log(`  delivery_format: ${summary.delivery_format}`);
+    if (summary.target) console.log(`  target: ${summary.target}`);
     if (text) console.log(`  ${String(text).slice(0, 160)}`);
   }
 }
@@ -104,6 +108,7 @@ export async function bridgeCommand({
       subject,
       status: flags.status && flags.status !== true ? String(flags.status) : 'pending',
       limit: flags.limit ?? 20,
+      deliverableId: flags['deliverable-id'] && flags['deliverable-id'] !== true ? String(flags['deliverable-id']) : null,
     });
     if (flags.json) console.log(JSON.stringify(result, null, 2));
     else printIntentList(result);

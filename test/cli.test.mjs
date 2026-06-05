@@ -305,7 +305,20 @@ describe('openclaw bridge deploy', () => {
     const deployed = deployOpenClawBridge(root, { subject: 'alpha', agentId: 'jea-alpha' });
     writeJsonFile(join(deployed.intents_dir, 'pending', 'intent-1.json'), {
       generated_at: '2026-06-05T00:00:00Z',
-      outbound: { text: 'hello from bridge' },
+      outbound: {
+        text: 'hello from bridge',
+        target: 'jea-alpha',
+        metadata: {
+          channel_deliverable: true,
+          deliverable_id: 'delivery-1',
+          channel_agent_run_id: 'car-1',
+          delivery_format: 'document',
+        },
+      },
+    });
+    writeJsonFile(join(deployed.intents_dir, 'pending', 'intent-2.json'), {
+      generated_at: '2026-06-05T00:01:00Z',
+      outbound: { text: 'other bridge intent', metadata: { deliverable_id: 'delivery-2' } },
     });
 
     const status = await captureConsole(() => bridgeCommand({
@@ -317,8 +330,25 @@ describe('openclaw bridge deploy', () => {
     expect(status.stdout).toContain('mode: bridge-intent');
 
     const list = listOpenClawBridgeIntents(root, { subject: 'alpha', status: 'pending' });
-    expect(list.intents).toHaveLength(1);
-    expect(list.intents[0].payload.outbound.text).toBe('hello from bridge');
+    expect(list.intents).toHaveLength(2);
+    const filtered = listOpenClawBridgeIntents(root, {
+      subject: 'alpha',
+      status: 'pending',
+      deliverableId: 'delivery-1',
+    });
+    expect(filtered.intents).toHaveLength(1);
+    expect(filtered.intents[0].payload.outbound.text).toBe('hello from bridge');
+    expect(filtered.intents[0].summary.deliverable_id).toBe('delivery-1');
+    expect(filtered.intents[0].summary.delivery_format).toBe('document');
+
+    const printed = await captureConsole(() => bridgeCommand({
+      subcommand: 'intents',
+      args: ['list'],
+      flags: { subject: 'alpha', 'deliverable-id': 'delivery-1' },
+      root,
+    }));
+    expect(printed.stdout).toContain('deliverable_id: delivery-1');
+    expect(printed.stdout).toContain('delivery_format: document');
   });
 });
 
