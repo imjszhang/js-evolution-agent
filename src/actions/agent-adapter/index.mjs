@@ -6,4 +6,12 @@ export * as reasonixProvider from './providers/reasonix.mjs';
 
 export {
   runAgenticAction,
-} from '../agent-adapter.mjs';
+  buildClaudeOptions,
+  buildCursorOptions,
+  buildReasonixOptions,
+  resolveAgentExecutionRoots,
+  resolveConfiguredAgentCwd,
+  resolveReasonixFlavor,
+  buildReasonixRunBaseArgs,
+  buildReasonixTurnInvocation,
+} from './runner.mjs';

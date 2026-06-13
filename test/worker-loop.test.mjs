@@ -21,6 +21,21 @@ describe('DomainWorkerLoop', () => {
     expect(calls).toEqual(['heartbeat', 'tick', 'execute:task-1']);
   });
 
+  it('afterExecute runs when execute returns worked:false (truthy idle result)', async () => {
+    const afterCalls = [];
+    await runDomainWorkerLoop({
+      once: true,
+      idleMs: 0,
+      claim: () => ({ worked: false, task: null }),
+      execute: async (result) => result,
+      afterExecute: async (result) => {
+        afterCalls.push(result?.worked);
+        return result?.worked ? 1 : 10;
+      },
+    });
+    expect(afterCalls).toEqual([false]);
+  });
+
   it('runs idle path when no task is claimed', async () => {
     const calls = [];
     const result = await runDomainWorkerLoop({

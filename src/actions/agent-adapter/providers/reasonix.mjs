@@ -1,6 +1,6 @@
 export {
   buildReasonixOptions,
+  resolveReasonixFlavor,
   buildReasonixRunBaseArgs,
   buildReasonixTurnInvocation,
-  resolveReasonixFlavor,
-} from '../../agent-adapter.mjs';
+} from '../runner.mjs';

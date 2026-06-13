@@ -1,3 +1,3 @@
 export {
   createRuntimeWatcher,
-} from './viewer-api.mjs';
+} from './api-core.mjs';

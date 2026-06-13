@@ -17,6 +17,8 @@ import {
   safeUpdateChannelRoleWorkerHeartbeat,
 } from './worker-state.mjs';
 import { reclaimExpiredChannelLeases } from './task-queue.mjs';
+import { runDomainWorkerLoop } from '../infra/worker-loop.mjs';
+import { cancelDeprecatedChannelTasks } from './queue-cleanup.mjs';
 
 function sleep(ms) {
   if (!ms) return Promise.resolve();
@@ -74,53 +76,63 @@ export async function runChannelRoleWorkerLoop(root, subject, role, flags, share
   let stopReason = 'stopped';
 
   try {
-    for (;;) {
-      if (shared.stopping || isChannelRoleStopRequested(root, subject, role)) {
-        stopReason = 'stop_requested';
-        break;
-      }
-      safeUpdateChannelRoleWorkerHeartbeat(root, subject, role, {
-        worker_id: workerId,
-        pid: process.pid,
-        status: 'running',
-      });
-      const { reclaimed } = reclaimExpiredChannelLeases(root, subject);
-      for (const task of reclaimed) {
-        recordChannelEvent(root, subject, {
-          type: 'channel_stale_lease_reclaimed',
-          status: 'ok',
-          role,
-          task_id: task.task_id,
-          task_type: task.type,
-          lease_owner: task.previous?.lease_owner,
+    await runDomainWorkerLoop({
+      shouldStop: () => {
+        if (shared.stopping) return true;
+        if (maxIterations && iterations >= maxIterations) return true;
+        return isChannelRoleStopRequested(root, subject, role);
+      },
+      heartbeat: () => {
+        safeUpdateChannelRoleWorkerHeartbeat(root, subject, role, {
+          worker_id: workerId,
+          pid: process.pid,
+          status: 'running',
         });
-      }
-      const result = await channelWorkOnce(root, subject, {
-        ...flags,
-        worker: workerId,
-        role,
-        types,
-        'lease-ms': leaseMs,
-      });
-      iterations += 1;
-      const summary = workResultSummary(result);
-      safeUpdateChannelRoleWorkerHeartbeat(root, subject, role, {
-        worker_id: workerId,
-        pid: process.pid,
-        status: 'running',
-        last_work_result: summary,
-        last_error: summary.error_code ? {
-          code: summary.error_code,
-          task_id: summary.task_id,
-          task_status: summary.task_status,
-        } : null,
-      });
-      if (maxIterations && iterations >= maxIterations) {
-        stopReason = 'max_iterations';
-        break;
-      }
-      await sleep(result.worked ? workIntervalMs : idleIntervalMs);
-    }
+      },
+      claim: async () => {
+        if (shared.stopping || isChannelRoleStopRequested(root, subject, role)) return null;
+        const { reclaimed } = reclaimExpiredChannelLeases(root, subject);
+        for (const task of reclaimed) {
+          recordChannelEvent(root, subject, {
+            type: 'channel_stale_lease_reclaimed',
+            status: 'ok',
+            role,
+            task_id: task.task_id,
+            task_type: task.type,
+            lease_owner: task.previous?.lease_owner,
+          });
+        }
+        return channelWorkOnce(root, subject, {
+          ...flags,
+          worker: workerId,
+          role,
+          types,
+          'lease-ms': leaseMs,
+        });
+      },
+      execute: async (result) => {
+        iterations += 1;
+        const summary = workResultSummary(result);
+        safeUpdateChannelRoleWorkerHeartbeat(root, subject, role, {
+          worker_id: workerId,
+          pid: process.pid,
+          status: 'running',
+          last_work_result: summary,
+          last_error: summary.error_code ? {
+            code: summary.error_code,
+            task_id: summary.task_id,
+            task_status: summary.task_status,
+          } : null,
+        });
+        if (maxIterations && iterations >= maxIterations) {
+          shared.stopping = true;
+          stopReason = 'max_iterations';
+        }
+      },
+      afterExecute: async (result) => (result?.worked ? workIntervalMs : idleIntervalMs),
+      idleMs: idleIntervalMs,
+    });
+    if (isChannelRoleStopRequested(root, subject, role)) stopReason = 'stop_requested';
   } finally {
     markChannelRoleWorkerStopped(root, subject, role, {
       worker_id: workerId,
@@ -158,6 +170,10 @@ export async function runChannelDomainWorkerMulti(root, subject, flags, {
     roles,
     staleMs: heartbeatStaleMs,
   });
+
+  if (!flags['no-purge-deprecated']) {
+    cancelDeprecatedChannelTasks(root, subject, { dryRun: false });
+  }
 
   const shared = {
     stopping: false,

@@ -15,6 +15,10 @@ import {
 } from '../infra/json-store.mjs';
 import { getChannelEvent } from './event-queue.mjs';
 import { nowIso } from './types.mjs';
+import {
+  handleContractValidation,
+  validateChannelEnvelope,
+} from '../contracts/index.mjs';
 
 const ACTIVE_SPEECH_EVENT_STATUSES = new Set(['pending', 'claimed']);
 import {
@@ -199,6 +203,13 @@ export function setCooldown(root, subject, key, ttlMs, meta = {}) {
 }
 
 export function writeOutboxMessage(root, subject, message) {
+  handleContractValidation('channel_envelope', validateChannelEnvelope({
+    id: message.id ?? message.idempotency_key ?? 'outbox-unknown',
+    subject,
+    text: message.text ?? message.outbound?.text ?? null,
+    target: message.target ?? message.outbound?.target ?? null,
+    meta: message.metadata ?? message.meta ?? null,
+  }));
   const dir = ensureDir(channelOutboxPendingDir(root, subject));
   const key = safeFilenamePart(message.idempotency_key ?? message.id ?? randomUUID());
   const existing = findOutboxByIdempotencyKey(root, subject, message.idempotency_key);

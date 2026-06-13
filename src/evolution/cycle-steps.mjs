@@ -75,8 +75,8 @@ function stateCycleId(intelResult, stateCycleId = null, execResult = null) {
 export async function runIntelStep(ctx, { cycleId = null, recordState = null } = {}) {
   const { cfg, engine, runtime, store } = ctx;
   const forcedCycleId = cycleId || process.env.JEA_CYCLE_ID;
-  if (forcedCycleId && engine._cycleId !== forcedCycleId) {
-    engine._cycleId = forcedCycleId;
+  if (forcedCycleId) {
+    engine.setCycleId(forcedCycleId);
   }
   const intel = new ConversationalIntelligencePipeline({
     aiClient: cfg.aiClient,
@@ -172,13 +172,18 @@ export async function runIntelReportStep(ctx, { intelResult, recordState = null 
 
 export async function runExecStep(ctx, { recordState = null, intelResult = null, stateCycleId: stateCycleIdOpt = null } = {}) {
   const { cfg, runtime, store } = ctx;
+  const resolvedCycleId = stateCycleId(intelResult, stateCycleIdOpt, null);
   const exec = new ExecutionPipeline({
     host: cfg.host,
     projectRoot: runtime.runtimeRoot,
     aiClient: cfg.aiClient,
     source: 'queue',
+    cycleId: resolvedCycleId || undefined,
   });
-  const execResult = await exec.run({ limit: parseExecLimitFromEnv() });
+  const execResult = await exec.run({
+    limit: parseExecLimitFromEnv(),
+    cycleId: resolvedCycleId || undefined,
+  });
   const artifactCycleId = stateCycleId(intelResult, stateCycleIdOpt, execResult);
   store.recordEvolutionEvent({
     type: 'exec_pipeline',

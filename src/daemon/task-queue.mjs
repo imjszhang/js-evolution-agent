@@ -1,3 +1,3 @@
 export {
   enqueueDaemonTask,
-} from '../cli/commands/daemon.mjs';
+} from './daemon-core.mjs';

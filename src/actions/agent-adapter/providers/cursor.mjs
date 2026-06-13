@@ -1,3 +1,3 @@
 export {
   buildCursorOptions,
-} from '../../agent-adapter.mjs';
+} from '../runner.mjs';

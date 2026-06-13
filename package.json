@@ -2,7 +2,7 @@
   "name": "js-evolution-agent",
   "version": "0.1.0",
   "private": true,
-  "description": "A controlled self-evolution host instance built on js-evolution-engine with js-intel-store intelligence memory.",
+  "description": "A controlled self-evolution host instance with vendored OADA engine (src/engine/) and js-intel-store intelligence memory.",
   "type": "module",
   "bin": {
     "jea": "src/cli/jea.mjs"
@@ -11,9 +11,6 @@
     "start": "node --preserve-symlinks src/cli/jea.mjs run",
     "jea": "node --preserve-symlinks src/cli/jea.mjs",
     "doctor": "node --preserve-symlinks src/cli/jea.mjs doctor",
-    "intel": "node --preserve-symlinks ./node_modules/js-evolution-engine/src/cli/oada.mjs intel",
-    "exec": "node --preserve-symlinks ./node_modules/js-evolution-engine/src/cli/oada.mjs exec --limit 5",
-    "decisions": "node --preserve-symlinks ./node_modules/js-evolution-engine/src/cli/oada.mjs decisions",
     "reset-data": "node --preserve-symlinks src/cli/jea.mjs data reset --yes",
     "test": "node --preserve-symlinks ./node_modules/vitest/vitest.mjs run",
     "viewer:build": "node --preserve-symlinks src/cli/jea.mjs intel viewer build",
@@ -26,7 +23,6 @@
     "@cursor/sdk": "^1.0.12",
     "@larksuiteoapi/node-sdk": "^1.56.0",
     "dotenv": "^16.4.5",
-    "js-evolution-engine": "^0.2.0",
     "js-intel-store": "^0.1.0",
     "js-yaml": "^4.1.1",
     "openai": "^4.73.0",

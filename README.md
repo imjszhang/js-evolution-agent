@@ -2,14 +2,14 @@
 
 Updated: 2026-05-10 22:44:39 +08:00
 
-`js-evolution-agent` is a controlled self-evolution host instance. It reuses `js-evolution-engine` as the OADA runtime, reads Cyber-Taoist documents as authoritative context, and stores local intelligence through `js-intel-store`.
+`js-evolution-agent` is a controlled self-evolution host instance. It embeds the OADA runtime under `src/engine/` (vendored from js-evolution-engine), reads Cyber-Taoist documents as authoritative context, and stores local intelligence through `js-intel-store`.
 
 ## Architecture
 
-- `js-evolution-engine`: engine, pipelines, action registry, decision queue, verification helpers.
+- `src/engine/`: vendored OADA engine — pipelines, action registry, decision queue, verification helpers.
 - `policies/authority/`: read-only `CONSTITUTION.md` and `GUIDE.md` authority context (project-local).
 - `js-intel-store`: file-backed intelligence memory under `runtime/subjects/<data_namespace>/data/intelligence`.
-- `js-evolution-agent`: host adapter, local policy, controlled action handlers, CLI, reports, and runtime data.
+- `src/`: host adapter, local policy, controlled action handlers, CLI, reports, and runtime data.
 
 ## Install
 
@@ -18,7 +18,7 @@ cd D:\github\My\js-evolution-agent
 npm install
 ```
 
-Runtime libraries are consumed from npm (`js-evolution-engine`, `js-intel-store`); `npm install` is enough after cloning.
+Runtime libraries: intelligence memory uses `js-intel-store` from npm; the OADA engine is vendored in `src/engine/` (see `src/engine/VENDORED.md`).
 
 ## CLI
 

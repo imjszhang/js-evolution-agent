@@ -1,4 +1,4 @@
 export {
   SseHub,
   formatSseMessage,
-} from './viewer-api.mjs';
+} from './api-core.mjs';

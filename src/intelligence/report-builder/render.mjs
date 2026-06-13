@@ -4,4 +4,4 @@ export {
   extractTldr,
   persistIntelReport,
   prepareIntelReport,
-} from '../report-builder.mjs';
+} from './core.mjs';

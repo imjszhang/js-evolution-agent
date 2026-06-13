@@ -14,7 +14,7 @@ import {
   buildPromptCacheMetadata,
   markPromptCacheInvariant,
 } from '../ai/prompt-cache-metadata.mjs';
-import { LocalDecisionQueue } from './decision-queue.mjs';
+import { createHostDecisionQueue } from './decision-queue.mjs';
 import {
   persistIntelReport,
   prepareIntelReport,
@@ -303,7 +303,7 @@ export class ConversationalIntelligencePipeline {
     this.actionRegistry = actionRegistry || this.engine.actionRegistry;
     this.runtime = runtime || runtimeFromHost(this.projectRoot, host);
     this.updateStandingMemory = updateStandingMemory;
-    this.decisionQueue = decisionQueue || new LocalDecisionQueue({
+    this.decisionQueue = decisionQueue || createHostDecisionQueue({
       dataDir: join(this.projectRoot, 'data', 'evolution'),
       logFn: (msg) => this._log(msg),
     });

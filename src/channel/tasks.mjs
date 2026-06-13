@@ -121,6 +121,24 @@ export async function runChannelNotifyTask(root, subject, input = {}) {
       }
     }
   }
+  if (failed.length) {
+    const attempt = Number(input.retry_attempt ?? 0) + 1;
+    const maxAttempts = Number(process.env.JEA_CHANNEL_NOTIFY_MAX_RETRIES ?? 3);
+    if (attempt < maxAttempts) {
+      enqueueChannelTask(root, subject, {
+        type: 'channel_retry',
+        input: { ...input, retry_attempt: attempt, limit: input.limit ?? 10 },
+        idempotency_key: `${subject}:channel_notify_retry:${attempt}`,
+        priority: 10,
+      });
+      recordChannelEvent(root, subject, {
+        type: 'channel_notify_retry_scheduled',
+        status: 'ok',
+        attempt,
+        failed_count: failed.length,
+      });
+    }
+  }
   return { sent, failed };
 }
 

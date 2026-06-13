@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import {
   ACTION_REGISTRY,
   MockAIClient,
-} from 'js-evolution-engine';
+} from './src/engine/index.mjs';
 import { DeepSeekOpenAIClient } from './src/ai/deepseek-client.mjs';
 import { actionRegistry } from './src/actions/registry.mjs';
 import {
@@ -105,7 +105,7 @@ const cannedAnalyzeDecide = {
         source: 'bootstrap-cycle',
         subject: 'js-evolution-agent',
         kind: 'project_state',
-        content: 'Initial controlled loop uses js-evolution-engine, project authority docs, and js-intel-store.',
+        content: 'Initial controlled loop uses vendored src/engine/, project authority docs, and js-intel-store.',
         confidence: 'high',
         tags: ['bootstrap', 'controlled-loop'],
       },
@@ -122,7 +122,7 @@ const cannedAnalyzeDecide = {
         target: 'self-evolution workflow',
         hypothesis: 'A record-only first cycle proves the integration path before any mutation is allowed.',
         success_signal: 'Decision queue executes and receipts appear under the active subject runtime data namespace.',
-        failure_signal: 'Any action tries to modify js-evolution-engine or policies/authority/.',
+        failure_signal: 'Any action tries to modify src/engine/ or policies/authority/.',
         death_boundary: 'Do not write outside the active subject runtime during the first cycle.',
       },
       expected_impact: 'One decisive integration signal with no external side effects.',

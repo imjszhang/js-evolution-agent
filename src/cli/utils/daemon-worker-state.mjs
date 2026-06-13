@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { readJsonSafe, writeJsonFile } from './files.mjs';
+import { readJsonSafe } from './files.mjs';
+import { writeJson } from '../../infra/json-store.mjs';
 import { nowIso, parsePositiveInt, runtimeForSubject } from './evolve-runs.mjs';
 import { isProcessAlive } from './process-alive.mjs';
 
@@ -32,7 +33,8 @@ export function readWorkerState(root, subject) {
 }
 
 export function writeWorkerState(root, subject, state) {
-  writeJsonFile(workerStatePath(root, subject), state);
+  const filePath = workerStatePath(root, subject);
+  writeJson(filePath, state);
   return state;
 }
 

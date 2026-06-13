@@ -5,4 +5,4 @@ export {
   gatherReportContext,
   readReportBuilderConfig,
   summarizeEvidenceIndexItem,
-} from '../report-builder.mjs';
+} from './core.mjs';

@@ -762,18 +762,17 @@ Phase 2（exec）action 选择口径：
 - 记录型：`record_observation`、`propose_probe`、`write_retrospective`、`request_core_review` 只落已有结论/提案/审批请求，不用于读文件或调查。
 - 系统/兼容：`lane_status`、`lane_observe`、`lane_verify`、`github_open_lane_pr` 是机械 lane 能力；`run_probe`、`agent_execute` 是旧兼容动作；`core_apply` 仅用于 core 层审批变更。subject policy 不应维护 subject-specific action 菜单，业务能力通过 `subjects.json` 的 lane/resources 或 configured external actions 表达。
 
-## 旧脚本
+## 旧脚本（已移除）
 
-这些脚本仍保留，主要用于兼容或低层调试：
+以下 npm 脚本已删除，请改用 `jea`：
 
-```powershell
-npm run intel
-npm run exec
-npm run decisions
-npm run reset-data
-```
+| 旧命令 | 替代 |
+| --- | --- |
+| `npm run intel` | `npm run jea -- run --mock`（或 daemon step `intel`） |
+| `npm run exec` | Phase 2 由 `jea run` / daemon `exec` step 执行 |
+| `npm run decisons` | `jea audit queue` |
 
-优先使用 `jea` 命令族；只有在需要直接访问底层 engine CLI 时再使用旧脚本。
+底层 engine 源码位于 `src/engine/`；旧 `node_modules/js-evolution-engine` 路径不再使用。
 
 ## 操作建议
 

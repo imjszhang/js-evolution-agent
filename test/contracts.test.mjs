@@ -9,6 +9,10 @@ import {
   validateDecision,
   validateStepCheckpoint,
   validateStepCheckpointPayload,
+  validateBeliefEvent,
+  validateChannelEnvelope,
+  validateGoalEvent,
+  validateVerifyReport,
 } from '../src/contracts/index.mjs';
 
 describe('contracts', () => {
@@ -49,6 +53,11 @@ describe('contracts', () => {
       status: 'pending',
       payload: {},
     }).ok).toBe(true);
+
+    expect(validateVerifyReport({ cycle_id: 'cycle-1', summary: {} }).ok).toBe(true);
+    expect(validateBeliefEvent({ type: 'updated', belief_id: 'b1' }).ok).toBe(true);
+    expect(validateGoalEvent({ type: 'assessment', reason: 'ok' }).ok).toBe(true);
+    expect(validateChannelEnvelope({ id: 'msg-1', text: 'hello' }).ok).toBe(true);
   });
 
   it('reports contract errors without throwing unless strict mode is requested', () => {

@@ -2,4 +2,4 @@ export {
   createViewerApiServer,
   daemonSummaryFromProjection,
   formatChannelEventForApi,
-} from './viewer-api.mjs';
+} from './api-core.mjs';

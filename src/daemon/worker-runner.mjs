@@ -1,11 +1,10 @@
-/**
- * Daemon worker orchestration boundary.
- *
- * This compatibility module gives domain imports a stable home before the
- * legacy CLI implementation is fully decomposed.
- */
 export {
+  channelWorkOnce,
+  daemonCommand,
+  enqueueDaemonTask,
+  refreshWorkerEvolutionMode,
   runChannelDomainWorker,
   runDaemonDomains,
   runDaemonWorker,
-} from '../cli/commands/daemon.mjs';
+  workOnce,
+} from './daemon-core.mjs';

@@ -1,6 +1,6 @@
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { writeJsonFile } from './files.mjs';
+import { writeJson } from '../../infra/json-store.mjs';
 import { runtimeForSubject } from './evolve-runs.mjs';
 import { readTaskQueue, summarizeTaskQueue } from './daemon-tasks.mjs';
 import { readWorkerState, summarizeWorkerState } from './daemon-worker-state.mjs';
@@ -290,6 +290,6 @@ export function buildDaemonProjection(root, subject, { store = null, eventLimit 
 
 export function writeDaemonProjection(root, subject, projection) {
   mkdirSync(daemonViewsDir(root, subject), { recursive: true });
-  writeJsonFile(currentStatePath(root, subject), projection);
+  writeJson(currentStatePath(root, subject), projection);
   return projection;
 }

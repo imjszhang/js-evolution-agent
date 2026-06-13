@@ -33,3 +33,16 @@ export {
   DAEMON_TASK_STATUSES,
   validateDaemonTask,
 } from './daemon-task.mjs';
+
+export {
+  validateVerifyReport,
+} from './verify-report.mjs';
+
+export {
+  validateBeliefEvent,
+  validateGoalEvent,
+} from './belief-goal-events.mjs';
+
+export {
+  validateChannelEnvelope,
+} from './channel-envelope.mjs';

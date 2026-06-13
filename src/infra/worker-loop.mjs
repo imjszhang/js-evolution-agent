@@ -14,6 +14,8 @@ export async function runDomainWorkerLoop({
   heartbeat = null,
   ticks = [],
   onIdle = null,
+  afterExecute = null,
+  shouldStop = null,
   onError = null,
   idleMs = 1000,
   once = false,
@@ -27,6 +29,7 @@ export async function runDomainWorkerLoop({
   let lastTask = null;
 
   while (shouldContinueLoop({ once, signal, iteration })) {
+    if (typeof shouldStop === 'function' && shouldStop({ iteration, executed })) break;
     heartbeat?.({ iteration, executed });
     for (const tick of tickList) {
       await tick?.({ iteration, executed });
@@ -38,6 +41,10 @@ export async function runDomainWorkerLoop({
       await execute(task, { iteration, executed });
       executed += 1;
       iteration += 1;
+      const postDelay = typeof afterExecute === 'function'
+        ? Number(await afterExecute(task, { iteration, executed })) || 0
+        : 0;
+      if (postDelay > 0) await sleep(postDelay);
       continue;
     }
 

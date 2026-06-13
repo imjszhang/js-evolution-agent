@@ -2,4 +2,4 @@ export {
   createChannelEventsTailer,
   createEvolutionEventsTailer,
   sseEventFromEvolutionLine,
-} from './viewer-api.mjs';
+} from './api-core.mjs';
