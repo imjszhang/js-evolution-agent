@@ -1,5 +1,5 @@
 import { chatMessagesJson } from '../ai/messages.mjs';
-import { DeepSeekOpenAIClient } from '../ai/deepseek-client.mjs';
+import { createLlmClient } from '../ai/gateway.mjs';
 import { runWithTimeout } from './async-utils.mjs';
 import { recordChannelEvent } from './audit.mjs';
 import { resolveSubjectReplyIdentity } from './subject-identity.mjs';
@@ -150,18 +150,12 @@ function renderDeterministicSpeech(intent, subject) {
   return sanitizeGeneratedText(ackText(subject, req.kind, req.summary ?? req), intent);
 }
 
-function createLlmClient(config) {
-  if (!process.env.DEEPSEEK_API_KEY?.trim()) return null;
-  try {
-    return new DeepSeekOpenAIClient({ timeout: config.llm?.timeout ?? 25 });
-  } catch {
-    return null;
-  }
-}
-
 async function renderLlmSpeech(root, subject, intent, context, { aiClient = null, presenceConfig = null } = {}) {
   const cfg = presenceConfig ?? context?.presence ?? {};
-  const client = aiClient ?? createLlmClient(cfg);
+  const client = aiClient ?? createLlmClient({
+    profile: 'channel_speech',
+    timeout: cfg.llm?.timeout ?? 25,
+  });
   if (!client) return renderDeterministicSpeech(intent, subject);
 
   const identity = context?.identity ?? resolveSubjectReplyIdentity(root, subject);

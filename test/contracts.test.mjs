@@ -1,0 +1,80 @@
+import { describe, expect, it } from 'vitest';
+import {
+  assertValidContract,
+  contractModeFromEnv,
+  handleContractValidation,
+  validateActionReceipt,
+  validateAgentRunSpec,
+  validateDaemonTask,
+  validateDecision,
+  validateStepCheckpoint,
+  validateStepCheckpointPayload,
+} from '../src/contracts/index.mjs';
+
+describe('contracts', () => {
+  it('validates core runtime shapes', () => {
+    expect(validateDecision({
+      id: 'cycle-test:0',
+      status: 'pending',
+      action: { type: 'record_observation', description: 'record' },
+    }).ok).toBe(true);
+
+    expect(validateActionReceipt({
+      id: 'receipt-test',
+      recorded_at: '2026-06-13T00:00:00.000Z',
+      action_type: 'record_observation',
+      action: { type: 'record_observation' },
+      result: { success: true },
+    }).ok).toBe(true);
+
+    expect(validateAgentRunSpec({
+      primary_cwd_kind: 'target_repo',
+      permission_profile: 'read_only',
+      intent: 'Inspect state',
+      expected_output: ['summary'],
+    }).ok).toBe(true);
+
+    expect(validateStepCheckpoint({
+      step: 'exec',
+      cycle_id: 'cycle-test',
+      written_at: '2026-06-13T00:00:00.000Z',
+      payload: { executed: [] },
+    }).ok).toBe(true);
+
+    expect(validateStepCheckpointPayload('exec', { executed: [] }).ok).toBe(true);
+
+    expect(validateDaemonTask({
+      id: 'task-test',
+      type: 'intel',
+      status: 'pending',
+      payload: {},
+    }).ok).toBe(true);
+  });
+
+  it('reports contract errors without throwing unless strict mode is requested', () => {
+    const result = validateDecision({
+      id: 'cycle-test:0',
+      status: 'pending',
+      action: {},
+    });
+    expect(result.ok).toBe(false);
+    expect(result.errors.join('\n')).toContain('action.type');
+
+    const warnings = [];
+    expect(handleContractValidation('decision', result, {
+      mode: 'warn',
+      logger: { warn: (msg) => warnings.push(msg) },
+    })).toBe(result);
+    expect(warnings[0]).toContain('decision contract invalid');
+
+    expect(() => handleContractValidation('decision', result, { mode: 'strict' }))
+      .toThrow(/decision contract invalid/);
+    expect(() => assertValidContract('decision', result)).toThrow(/decision contract invalid/);
+  });
+
+  it('defaults unknown modes to warn and honors strict mode', () => {
+    expect(contractModeFromEnv({ JEA_CONTRACT_MODE: 'strict' })).toBe('strict');
+    expect(contractModeFromEnv({ JEA_CONTRACT_MODE: 'warn' })).toBe('warn');
+    expect(contractModeFromEnv({ JEA_CONTRACT_MODE: 'unexpected' })).toBe('warn');
+  });
+});

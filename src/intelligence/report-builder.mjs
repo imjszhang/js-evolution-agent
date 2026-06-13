@@ -7,6 +7,7 @@ import {
   resolveIntelReportWritePath,
 } from './report-paths.mjs';
 import { redactSecrets } from './redaction.mjs';
+import { chatMessages } from '../ai/messages.mjs';
 
 const DEFAULT_EVIDENCE_LIMITS = {
   obsLimit: 5,
@@ -621,12 +622,12 @@ function renderFallbackMd({ intelResult, runtime, generatedAt, evidence, assessm
 }
 
 async function tryAiRender({ aiClient, language, agentContextDocs, intelResult, runtime, goals, evidence, assessment, generatedAt, reportContext, logger }) {
-  if (!aiClient || typeof aiClient.chat !== 'function') {
+  if (!aiClient || (typeof aiClient.chat !== 'function' && typeof aiClient.chatMessages !== 'function')) {
     return { md: null, reason: 'no-ai-client' };
   }
   const prompt = buildPrompt({ language, agentContextDocs, intelResult, runtime, goals, evidence, assessment, generatedAt, reportContext });
   try {
-    const md = await aiClient.chat(prompt);
+    const md = await chatMessages(aiClient, [{ role: 'user', content: prompt }]);
     if (typeof md !== 'string' || !md.trim()) {
       return { md: null, reason: 'empty-output' };
     }
@@ -1699,7 +1700,7 @@ export async function updateStandingMemoryWithAi({
     const cycleRefs = buildTypedEvidenceRefsFromAdmission(admission);
     const oldMemory = safeRead(() => store.readStandingMemory(), null);
     const rollingConfig = readReportBuilderConfig(runtimeRoot)?.rolling_update ?? null;
-    const raw = await aiClient.chat(prompt);
+    const raw = await chatMessages(aiClient, [{ role: 'user', content: prompt }]);
     const aiBody = stripCodeFence(raw);
     const rawCurrentStateBody = extractCurrentStateBody(aiBody);
     let typedEvidenceRefs = rollingConfig

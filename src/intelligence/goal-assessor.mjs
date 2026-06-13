@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { extractJsonFromText } from '../ai/messages.mjs';
+import { chatMessages, extractJsonFromText } from '../ai/messages.mjs';
 import {
   buildPromptCacheMetadata,
   markPromptCacheInvariant,
@@ -473,7 +473,7 @@ export async function assessGoalsWithAi({
     logger,
   });
 
-  if (!aiClient || typeof aiClient.chat !== 'function') {
+  if (!aiClient || (typeof aiClient.chat !== 'function' && typeof aiClient.chatMessages !== 'function')) {
     return {
       source: 'fallback',
       context,
@@ -487,7 +487,7 @@ export async function assessGoalsWithAi({
   }
 
   try {
-    const raw = await aiClient.chat(prompt);
+    const raw = await chatMessages(aiClient, [{ role: 'user', content: prompt }]);
     const assessment = parseGoalAssessment(raw);
     return {
       source: 'ai',

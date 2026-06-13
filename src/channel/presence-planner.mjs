@@ -1,5 +1,5 @@
 import { chatMessagesJson } from '../ai/messages.mjs';
-import { DeepSeekOpenAIClient } from '../ai/deepseek-client.mjs';
+import { createLlmClient } from '../ai/gateway.mjs';
 import { normalizeSpeechIntent, speechIntentFromDeterministic } from './speech-intent.mjs';
 import {
   candidateEligibleForDeterministicAgent,
@@ -308,15 +308,6 @@ export function planPresenceDeterministic(context) {
   return speakPlan(context, selected);
 }
 
-function createLlmClient(config) {
-  if (!process.env.DEEPSEEK_API_KEY?.trim()) return null;
-  try {
-    return new DeepSeekOpenAIClient({ timeout: config.llm?.timeout ?? 25 });
-  } catch {
-    return null;
-  }
-}
-
 /**
  * LLM presence deliberation; falls back to deterministic on failure.
  */
@@ -324,7 +315,11 @@ export async function planPresenceWithLlm(context, { aiClient = null } = {}) {
   const fallback = planPresenceDeterministic(context);
   const available = candidates(context);
   if (!available.length) return fallback;
-  const client = aiClient ?? createLlmClient(context.presence ?? {});
+  const config = context.presence ?? {};
+  const client = aiClient ?? createLlmClient({
+    profile: 'channel_presence',
+    timeout: config.llm?.timeout ?? 25,
+  });
   if (!client) {
     const openMessageSilence = silencePlanForOpenMessages(context, 'missing_ai_client_for_open_messages', {
       planner: 'llm',

@@ -1,0 +1,16 @@
+export {
+  buildSubjectResourceSummary,
+  diagnoseSubjectRuntimeConfig,
+  diagnoseSubjectWorkspace,
+  normalizeStructuredResourceItems,
+  parseSubjectExternalRoots,
+  parseSubjectResourceRules,
+  readDefaultSubjectPolicy,
+  readSubjectPolicy,
+  readSubjectSoul,
+  resolveResourcesUsedFromRunSpec,
+  resolveSubjectExternalRoots,
+  resolveSubjectPolicyPath,
+  resolveSubjectResourceRules,
+  resolveSubjectSoulPath,
+} from '../../cli/utils/subjects.mjs';

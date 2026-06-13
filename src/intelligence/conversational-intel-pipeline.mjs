@@ -1,8 +1,10 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { EvolutionEngine } from 'js-evolution-engine/engine';
-import { AIDrivenObserver } from '../../node_modules/js-evolution-engine/src/observe/ai-driven-observer.mjs';
-import { isoBeijing } from '../../node_modules/js-evolution-engine/src/core/time.mjs';
+import {
+  AIDrivenObserver,
+  EvolutionEngine,
+  isoBeijing,
+} from '../engine/index.mjs';
 import {
   chatMessages,
   parseJsonFromText,

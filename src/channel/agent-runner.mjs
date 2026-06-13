@@ -1,6 +1,5 @@
-import { MockAIClient } from 'js-evolution-engine';
 import { createIntelligenceStore } from '../intelligence/store.mjs';
-import { DeepSeekOpenAIClient } from '../ai/deepseek-client.mjs';
+import { createLlmClient } from '../ai/gateway.mjs';
 import { runtimeForSubject } from '../cli/utils/evolve-runs.mjs';
 import { resolveEffectiveEnv } from '../actions/execution-env.mjs';
 import { actionHandlers } from '../actions/handlers.mjs';
@@ -84,11 +83,6 @@ function createStore(runtime) {
   });
 }
 
-function envBool(value) {
-  if (value == null || value === '') return false;
-  return ['1', 'true', 'yes', 'on', 'enabled'].includes(String(value).trim().toLowerCase());
-}
-
 const MOCK_DELIVERABLE_RESPONSE = JSON.stringify({
   status: 'completed',
   summary: 'mock channel agent run',
@@ -106,17 +100,11 @@ const MOCK_DELIVERABLE_RESPONSE = JSON.stringify({
 });
 
 function createAiFromEnv(env = {}) {
-  if (envBool(env.JEA_FORCE_MOCK)) {
-    return new MockAIClient({ defaultResponse: MOCK_DELIVERABLE_RESPONSE });
-  }
-  if (!String(env.DEEPSEEK_API_KEY ?? '').trim()) return null;
   try {
-    return new DeepSeekOpenAIClient({
-      apiKey: env.DEEPSEEK_API_KEY,
-      baseURL: env.DEEPSEEK_BASE_URL,
-      model: env.DEEPSEEK_MODEL,
-      thinkingEnabled: envBool(env.DEEPSEEK_THINKING),
-      reasoningEffort: env.DEEPSEEK_REASONING_EFFORT,
+    return createLlmClient({
+      profile: 'channel_agent',
+      env,
+      mockResponse: MOCK_DELIVERABLE_RESPONSE,
     });
   } catch {
     return null;

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { readJsonSafe, writeJsonFile } from '../cli/utils/files.mjs';
+import { readJson, updateJson } from '../infra/json-store.mjs';
 import { channelEventQueuePath } from './paths.mjs';
 import { nowIso } from './types.mjs';
 
@@ -10,20 +10,29 @@ function emptyQueue() {
 }
 
 function readQueue(root, subject) {
-  const raw = readJsonSafe(channelEventQueuePath(root, subject), emptyQueue());
+  const raw = readJson(channelEventQueuePath(root, subject), emptyQueue());
   return {
     events: Array.isArray(raw.events) ? raw.events : [],
     updated_at: raw.updated_at ?? null,
   };
 }
 
-function writeQueue(root, subject, queue) {
+function normalizeQueue(queue) {
   const next = {
     ...queue,
     updated_at: nowIso(),
   };
-  writeJsonFile(channelEventQueuePath(root, subject), next);
   return next;
+}
+
+function updateQueue(root, subject, updater) {
+  return updateJson(channelEventQueuePath(root, subject), (raw) => {
+    const queue = {
+      events: Array.isArray(raw?.events) ? raw.events : [],
+      updated_at: raw?.updated_at ?? null,
+    };
+    return normalizeQueue(updater(queue) ?? queue);
+  }, { fallback: emptyQueue() });
 }
 
 function normalizeEvent(event = {}) {
@@ -45,10 +54,11 @@ function normalizeEvent(event = {}) {
 }
 
 export function appendChannelEvent(root, subject, event = {}) {
-  const queue = readQueue(root, subject);
   const record = normalizeEvent({ ...event, status: 'pending' });
-  queue.events.push(record);
-  writeQueue(root, subject, queue);
+  updateQueue(root, subject, (queue) => {
+    queue.events.push(record);
+    return queue;
+  });
   return record;
 }
 
@@ -62,34 +72,36 @@ export function listPendingChannelEvents(root, subject, { limit = 50, type = nul
 }
 
 export function claimChannelEvents(root, subject, { runId, limit = 20, types = null } = {}) {
-  const queue = readQueue(root, subject);
   const now = nowIso();
   const typeSet = types ? new Set(types) : null;
   const claimed = [];
-  for (const event of queue.events) {
-    if (event.status !== 'pending') continue;
-    if (typeSet && !typeSet.has(event.type)) continue;
-    event.status = 'claimed';
-    event.claimed_by = runId ?? null;
-    event.claimed_at = now;
-    claimed.push(event);
-    if (claimed.length >= limit) break;
-  }
-  if (claimed.length) writeQueue(root, subject, queue);
+  updateQueue(root, subject, (queue) => {
+    for (const event of queue.events) {
+      if (event.status !== 'pending') continue;
+      if (typeSet && !typeSet.has(event.type)) continue;
+      event.status = 'claimed';
+      event.claimed_by = runId ?? null;
+      event.claimed_at = now;
+      claimed.push(event);
+      if (claimed.length >= limit) break;
+    }
+    return queue;
+  });
   return claimed;
 }
 
 function updateEvents(root, subject, eventIds, patchFn) {
   const ids = new Set(eventIds ?? []);
   if (!ids.size) return [];
-  const queue = readQueue(root, subject);
   const updated = [];
-  for (const event of queue.events) {
-    if (!ids.has(event.id)) continue;
-    patchFn(event);
-    updated.push(event);
-  }
-  if (updated.length) writeQueue(root, subject, queue);
+  updateQueue(root, subject, (queue) => {
+    for (const event of queue.events) {
+      if (!ids.has(event.id)) continue;
+      patchFn(event);
+      updated.push(event);
+    }
+    return queue;
+  });
   return updated;
 }
 
@@ -113,17 +125,19 @@ export function markChannelEventsFailed(root, subject, eventIds, meta = {}) {
 }
 
 export function supersedePendingChannelEvents(root, subject, { type, keepLatest = true } = {}) {
-  const queue = readQueue(root, subject);
-  const pending = queue.events.filter((e) => e.status === 'pending' && (!type || e.type === type));
-  if (pending.length <= 1) return [];
-  const sorted = [...pending].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
-  const toSupersede = keepLatest ? sorted.slice(1) : sorted;
   const now = nowIso();
-  for (const event of toSupersede) {
-    event.status = 'superseded';
-    event.handled_at = now;
-  }
-  writeQueue(root, subject, queue);
+  let toSupersede = [];
+  updateQueue(root, subject, (queue) => {
+    const pending = queue.events.filter((e) => e.status === 'pending' && (!type || e.type === type));
+    if (pending.length <= 1) return queue;
+    const sorted = [...pending].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+    toSupersede = keepLatest ? sorted.slice(1) : sorted;
+    for (const event of toSupersede) {
+      event.status = 'superseded';
+      event.handled_at = now;
+    }
+    return queue;
+  });
   return toSupersede;
 }
 

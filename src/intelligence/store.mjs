@@ -6,6 +6,10 @@ import {
 import { INTELLIGENCE_SPECS } from './specs.mjs';
 import { redactSecrets } from './redaction.mjs';
 import { prioritizeActiveOperatorFacts } from './operator-facts.mjs';
+import {
+  handleContractValidation,
+  validateActionReceipt,
+} from '../contracts/index.mjs';
 
 export const DEFAULT_TIMEZONE = 'Asia/Shanghai';
 
@@ -147,7 +151,7 @@ export class IntelligenceStore {
   }
 
   recordActionReceipt(action, result, ctx = {}) {
-    return this.engine.ingest('action_receipts', redactSecrets(withId({
+    const record = withId({
       recorded_at: new Date().toISOString(),
       cycle_id: ctx.cycleId ?? null,
       exec_cycle_id: ctx.execCycleId ?? ctx.cycleId ?? null,
@@ -157,7 +161,11 @@ export class IntelligenceStore {
       action_type: action?.type ?? 'unknown',
       action,
       result,
-    }, 'receipt')));
+    }, 'receipt');
+    handleContractValidation('action_receipt', validateActionReceipt(record), {
+      logger: this.engine?.logger ?? null,
+    });
+    return this.engine.ingest('action_receipts', redactSecrets(record));
   }
 
   recordProbeEvent(probeId, event) {

@@ -20,6 +20,7 @@ import {
 } from '../src/cli/utils/cycle-reducer.mjs';
 import {
   listStepArtifacts,
+  readStepArtifact,
   readCycleState,
 } from '../src/cli/utils/cycle-state.mjs';
 import { readTaskQueue } from '../src/cli/utils/daemon-tasks.mjs';
@@ -69,12 +70,16 @@ const STEP_FLAGS = {
   'skip-belief-update': true,
 };
 
+const FULL_STEP_FLAGS = {
+  mock: true,
+};
+
 function pendingOrRunningCount(root) {
   const queue = readTaskQueue(root, SUBJECT);
   return queue.tasks.filter((task) => task.status === 'pending' || task.status === 'running').length;
 }
 
-async function drainCycle(root, cycleId, stepInput) {
+async function drainCycle(root, cycleId, stepInput, stepFlags = STEP_FLAGS) {
   const maxIterations = 80;
   for (let i = 0; i < maxIterations; i += 1) {
     const state = readCycleState(root, SUBJECT, cycleId);
@@ -86,7 +91,7 @@ async function drainCycle(root, cycleId, stepInput) {
       reconcileOpenCycles(root, SUBJECT, stepInput);
     }
 
-    await workOnce(root, SUBJECT, STEP_FLAGS);
+    await workOnce(root, SUBJECT, stepFlags);
   }
   return readCycleState(root, SUBJECT, cycleId);
 }
@@ -147,6 +152,64 @@ describe('cycle step e2e (mock)', () => {
 
       const cycleEvents = events.filter((e) => e.cycle_id === cycleId || e.cycle_id?.startsWith('exec-'));
       expect(cycleEvents.length).toBeGreaterThan(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 180_000);
+
+  it('workOnce loop runs belief and goals steps when they are not skipped', async () => {
+    const root = makeE2eProjectRoot();
+    const stepInput = {
+      mock: true,
+      skip_belief_update: false,
+      skip_goals_assess: false,
+    };
+
+    try {
+      const started = startCycleFromTick(root, SUBJECT, stepInput);
+      expect(started.started).toBe(true);
+      const cycleId = started.cycle.cycle_id;
+      expect(cycleId).toBeTruthy();
+
+      const finalState = await drainCycle(root, cycleId, stepInput, FULL_STEP_FLAGS);
+      expect(finalState?.status).toBe('closed');
+
+      for (const step of CYCLE_STEP_TYPES) {
+        const status = finalState.steps[step]?.status;
+        expect(TERMINAL_STEP_STATUSES.has(status), `${step}=${status}`).toBe(true);
+      }
+      expect(finalState.steps.belief_update.status).not.toBe('skipped');
+      expect(finalState.steps.goals_assess.status).not.toBe('skipped');
+      expect(finalState.steps.goals_calibrate.status).not.toBe('skipped');
+
+      const artifacts = listStepArtifacts(root, SUBJECT, cycleId);
+      for (const step of CYCLE_STEP_TYPES) {
+        expect(artifacts, `missing artifact for ${step}`).toContain(step);
+      }
+
+      const beliefArtifact = readStepArtifact(root, SUBJECT, cycleId, 'belief_update');
+      expect(beliefArtifact).toMatchObject({
+        skipped: false,
+      });
+      expect(beliefArtifact.beliefUpdateResult).toBeTruthy();
+
+      const goalsAssessArtifact = readStepArtifact(root, SUBJECT, cycleId, 'goals_assess');
+      expect(goalsAssessArtifact).toMatchObject({
+        skipped: false,
+      });
+      expect(goalsAssessArtifact.goalsAssessResult).toBeTruthy();
+
+      const goalsCalibrateArtifact = readStepArtifact(root, SUBJECT, cycleId, 'goals_calibrate');
+      expect(goalsCalibrateArtifact).toMatchObject({
+        skipped: false,
+      });
+      expect(goalsCalibrateArtifact.goalsCalibrateResult).toBeTruthy();
+
+      const events = readEvolutionEventTypes(root);
+      const types = new Set(events.map((e) => e.type));
+      expect(types.has('belief_update')).toBe(true);
+      expect(types.has('goals_assess')).toBe(true);
+      expect(types.has('goals_calibrate')).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

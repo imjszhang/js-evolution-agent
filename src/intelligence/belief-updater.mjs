@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { extractJsonFromText } from '../ai/messages.mjs';
+import { chatMessages, extractJsonFromText } from '../ai/messages.mjs';
 import {
   buildPromptCacheMetadata,
   markPromptCacheInvariant,
@@ -344,7 +344,7 @@ export async function updateBeliefsWithAi({
     logger,
   });
 
-  if (!aiClient || typeof aiClient.chat !== 'function') {
+  if (!aiClient || (typeof aiClient.chat !== 'function' && typeof aiClient.chatMessages !== 'function')) {
     return {
       source: 'fallback',
       context,
@@ -360,7 +360,7 @@ export async function updateBeliefsWithAi({
   }
 
   try {
-    const raw = await aiClient.chat(prompt);
+    const raw = await chatMessages(aiClient, [{ role: 'user', content: prompt }]);
     const parsed = parseBeliefUpdate(raw);
     const cycleId = execResult?.cycle_id ?? intelResult?.cycle_id ?? null;
     const applied = applyBeliefUpdates(context.current_beliefs, parsed.updates, { cycleId });

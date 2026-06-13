@@ -1,7 +1,7 @@
 import {
   ActionTypeRegistry,
   ActionTypeSpec,
-} from 'js-evolution-engine';
+} from '../engine/index.mjs';
 
 export const actionRegistry = new ActionTypeRegistry({ includeBuiltins: false });
 

@@ -4,9 +4,9 @@ import {
   EvolutionEngine,
   ExecutionPipeline,
   verifyActions,
-} from 'js-evolution-engine';
+} from '../engine/index.mjs';
 import loadConfig from '../../oada.config.mjs'; // project root oada.config.mjs
-import { assessActiveGoals, autoCalibrateGoals } from '../cli/commands/goals.mjs';
+import { assessActiveGoals, autoCalibrateGoals } from '../domain/cognition/index.mjs';
 import { updateActiveBeliefs } from '../intelligence/belief-updater.mjs';
 import { ConversationalIntelligencePipeline } from '../intelligence/conversational-intel-pipeline.mjs';
 import { verifyWithRestoredConversation } from '../intelligence/conversation-context.mjs';

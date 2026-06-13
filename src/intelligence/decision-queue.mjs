@@ -1,6 +1,10 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import lockfile from 'proper-lockfile';
+import {
+  handleContractValidation,
+  validateDecision,
+} from '../contracts/index.mjs';
 
 const STATUS_PENDING = 'pending';
 const HOT_STATUSES = new Set(['pending', 'in_progress']);
@@ -190,7 +194,7 @@ export class LocalDecisionQueue {
           continue;
         }
         const decisionId = `${cycleId}:${idx}`;
-        data.decisions.push({
+        const decision = {
           id: decisionId,
           cycle_id: cycleId,
           created_at: now,
@@ -200,7 +204,11 @@ export class LocalDecisionQueue {
           analysis_context: (analysisContext || '').slice(0, 3000),
           metadata,
           validation: validation ?? null,
+        };
+        handleContractValidation('decision', validateDecision(decision), {
+          logger: { warn: (msg) => this._logFn(`[contract] ${msg}`) },
         });
+        data.decisions.push(decision);
         newIds.push(decisionId);
         hotFingerprints.add(fingerprint);
       }

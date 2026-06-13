@@ -5,6 +5,11 @@ import lockfile from 'proper-lockfile';
 import { runtimeForSubject, nowIso } from './evolve-runs.mjs';
 import { CYCLE_STEP_TYPES } from './cycle-reducer.mjs';
 import { findCycleStepTask, stepHasValidLease } from './daemon-tasks.mjs';
+import {
+  handleContractValidation,
+  validateStepCheckpoint,
+  validateStepCheckpointPayload,
+} from '../../contracts/index.mjs';
 
 export function cycleStateDir(root, subject) {
   return join(runtimeForSubject(root, subject).evolutionDir, 'cycle-state');
@@ -12,6 +17,10 @@ export function cycleStateDir(root, subject) {
 
 export function cycleStatePath(root, subject, cycleId) {
   return join(cycleStateDir(root, subject), `${cycleId}.json`);
+}
+
+export function cycleStateLockPath(root, subject, cycleId) {
+  return `${cycleStatePath(root, subject, cycleId)}.lock`;
 }
 
 export function cycleArtifactsDir(root, subject, cycleId) {
@@ -38,6 +47,8 @@ export function writeStepArtifact(root, subject, cycleId, step, payload) {
       written_at: nowIso(),
       payload,
     };
+    handleContractValidation('step_checkpoint', validateStepCheckpoint(record));
+    handleContractValidation('step_checkpoint_payload', validateStepCheckpointPayload(step, payload));
     writeJsonAtomic(stepArtifactPath(root, subject, cycleId, step), record);
     return record;
   });
@@ -117,15 +128,16 @@ function writeCycleStateFile(filePath, state) {
 
 export function withCycleStateLock(root, subject, cycleId, fn) {
   const filePath = cycleStatePath(root, subject, cycleId);
+  const lockPath = cycleStateLockPath(root, subject, cycleId);
   mkdirSync(dirname(filePath), { recursive: true });
-  if (!existsSync(filePath)) {
-    writeCycleStateFile(filePath, createEmptyCycleState({ cycleId, subject }));
+  if (!existsSync(lockPath)) {
+    writeFileSync(lockPath, '', 'utf-8');
   }
   let release;
   let lastErr;
   for (let attempt = 0; attempt < 15; attempt++) {
     try {
-      release = lockfile.lockSync(filePath);
+      release = lockfile.lockSync(lockPath);
       lastErr = null;
       break;
     } catch (e) {
@@ -141,6 +153,9 @@ export function withCycleStateLock(root, subject, cycleId, fn) {
     throw new Error(`Cycle state is locked for ${subject}/${cycleId}: ${lastErr?.message || lastErr}`);
   }
   try {
+    if (!existsSync(filePath)) {
+      writeCycleStateFile(filePath, createEmptyCycleState({ cycleId, subject }));
+    }
     const state = readCycleStateFile(filePath);
     const result = fn(state);
     if (result?.state) {

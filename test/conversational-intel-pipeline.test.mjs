@@ -293,6 +293,9 @@ describe('ConversationalIntelligencePipeline', () => {
       async chatMessages(messages) {
         messageCalls.push(messages);
         const last = messages.at(-1).content;
+        if (last.includes('This is not an intelligence report') || last.includes('这不是情报报告')) {
+          return '## Current State\n\n- 长期态势：对话式情报报告已经生成，并可供下一轮参考。[evolution_events:evt-conversation]';
+        }
         if (last.includes('Strategic Analysis & Decision')) {
           return JSON.stringify({
             analysis: {
@@ -362,7 +365,7 @@ describe('ConversationalIntelligencePipeline', () => {
     expect(result.report.mdPath).toBeTruthy();
     expect(result.standing_memory_update.status).toBe('updated');
     expect(result.conversation_context_path).toBeTruthy();
-    expect(messageCalls).toHaveLength(2);
+    expect(messageCalls).toHaveLength(3);
     expect(chatCalls[0]).toContain('Observation Evidence Guard');
     expect(chatCalls[0]).toContain('Seen / Inferred / Remembered');
     expect(chatCalls[0]).toContain('worker-state.json.remote.*');
@@ -389,7 +392,10 @@ describe('ConversationalIntelligencePipeline', () => {
       .toEqual(['system', 'user', 'assistant', 'user', 'assistant']);
     expect(context.restored_conversation.at(-1).content).toContain('"decision":"execute"');
 
-    const memoryPrompt = chatCalls.find((message) => message.includes('standing memory'));
+    const memoryPrompt = [
+      ...chatCalls,
+      ...messageCalls.map((messages) => messages.at(-1).content),
+    ].find((message) => message.includes('This is not an intelligence report') || message.includes('这不是情报报告'));
     expect(memoryPrompt).toBeTruthy();
     expect(memoryPrompt).toContain('Current State');
     expect(memoryPrompt).toContain('Evidence');

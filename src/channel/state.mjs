@@ -9,6 +9,10 @@ import {
 import { basename, dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { readJsonSafe, writeJsonFile } from '../cli/utils/files.mjs';
+import {
+  readJson,
+  updateJson,
+} from '../infra/json-store.mjs';
 import { getChannelEvent } from './event-queue.mjs';
 import { nowIso } from './types.mjs';
 
@@ -141,7 +145,7 @@ export function markInboundFailed(root, subject, file, reason, payload = null) {
 }
 
 export function readDedup(root, subject) {
-  const data = readJsonSafe(channelDedupPath(root, subject), { seen: {} });
+  const data = readJson(channelDedupPath(root, subject), { seen: {} });
   return data && typeof data === 'object' && data.seen ? data : { seen: {} };
 }
 
@@ -152,18 +156,22 @@ export function hasSeenMessage(root, subject, messageId) {
 
 export function markMessageSeen(root, subject, messageId, meta = {}) {
   if (!messageId) return null;
-  const state = readDedup(root, subject);
-  state.seen[messageId] = {
-    first_seen_at: state.seen[messageId]?.first_seen_at ?? nowIso(),
-    last_seen_at: nowIso(),
-    ...meta,
-  };
-  writeJsonFile(channelDedupPath(root, subject), state);
-  return state.seen[messageId];
+  let seen = null;
+  updateJson(channelDedupPath(root, subject), (raw) => {
+    const state = raw && typeof raw === 'object' && raw.seen ? raw : { seen: {} };
+    state.seen[messageId] = {
+      first_seen_at: state.seen[messageId]?.first_seen_at ?? nowIso(),
+      last_seen_at: nowIso(),
+      ...meta,
+    };
+    seen = state.seen[messageId];
+    return state;
+  }, { fallback: { seen: {} } });
+  return seen;
 }
 
 export function readCooldown(root, subject) {
-  const data = readJsonSafe(channelCooldownPath(root, subject), { keys: {} });
+  const data = readJson(channelCooldownPath(root, subject), { keys: {} });
   return data && typeof data === 'object' && data.keys ? data : { keys: {} };
 }
 
@@ -176,14 +184,18 @@ export function cooldownActive(root, subject, key, { nowMs = Date.now() } = {}) 
 
 export function setCooldown(root, subject, key, ttlMs, meta = {}) {
   if (!key || !ttlMs) return null;
-  const state = readCooldown(root, subject);
-  state.keys[key] = {
-    until: new Date(Date.now() + ttlMs).toISOString(),
-    updated_at: nowIso(),
-    ...meta,
-  };
-  writeJsonFile(channelCooldownPath(root, subject), state);
-  return state.keys[key];
+  let value = null;
+  updateJson(channelCooldownPath(root, subject), (raw) => {
+    const state = raw && typeof raw === 'object' && raw.keys ? raw : { keys: {} };
+    state.keys[key] = {
+      until: new Date(Date.now() + ttlMs).toISOString(),
+      updated_at: nowIso(),
+      ...meta,
+    };
+    value = state.keys[key];
+    return state;
+  }, { fallback: { keys: {} } });
+  return value;
 }
 
 export function writeOutboxMessage(root, subject, message) {
@@ -332,7 +344,7 @@ function trimPresenceHandledMap(map, limit = PRESENCE_HANDLED_CURSOR_LIMIT) {
 }
 
 export function readPresenceState(root, subject) {
-  const raw = readJsonSafe(channelPresenceStatePath(root, subject), {});
+  const raw = readJson(channelPresenceStatePath(root, subject), {});
   return {
     ...DEFAULT_PRESENCE_STATE,
     ...raw,
@@ -447,20 +459,32 @@ export function isExpressionCandidateHandled(root, subject, candidateId) {
 }
 
 export function writePresenceState(root, subject, patch = {}) {
-  const current = readPresenceState(root, subject);
-  const mergedCandidates = patch.handled_candidates
-    ? { ...current.handled_candidates, ...patch.handled_candidates }
-    : current.handled_candidates;
-  const { handled_candidates: _hc, ...restPatch } = patch;
-  const next = {
-    ...current,
-    ...restPatch,
-    subject,
-    handled_candidates: trimPresenceHandledMap(mergedCandidates),
-    updated_at: nowIso(),
-  };
-  writeJsonFile(channelPresenceStatePath(root, subject), next);
-  return next;
+  return updateJson(channelPresenceStatePath(root, subject), (raw) => {
+    const current = {
+      ...DEFAULT_PRESENCE_STATE,
+      ...(raw ?? {}),
+      handled_candidates: { ...(raw?.handled_candidates ?? {}) },
+      reactor: {
+        ...DEFAULT_REACTOR_STATE,
+        ...(raw?.reactor ?? {}),
+        event_ids: Array.isArray(raw?.reactor?.event_ids) ? [...raw.reactor.event_ids] : [],
+      },
+      pending_speech_generation: Array.isArray(raw?.pending_speech_generation)
+        ? [...raw.pending_speech_generation]
+        : [],
+    };
+    const mergedCandidates = patch.handled_candidates
+      ? { ...current.handled_candidates, ...patch.handled_candidates }
+      : current.handled_candidates;
+    const { handled_candidates: _hc, ...restPatch } = patch;
+    return {
+      ...current,
+      ...restPatch,
+      subject,
+      handled_candidates: trimPresenceHandledMap(mergedCandidates),
+      updated_at: nowIso(),
+    };
+  }, { fallback: {} });
 }
 
 export function markExpressionCandidateHandled(root, subject, candidateId, meta = {}) {

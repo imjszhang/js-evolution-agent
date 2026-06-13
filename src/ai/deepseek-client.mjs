@@ -3,7 +3,7 @@
  * @see https://api-docs.deepseek.com/zh-cn/
  */
 import OpenAI from 'openai';
-import { AIError, BaseAIClient } from 'js-evolution-engine';
+import { AIError, BaseAIClient } from '../engine/index.mjs';
 
 function envBool(value) {
   if (value == null || value === '') return false;

@@ -3,10 +3,10 @@ import { resolveClassifierConfig } from './classifier-config.mjs';
 import { resolveChannelRoles, resolveChannelWorkerTaskTypes, taskTypesForChannelRole } from './channel-roles.mjs';
 import { recordChannelEvent } from './audit.mjs';
 import {
-  refreshChannelFeishuListener,
-  getFeishuListenerStatus,
-  stopFeishuListener,
-} from './adapters/feishu/index.mjs';
+  ensureChannelListener,
+  getChannelListenerStatus,
+  stopChannelListener,
+} from './listener.mjs';
 import {
   createChannelRoleWorkerState,
   initChannelCoordinatorState,
@@ -211,7 +211,7 @@ export async function runChannelDomainWorkerMulti(root, subject, flags, {
   }
 
   if (!flags['no-feishu-listener']) {
-    const initialEnsure = await refreshChannelFeishuListener(root, subject, flags);
+    const initialEnsure = await ensureChannelListener(root, subject, flags);
     if (initialEnsure.action === 'start_failed' || initialEnsure.action === 'reload_failed') {
       recordChannelEvent(root, subject, {
         type: 'feishu_listener_start_skipped',
@@ -228,7 +228,7 @@ export async function runChannelDomainWorkerMulti(root, subject, flags, {
       ? setInterval(async () => {
         if (shared.stopping) return;
         try {
-          await refreshChannelFeishuListener(root, subject, flags);
+          await ensureChannelListener(root, subject, flags);
         } catch (err) {
           recordChannelEvent(root, subject, {
             type: 'channel_config_reload_failed',
@@ -257,8 +257,8 @@ export async function runChannelDomainWorkerMulti(root, subject, flags, {
     if (listenerRefresh) clearInterval(listenerRefresh);
     if (presenceTickTimer) clearInterval(presenceTickTimer);
     if (classifierTickTimer) clearInterval(classifierTickTimer);
-    if (getFeishuListenerStatus(root, subject).running) {
-      await stopFeishuListener(root, subject);
+    if (getChannelListenerStatus(root, subject).running) {
+      await stopChannelListener(root, subject);
     }
     process.removeListener('SIGINT', requestLocalStop);
     process.removeListener('SIGTERM', requestLocalStop);

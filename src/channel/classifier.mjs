@@ -1,7 +1,6 @@
 import { chatMessagesJson } from '../ai/messages.mjs';
-import { DeepSeekOpenAIClient } from '../ai/deepseek-client.mjs';
-import { normalizeInboundPayload, resolveFeishuConfig } from './adapters/feishu/index.mjs';
-import { tryHandleFeishuBind } from './adapters/feishu/binding.mjs';
+import { createLlmClient } from '../ai/gateway.mjs';
+import { defaultInboundAdapter } from './inbound-adapters/registry.mjs';
 import { recordChannelEvent } from './audit.mjs';
 import { runWithTimeout, ChannelTimeoutError } from './async-utils.mjs';
 import { resolveClassifierConfig } from './classifier-config.mjs';
@@ -24,14 +23,10 @@ import {
   normalizeUnderstanding,
 } from './classifier-understanding.mjs';
 
-function createLlmClient(config) {
-  if (!process.env.DEEPSEEK_API_KEY?.trim()) return null;
-  try {
-    return new DeepSeekOpenAIClient({ timeout: config.llm?.timeout ?? 25 });
-  } catch {
-    return null;
-  }
-}
+const inboundAdapter = defaultInboundAdapter();
+const normalizeInboundPayload = (...args) => inboundAdapter.normalizeInboundPayload(...args);
+const resolveFeishuConfig = (...args) => inboundAdapter.resolveConfig(...args);
+const tryHandleFeishuBind = (...args) => inboundAdapter.tryHandleBind(...args);
 
 function normalizeClassifierItems(parsed, expectedIds, entriesById = new Map()) {
   const items = Array.isArray(parsed?.items) ? parsed.items : [];
@@ -58,7 +53,10 @@ function normalizeClassifierItems(parsed, expectedIds, entriesById = new Map()) 
 }
 
 async function classifyBatchWithLlm(entries, { aiClient = null, config } = {}) {
-  const client = aiClient ?? createLlmClient(config);
+  const client = aiClient ?? createLlmClient({
+    profile: 'channel_classifier',
+    timeout: config.llm?.timeout ?? 25,
+  });
   if (!client) {
     return { status: 'skipped', reason: 'missing_ai_client', items: null };
   }

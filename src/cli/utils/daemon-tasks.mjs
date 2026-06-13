@@ -5,6 +5,10 @@ import lockfile from 'proper-lockfile';
 import { writeJsonAtomic } from './atomic-json-write.mjs';
 import { runtimeForSubject, nowIso, parsePositiveInt } from './evolve-runs.mjs';
 import { CYCLE_STEP_TYPES, stepIdempotencyKey } from './cycle-reducer.mjs';
+import {
+  handleContractValidation,
+  validateDaemonTask,
+} from '../../contracts/index.mjs';
 
 export { QueueWriteError, isQueueWriteError } from './atomic-json-write.mjs';
 
@@ -185,6 +189,7 @@ export function enqueueTask(root, subject, {
       last_error_code: null,
       last_error_reason: null,
     };
+    handleContractValidation('daemon_task', validateDaemonTask(task));
     queue.tasks.push(task);
     return { task, created: true, queue: writeTaskQueue(root, subject, queue, options) };
   }, options);

@@ -1,4 +1,4 @@
-import { MockAIClient } from 'js-evolution-engine';
+import { MockAIClient } from '../../engine/index.mjs';
 import { getProjectRoot, loadProjectEnv } from '../utils/project.mjs';
 import { DeepSeekOpenAIClient } from '../../ai/deepseek-client.mjs';
 
