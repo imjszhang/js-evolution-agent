@@ -12,11 +12,13 @@
 <p align="center">
   <a href="https://cyber-taoist.ai"><strong>Theory</strong></a> ·
   <a href="https://github.com/imjszhang/cyber-taoist"><strong>Cyber-Taoist</strong></a> ·
+  <a href="https://x.com/imjszhang"><strong>@imjszhang</strong></a> ·
   <a href="./README.zh-CN.md"><strong>中文</strong></a> ·
   <a href="./AGENTS.md"><strong>CLI Reference</strong></a>
 </p>
 
 <p align="center">
+  <img src="https://img.shields.io/badge/License-MIT-blue?style=flat-square" alt="MIT License" />
   <img src="https://img.shields.io/badge/Theory-cyber--taoist.ai-FCD228?style=flat-square&labelColor=000000" alt="cyber-taoist.ai" />
   <img src="https://img.shields.io/badge/CLI-jea-000000?style=flat-square&labelColor=FCD228" alt="jea CLI" />
   <img src="https://img.shields.io/badge/Node.js-%3E%3D18-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node.js >= 18" />
@@ -51,7 +53,7 @@
 
 ## Core innovation: goal self-correction
 
-Mainstream [Loop Engineering](https://addyo.substack.com/p/loop-engineering) assumes **the goal is fixed when the loop starts** — e.g. “all auth tests pass and lint is clean” — and the loop keeps prompting the agent until a gate passes. That works when the task boundary is clear; it breaks down in long-horizon evolution: **when the environment (Nature / 天道) has shifted and the old goal no longer produces useful feedback, the agent spins inside a wrong law**.
+Mainstream [Loop Engineering](https://x.com/addyosmani/status/2064127981161959567) assumes **the goal is fixed when the loop starts** — e.g. “all auth tests pass and lint is clean” — and the loop keeps prompting the agent until a gate passes. That works when the task boundary is clear; it breaks down in long-horizon evolution: **when the environment (Nature / 天道) has shifted and the old goal no longer produces useful feedback, the agent spins inside a wrong law**.
 
 JEA’s core innovation is to **materialize the [cyber-taoist.ai](https://cyber-taoist.ai) framework as a mechanically executable goal self-correction mechanism**:
 
@@ -462,4 +464,4 @@ npm run jea -- help
 
 ## License
 
-UNLICENSED — see [package.json](./package.json).
+[MIT License](./LICENSE) — Copyright (c) [imjszhang](https://x.com/imjszhang).

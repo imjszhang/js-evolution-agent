@@ -12,11 +12,13 @@
 <p align="center">
   <a href="https://cyber-taoist.ai"><strong>理论框架</strong></a> ·
   <a href="https://github.com/imjszhang/cyber-taoist"><strong>Cyber-Taoist</strong></a> ·
+  <a href="https://x.com/imjszhang"><strong>@imjszhang</strong></a> ·
   <a href="./README.md"><strong>English</strong></a> ·
   <a href="./AGENTS.md"><strong>CLI 参考</strong></a>
 </p>
 
 <p align="center">
+  <img src="https://img.shields.io/badge/License-MIT-blue?style=flat-square" alt="MIT License" />
   <img src="https://img.shields.io/badge/理论-cyber--taoist.ai-FCD228?style=flat-square&labelColor=000000" alt="cyber-taoist.ai" />
   <img src="https://img.shields.io/badge/CLI-jea-000000?style=flat-square&labelColor=FCD228" alt="jea CLI" />
   <img src="https://img.shields.io/badge/Node.js-%3E%3D18-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node.js >= 18" />
@@ -51,7 +53,7 @@
 
 ## 核心创新：目标自修正
 
-业界常见的 [Loop Engineering](https://addyo.substack.com/p/loop-engineering) 假设 **目标在 loop 启动时即固定** — 例如「所有 auth 测试通过且 lint 干净」，loop 只负责反复 prompt agent 直到 gate 通过。这在任务边界清晰时有效，但在长期演化场景会失效：**当环境（天道）已变、旧目标不再产生有效反馈时，agent 会在错误法则内空转**。
+业界常见的 [Loop Engineering](https://x.com/addyosmani/status/2064127981161959567) 假设 **目标在 loop 启动时即固定** — 例如「所有 auth 测试通过且 lint 干净」，loop 只负责反复 prompt agent 直到 gate 通过。这在任务边界清晰时有效，但在长期演化场景会失效：**当环境（天道）已变、旧目标不再产生有效反馈时，agent 会在错误法则内空转**。
 
 JEA 的核心创新，是把 [cyber-taoist.ai](https://cyber-taoist.ai) 的进化学框架 **落地为可机械执行的目标自修正机制**：
 
@@ -462,4 +464,4 @@ npm run jea -- help
 
 ## License
 
-UNLICENSED — 见 [package.json](./package.json)。
+[MIT 许可证](./LICENSE) — 版权所有 © [imjszhang](https://x.com/imjszhang)。
