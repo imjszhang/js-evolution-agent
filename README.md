@@ -1,275 +1,447 @@
 # js-evolution-agent
 
-Updated: 2026-05-10 22:44:39 +08:00
+**English** | [中文文档](./README.zh-CN.md)
 
-`js-evolution-agent` is a controlled self-evolution host instance. It embeds the OADA runtime under `src/engine/` (vendored from js-evolution-engine), reads Cyber-Taoist documents as authoritative context, and stores local intelligence through `js-intel-store`.
+**A governed self-evolution host (JEA)** — operationalizes [Cyber-Taoist evolution theory](https://cyber-taoist.ai) as a runnable **Loop Engineering** system: inside an OADA closed loop, it does not only execute tasks but **self-corrects goals (laws)** from transaction feedback.
+
+> Not a fixed `/goal` coding loop that runs until tests pass — an **evolution loop** with theoretical constraints, governance boundaries, and auditable receipts. When an old goal (law) is falsified by consequences, the system enters a rule-update phase instead of spinning or grinding.
+
+---
+
+## Table of contents
+
+- [Core innovation: goal self-correction](#core-innovation-goal-self-correction)
+- [Alignment with Loop Engineering](#alignment-with-loop-engineering)
+- [What this is](#what-this-is)
+- [Features](#features)
+- [Architecture](#architecture)
+- [Requirements](#requirements)
+- [Quick start](#quick-start)
+- [Evolution cycle](#evolution-cycle)
+- [Subjects and multi-subject](#subjects-and-multi-subject)
+- [Daemon (long-running)](#daemon-long-running)
+- [Channel](#channel)
+- [Evolution Viewer](#evolution-viewer)
+- [Operator input](#operator-input)
+- [Configuration](#configuration)
+- [Safety boundaries](#safety-boundaries)
+- [Development and testing](#development-and-testing)
+- [Documentation index](#documentation-index)
+- [License](#license)
+
+---
+
+## Core innovation: goal self-correction
+
+Mainstream [Loop Engineering](https://addyo.substack.com/p/loop-engineering) assumes **the goal is fixed when the loop starts** — e.g. “all auth tests pass and lint is clean” — and the loop keeps prompting the agent until a gate passes. That works when the task boundary is clear; it breaks down in long-horizon evolution: **when the environment (Nature / 天道) has shifted and the old goal no longer produces useful feedback, the agent spins inside a wrong law**.
+
+JEA’s core innovation is to **materialize the [cyber-taoist.ai](https://cyber-taoist.ai) framework as a mechanically executable goal self-correction mechanism**:
+
+| Cyber-Taoist concept | JEA mapping | Role |
+| --- | --- | --- |
+| **Nature (N)** — ultimate environment; not directly observable, only sensed through consequences | verify reports, probe results, action receipts, external probes | Infer environmental change from verified outcomes |
+| **Law (R)** — rules firewall built by the subject; always lagging | `active_goals.json`, SUBJECT.md constraints, beliefs | Current hypotheses about what to optimize and how to act |
+| **Transaction (T)** — probe for sensing Nature | `agent_run`, probes, record-type actions | Interactions within law, or breakthroughs after approval |
+| **Niche (NI)** — compatibility with current law | `good_signal` / `bad_signal` matching, outcome metrics | Whether strategy still works inside current law |
+| **Rule-update phase** — old law falsified; new law sedimented | Phase 4 `goals assess` + Phase 4.5 `goals_calibrate` | **Rewrite the goal tree** and enter the next evolution round |
+
+### Evolution stage → goal calibration
+
+Following the constitution’s path — perception lag → probe → success/failure screening → **rule update** — Phase 4 emits `rule_status`:
+
+| `rule_status` | Cyber-Taoist meaning | System behavior |
+| --- | --- | --- |
+| `continue` | Regular phase: transaction feedback inside law is still clear | Keep current goals |
+| `learn` | Perception lag: insufficient feedback or evidence gaps | Next round biased toward read-only learning, diagnostics, feedback-loop calibration |
+| `mutate` | Rule-update phase: old law falsified by consequences | Phase 4.5 **auto-applies `goal_patches`**, rewrites outcome sub-goals |
+| `stop` | Core guard failure | Pause outcome exploration; restore continuity first |
+| `insufficient_evidence` | Cannot infer from consequences | Do not change goals lightly; wait for more transaction feedback |
+
+Unlike workflows that “suggest but never apply,” **`goals_calibrate` writes high-confidence calibration to `active_goals.json` by default**, logs `goal-events.jsonl` for audit, and patches like `remove_child` can retire linked beliefs.
+
+### Why theory, not prompts alone
+
+Without top-level constraints, goal self-correction degrades into “lower the bar on failure” or “expand scope arbitrarily.” JEA injects [CONSTITUTION.md](./policies/authority/CONSTITUTION.md) and [GUIDE.md](./policies/authority/GUIDE.md) as **authority documents** into the assess phase — the assessor must stay compatible with the constitution before citing verify / receipt / belief intelligence. Examples: after process goals (compliance, audit) are satisfied, **restore outcome pressure**; `mutate` must not bypass publish-approval boundaries in SUBJECT.md.
+
+In short: **the loop changes not only code but, under theory, where evolution should go** — the fundamental difference from Ralph loops and fixed-goal `/goal` loops.
+
+---
+
+## Alignment with Loop Engineering
+
+JEA is best read as a **governed orchestration loop** — humans design loop structure and guardrails; the system finds work, delegates to agents, verifies independently, persists state, and decides the next round (including whether goals mutate).
+
+```text
+Loop Engineering five steps     JEA mapping
+─────────────────────────────────────────────────────────
+find work                     →  Phase 1 observe + analyze/decide (pending_decisions)
+delegate to agent             →  Phase 2 exec (agent_run / probe / record actions)
+gate (pass/fail)              →  Phase 3 verify (mechanical + semantic; maker ≠ verifier)
+record state                  →  intel store, cycle-state, receipts, evolution diary
+decide next                   →  Phase 3.5 beliefs + Phase 4/4.5 goals + next intel round
+
+JEA-specific layer            →  goal/law self-correction + SUBJECT approval + operator brief/fact
+```
+
+| Loop Engineering element | JEA implementation |
+| --- | --- |
+| **Scheduling** | `jea daemon start` (`continuous` / `on_demand`), channel classifier tick |
+| **Worktrees** | Subject `lane` — isolated worktrees for external target repos |
+| **Persistent memory** | `js-intel-store`, standing memory, goal/belief events |
+| **Maker–Verifier split** | Exec agent writes/runs; Verify and Goals assess are **separate phases**, not self-graded |
+| **Verifiable stopping** | Per-action verify; per-cycle diary + `requires_human_review` |
+| **Guardrails** | SUBJECT.md Off-Limits, `approval_granted`, brief/fact layering |
+| **Dynamic goals** (JEA extension) | Fixed `/goal` → **mutable goals + Cyber-Taoist `rule_status`** |
+
+```text
+                    ┌──────────────────────────────────────┐
+                    │  Human: Subject policy · brief · approval │
+                    └─────────────────┬────────────────────┘
+                                      │ guardrails
+┌─────────────── Evolution Loop ──────▼──────────────────────────────┐
+│  Intel → Exec → Verify → Belief → Goals Assess → Goals Calibrate   │
+│     ↑                                      │                       │
+│     └──────── next round (goals may mutate) ─┘                       │
+└────────────────────────────────────────────────────────────────────┘
+         Daemon / Channel scheduling · multi-subject · Evolution Viewer
+```
+
+If you know Claude Code’s `/loop` + `/goal`: JEA adds an evolution layer on top of orchestration loops — **goals are law hypotheses that consequences can falsify and update**.
+
+---
+
+## What this is
+
+`js-evolution-agent` is a **locally run evolution host** that composes:
+
+| Component | Role |
+| --- | --- |
+| **OADA engine** (`src/engine/`, vendored) | Observe → Analyze → Decide → Act pipeline and decision queue |
+| **Cyber-Taoist authority docs** (`policies/authority/`) | Cross-subject governance context (constitution, guide) |
+| **Subject policy** (`runtime/subjects/<ns>/SUBJECT.md`) | Per-subject semantic boundaries and approval rules |
+| **js-intel-store** | File-backed intelligence memory (observations, receipts, reports, beliefs, …) |
+| **CLI `jea`** | Operator entry: single runs, daemon, channel, data, audit |
+
+Typical use: let an AI subject investigate, edit code, simulate, and prepare releases in a **lane worktree** or external resources, while persisting reports, verification, and evolution diaries each cycle for human review or channel interaction (e.g. Feishu).
+
+---
+
+## Features
+
+- **Cyber-Taoist goal self-correction** — Phase 4/4.5 detects law lag from transaction feedback and mechanically applies `goal_patches` ([Core innovation](#core-innovation-goal-self-correction))
+- **Full evolution pipeline** — Intel → Exec → Verify → Belief Update → Goals Assess/Calibrate → Evolution Diary
+- **Subject isolation** — parallel subjects with separate namespaces, policies, lanes, and runtime data
+- **Daemon step mode** — event-driven step-level evolution; `continuous` / `on_demand`
+- **Human approval and soft intent** — Brief (next-cycle intent) + `approval_granted` (hard gate)
+- **Beliefs and goals** — formal update paths for testable hypotheses and goal trees
+- **Multiple agent backends** — DeepSeek, Claude Agent SDK, Cursor SDK, Reasonix CLI, …
+- **Channel (Feishu)** — inbound classification, presence expression, control actions (evolution mode, cycle request, …)
+- **Evolution Viewer** — local Web UI for rounds, reports, daemon state, observability
+
+---
 
 ## Architecture
 
-- `src/engine/`: vendored OADA engine — pipelines, action registry, decision queue, verification helpers.
-- `policies/authority/`: read-only `CONSTITUTION.md` and `GUIDE.md` authority context (project-local).
-- `js-intel-store`: file-backed intelligence memory under `runtime/subjects/<data_namespace>/data/intelligence`.
-- `src/`: host adapter, local policy, controlled action handlers, CLI, reports, and runtime data.
+```text
+┌─────────────────────────────────────────────────────────────────┐
+│                         jea CLI / Daemon                         │
+├──────────────┬──────────────────────┬───────────────────────────┤
+│  Cycle Domain │    Channel Domain     │   Evolution Viewer (web)  │
+│  intel→exec→  │  classifier→presence  │   rounds / reports / SSE  │
+│  verify→…     │  →speech→outbox       │                           │
+├──────────────┴──────────────────────┴───────────────────────────┤
+│  src/engine/ (OADA)  │  src/actions/  │  src/intelligence/       │
+│  analyze · decide ·  │  agent_run ·   │  store · reports ·       │
+│  verify helpers      │  lane · gates  │  beliefs · goals           │
+├──────────────────────┴────────────────┴───────────────────────────┤
+│  policies/authority/  +  runtime/subjects/<ns>/SUBJECT.md         │
+│  runtime/subjects/<ns>/data/  (evolution · intelligence · goals)  │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-## Install
+Per-cycle pipeline:
 
-```powershell
-cd D:\github\My\js-evolution-agent
+```text
+Phase 1   intel pipeline (observe → report → analyze+decide)
+Phase 1.5 intel report persistence
+Phase 2   exec (consume pending_decisions queue)
+Phase 3   verify (mechanical + semantic)
+Phase 3.5 belief_update
+Phase 4   goals assess
+Phase 4.5 goals calibrate
+Phase 5   evolution diary
+```
+
+---
+
+## Requirements
+
+- **Node.js** ≥ 18
+- Optional: **DeepSeek API key** (use `--mock` without a key)
+- Optional: Claude Agent SDK / Cursor SDK / Reasonix CLI (for `agent_run`)
+- Optional: Feishu open-platform app (Channel adapter)
+
+---
+
+## Quick start
+
+```bash
+git clone <repo-url> js-evolution-agent
+cd js-evolution-agent
 npm install
-```
 
-Runtime libraries: intelligence memory uses `js-intel-store` from npm; the OADA engine is vendored in `src/engine/` (see `src/engine/VENDORED.md`).
-
-## CLI
-
-Use `jea` as the project operator CLI:
-
-```powershell
-npm run jea -- help
+# Health check
 npm run doctor
-npm start
+
+# Create a subject and initialize runtime data
+npm run jea -- subject init my-bot --use
+npm run jea -- data init --all --subject my-bot
+
+# Local smoke test (no real model)
+npm run jea -- run --mock --subject my-bot
+
+# Runtime overview
+npm run jea -- data status
+npm run jea -- intel report
 ```
 
-After package bin links are installed, direct usage is also available:
+After install, bin links work directly:
 
-```powershell
+```bash
 jea doctor
 jea run --mock
-jea data status
 ```
 
-First-version commands:
+For real models: copy `.env.example` to `.env`, set `DEEPSEEK_API_KEY`, then:
 
-- `jea doctor`: check Node, dependencies, `.env`, DeepSeek config, docs, and config files.
-- `jea run [--mock] [--deepseek]`: run the full `intel -> exec -> verify -> intelligence receipts` loop.
-- `jea data status`: show runtime data file counts and latest files.
-- `jea data status --json`: show runtime data status as machine-readable JSON.
-- `jea data init`: create runtime data directories without deleting history.
-- `jea data init --all`: create the default goals template and append seed intelligence.
-- `jea data backup [--name NAME]`: back up the active subject runtime data to `backups/subjects/<data_namespace>/`.
-- `jea data reset [--yes]`: remove local runtime data.
-- `jea intel summary [--days N] [--limit N]`: show recent intelligence memory.
-- `jea intel report`: print the latest human-readable intel report (Markdown) for the active subject.
-- `jea intel report list [--limit N]`: list recent intel reports with cycle id, time, and TL;DR.
-- `jea intel report --cycle <id>`: print the report for a specific cycle.
-- `jea intel report --open`: open the latest report in the OS default viewer (`open` on macOS, `xdg-open` on Linux, `start` on Windows).
-- `jea intel report --json`: print the index record (not the MD body) as JSON.
-- `jea intel ingest --source NAME [--file PATH | --stdin] [--json]`: ingest one or more JSON records directly into the active subject intelligence store. `entity_jsonl` sources (e.g. `probe_threads`) require `_entity_id` on every record.
-- `jea intel inbox put --source NAME [--file PATH | --stdin] [--name LABEL]`: queue records as a JSON payload under `runtime/subjects/<ns>/data/intelligence/_inbox/` for later draining; useful when external collectors drop files for the agent to pick up.
-- `jea intel inbox drain [--dir PATH] [--json]`: drain queued `_inbox` files into the intelligence store; unknown source or invalid files are kept and reported as failures (exit code 1).
-- `jea daemon status [--all | --subjects a,b] [--json]`: show daemon worker, queue, health, lock, and latest event summaries across one or more subjects.
-- `jea daemon doctor [--all | --subjects a,b] [--json]`: diagnose daemon health for one or more subjects.
-- `jea daemon events [--all | --subjects a,b] [--limit N] [--json]`: show recent daemon/task lifecycle events.
-- `jea daemon tasks list [--all | --subjects a,b] [--status STATUS] [--json]`: list daemon tasks across subjects. Task `inspect` / `retry` / `cancel` remain single-subject operations.
-- `jea daemon inbox [--all | --subjects a,b] [--json]`: show the latest intel report, evolution diary, verify report, standing memory marker, and health attention summary for each subject.
-- `jea daemon stop [--all | --subjects a,b]`: request graceful stop for selected subject workers. `daemon start` and `daemon work --once` remain one-subject-per-process so external orchestrators can run subjects in parallel.
-- `jea audit queue`: check decision queue health, unknown actions, and stale in-progress work.
-- `jea llm ping [--mock]`: test DeepSeek or local MockAIClient connectivity.
-- `jea policy check`: verify required active subject policy sections.
-- `jea subject list`: list configured subject policies.
-- `jea subject show`: show the active Subject, Core Layer, namespace, and runtime paths.
-- `jea subject init <name> [--use]`: create a new subject policy from the project template.
-- `jea subject use <name>`: switch the active subject policy.
-- `jea subject check`: validate the active subject policy.
-- `jea actions list`: list registered action types.
-- `jea actions check`: check queued decisions for unknown action types.
-
-Legacy scripts are kept:
-
-```powershell
-npm run intel
-npm run exec
-npm run decisions
-npm run reset-data
+```bash
+jea llm ping
+jea run --deepseek --subject my-bot
 ```
 
-## AI Driver
+---
 
-This project uses [DeepSeek's OpenAI-compatible Chat Completions API](https://api-docs.deepseek.com/zh-cn/) when `DEEPSEEK_API_KEY` is set. Implementation: `src/ai/deepseek-client.mjs` (`openai` SDK + `dotenv`).
+## Evolution cycle
 
-1. Copy the example env file and fill in your key:
+**Single-round debugging** — local validation and troubleshooting:
 
-   ```powershell
-   copy .env.example .env
-   ```
-
-2. Edit `.env`:
-
-   - `DEEPSEEK_API_KEY`: required for real calls; if missing, `oada.config.mjs` falls back to `MockAIClient`.
-   - `DEEPSEEK_BASE_URL`: default `https://api.deepseek.com`.
-   - `DEEPSEEK_MODEL`: default `deepseek-v4-flash`.
-   - `DEEPSEEK_THINKING`: optional, `enabled` / `true` / `1`.
-   - `DEEPSEEK_REASONING_EFFORT`: optional, for example `high`.
-
-3. Run:
-
-   ```powershell
-   jea run --deepseek
-   ```
-
-## Context Documents
-
-By default, `oada.config.mjs` reads Cyber-Taoist Markdown from this repository's `policies/authority/`, plus:
-
-- the subject policy selected by `JEA_SUBJECT`, `--subject`, or `runtime/subjects/registry.json` default
-
-`policies/project-guidance.md` is kept as a compatibility entry. New subject policies live under `runtime/subjects/<data_namespace>/`.
-
-To override the authority docs directory:
-
-```powershell
-$env:CYBER_TAOIST_DOCS_DIR = 'D:\path\to\custom-authority-docs'
-jea run
+```bash
+jea run [--mock | --deepseek] [--subject NAME]
+jea run --skip-goals-assess      # skip Phase 4/4.5
+jea run --skip-belief-update     # skip Phase 3.5
 ```
 
-## Subjects
+**Batch evolution**:
 
-Cyber-Taoist analysis requires a defined subject. `js-evolution-agent` keeps local subject configuration in runtime:
+```bash
+jea evolve --rounds 5
+jea evolve status
+jea evolve resume <run-id>
+```
+
+**Common inspection commands**:
+
+```bash
+jea intel summary [--days 7]
+jea intel report [--cycle <id>] [--open]
+jea daemon inbox [--json]
+jea audit queue
+jea beliefs show
+jea goals show
+```
+
+Full CLI reference: [AGENTS.md](./AGENTS.md) (Chinese operator manual).
+
+---
+
+## Subjects and multi-subject
+
+Each **Subject** is an independent evolution unit: its own policy, data namespace, optional lane (target-repo worktree), and channel config.
 
 ```text
-runtime/
-  subjects/
-    registry.json
-    <data_namespace>/
-      SUBJECT.md
-      SOUL.md
-      data/
+runtime/subjects/
+├── registry.json              # local registry (gitignored — do not commit)
+└── <data_namespace>/
+    ├── SUBJECT.md             # governance (boundaries, approval rules)
+    ├── SOUL.md                # channel persona (not Decide authority)
+    └── data/
+        ├── evolution/
+        ├── intelligence/
+        └── goals/
 ```
 
-`runtime/subjects/registry.json` registers known subjects and optional `default_subject` for interactive CLI convenience. It may also carry structured `lane` and `resources` fields for machine-readable repo, branch, command, resource-root, and resource-rule configuration. Use `policies/subjects.example.json` as the copyable shape for those fields.
-
-`runtime/subjects/registry.json`, subject workspace files, legacy `policies/active-subject.json`, and legacy `policies/subjects/*.md` are local state and are ignored by Git by default. Commit examples, templates, and stable project defaults, not operator-specific registry files. `policies/project-guidance.md` remains the committed compatibility/default policy.
-
-Common commands:
-
-```powershell
+```bash
 jea subject list
-jea subject show
-jea subject show --subject agentank-tank
-jea subject init my-product
-jea subject use my-product
+jea subject init my-product --use
+jea subject show --subject my-product
 jea subject check
-jea run --subject agentank-tank
+jea data init --all --subject my-product
 ```
 
-Each subject owns a separate data namespace under `runtime/subjects/<data_namespace>/`. After creating or selecting a subject, initialize that subject runtime before running:
+Machine-readable registry fields (lane, resources, channels, `evolution.mode`): [`policies/subjects.example.json`](./policies/subjects.example.json). Setup details: [`policies/README.md`](./policies/README.md).
 
-```powershell
-jea data init --all
-```
+For parallel subjects, **one daemon process per subject**:
 
-## Multi-Subject Daemon Operations
-
-Subjects are independent evolution units. Run one daemon worker process per subject when you want parallel evolution, and use the multi-subject daemon views to supervise them:
-
-```powershell
-# External orchestrators can start these as separate foreground worker processes.
+```bash
 jea daemon start --subject subject-a
 jea daemon start --subject subject-b
-
-# Operator views aggregate state without serializing the subjects into one run.
 jea daemon status --all
-jea daemon doctor --all
-jea daemon inbox --all
-jea daemon tasks list --all --status failed
 ```
 
-Operational commands stay conservative: `daemon stop --all` fans out graceful stop requests, while `daemon start`, `daemon work --once`, and task `inspect` / `retry` / `cancel` operate on a single subject at a time.
+---
 
-## Runtime Data
+## Daemon (long-running)
 
-Runtime data is isolated by subject namespace:
+The daemon drives evolution at **step granularity** — recommended for unattended long runs.
 
-```text
-runtime/subjects/<data_namespace>/
-  SUBJECT.md
-  SOUL.md
-  data/
-    evolution/
-    intelligence/
-    goals/
+```bash
+# Foreground worker (cycle + channel in one process)
+jea daemon start --subject my-bot
+
+# Production: split cycle and channel for fault isolation
+jea daemon start --subject my-bot --domain cycle
+jea daemon start --subject my-bot --domain channel
+
+# Windows detached background
+npm run daemon:start:detached
 ```
 
-`runtime/subjects/registry.json` registers subjects and optional `default_subject`. Explicit selection uses `--subject NAME` or `JEA_SUBJECT`. `jea run`, `jea data status/init/reset/backup`, `jea intel summary`, `jea audit queue`, and `jea actions check` resolve the subject through that order. Legacy `policies/subjects.json` and `policies/active-subject.json` are still read when the runtime registry is missing.
+| Mode | Behavior |
+| --- | --- |
+| `continuous` (default) | Heartbeat tick reconciles; opens new cycles when none are open |
+| `on_demand` | Only explicit requests (`jea daemon cycle request`, operator brief, …) |
 
-Use `init` for a non-destructive first setup:
-
-```powershell
-jea data init --all
+```bash
+jea daemon evolution-mode show
+jea daemon evolution-mode set on_demand
+jea daemon cycle request --reason "manual kick"
+jea daemon status --json
+jea daemon doctor
 ```
 
-This creates:
+---
 
-- `runtime/subjects/registry.json` plus localized `runtime/subjects/<data_namespace>/SUBJECT.md` and `SOUL.md` generated from `JEA_LANGUAGE` when missing (same rules as `jea subject list`)
+## Channel
 
-- `runtime/subjects/<data_namespace>/data/evolution`
-- `runtime/subjects/<data_namespace>/data/intelligence`
-- `runtime/subjects/<data_namespace>/data/goals`
-- `runtime/subjects/<data_namespace>/data/goals/active_goals.json` when missing
-- one initialization observation and one evolution event when `--seed` or `--all` is used
+Channel is **peer-level with cycle** — external message I/O and expression decisions. Feishu adapter is built in.
 
-Useful variants:
+**New subject + Feishu**:
 
-```powershell
-jea data init
-jea data init --goals
-jea data init --seed
-jea data init --all --json
-jea data backup --name before-subject-change
+```bash
+jea channel feishu setup --subject my-bot --write-env --init-subject-config
+jea daemon start --subject my-bot --domain channel
+# Feishu DM to bot: JEA BIND <token>
 ```
 
-`init` does not delete history and does not overwrite existing files by default. Use `--force` only if you want to overwrite the default goals template.
+Inbound messages are batch-classified (**classifier**): approval intent, verification requests, operator facts, control commands, observations, … **Presence** produces speech in two stages and enqueues outbox.
 
-If you change the active evolution subject, the next commands automatically read and write that subject namespace. `reset` only removes the current subject runtime data:
+Channel cannot bypass approval for publish or credentials; remote publish still follows brief → Decide → `approval_granted`.
 
-```powershell
-jea data reset --yes
+---
+
+## Evolution Viewer
+
+Local Web UI; by default tracks all registered subjects:
+
+```bash
+npm run viewer:serve
+# or
+jea intel viewer serve [--port 8787] [--open]
 ```
 
-This deletes the current subject's `data/evolution`, `data/intelligence`, and `data/goals` if present. It does not delete `.env`, source files, or other subject namespaces.
+- **Ops Home** — KPIs, attention items, open cycles, event stream
+- **Reading view** — reports, diary, diagnostics, observability per cycle
+- Live API + SSE — no dist build required
 
-The legacy top-level `data/` directory is still ignored for compatibility with older local runs, but it is no longer the default write target.
+Offline snapshot:
 
-`js-intel-store` writes these sources under the current subject's `data/intelligence`:
-
-- `intel_observations`: daily JSONL observations.
-- `evolution_events`: append-only evolution event log.
-- `retrospectives`: append-only reviews.
-- `latest_review`: latest review JSON.
-- `action_receipts`: receipts from controlled handlers.
-- `probe_threads`: per-probe event streams.
-- `intel_reports`: index of human-readable intel reports. Each cycle's report is written as Markdown under `data/intelligence/reports/<cycle_id>.md`; this jsonl stores the index (cycle_id, generated_at, md_path, tldr, source, language, action_count, evidence_obs_count, evidence_probe_count, evidence_retro_count).
-
-After every successful Phase 1 (intel pipeline), a Phase 1.5 build step writes one free-form Markdown report per cycle. The report is intentionally **unconstrained**:
-
-- The full text of `CONSTITUTION.md`, `GUIDE.md`, and the active subject policy is injected into the AI prompt. The model is free to choose structure, voice, length, and section names — it is asked only to be human-readable, faithful to Cyber-Taoist evolutionary thinking, and to not invent ids/counts beyond the cycle facts JSON.
-- Output language is detected from the active subject policy (CJK ratio): primarily Chinese policies produce Chinese reports; otherwise English. The default is Chinese.
-- `gatherEvidence` (recent `intel_observations` / `probe_results` / `retrospectives` / `evolution_events`) and `assessGoals` (deterministic bad-signal / good-signal token match) are still computed and passed to the prompt as auxiliary signals; the AI may use, override, or ignore them.
-- When the AI client is missing or throws, the builder writes a minimal placeholder Markdown listing only mechanical facts (cycle id, action count, evidence counts) so `jea intel report` always has something to display. `source: 'fallback'` marks these.
-- **Token cost**: injecting the full Cyber-Taoist documents materially increases prompt length; `jea run --deepseek` cycles take noticeably longer than before. The Phase 1.5 step is wrapped in try/catch and never blocks the main loop.
-- There is currently **no machine-side schema enforcement** on the report body. Tools that previously parsed structured sections (`countProposedRevisions`, `extractEvidenceRefs`, `jea intel report doctor`) have been removed. Re-introducing a parseable channel for downstream goal-refinement is intentionally deferred.
-
-## Inspection And Audit
-
-Use these commands to inspect runtime state without mutating it:
-
-```powershell
-jea intel summary
-jea intel summary --json
-jea audit queue
-jea audit queue --json
-jea policy check
-jea llm ping --mock
+```bash
+npm run viewer:build
 ```
 
-`jea llm ping` without `--mock` sends one short request to DeepSeek and never prints your API key.
+---
 
-## Safety Boundary
+## Operator input
 
-The first phase only records observations, probe proposals, retrospectives, receipts, and local verification reports. It does not modify `js-evolution-engine`, `js-intel-store`, or Cyber-Taoist documents. Core-layer actions are recorded as human-review requests only.
+Four kinds of human input — **do not mix them**:
 
-## Test
+| Type | Meaning | Typical entry |
+| --- | --- | --- |
+| **Constraint** | Long-term boundaries | `human_guidance.md`, SUBJECT.md |
+| **Intent** | What to focus on next cycle (not fact) | `jea intel brief put` |
+| **Fact** | Operator-confirmed, promotable to Seen | `operator_fact` via `jea intel ingest` |
+| **Evidence** | External observations that can be overturned | `jea intel ingest` / inbox, probes |
 
-```powershell
+**Actions (hard gates)** like `approval_granted` are produced by Decide and executed in Phase 2; operators should not edit `pending_decisions.json` directly.
+
+Approval policy: `JEA_APPROVAL_MODE` = `manual` (default) | `auto_guarded` | `auto_all`. See [AGENTS.md § Human approval](./AGENTS.md#人工审批与操作者意图).
+
+---
+
+## Configuration
+
+Copy the env template:
+
+```bash
+cp .env.example .env   # Windows: copy .env.example .env
+```
+
+| Variable | Description |
+| --- | --- |
+| `DEEPSEEK_API_KEY` | Real model calls (Mock if unset) |
+| `DEEPSEEK_MODEL` | Default `deepseek-v4-flash` |
+| `JEA_LANGUAGE` | UI/report language: `zh-CN` \| `en-US` |
+| `JEA_APPROVAL_MODE` | `manual` \| `auto_guarded` \| `auto_all` |
+| `JEA_EVOLUTION_MODE` | Default daemon evolution mode |
+| `JEA_AGENT_PROVIDER` | Default agent backend |
+| `JEA_EXEC_LIMIT` | Max decisions per exec phase (default 5) |
+
+Feishu per-subject credentials: `JEA_CHANNEL_FEISHU_<SUBJECT>_APP_ID`, etc. — see `.env.example` and `policies/subjects.example.json`.
+
+Override authority docs directory:
+
+```bash
+CYBER_TAOIST_DOCS_DIR=/path/to/custom-authority jea run
+```
+
+---
+
+## Safety boundaries
+
+- Phase 1 by default **records** observations, probe proposals, retrospectives, and receipts — it does not modify engine source, authority docs, or intel-store itself.
+- **Core-layer changes** (`core_apply`) require human review by default; `JEA_CORE_APPLY_POLICY=review|disabled` tightens further.
+- **Remote publish, credentials, out-of-bounds writes** are constrained by SUBJECT.md Off-Limits and `approval_granted`; Channel cannot auto-approve.
+- `jea data reset --yes` deletes current subject runtime data — **destructive**; confirm subject before automation runs it.
+
+---
+
+## Development and testing
+
+```bash
 npm test
+npm run jea -- help
 ```
+
+- Engine vendoring: [`src/engine/VENDORED.md`](./src/engine/VENDORED.md)
+- Full operator / automation guide: [AGENTS.md](./AGENTS.md)
+- Design notes: `journal/`
+
+---
+
+## Documentation index
+
+| Document | Contents |
+| --- | --- |
+| [cyber-taoist.ai](https://cyber-taoist.ai) | Evolution framework site: N/R/T/EC/NI and full constitution |
+| [README.zh-CN.md](./README.zh-CN.md) | Chinese README |
+| [AGENTS.md](./AGENTS.md) | Full CLI reference, daemon/channel workflows, operator input |
+| [policies/README.md](./policies/README.md) | Subject / registry / lane / goals setup |
+| [policies/subjects.example.json](./policies/subjects.example.json) | Registry example |
+| [policies/authority/](./policies/authority/) | Local authority doc copies (CONSTITUTION, GUIDE) |
+| [.env.example](./.env.example) | Environment template |
+
+---
+
+## License
+
+UNLICENSED — see [package.json](./package.json).
