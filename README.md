@@ -1,8 +1,26 @@
-# js-evolution-agent
+<p align="center">
+  <img src="docs/img/cyber-taoist-logo.svg" alt="Cyber-Taoist logo" width="96" />
+</p>
 
-**English** | [中文文档](./README.zh-CN.md)
+<h1 align="center">JS-EVOLUTION-AGENT</h1>
 
-**A governed self-evolution host (JEA)** — operationalizes [Cyber-Taoist evolution theory](https://cyber-taoist.ai) as a runnable **Loop Engineering** system: inside an OADA closed loop, it does not only execute tasks but **self-corrects goals (laws)** from transaction feedback.
+<p align="center">
+  <strong>A governed self-evolution host (JEA)</strong><br/>
+  <strong>Cyber-Taoist evolution theory</strong> × <strong>Loop Engineering</strong> — OADA closed loops with goal self-correction
+</p>
+
+<p align="center">
+  <a href="https://cyber-taoist.ai"><strong>Theory</strong></a> ·
+  <a href="https://github.com/imjszhang/cyber-taoist"><strong>Cyber-Taoist</strong></a> ·
+  <a href="./README.zh-CN.md"><strong>中文</strong></a> ·
+  <a href="./AGENTS.md"><strong>CLI Reference</strong></a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Theory-cyber--taoist.ai-FCD228?style=flat-square&labelColor=000000" alt="cyber-taoist.ai" />
+  <img src="https://img.shields.io/badge/CLI-jea-000000?style=flat-square&labelColor=FCD228" alt="jea CLI" />
+  <img src="https://img.shields.io/badge/Node.js-%3E%3D18-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node.js >= 18" />
+</p>
 
 > Not a fixed `/goal` coding loop that runs until tests pass — an **evolution loop** with theoretical constraints, governance boundaries, and auditable receipts. When an old goal (law) is falsified by consequences, the system enters a rule-update phase instead of spinning or grinding.
 

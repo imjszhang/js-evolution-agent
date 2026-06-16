@@ -1,8 +1,26 @@
-# js-evolution-agent
+<p align="center">
+  <img src="docs/img/cyber-taoist-logo.svg" alt="Cyber-Taoist logo" width="96" />
+</p>
 
-**[English](./README.md)** | 中文文档
+<h1 align="center">JS-EVOLUTION-AGENT</h1>
 
-**受控的自演化宿主（JEA）** — 把 [Cyber-Taoist 进化学](https://cyber-taoist.ai) 操作化为可运行的 **Loop Engineering** 系统：在 OADA 闭环里不只执行任务，还能依据交易反馈 **自修正目标（法则）**。
+<p align="center">
+  <strong>受控的自演化宿主（JEA）</strong><br/>
+  <strong>Cyber-Taoist 进化学</strong> × <strong>Loop Engineering</strong> — 带目标自修正的 OADA 演化闭环
+</p>
+
+<p align="center">
+  <a href="https://cyber-taoist.ai"><strong>理论框架</strong></a> ·
+  <a href="https://github.com/imjszhang/cyber-taoist"><strong>Cyber-Taoist</strong></a> ·
+  <a href="./README.md"><strong>English</strong></a> ·
+  <a href="./AGENTS.md"><strong>CLI 参考</strong></a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/理论-cyber--taoist.ai-FCD228?style=flat-square&labelColor=000000" alt="cyber-taoist.ai" />
+  <img src="https://img.shields.io/badge/CLI-jea-000000?style=flat-square&labelColor=FCD228" alt="jea CLI" />
+  <img src="https://img.shields.io/badge/Node.js-%3E%3D18-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node.js >= 18" />
+</p>
 
 > 不是「固定 `/goal` 直到测试通过」的 coding loop，而是带理论约束、治理边界与可审计回执的 **演化 loop** — 当旧目标（法则）被后果证伪时，系统进入规则更新期，而非空转或硬撑。
 
