@@ -39,7 +39,11 @@ function printSubject(root, policy, runtime, { defaultSubject = null } = {}) {
   console.log(`runtime root: ${runtime.runtimeRoot}`);
   console.log(`data root: ${runtime.dataRoot}`);
   if (repoLane.configured) {
-    console.log(`repo: ${repoLane.repoRoot}`);
+    if (repoLane.repoRef) {
+      console.log(`repo link: ${repoLane.repo} -> ${repoLane.repoRoot ?? '(unresolved)'}`);
+    } else {
+      console.log(`repo: ${repoLane.repoRoot}`);
+    }
     console.log(`base branch: ${repoLane.baseBranch}`);
     console.log(`lane: ${repoLane.lane}`);
   }
@@ -84,7 +88,11 @@ function currentRepoLane(root, flags = {}) {
 
 function printLaneStatus(status) {
   console.log(`# Subject Lane Status`);
-  console.log(`repo: ${status.repoRoot ?? '(not configured)'}`);
+  if (status.repoRef) {
+    console.log(`repo link: ${status.repo ?? status.repoRef.ref} -> ${status.repoRoot ?? '(not configured)'}`);
+  } else {
+    console.log(`repo: ${status.repoRoot ?? '(not configured)'}`);
+  }
   console.log(`base branch: ${status.baseBranch}`);
   console.log(`lane: ${status.lane ?? '(not configured)'}`);
   console.log(`git root: ${status.gitRoot ?? '(not a git repo)'}`);
@@ -205,8 +213,9 @@ export async function subjectCommand({ subcommand, flags = {}, args = [] } = {})
     const { repoLane } = currentRepoLane(root, flags);
     if (laneCommand === 'status') {
       const status = checkLaneStatus(repoLane);
-      if (flags.json) console.log(JSON.stringify(status, null, 2));
-      else printLaneStatus(status);
+      const payload = { ...status, repo: repoLane.repo ?? null, repoRef: repoLane.repoRef ?? null };
+      if (flags.json) console.log(JSON.stringify(payload, null, 2));
+      else printLaneStatus({ ...status, repo: repoLane.repo, repoRef: repoLane.repoRef });
       return status.ok ? 0 : 1;
     }
     if (laneCommand === 'init') {

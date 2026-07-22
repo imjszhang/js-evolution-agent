@@ -2,6 +2,7 @@
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   afterEach,
   describe,
@@ -1609,6 +1610,54 @@ describe('controlled action handlers', () => {
     expect(result.args).toContain('--limit');
     expect(result.args).toContain('3');
     expect(result.args).not.toContain('--secret');
+  });
+
+  it('runs linked external actions with cwd set to the resolved link root', async () => {
+    const ctx = makeCtx();
+    installConfiguredActionProject(ctx);
+    const linkRepo = join(ctx.projectRoot, 'linked-tool');
+    mkdirSync(join(linkRepo, 'src'), { recursive: true });
+    const repolinkImport = pathToFileURL(join(import.meta.dirname, '..', 'node_modules', 'js-repolink', 'src', 'index.mjs')).href;
+    writeFileSync(join(ctx.projectRoot, 'repolink.config.mjs'), `import { defineLinks } from '${repolinkImport}';
+export const links = defineLinks({
+  test_link: {
+    envVar: 'TEST_LINK_PATH',
+    runtime: 'node',
+    entry: 'src/cli.mjs',
+  },
+});
+`, 'utf-8');
+    writeFileSync(join(ctx.projectRoot, '.env'), `TEST_LINK_PATH=${linkRepo.replace(/\\/g, '/')}\n`, 'utf-8');
+    writeFileSync(join(linkRepo, 'src', 'cli.mjs'), [
+      'const cmd = process.argv[2];',
+      'if (cmd === "sync") {',
+      '  console.log(JSON.stringify({ success: true, status: "completed", cwd: process.cwd() }));',
+      '}',
+      '',
+    ].join('\n'), 'utf-8');
+    writeJsonFile(join(ctx.projectRoot, 'runtime', 'subjects', 'configured-test', 'data', 'config', 'actions.json'), {
+      external_tools: {
+        test_tool: { link: 'test_link', entry: 'src/cli.mjs' },
+      },
+      actions: [
+        {
+          name: 'configured_sync',
+          tool: 'test_tool',
+          command: 'sync',
+          description: 'Sync configured test context via link',
+          defaultRisk: 'low',
+          defaultPriority: 'high',
+          layer: 'probe',
+          params: { allowed: ['limit'] },
+        },
+      ],
+    });
+
+    const result = await runConfiguredExternalAction({ type: 'configured_sync' }, ctx);
+
+    expect(result.success).toBe(true);
+    expect(result.resolution).toBe('link');
+    expect(result.cwd.replace(/\\/g, '/')).toBe(linkRepo.replace(/\\/g, '/'));
   });
 
   it('loads configured external action env from the tool root, overriding stale process env for tool-defined keys', async () => {

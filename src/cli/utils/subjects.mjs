@@ -8,6 +8,12 @@ import {
 import { basename, dirname, join, resolve } from 'node:path';
 import { readJsonSafe, readTextSafe, writeJsonFile } from './files.mjs';
 import { getLanguage, t } from './i18n.mjs';
+import {
+  describeLinkRef,
+  isLinkRef,
+  parseLinkRef,
+  resolveMachinePath,
+} from '../../infra/links/index.mjs';
 
 export const DEFAULT_SUBJECT = 'js-evolution-agent';
 export const SUBJECT_ENV = 'JEA_SUBJECT';
@@ -665,7 +671,7 @@ function isWindowsAbsolutePath(value) {
 
 function parseRelativeResourceHandle(handle) {
   const text = String(handle || '').trim();
-  if (!text || isWindowsAbsolutePath(text)) return null;
+  if (!text || isWindowsAbsolutePath(text) || isLinkRef(text)) return null;
   const match = text.match(/^([^:]+):(.+)$/);
   if (!match) return null;
   return {
@@ -675,7 +681,14 @@ function parseRelativeResourceHandle(handle) {
 }
 
 function isLocalRootHandle(handle) {
-  return Boolean(String(handle || '').trim()) && !parseRelativeResourceHandle(handle);
+  const text = String(handle || '').trim();
+  if (isLinkRef(text)) return true;
+  return Boolean(text) && !parseRelativeResourceHandle(text);
+}
+
+function resolveResourceRootHandle(handle, projectRoot = process.cwd()) {
+  if (!isLocalRootHandle(handle)) return null;
+  return resolveMachinePath(handle, projectRoot);
 }
 
 const ROOT_RESOURCE_KINDS = new Set(['repo', 'root']);
@@ -724,7 +737,7 @@ function resolveResourceItemId(resources = {}, resourceRef = '') {
   return id;
 }
 
-function resolveRootScopeToPath(resources = {}, scopeName = '') {
+function resolveRootScopeToPath(resources = {}, scopeName = '', projectRoot = process.cwd()) {
   const items = normalizeStructuredResourceItems(resources?.items);
   const roots = asPlainObject(resources?.roots);
   const rootScope = resolveRootScopeName(resources, scopeName);
@@ -740,15 +753,15 @@ function resolveRootScopeToPath(resources = {}, scopeName = '') {
   if (!ROOT_RESOURCE_KINDS.has(item.kind)) return null;
   if (!isLocalRootHandle(item.handle)) return null;
 
-  return item.handle;
+  return resolveResourceRootHandle(item.handle, projectRoot);
 }
 
-function normalizeStructuredResourceRoots(resources = {}) {
+function normalizeStructuredResourceRoots(resources = {}, projectRoot = process.cwd()) {
   const roots = {};
   for (const scopeName of Object.keys(asPlainObject(resources?.roots))) {
     const scope = normalizeResourceScope(scopeName);
     if (!scope || scope === 'subject_runtime' || scope === 'source_root') continue;
-    const path = resolveRootScopeToPath(resources, scopeName);
+    const path = resolveRootScopeToPath(resources, scopeName, projectRoot);
     if (path) roots[scope] = path;
   }
 
@@ -757,14 +770,14 @@ function normalizeStructuredResourceRoots(resources = {}) {
     const target = normalizeResourceScope(rawTarget);
     if (!alias || alias === 'subject_runtime' || alias === 'source_root') continue;
     if (!target || target === 'subject_runtime' || target === 'source_root') continue;
-    const path = roots[target] || resolveRootScopeToPath(resources, target);
+    const path = roots[target] || resolveRootScopeToPath(resources, target, projectRoot);
     if (path) roots[alias] = path;
   }
 
   return roots;
 }
 
-function diagnoseStructuredResourceItems(resources = {}) {
+function diagnoseStructuredResourceItems(resources = {}, projectRoot = process.cwd()) {
   const diagnostics = [];
   const items = normalizeStructuredResourceItems(resources?.items);
   const itemIds = new Set(Object.keys(items));
@@ -773,6 +786,16 @@ function diagnoseStructuredResourceItems(resources = {}) {
     if (!item.kind || !item.handle) {
       diagnostics.push(makeDiagnostic('error', 'resources.item_invalid', `resource item '${id}' requires kind and handle`, { id }));
       continue;
+    }
+    if (isLinkRef(item.handle)) {
+      const linkMeta = describeLinkRef(item.handle, projectRoot);
+      if (!linkMeta?.link_root) {
+        diagnostics.push(makeDiagnostic('error', 'resources.link_unresolved', `resource item '${id}' link '${parseLinkRef(item.handle)}' is not configured or resolvable`, {
+          id,
+          link: parseLinkRef(item.handle),
+          status: linkMeta?.status ?? 'unknown',
+        }));
+      }
     }
     if (RESOURCE_NOTE_KINDS.has(item.kind)) {
       if (!item.note) {
@@ -836,10 +859,10 @@ function normalizeStructuredResourceRule(rule = {}) {
   };
 }
 
-export function resolveSubjectExternalRoots(policyText = '', { config = null } = {}) {
+export function resolveSubjectExternalRoots(policyText = '', { config = null, root = process.cwd() } = {}) {
   return {
     ...parseSubjectExternalRoots(policyText),
-    ...normalizeStructuredResourceRoots(config?.resources),
+    ...normalizeStructuredResourceRoots(config?.resources, root),
   };
 }
 
@@ -1015,11 +1038,11 @@ export function diagnoseSubjectRuntimeConfig(policyText = '', {
   config = null,
 } = {}) {
   const diagnostics = [];
-  const structuredRoots = normalizeStructuredResourceRoots(config?.resources);
+  const structuredRoots = normalizeStructuredResourceRoots(config?.resources, root);
   const structuredRules = Array.isArray(config?.resources?.rules)
     ? config.resources.rules.map(normalizeStructuredResourceRule).filter(Boolean)
     : [];
-  diagnostics.push(...diagnoseStructuredResourceItems(config?.resources));
+  diagnostics.push(...diagnoseStructuredResourceItems(config?.resources, root));
   const markdownLane = parseSubjectRepoLane(policyText, { root, subject });
   const markdownRoots = parseSubjectExternalRoots(policyText);
   const markdownRules = parseSubjectResourceRules(policyText);
@@ -1028,6 +1051,14 @@ export function diagnoseSubjectRuntimeConfig(policyText = '', {
     const repo = structuredLaneRepo(config);
     if (!repo) {
       diagnostics.push(makeDiagnostic('error', 'lane.repo_missing', 'structured lane repo is required when lane is configured'));
+    } else if (isLinkRef(repo)) {
+      const resolvedRepo = resolveMachinePath(repo, root);
+      if (!resolvedRepo) {
+        diagnostics.push(makeDiagnostic('error', 'lane.repo_link_unresolved', `structured lane repo link '${parseLinkRef(repo)}' is not configured or resolvable`, {
+          link: parseLinkRef(repo),
+          ref: repo,
+        }));
+      }
     }
     const laneBranch = structuredLaneValue(config, ['lane_branch', 'laneBranch', 'lane']);
     if (!laneBranch) {
@@ -1037,7 +1068,7 @@ export function diagnoseSubjectRuntimeConfig(policyText = '', {
     if (!workBranchPrefix) {
       diagnostics.push(makeDiagnostic('warning', 'lane.work_prefix_missing', 'structured work branch prefix is missing; default prefix will be used'));
     }
-    if (repo && markdownLane.repo && !samePathValue(resolve(root, repo), markdownLane.repoRoot)) {
+    if (repo && markdownLane.repo && !samePathValue(resolveMachinePath(repo, root) ?? resolve(root, repo), markdownLane.repoRoot)) {
       diagnostics.push(makeDiagnostic('warning', 'lane.repo_conflict', 'structured lane repo differs from markdown policy', {
         structured: repo,
         markdown: markdownLane.repo,
@@ -1211,10 +1242,13 @@ export function resolveSubjectRepoLane(policyText = '', {
     ?? parsed.runCommand;
   const githubRepo = firstStructuredLaneValue(lane, ['github_repo', 'githubRepo', 'remote_repo', 'remoteRepo'])
     ?? parsed.githubRepo;
+  const repoRoot = repo ? resolveMachinePath(repo, root) : null;
+  const repoRef = repo && isLinkRef(repo) ? describeLinkRef(repo, root) : null;
   return {
     configured: Boolean(repo),
     repo,
-    repoRoot: repo ? resolve(root, repo) : null,
+    repoRoot,
+    repoRef,
     baseBranch,
     lane: laneBranch,
     workBranchPrefix,

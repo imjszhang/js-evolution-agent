@@ -363,7 +363,7 @@ function buildChannelDiagnostics(channel) {
  * @param {string} options.runtimeRoot
  * @param {object} options.daemon - output of buildDaemonProjection
  */
-export function buildSubjectObservability({ subject, runtimeRoot, daemon }) {
+export function buildSubjectObservability({ subject, runtimeRoot, daemon, repo_links = null }) {
   const operator_inputs = buildOperatorInputs(runtimeRoot, subject);
   const cycle_diagnostics = buildCycleDiagnostics(daemon);
   const channel_diagnostics = buildChannelDiagnostics(daemon?.channel);
@@ -389,6 +389,7 @@ export function buildSubjectObservability({ subject, runtimeRoot, daemon }) {
     cycle_diagnostics,
     channel_diagnostics,
     operator_inputs,
+    repo_links,
     evolution_mode: daemon?.evolution_mode ?? null,
     evolution_mode_source: daemon?.evolution_mode_source ?? null,
   };

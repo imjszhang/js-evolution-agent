@@ -8,6 +8,7 @@ import {
 } from '../cli/utils/evolve-runs.mjs';
 import { hasMultiSubjectSelection, selectSubjects } from '../cli/utils/subject-selection.mjs';
 import { buildSubjectArtifactOverview } from '../cli/utils/subject-artifacts.mjs';
+import { buildLinkHealthSummary } from '../infra/links/index.mjs';
 import {
   acknowledgeTask,
   cancelTask,
@@ -1802,9 +1803,10 @@ export async function daemonCommand({ subcommand, flags = {}, args = [], root = 
   }
 
   if (subcommand === 'inbox' || subcommand === 'overview') {
+    const repoLinks = await buildLinkHealthSummary(root, { probe: false }).catch(() => ({ configured: false, links: [] }));
     const items = subjects.map((name) => {
       const projection = buildProjection(root, name, flags);
-      return buildSubjectArtifactOverview(root, name, { projection });
+      return buildSubjectArtifactOverview(root, name, { projection, repoLinks });
     });
     if (flags.json) console.log(JSON.stringify(multiSubject ? { subjects: items } : items[0], null, 2));
     else printArtifactInbox(items);

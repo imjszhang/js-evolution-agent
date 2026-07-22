@@ -29,6 +29,7 @@ import {
   buildSubjectObservability,
   cycleDiagnosticsForId,
 } from './observability-projection.mjs';
+import { getCachedLinkHealthSummary } from '../../infra/links/index.mjs';
 
 const PING_INTERVAL_MS = 25_000;
 const DEFAULT_CACHE_SIZE = 30;
@@ -749,6 +750,7 @@ function createSubjectContext(runtime, projectRoot, catalogLimit) {
       subject: runtime.subject,
       runtimeRoot: runtime.runtimeRoot,
       daemon,
+      repo_links: getCachedLinkHealthSummary(projectRoot),
     });
     observabilityCacheAt = now;
     return observabilityCache;

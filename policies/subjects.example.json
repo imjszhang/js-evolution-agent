@@ -8,7 +8,7 @@
         "mode": "on_demand"
       },
       "lane": {
-        "repo": "D:\\path\\to\\target-project",
+        "repo": "link:my-target-project",
         "base_branch": "main",
         "lane_branch": "jea/my-subject/local",
         "work_branch_prefix": "jea/my-subject/work",
@@ -50,7 +50,7 @@
         "items": {
           "target_repo": {
             "kind": "repo",
-            "handle": "D:\\path\\to\\target-project",
+            "handle": "link:my-target-project",
             "note": "Target project repository used as this subject's lane and external write scope.",
             "fallback": "Pause lane writes and inspect the repository manually."
           }

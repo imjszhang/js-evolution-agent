@@ -1,8 +1,9 @@
-﻿import { existsSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+﻿import { join, resolve } from 'node:path';
+import { existsSync } from 'node:fs';
 import { getProjectRoot } from '../cli/utils/project.mjs';
 import { readJsonSafe } from '../cli/utils/files.mjs';
 import { runtimeInfoForDefaultSubject } from '../cli/utils/subjects.mjs';
+import { resolveJeaLinkRootSync } from '../infra/links/index.mjs';
 
 const VALID_RISKS = new Set(['low', 'medium', 'high']);
 const VALID_PRIORITIES = new Set(['low', 'medium', 'high']);
@@ -124,8 +125,15 @@ export function getConfiguredExternalAction(actionType, root = getProjectRoot())
   return config.byName[actionType] ?? null;
 }
 
-export function resolveConfiguredToolRoot(config, toolName, fallbackRoot) {
+export function resolveConfiguredToolRoot(config, toolName, fallbackRoot, projectRoot = config?.root ?? getProjectRoot()) {
   const tool = config?.external_tools?.[toolName];
-  const configured = tool && typeof tool === 'object' ? tool.root : null;
-  return configured ? resolve(config.root, configured) : fallbackRoot;
+  if (tool && typeof tool === 'object') {
+    if (tool.link) {
+      const linkRoot = resolveJeaLinkRootSync(tool.link, projectRoot);
+      if (linkRoot) return linkRoot;
+    }
+    const configured = tool.root;
+    if (configured) return resolve(config.root, configured);
+  }
+  return fallbackRoot;
 }

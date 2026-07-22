@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config as loadDotenv } from 'dotenv';
+import { invalidateLinkHealthCache } from '../../infra/links/index.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -17,6 +18,7 @@ export function loadProjectEnv(root = getProjectRoot()) {
     // Project .env is the local source of truth; shell placeholders must not win over it.
     loadDotenv({ path: envPath, override: true });
   }
+  invalidateLinkHealthCache(root);
   return envPath;
 }
 

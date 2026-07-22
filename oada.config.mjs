@@ -229,6 +229,7 @@ export default async function ({ cwd }) {
   });
   const externalRoots = resolveSubjectExternalRoots(subjectPolicy.text, {
     config: subjectConfig,
+    root: cwd,
   });
   if (subjectRepoLane.configured) {
     externalRoots.target_repo = subjectRepoLane.repoRoot;

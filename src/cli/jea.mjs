@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgv } from './utils/args.mjs';
 import { getProjectRoot, loadProjectEnv } from './utils/project.mjs';
+import { warmJeaLinksCache } from '../infra/links/index.mjs';
 import { doctorCommand } from './commands/doctor.mjs';
 import { runCommand } from './commands/run.mjs';
 import { dataCommand } from './commands/data.mjs';
@@ -158,7 +159,9 @@ Examples:
 }
 
 export async function main(argv = process.argv.slice(2)) {
-  loadProjectEnv(getProjectRoot());
+  const root = getProjectRoot();
+  loadProjectEnv(root);
+  await warmJeaLinksCache(root).catch(() => {});
   const { positionals, flags } = parseArgv(argv);
   const [command, subcommand, ...args] = positionals;
 

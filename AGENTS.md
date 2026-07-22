@@ -27,12 +27,34 @@ jea data status
 
 ## 环境与诊断
 
-- `jea doctor`：检查 Node、依赖、`.env`、DeepSeek 配置、权威文档（`policies/authority/CONSTITUTION.md`、`GUIDE.md`）和 `oada.config.mjs`。
+- `jea doctor`：检查 Node、依赖、`.env`、DeepSeek 配置、权威文档（`policies/authority/CONSTITUTION.md`、`GUIDE.md`）、`oada.config.mjs`，以及 `repolink.config.mjs` 声明的兄弟仓库链接（`jea doctor` 的 Repo Links 段）。
 - `jea llm ping`：测试 DeepSeek 连接。
 - `jea llm ping --mock`：测试本地 Mock AI 路径。
 - `jea policy check`：检查当前主体策略是否包含必需章节（`Subject`）。
 
 真实模型调用依赖 `.env` 中的 `DEEPSEEK_API_KEY`。没有 API key 时，可使用 `--mock` 走本地模拟路径。
+
+## 外部仓库链接（js-repolink）
+
+JEA 通过 [js-repolink](https://github.com/imjszhang/js-repolink) 引用同机器上活跃开发中的兄弟仓库（lane 目标、configured external actions），避免在 `runtime/subjects/registry.json` 中硬编码绝对路径。
+
+| 文件 | 作用 |
+| --- | --- |
+| `repolink.config.mjs` | 声明链接 id、envVar、entry、preflight、versionProbe（可提交） |
+| `.env` | 各链接的绝对路径，如 `AGENTANK_EVOLVER_PATH=D:/github/My/agentank-evolver` |
+| `runtime/subjects/registry.json` | 使用 `link:<id>` 引用，如 `"repo": "link:agentank-evolver"` |
+
+常用命令：
+
+```powershell
+jea doctor                    # Repo Links 段：ok / unconfigured / path-missing / entry-missing
+npx repolink list             # 若全局安装 js-repolink，可独立查看链接状态
+npx repolink check --link agentank-evolver
+```
+
+`external_tools.<tool>.link` 指向 repolink link id 时，Phase 2 exec 会在运行 configured external action 前做 link preflight；失败返回 `blocked` receipt（`blocked_reason: repo_link_unavailable`），而不是 ENOENT 裸报错。
+
+自动化代理在未确认操作者路径前，不要替其写入 `.env` 中的链接路径；`link:` 引用未配置时 `jea subject check` 会报 `lane.repo_link_unresolved` / `resources.link_unresolved` 诊断。
 
 ## 运行演化循环
 

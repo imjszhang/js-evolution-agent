@@ -9,6 +9,12 @@ import {
   summarizeGoalCalibratePolicy,
   resolveGoalCalibratePolicy,
 } from '../../intelligence/goal-calibrate-policy.mjs';
+import {
+  preflightAll,
+  repolinkConfigExists,
+  summarizeDoctorLinkChecks,
+  warmJeaLinksCache,
+} from '../../infra/links/index.mjs';
 
 function statusLine(ok, label, detail = '') {
   const mark = ok ? 'OK ' : 'WARN';
@@ -53,6 +59,16 @@ export async function doctorCommand() {
   ok = statusLine(existsSync(join(docsDir, 'CONSTITUTION.md')), 'Authority CONSTITUTION.md', docsDir) && ok;
   ok = statusLine(existsSync(join(docsDir, 'GUIDE.md')), 'Authority GUIDE.md', docsDir) && ok;
   ok = statusLine(existsSync(join(root, 'oada.config.mjs')), 'oada.config.mjs') && ok;
+
+  if (repolinkConfigExists(root)) {
+    await warmJeaLinksCache(root);
+    const reports = await preflightAll(root, { probe: true });
+    const linkSummary = summarizeDoctorLinkChecks(reports);
+    for (const line of linkSummary.lines) {
+      if (line.warn) statusLine(true, line.label, line.detail);
+      else ok = statusLine(line.ok, line.label, line.detail) && ok;
+    }
+  }
 
   const runtimeSubjects = join(root, 'runtime', 'subjects');
   if (existsSync(runtimeSubjects)) {

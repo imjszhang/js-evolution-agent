@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "external_tools": {
+    "agentank_evolver": {
+      "link": "agentank-evolver",
+      "entry": "src/cli.mjs"
+    }
+  }
+}

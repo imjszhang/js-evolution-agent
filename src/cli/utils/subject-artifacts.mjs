@@ -4,7 +4,6 @@ import { EVOLUTION_DIARIES_REL } from '../../intelligence/diary-paths.mjs';
 import { readJsonSafe } from './files.mjs';
 import { runtimeForSubject } from './evolve-runs.mjs';
 import { storeForSubject } from './daemon-events.mjs';
-
 function latestFileInDir(dirPath, predicate = () => true, { recursive = false } = {}) {
   if (!existsSync(dirPath)) return null;
   let latest = null;
@@ -62,7 +61,7 @@ function latestVerifyReport(runtime) {
   };
 }
 
-export function buildSubjectArtifactOverview(root, subject, { projection = null } = {}) {
+export function buildSubjectArtifactOverview(root, subject, { projection = null, repoLinks = null } = {}) {
   const runtime = runtimeForSubject(root, subject);
   const store = storeForSubject(root, subject);
   const standingMemory = store.readStandingMemory();
@@ -92,5 +91,6 @@ export function buildSubjectArtifactOverview(root, subject, { projection = null 
       open_cycles: projection?.cycles?.open_count ?? 0,
       stuck_steps: projection?.cycles?.stuck_steps?.length ?? 0,
     },
+    repo_links: repoLinks ?? { configured: false, links: [] },
   };
 }
