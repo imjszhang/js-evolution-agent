@@ -17,8 +17,7 @@ import { createIntelligenceStore } from './src/intelligence/store.mjs';
 import { resolveAuthorityDocsDir } from './src/cli/utils/project.mjs';
 import {
   runtimeInfoForDefaultSubject,
-  resolveSubjectRepoLane,
-  resolveSubjectExternalRoots,
+  resolveHostExternalRoots,
   resolveSubjectResourceRules,
   buildSubjectResourceSummary,
   readSubjectPolicy,
@@ -222,18 +221,11 @@ export default async function ({ cwd }) {
   const subjectConfig = resolveSubjectConfig(cwd);
   const runtime = runtimeInfoForDefaultSubject(cwd);
   const subjectPolicy = readSubjectPolicy(cwd, subjectConfig);
-  const subjectRepoLane = resolveSubjectRepoLane(subjectPolicy.text, {
+  const { externalRoots, subjectRepoLane } = await resolveHostExternalRoots({
     root: cwd,
-    subject: subjectConfig.name,
     config: subjectConfig,
+    policyText: subjectPolicy.text,
   });
-  const externalRoots = resolveSubjectExternalRoots(subjectPolicy.text, {
-    config: subjectConfig,
-    root: cwd,
-  });
-  if (subjectRepoLane.configured) {
-    externalRoots.target_repo = subjectRepoLane.repoRoot;
-  }
   const resourceRules = resolveSubjectResourceRules(subjectPolicy.text, {
     config: subjectConfig,
   });

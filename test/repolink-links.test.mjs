@@ -20,7 +20,11 @@ import {
   getCachedLinkHealthSummary,
   invalidateLinkHealthCache,
 } from '../src/infra/links/index.mjs';
-import { diagnoseSubjectRuntimeConfig, resolveSubjectRepoLane } from '../src/cli/utils/subjects.mjs';
+import {
+  diagnoseSubjectRuntimeConfig,
+  resolveHostExternalRoots,
+  resolveSubjectRepoLane,
+} from '../src/cli/utils/subjects.mjs';
 
 describe('repo links facade', () => {
   let tempRoot;
@@ -76,6 +80,25 @@ export const links = defineLinks({
     ]);
     expect(summary.ok).toBe(true);
     expect(summary.lines[0].warn).toBe(true);
+  });
+
+  it('resolveHostExternalRoots warms link cache and resolves target_repo', async () => {
+    tempRoot = mkdtempSync(join(tmpdir(), 'jea-repolink-host-roots-'));
+    const repoPath = join(tempRoot, 'target-repo');
+    mkdirSync(repoPath, { recursive: true });
+    writeTempLinkConfig(tempRoot, 'target', 'TARGET_REPO_PATH');
+    writeFileSync(join(tempRoot, '.env'), `TARGET_REPO_PATH=${repoPath.replace(/\\/g, '/')}\n`, 'utf-8');
+    writeFileSync(join(repoPath, 'cli.mjs'), 'console.log("ok");\n', 'utf-8');
+
+    const { externalRoots, subjectRepoLane } = await resolveHostExternalRoots({
+      root: tempRoot,
+      config: {
+        name: 'demo-subject',
+        lane: { repo: 'link:target', base_branch: 'main', lane_branch: 'jea/demo/local' },
+      },
+    });
+    expect(subjectRepoLane.repoRoot).toBe(repoPath);
+    expect(externalRoots.target_repo).toBe(repoPath);
   });
 
   it('resolves link refs in subject repo lane config', async () => {

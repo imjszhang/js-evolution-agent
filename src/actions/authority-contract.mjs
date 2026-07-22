@@ -2,6 +2,13 @@ import { RESOURCE_SCOPES } from './resource-registry.mjs';
 
 const HOST_ENV_PREFIXES = ['JEA_', 'DEEPSEEK_', 'ANTHROPIC_', 'CLAUDE_', 'CURSOR_', 'OPENAI_'];
 
+/** Uppercase tokens that match the env-var regex but are not environment variables. */
+const ENV_VAR_FALSE_POSITIVES = new Set([
+  'GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS',
+  'HTTP', 'HTTPS', 'API', 'JSON', 'URL', 'URI', 'SHA', 'UTC', 'GMT',
+  'CLI', 'SDK', 'SSE', 'EOF', 'CPU', 'GPU', 'RAM', 'SSD', 'OK',
+]);
+
 function asObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
@@ -49,9 +56,17 @@ function actionText(action = {}) {
   ].filter(Boolean).join('\n');
 }
 
+function looksLikeEnvVar(name) {
+  if (!name || name.length < 4) return false;
+  if (ENV_VAR_FALSE_POSITIVES.has(name)) return false;
+  // Project secrets and tool env vars in this repo use underscores (AGENTANK_TANK_KEY, etc.).
+  return name.includes('_');
+}
+
 function envVarsInAction(action) {
   const text = actionText(action);
-  return [...new Set([...text.matchAll(/\b[A-Z][A-Z0-9_]{2,}\b/g)].map((match) => match[0]))];
+  return [...new Set([...text.matchAll(/\b[A-Z][A-Z0-9_]{2,}\b/g)].map((match) => match[0]))]
+    .filter((name) => looksLikeEnvVar(name));
 }
 
 function isHostEnvVar(name) {

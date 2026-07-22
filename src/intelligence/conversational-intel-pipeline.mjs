@@ -123,6 +123,7 @@ import {
   summarizeOperatorBriefsForContext,
 } from './operator-briefs.mjs';
 import { validateAgentRunSpec } from '../actions/agent-run-spec.mjs';
+import { resolveHostExternalRoots } from '../cli/utils/subjects.mjs';
 
 function summarizeAnalysis(analysis) {
   if (!analysis) return '';
@@ -307,6 +308,24 @@ export class ConversationalIntelligencePipeline {
       dataDir: join(this.projectRoot, 'data', 'evolution'),
       logFn: (msg) => this._log(msg),
     });
+  }
+
+  async _refreshHostExternalRoots() {
+    const jeaRoot = this.host?.sourceRoot ?? this.projectRoot;
+    const subject = this.runtime?.subject ?? this.host?.subject ?? null;
+    const { externalRoots, subjectRepoLane } = await resolveHostExternalRoots({
+      root: jeaRoot,
+      subject,
+    });
+    this.host = {
+      ...(this.host || {}),
+      externalRoots,
+      resourceRoots: externalRoots,
+      subjectRepoLane,
+    };
+    if (this.engine?.host) {
+      this.engine.host = this.host;
+    }
   }
 
   async run({ dryRun = false } = {}) {
@@ -651,6 +670,9 @@ export class ConversationalIntelligencePipeline {
           JSON.stringify({ cycle_id: cycleId, actions: result.actions }, null, 2),
           'utf-8',
         );
+        if (result.actions.length > 0) {
+          await this._refreshHostExternalRoots();
+        }
         const queued = this.decisionQueue.addDecisionsDetailed
           ? this.decisionQueue.addDecisionsDetailed({
             cycleId,
@@ -661,7 +683,7 @@ export class ConversationalIntelligencePipeline {
               conversation_context_path: result.conversation_context_path,
             },
             validateAction: (action) => validateQueuedAction(action, {
-              projectRoot: this.projectRoot,
+              projectRoot: this.host?.sourceRoot ?? this.projectRoot,
               host: this.host,
               runtime: this.runtime,
               cycleId,

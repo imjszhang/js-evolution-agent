@@ -13,6 +13,7 @@ import {
   isLinkRef,
   parseLinkRef,
   resolveMachinePath,
+  warmJeaLinksCache,
 } from '../../infra/links/index.mjs';
 
 export const DEFAULT_SUBJECT = 'js-evolution-agent';
@@ -864,6 +865,31 @@ export function resolveSubjectExternalRoots(policyText = '', { config = null, ro
     ...parseSubjectExternalRoots(policyText),
     ...normalizeStructuredResourceRoots(config?.resources, root),
   };
+}
+
+export async function resolveHostExternalRoots({
+  root = process.cwd(),
+  subject = null,
+  config = null,
+  policyText = '',
+  subjectRepoLane = null,
+} = {}) {
+  await warmJeaLinksCache(root);
+  const subjectConfig = config ?? resolveSubjectConfig(root, subject);
+  const policy = policyText || readSubjectPolicy(root, subjectConfig).text;
+  const lane = subjectRepoLane ?? resolveSubjectRepoLane(policy, {
+    root,
+    subject: subjectConfig.name,
+    config: subjectConfig,
+  });
+  const externalRoots = resolveSubjectExternalRoots(policy, {
+    config: subjectConfig,
+    root,
+  });
+  if (lane.configured && lane.repoRoot) {
+    externalRoots.target_repo = lane.repoRoot;
+  }
+  return { externalRoots, subjectRepoLane: lane, subjectConfig };
 }
 
 export function resolveSubjectResourceRules(policyText = '', { config = null } = {}) {
