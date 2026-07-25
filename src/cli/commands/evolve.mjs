@@ -21,7 +21,7 @@ import {
 import { isStepArtifactComplete } from '../utils/cycle-state.mjs';
 import { enqueueTask } from '../utils/daemon-tasks.mjs';
 import { recordDaemonEvent } from '../utils/daemon-events.mjs';
-import { CYCLE_STEP_TYPES } from '../utils/cycle-reducer.mjs';
+import { ALL_CYCLE_STEP_TYPES, CYCLE_STEP_TYPES } from '../utils/cycle-reducer.mjs';
 import {
   checkSubjectLaneReady,
   printSubjectLaneGuardFailure,
@@ -32,7 +32,7 @@ import {
   runSingleStep,
 } from '../../evolution/runner.mjs';
 
-export { CYCLE_STEP_TYPES };
+export { CYCLE_STEP_TYPES, ALL_CYCLE_STEP_TYPES };
 export { buildCycleEnv, runSingleCycle, runSingleStep };
 
 const RETRYABLE_PATTERNS = [

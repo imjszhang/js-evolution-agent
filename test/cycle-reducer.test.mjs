@@ -139,4 +139,40 @@ describe('cycle-reducer', () => {
     const state = stateWithSteps('cycle-1', { intel: 'skipped' });
     expect(isStepTerminal(state, 'intel')).toBe(true);
   });
+
+  it('agent_loop pipeline enqueues agent_loop on cycle_due and skips intel/exec steps map', () => {
+    const state = createEmptyCycleState({
+      cycleId: 'cycle-loop',
+      subject: 'alpha',
+      meta: { pipeline: 'agent_loop' },
+    });
+    expect(state.steps.agent_loop).toBeTruthy();
+    expect(state.steps.intel).toBeUndefined();
+    expect(state.steps.exec).toBeUndefined();
+    const { steps } = nextSteps({ type: 'cycle_due', cycle_id: 'cycle-loop' }, state);
+    expect(steps.map((s) => s.type)).toEqual(['agent_loop']);
+  });
+
+  it('agent_loop_done enqueues verify', () => {
+    const state = stateWithSteps('cycle-loop', { agent_loop: 'done' }, { pipeline: 'agent_loop' });
+    const { steps } = nextSteps({ type: 'agent_loop_done', cycle_id: 'cycle-loop' }, state);
+    expect(steps.map((s) => s.type)).toEqual(['verify']);
+  });
+
+  it('maps agent_loop completion events', () => {
+    expect(eventFromStepCompletion('agent_loop', { status: 'done' }, { cycle_id: 'c1' }).type)
+      .toBe('agent_loop_done');
+    expect(eventFromStepCompletion('agent_loop', { status: 'failed' }, { cycle_id: 'c1' }).type)
+      .toBe('agent_loop_failed');
+  });
+
+  it('reconcileCycle for agent_loop fills verify after agent_loop done', () => {
+    const state = stateWithSteps('cycle-loop', {
+      agent_loop: 'done',
+      verify: 'pending',
+    }, { pipeline: 'agent_loop', intel_report_ready: true });
+    const { steps } = reconcileCycle(state);
+    expect(steps.some((s) => s.type === 'verify')).toBe(true);
+    expect(steps.some((s) => s.type === 'intel')).toBe(false);
+  });
 });

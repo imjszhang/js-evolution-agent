@@ -30,6 +30,7 @@ import {
   summarizePendingCycleStartRequest,
 } from './cycle-start-requests.mjs';
 import { isContinuousEvolutionMode } from './evolution-mode.mjs';
+import { resolveCyclePipeline } from './cycle-pipeline-mode.mjs';
 
 const DEFAULT_TICK_MS = 5 * 60 * 1000;
 
@@ -87,6 +88,7 @@ function enqueueStepTasks(root, subject, steps, input = {}) {
 
 function stepPriority(stepType) {
   const order = {
+    agent_loop: 10,
     intel: 10,
     intel_report: 20,
     exec: 30,
@@ -186,9 +188,18 @@ export function startCycleFromRequest(root, subject, input = {}, trigger = {}) {
   }
 
   const triggerReasons = trigger.reasons?.length ? trigger.reasons : ['unknown'];
+  const pipelineResolved = resolveCyclePipeline(root, {
+    subject,
+    env: process.env,
+    flags: {
+      pipeline: input.pipeline,
+      loop: input.loop,
+    },
+  });
   const cycleState = createCycle(root, subject, {
     meta: {
       driver: 'daemon',
+      pipeline: pipelineResolved.pipeline,
       skip_belief_update: Boolean(input.skip_belief_update),
       skip_goals_assess: Boolean(input.skip_goals_assess),
       cycle_start_trigger: triggerReasons[0],

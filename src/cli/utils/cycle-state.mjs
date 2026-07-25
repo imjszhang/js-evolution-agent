@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import lockfile from 'proper-lockfile';
 import { runtimeForSubject, nowIso } from './evolve-runs.mjs';
-import { CYCLE_STEP_TYPES } from './cycle-reducer.mjs';
+import { stepTypesForPipeline } from './cycle-reducer.mjs';
 import { findCycleStepTask, stepHasValidLease } from './daemon-tasks.mjs';
 import {
   handleContractValidation,
@@ -74,9 +74,9 @@ export function listStepArtifacts(root, subject, cycleId) {
     .map((name) => name.replace(/\.json$/, ''));
 }
 
-function emptySteps() {
+function emptySteps(pipeline = 'phases') {
   const steps = {};
-  for (const step of CYCLE_STEP_TYPES) {
+  for (const step of stepTypesForPipeline(pipeline)) {
     steps[step] = { status: 'pending', updated_at: null, error: null };
   }
   return steps;
@@ -84,6 +84,7 @@ function emptySteps() {
 
 export function createEmptyCycleState({ cycleId, subject, meta = {} } = {}) {
   const now = nowIso();
+  const pipeline = meta.pipeline === 'agent_loop' ? 'agent_loop' : 'phases';
   return {
     cycle_id: cycleId,
     subject,
@@ -91,7 +92,7 @@ export function createEmptyCycleState({ cycleId, subject, meta = {} } = {}) {
     opened_at: now,
     closed_at: null,
     updated_at: now,
-    steps: emptySteps(),
+    steps: emptySteps(pipeline),
     meta: {
       decisions_queued: 0,
       intel_report_ready: false,
@@ -99,6 +100,7 @@ export function createEmptyCycleState({ cycleId, subject, meta = {} } = {}) {
       skip_goals_assess: false,
       driver: null,
       ...meta,
+      pipeline,
     },
   };
 }

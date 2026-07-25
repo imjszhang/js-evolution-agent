@@ -60,11 +60,12 @@ npx repolink check --link agentank-evolver
 
 - `jea run [--mock] [--deepseek] [--skip-goals-assess] [--skip-belief-update] [--subject NAME]`：运行一次完整演化循环并写入情报回执。
 - `jea run --mock`：不调用真实模型，适合本地冒烟验证。
+- `jea run --loop` / `jea run --pipeline agent_loop`：使用 **agent_loop** 管道（见下节）。
 - `jea run --deepseek`：要求 DeepSeek API 配置存在。
 - `jea run --skip-goals-assess`：跳过本轮目标评估（Phase 4 / 4.5）。
 - `jea run --skip-belief-update`：跳过 post-verify 信念更新（Phase 3.5）。
 
-单轮主流水线：
+单轮主流水线（默认 `phases`）：
 
 ```text
 Phase 1   intel pipeline（observe -> report -> analyze+decide）
@@ -78,6 +79,49 @@ Phase 5   evolution diary
 ```
 
 信念（Belief）在 Phase 1 被 Decide 读取约束行动，在 Phase 3.5 依据 receipt 与 verify_report 正式更新。详见下文「信念管理」与「人工审批与操作者意图」。
+
+### Agent Loop 管道
+
+`agent_loop` 把 Phase 1–2 融合成一个带原生 function calling 的 agent session；verify / belief / goals / diary **保持固定收尾**，下游契约不变。
+
+模式解析优先级（仿 evolution.mode）：
+
+1. `runtime/subjects/registry.json` → `subjects.<name>.evolution.pipeline`
+2. CLI `--loop` / `--pipeline agent_loop|phases`
+3. env `JEA_CYCLE_PIPELINE`
+4. 默认 `phases`
+
+相关 env：
+
+| 变量 | 默认 | 含义 |
+| --- | --- | --- |
+| `JEA_CYCLE_PIPELINE` | `phases` | `phases` 或 `agent_loop` |
+| `JEA_LOOP_MAX_TURNS` | `24` | LLM 最大轮数 |
+| `JEA_LOOP_MAX_WALLCLOCK_MS` | `1200000` | 墙钟预算（20 分钟） |
+| `JEA_LOOP_TOOL_RESULT_MAX_CHARS` | `6000` | 回填模型的工具结果截断 |
+| `JEA_EXEC_LIMIT` | `5` | 复用为 loop 内最大副作用动作数 |
+
+工具分层：
+
+- **readonly**：`intel_query`、`get_current_beliefs`、`get_active_goals`、`get_decision_queue_summary`、`read_intel_report`
+- **action**：来自 `actionRegistry` + host `actionHandlers`（含 configured external）；执行前校验 / 预算 / fingerprint 去重，并写入 decision queue 审计
+- **control**：`finish_cycle`（必填 `report_markdown`）
+
+产物路径（subject runtime）：
+
+```text
+data/evolution/cycle-state/<cycleId>/agent_loop.json
+data/evolution/cycle-state/<cycleId>/intel.json   # 兼容下游
+data/evolution/cycle-state/<cycleId>/exec.json    # 兼容下游
+data/evolution/records/<cycleId>/conversation_context.json
+data/evolution/records/<cycleId>/agent_loop_turns.jsonl
+```
+
+审批语义不变：`agent_run` 仍走 handler 内 `preflightAgentRun` / `JEA_APPROVAL_MODE`，loop 不提供审批旁路。本地冒烟：
+
+```powershell
+npm run jea -- run --mock --loop --subject js-evolution-agent
+```
 
 批量演化：
 

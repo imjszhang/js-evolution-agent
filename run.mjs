@@ -8,6 +8,7 @@ import { createCycle } from './src/cli/utils/cycle-state.mjs';
 import { loadCycleStepContext } from './src/cli/utils/cycle-checkpoints.mjs';
 import {
   buildCycleContext,
+  runAgentLoopStep,
   runBeliefUpdateStep,
   runDiaryStep,
   runExecStep,
@@ -19,6 +20,7 @@ import {
   skipGoalsAssessFromEnv,
   skipBeliefUpdateFromEnv,
 } from './src/evolution/cycle-steps.mjs';
+import { resolveCyclePipeline } from './src/cli/utils/cycle-pipeline-mode.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -55,7 +57,7 @@ function requireCheckpoint(stepContext, { requireExec = false } = {}) {
 }
 
 async function runSingleStepMode(runtime, step, cycleId) {
-  if (!cycleId && step !== 'intel') {
+  if (!cycleId && step !== 'intel' && step !== 'agent_loop') {
     throw new Error(`JEA_CYCLE_ID is required for step: ${step}`);
   }
   const ctx = await buildCycleContext(__dirname, runtime);
@@ -65,6 +67,17 @@ async function runSingleStepMode(runtime, step, cycleId) {
     : null;
 
   switch (step) {
+    case 'agent_loop': {
+      const result = await runAgentLoopStep(ctx, { cycleId, recordState });
+      console.log(`JEA_STEP_RESULT ${JSON.stringify({
+        step: 'agent_loop',
+        cycle_id: result.cycleId,
+        ok: true,
+        decisions_queued: result.eventPayload?.decisions_queued ?? 0,
+        intel_report_ready: true,
+      })}`);
+      return;
+    }
     case 'intel': {
       const result = await runIntelStep(ctx, { cycleId, recordState });
       let intelReportReady = false;
@@ -172,39 +185,55 @@ async function runCycle(runtime) {
   const ctx = await buildCycleContext(__dirname, runtime);
   const recordState = recordStateBag(runtime);
   const { store } = ctx;
+  const pipelineResolved = resolveCyclePipeline(__dirname, {
+    subject: runtime.subject,
+    env: process.env,
+  });
+  const pipeline = pipelineResolved.pipeline;
 
   console.log('\n=== active subject runtime ===');
   console.log('  subject:', runtime.subject);
   console.log('  namespace:', runtime.dataNamespace);
   console.log('  runtimeRoot:', runtime.runtimeRoot);
+  console.log('  pipeline:', pipeline, `(${pipelineResolved.source})`);
 
   const cycleState = createCycle(recordState.root, runtime.subject, {
-    meta: { driver: cycleDriverFromEnv() },
+    meta: { driver: cycleDriverFromEnv(), pipeline },
   });
 
-  console.log('\n=== Phase 1: intel pipeline ===');
-  const intelOutcome = await runIntelStep(ctx, { cycleId: cycleState.cycle_id, recordState });
-  const intelResult = intelOutcome.intelResult;
-  console.log('  success:', intelResult.success);
-  console.log('  actions queued:', intelResult.decisions_queued.length);
-
-  console.log('\n=== Phase 1.5: intel report ===');
-  const reportOutcome = await runIntelReportStep(ctx, { intelResult, recordState });
-  const intelReportReady = reportOutcome.intelReportReady;
-  if (reportOutcome.failed) {
-    console.warn('  report generation failed (non-fatal)');
-  } else {
-    console.log('  report ready:', intelReportReady);
-  }
-
-  console.log('\n=== Phase 2: exec pipeline ===');
+  let intelResult;
   let execResult;
-  try {
+  let intelReportReady = false;
+
+  if (pipeline === 'agent_loop') {
+    console.log('\n=== Agent loop (replaces intel + exec) ===');
+    const loopOutcome = await runAgentLoopStep(ctx, { cycleId: cycleState.cycle_id, recordState });
+    intelResult = loopOutcome.intelResult;
+    execResult = loopOutcome.execResult;
+    intelReportReady = Boolean(intelResult?.report?.mdPath);
+    console.log('  success:', intelResult.success);
+    console.log('  actions executed:', execResult.executed.length);
+    console.log('  report ready:', intelReportReady);
+  } else {
+    console.log('\n=== Phase 1: intel pipeline ===');
+    const intelOutcome = await runIntelStep(ctx, { cycleId: cycleState.cycle_id, recordState });
+    intelResult = intelOutcome.intelResult;
+    console.log('  success:', intelResult.success);
+    console.log('  actions queued:', intelResult.decisions_queued.length);
+
+    console.log('\n=== Phase 1.5: intel report ===');
+    const reportOutcome = await runIntelReportStep(ctx, { intelResult, recordState });
+    intelReportReady = reportOutcome.intelReportReady;
+    if (reportOutcome.failed) {
+      console.warn('  report generation failed (non-fatal)');
+    } else {
+      console.log('  report ready:', intelReportReady);
+    }
+
+    console.log('\n=== Phase 2: exec pipeline ===');
     ({ execResult } = await runExecStep(ctx, { recordState, intelResult, stateCycleId: intelResult.cycle_id }));
     console.log('  success:', execResult.success);
     console.log('  executed:', execResult.executed.length);
-  } catch (e) {
-    throw e;
   }
 
   console.log('\n=== Phase 3: verify receipts ===');

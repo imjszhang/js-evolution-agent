@@ -5,9 +5,9 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   ACTION_REGISTRY,
-  MockAIClient,
 } from './src/engine/index.mjs';
 import { DeepSeekOpenAIClient } from './src/ai/deepseek-client.mjs';
+import { MockToolsAIClient } from './src/ai/mock-tools-client.mjs';
 import { actionRegistry } from './src/actions/registry.mjs';
 import {
   actionHandlers,
@@ -196,7 +196,7 @@ function createMockAiClient() {
     '## What the next cycle should remember\n\n' +
     'With a real LLM enabled, inspect execution receipts and verification reports before judging goal progress.\n';
 
-  return new MockAIClient({
+  return new MockToolsAIClient({
     canned: [
       { match: /Strategic Analysis & Decision/i, response: cannedAnalyzeDecide },
       {
@@ -213,6 +213,7 @@ function createMockAiClient() {
       { match: /intelligence report/i, response: mockJournalEn },
     ],
     defaultResponse: cannedAnalyzeDecide,
+    script: [],
   });
 }
 

@@ -82,4 +82,84 @@ export class DeepSeekOpenAIClient extends BaseAIClient {
     }
     return String(text);
   }
+
+  /**
+   * OpenAI-compatible Chat Completions with native function calling.
+   * Callers must pass raw tool-capable messages (do NOT route through
+   * messages.mjs normalizeMessages — it strips tool_calls / tool_call_id).
+   *
+   * @param {Array<object>} messages
+   * @param {{ tools: object[], toolChoice?: string|object, timeout?: number }} opts
+   * @returns {Promise<{
+   *   content: string|null,
+   *   toolCalls: Array<{ id: string, name: string, arguments: object|null, argumentsRaw: string }>,
+   *   finishReason: string,
+   *   usage: object|null,
+   *   rawMessage: object,
+   * }>}
+   */
+  async chatMessagesWithTools(messages, opts = {}) {
+    if (!Array.isArray(opts.tools) || !opts.tools.length) {
+      throw new AIError('chatMessagesWithTools requires a non-empty tools array');
+    }
+    const timeoutSec = opts.timeout ?? this.timeout;
+    const body = {
+      model: this.model,
+      messages,
+      stream: false,
+      tools: opts.tools,
+      tool_choice: opts.toolChoice ?? 'auto',
+    };
+    if (this.thinkingEnabled) {
+      body.thinking = { type: 'enabled' };
+      if (this.reasoningEffort) body.reasoning_effort = this.reasoningEffort;
+    }
+
+    let completion;
+    try {
+      completion = await this._openai.chat.completions.create(body, {
+        timeout: Math.max(1, Number(timeoutSec) || 120) * 1000,
+      });
+    } catch (e) {
+      const msg = e?.message || String(e);
+      this._log(`DeepSeek API error: ${msg}`, 'error');
+      throw new AIError(`DeepSeek request failed: ${msg}`);
+    }
+
+    const choice = completion?.choices?.[0];
+    const message = choice?.message ?? {};
+    const content = message.content == null ? null : String(message.content);
+    const rawCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+    const toolCalls = rawCalls.map((call, idx) => {
+      const argumentsRaw = String(call?.function?.arguments ?? '');
+      let parsed = null;
+      if (argumentsRaw.trim()) {
+        try {
+          parsed = JSON.parse(argumentsRaw);
+        } catch {
+          parsed = null;
+        }
+      } else {
+        parsed = {};
+      }
+      return {
+        id: call?.id || `tool_call_${idx}`,
+        name: String(call?.function?.name || ''),
+        arguments: parsed,
+        argumentsRaw,
+      };
+    });
+
+    if ((content == null || content.trim() === '') && toolCalls.length === 0) {
+      throw new AIError('DeepSeek returned empty content and no tool_calls');
+    }
+
+    return {
+      content,
+      toolCalls,
+      finishReason: String(choice?.finish_reason || 'stop'),
+      usage: completion?.usage ?? null,
+      rawMessage: message,
+    };
+  }
 }

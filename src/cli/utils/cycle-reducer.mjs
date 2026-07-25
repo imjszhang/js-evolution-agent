@@ -14,9 +14,33 @@ export const CYCLE_STEP_TYPES = Object.freeze([
   'diary',
 ]);
 
+export const AGENT_LOOP_STEP_TYPES = Object.freeze([
+  'agent_loop',
+  'verify',
+  'belief_update',
+  'goals_assess',
+  'goals_calibrate',
+  'diary',
+]);
+
+export const ALL_CYCLE_STEP_TYPES = Object.freeze([
+  ...new Set([...AGENT_LOOP_STEP_TYPES, ...CYCLE_STEP_TYPES]),
+]);
+
+export function stepTypesForPipeline(pipeline = 'phases') {
+  return pipeline === 'agent_loop' ? AGENT_LOOP_STEP_TYPES : CYCLE_STEP_TYPES;
+}
+
+export function cyclePipelineOf(cycleState) {
+  const pipeline = cycleState?.meta?.pipeline;
+  return pipeline === 'agent_loop' ? 'agent_loop' : 'phases';
+}
+
 export const CYCLE_EVENT_TYPES = Object.freeze([
   'tick',
   'cycle_due',
+  'agent_loop_done',
+  'agent_loop_failed',
   'intel_ready',
   'intel_failed',
   'report_ready',
@@ -79,15 +103,25 @@ function shouldSkipGoalsAssess(cycleState, options) {
 function intelReportReady(cycleState, event) {
   if (event?.intel_report_ready != null) return Boolean(event.intel_report_ready);
   if (cycleMeta(cycleState).intel_report_ready != null) return Boolean(cycleMeta(cycleState).intel_report_ready);
+  if (cyclePipelineOf(cycleState) === 'agent_loop') {
+    return isStepTerminal(cycleState, 'agent_loop') && stepStatus(cycleState, 'agent_loop') === 'done';
+  }
   return isStepTerminal(cycleState, 'intel_report') && stepStatus(cycleState, 'intel_report') === 'done';
 }
 
 function execFailed(cycleState, event) {
-  if (event?.type === 'exec_failed') return true;
+  if (event?.type === 'exec_failed' || event?.type === 'agent_loop_failed') return true;
+  if (cyclePipelineOf(cycleState) === 'agent_loop') {
+    return stepStatus(cycleState, 'agent_loop') === 'failed';
+  }
   return stepStatus(cycleState, 'exec') === 'failed';
 }
 
 function execSkippedOrDone(cycleState) {
+  if (cyclePipelineOf(cycleState) === 'agent_loop') {
+    const status = stepStatus(cycleState, 'agent_loop');
+    return status === 'done' || status === 'skipped';
+  }
   const status = stepStatus(cycleState, 'exec');
   return status === 'done' || status === 'skipped';
 }
@@ -112,6 +146,26 @@ function beliefUpdateReady(cycleState, event, options) {
 }
 
 function diaryReady(cycleState, event, options) {
+  const pipeline = cyclePipelineOf(cycleState);
+
+  if (pipeline === 'agent_loop') {
+    if (!isStepTerminal(cycleState, 'agent_loop')) return false;
+    if (stepStatus(cycleState, 'agent_loop') === 'failed') {
+      return isStepRunnable(cycleState, 'diary') || !isStepTerminal(cycleState, 'diary');
+    }
+    if (!verifyDone(cycleState)) return false;
+    if (beliefUpdateReady(cycleState, event, options) && !isStepTerminal(cycleState, 'belief_update')) {
+      return false;
+    }
+    if (goalsAssessReady(cycleState, event, options) && !isStepTerminal(cycleState, 'goals_assess')) {
+      return false;
+    }
+    if (stepStatus(cycleState, 'goals_assess') === 'done' && !isStepTerminal(cycleState, 'goals_calibrate')) {
+      return false;
+    }
+    return true;
+  }
+
   if (!isStepTerminal(cycleState, 'intel')) return false;
   if (stepStatus(cycleState, 'intel') === 'failed') {
     return isStepRunnable(cycleState, 'diary') || !isStepTerminal(cycleState, 'diary');
@@ -147,6 +201,7 @@ export function nextSteps(event, cycleState = {}, options = {}) {
   const steps = [];
   const markSkipped = [];
   const type = event?.type;
+  const pipeline = cyclePipelineOf(cycleState);
 
   if (!cycleId && type !== 'tick') {
     return { steps, markSkipped };
@@ -165,7 +220,19 @@ export function nextSteps(event, cycleState = {}, options = {}) {
   switch (type) {
     case 'cycle_due':
     case 'reconcile':
-      enqueue('intel', type);
+      if (pipeline === 'agent_loop') {
+        enqueue('agent_loop', type);
+      } else {
+        enqueue('intel', type);
+      }
+      break;
+
+    case 'agent_loop_done':
+      enqueue('verify', 'agent_loop_done');
+      break;
+
+    case 'agent_loop_failed':
+      enqueue('diary', 'agent_loop_failed');
       break;
 
     case 'intel_ready': {
@@ -303,9 +370,20 @@ export function reconcileCycle(cycleState, options = {}) {
   if (cycleIsClosed(cycleState)) return { steps: [], markSkipped: [] };
   const cycleId = cycleState.cycle_id;
   const meta = cycleMeta(cycleState);
+  const pipeline = cyclePipelineOf(cycleState);
   let result = { steps: [], markSkipped: [] };
 
-  if (isStepTerminal(cycleState, 'intel') && stepStatus(cycleState, 'intel') === 'done') {
+  if (pipeline === 'agent_loop') {
+    if (!isStepTerminal(cycleState, 'agent_loop') && isStepRunnable(cycleState, 'agent_loop')) {
+      result = mergeResults(result, nextSteps({ type: 'cycle_due', cycle_id: cycleId }, cycleState, options));
+    }
+    if (stepStatus(cycleState, 'agent_loop') === 'done' && isStepRunnable(cycleState, 'verify')) {
+      result = mergeResults(result, nextSteps({ type: 'agent_loop_done', cycle_id: cycleId }, cycleState, options));
+    }
+    if (stepStatus(cycleState, 'agent_loop') === 'failed' && isStepRunnable(cycleState, 'diary')) {
+      result = mergeResults(result, nextSteps({ type: 'agent_loop_failed', cycle_id: cycleId }, cycleState, options));
+    }
+  } else if (isStepTerminal(cycleState, 'intel') && stepStatus(cycleState, 'intel') === 'done') {
     const intelReportPending = !isStepTerminal(cycleState, 'intel_report');
     const execPending = isStepRunnable(cycleState, 'exec');
     if (intelReportPending || execPending) {
@@ -317,7 +395,7 @@ export function reconcileCycle(cycleState, options = {}) {
     }
   }
 
-  if (execSkippedOrDone(cycleState) && isStepRunnable(cycleState, 'verify')) {
+  if (pipeline !== 'agent_loop' && execSkippedOrDone(cycleState) && isStepRunnable(cycleState, 'verify')) {
     const execSt = stepStatus(cycleState, 'exec');
     const execArtifactReady = execSt === 'skipped'
       || options.isExecArtifactComplete !== false;
@@ -380,6 +458,7 @@ export function eventFromStepCompletion(stepType, outcome, cycleState = {}) {
   const status = outcome?.status ?? 'done';
 
   const map = {
+    agent_loop: status === 'failed' ? 'agent_loop_failed' : 'agent_loop_done',
     intel: status === 'failed' ? 'intel_failed' : 'intel_ready',
     intel_report: status === 'failed' ? 'report_failed' : 'report_ready',
     exec: status === 'failed' ? 'exec_failed' : status === 'skipped' ? 'exec_skipped' : 'exec_done',

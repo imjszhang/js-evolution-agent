@@ -28,6 +28,9 @@ Commands:
   run [--mock] [--skip-goals-assess] [--skip-belief-update] [--subject NAME]
                          Run the full intel -> exec -> verify loop; by default
                          also records a goals assess event for the same cycle
+  run --loop             Use agent_loop pipeline (tool-calling step replaces intel+exec)
+  run --pipeline phases|agent_loop
+                         Explicit cycle pipeline (default: phases; registry/env may override)
   run --deepseek         Require DeepSeek API configuration
   evolve --rounds N      Run multiple evolution cycles with retry/resume state
   evolve resume ID       Resume an interrupted evolve run
@@ -118,6 +121,7 @@ Commands:
 Examples:
   jea doctor
   jea run --mock --subject agentank-tank
+  jea run --mock --loop --subject js-evolution-agent
   jea run --skip-goals-assess
   jea evolve --rounds 30
   jea evolve status

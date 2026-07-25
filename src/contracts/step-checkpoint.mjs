@@ -7,6 +7,7 @@ import {
 } from './validation.mjs';
 
 export const CYCLE_STEPS = Object.freeze([
+  'agent_loop',
   'intel',
   'intel_report',
   'exec',
@@ -40,6 +41,14 @@ export function validateStepCheckpointPayload(step, payload, path = 'payload') {
   const errors = [];
   if (step === 'intel' && typeof payload.success !== 'boolean') {
     errors.push(`${path}.success must be a boolean for intel`);
+  }
+  if (step === 'agent_loop') {
+    if (typeof payload.success !== 'boolean') {
+      errors.push(`${path}.success must be a boolean for agent_loop`);
+    }
+    if (payload.turns != null && typeof payload.turns !== 'number') {
+      errors.push(`${path}.turns must be a number for agent_loop`);
+    }
   }
   if (step === 'exec' && !Array.isArray(payload.executed)) {
     errors.push(`${path}.executed must be an array for exec`);

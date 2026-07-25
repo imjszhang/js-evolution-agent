@@ -5,7 +5,8 @@
       "policy": "SUBJECT.md",
       "data_namespace": "my-subject",
       "evolution": {
-        "mode": "on_demand"
+        "mode": "on_demand",
+        "pipeline": "phases"
       },
       "lane": {
         "repo": "link:my-target-project",
