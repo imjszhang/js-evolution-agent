@@ -35,11 +35,38 @@ import { markStepStatus, writeStepArtifact } from '../cli/utils/cycle-state.mjs'
 import { loadCycleStepContext, loadVerifyReportForCycle } from '../cli/utils/cycle-checkpoints.mjs';
 import { buildLoopTools } from './agent-loop/tool-registry.mjs';
 import { runAgentLoop } from './agent-loop/loop-runner.mjs';
+import { runMechanicalGuards } from './agent-loop/guard-runner.mjs';
 import {
   buildAgentLoopInitialUserPromptParts,
   buildAgentLoopSystemPromptParts,
   formatToolCatalogForPrompt,
 } from '../prompts/agent-loop.mjs';
+
+function carryoverPath(runtimeRoot) {
+  return join(runtimeRoot, 'data', 'evolution', 'agent_loop_carryover.json');
+}
+
+function readCarryoverItems(runtimeRoot) {
+  const path = carryoverPath(runtimeRoot);
+  if (!existsSync(path)) return [];
+  try {
+    const raw = JSON.parse(readFileSync(path, 'utf-8'));
+    return Array.isArray(raw?.items) ? raw.items.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeCarryoverItems(runtimeRoot, { cycleId, items = [] } = {}) {
+  const path = carryoverPath(runtimeRoot);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify({
+    schema_version: 1,
+    cycle_id: cycleId || null,
+    created_at: new Date().toISOString(),
+    items: Array.isArray(items) ? items.map(String) : [],
+  }, null, 2), 'utf-8');
+}
 
 export { loadCycleStepContext } from '../cli/utils/cycle-checkpoints.mjs';
 
@@ -115,6 +142,24 @@ function parseLoopToolResultMaxChars() {
   const n = Number(process.env.JEA_LOOP_TOOL_RESULT_MAX_CHARS);
   if (!Number.isFinite(n)) return 6000;
   return Math.max(500, Math.trunc(n));
+}
+
+function parseLoopFinishReserveMs() {
+  const n = Number(process.env.JEA_LOOP_FINISH_RESERVE_MS);
+  if (!Number.isFinite(n)) return 120_000;
+  return Math.max(15_000, Math.trunc(n));
+}
+
+function parseLoopClosingTimeoutSec() {
+  const n = Number(process.env.JEA_LOOP_CLOSING_TIMEOUT_SEC);
+  if (!Number.isFinite(n)) return 240;
+  return Math.max(30, Math.trunc(n));
+}
+
+function parseLoopTransientRefunds() {
+  const n = Number(process.env.JEA_LOOP_TRANSIENT_REFUNDS);
+  if (!Number.isFinite(n)) return 2;
+  return Math.max(0, Math.min(5, Math.trunc(n)));
 }
 
 function buildRestoredConversationForVerify({ systemPrompt, initialUserPrompt, reportMarkdown, executed }) {
@@ -217,6 +262,10 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
     maxActions: parseExecLimitFromEnv(),
     maxWallClockMs: parseLoopWallclockMs(),
     toolResultMaxChars: parseLoopToolResultMaxChars(),
+    finishReserveMs: parseLoopFinishReserveMs(),
+    closingTimeoutSec: parseLoopClosingTimeoutSec(),
+    maxTransientRefunds: parseLoopTransientRefunds(),
+    transientRefunds: 0,
     actionsUsed: 0,
   };
 
@@ -224,6 +273,22 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
     dataDir: join(runtime.runtimeRoot, 'data', 'evolution'),
     logFn: (msg) => logger?.info?.(`[agent_loop] ${msg}`),
   });
+
+  const autoArchive = process.env.JEA_QUEUE_AUTO_ARCHIVE;
+  if (autoArchive !== '0' && String(autoArchive).toLowerCase() !== 'false') {
+    try {
+      const archived = decisionQueue.archiveDecisions?.({
+        statuses: ['completed', 'expired'],
+        dryRun: false,
+      });
+      if (archived?.archived?.length) {
+        logger?.info?.(`[agent_loop] auto-archived ${archived.archived.length} queue decision(s)`);
+      }
+    } catch {
+      // archive failure must not block the step
+    }
+  }
+
   const executor = new ActionExecutor({
     projectRoot: runtime.runtimeRoot,
     cycleId: resolvedCycleId,
@@ -254,6 +319,17 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
     logger,
   };
 
+  const guardResult = await runMechanicalGuards({ root: ctx.projectRoot, loopCtx });
+  for (const item of guardResult.ran || []) {
+    already.push({
+      type: item.action?.type || 'guard',
+      description: `${item.action?.description || item.action?.type || 'guard'} (mechanical guard)`,
+      summary: item.result?.summary || item.result?.message || item.result?.status || null,
+    });
+  }
+
+  const carryoverItems = readCarryoverItems(runtime.runtimeRoot);
+
   const tools = buildLoopTools(loopCtx);
   const language = prepared.language || 'zh';
   const systemParts = buildAgentLoopSystemPromptParts({
@@ -271,6 +347,7 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
     intelligenceContext,
     reportContext: prepared.reportContext,
     alreadyExecuted: already,
+    carryover: carryoverItems,
   });
 
   const promptCache = buildPromptCacheMetadata({
@@ -318,9 +395,19 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
     report_markdown: '# Agent Loop Incomplete\n\nLoop ended without finish payload.\n',
     key_findings: [],
     next_cycle_suggestions: [],
+    carryover: [],
   };
   const reportMarkdown = String(finish.report_markdown || '').trim()
     || '# Agent Loop Report\n\n(empty finish payload)\n';
+  const finishCarryover = Array.isArray(finish.carryover) ? finish.carryover.map(String) : [];
+  try {
+    writeCarryoverItems(runtime.runtimeRoot, {
+      cycleId: resolvedCycleId,
+      items: finishCarryover,
+    });
+  } catch (e) {
+    logger?.warning?.(`[agent_loop] failed to write carryover: ${e?.message || e}`);
+  }
 
   const persistedReport = await persistIntelReport({
     intelResult: {
@@ -375,6 +462,9 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
       turns: loopResult.turns,
       actions_executed: loopCtx.executed.length,
       duration_ms: loopResult.duration_ms,
+      forced: Boolean(finish.forced),
+      forced_reason: finish.forced_reason || null,
+      closing: finish.closing || null,
     },
     restored_conversation: restoredConversation,
   }, null, 2), 'utf-8');
@@ -426,6 +516,9 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
       source: 'agent_loop',
       indexRecord: persistedReport.indexRecord,
       markdown: reportMarkdown,
+      forced: Boolean(finish.forced),
+      forced_reason: finish.forced_reason || null,
+      closing: finish.closing || null,
     },
     conversation_context_path: conversationPath,
     standing_memory_update: memoryUpdate,
@@ -438,6 +531,9 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
     turns: loopResult.turns,
     actions_executed: loopCtx.executed.length,
     finish_status: finish.status,
+    forced: Boolean(finish.forced),
+    forced_reason: finish.forced_reason || null,
+    closing: finish.closing || null,
   });
 
   if (recordState) {
@@ -449,6 +545,9 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
         mdPath: persistedReport.mdPath,
         source: 'agent_loop',
         indexRecord: persistedReport.indexRecord,
+        forced: Boolean(finish.forced),
+        forced_reason: finish.forced_reason || null,
+        closing: finish.closing || null,
       },
     });
     await persistCheckpoint(recordState, resolvedCycleId, 'exec', {
@@ -468,6 +567,10 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
       report_path: persistedReport.mdPath,
       conversation_context_path: conversationPath,
       turns_path: turnsPath,
+      carryover: finishCarryover,
+      forced: Boolean(finish.forced),
+      forced_reason: finish.forced_reason || null,
+      closing: finish.closing || null,
       prompt_cache: { ...promptCache, invariant: promptCacheInvariant },
     }, { required: true });
     await recordStepSidecar(recordState.root, recordState.subject, resolvedCycleId, 'agent_loop', 'done', {

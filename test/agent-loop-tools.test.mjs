@@ -104,11 +104,17 @@ describe('agent-loop tool registry', () => {
     };
     const first = await tools.dispatch('record_observation', args);
     expect(first.ok).toBe(true);
+    expect(first.budget_status).toMatchObject({
+      actions_used: 1,
+      max_actions: 2,
+      actions_remaining: 1,
+    });
     expect(loopCtx.executed).toHaveLength(1);
 
     const dup = await tools.dispatch('record_observation', args);
     expect(dup.ok).toBe(false);
     expect(dup.error).toBe('duplicate_action_this_cycle');
+    expect(dup.budget_status).toBeTruthy();
 
     const second = await tools.dispatch('record_observation', {
       description: 'note B',
@@ -122,6 +128,12 @@ describe('agent-loop tool registry', () => {
     });
     expect(third.ok).toBe(false);
     expect(third.error).toBe('action_budget_exhausted');
+    expect(third.budget_status).toMatchObject({
+      actions_used: 2,
+      max_actions: 2,
+      actions_remaining: 0,
+    });
+    expect(third.hint).toMatch(/finish_cycle/);
 
     const summary = decisionQueue.summarize();
     const completed = summary.counts?.completed ?? 0;
@@ -129,7 +141,50 @@ describe('agent-loop tool registry', () => {
     expect(loopCtx.budget.actionsUsed).toBe(2);
   });
 
-  it('reads active goals and finishes cycle', async () => {
+  it('returns valid_tools for unknown tool names', async () => {
+    const { loopCtx } = makeLoopCtx();
+    const tools = buildLoopTools(loopCtx);
+    const outcome = await tools.dispatch('not_a_real_tool', {});
+    expect(outcome.ok).toBe(false);
+    expect(outcome.error).toContain('unknown_tool');
+    expect(outcome.valid_tools).toContain('finish_cycle');
+    expect(outcome.valid_tools).toContain('record_observation');
+  });
+
+  it('embeds agent_run run_spec schema and coerces common mistakes', async () => {
+    const { loopCtx } = makeLoopCtx();
+    let called = false;
+    loopCtx.host.actionHandlers.agent_run = async () => {
+      called = true;
+      return { success: true, status: 'completed', summary: 'ok' };
+    };
+    const tools = buildLoopTools(loopCtx);
+    const openAi = tools.toOpenAiTools().find((t) => t.function?.name === 'agent_run');
+    expect(openAi.function.parameters.properties.params.properties.run_spec).toBeTruthy();
+    expect(openAi.function.parameters.properties.params.required).toContain('run_spec');
+
+    const outcome = await tools.dispatch('agent_run', {
+      description: 'coerced run',
+      params: {
+        run_spec: {
+          primary_cwd_kind: 'subject_runtime',
+          permission_profile: 'read_only',
+          intent: 'audit standing memory',
+          expected_output: 'typed_evidence_refs count',
+          context: 'why now as string',
+        },
+      },
+    });
+    expect(outcome.ok).toBe(true);
+    expect(called).toBe(true);
+    expect(outcome.coercions).toEqual(expect.arrayContaining([
+      'context:string->object',
+      'expected_output:string->array',
+    ]));
+    expect(outcome.budget_status).toBeTruthy();
+  });
+
+  it('reads active goals and finishes cycle with carryover', async () => {
     const { loopCtx } = makeLoopCtx();
     const tools = buildLoopTools(loopCtx);
     const goals = await tools.dispatch('get_active_goals', {});
@@ -139,9 +194,11 @@ describe('agent-loop tool registry', () => {
     const finish = await tools.dispatch('finish_cycle', {
       status: 'done',
       report_markdown: '# Report\n\nok\n',
+      carryover: ['publish candidate-abc', 'retry sync'],
     });
     expect(finish.ok).toBe(true);
     expect(loopCtx.finish.status).toBe('done');
+    expect(loopCtx.finish.carryover).toEqual(['publish candidate-abc', 'retry sync']);
   });
 
   it('validates intel_query source enum', async () => {
@@ -151,5 +208,77 @@ describe('agent-loop tool registry', () => {
     expect(bad.ok).toBe(false);
     const ok = await tools.dispatch('intel_query', { source: 'evolution_events', limit: 5 });
     expect(ok.ok).toBe(true);
+  });
+
+  it('includes turns/wallclock fields in budget_status when available', async () => {
+    const { loopCtx } = makeLoopCtx();
+    loopCtx.budget.turnsUsed = 3;
+    loopCtx.budget.maxTurns = 8;
+    loopCtx.budget.softDeadlineAt = Date.now() + 30_000;
+    const tools = buildLoopTools(loopCtx);
+    const outcome = await tools.dispatch('record_observation', {
+      description: 'with budget fields',
+      params: { content: 'hello' },
+    });
+    expect(outcome.budget_status).toMatchObject({
+      actions_used: 1,
+      max_actions: 2,
+      actions_remaining: 1,
+      turns_used: 3,
+      turns_remaining: 5,
+    });
+    expect(typeof outcome.budget_status.wallclock_remaining_ms).toBe('number');
+    expect(outcome.budget_status.wallclock_remaining_ms).toBeGreaterThan(0);
+
+    loopCtx.budget = {
+      maxActions: 2,
+      actionsUsed: 0,
+      toolResultMaxChars: 2000,
+    };
+    const leanTools = buildLoopTools(loopCtx);
+    const leanOut = await leanTools.dispatch('record_observation', {
+      description: 'lean',
+      params: { content: 'x' },
+    });
+    expect(leanOut.budget_status.turns_used).toBeNull();
+    expect(leanOut.budget_status.turns_remaining).toBeNull();
+    expect(leanOut.budget_status.wallclock_remaining_ms).toBeNull();
+  });
+
+  it('refunds action budget for transient infrastructure failures', async () => {
+    const { loopCtx } = makeLoopCtx();
+    loopCtx.budget.maxActions = 2;
+    loopCtx.budget.maxTransientRefunds = 2;
+    let calls = 0;
+    loopCtx.host.actionHandlers.record_observation = async () => {
+      calls += 1;
+      return {
+        success: false,
+        error: 'DeepSeek request failed: Invalid response body while trying to fetch',
+      };
+    };
+    const tools = buildLoopTools(loopCtx);
+    const args = {
+      description: 'transient',
+      params: { content: 'same fingerprint' },
+    };
+
+    const first = await tools.dispatch('record_observation', args);
+    expect(first.ok).toBe(false);
+    expect(first.transient_refund).toBe(true);
+    expect(loopCtx.budget.actionsUsed).toBe(0);
+    expect(loopCtx.dedup.size).toBe(0);
+    expect(loopCtx.executed).toHaveLength(1);
+
+    const second = await tools.dispatch('record_observation', args);
+    expect(second.transient_refund).toBe(true);
+    expect(loopCtx.budget.actionsUsed).toBe(0);
+    expect(loopCtx.dedup.size).toBe(0);
+
+    const third = await tools.dispatch('record_observation', args);
+    expect(third.transient_refund).toBeUndefined();
+    expect(loopCtx.budget.actionsUsed).toBe(1);
+    expect(loopCtx.dedup.size).toBe(1);
+    expect(calls).toBe(3);
   });
 });

@@ -71,6 +71,9 @@ export class GoalProvider {
    * @returns {string}
    */
   formatForPrompt(goalId = null) {
+    if (goalId === 'bootstrap' && !GoalProvider._find(this._tree, 'bootstrap')) {
+      goalId = null; // 'bootstrap' is a conventional root id; missing → silent root fallback
+    }
     if (!goalId) {
       const lines = ['## 本轮目标\n'];
       GoalProvider._renderNode(this._tree, 0, lines);
@@ -104,6 +107,9 @@ export class GoalProvider {
    * @returns {string}
    */
   formatForObserve(goalId = null) {
+    if (goalId === 'bootstrap' && !GoalProvider._find(this._tree, 'bootstrap')) {
+      goalId = null; // 'bootstrap' is a conventional root id; missing → silent root fallback
+    }
     if (!goalId) {
       const root = this._tree;
       const lines = ['## 当前目标\n'];

@@ -6,7 +6,20 @@
       "data_namespace": "my-subject",
       "evolution": {
         "mode": "on_demand",
-        "pipeline": "phases"
+        "pipeline": "phases",
+        "guards": [
+          {
+            "id": "example-credential-sync",
+            "enabled": false,
+            "every_cycles": 1,
+            "action": {
+              "type": "lane_status",
+              "description": "Mechanical guard example: check lane health each cycle",
+              "priority": "high",
+              "params": {}
+            }
+          }
+        ]
       },
       "lane": {
         "repo": "link:my-target-project",

@@ -177,10 +177,63 @@ function buildReadonlyTools(loopCtx) {
   ];
 }
 
+const TRANSIENT_ERROR_RE = /invalid response body|econnreset|etimedout|socket hang up|fetch failed|\b(502|503|504)\b|rate.?limit/i;
+
+const AGENT_RUN_PARAMS_SCHEMA = Object.freeze({
+  type: 'object',
+  properties: {
+    run_spec: {
+      type: 'object',
+      properties: {
+        primary_cwd_kind: {
+          type: 'string',
+          description: 'Execution root kind, e.g. subject_runtime, source_root, target_repo, or a configured resource root name',
+        },
+        permission_profile: {
+          type: 'string',
+          enum: ['read_only', 'workspace_write', 'remote_write_review'],
+        },
+        intent: { type: 'string' },
+        expected_output: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'REQUIRED: array of strings (not a single string)',
+        },
+        context: {
+          type: 'object',
+          description: 'OPTIONAL: must be an OBJECT like {"why_now":"...","constraints":[...]}, never a plain string',
+        },
+        boundary: { type: 'object' },
+        cwd: { type: 'string' },
+        provider: { type: 'string' },
+      },
+      required: ['primary_cwd_kind', 'permission_profile', 'intent', 'expected_output'],
+    },
+  },
+  required: ['run_spec'],
+});
+
+function coerceAgentRunSpec(runSpec) {
+  const coercions = [];
+  if (!runSpec || typeof runSpec !== 'object' || Array.isArray(runSpec)) {
+    return coercions;
+  }
+  if (typeof runSpec.context === 'string' && runSpec.context.trim()) {
+    runSpec.context = { note: runSpec.context };
+    coercions.push('context:string->object');
+  }
+  if (typeof runSpec.expected_output === 'string' && runSpec.expected_output.trim()) {
+    runSpec.expected_output = [runSpec.expected_output];
+    coercions.push('expected_output:string->array');
+  }
+  return coercions;
+}
+
 function buildActionTool(spec, loopCtx) {
   const { budget, dedup, decisionQueue, executor, cycleId, host, runtime, emitEvent } = loopCtx;
   const maxChars = budget.toolResultMaxChars;
   const description = [spec.description, spec.promptHint].filter(Boolean).join('\n');
+  const paramsSchema = spec.name === 'agent_run' ? AGENT_RUN_PARAMS_SCHEMA : { type: 'object' };
 
   return {
     name: spec.name,
@@ -192,11 +245,24 @@ function buildActionTool(spec, loopCtx) {
         description: { type: 'string' },
         serves_goal: { type: 'string' },
         priority: { type: 'string', enum: ['low', 'medium', 'high'] },
-        params: { type: 'object' },
+        params: paramsSchema,
       },
       required: ['description', 'params'],
     },
     async execute(args, meta = {}) {
+      const budgetStatus = () => ({
+        actions_used: budget.actionsUsed,
+        max_actions: budget.maxActions,
+        actions_remaining: Math.max(0, budget.maxActions - budget.actionsUsed),
+        turns_used: budget.turnsUsed ?? null,
+        turns_remaining: budget.maxTurns != null && budget.turnsUsed != null
+          ? Math.max(0, budget.maxTurns - budget.turnsUsed)
+          : null,
+        wallclock_remaining_ms: budget.softDeadlineAt != null
+          ? Math.max(0, budget.softDeadlineAt - Date.now())
+          : null,
+      });
+
       const action = {
         type: spec.name,
         description: String(args?.description || ''),
@@ -206,15 +272,27 @@ function buildActionTool(spec, loopCtx) {
       };
 
       if (budget.actionsUsed >= budget.maxActions) {
-        return { ok: false, error: 'action_budget_exhausted' };
+        return {
+          ok: false,
+          error: 'action_budget_exhausted',
+          budget_status: budgetStatus(),
+          hint: 'No side-effect budget left this cycle. Do NOT retry actions. Call finish_cycle now with report_markdown; put unfinished work into carryover and next_cycle_suggestions.',
+        };
       }
 
       const fingerprint = decisionFingerprint(action);
       if (dedup.has(fingerprint)) {
-        return { ok: false, error: 'duplicate_action_this_cycle', fingerprint };
+        return {
+          ok: false,
+          error: 'duplicate_action_this_cycle',
+          fingerprint,
+          budget_status: budgetStatus(),
+        };
       }
 
+      let coercions = [];
       if (action.type === 'agent_run') {
+        coercions = coerceAgentRunSpec(action.params?.run_spec);
         const jeaRoot = host?.sourceRoot ?? runtime.runtimeRoot;
         try {
           const { externalRoots, subjectRepoLane } = await resolveHostExternalRoots({
@@ -225,7 +303,12 @@ function buildActionTool(spec, loopCtx) {
           host.resourceRoots = externalRoots;
           host.subjectRepoLane = subjectRepoLane;
         } catch (e) {
-          return { ok: false, error: `external_roots_refresh_failed: ${e?.message || e}` };
+          return {
+            ok: false,
+            error: `external_roots_refresh_failed: ${e?.message || e}`,
+            budget_status: budgetStatus(),
+            ...(coercions.length ? { coercions } : {}),
+          };
         }
         const validation = validateAgentRunSpec(action, {
           projectRoot: host?.sourceRoot ?? runtime.runtimeRoot,
@@ -239,6 +322,8 @@ function buildActionTool(spec, loopCtx) {
             error: 'invalid_action',
             errors: validation.errors,
             warnings: validation.warnings,
+            budget_status: budgetStatus(),
+            ...(coercions.length ? { coercions } : {}),
           };
         }
       }
@@ -255,6 +340,8 @@ function buildActionTool(spec, loopCtx) {
           ok: false,
           error: skip?.reason || 'queue_rejected',
           skipped: queued.skipped,
+          budget_status: budgetStatus(),
+          ...(coercions.length ? { coercions } : {}),
         };
       }
       const decisionId = queued.ids[0];
@@ -274,8 +361,19 @@ function buildActionTool(spec, loopCtx) {
         decisionQueue.failDecision?.(decisionId, String(result?.error || summary).slice(0, 2000));
       }
 
-      dedup.add(fingerprint);
-      budget.actionsUsed += 1;
+      const errText = String(result?.error || summary || '');
+      const isTransient = !result?.success && TRANSIENT_ERROR_RE.test(errText);
+      const refundsUsed = budget.transientRefunds ?? 0;
+      const maxRefunds = budget.maxTransientRefunds ?? 2;
+      const canRefund = isTransient && refundsUsed < maxRefunds;
+
+      if (canRefund) {
+        budget.transientRefunds = refundsUsed + 1;
+      } else {
+        dedup.add(fingerprint);
+        budget.actionsUsed += 1;
+      }
+
       const executedItem = { id: decisionId, action, result };
       loopCtx.executed.push(executedItem);
       emitEvent?.({
@@ -285,6 +383,7 @@ function buildActionTool(spec, loopCtx) {
         decision_id: decisionId,
         action_type: action.type,
         deferred: Boolean(result?.deferred),
+        transient_refund: Boolean(canRefund),
       });
 
       return {
@@ -292,6 +391,12 @@ function buildActionTool(spec, loopCtx) {
         decision_id: decisionId,
         result: summarizeResult(result, maxChars),
         error: result?.success ? undefined : (result?.error || 'handler_non_success'),
+        budget_status: budgetStatus(),
+        ...(canRefund ? {
+          transient_refund: true,
+          hint: 'Infrastructure-level failure, budget not consumed. You may retry this action once.',
+        } : {}),
+        ...(coercions.length ? { coercions } : {}),
       };
     },
   };
@@ -318,6 +423,11 @@ function buildFinishTool(loopCtx) {
           type: 'array',
           items: { type: 'string' },
         },
+        carryover: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Unfinished work handed to the next cycle, e.g. "publish candidate-XXX (already evaluated)". Max 10 items.',
+        },
       },
       required: ['status', 'report_markdown'],
     },
@@ -332,6 +442,9 @@ function buildFinishTool(loopCtx) {
         key_findings: Array.isArray(args?.key_findings) ? args.key_findings.map(String) : [],
         next_cycle_suggestions: Array.isArray(args?.next_cycle_suggestions)
           ? args.next_cycle_suggestions.map(String)
+          : [],
+        carryover: Array.isArray(args?.carryover)
+          ? args.carryover.map(String).map((s) => s.slice(0, 500)).slice(0, 10)
           : [],
       };
       return { ok: true, result: { finished: true, status: loopCtx.finish.status } };
@@ -353,9 +466,13 @@ export function buildLoopTools(loopCtx) {
       maxWallClockMs: 1_200_000,
       toolResultMaxChars: 6000,
       actionsUsed: 0,
+      maxTransientRefunds: 2,
+      transientRefunds: 0,
     };
   }
   if (loopCtx.budget.actionsUsed == null) loopCtx.budget.actionsUsed = 0;
+  if (loopCtx.budget.transientRefunds == null) loopCtx.budget.transientRefunds = 0;
+  if (loopCtx.budget.maxTransientRefunds == null) loopCtx.budget.maxTransientRefunds = 2;
 
   const registry = loopCtx.actionRegistry || actionRegistry;
   const actionSpecs = typeof registry.listAll === 'function' ? registry.listAll() : [];
@@ -396,7 +513,11 @@ export function buildLoopTools(loopCtx) {
     async dispatch(name, args, meta = {}) {
       const tool = byName.get(name);
       if (!tool) {
-        return { ok: false, error: `unknown_tool: ${name}` };
+        return {
+          ok: false,
+          error: `unknown_tool: ${name}`,
+          valid_tools: [...byName.keys()],
+        };
       }
       try {
         return await tool.execute(args ?? {}, meta);

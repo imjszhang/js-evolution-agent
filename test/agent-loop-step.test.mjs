@@ -68,6 +68,7 @@ function makeCtx() {
               '## 下一轮建议',
               '- keep using agent_loop in mock smoke tests',
             ].join('\n'),
+            carryover: ['follow up on publish candidate-demo'],
           },
         }],
       },
@@ -200,5 +201,114 @@ describe('runAgentLoopStep', () => {
     });
     expect(verify.verification.verified.length).toBeGreaterThanOrEqual(1);
     expect(existsSync(verify.reportPath)).toBe(true);
+
+    const carryoverPath = join(runtime.runtimeRoot, 'data', 'evolution', 'agent_loop_carryover.json');
+    expect(existsSync(carryoverPath)).toBe(true);
+    const carryover = JSON.parse(readFileSync(carryoverPath, 'utf-8'));
+    expect(carryover.items).toEqual(['follow up on publish candidate-demo']);
+    const loopPayload = JSON.parse(readFileSync(loopCp, 'utf-8')).payload;
+    expect(loopPayload.carryover).toEqual(['follow up on publish candidate-demo']);
+  });
+
+  it('clears carryover when finish_cycle omits it', async () => {
+    const { ctx, cycleId, recordState, runtime } = makeCtx();
+    const carryoverPath = join(runtime.runtimeRoot, 'data', 'evolution', 'agent_loop_carryover.json');
+    writeFileSync(carryoverPath, JSON.stringify({
+      schema_version: 1,
+      cycle_id: 'old',
+      created_at: new Date().toISOString(),
+      items: ['stale item'],
+    }, null, 2), 'utf-8');
+    // Override finish to empty carryover
+    ctx.cfg.aiClient = new MockToolsAIClient({
+      script: [
+        {
+          toolCalls: [{
+            name: 'finish_cycle',
+            arguments: {
+              status: 'done',
+              report_markdown: '# Report\n\n## Seen\n- none\n\n## Inferred\n- none\n\n## Cyber-Taoist analysis\n- none\n\n## Next\n- none\n',
+            },
+          }],
+        },
+      ],
+      canned: [
+        { match: /standing memory|Current State|固定容量/i, response: 'ok' },
+      ],
+    });
+    mkdirSync(join(runtime.runtimeRoot, 'data', 'evolution', 'cycle-state'), { recursive: true });
+    await runAgentLoopStep(ctx, { cycleId: `${cycleId}-clear`, recordState });
+    const carryover = JSON.parse(readFileSync(carryoverPath, 'utf-8'));
+    expect(carryover.items).toEqual([]);
+  });
+
+  it('records forced/closing metadata and salvage carryover on hard close', async () => {
+    const { ctx, cycleId, recordState, projectRoot, runtime } = makeCtx();
+    ctx.cfg.host.actionHandlers.record_observation = async () => ({
+      success: false,
+      error: 'simulated action failure for salvage',
+    });
+    ctx.cfg.aiClient = new MockToolsAIClient({
+      script: [
+        {
+          content: 'failed action, need salvage carryover',
+          toolCalls: [{
+            name: 'record_observation',
+            arguments: {
+              description: 'will fail',
+              params: { content: 'salvage-me', source: 'test' },
+            },
+          }],
+        },
+        {
+          content: 'still reading instead of finishing',
+          toolCalls: [{ name: 'get_decision_queue_summary', arguments: {} }],
+        },
+        // Closing turn retries toolChoice up to 3 times; keep failing all of them.
+        { error: 'closing unavailable' },
+        { error: 'closing unavailable' },
+        { error: 'closing unavailable' },
+      ],
+      canned: [
+        { match: /standing memory|Current State|固定容量/i, response: 'ok' },
+      ],
+    });
+    const prevExec = process.env.JEA_EXEC_LIMIT;
+    process.env.JEA_EXEC_LIMIT = '1';
+    try {
+      mkdirSync(join(runtime.runtimeRoot, 'data', 'evolution', 'cycle-state'), { recursive: true });
+      const forcedCycleId = `${cycleId}-forced`;
+      await runAgentLoopStep(ctx, { cycleId: forcedCycleId, recordState });
+      const loopCp = join(
+        projectRoot,
+        'runtime',
+        'subjects',
+        'demo',
+        'data',
+        'evolution',
+        'cycle-state',
+        forcedCycleId,
+        'agent_loop.json',
+      );
+      const loopPayload = JSON.parse(readFileSync(loopCp, 'utf-8')).payload;
+      expect(loopPayload.forced).toBe(true);
+      expect(loopPayload.forced_reason).toBe('action_budget_exhausted');
+      expect(loopPayload.closing).toBe('salvaged');
+      expect(Array.isArray(loopPayload.carryover)).toBe(true);
+      expect(loopPayload.carryover.some((item) => String(item).includes('record_observation'))).toBe(true);
+
+      const carryoverPath = join(runtime.runtimeRoot, 'data', 'evolution', 'agent_loop_carryover.json');
+      const carryover = JSON.parse(readFileSync(carryoverPath, 'utf-8'));
+      expect(carryover.items.some((item) => String(item).includes('record_observation'))).toBe(true);
+
+      const events = ctx.store.readEvolutionEvents?.({ limit: 50 }) ?? [];
+      const pipelineEvent = events.find((e) => e.type === 'agent_loop_pipeline' && e.cycle_id === forcedCycleId);
+      expect(pipelineEvent).toBeTruthy();
+      expect(pipelineEvent.forced).toBe(true);
+      expect(pipelineEvent.closing).toBe('salvaged');
+    } finally {
+      if (prevExec == null) delete process.env.JEA_EXEC_LIMIT;
+      else process.env.JEA_EXEC_LIMIT = prevExec;
+    }
   });
 });

@@ -22,6 +22,15 @@ const DEFAULT_FINISH_REPORT = [
 ].join('\n');
 
 function normalizeScriptItem(item = {}) {
+  if (item?.error != null) {
+    return {
+      error: String(item.error),
+      content: null,
+      toolCalls: [],
+      finishReason: 'error',
+      delayMs: Number(item.delayMs) || 0,
+    };
+  }
   const toolCalls = Array.isArray(item.toolCalls)
     ? item.toolCalls.map((call, idx) => ({
       id: call.id || `mock_call_${idx}`,
@@ -36,6 +45,7 @@ function normalizeScriptItem(item = {}) {
     content: item.content == null ? null : String(item.content),
     toolCalls,
     finishReason: item.finishReason || (toolCalls.length ? 'tool_calls' : 'stop'),
+    delayMs: Number(item.delayMs) || 0,
   };
 }
 
@@ -72,6 +82,12 @@ export class MockToolsAIClient extends MockAIClient {
 
     if (this._scriptIndex < this._script.length) {
       const item = this._script[this._scriptIndex++];
+      if (item.delayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, item.delayMs));
+      }
+      if (item.error) {
+        throw new Error(item.error);
+      }
       if ((item.content == null || item.content.trim() === '') && item.toolCalls.length === 0) {
         throw new Error('MockToolsAIClient script item has empty content and no tool_calls');
       }

@@ -38,6 +38,9 @@ Rules:
 - Every turn you MUST call a tool. Prefer readonly tools before actions.
 - Side-effect actions go through registered action tools only; never invent filesystem writes.
 - Respect action budgets. Do not retry the same action fingerprint in this cycle.
+- Finishing is your responsibility: if the host force-closes after budget exhaustion, the salvaged report is far worse than one you write yourself.
+- After a budget checkpoint or budget-exhausted notice, stop investigating and call finish_cycle on the next turn.
+- Each agent_run can consume several minutes of wallclock; prefer readonly tools and avoid more than ~3 agent_run calls per cycle.
 - When done, call finish_cycle with status and a full report_markdown.
 - report_markdown must include sections: Seen, Inferred, Cyber-Taoist analysis, Next cycle suggestions.
 - Writing style: straightforward technical/ops prose. Cyber-Taoist terms may be quoted from docs.
@@ -57,6 +60,9 @@ ${toolCatalogText || '(see tool schemas)'}
 - 每一轮必须调用工具；先用只读工具查证，再决定是否执行动作工具。
 - 副作用只能通过已注册 action 工具产生，禁止伪造写盘。
 - 遵守动作预算；本周期内不要重复相同 fingerprint 的动作。
+- 收尾是你的责任：预算耗尽后宿主会强制关闭并生成降级报告，质量远低于你自己写的。
+- 收到 budget checkpoint 或 budget exhausted 提示后，立即停止调查，下一轮就调用 finish_cycle。
+- agent_run 每次会消耗数分钟墙钟；优先用只读工具，单周期内尽量不超过约 3 次 agent_run。
 - 结束时必须调用 finish_cycle，并提供完整 report_markdown。
 - report_markdown 必须包含：Seen、Inferred、Cyber-Taoist 分析、下一轮建议。
 - 中文使用白话书面语，清晰直白；Cyber-Taoist 专有术语可按文献原样引用。
@@ -77,6 +83,18 @@ ${toolCatalogText || '(见 tool schemas)'}
   };
 }
 
+function formatCarryover(carryover = [], language = 'zh') {
+  const isEn = language === 'en';
+  const note = isEn
+    ? 'Unfinished items left by the previous agent_loop. Prefer them when still valid, but verify preconditions with readonly tools first.'
+    : '上轮 agent_loop 留下的待续事项。可优先处理，但必须先用只读工具核实其前提仍然成立。';
+  if (!Array.isArray(carryover) || !carryover.length) {
+    return `${note}\n\n(none)`;
+  }
+  const list = carryover.map((item, idx) => `${idx + 1}. ${item}`).join('\n');
+  return `${note}\n\n${list}`;
+}
+
 export function buildAgentLoopInitialUserPromptParts({
   cycleId,
   language = 'zh',
@@ -87,6 +105,7 @@ export function buildAgentLoopInitialUserPromptParts({
   intelligenceContext = '',
   reportContext = null,
   alreadyExecuted = [],
+  carryover = [],
 } = {}) {
   const isEn = language === 'en';
   const dynamicPayload = `## Cycle
@@ -125,11 +144,15 @@ ${briefJson(reportContext)}
 
 ${formatAlreadyExecuted(alreadyExecuted)}
 
+## Carryover from previous cycle
+
+${formatCarryover(carryover, language)}
+
 ## Task
 
 ${isEn
-    ? 'Investigate with readonly tools as needed, execute at most the action budget of high-value actions, then finish_cycle with a complete report_markdown.'
-    : '按需使用只读工具查证，在动作预算内执行高价值动作，然后调用 finish_cycle 并提交完整 report_markdown。'}
+    ? 'Investigate with readonly tools as needed, execute at most one side-effect action per turn within the action budget, then finish_cycle with a complete report_markdown. Put unfinished work into carryover.'
+    : '按需使用只读工具查证；每轮最多执行一个副作用动作；在动作预算内完成后调用 finish_cycle 并提交完整 report_markdown；未完成事项写入 carryover。'}
 `;
 
   const stablePrefix = isEn

@@ -98,14 +98,38 @@ Phase 5   evolution diary
 | `JEA_CYCLE_PIPELINE` | `phases` | `phases` 或 `agent_loop` |
 | `JEA_LOOP_MAX_TURNS` | `24` | LLM 最大轮数 |
 | `JEA_LOOP_MAX_WALLCLOCK_MS` | `1200000` | 墙钟预算（20 分钟） |
+| `JEA_LOOP_FINISH_RESERVE_MS` | `120000` | 软截止预留（墙钟内留给强制 finish_cycle） |
+| `JEA_LOOP_CLOSING_TIMEOUT_SEC` | `240` | 强制收尾轮 LLM 超时（秒） |
+| `JEA_LOOP_TRANSIENT_REFUNDS` | `2` | 基础设施瞬时失败不扣动作额度的次数上限 |
 | `JEA_LOOP_TOOL_RESULT_MAX_CHARS` | `6000` | 回填模型的工具结果截断 |
-| `JEA_EXEC_LIMIT` | `5` | 复用为 loop 内最大副作用动作数 |
+| `JEA_EXEC_LIMIT` | `5` | 复用为 loop 内最大副作用动作数（不含机械守护） |
+| `JEA_QUEUE_AUTO_ARCHIVE` | 开启 | `0`/`false` 关闭；agent_loop 开始前自动归档 completed/expired 决策 |
 
 工具分层：
 
 - **readonly**：`intel_query`、`get_current_beliefs`、`get_active_goals`、`get_decision_queue_summary`、`read_intel_report`
-- **action**：来自 `actionRegistry` + host `actionHandlers`（含 configured external）；执行前校验 / 预算 / fingerprint 去重，并写入 decision queue 审计
-- **control**：`finish_cycle`（必填 `report_markdown`）
+- **action**：来自 `actionRegistry` + host `actionHandlers`（含 configured external）；执行前校验 / 预算 / fingerprint 去重，并写入 decision queue 审计。**每 turn 最多一个副作用动作**；动作回执带 `budget_status`（`actions_used` / `max_actions` / `actions_remaining`）
+- **control**：`finish_cycle`（必填 `report_markdown`；可选 `carryover[]` 交给下一轮）
+
+机械守护（`evolution.guards`，不占 loop 预算）：
+
+在 `runtime/subjects/registry.json` 的 `subjects.<name>.evolution.guards` 配置固定节奏动作（如凭据 sync、记忆审计）。`runAgentLoopStep` 在进入 LLM loop 前按 `every_cycles` 到期执行，结果写入 Already executed；状态在 `data/evolution/agent_loop_guard_state.json`。
+
+```json
+{
+  "id": "credential-sync",
+  "enabled": true,
+  "every_cycles": 1,
+  "action": {
+    "type": "agentank_sync_context",
+    "description": "Mechanical guard: sync context",
+    "priority": "high",
+    "params": {}
+  }
+}
+```
+
+Carryover：`finish_cycle.carryover` 覆写 `data/evolution/agent_loop_carryover.json`；下一轮 initial prompt 的 `## Carryover from previous cycle` 注入（空数组也会写盘以清空过期项）。
 
 产物路径（subject runtime）：
 
@@ -115,6 +139,8 @@ data/evolution/cycle-state/<cycleId>/intel.json   # 兼容下游
 data/evolution/cycle-state/<cycleId>/exec.json    # 兼容下游
 data/evolution/records/<cycleId>/conversation_context.json
 data/evolution/records/<cycleId>/agent_loop_turns.jsonl
+data/evolution/agent_loop_carryover.json
+data/evolution/agent_loop_guard_state.json
 ```
 
 审批语义不变：`agent_run` 仍走 handler 内 `preflightAgentRun` / `JEA_APPROVAL_MODE`，loop 不提供审批旁路。本地冒烟：

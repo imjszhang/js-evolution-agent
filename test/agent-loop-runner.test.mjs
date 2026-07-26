@@ -145,5 +145,225 @@ describe('runAgentLoop', () => {
     expect(result.status).toBe('done');
     const toolMsg = result.messages.find((m) => m.role === 'tool' && m.content.includes('unknown_tool'));
     expect(toolMsg).toBeTruthy();
+    expect(toolMsg.content).toContain('valid_tools');
+  });
+
+  it('rejects a second side-effect action in the same turn', async () => {
+    const { tools, loopCtx } = makeTools();
+    const client = new MockToolsAIClient({
+      script: [
+        {
+          toolCalls: [
+            {
+              name: 'record_observation',
+              arguments: { description: 'a', params: { content: 'a' } },
+            },
+            {
+              name: 'record_observation',
+              arguments: { description: 'b', params: { content: 'b' } },
+            },
+          ],
+        },
+        {
+          toolCalls: [{
+            name: 'finish_cycle',
+            arguments: { status: 'done', report_markdown: '# ok\n' },
+          }],
+        },
+      ],
+    });
+    const result = await runAgentLoop({
+      aiClient: client,
+      systemPrompt: 'system',
+      initialUserPrompt: 'user',
+      tools,
+      budget: loopCtx.budget,
+    });
+    expect(result.status).toBe('done');
+    expect(loopCtx.executed).toHaveLength(1);
+    const blocked = result.messages.find((m) => m.role === 'tool' && m.content.includes('one_action_per_turn'));
+    expect(blocked).toBeTruthy();
+  });
+
+  it('injects a one-shot budget-exhausted finish notice', async () => {
+    const { tools, loopCtx } = makeTools();
+    loopCtx.budget.maxActions = 1;
+    const client = new MockToolsAIClient({
+      script: [
+        {
+          toolCalls: [{
+            name: 'record_observation',
+            arguments: { description: 'only', params: { content: 'one' } },
+          }],
+        },
+        {
+          toolCalls: [{
+            name: 'finish_cycle',
+            arguments: { status: 'done', report_markdown: '# done\n' },
+          }],
+        },
+      ],
+    });
+    const result = await runAgentLoop({
+      aiClient: client,
+      systemPrompt: 'system',
+      initialUserPrompt: 'user',
+      tools,
+      budget: loopCtx.budget,
+    });
+    expect(result.status).toBe('done');
+    const notice = result.messages.find((m) => (
+      m.role === 'user' && String(m.content).includes('Action budget is exhausted')
+    ));
+    expect(notice).toBeTruthy();
+  });
+
+  it('enters protected closing turn after soft wallclock deadline', async () => {
+    const { tools, loopCtx } = makeTools();
+    const client = new MockToolsAIClient({
+      script: [
+        {
+          delayMs: 700,
+          content: 'gathering evidence before soft deadline',
+          toolCalls: [{ name: 'get_decision_queue_summary', arguments: {} }],
+        },
+      ],
+      finishReport: '# Closing Model Report\n\n## Seen\n- soft deadline closing worked\n',
+    });
+    const result = await runAgentLoop({
+      aiClient: client,
+      systemPrompt: 'system',
+      initialUserPrompt: 'user',
+      tools,
+      budget: {
+        ...loopCtx.budget,
+        maxWallClockMs: 1000,
+        finishReserveMs: 500,
+        maxTurns: 10,
+      },
+    });
+    expect(result.finish.forced).toBe(true);
+    expect(result.finish.closing).toBe('model');
+    expect(result.finish.forced_reason).toBe('wallclock_soft_deadline');
+    expect(result.finish.report_markdown).toContain('# Closing Model Report');
+    expect(result.finish.report_markdown).not.toContain('Agent Loop Forced Finish');
+  });
+
+  it('salvages a structured report when closing LLM fails', async () => {
+    const { tools, loopCtx } = makeTools();
+    const client = new MockToolsAIClient({
+      script: [
+        {
+          delayMs: 700,
+          content: 'I observed avg=43.33 and candidate evaluate failed',
+          toolCalls: [{
+            name: 'record_observation',
+            arguments: { description: 'note', params: { content: 'avg=43.33' } },
+          }],
+        },
+        // Closing turn retries toolChoice up to 3 times; keep failing all of them.
+        { error: 'closing boom' },
+        { error: 'closing boom' },
+        { error: 'closing boom' },
+      ],
+    });
+    const result = await runAgentLoop({
+      aiClient: client,
+      systemPrompt: 'system',
+      initialUserPrompt: 'user',
+      tools,
+      budget: {
+        ...loopCtx.budget,
+        maxWallClockMs: 1000,
+        finishReserveMs: 500,
+        maxTurns: 10,
+      },
+    });
+    expect(result.finish.forced).toBe(true);
+    expect(result.finish.closing).toBe('salvaged');
+    expect(result.finish.report_markdown).toContain('Salvaged');
+    expect(result.finish.report_markdown).toContain('record_observation');
+    expect(result.finish.report_markdown).toContain('avg=43.33');
+    expect(result.finish.report_markdown).not.toContain('Agent Loop Forced Finish');
+    expect(result.finish.carryover.length).toBeGreaterThanOrEqual(0);
+  });
+
+  it('gives one turn after action-budget notice then closes', async () => {
+    const { tools, loopCtx } = makeTools();
+    loopCtx.budget.maxActions = 1;
+    const client = new MockToolsAIClient({
+      script: [
+        {
+          toolCalls: [{
+            name: 'record_observation',
+            arguments: { description: 'only', params: { content: 'one' } },
+          }],
+        },
+        {
+          content: 'still investigating instead of finishing',
+          toolCalls: [{ name: 'get_decision_queue_summary', arguments: {} }],
+        },
+      ],
+      finishReport: '# Closed After Budget\n\n## Seen\n- action budget\n',
+    });
+    const result = await runAgentLoop({
+      aiClient: client,
+      systemPrompt: 'system',
+      initialUserPrompt: 'user',
+      tools,
+      budget: loopCtx.budget,
+    });
+    const notices = result.messages.filter((m) => (
+      m.role === 'user' && String(m.content).includes('Action budget is exhausted')
+    ));
+    expect(notices).toHaveLength(1);
+    expect(result.finish.forced).toBe(true);
+    expect(result.finish.closing).toBe('model');
+    expect(result.finish.forced_reason).toBe('action_budget_exhausted');
+    expect(result.finish.report_markdown).toContain('# Closed After Budget');
+  });
+
+  it('injects 60% and 85% wallclock checkpoints once each', async () => {
+    const { tools, loopCtx } = makeTools();
+    // softBudget = 3000-1000 = 2000ms → 60% at 1200ms, 85% at 1700ms
+    const client = new MockToolsAIClient({
+      script: [
+        {
+          delayMs: 1250,
+          toolCalls: [{ name: 'get_decision_queue_summary', arguments: {} }],
+        },
+        {
+          delayMs: 500,
+          toolCalls: [{ name: 'get_current_beliefs', arguments: {} }],
+        },
+        {
+          toolCalls: [{
+            name: 'finish_cycle',
+            arguments: { status: 'done', report_markdown: '# ok\n' },
+          }],
+        },
+      ],
+    });
+    const result = await runAgentLoop({
+      aiClient: client,
+      systemPrompt: 'system',
+      initialUserPrompt: 'user',
+      tools,
+      budget: {
+        ...loopCtx.budget,
+        maxWallClockMs: 3000,
+        finishReserveMs: 1000,
+        maxTurns: 10,
+      },
+    });
+    expect(result.status).toBe('done');
+    const c60 = result.messages.filter((m) => (
+      m.role === 'user' && String(m.content).includes('Budget checkpoint (~60%')
+    ));
+    const c85 = result.messages.filter((m) => (
+      m.role === 'user' && String(m.content).includes('Budget checkpoint (~85%')
+    ));
+    expect(c60).toHaveLength(1);
+    expect(c85).toHaveLength(1);
   });
 });
