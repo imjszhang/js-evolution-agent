@@ -12,7 +12,7 @@ import { parseArgv } from '../src/cli/utils/args.mjs';
 import { readJsonSafe, removeProjectDir, writeJsonFile } from '../src/cli/utils/files.mjs';
 import { extractMarkdownSection } from '../src/cli/commands/subject.mjs';
 import { findUnknownActions, readActiveDecisionQueue } from '../src/cli/commands/actions.mjs';
-import { archiveQueue, auditQueue } from '../src/cli/commands/audit.mjs';
+import { archiveQueue, auditCommand, auditQueue } from '../src/cli/commands/audit.mjs';
 import { buildDefaultGoals, backupData, dataStatus, initData } from '../src/cli/commands/data.mjs';
 import {
   applyGoalObject,
@@ -156,6 +156,7 @@ import {
 let tempDir = null;
 const originalJeaLanguage = process.env.JEA_LANGUAGE;
 const originalJeaSubject = process.env.JEA_SUBJECT;
+const originalJeaProjectRoot = process.env.JEA_PROJECT_ROOT;
 
 async function captureConsole(fn) {
   const logs = [];
@@ -184,6 +185,8 @@ afterEach(() => {
   else process.env.JEA_LANGUAGE = originalJeaLanguage;
   if (originalJeaSubject === undefined) delete process.env.JEA_SUBJECT;
   else process.env.JEA_SUBJECT = originalJeaSubject;
+  if (originalJeaProjectRoot === undefined) delete process.env.JEA_PROJECT_ROOT;
+  else process.env.JEA_PROJECT_ROOT = originalJeaProjectRoot;
 });
 
 describe('CLI argument parsing', () => {
@@ -3650,5 +3653,19 @@ describe('intel operator briefs', () => {
 
     expect(readProcessedOperatorBriefs(runtime.runtimeRoot).briefs[0].id).toBe('brief-done');
     expect(briefProcessed({ root, flags: { json: true } })).toBe(0);
+  });
+});
+
+describe('audit evidence command', () => {
+  it('returns exit code 0 on a clean subject runtime with --json', async () => {
+    const root = makeIntelRoot('jea-audit-evidence-');
+    process.env.JEA_PROJECT_ROOT = root;
+    const { code, stdout } = await captureConsole(async () => (
+      auditCommand({ subcommand: 'evidence', flags: { json: true } })
+    ));
+    expect(code).toBe(0);
+    const payload = JSON.parse(stdout);
+    expect(payload.schema_version).toBe('evidence-audit.v1');
+    expect(payload.summary.ok).toBe(true);
   });
 });

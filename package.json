@@ -25,6 +25,7 @@
     "dotenv": "^16.4.5",
     "js-intel-store": "^0.1.0",
     "js-repolink": "^0.1.0",
+    "js-traceability": "^0.1.0",
     "js-yaml": "^4.1.1",
     "openai": "^4.73.0",
     "proper-lockfile": "^4.1.2",

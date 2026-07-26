@@ -26,6 +26,16 @@ actionRegistry.register(new ActionTypeSpec({
 }));
 
 actionRegistry.register(new ActionTypeSpec({
+  name: 'run_evidence_audit',
+  description: 'Deterministic host-side audit of evidence references (beliefs, standing memory, operator_fact supersedes, report citations).',
+  promptHint: '[MECHANICAL AUDIT] Deterministic host-side audit of evidence references (belief evidence_refs, standing memory typed refs, operator_fact supersedes, report citations). No LLM, no file edits. Optional params: reports/diaries/events (numbers), narrative (bool). Use for memory-audit / evidence-hygiene goals instead of agent_run; results land in intel_observations (source: evidence_audit) and the action receipt.',
+  defaultRisk: 'low',
+  defaultPriority: 'medium',
+  autoExecutable: true,
+  layer: 'buffer',
+}));
+
+actionRegistry.register(new ActionTypeSpec({
   name: 'propose_probe',
   description: 'Create a bounded experiment proposal without executing external side effects (host-backed write only).',
   promptHint: '[RECORDING ONLY] Register a bounded experiment proposal, not execute it. Required params: hypothesis, success_signal, failure_signal, death_boundary; optional: target/resource intent. Do not use to run the experiment—schedule agent_run for execution after the proposal is recorded.',

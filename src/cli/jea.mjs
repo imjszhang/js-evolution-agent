@@ -101,6 +101,8 @@ Commands:
   audit queue --archive  Preview archiving completed/expired queue items
   audit queue --archive --yes
                          Archive completed/expired queue items out of the hot queue
+  audit evidence [--subject NAME] [--json] [--strict] [--ingest] [--no-narrative]
+                         Mechanically audit evidence refs (beliefs, standing memory, supersedes, report citations)
   llm ping               Test DeepSeek connectivity
   llm ping --mock        Test local mock AI path
   policy check           Verify subject policy has Subject section (--subject NAME)

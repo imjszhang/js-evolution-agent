@@ -5,6 +5,14 @@ import {
   findUnknownActions,
   readActiveDecisionQueue,
 } from './actions.mjs';
+import { resolveSubjectFromFlags, runtimeInfoForSubject } from '../utils/subjects.mjs';
+import { createIntelligenceStore } from '../../intelligence/store.mjs';
+import {
+  parseCountOption,
+  renderEvidenceAuditText,
+  runEvidenceAudit,
+  summarizeEvidenceAuditForIngest,
+} from '../../intelligence/evidence-audit.mjs';
 
 const KNOWN_STATUSES = ['pending', 'in_progress', 'completed', 'failed', 'expired'];
 
@@ -109,11 +117,62 @@ export function archiveQueue(root, { statuses = ['completed', 'expired'], dryRun
   };
 }
 
-export async function auditCommand({ subcommand, flags = {} } = {}) {
-  if (subcommand !== 'queue') {
-    console.error('Usage: jea audit queue [--stale-minutes N] [--json] [--archive] [--yes] [--statuses completed,expired]');
-    return 2;
+function ingestEvidenceAuditObservation(runtime, audit) {
+  const store = createIntelligenceStore({
+    baseDir: runtime.intelligenceDir,
+    timezone: 'Asia/Shanghai',
+  });
+  const { content, audit_summary } = summarizeEvidenceAuditForIngest(audit);
+  return store.ingestObservation({
+    source: 'evidence_audit',
+    kind: 'observation',
+    confidence: 'medium',
+    subject: runtime.subject,
+    tags: ['evidence_audit'],
+    content,
+    audit_summary,
+  });
+}
+
+async function auditEvidenceCommand(flags = {}) {
+  const root = getProjectRoot();
+  const config = resolveSubjectFromFlags(root, flags);
+  const runtime = runtimeInfoForSubject(root, config);
+  const audit = runEvidenceAudit({
+    dataRoot: runtime.dataRoot,
+    reports: parseCountOption(flags.reports, 5),
+    diaries: parseCountOption(flags.diaries, 5),
+    events: parseCountOption(flags.events, 200),
+    narrative: !flags['no-narrative'],
+  });
+
+  let ingested = 0;
+  if (flags.ingest) {
+    ingested = ingestEvidenceAuditObservation(runtime, audit);
   }
+
+  if (flags.json) {
+    console.log(JSON.stringify({
+      subject: runtime.subject,
+      namespace: runtime.dataNamespace,
+      runtime: runtime.runtimeRoot,
+      ingested,
+      ...audit,
+    }, null, 2));
+  } else {
+    console.log(`subject: ${runtime.subject}`);
+    console.log(`namespace: ${runtime.dataNamespace}`);
+    console.log(`runtime: ${runtime.runtimeRoot}`);
+    process.stdout.write(renderEvidenceAuditText(audit));
+    if (flags.ingest) console.log(`ingested observation: ${ingested}`);
+  }
+
+  if ((audit.summary?.errors ?? 0) > 0) return 1;
+  if (flags.strict && (audit.summary?.warnings ?? 0) > 0) return 1;
+  return 0;
+}
+
+async function auditQueueCommand(flags = {}) {
   const root = getProjectRoot();
   if (flags.archive) {
     const result = archiveQueue(root, {
@@ -143,3 +202,15 @@ export async function auditCommand({ subcommand, flags = {} } = {}) {
   return audit.healthy ? 0 : 1;
 }
 
+export async function auditCommand({ subcommand, flags = {} } = {}) {
+  if (subcommand === 'evidence') {
+    return auditEvidenceCommand(flags);
+  }
+  if (subcommand === 'queue') {
+    return auditQueueCommand(flags);
+  }
+  console.error('Usage: jea audit <queue|evidence> [options]');
+  console.error('  jea audit queue [--stale-minutes N] [--json] [--archive] [--yes] [--statuses completed,expired]');
+  console.error('  jea audit evidence [--subject NAME] [--json] [--strict] [--ingest] [--no-narrative] [--reports N] [--diaries N] [--events N]');
+  return 2;
+}

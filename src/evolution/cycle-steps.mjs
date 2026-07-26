@@ -11,6 +11,7 @@ import {
 import loadConfig from '../../oada.config.mjs'; // project root oada.config.mjs
 import { assessActiveGoals, autoCalibrateGoals } from '../domain/cognition/index.mjs';
 import { updateActiveBeliefs } from '../intelligence/belief-updater.mjs';
+import { runEvidenceAuditQuick } from '../intelligence/evidence-audit.mjs';
 import { ConversationalIntelligencePipeline } from '../intelligence/conversational-intel-pipeline.mjs';
 import { verifyWithRestoredConversation } from '../intelligence/conversation-context.mjs';
 import { buildEvolutionDiary } from '../intelligence/evolution-diary-builder.mjs';
@@ -651,6 +652,11 @@ export async function runVerifyStep(ctx, { intelResult, execResult, recordState 
     logger: cfg.host.logger,
   });
   verification.semantic = semanticVerification;
+  try {
+    verification.evidence_audit = runEvidenceAuditQuick({ dataRoot: runtime.dataRoot });
+  } catch (e) {
+    verification.evidence_audit = { status: 'failed', error: e?.message ?? String(e) };
+  }
   const reportDir = join(runtime.runtimeRoot, 'data', 'evolution', 'verify_reports');
   mkdirSync(reportDir, { recursive: true });
   const reportPath = join(reportDir, `${execResult.cycle_id}.json`);

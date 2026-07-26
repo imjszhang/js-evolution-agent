@@ -1,6 +1,7 @@
 const VALID_MODES = new Set(['manual', 'auto_guarded', 'auto_all']);
 
 const AUTO_GUARDED_RECORD_TYPES = new Set([
+  'run_evidence_audit',
   'record_observation',
   'propose_probe',
   'write_retrospective',

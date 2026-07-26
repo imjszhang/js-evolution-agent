@@ -1,6 +1,11 @@
 import { runReadOnlyProbe } from '../probe-runner.mjs';
 import { runAgenticAction } from '../agent-adapter.mjs';
 import {
+  parseCountOption,
+  runEvidenceAudit,
+  summarizeEvidenceAuditForIngest,
+} from '../../intelligence/evidence-audit.mjs';
+import {
   applyRunSpecToAction,
   normalizeAgentRunSpec,
   validateAgentRunSpec,
@@ -1556,6 +1561,77 @@ const builtInActionHandlers = {
     };
     store.recordActionReceipt(action, result, ctx);
     return result;
+  },
+
+  async run_evidence_audit(action, ctx) {
+    const store = storeFrom(ctx);
+    const dataRoot = ctx?.host?.dataRoot;
+    if (!dataRoot) {
+      const result = {
+        success: false,
+        status: 'blocked',
+        message: 'host.dataRoot is not configured',
+        provider: 'local',
+        fallback_used: false,
+        evidence: {},
+        writes: {},
+      };
+      store.recordActionReceipt(action, result, ctx);
+      return result;
+    }
+
+    const params = asObject(action?.params);
+    try {
+      const audit = runEvidenceAudit({
+        dataRoot,
+        reports: parseCountOption(params.reports, 5),
+        diaries: parseCountOption(params.diaries, 5),
+        events: parseCountOption(params.events, 200),
+        narrative: params.narrative !== false && params.narrative !== 'false',
+      });
+      const { content, audit_summary } = summarizeEvidenceAuditForIngest(audit);
+      const observation = {
+        source: 'evidence_audit',
+        kind: 'observation',
+        confidence: 'medium',
+        subject: getField(action, 'subject') ?? ctx?.host?.dataNamespace ?? 'unspecified',
+        tags: ['evidence_audit'],
+        content,
+        audit_summary,
+      };
+      const written = store.ingestObservation(observation);
+      const result = {
+        success: true,
+        status: 'completed',
+        message: `evidence audit: ${audit.summary.errors} errors, ${audit.summary.warnings} warnings`,
+        provider: 'local',
+        fallback_used: false,
+        evidence: {
+          audit_summary,
+          errors: (audit.errors ?? []).slice(0, 10),
+          warnings: (audit.warnings ?? []).slice(0, 10),
+        },
+        writes: { observations: written },
+        writes_applied: { observations: written },
+        verification_hints: [
+          'run_evidence_audit is a mechanical host-side audit; inspect intel_observations source=evidence_audit for the summary.',
+        ],
+      };
+      store.recordActionReceipt(action, result, ctx);
+      return result;
+    } catch (error) {
+      const result = {
+        success: false,
+        status: 'failed',
+        message: error?.message ?? String(error),
+        provider: 'local',
+        fallback_used: false,
+        evidence: {},
+        writes: {},
+      };
+      store.recordActionReceipt(action, result, ctx);
+      return result;
+    }
   },
 
   async propose_probe(action, ctx) {

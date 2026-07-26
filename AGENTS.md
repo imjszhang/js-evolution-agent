@@ -289,7 +289,7 @@ runtime/subjects/<data_namespace>/data/evolution/operator_briefs/processed/
 
 ### 记录型 action（经 Decide 间接落盘）
 
-Decide 可调度、`Phase 2` 执行的记录型动作，用于落已有结论而非调查：`record_observation`、`propose_probe`、`write_retrospective`、`request_core_review`。操作者通常通过 brief 引导 Decide，而不是直接写决策队列。
+Decide 可调度、`Phase 2` 执行的记录型动作，用于落已有结论而非调查：`record_observation`、`run_evidence_audit`、`propose_probe`、`write_retrospective`、`request_core_review`。操作者通常通过 brief 引导 Decide，而不是直接写决策队列。
 
 ### 不建议的操作者入口
 
@@ -348,7 +348,7 @@ Decide 可调度、`Phase 2` 执行的记录型动作，用于落已有结论而
 | 值 | 含义 |
 | --- | --- |
 | `manual` | 所有需要 `approval_granted` 的 `agent_run` 必须显式批准 |
-| `auto_guarded` | 仅自动批准低风险动作：只读 `agent_run`（`permission_profile=read_only`）、`record_observation`、`propose_probe`、`write_retrospective` |
+| `auto_guarded` | 仅自动批准低风险动作：只读 `agent_run`（`permission_profile=read_only`）、`record_observation`、`run_evidence_audit`、`propose_probe`、`write_retrospective` |
 | `auto_all` | 自动批准所有需审批动作（含远端发布、`workspace_write` / `remote_write_review`）；`core_apply` 在 `JEA_CORE_APPLY_POLICY=review` 时也会自动执行；外部工具 `approvalFlag` 会自动追加 `--force`。`JEA_CORE_APPLY_POLICY=disabled` 仍硬拦截 |
 
 `auto_guarded` **不会**自动：
@@ -819,13 +819,14 @@ jea data init --all --subject <name>
 - `jea audit queue`：检查决策队列健康状态、未知动作和陈旧 in-progress 项。
 - `jea audit queue --archive`：预览归档 completed/expired 队列项。
 - `jea audit queue --archive --yes`：执行归档。
+- `jea audit evidence [--subject NAME] [--json] [--strict] [--ingest] [--no-narrative]`：机械审计证据引用（信念 `evidence_refs`、standing memory typed refs、operator_fact `supersedes` 链、近期 report/diary 叙事引用）。`--strict` 时 warnings 也非零退出；`--ingest` 写入一条 `source: evidence_audit` observation（摘要，不含完整 findings）；`--no-narrative` 跳过 report/diary 扫描。`verify_report:` 引用必须用磁盘文件名（`exec-…` 或 `cycle-…`），裸 `cycle-…` 也会解析为 verify report。
 - `jea actions list`：列出已注册 action types。
 - `jea actions check`：检查待处理决策中的未知 action types。
 
 Phase 2（exec）action 选择口径：
 
 - 主执行：优先 `agent_run`（调查、改代码、模拟、发布准备等“做事”任务）。
-- 记录型：`record_observation`、`propose_probe`、`write_retrospective`、`request_core_review` 只落已有结论/提案/审批请求，不用于读文件或调查。
+- 记录型：`record_observation`、`run_evidence_audit`（机械证据审计）、`propose_probe`、`write_retrospective`、`request_core_review` 只落已有结论/提案/审批请求/审计摘要，不用于读文件或调查。
 - 系统/兼容：`lane_status`、`lane_observe`、`lane_verify`、`github_open_lane_pr` 是机械 lane 能力；`run_probe`、`agent_execute` 是旧兼容动作；`core_apply` 仅用于 core 层审批变更。subject policy 不应维护 subject-specific action 菜单，业务能力通过 `subjects.json` 的 lane/resources 或 configured external actions 表达。
 
 ## 旧脚本（已移除）
