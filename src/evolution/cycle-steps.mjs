@@ -446,7 +446,11 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
   let reportSource = 'fallback';
   let reportReason = null;
   try {
-    const md = await chatMessages(aiClient, reportMessages, { thinking: 'medium', timeout: 600 });
+    const md = await chatMessages(aiClient, reportMessages, {
+      thinking: 'medium',
+      timeout: 600,
+      phase: 'report',
+    });
     if (typeof md === 'string' && md.trim()) {
       reportMarkdown = `${md.trim()}\n`;
       reportSource = 'ai';
@@ -518,7 +522,11 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
   let analysis = null;
   let analysisParseError = null;
   try {
-    const rawDecision = await chatMessages(aiClient, decideMessages, { thinking: 'medium', timeout: 600 });
+    const rawDecision = await chatMessages(aiClient, decideMessages, {
+      thinking: 'medium',
+      timeout: 600,
+      phase: 'decide',
+    });
     const parsedDecision = await parseAnalyzeDecisionWithRepair(aiClient, rawDecision, { logger });
     analysis = parsedDecision.analysis;
     analysisParseError = parsedDecision.parseError;

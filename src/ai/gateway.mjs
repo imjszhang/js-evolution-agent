@@ -23,9 +23,7 @@ export function createLlmClient({
   return new DeepSeekOpenAIClient({
     apiKey: env.DEEPSEEK_API_KEY,
     baseURL: env.DEEPSEEK_BASE_URL,
-    model: env.DEEPSEEK_MODEL,
-    thinkingEnabled: envBool(env.DEEPSEEK_THINKING),
-    reasoningEffort: env.DEEPSEEK_REASONING_EFFORT,
+    env,
     timeout,
   });
 }

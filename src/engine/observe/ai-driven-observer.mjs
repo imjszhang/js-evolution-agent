@@ -65,8 +65,16 @@ export class AIDrivenObserver {
     const prompt = this._buildObservePrompt();
     results._prompt = prompt;
     const timeout = this.aiClient.model ? 600 : 300;
-    this._log(`calling AI for autonomous exploration (thinking=medium, timeout=${timeout}s)...`);
-    const reportText = await this.aiClient.chat(prompt, 'medium', timeout);
+    this._log(`calling AI for autonomous exploration (thinking=medium, timeout=${timeout}s, phase=observe)...`);
+    let reportText;
+    if (typeof this.aiClient.chatMessages === 'function') {
+      reportText = await this.aiClient.chatMessages(
+        [{ role: 'user', content: prompt }],
+        { thinking: 'medium', timeout, phase: 'observe' },
+      );
+    } else {
+      reportText = await this.aiClient.chat(prompt, 'medium', timeout);
+    }
 
     const reportStripped = (reportText || '').trim();
     const errSigs = ['request timed out', 'request was aborted', 'error'];

@@ -21,7 +21,13 @@ const sampleTools = [{
 
 describe('DeepSeekOpenAIClient.chatMessagesWithTools', () => {
   it('passes tools and parses tool_calls with tolerant JSON arguments', async () => {
-    const client = new DeepSeekOpenAIClient({ apiKey: 'test-key', timeout: 30 });
+    const client = new DeepSeekOpenAIClient({
+      apiKey: 'test-key',
+      timeout: 30,
+      env: {},
+      thinkingMode: 'high',
+      model: 'deepseek-v4-flash',
+    });
     let capturedBody = null;
     client._openai = {
       chat: {
@@ -34,6 +40,7 @@ describe('DeepSeekOpenAIClient.chatMessagesWithTools', () => {
                 message: {
                   role: 'assistant',
                   content: null,
+                  reasoning_content: 'plan finish',
                   tool_calls: [{
                     id: 'call_1',
                     type: 'function',
@@ -58,18 +65,85 @@ describe('DeepSeekOpenAIClient.chatMessagesWithTools', () => {
 
     expect(capturedBody.tools).toEqual(sampleTools);
     expect(capturedBody.tool_choice).toBe('auto');
+    expect(capturedBody.thinking).toEqual({ type: 'enabled' });
+    expect(capturedBody.reasoning_effort).toBe('high');
     expect(result.toolCalls).toHaveLength(1);
     expect(result.toolCalls[0]).toMatchObject({
       id: 'call_1',
       name: 'finish_cycle',
       arguments: { status: 'done', report_markdown: '# ok' },
     });
+    expect(result.reasoningContent).toBe('plan finish');
+    expect(result.rawMessage.reasoning_content).toBe('plan finish');
     expect(result.finishReason).toBe('tool_calls');
     expect(result.usage.prompt_tokens).toBe(10);
   });
 
+  it('sends thinking.disabled without reasoning_effort when off', async () => {
+    const client = new DeepSeekOpenAIClient({
+      apiKey: 'test-key',
+      timeout: 30,
+      env: {},
+      thinkingMode: 'off',
+      model: 'deepseek-v4-flash',
+    });
+    let capturedBody = null;
+    client._openai = {
+      chat: {
+        completions: {
+          async create(body) {
+            capturedBody = body;
+            return {
+              choices: [{
+                finish_reason: 'stop',
+                message: { role: 'assistant', content: 'pong' },
+              }],
+            };
+          },
+        },
+      },
+    };
+    await client.chatMessages([{ role: 'user', content: 'hi' }], { phase: 'observe' });
+    expect(capturedBody.model).toBe('deepseek-v4-flash');
+    expect(capturedBody.thinking).toEqual({ type: 'disabled' });
+    expect(capturedBody.reasoning_effort).toBeUndefined();
+  });
+
+  it('honors per-call phase and thinking overrides', async () => {
+    const client = new DeepSeekOpenAIClient({
+      apiKey: 'test-key',
+      timeout: 30,
+      env: {},
+      thinkingMode: 'off',
+    });
+    let capturedBody = null;
+    client._openai = {
+      chat: {
+        completions: {
+          async create(body) {
+            capturedBody = body;
+            return {
+              choices: [{
+                finish_reason: 'stop',
+                message: { role: 'assistant', content: 'ok' },
+              }],
+            };
+          },
+        },
+      },
+    };
+    await client.chatMessages([{ role: 'user', content: 'hi' }], {
+      phase: 'decide',
+      model: 'deepseek-v4-pro',
+      thinkingMode: 'max',
+    });
+    expect(capturedBody.model).toBe('deepseek-v4-pro');
+    expect(capturedBody.thinking).toEqual({ type: 'enabled' });
+    expect(capturedBody.reasoning_effort).toBe('max');
+  });
+
   it('keeps argumentsRaw when JSON parse fails', async () => {
-    const client = new DeepSeekOpenAIClient({ apiKey: 'test-key', timeout: 30 });
+    const client = new DeepSeekOpenAIClient({ apiKey: 'test-key', timeout: 30, env: {} });
     client._openai = {
       chat: {
         completions: {
@@ -106,7 +180,7 @@ describe('DeepSeekOpenAIClient.chatMessagesWithTools', () => {
   });
 
   it('throws when content and tool_calls are both empty', async () => {
-    const client = new DeepSeekOpenAIClient({ apiKey: 'test-key', timeout: 30 });
+    const client = new DeepSeekOpenAIClient({ apiKey: 'test-key', timeout: 30, env: {} });
     client._openai = {
       chat: {
         completions: {

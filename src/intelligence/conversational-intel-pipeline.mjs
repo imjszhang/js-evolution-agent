@@ -89,6 +89,7 @@ export async function parseAnalyzeDecisionWithRepair(aiClient, rawDecision, { lo
       const repairedRaw = await chatMessages(aiClient, buildAnalyzeDecisionRepairMessages(rawDecision, parseError), {
         thinking: 'low',
         timeout: 180,
+        phase: 'repair',
       });
       const repaired = normalizeAnalyzeDecision(parseJsonFromText(aiClient, repairedRaw));
       logger?.warning?.(`[analyze_decide] repaired invalid JSON: ${parseError}`);
@@ -325,7 +326,11 @@ export class ConversationalIntelligencePipeline {
       let reportSource = 'fallback';
       let reportReason = null;
       try {
-        const md = await chatMessages(this.aiClient, reportMessages, { thinking: 'medium', timeout: 600 });
+        const md = await chatMessages(this.aiClient, reportMessages, {
+          thinking: 'medium',
+          timeout: 600,
+          phase: 'report',
+        });
         if (typeof md === 'string' && md.trim()) {
           reportMarkdown = md.trim() + '\n';
           reportSource = 'ai';
@@ -407,7 +412,11 @@ export class ConversationalIntelligencePipeline {
 
       this._log(`[${cycleId}] phase 3/3: analyze + decide`);
       logger.startPhase('analyze_decide');
-      const rawDecision = await chatMessages(this.aiClient, decideMessages, { thinking: 'medium', timeout: 600 });
+      const rawDecision = await chatMessages(this.aiClient, decideMessages, {
+        thinking: 'medium',
+        timeout: 600,
+        phase: 'decide',
+      });
       let analysis = null;
       let analysisParseError = null;
       const parsedDecision = await parseAnalyzeDecisionWithRepair(this.aiClient, rawDecision, {

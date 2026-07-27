@@ -546,7 +546,7 @@ describe('controlled action handlers', () => {
     expect(status.ok).toBe(true);
     expect(second.success).toBe(true);
     expect(second.created).toBe(false);
-  });
+  }, 60_000);
 
   it('runs lane commands in a dedicated lane worktree when the main checkout stays on main', () => {
     const repo = join(tempDir || mkdtempSync(join(tmpdir(), 'jea-lane-command-')), 'repo');
@@ -580,7 +580,7 @@ describe('controlled action handlers', () => {
     expect(result.worktreeReused).toBe(false);
     expect(result.commit).toMatch(/^[0-9a-f]{40}$/);
     expect(mainBranch).toBe('main');
-  });
+  }, 60_000);
 
   it('reuses the fixed lane worktree across lane commands', () => {
     const repo = join(tempDir || mkdtempSync(join(tmpdir(), 'jea-lane-reuse-')), 'repo');
@@ -608,7 +608,7 @@ describe('controlled action handlers', () => {
     expect(first.worktreeCreated).toBe(true);
     expect(second.worktreeCreated).toBe(false);
     expect(second.worktreeReused).toBe(true);
-  });
+  }, 60_000);
 
   it('fails lane commands when the dedicated lane worktree is dirty', () => {
     const repo = join(tempDir || mkdtempSync(join(tmpdir(), 'jea-lane-dirty-')), 'repo');
@@ -635,7 +635,7 @@ describe('controlled action handlers', () => {
     expect(second.success).toBe(false);
     expect(second.error).toContain('lane worktree is dirty');
     expect(second.stdout).toBe('');
-  });
+  }, 60_000);
 
   it('creates worktree branches with non-nested prefix when lane branch exists', () => {
     const repo = join(tempDir || mkdtempSync(join(tmpdir(), 'jea-lane-worktree-')), 'repo');

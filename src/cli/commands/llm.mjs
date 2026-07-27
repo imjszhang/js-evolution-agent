@@ -7,7 +7,12 @@ export async function pingLlm({ mock = false, timeout = 30 } = {}) {
     ? new MockAIClient({ defaultResponse: 'pong' })
     : new DeepSeekOpenAIClient({ timeout });
   const started = Date.now();
-  const text = await client.chat('Reply with exactly: pong', 'low', timeout);
+  const text = typeof client.chatMessages === 'function'
+    ? await client.chatMessages(
+      [{ role: 'user', content: 'Reply with exactly: pong' }],
+      { thinking: 'low', timeout, phase: 'llm_ping' },
+    )
+    : await client.chat('Reply with exactly: pong', 'low', timeout);
   return {
     ok: text.trim().toLowerCase().includes('pong'),
     mode: mock ? 'mock' : 'deepseek',

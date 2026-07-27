@@ -1,5 +1,6 @@
 import { expect } from 'vitest';
 import { extractMarkdownSection } from '../../src/cli/utils/markdown-sections.mjs';
+import { MACHINE_CONTEXT_IDS } from '../../src/intelligence/machine-context-refs.mjs';
 
 export const POISON_INTENT_CLAIM_E2E = 'POISON_INTENT_CLAIM_E2E';
 
@@ -69,6 +70,9 @@ function splitBullets(body) {
 
 function recordExists(store, sourceType, sourceId) {
   const normalized = normalizeSourceType(sourceType);
+  if (normalized === 'machine_context') {
+    return { supported: true, found: MACHINE_CONTEXT_IDS.includes(sourceId), sourceType: normalized };
+  }
   const reader = SUPPORTED_SOURCE_READERS[normalized];
   if (!reader) return { supported: false, found: false, sourceType: normalized };
   const rows = reader(store, 500) || [];

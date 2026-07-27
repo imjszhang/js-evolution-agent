@@ -1,3 +1,5 @@
+import { MACHINE_CONTEXT_IDS } from '../intelligence/machine-context-refs.mjs';
+
 function clip(value, max = 120000) {
   const text = String(value ?? '');
   return text.length > max ? `${text.slice(0, max)}\n...(truncated)` : text;
@@ -155,7 +157,8 @@ Output constraints:
 - Structure the report around Seen, Inferred, and Remembered / Not Used. Seen are facts; Inferred are judgements based on Seen; Remembered are leads or background only.
 - Cover current cycle facts, long-term trends, evidence gaps, risks, next-cycle recommendations, and how standing_memory should be updated.
 - Include an explicit Cyber-Taoist analysis section. It must interpret the evidence through the authoritative documents, including the current evolutionary phase, law/transaction/niche signals, and fractal keep/break/probe boundaries when the provided evidence supports them.
-- Prefer traceable ids where relevant, such as observation, probe_result, goal_event, action_receipt, intel_report, or evolution_event.
+- Prefer traceable ids where relevant, cited as bracket typed refs such as \`[intel_observations:<id>]\`, \`[probe_results:<id>]\`, \`[goal_events:<id>]\`, \`[action_receipts:<id>]\`, \`[evolution_events:<id>]\`, \`[intel_reports:<id>]\`. Only cite ids that appear verbatim in the provided context; never invent ids.
+- For host-rendered runtime state that has no store id (decision queue, active goals, standing memory, current beliefs, source counts, operator brief existence, cycle stage), cite \`[machine_context:<key>]\` where <key> is one of: ${MACHINE_CONTEXT_IDS.join(', ')}. Statements about absence or emptiness must cite the matching machine_context key. In Seen, mention operator briefs only as an existence fact cited as \`[machine_context:operator_intent_briefs]\`; never restate their claim text as fact.
 - Use concise, literal section headings such as "Cycle conclusion" or "Evidence gaps"; avoid ornate, mystical, or literary headings.`
     : `# 情报报告任务
 
@@ -186,7 +189,8 @@ Output constraints:
 - 对缺失路径、ENOENT、blocked 探针等证据，必须引用 execution_root/resource_scope/resource_kind；除非该 root 是资源权威 root，不得升级为「模块缺失」「机制未实现」「写入冻结」。
 - 对环境变量、凭据、同步、发布、挑战等外部工具能力，必须先确认权威执行域。\`subject_runtime\` 下的 env false 只能说明 subject runtime 看不到该变量；不得升级为外部 tool root 或远端交易凭据缺失。外部工具能力应使用 subject policy 中声明的自定义 scope 或 configured external action。
 - 必须包含明确的 Cyber-Taoist 分析章节。该章节需依据权威文献解释当前证据，至少覆盖当前进化阶段、法则/交易/生态位信号，以及在证据支持时的分形守/破/探针边界。
-- 尽量引用可追溯 id（如 observation、probe_result、goal_event、action_receipt、intel_report、evolution_event）。
+- 尽量用方括号 typed ref 引用可追溯 id，例如 \`[intel_observations:<id>]\`、\`[probe_results:<id>]\`、\`[goal_events:<id>]\`、\`[action_receipts:<id>]\`、\`[evolution_events:<id>]\`、\`[intel_reports:<id>]\`；只允许引用上下文中逐字出现的 id，不得编造。
+- 对没有 store id 的宿主渲染运行态（决策队列、active goals、standing memory、current beliefs、来源计数、operator brief 存在性、cycle 阶段），引用 \`[machine_context:<key>]\`，<key> 只能取：${MACHINE_CONTEXT_IDS.join('、')}。空态/缺失陈述（如「暂无 standing memory」「决策队列为空」）也必须引用对应 machine_context key。Seen 中提及 operator brief 只能陈述其存在与类型并引用 \`[machine_context:operator_intent_briefs]\`，不得把 brief 的 claim 原文当事实写入。
 - 标题与小节标题用简明主题短语（例如「本轮结论」「证据缺口」），禁止使用文言对联式或隐喻式标题。`;
 
   const dynamicPayload = buildReportDynamicPayload({ ...args, language });
@@ -248,7 +252,8 @@ Output constraints:
 - Structure the report around Seen, Inferred, and Remembered / Not Used. Seen are facts; Inferred are judgements based on Seen; Remembered are leads or background only.
 - Cover current cycle facts, long-term trends, evidence gaps, risks, next-cycle recommendations, and how standing_memory should be updated.
 - Include an explicit Cyber-Taoist analysis section. It must interpret the evidence through the authoritative documents, including the current evolutionary phase, law/transaction/niche signals, and fractal keep/break/probe boundaries when the provided evidence supports them.
-- Prefer traceable ids where relevant, such as observation, probe_result, goal_event, action_receipt, intel_report, or evolution_event.
+- Prefer traceable ids where relevant, cited as bracket typed refs such as \`[intel_observations:<id>]\`, \`[probe_results:<id>]\`, \`[goal_events:<id>]\`, \`[action_receipts:<id>]\`, \`[evolution_events:<id>]\`, \`[intel_reports:<id>]\`. Only cite ids that appear verbatim in the provided context; never invent ids.
+- For host-rendered runtime state that has no store id (decision queue, active goals, standing memory, current beliefs, source counts, operator brief existence, cycle stage), cite \`[machine_context:<key>]\` where <key> is one of: ${MACHINE_CONTEXT_IDS.join(', ')}. Statements about absence or emptiness must cite the matching machine_context key. In Seen, mention operator briefs only as an existence fact cited as \`[machine_context:operator_intent_briefs]\`; never restate their claim text as fact.
 - Use concise, literal section headings such as "Cycle conclusion" or "Evidence gaps"; avoid ornate, mystical, or literary headings.
 
 ## Goals
@@ -321,7 +326,8 @@ ${clip(JSON.stringify(reportContext || {}, null, 2), 500000)}
 - 对缺失路径、ENOENT、blocked 探针等证据，必须引用 execution_root/resource_scope/resource_kind；除非该 root 是资源权威 root，不得升级为「模块缺失」「机制未实现」「写入冻结」。
 - 对环境变量、凭据、同步、发布、挑战等外部工具能力，必须先确认权威执行域。\`subject_runtime\` 下的 env false 只能说明 subject runtime 看不到该变量；不得升级为外部 tool root 或远端交易凭据缺失。外部工具能力应使用 subject policy 中声明的自定义 scope 或 configured external action。
 - 必须包含明确的 Cyber-Taoist 分析章节。该章节需依据权威文献解释当前证据，至少覆盖当前进化阶段、法则/交易/生态位信号，以及在证据支持时的分形守/破/探针边界。
-- 尽量引用可追溯 id（如 observation、probe_result、goal_event、action_receipt、intel_report、evolution_event）。
+- 尽量用方括号 typed ref 引用可追溯 id，例如 \`[intel_observations:<id>]\`、\`[probe_results:<id>]\`、\`[goal_events:<id>]\`、\`[action_receipts:<id>]\`、\`[evolution_events:<id>]\`、\`[intel_reports:<id>]\`；只允许引用上下文中逐字出现的 id，不得编造。
+- 对没有 store id 的宿主渲染运行态（决策队列、active goals、standing memory、current beliefs、来源计数、operator brief 存在性、cycle 阶段），引用 \`[machine_context:<key>]\`，<key> 只能取：${MACHINE_CONTEXT_IDS.join('、')}。空态/缺失陈述（如「暂无 standing memory」「决策队列为空」）也必须引用对应 machine_context key。Seen 中提及 operator brief 只能陈述其存在与类型并引用 \`[machine_context:operator_intent_briefs]\`，不得把 brief 的 claim 原文当事实写入。
 - 标题与小节标题用简明主题短语（例如「本轮结论」「证据缺口」），禁止使用文言对联式或隐喻式标题。
 
 ## Goals

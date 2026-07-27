@@ -111,4 +111,42 @@ describe('intel-report evidence honesty assert', () => {
     });
     expect(result.findings).toEqual([]);
   });
+
+  it('passes when Seen cites machine_context with a known key', () => {
+    const store = makeStore();
+    const markdown = [
+      '## Seen',
+      '- [machine_context:active_goals]: host rendered two active goals this cycle',
+      '',
+    ].join('\n');
+    const result = assertIntelReportEvidenceHonesty({
+      store,
+      markdown,
+      forbiddenInSeen: [POISON_INTENT_CLAIM_E2E],
+    });
+    expect(result.findings).toEqual([]);
+  });
+
+  it('fails seen_dangling_ref for machine_context key outside the enum', () => {
+    const store = makeStore();
+    const markdown = [
+      '## Seen',
+      '- [machine_context:not_a_real_key]: bogus runtime claim',
+      '',
+    ].join('\n');
+    const { findings } = auditIntelReportEvidenceHonesty({ store, markdown });
+    expect(findings.some((f) => f.rule === 'seen_dangling_ref')).toBe(true);
+    expect(findings.some((f) => f.rule === 'seen_unknown_source_type')).toBe(false);
+  });
+
+  it('still fails seen_unknown_source_type for nonstandard type spellings', () => {
+    const store = makeStore();
+    const markdown = [
+      '## Seen',
+      '- [temporal_decision_brief:seen]: nonstandard citation',
+      '',
+    ].join('\n');
+    const { findings } = auditIntelReportEvidenceHonesty({ store, markdown });
+    expect(findings.some((f) => f.rule === 'seen_unknown_source_type')).toBe(true);
+  });
 });

@@ -3,7 +3,8 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    testTimeout: 15_000,
+    // Windows git/worktree fixtures can exceed 15s under full-suite parallel load.
+    testTimeout: 30_000,
   },
   resolve: {
     preserveSymlinks: true,

@@ -172,6 +172,7 @@ export async function runInvestigationLoop({
           tools: finishTools,
           toolChoice,
           timeout: closingTimeoutSec,
+          phase: 'agent_loop',
         });
         lastError = null;
         break;
@@ -205,11 +206,7 @@ export async function runInvestigationLoop({
     }
 
     const toolCalls = Array.isArray(resp.toolCalls) ? resp.toolCalls : [];
-    messages.push({
-      role: 'assistant',
-      content: resp.content,
-      ...(toolCalls.length ? { tool_calls: rawToolCallsForMessage(toolCalls) } : {}),
-    });
+    messages.push(assistantMessageFromResponse(resp));
 
     const finishCall = toolCalls.find((c) => c.name === 'finish_investigation');
     if (!finishCall || (finishCall.arguments == null && finishCall.argumentsRaw)) {
@@ -290,6 +287,7 @@ export async function runInvestigationLoop({
         tools: openAiTools,
         toolChoice: 'auto',
         timeout: 600,
+        phase: 'agent_loop',
       });
     } catch (e) {
       logger?.error?.(`[agent_loop] investigation LLM turn failed: ${e?.message || e}`);
@@ -298,11 +296,7 @@ export async function runInvestigationLoop({
     }
 
     const toolCalls = Array.isArray(resp.toolCalls) ? resp.toolCalls : [];
-    messages.push({
-      role: 'assistant',
-      content: resp.content,
-      ...(toolCalls.length ? { tool_calls: rawToolCallsForMessage(toolCalls) } : {}),
-    });
+    messages.push(assistantMessageFromResponse(resp));
 
     if (!toolCalls.length) {
       emptyToolTurns += 1;
@@ -475,6 +469,33 @@ function rawToolCallsForMessage(toolCalls) {
         || (call.arguments == null ? '{}' : JSON.stringify(call.arguments)),
     },
   }));
+}
+
+/**
+ * Prefer API rawMessage so reasoning_content is echoed on tool turns (DeepSeek V4).
+ */
+function assistantMessageFromResponse(resp) {
+  const raw = resp?.rawMessage && typeof resp.rawMessage === 'object'
+    ? { ...resp.rawMessage }
+    : null;
+  if (raw && raw.role === 'assistant') {
+    if (!Array.isArray(raw.tool_calls) || !raw.tool_calls.length) {
+      const toolCalls = Array.isArray(resp?.toolCalls) ? resp.toolCalls : [];
+      if (toolCalls.length) raw.tool_calls = rawToolCallsForMessage(toolCalls);
+    }
+    if (raw.content === undefined) raw.content = resp?.content ?? null;
+    return raw;
+  }
+  const toolCalls = Array.isArray(resp?.toolCalls) ? resp.toolCalls : [];
+  const message = {
+    role: 'assistant',
+    content: resp?.content ?? null,
+  };
+  if (resp?.reasoningContent != null && String(resp.reasoningContent).length) {
+    message.reasoning_content = String(resp.reasoningContent);
+  }
+  if (toolCalls.length) message.tool_calls = rawToolCallsForMessage(toolCalls);
+  return message;
 }
 
 export function attachLoopCtx(tools, loopCtx) {

@@ -115,6 +115,83 @@ describe('runInvestigationLoop', () => {
     expect(result.investigation.enough_for_report).toBe(true);
   });
 
+  it('echoes reasoning_content from rawMessage on subsequent tool turns', async () => {
+    const { tools, loopCtx } = makeTools();
+    const seen = [];
+    let turn = 0;
+    const client = {
+      async chatMessagesWithTools(messages, opts = {}) {
+        seen.push({ messages: structuredClone(messages), phase: opts.phase });
+        turn += 1;
+        if (turn === 1) {
+          return {
+            content: null,
+            reasoningContent: 'need queue summary first',
+            toolCalls: [{
+              id: 'call_q',
+              name: 'get_decision_queue_summary',
+              arguments: {},
+              argumentsRaw: '{}',
+            }],
+            finishReason: 'tool_calls',
+            usage: null,
+            rawMessage: {
+              role: 'assistant',
+              content: null,
+              reasoning_content: 'need queue summary first',
+              tool_calls: [{
+                id: 'call_q',
+                type: 'function',
+                function: { name: 'get_decision_queue_summary', arguments: '{}' },
+              }],
+            },
+          };
+        }
+        return {
+          content: null,
+          reasoningContent: 'enough to finish',
+          toolCalls: [{
+            id: 'call_f',
+            name: 'finish_investigation',
+            arguments: {
+              findings_summary: 'done',
+              enough_for_report: true,
+            },
+            argumentsRaw: '{"findings_summary":"done","enough_for_report":true}',
+          }],
+          finishReason: 'tool_calls',
+          usage: null,
+          rawMessage: {
+            role: 'assistant',
+            content: null,
+            reasoning_content: 'enough to finish',
+            tool_calls: [{
+              id: 'call_f',
+              type: 'function',
+              function: {
+                name: 'finish_investigation',
+                arguments: '{"findings_summary":"done","enough_for_report":true}',
+              },
+            }],
+          },
+        };
+      },
+    };
+    const result = await runInvestigationLoop({
+      aiClient: client,
+      systemPrompt: 'system',
+      initialUserPrompt: 'user',
+      tools,
+      budget: loopCtx.budget,
+    });
+    expect(result.status).toBe('done');
+    expect(seen[0].phase).toBe('agent_loop');
+    expect(seen).toHaveLength(2);
+    const assistant = seen[1].messages.find((m) => m.role === 'assistant' && m.reasoning_content);
+    expect(assistant?.reasoning_content).toBe('need queue summary first');
+    expect(assistant?.tool_calls?.[0]?.function?.name).toBe('get_decision_queue_summary');
+  });
+
   it('force-finishes after two empty tool turns', async () => {
     const { tools, loopCtx } = makeTools();
     const client = {

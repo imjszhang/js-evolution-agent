@@ -60,6 +60,7 @@ export const SKIP_REF_TYPES = Object.freeze([
   'standing_memory',
   'operator_brief',
   'human_guidance',
+  'machine_context',
 ]);
 
 /**

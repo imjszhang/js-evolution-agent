@@ -165,7 +165,7 @@ npm run jea -- run --mock --loop --subject js-evolution-agent
 Intel 报告测试两道闸（mock / CI）：
 
 1. **交付物契约**（`test/intel-report-deliverable-e2e.test.mjs`）：落盘、index、章节结构、`E2E_REPORT_TOKEN`。
-2. **证据诚实**（`test/intel-report-honesty-e2e.test.mjs`）：Seen/Evidence bullet 须带可解析 typed ref；operator brief 毒句不得进入 Seen。
+2. **证据诚实**（`test/intel-report-honesty-e2e.test.mjs`）：Seen/Evidence bullet 须带可解析 typed ref（store 类型 + `machine_context:<key>` 枚举，枚举见 `src/intelligence/machine-context-refs.mjs`，覆盖 decision_queue / active_goals 等宿主渲染运行态）；operator brief 毒句不得进入 Seen。
 
 诚实层用 fixture + 注入 mock 报告做机械审计；phases 与 agent_loop 共用同一标尺。
 
@@ -175,7 +175,35 @@ Intel 报告测试两道闸（mock / CI）：
 $env:JEA_LIVE_DEEPSEEK='1'; npm run test:live-deepseek
 ```
 
-覆盖 phases + agent_loop Intel-only；对模型生成报告跑同一诚实断言（无 canned MD / 不要求 `E2E_REPORT_TOKEN`）。**失败表示线上模型 Seen 纪律不足**（例如把 brief 毒句写进 Seen），不是 mock 接线问题；默认 CI 不跑此文件。
+覆盖 phases + agent_loop Intel-only；对模型生成报告跑同一诚实断言（无 canned MD / 不要求 `E2E_REPORT_TOKEN`）。**失败表示线上模型 Seen 纪律不足**（例如把 brief 毒句写进 Seen），不是 mock 接线问题；默认 CI 不跑此文件。可用 `JEA_LLM_PROFILE` 换档后复跑。
+
+### LLM 档案（DeepSeek V4）
+
+按[思考模式文档](https://api-docs.deepseek.com/zh-cn/guides/thinking_mode)支持模型档与推理档，而非固定单模型：
+
+| 档案 | 模型 | 推理 |
+| --- | --- | --- |
+| `fast` | `deepseek-v4-flash` | off（显式 `thinking.disabled`） |
+| `balanced`（默认） | `deepseek-v4-flash` | high |
+| `deep` | `deepseek-v4-pro` | max |
+
+阶段默认：`observe` / channel / diary → `fast`；`report` / `decide` / `agent_loop` → `balanced`。覆盖：`JEA_LLM_PROFILE`、`JEA_LLM_PHASE_<PHASE>`（如 `JEA_LLM_PHASE_AGENT_LOOP=deep` 或 `pro:max`）。旧 `DEEPSEEK_MODEL` / `DEEPSEEK_THINKING` / `DEEPSEEK_REASONING_EFFORT` 仍兼容。
+
+轻量连通矩阵（flash×off/high、pro×high；pro×max 需 `JEA_LIVE_DEEPSEEK_DEEP=1`）：
+
+```powershell
+$env:JEA_LIVE_DEEPSEEK='1'; npm run test:live-deepseek:matrix
+```
+
+**Intel 诚实矩阵**（同一 fixture 下对比模型×推理×pipeline 的 Seen 纪律；默认不挂在 `test:live-deepseek`）：
+
+```powershell
+$env:JEA_LIVE_DEEPSEEK='1'; npm run test:live-deepseek:intel-matrix
+# 另含 pro×max × phases/agent_loop：
+$env:JEA_LIVE_DEEPSEEK_DEEP='1'; npm run test:live-deepseek:intel-matrix
+```
+
+默认 5 格：phases 的 flash×off / flash×high / pro×high，以及 agent_loop 的 flash×high / pro×high。每格硬闸；结束打印对比汇总表。失败表示该档 Seen 纪律不足。
 
 批量演化：
 

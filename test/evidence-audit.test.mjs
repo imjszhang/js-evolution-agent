@@ -140,6 +140,11 @@ describe('parseRef', () => {
       id: 'CONSTITUTION',
       skip: true,
     });
+    expect(parseRef('machine_context:decision_queue')).toEqual({
+      type: 'machine_context',
+      id: 'decision_queue',
+      skip: true,
+    });
   });
 
   it('parseCountOption keeps zero and falls back on invalid', () => {

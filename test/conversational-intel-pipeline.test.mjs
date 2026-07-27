@@ -39,6 +39,11 @@ function longObservation() {
   ].join('\n');
 }
 
+/** Observer now prefers chatMessages when present; mocks must answer the observe prompt. */
+function isObservePrompt(content) {
+  return String(content || '').includes('You are an intelligence analyst');
+}
+
 function makeFixture() {
   tempDir = mkdtempSync(join(tmpdir(), 'jea-conversation-'));
   const runtimeRoot = join(tempDir, 'runtime');
@@ -293,6 +298,7 @@ describe('ConversationalIntelligencePipeline', () => {
       async chatMessages(messages) {
         messageCalls.push(messages);
         const last = messages.at(-1).content;
+        if (isObservePrompt(last)) return longObservation();
         if (last.includes('This is not an intelligence report') || last.includes('这不是情报报告')) {
           return '## Current State\n\n- 长期态势：对话式情报报告已经生成，并可供下一轮参考。[evolution_events:evt-conversation]';
         }
@@ -365,20 +371,21 @@ describe('ConversationalIntelligencePipeline', () => {
     expect(result.report.mdPath).toBeTruthy();
     expect(result.standing_memory_update.status).toBe('updated');
     expect(result.conversation_context_path).toBeTruthy();
-    expect(messageCalls).toHaveLength(3);
-    expect(chatCalls[0]).toContain('Observation Evidence Guard');
-    expect(chatCalls[0]).toContain('Seen / Inferred / Remembered');
-    expect(chatCalls[0]).toContain('worker-state.json.remote.*');
-    expect(chatCalls[0]).toContain('json_pointer');
-    expect(messageCalls[0][1].content).toContain('pre_analyze_decide_report');
-    expect(messageCalls[0][1].content).toContain('"decision_queue"');
-    expect(messageCalls[0][1].content).not.toContain('decisions_queued');
-    expect(messageCalls[0][1].content.indexOf('## Temporal Decision Brief')).toBeLessThan(messageCalls[0][1].content.indexOf('## Model Observation Claims'));
-    expect(messageCalls[0][1].content).toContain('Seen');
-    expect(messageCalls[0][1].content).toContain('Inferred');
-    expect(messageCalls[0][1].content).toContain('Remembered');
-    expect(messageCalls[1].map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user']);
-    expect(messageCalls[1][2].content).toContain('情报报告');
+    // observe + report + decide + standing memory (observer prefers chatMessages)
+    expect(messageCalls).toHaveLength(4);
+    expect(messageCalls[0][0].content).toContain('Observation Evidence Guard');
+    expect(messageCalls[0][0].content).toContain('Seen / Inferred / Remembered');
+    expect(messageCalls[0][0].content).toContain('worker-state.json.remote.*');
+    expect(messageCalls[0][0].content).toContain('json_pointer');
+    expect(messageCalls[1][1].content).toContain('pre_analyze_decide_report');
+    expect(messageCalls[1][1].content).toContain('"decision_queue"');
+    expect(messageCalls[1][1].content).not.toContain('decisions_queued');
+    expect(messageCalls[1][1].content.indexOf('## Temporal Decision Brief')).toBeLessThan(messageCalls[1][1].content.indexOf('## Model Observation Claims'));
+    expect(messageCalls[1][1].content).toContain('Seen');
+    expect(messageCalls[1][1].content).toContain('Inferred');
+    expect(messageCalls[1][1].content).toContain('Remembered');
+    expect(messageCalls[2].map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user']);
+    expect(messageCalls[2][2].content).toContain('情报报告');
 
     const context = JSON.parse(readFileSync(result.conversation_context_path, 'utf-8'));
     expect(context.kind).toBe('phase1_conversation_context');
@@ -427,6 +434,7 @@ describe('ConversationalIntelligencePipeline', () => {
       async chatMessages(messages) {
         messageCalls.push(messages);
         const last = messages.at(-1).content;
+        if (isObservePrompt(last)) return longObservation();
         if (last.includes('Strategic Analysis & Decision')) {
           return JSON.stringify({
             analysis: { key_patterns: ['invalid run spec'], root_causes: {} },
@@ -505,6 +513,7 @@ describe('ConversationalIntelligencePipeline', () => {
       async chatMessages(messages) {
         messageCalls.push(messages);
         const last = messages.at(-1).content;
+        if (isObservePrompt(last)) return longObservation();
         if (last.includes('Strategic Analysis & Decision')) {
           return JSON.stringify({
             analysis: {
@@ -552,9 +561,10 @@ describe('ConversationalIntelligencePipeline', () => {
     const result = await pipeline.run();
 
     expect(result.success).toBe(true);
-    expect(messageCalls[0][1].content).toContain('brief-next');
-    expect(messageCalls[1][3].content).toContain('brief-next');
-    expect(messageCalls[1][3].content).toContain('若不采纳 brief');
+    // messageCalls[0]=observe, [1]=report, [2]=decide
+    expect(messageCalls[1][1].content).toContain('brief-next');
+    expect(messageCalls[2][3].content).toContain('brief-next');
+    expect(messageCalls[2][3].content).toContain('若不采纳 brief');
     const context = JSON.parse(readFileSync(result.conversation_context_path, 'utf-8'));
     expect(context.operator_intent_briefs[0].id).toBe('brief-next');
     expect(context.report_turn.messages[1].content).toContain('"operator_intent_briefs"');
@@ -599,6 +609,7 @@ describe('ConversationalIntelligencePipeline', () => {
       },
       async chatMessages(messages) {
         const last = messages.at(-1).content;
+        if (isObservePrompt(last)) return longObservation();
         if (last.includes('Strategic Analysis & Decision')) {
           return JSON.stringify({
             analysis: { key_patterns: [], root_causes: {}, opportunities: [] },
@@ -649,6 +660,7 @@ describe('ConversationalIntelligencePipeline', () => {
       },
       async chatMessages(messages) {
         const last = messages.at(-1).content;
+        if (isObservePrompt(last)) return longObservation();
         if (last.includes('Strategic Analysis & Decision')) {
           return [
             'Here is the decision:',
@@ -733,6 +745,7 @@ describe('ConversationalIntelligencePipeline', () => {
       async chatMessages(messages) {
         messageCalls.push(messages);
         const last = messages.at(-1).content;
+        if (isObservePrompt(last)) return longObservation();
         if (last.includes('Repair this Analyze+Decide JSON')) {
           return JSON.stringify(repairedDecision);
         }
@@ -794,6 +807,7 @@ describe('ConversationalIntelligencePipeline', () => {
       },
       async chatMessages(messages) {
         const last = messages.at(-1).content;
+        if (isObservePrompt(last)) return longObservation();
         if (last.includes('Strategic Analysis & Decision')) {
           return '{"analysis":{"key_patterns":["truncated"]},"decision":"execute"';
         }
@@ -833,6 +847,7 @@ describe('ConversationalIntelligencePipeline', () => {
       },
       async chatMessages(messages) {
         const last = messages.at(-1).content;
+        if (isObservePrompt(last)) return longObservation();
         if (last.includes('Strategic Analysis & Decision')) {
           return JSON.stringify({
             analysis: { key_patterns: [], root_causes: {}, opportunities: [] },
@@ -878,6 +893,7 @@ describe('ConversationalIntelligencePipeline', () => {
       },
       async chatMessages(messages) {
         const last = messages.at(-1).content;
+        if (isObservePrompt(last)) return longObservation();
         if (last.includes('Reflective Phase 3 Verification')) {
           semanticCalls.push(messages);
           return JSON.stringify({
