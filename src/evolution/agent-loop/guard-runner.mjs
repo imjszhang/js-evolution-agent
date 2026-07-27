@@ -125,8 +125,8 @@ export async function runMechanicalGuards({ root, loopCtx } = {}) {
       const queued = decisionQueue.addDecisionsDetailed({
         cycleId: currentCycleId,
         actions: [action],
-        analysisContext: 'agent_loop_guard',
-        metadata: { pipeline: 'agent_loop', guard: true, guard_id: guardId },
+        analysisContext: 'exec_guard',
+        metadata: { pipeline: 'agent_loop', phase: 'exec', guard: true, guard_id: guardId },
       });
       if (!queued.ids?.length) {
         entry.last_run_cycle_id = currentCycleId;
@@ -181,7 +181,7 @@ export async function runMechanicalGuards({ root, loopCtx } = {}) {
         result,
         success: Boolean(result?.success),
       });
-      logger?.info?.(`[agent_loop] guard ${guardId} => ${entry.last_status}`);
+      logger?.info?.(`[exec] guard ${guardId} => ${entry.last_status}`);
     } catch (e) {
       entry.last_run_cycle_id = currentCycleId;
       entry.last_run_at = nowIso();
@@ -190,7 +190,7 @@ export async function runMechanicalGuards({ root, loopCtx } = {}) {
         guard_id: guardId,
         reason: e?.message || String(e),
       });
-      logger?.warning?.(`[agent_loop] guard ${guardId} failed: ${e?.message || e}`);
+      logger?.warning?.(`[exec] guard ${guardId} failed: ${e?.message || e}`);
       emitEvent?.({
         type: 'agent_loop_guard_executed',
         status: 'failed',
@@ -205,7 +205,7 @@ export async function runMechanicalGuards({ root, loopCtx } = {}) {
   try {
     writeGuardState(runtimeRoot, state);
   } catch (e) {
-    logger?.warning?.(`[agent_loop] failed to persist guard state: ${e?.message || e}`);
+    logger?.warning?.(`[exec] failed to persist guard state: ${e?.message || e}`);
   }
 
   return { ran, skipped };

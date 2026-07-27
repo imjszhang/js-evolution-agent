@@ -1,4 +1,3 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   AIDrivenObserver,
@@ -118,91 +117,18 @@ import {
 import { persistPhase1ConversationContext } from './conversation-context.mjs';
 import {
   formatOperatorBriefsForPrompt,
-  markOperatorBriefsProcessed,
   readPendingOperatorBriefs,
   summarizeOperatorBriefsForContext,
 } from './operator-briefs.mjs';
-import { validateAgentRunSpec } from '../actions/agent-run-spec.mjs';
 import { resolveHostExternalRoots } from '../cli/utils/subjects.mjs';
+import {
+  buildStandingMemoryExtraContext,
+  queueAnalyzeDecideActions,
+  safeQueueSummary,
+  toPreDecisionReportContext,
+} from './phase1-shared.mjs';
 
-function summarizeAnalysis(analysis) {
-  if (!analysis) return '';
-  if (typeof analysis === 'string') return analysis.slice(0, 3000);
-  const a = analysis.analysis || analysis;
-  const parts = [];
-  if (a.key_patterns?.length) {
-    parts.push(`Key patterns: ${a.key_patterns.slice(0, 5).join('; ')}`);
-  }
-  if (a.root_causes) {
-    parts.push(`Root causes: ${JSON.stringify(a.root_causes)}`);
-  }
-  if (analysis.rationale) parts.push(`Rationale: ${analysis.rationale}`);
-  return parts.join('\n').slice(0, 3000);
-}
-
-function buildBriefing(cycle, context) {
-  const lines = [
-    `# OADA Intelligence Briefing - ${cycle.cycle_id}`,
-    `*Generated:* ${cycle.timestamp}`,
-    cycle.goal_id ? `*Focus goal:* \`${cycle.goal_id}\`` : '',
-    '',
-    '## Summary',
-    context || '(no analysis context)',
-    '',
-    `## Decisions (${cycle.actions.length})`,
-  ];
-  for (const a of cycle.actions) {
-    lines.push(`- **[${a.type}]** ${a.description || ''} (priority: ${a.priority || 'medium'})`);
-    if (a.serves_goal) lines.push(`  - serves: ${a.serves_goal}`);
-    if (a.expected_impact) lines.push(`  - impact: ${a.expected_impact}`);
-  }
-  return lines.join('\n');
-}
-
-function attachExecutionContext(action, {
-  reportPath = null,
-  conversationContextPath = null,
-  reportMarkdown = null,
-  analysisContext = '',
-} = {}) {
-  if (action?.type !== 'agent_run') return action;
-  const params = action.params && typeof action.params === 'object' ? action.params : {};
-  const runSpec = params.run_spec && typeof params.run_spec === 'object' ? params.run_spec : {};
-  const context = runSpec.context && typeof runSpec.context === 'object'
-    ? runSpec.context
-    : { notes: runSpec.context ?? null };
-  return {
-    ...action,
-    params: {
-      ...params,
-      run_spec: {
-        ...runSpec,
-        context: {
-          ...context,
-          phase1_report_path: context.phase1_report_path ?? reportPath,
-          phase1_conversation_context_path: context.phase1_conversation_context_path ?? conversationContextPath,
-          phase1_report_markdown: context.phase1_report_markdown ?? reportMarkdown,
-          analysis_context: context.analysis_context ?? analysisContext,
-        },
-      },
-    },
-  };
-}
-
-function validateQueuedAction(action, ctx) {
-  if (action?.type !== 'agent_run') return { valid: true };
-  const validation = validateAgentRunSpec(action, ctx);
-  return {
-    valid: validation.valid,
-    errors: validation.errors,
-    warnings: validation.warnings,
-    run_spec: {
-      primary_cwd: validation.spec?.primary_cwd ?? null,
-      primary_cwd_kind: validation.spec?.primary_cwd_kind ?? null,
-      permission_profile: validation.spec?.permission_profile ?? null,
-    },
-  };
-}
+export { toPreDecisionReportContext, queueAnalyzeDecideActions } from './phase1-shared.mjs';
 
 function runtimeFromHost(projectRoot, host) {
   return {
@@ -212,57 +138,8 @@ function runtimeFromHost(projectRoot, host) {
   };
 }
 
-function toPreDecisionReportContext(reportContext) {
-  const current = reportContext?.current_cycle || {};
-  return {
-    ...reportContext,
-    current_cycle: {
-      cycle_id: current.cycle_id ?? null,
-      mode: current.mode ?? null,
-      stage: 'pre_analyze_decide_report',
-      note: 'Only pre-decision evidence is available at this stage.',
-    },
-  };
-}
-
-function safeQueueSummary(queue) {
-  if (!queue || typeof queue.summarize !== 'function') return null;
-  try {
-    return queue.summarize();
-  } catch {
-    return null;
-  }
-}
-
 function appendObservationGuard(rules, guardText) {
   return [rules || '', guardText || ''].filter(Boolean).join('\n\n');
-}
-
-function buildStandingMemoryExtraContext({
-  analysis,
-  actions,
-  reportPath,
-  conversationContextPath,
-} = {}) {
-  return {
-    stage: 'post_analyze_decide',
-    report_path: reportPath ?? null,
-    conversation_context_path: conversationContextPath ?? null,
-    decision: analysis?.decision ?? null,
-    rationale: analysis?.rationale ?? null,
-    actions: (actions || []).map((a) => ({
-      type: a.type,
-      description: a.description,
-      serves_goal: a.serves_goal,
-      priority: a.priority,
-      expected_impact: a.expected_impact,
-      risk: a.risk,
-    })),
-    goal_coverage: analysis?.goal_coverage ?? null,
-    deferred: analysis?.deferred ?? [],
-    risk_mitigation: analysis?.risk_mitigation ?? [],
-    confidence_score: analysis?.confidence_score ?? null,
-  };
 }
 
 /**
@@ -646,65 +523,30 @@ export class ConversationalIntelligencePipeline {
       });
 
       if (!dryRun) {
-        const analysisContext = summarizeAnalysis(analysis);
-        const draftDir = join(this.projectRoot, 'data', 'evolution', 'draft_issues', cycleId);
-        mkdirSync(draftDir, { recursive: true });
-        result.actions = result.actions.map((action) => attachExecutionContext(action, {
+        const queuedResult = await queueAnalyzeDecideActions({
+          projectRoot: this.projectRoot,
+          host: this.host,
+          runtime: this.runtime,
+          decisionQueue: this.decisionQueue,
+          cycleId,
+          timestamp: result.timestamp,
+          goalId: this.goalId,
+          analysis,
+          actions: result.actions,
           reportPath: persistedReport.mdPath,
           conversationContextPath: result.conversation_context_path,
           reportMarkdown,
-          analysisContext,
-        }));
-        writeFileSync(
-          join(draftDir, 'briefing.md'),
-          buildBriefing({
-            cycle_id: cycleId,
-            timestamp: result.timestamp,
-            goal_id: this.goalId,
-            actions: result.actions,
-          }, analysisContext),
-          'utf-8',
-        );
-        writeFileSync(
-          join(draftDir, 'issues.json'),
-          JSON.stringify({ cycle_id: cycleId, actions: result.actions }, null, 2),
-          'utf-8',
-        );
-        if (result.actions.length > 0) {
-          await this._refreshHostExternalRoots();
-        }
-        const queued = this.decisionQueue.addDecisionsDetailed
-          ? this.decisionQueue.addDecisionsDetailed({
-            cycleId,
-            actions: result.actions,
-            analysisContext,
-            metadata: {
-              report_path: persistedReport.mdPath,
-              conversation_context_path: result.conversation_context_path,
-            },
-            validateAction: (action) => validateQueuedAction(action, {
-              projectRoot: this.host?.sourceRoot ?? this.projectRoot,
-              host: this.host,
-              runtime: this.runtime,
-              cycleId,
-            }),
-          })
-          : { ids: this.decisionQueue.addDecisions({
-            cycleId,
-            actions: result.actions,
-            analysisContext,
-          }), skipped: [] };
-        result.decisions_queued = queued.ids;
-        result.decisions_skipped = queued.skipped;
-        this._log(`wrote draft + queued ${result.decisions_queued.length} decision(s), skipped ${result.decisions_skipped.length} at ${draftDir}`);
-        const processedBriefs = markOperatorBriefsProcessed(this.runtime.runtimeRoot, operatorBriefs, {
-          cycleId,
-          outcome: result.decisions_queued.length ? 'consumed_with_decisions' : 'consumed_without_decisions',
+          operatorBriefs,
+          pipeline: 'phases',
         });
+        result.actions = queuedResult.actions;
+        result.decisions_queued = queuedResult.decisions_queued;
+        result.decisions_skipped = queuedResult.decisions_skipped;
+        this._log(`wrote draft + queued ${result.decisions_queued.length} decision(s), skipped ${result.decisions_skipped.length} at ${queuedResult.draftDir}`);
         result.operator_briefs = {
           pending_read: operatorBriefsContext,
           invalid: operatorBriefRead.invalid,
-          processed: processedBriefs,
+          processed: queuedResult.operator_briefs_processed,
         };
       }
 

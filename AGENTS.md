@@ -82,7 +82,13 @@ Phase 5   evolution diary
 
 ### Agent Loop 管道
 
-`agent_loop` 把 Phase 1–2 融合成一个带原生 function calling 的 agent session；verify / belief / goals / diary **保持固定收尾**，下游契约不变。
+`agent_loop` **仅替代 Phase 1**，按报告中心生产线编排；**Phase 2 exec 仍独立执行** pending_decisions；verify / belief / goals / diary **保持固定收尾**。
+
+内部阶段：
+
+```text
+机械 Seen 底板 → 只读查证（tool loop）→ 单次定稿 Intel 报告 → 经典 Analyze+Decide JSON 批入队
+```
 
 模式解析优先级（仿 evolution.mode）：
 
@@ -91,29 +97,36 @@ Phase 5   evolution diary
 3. env `JEA_CYCLE_PIPELINE`
 4. 默认 `phases`
 
+agent_loop 管道 step 图：
+
+```text
+agent_loop → exec → verify → belief_update → goals_assess → goals_calibrate → diary
+```
+
 相关 env：
 
 | 变量 | 默认 | 含义 |
 | --- | --- | --- |
 | `JEA_CYCLE_PIPELINE` | `phases` | `phases` 或 `agent_loop` |
-| `JEA_LOOP_MAX_TURNS` | `24` | LLM 最大轮数 |
-| `JEA_LOOP_MAX_WALLCLOCK_MS` | `1200000` | 墙钟预算（20 分钟） |
-| `JEA_LOOP_FINISH_RESERVE_MS` | `120000` | 软截止预留（墙钟内留给强制 finish_cycle） |
-| `JEA_LOOP_CLOSING_TIMEOUT_SEC` | `240` | 强制收尾轮 LLM 超时（秒） |
-| `JEA_LOOP_TRANSIENT_REFUNDS` | `2` | 基础设施瞬时失败不扣动作额度的次数上限 |
+| `JEA_LOOP_MAX_READONLY_TURNS` | `6` | 只读查证最大 LLM 轮数（主配置） |
+| `JEA_LOOP_MAX_TURNS` | （可选） | 与 `MAX_READONLY` 取较小值；兼容旧配置 |
+| `JEA_LOOP_MAX_WALLCLOCK_MS` | `1200000` | 整步墙钟（查证+报告+Decide） |
+| `JEA_LOOP_FINISH_RESERVE_MS` | `120000` | 留给报告+Decide 的墙钟预留（查证软截止 = 总墙钟 − 预留） |
+| `JEA_LOOP_CLOSING_TIMEOUT_SEC` | `240` | 查证强制收尾轮 LLM 超时（秒） |
 | `JEA_LOOP_TOOL_RESULT_MAX_CHARS` | `6000` | 回填模型的工具结果截断 |
-| `JEA_EXEC_LIMIT` | `5` | 复用为 loop 内最大副作用动作数（不含机械守护） |
+| `JEA_EXEC_LIMIT` | `5` | Decide 批入队上限；超出进 deferred/carryover；Phase 2 exec 仍按该上限消费队列 |
 | `JEA_QUEUE_AUTO_ARCHIVE` | 开启 | `0`/`false` 关闭；agent_loop 开始前自动归档 completed/expired 决策 |
 
-工具分层：
+查证工具（仅 investigation 阶段）：
 
 - **readonly**：`intel_query`、`get_current_beliefs`、`get_active_goals`、`get_decision_queue_summary`、`read_intel_report`
-- **action**：来自 `actionRegistry` + host `actionHandlers`（含 configured external）；执行前校验 / 预算 / fingerprint 去重，并写入 decision queue 审计。**每 turn 最多一个副作用动作**；动作回执带 `budget_status`（`actions_used` / `max_actions` / `actions_remaining`）
-- **control**：`finish_cycle`（必填 `report_markdown`；可选 `carryover[]` 交给下一轮）
+- **control**：`finish_investigation`（必填 `findings_summary`、`enough_for_report`；可选 `gaps_closed` / `open_gaps`）
 
-机械守护（`evolution.guards`，不占 loop 预算）：
+查证阶段**不**注册 action 入队工具，也**不**在 loop 内写完整 Intel 报告。宿主在查证结束后：用机械 Seen + investigation digest **单次**生成 Phase 1.5 报告，再跑经典 Analyze+Decide JSON 批入队。
 
-在 `runtime/subjects/registry.json` 的 `subjects.<name>.evolution.guards` 配置固定节奏动作（如凭据 sync、记忆审计）。`runAgentLoopStep` 在进入 LLM loop 前按 `every_cycles` 到期执行，结果写入 Already executed；状态在 `data/evolution/agent_loop_guard_state.json`。
+机械守护（`evolution.guards`，不占 Decide 入队预算）：
+
+在 `runtime/subjects/registry.json` 的 `subjects.<name>.evolution.guards` 配置固定节奏动作（如凭据 sync、记忆审计）。`runExecStep` 在消费决策队列前按 `every_cycles` 到期执行；状态在 `data/evolution/agent_loop_guard_state.json`。
 
 ```json
 {
@@ -129,25 +142,40 @@ Phase 5   evolution diary
 }
 ```
 
-Carryover：`finish_cycle.carryover` 覆写 `data/evolution/agent_loop_carryover.json`；下一轮 initial prompt 的 `## Carryover from previous cycle` 注入（空数组也会写盘以清空过期项）。
+Carryover：由查证 `open_gaps`、Decide `deferred` / goal suggestions 合并覆写 `data/evolution/agent_loop_carryover.json`；下一轮查证 initial prompt 的 `## Carryover from previous cycle` 注入（空数组也会写盘以清空过期项）。
 
 产物路径（subject runtime）：
 
 ```text
 data/evolution/cycle-state/<cycleId>/agent_loop.json
-data/evolution/cycle-state/<cycleId>/intel.json   # 兼容下游
-data/evolution/cycle-state/<cycleId>/exec.json    # 兼容下游
+data/evolution/cycle-state/<cycleId>/intel.json   # Phase 1 兼容
+data/evolution/cycle-state/<cycleId>/exec.json    # 由独立 Phase 2 exec 写入
 data/evolution/records/<cycleId>/conversation_context.json
-data/evolution/records/<cycleId>/agent_loop_turns.jsonl
+data/evolution/records/<cycleId>/agent_loop_turns.jsonl   # 仅查证 turns
 data/evolution/agent_loop_carryover.json
 data/evolution/agent_loop_guard_state.json
 ```
 
-审批语义不变：`agent_run` 仍走 handler 内 `preflightAgentRun` / `JEA_APPROVAL_MODE`，loop 不提供审批旁路。本地冒烟：
+审批语义：Decide JSON 可带 `approval_granted`；真正执行仍走 Phase 2 handler 内 `preflightAgentRun` / `JEA_APPROVAL_MODE`。本地冒烟：
 
 ```powershell
 npm run jea -- run --mock --loop --subject js-evolution-agent
 ```
+
+Intel 报告测试两道闸（mock / CI）：
+
+1. **交付物契约**（`test/intel-report-deliverable-e2e.test.mjs`）：落盘、index、章节结构、`E2E_REPORT_TOKEN`。
+2. **证据诚实**（`test/intel-report-honesty-e2e.test.mjs`）：Seen/Evidence bullet 须带可解析 typed ref；operator brief 毒句不得进入 Seen。
+
+诚实层用 fixture + 注入 mock 报告做机械审计；phases 与 agent_loop 共用同一标尺。
+
+**真实 DeepSeek 诚实闸**（opt-in，默认 `npm test` 跳过；需 `.env` 中 `DEEPSEEK_API_KEY`）：
+
+```powershell
+$env:JEA_LIVE_DEEPSEEK='1'; npm run test:live-deepseek
+```
+
+覆盖 phases + agent_loop Intel-only；对模型生成报告跑同一诚实断言（无 canned MD / 不要求 `E2E_REPORT_TOKEN`）。**失败表示线上模型 Seen 纪律不足**（例如把 brief 毒句写进 Seen），不是 mock 接线问题；默认 CI 不跑此文件。
 
 批量演化：
 

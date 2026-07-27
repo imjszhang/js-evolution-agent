@@ -16,6 +16,7 @@ export const CYCLE_STEP_TYPES = Object.freeze([
 
 export const AGENT_LOOP_STEP_TYPES = Object.freeze([
   'agent_loop',
+  'exec',
   'verify',
   'belief_update',
   'goals_assess',
@@ -110,18 +111,11 @@ function intelReportReady(cycleState, event) {
 }
 
 function execFailed(cycleState, event) {
-  if (event?.type === 'exec_failed' || event?.type === 'agent_loop_failed') return true;
-  if (cyclePipelineOf(cycleState) === 'agent_loop') {
-    return stepStatus(cycleState, 'agent_loop') === 'failed';
-  }
+  if (event?.type === 'exec_failed') return true;
   return stepStatus(cycleState, 'exec') === 'failed';
 }
 
 function execSkippedOrDone(cycleState) {
-  if (cyclePipelineOf(cycleState) === 'agent_loop') {
-    const status = stepStatus(cycleState, 'agent_loop');
-    return status === 'done' || status === 'skipped';
-  }
   const status = stepStatus(cycleState, 'exec');
   return status === 'done' || status === 'skipped';
 }
@@ -152,6 +146,12 @@ function diaryReady(cycleState, event, options) {
     if (!isStepTerminal(cycleState, 'agent_loop')) return false;
     if (stepStatus(cycleState, 'agent_loop') === 'failed') {
       return isStepRunnable(cycleState, 'diary') || !isStepTerminal(cycleState, 'diary');
+    }
+    if (!isStepTerminal(cycleState, 'exec')) return false;
+    if (execFailed(cycleState, event)) {
+      return !isStepTerminal(cycleState, 'belief_update')
+        && !isStepTerminal(cycleState, 'goals_assess')
+        && !isStepTerminal(cycleState, 'goals_calibrate');
     }
     if (!verifyDone(cycleState)) return false;
     if (beliefUpdateReady(cycleState, event, options) && !isStepTerminal(cycleState, 'belief_update')) {
@@ -228,7 +228,7 @@ export function nextSteps(event, cycleState = {}, options = {}) {
       break;
 
     case 'agent_loop_done':
-      enqueue('verify', 'agent_loop_done');
+      enqueue('exec', 'agent_loop_done');
       break;
 
     case 'agent_loop_failed':
@@ -377,7 +377,7 @@ export function reconcileCycle(cycleState, options = {}) {
     if (!isStepTerminal(cycleState, 'agent_loop') && isStepRunnable(cycleState, 'agent_loop')) {
       result = mergeResults(result, nextSteps({ type: 'cycle_due', cycle_id: cycleId }, cycleState, options));
     }
-    if (stepStatus(cycleState, 'agent_loop') === 'done' && isStepRunnable(cycleState, 'verify')) {
+    if (stepStatus(cycleState, 'agent_loop') === 'done' && isStepRunnable(cycleState, 'exec')) {
       result = mergeResults(result, nextSteps({ type: 'agent_loop_done', cycle_id: cycleId }, cycleState, options));
     }
     if (stepStatus(cycleState, 'agent_loop') === 'failed' && isStepRunnable(cycleState, 'diary')) {
@@ -395,7 +395,7 @@ export function reconcileCycle(cycleState, options = {}) {
     }
   }
 
-  if (pipeline !== 'agent_loop' && execSkippedOrDone(cycleState) && isStepRunnable(cycleState, 'verify')) {
+  if (execSkippedOrDone(cycleState) && isStepRunnable(cycleState, 'verify')) {
     const execSt = stepStatus(cycleState, 'exec');
     const execArtifactReady = execSt === 'skipped'
       || options.isExecArtifactComplete !== false;

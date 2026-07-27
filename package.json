@@ -13,6 +13,7 @@
     "doctor": "node --preserve-symlinks src/cli/jea.mjs doctor",
     "reset-data": "node --preserve-symlinks src/cli/jea.mjs data reset --yes",
     "test": "node --preserve-symlinks ./node_modules/vitest/vitest.mjs run",
+    "test:live-deepseek": "node --preserve-symlinks ./node_modules/vitest/vitest.mjs run test/intel-report-honesty-live.test.mjs",
     "viewer:build": "node --preserve-symlinks src/cli/jea.mjs intel viewer build",
     "viewer:serve": "node --preserve-symlinks src/cli/jea.mjs intel viewer serve --open",
     "viewer:serve:win": "powershell -ExecutionPolicy Bypass -File scripts/viewer-serve-win.ps1 -Launch",

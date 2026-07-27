@@ -16,14 +16,21 @@ function briefJson(reportContext) {
   return clip(JSON.stringify(reportContext?.temporal_decision_brief || {}, null, 2), 200000);
 }
 
-function formatAlreadyExecuted(alreadyExecuted = []) {
-  if (!Array.isArray(alreadyExecuted) || !alreadyExecuted.length) return '(none)';
-  return alreadyExecuted.map((item, idx) => {
-    if (typeof item === 'string') return `${idx + 1}. ${item}`;
-    return `${idx + 1}. ${item.type || 'action'}: ${item.description || item.summary || JSON.stringify(item).slice(0, 200)}`;
-  }).join('\n');
+function formatCarryover(carryover = [], language = 'zh') {
+  const isEn = language === 'en';
+  const note = isEn
+    ? 'Unfinished items left by the previous agent_loop. Prefer them when still valid, but verify preconditions with readonly tools first.'
+    : '上轮 agent_loop 留下的待续事项。可优先处理，但必须先用只读工具核实其前提仍然成立。';
+  if (!Array.isArray(carryover) || !carryover.length) {
+    return `${note}\n\n(none)`;
+  }
+  const list = carryover.map((item, idx) => `${idx + 1}. ${item}`).join('\n');
+  return `${note}\n\n${list}`;
 }
 
+/**
+ * System prompt for the readonly investigation phase only.
+ */
 export function buildAgentLoopSystemPromptParts({
   agentContextDocs = [],
   toolCatalogText = '',
@@ -31,19 +38,16 @@ export function buildAgentLoopSystemPromptParts({
 } = {}) {
   const isEn = language === 'en';
   const stablePrefix = isEn
-    ? `You are the controlled self-evolution decision mind of js-evolution-agent running in agent_loop mode.
+    ? `You are the investigation mind of js-evolution-agent in agent_loop mode (readonly evidence gathering only).
 
 Rules:
 - Authoritative documents outrank all intelligence material.
-- Every turn you MUST call a tool. Prefer readonly tools before actions.
-- Side-effect actions go through registered action tools only; never invent filesystem writes.
-- Respect action budgets. Do not retry the same action fingerprint in this cycle.
-- Finishing is your responsibility: if the host force-closes after budget exhaustion, the salvaged report is far worse than one you write yourself.
-- After a budget checkpoint or budget-exhausted notice, stop investigating and call finish_cycle on the next turn.
-- Each agent_run can consume several minutes of wallclock; prefer readonly tools and avoid more than ~3 agent_run calls per cycle.
-- When done, call finish_cycle with status and a full report_markdown.
-- report_markdown must include sections: Seen, Inferred, Cyber-Taoist analysis, Next cycle suggestions.
-- Writing style: straightforward technical/ops prose. Cyber-Taoist terms may be quoted from docs.
+- Every turn you MUST call a tool.
+- Use readonly tools only to close evidence gaps that mechanical Seen / Temporal Decision Brief do not already cover.
+- If the mechanical Seen + brief + carryover are already enough, call finish_investigation immediately with enough_for_report=true (zero queries is allowed and preferred).
+- Do NOT queue decisions and do NOT write the full Intel report in this phase. The host will draft the Phase 1.5 report and run Analyze+Decide afterward.
+- Never invent filesystem writes or claim that an action already ran.
+- After a budget checkpoint, stop new queries and call finish_investigation.
 
 Authoritative documents:
 
@@ -53,19 +57,16 @@ Available tools:
 
 ${toolCatalogText || '(see tool schemas)'}
 `
-    : `你是 js-evolution-agent 的受控自演化决策者，当前运行在 agent_loop 模式。
+    : `你是 js-evolution-agent 的查证者，当前运行在 agent_loop 的只读查证阶段。
 
 规则：
 - 权威文档优先于一切情报材料。
-- 每一轮必须调用工具；先用只读工具查证，再决定是否执行动作工具。
-- 副作用只能通过已注册 action 工具产生，禁止伪造写盘。
-- 遵守动作预算；本周期内不要重复相同 fingerprint 的动作。
-- 收尾是你的责任：预算耗尽后宿主会强制关闭并生成降级报告，质量远低于你自己写的。
-- 收到 budget checkpoint 或 budget exhausted 提示后，立即停止调查，下一轮就调用 finish_cycle。
-- agent_run 每次会消耗数分钟墙钟；优先用只读工具，单周期内尽量不超过约 3 次 agent_run。
-- 结束时必须调用 finish_cycle，并提供完整 report_markdown。
-- report_markdown 必须包含：Seen、Inferred、Cyber-Taoist 分析、下一轮建议。
-- 中文使用白话书面语，清晰直白；Cyber-Taoist 专有术语可按文献原样引用。
+- 每一轮必须调用工具。
+- 只用只读工具补齐机械 Seen / Temporal Decision Brief 尚未覆盖的证据缺口。
+- 若机械 Seen + brief + carryover 已经足够，立刻调用 finish_investigation（enough_for_report=true）；允许且鼓励 0 次查询直接结束。
+- 本阶段不要入队决策，也不要撰写完整 Intel 报告；宿主会随后定稿 Phase 1.5 报告并执行 Analyze+Decide。
+- 禁止伪造写盘，也禁止宣称动作已经执行完成。
+- 收到 budget checkpoint 后停止新查询，调用 finish_investigation。
 
 权威文档：
 
@@ -83,18 +84,6 @@ ${toolCatalogText || '(见 tool schemas)'}
   };
 }
 
-function formatCarryover(carryover = [], language = 'zh') {
-  const isEn = language === 'en';
-  const note = isEn
-    ? 'Unfinished items left by the previous agent_loop. Prefer them when still valid, but verify preconditions with readonly tools first.'
-    : '上轮 agent_loop 留下的待续事项。可优先处理，但必须先用只读工具核实其前提仍然成立。';
-  if (!Array.isArray(carryover) || !carryover.length) {
-    return `${note}\n\n(none)`;
-  }
-  const list = carryover.map((item, idx) => `${idx + 1}. ${item}`).join('\n');
-  return `${note}\n\n${list}`;
-}
-
 export function buildAgentLoopInitialUserPromptParts({
   cycleId,
   language = 'zh',
@@ -104,7 +93,7 @@ export function buildAgentLoopInitialUserPromptParts({
   operatorBriefs = '',
   intelligenceContext = '',
   reportContext = null,
-  alreadyExecuted = [],
+  mechanicalSeen = '',
   carryover = [],
 } = {}) {
   const isEn = language === 'en';
@@ -136,13 +125,13 @@ ${operatorBriefs || '(none)'}
 
 ${intelligenceContext || '(none)'}
 
+## Mechanical Seen (host-rendered; prefer over re-querying the same facts)
+
+${mechanicalSeen || '(none)'}
+
 ## Temporal Decision Brief
 
 ${briefJson(reportContext)}
-
-## Already executed this cycle (do not repeat)
-
-${formatAlreadyExecuted(alreadyExecuted)}
 
 ## Carryover from previous cycle
 
@@ -151,13 +140,13 @@ ${formatCarryover(carryover, language)}
 ## Task
 
 ${isEn
-    ? 'Investigate with readonly tools as needed, execute at most one side-effect action per turn within the action budget, then finish_cycle with a complete report_markdown. Put unfinished work into carryover.'
-    : '按需使用只读工具查证；每轮最多执行一个副作用动作；在动作预算内完成后调用 finish_cycle 并提交完整 report_markdown；未完成事项写入 carryover。'}
+    ? 'Identify evidence gaps against mechanical Seen / brief / carryover. Query only what is missing, then call finish_investigation with findings_summary. Prefer finishing early over exhaustive browsing.'
+    : '对照机械 Seen / brief / carryover 标出证据缺口；只查缺失项，然后调用 finish_investigation 并提交 findings_summary。宁可早结束，不要穷尽浏览。'}
 `;
 
   const stablePrefix = isEn
-    ? 'Begin the agent_loop for this cycle using the dynamic payload below.'
-    : '根据以下动态载荷开始本周期 agent_loop。';
+    ? 'Begin the readonly investigation for this cycle using the dynamic payload below.'
+    : '根据以下动态载荷开始本周期只读查证。';
 
   return {
     stablePrefix,
@@ -168,5 +157,65 @@ ${isEn
 
 export function formatToolCatalogForPrompt(toolsProduct) {
   const tools = toolsProduct?.tools || [];
-  return tools.map((tool) => `- \`${tool.name}\` (${tool.kind}): ${String(tool.description || '').split('\n')[0]}`).join('\n');
+  return tools
+    .filter((tool) => tool.name !== 'finish_cycle')
+    .map((tool) => `- \`${tool.name}\` (${tool.kind}): ${String(tool.description || '').split('\n')[0]}`)
+    .join('\n');
+}
+
+/**
+ * Compress investigation outputs into a bounded digest for the single-shot report call.
+ */
+export function buildInvestigationDigest({
+  investigation = null,
+  queryLog = [],
+  maxChars = 16000,
+} = {}) {
+  const lines = [
+    '## Investigation Digest',
+    '',
+    `enough_for_report: ${investigation?.enough_for_report !== false}`,
+    `forced: ${Boolean(investigation?.forced)}`,
+    investigation?.forced_reason ? `forced_reason: ${investigation.forced_reason}` : null,
+    '',
+    '### Findings summary',
+    String(investigation?.findings_summary || '(none)').slice(0, 8000),
+    '',
+    '### Gaps closed',
+    ...(Array.isArray(investigation?.gaps_closed) && investigation.gaps_closed.length
+      ? investigation.gaps_closed.map((g) => `- ${g}`)
+      : ['- (none)']),
+    '',
+    '### Open gaps',
+    ...(Array.isArray(investigation?.open_gaps) && investigation.open_gaps.length
+      ? investigation.open_gaps.map((g) => `- ${g}`)
+      : ['- (none)']),
+    '',
+    '### Readonly query log (truncated)',
+  ].filter((line) => line != null);
+
+  const queries = Array.isArray(queryLog) ? queryLog : [];
+  if (!queries.length) {
+    lines.push('- (no readonly queries)');
+  } else {
+    for (const q of queries.slice(0, 30)) {
+      lines.push(`- ${q.name} ok=${q.ok}: ${String(q.preview || '').slice(0, 500)}`);
+    }
+  }
+
+  return clip(lines.join('\n'), maxChars);
+}
+
+/** Observation substitute for classic report prompts: mechanical Seen + investigation digest. */
+export function buildAgentLoopObservationReport({
+  mechanicalSeen = '',
+  investigationDigest = '',
+} = {}) {
+  return [
+    '## Host mechanical Seen',
+    '',
+    mechanicalSeen || '(none)',
+    '',
+    investigationDigest || '## Investigation Digest\n\n(none)',
+  ].join('\n');
 }

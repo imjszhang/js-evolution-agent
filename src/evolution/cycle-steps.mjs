@@ -12,35 +12,52 @@ import loadConfig from '../../oada.config.mjs'; // project root oada.config.mjs
 import { assessActiveGoals, autoCalibrateGoals } from '../domain/cognition/index.mjs';
 import { updateActiveBeliefs } from '../intelligence/belief-updater.mjs';
 import { runEvidenceAuditQuick } from '../intelligence/evidence-audit.mjs';
-import { ConversationalIntelligencePipeline } from '../intelligence/conversational-intel-pipeline.mjs';
+import {
+  ConversationalIntelligencePipeline,
+  parseAnalyzeDecisionWithRepair,
+  normalizeAnalyzeDecision,
+} from '../intelligence/conversational-intel-pipeline.mjs';
 import { verifyWithRestoredConversation } from '../intelligence/conversation-context.mjs';
 import { buildEvolutionDiary } from '../intelligence/evolution-diary-builder.mjs';
 import { createHostDecisionQueue } from '../intelligence/decision-queue.mjs';
 import {
   formatOperatorBriefsForPrompt,
-  markOperatorBriefsProcessed,
   readPendingOperatorBriefs,
   summarizeOperatorBriefsForContext,
 } from '../intelligence/operator-briefs.mjs';
 import {
+  buildSeenSection,
   prepareIntelReport,
   persistIntelReport,
   updateStandingMemoryWithAi,
 } from '../intelligence/report-builder.mjs';
 import {
+  queueAnalyzeDecideActions,
+  toPreDecisionReportContext,
+  buildStandingMemoryExtraContext,
+} from '../intelligence/phase1-shared.mjs';
+import {
   buildPromptCacheMetadata,
   markPromptCacheInvariant,
 } from '../ai/prompt-cache-metadata.mjs';
+import { chatMessages, serializeMessages } from '../ai/messages.mjs';
 import { markStepStatus, writeStepArtifact } from '../cli/utils/cycle-state.mjs';
 import { loadCycleStepContext, loadVerifyReportForCycle } from '../cli/utils/cycle-checkpoints.mjs';
-import { buildLoopTools } from './agent-loop/tool-registry.mjs';
-import { runAgentLoop } from './agent-loop/loop-runner.mjs';
+import { buildInvestigationTools } from './agent-loop/tool-registry.mjs';
+import { runInvestigationLoop } from './agent-loop/loop-runner.mjs';
 import { runMechanicalGuards } from './agent-loop/guard-runner.mjs';
 import {
   buildAgentLoopInitialUserPromptParts,
+  buildAgentLoopObservationReport,
   buildAgentLoopSystemPromptParts,
+  buildInvestigationDigest,
   formatToolCatalogForPrompt,
 } from '../prompts/agent-loop.mjs';
+import {
+  buildConversationSystemPromptParts,
+  buildDecideUserPromptParts,
+  buildReportUserPromptParts,
+} from '../prompts/phase1-conversation.mjs';
 
 function carryoverPath(runtimeRoot) {
   return join(runtimeRoot, 'data', 'evolution', 'agent_loop_carryover.json');
@@ -126,10 +143,19 @@ function stateCycleId(intelResult, stateCycleId = null, execResult = null) {
   return stateCycleId || intelResult?.cycle_id || execResult?.cycle_id || null;
 }
 
+function parseLoopMaxReadonlyTurns() {
+  const readonly = Number(process.env.JEA_LOOP_MAX_READONLY_TURNS);
+  const legacy = Number(process.env.JEA_LOOP_MAX_TURNS);
+  const candidates = [];
+  if (Number.isFinite(readonly)) candidates.push(Math.max(1, Math.min(100, Math.trunc(readonly))));
+  if (Number.isFinite(legacy)) candidates.push(Math.max(1, Math.min(100, Math.trunc(legacy))));
+  if (!candidates.length) return 6;
+  return Math.min(...candidates);
+}
+
+/** @deprecated Prefer parseLoopMaxReadonlyTurns */
 function parseLoopMaxTurns() {
-  const n = Number(process.env.JEA_LOOP_MAX_TURNS);
-  if (!Number.isFinite(n)) return 24;
-  return Math.max(1, Math.min(100, Math.trunc(n)));
+  return parseLoopMaxReadonlyTurns();
 }
 
 function parseLoopWallclockMs() {
@@ -154,12 +180,6 @@ function parseLoopClosingTimeoutSec() {
   const n = Number(process.env.JEA_LOOP_CLOSING_TIMEOUT_SEC);
   if (!Number.isFinite(n)) return 240;
   return Math.max(30, Math.trunc(n));
-}
-
-function parseLoopTransientRefunds() {
-  const n = Number(process.env.JEA_LOOP_TRANSIENT_REFUNDS);
-  if (!Number.isFinite(n)) return 2;
-  return Math.max(0, Math.min(5, Math.trunc(n)));
 }
 
 function buildRestoredConversationForVerify({ systemPrompt, initialUserPrompt, reportMarkdown, executed }) {
@@ -206,8 +226,9 @@ function preloadDedupFromReceipts(store, cycleId) {
 }
 
 /**
- * Agent-loop pipeline step: replaces intel + intel_report + exec for one cycle.
- * Writes compatible intel.json + exec.json checkpoints for downstream verify/belief/goals/diary.
+ * Report-centric agent_loop step: replaces intel + intel_report (Phase 1 only).
+ * investigate (readonly) → single-shot report → classic Analyze+Decide queue.
+ * Does not execute side effects or write exec.json.
  */
 export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null } = {}) {
   const { cfg, engine, runtime, store } = ctx;
@@ -218,6 +239,7 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
   const resolvedCycleId = engine.cycleId || forcedCycleId;
   const logger = cfg.host?.logger || null;
   const aiClient = cfg.aiClient;
+  const stepStartedAt = Date.now();
 
   if (!aiClient || typeof aiClient.chatMessagesWithTools !== 'function') {
     throw new Error('agent_loop requires aiClient.chatMessagesWithTools (use DeepSeek or MockToolsAIClient)');
@@ -232,11 +254,13 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
   const rules = engine.loadRules();
   const humanGuidance = engine.guidanceReader.readGuidance();
   const intelligenceContext = cfg.host?.knowledgeWriter?.buildContextSummary?.() || '';
+  const decisionQueue = createHostDecisionQueue({
+    dataDir: join(runtime.runtimeRoot, 'data', 'evolution'),
+    logFn: (msg) => logger?.info?.(`[agent_loop] ${msg}`),
+  });
   const queueSummary = (() => {
     try {
-      return createHostDecisionQueue({
-        dataDir: join(runtime.runtimeRoot, 'data', 'evolution'),
-      }).summarize();
+      return decisionQueue.summarize();
     } catch {
       return null;
     }
@@ -255,24 +279,19 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
     queueSummary,
     operatorBriefs: operatorBriefsSummary,
   });
-
-  const { fingerprints: dedup, already } = preloadDedupFromReceipts(store, resolvedCycleId);
+  const language = prepared.language || 'zh';
+  const mechanicalSeen = buildSeenSection(prepared.reportContext) || '(none)';
+  const execLimit = parseExecLimitFromEnv();
   const budget = {
-    maxTurns: parseLoopMaxTurns(),
-    maxActions: parseExecLimitFromEnv(),
+    maxTurns: parseLoopMaxReadonlyTurns(),
+    maxActions: execLimit,
     maxWallClockMs: parseLoopWallclockMs(),
     toolResultMaxChars: parseLoopToolResultMaxChars(),
     finishReserveMs: parseLoopFinishReserveMs(),
+    reportDecideReserveMs: parseLoopFinishReserveMs(),
     closingTimeoutSec: parseLoopClosingTimeoutSec(),
-    maxTransientRefunds: parseLoopTransientRefunds(),
-    transientRefunds: 0,
     actionsUsed: 0,
   };
-
-  const decisionQueue = createHostDecisionQueue({
-    dataDir: join(runtime.runtimeRoot, 'data', 'evolution'),
-    logFn: (msg) => logger?.info?.(`[agent_loop] ${msg}`),
-  });
 
   const autoArchive = process.env.JEA_QUEUE_AUTO_ARCHIVE;
   if (autoArchive !== '0' && String(autoArchive).toLowerCase() !== 'false') {
@@ -289,15 +308,6 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
     }
   }
 
-  const executor = new ActionExecutor({
-    projectRoot: runtime.runtimeRoot,
-    cycleId: resolvedCycleId,
-    aiClient,
-    host: cfg.host,
-    logFn: (msg, level = 'info') => logger?.[level]?.(`[agent_loop] ${msg}`),
-    goalsText,
-  });
-
   const loopCtx = {
     cfg,
     host: cfg.host,
@@ -305,12 +315,13 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
     store,
     cycleId: resolvedCycleId,
     decisionQueue,
-    executor,
     actionRegistry: cfg.actionRegistry,
     budget,
-    dedup,
+    dedup: new Set(),
+    queued: [],
     executed: [],
-    finish: null,
+    investigation: null,
+    queryLog: [],
     emitEvent: (event) => store.recordEvolutionEvent({
       ...event,
       cycle_id: resolvedCycleId,
@@ -318,26 +329,16 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
     }),
     logger,
   };
-
-  const guardResult = await runMechanicalGuards({ root: ctx.projectRoot, loopCtx });
-  for (const item of guardResult.ran || []) {
-    already.push({
-      type: item.action?.type || 'guard',
-      description: `${item.action?.description || item.action?.type || 'guard'} (mechanical guard)`,
-      summary: item.result?.summary || item.result?.message || item.result?.status || null,
-    });
-  }
+  loopCtx.executed = loopCtx.queued;
 
   const carryoverItems = readCarryoverItems(runtime.runtimeRoot);
-
-  const tools = buildLoopTools(loopCtx);
-  const language = prepared.language || 'zh';
-  const systemParts = buildAgentLoopSystemPromptParts({
+  const tools = buildInvestigationTools(loopCtx);
+  const investigateSystemParts = buildAgentLoopSystemPromptParts({
     agentContextDocs: cfg.agentContextDocs,
     toolCatalogText: formatToolCatalogForPrompt(tools),
     language,
   });
-  const userParts = buildAgentLoopInitialUserPromptParts({
+  const investigateUserParts = buildAgentLoopInitialUserPromptParts({
     cycleId: resolvedCycleId,
     language,
     goalsText,
@@ -346,22 +347,22 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
     operatorBriefs: operatorBriefsPrompt,
     intelligenceContext,
     reportContext: prepared.reportContext,
-    alreadyExecuted: already,
+    mechanicalSeen,
     carryover: carryoverItems,
   });
 
-  const promptCache = buildPromptCacheMetadata({
-    profile: 'agent_loop',
+  const investigatePromptCache = buildPromptCacheMetadata({
+    profile: 'agent_loop_investigate',
     messages: [
-      { role: 'system', content: systemParts.content },
-      { role: 'user', content: userParts.content },
+      { role: 'system', content: investigateSystemParts.content },
+      { role: 'user', content: investigateUserParts.content },
     ],
-    stablePrefix: systemParts.stablePrefix,
-    dynamicPayload: userParts.dynamicPayload,
+    stablePrefix: investigateSystemParts.stablePrefix,
+    dynamicPayload: investigateUserParts.dynamicPayload,
   });
-  const promptCacheInvariant = markPromptCacheInvariant({
-    scope: 'agent_loop',
-    metadata: promptCache,
+  const investigatePromptCacheInvariant = markPromptCacheInvariant({
+    scope: 'agent_loop_investigate',
+    metadata: investigatePromptCache,
     logger,
   });
 
@@ -375,10 +376,11 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
   );
   mkdirSync(dirname(turnsPath), { recursive: true });
 
-  const loopResult = await runAgentLoop({
+  logger?.info?.(`[agent_loop] phase investigate (maxTurns=${budget.maxTurns})`);
+  const investigateResult = await runInvestigationLoop({
     aiClient,
-    systemPrompt: systemParts.content,
-    initialUserPrompt: userParts.content,
+    systemPrompt: investigateSystemParts.content,
+    initialUserPrompt: investigateUserParts.content,
     tools,
     budget,
     emitEvent: (event) => store.recordEvolutionEvent({
@@ -389,41 +391,170 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
     logger,
     turnsPath,
   });
-
-  const finish = loopResult.finish || {
-    status: 'budget_exhausted',
-    report_markdown: '# Agent Loop Incomplete\n\nLoop ended without finish payload.\n',
-    key_findings: [],
-    next_cycle_suggestions: [],
-    carryover: [],
+  const investigation = investigateResult.investigation || {
+    findings_summary: '(investigation missing)',
+    enough_for_report: true,
+    open_gaps: [],
+    gaps_closed: [],
+    forced: true,
+    forced_reason: 'missing_investigation',
   };
-  const reportMarkdown = String(finish.report_markdown || '').trim()
-    || '# Agent Loop Report\n\n(empty finish payload)\n';
-  const finishCarryover = Array.isArray(finish.carryover) ? finish.carryover.map(String) : [];
+  const investigationDigest = buildInvestigationDigest({
+    investigation,
+    queryLog: investigateResult.queryLog || loopCtx.queryLog || [],
+  });
+  const observationReport = buildAgentLoopObservationReport({
+    mechanicalSeen,
+    investigationDigest,
+  });
+
+  // --- Phase: single-shot report ---
+  const reportPromptContext = toPreDecisionReportContext(prepared.reportContext);
+  const systemPromptParts = buildConversationSystemPromptParts({
+    agentContextDocs: cfg.agentContextDocs,
+    actionRegistry: cfg.actionRegistry,
+  });
+  const reportPromptParts = buildReportUserPromptParts({
+    cycleId: resolvedCycleId,
+    language,
+    goalsText,
+    rules,
+    humanGuidance,
+    operatorBriefs: operatorBriefsPrompt,
+    intelligenceContext,
+    observationReport,
+    reportContext: reportPromptContext,
+  });
+  const reportMessages = [
+    { role: 'system', content: systemPromptParts.content },
+    { role: 'user', content: reportPromptParts.content },
+  ];
+  const reportPromptCache = buildPromptCacheMetadata({
+    profile: 'agent_loop_report',
+    messages: reportMessages,
+    stablePrefix: [systemPromptParts.stablePrefix, reportPromptParts.stablePrefix].join('\n\n--- stable turn ---\n\n'),
+    dynamicPayload: reportPromptParts.dynamicPayload,
+  });
+  const reportPromptCacheInvariant = markPromptCacheInvariant({
+    scope: 'agent_loop_report',
+    metadata: reportPromptCache,
+    logger,
+  });
+
+  logger?.info?.('[agent_loop] phase report (single-shot)');
+  let reportMarkdown = null;
+  let reportSource = 'fallback';
+  let reportReason = null;
   try {
-    writeCarryoverItems(runtime.runtimeRoot, {
-      cycleId: resolvedCycleId,
-      items: finishCarryover,
-    });
+    const md = await chatMessages(aiClient, reportMessages, { thinking: 'medium', timeout: 600 });
+    if (typeof md === 'string' && md.trim()) {
+      reportMarkdown = `${md.trim()}\n`;
+      reportSource = 'ai';
+    } else {
+      reportReason = 'empty-output';
+    }
   } catch (e) {
-    logger?.warning?.(`[agent_loop] failed to write carryover: ${e?.message || e}`);
+    reportReason = e?.message || String(e);
+    logger?.warning?.(`[agent_loop] report generation failed: ${reportReason}`);
   }
 
   const persistedReport = await persistIntelReport({
     intelResult: {
       cycle_id: resolvedCycleId,
       timestamp: isoBeijing(),
-      actions: loopCtx.executed.map((item) => item.action),
-      decisions_queued: loopCtx.executed.map((item) => item.id),
+      actions: [],
+      decisions_queued: [],
     },
     runtime,
     store,
     agentContextDocs: cfg.agentContextDocs,
+    aiClient: reportSource === 'ai' ? aiClient : null,
+    logger,
     md: reportMarkdown,
-    source: 'agent_loop',
+    source: reportSource === 'ai' ? 'agent_loop' : 'fallback',
+    fallbackReason: reportReason,
     updateStandingMemory: false,
     ...prepared,
   });
+  reportMarkdown = persistedReport.markdown;
+
+  // --- Phase: classic Analyze+Decide ---
+  const decidePromptParts = buildDecideUserPromptParts({
+    goalsText,
+    rules,
+    humanGuidance,
+    operatorBriefs: operatorBriefsPrompt,
+    intelligenceContext,
+    observationReport,
+    reportContext: prepared.reportContext,
+    actionRegistry: cfg.actionRegistry,
+  });
+  const decideMessages = [
+    ...reportMessages,
+    { role: 'assistant', content: reportMarkdown },
+    { role: 'user', content: decidePromptParts.content },
+  ];
+  const decidePromptCache = buildPromptCacheMetadata({
+    profile: 'agent_loop_decide',
+    messages: decideMessages,
+    stablePrefix: [
+      systemPromptParts.stablePrefix,
+      reportPromptParts.stablePrefix,
+      decidePromptParts.stablePrefix,
+    ].join('\n\n--- stable turn ---\n\n'),
+    dynamicPayload: [
+      reportPromptParts.dynamicPayload,
+      reportMarkdown,
+      decidePromptParts.dynamicPayload,
+    ].join('\n\n--- dynamic turn ---\n\n'),
+  });
+  const decidePromptCacheInvariant = markPromptCacheInvariant({
+    scope: 'agent_loop_decide',
+    metadata: decidePromptCache,
+    logger,
+  });
+
+  logger?.info?.('[agent_loop] phase decide (JSON)');
+  let analysis = null;
+  let analysisParseError = null;
+  try {
+    const rawDecision = await chatMessages(aiClient, decideMessages, { thinking: 'medium', timeout: 600 });
+    const parsedDecision = await parseAnalyzeDecisionWithRepair(aiClient, rawDecision, { logger });
+    analysis = parsedDecision.analysis;
+    analysisParseError = parsedDecision.parseError;
+    if (!analysis) {
+      analysis = normalizeAnalyzeDecision({
+        decision: 'defer',
+        rationale: `Analyze+Decide JSON was invalid; no actions were queued. ${analysisParseError}`,
+        actions: [],
+        deferred: [{
+          action: 'retry_analyze_decide',
+          reason: analysisParseError,
+          revisit_after: 'next cycle',
+        }],
+        error_code: 'invalid_ai_json',
+        parse_error: analysisParseError,
+        repair_error: parsedDecision.repairError,
+      });
+    } else if (parsedDecision.repairUsed) {
+      analysis.json_repair_used = true;
+      analysis.original_parse_error = analysisParseError;
+    }
+  } catch (e) {
+    analysisParseError = e?.message || String(e);
+    analysis = normalizeAnalyzeDecision({
+      decision: 'defer',
+      rationale: `Analyze+Decide failed: ${analysisParseError}`,
+      actions: [],
+      deferred: [{
+        action: 'retry_analyze_decide',
+        reason: analysisParseError,
+        revisit_after: 'next cycle',
+      }],
+      error_code: 'decide_failed',
+      parse_error: analysisParseError,
+    });
+  }
 
   const conversationPath = join(
     runtime.runtimeRoot,
@@ -434,11 +565,54 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
     'conversation_context.json',
   );
   mkdirSync(dirname(conversationPath), { recursive: true });
-  const restoredConversation = buildRestoredConversationForVerify({
-    systemPrompt: systemParts.content,
-    initialUserPrompt: userParts.content,
+
+  const queuedResult = await queueAnalyzeDecideActions({
+    projectRoot: runtime.runtimeRoot,
+    host: cfg.host,
+    runtime,
+    decisionQueue,
+    cycleId: resolvedCycleId,
+    timestamp: isoBeijing(),
+    goalId: 'bootstrap',
+    analysis,
+    actions: Array.isArray(analysis?.actions) ? analysis.actions : [],
+    reportPath: persistedReport.mdPath,
+    conversationContextPath: conversationPath,
     reportMarkdown,
-    executed: loopCtx.executed,
+    operatorBriefs,
+    maxActions: execLimit,
+    pipeline: 'agent_loop',
+  });
+
+  const queuedActions = queuedResult.actions;
+  const queuedIds = queuedResult.decisions_queued;
+  const finishCarryover = [
+    ...(Array.isArray(investigation.open_gaps) ? investigation.open_gaps.map(String) : []),
+    ...(Array.isArray(analysis?.deferred)
+      ? analysis.deferred.map((d) => (typeof d === 'string' ? d : `${d.action || 'deferred'}: ${d.reason || d.description || ''}`.trim()))
+      : []),
+    ...(Array.isArray(analysis?.goal_suggestions)
+      ? analysis.goal_suggestions.map((s) => (typeof s === 'string' ? s : JSON.stringify(s))).slice(0, 5)
+      : []),
+  ].filter(Boolean).slice(0, 10);
+
+  try {
+    writeCarryoverItems(runtime.runtimeRoot, {
+      cycleId: resolvedCycleId,
+      items: finishCarryover,
+    });
+  } catch (e) {
+    logger?.warning?.(`[agent_loop] failed to write carryover: ${e?.message || e}`);
+  }
+
+  const restoredConversation = buildRestoredConversationForVerify({
+    systemPrompt: systemPromptParts.content,
+    initialUserPrompt: reportPromptParts.content,
+    reportMarkdown,
+    executed: queuedActions.map((action, idx) => ({
+      id: queuedIds[idx] || null,
+      action,
+    })),
   });
   writeFileSync(conversationPath, JSON.stringify({
     schema_version: 1,
@@ -456,16 +630,32 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
       turns: turnsPath,
     },
     operator_intent_briefs: operatorBriefsSummary,
-    prompt_cache: { ...promptCache, invariant: promptCacheInvariant },
-    loop: {
-      status: finish.status,
-      turns: loopResult.turns,
-      actions_executed: loopCtx.executed.length,
-      duration_ms: loopResult.duration_ms,
-      forced: Boolean(finish.forced),
-      forced_reason: finish.forced_reason || null,
-      closing: finish.closing || null,
+    prompt_cache: {
+      investigate: { ...investigatePromptCache, invariant: investigatePromptCacheInvariant },
+      report: { ...reportPromptCache, invariant: reportPromptCacheInvariant },
+      decide: { ...decidePromptCache, invariant: decidePromptCacheInvariant },
     },
+    phases: {
+      investigate: {
+        status: investigateResult.status,
+        turns: investigateResult.turns,
+        readonly_calls: investigateResult.readonlyCalls ?? 0,
+        forced: Boolean(investigation.forced),
+        forced_reason: investigation.forced_reason || null,
+        duration_ms: investigateResult.duration_ms,
+      },
+      report: {
+        source: persistedReport.source,
+        reason: reportReason,
+      },
+      decide: {
+        decision: analysis?.decision ?? null,
+        actions_count: queuedActions.length,
+        parse_error: analysisParseError,
+      },
+    },
+    investigation,
+    decide_messages_digest: serializeMessages(decideMessages).slice(0, 4000),
     restored_conversation: restoredConversation,
   }, null, 2), 'utf-8');
 
@@ -481,44 +671,33 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
       generatedAt: isoBeijing(),
       logger,
       runtimeRoot: runtime.runtimeRoot,
-      extraContext: {
-        stage: 'agent_loop',
-        status: finish.status,
-        executed: loopCtx.executed.map((item) => ({
-          type: item.action?.type,
-          success: item.result?.success ?? false,
-        })),
-      },
+      extraContext: buildStandingMemoryExtraContext({
+        analysis,
+        actions: queuedActions,
+        reportPath: persistedReport.mdPath,
+        conversationContextPath: conversationPath,
+      }),
     });
   } catch (e) {
     memoryUpdate = { status: 'failed', reason: e?.message || String(e) };
   }
 
-  markOperatorBriefsProcessed(runtime.runtimeRoot, operatorBriefs, {
-    cycleId: resolvedCycleId,
-    outcome: loopCtx.executed.length ? 'consumed_with_decisions' : 'consumed_without_decisions',
-  });
-
-  const execResult = {
-    cycle_id: resolvedCycleId,
-    success: true,
-    executed: loopCtx.executed,
-    error: null,
-  };
+  const durationMs = Date.now() - stepStartedAt;
   const intelResult = {
     cycle_id: resolvedCycleId,
     timestamp: isoBeijing(),
     success: true,
-    actions: loopCtx.executed.map((item) => item.action),
-    decisions_queued: loopCtx.executed.map((item) => item.id),
+    actions: queuedActions,
+    decisions_queued: queuedIds,
+    decisions_skipped: queuedResult.decisions_skipped,
+    analysis,
     report: {
       mdPath: persistedReport.mdPath,
-      source: 'agent_loop',
+      source: persistedReport.source,
       indexRecord: persistedReport.indexRecord,
       markdown: reportMarkdown,
-      forced: Boolean(finish.forced),
-      forced_reason: finish.forced_reason || null,
-      closing: finish.closing || null,
+      forced: reportSource !== 'ai',
+      forced_reason: reportReason,
     },
     conversation_context_path: conversationPath,
     standing_memory_update: memoryUpdate,
@@ -526,55 +705,57 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
 
   store.recordEvolutionEvent({
     type: 'agent_loop_pipeline',
-    status: finish.forced ? 'forced' : 'ok',
+    status: investigation.forced || reportSource !== 'ai' ? 'forced' : 'ok',
     cycle_id: resolvedCycleId,
-    turns: loopResult.turns,
-    actions_executed: loopCtx.executed.length,
-    finish_status: finish.status,
-    forced: Boolean(finish.forced),
-    forced_reason: finish.forced_reason || null,
-    closing: finish.closing || null,
+    turns: investigateResult.turns,
+    readonly_calls: investigateResult.readonlyCalls ?? 0,
+    decisions_queued: queuedIds.length,
+    report_source: persistedReport.source,
+    duration_ms: durationMs,
   });
 
   if (recordState) {
     await persistCheckpoint(recordState, resolvedCycleId, 'intel', {
       cycle_id: resolvedCycleId,
       success: true,
-      decisions_queued: loopCtx.executed.length,
+      decisions_queued: queuedIds.length,
       report: {
         mdPath: persistedReport.mdPath,
-        source: 'agent_loop',
+        source: persistedReport.source,
         indexRecord: persistedReport.indexRecord,
-        forced: Boolean(finish.forced),
-        forced_reason: finish.forced_reason || null,
-        closing: finish.closing || null,
+        forced: reportSource !== 'ai',
+        forced_reason: reportReason,
       },
-    });
-    await persistCheckpoint(recordState, resolvedCycleId, 'exec', {
-      cycle_id: resolvedCycleId,
-      intel_cycle_id: resolvedCycleId,
-      success: true,
-      executed: loopCtx.executed,
-      error: null,
     });
     await persistCheckpoint(recordState, resolvedCycleId, 'agent_loop', {
       cycle_id: resolvedCycleId,
       success: true,
-      status: finish.status,
-      turns: loopResult.turns,
-      actions_executed: loopCtx.executed.length,
-      actions_failed: loopCtx.executed.filter((item) => !item.result?.success).length,
+      status: investigation.forced ? 'forced' : 'done',
+      turns: investigateResult.turns,
+      decisions_queued: queuedIds,
+      queued_count: queuedIds.length,
       report_path: persistedReport.mdPath,
       conversation_context_path: conversationPath,
       turns_path: turnsPath,
       carryover: finishCarryover,
-      forced: Boolean(finish.forced),
-      forced_reason: finish.forced_reason || null,
-      closing: finish.closing || null,
-      prompt_cache: { ...promptCache, invariant: promptCacheInvariant },
+      phases: {
+        investigate: {
+          turns: investigateResult.turns,
+          readonly_calls: investigateResult.readonlyCalls ?? 0,
+          forced: Boolean(investigation.forced),
+          forced_reason: investigation.forced_reason || null,
+        },
+        report: { source: persistedReport.source, reason: reportReason },
+        decide: { decision: analysis?.decision ?? null, actions_count: queuedActions.length },
+      },
+      prompt_cache: {
+        investigate: { ...investigatePromptCache, invariant: investigatePromptCacheInvariant },
+        report: { ...reportPromptCache, invariant: reportPromptCacheInvariant },
+        decide: { ...decidePromptCache, invariant: decidePromptCacheInvariant },
+      },
     }, { required: true });
     await recordStepSidecar(recordState.root, recordState.subject, resolvedCycleId, 'agent_loop', 'done', {
-      decisions_queued: loopCtx.executed.length,
+      decisions_queued: queuedIds.length,
       intel_report_ready: true,
     });
   }
@@ -582,16 +763,20 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
   return {
     cycleId: resolvedCycleId,
     intelResult,
-    execResult,
     loopResult: {
-      status: finish.status,
-      turns: loopResult.turns,
-      actions_executed: loopCtx.executed.length,
+      status: investigation.forced ? 'forced' : 'done',
+      turns: investigateResult.turns,
+      decisions_queued: queuedIds.length,
       report_path: persistedReport.mdPath,
       conversation_context_path: conversationPath,
+      phases: {
+        investigate: investigateResult,
+        report: { source: persistedReport.source },
+        decide: { actions: queuedActions.length },
+      },
     },
     eventPayload: {
-      decisions_queued: loopCtx.executed.length,
+      decisions_queued: queuedIds.length,
       intel_report_ready: true,
     },
   };
@@ -697,7 +882,44 @@ export async function runIntelReportStep(ctx, { intelResult, recordState = null 
 
 export async function runExecStep(ctx, { recordState = null, intelResult = null, stateCycleId: stateCycleIdOpt = null } = {}) {
   const { cfg, runtime, store } = ctx;
-  const resolvedCycleId = stateCycleId(intelResult, stateCycleIdOpt, null);
+  const logger = cfg.host?.logger || null;
+  const resolvedCycleId = stateCycleId(intelResult, stateCycleIdOpt, null)
+    || process.env.JEA_CYCLE_ID
+    || null;
+
+  const decisionQueue = createHostDecisionQueue({
+    dataDir: join(runtime.runtimeRoot, 'data', 'evolution'),
+    logFn: (msg) => logger?.info?.(`[exec] ${msg}`),
+  });
+  const executor = new ActionExecutor({
+    projectRoot: runtime.runtimeRoot,
+    cycleId: resolvedCycleId,
+    aiClient: cfg.aiClient,
+    host: cfg.host,
+    logFn: (msg, level = 'info') => logger?.[level]?.(`[exec] ${msg}`),
+  });
+  const guardExecuted = [];
+  const guardCtx = {
+    host: cfg.host,
+    runtime,
+    store,
+    cycleId: resolvedCycleId,
+    decisionQueue,
+    executor,
+    dedup: new Set(),
+    executed: guardExecuted,
+    emitEvent: (event) => store.recordEvolutionEvent({
+      ...event,
+      cycle_id: resolvedCycleId,
+      subject: runtime.subject,
+    }),
+    logger,
+  };
+  const guardResult = await runMechanicalGuards({ root: ctx.projectRoot, loopCtx: guardCtx });
+  if (guardResult.ran?.length) {
+    logger?.info?.(`[exec] mechanical guards ran: ${guardResult.ran.length}`);
+  }
+
   const exec = new ExecutionPipeline({
     host: cfg.host,
     projectRoot: runtime.runtimeRoot,
@@ -709,12 +931,17 @@ export async function runExecStep(ctx, { recordState = null, intelResult = null,
     limit: parseExecLimitFromEnv(),
     cycleId: resolvedCycleId || undefined,
   });
+  // Prepend guard executions so verify can see them.
+  if (guardExecuted.length) {
+    execResult.executed = [...guardExecuted, ...(execResult.executed || [])];
+  }
   const artifactCycleId = stateCycleId(intelResult, stateCycleIdOpt, execResult);
   store.recordEvolutionEvent({
     type: 'exec_pipeline',
     status: execResult.success ? 'ok' : 'failed',
     cycle_id: execResult.cycle_id,
     executed_count: execResult.executed.length,
+    guards_ran: guardResult.ran?.length ?? 0,
     error: execResult.error,
   });
   if (!execResult.success) {

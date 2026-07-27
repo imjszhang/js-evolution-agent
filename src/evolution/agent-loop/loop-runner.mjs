@@ -13,127 +13,34 @@ function truncateText(value, maxChars) {
   return { text: `${text.slice(0, maxChars)}\n...(truncated)`, truncated: true };
 }
 
-function itemSummary(item) {
-  const result = item?.result;
-  return String(
-    result?.summary
-    || result?.message
-    || result?.status
-    || result?.error
-    || 'n/a',
-  ).slice(0, 300);
-}
-
-function itemError(item) {
-  return String(item?.result?.error || itemSummary(item) || 'failed').slice(0, 200);
-}
-
-function buildSalvagedFinishReport({
-  reason,
-  messages,
-  executed = [],
-  turns = 0,
-  budget = null,
-  durationMs = 0,
-} = {}) {
-  const actionLines = (executed || []).map((item) => {
-    const ok = item?.result?.success ? 'ok' : 'FAILED';
-    const type = item?.action?.type || 'action';
-    const id = item?.id || 'n/a';
-    return `- [${ok}] ${type} (${id}): ${itemSummary(item)}`;
-  });
-
-  const assistantParts = [];
-  let used = 0;
-  const assistants = (messages || [])
-    .filter((m) => m?.role === 'assistant' && String(m.content || '').trim())
-    .map((m) => String(m.content).trim());
-  for (let i = 0; i < assistants.length; i += 1) {
-    const clipped = assistants[i].slice(0, 1200);
-    if (used + clipped.length > 8000) break;
-    assistantParts.push(`### turn tail ${i + 1}\n${clipped}`);
-    used += clipped.length;
-  }
-
-  const retrySuggestions = (executed || [])
-    .filter((item) => !item?.result?.success)
-    .slice(-5)
-    .map((item) => `- Re-attempt ${item?.action?.type || 'action'} (failed with: ${itemError(item)})`);
-
-  const maxActions = budget?.maxActions ?? '?';
-  const actionsUsed = budget?.actionsUsed ?? executed.length;
-
-  return [
-    '# Agent Loop Salvaged Report',
-    '',
-    '> WARNING: host-synthesized after budget exhaustion; narrative below is NOT a model-authored cycle report.',
-    '',
-    '## Status',
-    `- reason: ${reason}`,
-    `- turns: ${turns}`,
-    `- actions_used: ${actionsUsed} / ${maxActions}`,
-    `- duration_ms: ${durationMs}`,
-    '',
-    '## Seen',
-    ...(actionLines.length ? actionLines : ['- (no actions executed)']),
-    '',
-    '## Assistant reasoning (recovered)',
-    ...(assistantParts.length ? assistantParts : ['(none)']),
-    '',
-    '## Inferred',
-    '- Host synthesized this report because the model did not complete finish_cycle in time.',
-    '',
-    '## Cyber-Taoist analysis',
-    '- Forced finish is a host control-plane outcome, not an evolutionary claim.',
-    '',
-    '## Next cycle suggestions',
-    ...(retrySuggestions.length ? retrySuggestions : ['- Inspect agent_loop_turns.jsonl and tighten the next brief or action budget.']),
-    '- Review whether wallclock / action budgets match typical agent_run duration.',
-  ].join('\n');
-}
-
-function buildSalvagedFinish({ reason, messages, executed, turns, budget, durationMs }) {
-  const failed = (executed || []).filter((item) => !item?.result?.success);
-  const succeeded = (executed || []).filter((item) => item?.result?.success);
+function buildForcedInvestigation({ reason, queryLog = [], turns = 0, durationMs = 0 } = {}) {
   return {
-    status: reason === 'no_tool_calls' || reason === 'llm_error' ? reason : 'budget_exhausted',
-    report_markdown: buildSalvagedFinishReport({
-      reason,
-      messages,
-      executed,
-      turns,
-      budget,
-      durationMs,
-    }),
-    key_findings: succeeded
-      .slice(-5)
-      .map((item) => `${item?.action?.type || 'action'}: ${itemSummary(item)}`.slice(0, 300)),
-    next_cycle_suggestions: [
-      ...failed.slice(-5).map((item) => (
-        `Re-attempt ${item?.action?.type || 'action'}: ${itemError(item)}`.slice(0, 300)
-      )),
-      'Inspect agent_loop_turns.jsonl and tighten the next brief or action budget.',
-    ],
-    carryover: failed
-      .slice(-10)
-      .map((item) => `retry ${item?.action?.type || 'action'}: ${itemError(item)}`.slice(0, 500)),
+    gaps_closed: [],
+    open_gaps: [`Investigation ended early: ${reason}`],
+    findings_summary: [
+      `Host closed investigation (${reason}) after ${turns} turn(s), ${durationMs}ms.`,
+      queryLog.length
+        ? `Readonly queries logged: ${queryLog.map((q) => q.name).join(', ')}.`
+        : 'No readonly queries were completed.',
+    ].join(' '),
+    enough_for_report: true,
+    finished: true,
     forced: true,
     forced_reason: reason,
-    closing: 'salvaged',
   };
 }
 
-function finishToolOnlyList(tools) {
-  return tools.toOpenAiTools().filter((t) => t.function?.name === 'finish_cycle');
+function finishInvestigationOnlyList(tools) {
+  return tools.toOpenAiTools().filter((t) => t.function?.name === 'finish_investigation');
 }
 
 /**
- * Multi-turn tool-calling agent loop.
+ * Readonly investigation loop for report-centric agent_loop.
  *
  * IMPORTANT: messages are managed here and must NOT pass through
  * messages.mjs normalizeMessages (it strips tool_calls / tool_call_id).
  */
-export async function runAgentLoop({
+export async function runInvestigationLoop({
   aiClient,
   systemPrompt,
   initialUserPrompt,
@@ -145,30 +52,32 @@ export async function runAgentLoop({
   turnsPath = null,
 } = {}) {
   if (!aiClient || typeof aiClient.chatMessagesWithTools !== 'function') {
-    throw new Error('runAgentLoop requires aiClient.chatMessagesWithTools');
+    throw new Error('runInvestigationLoop requires aiClient.chatMessagesWithTools');
   }
   if (!tools || typeof tools.toOpenAiTools !== 'function' || typeof tools.dispatch !== 'function') {
-    throw new Error('runAgentLoop requires buildLoopTools() product');
+    throw new Error('runInvestigationLoop requires buildInvestigationTools() product');
   }
 
-  const maxTurns = Math.max(1, Number(budget?.maxTurns) || 24);
+  const maxTurns = Math.max(1, Number(budget?.maxTurns) || 6);
   const maxWallClockMs = Math.max(1000, Number(budget?.maxWallClockMs) || 1_200_000);
   const toolResultMaxChars = Math.max(500, Number(budget?.toolResultMaxChars) || 6000);
-  const rawFinishReserve = Number(budget?.finishReserveMs);
-  const finishReserveMs = Math.min(
-    Number.isFinite(rawFinishReserve) ? Math.max(0, Math.trunc(rawFinishReserve)) : 120_000,
+  // Reserve wallclock for host report + decide (not for finish_cycle).
+  const rawReserve = Number(budget?.finishReserveMs ?? budget?.reportDecideReserveMs);
+  const reportDecideReserveMs = Math.min(
+    Number.isFinite(rawReserve) ? Math.max(0, Math.trunc(rawReserve)) : 120_000,
     Math.floor(maxWallClockMs / 2),
   );
-  const closingTimeoutSec = Math.max(30, Number(budget?.closingTimeoutSec) || 240);
+  const closingTimeoutSec = Math.max(30, Number(budget?.closingTimeoutSec) || 120);
   const startedAt = Date.now();
-  const softDeadlineAt = startedAt + maxWallClockMs - finishReserveMs;
+  const softDeadlineAt = startedAt + maxWallClockMs - reportDecideReserveMs;
 
   if (budget && typeof budget === 'object') {
     budget.startedAt = startedAt;
     budget.maxWallClockMs = maxWallClockMs;
     budget.softDeadlineAt = softDeadlineAt;
     budget.maxTurns = maxTurns;
-    budget.finishReserveMs = finishReserveMs;
+    budget.finishReserveMs = reportDecideReserveMs;
+    budget.reportDecideReserveMs = reportDecideReserveMs;
     budget.closingTimeoutSec = closingTimeoutSec;
     if (budget.turnsUsed == null) budget.turnsUsed = 0;
   }
@@ -179,26 +88,23 @@ export async function runAgentLoop({
   ];
 
   let emptyToolTurns = 0;
-  let finish = null;
+  let investigation = null;
   let turns = 0;
-  let budgetNoticeSent = false;
-  let turnsAfterBudgetNotice = 0;
   let closingReason = null;
   let checkpoint60Sent = false;
   let checkpoint85Sent = false;
-  const openAiTools = tools.toOpenAiTools();
+  const openAiTools = tools.toOpenAiTools().filter((t) => t.function?.name !== 'finish_cycle');
 
-  const executedList = () => tools._loopCtx?.executed ?? [];
+  const queryLog = () => tools._loopCtx?.queryLog ?? [];
 
-  const forceFinish = (reason) => {
-    finish = buildSalvagedFinish({
+  const forceInvestigation = (reason) => {
+    investigation = buildForcedInvestigation({
       reason,
-      messages,
-      executed: executedList(),
+      queryLog: queryLog(),
       turns,
-      budget,
       durationMs: Date.now() - startedAt,
     });
+    if (tools._loopCtx) tools._loopCtx.investigation = investigation;
   };
 
   const appendTurn = (record) => {
@@ -223,40 +129,37 @@ export async function runAgentLoop({
 
   const injectBudgetCheckpoints = () => {
     const elapsed = Date.now() - startedAt;
-    const softBudget = Math.max(1, maxWallClockMs - finishReserveMs);
+    const softBudget = Math.max(1, maxWallClockMs - reportDecideReserveMs);
     const ratio = elapsed / softBudget;
-    const actionsRemaining = budget
-      ? Math.max(0, (budget.maxActions ?? 0) - (budget.actionsUsed ?? 0))
-      : null;
     if (!checkpoint60Sent && ratio >= 0.6) {
       checkpoint60Sent = true;
       messages.push({
         role: 'user',
-        content: `Budget checkpoint (~60% of soft wallclock used). About ${Math.max(0, Math.round((softDeadlineAt - Date.now()) / 60000))} min and ${actionsRemaining ?? '?'} actions remain. Start converging: prefer finishing over new investigations.`,
+        content: `Budget checkpoint (~60% of investigation wallclock used). About ${Math.max(0, Math.round((softDeadlineAt - Date.now()) / 60000))} min remain. Prefer finishing investigation over new queries; call finish_investigation soon.`,
       });
     }
     if (!checkpoint85Sent && ratio >= 0.85) {
       checkpoint85Sent = true;
       messages.push({
         role: 'user',
-        content: `Budget checkpoint (~85% of soft wallclock used). Finish soon: stop new investigations and call finish_cycle with a complete report_markdown.`,
+        content: 'Budget checkpoint (~85% of investigation wallclock used). Stop new queries and call finish_investigation now with findings_summary.',
       });
     }
   };
 
   const runClosingTurn = async (reason) => {
-    const closingUser = [
-      `Budget is exhausted (reason: ${reason}). This is your FINAL turn.`,
-      'You cannot call any tool except finish_cycle. Call finish_cycle NOW with a',
-      'complete report_markdown summarizing everything you did and learned this cycle:',
-      'what you observed, what actions you executed and their outcomes, what remains',
-      'unverified. Put unfinished work into carryover and next_cycle_suggestions.',
-    ].join(' ');
-    messages.push({ role: 'user', content: closingUser });
+    messages.push({
+      role: 'user',
+      content: [
+        `Investigation budget is exhausted (reason: ${reason}). This is your FINAL turn.`,
+        'Call finish_investigation NOW with findings_summary covering what you learned and any open_gaps.',
+        'Do not attempt to write the full Intel report.',
+      ].join(' '),
+    });
 
-    const finishTools = finishToolOnlyList(tools);
+    const finishTools = finishInvestigationOnlyList(tools);
     const choiceLadder = [
-      { type: 'function', function: { name: 'finish_cycle' } },
+      { type: 'function', function: { name: 'finish_investigation' } },
       'required',
       'auto',
     ];
@@ -275,7 +178,7 @@ export async function runAgentLoop({
       } catch (e) {
         lastError = e;
         logger?.warning?.(
-          `[agent_loop] closing turn toolChoice=${JSON.stringify(toolChoice)} failed: ${e?.message || e}`,
+          `[agent_loop] investigation closing toolChoice=${JSON.stringify(toolChoice)} failed: ${e?.message || e}`,
         );
       }
     }
@@ -308,8 +211,8 @@ export async function runAgentLoop({
       ...(toolCalls.length ? { tool_calls: rawToolCallsForMessage(toolCalls) } : {}),
     });
 
-    const finishCall = toolCalls.find((c) => c.name === 'finish_cycle');
-    if (!finishCall) {
+    const finishCall = toolCalls.find((c) => c.name === 'finish_investigation');
+    if (!finishCall || (finishCall.arguments == null && finishCall.argumentsRaw)) {
       appendTurn({
         turn: closingTurn,
         at: nowIso(),
@@ -318,38 +221,18 @@ export async function runAgentLoop({
         assistant_content: resp.content,
         tool_calls: toolCalls.map((c) => ({ name: c.name })),
         tool_results: [],
-        error: 'no_finish_cycle_call',
+        error: finishCall ? 'invalid_tool_arguments_json' : 'no_finish_investigation_call',
       });
       emitEvent?.({
         type: 'agent_loop_closing_turn',
         status: 'failed',
         reason,
-        error: 'no_finish_cycle_call',
+        error: finishCall ? 'invalid_tool_arguments_json' : 'no_finish_investigation_call',
       });
       return false;
     }
 
-    if (finishCall.arguments == null && finishCall.argumentsRaw) {
-      appendTurn({
-        turn: closingTurn,
-        at: nowIso(),
-        note: 'closing_turn',
-        closing_reason: reason,
-        assistant_content: resp.content,
-        tool_calls: [{ name: 'finish_cycle' }],
-        tool_results: [],
-        error: 'invalid_tool_arguments_json',
-      });
-      emitEvent?.({
-        type: 'agent_loop_closing_turn',
-        status: 'failed',
-        reason,
-        error: 'invalid_tool_arguments_json',
-      });
-      return false;
-    }
-
-    const outcome = await tools.dispatch('finish_cycle', finishCall.arguments ?? {}, { turn: closingTurn });
+    const outcome = await tools.dispatch('finish_investigation', finishCall.arguments ?? {}, { turn: closingTurn });
     const clipped = truncateText(outcome, toolResultMaxChars);
     messages.push({
       role: 'tool',
@@ -363,8 +246,8 @@ export async function runAgentLoop({
       note: 'closing_turn',
       closing_reason: reason,
       assistant_content: resp.content,
-      tool_calls: [{ name: 'finish_cycle' }],
-      tool_results: [{ name: 'finish_cycle', ok: Boolean(outcome?.ok), chars: clipped.text.length }],
+      tool_calls: [{ name: 'finish_investigation' }],
+      tool_results: [{ name: 'finish_investigation', ok: Boolean(outcome?.ok), chars: clipped.text.length }],
       finish_reason: resp.finishReason,
     });
 
@@ -373,24 +256,13 @@ export async function runAgentLoop({
         type: 'agent_loop_closing_turn',
         status: 'failed',
         reason,
-        error: outcome?.error || 'finish_cycle_rejected',
+        error: outcome?.error || 'finish_investigation_rejected',
       });
       return false;
     }
 
-    const finishFromTools = tools._loopCtx?.finish || null;
-    if (!finishFromTools?.report_markdown) {
-      emitEvent?.({
-        type: 'agent_loop_closing_turn',
-        status: 'failed',
-        reason,
-        error: 'finish_cycle_missing_payload',
-      });
-      return false;
-    }
-
-    finish = {
-      ...finishFromTools,
+    investigation = {
+      ...(tools._loopCtx?.investigation || {}),
       forced: true,
       forced_reason: reason,
       closing: 'model',
@@ -409,15 +281,6 @@ export async function runAgentLoop({
     if (budget && typeof budget === 'object') budget.turnsUsed = turn;
 
     if (checkSoftDeadline('wallclock_soft_deadline')) break;
-    if (turn >= maxTurns) {
-      maybeEnterClosing('turns_exhausted');
-      break;
-    }
-    // After the one-shot notice, allow exactly one more normal turn, then close.
-    if (budgetNoticeSent && turnsAfterBudgetNotice >= 2) {
-      maybeEnterClosing('action_budget_exhausted');
-      break;
-    }
 
     injectBudgetCheckpoints();
 
@@ -429,7 +292,7 @@ export async function runAgentLoop({
         timeout: 600,
       });
     } catch (e) {
-      logger?.error?.(`[agent_loop] LLM turn failed: ${e?.message || e}`);
+      logger?.error?.(`[agent_loop] investigation LLM turn failed: ${e?.message || e}`);
       maybeEnterClosing('llm_error');
       break;
     }
@@ -464,7 +327,7 @@ export async function runAgentLoop({
       }
       messages.push({
         role: 'user',
-        content: 'You must call a tool on every turn. Use readonly tools to gather evidence, action tools to act, or finish_cycle to end the cycle with report_markdown.',
+        content: 'You must call a tool on every turn. Use readonly tools to fill evidence gaps, or finish_investigation when ready for the host report step.',
       });
       continue;
     }
@@ -472,7 +335,6 @@ export async function runAgentLoop({
     emptyToolTurns = 0;
     const toolResultsMeta = [];
     let finishedThisTurn = false;
-    let actionRanThisTurn = false;
 
     for (const call of toolCalls) {
       if (!call.name) {
@@ -504,28 +366,6 @@ export async function runAgentLoop({
         continue;
       }
 
-      const kind = tools.byName?.get?.(call.name)?.kind;
-      if (kind === 'action' && actionRanThisTurn) {
-        const errPayload = {
-          ok: false,
-          error: 'one_action_per_turn',
-          hint: 'Only one side-effect action per turn. Review the previous tool result first, then re-issue this call next turn if still needed.',
-        };
-        const clipped = truncateText(errPayload, toolResultMaxChars);
-        messages.push({
-          role: 'tool',
-          tool_call_id: call.id,
-          content: clipped.text,
-        });
-        toolResultsMeta.push({
-          name: call.name,
-          ok: false,
-          chars: clipped.text.length,
-          truncated: clipped.truncated,
-        });
-        continue;
-      }
-
       const outcome = await tools.dispatch(call.name, call.arguments ?? {}, { turn });
       const clipped = truncateText(outcome, toolResultMaxChars);
       messages.push({
@@ -540,11 +380,7 @@ export async function runAgentLoop({
         truncated: clipped.truncated,
       });
 
-      if (kind === 'action') {
-        actionRanThisTurn = true;
-      }
-
-      if (call.name === 'finish_cycle' && outcome?.ok) {
+      if (call.name === 'finish_investigation' && outcome?.ok) {
         finishedThisTurn = true;
       }
     }
@@ -568,13 +404,10 @@ export async function runAgentLoop({
     });
 
     if (finishedThisTurn) {
-      const finishFromTools = tools._loopCtx?.finish || null;
-      finish = finishFromTools || buildSalvagedFinish({
-        reason: 'finish_cycle_missing_payload',
-        messages,
-        executed: executedList(),
+      investigation = tools._loopCtx?.investigation || buildForcedInvestigation({
+        reason: 'finish_investigation_missing_payload',
+        queryLog: queryLog(),
         turns,
-        budget,
         durationMs: Date.now() - startedAt,
       });
       break;
@@ -582,36 +415,53 @@ export async function runAgentLoop({
 
     if (checkSoftDeadline('wallclock_soft_deadline')) break;
 
-    if (!budgetNoticeSent
-        && budget && budget.actionsUsed >= (budget.maxActions ?? Infinity)) {
-      budgetNoticeSent = true;
-      messages.push({
-        role: 'user',
-        content: 'Action budget is exhausted. Do not call any more action tools. Call finish_cycle now with a complete report_markdown; put unfinished work into carryover and next_cycle_suggestions.',
-      });
+    if (turn >= maxTurns) {
+      maybeEnterClosing('turns_exhausted');
+      break;
     }
-
-    if (budgetNoticeSent) turnsAfterBudgetNotice += 1;
   }
 
-  if (!finish && closingReason) {
+  if (!investigation && closingReason) {
     const closed = await runClosingTurn(closingReason);
     if (!closed) {
-      forceFinish(closingReason);
+      forceInvestigation(closingReason);
     }
   }
 
-  if (!finish) {
-    forceFinish(closingReason || 'budget_exhausted');
+  if (!investigation) {
+    forceInvestigation(closingReason || 'budget_exhausted');
   }
 
   return {
-    status: finish.status,
+    status: investigation.forced ? (investigation.forced_reason || 'forced') : 'done',
     turns,
-    finish,
+    investigation,
     messages,
-    executedCount: budget?.actionsUsed ?? 0,
+    queryLog: queryLog(),
+    readonlyCalls: queryLog().length,
     duration_ms: Date.now() - startedAt,
+  };
+}
+
+/** @deprecated Use runInvestigationLoop. Alias for import stability during migration. */
+export async function runAgentLoop(opts) {
+  const result = await runInvestigationLoop(opts);
+  // Compatibility shape for older callers expecting finish.report_markdown.
+  const finish = {
+    status: result.investigation?.forced ? 'budget_exhausted' : 'done',
+    report_markdown: null,
+    key_findings: result.investigation?.gaps_closed || [],
+    next_cycle_suggestions: result.investigation?.open_gaps || [],
+    carryover: result.investigation?.open_gaps || [],
+    forced: Boolean(result.investigation?.forced),
+    forced_reason: result.investigation?.forced_reason || null,
+    closing: result.investigation?.closing || null,
+    investigation: result.investigation,
+  };
+  return {
+    ...result,
+    finish,
+    executedCount: 0,
   };
 }
 
@@ -627,12 +477,9 @@ function rawToolCallsForMessage(toolCalls) {
   }));
 }
 
-/**
- * Attach loopCtx onto tools product so finish_cycle can be recovered.
- */
 export function attachLoopCtx(tools, loopCtx) {
   tools._loopCtx = loopCtx;
   return tools;
 }
 
-export { buildSalvagedFinishReport };
+export { buildForcedInvestigation };

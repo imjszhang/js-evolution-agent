@@ -206,14 +206,18 @@ async function runCycle(runtime) {
   let intelReportReady = false;
 
   if (pipeline === 'agent_loop') {
-    console.log('\n=== Agent loop (replaces intel + exec) ===');
+    console.log('\n=== Agent loop (intel only) ===');
     const loopOutcome = await runAgentLoopStep(ctx, { cycleId: cycleState.cycle_id, recordState });
     intelResult = loopOutcome.intelResult;
-    execResult = loopOutcome.execResult;
     intelReportReady = Boolean(intelResult?.report?.mdPath);
     console.log('  success:', intelResult.success);
-    console.log('  actions executed:', execResult.executed.length);
+    console.log('  decisions queued:', intelResult.decisions_queued?.length ?? 0);
     console.log('  report ready:', intelReportReady);
+
+    console.log('\n=== Phase 2: exec pipeline ===');
+    ({ execResult } = await runExecStep(ctx, { recordState, intelResult, stateCycleId: intelResult.cycle_id }));
+    console.log('  success:', execResult.success);
+    console.log('  executed:', execResult.executed.length);
   } else {
     console.log('\n=== Phase 1: intel pipeline ===');
     const intelOutcome = await runIntelStep(ctx, { cycleId: cycleState.cycle_id, recordState });

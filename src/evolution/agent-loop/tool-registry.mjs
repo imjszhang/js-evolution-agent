@@ -1,9 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { decisionFingerprint } from '../../engine/index.mjs';
-import { validateAgentRunSpec } from '../../actions/agent-run-spec.mjs';
-import { resolveHostExternalRoots } from '../../cli/utils/subjects.mjs';
-import { actionRegistry } from '../../actions/registry.mjs';
 
 const READONLY_SOURCES = Object.freeze([
   'intel_observations',
@@ -177,325 +174,85 @@ function buildReadonlyTools(loopCtx) {
   ];
 }
 
-const TRANSIENT_ERROR_RE = /invalid response body|econnreset|etimedout|socket hang up|fetch failed|\b(502|503|504)\b|rate.?limit/i;
-
-const AGENT_RUN_PARAMS_SCHEMA = Object.freeze({
-  type: 'object',
-  properties: {
-    run_spec: {
-      type: 'object',
-      properties: {
-        primary_cwd_kind: {
-          type: 'string',
-          description: 'Execution root kind, e.g. subject_runtime, source_root, target_repo, or a configured resource root name',
-        },
-        permission_profile: {
-          type: 'string',
-          enum: ['read_only', 'workspace_write', 'remote_write_review'],
-        },
-        intent: { type: 'string' },
-        expected_output: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'REQUIRED: array of strings (not a single string)',
-        },
-        context: {
-          type: 'object',
-          description: 'OPTIONAL: must be an OBJECT like {"why_now":"...","constraints":[...]}, never a plain string',
-        },
-        boundary: { type: 'object' },
-        cwd: { type: 'string' },
-        provider: { type: 'string' },
-      },
-      required: ['primary_cwd_kind', 'permission_profile', 'intent', 'expected_output'],
-    },
-  },
-  required: ['run_spec'],
-});
-
-function coerceAgentRunSpec(runSpec) {
-  const coercions = [];
-  if (!runSpec || typeof runSpec !== 'object' || Array.isArray(runSpec)) {
-    return coercions;
-  }
-  if (typeof runSpec.context === 'string' && runSpec.context.trim()) {
-    runSpec.context = { note: runSpec.context };
-    coercions.push('context:string->object');
-  }
-  if (typeof runSpec.expected_output === 'string' && runSpec.expected_output.trim()) {
-    runSpec.expected_output = [runSpec.expected_output];
-    coercions.push('expected_output:string->array');
-  }
-  return coercions;
+function normalizeStringList(value, { maxItems = 20, maxChars = 500 } = {}) {
+  if (!Array.isArray(value)) return [];
+  return value.map(String).map((s) => s.slice(0, maxChars)).slice(0, maxItems);
 }
 
-function buildActionTool(spec, loopCtx) {
-  const { budget, dedup, decisionQueue, executor, cycleId, host, runtime, emitEvent } = loopCtx;
-  const maxChars = budget.toolResultMaxChars;
-  const description = [spec.description, spec.promptHint].filter(Boolean).join('\n');
-  const paramsSchema = spec.name === 'agent_run' ? AGENT_RUN_PARAMS_SCHEMA : { type: 'object' };
-
+function buildFinishInvestigationTool(loopCtx) {
   return {
-    name: spec.name,
-    kind: 'action',
-    description,
-    parameters: {
-      type: 'object',
-      properties: {
-        description: { type: 'string' },
-        serves_goal: { type: 'string' },
-        priority: { type: 'string', enum: ['low', 'medium', 'high'] },
-        params: paramsSchema,
-      },
-      required: ['description', 'params'],
-    },
-    async execute(args, meta = {}) {
-      const budgetStatus = () => ({
-        actions_used: budget.actionsUsed,
-        max_actions: budget.maxActions,
-        actions_remaining: Math.max(0, budget.maxActions - budget.actionsUsed),
-        turns_used: budget.turnsUsed ?? null,
-        turns_remaining: budget.maxTurns != null && budget.turnsUsed != null
-          ? Math.max(0, budget.maxTurns - budget.turnsUsed)
-          : null,
-        wallclock_remaining_ms: budget.softDeadlineAt != null
-          ? Math.max(0, budget.softDeadlineAt - Date.now())
-          : null,
-      });
-
-      const action = {
-        type: spec.name,
-        description: String(args?.description || ''),
-        serves_goal: args?.serves_goal || undefined,
-        priority: args?.priority || undefined,
-        params: args?.params && typeof args.params === 'object' ? args.params : {},
-      };
-
-      if (budget.actionsUsed >= budget.maxActions) {
-        return {
-          ok: false,
-          error: 'action_budget_exhausted',
-          budget_status: budgetStatus(),
-          hint: 'No side-effect budget left this cycle. Do NOT retry actions. Call finish_cycle now with report_markdown; put unfinished work into carryover and next_cycle_suggestions.',
-        };
-      }
-
-      const fingerprint = decisionFingerprint(action);
-      if (dedup.has(fingerprint)) {
-        return {
-          ok: false,
-          error: 'duplicate_action_this_cycle',
-          fingerprint,
-          budget_status: budgetStatus(),
-        };
-      }
-
-      let coercions = [];
-      if (action.type === 'agent_run') {
-        coercions = coerceAgentRunSpec(action.params?.run_spec);
-        const jeaRoot = host?.sourceRoot ?? runtime.runtimeRoot;
-        try {
-          const { externalRoots, subjectRepoLane } = await resolveHostExternalRoots({
-            root: jeaRoot,
-            subject: runtime.subject,
-          });
-          host.externalRoots = externalRoots;
-          host.resourceRoots = externalRoots;
-          host.subjectRepoLane = subjectRepoLane;
-        } catch (e) {
-          return {
-            ok: false,
-            error: `external_roots_refresh_failed: ${e?.message || e}`,
-            budget_status: budgetStatus(),
-            ...(coercions.length ? { coercions } : {}),
-          };
-        }
-        const validation = validateAgentRunSpec(action, {
-          projectRoot: host?.sourceRoot ?? runtime.runtimeRoot,
-          host,
-          runtime,
-          cycleId,
-        });
-        if (!validation.valid) {
-          return {
-            ok: false,
-            error: 'invalid_action',
-            errors: validation.errors,
-            warnings: validation.warnings,
-            budget_status: budgetStatus(),
-            ...(coercions.length ? { coercions } : {}),
-          };
-        }
-      }
-
-      const queued = decisionQueue.addDecisionsDetailed({
-        cycleId,
-        actions: [action],
-        analysisContext: 'agent_loop',
-        metadata: { loop_turn: meta.turn ?? null, pipeline: 'agent_loop' },
-      });
-      if (!queued.ids?.length) {
-        const skip = queued.skipped?.[0];
-        return {
-          ok: false,
-          error: skip?.reason || 'queue_rejected',
-          skipped: queued.skipped,
-          budget_status: budgetStatus(),
-          ...(coercions.length ? { coercions } : {}),
-        };
-      }
-      const decisionId = queued.ids[0];
-      decisionQueue.updateStatus?.(decisionId, 'in_progress');
-
-      const result = await executor.execute(action);
-      const summary = result?.summary
-        || result?.message
-        || result?.error
-        || (result?.success ? 'ok' : 'failed');
-
-      if (result?.success) {
-        decisionQueue.completeDecision?.(decisionId, String(summary).slice(0, 2000));
-      } else if (result?.deferred) {
-        decisionQueue.updateStatus?.(decisionId, 'pending');
-      } else {
-        decisionQueue.failDecision?.(decisionId, String(result?.error || summary).slice(0, 2000));
-      }
-
-      const errText = String(result?.error || summary || '');
-      const isTransient = !result?.success && TRANSIENT_ERROR_RE.test(errText);
-      const refundsUsed = budget.transientRefunds ?? 0;
-      const maxRefunds = budget.maxTransientRefunds ?? 2;
-      const canRefund = isTransient && refundsUsed < maxRefunds;
-
-      if (canRefund) {
-        budget.transientRefunds = refundsUsed + 1;
-      } else {
-        dedup.add(fingerprint);
-        budget.actionsUsed += 1;
-      }
-
-      const executedItem = { id: decisionId, action, result };
-      loopCtx.executed.push(executedItem);
-      emitEvent?.({
-        type: 'agent_loop_action_executed',
-        status: result?.success ? 'ok' : 'failed',
-        cycle_id: cycleId,
-        decision_id: decisionId,
-        action_type: action.type,
-        deferred: Boolean(result?.deferred),
-        transient_refund: Boolean(canRefund),
-      });
-
-      return {
-        ok: Boolean(result?.success),
-        decision_id: decisionId,
-        result: summarizeResult(result, maxChars),
-        error: result?.success ? undefined : (result?.error || 'handler_non_success'),
-        budget_status: budgetStatus(),
-        ...(canRefund ? {
-          transient_refund: true,
-          hint: 'Infrastructure-level failure, budget not consumed. You may retry this action once.',
-        } : {}),
-        ...(coercions.length ? { coercions } : {}),
-      };
-    },
-  };
-}
-
-function buildFinishTool(loopCtx) {
-  return {
-    name: 'finish_cycle',
+    name: 'finish_investigation',
     kind: 'control',
-    description: 'Terminate the agent_loop session. Provide the cycle intelligence report markdown (report_markdown is required).',
+    description: [
+      'End the readonly investigation phase.',
+      'Call when mechanical Seen + brief are enough, or after targeted queries closed the gaps.',
+      'Do not write the Intel report here; the host generates it in a separate step.',
+    ].join(' '),
     parameters: {
       type: 'object',
       properties: {
-        status: {
+        gaps_closed: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Evidence gaps that were resolved during investigation.',
+        },
+        open_gaps: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Remaining gaps to carry into the report / next cycle.',
+        },
+        findings_summary: {
           type: 'string',
-          enum: ['done', 'no_action_needed', 'blocked'],
+          description: 'Short summary of investigation findings for the host report step (not the full Intel report).',
         },
-        report_markdown: { type: 'string' },
-        key_findings: {
-          type: 'array',
-          items: { type: 'string' },
-        },
-        next_cycle_suggestions: {
-          type: 'array',
-          items: { type: 'string' },
-        },
-        carryover: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'Unfinished work handed to the next cycle, e.g. "publish candidate-XXX (already evaluated)". Max 10 items.',
+        enough_for_report: {
+          type: 'boolean',
+          description: 'True when evidence is sufficient to draft the Phase 1.5 Intel report.',
         },
       },
-      required: ['status', 'report_markdown'],
+      required: ['findings_summary', 'enough_for_report'],
     },
     async execute(args) {
-      const report = String(args?.report_markdown || '').trim();
-      if (!report) {
-        return { ok: false, error: 'report_markdown is required' };
+      const findings = String(args?.findings_summary || '').trim();
+      if (!findings) {
+        return { ok: false, error: 'findings_summary is required' };
       }
-      loopCtx.finish = {
-        status: args?.status || 'done',
-        report_markdown: report,
-        key_findings: Array.isArray(args?.key_findings) ? args.key_findings.map(String) : [],
-        next_cycle_suggestions: Array.isArray(args?.next_cycle_suggestions)
-          ? args.next_cycle_suggestions.map(String)
-          : [],
-        carryover: Array.isArray(args?.carryover)
-          ? args.carryover.map(String).map((s) => s.slice(0, 500)).slice(0, 10)
-          : [],
+      loopCtx.investigation = {
+        gaps_closed: normalizeStringList(args?.gaps_closed),
+        open_gaps: normalizeStringList(args?.open_gaps),
+        findings_summary: findings.slice(0, 8000),
+        enough_for_report: args?.enough_for_report !== false,
+        finished: true,
       };
-      return { ok: true, result: { finished: true, status: loopCtx.finish.status } };
+      return {
+        ok: true,
+        result: {
+          finished: true,
+          enough_for_report: loopCtx.investigation.enough_for_report,
+        },
+      };
     },
   };
 }
 
-/**
- * @param {object} loopCtx
- * @returns {{ tools: object[], byName: Map<string, object>, toOpenAiTools: () => object[] }}
- */
-export function buildLoopTools(loopCtx) {
-  if (!loopCtx.executed) loopCtx.executed = [];
-  if (!loopCtx.dedup) loopCtx.dedup = new Set();
-  if (!loopCtx.budget) {
-    loopCtx.budget = {
-      maxTurns: 24,
-      maxActions: 5,
-      maxWallClockMs: 1_200_000,
-      toolResultMaxChars: 6000,
-      actionsUsed: 0,
-      maxTransientRefunds: 2,
-      transientRefunds: 0,
-    };
-  }
-  if (loopCtx.budget.actionsUsed == null) loopCtx.budget.actionsUsed = 0;
-  if (loopCtx.budget.transientRefunds == null) loopCtx.budget.transientRefunds = 0;
-  if (loopCtx.budget.maxTransientRefunds == null) loopCtx.budget.maxTransientRefunds = 2;
+function buildDeprecatedShim(name, kind, hint) {
+  return {
+    name,
+    kind,
+    description: `[DEPRECATED] ${hint}`,
+    parameters: { type: 'object', properties: {}, additionalProperties: true },
+    async execute() {
+      return {
+        ok: false,
+        error: 'deprecated_tool',
+        hint,
+      };
+    },
+  };
+}
 
-  const registry = loopCtx.actionRegistry || actionRegistry;
-  const actionSpecs = typeof registry.listAll === 'function' ? registry.listAll() : [];
-  // Also include dynamic handlers present on host but not in registry (configured externals).
-  const handlerNames = Object.keys(loopCtx.host?.actionHandlers || {});
-  const known = new Set(actionSpecs.map((s) => s.name));
-  for (const name of handlerNames) {
-    if (!known.has(name)) {
-      actionSpecs.push({
-        name,
-        description: `Configured / host action: ${name}`,
-        promptHint: `Execute host-registered action ${name}. Params are action-specific.`,
-      });
-    }
-  }
-
-  const tools = [
-    ...buildReadonlyTools(loopCtx),
-    ...actionSpecs.map((spec) => buildActionTool(spec, loopCtx)),
-    buildFinishTool(loopCtx),
-  ];
+function wrapToolsProduct(tools, loopCtx) {
   const byName = new Map(tools.map((t) => [t.name, t]));
-
   return {
     tools,
     byName,
@@ -526,6 +283,71 @@ export function buildLoopTools(loopCtx) {
       }
     },
   };
+}
+
+/**
+ * Report-centric investigation tools: readonly queries + finish_investigation.
+ * Action queueing and finish_cycle report writing are host-orchestrated outside this loop.
+ */
+export function buildInvestigationTools(loopCtx) {
+  if (!loopCtx.queued) loopCtx.queued = [];
+  if (!loopCtx.executed) loopCtx.executed = loopCtx.queued;
+  if (!loopCtx.dedup) loopCtx.dedup = new Set();
+  if (!loopCtx.budget) {
+    loopCtx.budget = {
+      maxTurns: 6,
+      maxActions: 5,
+      maxWallClockMs: 1_200_000,
+      toolResultMaxChars: 6000,
+      actionsUsed: 0,
+    };
+  }
+  if (loopCtx.budget.actionsUsed == null) loopCtx.budget.actionsUsed = 0;
+  if (!loopCtx.investigation) loopCtx.investigation = null;
+  if (!Array.isArray(loopCtx.queryLog)) loopCtx.queryLog = [];
+
+  const readonly = buildReadonlyTools(loopCtx).map((tool) => {
+    const original = tool.execute.bind(tool);
+    return {
+      ...tool,
+      async execute(args, meta) {
+        const outcome = await original(args, meta);
+        loopCtx.queryLog.push({
+          name: tool.name,
+          ok: Boolean(outcome?.ok),
+          args: args && typeof args === 'object' ? args : {},
+          at: new Date().toISOString(),
+          preview: (() => {
+            try {
+              const text = JSON.stringify(outcome?.result ?? outcome ?? null);
+              return text.length > 800 ? `${text.slice(0, 800)}…` : text;
+            } catch {
+              return null;
+            }
+          })(),
+        });
+        return outcome;
+      },
+    };
+  });
+
+  const tools = [
+    ...readonly,
+    buildFinishInvestigationTool(loopCtx),
+    // Thin shims so stale model/toolChoice paths fail clearly instead of hard-crashing.
+    buildDeprecatedShim(
+      'finish_cycle',
+      'control',
+      'finish_cycle is deprecated in report-centric agent_loop. Call finish_investigation; the host writes the Intel report.',
+    ),
+  ];
+
+  return wrapToolsProduct(tools, loopCtx);
+}
+
+/** @deprecated Use buildInvestigationTools. Alias kept for import stability. */
+export function buildLoopTools(loopCtx) {
+  return buildInvestigationTools(loopCtx);
 }
 
 export { READONLY_SOURCES, decisionFingerprint };

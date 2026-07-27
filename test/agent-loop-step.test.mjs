@@ -5,9 +5,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { MockToolsAIClient } from '../src/ai/mock-tools-client.mjs';
 import { createIntelligenceStore } from '../src/intelligence/store.mjs';
 import { actionRegistry } from '../src/actions/registry.mjs';
-import { runAgentLoopStep, runVerifyStep } from '../src/evolution/cycle-steps.mjs';
+import { runAgentLoopStep, runExecStep, runVerifyStep } from '../src/evolution/cycle-steps.mjs';
 import { loadCycleStepContext } from '../src/cli/utils/cycle-checkpoints.mjs';
 import { writePendingOperatorBrief } from '../src/intelligence/operator-briefs.mjs';
+import { queueAnalyzeDecideActions } from '../src/intelligence/phase1-shared.mjs';
+import { createHostDecisionQueue } from '../src/intelligence/decision-queue.mjs';
 
 let tempDir = null;
 
@@ -16,7 +18,48 @@ afterEach(() => {
   tempDir = null;
 });
 
-function makeCtx() {
+const MOCK_REPORT = [
+  '# 情报报告',
+  '',
+  '## Seen',
+  '- mechanical Seen + investigation digest available',
+  '',
+  '## Inferred',
+  '- step wiring is intact',
+  '',
+  '## Cyber-Taoist analysis',
+  '- mock path only',
+  '',
+  '## 下一轮建议',
+  '- keep using agent_loop in mock smoke tests',
+].join('\n');
+
+const MOCK_DECIDE = JSON.stringify({
+  decision: 'execute',
+  rationale: 'queue one record_observation from brief',
+  actions: [{
+    type: 'record_observation',
+    description: 'record bootstrap observation',
+    priority: 'medium',
+    params: { content: 'agent_loop step works', source: 'test', kind: 'project_state' },
+  }],
+  goal_coverage: { covered: ['bootstrap'], not_covered: {} },
+  deferred: [{ action: 'follow up on publish candidate-demo', reason: 'not this cycle' }],
+  risk_mitigation: [],
+  goal_suggestions: [],
+});
+
+function mockCanned() {
+  return [
+    // Decide must match before report text (assistant report also contains 「情报报告」).
+    { match: /Strategic Analysis & Decision/i, response: MOCK_DECIDE },
+    { match: /情报报告任务|Intelligence Report Task/i, response: MOCK_REPORT },
+    { match: /standing memory|Current State|固定容量/i, response: '长期态势：agent_loop mock 完成。' },
+    { match: /verification|语义验证|机械验证/i, response: JSON.stringify({ status: 'ok', notes: ['mock verify'] }) },
+  ];
+}
+
+function makeCtx(script = null) {
   tempDir = mkdtempSync(join(tmpdir(), 'jea-loop-step-'));
   const projectRoot = tempDir;
   const runtimeRoot = join(tempDir, 'runtime', 'subjects', 'demo');
@@ -38,45 +81,18 @@ function makeCtx() {
     timezone: 'Asia/Shanghai',
   });
   const aiClient = new MockToolsAIClient({
-    script: [
-      {
-        toolCalls: [{
-          name: 'record_observation',
-          arguments: {
-            description: 'record bootstrap observation',
-            params: { content: 'agent_loop step works', source: 'test', kind: 'project_state' },
-          },
-        }],
-      },
-      {
-        toolCalls: [{
-          name: 'finish_cycle',
-          arguments: {
-            status: 'done',
-            report_markdown: [
-              '# 情报报告',
-              '',
-              '## Seen',
-              '- agent_loop executed record_observation',
-              '',
-              '## Inferred',
-              '- step wiring is intact',
-              '',
-              '## Cyber-Taoist analysis',
-              '- mock path only',
-              '',
-              '## 下一轮建议',
-              '- keep using agent_loop in mock smoke tests',
-            ].join('\n'),
-            carryover: ['follow up on publish candidate-demo'],
-          },
-        }],
-      },
-    ],
-    canned: [
-      { match: /standing memory|Current State|固定容量/i, response: '长期态势：agent_loop mock 完成。' },
-      { match: /verification|语义验证|机械验证/i, response: JSON.stringify({ status: 'ok', notes: ['mock verify'] }) },
-    ],
+    script: script || [{
+      toolCalls: [{
+        name: 'finish_investigation',
+        arguments: {
+          findings_summary: 'brief asks for one record_observation',
+          enough_for_report: true,
+          gaps_closed: ['brief'],
+          open_gaps: [],
+        },
+      }],
+    }],
+    canned: mockCanned(),
   });
 
   const host = {
@@ -154,8 +170,8 @@ function makeCtx() {
   };
 }
 
-describe('runAgentLoopStep', () => {
-  it('writes intel/exec/agent_loop checkpoints and supports verify downstream', async () => {
+describe('runAgentLoopStep (report-centric)', () => {
+  it('writes intel/agent_loop checkpoints, queues via Decide, then exec/verify', async () => {
     const { ctx, cycleId, recordState, projectRoot, runtime } = makeCtx();
     writePendingOperatorBrief(runtime.runtimeRoot, {
       id: 'brief-loop',
@@ -164,53 +180,56 @@ describe('runAgentLoopStep', () => {
       suggested_actions: ['record_observation'],
     });
 
-    // Ensure cycle-state dirs exist for writeStepArtifact
     mkdirSync(join(projectRoot, 'runtime', 'subjects', 'demo', 'data', 'evolution', 'cycle-state'), { recursive: true });
 
     const outcome = await runAgentLoopStep(ctx, { cycleId, recordState });
     expect(outcome.cycleId).toBe(cycleId);
-    expect(outcome.execResult.executed.length).toBe(1);
+    expect(outcome.execResult).toBeUndefined();
+    expect(outcome.intelResult.decisions_queued.length).toBe(1);
     expect(outcome.intelResult.report.mdPath).toBeTruthy();
     expect(existsSync(outcome.intelResult.report.mdPath)).toBe(true);
+    expect(outcome.loopResult.phases.investigate).toBeTruthy();
+    expect(outcome.loopResult.phases.report.source).toBeTruthy();
 
     const intelCp = join(projectRoot, 'runtime', 'subjects', 'demo', 'data', 'evolution', 'cycle-state', cycleId, 'intel.json');
     const execCp = join(projectRoot, 'runtime', 'subjects', 'demo', 'data', 'evolution', 'cycle-state', cycleId, 'exec.json');
     const loopCp = join(projectRoot, 'runtime', 'subjects', 'demo', 'data', 'evolution', 'cycle-state', cycleId, 'agent_loop.json');
     expect(existsSync(intelCp)).toBe(true);
-    expect(existsSync(execCp)).toBe(true);
+    expect(existsSync(execCp)).toBe(false);
     expect(existsSync(loopCp)).toBe(true);
 
-    const intelPayload = JSON.parse(readFileSync(intelCp, 'utf-8')).payload;
-    const execPayload = JSON.parse(readFileSync(execCp, 'utf-8')).payload;
-    expect(intelPayload.success).toBe(true);
-    expect(Array.isArray(execPayload.executed)).toBe(true);
+    const loopPayload = JSON.parse(readFileSync(loopCp, 'utf-8')).payload;
+    expect(loopPayload.queued_count).toBe(1);
+    expect(loopPayload.phases?.investigate).toBeTruthy();
+    expect(loopPayload.phases?.decide?.actions_count).toBe(1);
 
-    const conversationPath = outcome.intelResult.conversation_context_path;
-    const conversation = JSON.parse(readFileSync(conversationPath, 'utf-8'));
+    const { execResult } = await runExecStep(ctx, {
+      recordState,
+      intelResult: outcome.intelResult,
+      stateCycleId: cycleId,
+    });
+    expect(execResult.executed.length).toBeGreaterThanOrEqual(1);
+    expect(existsSync(execCp)).toBe(true);
+
+    const conversation = JSON.parse(readFileSync(outcome.intelResult.conversation_context_path, 'utf-8'));
     expect(conversation.kind).toBe('agent_loop_conversation_context');
+    expect(conversation.phases.investigate).toBeTruthy();
     expect(conversation.restored_conversation.length).toBeGreaterThan(0);
 
     const stepContext = loadCycleStepContext(projectRoot, 'demo', cycleId, runtime.runtimeRoot);
-    expect(stepContext.intelResult.cycle_id).toBe(cycleId);
-    expect(stepContext.execResult.executed).toHaveLength(1);
-
     const verify = await runVerifyStep(ctx, {
       intelResult: stepContext.intelResult,
       execResult: stepContext.execResult,
       recordState,
     });
     expect(verify.verification.verified.length).toBeGreaterThanOrEqual(1);
-    expect(existsSync(verify.reportPath)).toBe(true);
 
     const carryoverPath = join(runtime.runtimeRoot, 'data', 'evolution', 'agent_loop_carryover.json');
-    expect(existsSync(carryoverPath)).toBe(true);
     const carryover = JSON.parse(readFileSync(carryoverPath, 'utf-8'));
-    expect(carryover.items).toEqual(['follow up on publish candidate-demo']);
-    const loopPayload = JSON.parse(readFileSync(loopCp, 'utf-8')).payload;
-    expect(loopPayload.carryover).toEqual(['follow up on publish candidate-demo']);
+    expect(carryover.items.some((item) => String(item).includes('publish candidate-demo'))).toBe(true);
   });
 
-  it('clears carryover when finish_cycle omits it', async () => {
+  it('clears carryover when decide/investigation leave no open items', async () => {
     const { ctx, cycleId, recordState, runtime } = makeCtx();
     const carryoverPath = join(runtime.runtimeRoot, 'data', 'evolution', 'agent_loop_carryover.json');
     writeFileSync(carryoverPath, JSON.stringify({
@@ -219,20 +238,30 @@ describe('runAgentLoopStep', () => {
       created_at: new Date().toISOString(),
       items: ['stale item'],
     }, null, 2), 'utf-8');
-    // Override finish to empty carryover
+
     ctx.cfg.aiClient = new MockToolsAIClient({
-      script: [
-        {
-          toolCalls: [{
-            name: 'finish_cycle',
-            arguments: {
-              status: 'done',
-              report_markdown: '# Report\n\n## Seen\n- none\n\n## Inferred\n- none\n\n## Cyber-Taoist analysis\n- none\n\n## Next\n- none\n',
-            },
-          }],
-        },
-      ],
+      script: [{
+        toolCalls: [{
+          name: 'finish_investigation',
+          arguments: {
+            findings_summary: 'nothing pending',
+            enough_for_report: true,
+            open_gaps: [],
+          },
+        }],
+      }],
       canned: [
+        {
+          match: /Strategic Analysis & Decision/i,
+          response: JSON.stringify({
+            decision: 'defer',
+            rationale: 'no action',
+            actions: [],
+            deferred: [],
+            goal_coverage: { covered: [], not_covered: {} },
+          }),
+        },
+        { match: /情报报告任务|Intelligence Report Task/i, response: MOCK_REPORT },
         { match: /standing memory|Current State|固定容量/i, response: 'ok' },
       ],
     });
@@ -242,43 +271,42 @@ describe('runAgentLoopStep', () => {
     expect(carryover.items).toEqual([]);
   });
 
-  it('records forced/closing metadata and salvage carryover on hard close', async () => {
+  it('truncates Decide actions beyond JEA_EXEC_LIMIT into deferred/carryover', async () => {
     const { ctx, cycleId, recordState, projectRoot, runtime } = makeCtx();
-    ctx.cfg.host.actionHandlers.record_observation = async () => ({
-      success: false,
-      error: 'simulated action failure for salvage',
-    });
+    const manyActions = Array.from({ length: 4 }, (_, i) => ({
+      type: 'record_observation',
+      description: `note ${i + 1}`,
+      params: { content: `c${i + 1}`, source: 'test' },
+    }));
     ctx.cfg.aiClient = new MockToolsAIClient({
-      script: [
-        {
-          content: 'failed action, need salvage carryover',
-          toolCalls: [{
-            name: 'record_observation',
-            arguments: {
-              description: 'will fail',
-              params: { content: 'salvage-me', source: 'test' },
-            },
-          }],
-        },
-        {
-          content: 'still reading instead of finishing',
-          toolCalls: [{ name: 'get_decision_queue_summary', arguments: {} }],
-        },
-        // Closing turn retries toolChoice up to 3 times; keep failing all of them.
-        { error: 'closing unavailable' },
-        { error: 'closing unavailable' },
-        { error: 'closing unavailable' },
-      ],
+      script: [{
+        toolCalls: [{
+          name: 'finish_investigation',
+          arguments: { findings_summary: 'many actions', enough_for_report: true },
+        }],
+      }],
       canned: [
+        {
+          match: /Strategic Analysis & Decision/i,
+          response: JSON.stringify({
+            decision: 'execute',
+            rationale: 'many',
+            actions: manyActions,
+            deferred: [],
+            goal_coverage: { covered: [], not_covered: {} },
+          }),
+        },
+        { match: /情报报告任务|Intelligence Report Task/i, response: MOCK_REPORT },
         { match: /standing memory|Current State|固定容量/i, response: 'ok' },
       ],
     });
     const prevExec = process.env.JEA_EXEC_LIMIT;
-    process.env.JEA_EXEC_LIMIT = '1';
+    process.env.JEA_EXEC_LIMIT = '2';
     try {
       mkdirSync(join(runtime.runtimeRoot, 'data', 'evolution', 'cycle-state'), { recursive: true });
-      const forcedCycleId = `${cycleId}-forced`;
-      await runAgentLoopStep(ctx, { cycleId: forcedCycleId, recordState });
+      const forcedCycleId = `${cycleId}-limit`;
+      const outcome = await runAgentLoopStep(ctx, { cycleId: forcedCycleId, recordState });
+      expect(outcome.intelResult.decisions_queued.length).toBe(2);
       const loopCp = join(
         projectRoot,
         'runtime',
@@ -291,24 +319,47 @@ describe('runAgentLoopStep', () => {
         'agent_loop.json',
       );
       const loopPayload = JSON.parse(readFileSync(loopCp, 'utf-8')).payload;
-      expect(loopPayload.forced).toBe(true);
-      expect(loopPayload.forced_reason).toBe('action_budget_exhausted');
-      expect(loopPayload.closing).toBe('salvaged');
-      expect(Array.isArray(loopPayload.carryover)).toBe(true);
-      expect(loopPayload.carryover.some((item) => String(item).includes('record_observation'))).toBe(true);
-
-      const carryoverPath = join(runtime.runtimeRoot, 'data', 'evolution', 'agent_loop_carryover.json');
-      const carryover = JSON.parse(readFileSync(carryoverPath, 'utf-8'));
-      expect(carryover.items.some((item) => String(item).includes('record_observation'))).toBe(true);
-
-      const events = ctx.store.readEvolutionEvents?.({ limit: 50 }) ?? [];
-      const pipelineEvent = events.find((e) => e.type === 'agent_loop_pipeline' && e.cycle_id === forcedCycleId);
-      expect(pipelineEvent).toBeTruthy();
-      expect(pipelineEvent.forced).toBe(true);
-      expect(pipelineEvent.closing).toBe('salvaged');
+      expect(loopPayload.carryover.some((item) => String(item).includes('JEA_EXEC_LIMIT'))).toBe(true);
+      expect(existsSync(join(
+        projectRoot,
+        'runtime',
+        'subjects',
+        'demo',
+        'data',
+        'evolution',
+        'cycle-state',
+        forcedCycleId,
+        'exec.json',
+      ))).toBe(false);
     } finally {
       if (prevExec == null) delete process.env.JEA_EXEC_LIMIT;
       else process.env.JEA_EXEC_LIMIT = prevExec;
     }
+  });
+
+  it('queueAnalyzeDecideActions helper respects maxActions', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'jea-phase1-shared-'));
+    const runtimeRoot = join(tempDir, 'runtime');
+    mkdirSync(join(runtimeRoot, 'data', 'evolution'), { recursive: true });
+    const decisionQueue = createHostDecisionQueue({ dataDir: join(runtimeRoot, 'data', 'evolution') });
+    const analysis = { deferred: [] };
+    const result = await queueAnalyzeDecideActions({
+      projectRoot: runtimeRoot,
+      runtime: { runtimeRoot, subject: 'demo' },
+      decisionQueue,
+      cycleId: 'c1',
+      timestamp: new Date().toISOString(),
+      analysis,
+      actions: [
+        { type: 'record_observation', description: 'a', params: { content: 'a' } },
+        { type: 'record_observation', description: 'b', params: { content: 'b' } },
+        { type: 'record_observation', description: 'c', params: { content: 'c' } },
+      ],
+      maxActions: 1,
+      pipeline: 'agent_loop',
+    });
+    expect(result.decisions_queued).toHaveLength(1);
+    expect(result.deferred_overflow).toHaveLength(2);
+    expect(analysis.deferred.length).toBeGreaterThanOrEqual(2);
   });
 });

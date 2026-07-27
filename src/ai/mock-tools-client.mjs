@@ -21,6 +21,13 @@ const DEFAULT_FINISH_REPORT = [
   '- Switch to a real DeepSeek client for production agent_loop runs.',
 ].join('\n');
 
+const DEFAULT_INVESTIGATION = Object.freeze({
+  findings_summary: 'Mock investigation: mechanical Seen and brief are sufficient for report drafting.',
+  enough_for_report: true,
+  gaps_closed: ['confirmed brief coverage'],
+  open_gaps: [],
+});
+
 function normalizeScriptItem(item = {}) {
   if (item?.error != null) {
     return {
@@ -60,6 +67,7 @@ export class MockToolsAIClient extends MockAIClient {
   constructor({
     script = [],
     finishReport = DEFAULT_FINISH_REPORT,
+    investigation = null,
     canned = [],
     defaultResponse = '{}',
     ...rest
@@ -68,6 +76,9 @@ export class MockToolsAIClient extends MockAIClient {
     this._script = Array.isArray(script) ? script.map(normalizeScriptItem) : [];
     this._scriptIndex = 0;
     this.finishReport = String(finishReport || DEFAULT_FINISH_REPORT);
+    this.investigation = investigation && typeof investigation === 'object'
+      ? { ...DEFAULT_INVESTIGATION, ...investigation }
+      : { ...DEFAULT_INVESTIGATION };
   }
 
   /**
@@ -111,20 +122,35 @@ export class MockToolsAIClient extends MockAIClient {
       };
     }
 
-    // Exhausted script: always finish so the loop terminates.
+    // Exhausted script: finish investigation so the host can draft the report.
     const finishArgs = {
-      status: 'done',
-      report_markdown: this.finishReport,
-      key_findings: ['mock agent_loop auto-finish'],
-      next_cycle_suggestions: ['Use a real model for production runs'],
+      findings_summary: this.investigation.findings_summary,
+      enough_for_report: this.investigation.enough_for_report !== false,
+      gaps_closed: this.investigation.gaps_closed,
+      open_gaps: this.investigation.open_gaps,
     };
+    // Prefer finish_investigation; fall back only if tools list is legacy-only.
+    const toolNames = (opts.tools || [])
+      .map((t) => t?.function?.name || t?.name)
+      .filter(Boolean);
+    const finishName = toolNames.includes('finish_investigation')
+      ? 'finish_investigation'
+      : (toolNames.includes('finish_cycle') ? 'finish_cycle' : 'finish_investigation');
+    const legacyFinishArgs = finishName === 'finish_cycle'
+      ? {
+        status: 'done',
+        report_markdown: this.finishReport,
+        key_findings: ['mock agent_loop auto-finish'],
+        next_cycle_suggestions: ['Use a real model for production runs'],
+      }
+      : finishArgs;
     return {
       content: null,
       toolCalls: [{
         id: 'mock_finish',
-        name: 'finish_cycle',
-        arguments: finishArgs,
-        argumentsRaw: JSON.stringify(finishArgs),
+        name: finishName,
+        arguments: legacyFinishArgs,
+        argumentsRaw: JSON.stringify(legacyFinishArgs),
       }],
       finishReason: 'tool_calls',
       usage: null,
@@ -135,8 +161,8 @@ export class MockToolsAIClient extends MockAIClient {
           id: 'mock_finish',
           type: 'function',
           function: {
-            name: 'finish_cycle',
-            arguments: JSON.stringify(finishArgs),
+            name: finishName,
+            arguments: JSON.stringify(legacyFinishArgs),
           },
         }],
       },
@@ -144,4 +170,4 @@ export class MockToolsAIClient extends MockAIClient {
   }
 }
 
-export { DEFAULT_FINISH_REPORT };
+export { DEFAULT_FINISH_REPORT, DEFAULT_INVESTIGATION };

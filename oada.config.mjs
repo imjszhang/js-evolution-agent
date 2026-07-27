@@ -167,20 +167,50 @@ function createAiClient() {
 }
 
 function createMockAiClient() {
-  const mockJournalZh =
-    '# 情报报告（mock 输出）\n\n' +
-    '本轮处于无 AI 网络调用的兜底模式。机器仅汇总当前运行时状态要点：\n\n' +
-    '- buffer：观测已落盘，未触及核心。\n' +
-    '- probe：尚无新的探针结果。\n' +
-    '- core：只读，符合主体策略边界。\n\n' +
-    '本段为占位输出，不代表 DeepSeek 真实生成；切换到 `--deepseek` 可获得完整分析报告。\n';
-  const mockJournalEn =
-    '# Intelligence Report (mock output)\n\n' +
-    'This cycle ran without a real AI call. The machine only summarizes baseline runtime posture:\n\n' +
-    '- buffer layer: observations absorbed, core untouched.\n' +
-    '- probe layer: no new probe results.\n' +
-    '- core layer: read-only, consistent with the subject policy boundary.\n\n' +
-    'This placeholder text does not replace a DeepSeek run; switch to `--deepseek` for a full Cyber-Taoist-aligned reading.\n';
+  const mockJournalZh = [
+    '# 情报报告（mock 输出）',
+    '',
+    '本轮处于无 AI 网络调用的兜底模式。机器仅汇总当前运行时状态要点。',
+    '',
+    'Token: E2E_REPORT_TOKEN',
+    '',
+    '## Seen',
+    '- buffer：观测已落盘，未触及核心。',
+    '- probe：尚无新的探针结果。',
+    '- core：只读，符合主体策略边界。',
+    '',
+    '## Inferred',
+    '- mock 路径接线完整；切换到真实 DeepSeek 可获得完整分析。',
+    '',
+    '## Cyber-Taoist analysis',
+    '- 当前为 bootstrap / mock 阶段，不构成竞争主张。',
+    '',
+    '## 下一轮建议',
+    '- 使用 `--deepseek` 生成完整 Cyber-Taoist 对齐报告。',
+    '',
+  ].join('\n');
+  const mockJournalEn = [
+    '# Intelligence Report (mock output)',
+    '',
+    'This cycle ran without a real AI call. The machine only summarizes baseline runtime posture.',
+    '',
+    'Token: E2E_REPORT_TOKEN',
+    '',
+    '## Seen',
+    '- buffer layer: observations absorbed, core untouched.',
+    '- probe layer: no new probe results.',
+    '- core layer: read-only, consistent with the subject policy boundary.',
+    '',
+    '## Inferred',
+    '- Mock wiring is intact; switch to DeepSeek for a full analysis.',
+    '',
+    '## Cyber-Taoist analysis',
+    '- Bootstrap / mock stage only; no competitive claim.',
+    '',
+    '## Next cycle suggestions',
+    '- Use `--deepseek` for a full Cyber-Taoist-aligned reading.',
+    '',
+  ].join('\n');
   const mockDiaryZh =
     '# 进化日记（mock 输出）\n\n' +
     '这一轮在 mock 模式下完成，日记只记录可确认的运行事实。\n\n' +
@@ -199,8 +229,12 @@ function createMockAiClient() {
   return new MockToolsAIClient({
     canned: [
       { match: /Strategic Analysis & Decision/i, response: cannedAnalyzeDecide },
+      // Intel report task must win over embedded observation text in the report prompt.
+      { match: /情报报告任务|情报报告（mock/, response: mockJournalZh },
+      { match: /Intelligence Report Task|Intelligence Report \(mock/i, response: mockJournalEn },
       {
-        match: /observation report/i,
+        // Observe-only prompt signature (do not use bare "observation report" — report prompts embed that phrase).
+        match: /You are an intelligence analyst|Conduct a current-state observation/i,
         response:
           '# Observation Report\n\n' +
           '## State\njs-evolution-agent bootstrap cycle with Cyber-Taoist context and js-intel-store memory enabled.\n\n' +
@@ -209,8 +243,6 @@ function createMockAiClient() {
       },
       { match: /进化日记/, response: mockDiaryZh },
       { match: /evolution diary/i, response: mockDiaryEn },
-      { match: /情报报告/, response: mockJournalZh },
-      { match: /intelligence report/i, response: mockJournalEn },
     ],
     defaultResponse: cannedAnalyzeDecide,
     script: [],

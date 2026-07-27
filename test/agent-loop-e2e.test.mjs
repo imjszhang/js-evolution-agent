@@ -20,6 +20,7 @@ import {
   runAgentLoopStep,
   runBeliefUpdateStep,
   runDiaryStep,
+  runExecStep,
   runGoalsAssessStep,
   runGoalsCalibrateStep,
   runVerifyStep,
@@ -63,7 +64,7 @@ function makeE2eProjectRoot() {
 }
 
 describe('agent_loop e2e (mock)', () => {
-  it('runs agent_loop then verify/belief/goals/diary and closes cycle artifacts', async () => {
+  it('runs agent_loop then exec/verify/belief/goals/diary and closes cycle artifacts', async () => {
     const root = makeE2eProjectRoot();
     const prevCwd = process.cwd();
     const prevMock = process.env.JEA_FORCE_MOCK;
@@ -92,22 +93,29 @@ describe('agent_loop e2e (mock)', () => {
       expect(existsSync(loopOutcome.intelResult.report.mdPath)).toBe(true);
 
       const intelCp = readStepArtifact(root, SUBJECT, cycleState.cycle_id, 'intel');
-      const execCp = readStepArtifact(root, SUBJECT, cycleState.cycle_id, 'exec');
       const loopCp = readStepArtifact(root, SUBJECT, cycleState.cycle_id, 'agent_loop');
       expect(intelCp?.success).toBe(true);
-      expect(Array.isArray(execCp?.executed)).toBe(true);
       expect(loopCp?.success).toBe(true);
+      expect(readStepArtifact(root, SUBJECT, cycleState.cycle_id, 'exec')).toBeNull();
+
+      const { execResult } = await runExecStep(ctx, {
+        recordState,
+        intelResult: loopOutcome.intelResult,
+        stateCycleId: cycleState.cycle_id,
+      });
+      const execCp = readStepArtifact(root, SUBJECT, cycleState.cycle_id, 'exec');
+      expect(Array.isArray(execCp?.executed)).toBe(true);
 
       const { verification, reportPath } = await runVerifyStep(ctx, {
         intelResult: loopOutcome.intelResult,
-        execResult: loopOutcome.execResult,
+        execResult,
         recordState,
       });
       expect(existsSync(reportPath)).toBe(true);
 
       await runBeliefUpdateStep(ctx, {
         intelResult: loopOutcome.intelResult,
-        execResult: loopOutcome.execResult,
+        execResult,
         verification,
         reportPath,
         recordState,
@@ -128,7 +136,7 @@ describe('agent_loop e2e (mock)', () => {
       }
       const diary = await runDiaryStep(ctx, {
         intelResult: loopOutcome.intelResult,
-        execResult: loopOutcome.execResult,
+        execResult,
         verification,
         beliefUpdateResult: null,
         goalsAssessResult: goalsOutcome.goalsAssessResult,

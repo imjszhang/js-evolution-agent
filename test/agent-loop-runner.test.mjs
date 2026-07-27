@@ -3,9 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { MockToolsAIClient } from '../src/ai/mock-tools-client.mjs';
-import { buildLoopTools } from '../src/evolution/agent-loop/tool-registry.mjs';
-import { runAgentLoop } from '../src/evolution/agent-loop/loop-runner.mjs';
-import { ActionExecutor } from '../src/engine/index.mjs';
+import { buildInvestigationTools } from '../src/evolution/agent-loop/tool-registry.mjs';
+import { runInvestigationLoop, runAgentLoop } from '../src/evolution/agent-loop/loop-runner.mjs';
 import { createHostDecisionQueue } from '../src/intelligence/decision-queue.mjs';
 import { createIntelligenceStore } from '../src/intelligence/store.mjs';
 
@@ -30,9 +29,7 @@ function makeTools() {
     runtimeRoot,
     sourceRoot: tempDir,
     intelligenceStore: store,
-    actionHandlers: {
-      record_observation: async () => ({ success: true, status: 'recorded' }),
-    },
+    actionHandlers: {},
     logger: { info() {}, warning() {}, error() {} },
   };
   const runtime = { runtimeRoot, subject: 'demo', dataNamespace: 'demo' };
@@ -42,7 +39,6 @@ function makeTools() {
     store,
     cycleId: 'cycle-runner',
     decisionQueue: createHostDecisionQueue({ dataDir: join(runtimeRoot, 'data', 'evolution') }),
-    executor: new ActionExecutor({ projectRoot: runtimeRoot, cycleId: 'cycle-runner', host }),
     budget: {
       maxTurns: 10,
       maxActions: 5,
@@ -52,36 +48,33 @@ function makeTools() {
     },
     dedup: new Set(),
     executed: [],
+    queryLog: [],
     emitEvent() {},
   };
-  return { tools: buildLoopTools(loopCtx), loopCtx, runtimeRoot };
+  return { tools: buildInvestigationTools(loopCtx), loopCtx, runtimeRoot };
 }
 
-describe('runAgentLoop', () => {
-  it('runs readonly -> action -> finish and writes turns.jsonl', async () => {
+describe('runInvestigationLoop', () => {
+  it('runs readonly -> finish_investigation and writes turns.jsonl', async () => {
     const { tools, loopCtx, runtimeRoot } = makeTools();
     const client = new MockToolsAIClient({
       script: [
         { toolCalls: [{ name: 'get_decision_queue_summary', arguments: {} }] },
         {
           toolCalls: [{
-            name: 'record_observation',
-            arguments: { description: 'obs', params: { content: 'hello' } },
-          }],
-        },
-        {
-          toolCalls: [{
-            name: 'finish_cycle',
+            name: 'finish_investigation',
             arguments: {
-              status: 'done',
-              report_markdown: '# Loop Report\n\n## Seen\n- ok\n',
+              findings_summary: 'queue is quiet',
+              enough_for_report: true,
+              gaps_closed: ['queue'],
+              open_gaps: [],
             },
           }],
         },
       ],
     });
     const turnsPath = join(runtimeRoot, 'data', 'evolution', 'records', 'cycle-runner', 'agent_loop_turns.jsonl');
-    const result = await runAgentLoop({
+    const result = await runInvestigationLoop({
       aiClient: client,
       systemPrompt: 'system',
       initialUserPrompt: 'user',
@@ -90,12 +83,36 @@ describe('runAgentLoop', () => {
       turnsPath,
     });
     expect(result.status).toBe('done');
-    expect(result.turns).toBe(3);
-    expect(loopCtx.executed).toHaveLength(1);
-    expect(result.finish.report_markdown).toContain('# Loop Report');
+    expect(result.turns).toBe(2);
+    expect(result.investigation.findings_summary).toContain('queue is quiet');
+    expect(result.readonlyCalls).toBeGreaterThanOrEqual(1);
     const lines = readFileSync(turnsPath, 'utf-8').trim().split('\n');
-    expect(lines).toHaveLength(3);
-    expect(result.messages.some((m) => m.role === 'tool')).toBe(true);
+    expect(lines).toHaveLength(2);
+  });
+
+  it('allows zero-query finish_investigation', async () => {
+    const { tools, loopCtx } = makeTools();
+    const client = new MockToolsAIClient({
+      script: [{
+        toolCalls: [{
+          name: 'finish_investigation',
+          arguments: {
+            findings_summary: 'mechanical Seen is enough',
+            enough_for_report: true,
+          },
+        }],
+      }],
+    });
+    const result = await runInvestigationLoop({
+      aiClient: client,
+      systemPrompt: 'system',
+      initialUserPrompt: 'user',
+      tools,
+      budget: loopCtx.budget,
+    });
+    expect(result.status).toBe('done');
+    expect(result.turns).toBe(1);
+    expect(result.investigation.enough_for_report).toBe(true);
   });
 
   it('force-finishes after two empty tool turns', async () => {
@@ -111,15 +128,16 @@ describe('runAgentLoop', () => {
         };
       },
     };
-    const result = await runAgentLoop({
+    const result = await runInvestigationLoop({
       aiClient: client,
       systemPrompt: 'system',
       initialUserPrompt: 'user',
       tools,
       budget: { ...loopCtx.budget, maxTurns: 5 },
     });
-    expect(result.status).toBe('no_tool_calls');
-    expect(result.finish.forced).toBe(true);
+    expect(result.investigation.forced).toBe(true);
+    expect(result.investigation.forced_reason).toBe('no_tool_calls');
+    expect(result.investigation.findings_summary).toMatch(/Host closed investigation|no_tool_calls/);
   });
 
   it('returns error for unknown tools without crashing', async () => {
@@ -129,13 +147,13 @@ describe('runAgentLoop', () => {
         { toolCalls: [{ name: 'not_a_real_tool', arguments: {} }] },
         {
           toolCalls: [{
-            name: 'finish_cycle',
-            arguments: { status: 'done', report_markdown: '# ok\n' },
+            name: 'finish_investigation',
+            arguments: { findings_summary: 'ok', enough_for_report: true },
           }],
         },
       ],
     });
-    const result = await runAgentLoop({
+    const result = await runInvestigationLoop({
       aiClient: client,
       systemPrompt: 'system',
       initialUserPrompt: 'user',
@@ -145,77 +163,6 @@ describe('runAgentLoop', () => {
     expect(result.status).toBe('done');
     const toolMsg = result.messages.find((m) => m.role === 'tool' && m.content.includes('unknown_tool'));
     expect(toolMsg).toBeTruthy();
-    expect(toolMsg.content).toContain('valid_tools');
-  });
-
-  it('rejects a second side-effect action in the same turn', async () => {
-    const { tools, loopCtx } = makeTools();
-    const client = new MockToolsAIClient({
-      script: [
-        {
-          toolCalls: [
-            {
-              name: 'record_observation',
-              arguments: { description: 'a', params: { content: 'a' } },
-            },
-            {
-              name: 'record_observation',
-              arguments: { description: 'b', params: { content: 'b' } },
-            },
-          ],
-        },
-        {
-          toolCalls: [{
-            name: 'finish_cycle',
-            arguments: { status: 'done', report_markdown: '# ok\n' },
-          }],
-        },
-      ],
-    });
-    const result = await runAgentLoop({
-      aiClient: client,
-      systemPrompt: 'system',
-      initialUserPrompt: 'user',
-      tools,
-      budget: loopCtx.budget,
-    });
-    expect(result.status).toBe('done');
-    expect(loopCtx.executed).toHaveLength(1);
-    const blocked = result.messages.find((m) => m.role === 'tool' && m.content.includes('one_action_per_turn'));
-    expect(blocked).toBeTruthy();
-  });
-
-  it('injects a one-shot budget-exhausted finish notice', async () => {
-    const { tools, loopCtx } = makeTools();
-    loopCtx.budget.maxActions = 1;
-    const client = new MockToolsAIClient({
-      script: [
-        {
-          toolCalls: [{
-            name: 'record_observation',
-            arguments: { description: 'only', params: { content: 'one' } },
-          }],
-        },
-        {
-          toolCalls: [{
-            name: 'finish_cycle',
-            arguments: { status: 'done', report_markdown: '# done\n' },
-          }],
-        },
-      ],
-    });
-    const result = await runAgentLoop({
-      aiClient: client,
-      systemPrompt: 'system',
-      initialUserPrompt: 'user',
-      tools,
-      budget: loopCtx.budget,
-    });
-    expect(result.status).toBe('done');
-    const notice = result.messages.find((m) => (
-      m.role === 'user' && String(m.content).includes('Action budget is exhausted')
-    ));
-    expect(notice).toBeTruthy();
   });
 
   it('enters protected closing turn after soft wallclock deadline', async () => {
@@ -228,9 +175,12 @@ describe('runAgentLoop', () => {
           toolCalls: [{ name: 'get_decision_queue_summary', arguments: {} }],
         },
       ],
-      finishReport: '# Closing Model Report\n\n## Seen\n- soft deadline closing worked\n',
+      investigation: {
+        findings_summary: 'closing model investigation summary',
+        enough_for_report: true,
+      },
     });
-    const result = await runAgentLoop({
+    const result = await runInvestigationLoop({
       aiClient: client,
       systemPrompt: 'system',
       initialUserPrompt: 'user',
@@ -242,32 +192,27 @@ describe('runAgentLoop', () => {
         maxTurns: 10,
       },
     });
-    expect(result.finish.forced).toBe(true);
-    expect(result.finish.closing).toBe('model');
-    expect(result.finish.forced_reason).toBe('wallclock_soft_deadline');
-    expect(result.finish.report_markdown).toContain('# Closing Model Report');
-    expect(result.finish.report_markdown).not.toContain('Agent Loop Forced Finish');
+    expect(result.investigation.forced).toBe(true);
+    expect(result.investigation.closing).toBe('model');
+    expect(result.investigation.forced_reason).toBe('wallclock_soft_deadline');
+    expect(result.investigation.findings_summary).toContain('closing model investigation summary');
   });
 
-  it('salvages a structured report when closing LLM fails', async () => {
+  it('forces investigation digest when closing LLM fails', async () => {
     const { tools, loopCtx } = makeTools();
     const client = new MockToolsAIClient({
       script: [
         {
           delayMs: 700,
-          content: 'I observed avg=43.33 and candidate evaluate failed',
-          toolCalls: [{
-            name: 'record_observation',
-            arguments: { description: 'note', params: { content: 'avg=43.33' } },
-          }],
+          content: 'I observed avg=43.33',
+          toolCalls: [{ name: 'get_decision_queue_summary', arguments: {} }],
         },
-        // Closing turn retries toolChoice up to 3 times; keep failing all of them.
         { error: 'closing boom' },
         { error: 'closing boom' },
         { error: 'closing boom' },
       ],
     });
-    const result = await runAgentLoop({
+    const result = await runInvestigationLoop({
       aiClient: client,
       systemPrompt: 'system',
       initialUserPrompt: 'user',
@@ -279,53 +224,13 @@ describe('runAgentLoop', () => {
         maxTurns: 10,
       },
     });
-    expect(result.finish.forced).toBe(true);
-    expect(result.finish.closing).toBe('salvaged');
-    expect(result.finish.report_markdown).toContain('Salvaged');
-    expect(result.finish.report_markdown).toContain('record_observation');
-    expect(result.finish.report_markdown).toContain('avg=43.33');
-    expect(result.finish.report_markdown).not.toContain('Agent Loop Forced Finish');
-    expect(result.finish.carryover.length).toBeGreaterThanOrEqual(0);
-  });
-
-  it('gives one turn after action-budget notice then closes', async () => {
-    const { tools, loopCtx } = makeTools();
-    loopCtx.budget.maxActions = 1;
-    const client = new MockToolsAIClient({
-      script: [
-        {
-          toolCalls: [{
-            name: 'record_observation',
-            arguments: { description: 'only', params: { content: 'one' } },
-          }],
-        },
-        {
-          content: 'still investigating instead of finishing',
-          toolCalls: [{ name: 'get_decision_queue_summary', arguments: {} }],
-        },
-      ],
-      finishReport: '# Closed After Budget\n\n## Seen\n- action budget\n',
-    });
-    const result = await runAgentLoop({
-      aiClient: client,
-      systemPrompt: 'system',
-      initialUserPrompt: 'user',
-      tools,
-      budget: loopCtx.budget,
-    });
-    const notices = result.messages.filter((m) => (
-      m.role === 'user' && String(m.content).includes('Action budget is exhausted')
-    ));
-    expect(notices).toHaveLength(1);
-    expect(result.finish.forced).toBe(true);
-    expect(result.finish.closing).toBe('model');
-    expect(result.finish.forced_reason).toBe('action_budget_exhausted');
-    expect(result.finish.report_markdown).toContain('# Closed After Budget');
+    expect(result.investigation.forced).toBe(true);
+    expect(result.investigation.forced_reason).toBe('wallclock_soft_deadline');
+    expect(result.investigation.findings_summary).toMatch(/Host closed investigation/);
   });
 
   it('injects 60% and 85% wallclock checkpoints once each', async () => {
     const { tools, loopCtx } = makeTools();
-    // softBudget = 3000-1000 = 2000ms → 60% at 1200ms, 85% at 1700ms
     const client = new MockToolsAIClient({
       script: [
         {
@@ -338,13 +243,13 @@ describe('runAgentLoop', () => {
         },
         {
           toolCalls: [{
-            name: 'finish_cycle',
-            arguments: { status: 'done', report_markdown: '# ok\n' },
+            name: 'finish_investigation',
+            arguments: { findings_summary: 'ok', enough_for_report: true },
           }],
         },
       ],
     });
-    const result = await runAgentLoop({
+    const result = await runInvestigationLoop({
       aiClient: client,
       systemPrompt: 'system',
       initialUserPrompt: 'user',
@@ -365,5 +270,20 @@ describe('runAgentLoop', () => {
     ));
     expect(c60).toHaveLength(1);
     expect(c85).toHaveLength(1);
+  });
+
+  it('runAgentLoop alias still returns finish compatibility shape', async () => {
+    const { tools, loopCtx } = makeTools();
+    const client = new MockToolsAIClient({ script: [] });
+    const result = await runAgentLoop({
+      aiClient: client,
+      systemPrompt: 'system',
+      initialUserPrompt: 'user',
+      tools,
+      budget: loopCtx.budget,
+    });
+    expect(result.finish).toBeTruthy();
+    expect(result.investigation).toBeTruthy();
+    expect(result.finish.investigation).toBeTruthy();
   });
 });
