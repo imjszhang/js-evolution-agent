@@ -87,7 +87,10 @@ Phase 5   evolution diary
 内部阶段：
 
 ```text
-机械 Seen 底板 → 只读查证（tool loop）→ 单次定稿 Intel 报告 → 经典 Analyze+Decide JSON 批入队
+机械 Seen 底板 → 只读查证（tool loop，可交 verified_facts）
+→ 宿主组装最终 Seen（machine_context + 机械底板 + verified_facts）
+→ 模型单次定稿判断章节（Inferred / Cyber-Taoist / 下一轮建议）
+→ 宿主 splice Seen + 引用字形净化 → 经典 Analyze+Decide JSON 批入队
 ```
 
 模式解析优先级（仿 evolution.mode）：
@@ -119,10 +122,10 @@ agent_loop → exec → verify → belief_update → goals_assess → goals_cali
 
 查证工具（仅 investigation 阶段）：
 
-- **readonly**：`intel_query`、`get_current_beliefs`、`get_active_goals`、`get_decision_queue_summary`、`read_intel_report`
-- **control**：`finish_investigation`（必填 `findings_summary`、`enough_for_report`；可选 `gaps_closed` / `open_gaps`）
+- **readonly**：`intel_query`、`get_current_beliefs`、`get_active_goals`、`get_decision_queue_summary`、`read_intel_report`（工具结果附 `ref` / `cite_as` 句柄）
+- **control**：`finish_investigation`（必填 `findings_summary`、`enough_for_report`；可选 `gaps_closed` / `open_gaps` / `verified_facts[{ref,statement}]`）
 
-查证阶段**不**注册 action 入队工具，也**不**在 loop 内写完整 Intel 报告。宿主在查证结束后：用机械 Seen + investigation digest **单次**生成 Phase 1.5 报告，再跑经典 Analyze+Decide JSON 批入队。
+查证阶段**不**注册 action 入队工具，也**不**在 loop 内写完整 Intel 报告。宿主在查证结束后组装最终 Seen（机械底板 + `machine_context` 运行态 bullets + 已校验 `verified_facts`），再让模型单次撰写判断章节；落盘前无条件 splice `## Seen` 并做引用字形净化。模型裸写报告存档于 `data/evolution/records/<cycleId>/agent_loop_report_raw.md`（诚实矩阵的 raw 列用此测裸写纪律；最终产物硬闸看 splice 后报告）。
 
 机械守护（`evolution.guards`，不占 Decide 入队预算）：
 
@@ -152,6 +155,7 @@ data/evolution/cycle-state/<cycleId>/intel.json   # Phase 1 兼容
 data/evolution/cycle-state/<cycleId>/exec.json    # 由独立 Phase 2 exec 写入
 data/evolution/records/<cycleId>/conversation_context.json
 data/evolution/records/<cycleId>/agent_loop_turns.jsonl   # 仅查证 turns
+data/evolution/records/<cycleId>/agent_loop_report_raw.md # 模型裸写报告（splice 前）
 data/evolution/agent_loop_carryover.json
 data/evolution/agent_loop_guard_state.json
 ```
@@ -165,9 +169,9 @@ npm run jea -- run --mock --loop --subject js-evolution-agent
 Intel 报告测试两道闸（mock / CI）：
 
 1. **交付物契约**（`test/intel-report-deliverable-e2e.test.mjs`）：落盘、index、章节结构、`E2E_REPORT_TOKEN`。
-2. **证据诚实**（`test/intel-report-honesty-e2e.test.mjs`）：Seen/Evidence bullet 须带可解析 typed ref（store 类型 + `machine_context:<key>` 枚举，枚举见 `src/intelligence/machine-context-refs.mjs`，覆盖 decision_queue / active_goals 等宿主渲染运行态）；operator brief 毒句不得进入 Seen。
+2. **证据诚实**（`test/intel-report-honesty-e2e.test.mjs`）：Seen/Evidence bullet 须带可解析 typed ref（store 类型 + `machine_context:<key>` 枚举，枚举见 `src/intelligence/machine-context-refs.mjs`，覆盖 decision_queue / active_goals 等宿主渲染运行态）；operator brief 毒句不得进入 Seen。agent_loop 路径额外断言宿主 splice：模型脏 Seen 被覆盖，最终产物含机械底板与 `verified_facts` 引用。
 
-诚实层用 fixture + 注入 mock 报告做机械审计；phases 与 agent_loop 共用同一标尺。
+诚实层用 fixture + 注入 mock 报告做机械审计；phases 与 agent_loop 共用同一标尺。agent_loop 生产路径 Seen 由宿主组装（构造不变量）；诚实矩阵对 agent_loop 硬闸最终产物，并用 `raw` / `raw_sanitized` 列计量模型裸写纪律差距。
 
 **真实 DeepSeek 诚实闸**（opt-in，默认 `npm test` 跳过；需 `.env` 中 `DEEPSEEK_API_KEY`）：
 
@@ -175,7 +179,7 @@ Intel 报告测试两道闸（mock / CI）：
 $env:JEA_LIVE_DEEPSEEK='1'; npm run test:live-deepseek
 ```
 
-覆盖 phases + agent_loop Intel-only；对模型生成报告跑同一诚实断言（无 canned MD / 不要求 `E2E_REPORT_TOKEN`）。**失败表示线上模型 Seen 纪律不足**（例如把 brief 毒句写进 Seen），不是 mock 接线问题；默认 CI 不跑此文件。可用 `JEA_LLM_PROFILE` 换档后复跑。
+覆盖 phases + agent_loop Intel-only；对最终落盘报告跑同一诚实断言（无 canned MD / 不要求 `E2E_REPORT_TOKEN`）。agent_loop 最终产物 Seen 由宿主组装，失败多为接线/组装回归；phases 失败仍表示模型 Seen 纪律不足。默认 CI 不跑此文件。可用 `JEA_LLM_PROFILE` 换档后复跑。
 
 ### LLM 档案（DeepSeek V4）
 
@@ -203,7 +207,7 @@ $env:JEA_LIVE_DEEPSEEK='1'; npm run test:live-deepseek:intel-matrix
 $env:JEA_LIVE_DEEPSEEK_DEEP='1'; npm run test:live-deepseek:intel-matrix
 ```
 
-默认 5 格：phases 的 flash×off / flash×high / pro×high，以及 agent_loop 的 flash×high / pro×high。每格硬闸；结束打印对比汇总表。失败表示该档 Seen 纪律不足。
+默认 5 格：phases 的 flash×off / flash×high / pro×high，以及 agent_loop 的 flash×high / pro×high。每格对最终产物硬闸；汇总表另含 agent_loop 的 `raw` / `raw_sanitized` 信息列（模型裸写纪律，不影响硬闸）。phases 失败表示该档 Seen 纪律不足；agent_loop 最终产物失败表示宿主组装/splice 回归。
 
 批量演化：
 

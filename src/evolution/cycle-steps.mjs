@@ -27,6 +27,7 @@ import {
 } from '../intelligence/operator-briefs.mjs';
 import {
   buildSeenSection,
+  enforceIntelReportSeenGate,
   prepareIntelReport,
   persistIntelReport,
   updateStandingMemoryWithAi,
@@ -49,6 +50,7 @@ import { runMechanicalGuards } from './agent-loop/guard-runner.mjs';
 import {
   buildAgentLoopInitialUserPromptParts,
   buildAgentLoopObservationReport,
+  buildAgentLoopReportUserPromptParts,
   buildAgentLoopSystemPromptParts,
   buildInvestigationDigest,
   formatToolCatalogForPrompt,
@@ -56,8 +58,13 @@ import {
 import {
   buildConversationSystemPromptParts,
   buildDecideUserPromptParts,
-  buildReportUserPromptParts,
 } from '../prompts/phase1-conversation.mjs';
+import { buildMachineContextSeenBullets } from '../intelligence/machine-context-refs.mjs';
+import {
+  auditIntelReportEvidenceHonesty,
+  extractBracketRefs,
+  sanitizeCitationGlyphs,
+} from '../intelligence/report-honesty.mjs';
 
 function carryoverPath(runtimeRoot) {
   return join(runtimeRoot, 'data', 'evolution', 'agent_loop_carryover.json');
@@ -201,6 +208,87 @@ function buildRestoredConversationForVerify({ systemPrompt, initialUserPrompt, r
       ].join('\n'),
     },
   ];
+}
+
+/**
+ * Assemble host-owned Seen body for agent_loop:
+ * machine_context bullets + mechanical Seen + verified_facts (deduped by ref).
+ */
+export function assembleAgentLoopHostSeenBody({
+  reportContext = null,
+  queueSummary = null,
+  operatorBriefs = [],
+  mechanicalSeen = '',
+  verifiedFacts = [],
+} = {}) {
+  const mcBody = buildMachineContextSeenBullets({
+    reportContext,
+    queueSummary,
+    operatorBriefs,
+  });
+  const mechBody = String(mechanicalSeen || '').trim();
+  const existingRefs = new Set([
+    ...extractBracketRefs(mcBody).map((r) => r.raw.toLowerCase()),
+    ...extractBracketRefs(mechBody).map((r) => r.raw.toLowerCase()),
+  ]);
+  const verifiedBullets = [];
+  for (const fact of Array.isArray(verifiedFacts) ? verifiedFacts : []) {
+    const ref = String(fact?.ref || '').trim();
+    const statement = String(fact?.statement || '').trim();
+    if (!ref || !statement) continue;
+    if (existingRefs.has(ref.toLowerCase())) continue;
+    existingRefs.add(ref.toLowerCase());
+    verifiedBullets.push(`- ${ref}: ${statement}`);
+  }
+  return [mcBody, mechBody, verifiedBullets.join('\n')]
+    .filter((part) => part && part !== '(none)')
+    .join('\n\n')
+    .trim() || '- (none)';
+}
+
+function forbiddenPhrasesFromBriefs(operatorBriefs = []) {
+  const phrases = [];
+  for (const brief of Array.isArray(operatorBriefs) ? operatorBriefs : []) {
+    const summary = String(brief?.summary || '').trim();
+    if (summary) phrases.push(summary);
+  }
+  return phrases;
+}
+
+function finalizeAgentLoopReportMarkdown({
+  markdown,
+  hostSeenBody,
+  store = null,
+  operatorBriefs = [],
+  emitEvent = null,
+  logger = null,
+} = {}) {
+  let md = sanitizeCitationGlyphs(String(markdown || ''));
+  md = enforceIntelReportSeenGate(md, hostSeenBody);
+  if (store) {
+    try {
+      const honesty = auditIntelReportEvidenceHonesty({
+        store,
+        markdown: md,
+        forbiddenInSeen: forbiddenPhrasesFromBriefs(operatorBriefs),
+        minSeenBulletsWithRefs: 1,
+      });
+      if (honesty.findings.length) {
+        logger?.warning?.(
+          `[agent_loop] report honesty findings after host Seen splice: ${JSON.stringify(honesty.findings)}`,
+        );
+      }
+      emitEvent?.({
+        type: 'agent_loop_report_honesty',
+        status: honesty.findings.length ? 'findings' : 'ok',
+        findings_count: honesty.findings.length,
+        findings: honesty.findings.slice(0, 20),
+      });
+    } catch (e) {
+      logger?.warning?.(`[agent_loop] report honesty audit failed: ${e?.message || e}`);
+    }
+  }
+  return md.endsWith('\n') ? md : `${md}\n`;
 }
 
 function preloadDedupFromReceipts(store, cycleId) {
@@ -403,26 +491,33 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
     investigation,
     queryLog: investigateResult.queryLog || loopCtx.queryLog || [],
   });
-  const observationReport = buildAgentLoopObservationReport({
+  const hostSeenBody = assembleAgentLoopHostSeenBody({
+    reportContext: prepared.reportContext,
+    queueSummary,
+    operatorBriefs: operatorBriefsSummary,
     mechanicalSeen,
+    verifiedFacts: investigation.verified_facts || [],
+  });
+  const observationReport = buildAgentLoopObservationReport({
+    mechanicalSeen: hostSeenBody,
     investigationDigest,
   });
 
-  // --- Phase: single-shot report ---
+  // --- Phase: single-shot report (model writes judgement; host owns Seen) ---
   const reportPromptContext = toPreDecisionReportContext(prepared.reportContext);
   const systemPromptParts = buildConversationSystemPromptParts({
     agentContextDocs: cfg.agentContextDocs,
     actionRegistry: cfg.actionRegistry,
   });
-  const reportPromptParts = buildReportUserPromptParts({
+  const reportPromptParts = buildAgentLoopReportUserPromptParts({
     cycleId: resolvedCycleId,
     language,
     goalsText,
     rules,
     humanGuidance,
     operatorBriefs: operatorBriefsPrompt,
-    intelligenceContext,
-    observationReport,
+    hostSeenBody,
+    investigationDigest,
     reportContext: reportPromptContext,
   });
   const reportMessages = [
@@ -441,10 +536,21 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
     logger,
   });
 
-  logger?.info?.('[agent_loop] phase report (single-shot)');
+  const recordsDir = join(
+    runtime.runtimeRoot,
+    'data',
+    'evolution',
+    'records',
+    resolvedCycleId,
+  );
+  mkdirSync(recordsDir, { recursive: true });
+  const rawReportPath = join(recordsDir, 'agent_loop_report_raw.md');
+
+  logger?.info?.('[agent_loop] phase report (single-shot, host Seen splice)');
   let reportMarkdown = null;
   let reportSource = 'fallback';
   let reportReason = null;
+  let rawReportMarkdown = null;
   try {
     const md = await chatMessages(aiClient, reportMessages, {
       thinking: 'medium',
@@ -452,7 +558,7 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
       phase: 'report',
     });
     if (typeof md === 'string' && md.trim()) {
-      reportMarkdown = `${md.trim()}\n`;
+      rawReportMarkdown = `${md.trim()}\n`;
       reportSource = 'ai';
     } else {
       reportReason = 'empty-output';
@@ -460,6 +566,22 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
   } catch (e) {
     reportReason = e?.message || String(e);
     logger?.warning?.(`[agent_loop] report generation failed: ${reportReason}`);
+  }
+
+  if (rawReportMarkdown) {
+    writeFileSync(rawReportPath, rawReportMarkdown, 'utf-8');
+    reportMarkdown = finalizeAgentLoopReportMarkdown({
+      markdown: rawReportMarkdown,
+      hostSeenBody,
+      store,
+      operatorBriefs,
+      emitEvent: (event) => store.recordEvolutionEvent({
+        ...event,
+        cycle_id: resolvedCycleId,
+        subject: runtime.subject,
+      }),
+      logger,
+    });
   }
 
   const persistedReport = await persistIntelReport({
@@ -480,7 +602,28 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
     updateStandingMemory: false,
     ...prepared,
   });
-  reportMarkdown = persistedReport.markdown;
+  // Always host-splice Seen (covers AI path and fallback render).
+  reportMarkdown = finalizeAgentLoopReportMarkdown({
+    markdown: persistedReport.markdown,
+    hostSeenBody,
+    store,
+    operatorBriefs,
+    emitEvent: reportSource === 'ai'
+      ? null
+      : (event) => store.recordEvolutionEvent({
+        ...event,
+        cycle_id: resolvedCycleId,
+        subject: runtime.subject,
+      }),
+    logger,
+  });
+  if (persistedReport.mdPath) {
+    writeFileSync(persistedReport.mdPath, reportMarkdown, 'utf-8');
+  }
+  if (!rawReportMarkdown && existsSync(rawReportPath) === false) {
+    // No model raw; still leave an empty marker only when AI never produced output.
+    writeFileSync(rawReportPath, '', 'utf-8');
+  }
 
   // --- Phase: classic Analyze+Decide ---
   const decidePromptParts = buildDecideUserPromptParts({
@@ -492,6 +635,7 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
     observationReport,
     reportContext: prepared.reportContext,
     actionRegistry: cfg.actionRegistry,
+    includeMachineContext: true,
   });
   const decideMessages = [
     ...reportMessages,
@@ -635,6 +779,7 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
     files: {
       self: conversationPath,
       report: persistedReport.mdPath,
+      report_raw: rawReportPath,
       turns: turnsPath,
     },
     operator_intent_briefs: operatorBriefsSummary,
@@ -655,6 +800,8 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
       report: {
         source: persistedReport.source,
         reason: reportReason,
+        raw_path: rawReportPath,
+        host_seen_spliced: true,
       },
       decide: {
         decision: analysis?.decision ?? null,
@@ -706,6 +853,7 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
       markdown: reportMarkdown,
       forced: reportSource !== 'ai',
       forced_reason: reportReason,
+      raw_md_path: rawReportPath,
     },
     conversation_context_path: conversationPath,
     standing_memory_update: memoryUpdate,
@@ -733,6 +881,7 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
         indexRecord: persistedReport.indexRecord,
         forced: reportSource !== 'ai',
         forced_reason: reportReason,
+        raw_md_path: rawReportPath,
       },
     });
     await persistCheckpoint(recordState, resolvedCycleId, 'agent_loop', {
@@ -743,6 +892,7 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
       decisions_queued: queuedIds,
       queued_count: queuedIds.length,
       report_path: persistedReport.mdPath,
+      report_raw_path: rawReportPath,
       conversation_context_path: conversationPath,
       turns_path: turnsPath,
       carryover: finishCarryover,
@@ -753,7 +903,12 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
           forced: Boolean(investigation.forced),
           forced_reason: investigation.forced_reason || null,
         },
-        report: { source: persistedReport.source, reason: reportReason },
+        report: {
+          source: persistedReport.source,
+          reason: reportReason,
+          raw_path: rawReportPath,
+          host_seen_spliced: true,
+        },
         decide: { decision: analysis?.decision ?? null, actions_count: queuedActions.length },
       },
       prompt_cache: {

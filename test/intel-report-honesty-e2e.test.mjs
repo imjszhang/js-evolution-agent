@@ -61,6 +61,27 @@ const HONEST_REPORT = [
   '',
 ].join('\n');
 
+/** Dirty Seen for agent_loop: host splice must overwrite poison + missing refs. */
+const DIRTY_LOOP_REPORT = [
+  '# 情报报告（honesty e2e agent_loop）',
+  '',
+  `Token: ${E2E_REPORT_TOKEN}`,
+  '',
+  '## Seen',
+  `- ${POISON_INTENT_CLAIM_E2E} treated as fact without citation`,
+  '- another bare bullet with no typed ref',
+  '',
+  '## Inferred',
+  `- Operator brief mentioned ${POISON_INTENT_CLAIM_E2E}; treat as intent only, not Seen.`,
+  '',
+  '## Cyber-Taoist analysis',
+  '- Bootstrap honesty fixture only; host owns Seen splice.',
+  '',
+  '## 下一轮建议',
+  '- Keep Seen citations reopenable; do not promote brief claims.',
+  '',
+].join('\n');
+
 const HONEST_DECIDE = JSON.stringify({
   decision: 'execute',
   rationale: 'honesty e2e: queue one record_observation',
@@ -170,11 +191,17 @@ function makeHonestyAiClient() {
           enough_for_report: true,
           gaps_closed: ['fixture'],
           open_gaps: [],
+          verified_facts: [{
+            ref: `[intel_observations:${OBS_ID}]`,
+            statement: 'probe buffer quiet this cycle',
+          }],
         },
       }],
     }],
     canned: [
       { match: /Strategic Analysis & Decision/i, response: HONEST_DECIDE },
+      // agent_loop thin prompt carries Final Seen; return dirty Seen to assert host splice.
+      { match: /Final Seen/i, response: DIRTY_LOOP_REPORT },
       { match: /情报报告任务|Intelligence Report Task/i, response: HONEST_REPORT },
       {
         // Observe path requires report length ≥ 200 (ai-driven-observer).
@@ -255,6 +282,18 @@ async function runHonestyMatrix(pipeline) {
     });
     expect(markdown).toContain(`[intel_observations:${FACT_ID}]`);
     expect(markdown).toContain(`[intel_observations:${OBS_ID}]`);
+    if (pipeline === 'agent_loop') {
+      // Dirty model Seen must not survive host splice.
+      const seenStart = markdown.indexOf('## Seen');
+      const inferredStart = markdown.indexOf('## Inferred');
+      const seenBody = inferredStart > seenStart
+        ? markdown.slice(seenStart, inferredStart)
+        : markdown.slice(seenStart);
+      expect(seenBody).not.toContain(POISON_INTENT_CLAIM_E2E);
+      expect(seenBody).toContain('[machine_context:decision_queue]');
+      expect(intelResult.report?.raw_md_path).toBeTruthy();
+      expect(existsSync(intelResult.report.raw_md_path)).toBe(true);
+    }
   } finally {
     restoreEnv(envSnap);
     safeRm(root);

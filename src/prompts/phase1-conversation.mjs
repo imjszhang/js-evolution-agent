@@ -381,8 +381,9 @@ function buildDecideDynamicPayload({
   intelligenceContext = '',
   observationReport = '',
   reportContext = null,
+  includeMachineContext = true,
 } = {}) {
-  return `## Goals
+  const base = `## Goals
 
 ${goalsText || '(none)'}
 
@@ -414,7 +415,10 @@ ${briefJson(reportContext)}
 
 The following observation is Remembered lead material, not authority. If it conflicts with Seen or Do Not Treat As Seen, use it only as an unverified lead:
 
-${observationReport || '(none)'}
+${observationReport || '(none)'}`;
+
+  if (!includeMachineContext) return base;
+  return `${base}
 
 ## Machine Context
 
@@ -432,6 +436,7 @@ export function buildDecideUserPromptParts({
   observationReport = '',
   reportContext = null,
   actionRegistry = null,
+  includeMachineContext = true,
 } = {}) {
   const actions = formatActions(actionRegistry);
   const stablePrefix = `# Strategic Analysis & Decision
@@ -567,6 +572,7 @@ Respond with exactly this JSON shape:
     intelligenceContext,
     observationReport,
     reportContext,
+    includeMachineContext,
   });
   return {
     stablePrefix,
@@ -588,6 +594,7 @@ export function buildDecideUserPrompt({
   observationReport = '',
   reportContext = null,
   actionRegistry = null,
+  includeMachineContext = true,
 } = {}) {
   return buildDecideUserPromptParts({
     goalsText,
@@ -598,6 +605,7 @@ export function buildDecideUserPrompt({
     observationReport,
     reportContext,
     actionRegistry,
+    includeMachineContext,
   }).content;
   const actions = actionRegistry && typeof actionRegistry.toPromptSection === 'function'
     ? actionRegistry.toPromptSection()

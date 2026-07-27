@@ -6,7 +6,10 @@ import { createIntelligenceStore } from '../src/intelligence/store.mjs';
 import {
   assertIntelReportEvidenceHonesty,
   auditIntelReportEvidenceHonesty,
+  detectNearMissCitations,
   POISON_INTENT_CLAIM_E2E,
+  resolveTypedRef,
+  sanitizeCitationGlyphs,
 } from './helpers/intel-report-honesty-assert.mjs';
 
 let tempDir = null;
@@ -148,5 +151,51 @@ describe('intel-report evidence honesty assert', () => {
     ].join('\n');
     const { findings } = auditIntelReportEvidenceHonesty({ store, markdown });
     expect(findings.some((f) => f.rule === 'seen_unknown_source_type')).toBe(true);
+  });
+
+  it('resolveTypedRef accepts bracket and bare forms for store and machine_context', () => {
+    const store = makeStore();
+    expect(resolveTypedRef(store, '[intel_observations:obs-e2e-1]')).toMatchObject({
+      ok: true,
+      sourceType: 'intel_observations',
+      sourceId: 'obs-e2e-1',
+    });
+    expect(resolveTypedRef(store, 'machine_context:decision_queue')).toMatchObject({
+      ok: true,
+      sourceType: 'machine_context',
+      sourceId: 'decision_queue',
+    });
+    expect(resolveTypedRef(store, '[machine_context:not_a_real_key]').ok).toBe(false);
+    expect(resolveTypedRef(store, 'bogus').reason).toBe('unparseable_ref');
+  });
+
+  it('sanitizeCitationGlyphs normalizes fullwidth brackets and colons', () => {
+    const input = [
+      '［intel_observations：obs-e2e-1］',
+      '【machine_context：active_goals】',
+      '[intel_observations：obs-e2e-1]',
+      '[ intel_observations : obs-e2e-1 ]',
+      '普通全角冒号：保留',
+    ].join('\n');
+    const out = sanitizeCitationGlyphs(input);
+    expect(out).toContain('[intel_observations:obs-e2e-1]');
+    expect(out).toContain('[machine_context:active_goals]');
+    expect(out).toContain('普通全角冒号：保留');
+    expect(out).not.toContain('［');
+    expect(out).not.toContain('：obs');
+  });
+
+  it('attaches near_miss diagnostics when refs look like citations but fail ASCII parse', () => {
+    const store = makeStore();
+    const markdown = [
+      '## Seen',
+      '- ［intel_observations：obs-e2e-1］: fullwidth citation shape',
+      '',
+    ].join('\n');
+    const { findings } = auditIntelReportEvidenceHonesty({ store, markdown });
+    const missing = findings.find((f) => f.rule === 'seen_bullet_missing_ref');
+    expect(missing).toBeTruthy();
+    expect(missing.detail.near_miss?.length).toBeGreaterThan(0);
+    expect(detectNearMissCitations('［intel_observations：obs-e2e-1］').length).toBeGreaterThan(0);
   });
 });

@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { decisionFingerprint } from '../../engine/index.mjs';
+import { resolveTypedRef } from '../../intelligence/report-honesty.mjs';
 
 const READONLY_SOURCES = Object.freeze([
   'intel_observations',
@@ -34,6 +35,20 @@ function summarizeResult(result, maxChars) {
   } catch {
     return { preview: clipped.text, truncated: clipped.truncated, chars: clipped.chars };
   }
+}
+
+function itemRef(source, row) {
+  const id = row?.id ?? row?.receipt_id ?? row?.cycle_id ?? null;
+  if (!id) return null;
+  return `[${source}:${id}]`;
+}
+
+function attachItemRefs(source, items = []) {
+  return (Array.isArray(items) ? items : []).map((row) => {
+    const ref = itemRef(source, row);
+    if (!ref || !row || typeof row !== 'object') return row;
+    return { ...row, ref };
+  });
 }
 
 function filterContains(rows, contains) {
@@ -90,9 +105,10 @@ function buildReadonlyTools(loopCtx) {
         const rows = await readSourceRows(store, source, limit);
         if (rows == null) return { ok: false, error: `source unavailable: ${source}` };
         const filtered = filterContains(rows, args?.contains).slice(0, limit);
+        const items = attachItemRefs(source, filtered);
         return {
           ok: true,
-          result: summarizeResult({ source, count: filtered.length, items: filtered }, maxChars),
+          result: summarizeResult({ source, count: items.length, items }, maxChars),
         };
       },
     },
@@ -103,7 +119,13 @@ function buildReadonlyTools(loopCtx) {
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       async execute() {
         const doc = store.readCurrentBeliefs?.() ?? null;
-        return { ok: true, result: summarizeResult(doc, maxChars) };
+        return {
+          ok: true,
+          result: summarizeResult({
+            ...(doc && typeof doc === 'object' ? doc : { beliefs: doc }),
+            cite_as: '[machine_context:current_beliefs]',
+          }, maxChars),
+        };
       },
     },
     {
@@ -113,10 +135,22 @@ function buildReadonlyTools(loopCtx) {
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       async execute() {
         const path = join(runtime.runtimeRoot, 'data', 'goals', 'active_goals.json');
-        if (!existsSync(path)) return { ok: true, result: { goals: null, path } };
+        if (!existsSync(path)) {
+          return {
+            ok: true,
+            result: { goals: null, path, cite_as: '[machine_context:active_goals]' },
+          };
+        }
         try {
           const goals = JSON.parse(readFileSync(path, 'utf-8'));
-          return { ok: true, result: summarizeResult({ path, goals }, maxChars) };
+          return {
+            ok: true,
+            result: summarizeResult({
+              path,
+              goals,
+              cite_as: '[machine_context:active_goals]',
+            }, maxChars),
+          };
         } catch (e) {
           return { ok: false, error: e?.message || String(e) };
         }
@@ -130,7 +164,13 @@ function buildReadonlyTools(loopCtx) {
       async execute() {
         try {
           const summary = loopCtx.decisionQueue?.summarize?.() ?? null;
-          return { ok: true, result: summarizeResult(summary, maxChars) };
+          return {
+            ok: true,
+            result: summarizeResult({
+              ...(summary && typeof summary === 'object' ? summary : { summary }),
+              cite_as: '[machine_context:decision_queue]',
+            }, maxChars),
+          };
         } catch (e) {
           return { ok: false, error: e?.message || String(e) };
         }
@@ -160,13 +200,15 @@ function buildReadonlyTools(loopCtx) {
             markdown = `${markdown.slice(0, maxChars)}\n...(truncated)`;
           }
         }
+        const cycleId = wanted.cycle_id;
         return {
           ok: true,
           result: {
-            cycle_id: wanted.cycle_id,
+            cycle_id: cycleId,
             md_path: mdPath ?? null,
             tldr: wanted.tldr ?? null,
             markdown,
+            cite_as: cycleId ? `[intel_reports:${cycleId}]` : null,
           },
         };
       },
@@ -179,6 +221,40 @@ function normalizeStringList(value, { maxItems = 20, maxChars = 500 } = {}) {
   return value.map(String).map((s) => s.slice(0, maxChars)).slice(0, maxItems);
 }
 
+function normalizeVerifiedFacts(store, rawFacts) {
+  const accepted = [];
+  const rejected = [];
+  const list = Array.isArray(rawFacts) ? rawFacts.slice(0, 10) : [];
+  for (const item of list) {
+    const refRaw = item?.ref ?? item?.source_address ?? null;
+    const statement = String(item?.statement ?? item?.summary ?? '').trim().slice(0, 500);
+    if (!refRaw || !statement) {
+      rejected.push({
+        ref: refRaw ? String(refRaw) : null,
+        statement: statement || null,
+        reason: 'ref_and_statement_required',
+      });
+      continue;
+    }
+    const resolved = resolveTypedRef(store, String(refRaw));
+    if (!resolved.ok) {
+      rejected.push({
+        ref: String(refRaw),
+        statement,
+        reason: resolved.reason || 'invalid_ref',
+      });
+      continue;
+    }
+    accepted.push({
+      ref: resolved.raw,
+      source_type: resolved.sourceType,
+      source_id: resolved.sourceId,
+      statement,
+    });
+  }
+  return { accepted, rejected };
+}
+
 function buildFinishInvestigationTool(loopCtx) {
   return {
     name: 'finish_investigation',
@@ -186,6 +262,8 @@ function buildFinishInvestigationTool(loopCtx) {
     description: [
       'End the readonly investigation phase.',
       'Call when mechanical Seen + brief are enough, or after targeted queries closed the gaps.',
+      'Prefer verified_facts (ref + one-sentence statement) for facts the host should splice into Seen;',
+      'ref must come from tool result handles (item.ref / cite_as) or machine_context enum keys.',
       'Do not write the Intel report here; the host generates it in a separate step.',
     ].join(' '),
     parameters: {
@@ -209,6 +287,25 @@ function buildFinishInvestigationTool(loopCtx) {
           type: 'boolean',
           description: 'True when evidence is sufficient to draft the Phase 1.5 Intel report.',
         },
+        verified_facts: {
+          type: 'array',
+          maxItems: 10,
+          description: 'Structured facts for host Seen splice. Each item needs ref + statement; prose findings_summary alone is not Seen.',
+          items: {
+            type: 'object',
+            properties: {
+              ref: {
+                type: 'string',
+                description: 'Typed ref such as [intel_observations:<id>] or [machine_context:<key>]',
+              },
+              statement: {
+                type: 'string',
+                description: 'One-sentence factual statement tied to the ref',
+              },
+            },
+            required: ['ref', 'statement'],
+          },
+        },
       },
       required: ['findings_summary', 'enough_for_report'],
     },
@@ -217,11 +314,14 @@ function buildFinishInvestigationTool(loopCtx) {
       if (!findings) {
         return { ok: false, error: 'findings_summary is required' };
       }
+      const { accepted, rejected } = normalizeVerifiedFacts(loopCtx.store, args?.verified_facts);
       loopCtx.investigation = {
         gaps_closed: normalizeStringList(args?.gaps_closed),
         open_gaps: normalizeStringList(args?.open_gaps),
         findings_summary: findings.slice(0, 8000),
         enough_for_report: args?.enough_for_report !== false,
+        verified_facts: accepted,
+        rejected_facts: rejected,
         finished: true,
       };
       return {
@@ -229,6 +329,8 @@ function buildFinishInvestigationTool(loopCtx) {
         result: {
           finished: true,
           enough_for_report: loopCtx.investigation.enough_for_report,
+          verified_facts: accepted.length,
+          rejected: rejected.length ? rejected : undefined,
         },
       };
     },

@@ -1581,6 +1581,26 @@ export function enforceStandingMemoryEvidenceGate(text, reportContext) {
   return replaceMarkdownSection(text, 'Evidence', buildEvidenceSection(reportContext));
 }
 
+/**
+ * Host-owned Seen splice for agent_loop reports.
+ * Replaces the first matching Seen/Evidence/本轮看到 section body; inserts ## Seen if none exist.
+ */
+export function enforceIntelReportSeenGate(markdown, seenBody) {
+  const body = String(seenBody || '').trim() || '- (none)';
+  const text = String(markdown || '');
+  for (const heading of ['Seen', 'Evidence', '本轮看到']) {
+    const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const sectionPattern = new RegExp(
+      `(^|\\n)##\\s+${escaped}\\s*\\n[\\s\\S]*?(?=\\n##\\s+|$)`,
+      'i',
+    );
+    if (sectionPattern.test(text)) {
+      return replaceMarkdownSection(text, heading, body);
+    }
+  }
+  return `## Seen\n\n${body}\n\n${text}`.trim();
+}
+
 /** @deprecated Use enforceStandingMemoryEvidenceGate */
 export function enforceStandingMemorySeenGate(text, reportContext) {
   let updated = replaceMarkdownSection(text, 'Evidence', buildEvidenceSection(reportContext));

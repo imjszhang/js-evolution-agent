@@ -58,8 +58,13 @@ function makeMatrixClient(cell) {
   });
 }
 
+function countFindings(byRule = {}) {
+  return Object.values(byRule).reduce((a, b) => a + Number(b || 0), 0);
+}
+
 function pushRow(cell, result, error = null) {
   const findings = result?.findingsByRule || {};
+  const isLoop = cell.pipeline === 'agent_loop';
   matrixRows.push({
     label: cellLabel(cell),
     pipeline: cell.pipeline,
@@ -70,6 +75,8 @@ function pushRow(cell, result, error = null) {
     missing_ref: findings.seen_bullet_missing_ref || 0,
     dangling: findings.seen_dangling_ref || 0,
     unknown_type: findings.seen_unknown_source_type || 0,
+    raw: isLoop ? countFindings(result?.rawFindingsByRule) : null,
+    raw_sanitized: isLoop ? countFindings(result?.rawSanitizedFindingsByRule) : null,
     citesFixture: Boolean(result?.citesFixture),
     elapsedMs: result?.elapsedMs ?? null,
     error: error ? String(error.message || error).slice(0, 160) : null,
@@ -85,6 +92,8 @@ function printSummaryTable() {
     'missing_ref',
     'dangling',
     'unknown_type',
+    'raw',
+    'raw_sanitized',
     'fixture_cite',
     'ms',
   ];
@@ -102,6 +111,8 @@ function printSummaryTable() {
         row.missing_ref,
         row.dangling,
         row.unknown_type,
+        row.raw == null ? '-' : row.raw,
+        row.raw_sanitized == null ? '-' : row.raw_sanitized,
         row.citesFixture ? 'yes' : 'no',
         row.elapsedMs ?? '-',
       ].join(' | ')
@@ -110,6 +121,10 @@ function printSummaryTable() {
   }
   // Use console.log so the table survives vitest per-test stdout isolation.
   console.log('\n[intel-honesty-matrix] summary\n' + lines.join('\n') + '\n');
+  console.log(
+    '[intel-honesty-matrix] note: ok/poison/missing_ref/dangling/unknown_type are final-product gates; '
+    + 'raw / raw_sanitized are informational model-bare-write discipline (agent_loop only).\n',
+  );
 }
 
 async function runCell(cell) {

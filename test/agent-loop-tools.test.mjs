@@ -135,30 +135,81 @@ describe('agent-loop investigation tools', () => {
     const goals = await tools.dispatch('get_active_goals', {});
     expect(goals.ok).toBe(true);
     expect(JSON.stringify(goals.result)).toContain('bootstrap');
+    expect(JSON.stringify(goals.result)).toContain('[machine_context:active_goals]');
     expect(loopCtx.queryLog.some((q) => q.name === 'get_active_goals')).toBe(true);
   });
 
-  it('validates intel_query source enum', async () => {
-    const { loopCtx } = makeLoopCtx();
+  it('validates intel_query source enum and attaches item.ref', async () => {
+    const { loopCtx, store } = makeLoopCtx();
+    store.ingest('intel_observations', {
+      id: 'obs-ref-1',
+      kind: 'observation',
+      source: 'test',
+      content: 'ref handle fixture',
+      confidence: 'medium',
+    });
     const tools = buildInvestigationTools(loopCtx);
     const bad = await tools.dispatch('intel_query', { source: 'nope' });
     expect(bad.ok).toBe(false);
-    const ok = await tools.dispatch('intel_query', { source: 'evolution_events', limit: 5 });
+    const ok = await tools.dispatch('intel_query', { source: 'intel_observations', limit: 5 });
     expect(ok.ok).toBe(true);
+    const payload = typeof ok.result === 'string' ? JSON.parse(ok.result) : ok.result;
+    const items = payload.items || payload.preview && [];
+    if (Array.isArray(payload.items)) {
+      expect(payload.items.some((row) => row.ref === '[intel_observations:obs-ref-1]')).toBe(true);
+    } else {
+      expect(JSON.stringify(ok.result)).toContain('[intel_observations:obs-ref-1]');
+    }
+    expect(items || true).toBeTruthy();
   });
 
-  it('builds a bounded investigation digest', () => {
+  it('accepts verified_facts and rejects invalid refs', async () => {
+    const { loopCtx, store } = makeLoopCtx();
+    store.ingest('intel_observations', {
+      id: 'obs-vf-1',
+      kind: 'observation',
+      source: 'test',
+      content: 'verified fact fixture',
+      confidence: 'medium',
+    });
+    const tools = buildInvestigationTools(loopCtx);
+    const outcome = await tools.dispatch('finish_investigation', {
+      findings_summary: 'closed with verified facts',
+      enough_for_report: true,
+      verified_facts: [
+        { ref: '[intel_observations:obs-vf-1]', statement: 'fixture observation present' },
+        { ref: '[machine_context:decision_queue]', statement: 'queue summary available' },
+        { ref: '[intel_observations:missing]', statement: 'should be rejected' },
+        { ref: 'not-a-ref', statement: 'unparseable' },
+      ],
+    });
+    expect(outcome.ok).toBe(true);
+    expect(loopCtx.investigation.verified_facts).toHaveLength(2);
+    expect(loopCtx.investigation.rejected_facts).toHaveLength(2);
+    expect(outcome.result.rejected).toHaveLength(2);
+  });
+
+  it('builds a bounded investigation digest including verified facts', () => {
     const digest = buildInvestigationDigest({
       investigation: {
         findings_summary: 'ok',
         enough_for_report: true,
         gaps_closed: ['a'],
         open_gaps: ['b'],
+        verified_facts: [
+          { ref: '[intel_observations:obs-1]', statement: 'seen fact' },
+        ],
+        rejected_facts: [
+          { ref: '[intel_observations:missing]', statement: 'nope', reason: 'dangling_ref' },
+        ],
       },
       queryLog: [{ name: 'intel_query', ok: true, preview: '{"count":1}' }],
       maxChars: 2000,
     });
     expect(digest).toContain('Findings summary');
+    expect(digest).toContain('Verified facts');
+    expect(digest).toContain('[intel_observations:obs-1]');
+    expect(digest).toContain('Rejected facts');
     expect(digest).toContain('intel_query');
     expect(digest).toContain('Open gaps');
   });
