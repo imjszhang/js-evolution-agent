@@ -236,6 +236,30 @@ describe('conversation prompt constraints', () => {
     expect(first.dynamicPayload).toContain('brief A');
     expect(first.content.indexOf('## Dynamic Decision Payload')).toBeGreaterThan(first.content.indexOf('Respond with exactly this JSON shape'));
   });
+
+  it('observationReportFraming defaults to model_lead and supports host_assembled', () => {
+    const defaultParts = buildDecideUserPromptParts({
+      observationReport: 'HOST_OR_MODEL_BLOCK',
+      actionRegistry: { toPromptSection: () => '- `agent_run`' },
+    });
+    expect(defaultParts.dynamicPayload).toContain('## Model Observation Claims');
+    expect(defaultParts.dynamicPayload).toContain(
+      'The following observation is Remembered lead material, not authority.',
+    );
+    expect(defaultParts.dynamicPayload).toContain('HOST_OR_MODEL_BLOCK');
+    expect(defaultParts.dynamicPayload).not.toContain('## Host-Assembled Observation Baseline');
+
+    const hostParts = buildDecideUserPromptParts({
+      observationReport: 'HOST_OR_MODEL_BLOCK',
+      observationReportFraming: 'host_assembled',
+      actionRegistry: { toPromptSection: () => '- `agent_run`' },
+    });
+    expect(hostParts.dynamicPayload).toContain('## Host-Assembled Observation Baseline');
+    expect(hostParts.dynamicPayload).toContain('host-assembled authoritative Seen baseline');
+    expect(hostParts.dynamicPayload).toContain('HOST_OR_MODEL_BLOCK');
+    expect(hostParts.dynamicPayload).not.toContain('## Model Observation Claims');
+    expect(hostParts.stablePrefix).toBe(defaultParts.stablePrefix);
+  });
 });
 
 describe('operator intent briefs', () => {

@@ -25,6 +25,7 @@ const SOURCE_TYPE_ALIASES = Object.freeze({
   action_receipt: 'action_receipts',
   probe_result: 'probe_results',
   intel_report: 'intel_reports',
+  reports: 'intel_reports',
   belief_event: 'belief_events',
 });
 

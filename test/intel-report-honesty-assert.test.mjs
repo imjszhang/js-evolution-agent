@@ -169,6 +169,21 @@ describe('intel-report evidence honesty assert', () => {
     expect(resolveTypedRef(store, 'bogus').reason).toBe('unparseable_ref');
   });
 
+  it('resolveTypedRef accepts reports alias for intel_reports', () => {
+    const store = makeStore();
+    store.recordIntelReport({
+      id: 'report-alias-1',
+      cycle_id: 'cycle-alias',
+      tldr: 'alias fixture',
+    });
+    const resolved = resolveTypedRef(store, '[reports:report-alias-1]');
+    expect(resolved).toMatchObject({
+      ok: true,
+      sourceType: 'intel_reports',
+      sourceId: 'report-alias-1',
+    });
+  });
+
   it('sanitizeCitationGlyphs normalizes fullwidth brackets and colons', () => {
     const input = [
       '［intel_observations：obs-e2e-1］',

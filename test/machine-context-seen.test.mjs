@@ -81,4 +81,24 @@ describe('assembleAgentLoopHostSeenBody', () => {
     expect(body).toContain('[intel_observations:obs-1]: new verified fact');
     expect(body).not.toContain('duplicate should skip');
   });
+
+  it('dedupes singular/plural source-type aliases to one bullet', () => {
+    const body = assembleAgentLoopHostSeenBody({
+      reportContext: {
+        current_cycle: { cycle_id: 'c1' },
+        source_counts: { observations: 0 },
+        standing_memory: { exists: false },
+        current_beliefs: { exists: false },
+      },
+      queueSummary: { pending: 0, in_progress: 0, completed: 0 },
+      operatorBriefs: [],
+      mechanicalSeen: '- [evolution_event:evt-1]: mechanical singular form',
+      verifiedFacts: [
+        { ref: '[evolution_events:evt-1]', statement: 'alias duplicate should skip' },
+      ],
+    });
+    expect(body).toContain('[evolution_event:evt-1]: mechanical singular form');
+    expect(body).not.toContain('alias duplicate should skip');
+    expect(body.match(/evt-1/g)?.length).toBe(1);
+  });
 });

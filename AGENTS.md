@@ -125,7 +125,7 @@ agent_loop → exec → verify → belief_update → goals_assess → goals_cali
 - **readonly**：`intel_query`、`get_current_beliefs`、`get_active_goals`、`get_decision_queue_summary`、`read_intel_report`（工具结果附 `ref` / `cite_as` 句柄）
 - **control**：`finish_investigation`（必填 `findings_summary`、`enough_for_report`；可选 `gaps_closed` / `open_gaps` / `verified_facts[{ref,statement}]`）
 
-查证阶段**不**注册 action 入队工具，也**不**在 loop 内写完整 Intel 报告。宿主在查证结束后组装最终 Seen（机械底板 + `machine_context` 运行态 bullets + 已校验 `verified_facts`），再让模型单次撰写判断章节；落盘前无条件 splice `## Seen` 并做引用字形净化。模型裸写报告存档于 `data/evolution/records/<cycleId>/agent_loop_report_raw.md`（诚实矩阵的 raw 列用此测裸写纪律；最终产物硬闸看 splice 后报告）。
+查证阶段**不**注册 action 入队工具，也**不**在 loop 内写完整 Intel 报告。宿主在查证结束后组装最终 Seen（机械底板 + `machine_context` 运行态 bullets + 已校验 `verified_facts`），再让模型单次撰写判断章节。落盘次序：`transformMd` 在 `persistIntelReport` 内、`redactSecrets` 之前做字形净化与 `## Seen` splice（只写盘一次，index/tldr 与文件一致）；persist 后对最终产物发单次 `agent_loop_report_honesty` 事件。查证阶段若有 `rejected_facts`，另发 `agent_loop_rejected_facts`（不进 carryover）。模型裸写报告存档于 `data/evolution/records/<cycleId>/agent_loop_report_raw.md`（诚实矩阵的 raw 列用此测裸写纪律；最终产物硬闸看 splice+脱敏后报告）。有意取舍：verify 复放的是宿主最终报告（raw 仅存档）；agent_loop 瘦身报告 prompt 不含 intelligenceContext（与 phases 输入面不对称，对比矩阵时注意）。
 
 机械守护（`evolution.guards`，不占 Decide 入队预算）：
 
@@ -169,7 +169,7 @@ npm run jea -- run --mock --loop --subject js-evolution-agent
 Intel 报告测试两道闸（mock / CI）：
 
 1. **交付物契约**（`test/intel-report-deliverable-e2e.test.mjs`）：落盘、index、章节结构、`E2E_REPORT_TOKEN`。
-2. **证据诚实**（`test/intel-report-honesty-e2e.test.mjs`）：Seen/Evidence bullet 须带可解析 typed ref（store 类型 + `machine_context:<key>` 枚举，枚举见 `src/intelligence/machine-context-refs.mjs`，覆盖 decision_queue / active_goals 等宿主渲染运行态）；operator brief 毒句不得进入 Seen。agent_loop 路径额外断言宿主 splice：模型脏 Seen 被覆盖，最终产物含机械底板与 `verified_facts` 引用。
+2. **证据诚实**（`test/intel-report-honesty-e2e.test.mjs`）：Seen/Evidence bullet 须带可解析 typed ref（store 类型 + `machine_context:<key>` 枚举，枚举见 `src/intelligence/machine-context-refs.mjs`，覆盖 decision_queue / active_goals 等宿主渲染运行态）；operator brief 毒句不得进入 Seen。agent_loop 路径额外断言宿主 splice：模型脏 Seen 被覆盖，最终产物含机械底板与 `verified_facts` 引用；Seen 经 persist 脱敏；每轮恰好一条 `agent_loop_report_honesty`；非法 `verified_facts` 产生 `agent_loop_rejected_facts`。
 
 诚实层用 fixture + 注入 mock 报告做机械审计；phases 与 agent_loop 共用同一标尺。agent_loop 生产路径 Seen 由宿主组装（构造不变量）；诚实矩阵对 agent_loop 硬闸最终产物，并用 `raw` / `raw_sanitized` 列计量模型裸写纪律差距。
 

@@ -649,7 +649,7 @@ function seenSourceId(item) {
   return item?.source?.id ?? item?.id ?? null;
 }
 
-function memorySourceType(sourceType) {
+export function memorySourceType(sourceType) {
   const map = {
     evolution_event: 'evolution_events',
     goal_event: 'goal_events',
@@ -1888,6 +1888,7 @@ export async function persistIntelReport({
   updateStandingMemory = true,
   queueSummary = null,
   operatorBriefs = [],
+  transformMd = null,
 } = {}) {
   const prepared = reportContext && evidence && assessment && language
     ? {
@@ -1932,6 +1933,10 @@ export async function persistIntelReport({
       language: finalLanguage,
       reason: fallbackReason,
     });
+  }
+
+  if (typeof transformMd === 'function') {
+    finalMd = transformMd(finalMd, { source: finalSource });
   }
 
   finalMd = redactSecrets(finalMd);

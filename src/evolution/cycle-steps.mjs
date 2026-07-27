@@ -63,6 +63,7 @@ import { buildMachineContextSeenBullets } from '../intelligence/machine-context-
 import {
   auditIntelReportEvidenceHonesty,
   extractBracketRefs,
+  normalizeSourceType,
   sanitizeCitationGlyphs,
 } from '../intelligence/report-honesty.mjs';
 
@@ -211,8 +212,21 @@ function buildRestoredConversationForVerify({ systemPrompt, initialUserPrompt, r
 }
 
 /**
+ * Canonical ref key for host Seen dedupe (aliases collapse to store plural form).
+ */
+function canonicalRefKey(sourceType, sourceId) {
+  const type = normalizeSourceType(sourceType);
+  const id = String(sourceId || '').trim().toLowerCase();
+  return `${type}:${id}`;
+}
+
+function refsToCanonicalKeys(text) {
+  return extractBracketRefs(text).map((r) => canonicalRefKey(r.sourceType, r.sourceId));
+}
+
+/**
  * Assemble host-owned Seen body for agent_loop:
- * machine_context bullets + mechanical Seen + verified_facts (deduped by ref).
+ * machine_context bullets + mechanical Seen + verified_facts (deduped by normalized ref).
  */
 export function assembleAgentLoopHostSeenBody({
   reportContext = null,
@@ -228,16 +242,24 @@ export function assembleAgentLoopHostSeenBody({
   });
   const mechBody = String(mechanicalSeen || '').trim();
   const existingRefs = new Set([
-    ...extractBracketRefs(mcBody).map((r) => r.raw.toLowerCase()),
-    ...extractBracketRefs(mechBody).map((r) => r.raw.toLowerCase()),
+    ...refsToCanonicalKeys(mcBody),
+    ...refsToCanonicalKeys(mechBody),
   ]);
   const verifiedBullets = [];
   for (const fact of Array.isArray(verifiedFacts) ? verifiedFacts : []) {
     const ref = String(fact?.ref || '').trim();
     const statement = String(fact?.statement || '').trim();
     if (!ref || !statement) continue;
-    if (existingRefs.has(ref.toLowerCase())) continue;
-    existingRefs.add(ref.toLowerCase());
+    const parsed = extractBracketRefs(ref)[0]
+      || (() => {
+        const bare = ref.replace(/^\[|\]$/g, '');
+        const m = /^([a-z0-9_]+)\s*:\s*(.+)$/i.exec(bare);
+        return m ? { sourceType: m[1], sourceId: m[2].trim() } : null;
+      })();
+    if (!parsed) continue;
+    const key = canonicalRefKey(parsed.sourceType, parsed.sourceId);
+    if (existingRefs.has(key)) continue;
+    existingRefs.add(key);
     verifiedBullets.push(`- ${ref}: ${statement}`);
   }
   return [mcBody, mechBody, verifiedBullets.join('\n')]
@@ -255,40 +277,47 @@ function forbiddenPhrasesFromBriefs(operatorBriefs = []) {
   return phrases;
 }
 
-function finalizeAgentLoopReportMarkdown({
+/**
+ * Pure Seen splice for agent_loop (sanitize + host gate). Used as persistIntelReport transformMd.
+ */
+export function spliceAgentLoopSeen(markdown, hostSeenBody) {
+  let md = sanitizeCitationGlyphs(String(markdown || ''));
+  md = enforceIntelReportSeenGate(md, hostSeenBody);
+  return md.endsWith('\n') ? md : `${md}\n`;
+}
+
+/**
+ * Post-persist honesty audit on the final (redacted) report. Emits at most once per cycle.
+ */
+function auditAgentLoopReport({
   markdown,
-  hostSeenBody,
   store = null,
   operatorBriefs = [],
   emitEvent = null,
   logger = null,
 } = {}) {
-  let md = sanitizeCitationGlyphs(String(markdown || ''));
-  md = enforceIntelReportSeenGate(md, hostSeenBody);
-  if (store) {
-    try {
-      const honesty = auditIntelReportEvidenceHonesty({
-        store,
-        markdown: md,
-        forbiddenInSeen: forbiddenPhrasesFromBriefs(operatorBriefs),
-        minSeenBulletsWithRefs: 1,
-      });
-      if (honesty.findings.length) {
-        logger?.warning?.(
-          `[agent_loop] report honesty findings after host Seen splice: ${JSON.stringify(honesty.findings)}`,
-        );
-      }
-      emitEvent?.({
-        type: 'agent_loop_report_honesty',
-        status: honesty.findings.length ? 'findings' : 'ok',
-        findings_count: honesty.findings.length,
-        findings: honesty.findings.slice(0, 20),
-      });
-    } catch (e) {
-      logger?.warning?.(`[agent_loop] report honesty audit failed: ${e?.message || e}`);
+  if (!store) return;
+  try {
+    const honesty = auditIntelReportEvidenceHonesty({
+      store,
+      markdown: String(markdown || ''),
+      forbiddenInSeen: forbiddenPhrasesFromBriefs(operatorBriefs),
+      minSeenBulletsWithRefs: 1,
+    });
+    if (honesty.findings.length) {
+      logger?.warning?.(
+        `[agent_loop] report honesty findings after host Seen splice: ${JSON.stringify(honesty.findings)}`,
+      );
     }
+    emitEvent?.({
+      type: 'agent_loop_report_honesty',
+      status: honesty.findings.length ? 'findings' : 'ok',
+      findings_count: honesty.findings.length,
+      findings: honesty.findings.slice(0, 20),
+    });
+  } catch (e) {
+    logger?.warning?.(`[agent_loop] report honesty audit failed: ${e?.message || e}`);
   }
-  return md.endsWith('\n') ? md : `${md}\n`;
 }
 
 function preloadDedupFromReceipts(store, cycleId) {
@@ -487,6 +516,15 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
     forced: true,
     forced_reason: 'missing_investigation',
   };
+  if (Array.isArray(investigation.rejected_facts) && investigation.rejected_facts.length) {
+    store.recordEvolutionEvent({
+      type: 'agent_loop_rejected_facts',
+      cycle_id: resolvedCycleId,
+      subject: runtime.subject,
+      count: investigation.rejected_facts.length,
+      rejected: investigation.rejected_facts.slice(0, 20),
+    });
+  }
   const investigationDigest = buildInvestigationDigest({
     investigation,
     queryLog: investigateResult.queryLog || loopCtx.queryLog || [],
@@ -547,7 +585,6 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
   const rawReportPath = join(recordsDir, 'agent_loop_report_raw.md');
 
   logger?.info?.('[agent_loop] phase report (single-shot, host Seen splice)');
-  let reportMarkdown = null;
   let reportSource = 'fallback';
   let reportReason = null;
   let rawReportMarkdown = null;
@@ -570,20 +607,13 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
 
   if (rawReportMarkdown) {
     writeFileSync(rawReportPath, rawReportMarkdown, 'utf-8');
-    reportMarkdown = finalizeAgentLoopReportMarkdown({
-      markdown: rawReportMarkdown,
-      hostSeenBody,
-      store,
-      operatorBriefs,
-      emitEvent: (event) => store.recordEvolutionEvent({
-        ...event,
-        cycle_id: resolvedCycleId,
-        subject: runtime.subject,
-      }),
-      logger,
-    });
+  } else if (existsSync(rawReportPath) === false) {
+    // No model raw; still leave an empty marker only when AI never produced output.
+    writeFileSync(rawReportPath, '', 'utf-8');
   }
 
+  // Splice host Seen inside persist (before redactSecrets) so index/tldr match disk
+  // and Seen cannot bypass redaction via a post-persist rewrite.
   const persistedReport = await persistIntelReport({
     intelResult: {
       cycle_id: resolvedCycleId,
@@ -596,34 +626,25 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
     agentContextDocs: cfg.agentContextDocs,
     aiClient: reportSource === 'ai' ? aiClient : null,
     logger,
-    md: reportMarkdown,
+    md: rawReportMarkdown,
     source: reportSource === 'ai' ? 'agent_loop' : 'fallback',
     fallbackReason: reportReason,
     updateStandingMemory: false,
+    transformMd: (md) => spliceAgentLoopSeen(md, hostSeenBody),
     ...prepared,
   });
-  // Always host-splice Seen (covers AI path and fallback render).
-  reportMarkdown = finalizeAgentLoopReportMarkdown({
-    markdown: persistedReport.markdown,
-    hostSeenBody,
+  const reportMarkdown = persistedReport.markdown;
+  auditAgentLoopReport({
+    markdown: reportMarkdown,
     store,
     operatorBriefs,
-    emitEvent: reportSource === 'ai'
-      ? null
-      : (event) => store.recordEvolutionEvent({
-        ...event,
-        cycle_id: resolvedCycleId,
-        subject: runtime.subject,
-      }),
+    emitEvent: (event) => store.recordEvolutionEvent({
+      ...event,
+      cycle_id: resolvedCycleId,
+      subject: runtime.subject,
+    }),
     logger,
   });
-  if (persistedReport.mdPath) {
-    writeFileSync(persistedReport.mdPath, reportMarkdown, 'utf-8');
-  }
-  if (!rawReportMarkdown && existsSync(rawReportPath) === false) {
-    // No model raw; still leave an empty marker only when AI never produced output.
-    writeFileSync(rawReportPath, '', 'utf-8');
-  }
 
   // --- Phase: classic Analyze+Decide ---
   const decidePromptParts = buildDecideUserPromptParts({
@@ -636,6 +657,7 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
     reportContext: prepared.reportContext,
     actionRegistry: cfg.actionRegistry,
     includeMachineContext: true,
+    observationReportFraming: 'host_assembled',
   });
   const decideMessages = [
     ...reportMessages,

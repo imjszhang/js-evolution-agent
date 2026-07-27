@@ -156,13 +156,16 @@ function safeRm(root) {
   }
 }
 
+const SECRET_SHAPED = 'API_KEY=sk-ant-api03ABCDEFGH12345678';
+
 function seedHonestyFixture(store, runtimeRoot) {
   store.ingest('intel_observations', {
     id: FACT_ID,
     kind: 'operator_fact',
     source: 'operator',
     subject: SUBJECT,
-    content: 'standing.rank lower is better; rankScore higher is better',
+    // Secret-shaped text must enter host Seen via mechanical bullets so redactSecrets is exercised.
+    content: `standing.rank lower is better; rankScore higher is better; ${SECRET_SHAPED}`,
     confidence: 'high',
   });
   store.ingest('intel_observations', {
@@ -191,10 +194,16 @@ function makeHonestyAiClient() {
           enough_for_report: true,
           gaps_closed: ['fixture'],
           open_gaps: [],
-          verified_facts: [{
-            ref: `[intel_observations:${OBS_ID}]`,
-            statement: 'probe buffer quiet this cycle',
-          }],
+          verified_facts: [
+            {
+              ref: `[intel_observations:${OBS_ID}]`,
+              statement: 'probe buffer quiet this cycle',
+            },
+            {
+              ref: '[intel_observations:does-not-exist-honesty-e2e]',
+              statement: 'dangling ref should be rejected',
+            },
+          ],
         },
       }],
     }],
@@ -293,6 +302,15 @@ async function runHonestyMatrix(pipeline) {
       expect(seenBody).toContain('[machine_context:decision_queue]');
       expect(intelResult.report?.raw_md_path).toBeTruthy();
       expect(existsSync(intelResult.report.raw_md_path)).toBe(true);
+      // Host Seen splice runs before redactSecrets; secret-shaped verified_facts must be redacted.
+      expect(seenBody).not.toContain(SECRET_SHAPED);
+      expect(seenBody).toContain('[REDACTED_SECRET]');
+      const events = ctx.store.readEvolutionEvents({ limit: 200 });
+      const honestyEvents = events.filter((e) => e.type === 'agent_loop_report_honesty');
+      expect(honestyEvents.length).toBe(1);
+      const rejectedEvents = events.filter((e) => e.type === 'agent_loop_rejected_facts');
+      expect(rejectedEvents.length).toBe(1);
+      expect(rejectedEvents[0].count).toBeGreaterThanOrEqual(1);
     }
   } finally {
     restoreEnv(envSnap);

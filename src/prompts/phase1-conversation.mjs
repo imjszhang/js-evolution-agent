@@ -373,6 +373,21 @@ ${clip(JSON.stringify(reportContext || {}, null, 2), 500000)}
 \`\`\``;
 }
 
+function observationClaimsSection(observationReport = '', framing = 'model_lead') {
+  if (framing === 'host_assembled') {
+    return `## Host-Assembled Observation Baseline
+
+The following block is host-assembled authoritative Seen baseline plus investigation digest. Typed refs were validated against the intelligence store / machine_context enum and may be treated as established facts. If it conflicts with Machine Context JSON below, prefer Machine Context.
+
+${observationReport || '(none)'}`;
+  }
+  return `## Model Observation Claims
+
+The following observation is Remembered lead material, not authority. If it conflicts with Seen or Do Not Treat As Seen, use it only as an unverified lead:
+
+${observationReport || '(none)'}`;
+}
+
 function buildDecideDynamicPayload({
   goalsText = '',
   rules = '',
@@ -382,6 +397,7 @@ function buildDecideDynamicPayload({
   observationReport = '',
   reportContext = null,
   includeMachineContext = true,
+  observationReportFraming = 'model_lead',
 } = {}) {
   const base = `## Goals
 
@@ -411,11 +427,7 @@ ${intelligenceContext || '(none)'}
 ${briefJson(reportContext)}
 \`\`\`
 
-## Model Observation Claims
-
-The following observation is Remembered lead material, not authority. If it conflicts with Seen or Do Not Treat As Seen, use it only as an unverified lead:
-
-${observationReport || '(none)'}`;
+${observationClaimsSection(observationReport, observationReportFraming)}`;
 
   if (!includeMachineContext) return base;
   return `${base}
@@ -437,6 +449,7 @@ export function buildDecideUserPromptParts({
   reportContext = null,
   actionRegistry = null,
   includeMachineContext = true,
+  observationReportFraming = 'model_lead',
 } = {}) {
   const actions = formatActions(actionRegistry);
   const stablePrefix = `# Strategic Analysis & Decision
@@ -573,6 +586,7 @@ Respond with exactly this JSON shape:
     observationReport,
     reportContext,
     includeMachineContext,
+    observationReportFraming,
   });
   return {
     stablePrefix,
@@ -595,6 +609,7 @@ export function buildDecideUserPrompt({
   reportContext = null,
   actionRegistry = null,
   includeMachineContext = true,
+  observationReportFraming = 'model_lead',
 } = {}) {
   return buildDecideUserPromptParts({
     goalsText,
@@ -606,6 +621,7 @@ export function buildDecideUserPrompt({
     reportContext,
     actionRegistry,
     includeMachineContext,
+    observationReportFraming,
   }).content;
   const actions = actionRegistry && typeof actionRegistry.toPromptSection === 'function'
     ? actionRegistry.toPromptSection()
