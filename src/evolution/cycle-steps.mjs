@@ -38,9 +38,11 @@ import {
 } from '../intelligence/phase1-shared.mjs';
 import {
   buildPromptCacheMetadata,
+  formatLlmUsageSummary,
   markPromptCacheInvariant,
+  summarizeLlmUsage,
 } from '../ai/prompt-cache-metadata.mjs';
-import { chatMessages, serializeMessages } from '../ai/messages.mjs';
+import { chatMessagesDetailed, serializeMessages } from '../ai/messages.mjs';
 import { markStepStatus, writeStepArtifact } from '../cli/utils/cycle-state.mjs';
 import { loadCycleStepContext, loadVerifyReportForCycle } from '../cli/utils/cycle-checkpoints.mjs';
 import { buildInvestigationTools } from './agent-loop/tool-registry.mjs';
@@ -480,12 +482,15 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
   let reportSource = 'fallback';
   let reportReason = null;
   let rawReportMarkdown = null;
+  let reportUsageSummary = null;
   try {
-    const md = await chatMessages(aiClient, reportMessages, {
+    const reportResult = await chatMessagesDetailed(aiClient, reportMessages, {
       thinking: 'medium',
       timeout: 600,
       phase: 'report',
     });
+    const md = reportResult?.text;
+    reportUsageSummary = summarizeLlmUsage(reportResult?.usage);
     if (typeof md === 'string' && md.trim()) {
       rawReportMarkdown = `${md.trim()}\n`;
       reportSource = 'ai';
@@ -496,6 +501,8 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
     reportReason = e?.message || String(e);
     logger?.warning?.(`[agent_loop] report generation failed: ${reportReason}`);
   }
+  const reportUsageLog = formatLlmUsageSummary(reportUsageSummary, 'prompt-cache agent_loop_report');
+  if (reportUsageLog) logger?.info?.(reportUsageLog);
 
   if (rawReportMarkdown) {
     writeFileSync(rawReportPath, rawReportMarkdown, 'utf-8');
@@ -581,12 +588,17 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
   logger?.info?.('[agent_loop] phase decide (JSON)');
   let analysis = null;
   let analysisParseError = null;
+  let decideUsageSummary = null;
   try {
-    const rawDecision = await chatMessages(aiClient, decideMessages, {
+    const decideResult = await chatMessagesDetailed(aiClient, decideMessages, {
       thinking: 'medium',
       timeout: 600,
       phase: 'decide',
     });
+    const rawDecision = decideResult?.text;
+    decideUsageSummary = summarizeLlmUsage(decideResult?.usage);
+    const decideUsageLog = formatLlmUsageSummary(decideUsageSummary, 'prompt-cache agent_loop_decide');
+    if (decideUsageLog) logger?.info?.(decideUsageLog);
     const parsedDecision = await parseAnalyzeDecisionWithRepair(aiClient, rawDecision, { logger });
     analysis = parsedDecision.analysis;
     analysisParseError = parsedDecision.parseError;
@@ -682,6 +694,28 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
       action,
     })),
   });
+  const investigateUsageLog = formatLlmUsageSummary(
+    investigateResult.usage_totals,
+    'prompt-cache agent_loop_investigate',
+  );
+  if (investigateUsageLog) logger?.info?.(investigateUsageLog);
+  const promptCacheWithUsage = {
+    investigate: {
+      ...investigatePromptCache,
+      invariant: investigatePromptCacheInvariant,
+      usage: investigateResult.usage_totals ?? null,
+    },
+    report: {
+      ...reportPromptCache,
+      invariant: reportPromptCacheInvariant,
+      usage: reportUsageSummary,
+    },
+    decide: {
+      ...decidePromptCache,
+      invariant: decidePromptCacheInvariant,
+      usage: decideUsageSummary,
+    },
+  };
   writeFileSync(conversationPath, JSON.stringify({
     schema_version: 1,
     kind: 'agent_loop_conversation_context',
@@ -699,11 +733,7 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
       turns: turnsPath,
     },
     operator_intent_briefs: operatorBriefsSummary,
-    prompt_cache: {
-      investigate: { ...investigatePromptCache, invariant: investigatePromptCacheInvariant },
-      report: { ...reportPromptCache, invariant: reportPromptCacheInvariant },
-      decide: { ...decidePromptCache, invariant: decidePromptCacheInvariant },
-    },
+    prompt_cache: promptCacheWithUsage,
     phases: {
       investigate: {
         status: investigateResult.status,
@@ -827,11 +857,7 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
         },
         decide: { decision: analysis?.decision ?? null, actions_count: queuedActions.length },
       },
-      prompt_cache: {
-        investigate: { ...investigatePromptCache, invariant: investigatePromptCacheInvariant },
-        report: { ...reportPromptCache, invariant: reportPromptCacheInvariant },
-        decide: { ...decidePromptCache, invariant: decidePromptCacheInvariant },
-      },
+      prompt_cache: promptCacheWithUsage,
     }, { required: true });
     await recordStepSidecar(recordState.root, recordState.subject, resolvedCycleId, 'agent_loop', 'done', {
       decisions_queued: queuedIds.length,

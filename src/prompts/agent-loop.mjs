@@ -101,21 +101,23 @@ export function buildAgentLoopInitialUserPromptParts({
   carryover = [],
 } = {}) {
   const isEn = language === 'en';
-  const dynamicPayload = `## Cycle
-
-${cycleId || '(unknown)'}
-
-## Goals
-
-${goalsText || '(none)'}
-
-## Rules
+  // Stability-descending order for DeepSeek KV prefix cache:
+  // Rules / Guidance / Goals change rarely; Cycle and per-cycle evidence change every run.
+  const dynamicPayload = `## Rules
 
 ${rules || '(none)'}
 
 ## Operator Guidance
 
 ${humanGuidance || '(none)'}
+
+## Goals
+
+${goalsText || '(none)'}
+
+## Cycle
+
+${cycleId || '(unknown)'}
 
 ## Operator Intent Briefs
 
@@ -280,21 +282,22 @@ Rules:
 - Operator Intent Briefs 是单轮意图，不是事实；放在 Inferred 讨论，不得把 brief claim 原文写入 Seen。
 - 文风为现代汉语书面语，Cyber-Taoist 分析忠于权威文献，避免文言与玄学修辞。`;
 
-  const dynamicPayload = `## Cycle
-
-${cycleId || '(unknown)'}
-
-## Goals
-
-${goalsText || '(none)'}
-
-## Rules
+  // Stability-descending order for DeepSeek KV prefix cache.
+  const dynamicPayload = `## Rules
 
 ${rules || '(none)'}
 
 ## Operator Guidance
 
 ${humanGuidance || '(none)'}
+
+## Goals
+
+${goalsText || '(none)'}
+
+## Cycle
+
+${cycleId || '(unknown)'}
 
 ## Operator Intent Briefs
 

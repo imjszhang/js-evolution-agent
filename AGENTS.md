@@ -210,6 +210,27 @@ $env:JEA_LIVE_DEEPSEEK_DEEP='1'; npm run test:live-deepseek:intel-matrix
 
 默认 5 格：phases 的 flash×off / flash×high / pro×high，以及 agent_loop 的 flash×high / pro×high。每格对最终产物硬闸；汇总表另含 agent_loop 的 `raw` / `raw_sanitized` 信息列（模型裸写纪律，不影响硬闸）。phases 失败表示该档 Seen 纪律不足；agent_loop 最终产物失败表示宿主组装/splice 回归。
 
+### DeepSeek KV 缓存（context caching）
+
+DeepSeek 按请求消息流**从位置 0 开始的连续 token 前缀**自动命中 context cache（约 1/10 价格）。设计准则：整条消息流按**稳定度降序**排布；中间任一 token 变化会使其后内容全部 miss。system / user 角色对缓存透明——重要的是序列化后的前缀是否字节级稳定。
+
+**观测字段**（phase outputs / conversation_context / agent_loop checkpoint 的 `prompt_cache`）：
+
+| 字段 | 含义 |
+| --- | --- |
+| `usage.prompt_tokens` | API 报告的 prompt token 数 |
+| `usage.cache_hit_tokens` | 前缀缓存命中（来自 `prompt_cache_hit_tokens`） |
+| `usage.cache_miss_tokens` | 前缀缓存未命中 |
+| `usage.cache_hit_ratio` | hit / prompt（或 hit/(hit+miss)） |
+| `usage.call_count` | 仅查证循环累加时存在（多 turn） |
+
+mock 路径 `usage` 为 `null`。真实调用时日志可见 `[prompt-cache ...]` 摘要行。
+
+**动态载荷约定**（改 prompt 时的 review 准则）：会话首条 user 消息的 dynamic payload 段序为 `Rules → Operator Guidance → Goals → Cycle → 其余每轮变化段`。`stablePrefix`（含权威文献与任务规则）保持跨部署稳定，不要为「阅读顺序」去改它的物理位置。
+
+**会话链同 profile**：report → decide（以及 agent_loop 查证 turn 间）依赖会话前缀复用。同一会话链内保持同 LLM profile（例如不要单独设 `JEA_LLM_PHASE_DECIDE=deep`），否则 decide 会对整个 report 会话前缀按原价重付。thinking on/off 不保证共享同一缓存家族——保守假设 `fast` 与 `balanced` 虽同为 flash 也不互相暖缓存。
+
+
 批量演化：
 
 - `jea evolve --rounds N`：连续运行多轮演化，带重试和运行状态记录。

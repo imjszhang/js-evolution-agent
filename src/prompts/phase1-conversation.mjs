@@ -76,21 +76,23 @@ function buildReportDynamicPayload({
   language = 'zh',
 } = {}) {
   const isEn = language === 'en';
-  return `${isEn ? '## Cycle' : '## Cycle'}
-
-${cycleId || '(unknown)'}
-
-## Goals
-
-${goalsText || '(none)'}
-
-## Rules
+  // Stability-descending order for DeepSeek KV prefix cache:
+  // Rules / Guidance / Goals change rarely; Cycle and per-cycle evidence change every run.
+  return `## Rules
 
 ${rules || '(none)'}
 
 ## Operator Guidance
 
 ${humanGuidance || '(none)'}
+
+## Goals
+
+${goalsText || '(none)'}
+
+## Cycle
+
+${cycleId || '(unknown)'}
 
 ## Operator Intent Briefs
 

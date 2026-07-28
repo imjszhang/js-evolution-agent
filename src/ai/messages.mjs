@@ -38,6 +38,32 @@ export async function chatMessages(aiClient, messages, opts = {}) {
   throw new Error('aiClient must implement chatMessages or chat');
 }
 
+/**
+ * Like chatMessages, but returns `{ text, usage }` when the client exposes
+ * chatMessagesDetailed (DeepSeek). Falls back to `{ text, usage: null }` for
+ * mock / chat-only clients.
+ *
+ * @returns {Promise<{ text: string, usage: object|null, model?: string|null, thinkingMode?: string|null }>}
+ */
+export async function chatMessagesDetailed(aiClient, messages, opts = {}) {
+  if (!aiClient) throw new Error('aiClient is required');
+  const normalized = normalizeMessages(messages);
+  if (typeof aiClient.chatMessagesDetailed === 'function') {
+    const result = await aiClient.chatMessagesDetailed(normalized, opts);
+    if (result && typeof result === 'object' && result.text != null) {
+      return {
+        text: String(result.text),
+        usage: result.usage ?? null,
+        model: result.model ?? null,
+        thinkingMode: result.thinkingMode ?? null,
+      };
+    }
+    return { text: String(result ?? ''), usage: null, model: null, thinkingMode: null };
+  }
+  const text = await chatMessages(aiClient, normalized, opts);
+  return { text, usage: null, model: null, thinkingMode: null };
+}
+
 function stripJsonCodeFence(text) {
   const trimmed = String(text || '').trim();
   const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);

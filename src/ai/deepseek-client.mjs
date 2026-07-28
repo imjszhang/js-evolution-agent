@@ -85,10 +85,12 @@ export class DeepSeekOpenAIClient extends BaseAIClient {
   }
 
   /**
+   * Chat Completions with usage metadata (prompt cache hit/miss tokens).
    * @param {Array<{ role: 'system'|'user'|'assistant', content: string }>} messages
    * @param {{ thinking?: string, thinkingMode?: string, timeout?: number, phase?: string, model?: string }} [opts]
+   * @returns {Promise<{ text: string, usage: object|null, model: string, thinkingMode: string }>}
    */
-  async chatMessages(messages, opts = {}) {
+  async chatMessagesDetailed(messages, opts = {}) {
     const timeoutSec = opts.timeout ?? this.timeout;
     const callOpts = this.resolveCallOptions(opts);
     const fields = toDeepSeekRequestFields(callOpts);
@@ -117,7 +119,21 @@ export class DeepSeekOpenAIClient extends BaseAIClient {
     if (text == null || String(text).trim() === '') {
       throw new AIError('DeepSeek returned empty content');
     }
-    return String(text);
+    return {
+      text: String(text),
+      usage: completion?.usage ?? null,
+      model: fields.model,
+      thinkingMode: callOpts.thinkingMode,
+    };
+  }
+
+  /**
+   * @param {Array<{ role: 'system'|'user'|'assistant', content: string }>} messages
+   * @param {{ thinking?: string, thinkingMode?: string, timeout?: number, phase?: string, model?: string }} [opts]
+   */
+  async chatMessages(messages, opts = {}) {
+    const result = await this.chatMessagesDetailed(messages, opts);
+    return result.text;
   }
 
   /**

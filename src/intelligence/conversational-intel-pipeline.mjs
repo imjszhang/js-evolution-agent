@@ -7,12 +7,15 @@ import {
 } from '../engine/index.mjs';
 import {
   chatMessages,
+  chatMessagesDetailed,
   parseJsonFromText,
   serializeMessages,
 } from '../ai/messages.mjs';
 import {
   buildPromptCacheMetadata,
+  formatLlmUsageSummary,
   markPromptCacheInvariant,
+  summarizeLlmUsage,
 } from '../ai/prompt-cache-metadata.mjs';
 import { createHostDecisionQueue } from './decision-queue.mjs';
 import {
@@ -351,12 +354,15 @@ export class ConversationalIntelligencePipeline {
       let reportSource = 'fallback';
       let reportReason = null;
       let rawReportMarkdown = null;
+      let reportUsageSummary = null;
       try {
-        const md = await chatMessages(this.aiClient, reportMessages, {
+        const reportResult = await chatMessagesDetailed(this.aiClient, reportMessages, {
           thinking: 'medium',
           timeout: 600,
           phase: 'report',
         });
+        const md = reportResult?.text;
+        reportUsageSummary = summarizeLlmUsage(reportResult?.usage);
         if (typeof md === 'string' && md.trim()) {
           rawReportMarkdown = `${md.trim()}\n`;
           reportSource = 'ai';
@@ -367,6 +373,8 @@ export class ConversationalIntelligencePipeline {
         reportReason = e?.message || String(e);
         this._log(`report generation failed: ${reportReason}`, 'warning');
       }
+      const reportUsageLog = formatLlmUsageSummary(reportUsageSummary, 'prompt-cache phase1_report');
+      if (reportUsageLog) this._log(reportUsageLog);
 
       if (rawReportMarkdown) {
         writeFileSync(rawReportPath, rawReportMarkdown, 'utf-8');
@@ -405,6 +413,11 @@ export class ConversationalIntelligencePipeline {
         logLabel: 'phases',
       });
       result.report = persistedReport;
+      const reportPromptCacheWithUsage = {
+        ...reportPromptCache,
+        invariant: reportPromptCacheInvariant,
+        usage: reportUsageSummary,
+      };
       logger.logPhase('intel_report', {
         outputs: {
           source: persistedReport.source,
@@ -412,10 +425,7 @@ export class ConversationalIntelligencePipeline {
           raw_md_path: rawReportPath,
           host_seen_spliced: true,
           language: persistedReport.indexRecord.language,
-          prompt_cache: {
-            ...reportPromptCache,
-            invariant: reportPromptCacheInvariant,
-          },
+          prompt_cache: reportPromptCacheWithUsage,
         },
         prompt: serializeMessages(reportMessages),
         aiResponse: reportMarkdown,
@@ -462,11 +472,15 @@ export class ConversationalIntelligencePipeline {
 
       this._log(`[${cycleId}] phase 3/3: analyze + decide`);
       logger.startPhase('analyze_decide');
-      const rawDecision = await chatMessages(this.aiClient, decideMessages, {
+      const decideResult = await chatMessagesDetailed(this.aiClient, decideMessages, {
         thinking: 'medium',
         timeout: 600,
         phase: 'decide',
       });
+      const rawDecision = decideResult?.text;
+      const decideUsageSummary = summarizeLlmUsage(decideResult?.usage);
+      const decideUsageLog = formatLlmUsageSummary(decideUsageSummary, 'prompt-cache phase1_decide');
+      if (decideUsageLog) this._log(decideUsageLog);
       let analysis = null;
       let analysisParseError = null;
       const parsedDecision = await parseAnalyzeDecisionWithRepair(this.aiClient, rawDecision, {
@@ -504,6 +518,11 @@ export class ConversationalIntelligencePipeline {
       }
       result.analysis = analysis;
       result.actions = Array.isArray(analysis?.actions) ? analysis.actions : [];
+      const decidePromptCacheWithUsage = {
+        ...decidePromptCache,
+        invariant: decidePromptCacheInvariant,
+        usage: decideUsageSummary,
+      };
       result.conversation_context_path = persistPhase1ConversationContext({
         runtimeRoot: this.runtime.runtimeRoot,
         cycleId,
@@ -513,18 +532,12 @@ export class ConversationalIntelligencePipeline {
         operatorBriefs: operatorBriefsContext,
         observation,
         reportMessages,
-        reportPromptCache: {
-          ...reportPromptCache,
-          invariant: reportPromptCacheInvariant,
-        },
+        reportPromptCache: reportPromptCacheWithUsage,
         reportMarkdown,
         reportSource: persistedReport.source,
         reportPath: persistedReport.mdPath,
         decideMessages,
-        decidePromptCache: {
-          ...decidePromptCache,
-          invariant: decidePromptCacheInvariant,
-        },
+        decidePromptCache: decidePromptCacheWithUsage,
         rawDecision,
         analysis,
         actions: result.actions,
@@ -534,10 +547,7 @@ export class ConversationalIntelligencePipeline {
           decision: analysis?.decision,
           actions_count: result.actions.length,
           conversation_context_path: result.conversation_context_path,
-          prompt_cache: {
-            ...decidePromptCache,
-            invariant: decidePromptCacheInvariant,
-          },
+          prompt_cache: decidePromptCacheWithUsage,
         },
         prompt: serializeMessages(decideMessages),
         aiResponse: rawDecision,

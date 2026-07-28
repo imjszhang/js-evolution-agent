@@ -1,5 +1,9 @@
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import {
+  accumulateLlmUsage,
+  summarizeLlmUsage,
+} from '../../ai/prompt-cache-metadata.mjs';
 
 function nowIso() {
   return new Date().toISOString();
@@ -93,9 +97,15 @@ export async function runInvestigationLoop({
   let closingReason = null;
   let checkpoint60Sent = false;
   let checkpoint85Sent = false;
+  const turnUsages = [];
   const openAiTools = tools.toOpenAiTools().filter((t) => t.function?.name !== 'finish_cycle');
 
   const queryLog = () => tools._loopCtx?.queryLog ?? [];
+  const recordUsage = (usage) => {
+    const summary = summarizeLlmUsage(usage);
+    if (summary) turnUsages.push(summary);
+    return summary;
+  };
 
   const forceInvestigation = (reason) => {
     investigation = buildForcedInvestigation({
@@ -194,6 +204,7 @@ export async function runInvestigationLoop({
         assistant_content: null,
         tool_calls: [],
         tool_results: [],
+        usage: null,
         error: lastError?.message || 'closing_llm_failed',
       });
       emitEvent?.({
@@ -205,6 +216,7 @@ export async function runInvestigationLoop({
       return false;
     }
 
+    const closingUsage = recordUsage(resp.usage);
     const toolCalls = Array.isArray(resp.toolCalls) ? resp.toolCalls : [];
     messages.push(assistantMessageFromResponse(resp));
 
@@ -218,6 +230,7 @@ export async function runInvestigationLoop({
         assistant_content: resp.content,
         tool_calls: toolCalls.map((c) => ({ name: c.name })),
         tool_results: [],
+        usage: closingUsage,
         error: finishCall ? 'invalid_tool_arguments_json' : 'no_finish_investigation_call',
       });
       emitEvent?.({
@@ -246,6 +259,7 @@ export async function runInvestigationLoop({
       tool_calls: [{ name: 'finish_investigation' }],
       tool_results: [{ name: 'finish_investigation', ok: Boolean(outcome?.ok), chars: clipped.text.length }],
       finish_reason: resp.finishReason,
+      usage: closingUsage,
     });
 
     if (!outcome?.ok) {
@@ -295,6 +309,7 @@ export async function runInvestigationLoop({
       break;
     }
 
+    const turnUsage = recordUsage(resp.usage);
     const toolCalls = Array.isArray(resp.toolCalls) ? resp.toolCalls : [];
     messages.push(assistantMessageFromResponse(resp));
 
@@ -307,6 +322,7 @@ export async function runInvestigationLoop({
         tool_calls: [],
         tool_results: [],
         finish_reason: resp.finishReason,
+        usage: turnUsage,
         note: 'no_tool_calls',
       });
       emitEvent?.({
@@ -389,6 +405,7 @@ export async function runInvestigationLoop({
       })),
       tool_results: toolResultsMeta,
       finish_reason: resp.finishReason,
+      usage: turnUsage,
     });
     emitEvent?.({
       type: 'agent_loop_turn',
@@ -434,6 +451,7 @@ export async function runInvestigationLoop({
     queryLog: queryLog(),
     readonlyCalls: queryLog().length,
     duration_ms: Date.now() - startedAt,
+    usage_totals: accumulateLlmUsage(turnUsages),
   };
 }
 
