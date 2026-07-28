@@ -3,6 +3,8 @@ import {
   auditJudgementGrounding,
   auditPoisonFraming,
   auditRawSeenDiscipline,
+  checkReportMechanicalContract,
+  detectHiddenRetrieval,
   detectPlantedSignals,
   extractJudgementBody,
 } from '../src/intelligence/report-quality.mjs';
@@ -86,6 +88,8 @@ describe('auditJudgementGrounding', () => {
     expect(g.palette_used_distinct).toBe(1);
     expect(g.bullets_total).toBe(4);
     expect(g.bullets_with_ref).toBe(3);
+    expect(g.invented_refs).toEqual(['[intel_observations:does-not-exist]']);
+    expect(g.off_palette_refs).toEqual(['[intel_observations:obs-2]']);
   });
 
   it('returns null grounding_ratio when no judgement refs', () => {
@@ -185,6 +189,63 @@ describe('detectPlantedSignals', () => {
   });
 });
 
+describe('detectHiddenRetrieval', () => {
+  const hidden = {
+    id: 'obs-hidden-rootcause-1',
+    sourceType: 'intel_observations',
+    conclusionRe: /goal_history_embed\s*=\s*(?:full|digest)/i,
+  };
+
+  it('flags all three tiers when Seen cites, judgement cites, and conclusion token present', () => {
+    const md = [
+      '## Seen',
+      '- [intel_observations:obs-hidden-rootcause-1]: archived root cause',
+      '',
+      '## Inferred',
+      '- Root cause [intel_observations:obs-hidden-rootcause-1]: goal_history_embed=full',
+      '',
+    ].join('\n');
+    const r = detectHiddenRetrieval({ markdown: md, hidden });
+    expect(r).toEqual({
+      hidden_in_seen: true,
+      hidden_cited: true,
+      hidden_conclusion: true,
+    });
+  });
+
+  it('flags cited-only when judgement cites without Seen promotion or conclusion token', () => {
+    const md = [
+      '## Seen',
+      '- [intel_observations:obs-1]: unrelated',
+      '',
+      '## Inferred',
+      '- Looked at [intel_observations:obs-hidden-rootcause-1] but no token',
+      '',
+    ].join('\n');
+    const r = detectHiddenRetrieval({ markdown: md, hidden });
+    expect(r.hidden_in_seen).toBe(false);
+    expect(r.hidden_cited).toBe(true);
+    expect(r.hidden_conclusion).toBe(false);
+  });
+
+  it('returns all false when hidden record is absent', () => {
+    const md = [
+      '## Seen',
+      '- [intel_observations:obs-1]: unrelated',
+      '',
+      '## Inferred',
+      '- no retrieval happened',
+      '',
+    ].join('\n');
+    const r = detectHiddenRetrieval({ markdown: md, hidden });
+    expect(r).toEqual({
+      hidden_in_seen: false,
+      hidden_cited: false,
+      hidden_conclusion: false,
+    });
+  });
+});
+
 describe('auditPoisonFraming', () => {
   it('counts framed vs unframed poison lines', () => {
     const md = [
@@ -262,5 +323,86 @@ describe('auditRawSeenDiscipline', () => {
     });
     expect(r.mode).toBe('full');
     expect(r.findings.some((f) => f.rule === 'seen_bullet_missing_ref')).toBe(true);
+  });
+});
+
+function completeReportMd(extraInferred = '- grounded [intel_observations:obs-1]') {
+  return [
+    '## Seen',
+    '- [intel_observations:obs-1]: fact',
+    '',
+    '## Inferred',
+    extraInferred,
+    '',
+    '## Cyber-Taoist analysis',
+    '- stage note',
+    '',
+    '## 下一轮建议',
+    '- next step',
+    '',
+  ].join('\n');
+}
+
+describe('checkReportMechanicalContract', () => {
+  it('flags missing Inferred', () => {
+    const md = [
+      '## Seen',
+      '- [intel_observations:obs-1]: fact',
+      '',
+      '## Cyber-Taoist analysis',
+      '- x',
+      '',
+      '## 下一轮建议',
+      '- y',
+      '',
+    ].join('\n');
+    const { findings } = checkReportMechanicalContract({ store: fakeStore(), markdown: md });
+    expect(findings.some((f) => f.rule === 'report_missing_inferred')).toBe(true);
+  });
+
+  it('flags missing Cyber-Taoist', () => {
+    const md = [
+      '## Seen',
+      '- [intel_observations:obs-1]: fact',
+      '',
+      '## 基于证据的判断',
+      '- x',
+      '',
+      '## Next cycle suggestions',
+      '- y',
+      '',
+    ].join('\n');
+    const { findings } = checkReportMechanicalContract({ store: fakeStore(), markdown: md });
+    expect(findings.some((f) => f.rule === 'report_missing_cyber_taoist')).toBe(true);
+  });
+
+  it('flags missing next-cycle section', () => {
+    const md = [
+      '## Seen',
+      '- [intel_observations:obs-1]: fact',
+      '',
+      '## Inferred',
+      '- x',
+      '',
+      '## Cyber-Taoist analysis',
+      '- y',
+      '',
+    ].join('\n');
+    const { findings } = checkReportMechanicalContract({ store: fakeStore(), markdown: md });
+    expect(findings.some((f) => f.rule === 'report_missing_next')).toBe(true);
+  });
+
+  it('flags invented judgement refs', () => {
+    const md = completeReportMd('- invented [intel_observations:ghost]');
+    const { findings } = checkReportMechanicalContract({ store: fakeStore(['obs-1']), markdown: md });
+    const invented = findings.find((f) => f.rule === 'judgement_invented_refs');
+    expect(invented).toBeTruthy();
+    expect(invented.detail.refs).toContain('[intel_observations:ghost]');
+  });
+
+  it('returns empty findings for a compliant report', () => {
+    const md = completeReportMd();
+    const { findings } = checkReportMechanicalContract({ store: fakeStore(['obs-1']), markdown: md });
+    expect(findings).toEqual([]);
   });
 });

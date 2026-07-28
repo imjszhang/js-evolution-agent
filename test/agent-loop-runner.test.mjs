@@ -115,6 +115,58 @@ describe('runInvestigationLoop', () => {
     expect(result.investigation.enough_for_report).toBe(true);
   });
 
+  it('retries finish_investigation after rejected verified_facts then completes', async () => {
+    const { tools, loopCtx } = makeTools();
+    loopCtx.store.ingest('intel_observations', {
+      id: 'obs-ok',
+      kind: 'observation',
+      source: 'test',
+      content: 'ok fact',
+      confidence: 'medium',
+    });
+    const client = new MockToolsAIClient({
+      script: [
+        {
+          toolCalls: [{
+            name: 'finish_investigation',
+            arguments: {
+              findings_summary: 'first attempt with bad ref',
+              enough_for_report: true,
+              verified_facts: [
+                { ref: '[intel_observations:obs-ok]', statement: 'good fact' },
+                { ref: '[intel_observations:missing]', statement: 'bad fact' },
+              ],
+            },
+          }],
+        },
+        {
+          toolCalls: [{
+            name: 'finish_investigation',
+            arguments: {
+              findings_summary: 'retry clean',
+              enough_for_report: true,
+              verified_facts: [
+                { ref: '[intel_observations:obs-ok]', statement: 'good fact again' },
+              ],
+            },
+          }],
+        },
+      ],
+    });
+    const result = await runInvestigationLoop({
+      aiClient: client,
+      systemPrompt: 'system',
+      initialUserPrompt: 'user',
+      tools,
+      budget: loopCtx.budget,
+    });
+    expect(result.status).toBe('done');
+    expect(result.turns).toBe(2);
+    expect(result.investigation.fact_retry_used).toBe(true);
+    expect(result.investigation.verified_facts).toHaveLength(1);
+    expect(result.investigation.verified_facts[0].ref).toBe('[intel_observations:obs-ok]');
+  });
+
   it('echoes reasoning_content from rawMessage on subsequent tool turns', async () => {
     const { tools, loopCtx } = makeTools();
     const seen = [];

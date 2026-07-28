@@ -37,12 +37,14 @@ import {
   buildStandingMemoryExtraContext,
 } from '../intelligence/phase1-shared.mjs';
 import {
+  accumulateLlmUsage,
   buildPromptCacheMetadata,
   formatLlmUsageSummary,
   markPromptCacheInvariant,
   summarizeLlmUsage,
 } from '../ai/prompt-cache-metadata.mjs';
 import { chatMessagesDetailed, serializeMessages } from '../ai/messages.mjs';
+import { repairReportIfNeeded } from '../intelligence/report-repair.mjs';
 import { markStepStatus, writeStepArtifact } from '../cli/utils/cycle-state.mjs';
 import { loadCycleStepContext, loadVerifyReportForCycle } from '../cli/utils/cycle-checkpoints.mjs';
 import { buildInvestigationTools } from './agent-loop/tool-registry.mjs';
@@ -511,6 +513,51 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
     writeFileSync(rawReportPath, '', 'utf-8');
   }
 
+  let persistReportMarkdown = rawReportMarkdown;
+  let reportRepair = {
+    rounds: 0,
+    attempted: false,
+    repaired: false,
+    gave_up: false,
+    findings_initial: [],
+    findings_final: [],
+  };
+  let reportRepairUsageSummaries = [];
+  let repairedReportPath = null;
+  if (reportSource === 'ai' && rawReportMarkdown) {
+    const repaired = await repairReportIfNeeded({
+      aiClient,
+      store,
+      reportMessages,
+      rawReportMarkdown,
+      hostSeenBody,
+      language,
+      logger,
+      label: 'agent_loop',
+    });
+    persistReportMarkdown = repaired.rawReportMarkdown;
+    reportRepair = repaired.repair;
+    reportRepairUsageSummaries = repaired.usageSummaries || [];
+    if (reportRepair.rounds > 0 && persistReportMarkdown) {
+      repairedReportPath = join(recordsDir, 'agent_loop_report_repaired.md');
+      writeFileSync(repairedReportPath, persistReportMarkdown, 'utf-8');
+    }
+    if (reportRepair.findings_initial?.length) {
+      store.recordEvolutionEvent({
+        type: 'intel_report_repair',
+        pipeline: 'agent_loop',
+        cycle_id: resolvedCycleId,
+        subject: runtime.subject,
+        status: reportRepair.repaired
+          ? 'repaired'
+          : (reportRepair.rounds ? 'gave_up' : 'skipped'),
+        rounds: reportRepair.rounds,
+        findings_initial: reportRepair.findings_initial,
+        findings_final: reportRepair.findings_final,
+      });
+    }
+  }
+
   // Splice host Seen inside persist (before redactSecrets) so index/tldr match disk
   // and Seen cannot bypass redaction via a post-persist rewrite.
   const persistedReport = await persistIntelReport({
@@ -525,13 +572,19 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
     agentContextDocs: cfg.agentContextDocs,
     aiClient: reportSource === 'ai' ? aiClient : null,
     logger,
-    md: rawReportMarkdown,
+    md: persistReportMarkdown,
     source: reportSource === 'ai' ? 'agent_loop' : 'fallback',
     fallbackReason: reportReason,
     updateStandingMemory: false,
     transformMd: (md) => spliceHostSeen(md, hostSeenBody),
     ...prepared,
   });
+  persistedReport.repair = {
+    rounds: reportRepair.rounds,
+    repaired: reportRepair.repaired,
+    gave_up: reportRepair.gave_up,
+  };
+  if (repairedReportPath) persistedReport.repaired_md_path = repairedReportPath;
   const reportMarkdown = persistedReport.markdown;
   auditHostSeenReport({
     markdown: reportMarkdown,
@@ -708,7 +761,7 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
     report: {
       ...reportPromptCache,
       invariant: reportPromptCacheInvariant,
-      usage: reportUsageSummary,
+      usage: accumulateLlmUsage([reportUsageSummary, ...reportRepairUsageSummaries]),
     },
     decide: {
       ...decidePromptCache,
@@ -730,6 +783,7 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
       self: conversationPath,
       report: persistedReport.mdPath,
       report_raw: rawReportPath,
+      report_repaired: repairedReportPath,
       turns: turnsPath,
     },
     operator_intent_briefs: operatorBriefsSummary,
@@ -742,12 +796,19 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
         forced: Boolean(investigation.forced),
         forced_reason: investigation.forced_reason || null,
         duration_ms: investigateResult.duration_ms,
+        fact_retry_used: Boolean(investigation.fact_retry_used),
       },
       report: {
         source: persistedReport.source,
         reason: reportReason,
         raw_path: rawReportPath,
+        repaired_path: repairedReportPath,
         host_seen_spliced: true,
+        repair: {
+          rounds: reportRepair.rounds,
+          repaired: reportRepair.repaired,
+          gave_up: reportRepair.gave_up,
+        },
       },
       decide: {
         decision: analysis?.decision ?? null,
@@ -800,6 +861,8 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
       forced: reportSource !== 'ai',
       forced_reason: reportReason,
       raw_md_path: rawReportPath,
+      repaired_md_path: repairedReportPath,
+      repair: persistedReport.repair,
     },
     conversation_context_path: conversationPath,
     standing_memory_update: memoryUpdate,
@@ -853,7 +916,13 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
           source: persistedReport.source,
           reason: reportReason,
           raw_path: rawReportPath,
+          repaired_path: repairedReportPath,
           host_seen_spliced: true,
+          repair: {
+            rounds: reportRepair.rounds,
+            repaired: reportRepair.repaired,
+            gave_up: reportRepair.gave_up,
+          },
         },
         decide: { decision: analysis?.decision ?? null, actions_count: queuedActions.length },
       },

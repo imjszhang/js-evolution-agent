@@ -185,28 +185,28 @@ function seedHonestyFixture(store, runtimeRoot) {
 }
 
 function makeHonestyAiClient() {
+  const finishWithRejected = {
+    findings_summary: 'Fixture Seen refs are enough for report drafting',
+    enough_for_report: true,
+    gaps_closed: ['fixture'],
+    open_gaps: [],
+    verified_facts: [
+      {
+        ref: `[intel_observations:${OBS_ID}]`,
+        statement: 'probe buffer quiet this cycle',
+      },
+      {
+        ref: '[intel_observations:does-not-exist-honesty-e2e]',
+        statement: 'dangling ref should be rejected',
+      },
+    ],
+  };
   return new MockToolsAIClient({
-    script: [{
-      toolCalls: [{
-        name: 'finish_investigation',
-        arguments: {
-          findings_summary: 'Fixture Seen refs are enough for report drafting',
-          enough_for_report: true,
-          gaps_closed: ['fixture'],
-          open_gaps: [],
-          verified_facts: [
-            {
-              ref: `[intel_observations:${OBS_ID}]`,
-              statement: 'probe buffer quiet this cycle',
-            },
-            {
-              ref: '[intel_observations:does-not-exist-honesty-e2e]',
-              statement: 'dangling ref should be rejected',
-            },
-          ],
-        },
-      }],
-    }],
+    // First finish triggers verified_facts_rejected_retry; second finishes with remaining rejects.
+    script: [
+      { toolCalls: [{ name: 'finish_investigation', arguments: finishWithRejected }] },
+      { toolCalls: [{ name: 'finish_investigation', arguments: finishWithRejected }] },
+    ],
     canned: [
       { match: /Strategic Analysis & Decision/i, response: HONEST_DECIDE },
       // phases + agent_loop prompts carry Final Seen; dirty Seen asserts host splice.

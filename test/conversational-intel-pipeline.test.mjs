@@ -381,7 +381,22 @@ describe('ConversationalIntelligencePipeline', () => {
             confidence_score: 0.8,
           });
         }
-        return '# 情报报告\n\n本轮报告先于决策生成，随后作为 assistant 消息进入第二次调用。\n';
+        return [
+          '# 情报报告',
+          '',
+          '## Seen',
+          '- acknowledged Final Seen',
+          '',
+          '## Inferred',
+          '- 本轮报告先于决策生成，随后作为 assistant 消息进入第二次调用。',
+          '',
+          '## Cyber-Taoist analysis',
+          '- Bootstrap / mock path only.',
+          '',
+          '## 下一轮建议',
+          '- Continue conversational report-to-decision wiring checks.',
+          '',
+        ].join('\n');
       },
     };
 
@@ -576,7 +591,22 @@ describe('ConversationalIntelligencePipeline', () => {
             confidence_score: 0.8,
           });
         }
-        return '# 情报报告\n\nOperator Intent Briefs 已进入报告上下文。\n';
+        return [
+          '# 情报报告',
+          '',
+          '## Seen',
+          '- acknowledged Final Seen',
+          '',
+          '## Inferred',
+          '- Operator Intent Briefs 已进入报告上下文。',
+          '',
+          '## Cyber-Taoist analysis',
+          '- Bootstrap / mock path only.',
+          '',
+          '## 下一轮建议',
+          '- Convert one-cycle brief into a bounded observation.',
+          '',
+        ].join('\n');
       },
     };
 

@@ -115,11 +115,28 @@ function fmtTokens(usageTotals) {
   return sum > 0 ? String(sum) : '-';
 }
 
+function fmtMark(value) {
+  return value ? '✓' : '✗';
+}
+
+function fmtHidden(hidden, pipeline) {
+  if (pipeline === 'phases') return '—';
+  if (!hidden) return 'S✗C✗K✗';
+  return `S${fmtMark(hidden.in_seen)}C${fmtMark(hidden.cited)}K${fmtMark(hidden.conclusion)}`;
+}
+
+function fmtVf(investigation, pipeline) {
+  if (pipeline === 'phases' || !investigation) return '—';
+  return `${investigation.vf_accepted ?? 0}/${investigation.vf_submitted ?? 0}`;
+}
+
 function pushRow(cell, attempt, result, error = null, judge = null) {
   const findings = result?.findingsByRule || {};
   const grounding = result?.grounding || {};
   const planted = result?.planted || {};
   const poisonFraming = result?.poisonFraming || {};
+  const hidden = result?.hidden || {};
+  const investigation = result?.investigation || null;
   const raw = result?.raw || {};
   const usage = result?.usage || {};
   matrixRows.push({
@@ -136,9 +153,18 @@ function pushRow(cell, attempt, result, error = null, judge = null) {
     dangling: findings.seen_dangling_ref || 0,
     unknown_type: findings.seen_unknown_source_type || 0,
     host_fixture_missing: findings.host_seen_missing_fixture_ref || 0,
+    repair: result?.repair ?? null,
     grounding,
     planted,
     poison_framing: poisonFraming,
+    hidden_in_seen: Boolean(hidden.in_seen),
+    hidden_cited: Boolean(hidden.cited),
+    hidden_conclusion: Boolean(hidden.conclusion),
+    vf_submitted: investigation?.vf_submitted ?? null,
+    vf_accepted: investigation?.vf_accepted ?? null,
+    vf_rejected: investigation?.vf_rejected ?? null,
+    readonly_calls: investigation?.readonly_calls ?? null,
+    investigation,
     raw_mode: raw.mode || 'none',
     raw_findings: countFindings(raw.findingsByRule),
     raw_sanitized_findings: countFindings(raw.sanitizedFindingsByRule),
@@ -163,6 +189,7 @@ function buildGatesTableLines() {
     'dangling',
     'unknown_type',
     'host_fixture',
+    'repair',
     'raw_mode',
     'raw_findings',
     'ms',
@@ -183,6 +210,7 @@ function buildGatesTableLines() {
         row.dangling,
         row.unknown_type,
         row.host_fixture_missing,
+        row.repair?.rounds ?? 0,
         row.raw_mode,
         row.raw_findings,
         row.elapsedMs ?? '-',
@@ -207,6 +235,8 @@ function buildQualityTableLines() {
     'distractor',
     'fixture_j',
     'poison_unframed',
+    'hidden',
+    'vf',
     'calls',
     'tokens',
     'hit_ratio',
@@ -236,6 +266,12 @@ function buildQualityTableLines() {
         p.distractor_cited ?? 0,
         fmtBool(p.fixture_cited_in_judgement),
         pf.poison_unframed ?? 0,
+        fmtHidden({
+          in_seen: row.hidden_in_seen,
+          cited: row.hidden_cited,
+          conclusion: row.hidden_conclusion,
+        }, row.pipeline),
+        fmtVf(row.investigation, row.pipeline),
         row.llm_calls ?? 0,
         fmtTokens(row.usage_totals),
         fmtRatio(row.cache_hit_ratio),
@@ -256,7 +292,8 @@ function printSummaryTable() {
   console.log(
     '[intel-honesty-matrix] note: ok/poison/missing_ref/dangling/unknown_type/host_fixture '
     + 'are final-product host-wiring gates; '
-    + 'Quality columns (grounding/planted/raw_mode/usage/judge) are informational only.\n',
+    + 'Quality columns (grounding/planted/hidden/vf/raw_mode/usage/judge) are informational only. '
+    + 'hidden=S(in Seen)/C(cited)/K(conclusion token); vf=accepted/submitted; phases shows —.\n',
   );
 }
 
@@ -313,6 +350,8 @@ async function runCell(cell) {
         findingsByRule: result.findingsByRule,
         grounding_ratio: result.grounding?.grounding_ratio,
         planted: result.planted,
+        hidden: result.hidden,
+        investigation: result.investigation,
         raw_mode: result.raw?.mode,
         elapsedMs: result.elapsedMs,
       });

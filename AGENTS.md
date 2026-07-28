@@ -89,7 +89,8 @@ Phase 5   evolution diary
 ```text
 机械 Seen 底板 → 只读查证（tool loop，可交 verified_facts）
 → 宿主组装最终 Seen（machine_context + 机械底板 + verified_facts）
-→ 模型单次定稿判断章节（Inferred / Cyber-Taoist / 下一轮建议）
+→ 模型定稿判断章节（Inferred / Cyber-Taoist / 下一轮建议）
+→ 机械契约检查（必需标题 / 编造 ref）→ 有界重问修复（默认最多 1 轮）
 → 宿主 splice Seen + 引用字形净化 → 经典 Analyze+Decide JSON 批入队
 ```
 
@@ -117,15 +118,16 @@ agent_loop → exec → verify → belief_update → goals_assess → goals_cali
 | `JEA_LOOP_FINISH_RESERVE_MS` | `120000` | 留给报告+Decide 的墙钟预留（查证软截止 = 总墙钟 − 预留） |
 | `JEA_LOOP_CLOSING_TIMEOUT_SEC` | `240` | 查证强制收尾轮 LLM 超时（秒） |
 | `JEA_LOOP_TOOL_RESULT_MAX_CHARS` | `6000` | 回填模型的工具结果截断 |
+| `JEA_REPORT_REPAIR_MAX_ROUNDS` | `1` | 报告机械契约修复最大重问轮数（0 关闭，上限 2）；phases 与 agent_loop 共用 |
 | `JEA_EXEC_LIMIT` | `5` | Decide 批入队上限；超出进 deferred/carryover；Phase 2 exec 仍按该上限消费队列 |
 | `JEA_QUEUE_AUTO_ARCHIVE` | 开启 | `0`/`false` 关闭；agent_loop 开始前自动归档 completed/expired 决策 |
 
 查证工具（仅 investigation 阶段）：
 
 - **readonly**：`intel_query`、`get_current_beliefs`、`get_active_goals`、`get_decision_queue_summary`、`read_intel_report`（工具结果附 `ref` / `cite_as` 句柄）
-- **control**：`finish_investigation`（必填 `findings_summary`、`enough_for_report`；可选 `gaps_closed` / `open_gaps` / `verified_facts[{ref,statement}]`）
+- **control**：`finish_investigation`（必填 `findings_summary`、`enough_for_report`；可选 `gaps_closed` / `open_gaps` / `verified_facts[{ref,statement}]`）。若 `verified_facts` 被拒且非 closing 收尾，宿主给一次重交机会（`ok: false` + `verified_facts_rejected_retry`；已接受 facts 累积保留；`fact_retry_used` 记入 investigation）。
 
-查证阶段**不**注册 action 入队工具，也**不**在 loop 内写完整 Intel 报告。**phases 与 agent_loop 的最终 Seen 均由宿主组装**：机械底板 + `machine_context` bullets（agent_loop 另可并入已校验 `verified_facts`；phases 无查证阶段故 `verifiedFacts=[]`）。模型只写判断章节。落盘次序：`transformMd` 在 `persistIntelReport` 内、`redactSecrets` 之前做字形净化与 `## Seen` splice（只写盘一次）；persist 后发单次诚实事件（`phases_report_honesty` / `agent_loop_report_honesty`）。agent_loop 查证若有 `rejected_facts`，另发 `agent_loop_rejected_facts`（不进 carryover）。模型裸写存档：`phases_report_raw.md` / `agent_loop_report_raw.md`（诚实矩阵 raw 列测裸写纪律；最终产物硬闸看 splice+脱敏后报告）。有意不对称：phases 报告 prompt 仍含 intelligenceContext + observe + Machine Context JSON；agent_loop 报告 prompt 更瘦。verify 复放的是宿主最终报告（raw 仅存档）。
+查证阶段**不**注册 action 入队工具，也**不**在 loop 内写完整 Intel 报告。**phases 与 agent_loop 的最终 Seen 均由宿主组装**：机械底板 + `machine_context` bullets（agent_loop 另可并入已校验 `verified_facts`；phases 无查证阶段故 `verifiedFacts=[]`）。模型只写判断章节。落盘次序：首稿写入 `*_report_raw.md` → 机械契约检查（缺必需标题 / 判断章节编造 ref）→ 有界重问修复（最多 `JEA_REPORT_REPAIR_MAX_ROUNDS` 轮，默认 1；修复稿另存 `*_report_repaired.md`；事件 `intel_report_repair`）→ `transformMd` 在 `persistIntelReport` 内、`redactSecrets` 之前做字形净化与 `## Seen` splice（只写盘一次）→ persist 后发单次诚实事件（`phases_report_honesty` / `agent_loop_report_honesty`）。agent_loop 查证若最终仍有 `rejected_facts`，另发 `agent_loop_rejected_facts`（不进 carryover）。诚实矩阵 raw 列始终审修复前首稿；最终产物硬闸看 splice+脱敏后报告。有意不对称：phases 报告 prompt 仍含 intelligenceContext + observe + Machine Context JSON；agent_loop 报告 prompt 更瘦。verify 复放的是宿主最终报告（raw 仅存档）。
 
 机械守护（`evolution.guards`，不占 Decide 入队预算）：
 
@@ -155,8 +157,10 @@ data/evolution/cycle-state/<cycleId>/intel.json   # Phase 1 兼容
 data/evolution/cycle-state/<cycleId>/exec.json    # 由独立 Phase 2 exec 写入
 data/evolution/records/<cycleId>/conversation_context.json
 data/evolution/records/<cycleId>/agent_loop_turns.jsonl   # 仅查证 turns
-data/evolution/records/<cycleId>/agent_loop_report_raw.md # agent_loop 模型裸写（splice 前）
-data/evolution/records/<cycleId>/phases_report_raw.md     # phases 模型裸写（splice 前）
+data/evolution/records/<cycleId>/agent_loop_report_raw.md # agent_loop 模型裸写（修复前）
+data/evolution/records/<cycleId>/agent_loop_report_repaired.md # 有修复时：修复后全文（persist 前）
+data/evolution/records/<cycleId>/phases_report_raw.md     # phases 模型裸写（修复前）
+data/evolution/records/<cycleId>/phases_report_repaired.md # 有修复时：修复后全文
 data/evolution/agent_loop_carryover.json
 data/evolution/agent_loop_guard_state.json
 ```
@@ -216,10 +220,15 @@ $env:JEA_MATRIX_JUDGE='1'; npm run test:live-deepseek:intel-matrix
 
 | 层 | 列 | 是否硬闸 |
 | --- | --- | --- |
-| Gates | `ok` / poison / missing_ref / dangling / unknown_type / `host_fixture` | 是（宿主接线；`host_seen_missing_fixture_ref` 检查宿主 Seen 是否含 fixture id） |
-| Quality | `grounding` / invented / off_palette / palette_used / synth / conflict / stale / distractor / fixture_j / poison_unframed / calls / tokens / hit_ratio / judge | 否（判断章节质量；埋答案召回；成本） |
+| Gates | `ok` / poison / missing_ref / dangling / unknown_type / `host_fixture` / `repair` | 是（宿主接线；`host_seen_missing_fixture_ref` 检查宿主 Seen 是否含 fixture id；`repair` 为信息列显示修复轮数，不挡硬闸） |
+| Quality | `grounding` / invented / off_palette / palette_used / synth / conflict / stale / distractor / fixture_j / poison_unframed / `hidden` / `vf` / calls / tokens / hit_ratio / judge | 否（判断章节质量；开卷埋答案召回；闭卷检索；成本） |
 
-`raw_mode`：`placeholder`（模型服从宿主占位契约）/ `full`（仍写完整 Seen）/ `missing` / `none`。埋答案 fixture 含合成对、冲突对、superseded 陷阱与干扰项；guidance **不**泄露期望。产物落盘：`test-artifacts/intel-honesty-matrix/<run_id>.jsonl` 与 `.md`（已 gitignore）。
+`raw_mode`：`placeholder`（模型服从宿主占位契约）/ `full`（仍写完整 Seen）/ `missing` / `none`。埋答案 fixture 含两组信号：
+
+- **开卷推理**（当天写入，进 7 天 prompt 窗口）：合成对、冲突对、superseded 陷阱与干扰项。
+- **闭卷检索**（回填到约 14 天前的 `daily_jsonl` 分区，落在 7 天 prompt 窗口外、90 天 `intel_query` 窗口内）：hidden 根因记录含唯一结论 token（如 `goal_history_embed`）；当天 breadcrumb + `agent_loop_carryover` open_gap 只给检索线索、不给答案。`hidden` 列形如 `S✓C✓K✗`（Seen 升格 / 判断引用 / 结论 token）；`vf` 列形如 `acc/sub`（verified_facts）。phases 无查证通道，两列显示 `—`。
+
+guidance **不**泄露期望。产物落盘：`test-artifacts/intel-honesty-matrix/<run_id>.jsonl` 与 `.md`（已 gitignore）。
 
 ### DeepSeek KV 缓存（context caching）
 

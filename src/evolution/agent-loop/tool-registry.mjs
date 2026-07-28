@@ -1,7 +1,10 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { decisionFingerprint } from '../../engine/index.mjs';
-import { resolveTypedRef } from '../../intelligence/report-honesty.mjs';
+import {
+  normalizeSourceType,
+  resolveTypedRef,
+} from '../../intelligence/report-honesty.mjs';
 
 const READONLY_SOURCES = Object.freeze([
   'intel_observations',
@@ -255,6 +258,25 @@ function normalizeVerifiedFacts(store, rawFacts) {
   return { accepted, rejected };
 }
 
+function verifiedFactCanonicalKey(fact) {
+  const type = normalizeSourceType(fact?.source_type);
+  const id = String(fact?.source_id || '').trim().toLowerCase();
+  return `${type}:${id}`;
+}
+
+function mergeAcceptedVerifiedFacts(existing = [], incoming = []) {
+  const out = [];
+  const seen = new Set();
+  for (const fact of [...(Array.isArray(existing) ? existing : []), ...(Array.isArray(incoming) ? incoming : [])]) {
+    if (!fact?.ref || !fact?.statement) continue;
+    const key = verifiedFactCanonicalKey(fact);
+    if (!key || key === ':' || seen.has(key)) continue;
+    seen.add(key);
+    out.push(fact);
+  }
+  return out;
+}
+
 function buildFinishInvestigationTool(loopCtx) {
   return {
     name: 'finish_investigation',
@@ -264,6 +286,7 @@ function buildFinishInvestigationTool(loopCtx) {
       'Call when mechanical Seen + brief are enough, or after targeted queries closed the gaps.',
       'Prefer verified_facts (ref + one-sentence statement) for facts the host should splice into Seen;',
       'ref must come from tool result handles (item.ref / cite_as) or machine_context enum keys.',
+      'If verified_facts are rejected, the host may ask once to re-call with fixed refs; previously accepted facts are kept.',
       'Do not write the Intel report here; the host generates it in a separate step.',
     ].join(' '),
     parameters: {
@@ -315,22 +338,49 @@ function buildFinishInvestigationTool(loopCtx) {
         return { ok: false, error: 'findings_summary is required' };
       }
       const { accepted, rejected } = normalizeVerifiedFacts(loopCtx.store, args?.verified_facts);
+      if (!Array.isArray(loopCtx.acceptedVerifiedFacts)) {
+        loopCtx.acceptedVerifiedFacts = [];
+      }
+      loopCtx.acceptedVerifiedFacts = mergeAcceptedVerifiedFacts(
+        loopCtx.acceptedVerifiedFacts,
+        accepted,
+      );
+
+      const allowRetry = rejected.length > 0
+        && !loopCtx.factRetryUsed
+        && !loopCtx.closing;
+      if (allowRetry) {
+        loopCtx.factRetryUsed = true;
+        return {
+          ok: false,
+          error: 'verified_facts_rejected_retry',
+          result: {
+            accepted_total: loopCtx.acceptedVerifiedFacts.length,
+            rejected,
+            hint: 'Re-call finish_investigation; fix or drop the rejected refs. Accepted facts are kept.',
+          },
+        };
+      }
+
+      const mergedAccepted = loopCtx.acceptedVerifiedFacts;
       loopCtx.investigation = {
         gaps_closed: normalizeStringList(args?.gaps_closed),
         open_gaps: normalizeStringList(args?.open_gaps),
         findings_summary: findings.slice(0, 8000),
         enough_for_report: args?.enough_for_report !== false,
-        verified_facts: accepted,
+        verified_facts: mergedAccepted,
         rejected_facts: rejected,
         finished: true,
+        fact_retry_used: Boolean(loopCtx.factRetryUsed),
       };
       return {
         ok: true,
         result: {
           finished: true,
           enough_for_report: loopCtx.investigation.enough_for_report,
-          verified_facts: accepted.length,
+          verified_facts: mergedAccepted.length,
           rejected: rejected.length ? rejected : undefined,
+          fact_retry_used: Boolean(loopCtx.factRetryUsed),
         },
       };
     },

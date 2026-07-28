@@ -163,7 +163,7 @@ describe('agent-loop investigation tools', () => {
     expect(items || true).toBeTruthy();
   });
 
-  it('accepts verified_facts and rejects invalid refs', async () => {
+  it('retries once when verified_facts are rejected, then finishes with merged accepts', async () => {
     const { loopCtx, store } = makeLoopCtx();
     store.ingest('intel_observations', {
       id: 'obs-vf-1',
@@ -172,8 +172,15 @@ describe('agent-loop investigation tools', () => {
       content: 'verified fact fixture',
       confidence: 'medium',
     });
+    store.ingest('intel_observations', {
+      id: 'obs-vf-2',
+      kind: 'observation',
+      source: 'test',
+      content: 'second fixture',
+      confidence: 'medium',
+    });
     const tools = buildInvestigationTools(loopCtx);
-    const outcome = await tools.dispatch('finish_investigation', {
+    const first = await tools.dispatch('finish_investigation', {
       findings_summary: 'closed with verified facts',
       enough_for_report: true,
       verified_facts: [
@@ -183,10 +190,47 @@ describe('agent-loop investigation tools', () => {
         { ref: 'not-a-ref', statement: 'unparseable' },
       ],
     });
+    expect(first.ok).toBe(false);
+    expect(first.error).toBe('verified_facts_rejected_retry');
+    expect(loopCtx.investigation).toBeFalsy();
+    expect(loopCtx.factRetryUsed).toBe(true);
+    expect(loopCtx.acceptedVerifiedFacts).toHaveLength(2);
+
+    const second = await tools.dispatch('finish_investigation', {
+      findings_summary: 'retry without bad refs',
+      enough_for_report: true,
+      verified_facts: [
+        { ref: '[intel_observations:obs-vf-2]', statement: 'second fixture present' },
+      ],
+    });
+    expect(second.ok).toBe(true);
+    expect(loopCtx.investigation.verified_facts).toHaveLength(3);
+    expect(loopCtx.investigation.fact_retry_used).toBe(true);
+    expect(loopCtx.investigation.rejected_facts).toEqual([]);
+  });
+
+  it('finishes immediately with rejected facts when closing', async () => {
+    const { loopCtx, store } = makeLoopCtx();
+    store.ingest('intel_observations', {
+      id: 'obs-vf-1',
+      kind: 'observation',
+      source: 'test',
+      content: 'verified fact fixture',
+      confidence: 'medium',
+    });
+    loopCtx.closing = true;
+    const tools = buildInvestigationTools(loopCtx);
+    const outcome = await tools.dispatch('finish_investigation', {
+      findings_summary: 'closing finish',
+      enough_for_report: true,
+      verified_facts: [
+        { ref: '[intel_observations:obs-vf-1]', statement: 'ok' },
+        { ref: '[intel_observations:missing]', statement: 'bad' },
+      ],
+    });
     expect(outcome.ok).toBe(true);
-    expect(loopCtx.investigation.verified_facts).toHaveLength(2);
-    expect(loopCtx.investigation.rejected_facts).toHaveLength(2);
-    expect(outcome.result.rejected).toHaveLength(2);
+    expect(loopCtx.investigation.verified_facts).toHaveLength(1);
+    expect(loopCtx.investigation.rejected_facts).toHaveLength(1);
   });
 
   it('builds a bounded investigation digest including verified facts', () => {

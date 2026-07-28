@@ -242,6 +242,7 @@ export async function runInvestigationLoop({
       return false;
     }
 
+    if (tools._loopCtx) tools._loopCtx.closing = true;
     const outcome = await tools.dispatch('finish_investigation', finishCall.arguments ?? {}, { turn: closingTurn });
     const clipped = truncateText(outcome, toolResultMaxChars);
     messages.push({

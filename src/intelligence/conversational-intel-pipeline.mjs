@@ -12,6 +12,7 @@ import {
   serializeMessages,
 } from '../ai/messages.mjs';
 import {
+  accumulateLlmUsage,
   buildPromptCacheMetadata,
   formatLlmUsageSummary,
   markPromptCacheInvariant,
@@ -23,6 +24,7 @@ import {
   auditHostSeenReport,
   spliceHostSeen,
 } from './host-seen.mjs';
+import { repairReportIfNeeded } from './report-repair.mjs';
 import {
   buildSeenSection,
   persistIntelReport,
@@ -383,6 +385,51 @@ export class ConversationalIntelligencePipeline {
       }
 
       const store = this.host?.intelligenceStore;
+      let persistReportMarkdown = rawReportMarkdown;
+      let reportRepair = {
+        rounds: 0,
+        attempted: false,
+        repaired: false,
+        gave_up: false,
+        findings_initial: [],
+        findings_final: [],
+      };
+      let reportRepairUsageSummaries = [];
+      let repairedReportPath = null;
+      if (reportSource === 'ai' && rawReportMarkdown) {
+        const repaired = await repairReportIfNeeded({
+          aiClient: this.aiClient,
+          store,
+          reportMessages,
+          rawReportMarkdown,
+          hostSeenBody,
+          language: preparedReport.language,
+          logger: this.host?.logger,
+          label: 'phases',
+        });
+        persistReportMarkdown = repaired.rawReportMarkdown;
+        reportRepair = repaired.repair;
+        reportRepairUsageSummaries = repaired.usageSummaries || [];
+        if (reportRepair.rounds > 0 && persistReportMarkdown) {
+          repairedReportPath = join(recordsDir, 'phases_report_repaired.md');
+          writeFileSync(repairedReportPath, persistReportMarkdown, 'utf-8');
+        }
+        if (reportRepair.findings_initial?.length) {
+          store?.recordEvolutionEvent?.({
+            type: 'intel_report_repair',
+            pipeline: 'phases',
+            cycle_id: cycleId,
+            subject: this.runtime?.subject,
+            status: reportRepair.repaired
+              ? 'repaired'
+              : (reportRepair.rounds ? 'gave_up' : 'skipped'),
+            rounds: reportRepair.rounds,
+            findings_initial: reportRepair.findings_initial,
+            findings_final: reportRepair.findings_final,
+          });
+        }
+      }
+
       const persistedReport = await persistIntelReport({
         intelResult: preliminaryIntelResult,
         runtime: this.runtime,
@@ -390,7 +437,7 @@ export class ConversationalIntelligencePipeline {
         agentContextDocs: this.agentContextDocs,
         aiClient: reportSource === 'ai' ? this.aiClient : null,
         logger: this.host?.logger,
-        md: rawReportMarkdown,
+        md: persistReportMarkdown,
         source: reportSource,
         fallbackReason: reportReason,
         updateStandingMemory: false,
@@ -399,6 +446,12 @@ export class ConversationalIntelligencePipeline {
       });
       const reportMarkdown = persistedReport.markdown;
       persistedReport.raw_md_path = rawReportPath;
+      persistedReport.repair = {
+        rounds: reportRepair.rounds,
+        repaired: reportRepair.repaired,
+        gave_up: reportRepair.gave_up,
+      };
+      if (repairedReportPath) persistedReport.repaired_md_path = repairedReportPath;
       auditHostSeenReport({
         markdown: reportMarkdown,
         store,
@@ -416,16 +469,18 @@ export class ConversationalIntelligencePipeline {
       const reportPromptCacheWithUsage = {
         ...reportPromptCache,
         invariant: reportPromptCacheInvariant,
-        usage: reportUsageSummary,
+        usage: accumulateLlmUsage([reportUsageSummary, ...reportRepairUsageSummaries]),
       };
       logger.logPhase('intel_report', {
         outputs: {
           source: persistedReport.source,
           md_path: persistedReport.mdPath,
           raw_md_path: rawReportPath,
+          repaired_md_path: repairedReportPath,
           host_seen_spliced: true,
           language: persistedReport.indexRecord.language,
           prompt_cache: reportPromptCacheWithUsage,
+          repair: persistedReport.repair,
         },
         prompt: serializeMessages(reportMessages),
         aiResponse: reportMarkdown,
