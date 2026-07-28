@@ -172,7 +172,7 @@ Intel 报告测试两道闸（mock / CI）：
 1. **交付物契约**（`test/intel-report-deliverable-e2e.test.mjs`）：落盘、index、章节结构、`E2E_REPORT_TOKEN`。
 2. **证据诚实**（`test/intel-report-honesty-e2e.test.mjs`）：Seen/Evidence bullet 须带可解析 typed ref（store 类型 + `machine_context:<key>` 枚举，枚举见 `src/intelligence/machine-context-refs.mjs`）；operator brief 毒句不得进入 Seen。**phases 与 agent_loop 均宿主 splice**：模型脏 Seen 被覆盖；Seen 经 persist 脱敏；每轮恰好一条 `phases_report_honesty` / `agent_loop_report_honesty`。agent_loop 另可断言 `verified_facts` 与 `agent_loop_rejected_facts`。
 
-诚实层用 fixture + 注入 mock 报告做机械审计；phases 与 agent_loop 共用同一最终产物标尺（宿主组装 Seen）。诚实矩阵硬闸最终产物；`raw` / `raw_sanitized` 列（两管线）计量模型裸写纪律差距，不挡硬闸。
+诚实层用 fixture + 注入 mock 报告做机械审计；phases 与 agent_loop 共用同一最终产物标尺（宿主组装 Seen）。诚实矩阵硬闸最终产物（宿主接线）；质量列（Inferred 接地、埋答案、raw_mode、usage）为信息列，不挡硬闸。
 
 **真实 DeepSeek 诚实闸**（opt-in，默认 `npm test` 跳过；需 `.env` 中 `DEEPSEEK_API_KEY`）：
 
@@ -180,7 +180,7 @@ Intel 报告测试两道闸（mock / CI）：
 $env:JEA_LIVE_DEEPSEEK='1'; npm run test:live-deepseek
 ```
 
-覆盖 phases + agent_loop Intel-only；对最终落盘报告跑同一诚实断言（无 canned MD / 不要求 `E2E_REPORT_TOKEN`）。agent_loop 最终产物 Seen 由宿主组装，失败多为接线/组装回归；phases 失败仍表示模型 Seen 纪律不足。默认 CI 不跑此文件。可用 `JEA_LLM_PROFILE` 换档后复跑。
+覆盖 phases + agent_loop Intel-only；对最终落盘报告跑同一诚实断言（无 canned MD / 不要求 `E2E_REPORT_TOKEN`）。最终产物 Seen 由宿主组装；硬闸失败多为接线/组装回归。默认 CI 不跑此文件。可用 `JEA_LLM_PROFILE` 换档后复跑。
 
 ### LLM 档案（DeepSeek V4）
 
@@ -200,15 +200,26 @@ $env:JEA_LIVE_DEEPSEEK='1'; npm run test:live-deepseek
 $env:JEA_LIVE_DEEPSEEK='1'; npm run test:live-deepseek:matrix
 ```
 
-**Intel 诚实矩阵**（同一 fixture 下对比模型×推理×pipeline 的 Seen 纪律；默认不挂在 `test:live-deepseek`）：
+**Intel 诚实矩阵**（同一 fixture 下对比模型×推理×pipeline 的最终报告交付质量；默认不挂在 `test:live-deepseek`）：
 
 ```powershell
 $env:JEA_LIVE_DEEPSEEK='1'; npm run test:live-deepseek:intel-matrix
 # 另含 pro×max × phases/agent_loop：
 $env:JEA_LIVE_DEEPSEEK_DEEP='1'; npm run test:live-deepseek:intel-matrix
+# 每格重复 N 次（1–5，默认 1）：
+$env:JEA_MATRIX_REPEATS='3'; npm run test:live-deepseek:intel-matrix
+# 可选 LLM judge（固定 pro×high，仅硬闸通过且 attempt=1）：
+$env:JEA_MATRIX_JUDGE='1'; npm run test:live-deepseek:intel-matrix
 ```
 
-默认 5 格：phases 的 flash×off / flash×high / pro×high，以及 agent_loop 的 flash×high / pro×high。每格对最终产物硬闸；汇总表另含 agent_loop 的 `raw` / `raw_sanitized` 信息列（模型裸写纪律，不影响硬闸）。phases 失败表示该档 Seen 纪律不足；agent_loop 最终产物失败表示宿主组装/splice 回归。
+默认 5 格：phases 的 flash×off / flash×high / pro×high，以及 agent_loop 的 flash×high / pro×high。
+
+| 层 | 列 | 是否硬闸 |
+| --- | --- | --- |
+| Gates | `ok` / poison / missing_ref / dangling / unknown_type / `host_fixture` | 是（宿主接线；`host_seen_missing_fixture_ref` 检查宿主 Seen 是否含 fixture id） |
+| Quality | `grounding` / invented / off_palette / palette_used / synth / conflict / stale / distractor / fixture_j / poison_unframed / calls / tokens / hit_ratio / judge | 否（判断章节质量；埋答案召回；成本） |
+
+`raw_mode`：`placeholder`（模型服从宿主占位契约）/ `full`（仍写完整 Seen）/ `missing` / `none`。埋答案 fixture 含合成对、冲突对、superseded 陷阱与干扰项；guidance **不**泄露期望。产物落盘：`test-artifacts/intel-honesty-matrix/<run_id>.jsonl` 与 `.md`（已 gitignore）。
 
 ### DeepSeek KV 缓存（context caching）
 

@@ -6,14 +6,19 @@
  *
  *   $env:JEA_LIVE_DEEPSEEK='1'; npm run test:live-deepseek:intel-matrix
  *
- * Each cell hard-fails on honesty findings; afterAll prints a comparison table.
+ * Hard-fails on host-wiring honesty findings; quality columns are informational.
+ * Optional: JEA_MATRIX_REPEATS=N (1–5), JEA_MATRIX_JUDGE=1.
  */
 import { afterAll, describe, expect, it } from 'vitest';
+import { execSync } from 'node:child_process';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadProjectEnv } from '../src/cli/utils/project.mjs';
 import { DeepSeekOpenAIClient } from '../src/ai/deepseek-client.mjs';
 import { DEEPSEEK_MODELS } from '../src/ai/llm-profile.mjs';
 import { runHonestyLiveIntel } from './helpers/intel-report-honesty-live-runner.mjs';
+import { judgeIntelReport, judgeMean } from './helpers/intel-report-judge.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 loadProjectEnv(REPO_ROOT);
@@ -21,6 +26,19 @@ loadProjectEnv(REPO_ROOT);
 const LIVE_ENABLED = process.env.JEA_LIVE_DEEPSEEK === '1'
   && Boolean(String(process.env.DEEPSEEK_API_KEY || '').trim());
 const LIVE_DEEP = process.env.JEA_LIVE_DEEPSEEK_DEEP === '1';
+const JUDGE_ENABLED = process.env.JEA_MATRIX_JUDGE === '1';
+const REPEATS = Math.min(5, Math.max(1, parseInt(process.env.JEA_MATRIX_REPEATS || '1', 10) || 1));
+
+const RUN_ID = new Date().toISOString().replace(/[:.]/g, '-');
+let GIT_COMMIT = null;
+try {
+  GIT_COMMIT = execSync('git rev-parse --short HEAD', {
+    cwd: REPO_ROOT,
+    encoding: 'utf-8',
+  }).trim();
+} catch {
+  GIT_COMMIT = null;
+}
 
 const DEFAULT_CELLS = [
   { pipeline: 'phases', model: DEEPSEEK_MODELS.flash, thinkingMode: 'off' },
@@ -37,6 +55,10 @@ const DEEP_CELLS = [
 
 /** @type {Array<object>} */
 const matrixRows = [];
+/** @type {string[]} */
+let lastGatesTable = '';
+/** @type {string[]} */
+let lastQualityTable = '';
 
 function cellLabel(cell) {
   const tier = cell.model.includes('pro') ? 'pro' : 'flash';
@@ -58,14 +80,53 @@ function makeMatrixClient(cell) {
   });
 }
 
+function makeJudgeClient() {
+  return new DeepSeekOpenAIClient({
+    apiKey: process.env.DEEPSEEK_API_KEY,
+    baseURL: process.env.DEEPSEEK_BASE_URL,
+    model: DEEPSEEK_MODELS.pro,
+    thinkingMode: 'high',
+    env: {
+      DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY,
+      DEEPSEEK_BASE_URL: process.env.DEEPSEEK_BASE_URL,
+    },
+    timeout: 300,
+  });
+}
+
 function countFindings(byRule = {}) {
   return Object.values(byRule).reduce((a, b) => a + Number(b || 0), 0);
 }
 
-function pushRow(cell, result, error = null) {
+function fmtRatio(value) {
+  if (value == null || !Number.isFinite(Number(value))) return '-';
+  return Number(value).toFixed(2);
+}
+
+function fmtBool(value) {
+  return value ? 'yes' : 'no';
+}
+
+function fmtTokens(usageTotals) {
+  if (!usageTotals) return '-';
+  const p = Number(usageTotals.prompt_tokens) || 0;
+  const c = Number(usageTotals.completion_tokens) || 0;
+  const sum = p + c;
+  return sum > 0 ? String(sum) : '-';
+}
+
+function pushRow(cell, attempt, result, error = null, judge = null) {
   const findings = result?.findingsByRule || {};
+  const grounding = result?.grounding || {};
+  const planted = result?.planted || {};
+  const poisonFraming = result?.poisonFraming || {};
+  const raw = result?.raw || {};
+  const usage = result?.usage || {};
   matrixRows.push({
+    run_id: RUN_ID,
+    git_commit: GIT_COMMIT,
     label: cellLabel(cell),
+    attempt,
     pipeline: cell.pipeline,
     model: cell.model,
     thinkingMode: cell.thinkingMode,
@@ -74,27 +135,36 @@ function pushRow(cell, result, error = null) {
     missing_ref: findings.seen_bullet_missing_ref || 0,
     dangling: findings.seen_dangling_ref || 0,
     unknown_type: findings.seen_unknown_source_type || 0,
-    // Informational bare-write discipline (phases + agent_loop when raw_md_path exists).
-    raw: countFindings(result?.rawFindingsByRule),
-    raw_sanitized: countFindings(result?.rawSanitizedFindingsByRule),
-    citesFixture: Boolean(result?.citesFixture),
+    host_fixture_missing: findings.host_seen_missing_fixture_ref || 0,
+    grounding,
+    planted,
+    poison_framing: poisonFraming,
+    raw_mode: raw.mode || 'none',
+    raw_findings: countFindings(raw.findingsByRule),
+    raw_sanitized_findings: countFindings(raw.sanitizedFindingsByRule),
+    llm_calls: usage.calls ?? 0,
+    tokens_prompt: usage.totals?.prompt_tokens ?? null,
+    tokens_completion: usage.totals?.completion_tokens ?? null,
+    cache_hit_ratio: usage.totals?.cache_hit_ratio ?? null,
+    usage_totals: usage.totals ?? null,
+    judge,
     elapsedMs: result?.elapsedMs ?? null,
     error: error ? String(error.message || error).slice(0, 160) : null,
   });
 }
 
-function printSummaryTable() {
-  if (!matrixRows.length) return;
+function buildGatesTableLines() {
   const header = [
     'label',
+    'attempt',
     'ok',
     'poison',
     'missing_ref',
     'dangling',
     'unknown_type',
-    'raw',
-    'raw_sanitized',
-    'fixture_cite',
+    'host_fixture',
+    'raw_mode',
+    'raw_findings',
     'ms',
   ];
   const lines = [
@@ -106,69 +176,178 @@ function printSummaryTable() {
       '| '
       + [
         row.label,
+        row.attempt,
         row.ok ? 'pass' : 'FAIL',
         row.poison,
         row.missing_ref,
         row.dangling,
         row.unknown_type,
-        row.raw,
-        row.raw_sanitized,
-        row.citesFixture ? 'yes' : 'no',
+        row.host_fixture_missing,
+        row.raw_mode,
+        row.raw_findings,
         row.elapsedMs ?? '-',
       ].join(' | ')
       + ' |',
     );
   }
-  // Use console.log so the table survives vitest per-test stdout isolation.
-  console.log('\n[intel-honesty-matrix] summary\n' + lines.join('\n') + '\n');
+  return lines;
+}
+
+function buildQualityTableLines() {
+  const header = [
+    'label',
+    'attempt',
+    'grounding',
+    'invented',
+    'off_palette',
+    'palette_used',
+    'synth',
+    'conflict',
+    'stale',
+    'distractor',
+    'fixture_j',
+    'poison_unframed',
+    'calls',
+    'tokens',
+    'hit_ratio',
+    'judge',
+  ];
+  const lines = [
+    '| ' + header.join(' | ') + ' |',
+    '| ' + header.map(() => '---').join(' | ') + ' |',
+  ];
+  for (const row of matrixRows) {
+    const g = row.grounding || {};
+    const p = row.planted || {};
+    const pf = row.poison_framing || {};
+    const mean = judgeMean(row.judge);
+    lines.push(
+      '| '
+      + [
+        row.label,
+        row.attempt,
+        fmtRatio(g.grounding_ratio),
+        g.refs_invented ?? 0,
+        g.refs_off_palette_resolvable ?? 0,
+        `${g.palette_used_distinct ?? 0}/${g.palette_size ?? 0}`,
+        fmtBool(p.synthesis_cocited),
+        fmtBool(p.conflict_flagged),
+        p.superseded_cited ?? 0,
+        p.distractor_cited ?? 0,
+        fmtBool(p.fixture_cited_in_judgement),
+        pf.poison_unframed ?? 0,
+        row.llm_calls ?? 0,
+        fmtTokens(row.usage_totals),
+        fmtRatio(row.cache_hit_ratio),
+        mean == null ? '-' : mean.toFixed(1),
+      ].join(' | ')
+      + ' |',
+    );
+  }
+  return lines;
+}
+
+function printSummaryTable() {
+  if (!matrixRows.length) return;
+  lastGatesTable = buildGatesTableLines();
+  lastQualityTable = buildQualityTableLines();
+  console.log('\n[intel-honesty-matrix] Gates (host wiring hard gates)\n' + lastGatesTable.join('\n') + '\n');
+  console.log('\n[intel-honesty-matrix] Quality (informational model judgement metrics)\n' + lastQualityTable.join('\n') + '\n');
   console.log(
-    '[intel-honesty-matrix] note: ok/poison/missing_ref/dangling/unknown_type are final-product gates '
-    + '(host-assembled Seen for phases + agent_loop); '
-    + 'raw / raw_sanitized are informational model-bare-write discipline before host splice.\n',
+    '[intel-honesty-matrix] note: ok/poison/missing_ref/dangling/unknown_type/host_fixture '
+    + 'are final-product host-wiring gates; '
+    + 'Quality columns (grounding/planted/raw_mode/usage/judge) are informational only.\n',
   );
+}
+
+function writeArtifacts() {
+  if (!matrixRows.length) return;
+  const dir = join(REPO_ROOT, 'test-artifacts', 'intel-honesty-matrix');
+  mkdirSync(dir, { recursive: true });
+  const jsonlPath = join(dir, `${RUN_ID}.jsonl`);
+  const mdPath = join(dir, `${RUN_ID}.md`);
+  const jsonl = matrixRows.map((row) => JSON.stringify(row)).join('\n') + '\n';
+  writeFileSync(jsonlPath, jsonl, 'utf-8');
+  const md = [
+    `# Intel honesty matrix ${RUN_ID}`,
+    '',
+    `- git_commit: ${GIT_COMMIT || '(unknown)'}`,
+    `- repeats: ${REPEATS}`,
+    `- judge: ${JUDGE_ENABLED ? 'on' : 'off'}`,
+    '',
+    '## Gates',
+    '',
+    ...(lastGatesTable.length ? lastGatesTable : buildGatesTableLines()),
+    '',
+    '## Quality',
+    '',
+    ...(lastQualityTable.length ? lastQualityTable : buildQualityTableLines()),
+    '',
+  ].join('\n');
+  writeFileSync(mdPath, md, 'utf-8');
+  console.log(`[intel-honesty-matrix] artifacts written: ${jsonlPath}`);
+  console.log(`[intel-honesty-matrix] artifacts written: ${mdPath}`);
 }
 
 async function runCell(cell) {
   const label = cellLabel(cell);
-  let result;
-  try {
-    result = await runHonestyLiveIntel({
-      pipeline: cell.pipeline,
-      aiClient: makeMatrixClient(cell),
-    });
-    console.info('[intel-honesty-matrix]', {
-      label,
-      ok: result.success,
-      findingsByRule: result.findingsByRule,
-      elapsedMs: result.elapsedMs,
-      citesFixture: result.citesFixture,
-    });
-    pushRow(cell, result);
-    expect(
-      result.honesty.findings,
-      [
-        `intel honesty matrix cell failed: ${label}`,
-        'Final-product gate failure (host Seen assemble/splice regression), not mock wiring.',
-        'raw columns (if any) are informational model bare-write discipline only.',
-        JSON.stringify(result.honesty.findings, null, 2),
-      ].join('\n'),
-    ).toEqual([]);
-  } catch (err) {
-    if (!matrixRows.some((r) => r.label === label)) {
-      pushRow(cell, result, err);
+  const attemptFailures = [];
+  for (let attempt = 1; attempt <= REPEATS; attempt += 1) {
+    let result;
+    try {
+      result = await runHonestyLiveIntel({
+        pipeline: cell.pipeline,
+        aiClient: makeMatrixClient(cell),
+      });
+      let judge = null;
+      if (JUDGE_ENABLED && result.success && attempt === 1) {
+        judge = await judgeIntelReport({
+          judgeClient: makeJudgeClient(),
+          markdown: result.markdown,
+        });
+      }
+      console.info('[intel-honesty-matrix]', {
+        label,
+        attempt,
+        ok: result.success,
+        findingsByRule: result.findingsByRule,
+        grounding_ratio: result.grounding?.grounding_ratio,
+        planted: result.planted,
+        raw_mode: result.raw?.mode,
+        elapsedMs: result.elapsedMs,
+      });
+      pushRow(cell, attempt, result, null, judge);
+      if (result.honesty.findings.length) {
+        attemptFailures.push({
+          attempt,
+          findings: result.honesty.findings,
+        });
+      }
+    } catch (err) {
+      pushRow(cell, attempt, result, err);
+      throw err;
     }
-    throw err;
   }
+  expect(
+    attemptFailures,
+    [
+      `intel honesty matrix cell failed: ${label}`,
+      'Hard-gate failure = host Seen assemble/splice / host_seen_missing_fixture_ref regression.',
+      'Quality columns are informational and do not affect this assertion.',
+      JSON.stringify(attemptFailures, null, 2),
+    ].join('\n'),
+  ).toEqual([]);
 }
 
 describe.skipIf(!LIVE_ENABLED)('Intel report honesty matrix (live DeepSeek)', () => {
   afterAll(() => {
     printSummaryTable();
+    writeArtifacts();
   });
 
   describe.sequential('default cells', () => {
     for (const cell of DEFAULT_CELLS) {
-      const timeout = 900_000;
+      const timeout = 900_000 * REPEATS;
       it(`cell ${cellLabel(cell)}`, async () => {
         await runCell(cell);
       }, timeout);
@@ -179,7 +358,7 @@ describe.skipIf(!LIVE_ENABLED)('Intel report honesty matrix (live DeepSeek)', ()
     for (const cell of DEEP_CELLS) {
       it(`cell ${cellLabel(cell)}`, async () => {
         await runCell(cell);
-      }, 1_200_000);
+      }, 1_200_000 * REPEATS);
     }
   });
 });
