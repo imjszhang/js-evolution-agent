@@ -27,7 +27,6 @@ import {
 } from '../intelligence/operator-briefs.mjs';
 import {
   buildSeenSection,
-  enforceIntelReportSeenGate,
   prepareIntelReport,
   persistIntelReport,
   updateStandingMemoryWithAi,
@@ -59,13 +58,15 @@ import {
   buildConversationSystemPromptParts,
   buildDecideUserPromptParts,
 } from '../prompts/phase1-conversation.mjs';
-import { buildMachineContextSeenBullets } from '../intelligence/machine-context-refs.mjs';
 import {
-  auditIntelReportEvidenceHonesty,
-  extractBracketRefs,
-  normalizeSourceType,
-  sanitizeCitationGlyphs,
-} from '../intelligence/report-honesty.mjs';
+  assembleHostSeenBody,
+  assembleAgentLoopHostSeenBody,
+  auditHostSeenReport,
+  spliceHostSeen,
+  spliceAgentLoopSeen,
+} from '../intelligence/host-seen.mjs';
+
+export { assembleAgentLoopHostSeenBody, assembleHostSeenBody, spliceAgentLoopSeen, spliceHostSeen };
 
 function carryoverPath(runtimeRoot) {
   return join(runtimeRoot, 'data', 'evolution', 'agent_loop_carryover.json');
@@ -209,115 +210,6 @@ function buildRestoredConversationForVerify({ systemPrompt, initialUserPrompt, r
       ].join('\n'),
     },
   ];
-}
-
-/**
- * Canonical ref key for host Seen dedupe (aliases collapse to store plural form).
- */
-function canonicalRefKey(sourceType, sourceId) {
-  const type = normalizeSourceType(sourceType);
-  const id = String(sourceId || '').trim().toLowerCase();
-  return `${type}:${id}`;
-}
-
-function refsToCanonicalKeys(text) {
-  return extractBracketRefs(text).map((r) => canonicalRefKey(r.sourceType, r.sourceId));
-}
-
-/**
- * Assemble host-owned Seen body for agent_loop:
- * machine_context bullets + mechanical Seen + verified_facts (deduped by normalized ref).
- */
-export function assembleAgentLoopHostSeenBody({
-  reportContext = null,
-  queueSummary = null,
-  operatorBriefs = [],
-  mechanicalSeen = '',
-  verifiedFacts = [],
-} = {}) {
-  const mcBody = buildMachineContextSeenBullets({
-    reportContext,
-    queueSummary,
-    operatorBriefs,
-  });
-  const mechBody = String(mechanicalSeen || '').trim();
-  const existingRefs = new Set([
-    ...refsToCanonicalKeys(mcBody),
-    ...refsToCanonicalKeys(mechBody),
-  ]);
-  const verifiedBullets = [];
-  for (const fact of Array.isArray(verifiedFacts) ? verifiedFacts : []) {
-    const ref = String(fact?.ref || '').trim();
-    const statement = String(fact?.statement || '').trim();
-    if (!ref || !statement) continue;
-    const parsed = extractBracketRefs(ref)[0]
-      || (() => {
-        const bare = ref.replace(/^\[|\]$/g, '');
-        const m = /^([a-z0-9_]+)\s*:\s*(.+)$/i.exec(bare);
-        return m ? { sourceType: m[1], sourceId: m[2].trim() } : null;
-      })();
-    if (!parsed) continue;
-    const key = canonicalRefKey(parsed.sourceType, parsed.sourceId);
-    if (existingRefs.has(key)) continue;
-    existingRefs.add(key);
-    verifiedBullets.push(`- ${ref}: ${statement}`);
-  }
-  return [mcBody, mechBody, verifiedBullets.join('\n')]
-    .filter((part) => part && part !== '(none)')
-    .join('\n\n')
-    .trim() || '- (none)';
-}
-
-function forbiddenPhrasesFromBriefs(operatorBriefs = []) {
-  const phrases = [];
-  for (const brief of Array.isArray(operatorBriefs) ? operatorBriefs : []) {
-    const summary = String(brief?.summary || '').trim();
-    if (summary) phrases.push(summary);
-  }
-  return phrases;
-}
-
-/**
- * Pure Seen splice for agent_loop (sanitize + host gate). Used as persistIntelReport transformMd.
- */
-export function spliceAgentLoopSeen(markdown, hostSeenBody) {
-  let md = sanitizeCitationGlyphs(String(markdown || ''));
-  md = enforceIntelReportSeenGate(md, hostSeenBody);
-  return md.endsWith('\n') ? md : `${md}\n`;
-}
-
-/**
- * Post-persist honesty audit on the final (redacted) report. Emits at most once per cycle.
- */
-function auditAgentLoopReport({
-  markdown,
-  store = null,
-  operatorBriefs = [],
-  emitEvent = null,
-  logger = null,
-} = {}) {
-  if (!store) return;
-  try {
-    const honesty = auditIntelReportEvidenceHonesty({
-      store,
-      markdown: String(markdown || ''),
-      forbiddenInSeen: forbiddenPhrasesFromBriefs(operatorBriefs),
-      minSeenBulletsWithRefs: 1,
-    });
-    if (honesty.findings.length) {
-      logger?.warning?.(
-        `[agent_loop] report honesty findings after host Seen splice: ${JSON.stringify(honesty.findings)}`,
-      );
-    }
-    emitEvent?.({
-      type: 'agent_loop_report_honesty',
-      status: honesty.findings.length ? 'findings' : 'ok',
-      findings_count: honesty.findings.length,
-      findings: honesty.findings.slice(0, 20),
-    });
-  } catch (e) {
-    logger?.warning?.(`[agent_loop] report honesty audit failed: ${e?.message || e}`);
-  }
 }
 
 function preloadDedupFromReceipts(store, cycleId) {
@@ -529,7 +421,7 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
     investigation,
     queryLog: investigateResult.queryLog || loopCtx.queryLog || [],
   });
-  const hostSeenBody = assembleAgentLoopHostSeenBody({
+  const hostSeenBody = assembleHostSeenBody({
     reportContext: prepared.reportContext,
     queueSummary,
     operatorBriefs: operatorBriefsSummary,
@@ -630,11 +522,11 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
     source: reportSource === 'ai' ? 'agent_loop' : 'fallback',
     fallbackReason: reportReason,
     updateStandingMemory: false,
-    transformMd: (md) => spliceAgentLoopSeen(md, hostSeenBody),
+    transformMd: (md) => spliceHostSeen(md, hostSeenBody),
     ...prepared,
   });
   const reportMarkdown = persistedReport.markdown;
-  auditAgentLoopReport({
+  auditHostSeenReport({
     markdown: reportMarkdown,
     store,
     operatorBriefs,
@@ -644,6 +536,8 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
       subject: runtime.subject,
     }),
     logger,
+    eventType: 'agent_loop_report_honesty',
+    logLabel: 'agent_loop',
   });
 
   // --- Phase: classic Analyze+Decide ---

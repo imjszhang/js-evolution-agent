@@ -72,6 +72,7 @@ function buildReportDynamicPayload({
   intelligenceContext = '',
   observationReport = '',
   reportContext = null,
+  hostSeenBody = '',
   language = 'zh',
 } = {}) {
   const isEn = language === 'en';
@@ -113,6 +114,14 @@ ${isEn
 ${briefJson(reportContext)}
 \`\`\`
 
+## Final Seen
+
+${isEn
+    ? 'Host will splice this body into ## Seen verbatim. Use it as the citation palette for Inferred.'
+    : '宿主将把以下正文逐字写入 ## Seen。Inferred 只能引用这里出现的 typed ref。'}
+
+${hostSeenBody || '- (none)'}
+
 ## Model Observation Claims
 
 ${isEn
@@ -133,64 +142,62 @@ export function buildReportUserPromptParts(args = {}) {
   const stablePrefix = language === 'en'
     ? `# Intelligence Report Task
 
-Write a human-readable Markdown intelligence report for the current cycle.
+Write a human-readable Markdown intelligence report for the current cycle (host-assembled Seen).
 
 Stage: pre_analyze_decide_report. Evaluate only the observations, historical intelligence, and machine context provided in the dynamic cycle payload; do not evaluate later products that do not exist at this stage.
 
 Reading order and constraints:
 1. First, read the authoritative documents already provided in the system message. They outrank all intelligence material.
-2. Then read the Temporal Decision Brief in this order: Seen, Inferred, Remembered, Do Not Treat As Seen.
+2. Then read Final Seen (host-owned citation palette) and the Temporal Decision Brief.
 3. Then read standing_memory. It is fixed-capacity global situation memory; use it for continuity, but treat it as a cache, not an authority.
 4. Then read current_beliefs from Machine Context / Temporal Decision Brief decision_constraints. Active beliefs are testable action hypotheses tied to goals; validated beliefs are operating assumptions; recently_refuted beliefs are avoid-repeat constraints, not facts.
 5. Then read active goals, goal history, current cycle facts, recent intelligence, and report history.
 6. Then read Operator Intent Briefs. They are one-cycle operator intent, not verified evidence or standing memory.
 7. If new evidence weakens or overturns standing_memory or historical reports, say so in the report.
-8. When sources conflict, Seen overrides Remembered. Inferred judgements must cite Seen evidence and state what would overturn them.
+8. When sources conflict, Final Seen / Temporal Seen overrides Remembered. Inferred judgements must cite typed refs that appear in Final Seen and state what would overturn them.
 
 Output constraints:
 - Output pure Markdown; do not wrap the whole document in code fences.
+- Required level-2 headings (English preferred): ## Seen, ## Inferred, ## Cyber-Taoist analysis, ## 下一轮建议 (or Next cycle suggestions).
+- Include a short TL;DR near the top.
+- ## Seen is a host-owned placeholder: write one short bullet acknowledging Final Seen below; the host will replace the entire Seen section verbatim with Final Seen. Do not invent Seen facts.
+- Write ## Inferred, ## Cyber-Taoist analysis, and next-cycle suggestions based on Final Seen + Observation + Temporal Decision Brief + Machine Context.
+- Inferred judgements may cite only typed refs that appear in Final Seen. Use halfwidth ASCII brackets and colons: [type:id]. Never invent ids.
+- Operator Intent Briefs are one-cycle intent, not facts. Discuss them under Inferred; never promote brief claim text into Seen.
 - Use straightforward technical-or-ops prose: readable to a human operator, useful to the subject's evolution, and faithful to Cyber-Taoist evolutionary thinking.
 - Cyber-Taoist terms may be used as written in the documents, but state claims with facts and traceable ids instead of metaphor.
-- Do not invent ids, counts, or events not present in the machine context.
-- Treat Operator Intent Briefs as requests to verify or focus attention. Do not state their claims as facts until supported by machine evidence.
-- Treat historical reports as historical claims, not current facts. Do not promote refuted, stale, or unverified claims into current facts.
-- Structure the report around Seen, Inferred, and Remembered / Not Used. Seen are facts; Inferred are judgements based on Seen; Remembered are leads or background only.
-- Cover current cycle facts, long-term trends, evidence gaps, risks, next-cycle recommendations, and how standing_memory should be updated.
-- Include an explicit Cyber-Taoist analysis section. It must interpret the evidence through the authoritative documents, including the current evolutionary phase, law/transaction/niche signals, and fractal keep/break/probe boundaries when the provided evidence supports them.
-- Prefer traceable ids where relevant, cited as bracket typed refs such as \`[intel_observations:<id>]\`, \`[probe_results:<id>]\`, \`[goal_events:<id>]\`, \`[action_receipts:<id>]\`, \`[evolution_events:<id>]\`, \`[intel_reports:<id>]\`. Only cite ids that appear verbatim in the provided context; never invent ids.
-- For host-rendered runtime state that has no store id (decision queue, active goals, standing memory, current beliefs, source counts, operator brief existence, cycle stage), cite \`[machine_context:<key>]\` where <key> is one of: ${MACHINE_CONTEXT_IDS.join(', ')}. Statements about absence or emptiness must cite the matching machine_context key. In Seen, mention operator briefs only as an existence fact cited as \`[machine_context:operator_intent_briefs]\`; never restate their claim text as fact.
+- Include an explicit Cyber-Taoist analysis section covering evolutionary phase, law/transaction/niche signals, and fractal keep/break/probe boundaries when evidence supports them.
+- Allowed machine_context keys (for understanding Final Seen only; do not invent new ones): ${MACHINE_CONTEXT_IDS.join(', ')}.
 - Use concise, literal section headings such as "Cycle conclusion" or "Evidence gaps"; avoid ornate, mystical, or literary headings.`
     : `# 情报报告任务
 
-请为当前 cycle 生成一份人类可读的情报报告（不要使用「修行札记」体裁或文言、半文言文风）。
+请为当前 cycle 生成一份人类可读的情报报告（宿主组装 Seen；不要使用「修行札记」体裁或文言、半文言文风）。
 
 阶段：pre_analyze_decide_report。只评价 Dynamic Cycle Payload 中已提供的观察、历史情报和机器上下文；不要评价本阶段尚未产生的后续产物。
 
 阅读顺序与约束：
 1. 先读 system message 中已提供的权威文献，它们高于所有情报材料。
-2. 再读 Temporal Decision Brief，并按顺序理解：Seen（本轮看到）、Inferred（基于证据判断）、Remembered（历史线索）、Do Not Treat As Seen（不得当事实）。
+2. 再读 Final Seen（宿主权威引用调色板）与 Temporal Decision Brief。
 3. 再读 standing_memory；它是固定容量的整体态势缓存，可以帮助保持连续性，但不是权威事实源。
 4. 再读 Machine Context / Temporal Decision Brief 中的 current_beliefs。active 信念是当前可验证的行动假设；validated 信念是当前行动前提；recently_refuted 信念是避免重复试错的约束，不是事实。
 5. 再读当前目标、目标历史、本轮事实、近期完整情报和历史报告索引。
 6. 再读 Operator Intent Briefs。它们是单轮人工意图，不是已验证证据，也不是 standing_memory。
 7. 若新证据推翻或削弱 standing_memory 或历史报告中的旧判断，请在报告中指出。
-8. 多源冲突时，Seen 覆盖 Remembered；Inferred 必须引用 Seen，并说明什么证据会推翻该判断。
+8. 多源冲突时，Final Seen / Temporal Seen 覆盖 Remembered；Inferred 只能引用 Final Seen 中出现的 typed ref，并说明什么证据会推翻该判断。
 
 要求：
 - 输出纯 Markdown，不要使用最外层代码围栏。
+- 必需二级标题（优先英文）：## Seen、## Inferred、## Cyber-Taoist analysis、## 下一轮建议。
+- 文首附近包含简短 TL;DR。
+- ## Seen 是宿主占位：只写一条短 bullet 确认已阅读下方 Final Seen；宿主会把整个 Seen 段逐字替换为 Final Seen。不要自行编造 Seen 事实。
+- 基于 Final Seen + Observation + Temporal Decision Brief + Machine Context 撰写 ## Inferred、## Cyber-Taoist analysis 与下一轮建议。
+- Inferred 判断只能引用 Final Seen 中出现的 typed ref；使用半角 ASCII 方括号与冒号：\`[type:id]\`；不得编造 id。
+- Operator Intent Briefs 是单轮意图不是事实；可在 Inferred 讨论，不得把 brief claim 原文写入 Seen。
 - 文风：现代汉语书面语（白话），条目化、可直接给工程师阅读；对人类操作者可读、对主体的演化有用，并忠于 Cyber-Taoist 进化学立场。
 - 禁止使用文言文、骈俪、堆砌典故作主标题、「子在川上」类譬喻文风，或过长的玄学、武侠、宗教隐喻。
 - Cyber-Taoist 专有名词可照文献原样引用，但必须用事实与可追溯 id 陈述，勿用玄学修辞替代证据。
-- 不要捏造机器上下文中没有的 id、计数或事件。
-- 将 Operator Intent Briefs 视为核实请求或注意力偏好；除非已有机器证据支持，不得把其中 claim 表述为事实。
-- 将历史报告视为 historical claim，而不是当前事实源；不得把 refuted、stale、unverified 的 claim 写成当前事实。
-- 报告结构应围绕「本轮看到」「基于证据的判断」「历史线索与未采纳内容」组织。Seen 是事实；Inferred 是判断；Remembered 只是线索。
-- 覆盖本轮观察、长期趋势、证据不足、风险、下一轮建议，以及 standing_memory 应如何更新的要点。
-- 对缺失路径、ENOENT、blocked 探针等证据，必须引用 execution_root/resource_scope/resource_kind；除非该 root 是资源权威 root，不得升级为「模块缺失」「机制未实现」「写入冻结」。
-- 对环境变量、凭据、同步、发布、挑战等外部工具能力，必须先确认权威执行域。\`subject_runtime\` 下的 env false 只能说明 subject runtime 看不到该变量；不得升级为外部 tool root 或远端交易凭据缺失。外部工具能力应使用 subject policy 中声明的自定义 scope 或 configured external action。
 - 必须包含明确的 Cyber-Taoist 分析章节。该章节需依据权威文献解释当前证据，至少覆盖当前进化阶段、法则/交易/生态位信号，以及在证据支持时的分形守/破/探针边界。
-- 尽量用方括号 typed ref 引用可追溯 id，例如 \`[intel_observations:<id>]\`、\`[probe_results:<id>]\`、\`[goal_events:<id>]\`、\`[action_receipts:<id>]\`、\`[evolution_events:<id>]\`、\`[intel_reports:<id>]\`；只允许引用上下文中逐字出现的 id，不得编造。
-- 对没有 store id 的宿主渲染运行态（决策队列、active goals、standing memory、current beliefs、来源计数、operator brief 存在性、cycle 阶段），引用 \`[machine_context:<key>]\`，<key> 只能取：${MACHINE_CONTEXT_IDS.join('、')}。空态/缺失陈述（如「暂无 standing memory」「决策队列为空」）也必须引用对应 machine_context key。Seen 中提及 operator brief 只能陈述其存在与类型并引用 \`[machine_context:operator_intent_briefs]\`，不得把 brief 的 claim 原文当事实写入。
+- 理解 Final Seen 时可用的 machine_context key（勿发明新 key）：${MACHINE_CONTEXT_IDS.join('、')}。
 - 标题与小节标题用简明主题短语（例如「本轮结论」「证据缺口」），禁止使用文言对联式或隐喻式标题。`;
 
   const dynamicPayload = buildReportDynamicPayload({ ...args, language });
@@ -215,6 +222,7 @@ export function buildReportUserPrompt({
   intelligenceContext = '',
   observationReport = '',
   reportContext = null,
+  hostSeenBody = '',
 } = {}) {
   return buildReportUserPromptParts({
     cycleId,
@@ -226,6 +234,7 @@ export function buildReportUserPrompt({
     intelligenceContext,
     observationReport,
     reportContext,
+    hostSeenBody,
   }).content;
   if (language === 'en') {
     return `Write a human-readable Markdown intelligence report for cycle \`${cycleId}\`.

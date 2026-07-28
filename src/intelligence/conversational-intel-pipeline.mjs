@@ -1,3 +1,4 @@
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   AIDrivenObserver,
@@ -15,6 +16,12 @@ import {
 } from '../ai/prompt-cache-metadata.mjs';
 import { createHostDecisionQueue } from './decision-queue.mjs';
 import {
+  assembleHostSeenBody,
+  auditHostSeenReport,
+  spliceHostSeen,
+} from './host-seen.mjs';
+import {
+  buildSeenSection,
   persistIntelReport,
   prepareIntelReport,
   updateStandingMemoryWithAi,
@@ -286,6 +293,14 @@ export class ConversationalIntelligencePipeline {
         preparedReport.reportContext.subject_resources = this.host.subjectResources;
       }
       const reportPromptContext = toPreDecisionReportContext(preparedReport.reportContext);
+      const mechanicalSeen = buildSeenSection(preparedReport.reportContext) || '(none)';
+      const hostSeenBody = assembleHostSeenBody({
+        reportContext: preparedReport.reportContext,
+        queueSummary,
+        operatorBriefs: operatorBriefsContext,
+        mechanicalSeen,
+        verifiedFacts: [],
+      });
 
       const systemPromptParts = buildConversationSystemPromptParts({
         agentContextDocs: this.agentContextDocs,
@@ -302,6 +317,7 @@ export class ConversationalIntelligencePipeline {
         intelligenceContext,
         observationReport: observation.observation_report,
         reportContext: reportPromptContext,
+        hostSeenBody,
       });
       const reportUserPrompt = reportPromptParts.content;
       const reportMessages = [
@@ -320,11 +336,21 @@ export class ConversationalIntelligencePipeline {
         logger: this.host?.logger,
       });
 
-      this._log(`[${cycleId}] phase 2/3: conversational report`);
+      const recordsDir = join(
+        this.runtime.runtimeRoot,
+        'data',
+        'evolution',
+        'records',
+        cycleId,
+      );
+      mkdirSync(recordsDir, { recursive: true });
+      const rawReportPath = join(recordsDir, 'phases_report_raw.md');
+
+      this._log(`[${cycleId}] phase 2/3: conversational report (host Seen splice)`);
       logger.startPhase('intel_report');
-      let reportMarkdown = null;
       let reportSource = 'fallback';
       let reportReason = null;
+      let rawReportMarkdown = null;
       try {
         const md = await chatMessages(this.aiClient, reportMessages, {
           thinking: 'medium',
@@ -332,7 +358,7 @@ export class ConversationalIntelligencePipeline {
           phase: 'report',
         });
         if (typeof md === 'string' && md.trim()) {
-          reportMarkdown = md.trim() + '\n';
+          rawReportMarkdown = `${md.trim()}\n`;
           reportSource = 'ai';
         } else {
           reportReason = 'empty-output';
@@ -342,25 +368,49 @@ export class ConversationalIntelligencePipeline {
         this._log(`report generation failed: ${reportReason}`, 'warning');
       }
 
+      if (rawReportMarkdown) {
+        writeFileSync(rawReportPath, rawReportMarkdown, 'utf-8');
+      } else if (!existsSync(rawReportPath)) {
+        writeFileSync(rawReportPath, '', 'utf-8');
+      }
+
+      const store = this.host?.intelligenceStore;
       const persistedReport = await persistIntelReport({
         intelResult: preliminaryIntelResult,
         runtime: this.runtime,
-        store: this.host?.intelligenceStore,
+        store,
         agentContextDocs: this.agentContextDocs,
         aiClient: reportSource === 'ai' ? this.aiClient : null,
         logger: this.host?.logger,
-        md: reportMarkdown,
+        md: rawReportMarkdown,
         source: reportSource,
         fallbackReason: reportReason,
         updateStandingMemory: false,
+        transformMd: (md) => spliceHostSeen(md, hostSeenBody),
         ...preparedReport,
       });
-      reportMarkdown = persistedReport.markdown;
+      const reportMarkdown = persistedReport.markdown;
+      persistedReport.raw_md_path = rawReportPath;
+      auditHostSeenReport({
+        markdown: reportMarkdown,
+        store,
+        operatorBriefs: operatorBriefsContext,
+        emitEvent: (event) => store?.recordEvolutionEvent?.({
+          ...event,
+          cycle_id: cycleId,
+          subject: this.runtime?.subject,
+        }),
+        logger: this.host?.logger,
+        eventType: 'phases_report_honesty',
+        logLabel: 'phases',
+      });
       result.report = persistedReport;
       logger.logPhase('intel_report', {
         outputs: {
           source: persistedReport.source,
           md_path: persistedReport.mdPath,
+          raw_md_path: rawReportPath,
+          host_seen_spliced: true,
           language: persistedReport.indexRecord.language,
           prompt_cache: {
             ...reportPromptCache,

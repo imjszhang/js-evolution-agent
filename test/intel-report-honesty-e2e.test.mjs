@@ -61,8 +61,8 @@ const HONEST_REPORT = [
   '',
 ].join('\n');
 
-/** Dirty Seen for agent_loop: host splice must overwrite poison + missing refs. */
-const DIRTY_LOOP_REPORT = [
+/** Dirty Seen: host splice (phases + agent_loop) must overwrite poison + missing refs. */
+const DIRTY_HOST_SEEN_REPORT = [
   '# 情报报告（honesty e2e agent_loop）',
   '',
   `Token: ${E2E_REPORT_TOKEN}`,
@@ -209,8 +209,8 @@ function makeHonestyAiClient() {
     }],
     canned: [
       { match: /Strategic Analysis & Decision/i, response: HONEST_DECIDE },
-      // agent_loop thin prompt carries Final Seen; return dirty Seen to assert host splice.
-      { match: /Final Seen/i, response: DIRTY_LOOP_REPORT },
+      // phases + agent_loop prompts carry Final Seen; dirty Seen asserts host splice.
+      { match: /Final Seen/i, response: DIRTY_HOST_SEEN_REPORT },
       { match: /情报报告任务|Intelligence Report Task/i, response: HONEST_REPORT },
       {
         // Observe path requires report length ≥ 200 (ai-driven-observer).
@@ -290,24 +290,28 @@ async function runHonestyMatrix(pipeline) {
       minSeenBulletsWithRefs: 2,
     });
     expect(markdown).toContain(`[intel_observations:${FACT_ID}]`);
-    expect(markdown).toContain(`[intel_observations:${OBS_ID}]`);
+    // Dirty model Seen must not survive host splice (phases + agent_loop).
+    const seenStart = markdown.indexOf('## Seen');
+    const inferredStart = markdown.indexOf('## Inferred');
+    const seenBody = inferredStart > seenStart
+      ? markdown.slice(seenStart, inferredStart)
+      : markdown.slice(seenStart);
+    expect(seenBody).not.toContain(POISON_INTENT_CLAIM_E2E);
+    expect(seenBody).toContain('[machine_context:decision_queue]');
+    expect(intelResult.report?.raw_md_path).toBeTruthy();
+    expect(existsSync(intelResult.report.raw_md_path)).toBe(true);
+    // Host Seen splice runs before redactSecrets.
+    expect(seenBody).not.toContain(SECRET_SHAPED);
+    expect(seenBody).toContain('[REDACTED_SECRET]');
+    const events = ctx.store.readEvolutionEvents({ limit: 200 });
+    const honestyType = pipeline === 'agent_loop'
+      ? 'agent_loop_report_honesty'
+      : 'phases_report_honesty';
+    const honestyEvents = events.filter((e) => e.type === honestyType);
+    expect(honestyEvents.length).toBe(1);
     if (pipeline === 'agent_loop') {
-      // Dirty model Seen must not survive host splice.
-      const seenStart = markdown.indexOf('## Seen');
-      const inferredStart = markdown.indexOf('## Inferred');
-      const seenBody = inferredStart > seenStart
-        ? markdown.slice(seenStart, inferredStart)
-        : markdown.slice(seenStart);
-      expect(seenBody).not.toContain(POISON_INTENT_CLAIM_E2E);
-      expect(seenBody).toContain('[machine_context:decision_queue]');
-      expect(intelResult.report?.raw_md_path).toBeTruthy();
-      expect(existsSync(intelResult.report.raw_md_path)).toBe(true);
-      // Host Seen splice runs before redactSecrets; secret-shaped verified_facts must be redacted.
-      expect(seenBody).not.toContain(SECRET_SHAPED);
-      expect(seenBody).toContain('[REDACTED_SECRET]');
-      const events = ctx.store.readEvolutionEvents({ limit: 200 });
-      const honestyEvents = events.filter((e) => e.type === 'agent_loop_report_honesty');
-      expect(honestyEvents.length).toBe(1);
+      // agent_loop verified_facts can add store observations beyond operator_fact mechanical Seen.
+      expect(markdown).toContain(`[intel_observations:${OBS_ID}]`);
       const rejectedEvents = events.filter((e) => e.type === 'agent_loop_rejected_facts');
       expect(rejectedEvents.length).toBe(1);
       expect(rejectedEvents[0].count).toBeGreaterThanOrEqual(1);

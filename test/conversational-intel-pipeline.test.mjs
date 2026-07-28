@@ -119,11 +119,14 @@ describe('conversation prompt constraints', () => {
     expect(zhReportPrompt).toContain('必须包含明确的 Cyber-Taoist 分析章节');
     expect(zhReportPrompt).toContain('法则/交易/生态位');
     expect(zhReportPrompt).toContain('Operator Intent Briefs');
-    expect(zhReportPrompt).toContain('不得把其中 claim 表述为事实');
+    expect(zhReportPrompt).toContain('不得把 brief claim 原文写入 Seen');
+    expect(zhReportPrompt).toContain('## Final Seen');
+    expect(zhReportPrompt).toContain('## Seen 是宿主占位');
     expect(enReportPrompt).toContain('Include an explicit Cyber-Taoist analysis section');
     expect(enReportPrompt).toContain('law/transaction/niche');
-    expect(enReportPrompt).toContain('not verified evidence');
-    expect(zhReportPrompt.indexOf('## Temporal Decision Brief')).toBeLessThan(zhReportPrompt.indexOf('## Model Observation Claims'));
+    expect(enReportPrompt).toContain('host-owned placeholder');
+    expect(enReportPrompt).toContain('## Final Seen');
+    expect(zhReportPrompt.indexOf('## Final Seen')).toBeLessThan(zhReportPrompt.indexOf('## Model Observation Claims'));
     expect(zhReportPrompt).toContain('current_beliefs');
     expect(decidePrompt).toContain('"cyber_taoist_analysis"');
     expect(decidePrompt).toContain('若不采纳 brief，应在 deferred 中说明原因');
@@ -184,17 +187,23 @@ describe('conversation prompt constraints', () => {
       cycleId: 'cycle-one',
       language: 'zh',
       goalsText: 'goal A',
+      hostSeenBody: '- [machine_context:cycle_stage]: cycle-one',
       reportContext: { current_cycle: { cycle_id: 'cycle-one' } },
     });
     const second = buildReportUserPromptParts({
       cycleId: 'cycle-two',
       language: 'zh',
       goalsText: 'goal B',
+      hostSeenBody: '- [machine_context:cycle_stage]: cycle-two',
       reportContext: { current_cycle: { cycle_id: 'cycle-two' } },
     });
 
     expect(first.stablePrefix).toBe(second.stablePrefix);
     expect(first.stablePrefix).not.toContain('cycle-one');
+    expect(first.stablePrefix).toContain('宿主组装 Seen');
+    expect(first.stablePrefix).toContain('## Seen 是宿主占位');
+    expect(first.dynamicPayload).toContain('## Final Seen');
+    expect(first.dynamicPayload).toContain('[machine_context:cycle_stage]: cycle-one');
     expect(first.content.indexOf('## Dynamic Cycle Payload')).toBeGreaterThan(first.content.indexOf('必须包含明确的 Cyber-Taoist 分析章节'));
     expect(first.dynamicPayload).toContain('cycle-one');
 

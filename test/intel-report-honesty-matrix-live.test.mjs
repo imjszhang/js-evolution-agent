@@ -64,7 +64,6 @@ function countFindings(byRule = {}) {
 
 function pushRow(cell, result, error = null) {
   const findings = result?.findingsByRule || {};
-  const isLoop = cell.pipeline === 'agent_loop';
   matrixRows.push({
     label: cellLabel(cell),
     pipeline: cell.pipeline,
@@ -75,8 +74,9 @@ function pushRow(cell, result, error = null) {
     missing_ref: findings.seen_bullet_missing_ref || 0,
     dangling: findings.seen_dangling_ref || 0,
     unknown_type: findings.seen_unknown_source_type || 0,
-    raw: isLoop ? countFindings(result?.rawFindingsByRule) : null,
-    raw_sanitized: isLoop ? countFindings(result?.rawSanitizedFindingsByRule) : null,
+    // Informational bare-write discipline (phases + agent_loop when raw_md_path exists).
+    raw: countFindings(result?.rawFindingsByRule),
+    raw_sanitized: countFindings(result?.rawSanitizedFindingsByRule),
     citesFixture: Boolean(result?.citesFixture),
     elapsedMs: result?.elapsedMs ?? null,
     error: error ? String(error.message || error).slice(0, 160) : null,
@@ -111,8 +111,8 @@ function printSummaryTable() {
         row.missing_ref,
         row.dangling,
         row.unknown_type,
-        row.raw == null ? '-' : row.raw,
-        row.raw_sanitized == null ? '-' : row.raw_sanitized,
+        row.raw,
+        row.raw_sanitized,
         row.citesFixture ? 'yes' : 'no',
         row.elapsedMs ?? '-',
       ].join(' | ')
@@ -122,8 +122,9 @@ function printSummaryTable() {
   // Use console.log so the table survives vitest per-test stdout isolation.
   console.log('\n[intel-honesty-matrix] summary\n' + lines.join('\n') + '\n');
   console.log(
-    '[intel-honesty-matrix] note: ok/poison/missing_ref/dangling/unknown_type are final-product gates; '
-    + 'raw / raw_sanitized are informational model-bare-write discipline (agent_loop only).\n',
+    '[intel-honesty-matrix] note: ok/poison/missing_ref/dangling/unknown_type are final-product gates '
+    + '(host-assembled Seen for phases + agent_loop); '
+    + 'raw / raw_sanitized are informational model-bare-write discipline before host splice.\n',
   );
 }
 
@@ -147,7 +148,8 @@ async function runCell(cell) {
       result.honesty.findings,
       [
         `intel honesty matrix cell failed: ${label}`,
-        'Evaluation signal (model Seen discipline), not mock wiring.',
+        'Final-product gate failure (host Seen assemble/splice regression), not mock wiring.',
+        'raw columns (if any) are informational model bare-write discipline only.',
         JSON.stringify(result.honesty.findings, null, 2),
       ].join('\n'),
     ).toEqual([]);

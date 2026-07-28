@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildMachineContextSeenBullets } from '../src/intelligence/machine-context-refs.mjs';
 import { enforceIntelReportSeenGate } from '../src/intelligence/report-builder.mjs';
-import { assembleAgentLoopHostSeenBody } from '../src/evolution/cycle-steps.mjs';
+import { assembleHostSeenBody } from '../src/intelligence/host-seen.mjs';
 import { extractSeenSectionBody } from '../src/intelligence/report-honesty.mjs';
 
 describe('buildMachineContextSeenBullets', () => {
@@ -59,9 +59,9 @@ describe('enforceIntelReportSeenGate', () => {
   });
 });
 
-describe('assembleAgentLoopHostSeenBody', () => {
+describe('assembleHostSeenBody', () => {
   it('merges machine_context, mechanical Seen, and verified_facts with ref dedupe', () => {
-    const body = assembleAgentLoopHostSeenBody({
+    const body = assembleHostSeenBody({
       reportContext: {
         current_cycle: { cycle_id: 'c1' },
         source_counts: { observations: 1 },
@@ -83,7 +83,7 @@ describe('assembleAgentLoopHostSeenBody', () => {
   });
 
   it('dedupes singular/plural source-type aliases to one bullet', () => {
-    const body = assembleAgentLoopHostSeenBody({
+    const body = assembleHostSeenBody({
       reportContext: {
         current_cycle: { cycle_id: 'c1' },
         source_counts: { observations: 0 },

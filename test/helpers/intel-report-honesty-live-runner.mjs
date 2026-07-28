@@ -301,25 +301,23 @@ export async function runHonestyLiveIntel({
 
     let rawHonesty = null;
     let rawSanitizedHonesty = null;
-    if (pipeline === 'agent_loop') {
-      const rawPath = intelResult.report?.raw_md_path;
-      const rawMarkdown = rawPath && existsSync(rawPath)
-        ? readFileSync(rawPath, 'utf-8')
-        : '';
-      if (rawMarkdown.trim()) {
-        rawHonesty = auditIntelReportEvidenceHonesty({
-          store: ctx.store,
-          markdown: rawMarkdown,
-          forbiddenInSeen: [POISON_INTENT_CLAIM_E2E],
-          minSeenBulletsWithRefs: 1,
-        });
-        rawSanitizedHonesty = auditIntelReportEvidenceHonesty({
-          store: ctx.store,
-          markdown: sanitizeCitationGlyphs(rawMarkdown),
-          forbiddenInSeen: [POISON_INTENT_CLAIM_E2E],
-          minSeenBulletsWithRefs: 1,
-        });
-      }
+    const rawPath = intelResult.report?.raw_md_path;
+    const rawMarkdown = rawPath && existsSync(rawPath)
+      ? readFileSync(rawPath, 'utf-8')
+      : '';
+    if (rawMarkdown.trim()) {
+      rawHonesty = auditIntelReportEvidenceHonesty({
+        store: ctx.store,
+        markdown: rawMarkdown,
+        forbiddenInSeen: [POISON_INTENT_CLAIM_E2E],
+        minSeenBulletsWithRefs: 1,
+      });
+      rawSanitizedHonesty = auditIntelReportEvidenceHonesty({
+        store: ctx.store,
+        markdown: sanitizeCitationGlyphs(rawMarkdown),
+        forbiddenInSeen: [POISON_INTENT_CLAIM_E2E],
+        minSeenBulletsWithRefs: 1,
+      });
     }
 
     const byRule = findingsByRule(honesty.findings);
