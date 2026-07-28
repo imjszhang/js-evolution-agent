@@ -226,7 +226,9 @@ $env:JEA_MATRIX_JUDGE='1'; npm run test:live-deepseek:intel-matrix
 `raw_mode`：`placeholder`（模型服从宿主占位契约）/ `full`（仍写完整 Seen）/ `missing` / `none`。埋答案 fixture 含两组信号：
 
 - **开卷推理**（当天写入，进 7 天 prompt 窗口）：合成对、冲突对、superseded 陷阱与干扰项。
-- **闭卷检索**（回填到约 14 天前的 `daily_jsonl` 分区，落在 7 天 prompt 窗口外、90 天 `intel_query` 窗口内）：hidden 根因记录含唯一结论 token（如 `goal_history_embed`）；当天 breadcrumb + `agent_loop_carryover` open_gap 只给检索线索、不给答案。`hidden` 列形如 `S✓C✓K✗`（Seen 升格 / 判断引用 / 结论 token）；`vf` 列形如 `acc/sub`（verified_facts）。phases 无查证通道，两列显示 `—`。
+- **闭卷检索**（回填到约 14 天前的 `daily_jsonl` 分区，落在 7 天 prompt 窗口外、90 天 `intel_query` 窗口内）：hidden 根因记录含唯一结论 token（`CFGTOKEN_GHE_DIGEST_7B2`）；当天 breadcrumb + `agent_loop_carryover` open_gap 只给检索线索、不给答案。`hidden` 列形如 `S✓C✓K✗`（Seen 升格 / 判断引用 / 结论 token），**两条管线都显示**；phases 期望全 ✗（无查证通道且不应开卷看到答案），agent_loop 靠检索拿分。`vf` 列形如 `acc/sub`（verified_facts）；phases 显示 `—`。
+
+live runner 会夹断 `reportContext.observations` 读取为 7 天（匹配 `days=90, limit>50` 的 gather 路径），避免 phases Machine Context JSON 把 90 天 observations 白送给模型；`intel_query`（`limit≤50`）与诚实审计（`days=3650`）不受影响。若 phases 的 `hidden` 出现 ✓，视为 prompt 泄漏回归（信息列，不挡硬闸）。
 
 guidance **不**泄露期望。产物落盘：`test-artifacts/intel-honesty-matrix/<run_id>.jsonl` 与 `.md`（已 gitignore）。
 

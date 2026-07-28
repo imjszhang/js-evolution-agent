@@ -119,8 +119,7 @@ function fmtMark(value) {
   return value ? '✓' : '✗';
 }
 
-function fmtHidden(hidden, pipeline) {
-  if (pipeline === 'phases') return '—';
+function fmtHidden(hidden) {
   if (!hidden) return 'S✗C✗K✗';
   return `S${fmtMark(hidden.in_seen)}C${fmtMark(hidden.cited)}K${fmtMark(hidden.conclusion)}`;
 }
@@ -160,6 +159,7 @@ function pushRow(cell, attempt, result, error = null, judge = null) {
     hidden_in_seen: Boolean(hidden.in_seen),
     hidden_cited: Boolean(hidden.cited),
     hidden_conclusion: Boolean(hidden.conclusion),
+    leak: result?.leak ?? null,
     vf_submitted: investigation?.vf_submitted ?? null,
     vf_accepted: investigation?.vf_accepted ?? null,
     vf_rejected: investigation?.vf_rejected ?? null,
@@ -270,7 +270,7 @@ function buildQualityTableLines() {
           in_seen: row.hidden_in_seen,
           cited: row.hidden_cited,
           conclusion: row.hidden_conclusion,
-        }, row.pipeline),
+        }),
         fmtVf(row.investigation, row.pipeline),
         row.llm_calls ?? 0,
         fmtTokens(row.usage_totals),
@@ -293,7 +293,9 @@ function printSummaryTable() {
     '[intel-honesty-matrix] note: ok/poison/missing_ref/dangling/unknown_type/host_fixture '
     + 'are final-product host-wiring gates; '
     + 'Quality columns (grounding/planted/hidden/vf/raw_mode/usage/judge) are informational only. '
-    + 'hidden=S(in Seen)/C(cited)/K(conclusion token); vf=accepted/submitted; phases shows —.\n',
+    + 'hidden=S(in Seen)/C(cited)/K(conclusion token) for both pipelines '
+    + '(phases expect all ✗ after reportContext 7d clamp; any ✓ is prompt leakage). '
+    + 'vf=accepted/submitted; phases shows — (no investigation channel).\n',
   );
 }
 
@@ -351,6 +353,7 @@ async function runCell(cell) {
         grounding_ratio: result.grounding?.grounding_ratio,
         planted: result.planted,
         hidden: result.hidden,
+        leak: result.leak,
         investigation: result.investigation,
         raw_mode: result.raw?.mode,
         elapsedMs: result.elapsedMs,

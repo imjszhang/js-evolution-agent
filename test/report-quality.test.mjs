@@ -193,7 +193,7 @@ describe('detectHiddenRetrieval', () => {
   const hidden = {
     id: 'obs-hidden-rootcause-1',
     sourceType: 'intel_observations',
-    conclusionRe: /goal_history_embed\s*=\s*(?:full|digest)/i,
+    conclusionRe: /CFGTOKEN_GHE_DIGEST_7B2/,
   };
 
   it('flags all three tiers when Seen cites, judgement cites, and conclusion token present', () => {
@@ -202,7 +202,7 @@ describe('detectHiddenRetrieval', () => {
       '- [intel_observations:obs-hidden-rootcause-1]: archived root cause',
       '',
       '## Inferred',
-      '- Root cause [intel_observations:obs-hidden-rootcause-1]: goal_history_embed=full',
+      '- Root cause [intel_observations:obs-hidden-rootcause-1]: CFGTOKEN_GHE_DIGEST_7B2',
       '',
     ].join('\n');
     const r = detectHiddenRetrieval({ markdown: md, hidden });
