@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { decisionFingerprint } from '../../engine/index.mjs';
+import { decisionFingerprint, getCurrentTimeSnapshot } from '../../engine/index.mjs';
 import {
   normalizeSourceType,
   resolveTypedRef,
@@ -86,6 +86,23 @@ function buildReadonlyTools(loopCtx) {
   const maxChars = budget.toolResultMaxChars;
 
   return [
+    {
+      name: 'get_current_time',
+      kind: 'readonly',
+      description:
+        'Return the host wall-clock now (Asia/Shanghai by default): beijing, ISO+08:00, weekday. Prefer the ## Current Time field already in the cycle payload unless you need a refreshed reading.',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      async execute() {
+        const snapshot = getCurrentTimeSnapshot();
+        return {
+          ok: true,
+          result: {
+            ...snapshot,
+            note: 'Host also injects ## Current Time after ## Cycle in the investigation/report payload for KV-safe placement.',
+          },
+        };
+      },
+    },
     {
       name: 'intel_query',
       kind: 'readonly',

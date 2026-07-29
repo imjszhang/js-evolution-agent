@@ -10,7 +10,14 @@ export { ExecutionPipeline } from './pipelines/exec.mjs';
 export { VerifyPipeline } from './pipelines/verify.mjs';
 
 export { NULL_HOST, normalizeHost } from './core/host.mjs';
-export { isoBeijing, todayBeijing, nowBeijing, nowBeijingStr } from './core/time.mjs';
+export {
+  isoBeijing,
+  todayBeijing,
+  nowBeijing,
+  nowBeijingStr,
+  getCurrentTimeSnapshot,
+  formatCurrentTimePromptBlock,
+} from './core/time.mjs';
 
 export { BaseAIClient, MockAIClient, AIError } from './ai/ai-client.mjs';
 export { PromptBuilder, promptBuilder } from './ai/prompt-builder.mjs';

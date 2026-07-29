@@ -76,11 +76,23 @@ describe('agent-loop investigation tools', () => {
     const { loopCtx } = makeLoopCtx();
     const tools = buildInvestigationTools(loopCtx);
     const names = tools.tools.map((t) => t.name);
+    expect(names).toContain('get_current_time');
     expect(names).toContain('intel_query');
     expect(names).toContain('finish_investigation');
     expect(names).not.toContain('record_observation');
     expect(names).not.toContain('agent_run');
     expect(buildLoopTools(loopCtx).tools.map((t) => t.name)).toEqual(names);
+  });
+
+  it('get_current_time returns beijing/iso wall-clock fields', async () => {
+    const { loopCtx } = makeLoopCtx();
+    const tools = buildInvestigationTools(loopCtx);
+    const outcome = await tools.dispatch('get_current_time', {});
+    expect(outcome.ok).toBe(true);
+    expect(outcome.result.timezone).toBeTruthy();
+    expect(outcome.result.beijing).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+    expect(outcome.result.iso).toMatch(/\+08:00$/);
+    expect(typeof outcome.result.unix_ms).toBe('number');
   });
 
   it('finish_investigation stores payload on loopCtx', async () => {

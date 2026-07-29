@@ -90,6 +90,7 @@ ${toolCatalogText || '(见 tool schemas)'}
 
 export function buildAgentLoopInitialUserPromptParts({
   cycleId,
+  currentTime = '',
   language = 'zh',
   goalsText = '',
   rules = '',
@@ -102,7 +103,8 @@ export function buildAgentLoopInitialUserPromptParts({
 } = {}) {
   const isEn = language === 'en';
   // Stability-descending order for DeepSeek KV prefix cache:
-  // Rules / Guidance / Goals change rarely; Cycle and per-cycle evidence change every run.
+  // Rules / Guidance / Goals change rarely; Cycle + Current Time and later evidence change every run.
+  // Keep Current Time after Cycle (not in system stablePrefix) so Rules→Goals can still prefix-hit.
   const dynamicPayload = `## Rules
 
 ${rules || '(none)'}
@@ -118,6 +120,10 @@ ${goalsText || '(none)'}
 ## Cycle
 
 ${cycleId || '(unknown)'}
+
+## Current Time
+
+${currentTime || '(unknown)'}
 
 ## Operator Intent Briefs
 
@@ -244,6 +250,7 @@ export function buildAgentLoopObservationReport({
  */
 export function buildAgentLoopReportUserPromptParts({
   cycleId,
+  currentTime = '',
   language = 'zh',
   goalsText = '',
   rules = '',
@@ -283,6 +290,7 @@ Rules:
 - 文风为现代汉语书面语，Cyber-Taoist 分析忠于权威文献，避免文言与玄学修辞。`;
 
   // Stability-descending order for DeepSeek KV prefix cache.
+  // Current Time sits with Cycle (per-run), never in the report-task stablePrefix above.
   const dynamicPayload = `## Rules
 
 ${rules || '(none)'}
@@ -298,6 +306,10 @@ ${goalsText || '(none)'}
 ## Cycle
 
 ${cycleId || '(unknown)'}
+
+## Current Time
+
+${currentTime || '(unknown)'}
 
 ## Operator Intent Briefs
 

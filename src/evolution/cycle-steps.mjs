@@ -5,6 +5,8 @@ import {
   EvolutionEngine,
   ExecutionPipeline,
   decisionFingerprint,
+  formatCurrentTimePromptBlock,
+  getCurrentTimeSnapshot,
   isoBeijing,
   verifyActions,
 } from '../engine/index.mjs';
@@ -346,6 +348,9 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
 
   const carryoverItems = readCarryoverItems(runtime.runtimeRoot);
   const tools = buildInvestigationTools(loopCtx);
+  // Snapshot once for this intel step so investigate↔report share one clock field;
+  // get_current_time tool may refresh later if the model asks.
+  const currentTimeBlock = formatCurrentTimePromptBlock(getCurrentTimeSnapshot());
   const investigateSystemParts = buildAgentLoopSystemPromptParts({
     agentContextDocs: cfg.agentContextDocs,
     toolCatalogText: formatToolCatalogForPrompt(tools),
@@ -353,6 +358,7 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
   });
   const investigateUserParts = buildAgentLoopInitialUserPromptParts({
     cycleId: resolvedCycleId,
+    currentTime: currentTimeBlock,
     language,
     goalsText,
     rules,
@@ -445,6 +451,7 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
   });
   const reportPromptParts = buildAgentLoopReportUserPromptParts({
     cycleId: resolvedCycleId,
+    currentTime: currentTimeBlock,
     language,
     goalsText,
     rules,
