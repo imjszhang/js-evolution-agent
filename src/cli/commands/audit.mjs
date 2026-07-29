@@ -2,6 +2,7 @@ import { getProjectRoot } from '../utils/project.mjs';
 import { join } from 'node:path';
 import { LocalDecisionQueue } from '../../intelligence/decision-queue.mjs';
 import {
+  collectValidActionNames,
   findUnknownActions,
   readActiveDecisionQueue,
 } from './actions.mjs';
@@ -67,11 +68,6 @@ export function auditQueue(queue, validActionNames, { staleMinutes = 60 } = {}) 
     } : null,
     healthy: unknownActions.length === 0 && staleInProgress.length === 0,
   };
-}
-
-async function loadValidActionNames() {
-  const mod = await import('../../actions/registry.mjs');
-  return mod.actionRegistry.validNames();
 }
 
 function printQueueAudit(audit) {
@@ -189,9 +185,9 @@ async function auditQueueCommand(flags = {}) {
     }
     return 0;
   }
-  const { runtime, queue } = readActiveDecisionQueue(root);
+  const { runtime, queue } = readActiveDecisionQueue(root, flags);
   const staleMinutes = Number(flags['stale-minutes']) || 60;
-  const audit = auditQueue(queue, await loadValidActionNames(), { staleMinutes });
+  const audit = auditQueue(queue, await collectValidActionNames(root, flags), { staleMinutes });
   if (flags.json) console.log(JSON.stringify({ runtime, ...audit }, null, 2));
   else {
     console.log(`subject: ${runtime.subject}`);

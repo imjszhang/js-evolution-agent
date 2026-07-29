@@ -11,7 +11,11 @@ import {
 import { parseArgv } from '../src/cli/utils/args.mjs';
 import { readJsonSafe, removeProjectDir, writeJsonFile } from '../src/cli/utils/files.mjs';
 import { extractMarkdownSection } from '../src/cli/commands/subject.mjs';
-import { findUnknownActions, readActiveDecisionQueue } from '../src/cli/commands/actions.mjs';
+import {
+  collectValidActionNames,
+  findUnknownActions,
+  readActiveDecisionQueue,
+} from '../src/cli/commands/actions.mjs';
 import { archiveQueue, auditCommand, auditQueue } from '../src/cli/commands/audit.mjs';
 import { buildDefaultGoals, backupData, dataStatus, initData } from '../src/cli/commands/data.mjs';
 import {
@@ -1846,6 +1850,44 @@ describe('action checks', () => {
     expect(findUnknownActions(decisions, new Set(['record_observation']))).toEqual([
       { id: 'bad', type: 'custom' },
     ]);
+  });
+
+  it('treats subject configured external actions as known for queue audit', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'jea-configured-actions-'));
+    const subjectsRoot = join(tempDir, 'runtime', 'subjects');
+    const ns = 'audit-cfg-actions';
+    mkdirSync(join(subjectsRoot, ns, 'data', 'config'), { recursive: true });
+    writeFileSync(join(subjectsRoot, 'registry.json'), JSON.stringify({
+      version: 1,
+      default_subject: 'audit-cfg',
+      subjects: {
+        'audit-cfg': {
+          data_namespace: ns,
+          display_name: 'Audit Cfg',
+          policy_path: `runtime/subjects/${ns}/SUBJECT.md`,
+        },
+      },
+    }, null, 2));
+    writeFileSync(join(subjectsRoot, ns, 'SUBJECT.md'), '# Subject\n');
+    writeFileSync(join(subjectsRoot, ns, 'data', 'config', 'actions.json'), JSON.stringify({
+      version: 1,
+      actions: [
+        {
+          name: 'agentank_sync_context',
+          tool: 'agentank_evolver',
+          command: 'sync-context',
+          description: 'test configured action',
+        },
+      ],
+    }, null, 2));
+
+    const names = await collectValidActionNames(tempDir, { subject: 'audit-cfg' });
+    expect(names.has('record_observation')).toBe(true);
+    expect(names.has('agentank_sync_context')).toBe(true);
+    expect(findUnknownActions(
+      [{ id: 'g1', action: { type: 'agentank_sync_context' } }],
+      names,
+    )).toEqual([]);
   });
 
   it('passes explicit action cwd into Claude and Cursor agent options', () => {
