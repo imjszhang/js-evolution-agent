@@ -208,6 +208,8 @@ $env:JEA_LIVE_DEEPSEEK='1'; npm run test:live-deepseek:matrix
 
 ```powershell
 $env:JEA_LIVE_DEEPSEEK='1'; npm run test:live-deepseek:intel-matrix
+# 只跑 agent_loop（跳过 phases）：
+$env:JEA_MATRIX_PIPELINES='agent_loop'; npm run test:live-deepseek:intel-matrix
 # 另含 pro×max × phases/agent_loop：
 $env:JEA_LIVE_DEEPSEEK_DEEP='1'; npm run test:live-deepseek:intel-matrix
 # 每格重复 N 次（1–5，默认 1）：
@@ -216,7 +218,7 @@ $env:JEA_MATRIX_REPEATS='3'; npm run test:live-deepseek:intel-matrix
 $env:JEA_MATRIX_JUDGE='1'; npm run test:live-deepseek:intel-matrix
 ```
 
-默认 5 格：phases 的 flash×off / flash×high / pro×high，以及 agent_loop 的 flash×high / pro×high。
+默认 5 格：phases 的 flash×off / flash×high / pro×high，以及 agent_loop 的 flash×high / pro×high。`JEA_MATRIX_PIPELINES` 可逗号过滤（如 `agent_loop`）。
 
 | 层 | 列 | 是否硬闸 |
 | --- | --- | --- |

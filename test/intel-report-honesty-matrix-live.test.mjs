@@ -7,7 +7,8 @@
  *   $env:JEA_LIVE_DEEPSEEK='1'; npm run test:live-deepseek:intel-matrix
  *
  * Hard-fails on host-wiring honesty findings; quality columns are informational.
- * Optional: JEA_MATRIX_REPEATS=N (1–5), JEA_MATRIX_JUDGE=1.
+ * Optional: JEA_MATRIX_REPEATS=N (1–5), JEA_MATRIX_JUDGE=1,
+ *           JEA_MATRIX_PIPELINES=agent_loop|phases|agent_loop,phases (default: both).
  */
 import { afterAll, describe, expect, it } from 'vitest';
 import { execSync } from 'node:child_process';
@@ -28,6 +29,12 @@ const LIVE_ENABLED = process.env.JEA_LIVE_DEEPSEEK === '1'
 const LIVE_DEEP = process.env.JEA_LIVE_DEEPSEEK_DEEP === '1';
 const JUDGE_ENABLED = process.env.JEA_MATRIX_JUDGE === '1';
 const REPEATS = Math.min(5, Math.max(1, parseInt(process.env.JEA_MATRIX_REPEATS || '1', 10) || 1));
+const PIPELINE_FILTER = new Set(
+  String(process.env.JEA_MATRIX_PIPELINES || 'phases,agent_loop')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean),
+);
 
 const RUN_ID = new Date().toISOString().replace(/[:.]/g, '-');
 let GIT_COMMIT = null;
@@ -40,7 +47,7 @@ try {
   GIT_COMMIT = null;
 }
 
-const DEFAULT_CELLS = [
+const ALL_DEFAULT_CELLS = [
   { pipeline: 'phases', model: DEEPSEEK_MODELS.flash, thinkingMode: 'off' },
   { pipeline: 'phases', model: DEEPSEEK_MODELS.flash, thinkingMode: 'high' },
   { pipeline: 'phases', model: DEEPSEEK_MODELS.pro, thinkingMode: 'high' },
@@ -48,10 +55,13 @@ const DEFAULT_CELLS = [
   { pipeline: 'agent_loop', model: DEEPSEEK_MODELS.pro, thinkingMode: 'high' },
 ];
 
-const DEEP_CELLS = [
+const ALL_DEEP_CELLS = [
   { pipeline: 'phases', model: DEEPSEEK_MODELS.pro, thinkingMode: 'max' },
   { pipeline: 'agent_loop', model: DEEPSEEK_MODELS.pro, thinkingMode: 'max' },
 ];
+
+const DEFAULT_CELLS = ALL_DEFAULT_CELLS.filter((cell) => PIPELINE_FILTER.has(cell.pipeline));
+const DEEP_CELLS = ALL_DEEP_CELLS.filter((cell) => PIPELINE_FILTER.has(cell.pipeline));
 
 /** @type {Array<object>} */
 const matrixRows = [];
@@ -312,6 +322,7 @@ function writeArtifacts() {
     '',
     `- git_commit: ${GIT_COMMIT || '(unknown)'}`,
     `- repeats: ${REPEATS}`,
+    `- pipelines: ${[...PIPELINE_FILTER].join(',') || '(none)'}`,
     `- judge: ${JUDGE_ENABLED ? 'on' : 'off'}`,
     '',
     '## Gates',
