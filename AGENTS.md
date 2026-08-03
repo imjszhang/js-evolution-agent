@@ -148,16 +148,18 @@ Phase 1.5 intel report 持久化
 
 **Carryover（跨轮待续，schema v2）**：
 
-- **agent_loop step 末**：查证 `open_gaps`、Decide `deferred` / goal suggestions、以及 `suggestion_coverage` 中 deferred/unaddressed 建议，以 **mechanical** 项写入 `data/evolution/agent_loop_carryover.json`（覆写上轮条目——此时上轮已被本轮查证消费）。
-- **diary step 末**：**合并**而非整体覆写——保留 mechanical 项，追加 diary「下轮应该注意什么」叙事 bullets，并写入机械 `step_status_snapshot`（exec/verify/belief/goals_assess/goals_calibrate 最终状态）。
+- **agent_loop step 末**：查证 `open_gaps`、Decide `deferred` / goal suggestions、`suggestion_coverage` 中 deferred/unaddressed、以及报告建议溢出项，以 **mechanical** 项写入 `data/evolution/agent_loop_carryover.json`（覆写上轮条目——此时上轮已被本轮查证消费）。写侧与 diary 合并侧共用 `CARRYOVER_MECHANICAL_LIMIT=8`；超限时按 origin 优先级裁剪（`decide_deferred` > `suggestion_deferred` > `open_gap` > `suggestion_overflow` > `goal_suggestion`），并发 `carryover_items_dropped`。
+- **diary step 末**：**合并**而非整体覆写——保留 mechanical 项，追加 diary「下轮应该注意什么」叙事 bullets（与 mechanical 归一化后完全相同文本会去重），并写入机械 `step_status_snapshot`（exec/verify/belief/goals_assess/goals_calibrate 最终状态）。若 snapshot 显示某 step 已完成，字面提及 `goals_assess`/`goals_calibrate`/`belief_update` 且含 pending/尚未/未完成/skipped 的条目会被机械丢弃（`carryover_stale_item_dropped`）。
 - **下轮注入**：`## Carryover from previous cycle` 先渲染状态快照，再渲染带 `[mechanical/origin]` / `[diary]` 标签的条目；指令要求条目与快照或本轮 Machine Context 冲突时以后者为准。
 - 读侧兼容 v1 纯字符串 items（映射为 diary source）。空 mechanical + 空 diary 也会写盘以清空过期项。
 
-**Suggestion coverage（P3 软闸，仅 agent_loop）**：宿主从报告「下一轮建议」机械编号 S1..Sn；Decide JSON 应输出 `suggestion_coverage`（adopted/deferred/rejected）。缺表态由宿主补 `deferred: unaddressed` 进 mechanical carryover，并发 `decide_coverage_gap` 事件；不挡轮、不重问。diary 的 `phase1.suggestion_coverage` 供复盘对照。
+**Suggestion coverage（P3 软闸，仅 agent_loop）**：宿主从报告「下一轮建议」只数**顶层**编号/bullet 为 S1..Sn（嵌套子弹不单独编号）；超出 8 条的顶层项进 mechanical carryover（`origin: suggestion_overflow`）并发 `report_suggestions_overflow`。Decide JSON 应输出 `suggestion_coverage`（adopted/deferred/rejected）。缺表态由宿主补 `deferred: unaddressed` 进 mechanical carryover，并发 `decide_coverage_gap` 事件；不挡轮、不重问。diary 的 `phase1.suggestion_coverage` 供复盘对照。
 
-**Diary 时间线契约**：`phase1.timeline` 标明 Phase 1 叙事写于轮初（系统状态描述截至上轮末）；本轮 exec/verify/belief/assess/calibrate 必须以 phase2–phase4_5 checkpoint 为准，不得把 Phase 1 过期叙事抄进「没有推进」或 carryover。
+**Diary 时间线契约**：`phase1.timeline` 标明 Phase 1 叙事写于轮初（系统状态描述截至上轮末）；本轮 exec/verify/belief/assess/calibrate 必须以 phase2–phase4_5 checkpoint 为准。phase2 receipt 里「assess/calibrate 仍 pending」只是执行时刻快照，写日记时不得抄进「没有推进」或 carryover；亦不得复述 mechanical carryover 已覆盖的主题。
 
-**Diary 摘要（tldr）**：checkpoint / viewer / inbox 用的 diary `tldr` 优先读 `## TL;DR`；否则机械从「真正推进了什么」bullets 或「这一轮发生了什么」首段散文提取；编号/bullet 列表不进入 tldr（避免截断停在 `2.`）。
+**Diary 摘要（tldr）**：checkpoint / viewer / inbox 用的 diary `tldr` 优先读 `## TL;DR`；否则机械从「真正推进了什么」bullets 或「这一轮发生了什么」首段散文提取；编号/bullet 列表不进入 tldr（避免截断停在 `2.`）。报告 index `tldr` 另认文首 `**TL;DR**` 粗体段，且无 `#` 顶级标题时也可从文首散文提取。
+
+**Standing memory 更新**：agent_loop 末宿主调用 `updateStandingMemoryWithAi`；DNTAS 条目硬切不加省略号；compose/sanitize/audit 共用 `DO_NOT_TREAT_SECTION_MAX_CHARS=1200`；主候选失败时 fallback 也会 sanitize，并在 reason 中保留 `primary:` / `fallback:` issues。成功或失败都发 `standing_memory_update` 事件（勿手改 `standing_memory.json`）。
 
 **Cycle Journal（轮内信息流）**：Phase 2 exec 串行执行多个 action 时，宿主维护本轮共享笔记，避免兄弟 `agent_run` 互相看不见。
 

@@ -228,6 +228,15 @@ describe('extractTldr (best-effort)', () => {
     const md = '# 情报报告\n\n本轮主体观测到三件事。\n\n## 详情\n更多';
     expect(extractTldr(md)).toContain('本轮主体观测到三件事');
   });
+  it('recognizes bold **TL;DR** lead-in without H1', () => {
+    const md = '**TL;DR**：本周期是只读学习期的延续轮。分页仍 502。\n\n## Seen\n- fact';
+    expect(extractTldr(md)).toContain('只读学习期的延续轮');
+    expect(extractTldr(md)).not.toContain('## Seen');
+  });
+  it('falls back from document start when no H1 heading', () => {
+    const md = '本轮无顶级标题的报告导语。\n\n第二句仍可进入摘要。\n\n## Seen\n- x';
+    expect(extractTldr(md)).toContain('本轮无顶级标题的报告导语');
+  });
   it('returns empty when no content', () => {
     expect(extractTldr('')).toBe('');
   });
@@ -1008,6 +1017,32 @@ describe('buildIntelReport', () => {
     expect(sanitized).not.toContain('agent_claim');
     expect(sanitized).not.toContain('receipt-missing');
     expect(sanitized).not.toContain('no address');
+  });
+
+  it('composeStandingMemoryMarkdown hard-clips DNTAS without ellipsis markers', () => {
+    const longSummary = `prior claim about free_text_clean conflict and pagination ${'word '.repeat(80)}tail`;
+    const admission = {
+      seen: [],
+      remembered: [],
+      do_not_treat_as_seen: Array.from({ length: 8 }, (_, i) => ({
+        id: `obs-${i}`,
+        summary: longSummary,
+        source: { source_type: 'intel_observations', id: `obs-${i}` },
+      })),
+    };
+    const text = composeStandingMemoryMarkdown({
+      currentStateBody: '- (none)',
+      reportContext: {},
+      language: 'zh',
+      admission,
+    });
+    expect(text).not.toContain('\u2026');
+    // hardClip must not introduce unicode ellipsis; ASCII "..." also avoided in DNTAS compose path
+    const dntas = text.slice(text.indexOf('## Do Not Treat As Seen'));
+    expect(dntas).not.toMatch(/\u2026/);
+    const audit = auditStandingMemoryFreeText({ text, typedEvidenceRefs: [], admission });
+    expect(audit.issues.some((i) => i.includes('unicode_ellipsis'))).toBe(false);
+    expect(audit.issues.some((i) => i.includes('section_too_long'))).toBe(false);
   });
 
   it('sanitizeStandingMemoryCosmeticIssues fixes ellipsis and long do_not_treat', () => {

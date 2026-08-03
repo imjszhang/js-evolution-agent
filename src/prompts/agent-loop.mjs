@@ -260,7 +260,7 @@ Write a human-readable Markdown intelligence report for the current cycle (agent
 Rules:
 - Output pure Markdown; do not wrap the whole document in code fences.
 - Required level-2 headings (English preferred): ## Seen, ## Inferred, ## Cyber-Taoist analysis, ## 下一轮建议 (or Next cycle suggestions).
-- Include a short TL;DR near the top.
+- Prefer a short ## TL;DR heading near the top (1–2 sentences). Do not write TL;DR as a numbered/bullet list.
 - ## Seen is a host-owned placeholder: write one short bullet acknowledging Final Seen below; the host will replace the entire Seen section verbatim with Final Seen. Do not invent Seen facts.
 - Write ## Inferred, ## Cyber-Taoist analysis, and next-cycle suggestions based on Final Seen + Investigation Digest + Temporal Decision Brief.
 - Inferred judgements may cite only typed refs that appear in Final Seen. Use halfwidth ASCII brackets and colons: [type:id]. Never invent ids.
@@ -273,7 +273,7 @@ Rules:
 规则：
 - 输出纯 Markdown，不要使用最外层代码围栏。
 - 必须包含这些二级标题（优先英文）：## Seen、## Inferred、## Cyber-Taoist analysis、## 下一轮建议。
-- 文首包含简短 TL;DR。
+- 文首建议用二级标题 ## TL;DR（1–2 句）；不要用编号或 bullet 列表写 TL;DR。
 - ## Seen 是宿主占位：写一条短 bullet 确认已读下方 Final Seen 即可；宿主会用 Final Seen 整段替换 Seen。不要自行编造 Seen 事实。
 - 基于 Final Seen + Investigation Digest + Temporal Decision Brief 撰写 ## Inferred、## Cyber-Taoist analysis 与下一轮建议。
 - Inferred 只能引用 Final Seen 中已出现的 typed ref；括号与冒号必须半角 ASCII：\`[type:id]\`。禁止编造 id。

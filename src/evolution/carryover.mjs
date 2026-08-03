@@ -6,6 +6,19 @@ export const CARRYOVER_MECHANICAL_LIMIT = 8;
 export const CARRYOVER_DIARY_LIMIT = 10;
 export const CARRYOVER_TOTAL_LIMIT = 18;
 
+/** Lower index = higher keep priority when capping mechanical items. */
+export const CARRYOVER_ORIGIN_PRIORITY = {
+  decide_deferred: 0,
+  suggestion_deferred: 1,
+  open_gap: 2,
+  suggestion_overflow: 3,
+  goal_suggestion: 4,
+};
+
+const STALE_PIPELINE_STEPS = ['goals_assess', 'goals_calibrate', 'belief_update'];
+const STALE_STATUS_RE = /pending|尚未|未完成|skipped|未闭环|未恢复/i;
+const DONE_SNAPSHOT_RE = /\b(done|applied|updated|ok|refine)\b/i;
+
 export function carryoverPath(runtimeRoot) {
   return join(runtimeRoot, 'data', 'evolution', 'agent_loop_carryover.json');
 }
@@ -41,6 +54,68 @@ export function normalizeCarryoverItems(items, { defaultSource = 'diary' } = {})
 export function itemText(item) {
   if (typeof item === 'string') return item.trim();
   return String(item?.text ?? '').trim();
+}
+
+export function normalizeCarryoverTextKey(text) {
+  return String(text ?? '')
+    .toLowerCase()
+    .replace(/[\s\p{P}\p{S}]+/gu, '')
+    .trim();
+}
+
+function originRank(item) {
+  const origin = item?.origin;
+  if (origin && Object.prototype.hasOwnProperty.call(CARRYOVER_ORIGIN_PRIORITY, origin)) {
+    return CARRYOVER_ORIGIN_PRIORITY[origin];
+  }
+  return 50;
+}
+
+/**
+ * Sort mechanical items by origin priority, then keep up to limit.
+ * Returns { kept, dropped }.
+ */
+export function rankAndLimitMechanicalItems(items = [], {
+  limit = CARRYOVER_MECHANICAL_LIMIT,
+} = {}) {
+  const mechanical = normalizeCarryoverItems(items)
+    .filter((item) => item.source === 'mechanical');
+  const ranked = mechanical
+    .map((item, idx) => ({ item, idx, rank: originRank(item) }))
+    .sort((a, b) => (a.rank - b.rank) || (a.idx - b.idx));
+  const kept = ranked.slice(0, limit).map((entry) => entry.item);
+  const dropped = ranked.slice(limit).map((entry) => entry.item);
+  return { kept, dropped };
+}
+
+/**
+ * When snapshot shows a pipeline step finished, drop carryover items that still
+ * claim that step is pending/incomplete. Conservative: only goals_assess /
+ * goals_calibrate / belief_update tokens.
+ */
+export function filterStalePipelineCarryoverItems(items = [], stepStatusSnapshot = null) {
+  const list = normalizeCarryoverItems(items);
+  if (!stepStatusSnapshot || typeof stepStatusSnapshot !== 'object') {
+    return { kept: list, dropped: [] };
+  }
+  const finishedSteps = STALE_PIPELINE_STEPS.filter((step) => {
+    const value = String(stepStatusSnapshot[step] ?? '');
+    return value && DONE_SNAPSHOT_RE.test(value);
+  });
+  if (!finishedSteps.length) return { kept: list, dropped: [] };
+
+  const kept = [];
+  const dropped = [];
+  for (const item of list) {
+    const text = item.text || '';
+    const mentionsFinished = finishedSteps.some((step) => text.includes(step));
+    if (mentionsFinished && STALE_STATUS_RE.test(text)) {
+      dropped.push(item);
+    } else {
+      kept.push(item);
+    }
+  }
+  return { kept, dropped };
 }
 
 /**
@@ -132,26 +207,54 @@ export function writeCarryoverItems(runtimeRoot, {
 /**
  * Merge diary narrative bullets with existing mechanical items from this cycle.
  * Mechanical items are preserved (host-managed); diary bullets replace prior diary items.
+ * Exact-normalized diary texts that duplicate mechanical items are dropped.
+ * Stale pipeline-status diary/mechanical claims are filtered against the snapshot.
  */
 export function mergeDiaryCarryover({
   existingItems = [],
   diaryBullets = [],
   stepStatusSnapshot = null,
 } = {}) {
-  const mechanical = normalizeCarryoverItems(existingItems)
-    .filter((item) => item.source === 'mechanical')
-    .slice(0, CARRYOVER_MECHANICAL_LIMIT);
-  const diary = normalizeCarryoverItems(
+  const { kept: rankedMechanical, dropped: droppedByCap } = rankAndLimitMechanicalItems(
+    existingItems,
+    { limit: CARRYOVER_MECHANICAL_LIMIT },
+  );
+
+  const mechanicalKeys = new Set(
+    rankedMechanical.map((item) => normalizeCarryoverTextKey(item.text)).filter(Boolean),
+  );
+
+  let diary = normalizeCarryoverItems(
     (Array.isArray(diaryBullets) ? diaryBullets : []).map((text) => ({
       text: String(text),
       source: 'diary',
     })),
-  ).slice(0, CARRYOVER_DIARY_LIMIT);
+  );
+  const droppedExactDupes = [];
+  diary = diary.filter((item) => {
+    const key = normalizeCarryoverTextKey(item.text);
+    if (key && mechanicalKeys.has(key)) {
+      droppedExactDupes.push(item);
+      return false;
+    }
+    return true;
+  }).slice(0, CARRYOVER_DIARY_LIMIT);
+
+  const combined = [...rankedMechanical, ...diary];
+  const staleFiltered = filterStalePipelineCarryoverItems(combined, stepStatusSnapshot);
+  const items = staleFiltered.kept.slice(0, CARRYOVER_TOTAL_LIMIT);
+  const dropped = [
+    ...droppedByCap.map((item) => ({ ...item, drop_reason: 'mechanical_cap' })),
+    ...droppedExactDupes.map((item) => ({ ...item, drop_reason: 'exact_dupe_of_mechanical' })),
+    ...staleFiltered.dropped.map((item) => ({ ...item, drop_reason: 'stale_pipeline_status' })),
+  ];
+
   return {
-    items: [...mechanical, ...diary].slice(0, CARRYOVER_TOTAL_LIMIT),
+    items,
     step_status_snapshot: stepStatusSnapshot && typeof stepStatusSnapshot === 'object'
       ? stepStatusSnapshot
       : null,
+    dropped,
   };
 }
 

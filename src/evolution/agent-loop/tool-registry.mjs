@@ -317,7 +317,13 @@ function buildFinishInvestigationTool(loopCtx) {
         open_gaps: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Remaining gaps to carry into the report / next cycle.',
+          description: [
+            'Remaining subject-level gaps to carry into the report / next cycle.',
+            'Only include domain/evidence gaps that still need work.',
+            'Do NOT list pipeline step statuses (goals_assess / goals_calibrate / belief_update / verify)',
+            'as open gaps: steps not yet run this cycle are expected, and previous-cycle step outcomes',
+            'are already in the step-status snapshot (trust the snapshot over narrative memory).',
+          ].join(' '),
         },
         findings_summary: {
           type: 'string',

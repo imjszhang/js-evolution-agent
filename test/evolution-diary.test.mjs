@@ -218,6 +218,8 @@ describe('buildEvolutionDiary', () => {
     expect(prompt).toContain('agent_loop_carryover');
     expect(prompt).toContain('step_status_snapshot');
     expect(prompt).toContain('时间线权威');
+    expect(prompt).toContain('phase2 receipt');
+    expect(prompt).toContain('不要复述 mechanical carryover');
     expect(prompt).toContain('## TL;DR');
     expect(prompt).toMatch(/建议章节：[\s\S]*- TL;DR/);
     expect(context.phase1.timeline).toBe('written_at_cycle_start_describes_previous_cycle_system_state');

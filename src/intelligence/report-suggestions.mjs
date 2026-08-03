@@ -3,10 +3,20 @@ import { extractMarkdownSection } from '../cli/utils/markdown-sections.mjs';
 export const REPORT_SUGGESTION_LIMIT = 8;
 export const REPORT_SUGGESTION_MAX_CHARS = 300;
 
+function isTopLevelSuggestionLine(line) {
+  // Top-level only: no leading indent. Nested bullets under a numbered item are ignored.
+  return /^(?:\d+\.\s+|[-*]\s+)\S/.test(line);
+}
+
+function suggestionTextFromLine(line) {
+  return line.replace(/^\d+\.\s+/, '').replace(/^[-*]\s+/, '').trim();
+}
+
 /**
- * Extract numbered suggestions from the required report section
+ * Extract top-level numbered/bullet suggestions from the required report section
  * 「下一轮建议」/ 「Next cycle suggestions」.
- * Returns [{ id: 'S1', text }, ...].
+ * Nested bullets under a top-level item are NOT numbered separately.
+ * Returns { suggestions: [{ id, text }], overflow: [{ text }], truncated: boolean }.
  */
 export function extractReportSuggestions(markdown, {
   limit = REPORT_SUGGESTION_LIMIT,
@@ -16,21 +26,35 @@ export function extractReportSuggestions(markdown, {
     || extractMarkdownSection(markdown, 'Next cycle suggestions')
     || extractMarkdownSection(markdown, 'Next cycle Suggestions')
     || '';
-  if (!body.trim()) return [];
+  if (!body.trim()) {
+    return { suggestions: [], overflow: [], truncated: false };
+  }
 
-  const bullets = body
+  const topLevel = body
     .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => /^[-*]\s+/.test(line) || /^\d+\.\s+/.test(line))
-    .map((line) => line.replace(/^[-*]\s+/, '').replace(/^\d+\.\s+/, '').trim())
+    .map((line) => line.replace(/\s+$/, ''))
+    .filter((line) => isTopLevelSuggestionLine(line))
+    .map((line) => suggestionTextFromLine(line))
     .filter(Boolean)
-    .slice(0, limit)
     .map((text) => (text.length > maxChars ? `${text.slice(0, maxChars)}…` : text));
 
-  return bullets.map((text, idx) => ({
+  const kept = topLevel.slice(0, limit);
+  const overflow = topLevel.slice(limit).map((text) => ({ text }));
+  const suggestions = kept.map((text, idx) => ({
     id: `S${idx + 1}`,
     text,
   }));
+
+  return {
+    suggestions,
+    overflow,
+    truncated: overflow.length > 0,
+  };
+}
+
+/** @deprecated Prefer extractReportSuggestions(...).suggestions for new callers. */
+export function extractReportSuggestionList(markdown, opts = {}) {
+  return extractReportSuggestions(markdown, opts).suggestions;
 }
 
 export function formatReportSuggestionsForPrompt(suggestions = [], language = 'zh') {

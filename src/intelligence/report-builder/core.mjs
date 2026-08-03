@@ -72,6 +72,8 @@ const FREE_TEXT_POLLUTION_PATTERNS = [
 ];
 
 const DO_NOT_TREAT_MAX_LINE_CHARS = 220;
+/** Shared budget for Do Not Treat As Seen section (compose, sanitize, audit). */
+export const DO_NOT_TREAT_SECTION_MAX_CHARS = 1200;
 
 function safeReadGoals(runtime) {
   const goalsPath = join(runtime.runtimeRoot, 'data', 'goals', 'active_goals.json');
@@ -105,6 +107,24 @@ function shortText(value, max = 200) {
   if (value == null) return '';
   const s = String(value).replace(/\s+/g, ' ').trim();
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+}
+
+/** Hard-clip without ellipsis markers (avoids DNTAS audit false positives). */
+function hardClipText(value, max = 200) {
+  if (value == null) return '';
+  const s = String(value).replace(/\s+/g, ' ').trim();
+  if (s.length <= max) return s;
+  // Prefer word/punctuation boundary when within the last 40 chars.
+  const window = s.slice(0, max);
+  const boundary = Math.max(
+    window.lastIndexOf(' '),
+    window.lastIndexOf('，'),
+    window.lastIndexOf('。'),
+    window.lastIndexOf(';'),
+    window.lastIndexOf(','),
+  );
+  if (boundary >= max - 40 && boundary > 0) return window.slice(0, boundary).trimEnd();
+  return window.trimEnd();
 }
 
 function clipText(value, max) {
@@ -504,7 +524,7 @@ function bulletSummaryFromBody(body, limit = 3) {
 
 /**
  * Best-effort tldr extraction for intel reports. Free-form reports may not have
- * a TL;DR section; in that case, take the first content lines after the top heading.
+ * a TL;DR section; in that case, take the first content lines (after optional top heading).
  */
 export function extractTldr(md) {
   if (!md) return '';
@@ -512,17 +532,39 @@ export function extractTldr(md) {
   if (m) {
     return truncateAtSentence(m[1].trim().split('\n').filter(Boolean).slice(0, 5).join(' '), 400);
   }
+  // Bold lead-in used by some agent_loop reports: **TL;DR**：...
+  const bold = md.match(/^\s*\*\*TL;?DR\*\*\s*[:：]?\s*([^\n]+)/im);
+  if (bold) {
+    return truncateAtSentence(bold[1].trim(), 400);
+  }
   const lines = md.split('\n');
   const collected = [];
   let pastTopHeading = false;
+  let sawTopHeading = false;
   for (const ln of lines) {
     if (!pastTopHeading) {
-      if (ln.startsWith('# ')) pastTopHeading = true;
-      continue;
+      if (ln.startsWith('# ')) {
+        pastTopHeading = true;
+        sawTopHeading = true;
+        continue;
+      }
+      // No H1: start collecting from the first non-empty prose line.
+      if (!sawTopHeading && ln.trim()) {
+        pastTopHeading = true;
+      } else {
+        continue;
+      }
     }
     if (ln.startsWith('>') || ln.startsWith('#')) continue;
     const t = ln.trim();
-    if (!t) continue;
+    if (!t) {
+      if (collected.length) break;
+      continue;
+    }
+    if (/^\d+\.\s+/.test(t) || /^[-*]\s+/.test(t)) {
+      if (collected.length) break;
+      continue;
+    }
     collected.push(t);
     if (collected.length >= 3) break;
   }
@@ -1200,7 +1242,7 @@ function summarizeDoNotTreatItem(item) {
   if (sourceType === 'standing_memory') {
     return `${sourceAddress({ sourceType, sourceId })}: prior-cycle working-memory narrative; reopen source before treating as fact`;
   }
-  const summary = shortText(item?.summary ?? '', DO_NOT_TREAT_MAX_LINE_CHARS);
+  const summary = hardClipText(item?.summary ?? '', DO_NOT_TREAT_MAX_LINE_CHARS);
   if (sourceId && sourceType) {
     return `${sourceAddress({ sourceType, sourceId })}: ${summary}`;
   }
@@ -1210,7 +1252,16 @@ function summarizeDoNotTreatItem(item) {
 function buildDoNotTreatAsSeenSectionBody(admission) {
   const items = admission.do_not_treat_as_seen.slice(0, STANDING_MEMORY_LIMITS.maxDoNotTreatAsSeenItems);
   if (!items.length) return '- (none)';
-  return items.map((item) => `- ${summarizeDoNotTreatItem(item)}`).join('\n');
+  const kept = [];
+  let size = 0;
+  for (const item of items) {
+    const line = `- ${summarizeDoNotTreatItem(item)}`;
+    const nextSize = size + line.length + (kept.length ? 1 : 0);
+    if (nextSize > DO_NOT_TREAT_SECTION_MAX_CHARS) break;
+    kept.push(line);
+    size = nextSize;
+  }
+  return kept.length ? kept.join('\n') : '- (none)';
 }
 
 function buildDoNotTreatAsSeenSection(reportContext) {
@@ -1493,8 +1544,6 @@ export function composeStandingMemoryMarkdown({
   return sections.map(([heading, body]) => `## ${heading}\n\n${body.trim()}`).join('\n\n').trim();
 }
 
-const DO_NOT_TREAT_SECTION_MAX_CHARS = 1200;
-
 /**
  * Cosmetic cleanup before standing-memory audit:
  * - replace unicode ellipsis glyphs with ASCII "..."
@@ -1573,7 +1622,7 @@ export function auditStandingMemoryFreeText({
   if (/##\s+Current State/i.test(doNotTreatText)) {
     issues.push('do_not_treat:standing_memory_body_embedded');
   }
-  if (doNotTreatText.length > 1200) {
+  if (doNotTreatText.length > DO_NOT_TREAT_SECTION_MAX_CHARS) {
     issues.push('do_not_treat:section_too_long');
   }
 
@@ -1927,7 +1976,10 @@ export async function updateStandingMemoryWithAi({
     }
     let usedFallback = false;
     let fallbackReason = null;
+    let primaryIssues = [];
+    let fallbackIssues = [];
     if (!audit.ok) {
+      primaryIssues = Array.isArray(audit.issues) ? [...audit.issues] : [];
       const minimalAdmission = buildMinimalSafeAdmission(extendedAdmission);
       const minimalRefs = buildTypedEvidenceRefsFromAdmission(minimalAdmission);
       text = composeStandingMemoryMarkdown({
@@ -1936,6 +1988,7 @@ export async function updateStandingMemoryWithAi({
         language,
         admission: minimalAdmission,
       });
+      text = sanitizeStandingMemoryCosmeticIssues(text);
       audit = auditStandingMemoryMarkdown({
         text,
         typedEvidenceRefs: minimalRefs,
@@ -1944,9 +1997,39 @@ export async function updateStandingMemoryWithAi({
       typedEvidenceRefs = minimalRefs;
       usedFallback = true;
       fallbackReason = 'primary_audit_failed';
+      if (!audit.ok) {
+        fallbackIssues = Array.isArray(audit.issues) ? [...audit.issues] : [];
+      }
     }
-    if (!text.trim()) return { status: 'failed', reason: 'empty-output' };
-    if (!audit.ok) return { status: 'failed', reason: `audit-failed:${audit.issues.join(',')}` };
+    if (!text.trim()) {
+      const failed = {
+        status: 'failed',
+        reason: 'empty-output',
+        primary_issues: primaryIssues,
+        fallback_issues: fallbackIssues,
+        used_fallback: usedFallback,
+        narrative_preserved: narrativePreserved,
+      };
+      emitStandingMemoryUpdateEvent(store, { cycleId, result: failed });
+      return failed;
+    }
+    if (!audit.ok) {
+      const reasonParts = [];
+      if (primaryIssues.length) reasonParts.push(`primary:${primaryIssues.join(',')}`);
+      if (fallbackIssues.length) reasonParts.push(`fallback:${fallbackIssues.join(',')}`);
+      if (!reasonParts.length) reasonParts.push(`audit-failed:${audit.issues.join(',')}`);
+      const failed = {
+        status: 'failed',
+        reason: reasonParts.join('; '),
+        audit,
+        primary_issues: primaryIssues,
+        fallback_issues: fallbackIssues,
+        used_fallback: usedFallback,
+        narrative_preserved: narrativePreserved,
+      };
+      emitStandingMemoryUpdateEvent(store, { cycleId, result: failed });
+      return failed;
+    }
 
     const lockedRefsCount = typedEvidenceRefs.filter((ref) => ref._locked === true).length;
     const backfillRefsCount = typedEvidenceRefs.filter((ref) => ref._backfill === true).length;
@@ -1975,20 +2058,45 @@ export async function updateStandingMemoryWithAi({
         narrative_preserved: narrativePreserved,
       },
     });
-    return {
+    const result = {
       status: written > 0 ? 'updated' : 'failed',
       reason: written > 0 ? null : 'write-failed',
       audit,
+      primary_issues: primaryIssues,
+      fallback_issues: fallbackIssues,
       used_fallback: usedFallback,
       narrative_preserved: narrativePreserved,
       evidence_depth: typedEvidenceRefs.length,
       locked_refs_count: lockedRefsCount,
       backfill_refs_count: backfillRefsCount,
     };
+    emitStandingMemoryUpdateEvent(store, { cycleId, result });
+    return result;
   } catch (e) {
     const msg = e?.message || String(e);
     logger?.warn?.(`[report] standing memory update failed: ${msg}`);
-    return { status: 'failed', reason: msg };
+    const failed = { status: 'failed', reason: msg };
+    emitStandingMemoryUpdateEvent(store, { cycleId, result: failed });
+    return failed;
+  }
+}
+
+function emitStandingMemoryUpdateEvent(store, { cycleId = null, result = null } = {}) {
+  if (!store || typeof store.recordEvolutionEvent !== 'function' || !result) return;
+  try {
+    store.recordEvolutionEvent({
+      type: 'standing_memory_update',
+      status: result.status || 'unknown',
+      cycle_id: cycleId || null,
+      reason: result.reason ?? null,
+      used_fallback: result.used_fallback === true,
+      narrative_preserved: result.narrative_preserved === true,
+      primary_issues: Array.isArray(result.primary_issues) ? result.primary_issues.slice(0, 20) : [],
+      fallback_issues: Array.isArray(result.fallback_issues) ? result.fallback_issues.slice(0, 20) : [],
+      evidence_depth: result.evidence_depth ?? null,
+    });
+  } catch {
+    // best-effort; do not fail the update path on event write
   }
 }
 

@@ -51,9 +51,11 @@ import { markStepStatus, writeStepArtifact } from '../cli/utils/cycle-state.mjs'
 import { loadCycleStepContext, loadVerifyReportForCycle } from '../cli/utils/cycle-checkpoints.mjs';
 import { extractMarkdownSection } from '../cli/utils/markdown-sections.mjs';
 import {
+  CARRYOVER_MECHANICAL_LIMIT,
   buildStepStatusSnapshot,
   formatCarryover,
   mergeDiaryCarryover,
+  rankAndLimitMechanicalItems,
   readCarryoverDocument,
   readCarryoverItems,
   writeCarryoverItems,
@@ -608,7 +610,19 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
   });
 
   // --- Phase: classic Analyze+Decide ---
-  const reportSuggestions = extractReportSuggestions(reportMarkdown);
+  const extractedSuggestions = extractReportSuggestions(reportMarkdown);
+  const reportSuggestions = extractedSuggestions.suggestions;
+  if (extractedSuggestions.truncated) {
+    store.recordEvolutionEvent({
+      type: 'report_suggestions_overflow',
+      status: 'overflow',
+      cycle_id: resolvedCycleId,
+      subject: runtime.subject,
+      kept: reportSuggestions.length,
+      overflow_count: extractedSuggestions.overflow.length,
+      overflow: extractedSuggestions.overflow.slice(0, 12).map((item) => item.text),
+    });
+  }
   const decidePromptParts = buildDecideUserPromptParts({
     goalsText,
     rules,
@@ -745,7 +759,7 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
       warnings: suggestionCoverage.warnings,
     });
   }
-  const finishCarryover = [
+  const finishCarryoverRaw = [
     ...(Array.isArray(investigation.open_gaps)
       ? investigation.open_gaps.map((gap) => ({
         text: String(gap),
@@ -770,7 +784,31 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
       })).slice(0, 5)
       : []),
     ...suggestionCoverage.carryoverItems,
-  ].filter((item) => item && String(item.text || '').trim()).slice(0, 12);
+    ...extractedSuggestions.overflow.map((item) => ({
+      text: item.text,
+      source: 'mechanical',
+      origin: 'suggestion_overflow',
+    })),
+  ].filter((item) => item && String(item.text || '').trim());
+  const { kept: finishCarryover, dropped: finishCarryoverDropped } = rankAndLimitMechanicalItems(
+    finishCarryoverRaw,
+    { limit: CARRYOVER_MECHANICAL_LIMIT },
+  );
+  if (finishCarryoverDropped.length) {
+    store.recordEvolutionEvent({
+      type: 'carryover_items_dropped',
+      status: 'capped',
+      cycle_id: resolvedCycleId,
+      subject: runtime.subject,
+      stage: 'agent_loop',
+      dropped_count: finishCarryoverDropped.length,
+      dropped: finishCarryoverDropped.slice(0, 12).map((item) => ({
+        text: item.text,
+        origin: item.origin ?? null,
+        drop_reason: 'mechanical_cap',
+      })),
+    });
+  }
 
   try {
     writeCarryoverItems(runtime.runtimeRoot, {
@@ -937,6 +975,19 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
         summary: suggestionCoverage.summary,
         items: suggestionCoverage.items,
         warnings: suggestionCoverage.warnings,
+      },
+      standing_memory_update: {
+        status: memoryUpdate?.status ?? null,
+        reason: memoryUpdate?.reason ?? null,
+        used_fallback: memoryUpdate?.used_fallback === true,
+        narrative_preserved: memoryUpdate?.narrative_preserved === true,
+        primary_issues: Array.isArray(memoryUpdate?.primary_issues)
+          ? memoryUpdate.primary_issues.slice(0, 20)
+          : [],
+        fallback_issues: Array.isArray(memoryUpdate?.fallback_issues)
+          ? memoryUpdate.fallback_issues.slice(0, 20)
+          : [],
+        evidence_depth: memoryUpdate?.evidence_depth ?? null,
       },
       report: {
         mdPath: persistedReport.mdPath,
@@ -1447,6 +1498,46 @@ export async function runDiaryStep(ctx, {
         diaryBullets,
         stepStatusSnapshot,
       });
+      if (Array.isArray(merged.dropped) && merged.dropped.length) {
+        const byReason = merged.dropped.reduce((acc, item) => {
+          const reason = item.drop_reason || 'unknown';
+          acc[reason] = (acc[reason] || 0) + 1;
+          return acc;
+        }, {});
+        const droppedSummary = merged.dropped.slice(0, 12).map((item) => ({
+          text: item.text,
+          origin: item.origin ?? null,
+          source: item.source ?? null,
+          drop_reason: item.drop_reason ?? null,
+        }));
+        const eventCycleId = execResult?.cycle_id || intelResult?.cycle_id;
+        store.recordEvolutionEvent({
+          type: 'carryover_items_dropped',
+          status: 'filtered',
+          cycle_id: eventCycleId,
+          subject: runtime.subject,
+          stage: 'diary',
+          dropped_count: merged.dropped.length,
+          by_reason: byReason,
+          dropped: droppedSummary,
+        });
+        const staleDropped = merged.dropped.filter((item) => item.drop_reason === 'stale_pipeline_status');
+        if (staleDropped.length) {
+          store.recordEvolutionEvent({
+            type: 'carryover_stale_item_dropped',
+            status: 'filtered',
+            cycle_id: eventCycleId,
+            subject: runtime.subject,
+            stage: 'diary',
+            dropped_count: staleDropped.length,
+            dropped: staleDropped.slice(0, 12).map((item) => ({
+              text: item.text,
+              origin: item.origin ?? null,
+              source: item.source ?? null,
+            })),
+          });
+        }
+      }
       writeCarryoverItems(runtime.runtimeRoot, {
         cycleId: execResult?.cycle_id || intelResult?.cycle_id,
         items: merged.items,
