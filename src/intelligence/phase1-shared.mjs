@@ -153,8 +153,11 @@ export async function queueAnalyzeDecideActions({
   reportMarkdown = null,
   operatorBriefs = [],
   maxActions = null,
-  pipeline = 'phases',
+  pipeline,
 } = {}) {
+  if (pipeline == null || pipeline === '') {
+    throw new Error('queueAnalyzeDecideActions requires an explicit pipeline (phases | agent_loop)');
+  }
   const analysisContext = summarizeAnalysis(analysis);
   let toQueue = Array.isArray(actions) ? [...actions] : [];
   const deferredExtra = [];

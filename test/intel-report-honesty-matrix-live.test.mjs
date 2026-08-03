@@ -30,7 +30,7 @@ const LIVE_DEEP = process.env.JEA_LIVE_DEEPSEEK_DEEP === '1';
 const JUDGE_ENABLED = process.env.JEA_MATRIX_JUDGE === '1';
 const REPEATS = Math.min(5, Math.max(1, parseInt(process.env.JEA_MATRIX_REPEATS || '1', 10) || 1));
 const PIPELINE_FILTER = new Set(
-  String(process.env.JEA_MATRIX_PIPELINES || 'phases,agent_loop')
+  String(process.env.JEA_MATRIX_PIPELINES || 'agent_loop')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean),

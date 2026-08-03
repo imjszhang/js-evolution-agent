@@ -404,6 +404,7 @@ function beginLiveEnv() {
     prevCwd: process.cwd(),
     prevMock: process.env.JEA_FORCE_MOCK,
     prevPipeline: process.env.JEA_CYCLE_PIPELINE,
+    prevSuppressPhases: process.env.JEA_SUPPRESS_PHASES_DEPRECATION,
     prevReadonly: process.env.JEA_LOOP_MAX_READONLY_TURNS,
     prevTurns: process.env.JEA_LOOP_MAX_TURNS,
   };
@@ -415,6 +416,8 @@ function restoreEnv(snapshot) {
   else process.env.JEA_FORCE_MOCK = snapshot.prevMock;
   if (snapshot.prevPipeline == null) delete process.env.JEA_CYCLE_PIPELINE;
   else process.env.JEA_CYCLE_PIPELINE = snapshot.prevPipeline;
+  if (snapshot.prevSuppressPhases == null) delete process.env.JEA_SUPPRESS_PHASES_DEPRECATION;
+  else process.env.JEA_SUPPRESS_PHASES_DEPRECATION = snapshot.prevSuppressPhases;
   if (snapshot.prevReadonly == null) delete process.env.JEA_LOOP_MAX_READONLY_TURNS;
   else process.env.JEA_LOOP_MAX_READONLY_TURNS = snapshot.prevReadonly;
   if (snapshot.prevTurns == null) delete process.env.JEA_LOOP_MAX_TURNS;
@@ -464,6 +467,9 @@ export async function runHonestyLiveIntel({
   try {
     delete process.env.JEA_FORCE_MOCK;
     process.env.JEA_CYCLE_PIPELINE = pipeline;
+    if (pipeline === 'phases') {
+      process.env.JEA_SUPPRESS_PHASES_DEPRECATION = '1';
+    }
     process.env.JEA_LOOP_MAX_READONLY_TURNS = process.env.JEA_LOOP_MAX_READONLY_TURNS || '4';
     process.env.JEA_LOOP_MAX_TURNS = process.env.JEA_LOOP_MAX_TURNS || '6';
     chdirWithRetry(root);

@@ -1,11 +1,12 @@
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   CYCLE_PIPELINES,
   cyclePipelineFromFlags,
   normalizeCyclePipeline,
+  resetPhasesDeprecationWarningForTests,
   resolveCyclePipeline,
 } from '../src/cli/utils/cycle-pipeline-mode.mjs';
 
@@ -15,6 +16,8 @@ describe('cycle pipeline mode', () => {
   afterEach(() => {
     if (tempRoot) rmSync(tempRoot, { recursive: true, force: true });
     tempRoot = null;
+    resetPhasesDeprecationWarningForTests();
+    vi.restoreAllMocks();
   });
 
   function writeRegistry(pipeline = null) {
@@ -52,7 +55,7 @@ describe('cycle pipeline mode', () => {
     const resolved = resolveCyclePipeline(tempRoot, {
       subject: 'demo',
       flags: { pipeline: 'phases' },
-      env: { JEA_CYCLE_PIPELINE: 'phases' },
+      env: { JEA_CYCLE_PIPELINE: 'phases', JEA_SUPPRESS_PHASES_DEPRECATION: '1' },
     });
     expect(resolved).toEqual({ pipeline: 'agent_loop', source: 'runtime-registry.json' });
   });
@@ -62,7 +65,7 @@ describe('cycle pipeline mode', () => {
     const resolved = resolveCyclePipeline(tempRoot, {
       subject: 'demo',
       flags: { loop: true },
-      env: { JEA_CYCLE_PIPELINE: 'phases' },
+      env: { JEA_CYCLE_PIPELINE: 'phases', JEA_SUPPRESS_PHASES_DEPRECATION: '1' },
     });
     expect(resolved).toEqual({ pipeline: 'agent_loop', source: 'cli' });
   });
@@ -77,14 +80,54 @@ describe('cycle pipeline mode', () => {
     expect(resolved).toEqual({ pipeline: 'agent_loop', source: 'env' });
   });
 
-  it('falls back to phases for invalid values', () => {
+  it('falls back to agent_loop for invalid values', () => {
     writeRegistry('not-a-pipeline');
     const resolved = resolveCyclePipeline(tempRoot, {
       subject: 'demo',
       flags: { pipeline: 'garbage' },
       env: { JEA_CYCLE_PIPELINE: 'also-bad' },
     });
-    expect(resolved).toEqual({ pipeline: 'phases', source: 'default' });
+    expect(resolved).toEqual({ pipeline: 'agent_loop', source: 'default' });
+  });
+
+  it('defaults to agent_loop when unset', () => {
+    writeRegistry(null);
+    const resolved = resolveCyclePipeline(tempRoot, {
+      subject: 'demo',
+      flags: {},
+      env: {},
+    });
+    expect(resolved).toEqual({ pipeline: 'agent_loop', source: 'default' });
+  });
+
+  it('still resolves explicit phases and warns once unless suppressed', () => {
+    writeRegistry(null);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const resolved = resolveCyclePipeline(tempRoot, {
+      subject: 'demo',
+      flags: { pipeline: 'phases' },
+      env: {},
+    });
+    expect(resolved).toEqual({ pipeline: 'phases', source: 'cli' });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).toMatch(/deprecated/i);
+
+    resolveCyclePipeline(tempRoot, {
+      subject: 'demo',
+      flags: { pipeline: 'phases' },
+      env: {},
+    });
+    expect(warn).toHaveBeenCalledTimes(1);
+
+    resetPhasesDeprecationWarningForTests();
+    warn.mockClear();
+    const suppressed = resolveCyclePipeline(tempRoot, {
+      subject: 'demo',
+      flags: { pipeline: 'phases' },
+      env: { JEA_SUPPRESS_PHASES_DEPRECATION: '1' },
+    });
+    expect(suppressed).toEqual({ pipeline: 'phases', source: 'cli' });
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it('parses pipeline flags', () => {

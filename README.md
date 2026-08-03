@@ -179,11 +179,10 @@ Typical use: let an AI subject investigate, edit code, simulate, and prepare rel
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-Per-cycle pipeline:
+Per-cycle pipeline (default **`agent_loop`**):
 
 ```text
-Phase 1   intel pipeline (observe → report → analyze+decide)
-Phase 1.5 intel report persistence
+Phase 1   agent_loop (readonly investigation → host Seen → report → Analyze+Decide)
 Phase 2   exec (consume pending_decisions queue)
 Phase 3   verify (mechanical + semantic)
 Phase 3.5 belief_update
@@ -191,6 +190,8 @@ Phase 4   goals assess
 Phase 4.5 goals calibrate
 Phase 5   evolution diary
 ```
+
+`phases` (classic observe → report → decide Phase 1) remains available as a deprecated fallback via `--pipeline phases` / `JEA_CYCLE_PIPELINE=phases`.
 
 ---
 

@@ -93,6 +93,8 @@ function restoreEnv(snapshot) {
   else process.env.JEA_FORCE_MOCK = snapshot.prevMock;
   if (snapshot.prevPipeline == null) delete process.env.JEA_CYCLE_PIPELINE;
   else process.env.JEA_CYCLE_PIPELINE = snapshot.prevPipeline;
+  if (snapshot.prevSuppressPhases == null) delete process.env.JEA_SUPPRESS_PHASES_DEPRECATION;
+  else process.env.JEA_SUPPRESS_PHASES_DEPRECATION = snapshot.prevSuppressPhases;
   if (snapshot.prevKey == null) delete process.env.DEEPSEEK_API_KEY;
   else process.env.DEEPSEEK_API_KEY = snapshot.prevKey;
 }
@@ -102,6 +104,7 @@ function beginMockEnv() {
     prevCwd: process.cwd(),
     prevMock: process.env.JEA_FORCE_MOCK,
     prevPipeline: process.env.JEA_CYCLE_PIPELINE,
+    prevSuppressPhases: process.env.JEA_SUPPRESS_PHASES_DEPRECATION,
     prevKey: process.env.DEEPSEEK_API_KEY,
   };
 }
@@ -123,6 +126,7 @@ describe('Intel report deliverable e2e (phases vs agent_loop)', () => {
       delete process.env.DEEPSEEK_API_KEY;
       process.chdir(root);
       process.env.JEA_CYCLE_PIPELINE = 'phases';
+      process.env.JEA_SUPPRESS_PHASES_DEPRECATION = '1';
 
       const runtime = runtimeForSubject(root, SUBJECT);
       writePendingOperatorBrief(runtime.runtimeRoot, {

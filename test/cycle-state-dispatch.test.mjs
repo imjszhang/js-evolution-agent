@@ -59,13 +59,15 @@ describe('cycle-state and dispatch', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it('startCycleFromTick enqueues intel step', () => {
+  it('startCycleFromTick enqueues agent_loop step by default', () => {
     const root = makeRoot();
     const result = startCycleFromTick(root, 'alpha');
     expect(result.started).toBe(true);
     expect(listOpenCycles(root, 'alpha')).toHaveLength(1);
+    expect(result.cycle?.meta?.pipeline).toBe('agent_loop');
     const queue = readTaskQueue(root, 'alpha');
-    expect(queue.tasks.some((t) => t.type === 'intel')).toBe(true);
+    expect(queue.tasks.some((t) => t.type === 'agent_loop')).toBe(true);
+    expect(queue.tasks.some((t) => t.type === 'intel')).toBe(false);
     rmSync(root, { recursive: true, force: true });
   });
 

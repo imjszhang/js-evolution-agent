@@ -2,6 +2,27 @@ import { getSubjectEntry, resolveSubjectConfig } from './subjects.mjs';
 
 export const CYCLE_PIPELINES = Object.freeze(['phases', 'agent_loop']);
 
+let phasesDeprecationWarned = false;
+
+export function resetPhasesDeprecationWarningForTests() {
+  phasesDeprecationWarned = false;
+}
+
+function maybeWarnPhasesDeprecated(env = process.env) {
+  if (phasesDeprecationWarned) return;
+  const suppress = String(env.JEA_SUPPRESS_PHASES_DEPRECATION || '').trim().toLowerCase();
+  if (suppress === '1' || suppress === 'true' || suppress === 'yes' || suppress === 'on') {
+    return;
+  }
+  phasesDeprecationWarned = true;
+  console.warn(
+    '[jea] pipeline "phases" is deprecated; default is agent_loop. '
+    + 'Prefer agent_loop via registry evolution.pipeline, --pipeline agent_loop/--loop, '
+    + 'or unset JEA_CYCLE_PIPELINE. '
+    + 'Set JEA_SUPPRESS_PHASES_DEPRECATION=1 to silence this warning.',
+  );
+}
+
 export function normalizeCyclePipeline(raw) {
   if (raw == null || raw === '') return null;
   const normalized = String(raw).trim().toLowerCase();
@@ -31,7 +52,9 @@ export function cyclePipelineFromFlags(flags = {}) {
 
 /**
  * Priority: runtime subject registry evolution.pipeline > CLI --pipeline/--loop
- * > JEA_CYCLE_PIPELINE > phases
+ * > JEA_CYCLE_PIPELINE > agent_loop (default).
+ * Explicit "phases" still resolves but emits a one-time deprecation warning
+ * unless JEA_SUPPRESS_PHASES_DEPRECATION=1.
  */
 export function resolveCyclePipeline(root, { subject = null, flags = {}, env = process.env } = {}) {
   const config = subject
@@ -41,17 +64,20 @@ export function resolveCyclePipeline(root, { subject = null, flags = {}, env = p
   const entry = subjectName ? getSubjectEntry(root, subjectName) : null;
   const fromSubject = cyclePipelineFromSubjectEntry(entry);
   if (fromSubject) {
+    if (fromSubject === 'phases') maybeWarnPhasesDeprecated(env);
     return { pipeline: fromSubject, source: config.registrySource || 'subjects.json' };
   }
   const fromFlags = cyclePipelineFromFlags(flags);
   if (fromFlags) {
+    if (fromFlags === 'phases') maybeWarnPhasesDeprecated(env);
     return { pipeline: fromFlags, source: 'cli' };
   }
   const fromEnv = cyclePipelineFromEnv(env);
   if (fromEnv) {
+    if (fromEnv === 'phases') maybeWarnPhasesDeprecated(env);
     return { pipeline: fromEnv, source: 'env' };
   }
-  return { pipeline: 'phases', source: 'default' };
+  return { pipeline: 'agent_loop', source: 'default' };
 }
 
 export function isAgentLoopPipeline(pipeline) {

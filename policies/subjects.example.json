@@ -6,7 +6,7 @@
       "data_namespace": "my-subject",
       "evolution": {
         "mode": "on_demand",
-        "pipeline": "phases",
+        "pipeline": "agent_loop",
         "guards": [
           {
             "id": "example-credential-sync",

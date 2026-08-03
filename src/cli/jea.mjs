@@ -26,11 +26,12 @@ export function helpText() {
 Commands:
   doctor                 Check env, dependencies, docs, and config
   run [--mock] [--skip-goals-assess] [--skip-belief-update] [--subject NAME]
-                         Run the full intel -> exec -> verify loop; by default
+                         Run agent_loop -> exec -> verify (default pipeline); by default
                          also records a goals assess event for the same cycle
-  run --loop             Use agent_loop pipeline (tool-calling step replaces intel+exec)
-  run --pipeline phases|agent_loop
-                         Explicit cycle pipeline (default: phases; registry/env may override)
+  run --loop             Explicit agent_loop (same as default; Phase 1 only, exec still runs)
+  run --pipeline agent_loop|phases
+                         Explicit cycle pipeline (default: agent_loop; phases is deprecated;
+                         registry/env may override)
   run --deepseek         Require DeepSeek API configuration
   evolve --rounds N      Run multiple evolution cycles with retry/resume state
   evolve resume ID       Resume an interrupted evolve run

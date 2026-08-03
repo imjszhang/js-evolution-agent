@@ -60,27 +60,13 @@ npx repolink check --link agentank-evolver
 
 - `jea run [--mock] [--deepseek] [--skip-goals-assess] [--skip-belief-update] [--subject NAME]`：运行一次完整演化循环并写入情报回执。
 - `jea run --mock`：不调用真实模型，适合本地冒烟验证。
-- `jea run --loop` / `jea run --pipeline agent_loop`：使用 **agent_loop** 管道（见下节）。
+- `jea run --loop` / `jea run --pipeline agent_loop`：显式指定 **agent_loop**（现为默认，通常可省略）。
+- `jea run --pipeline phases`：deprecated 回退路径（经典 observe→report→decide；无 tool-calling）。
 - `jea run --deepseek`：要求 DeepSeek API 配置存在。
 - `jea run --skip-goals-assess`：跳过本轮目标评估（Phase 4 / 4.5）。
 - `jea run --skip-belief-update`：跳过 post-verify 信念更新（Phase 3.5）。
 
-单轮主流水线（默认 `phases`）：
-
-```text
-Phase 1   intel pipeline（observe -> report -> analyze+decide）
-Phase 1.5 intel report 持久化
-Phase 2   exec（消费 pending_decisions 队列）
-Phase 3   verify（机械验证 + 语义验证）
-Phase 3.5 belief_update（更新 current_beliefs；可用 --skip-belief-update 跳过）
-Phase 4   goals assess
-Phase 4.5 goals calibrate
-Phase 5   evolution diary
-```
-
-信念（Belief）在 Phase 1 被 Decide 读取约束行动，在 Phase 3.5 依据 receipt 与 verify_report 正式更新。详见下文「信念管理」与「人工审批与操作者意图」。
-
-### Agent Loop 管道
+### Agent Loop 管道（默认）
 
 `agent_loop` **仅替代 Phase 1**，按报告中心生产线编排；**Phase 2 exec 仍独立执行** pending_decisions；verify / belief / goals / diary **保持固定收尾**。
 
@@ -94,24 +80,37 @@ Phase 5   evolution diary
 → 宿主 splice Seen + 引用字形净化 → 经典 Analyze+Decide JSON 批入队
 ```
 
+完整单轮 step 图：
+
+```text
+agent_loop → exec → verify → belief_update → goals_assess → goals_calibrate → diary
+```
+
+信念（Belief）在 Phase 1 被 Decide 读取约束行动，在 Phase 3.5 依据 receipt 与 verify_report 正式更新。详见下文「信念管理」与「人工审批与操作者意图」。
+
 模式解析优先级（仿 evolution.mode）：
 
 1. `runtime/subjects/registry.json` → `subjects.<name>.evolution.pipeline`
 2. CLI `--loop` / `--pipeline agent_loop|phases`
 3. env `JEA_CYCLE_PIPELINE`
-4. 默认 `phases`
+4. 默认 `agent_loop`
 
-agent_loop 管道 step 图：
+显式选择 `phases` 时会打一次 deprecation 警告；可用 `JEA_SUPPRESS_PHASES_DEPRECATION=1` 静音。历史 cycle-state 若缺 `meta.pipeline`，读盘时仍按 `phases` 步图 reconcile（避免误判旧 open cycle）。
+
+**deprecated `phases` Phase 1**（仅显式启用时）：
 
 ```text
-agent_loop → exec → verify → belief_update → goals_assess → goals_calibrate → diary
+Phase 1   intel pipeline（observe -> report -> analyze+decide）
+Phase 1.5 intel report 持久化
+→ 其后与 agent_loop 相同：exec → verify → belief → goals → diary
 ```
 
 相关 env：
 
 | 变量 | 默认 | 含义 |
 | --- | --- | --- |
-| `JEA_CYCLE_PIPELINE` | `phases` | `phases` 或 `agent_loop` |
+| `JEA_CYCLE_PIPELINE` | `agent_loop` | `agent_loop` 或 `phases`（deprecated） |
+| `JEA_SUPPRESS_PHASES_DEPRECATION` | （关） | `1`/`true` 时静音 phases deprecation 警告 |
 | `JEA_LOOP_MAX_READONLY_TURNS` | `6` | 只读查证最大 LLM 轮数（主配置） |
 | `JEA_LOOP_MAX_TURNS` | （可选） | 与 `MAX_READONLY` 取较小值；兼容旧配置 |
 | `JEA_LOOP_MAX_WALLCLOCK_MS` | `1200000` | 整步墙钟（查证+报告+Decide） |
@@ -168,7 +167,7 @@ data/evolution/agent_loop_guard_state.json
 审批语义：Decide JSON 可带 `approval_granted`；真正执行仍走 Phase 2 handler 内 `preflightAgentRun` / `JEA_APPROVAL_MODE`。本地冒烟：
 
 ```powershell
-npm run jea -- run --mock --loop --subject js-evolution-agent
+npm run jea -- run --mock --subject js-evolution-agent
 ```
 
 Intel 报告测试两道闸（mock / CI）：
@@ -208,9 +207,9 @@ $env:JEA_LIVE_DEEPSEEK='1'; npm run test:live-deepseek:matrix
 
 ```powershell
 $env:JEA_LIVE_DEEPSEEK='1'; npm run test:live-deepseek:intel-matrix
-# 只跑 agent_loop（跳过 phases）：
-$env:JEA_MATRIX_PIPELINES='agent_loop'; npm run test:live-deepseek:intel-matrix
-# 另含 pro×max × phases/agent_loop：
+# 默认只跑 agent_loop（2 格）；要含 deprecated phases 格子：
+$env:JEA_MATRIX_PIPELINES='phases,agent_loop'; npm run test:live-deepseek:intel-matrix
+# 另含 pro×max × 当前过滤的 pipeline：
 $env:JEA_LIVE_DEEPSEEK_DEEP='1'; npm run test:live-deepseek:intel-matrix
 # 每格重复 N 次（1–5，默认 1）：
 $env:JEA_MATRIX_REPEATS='3'; npm run test:live-deepseek:intel-matrix
@@ -218,7 +217,7 @@ $env:JEA_MATRIX_REPEATS='3'; npm run test:live-deepseek:intel-matrix
 $env:JEA_MATRIX_JUDGE='1'; npm run test:live-deepseek:intel-matrix
 ```
 
-默认 5 格：phases 的 flash×off / flash×high / pro×high，以及 agent_loop 的 flash×high / pro×high。`JEA_MATRIX_PIPELINES` 可逗号过滤（如 `agent_loop`）。
+默认 2 格：agent_loop 的 flash×high / pro×high。`JEA_MATRIX_PIPELINES=phases,agent_loop` 可恢复 phases 的 flash×off / flash×high / pro×high（共 5 格）。
 
 | 层 | 列 | 是否硬闸 |
 | --- | --- | --- |

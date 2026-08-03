@@ -14,11 +14,11 @@ import loadConfig from '../../oada.config.mjs'; // project root oada.config.mjs
 import { assessActiveGoals, autoCalibrateGoals } from '../domain/cognition/index.mjs';
 import { updateActiveBeliefs } from '../intelligence/belief-updater.mjs';
 import { runEvidenceAuditQuick } from '../intelligence/evidence-audit.mjs';
+import { ConversationalIntelligencePipeline } from '../intelligence/conversational-intel-pipeline.mjs';
 import {
-  ConversationalIntelligencePipeline,
-  parseAnalyzeDecisionWithRepair,
   normalizeAnalyzeDecision,
-} from '../intelligence/conversational-intel-pipeline.mjs';
+  parseAnalyzeDecisionWithRepair,
+} from '../intelligence/decide-json.mjs';
 import { verifyWithRestoredConversation } from '../intelligence/conversation-context.mjs';
 import { buildEvolutionDiary } from '../intelligence/evolution-diary-builder.mjs';
 import { createHostDecisionQueue } from '../intelligence/decision-queue.mjs';
