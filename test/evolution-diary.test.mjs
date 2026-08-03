@@ -24,6 +24,7 @@ import {
   summarizeEvidenceIndexItem,
   buildMinimalSafeAdmission,
   detectLanguage,
+  extractDiaryTldr,
   extractTldr,
   gatherEvidence,
   gatherReportContext,
@@ -45,6 +46,7 @@ import {
   buildEvolutionDiaryContext,
   buildEvolutionDiaryPrompt,
   gatherDiaryAnchors,
+  persistEvolutionDiary,
 } from '../src/intelligence/evolution-diary-builder.mjs';
 import {
   extractCarryoverFromDiaryMarkdown,
@@ -214,10 +216,53 @@ describe('buildEvolutionDiary', () => {
 
     expect(context.agent_loop_carryover).toEqual(['待复核 gate.std.max', '过期：凭据探针待执行']);
     expect(prompt).toContain('agent_loop_carryover');
-    expect(prompt).toContain('覆写为下一轮 agent_loop 的 carryover');
+    expect(prompt).toContain('step_status_snapshot');
+    expect(prompt).toContain('时间线权威');
+    expect(prompt).toContain('## TL;DR');
+    expect(prompt).toMatch(/建议章节：[\s\S]*- TL;DR/);
+    expect(context.phase1.timeline).toBe('written_at_cycle_start_describes_previous_cycle_system_state');
   });
 
-  it('extracts diary next-cycle bullets and runDiaryStep overwrites carryover', async () => {
+  it('persistEvolutionDiary uses extractDiaryTldr and avoids list-marker truncation', () => {
+    const { store, runtime, intelResult, execResult, verification } = makeDiaryFixture();
+    const context = buildEvolutionDiaryContext({
+      intelResult,
+      execResult,
+      verification,
+      runtime,
+      store,
+    });
+    const markdown = [
+      '# 进化日记：cycle-test-1',
+      '',
+      '## 这一轮发生了什么',
+      '',
+      '这是一个只读学习期的守护轮。决策阶段（Phase 1）定下的计划是执行一次自主只读 agent_run，覆盖到期守护项：记忆审计两周期复测、分页聚合口径合并、学习状态报告复核、subject_runtime env 注入 scoped 验证、gate.std.max 只读复核。实际执行了 3 个动作（见 exec_journal）：',
+      '',
+      '1. **agentank_sync_context**（机械守卫）：sync 成功，刷新远端快照 JS-TANK/freeze/isRanked=false/rank=0/totalPublic=5360/matchCount=10，写入 1 条脱敏 observation，无泄露信号。semantic verification 判为 improved（high confidence）。',
+      '2. **agent_run**（机械记忆审计 guard）：completed，确认 typed_evidence_refs=37。',
+      '',
+      '## 下轮应该注意什么',
+      '',
+      '- 分页待恢复',
+    ].join('\n');
+
+    expect(extractDiaryTldr(markdown)).toContain('只读学习期的守护轮');
+    expect(extractDiaryTldr(markdown)).not.toMatch(/\d+\.\s*$/);
+
+    const persisted = persistEvolutionDiary({
+      markdown,
+      context,
+      runtime,
+      store,
+      source: 'ai',
+    });
+    expect(persisted.tldr).toContain('只读学习期的守护轮');
+    expect(persisted.tldr).not.toMatch(/\d+\.\s*$/);
+    expect(persisted.tldr).not.toContain('agentank_sync_context');
+  });
+
+  it('extracts diary next-cycle bullets and runDiaryStep merges carryover', async () => {
     const markdown = [
       '# 进化日记',
       '',
@@ -246,8 +291,11 @@ describe('buildEvolutionDiary', () => {
 
     const { store, runtime, intelResult, execResult, verification } = makeDiaryFixture();
     writeCarryoverItems(runtime.runtimeRoot, {
-      cycleId: 'old',
-      items: ['过期：凭据探针待执行'],
+      cycleId: 'cycle-test-1',
+      defaultSource: 'mechanical',
+      items: [
+        { text: 'S2: 学习状态报告未写（budget）', source: 'mechanical', origin: 'suggestion_deferred' },
+      ],
     });
     const fakeAi = {
       chat: async () => markdown,
@@ -264,6 +312,7 @@ describe('buildEvolutionDiary', () => {
       intelResult,
       execResult,
       verification,
+      goalsCalibrateResult: { status: 'applied', mode: 'patch' },
       reportPath: null,
     });
 
@@ -272,10 +321,17 @@ describe('buildEvolutionDiary', () => {
       join(runtime.runtimeRoot, 'data', 'evolution', 'agent_loop_carryover.json'),
       'utf-8',
     ));
+    expect(carryover.schema_version).toBe(2);
+    expect(carryover.step_status_snapshot?.goals_calibrate).toBe('applied(patch)');
     expect(carryover.items).toEqual([
-      '模拟方差需要多次复跑',
-      '信念更新应消化本轮 receipt',
-      '过期的「凭据待执行」已完成，不再携带',
+      {
+        text: 'S2: 学习状态报告未写（budget）',
+        source: 'mechanical',
+        origin: 'suggestion_deferred',
+      },
+      { text: '模拟方差需要多次复跑', source: 'diary' },
+      { text: '信念更新应消化本轮 receipt', source: 'diary' },
+      { text: '过期的「凭据待执行」已完成，不再携带', source: 'diary' },
     ]);
   });
 

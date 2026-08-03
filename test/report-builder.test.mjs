@@ -25,7 +25,9 @@ import {
   summarizeEvidenceIndexItem,
   buildMinimalSafeAdmission,
   detectLanguage,
+  extractDiaryTldr,
   extractTldr,
+  truncateAtSentence,
   gatherEvidence,
   gatherReportContext,
   readReportBuilderConfig,
@@ -228,6 +230,93 @@ describe('extractTldr (best-effort)', () => {
   });
   it('returns empty when no content', () => {
     expect(extractTldr('')).toBe('');
+  });
+  it('truncates at sentence boundary instead of mid-sentence', () => {
+    const sentence = '这是第一句完整的结论。';
+    const long = `${sentence}${sentence}${sentence}${sentence}${sentence}${sentence}${sentence}${sentence}${sentence}${sentence}${sentence}${sentence}`;
+    const md = `# Report\n\n## TL;DR\n${long}\n\n## Other\nStuff`;
+    const tldr = extractTldr(md);
+    expect(tldr.length).toBeLessThanOrEqual(400);
+    expect(tldr.endsWith('。')).toBe(true);
+    expect(tldr.includes('这是第一句完整的结论')).toBe(true);
+  });
+
+  it('does not treat numbered-list markers as sentence boundaries', () => {
+    const text = [
+      '这是一个只读学习期的守护轮。',
+      '实际执行了 3 个动作（见 exec_journal）：',
+      '1. **agentank_sync_context**（机械守卫）：sync 成功，无泄露信号。semantic verification 判为 improved（high confidence）。',
+      '2. **agent_run**（机械记忆审计 guard）：completed，确认 typed_evidence_refs=37。',
+      '3. **agent_run**（综合只读守护轮）：partial，分页仍 502。',
+    ].join(' ');
+    const truncated = truncateAtSentence(text, 400);
+    expect(truncated.endsWith('2.')).toBe(false);
+    expect(/\d+\.\s*$/.test(truncated)).toBe(false);
+    expect(truncated).toContain('high confidence');
+    expect(truncated.endsWith('。')).toBe(true);
+  });
+
+  it('does not treat version-like digits before period as English sentence ends', () => {
+    const text = 'Config uses v1.0 today and more text after the version marker continues without a clean early stop.';
+    const truncated = truncateAtSentence(text, 28);
+    expect(truncated.includes('v1.0')).toBe(true);
+    expect(truncated.endsWith('0.')).toBe(false);
+    expect(/\d+\.\s*$/.test(truncated)).toBe(false);
+  });
+});
+
+describe('extractDiaryTldr', () => {
+  it('prefers ## TL;DR when present', () => {
+    const md = [
+      '# 进化日记',
+      '',
+      '## TL;DR',
+      '本轮只读守护完成，分页仍 502。',
+      '',
+      '## 这一轮发生了什么',
+      '很长的正文不应优先。',
+    ].join('\n');
+    expect(extractDiaryTldr(md)).toBe('本轮只读守护完成，分页仍 502。');
+  });
+
+  it('uses 真正推进了什么 bullets when TL;DR missing', () => {
+    const md = [
+      '# 进化日记',
+      '',
+      '## 这一轮发生了什么',
+      '导语。',
+      '',
+      '## 真正推进了什么',
+      '',
+      '- 凭据 sync 成功',
+      '- gate.std.max 升为 validated',
+      '- 记忆审计结构达标',
+      '',
+      '## 没有推进的地方',
+      '- 分页仍失败',
+    ].join('\n');
+    const tldr = extractDiaryTldr(md);
+    expect(tldr).toContain('凭据 sync 成功');
+    expect(tldr).toContain('gate.std.max 升为 validated');
+    expect(tldr).not.toContain('分页仍失败');
+  });
+
+  it('stops at numbered lists in 这一轮发生了什么 prose fallback', () => {
+    const md = [
+      '# 进化日记：cycle-test',
+      '',
+      '## 这一轮发生了什么',
+      '',
+      '这是一个只读学习期的守护轮。决策阶段定下的计划是执行一次自主只读 agent_run，覆盖到期守护项。实际执行了 3 个动作（见 exec_journal）：',
+      '',
+      '1. **agentank_sync_context**（机械守卫）：sync 成功，刷新远端快照。',
+      '2. **agent_run**（机械记忆审计 guard）：completed。',
+      '3. **agent_run**（综合只读守护轮）：partial。',
+    ].join('\n');
+    const tldr = extractDiaryTldr(md);
+    expect(tldr).toContain('只读学习期的守护轮');
+    expect(tldr).not.toMatch(/\d+\.\s*$/);
+    expect(tldr).not.toContain('agentank_sync_context');
   });
 });
 

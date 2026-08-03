@@ -50,6 +50,14 @@ import { repairReportIfNeeded } from '../intelligence/report-repair.mjs';
 import { markStepStatus, writeStepArtifact } from '../cli/utils/cycle-state.mjs';
 import { loadCycleStepContext, loadVerifyReportForCycle } from '../cli/utils/cycle-checkpoints.mjs';
 import { extractMarkdownSection } from '../cli/utils/markdown-sections.mjs';
+import {
+  buildStepStatusSnapshot,
+  formatCarryover,
+  mergeDiaryCarryover,
+  readCarryoverDocument,
+  readCarryoverItems,
+  writeCarryoverItems,
+} from './carryover.mjs';
 import { buildInvestigationTools } from './agent-loop/tool-registry.mjs';
 import { runInvestigationLoop } from './agent-loop/loop-runner.mjs';
 import { runMechanicalGuards } from './agent-loop/guard-runner.mjs';
@@ -72,34 +80,23 @@ import {
   spliceHostSeen,
   spliceAgentLoopSeen,
 } from '../intelligence/host-seen.mjs';
+import {
+  extractReportSuggestions,
+  reconcileSuggestionCoverage,
+} from '../intelligence/report-suggestions.mjs';
 
-export { assembleAgentLoopHostSeenBody, assembleHostSeenBody, spliceAgentLoopSeen, spliceHostSeen };
-
-function carryoverPath(runtimeRoot) {
-  return join(runtimeRoot, 'data', 'evolution', 'agent_loop_carryover.json');
-}
-
-function readCarryoverItems(runtimeRoot) {
-  const path = carryoverPath(runtimeRoot);
-  if (!existsSync(path)) return [];
-  try {
-    const raw = JSON.parse(readFileSync(path, 'utf-8'));
-    return Array.isArray(raw?.items) ? raw.items.map(String) : [];
-  } catch {
-    return [];
-  }
-}
-
-export function writeCarryoverItems(runtimeRoot, { cycleId, items = [] } = {}) {
-  const path = carryoverPath(runtimeRoot);
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify({
-    schema_version: 1,
-    cycle_id: cycleId || null,
-    created_at: new Date().toISOString(),
-    items: Array.isArray(items) ? items.map(String) : [],
-  }, null, 2), 'utf-8');
-}
+export {
+  assembleAgentLoopHostSeenBody,
+  assembleHostSeenBody,
+  spliceAgentLoopSeen,
+  spliceHostSeen,
+  formatCarryover,
+  readCarryoverDocument,
+  readCarryoverItems,
+  writeCarryoverItems,
+  buildStepStatusSnapshot,
+  mergeDiaryCarryover,
+};
 
 export function formatCarryoverSuggestion(suggestion) {
   if (typeof suggestion === 'string') return suggestion.trim();
@@ -110,7 +107,7 @@ export function formatCarryoverSuggestion(suggestion) {
   return text || reason;
 }
 
-/** Extract bullet items from diary "next cycle" section for carryover overwrite. */
+/** Extract bullet items from diary "next cycle" section for carryover merge. */
 export function extractCarryoverFromDiaryMarkdown(markdown, { limit = 10 } = {}) {
   const body = extractMarkdownSection(markdown, '下轮应该注意什么')
     || extractMarkdownSection(markdown, 'What the next cycle should remember')
@@ -315,7 +312,7 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
   if (autoArchive !== '0' && String(autoArchive).toLowerCase() !== 'false') {
     try {
       const archived = decisionQueue.archiveDecisions?.({
-        statuses: ['completed', 'expired'],
+        statuses: ['completed', 'expired', 'failed'],
         dryRun: false,
       });
       if (archived?.archived?.length) {
@@ -349,7 +346,7 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
   };
   loopCtx.executed = loopCtx.queued;
 
-  const carryoverItems = readCarryoverItems(runtime.runtimeRoot);
+  const carryoverDoc = readCarryoverDocument(runtime.runtimeRoot);
   const tools = buildInvestigationTools(loopCtx);
   // Snapshot once for this intel step so investigate↔report share one clock field;
   // get_current_time tool may refresh later if the model asks.
@@ -370,7 +367,7 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
     intelligenceContext,
     reportContext: prepared.reportContext,
     mechanicalSeen,
-    carryover: carryoverItems,
+    carryover: carryoverDoc,
   });
 
   const investigatePromptCache = buildPromptCacheMetadata({
@@ -611,6 +608,7 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
   });
 
   // --- Phase: classic Analyze+Decide ---
+  const reportSuggestions = extractReportSuggestions(reportMarkdown);
   const decidePromptParts = buildDecideUserPromptParts({
     goalsText,
     rules,
@@ -622,6 +620,8 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
     actionRegistry: cfg.actionRegistry,
     includeMachineContext: true,
     observationReportFraming: 'host_assembled',
+    reportSuggestions,
+    language,
   });
   const decideMessages = [
     ...reportMessages,
@@ -729,20 +729,54 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
 
   const queuedActions = queuedResult.actions;
   const queuedIds = queuedResult.decisions_queued;
+  const suggestionCoverage = reconcileSuggestionCoverage({
+    suggestions: reportSuggestions,
+    analysis,
+    queuedActions,
+  });
+  if (suggestionCoverage.summary.unaddressed > 0 || suggestionCoverage.warnings.length) {
+    store.recordEvolutionEvent({
+      type: 'decide_coverage_gap',
+      status: suggestionCoverage.summary.unaddressed > 0 ? 'gap' : 'warning',
+      cycle_id: resolvedCycleId,
+      subject: runtime.subject,
+      unaddressed: suggestionCoverage.summary.unaddressed,
+      summary: suggestionCoverage.summary,
+      warnings: suggestionCoverage.warnings,
+    });
+  }
   const finishCarryover = [
-    ...(Array.isArray(investigation.open_gaps) ? investigation.open_gaps.map(String) : []),
+    ...(Array.isArray(investigation.open_gaps)
+      ? investigation.open_gaps.map((gap) => ({
+        text: String(gap),
+        source: 'mechanical',
+        origin: 'open_gap',
+      }))
+      : []),
     ...(Array.isArray(analysis?.deferred)
-      ? analysis.deferred.map((d) => (typeof d === 'string' ? d : `${d.action || 'deferred'}: ${d.reason || d.description || ''}`.trim()))
+      ? analysis.deferred.map((d) => ({
+        text: typeof d === 'string'
+          ? d
+          : `${d.action || 'deferred'}: ${d.reason || d.description || ''}`.trim(),
+        source: 'mechanical',
+        origin: 'decide_deferred',
+      }))
       : []),
     ...(Array.isArray(analysis?.goal_suggestions)
-      ? analysis.goal_suggestions.map((s) => formatCarryoverSuggestion(s)).slice(0, 5)
+      ? analysis.goal_suggestions.map((s) => ({
+        text: formatCarryoverSuggestion(s),
+        source: 'mechanical',
+        origin: 'goal_suggestion',
+      })).slice(0, 5)
       : []),
-  ].filter(Boolean).slice(0, 10);
+    ...suggestionCoverage.carryoverItems,
+  ].filter((item) => item && String(item.text || '').trim()).slice(0, 12);
 
   try {
     writeCarryoverItems(runtime.runtimeRoot, {
       cycleId: resolvedCycleId,
       items: finishCarryover,
+      defaultSource: 'mechanical',
     });
   } catch (e) {
     logger?.warning?.(`[agent_loop] failed to write carryover: ${e?.message || e}`);
@@ -863,6 +897,11 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
     decisions_queued: queuedIds,
     decisions_skipped: queuedResult.decisions_skipped,
     analysis,
+    suggestion_coverage: {
+      summary: suggestionCoverage.summary,
+      items: suggestionCoverage.items,
+      warnings: suggestionCoverage.warnings,
+    },
     report: {
       mdPath: persistedReport.mdPath,
       source: persistedReport.source,
@@ -894,6 +933,11 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
       cycle_id: resolvedCycleId,
       success: true,
       decisions_queued: queuedIds.length,
+      suggestion_coverage: {
+        summary: suggestionCoverage.summary,
+        items: suggestionCoverage.items,
+        warnings: suggestionCoverage.warnings,
+      },
       report: {
         mdPath: persistedReport.mdPath,
         source: persistedReport.source,
@@ -915,6 +959,11 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
       conversation_context_path: conversationPath,
       turns_path: turnsPath,
       carryover: finishCarryover,
+      suggestion_coverage: {
+        summary: suggestionCoverage.summary,
+        items: suggestionCoverage.items,
+        warnings: suggestionCoverage.warnings,
+      },
       phases: {
         investigate: {
           turns: investigateResult.turns,
@@ -1378,19 +1427,31 @@ export async function runDiaryStep(ctx, {
       reportPath: intelResult.report?.mdPath,
       verifyReportPath: reportPath,
       logger: cfg.host.logger,
-      carryoverItems: readCarryoverItems(runtime.runtimeRoot),
+      carryoverItems: readCarryoverDocument(runtime.runtimeRoot).items,
     });
-    // Diary is the only LLM that saw the full cycle; let it finalize carryover for next loop.
+    // Diary finalizes narrative carryover; host preserves mechanical items + writes step snapshot.
     try {
       const diaryMarkdown = diary?.markdown
         ?? (diary?.mdPath && existsSync(diary.mdPath) ? readFileSync(diary.mdPath, 'utf-8') : '');
-      const carryoverItems = extractCarryoverFromDiaryMarkdown(diaryMarkdown);
-      if (carryoverItems.length) {
-        writeCarryoverItems(runtime.runtimeRoot, {
-          cycleId: execResult?.cycle_id || intelResult?.cycle_id,
-          items: carryoverItems,
-        });
-      }
+      const diaryBullets = extractCarryoverFromDiaryMarkdown(diaryMarkdown);
+      const existing = readCarryoverDocument(runtime.runtimeRoot);
+      const stepStatusSnapshot = buildStepStatusSnapshot({
+        execResult,
+        verification,
+        beliefUpdateResult,
+        goalsAssessResult,
+        goalsCalibrateResult,
+      });
+      const merged = mergeDiaryCarryover({
+        existingItems: existing.items,
+        diaryBullets,
+        stepStatusSnapshot,
+      });
+      writeCarryoverItems(runtime.runtimeRoot, {
+        cycleId: execResult?.cycle_id || intelResult?.cycle_id,
+        items: merged.items,
+        step_status_snapshot: merged.step_status_snapshot,
+      });
     } catch (carryErr) {
       cfg.host?.logger?.warning?.(
         `[diary] failed to finalize carryover from diary: ${carryErr?.message || carryErr}`,

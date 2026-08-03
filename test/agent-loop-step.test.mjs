@@ -47,6 +47,9 @@ const MOCK_DECIDE = JSON.stringify({
   deferred: [{ action: 'follow up on publish candidate-demo', reason: 'not this cycle' }],
   risk_mitigation: [],
   goal_suggestions: [],
+  suggestion_coverage: {
+    S1: { disposition: 'rejected', reason: 'mock smoke keeps agent_loop by default' },
+  },
 });
 
 function mockCanned() {
@@ -226,7 +229,9 @@ describe('runAgentLoopStep (report-centric)', () => {
 
     const carryoverPath = join(runtime.runtimeRoot, 'data', 'evolution', 'agent_loop_carryover.json');
     const carryover = JSON.parse(readFileSync(carryoverPath, 'utf-8'));
-    expect(carryover.items.some((item) => String(item).includes('publish candidate-demo'))).toBe(true);
+    expect(carryover.schema_version).toBe(2);
+    expect(carryover.items.some((item) => String(item?.text ?? item).includes('publish candidate-demo'))).toBe(true);
+    expect(carryover.items.every((item) => item?.source === 'mechanical' || typeof item === 'string')).toBe(true);
   });
 
   it('clears carryover when decide/investigation leave no open items', async () => {
@@ -259,6 +264,9 @@ describe('runAgentLoopStep (report-centric)', () => {
             actions: [],
             deferred: [],
             goal_coverage: { covered: [], not_covered: {} },
+            suggestion_coverage: {
+              S1: { disposition: 'rejected', reason: 'not needed this cycle' },
+            },
           }),
         },
         { match: /情报报告任务|Intelligence Report Task/i, response: MOCK_REPORT },
@@ -268,6 +276,7 @@ describe('runAgentLoopStep (report-centric)', () => {
     mkdirSync(join(runtime.runtimeRoot, 'data', 'evolution', 'cycle-state'), { recursive: true });
     await runAgentLoopStep(ctx, { cycleId: `${cycleId}-clear`, recordState });
     const carryover = JSON.parse(readFileSync(carryoverPath, 'utf-8'));
+    expect(carryover.schema_version).toBe(2);
     expect(carryover.items).toEqual([]);
   });
 
@@ -319,7 +328,7 @@ describe('runAgentLoopStep (report-centric)', () => {
         'agent_loop.json',
       );
       const loopPayload = JSON.parse(readFileSync(loopCp, 'utf-8')).payload;
-      expect(loopPayload.carryover.some((item) => String(item).includes('JEA_EXEC_LIMIT'))).toBe(true);
+      expect(loopPayload.carryover.some((item) => String(item?.text ?? item).includes('JEA_EXEC_LIMIT'))).toBe(true);
       expect(existsSync(join(
         projectRoot,
         'runtime',

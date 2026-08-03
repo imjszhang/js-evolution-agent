@@ -176,6 +176,15 @@ export function createAgentRunObserver(ctx, { provider }) {
       this.buffer?.flushAssistant('tool_started');
       const key = this.toolKey(callId, name);
       if (openTools.has(key)) return key;
+      // Cursor SDK may emit the same tool via assistant_block and on_delta/sdk_message.
+      // If an open entry already exists for this name under a different source, skip duplicate.
+      if (name) {
+        for (const [existingKey, meta] of openTools.entries()) {
+          if (meta?.name === name && meta?.source && meta.source !== source) {
+            return existingKey;
+          }
+        }
+      }
       openTools.set(key, { name, started_at: Date.now(), source });
       toolStartTimes.set(key, Date.now());
       this.emit('tool_started', {
@@ -188,7 +197,14 @@ export function createAgentRunObserver(ctx, { provider }) {
     },
 
     markToolFinished(callId, name, status, resultSummary) {
-      const key = callId ? String(callId) : [...openTools.keys()].find((k) => openTools.get(k)?.name === name);
+      let key = callId ? String(callId) : null;
+      if (key && !openTools.has(key)) {
+        // callId from finish event may not match start key; fall back by name.
+        key = null;
+      }
+      if (!key) {
+        key = [...openTools.keys()].find((k) => openTools.get(k)?.name === name) ?? null;
+      }
       const startedAt = key ? toolStartTimes.get(key) : null;
       const durationMs = startedAt ? Date.now() - startedAt : null;
       if (key) {

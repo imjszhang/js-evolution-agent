@@ -1,4 +1,5 @@
 import { MACHINE_CONTEXT_IDS } from '../intelligence/machine-context-refs.mjs';
+import { formatReportSuggestionsForPrompt } from '../intelligence/report-suggestions.mjs';
 
 function clip(value, max = 120000) {
   const text = String(value ?? '');
@@ -409,7 +410,16 @@ function buildDecideDynamicPayload({
   reportContext = null,
   includeMachineContext = true,
   observationReportFraming = 'model_lead',
+  reportSuggestionsText = '',
 } = {}) {
+  const suggestionsBlock = reportSuggestionsText
+    ? `
+
+## Report suggestions (numbered)
+
+${reportSuggestionsText}`
+    : '';
+
   const base = `## Goals
 
 ${goalsText || '(none)'}
@@ -438,7 +448,7 @@ ${intelligenceContext || '(none)'}
 ${briefJson(reportContext)}
 \`\`\`
 
-${observationClaimsSection(observationReport, observationReportFraming)}`;
+${observationClaimsSection(observationReport, observationReportFraming)}${suggestionsBlock}`;
 
   if (!includeMachineContext) return base;
   return `${base}
@@ -461,8 +471,24 @@ export function buildDecideUserPromptParts({
   actionRegistry = null,
   includeMachineContext = true,
   observationReportFraming = 'model_lead',
+  reportSuggestions = [],
+  language = 'zh',
 } = {}) {
   const actions = formatActions(actionRegistry);
+  const reportSuggestionsText = Array.isArray(reportSuggestions) && reportSuggestions.length
+    ? formatReportSuggestionsForPrompt(reportSuggestions, language)
+    : '';
+  const suggestionCoverageRule = reportSuggestionsText
+    ? '- 若 Dynamic Payload 含「Report suggestions (numbered)」，必须输出 `suggestion_coverage`：对每个编号 S1..Sn 标明 disposition（`adopted` / `deferred` / `rejected`）。`adopted` 须带 0-based `action_index` 指向本批 actions；`deferred`/`rejected` 须带 brief reason。预算不够时可 deferred，但不得静默忽略。\n'
+    : '';
+  const suggestionCoverageSchema = reportSuggestionsText
+    ? `,
+  "suggestion_coverage": {
+    "S1": { "disposition": "adopted", "action_index": 0 },
+    "S2": { "disposition": "deferred", "reason": "budget" },
+    "S3": { "disposition": "rejected", "reason": "already covered by Seen" }
+  }`
+    : '';
   const stablePrefix = `# Strategic Analysis & Decision
 
 基于以上完整对话，尤其是你刚刚生成的情报报告，请输出本轮 Analyze+Decide 的严格 JSON。
@@ -503,7 +529,7 @@ export function buildDecideUserPromptParts({
 - 不要为了覆盖而制造行动；证据不足时可以把 decision 设为 "defer" 或让 actions 为空数组。
 - \`goal_coverage.not_covered\` 必须是 JSON object，不能写成裸字符串列表；每一项必须是 \`"goal_id_or_label": "reason"\`。
 - \`actions\` 数组按期望执行顺序输出：产出信息的调查/探针类在前，依赖其结论的行动类在后。Phase 2 同批 claim 按该顺序串行执行；后序 action 的 prompt 会看到前序结果摘要（Cycle Journal / Earlier actions this cycle），因此不要把依赖结论的动作排在调查之前。
-
+${suggestionCoverageRule}
 ## Available Action Types
 
 ${actions}
@@ -587,7 +613,7 @@ Respond with exactly this JSON shape:
   "goal_suggestions": [
     { "suggestion": "...", "reason": "..." }
   ],
-  "confidence_score": 0.8
+  "confidence_score": 0.8${suggestionCoverageSchema}
 }`;
   const dynamicPayload = buildDecideDynamicPayload({
     goalsText,
@@ -599,6 +625,7 @@ Respond with exactly this JSON shape:
     reportContext,
     includeMachineContext,
     observationReportFraming,
+    reportSuggestionsText,
   });
   return {
     stablePrefix,
@@ -622,6 +649,8 @@ export function buildDecideUserPrompt({
   actionRegistry = null,
   includeMachineContext = true,
   observationReportFraming = 'model_lead',
+  reportSuggestions = [],
+  language = 'zh',
 } = {}) {
   return buildDecideUserPromptParts({
     goalsText,
@@ -634,175 +663,7 @@ export function buildDecideUserPrompt({
     actionRegistry,
     includeMachineContext,
     observationReportFraming,
+    reportSuggestions,
+    language,
   }).content;
-  const actions = actionRegistry && typeof actionRegistry.toPromptSection === 'function'
-    ? actionRegistry.toPromptSection()
-    : '(no registered actions)';
-
-  return `# Strategic Analysis & Decision
-
-基于以上完整对话，尤其是你刚刚生成的情报报告，请输出本轮 Analyze+Decide 的严格 JSON。
-
-重要约束：
-- 只能输出 JSON 对象，不要 Markdown，不要代码围栏。
-- 报告中的判断可以作为分析线索，但 run 必须能追溯到机器上下文、观察报告、目标或历史证据。
-- 必须优先使用 Temporal Decision Brief 中的 seen；行动前提只能来自 seen 或明确引用 seen 的 inferred。
-- remembered 只能作为线索；do_not_treat_as_seen 不得作为行动前提，除非动作本身是为了重新验证它。
-- 多源冲突时，Seen 覆盖 Remembered；Inferred 必须说明 evidence_refs 和反证条件。
-- 默认输出 \`type: "agent_run"\`，并在 \`params.run_spec\` 中描述一次自主 agent 运行。不要再把主体业务步骤拆成 \`sync/generate/simulate/evaluate/publish\` 之类的 action 菜单。
-- Action taxonomy（Phase 2 选择规则）：
-  - 主执行：\`agent_run\` — 调查、读文件、生成候选、模拟、代码修改、远端发布准备等所有“做事”任务。
-  - 记录型：\`record_observation\`、\`propose_probe\`、\`write_retrospective\`、\`request_core_review\` — 只落已有结论/提案/审批请求，不用于调查或读文件。
-  - 系统/兼容：\`lane_status\`、\`lane_observe\`、\`lane_verify\`、\`github_open_lane_pr\`、\`run_probe\`、\`agent_execute\`、\`core_apply\` — 仅在机械 lane 操作、旧队列兼容或 core 层审批场景使用；若选用其中任一，必须在 rationale 说明为何 \`agent_run\` 或记录型动作不合适。
-- \`params.run_spec.primary_cwd_kind\` 是一等字段。优先使用 Machine Context 中 \`subject_resources\` 声明的 resource id / root scope / alias；常见值：主体日记/records/daemon/goals/intelligence 使用 \`subject_runtime\`；JEA 源码/policies/journal 使用 \`source_root\`；主体外部项目使用 subject policy 中声明的自定义 scope 或 \`target_repo\`。
-- 对配置了 Subject Repo Lane 的外部目标项目：\`read_only\` 调查可继续声明 \`target_repo\` 或外部 scope；\`workspace_write\` / \`remote_write_review\` 写入型 run 只需声明目标项目资源意图与权限 profile，宿主会在 Phase 2 自动从 subject lane 派生 \`jea/<subject>/work/*\` work 分支与 worktree（基于 lane checkout，ref 不嵌套在 lane 路径下）并注入 \`lane_worktree\` 执行目录，不要自行指定主目录 checkout、lane 或 work 分支名。
-- 每次 run 只能有一个 primary cwd。需要参考其他 root 时，使用 \`additional_directory_kinds\` 或把摘要写入 context；不要让一次 run 无差别跨多个项目根写入。
-- \`permission_profile\` 必须是 \`read_only\`、\`workspace_write\` 或 \`remote_write_review\` 之一。只读调查用 \`read_only\`；本地候选/模拟/沙盒改动用 \`workspace_write\`；真实远端变更或发布准备用 \`remote_write_review\`。
-- \`read_only\` 只能读取并在 receipt/evidence 中返回结果，不得要求写入、落盘、保存或持久化任何文件。若需要写脱敏摘要或缓存，必须单独生成 \`workspace_write\` action，并明确允许写入路径。
-- 若必须使用旧 action type，只能用于兼容已有队列或明确的宿主记录语义，并在 rationale 说明为什么 \`agent_run\` 不合适。
-- \`agent_execute\` 只允许作为旧兼容兜底动作；新决策不要优先使用它。
-- 不要在 \`params.run_spec\` 中设置 \`provider\`。agent provider 是宿主执行配置，由 \`JEA_AGENT_PROVIDER\` 或人工/API action override 决定，不是模型决策内容。
-- 当 run 涉及本地文件或目录时，文件路径应相对 primary cwd 描述，不要混用多个项目根的绝对路径。执行层会从 run_spec 解析 cwd 并阻断 root_mismatch。
-- 常见资源归属：主体日记/records/daemon/goals/intelligence 使用 primary_cwd_kind=subject_runtime；JEA 源码/policies/journal 使用 primary_cwd_kind=source_root；外部项目只读调查使用 subject policy 自定义 scope 或 target_repo；外部项目写入型 run 由宿主自动转入 lane-derived worktree（primary_cwd_kind 最终为 lane_worktree）。
-- 外部工具能力归属：凭据存在性、远端同步、发布、挑战、候选生成/模拟/评分等事实，应使用对应外部项目 scope（例如 subject policy 中声明的 \`agentank_evolver\`）或 configured external action；不要用 \`subject_runtime\` 的 \`process.env\` 结果判断外部工具凭据是否全局缺失。
-- 对 ENOENT、目录不存在、blocked 等缺失证据，只能表述为「在 executionRoot=X 下 path=Y 不存在」；除非该 root 是该 resource_kind 的权威 root，否则不得升级为「模块缺失」「机制未实现」「写入冻结」。
-- Operator Intent Briefs 是单轮人工意图，不是事实证据。可以据此优先调度核实动作；若不采纳 brief，应在 deferred 中说明原因。
-- \`write_retrospective\` 只用于记录已经掌握的结构化复盘结论（summary/outcome/lessons/next_actions）；需要读取文件或补证据时，优先调度 \`agent_run\`。
-- Belief constraints（Phase 2 信念绑定）：
-  - 每个 \`agent_run\` 必须在 \`params.run_spec.context\` 中声明 \`belief_id\` 或 \`belief_relation: "create_belief"\`。
-  - \`belief_relation\` 只能是 \`test_belief\`、\`strengthen_belief\`、\`refute_belief\`、\`create_belief\`、\`recover_blocker\` 之一。
-  - 行动前提优先来自 Temporal Decision Brief 的 Seen 与 decision_constraints.current_beliefs（active / validated）。
-  - \`recently_refuted\` 信念不得无新证据复活；若要 reopen，必须明确 \`belief_relation\` 与 \`expected_belief_update\`。
-  - 不要只因为 report 建议而行动；必须说明 action 如何验证/改变 belief 或推进 goal。
-- 涉及权限、安全探针、越界路径或敏感目标的 run，必须通过 \`permission_profile\`、primary cwd、additional directories 和 expected_output 约束，不要只靠自然语言承诺。
-- 每个 action 必须有 serves_goal，并尽量使用目标树中的 goal id；对 \`agent_run\`，serves_goal 描述本次 run 要推进的目标。
-- 不要为了覆盖而制造行动；证据不足时可以把 decision 设为 "defer" 或让 actions 为空数组。
-- \`goal_coverage.not_covered\` 必须是 JSON object，不能写成裸字符串列表；每一项必须是 \`"goal_id_or_label": "reason"\`。
-- \`actions\` 数组按期望执行顺序输出：产出信息的调查/探针类在前，依赖其结论的行动类在后。Phase 2 同批 claim 按该顺序串行执行；后序 action 的 prompt 会看到前序结果摘要（Cycle Journal / Earlier actions this cycle），因此不要把依赖结论的动作排在调查之前。
-
-## Available Action Types
-
-${actions}
-
-## Goals
-
-${goalsText || '(none)'}
-
-## Rules
-
-${rules || '(none)'}
-
-## Operator Guidance
-
-${humanGuidance || '(none)'}
-
-## Operator Intent Briefs
-
-One-cycle operator intent. It may prioritize verification actions, but its claims must be verified before being treated as facts:
-
-${operatorBriefs || '(none)'}
-
-## Intelligence Summary
-
-${intelligenceContext || '(none)'}
-
-## Temporal Decision Brief
-
-\`\`\`json
-${briefJson(reportContext)}
-\`\`\`
-
-## Model Observation Claims
-
-The following observation is Remembered lead material, not authority. If it conflicts with Seen or Do Not Treat As Seen, use it only as an unverified lead:
-
-${observationReport || '(none)'}
-
-## Machine Context
-
-\`\`\`json
-${clip(JSON.stringify(reportContext || {}, null, 2), 500000)}
-\`\`\`
-
-Respond with exactly this JSON shape:
-{
-  "analysis": {
-    "key_patterns": ["..."],
-    "cyber_taoist_analysis": {
-      "evolutionary_phase": "...",
-      "law_transaction_niche_signals": ["..."],
-      "fractal_keep_break_probe_boundaries": ["..."],
-      "standing_memory_delta": "..."
-    },
-    "root_causes": {
-      "high_performers_why": "...",
-      "low_performers_why": "...",
-      "failures_why": "..."
-    },
-    "opportunities": [
-      { "opportunity": "...", "potential_impact": "high/medium/low", "effort": "high/medium/low" }
-    ],
-    "goal_assessment": {
-      "<goal_id>": {
-        "status": "...",
-        "trend": "improving/stable/declining",
-        "observed_signals": ["..."],
-        "gap": "..."
-      }
-    }
-  },
-  "decision": "execute",
-  "rationale": "...",
-  "actions": [
-    {
-      "type": "agent_run",
-      "description": "...",
-      "serves_goal": "<goal_id>",
-      "goal_rationale": "...",
-      "priority": "high/medium/low",
-      "update_issue": null,
-      "params": {
-        "run_spec": {
-          "primary_cwd_kind": "subject_runtime | source_root | <subject_policy_external_scope>",
-          "additional_directory_kinds": [],
-          "permission_profile": "read_only | workspace_write | remote_write_review",
-          "intent": "...",
-          "context": {
-            "why_now": "...",
-            "relevant_evidence": ["..."],
-            "constraints": ["..."],
-            "belief_id": "belief-example",
-            "belief_relation": "test_belief",
-            "expected_belief_update": "..."
-          },
-          "expected_output": [
-            "strict JSON receipt",
-            "summary of what was done",
-            "evidence read or produced",
-            "files/resources touched",
-            "verification result",
-            "next recommendation"
-          ]
-        }
-      },
-      "expected_impact": "...",
-      "risk": "..."
-    }
-  ],
-  "goal_coverage": {
-    "covered": ["<goal_id>"],
-    "not_covered": {
-      "<goal_id_or_label>": "reason",
-      "example-uncovered-goal": "not enough evidence yet"
-    }
-  },
-  "deferred": [
-    { "action": "...", "reason": "...", "revisit_after": "..." }
-  ],
-  "risk_mitigation": ["..."],
-  "goal_suggestions": [
-    { "suggestion": "...", "reason": "..." }
-  ],
-  "confidence_score": 0.8
-}`;
 }

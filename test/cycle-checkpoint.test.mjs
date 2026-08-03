@@ -53,6 +53,11 @@ describe('cycle step checkpoints', () => {
       cycle_id: cycleId,
       success: true,
       decisions_queued: 1,
+      suggestion_coverage: {
+        summary: { total: 1, adopted: 0, deferred: 1, rejected: 0, unaddressed: 1 },
+        items: [{ id: 'S1', disposition: 'deferred', reason: 'unaddressed' }],
+        warnings: [],
+      },
       report: { mdPath: '/tmp/report.md', source: 'mock', indexRecord: { language: 'en' } },
     });
     writeStepArtifact(root, 'alpha', cycleId, 'exec', {
@@ -75,6 +80,7 @@ describe('cycle step checkpoints', () => {
     const runtimeRoot = runtimeForSubject(root, 'alpha').runtimeRoot;
     const ctx = loadCycleStepContext(root, 'alpha', cycleId, runtimeRoot);
     expect(ctx.intelResult.cycle_id).toBe(cycleId);
+    expect(ctx.intelResult.suggestion_coverage?.summary?.unaddressed).toBe(1);
     expect(ctx.execResult.executed).toHaveLength(1);
     expect(ctx.execResult.journal?.entries).toHaveLength(1);
     expect(ctx.execResult.journal.entries[0].summary).toBe('sibling note');

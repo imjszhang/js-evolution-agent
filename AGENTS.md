@@ -119,7 +119,7 @@ Phase 1.5 intel report 持久化
 | `JEA_LOOP_TOOL_RESULT_MAX_CHARS` | `6000` | 回填模型的工具结果截断 |
 | `JEA_REPORT_REPAIR_MAX_ROUNDS` | `1` | 报告机械契约修复最大重问轮数（0 关闭，上限 2）；phases 与 agent_loop 共用 |
 | `JEA_EXEC_LIMIT` | `5` | Decide 批入队上限；超出进 deferred/carryover；Phase 2 exec 仍按该上限消费队列 |
-| `JEA_QUEUE_AUTO_ARCHIVE` | 开启 | `0`/`false` 关闭；agent_loop 开始前自动归档 completed/expired 决策 |
+| `JEA_QUEUE_AUTO_ARCHIVE` | 开启 | `0`/`false` 关闭；agent_loop 开始前自动归档 completed/expired/**failed** 决策 |
 
 查证工具（仅 investigation 阶段）：
 
@@ -146,7 +146,18 @@ Phase 1.5 intel report 持久化
 }
 ```
 
-Carryover：由查证 `open_gaps`、Decide `deferred` / goal suggestions 合并覆写 `data/evolution/agent_loop_carryover.json`；下一轮查证 initial prompt 的 `## Carryover from previous cycle` 注入（空数组也会写盘以清空过期项）。
+**Carryover（跨轮待续，schema v2）**：
+
+- **agent_loop step 末**：查证 `open_gaps`、Decide `deferred` / goal suggestions、以及 `suggestion_coverage` 中 deferred/unaddressed 建议，以 **mechanical** 项写入 `data/evolution/agent_loop_carryover.json`（覆写上轮条目——此时上轮已被本轮查证消费）。
+- **diary step 末**：**合并**而非整体覆写——保留 mechanical 项，追加 diary「下轮应该注意什么」叙事 bullets，并写入机械 `step_status_snapshot`（exec/verify/belief/goals_assess/goals_calibrate 最终状态）。
+- **下轮注入**：`## Carryover from previous cycle` 先渲染状态快照，再渲染带 `[mechanical/origin]` / `[diary]` 标签的条目；指令要求条目与快照或本轮 Machine Context 冲突时以后者为准。
+- 读侧兼容 v1 纯字符串 items（映射为 diary source）。空 mechanical + 空 diary 也会写盘以清空过期项。
+
+**Suggestion coverage（P3 软闸，仅 agent_loop）**：宿主从报告「下一轮建议」机械编号 S1..Sn；Decide JSON 应输出 `suggestion_coverage`（adopted/deferred/rejected）。缺表态由宿主补 `deferred: unaddressed` 进 mechanical carryover，并发 `decide_coverage_gap` 事件；不挡轮、不重问。diary 的 `phase1.suggestion_coverage` 供复盘对照。
+
+**Diary 时间线契约**：`phase1.timeline` 标明 Phase 1 叙事写于轮初（系统状态描述截至上轮末）；本轮 exec/verify/belief/assess/calibrate 必须以 phase2–phase4_5 checkpoint 为准，不得把 Phase 1 过期叙事抄进「没有推进」或 carryover。
+
+**Diary 摘要（tldr）**：checkpoint / viewer / inbox 用的 diary `tldr` 优先读 `## TL;DR`；否则机械从「真正推进了什么」bullets 或「这一轮发生了什么」首段散文提取；编号/bullet 列表不进入 tldr（避免截断停在 `2.`）。
 
 **Cycle Journal（轮内信息流）**：Phase 2 exec 串行执行多个 action 时，宿主维护本轮共享笔记，避免兄弟 `agent_run` 互相看不见。
 

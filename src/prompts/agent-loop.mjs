@@ -1,4 +1,7 @@
 import { MACHINE_CONTEXT_IDS } from '../intelligence/machine-context-refs.mjs';
+import { formatCarryover } from '../evolution/carryover.mjs';
+
+export { formatCarryover };
 
 function clip(value, max = 120000) {
   const text = String(value ?? '');
@@ -16,18 +19,6 @@ function formatAgentDocs(agentContextDocs = []) {
 
 function briefJson(reportContext) {
   return clip(JSON.stringify(reportContext?.temporal_decision_brief || {}, null, 2), 200000);
-}
-
-function formatCarryover(carryover = [], language = 'zh') {
-  const isEn = language === 'en';
-  const note = isEn
-    ? 'Unfinished items left by the previous agent_loop. Prefer them when still valid, but verify preconditions with readonly tools first.'
-    : '上轮 agent_loop 留下的待续事项。可优先处理，但必须先用只读工具核实其前提仍然成立。';
-  if (!Array.isArray(carryover) || !carryover.length) {
-    return `${note}\n\n(none)`;
-  }
-  const list = carryover.map((item, idx) => `${idx + 1}. ${item}`).join('\n');
-  return `${note}\n\n${list}`;
 }
 
 /**

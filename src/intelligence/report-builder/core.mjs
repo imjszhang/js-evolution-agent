@@ -435,15 +435,82 @@ export function assessGoals(goals, evidence) {
 }
 
 /**
- * Best-effort tldr extraction. Free-form reports may not have a TL;DR section
- * at all; in that case, take the first 2 non-empty content lines after the
- * top heading and clip.
+ * Truncate at a sentence boundary when possible; otherwise hard-cut with ellipsis.
+ * Never treat numbered-list markers (`1. `, `2. `) as English sentence ends.
+ */
+export function truncateAtSentence(text, maxChars = 400, minBoundary = 200) {
+  const s = String(text ?? '').trim();
+  if (s.length <= maxChars) return s;
+  const window = s.slice(0, maxChars);
+  let lastBoundary = -1;
+  for (let i = 0; i < window.length; i += 1) {
+    const ch = window[i];
+    if (ch === '。' || ch === '！' || ch === '？' || ch === '…' || ch === '!' || ch === '?') {
+      lastBoundary = i + 1;
+      continue;
+    }
+    if (ch !== '.') continue;
+    const prev = i > 0 ? window[i - 1] : '';
+    // Skip "1." / "2." list markers and digit-terminated versions like "v1.0 ".
+    if (/\d/.test(prev)) continue;
+    const after = window.slice(i + 1);
+    if (!after) {
+      lastBoundary = i + 1;
+      continue;
+    }
+    if (!/^\s/.test(after)) continue;
+    const rest = after.trimStart();
+    // Accept ". " only when end-of-window or next token starts with uppercase (English sentence).
+    if (!rest || /^[A-Z]/.test(rest)) {
+      lastBoundary = i + 1;
+    }
+  }
+  if (lastBoundary >= minBoundary) {
+    return window.slice(0, lastBoundary).trim();
+  }
+  // Hard cut: drop a trailing numbered-list fragment before ellipsis.
+  let hard = window.trimEnd().replace(/\s+\d+\.\s*$/, '').trimEnd();
+  return `${hard}…`;
+}
+
+function isMarkdownListLine(line) {
+  return /^\d+\.\s+/.test(line) || /^[-*]\s+/.test(line);
+}
+
+function firstProseParagraphFromBody(body) {
+  const prose = [];
+  for (const line of String(body || '').split('\n')) {
+    const t = line.trim();
+    if (!t) {
+      if (prose.length) break;
+      continue;
+    }
+    if (t.startsWith('#') || isMarkdownListLine(t)) break;
+    prose.push(t);
+  }
+  return prose.join(' ').trim();
+}
+
+function bulletSummaryFromBody(body, limit = 3) {
+  const bullets = [];
+  for (const line of String(body || '').split('\n')) {
+    const t = line.trim();
+    if (!isMarkdownListLine(t)) continue;
+    bullets.push(t.replace(/^[-*]\s+/, '').replace(/^\d+\.\s+/, '').trim());
+    if (bullets.length >= limit) break;
+  }
+  return bullets.filter(Boolean).join('；');
+}
+
+/**
+ * Best-effort tldr extraction for intel reports. Free-form reports may not have
+ * a TL;DR section; in that case, take the first content lines after the top heading.
  */
 export function extractTldr(md) {
   if (!md) return '';
   const m = md.match(/##\s*TL;?DR[^\n]*\n([\s\S]*?)(?=\n##\s|\n#\s|$)/i);
   if (m) {
-    return m[1].trim().split('\n').filter(Boolean).slice(0, 5).join(' ').slice(0, 400);
+    return truncateAtSentence(m[1].trim().split('\n').filter(Boolean).slice(0, 5).join(' '), 400);
   }
   const lines = md.split('\n');
   const collected = [];
@@ -459,7 +526,62 @@ export function extractTldr(md) {
     collected.push(t);
     if (collected.length >= 3) break;
   }
-  return collected.join(' ').slice(0, 400);
+  return truncateAtSentence(collected.join(' '), 400);
+}
+
+/**
+ * Diary-oriented tldr: prefer ## TL;DR, then "真正推进了什么" bullets,
+ * then first prose paragraph of "这一轮发生了什么" (stop before lists).
+ */
+export function extractDiaryTldr(md) {
+  if (!md) return '';
+
+  const tldrBody = extractMarkdownSection(md, 'TL;DR') || extractMarkdownSection(md, 'TLDR');
+  if (tldrBody) {
+    const proseLines = tldrBody
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line && !isMarkdownListLine(line) && !line.startsWith('#'));
+    const text = proseLines.length
+      ? proseLines.slice(0, 5).join(' ')
+      : tldrBody.split('\n').map((line) => line.trim()).filter(Boolean).slice(0, 3).join(' ');
+    return truncateAtSentence(text, 400);
+  }
+
+  const moved = extractMarkdownSection(md, '真正推进了什么')
+    || extractMarkdownSection(md, 'What actually moved');
+  if (moved) {
+    const fromBullets = bulletSummaryFromBody(moved, 3);
+    if (fromBullets) return truncateAtSentence(fromBullets, 400);
+    const prose = firstProseParagraphFromBody(moved);
+    if (prose) return truncateAtSentence(prose, 400);
+  }
+
+  const happened = extractMarkdownSection(md, '这一轮发生了什么')
+    || extractMarkdownSection(md, 'What happened this cycle');
+  if (happened) {
+    const prose = firstProseParagraphFromBody(happened);
+    if (prose) return truncateAtSentence(prose, 400);
+  }
+
+  const collected = [];
+  let pastTopHeading = false;
+  for (const ln of md.split('\n')) {
+    if (!pastTopHeading) {
+      if (ln.startsWith('# ')) pastTopHeading = true;
+      continue;
+    }
+    if (ln.startsWith('>') || ln.startsWith('#')) continue;
+    const t = ln.trim();
+    if (!t) {
+      if (collected.length) break;
+      continue;
+    }
+    if (isMarkdownListLine(t)) break;
+    collected.push(t);
+    if (collected.length >= 3) break;
+  }
+  return truncateAtSentence(collected.join(' '), 400);
 }
 
 function pickDoc(docs, idPrefix) {

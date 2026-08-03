@@ -5,7 +5,7 @@ import {
   buildPromptCacheMetadata,
   markPromptCacheInvariant,
 } from '../ai/prompt-cache-metadata.mjs';
-import { detectLanguage, extractTldr } from './report-builder.mjs';
+import { detectLanguage, extractDiaryTldr } from './report-builder.mjs';
 import { redactSecrets } from './redaction.mjs';
 import { resolveEvolutionDiaryWritePath } from './diary-paths.mjs';
 import { selectActiveOperatorFacts } from './operator-facts.mjs';
@@ -172,10 +172,22 @@ export function buildEvolutionDiaryContext({
       verify_report: verifyReportPath ?? null,
       phase1_conversation_context: intelResult?.conversation_context_path ?? null,
     },
-    // Mid-cycle carryover from agent_loop; diary may keep, rewrite, or drop items.
-    agent_loop_carryover: Array.isArray(carryoverItems) ? carryoverItems.map(String) : [],
+    // Mid-cycle carryover from agent_loop; diary may rewrite diary-source items only.
+    // Host preserves mechanical items and writes step_status_snapshot at diary finalize.
+    agent_loop_carryover: Array.isArray(carryoverItems)
+      ? carryoverItems.map((item) => (typeof item === 'string'
+        ? item
+        : {
+          text: item?.text ?? String(item),
+          source: item?.source ?? 'diary',
+          origin: item?.origin ?? null,
+        }))
+      : [],
     interpretation_anchors: gatherDiaryAnchors({ store, runtime }),
     phase1: {
+      // Phase 1 narrative is written at cycle start; system-state claims in the report
+      // (e.g. prior calibrate skipped) describe previous-cycle end, not this cycle's outcomes.
+      timeline: 'written_at_cycle_start_describes_previous_cycle_system_state',
       report_source: intelResult?.report?.source ?? null,
       report_tldr: intelResult?.report?.indexRecord?.tldr ?? null,
       decision: intelResult?.analysis?.decision ?? null,
@@ -191,6 +203,7 @@ export function buildEvolutionDiaryContext({
       })),
       decisions_queued: intelResult?.decisions_queued ?? [],
       decisions_skipped: intelResult?.decisions_skipped ?? [],
+      suggestion_coverage: intelResult?.suggestion_coverage ?? null,
       standing_memory_update: intelResult?.standing_memory_update ?? null,
     },
     phase2: {
@@ -311,15 +324,19 @@ export function buildEvolutionDiaryPrompt({
       '- Do not invent ids, files, tests, writes, success, or failure not present in the context.',
       '- Keep the diary scoped to the active subject runtime; never describe it as a `journal/` project update.',
       '- Prefer traceable facts such as cycle id, action type, report path, verification status, and receipt summaries.',
+      '- Timeline authority: statements about this cycle\'s exec/verify/belief/assess/calibrate status MUST use phase2–phase4_5 checkpoint fields. phase1.timeline marks Phase 1 narrative as written at cycle start (system-state claims there describe the previous cycle). If Phase 1 narrative conflicts with later checkpoints, explicitly say the Phase 1 claim is stale; never copy it into "What did not move" or carryover bullets.',
       '- When phase2.exec_journal is present, treat it as this cycle\'s action timeline. Use it to spot intra-cycle contradictions or duplicated work between sibling actions; do not invent journal lines.',
       '- If phase3.semantic is present, treat it as the latest interpretation of the executed receipt. Use it to correct stale report/diary inferences, but do not promote semantic summaries to Seen facts.',
       '- Explicitly record Phase 4 goal assessment and Phase 4.5 goal auto-calibration when present in Machine Context. Include status, rule_status (continue, learn, mutate, stop, or insufficient_evidence), confidence, and reason for Phase 4; include status, rule_status, mode (patch, patch_partial, or full_replace), calibrate_mode, reason, detail, applied_patches, children_ids_before/after, belief_retirements, next_goal_id, and written count for Phase 4.5. If calibration was skipped, state the skipped reason and detail instead of omitting it.',
       '- Explicitly record Phase 3.5 belief update when present in Machine Context. Include status, reason, updates_count, and which beliefs were strengthened, weakened, validated, refuted, created, or retired.',
+      '- When phase1.suggestion_coverage is present, use it when writing "What did not move": adopted/deferred/rejected/unaddressed counts and items are host-reconciled facts about which report suggestions were queued.',
       '- When interpreting metrics such as rank or score, follow interpretation_anchors.operator_established_facts. When judging progress vs no progress, use interpretation_anchors.active_goals or active_goals_flat good_signal / bad_signal. Do not infer metric direction from raw numeric delta alone (for example, a lower rank may be improvement). Execution and verification conclusions in phase2/phase3 still override anchors; anchors only interpret them.',
       '- Be readable and candid: say what moved, what did not move, and what the next cycle should remember.',
-      '- The section "What the next cycle should remember" must be a short bullet list (one item per line, starting with `- `, at most 10 items). The host overwrites next-cycle agent_loop carryover from those bullets; use this cycle\'s exec/verify/assess conclusions and Machine Context agent_loop_carryover to keep, rewrite, or drop stale items.',
+      '- Start with a short ## TL;DR (1–2 sentences, about ≤200 characters) covering this cycle\'s outcome and the main open gap. Do not write the TL;DR as a numbered or bullet list; put details in later sections.',
+      '- The section "What the next cycle should remember" must be a short bullet list (one item per line, starting with `- `, at most 10 items) of narrative memory only. Do not restate mechanical step statuses (the host writes step_status_snapshot and preserves mechanical carryover items automatically). Use this cycle\'s exec/verify/assess conclusions to rewrite or drop stale narrative items.',
       '',
       'Suggested sections:',
+      '- TL;DR',
       '- What happened this cycle',
       '- What actually moved',
       '- What did not move',
@@ -349,16 +366,20 @@ export function buildEvolutionDiaryPrompt({
     '- 不要编造上下文中不存在的 id、文件、测试、写入、成功或失败结论。',
     '- 只记录 active subject 的运行时进化，不要写成 `journal/` 项目开发日志。',
     '- 尽量引用可追溯事实，例如 cycle id、action type、报告路径、验证状态、receipt 摘要。',
+    '- 时间线权威：凡涉及本轮 exec/verify/belief/assess/calibrate 状态的陈述，必须以 phase2–phase4_5 checkpoint 字段为准。phase1.timeline 标明 Phase 1 叙事写于轮初（其中系统状态描述截至上轮末）。若 Phase 1 叙事与后续 checkpoint 冲突，须显式写「Phase 1 报告中的 X 描述已过时」，不得照抄进「没有推进的地方」或 carryover bullets。',
     '- 若 Machine Context 中存在 phase2.exec_journal，把它当作本轮行动时间线；用它发现同轮兄弟 action 之间的矛盾或重复劳动，不要编造 journal 行。',
     '- 如果 phase3.semantic 存在，它是本轮执行 receipt 的最新解释层结论。用它修正旧 report/diary 推断，但不要把 semantic summary 升级成 Seen 事实。',
     '- 如果 Machine Context 中存在 phase4 或 phase4_5，必须显式记录 Phase 4 目标评估与 Phase 4.5 自动校准结果。Phase 4 至少写出 status、rule_status（continue/learn/mutate/stop/insufficient_evidence）、confidence、reason；Phase 4.5 至少写出 status、rule_status、mode（patch、patch_partial 或 full_replace）、calibrate_mode、reason、detail、applied_patches、children_ids 前后变化、belief_retirements、next_goal_id、written。若校准被 skipped，也要写明 skipped reason 与 detail，不要省略。',
     '- 如果 Machine Context 中存在 phase3_5，必须显式记录 Phase 3.5 信念更新结果。至少写出 status、reason、updates_count，以及哪些 belief 被 strengthen/weaken/validate/refute/create/retire。',
+    '- 若存在 phase1.suggestion_coverage，写「没有推进的地方」时对照它：adopted/deferred/rejected/unaddressed 计数与明细是宿主对账后的机器事实，说明哪些报告建议未入队。',
     '- 解读 rank、score 等指标时，遵循 interpretation_anchors.operator_established_facts；判断「是否推进」时对照 interpretation_anchors.active_goals 或 active_goals_flat 的 good_signal / bad_signal，不要仅凭裸数值 delta 推断方向（例如 rank 数值更低可能是改善）。phase2/phase3 的执行与验证结论仍优先于 anchors；anchors 只用于解释它们。',
     '- 文风要像认真复盘的人写给操作者看：清楚、坦诚、可读，说清楚推进了什么、没推进什么、下一轮该记住什么。',
     '- 使用现代汉语书面语，避免文言、玄学散文、典故标题和过度模板化表格。',
-    '- 「下轮应该注意什么」必须用短 bullet 列表（每条一行，以 `- ` 开头，最多 10 条）。宿主会把该节 bullet 覆写为下一轮 agent_loop 的 carryover；请结合本轮 exec/verify/assess 结论与 Machine Context 中的 agent_loop_carryover，自行决定保留、改写或清除过期项。',
+    '- 文首必须有短 ## TL;DR（1–2 句，约不超过 200 字），概括本轮结果与最关键未闭环项；TL;DR 不要用编号或 bullet 列表，细节放到后续章节。',
+    '- 「下轮应该注意什么」必须用短 bullet 列表（每条一行，以 `- ` 开头，最多 10 条），只写叙事项。不要复述机械 step 状态（宿主会自动写 step_status_snapshot 并保留 mechanical carryover 项）。请结合本轮 exec/verify/assess 结论改写或清除过期叙事项。',
     '',
     '建议章节：',
+    '- TL;DR',
     '- 这一轮发生了什么',
     '- 真正推进了什么',
     '- 没有推进的地方',
@@ -476,7 +497,7 @@ export function persistEvolutionDiary({
   mkdirSync(dirname(mdPath), { recursive: true });
   writeFileSync(mdPath, finalMarkdown, 'utf-8');
 
-  const tldr = extractTldr(finalMarkdown);
+  const tldr = extractDiaryTldr(finalMarkdown);
   const event = {
     type: 'evolution_diary',
     status: source === 'ai' ? 'ok' : 'fallback',
