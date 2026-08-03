@@ -14,4 +14,6 @@ export {
   resolveReasonixFlavor,
   buildReasonixRunBaseArgs,
   buildReasonixTurnInvocation,
+  parseRawReceipt,
+  stripOuterMarkdownFence,
 } from './runner.mjs';

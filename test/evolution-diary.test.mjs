@@ -46,6 +46,12 @@ import {
   buildEvolutionDiaryPrompt,
   gatherDiaryAnchors,
 } from '../src/intelligence/evolution-diary-builder.mjs';
+import {
+  extractCarryoverFromDiaryMarkdown,
+  formatCarryoverSuggestion,
+  runDiaryStep,
+  writeCarryoverItems,
+} from '../src/evolution/cycle-steps.mjs';
 import { buildTemporalDecisionBrief } from '../src/intelligence/decision-brief.mjs';
 import {
   buildSupersededIds,
@@ -189,6 +195,88 @@ describe('buildEvolutionDiary', () => {
     expect(prompt).toContain('interpretation_anchors.operator_established_facts');
     expect(prompt).toContain('good_signal / bad_signal');
     expect(prompt).toContain('裸数值 delta');
+  });
+
+  it('includes agent_loop_carryover in diary context and prompt guidance', () => {
+    const { store, runtime, intelResult, execResult, verification } = makeDiaryFixture();
+    const context = buildEvolutionDiaryContext({
+      intelResult,
+      execResult,
+      verification,
+      runtime,
+      store,
+      carryoverItems: ['待复核 gate.std.max', '过期：凭据探针待执行'],
+    });
+    const prompt = buildEvolutionDiaryPrompt({
+      context,
+      agentContextDocs: [{ id: 'js-evolution-agent:subject:test', text: '主体策略全文。' }],
+    });
+
+    expect(context.agent_loop_carryover).toEqual(['待复核 gate.std.max', '过期：凭据探针待执行']);
+    expect(prompt).toContain('agent_loop_carryover');
+    expect(prompt).toContain('覆写为下一轮 agent_loop 的 carryover');
+  });
+
+  it('extracts diary next-cycle bullets and runDiaryStep overwrites carryover', async () => {
+    const markdown = [
+      '# 进化日记',
+      '',
+      '## 这一轮发生了什么',
+      '',
+      '执行完成。',
+      '',
+      '## 下轮应该注意什么',
+      '',
+      '- 模拟方差需要多次复跑',
+      '1. 信念更新应消化本轮 receipt',
+      '- 过期的「凭据待执行」已完成，不再携带',
+      '',
+      '杂文段落不应进入 carryover。',
+    ].join('\n');
+
+    expect(extractCarryoverFromDiaryMarkdown(markdown)).toEqual([
+      '模拟方差需要多次复跑',
+      '信念更新应消化本轮 receipt',
+      '过期的「凭据待执行」已完成，不再携带',
+    ]);
+    expect(formatCarryoverSuggestion({
+      suggestion: '增设 placement 子目标',
+      reason: 'isRanked=false',
+    })).toBe('增设 placement 子目标（reason: isRanked=false）');
+
+    const { store, runtime, intelResult, execResult, verification } = makeDiaryFixture();
+    writeCarryoverItems(runtime.runtimeRoot, {
+      cycleId: 'old',
+      items: ['过期：凭据探针待执行'],
+    });
+    const fakeAi = {
+      chat: async () => markdown,
+    };
+    const outcome = await runDiaryStep({
+      cfg: {
+        aiClient: fakeAi,
+        agentContextDocs: [{ id: 'js-evolution-agent:subject:test', text: '主体策略全文。' }],
+        host: { logger: null },
+      },
+      runtime,
+      store,
+    }, {
+      intelResult,
+      execResult,
+      verification,
+      reportPath: null,
+    });
+
+    expect(outcome.diary?.source).toBe('ai');
+    const carryover = JSON.parse(readFileSync(
+      join(runtime.runtimeRoot, 'data', 'evolution', 'agent_loop_carryover.json'),
+      'utf-8',
+    ));
+    expect(carryover.items).toEqual([
+      '模拟方差需要多次复跑',
+      '信念更新应消化本轮 receipt',
+      '过期的「凭据待执行」已完成，不再携带',
+    ]);
   });
 
   it('builds a post-execution prompt scoped away from project journal updates', () => {

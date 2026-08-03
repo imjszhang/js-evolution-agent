@@ -200,36 +200,9 @@ function normalizeAssessmentForCalibration(assessment) {
   };
 }
 
-const LEARNING_REQUIRED_KEYWORDS = [
-  'read-only', 'readonly', '只读', 'diagnostic', 'diagnostics', '诊断',
-  'feedback', '反馈', 'calibration', '校准', 'replay', 'challenge',
-  'rankscore', 'rank score', 'live rank', '相关性', 'correlation',
-];
-const LEARNING_FORBIDDEN_KEYWORDS = [
-  'remote write', 'remote_write', 'post /api/agent/tank/code',
-  '/api/agent/tank/code', '候选发布', '恢复发布', 'approval_granted',
-];
-
-function patchText(patch) {
-  return JSON.stringify(patch ?? {}).toLowerCase();
-}
-
-function isLowRiskLearningPatch(patch) {
-  if (!['add_child', 'update_child'].includes(patch?.op)) return false;
-  const text = patchText(patch);
-  if (LEARNING_FORBIDDEN_KEYWORDS.some((keyword) => text.includes(keyword.toLowerCase()))) return false;
-  return LEARNING_REQUIRED_KEYWORDS.some((keyword) => text.includes(keyword.toLowerCase()));
-}
-
-function filterPatchesForRuleStatus(patches, ruleStatus) {
-  if (ruleStatus !== 'learn') return { patches, skipped: [] };
-  const applicable = [];
-  const skipped = [];
-  for (const patch of patches) {
-    if (isLowRiskLearningPatch(patch)) applicable.push(patch);
-    else skipped.push({ patch, reason: 'learn_patch_not_low_risk' });
-  }
-  return { patches: applicable, skipped };
+/** Learn no longer uses keyword special-casing; patches pass through to liberal/strict policy. */
+function filterPatchesForRuleStatus(patches, _ruleStatus) {
+  return { patches, skipped: [] };
 }
 
 export function buildGoalPatchUpdate(root = getProjectRoot(), patches, opts = {}) {

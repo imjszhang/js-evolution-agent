@@ -152,6 +152,7 @@ export function buildEvolutionDiaryContext({
   verifyReportPath = null,
   store = null,
   generatedAt = new Date().toISOString(),
+  carryoverItems = null,
 } = {}) {
   const cycleId = execResult?.cycle_id ?? intelResult?.cycle_id;
   return redactSecrets({
@@ -171,6 +172,8 @@ export function buildEvolutionDiaryContext({
       verify_report: verifyReportPath ?? null,
       phase1_conversation_context: intelResult?.conversation_context_path ?? null,
     },
+    // Mid-cycle carryover from agent_loop; diary may keep, rewrite, or drop items.
+    agent_loop_carryover: Array.isArray(carryoverItems) ? carryoverItems.map(String) : [],
     interpretation_anchors: gatherDiaryAnchors({ store, runtime }),
     phase1: {
       report_source: intelResult?.report?.source ?? null,
@@ -300,6 +303,7 @@ export function buildEvolutionDiaryPrompt({
       '- Explicitly record Phase 3.5 belief update when present in Machine Context. Include status, reason, updates_count, and which beliefs were strengthened, weakened, validated, refuted, created, or retired.',
       '- When interpreting metrics such as rank or score, follow interpretation_anchors.operator_established_facts. When judging progress vs no progress, use interpretation_anchors.active_goals or active_goals_flat good_signal / bad_signal. Do not infer metric direction from raw numeric delta alone (for example, a lower rank may be improvement). Execution and verification conclusions in phase2/phase3 still override anchors; anchors only interpret them.',
       '- Be readable and candid: say what moved, what did not move, and what the next cycle should remember.',
+      '- The section "What the next cycle should remember" must be a short bullet list (one item per line, starting with `- `, at most 10 items). The host overwrites next-cycle agent_loop carryover from those bullets; use this cycle\'s exec/verify/assess conclusions and Machine Context agent_loop_carryover to keep, rewrite, or drop stale items.',
       '',
       'Suggested sections:',
       '- What happened this cycle',
@@ -337,6 +341,7 @@ export function buildEvolutionDiaryPrompt({
     '- 解读 rank、score 等指标时，遵循 interpretation_anchors.operator_established_facts；判断「是否推进」时对照 interpretation_anchors.active_goals 或 active_goals_flat 的 good_signal / bad_signal，不要仅凭裸数值 delta 推断方向（例如 rank 数值更低可能是改善）。phase2/phase3 的执行与验证结论仍优先于 anchors；anchors 只用于解释它们。',
     '- 文风要像认真复盘的人写给操作者看：清楚、坦诚、可读，说清楚推进了什么、没推进什么、下一轮该记住什么。',
     '- 使用现代汉语书面语，避免文言、玄学散文、典故标题和过度模板化表格。',
+    '- 「下轮应该注意什么」必须用短 bullet 列表（每条一行，以 `- ` 开头，最多 10 条）。宿主会把该节 bullet 覆写为下一轮 agent_loop 的 carryover；请结合本轮 exec/verify/assess 结论与 Machine Context 中的 agent_loop_carryover，自行决定保留、改写或清除过期项。',
     '',
     '建议章节：',
     '- 这一轮发生了什么',
@@ -428,9 +433,10 @@ function renderFallbackDiary({ context, generatedAt, reason, language }) {
     `## ${t('下轮应该注意什么', 'What the next cycle should remember')}`,
     '',
     t(
-      '这份回退日记只保留了机器可确认的事实。下一轮应优先查看情报报告、执行 receipt 和验证报告，再判断本轮是否真正推进了目标。',
-      'This fallback diary only preserves mechanically confirmed facts. The next cycle should inspect the intel report, execution receipts, and verification report before judging goal progress.',
+      '- 这份回退日记只保留了机器可确认的事实；下一轮应优先查看情报报告、执行 receipt 和验证报告。',
+      '- This fallback diary only preserves mechanically confirmed facts; inspect the intel report, execution receipts, and verification report next cycle.',
     ),
+    ...(asArray(context?.agent_loop_carryover).slice(0, 8).map((item) => `- ${item}`)),
     '',
   );
   return lines.join('\n');
@@ -489,6 +495,7 @@ export async function buildEvolutionDiary({
   logger = null,
   useAi = true,
   generatedAt = new Date().toISOString(),
+  carryoverItems = null,
 } = {}) {
   const subjectDoc = pickSubjectDoc(agentContextDocs);
   const language = detectLanguage(subjectDoc?.text);
@@ -504,6 +511,7 @@ export async function buildEvolutionDiary({
     verifyReportPath,
     store,
     generatedAt,
+    carryoverItems,
   });
 
   let markdown = null;

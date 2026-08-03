@@ -570,6 +570,13 @@ function strictRawReceipt(rawText) {
   }
 }
 
+/** Strip a single outer markdown fence (``` / ```json) before JSON parse. */
+export function stripOuterMarkdownFence(rawText) {
+  const trimmed = String(rawText ?? '').trim();
+  const matched = trimmed.match(/^```(?:json|javascript|js)?\s*\r?\n?([\s\S]*?)\r?\n?```$/i);
+  return matched ? matched[1].trim() : trimmed;
+}
+
 function jsonObjectCandidates(rawText) {
   const text = String(rawText ?? '');
   const candidates = [];
@@ -628,11 +635,18 @@ function receiptScore(obj) {
   return score;
 }
 
-function parseRawReceipt(rawText) {
+export function parseRawReceipt(rawText) {
   const strict = strictRawReceipt(rawText);
   if (strict) return { receipt: strict, parseMode: 'strict_json' };
 
-  const candidates = jsonObjectCandidates(rawText)
+  const unfenced = stripOuterMarkdownFence(rawText);
+  if (unfenced !== String(rawText ?? '').trim()) {
+    const fenced = strictRawReceipt(unfenced);
+    if (fenced) return { receipt: fenced, parseMode: 'fenced_json' };
+  }
+
+  // Prefer unfenced text for brace extraction so fence labels/noise don't dilute scoring.
+  const candidates = jsonObjectCandidates(unfenced)
     .map((receipt, index) => ({ receipt, index, score: receiptScore(receipt) }))
     .filter((item) => item.score > 0)
     .sort((a, b) => b.score - a.score || b.index - a.index);

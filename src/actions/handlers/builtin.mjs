@@ -1456,6 +1456,11 @@ const builtInActionHandlers = {
       ),
       fallback_used: false,
     };
+    const observationsWritten = persistObservationWrites(store, action, {
+      writes: result.writes,
+      message: result.message,
+    });
+    result.writes_applied = { observations: observationsWritten };
     store.recordActionReceipt(action, result, ctx);
     return result;
   },

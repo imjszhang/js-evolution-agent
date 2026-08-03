@@ -10,8 +10,13 @@ import {
   BELIEF_STATUSES,
   emptyCurrentBeliefs,
   normalizeCurrentBeliefs,
+  partitionBeliefs,
+  summarizeBeliefForPrompt,
 } from './beliefs.mjs';
 import { summarizeVerificationReport } from './goal-assessor.mjs';
+
+const BELIEF_UPDATE_PROMPT_MAX_CHARS = 120000;
+const RECENTLY_REFUTED_LIMIT = 10;
 
 function clip(value, max = 8000) {
   const text = String(value || '');
@@ -67,6 +72,43 @@ function summarizeReceipt(receipt = {}) {
   };
 }
 
+function compactBeliefEntry(belief) {
+  return {
+    id: belief?.id ?? null,
+    claim: belief?.claim ?? '',
+    status: belief?.status ?? 'active',
+  };
+}
+
+/** Compress beliefs for the updater prompt so cycle evidence is not truncated away. */
+export function compressBeliefsForPrompt(beliefsDoc) {
+  const doc = normalizeCurrentBeliefs(beliefsDoc);
+  const parts = partitionBeliefs(doc.beliefs || []);
+  return {
+    exists: doc.exists,
+    resource_kind: doc.resource_kind,
+    resource_scope: doc.resource_scope,
+    canonical_path: doc.canonical_path,
+    source_role: doc.source_role,
+    schema_version: doc.schema_version,
+    updated_at: doc.updated_at,
+    source_cycle_id: doc.source_cycle_id,
+    beliefs: {
+      active: parts.active.map(summarizeBeliefForPrompt),
+      validated: parts.validated.map(summarizeBeliefForPrompt),
+      recently_refuted: parts.recentlyRefuted.slice(-RECENTLY_REFUTED_LIMIT).map(compactBeliefEntry),
+      retired: parts.retired.map(compactBeliefEntry),
+    },
+    counts: {
+      active: parts.active.length,
+      validated: parts.validated.length,
+      refuted: parts.recentlyRefuted.length,
+      retired: parts.retired.length,
+      total: (doc.beliefs || []).length,
+    },
+  };
+}
+
 export function fallbackBeliefUpdate(reason = 'Belief update unavailable') {
   return {
     status: 'skipped',
@@ -95,27 +137,39 @@ export function buildBeliefUpdateContext({
     })
     : [];
 
+  // Evidence first: large belief docs used to truncate receipts/verification out of the prompt.
+  // current_beliefs stays full here for applyBeliefUpdates; prompt path compresses via
+  // compressBeliefsForPrompt before JSON serialization.
   return {
     cycle: {
       intel_cycle_id: intelResult?.cycle_id ?? null,
       exec_cycle_id: execResult?.cycle_id ?? null,
     },
-    active_goals: activeGoals,
-    active_goals_flat: flattenGoals(activeGoals),
-    current_beliefs: beliefsDoc,
-    actions: asArray(intelResult?.actions).map(summarizeAction),
-    receipts: receipts.map(summarizeReceipt),
-    verification: summarizeVerificationReport(verificationReportPath),
-    semantic: verification?.semantic ?? null,
     analysis: {
       decision: intelResult?.analysis?.decision ?? null,
       rationale: clip(intelResult?.analysis?.rationale ?? '', 800),
     },
+    actions: asArray(intelResult?.actions).map(summarizeAction),
+    receipts: receipts.map(summarizeReceipt),
+    verification: summarizeVerificationReport(verificationReportPath),
+    semantic: verification?.semantic ?? null,
+    active_goals: activeGoals,
+    active_goals_flat: flattenGoals(activeGoals),
+    current_beliefs: beliefsDoc,
+  };
+}
+
+export function buildBeliefUpdatePromptContext(context = {}) {
+  if (!context || typeof context !== 'object') return {};
+  return {
+    ...context,
+    current_beliefs: compressBeliefsForPrompt(context.current_beliefs),
   };
 }
 
 export function buildBeliefUpdatePrompt({ context, language = 'zh' } = {}) {
-  const contextJson = clip(JSON.stringify(context, null, 2), 120000);
+  const promptContext = buildBeliefUpdatePromptContext(context);
+  const contextJson = clip(JSON.stringify(promptContext, null, 2), BELIEF_UPDATE_PROMPT_MAX_CHARS);
   if (language !== 'en') {
     return `你是 js-evolution-agent 的信念更新器。根据本轮执行与验证证据，更新 current_beliefs。
 

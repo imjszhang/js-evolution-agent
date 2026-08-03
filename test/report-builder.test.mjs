@@ -21,6 +21,7 @@ import {
   buildTypedEvidenceRefsFromAdmission,
   composeStandingMemoryMarkdown,
   sanitizeCurrentStateBody,
+  sanitizeStandingMemoryCosmeticIssues,
   summarizeEvidenceIndexItem,
   buildMinimalSafeAdmission,
   detectLanguage,
@@ -918,6 +919,85 @@ describe('buildIntelReport', () => {
     expect(sanitized).not.toContain('agent_claim');
     expect(sanitized).not.toContain('receipt-missing');
     expect(sanitized).not.toContain('no address');
+  });
+
+  it('sanitizeStandingMemoryCosmeticIssues fixes ellipsis and long do_not_treat', () => {
+    const longBullets = Array.from({ length: 20 }, (_, i) => `- noisy lead item ${i} ${'x'.repeat(80)}`).join('\n');
+    const dirty = [
+      '## Current State',
+      '',
+      '- status continues… [evolution_events:evt-1]',
+      '',
+      '## Evidence',
+      '',
+      '- [evolution_events:evt-1]: ok',
+      '',
+      '## Remembered',
+      '',
+      '- hint only',
+      '',
+      '## Do Not Treat As Seen',
+      '',
+      longBullets,
+    ].join('\n');
+
+    expect(auditStandingMemoryFreeText({
+      text: dirty,
+      typedEvidenceRefs: [{
+        source_type: 'evolution_events',
+        source_id: 'evt-1',
+        source_address: '[evolution_events:evt-1]',
+      }],
+    }).ok).toBe(false);
+
+    const cleaned = sanitizeStandingMemoryCosmeticIssues(dirty);
+    expect(cleaned).toContain('status continues...');
+    expect(cleaned).not.toContain('\u2026');
+    const doNotTreat = cleaned.match(/## Do Not Treat As Seen\s*\n([\s\S]*?)(?=\n## |$)/i)?.[1]?.trim() || '';
+    expect(doNotTreat.length).toBeLessThanOrEqual(1200);
+    const audit = auditStandingMemoryFreeText({
+      text: cleaned,
+      typedEvidenceRefs: [{
+        source_type: 'evolution_events',
+        source_id: 'evt-1',
+        source_address: '[evolution_events:evt-1]',
+      }],
+    });
+    expect(audit.issues.some((i) => i.includes('unicode_ellipsis'))).toBe(false);
+    expect(audit.issues.some((i) => i.includes('section_too_long'))).toBe(false);
+    expect(audit.ok).toBe(true);
+  });
+
+  it('sanitizeStandingMemoryCosmeticIssues does not clear agent_claim pollution', () => {
+    const text = [
+      '## Current State',
+      '',
+      '- agent_claim: polluted… [evolution_events:evt-1]',
+      '',
+      '## Evidence',
+      '',
+      '- [evolution_events:evt-1]: ok',
+      '',
+      '## Remembered',
+      '',
+      '- hint',
+      '',
+      '## Do Not Treat As Seen',
+      '',
+      '- (none)',
+    ].join('\n');
+    const cleaned = sanitizeStandingMemoryCosmeticIssues(text);
+    const audit = auditStandingMemoryFreeText({
+      text: cleaned,
+      typedEvidenceRefs: [{
+        source_type: 'evolution_events',
+        source_id: 'evt-1',
+        source_address: '[evolution_events:evt-1]',
+      }],
+    });
+    expect(cleaned).toContain('polluted...');
+    expect(audit.ok).toBe(false);
+    expect(audit.issues.some((i) => i.includes('agent_claim_prefix'))).toBe(true);
   });
 
   it('auditStandingMemoryFreeText rejects agent_claim in Current State', () => {

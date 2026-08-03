@@ -1371,6 +1371,39 @@ export function composeStandingMemoryMarkdown({
   return sections.map(([heading, body]) => `## ${heading}\n\n${body.trim()}`).join('\n\n').trim();
 }
 
+const DO_NOT_TREAT_SECTION_MAX_CHARS = 1200;
+
+/**
+ * Cosmetic cleanup before standing-memory audit:
+ * - replace unicode ellipsis glyphs with ASCII "..."
+ * - trim oversized Do Not Treat As Seen section at bullet boundaries
+ * Does not touch substantive pollution / unlinked / agent_claim gates.
+ */
+export function sanitizeStandingMemoryCosmeticIssues(text) {
+  let body = String(text || '').replace(/\u2026/g, '...');
+  const heading = 'Do Not Treat As Seen';
+  const sectionBody = extractMarkdownSection(body, heading);
+  if (sectionBody && sectionBody.length > DO_NOT_TREAT_SECTION_MAX_CHARS) {
+    const bullets = splitBulletItems(sectionBody);
+    const kept = [];
+    let size = 0;
+    for (const bullet of bullets) {
+      const nextSize = size + bullet.length + (kept.length ? 1 : 0);
+      if (nextSize > DO_NOT_TREAT_SECTION_MAX_CHARS) break;
+      kept.push(bullet);
+      size = nextSize;
+    }
+    const trimmedBody = kept.length ? kept.join('\n') : '- (none)';
+    const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const sectionPattern = new RegExp(
+      `(##\\s+${escaped}\\s*\\n)([\\s\\S]*?)(?=\\n##\\s+|$)`,
+      'i',
+    );
+    body = body.replace(sectionPattern, `$1${trimmedBody}\n`);
+  }
+  return body.trim();
+}
+
 export function auditStandingMemoryFreeText({
   text,
   typedEvidenceRefs = [],
@@ -1743,6 +1776,7 @@ export async function updateStandingMemoryWithAi({
       language,
       admission: extendedAdmission,
     });
+    text = sanitizeStandingMemoryCosmeticIssues(text);
     let audit = auditStandingMemoryMarkdown({
       text,
       typedEvidenceRefs,
@@ -1761,6 +1795,14 @@ export async function updateStandingMemoryWithAi({
       extendedAdmission,
       language,
     }));
+    if (narrativePreserved) {
+      text = sanitizeStandingMemoryCosmeticIssues(text);
+      audit = auditStandingMemoryMarkdown({
+        text,
+        typedEvidenceRefs,
+        admission: extendedAdmission,
+      });
+    }
     let usedFallback = false;
     let fallbackReason = null;
     if (!audit.ok) {

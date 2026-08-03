@@ -1042,9 +1042,50 @@ describe('controlled action handlers', () => {
     expect(result.run_spec.primary_cwd_kind).toBe('subject_runtime');
     expect(result.run_spec.permission_profile).toBe('read_only');
     expect(result.evidence.observations).toEqual(['runtime queue is ready']);
+    expect(result.writes_applied).toEqual({ observations: 0 });
     expect(verification.status).toBe('improved');
     expect(ctx.host.intelligenceStore.readActionReceipts({ limit: 1 })[0].action_type)
       .toBe('agent_run');
+  });
+
+  it('persists agent_run writes.observations into the intelligence store', async () => {
+    const ctx = makeAgenticCtx({
+      status: 'completed',
+      summary: 'Recorded cycle baseline observation.',
+      evidence: { baseline: 'codeVersion=123' },
+      writes: {
+        observations: [{
+          source: 'agent_run',
+          subject: 'agentank-tank',
+          kind: 'work_baseline',
+          content: 'UNIQUE_AGENT_RUN_OBS_TOKEN_A1 work baseline recorded',
+          confidence: 'medium',
+          tags: ['agentank', 'baseline'],
+        }],
+      },
+      outputs: { recommendation: 'continue' },
+      confidence: 0.7,
+    });
+
+    const result = await actionHandlers.agent_run({
+      type: 'agent_run',
+      description: 'Capture work baseline',
+      params: {
+        run_spec: {
+          primary_cwd_kind: 'subject_runtime',
+          permission_profile: 'read_only',
+          provider: 'llm_only',
+          intent: 'Persist baseline observation from agent_run writes.',
+          context: { why_now: 'verify agent_run observation persistence' },
+          expected_output: ['summary', 'evidence', 'writes'],
+        },
+      },
+    }, ctx);
+
+    expect(result.success).toBe(true);
+    expect(result.writes_applied).toEqual({ observations: 1 });
+    const observations = ctx.host.intelligenceStore.readRecentIntel({ days: 7, limit: 20 });
+    expect(observations.some((row) => String(row.content || '').includes('UNIQUE_AGENT_RUN_OBS_TOKEN_A1'))).toBe(true);
   });
 
   it('normalizes nested agent_run receipts before validation', async () => {
@@ -1076,6 +1117,39 @@ describe('controlled action handlers', () => {
     expect(result.schema_status).toBe('valid');
     expect(result.execution_status).toBe('completed');
     expect(result.evidence.observations).toEqual(['nested receipt evidence']);
+  });
+
+  it('accepts an agent_run receipt wrapped in a markdown json fence', async () => {
+    const ctx = makeAgenticCtx(() => [
+      '```json',
+      JSON.stringify({
+        status: 'completed',
+        summary: 'Fenced receipt completed.',
+        evidence: { observations: ['fenced receipt evidence'] },
+        outputs: { recommendation: 'continue' },
+      }, null, 2),
+      '```',
+    ].join('\n'));
+
+    const result = await actionHandlers.agent_run({
+      type: 'agent_run',
+      description: 'Inspect fenced receipt',
+      params: {
+        run_spec: {
+          primary_cwd_kind: 'subject_runtime',
+          permission_profile: 'read_only',
+          provider: 'llm_only',
+          intent: 'Verify fenced receipt parse mode.',
+          context: { why_now: 'verify fenced receipt parsing' },
+          expected_output: ['summary', 'evidence'],
+        },
+      },
+    }, ctx);
+
+    expect(result.success).toBe(true);
+    expect(result.schema_status).toBe('valid');
+    expect(result.agent.raw_receipt_parse_mode).toBe('fenced_json');
+    expect(result.evidence.observations).toEqual(['fenced receipt evidence']);
   });
 
   it('accepts an agent_run receipt embedded after explanatory text', async () => {

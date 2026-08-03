@@ -49,6 +49,7 @@ import { chatMessagesDetailed, serializeMessages } from '../ai/messages.mjs';
 import { repairReportIfNeeded } from '../intelligence/report-repair.mjs';
 import { markStepStatus, writeStepArtifact } from '../cli/utils/cycle-state.mjs';
 import { loadCycleStepContext, loadVerifyReportForCycle } from '../cli/utils/cycle-checkpoints.mjs';
+import { extractMarkdownSection } from '../cli/utils/markdown-sections.mjs';
 import { buildInvestigationTools } from './agent-loop/tool-registry.mjs';
 import { runInvestigationLoop } from './agent-loop/loop-runner.mjs';
 import { runMechanicalGuards } from './agent-loop/guard-runner.mjs';
@@ -89,7 +90,7 @@ function readCarryoverItems(runtimeRoot) {
   }
 }
 
-function writeCarryoverItems(runtimeRoot, { cycleId, items = [] } = {}) {
+export function writeCarryoverItems(runtimeRoot, { cycleId, items = [] } = {}) {
   const path = carryoverPath(runtimeRoot);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify({
@@ -98,6 +99,30 @@ function writeCarryoverItems(runtimeRoot, { cycleId, items = [] } = {}) {
     created_at: new Date().toISOString(),
     items: Array.isArray(items) ? items.map(String) : [],
   }, null, 2), 'utf-8');
+}
+
+export function formatCarryoverSuggestion(suggestion) {
+  if (typeof suggestion === 'string') return suggestion.trim();
+  if (!suggestion || typeof suggestion !== 'object') return '';
+  const text = String(suggestion.suggestion || suggestion.text || suggestion.summary || '').trim();
+  const reason = String(suggestion.reason || '').trim();
+  if (text && reason) return `${text}（reason: ${reason}）`;
+  return text || reason;
+}
+
+/** Extract bullet items from diary "next cycle" section for carryover overwrite. */
+export function extractCarryoverFromDiaryMarkdown(markdown, { limit = 10 } = {}) {
+  const body = extractMarkdownSection(markdown, '下轮应该注意什么')
+    || extractMarkdownSection(markdown, 'What the next cycle should remember')
+    || '';
+  if (!body.trim()) return [];
+  return body
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => /^[-*]\s+/.test(line) || /^\d+\.\s+/.test(line))
+    .map((line) => line.replace(/^[-*]\s+/, '').replace(/^\d+\.\s+/, '').trim())
+    .filter(Boolean)
+    .slice(0, limit);
 }
 
 export { loadCycleStepContext } from '../cli/utils/cycle-checkpoints.mjs';
@@ -732,7 +757,7 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
       ? analysis.deferred.map((d) => (typeof d === 'string' ? d : `${d.action || 'deferred'}: ${d.reason || d.description || ''}`.trim()))
       : []),
     ...(Array.isArray(analysis?.goal_suggestions)
-      ? analysis.goal_suggestions.map((s) => (typeof s === 'string' ? s : JSON.stringify(s))).slice(0, 5)
+      ? analysis.goal_suggestions.map((s) => formatCarryoverSuggestion(s)).slice(0, 5)
       : []),
   ].filter(Boolean).slice(0, 10);
 
@@ -1362,7 +1387,24 @@ export async function runDiaryStep(ctx, {
       reportPath: intelResult.report?.mdPath,
       verifyReportPath: reportPath,
       logger: cfg.host.logger,
+      carryoverItems: readCarryoverItems(runtime.runtimeRoot),
     });
+    // Diary is the only LLM that saw the full cycle; let it finalize carryover for next loop.
+    try {
+      const diaryMarkdown = diary?.markdown
+        ?? (diary?.mdPath && existsSync(diary.mdPath) ? readFileSync(diary.mdPath, 'utf-8') : '');
+      const carryoverItems = extractCarryoverFromDiaryMarkdown(diaryMarkdown);
+      if (carryoverItems.length) {
+        writeCarryoverItems(runtime.runtimeRoot, {
+          cycleId: execResult?.cycle_id || intelResult?.cycle_id,
+          items: carryoverItems,
+        });
+      }
+    } catch (carryErr) {
+      cfg.host?.logger?.warning?.(
+        `[diary] failed to finalize carryover from diary: ${carryErr?.message || carryErr}`,
+      );
+    }
     if (recordState) {
       const artifactCycleId = stateCycleId(intelResult, null, execResult);
       await recordStepSidecar(recordState.root, recordState.subject, artifactCycleId, 'diary', 'done');

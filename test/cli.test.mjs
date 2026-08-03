@@ -2670,7 +2670,7 @@ describe('goals command helpers', () => {
     expect(active.children).toHaveLength(4);
   });
 
-  it('learn rule_status only auto-applies low-risk diagnostic patches', () => {
+  it('learn rule_status uses liberal patch policy without keyword special-casing', () => {
     const root = makeGoalsRoot('jea-goals-rule-learn-');
     const runtime = runtimeInfoForDefaultSubject(root);
     const seeded = {
@@ -2701,7 +2701,7 @@ describe('goals command helpers', () => {
             op: 'update_child',
             child_id: 'outcome-x',
             fields: {
-              intent: 'read-only diagnostics for replay challenge rankScore feedback correlation; 禁止发布',
+              intent: 'read-only learning period: forbid remote write and POST /api/agent/tank/code; diagnostics only',
             },
           },
           {
@@ -2722,13 +2722,14 @@ describe('goals command helpers', () => {
 
     expect(result).toMatchObject({
       status: 'applied',
-      mode: 'patch_partial',
+      mode: 'patch',
       rule_status: 'learn',
     });
-    expect(result.skipped_patches[0].reason).toBe('learn_patch_not_low_risk');
+    expect(result.skipped_patches || []).toEqual([]);
     const active = readJsonSafe(join(runtime.goalsDir, 'active_goals.json'));
-    expect(active.children.map((c) => c.id)).not.toContain('publish-now');
-    expect(active.children.find((c) => c.id === 'outcome-x').intent).toContain('read-only diagnostics');
+    expect(active.children.map((c) => c.id)).toContain('publish-now');
+    expect(active.children.find((c) => c.id === 'outcome-x').intent).toContain('read-only learning period');
+    expect(active.children.find((c) => c.id === 'outcome-x').intent).toContain('/api/agent/tank/code');
   });
 
   it('liberal auto-applies medium-confidence full_replace', () => {
