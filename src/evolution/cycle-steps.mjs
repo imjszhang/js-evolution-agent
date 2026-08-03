@@ -4,12 +4,12 @@ import {
   ActionExecutor,
   EvolutionEngine,
   ExecutionPipeline,
-  decisionFingerprint,
   formatCurrentTimePromptBlock,
   getCurrentTimeSnapshot,
   isoBeijing,
   verifyActions,
 } from '../engine/index.mjs';
+import { createExecJournal } from './exec-journal.mjs';
 import loadConfig from '../../oada.config.mjs'; // project root oada.config.mjs
 import { assessActiveGoals, autoCalibrateGoals } from '../domain/cognition/index.mjs';
 import { updateActiveBeliefs } from '../intelligence/belief-updater.mjs';
@@ -241,28 +241,6 @@ function buildRestoredConversationForVerify({ systemPrompt, initialUserPrompt, r
       ].join('\n'),
     },
   ];
-}
-
-function preloadDedupFromReceipts(store, cycleId) {
-  const fingerprints = new Set();
-  const already = [];
-  try {
-    const receipts = store?.readActionReceipts?.({ limit: 100 }) ?? [];
-    for (const receipt of receipts) {
-      if (receipt?.cycle_id !== cycleId && receipt?.exec_cycle_id !== cycleId) continue;
-      const action = receipt.action;
-      if (!action) continue;
-      fingerprints.add(decisionFingerprint(action));
-      already.push({
-        type: action.type,
-        description: action.description,
-        summary: receipt.result?.summary || receipt.result?.message || null,
-      });
-    }
-  } catch {
-    // best-effort
-  }
-  return { fingerprints, already };
 }
 
 /**
@@ -1093,6 +1071,11 @@ export async function runExecStep(ctx, { recordState = null, intelResult = null,
     || process.env.JEA_CYCLE_ID
     || null;
 
+  const executionJournal = createExecJournal({
+    cycleId: resolvedCycleId,
+    store,
+  });
+
   const decisionQueue = createHostDecisionQueue({
     dataDir: join(runtime.runtimeRoot, 'data', 'evolution'),
     logFn: (msg) => logger?.info?.(`[exec] ${msg}`),
@@ -1103,6 +1086,7 @@ export async function runExecStep(ctx, { recordState = null, intelResult = null,
     aiClient: cfg.aiClient,
     host: cfg.host,
     logFn: (msg, level = 'info') => logger?.[level]?.(`[exec] ${msg}`),
+    executionJournal,
   });
   const guardExecuted = [];
   const guardCtx = {
@@ -1125,6 +1109,9 @@ export async function runExecStep(ctx, { recordState = null, intelResult = null,
   if (guardResult.ran?.length) {
     logger?.info?.(`[exec] mechanical guards ran: ${guardResult.ran.length}`);
   }
+  for (const item of guardExecuted) {
+    executionJournal.recordExecuted(item, { source: 'guard' });
+  }
 
   const exec = new ExecutionPipeline({
     host: cfg.host,
@@ -1132,6 +1119,7 @@ export async function runExecStep(ctx, { recordState = null, intelResult = null,
     aiClient: cfg.aiClient,
     source: 'queue',
     cycleId: resolvedCycleId || undefined,
+    executionJournal,
   });
   const execResult = await exec.run({
     limit: parseExecLimitFromEnv(),
@@ -1141,6 +1129,7 @@ export async function runExecStep(ctx, { recordState = null, intelResult = null,
   if (guardExecuted.length) {
     execResult.executed = [...guardExecuted, ...(execResult.executed || [])];
   }
+  execResult.journal = executionJournal.toJSON();
   const artifactCycleId = stateCycleId(intelResult, stateCycleIdOpt, execResult);
   store.recordEvolutionEvent({
     type: 'exec_pipeline',
@@ -1148,6 +1137,7 @@ export async function runExecStep(ctx, { recordState = null, intelResult = null,
     cycle_id: execResult.cycle_id,
     executed_count: execResult.executed.length,
     guards_ran: guardResult.ran?.length ?? 0,
+    journal_entries: execResult.journal?.entries?.length ?? 0,
     error: execResult.error,
   });
   if (!execResult.success) {
@@ -1164,6 +1154,7 @@ export async function runExecStep(ctx, { recordState = null, intelResult = null,
       intel_cycle_id: intelResult?.cycle_id ?? artifactCycleId,
       success: execResult.success,
       executed: execResult.executed ?? [],
+      journal: execResult.journal ?? null,
       error: execResult.error ?? null,
     });
     await recordStepSidecar(recordState.root, recordState.subject, artifactCycleId, 'exec', 'done');

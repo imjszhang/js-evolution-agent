@@ -148,6 +148,14 @@ Phase 1.5 intel report 持久化
 
 Carryover：由查证 `open_gaps`、Decide `deferred` / goal suggestions 合并覆写 `data/evolution/agent_loop_carryover.json`；下一轮查证 initial prompt 的 `## Carryover from previous cycle` 注入（空数组也会写盘以清空过期项）。
 
+**Cycle Journal（轮内信息流）**：Phase 2 exec 串行执行多个 action 时，宿主维护本轮共享笔记，避免兄弟 `agent_run` 互相看不见。
+
+- 来源：mechanical guards 与 decision queue 每完成一个 action，宿主从 receipt 机械提炼一行（优先 `handoff_note`，否则 `summary`/`message`）；daemon 重跑时从同 cycle 的 `action_receipts` 回放重建。
+- 注入：后续 `agent_run` / `agent_execute` prompt 在 `## Recent intelligence` 之前插入 `## Earlier actions this cycle`（最多约 12 行；空时固定占位 `None (you are the first action this cycle).`），并附行为指令（前提被推翻时先核实、勿重复劳动）。
+- `handoff_note`：agent receipt 可选单行字段（≤300 字符），专门留给本轮后续兄弟 action。
+- 排序：Decide 的 `actions` 应按期望执行顺序输出（调查/探针在前，依赖结论的行动在后）；同批 `claimNext` 在相同 `created_at` 下按 decision id seq **升序**保证该顺序。
+- 落盘：`exec.json` checkpoint 含 `journal`；diary Machine Context 的 `phase2.exec_journal` 用作本轮行动时间线，便于发现轮内矛盾。
+
 产物路径（subject runtime）：
 
 ```text

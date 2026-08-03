@@ -38,6 +38,7 @@ function rebuildExecResult(cycleId, execCp) {
     cycle_id: execCp.cycle_id || cycleId,
     success: execCp.success ?? true,
     executed: Array.isArray(execCp.executed) ? execCp.executed : [],
+    journal: execCp.journal ?? null,
     error: execCp.error ?? null,
   };
 }

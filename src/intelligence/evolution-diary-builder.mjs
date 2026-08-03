@@ -198,6 +198,19 @@ export function buildEvolutionDiaryContext({
       executed_count: asArray(execResult?.executed).length,
       error: execResult?.error ?? null,
       executed: compactExecuted(execResult),
+      // Intra-cycle action timeline from Cycle Journal (sibling notes).
+      exec_journal: execResult?.journal?.entries
+        ? asArray(execResult.journal.entries).map((e) => ({
+          seq: e?.seq ?? null,
+          source: e?.source ?? null,
+          decision_id: e?.decision_id ?? null,
+          action_type: e?.action_type ?? null,
+          status: e?.status ?? null,
+          summary: e?.summary ?? null,
+          handoff_note: e?.handoff_note ?? null,
+          line: e?.line ?? null,
+        }))
+        : [],
     },
     phase3: {
       verified_count: asArray(verification?.verified).length,
@@ -298,6 +311,7 @@ export function buildEvolutionDiaryPrompt({
       '- Do not invent ids, files, tests, writes, success, or failure not present in the context.',
       '- Keep the diary scoped to the active subject runtime; never describe it as a `journal/` project update.',
       '- Prefer traceable facts such as cycle id, action type, report path, verification status, and receipt summaries.',
+      '- When phase2.exec_journal is present, treat it as this cycle\'s action timeline. Use it to spot intra-cycle contradictions or duplicated work between sibling actions; do not invent journal lines.',
       '- If phase3.semantic is present, treat it as the latest interpretation of the executed receipt. Use it to correct stale report/diary inferences, but do not promote semantic summaries to Seen facts.',
       '- Explicitly record Phase 4 goal assessment and Phase 4.5 goal auto-calibration when present in Machine Context. Include status, rule_status (continue, learn, mutate, stop, or insufficient_evidence), confidence, and reason for Phase 4; include status, rule_status, mode (patch, patch_partial, or full_replace), calibrate_mode, reason, detail, applied_patches, children_ids_before/after, belief_retirements, next_goal_id, and written count for Phase 4.5. If calibration was skipped, state the skipped reason and detail instead of omitting it.',
       '- Explicitly record Phase 3.5 belief update when present in Machine Context. Include status, reason, updates_count, and which beliefs were strengthened, weakened, validated, refuted, created, or retired.',
@@ -335,6 +349,7 @@ export function buildEvolutionDiaryPrompt({
     '- 不要编造上下文中不存在的 id、文件、测试、写入、成功或失败结论。',
     '- 只记录 active subject 的运行时进化，不要写成 `journal/` 项目开发日志。',
     '- 尽量引用可追溯事实，例如 cycle id、action type、报告路径、验证状态、receipt 摘要。',
+    '- 若 Machine Context 中存在 phase2.exec_journal，把它当作本轮行动时间线；用它发现同轮兄弟 action 之间的矛盾或重复劳动，不要编造 journal 行。',
     '- 如果 phase3.semantic 存在，它是本轮执行 receipt 的最新解释层结论。用它修正旧 report/diary 推断，但不要把 semantic summary 升级成 Seen 事实。',
     '- 如果 Machine Context 中存在 phase4 或 phase4_5，必须显式记录 Phase 4 目标评估与 Phase 4.5 自动校准结果。Phase 4 至少写出 status、rule_status（continue/learn/mutate/stop/insufficient_evidence）、confidence、reason；Phase 4.5 至少写出 status、rule_status、mode（patch、patch_partial 或 full_replace）、calibrate_mode、reason、detail、applied_patches、children_ids 前后变化、belief_retirements、next_goal_id、written。若校准被 skipped，也要写明 skipped reason 与 detail，不要省略。',
     '- 如果 Machine Context 中存在 phase3_5，必须显式记录 Phase 3.5 信念更新结果。至少写出 status、reason、updates_count，以及哪些 belief 被 strengthen/weaken/validate/refute/create/retire。',

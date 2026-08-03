@@ -59,11 +59,25 @@ describe('cycle step checkpoints', () => {
       cycle_id: cycleId,
       success: true,
       executed: [{ id: 'd1', action: { type: 'agent_run' }, result: { success: true } }],
+      journal: {
+        cycle_id: cycleId,
+        entries: [{
+          seq: 1,
+          source: 'queue',
+          decision_id: 'd1',
+          action_type: 'agent_run',
+          status: 'completed',
+          summary: 'sibling note',
+          line: '[1 queue agent_run completed] sibling note',
+        }],
+      },
     });
     const runtimeRoot = runtimeForSubject(root, 'alpha').runtimeRoot;
     const ctx = loadCycleStepContext(root, 'alpha', cycleId, runtimeRoot);
     expect(ctx.intelResult.cycle_id).toBe(cycleId);
     expect(ctx.execResult.executed).toHaveLength(1);
+    expect(ctx.execResult.journal?.entries).toHaveLength(1);
+    expect(ctx.execResult.journal.entries[0].summary).toBe('sibling note');
     expect(ctx.intelReportReady).toBe(false);
     rmSync(root, { recursive: true, force: true });
   });

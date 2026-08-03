@@ -6,6 +6,7 @@ export * as reasonixProvider from './providers/reasonix.mjs';
 
 export {
   runAgenticAction,
+  buildPrompt,
   buildClaudeOptions,
   buildCursorOptions,
   buildReasonixOptions,

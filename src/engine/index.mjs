@@ -35,6 +35,8 @@ export { AIDrivenObserver } from './observe/ai-driven-observer.mjs';
 export {
   DecisionQueue,
   decisionFingerprint,
+  decisionIdSequence,
+  compareDecisionsForClaim,
   STATUS_PENDING, STATUS_IN_PROGRESS, STATUS_COMPLETED, STATUS_FAILED, STATUS_EXPIRED,
 } from './decide/decision-queue.mjs';
 export { FeatureRequest, FeatureRequestQueue } from './decide/feature-request.mjs';

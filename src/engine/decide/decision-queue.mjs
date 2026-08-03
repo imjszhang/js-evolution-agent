@@ -65,6 +65,29 @@ function nextCycleDecisionSequence(decisions, cycleId) {
   return maxSeq + 1;
 }
 
+/**
+ * Extract numeric sequence from decision id `${cycleId}:${seq}`.
+ * Returns Number.POSITIVE_INFINITY when missing so unknown ids sort last
+ * within the same created_at bucket.
+ */
+export function decisionIdSequence(decisionId) {
+  if (typeof decisionId !== 'string' || !decisionId) return Number.POSITIVE_INFINITY;
+  const idx = decisionId.lastIndexOf(':');
+  if (idx < 0) return Number.POSITIVE_INFINITY;
+  const seq = Number.parseInt(decisionId.slice(idx + 1), 10);
+  return Number.isFinite(seq) ? seq : Number.POSITIVE_INFINITY;
+}
+
+/**
+ * Claim order: newer created_at first (cross-batch LIFO), then ascending
+ * decision seq within the same created_at (Decide output order).
+ */
+export function compareDecisionsForClaim(a, b) {
+  const createdCmp = (b?.created_at || '').localeCompare(a?.created_at || '');
+  if (createdCmp !== 0) return createdCmp;
+  return decisionIdSequence(a?.id) - decisionIdSequence(b?.id);
+}
+
 export class DecisionQueue {
   /**
    * @param {object} [opts]
@@ -369,7 +392,7 @@ export class DecisionQueue {
       const now = isoBeijing();
       const pending = data.decisions
         .filter((d) => d.status === STATUS_PENDING)
-        .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+        .sort(compareDecisionsForClaim);
 
       const claimed = [];
       for (const d of pending.slice(0, limit)) {

@@ -502,6 +502,7 @@ export function buildDecideUserPromptParts({
 - 每个 action 必须有 serves_goal，并尽量使用目标树中的 goal id；对 \`agent_run\`，serves_goal 描述本次 run 要推进的目标。
 - 不要为了覆盖而制造行动；证据不足时可以把 decision 设为 "defer" 或让 actions 为空数组。
 - \`goal_coverage.not_covered\` 必须是 JSON object，不能写成裸字符串列表；每一项必须是 \`"goal_id_or_label": "reason"\`。
+- \`actions\` 数组按期望执行顺序输出：产出信息的调查/探针类在前，依赖其结论的行动类在后。Phase 2 同批 claim 按该顺序串行执行；后序 action 的 prompt 会看到前序结果摘要（Cycle Journal / Earlier actions this cycle），因此不要把依赖结论的动作排在调查之前。
 
 ## Available Action Types
 
@@ -677,6 +678,7 @@ export function buildDecideUserPrompt({
 - 每个 action 必须有 serves_goal，并尽量使用目标树中的 goal id；对 \`agent_run\`，serves_goal 描述本次 run 要推进的目标。
 - 不要为了覆盖而制造行动；证据不足时可以把 decision 设为 "defer" 或让 actions 为空数组。
 - \`goal_coverage.not_covered\` 必须是 JSON object，不能写成裸字符串列表；每一项必须是 \`"goal_id_or_label": "reason"\`。
+- \`actions\` 数组按期望执行顺序输出：产出信息的调查/探针类在前，依赖其结论的行动类在后。Phase 2 同批 claim 按该顺序串行执行；后序 action 的 prompt 会看到前序结果摘要（Cycle Journal / Earlier actions this cycle），因此不要把依赖结论的动作排在调查之前。
 
 ## Available Action Types
 

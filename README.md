@@ -183,7 +183,7 @@ Per-cycle pipeline (default **`agent_loop`**):
 
 ```text
 Phase 1   agent_loop (readonly investigation → host Seen → report → Analyze+Decide)
-Phase 2   exec (consume pending_decisions queue)
+Phase 2   exec (consume pending_decisions; Cycle Journal shares sibling action notes within the cycle)
 Phase 3   verify (mechanical + semantic)
 Phase 3.5 belief_update
 Phase 4   goals assess

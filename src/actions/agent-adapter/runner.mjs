@@ -317,7 +317,7 @@ function claudeSystemPromptAppend(roots) {
   ].join(' ');
 }
 
-function buildPrompt(action, ctx) {
+export function buildPrompt(action, ctx) {
   const mode = getField(action, 'mode') ?? 'propose';
   const objective = getField(action, 'objective') ?? action?.description ?? '';
   const context = getField(action, 'context') ?? action?.rationale ?? '';
@@ -325,6 +325,9 @@ function buildPrompt(action, ctx) {
   const acceptance = getField(action, 'acceptance') ?? getField(action, 'acceptance_criteria') ?? '';
   const modeGuidance = MODE_GUIDANCE[mode] ?? MODE_GUIDANCE.propose;
   const roots = resolveAgentExecutionRoots(action, ctx);
+  const earlierActionsSection = typeof ctx?.executionJournal?.renderPromptSection === 'function'
+    ? ctx.executionJournal.renderPromptSection()
+    : null;
 
   const system = [
     'You are an autonomous execution agent dispatched by js-evolution-agent.',
@@ -361,6 +364,7 @@ function buildPrompt(action, ctx) {
     '## Acceptance',
     compactJson(acceptance),
     '',
+    ...(earlierActionsSection ? [earlierActionsSection, ''] : []),
     '## Recent intelligence',
     contextSummary(ctx),
     '',
@@ -400,10 +404,12 @@ function buildPrompt(action, ctx) {
       requires_approval: false,
       verification_hints: [],
       next_actions: [],
+      handoff_note: 'optional single line for sibling actions later in this cycle',
       confidence: 0.0,
     }),
     '',
     'The final response must be one strict JSON object with top-level status, summary, evidence, and outputs. If you have evidence_summary, also copy it to summary.',
+    'Optional handoff_note: one short line the host will show to later actions in this same exec cycle; omit when nothing useful to pass.',
   ].join('\n');
 
   return { system, user };

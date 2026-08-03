@@ -24,10 +24,12 @@ export class ActionExecutor {
    * @param {object} [opts.host] HostContext (provides actionHandlers + client + logger)
    * @param {((msg: string, level?: string) => void)|null} [opts.logFn]
    * @param {string} [opts.goalsText]
+   * @param {object|null} [opts.executionJournal] Cycle Journal for intra-exec sibling notes
    */
   constructor({
     modifier = null, aiClient = null, featureQueue = null,
     projectRoot, cycleId, host = null, logFn = null, goalsText = '',
+    executionJournal = null,
   } = {}) {
     this.modifier = modifier;
     this.aiClient = aiClient;
@@ -36,6 +38,7 @@ export class ActionExecutor {
     this.cycleId = cycleId;
     this.host = host;
     this._goalsText = goalsText;
+    this.executionJournal = executionJournal;
     this._logFn = logFn || (() => {});
   }
 
@@ -67,6 +70,7 @@ export class ActionExecutor {
         client: this.host?.client || null,
         logger: this.host?.logger || null,
         goalsText: this._goalsText,
+        executionJournal: this.executionJournal,
       };
       const result = await handler(action, ctx);
       return result || { success: true };

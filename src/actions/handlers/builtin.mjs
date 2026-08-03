@@ -189,6 +189,13 @@ function persistLocalProbeResult(store, action, ctx, probeResult, overrides = {}
   return result;
 }
 
+function normalizeHandoffNoteField(value, maxChars = 300) {
+  if (value == null) return null;
+  const text = String(value).replace(/\s+/g, ' ').trim();
+  if (!text) return null;
+  return text.slice(0, maxChars);
+}
+
 function summarizeAgenticExecution(agentResult = {}) {
   const agent = agentResult.agent ?? {};
   const outputs = asObject(agent.outputs);
@@ -200,6 +207,9 @@ function summarizeAgenticExecution(agentResult = {}) {
     ?? null;
   const evidence = asObject(agent.evidence ?? outputs.evidence);
   const writes = asObject(agent.writes ?? outputs.writes);
+  const handoffNote = normalizeHandoffNoteField(
+    agent.handoff_note ?? outputs.handoff_note ?? agentResult.handoff_note,
+  );
   return {
     success: !!agentResult.success,
     deferred: !!agentResult.deferred,
@@ -216,6 +226,7 @@ function summarizeAgenticExecution(agentResult = {}) {
     writes,
     verification_hints: agent.verification_hints ?? [],
     next_actions: agent.next_actions ?? [],
+    handoff_note: handoffNote,
     outputs,
     created_files: agent.created_files ?? [],
     modified_files: agent.modified_files ?? [],
@@ -328,6 +339,7 @@ function agentActionResult(action, agenticExecution, overrides = {}) {
     writes: agenticExecution.writes ?? {},
     verification_hints: agenticExecution.verification_hints ?? [],
     next_actions: agenticExecution.next_actions ?? [],
+    handoff_note: agenticExecution.handoff_note ?? null,
     agent: agenticExecution.agent ?? null,
     agentic_execution: agenticExecution,
     fallback_used: false,

@@ -28,17 +28,19 @@ export class ExecutionPipeline {
    * @param {DecisionQueue} [opts.decisionQueue]
    * @param {object} [opts.githubIssues] required when source='github'
    * @param {'queue'|'github'} [opts.source]
+   * @param {object|null} [opts.executionJournal] Cycle Journal for sibling action notes
    */
   constructor({
     host = null, projectRoot = null, aiClient = null,
     decisionQueue = null, githubIssues = null, source = 'queue',
-    cycleId = null,
+    cycleId = null, executionJournal = null,
   } = {}) {
     this.host = normalizeHost(host);
     this.projectRoot = projectRoot || this.host.basePath || process.cwd();
     this.aiClient = aiClient;
     this.source = source;
     this.githubIssues = githubIssues || this.host.githubIssues || null;
+    this.executionJournal = executionJournal;
     this.decisionQueue = decisionQueue || new DecisionQueue({
       dataDir: join(this.projectRoot, 'data', 'evolution'),
       logFn: (m) => this._log(m),
@@ -76,6 +78,7 @@ export class ExecutionPipeline {
       skipped: [],
       success: false,
       error: null,
+      journal: null,
     };
 
     try {
@@ -83,6 +86,7 @@ export class ExecutionPipeline {
       if (!decisions.length) {
         this._log('no pending decisions');
         result.success = true;
+        result.journal = this.executionJournal?.toJSON?.() ?? null;
         return result;
       }
 
@@ -94,6 +98,7 @@ export class ExecutionPipeline {
         cycleId: this._cycleId,
         host: this.host,
         logFn: (m, lvl) => this._log(m, lvl),
+        executionJournal: this.executionJournal,
       });
 
       for (const decision of decisions) {
@@ -101,14 +106,18 @@ export class ExecutionPipeline {
         this._log(`executing decision ${decision.id} type=${action?.type}`);
 
         if (dryRun) {
-          result.executed.push({ id: decision.id, action, result: { success: true, dry_run: true } });
+          const item = { id: decision.id, action, result: { success: true, dry_run: true } };
+          result.executed.push(item);
+          this.executionJournal?.recordExecuted?.(item, { source: 'queue' });
           await this._releaseDecision(decision, 'pending');
           continue;
         }
 
         try {
           const r = await executor.execute(action);
-          result.executed.push({ id: decision.id, action, result: r });
+          const item = { id: decision.id, action, result: r };
+          result.executed.push(item);
+          this.executionJournal?.recordExecuted?.(item, { source: 'queue' });
           if (r?.success) {
             await this._completeDecision(decision, this._summarize(r));
           } else if (r?.deferred) {
@@ -117,7 +126,9 @@ export class ExecutionPipeline {
             await this._failDecision(decision, r?.error || 'handler returned non-success');
           }
         } catch (e) {
-          result.executed.push({ id: decision.id, action, result: { success: false, error: e.message } });
+          const item = { id: decision.id, action, result: { success: false, error: e.message } };
+          result.executed.push(item);
+          this.executionJournal?.recordExecuted?.(item, { source: 'queue' });
           await this._failDecision(decision, e.message);
         }
       }
@@ -127,6 +138,7 @@ export class ExecutionPipeline {
       result.error = e?.message || String(e);
       this._log(`exec pipeline failed: ${result.error}`, 'error');
     }
+    result.journal = this.executionJournal?.toJSON?.() ?? null;
     return result;
   }
 
