@@ -1,4 +1,4 @@
-﻿import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+﻿import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
@@ -1731,7 +1731,7 @@ export const links = defineLinks({
 
     expect(result.success).toBe(true);
     expect(result.resolution).toBe('link');
-    expect(result.cwd.replace(/\\/g, '/')).toBe(linkRepo.replace(/\\/g, '/'));
+    expect(realpathSync(result.cwd)).toBe(realpathSync(linkRepo));
   });
 
   it('loads configured external action env from the tool root, overriding stale process env for tool-defined keys', async () => {

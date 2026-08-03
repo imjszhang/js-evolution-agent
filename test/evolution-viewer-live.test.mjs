@@ -162,37 +162,69 @@ describe('SseHub', () => {
   });
 });
 
+function isTransientHttpError(error) {
+  const code = error?.code;
+  return code === 'ECONNRESET' || code === 'ECONNABORTED' || error?.message === 'aborted';
+}
+
 function httpGetText(port, path, maxMs = 3000) {
   return new Promise((resolve, reject) => {
     const chunks = [];
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    const fail = (error) => {
+      if (settled) return;
+      if (isTransientHttpError(error)) {
+        finish(chunks.join(''));
+        return;
+      }
+      settled = true;
+      reject(error);
+    };
     const req = get(`http://127.0.0.1:${port}${path}`, (res) => {
       res.on('data', (c) => chunks.push(c));
-      res.on('end', () => resolve(chunks.join('')));
-      res.on('error', reject);
+      res.on('end', () => finish(chunks.join('')));
+      res.on('error', fail);
     });
-    req.on('error', reject);
+    req.on('error', fail);
     setTimeout(() => {
       req.destroy();
-      resolve(chunks.join(''));
+      finish(chunks.join(''));
     }, maxMs);
   });
 }
 
-function httpGetJson(port, path) {
-  return new Promise((resolve, reject) => {
-    get(`http://127.0.0.1:${port}${path}`, (res) => {
-      const chunks = [];
-      res.on('data', (c) => chunks.push(c));
-      res.on('end', () => {
-        try {
-          resolve(JSON.parse(chunks.join('')));
-        } catch (e) {
-          reject(e);
-        }
+async function httpGetJson(port, path, { retries = 1 } = {}) {
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      return await new Promise((resolve, reject) => {
+        const req = get(`http://127.0.0.1:${port}${path}`, (res) => {
+          const chunks = [];
+          res.on('data', (c) => chunks.push(c));
+          res.on('end', () => {
+            try {
+              resolve(JSON.parse(chunks.join('')));
+            } catch (e) {
+              reject(e);
+            }
+          });
+          res.on('error', reject);
+        });
+        req.on('error', reject);
       });
-      res.on('error', reject);
-    }).on('error', reject);
-  });
+    } catch (error) {
+      if (attempt < retries && isTransientHttpError(error)) {
+        await new Promise((r) => setTimeout(r, 50));
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw new Error('httpGetJson exhausted retries');
 }
 
 describe('round-catalog and round-detail', () => {

@@ -1226,7 +1226,7 @@ export function parseSubjectRepoLane(policyText = '', {
   const testCommand = firstPolicyValue(values, ['Test Command', 'Verify Command']);
   const runCommand = firstPolicyValue(values, ['Run Command', 'Observe Command']);
   const githubRepo = firstPolicyValue(values, ['GitHub Repo', 'Github Repo', 'Remote Repo']);
-  const resolvedRepo = repo ? resolve(root, repo) : null;
+  const resolvedRepo = repo ? resolveMachinePath(repo, root) : null;
   return {
     configured: Boolean(repo),
     repo,
