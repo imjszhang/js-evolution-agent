@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
@@ -5,6 +6,8 @@ export const CARRYOVER_SCHEMA_VERSION = 2;
 export const CARRYOVER_MECHANICAL_LIMIT = 8;
 export const CARRYOVER_DIARY_LIMIT = 10;
 export const CARRYOVER_TOTAL_LIMIT = 18;
+/** Jaccard similarity threshold for fuzzy carryover fingerprint inheritance. */
+export const CARRYOVER_FINGERPRINT_JACCARD = 0.6;
 
 /** Lower index = higher keep priority when capping mechanical items. */
 export const CARRYOVER_ORIGIN_PRIORITY = {
@@ -15,6 +18,14 @@ export const CARRYOVER_ORIGIN_PRIORITY = {
   goal_suggestion: 4,
 };
 
+/** Origins diary may retire via Carryover 销账 / retirements (not decide_deferred). */
+export const RETIRABLE_ORIGINS = new Set([
+  'open_gap',
+  'suggestion_overflow',
+  'suggestion_deferred',
+  'goal_suggestion',
+]);
+
 const STALE_PIPELINE_STEPS = ['goals_assess', 'goals_calibrate', 'belief_update'];
 const STALE_STATUS_RE = /pending|尚未|未完成|skipped|未闭环|未恢复/i;
 const DONE_SNAPSHOT_RE = /\b(done|applied|updated|ok|refine)\b/i;
@@ -24,14 +35,57 @@ export function carryoverPath(runtimeRoot) {
 }
 
 /**
- * Normalize a carryover item to `{ text, source, origin? }`.
+ * Stable fingerprint for carryover text (normalized key hash).
+ */
+export function carryoverFingerprint(text) {
+  const key = normalizeCarryoverTextKey(text);
+  if (!key) return null;
+  return createHash('sha256').update(key).digest('hex').slice(0, 16);
+}
+
+function tokenizeForJaccard(text) {
+  const key = normalizeCarryoverTextKey(text);
+  if (!key) return new Set();
+  // Split into overlapping 3-grams for CJK-friendly similarity; also keep latin words.
+  const tokens = new Set();
+  const latin = String(text ?? '').toLowerCase().match(/[a-z0-9_]{2,}/g) || [];
+  for (const w of latin) tokens.add(w);
+  if (key.length <= 3) {
+    tokens.add(key);
+  } else {
+    for (let i = 0; i <= key.length - 3; i += 1) {
+      tokens.add(key.slice(i, i + 3));
+    }
+  }
+  return tokens;
+}
+
+export function jaccardSimilarity(a, b) {
+  const setA = a instanceof Set ? a : tokenizeForJaccard(a);
+  const setB = b instanceof Set ? b : tokenizeForJaccard(b);
+  if (!setA.size || !setB.size) return 0;
+  let intersection = 0;
+  for (const t of setA) {
+    if (setB.has(t)) intersection += 1;
+  }
+  const union = setA.size + setB.size - intersection;
+  return union > 0 ? intersection / union : 0;
+}
+
+/**
+ * Normalize a carryover item to `{ text, source, origin?, fingerprint?, first_seen_cycle?, seen_count? }`.
  * Plain strings become diary items (v1 compat).
  */
 export function normalizeCarryoverItem(item, { defaultSource = 'diary' } = {}) {
   if (typeof item === 'string') {
     const text = item.trim();
     if (!text) return null;
-    return { text, source: defaultSource === 'mechanical' ? 'mechanical' : 'diary' };
+    const out = { text, source: defaultSource === 'mechanical' ? 'mechanical' : 'diary' };
+    if (out.source === 'mechanical') {
+      out.fingerprint = carryoverFingerprint(text);
+      out.seen_count = 1;
+    }
+    return out;
   }
   if (!item || typeof item !== 'object') return null;
   const text = String(item.text ?? item.summary ?? item.item ?? '').trim();
@@ -40,6 +94,16 @@ export function normalizeCarryoverItem(item, { defaultSource = 'diary' } = {}) {
   const out = { text, source };
   if (item.origin != null && String(item.origin).trim()) {
     out.origin = String(item.origin).trim();
+  }
+  if (source === 'mechanical') {
+    out.fingerprint = item.fingerprint != null && String(item.fingerprint).trim()
+      ? String(item.fingerprint).trim()
+      : carryoverFingerprint(text);
+    if (item.first_seen_cycle != null && String(item.first_seen_cycle).trim()) {
+      out.first_seen_cycle = String(item.first_seen_cycle).trim();
+    }
+    const count = Number(item.seen_count);
+    out.seen_count = Number.isFinite(count) && count >= 1 ? Math.floor(count) : 1;
   }
   return out;
 }
@@ -164,6 +228,61 @@ export function readCarryoverItems(runtimeRoot) {
   return readCarryoverDocument(runtimeRoot).items.map(itemText).filter(Boolean);
 }
 
+/**
+ * Inherit fingerprint / first_seen_cycle / seen_count from previous mechanical items.
+ * - Exact fingerprint match → inherit; increment seen_count unless same cycle rewrite.
+ * - Else Jaccard ≥ threshold → inherit the best match.
+ * - New items: seen_count=1, first_seen_cycle=current.
+ */
+export function inheritCarryoverTracking(newItems = [], previousDoc = null, {
+  cycleId = null,
+  jaccardThreshold = CARRYOVER_FINGERPRINT_JACCARD,
+} = {}) {
+  const prevItems = normalizeCarryoverItems(previousDoc?.items)
+    .filter((item) => item.source === 'mechanical');
+  const prevByFp = new Map();
+  for (const item of prevItems) {
+    const fp = item.fingerprint || carryoverFingerprint(item.text);
+    if (fp && !prevByFp.has(fp)) prevByFp.set(fp, item);
+  }
+  const sameCycle = Boolean(cycleId && previousDoc?.cycle_id && previousDoc.cycle_id === cycleId);
+
+  return normalizeCarryoverItems(newItems).map((item) => {
+    if (item.source !== 'mechanical') return item;
+    const fp = item.fingerprint || carryoverFingerprint(item.text);
+    let match = fp ? prevByFp.get(fp) : null;
+    if (!match && prevItems.length) {
+      let best = null;
+      let bestScore = 0;
+      for (const prev of prevItems) {
+        const score = jaccardSimilarity(item.text, prev.text);
+        if (score >= jaccardThreshold && score > bestScore) {
+          best = prev;
+          bestScore = score;
+        }
+      }
+      match = best;
+    }
+
+    if (!match) {
+      return {
+        ...item,
+        fingerprint: fp,
+        first_seen_cycle: cycleId || item.first_seen_cycle || null,
+        seen_count: 1,
+      };
+    }
+
+    const prevCount = Number(match.seen_count) || 1;
+    return {
+      ...item,
+      fingerprint: match.fingerprint || fp,
+      first_seen_cycle: match.first_seen_cycle || cycleId || null,
+      seen_count: sameCycle ? prevCount : prevCount + 1,
+    };
+  });
+}
+
 export function writeCarryoverDocument(runtimeRoot, {
   cycleId = null,
   items = [],
@@ -172,7 +291,9 @@ export function writeCarryoverDocument(runtimeRoot, {
 } = {}) {
   const path = carryoverPath(runtimeRoot);
   mkdirSync(dirname(path), { recursive: true });
-  const normalized = normalizeCarryoverItems(items, { defaultSource }).slice(0, CARRYOVER_TOTAL_LIMIT);
+  const previousDoc = readCarryoverDocument(runtimeRoot);
+  const normalized = normalizeCarryoverItems(items, { defaultSource });
+  const tracked = inheritCarryoverTracking(normalized, previousDoc, { cycleId });
   const doc = {
     schema_version: CARRYOVER_SCHEMA_VERSION,
     cycle_id: cycleId || null,
@@ -180,7 +301,7 @@ export function writeCarryoverDocument(runtimeRoot, {
     step_status_snapshot: step_status_snapshot && typeof step_status_snapshot === 'object'
       ? step_status_snapshot
       : null,
-    items: normalized,
+    items: tracked.slice(0, CARRYOVER_TOTAL_LIMIT),
   };
   writeFileSync(path, JSON.stringify(doc, null, 2), 'utf-8');
   return doc;
@@ -205,18 +326,69 @@ export function writeCarryoverItems(runtimeRoot, {
 }
 
 /**
+ * Apply diary-declared retirements (M1..Mn) against existing items.
+ * Numbering matches normalizeCarryoverItems(existingItems) order (same as diary context).
+ * Only mechanical items with RETIRABLE_ORIGINS may be retired; decide_deferred / diary /
+ * out-of-range ids are ignored. Returns { items, dropped }.
+ */
+export function applyCarryoverRetirements(existingItems = [], retirements = []) {
+  const list = normalizeCarryoverItems(existingItems);
+  const retirementById = new Map();
+  for (const entry of Array.isArray(retirements) ? retirements : []) {
+    if (!entry || typeof entry !== 'object') continue;
+    const id = String(entry.id || '').trim().toUpperCase();
+    if (!/^M\d+$/.test(id)) continue;
+    if (!retirementById.has(id)) retirementById.set(id, entry);
+  }
+  if (!retirementById.size) {
+    return { items: list, dropped: [] };
+  }
+
+  const kept = [];
+  const dropped = [];
+  list.forEach((item, idx) => {
+    const id = `M${idx + 1}`;
+    const retirement = retirementById.get(id);
+    if (!retirement) {
+      kept.push(item);
+      return;
+    }
+    const origin = item.origin || null;
+    const retirable = item.source === 'mechanical'
+      && origin
+      && RETIRABLE_ORIGINS.has(origin);
+    if (!retirable) {
+      kept.push(item);
+      return;
+    }
+    dropped.push({
+      ...item,
+      drop_reason: 'closed_by_exec',
+      retirement_id: id,
+      evidence: retirement.evidence ?? null,
+      retirement_reason: retirement.reason != null ? String(retirement.reason) : null,
+    });
+  });
+  return { items: kept, dropped };
+}
+
+/**
  * Merge diary narrative bullets with existing mechanical items from this cycle.
  * Mechanical items are preserved (host-managed); diary bullets replace prior diary items.
  * Exact-normalized diary texts that duplicate mechanical items are dropped.
  * Stale pipeline-status diary/mechanical claims are filtered against the snapshot.
+ * Optional retirements (from diary Carryover 销账) drop closed mechanical items first.
  */
 export function mergeDiaryCarryover({
   existingItems = [],
   diaryBullets = [],
   stepStatusSnapshot = null,
+  retirements = [],
 } = {}) {
+  const retired = applyCarryoverRetirements(existingItems, retirements);
+
   const { kept: rankedMechanical, dropped: droppedByCap } = rankAndLimitMechanicalItems(
-    existingItems,
+    retired.items,
     { limit: CARRYOVER_MECHANICAL_LIMIT },
   );
 
@@ -244,6 +416,7 @@ export function mergeDiaryCarryover({
   const staleFiltered = filterStalePipelineCarryoverItems(combined, stepStatusSnapshot);
   const items = staleFiltered.kept.slice(0, CARRYOVER_TOTAL_LIMIT);
   const dropped = [
+    ...retired.dropped,
     ...droppedByCap.map((item) => ({ ...item, drop_reason: 'mechanical_cap' })),
     ...droppedExactDupes.map((item) => ({ ...item, drop_reason: 'exact_dupe_of_mechanical' })),
     ...staleFiltered.dropped.map((item) => ({ ...item, drop_reason: 'stale_pipeline_status' })),

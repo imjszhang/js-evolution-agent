@@ -124,6 +124,39 @@ export function extractCarryoverFromDiaryMarkdown(markdown, { limit = 10 } = {})
     .slice(0, limit);
 }
 
+/**
+ * Extract optional Carryover retirements / 销账 section from diary markdown.
+ * Returns [{ id, reason, evidence }] (evidence may be null). Missing section → [].
+ */
+export function extractCarryoverRetirementsFromDiaryMarkdown(markdown) {
+  const body = extractMarkdownSection(markdown, 'Carryover 销账')
+    || extractMarkdownSection(markdown, 'Carryover retirements')
+    || '';
+  if (!body.trim()) return [];
+
+  const out = [];
+  for (const rawLine of body.split('\n')) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const content = line
+      .replace(/^[-*]\s+/, '')
+      .replace(/^\d+\.\s+/, '')
+      .trim();
+    const match = content.match(/^(M\d+)\s*[:：]\s*(.+)$/i);
+    if (!match) continue;
+    const id = match[1].toUpperCase();
+    const rest = match[2].trim();
+    const evidenceMatch = rest.match(/\[([a-z_]+:[^\]]+)\]/i);
+    const evidence = evidenceMatch ? `[${evidenceMatch[1]}]` : null;
+    out.push({
+      id,
+      reason: rest,
+      evidence,
+    });
+  }
+  return out;
+}
+
 export { loadCycleStepContext } from '../cli/utils/cycle-checkpoints.mjs';
 
 export function skipGoalsAssessFromEnv() {
@@ -607,6 +640,7 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
     logger,
     eventType: 'agent_loop_report_honesty',
     logLabel: 'agent_loop',
+    runtimeRoot: runtime.runtimeRoot,
   });
 
   // --- Phase: classic Analyze+Decide ---
@@ -935,6 +969,11 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
     decisions_queued: queuedIds,
     decisions_skipped: queuedResult.decisions_skipped,
     analysis,
+    injected_operator_fact_ids: Array.isArray(prepared?.reportContext?.injected_operator_fact_ids)
+      ? prepared.reportContext.injected_operator_fact_ids
+      : [],
+    pending_operator_facts: prepared?.reportContext?.pending_operator_facts ?? [],
+    pending_operator_questions: prepared?.reportContext?.pending_operator_questions ?? [],
     suggestion_coverage: {
       summary: suggestionCoverage.summary,
       items: suggestionCoverage.items,
@@ -966,11 +1005,18 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
     duration_ms: durationMs,
   });
 
+  const injectedOperatorFactIds = Array.isArray(prepared?.reportContext?.injected_operator_fact_ids)
+    ? prepared.reportContext.injected_operator_fact_ids
+    : [];
+
   if (recordState) {
     await persistCheckpoint(recordState, resolvedCycleId, 'intel', {
       cycle_id: resolvedCycleId,
       success: true,
       decisions_queued: queuedIds.length,
+      injected_operator_fact_ids: injectedOperatorFactIds,
+      pending_operator_facts: prepared?.reportContext?.pending_operator_facts ?? [],
+      pending_operator_questions: prepared?.reportContext?.pending_operator_questions ?? [],
       suggestion_coverage: {
         summary: suggestionCoverage.summary,
         items: suggestionCoverage.items,
@@ -981,8 +1027,12 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
         reason: memoryUpdate?.reason ?? null,
         used_fallback: memoryUpdate?.used_fallback === true,
         narrative_preserved: memoryUpdate?.narrative_preserved === true,
+        final_candidate: memoryUpdate?.final_candidate ?? null,
         primary_issues: Array.isArray(memoryUpdate?.primary_issues)
           ? memoryUpdate.primary_issues.slice(0, 20)
+          : [],
+        preserved_issues: Array.isArray(memoryUpdate?.preserved_issues)
+          ? memoryUpdate.preserved_issues.slice(0, 20)
           : [],
         fallback_issues: Array.isArray(memoryUpdate?.fallback_issues)
           ? memoryUpdate.fallback_issues.slice(0, 20)
@@ -1005,6 +1055,7 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
       turns: investigateResult.turns,
       decisions_queued: queuedIds,
       queued_count: queuedIds.length,
+      injected_operator_fact_ids: injectedOperatorFactIds,
       report_path: persistedReport.mdPath,
       report_raw_path: rawReportPath,
       conversation_context_path: conversationPath,
@@ -1106,6 +1157,9 @@ export async function runIntelStep(ctx, { cycleId = null, recordState = null } =
       cycle_id: resolvedCycleId,
       success: true,
       decisions_queued: metaPatch.decisions_queued,
+      injected_operator_fact_ids: intelResult.injected_operator_fact_ids ?? [],
+      pending_operator_facts: intelResult.pending_operator_facts ?? [],
+      pending_operator_questions: intelResult.pending_operator_questions ?? [],
       report: intelResult.report ? {
         mdPath: intelResult.report.mdPath,
         source: intelResult.report.source,
@@ -1337,10 +1391,12 @@ export async function runBeliefUpdateStep(ctx, {
       aiClient: cfg.aiClient,
       agentContextDocs: cfg.agentContextDocs,
       logger: cfg.host.logger,
+      runtimeRoot: ctx.runtime?.runtimeRoot ?? null,
     });
     if (recordState) {
       const artifactCycleId = stateCycleId(intelResult, null, execResult);
       await recordStepSidecar(recordState.root, recordState.subject, artifactCycleId, 'belief_update', 'done');
+      const digestion = beliefUpdateResult.operator_fact_digestion;
       await persistCheckpoint(recordState, artifactCycleId, 'belief_update', {
         cycle_id: execResult.cycle_id,
         skipped: false,
@@ -1349,6 +1405,13 @@ export async function runBeliefUpdateStep(ctx, {
           result: beliefUpdateResult.result,
           eventsWritten: beliefUpdateResult.eventsWritten ?? 0,
         },
+        operator_fact_digestion: digestion ? {
+          digested_count: digestion.digested?.length ?? 0,
+          beliefs_created: digestion.beliefs_created?.length ?? 0,
+          questions_opened: digestion.questions_opened?.length ?? 0,
+          failed_count: digestion.failed?.length ?? 0,
+          outcomes: (digestion.digested || []).map((d) => ({ id: d.id, outcome: d.outcome })),
+        } : null,
       });
     }
     return { beliefUpdateResult };
@@ -1447,15 +1510,90 @@ export async function runGoalsCalibrateStep(ctx, { intelResult, goalsAssessResul
     skipped_patches: goalsCalibrateResult.skipped_patches ?? [],
     belief_retirements: goalsCalibrateResult.belief_retirements ?? [],
   });
+
+  // Death-boundary escalation: feedback_state=dead for long enough without mutate apply.
+  let ruleFeedbackEscalation = null;
+  try {
+    const {
+      selectRuleFeedbackEscalations,
+      buildRuleFeedbackQuestionText,
+    } = await import('../intelligence/rule-feedback.mjs');
+    const {
+      openOperatorQuestion,
+      readPendingOperatorQuestions,
+    } = await import('../intelligence/operator-questions.mjs');
+    const ruleFeedbackStats = goalsAssessResult.rule_feedback_stats ?? null;
+    const runtimeRoot = ctx.runtime?.runtimeRoot
+      ?? goalsAssessResult.runtime?.runtimeRoot
+      ?? null;
+    if (!runtimeRoot) {
+      throw new Error('runtimeRoot unavailable for rule feedback escalation');
+    }
+    const pending = readPendingOperatorQuestions(runtimeRoot, { limit: 50 });
+    const escalations = selectRuleFeedbackEscalations({
+      ruleFeedbackStats,
+      assessment: goalsAssessResult.assessment,
+      calibrateResult: goalsCalibrateResult,
+      pendingQuestions: pending.questions,
+    });
+    const opened = [];
+    for (const stat of escalations) {
+      const { question } = openOperatorQuestion(runtimeRoot, {
+        question: buildRuleFeedbackQuestionText(stat),
+        reason: `Rule feedback death streak=${stat.constant_signature_streak} for ${stat.goal_id}`,
+        trigger: 'rule_feedback_dead',
+        cycle_id: intelResult.cycle_id,
+        created_by: 'rule_feedback_watchdog',
+        metadata: {
+          goal_id: stat.goal_id,
+          feedback_state: stat.feedback_state,
+          constant_signature_streak: stat.constant_signature_streak,
+          constant_keys: stat.constant_keys,
+          latest_receipt_id: stat.latest_receipt_id,
+        },
+      });
+      opened.push({
+        question_id: question.id,
+        goal_id: stat.goal_id,
+        streak: stat.constant_signature_streak,
+      });
+      store.recordEvolutionEvent({
+        type: 'rule_feedback_escalated',
+        status: 'opened',
+        cycle_id: intelResult.cycle_id,
+        goal_id: stat.goal_id,
+        question_id: question.id,
+        constant_signature_streak: stat.constant_signature_streak,
+        feedback_state: stat.feedback_state,
+      });
+    }
+    ruleFeedbackEscalation = {
+      eligible: escalations.length,
+      opened: opened.length,
+      questions: opened,
+    };
+  } catch (e) {
+    ctx.cfg?.host?.logger?.warning?.(
+      `[goals_calibrate] rule feedback escalation failed: ${e?.message || e}`,
+    );
+    ruleFeedbackEscalation = {
+      eligible: 0,
+      opened: 0,
+      questions: [],
+      error: e?.message || String(e),
+    };
+  }
+
   if (recordState) {
     await recordStepSidecar(recordState.root, recordState.subject, intelResult.cycle_id, 'goals_calibrate', 'done');
     await persistCheckpoint(recordState, intelResult.cycle_id, 'goals_calibrate', {
       cycle_id: intelResult.cycle_id,
       skipped: false,
       goalsCalibrateResult,
+      rule_feedback_escalation: ruleFeedbackEscalation,
     });
   }
-  return { goalsCalibrateResult };
+  return { goalsCalibrateResult, ruleFeedbackEscalation };
 }
 
 export async function runDiaryStep(ctx, {
@@ -1485,6 +1623,7 @@ export async function runDiaryStep(ctx, {
       const diaryMarkdown = diary?.markdown
         ?? (diary?.mdPath && existsSync(diary.mdPath) ? readFileSync(diary.mdPath, 'utf-8') : '');
       const diaryBullets = extractCarryoverFromDiaryMarkdown(diaryMarkdown);
+      const retirements = extractCarryoverRetirementsFromDiaryMarkdown(diaryMarkdown);
       const existing = readCarryoverDocument(runtime.runtimeRoot);
       const stepStatusSnapshot = buildStepStatusSnapshot({
         execResult,
@@ -1497,6 +1636,7 @@ export async function runDiaryStep(ctx, {
         existingItems: existing.items,
         diaryBullets,
         stepStatusSnapshot,
+        retirements,
       });
       if (Array.isArray(merged.dropped) && merged.dropped.length) {
         const byReason = merged.dropped.reduce((acc, item) => {
@@ -1509,6 +1649,7 @@ export async function runDiaryStep(ctx, {
           origin: item.origin ?? null,
           source: item.source ?? null,
           drop_reason: item.drop_reason ?? null,
+          evidence: item.evidence ?? null,
         }));
         const eventCycleId = execResult?.cycle_id || intelResult?.cycle_id;
         store.recordEvolutionEvent({
@@ -1521,7 +1662,10 @@ export async function runDiaryStep(ctx, {
           by_reason: byReason,
           dropped: droppedSummary,
         });
-        const staleDropped = merged.dropped.filter((item) => item.drop_reason === 'stale_pipeline_status');
+        const staleDropped = merged.dropped.filter((item) => (
+          item.drop_reason === 'stale_pipeline_status'
+          || item.drop_reason === 'closed_by_exec'
+        ));
         if (staleDropped.length) {
           store.recordEvolutionEvent({
             type: 'carryover_stale_item_dropped',
@@ -1534,6 +1678,8 @@ export async function runDiaryStep(ctx, {
               text: item.text,
               origin: item.origin ?? null,
               source: item.source ?? null,
+              drop_reason: item.drop_reason ?? null,
+              evidence: item.evidence ?? null,
             })),
           });
         }

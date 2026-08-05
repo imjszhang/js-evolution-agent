@@ -5,7 +5,10 @@ import {
 } from 'js-intel-store';
 import { INTELLIGENCE_SPECS } from './specs.mjs';
 import { redactSecrets } from './redaction.mjs';
-import { prioritizeActiveOperatorFacts } from './operator-facts.mjs';
+import {
+  prioritizeActiveOperatorFacts,
+  readPendingOperatorFacts,
+} from './operator-facts.mjs';
 import {
   handleContractValidation,
   validateActionReceipt,
@@ -323,22 +326,36 @@ export class IntelligenceStore {
     return this.engine.cleanupAllSources();
   }
 
-  buildContextSummary() {
-    const observations = prioritizeActiveOperatorFacts(
-      this.readRecentIntel({ days: 7, limit: 50 }),
-      20,
-    );
+  buildContextSummary({ runtimeRoot = null } = {}) {
+    const pendingFacts = runtimeRoot
+      ? readPendingOperatorFacts(runtimeRoot, { limit: 10 }).facts
+      : [];
+    const recent = this.readRecentIntel({ days: 7, limit: 50 });
+    // Prefer pending seeds when runtimeRoot is known; otherwise keep legacy
+    // observation-store operator facts visible in the summary.
+    const observations = runtimeRoot
+      ? prioritizeActiveOperatorFacts(recent, 20)
+        .filter((r) => r?.kind !== 'operator_fact' && r?.source !== 'operator_fact')
+      : prioritizeActiveOperatorFacts(recent, 20);
     const events = this.readEvolutionEvents({ limit: 8 });
     const probeResults = this.readProbeResults({ limit: 8 });
     const latestReview = this.readLatestReview();
 
-    return [
-      '# js-evolution-agent intelligence summary',
+    const sections = ['# js-evolution-agent intelligence summary'];
+    if (runtimeRoot) {
+      sections.push(formatList(
+        'Pending operator fact seeds',
+        pendingFacts,
+        (r) => `- [operator_fact] ${r.subject ?? 'operator'}: ${r.content ?? r.summary ?? ''}`,
+      ));
+    }
+    sections.push(
       formatList('Recent observations', observations, (r) => `- [${r.kind ?? 'observation'}] ${r.subject ?? r.source ?? 'unknown'}: ${r.content ?? r.summary ?? ''}`),
       formatList('Recent evolution events', events, (r) => `- [${r.type ?? 'event'}] ${r.action_type ?? r.target ?? 'unknown'}: ${r.result?.status ?? r.status ?? r.summary ?? ''}`),
       formatList('Recent probe results', probeResults, (r) => `- [${r.status ?? 'unknown'}] ${r.probe_type ?? 'probe'} ${r.target ?? ''}: ${r.summary ?? ''}`),
       `Latest review: ${latestReview?.summary ?? latestReview?.outcome ?? 'none'}`,
-    ].join('\n\n');
+    );
+    return sections.join('\n\n');
   }
 }
 

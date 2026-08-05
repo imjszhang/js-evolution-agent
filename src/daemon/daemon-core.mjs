@@ -1502,6 +1502,15 @@ function printArtifactInbox(items) {
     const verify = item.latest_verify_report;
     console.log(`latest_verify_report: ${verify?.name ?? 'none'} ${verify?.semantic_status ? `semantic=${verify.semantic_status}` : ''}`.trim());
     console.log(`standing_memory: ${item.standing_memory.exists ? item.standing_memory.updated_at || 'available' : 'none'}`);
+    const pendingQuestions = item.pending_operator_questions || [];
+    console.log(`pending_operator_questions: ${pendingQuestions.length}`);
+    for (const q of pendingQuestions.slice(0, 5)) {
+      console.log(`  - ${q.id}: ${String(q.question || '').slice(0, 120)}`);
+    }
+    const pendingFacts = item.pending_operator_facts || [];
+    if (pendingFacts.length) {
+      console.log(`pending_operator_facts: ${pendingFacts.length}`);
+    }
     for (const reason of item.attention.reasons || []) console.log(`reason: ${reason}`);
   }
 }

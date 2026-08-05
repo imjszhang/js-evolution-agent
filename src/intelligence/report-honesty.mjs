@@ -4,6 +4,10 @@
  */
 import { extractMarkdownSection } from '../cli/utils/markdown-sections.mjs';
 import { MACHINE_CONTEXT_IDS } from './machine-context-refs.mjs';
+import {
+  readDigestedOperatorFacts,
+  readPendingOperatorFacts,
+} from './operator-facts.mjs';
 
 const SEEN_HEADINGS = Object.freeze(['Seen', 'Evidence', '本轮看到']);
 
@@ -16,6 +20,10 @@ const SUPPORTED_SOURCE_READERS = Object.freeze({
   belief_events: (store, limit) => store.readBeliefEvents?.({ limit }) ?? [],
   retrospectives: (store, limit) => store.readRetrospectives?.({ limit }) ?? [],
   intel_reports: (store, limit) => store.readIntelReports?.({ limit }) ?? [],
+  current_beliefs: (store) => {
+    const doc = store.readCurrentBeliefs?.();
+    return Array.isArray(doc?.beliefs) ? doc.beliefs : [];
+  },
 });
 
 /** Align with report-builder memorySourceType aliases (singular → plural store keys). */
@@ -27,6 +35,8 @@ const SOURCE_TYPE_ALIASES = Object.freeze({
   intel_report: 'intel_reports',
   reports: 'intel_reports',
   belief_event: 'belief_events',
+  operator_fact: 'operator_facts',
+  current_belief: 'current_beliefs',
 });
 
 function normalizeSourceType(sourceType) {
@@ -70,10 +80,27 @@ function splitBullets(body) {
     .filter((line) => line && line !== '(none)');
 }
 
-function recordExists(store, sourceType, sourceId) {
+function operatorFactExists(runtimeRoot, sourceId) {
+  if (!runtimeRoot) return false;
+  const pending = readPendingOperatorFacts(runtimeRoot, { limit: 10_000 }).facts;
+  if (pending.some((f) => f.id === sourceId)) return true;
+  const digested = readDigestedOperatorFacts(runtimeRoot, { limit: 10_000 }).facts;
+  return digested.some((f) => f.id === sourceId);
+}
+
+function recordExists(store, sourceType, sourceId, { runtimeRoot = null } = {}) {
   const normalized = normalizeSourceType(sourceType);
   if (normalized === 'machine_context') {
     return { supported: true, found: MACHINE_CONTEXT_IDS.includes(sourceId), sourceType: normalized };
+  }
+  if (normalized === 'operator_facts') {
+    // Also accept legacy observation-store copies (pre-migration / dual-written).
+    const inPending = operatorFactExists(runtimeRoot, sourceId);
+    if (inPending) return { supported: true, found: true, sourceType: normalized };
+    const obsReader = SUPPORTED_SOURCE_READERS.intel_observations;
+    const obsRows = obsReader?.(store, 500) || [];
+    const inObs = obsRows.some((row) => row?.id === sourceId && (row?.kind === 'operator_fact' || row?.source === 'operator_fact'));
+    return { supported: true, found: inObs, sourceType: normalized };
   }
   const reader = SUPPORTED_SOURCE_READERS[normalized];
   if (!reader) return { supported: false, found: false, sourceType: normalized };
@@ -87,7 +114,7 @@ function recordExists(store, sourceType, sourceId) {
  * Accepts `[type:id]` or bare `type:id`.
  * @returns {{ ok: boolean, sourceType: string|null, sourceId: string|null, reason: string|null, raw: string }}
  */
-export function resolveTypedRef(store, refString) {
+export function resolveTypedRef(store, refString, { runtimeRoot = null } = {}) {
   const raw = String(refString || '').trim();
   if (!raw) {
     return { ok: false, sourceType: null, sourceId: null, reason: 'empty_ref', raw };
@@ -105,7 +132,7 @@ export function resolveTypedRef(store, refString) {
   if (!sourceId) {
     return { ok: false, sourceType, sourceId: null, reason: 'empty_source_id', raw };
   }
-  const { supported, found } = recordExists(store, sourceType, sourceId);
+  const { supported, found } = recordExists(store, sourceType, sourceId, { runtimeRoot });
   if (!supported) {
     return { ok: false, sourceType, sourceId, reason: 'unknown_source_type', raw };
   }
@@ -178,6 +205,7 @@ export function auditIntelReportEvidenceHonesty({
   markdown,
   forbiddenInSeen = [],
   minSeenBulletsWithRefs = 1,
+  runtimeRoot = null,
 } = {}) {
   const findings = [];
   const { heading: seenHeading, body: seenBody } = extractSeenSectionBody(markdown);
@@ -224,7 +252,7 @@ export function auditIntelReportEvidenceHonesty({
       continue;
     }
     for (const ref of refs) {
-      const { supported, found } = recordExists(store, ref.sourceType, ref.sourceId);
+      const { supported, found } = recordExists(store, ref.sourceType, ref.sourceId, { runtimeRoot });
       if (!supported) {
         findings.push({
           rule: 'seen_unknown_source_type',

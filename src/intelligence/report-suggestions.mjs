@@ -12,10 +12,19 @@ function suggestionTextFromLine(line) {
   return line.replace(/^\d+\.\s+/, '').replace(/^[-*]\s+/, '').trim();
 }
 
+/** Pure field-label top-level lines (e.g. **intent**: ...) merge into the previous suggestion. */
+const FIELD_LABEL_LINE_RE = /^\*\*([a-z][a-z0-9_]*)\*\*\s*[:：]\s*(.*)$/i;
+
+function clipSuggestionText(text, maxChars) {
+  return text.length > maxChars ? `${text.slice(0, maxChars)}…` : text;
+}
+
 /**
  * Extract top-level numbered/bullet suggestions from the required report section
  * 「下一轮建议」/ 「Next cycle suggestions」.
  * Nested bullets under a top-level item are NOT numbered separately.
+ * Top-level lines that are only `**field**: value` merge into the previous suggestion
+ * (empty values dropped); without a previous suggestion they stay independent.
  * Returns { suggestions: [{ id, text }], overflow: [{ text }], truncated: boolean }.
  */
 export function extractReportSuggestions(markdown, {
@@ -30,16 +39,34 @@ export function extractReportSuggestions(markdown, {
     return { suggestions: [], overflow: [], truncated: false };
   }
 
-  const topLevel = body
-    .split('\n')
-    .map((line) => line.replace(/\s+$/, ''))
-    .filter((line) => isTopLevelSuggestionLine(line))
-    .map((line) => suggestionTextFromLine(line))
-    .filter(Boolean)
-    .map((text) => (text.length > maxChars ? `${text.slice(0, maxChars)}…` : text));
+  const topLevel = [];
+  for (const rawLine of body.split('\n')) {
+    const line = rawLine.replace(/\s+$/, '');
+    if (!isTopLevelSuggestionLine(line)) continue;
+    const text = suggestionTextFromLine(line);
+    if (!text) continue;
 
-  const kept = topLevel.slice(0, limit);
-  const overflow = topLevel.slice(limit).map((text) => ({ text }));
+    const fieldMatch = text.match(FIELD_LABEL_LINE_RE);
+    if (fieldMatch) {
+      const label = fieldMatch[1];
+      const value = String(fieldMatch[2] || '').trim();
+      if (!value) continue; // empty field tag — drop
+      if (topLevel.length) {
+        const prev = topLevel[topLevel.length - 1];
+        topLevel[topLevel.length - 1] = `${prev}; ${label}: ${value}`;
+        continue;
+      }
+      // No previous suggestion: keep as independent (defensive).
+      topLevel.push(`${label}: ${value}`);
+      continue;
+    }
+
+    topLevel.push(text);
+  }
+
+  const clipped = topLevel.map((text) => clipSuggestionText(text, maxChars));
+  const kept = clipped.slice(0, limit);
+  const overflow = clipped.slice(limit).map((text) => ({ text }));
   const suggestions = kept.map((text, idx) => ({
     id: `S${idx + 1}`,
     text,

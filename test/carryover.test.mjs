@@ -4,9 +4,14 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   CARRYOVER_MECHANICAL_LIMIT,
+  RETIRABLE_ORIGINS,
+  applyCarryoverRetirements,
   buildStepStatusSnapshot,
+  carryoverFingerprint,
   filterStalePipelineCarryoverItems,
   formatCarryover,
+  inheritCarryoverTracking,
+  jaccardSimilarity,
   mergeDiaryCarryover,
   rankAndLimitMechanicalItems,
   readCarryoverDocument,
@@ -188,5 +193,148 @@ describe('carryover v2', () => {
     ]);
     expect(merged.dropped.some((d) => d.drop_reason === 'exact_dupe_of_mechanical')).toBe(true);
     expect(merged.dropped.some((d) => d.drop_reason === 'stale_pipeline_status')).toBe(true);
+  });
+
+  it('applyCarryoverRetirements drops retirable mechanical items with closed_by_exec', () => {
+    const existing = [
+      { text: 'open gap: throttle', source: 'mechanical', origin: 'open_gap' },
+      { text: 'decide deferred keep', source: 'mechanical', origin: 'decide_deferred' },
+      { text: 'diary keep', source: 'diary' },
+      { text: 'suggestion overflow', source: 'mechanical', origin: 'suggestion_overflow' },
+    ];
+    expect(RETIRABLE_ORIGINS.has('open_gap')).toBe(true);
+    expect(RETIRABLE_ORIGINS.has('decide_deferred')).toBe(false);
+
+    const { items, dropped } = applyCarryoverRetirements(existing, [
+      {
+        id: 'M1',
+        reason: 'closed [action_receipts:receipt-1]',
+        evidence: '[action_receipts:receipt-1]',
+      },
+      {
+        id: 'M2',
+        reason: 'should not retire decide_deferred',
+        evidence: '[action_receipts:receipt-2]',
+      },
+      {
+        id: 'M3',
+        reason: 'should not retire diary',
+        evidence: null,
+      },
+      {
+        id: 'M4',
+        reason: 'overflow closed [action_receipts:receipt-4]',
+        evidence: '[action_receipts:receipt-4]',
+      },
+      { id: 'M99', reason: 'out of range ignored', evidence: null },
+    ]);
+
+    expect(items.map((i) => i.text)).toEqual([
+      'decide deferred keep',
+      'diary keep',
+    ]);
+    expect(dropped).toHaveLength(2);
+    expect(dropped.every((d) => d.drop_reason === 'closed_by_exec')).toBe(true);
+    expect(dropped.find((d) => d.retirement_id === 'M1').evidence).toBe('[action_receipts:receipt-1]');
+    expect(dropped.find((d) => d.retirement_id === 'M4').origin).toBe('suggestion_overflow');
+  });
+
+  it('mergeDiaryCarryover applies retirements before cap and preserves behavior without them', () => {
+    const without = mergeDiaryCarryover({
+      existingItems: [
+        { text: 'gap keep', source: 'mechanical', origin: 'open_gap' },
+      ],
+      diaryBullets: ['叙事'],
+    });
+    expect(without.items.map((i) => i.text)).toEqual(['gap keep', '叙事']);
+    expect(without.dropped).toEqual([]);
+
+    const withRetire = mergeDiaryCarryover({
+      existingItems: [
+        { text: 'gap closed', source: 'mechanical', origin: 'open_gap' },
+        { text: 'deferred keep', source: 'mechanical', origin: 'decide_deferred' },
+      ],
+      diaryBullets: ['叙事'],
+      retirements: [
+        { id: 'M1', reason: 'done [action_receipts:r1]', evidence: '[action_receipts:r1]' },
+      ],
+    });
+    expect(withRetire.items.filter((i) => i.source === 'mechanical').map((i) => i.text)).toEqual([
+      'deferred keep',
+    ]);
+    expect(withRetire.dropped).toEqual([
+      expect.objectContaining({
+        text: 'gap closed',
+        drop_reason: 'closed_by_exec',
+        evidence: '[action_receipts:r1]',
+      }),
+    ]);
+  });
+
+  it('inherits fingerprint/seen_count across cycles and does not double-count same cycle', () => {
+    const root = makeRuntimeRoot();
+    writeCarryoverItems(root, {
+      cycleId: 'cycle-1',
+      defaultSource: 'mechanical',
+      items: [
+        { text: 'verify pipeline 对磁盘 typed=35 的独立文件层机械核验未执行', source: 'mechanical', origin: 'open_gap' },
+      ],
+    });
+    const c1 = readCarryoverDocument(root);
+    expect(c1.items[0].fingerprint).toBe(
+      carryoverFingerprint('verify pipeline 对磁盘 typed=35 的独立文件层机械核验未执行'),
+    );
+    expect(c1.items[0].seen_count).toBe(1);
+    expect(c1.items[0].first_seen_cycle).toBe('cycle-1');
+
+    // Same-cycle rewrite (agent_loop → diary) must not increment.
+    writeCarryoverItems(root, {
+      cycleId: 'cycle-1',
+      items: [
+        { text: 'verify pipeline 对磁盘 typed=35 的独立文件层机械核验未执行', source: 'mechanical', origin: 'open_gap' },
+        { text: '叙事备注', source: 'diary' },
+      ],
+    });
+    expect(readCarryoverDocument(root).items.find((i) => i.source === 'mechanical').seen_count).toBe(1);
+
+    // Next cycle increments.
+    writeCarryoverItems(root, {
+      cycleId: 'cycle-2',
+      defaultSource: 'mechanical',
+      items: [
+        { text: 'verify pipeline 对磁盘 typed=35 的独立文件层机械核验未执行', source: 'mechanical', origin: 'open_gap' },
+      ],
+    });
+    const c2 = readCarryoverDocument(root).items[0];
+    expect(c2.seen_count).toBe(2);
+    expect(c2.first_seen_cycle).toBe('cycle-1');
+  });
+
+  it('inheritCarryoverTracking uses Jaccard fuzzy match for rewritten mechanical text', () => {
+    const prev = {
+      cycle_id: 'cycle-1',
+      items: [{
+        text: 'verify pipeline 对磁盘 typed=35/refs=35 的独立文件层机械核验未执行（连续两次文件层 PASS 第一份证据缺失）',
+        source: 'mechanical',
+        origin: 'open_gap',
+        fingerprint: 'abc',
+        first_seen_cycle: 'cycle-1',
+        seen_count: 2,
+      }],
+    };
+    expect(jaccardSimilarity(
+      prev.items[0].text,
+      'verify pipeline 对磁盘 typed=35/refs=35 的独立文件层机械核验仍未执行（连续两次 PASS 第一份证据缺失）',
+    )).toBeGreaterThan(0.6);
+
+    const inherited = inheritCarryoverTracking([
+      {
+        text: 'verify pipeline 对磁盘 typed=35/refs=35 的独立文件层机械核验仍未执行（连续两次 PASS 第一份证据缺失）',
+        source: 'mechanical',
+        origin: 'open_gap',
+      },
+    ], prev, { cycleId: 'cycle-2' });
+    expect(inherited[0].seen_count).toBe(3);
+    expect(inherited[0].first_seen_cycle).toBe('cycle-1');
   });
 });

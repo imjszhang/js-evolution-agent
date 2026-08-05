@@ -294,8 +294,9 @@ async function runHonestyMatrix(pipeline) {
       markdown,
       forbiddenInSeen: [POISON_INTENT_CLAIM_E2E],
       minSeenBulletsWithRefs: 2,
+      runtimeRoot: ctx.runtime?.runtimeRoot ?? null,
     });
-    expect(markdown).toContain(`[intel_observations:${FACT_ID}]`);
+    expect(markdown).toContain(`[operator_facts:${FACT_ID}]`);
     // Dirty model Seen must not survive host splice (phases + agent_loop).
     const seenStart = markdown.indexOf('## Seen');
     const inferredStart = markdown.indexOf('## Inferred');

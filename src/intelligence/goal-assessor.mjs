@@ -207,6 +207,7 @@ export function buildGoalAssessmentContext({
   verificationReportPath = null,
   store,
   goalEventsLimit = 10,
+  ruleFeedbackStats = null,
 } = {}) {
   const goals = flattenGoals(activeGoals);
   const evidence = gatherEvidence(store);
@@ -243,6 +244,7 @@ export function buildGoalAssessmentContext({
     evidence,
     recent_goal_events: recentGoalEvents,
     machine_assessment: machineAssessment,
+    rule_feedback_stats: ruleFeedbackStats,
   };
 }
 
@@ -269,9 +271,19 @@ export function buildGoalAssessmentPrompt({
 rule_status 语义：
 - continue：当前目标/法则仍产生有效交易反馈，不改目标。
 - learn：反馈不足、证据缺口或感知滞后阻碍判断，下一轮应自动进入只读学习、诊断、反馈回路校准。
-- mutate：成果指标持续失败且失败已产生信息，旧法则已被后果证伪，应自动更新成果子目标，进入规则更新期。
+- mutate：成果指标持续失败且失败已产生信息，或**法则反馈死亡**（验收条款连续多轮恒定零信息反馈），旧法则已被后果证伪，应自动更新子目标条款，进入规则更新期。
 - stop：凭据、边界、记忆审计等核心守护失败，暂停成果探索，先恢复核心连续性。
 - insufficient_evidence：情报不足以判断法则状态。
+
+三分失败判据（必须先区分，再选 rule_status）：
+1. **世界未达标**：交易反馈清晰（结果签名随世界变化），只是尚未达到 good_signal → learn 或 continue；继续诊断/等待，不改验收条款。
+2. **通道故障**：transient 的外部/配置故障（如临时 HTTP 502）→ 修通道，不改法则；可用 learn 描述通道修复，不得 mutate 验收条款。
+3. **法则反馈死亡**：rule_feedback_stats 中某子目标 feedback_state="dead"（constant_signature_streak 达阈值且 information_gain=0）→ 按宪章第九条/第十三条，常规交易已无法提供真实反馈，必须 rule_status="mutate"，并用 update_child 修订该条款的观测点；**不得再以 learn 等待**。reason 必须点名该 goal_id 的 feedback_state / streak / constant_keys。
+
+守破分层（mutate 时强制）：
+- 守功能、破形态：守护子目标（role=guard 或 id 前缀 guard-/monitor-）不可 remove_child；只能 update_child 把观测点换成 receipt 证明**实际可观测**的口径。
+- mutate patch 的 evidence_refs 必须引用产生恒定签名的 action_receipt（可用 rule_feedback_stats.latest_receipt_id）。
+- update_child 的 intent/good_signal/bad_signal 应引用 belief id 或 receipt ref，**不要**把每轮失败细节原文复制进 intent（避免法则被失败叙事宪法化）。
 
 硬约束：
 - 只做判定，不执行修改。
@@ -281,7 +293,7 @@ rule_status 语义：
 - status 保持兼容旧工作流；rule_status 是本轮第一性原理判断。若 rule_status=learn 或 mutate，status 通常应为 refine（整树重组才用 replace）。
 - 不得把“目标正确触发人工介入/停止发布”直接当成 continue/keep。若触发原因是成果法则失败、模拟失真、真实反馈脱钩，且守护层稳定，必须输出 rule_status="learn" 或 rule_status="mutate"，并给出 goal_patches。
 - rule_status="learn" 的 goal_patches 只能描述只读探针、诊断、反馈回路校准、replay/challenge/rank/rankScore 相关性分析；必须显式禁止发布、远端写入和 POST /api/agent/tank/code。
-- rule_status="mutate" 的 goal_patches 应把失败反馈沉淀为新成果法则，例如真实反馈门禁、challenge/replay 相关性门禁、底层行为策略假设验证；不得绕过主体发布审批。
+- rule_status="mutate" 的 goal_patches 应把失败反馈沉淀为新成果法则或修订已死亡的验收观测点，例如真实反馈门禁、challenge/replay 相关性门禁、底层行为策略假设验证、或把不可观测字段改为可观测口径；不得绕过主体发布审批；不得删除守护功能本身。
 - 降标或收缩目标只允许作为恢复期策略，不能永久替代原始主目标的成果压力。若当前目标已从「成果目标」（例如胜率、排名、真实反馈改善、策略能力提升）降为「过程目标」（例如凭据合规、审计、仅观察），必须判断这些过程目标是否已经完成、稳定或可持续。
 - 当恢复期子目标已经达成或连续多轮可维持时，不应仅因低标准目标仍可验证就继续 keep；应优先建议 refine，把目标重新升回能推动原始主目标的成果指标。
 - 若 active_goals 的子目标全部是前置条件、合规、审计或观察类任务，而缺少直接衡量主体效果的成果指标，必须在 reason 中明确指出 "goal_pressure_loss"。除非有明确证据表明主体仍处于阻塞恢复期，否则应输出 status="refine"。
@@ -289,10 +301,10 @@ rule_status 语义：
 - 如果连续多个 cycle 为 keep，但顶层成果指标没有改善（例如 matchCount、rank、胜率或模拟质量长期停滞），不得仅因目标「仍可验证」而 keep；必须评估是否需要升标、收紧门禁或新增成果型子目标。
 - 评估 safe-runtime 时必须区分「agent 行为合规」「宿主预检阻断」和「provider/文件系统硬隔离」；verify_report 中的 boundary_risk 可作为边界风险证据，但不得把软约束误判为硬隔离。
 - 若 verification.semantic 存在，最新 semantic verification 优先于旧 report、diary 或 remembered agent claim。它仍不是 Seen 事实；它是最近执行结果的解释层证据，应用来覆盖旧推断而不是放大旧推断。
-- evidence_refs：须引用支持你结论的情报条目（intel_report / verify_report / observation / probe_result / retrospective / goal_event / evolution_event / belief_event）。若某项判断主要依据某一权威文献中的原则，也请用 type 为 agent_context、id 为该文档 id、ref 为该文档 id 前加前缀 agent_context: 一并列出，使理由可追溯。
+- evidence_refs：须引用支持你结论的情报条目（intel_report / verify_report / observation / probe_result / retrospective / goal_event / evolution_event / belief_event / action_receipt）。若某项判断主要依据某一权威文献中的原则，也请用 type 为 agent_context、id 为该文档 id、ref 为该文档 id 前加前缀 agent_context: 一并列出，使理由可追溯。
 - 如果某个 goal 下 active beliefs 全部 refuted/blocked，或 belief 长期无法产生 evidence，应在 reason 中指出 strategy pressure 或 goal pressure 失衡。
 - 没有可用的 evidence_refs（含 agent_context）时 confidence 必须为 low。
-- reason 必须用中文简述：结合了哪些文献要点 + 哪些情报事实。
+- reason 必须用中文简述：结合了哪些文献要点 + 哪些情报事实；若使用了 rule_feedback_stats，必须写明相关 goal 的 feedback_state。
 - 局部变化（增删改单个子目标）优先使用 goal_patches，不要同时填写 proposed_goal。仅主目标 intent 换代或整树重组时才用 proposed_goal。
 - goal_patches 与 proposed_goal 互斥；若使用 goal_patches，proposed_goal 必须为 null。
 - split 语义请用 remove_child + add_child 的 patch 列表表达；每个 add_child 的 child 必须带 role: "outcome" 或 "guard"。
@@ -341,9 +353,19 @@ Step 2: Under those constraints, use the structured intelligence block below to 
 rule_status semantics:
 - continue: the current law/goal still produces useful transaction feedback; do not change goals.
 - learn: feedback is thin, noisy, or blocked by evidence gaps; next cycle should enter read-only learning, diagnostics, or feedback-loop calibration.
-- mutate: outcome metrics keep failing and the failures now contain information; the old law has been falsified and outcome goals should be updated.
+- mutate: outcome metrics keep failing and the failures now contain information, OR **rule feedback death** (an acceptance clause yields a constant zero-information signature across cycles); the old law has been falsified and child clauses should be updated.
 - stop: core guardrails such as credentials, boundary, or memory audit failed; pause outcome exploration and recover continuity first.
 - insufficient_evidence: evidence is too thin to judge the rule state.
+
+Three-way failure triage (classify first, then choose rule_status):
+1. **World not yet at target**: feedback is live (result signature changes with the world) but good_signal unmet → learn or continue; keep diagnosing / waiting; do not rewrite acceptance clauses.
+2. **Channel fault**: transient external/config faults (e.g. temporary HTTP 502) → repair the channel, do not mutate the law; learn may describe channel repair.
+3. **Rule feedback death**: rule_feedback_stats marks a child goal feedback_state="dead" (constant_signature_streak at threshold and information_gain=0) → per Constitution Arts. 9/13, conventional transactions no longer yield useful feedback; you MUST return rule_status="mutate" with update_child revising that clause's observation point; **do not keep learn-waiting**. reason MUST name the goal_id feedback_state / streak / constant_keys.
+
+Hold/break layering (required on mutate):
+- Hold function, break form: guard children (role=guard or id prefix guard-/monitor-) must not be remove_child; only update_child to replace the observation point with a receipt-proven *actually observable* criterion.
+- mutate patch evidence_refs MUST cite the action_receipt that produced the constant signature (use rule_feedback_stats.latest_receipt_id when present).
+- update_child intent/good_signal/bad_signal should cite belief ids or receipt refs; do NOT paste per-cycle failure narrative into intent (prevents constitutionalizing failure details).
 
 Hard constraints:
 - Assess only; do not execute changes.
@@ -353,7 +375,7 @@ Hard constraints:
 - Keep status compatible with the old workflow; rule_status is the first-principles rule judgment. If rule_status is learn or mutate, status should usually be refine (use replace only for whole-tree rewrites).
 - Do not treat "the goal correctly triggered human intervention / stopped publishing" as continue/keep. If the trigger came from outcome-law failure, simulation distortion, or real-feedback decoupling, and guardrails are stable, return rule_status="learn" or rule_status="mutate" with goal_patches.
 - For rule_status="learn", goal_patches must be read-only learning, diagnostics, feedback-loop calibration, or replay/challenge/rank/rankScore correlation work; explicitly forbid publishing, remote writes, and POST /api/agent/tank/code.
-- For rule_status="mutate", goal_patches should turn failure feedback into a new outcome law, such as real-feedback gates, challenge/replay correlation gates, or bottom-level behavior hypothesis tests. Do not bypass subject publish approval.
+- For rule_status="mutate", goal_patches should turn failure feedback into a new outcome law or revise a dead acceptance observation point (real-feedback gates, challenge/replay correlation gates, bottom-level behavior hypothesis tests, or replace unobservable fields with observable criteria). Do not bypass subject publish approval; do not delete the guard function itself.
 - Goal downgrading or narrowing is allowed only as a recovery-phase strategy. It must not permanently replace the original top-level outcome pressure. If the active goal has drifted from outcome goals (win rate, rank, real feedback improvement, strategy capability) into process goals (credential hygiene, auditability, observation only), assess whether those process goals are now completed, stable, or sustainable.
 - When recovery subgoals are achieved or repeatedly maintainable, do not keep a low-pressure goal merely because it remains testable. Prefer refine to restore outcome pressure.
 - If all child goals are prerequisite, compliance, audit, or observation work and none directly measures subject effectiveness, explicitly mention "goal_pressure_loss" in reason. Unless evidence shows the subject is still in a blocking recovery phase, return status="refine".
@@ -361,9 +383,9 @@ Hard constraints:
 - If several consecutive cycles are keep while top-level outcome metrics do not improve, do not keep solely because the goal is still testable; assess whether to raise standards, tighten gates, or add an outcome-oriented child goal.
 - When assessing safe-runtime, distinguish agent conduct compliance, host preflight blocking, and provider/filesystem hard isolation. boundary_risk from verify_report is evidence about boundary posture, but soft constraints must not be treated as hard isolation.
 - If verification.semantic exists, the latest semantic verification has priority over older report, diary, or remembered agent claims. It is not Seen fact; it is interpretation-layer evidence for the latest execution result, and should override stale inference chains instead of amplifying them.
-- evidence_refs MUST cite intelligence items you rely on (intel_report / verify_report / observation / probe_result / retrospective / goal_event / evolution_event). When a key norm comes from authority text, also include agent_context with id = doc id and ref = the string "agent_context:" plus the same doc id.
+- evidence_refs MUST cite intelligence items you rely on (intel_report / verify_report / observation / probe_result / retrospective / goal_event / evolution_event / action_receipt). When a key norm comes from authority text, also include agent_context with id = doc id and ref = the string "agent_context:" plus the same doc id.
 - If evidence_refs would be empty, confidence MUST be low.
-- reason MUST briefly name which authority points plus which factual evidence you used (English).
+- reason MUST briefly name which authority points plus which factual evidence you used (English); when using rule_feedback_stats, name the relevant goal feedback_state.
 
 - Prefer goal_patches for local child changes; do not fill proposed_goal in the same response. Use proposed_goal only for root intent replacement or full tree rewrites.
 - goal_patches and proposed_goal are mutually exclusive; when goal_patches is non-empty, proposed_goal must be null.
@@ -451,6 +473,7 @@ export async function assessGoalsWithAi({
   store,
   agentContextDocs = [],
   logger = null,
+  ruleFeedbackStats = null,
 } = {}) {
   const context = buildGoalAssessmentContext({
     activeGoals,
@@ -458,6 +481,7 @@ export async function assessGoalsWithAi({
     reportMarkdown,
     verificationReportPath,
     store,
+    ruleFeedbackStats,
   });
   const prompt = buildGoalAssessmentPrompt({ context, agentContextDocs });
   const stablePrompt = buildGoalAssessmentPrompt({ context: {}, agentContextDocs });

@@ -23,6 +23,8 @@ const RUNTIME_LAYOUT = Object.freeze({
   'data/evolution/cycle-state/': '各轮 step 状态机与 checkpoint',
   'data/evolution/diary/': '演化日记',
   'data/evolution/operator_briefs/': '操作者意图 brief（pending/processed）',
+  'data/evolution/operator_facts/': '操作者事实种子（pending/digested）',
+  'data/evolution/operator_questions/': '系统向操作者提问（pending/resolved）',
 });
 
 const DELIVERABLE_CONTRACT = Object.freeze({

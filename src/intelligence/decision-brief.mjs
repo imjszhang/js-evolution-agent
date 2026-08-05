@@ -3,6 +3,14 @@ import {
 } from './beliefs.mjs';
 import { selectActiveOperatorFacts } from './operator-facts.mjs';
 
+function asPendingOperatorFacts(reportContext) {
+  if (Array.isArray(reportContext?.pending_operator_facts)) {
+    return reportContext.pending_operator_facts;
+  }
+  // Legacy fallback: observations still carrying operator_fact records.
+  return selectActiveOperatorFacts(reportContext?.observations ?? []);
+}
+
 const DEFAULT_TEXT_LIMIT = 600;
 const DEFAULT_ITEM_LIMIT = 12;
 
@@ -314,13 +322,31 @@ function beliefFacts(events, limit) {
   });
 }
 
-function operatorFacts(observations, limit) {
-  return selectActiveOperatorFacts(observations, { limit })
+function operatorFacts(facts, limit) {
+  return (Array.isArray(facts) ? facts : [])
+    .slice(0, Math.max(0, limit ?? DEFAULT_ITEM_LIMIT))
     .map((record) => directFact({
-      sourceType: 'intel_observations',
+      sourceType: 'operator_facts',
       evidenceLevel: 'operator_established_fact',
       record,
       summary: record.content ?? record.summary ?? '',
+    }));
+}
+
+/** Operator-origin beliefs continue as interpretation anchors after digestion. */
+function operatorOriginBeliefFacts(beliefs = [], limit) {
+  return (Array.isArray(beliefs) ? beliefs : [])
+    .filter((b) => b?.origin === 'operator' && (b.status === 'active' || b.status === 'validated'))
+    .slice(0, Math.max(0, limit ?? DEFAULT_ITEM_LIMIT))
+    .map((belief) => directFact({
+      sourceType: 'current_beliefs',
+      evidenceLevel: 'operator_established_fact',
+      record: {
+        id: belief.id,
+        updated_at: belief.last_change?.changed_at ?? null,
+        origin_fact_id: belief.origin_fact_id ?? null,
+      },
+      summary: belief.claim ?? '',
     }));
 }
 
@@ -460,7 +486,8 @@ function sourceOrdering(context) {
     ['evolution_events', context.evolution_events, 'structured_machine_record'],
     ['goal_events', context.goal_events, 'structured_machine_record'],
     ['belief_events', context.belief_events, 'structured_machine_record'],
-    ['intel_observations', context.observations, 'operator_established_fact'],
+    ['operator_facts', context.pending_operator_facts, 'operator_established_fact'],
+    ['intel_observations', context.observations, 'structured_machine_record'],
     ['current_beliefs', context.current_beliefs?.exists ? context.current_beliefs.beliefs : [], 'active_verified_claim'],
     ['standing_memory', context.standing_memory?.exists ? [context.standing_memory] : [], 'model_summary_cache'],
     ['recent_report_markdowns', context.recent_report_markdowns, 'historical_model_report'],
@@ -494,8 +521,10 @@ export function buildTemporalDecisionBrief(reportContext = {}, {
     ...probeStatuses(reportContext.probe_results, itemLimit),
   ];
   const beliefPartitions = partitionBeliefs(reportContext.current_beliefs?.beliefs ?? []);
+  const pendingFacts = asPendingOperatorFacts(reportContext);
   const directEvidence = [
-    ...operatorFacts(reportContext.observations, Math.ceil(itemLimit / 2)),
+    ...operatorFacts(pendingFacts, Math.ceil(itemLimit / 2)),
+    ...operatorOriginBeliefFacts(reportContext.current_beliefs?.beliefs ?? [], Math.ceil(itemLimit / 2)),
     ...eventFacts(reportContext.evolution_events, itemLimit),
     ...goalFacts(reportContext.goal_events, Math.ceil(itemLimit / 2)),
     ...beliefFacts(reportContext.belief_events, Math.ceil(itemLimit / 2)),

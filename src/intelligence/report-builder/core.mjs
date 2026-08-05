@@ -3,6 +3,16 @@ import { dirname, join } from 'node:path';
 import { buildTemporalDecisionBrief } from '../decision-brief.mjs';
 import { normalizeCurrentBeliefs } from '../beliefs.mjs';
 import {
+  markOperatorFactsInjected,
+  migrateLegacyOperatorFacts,
+  readPendingOperatorFacts,
+  summarizeOperatorFactsForContext,
+} from '../operator-facts.mjs';
+import {
+  readPendingOperatorQuestions,
+  summarizeOperatorQuestionsForContext,
+} from '../operator-questions.mjs';
+import {
   resolveIntelReportRecordPath,
   resolveIntelReportWritePath,
 } from '../report-paths.mjs';
@@ -348,7 +358,43 @@ export function gatherReportContext({
       limit: limits.reportMarkdownLimit,
       charLimit: limits.reportMarkdownCharLimit,
     }),
+    pending_operator_facts: [],
+    injected_operator_fact_ids: [],
+    operator_fact_migration: null,
+    pending_operator_questions: [],
   };
+
+  // Migrate legacy observation-store operator facts into pending/ (idempotent).
+  if (runtime?.runtimeRoot) {
+    const migration = migrateLegacyOperatorFacts(runtime.runtimeRoot, context.observations, { store });
+    context.operator_fact_migration = {
+      migrated: migration.migrated.length,
+      skipped: migration.skipped.length,
+      ids: migration.migrated.map((m) => m.id),
+    };
+
+    const pendingRead = readPendingOperatorFacts(runtime.runtimeRoot, { limit: 50 });
+    const cycleId = intelResult?.cycle_id ?? null;
+    // Mark as injected this cycle so Phase 3.5 digests only these seeds.
+    // Facts already injected by a prior cycle stay pending until digested;
+    // re-marking with the current cycle would incorrectly claim them as this cycle's.
+    const toInject = pendingRead.facts.filter((f) => !f.injected_by_cycle);
+    if (toInject.length && cycleId) {
+      markOperatorFactsInjected(runtime.runtimeRoot, toInject, { cycleId });
+    }
+    // Re-read so injected_by_cycle is current.
+    const refreshed = readPendingOperatorFacts(runtime.runtimeRoot, { limit: 50 });
+    context.pending_operator_facts = summarizeOperatorFactsForContext(refreshed.facts);
+    // All pending facts Seen this cycle; digestion covers any with injected_by_cycle
+    // (including prior-cycle leftovers whose belief_update was skipped/failed).
+    context.injected_operator_fact_ids = refreshed.facts
+      .filter((f) => f.injected_by_cycle)
+      .map((f) => f.id)
+      .filter(Boolean);
+
+    const questionsRead = readPendingOperatorQuestions(runtime.runtimeRoot, { limit: 20 });
+    context.pending_operator_questions = summarizeOperatorQuestionsForContext(questionsRead.questions);
+  }
 
   context.evidence = {
     observations: asRecords(context.observations).map((r) => ({
@@ -385,6 +431,8 @@ export function gatherReportContext({
     evolution_events: context.evolution_events.length,
     action_receipts: context.action_receipts.length,
     operator_intent_briefs: context.operator_intent_briefs.length,
+    pending_operator_facts: context.pending_operator_facts.length,
+    pending_operator_questions: context.pending_operator_questions.length,
     goal_events: context.goal_events.length,
     intel_reports_index: context.intel_reports_index.length,
     recent_report_markdowns: context.recent_report_markdowns.length,
@@ -954,13 +1002,20 @@ export function summarizeEvidenceIndexItem(item) {
 }
 
 function isMinimalSafeEvidenceItem(item) {
-  if (summarizeEvidenceFields(item?.fields)) return true;
+  if (summarizeEvidenceFields(item?.fields)) {
+    const fieldSummary = summarizeEvidenceFields(item.fields);
+    if (/\[[a-z_]+:[^\]]*$/im.test(fieldSummary) || hasStandingMemoryPollution(fieldSummary)) {
+      return false;
+    }
+    return true;
+  }
   if (item?.kind === 'structured_status') return true;
   if (item?.evidence_level === 'structured_machine_record') return true;
   const summary = summarizeEvidenceIndexItem(item);
   return Boolean(summary)
     && !/…/.test(summary)
-    && !hasStandingMemoryPollution(summary);
+    && !hasStandingMemoryPollution(summary)
+    && !/\[[a-z_]+:[^\]]*$/im.test(summary);
 }
 
 export function buildMinimalSafeAdmission(admission) {
@@ -1449,7 +1504,10 @@ export function applyRollingTypedEvidenceRefs({
     merged.set(typedEvidenceRefKey(ref), { ...ref });
   }
 
+  // Locked (incl. prior backfill) refs only pad depth; once organic cycle refs
+  // already meet minRefs, do not keep them forever pinning preservation.
   for (const ref of oldRefs) {
+    if (merged.size >= minRefs) break;
     const key = typedEvidenceRefKey(ref);
     if (ref._locked === true && !merged.has(key)) {
       merged.set(key, { ...ref });
@@ -1704,11 +1762,12 @@ export function mergePreservedNarrativeWithUpdatedEvidence({
   typedEvidenceRefs = [],
   admission = null,
   language = 'zh',
+  allowedAddresses = null,
 } = {}) {
-  const currentStateBody = limitBulletItems(
-    extractMarkdownSection(oldText, 'Current State'),
-    STANDING_MEMORY_LIMITS.maxCurrentStateItems,
-  );
+  const rawCurrentState = extractMarkdownSection(oldText, 'Current State');
+  const currentStateBody = allowedAddresses != null
+    ? sanitizeCurrentStateBody(rawCurrentState, allowedAddresses)
+    : limitBulletItems(rawCurrentState, STANDING_MEMORY_LIMITS.maxCurrentStateItems);
   const rememberedBody = extractMarkdownSection(oldText, 'Remembered');
   const doNotTreatBody = extractMarkdownSection(oldText, 'Do Not Treat As Seen');
   const evidenceBody = admission
@@ -1723,46 +1782,89 @@ export function mergePreservedNarrativeWithUpdatedEvidence({
   return sections.map(([heading, body]) => `## ${heading}\n\n${body.trim()}`).join('\n\n').trim();
 }
 
-function applyLockedNarrativePreservation({
+/**
+ * Rescue prior clean narrative sections when the primary (new) candidate fails
+ * audit. Locked/backfill refs never trigger preservation by themselves — they
+ * only pad Evidence depth. Prefer the caller's full primary `audit`; fall back
+ * to free-text audit when audit is omitted. Merges old narrative-referenced
+ * refs into the rolling set so preserved Current State stays linked.
+ */
+export function applyLockedNarrativePreservation({
   text,
   audit,
   oldMemory,
   typedEvidenceRefs,
   extendedAdmission,
   language,
+  reportContext = null,
 } = {}) {
-  const hasLockedRefs = hasLockedEvidenceRefs(typedEvidenceRefs)
-    || hasLockedEvidenceRefs(oldMemory?.typed_evidence_refs);
-  if (!oldMemory?.text) return { text, audit, narrative_preserved: false };
+  const passthrough = {
+    text,
+    audit,
+    typed_evidence_refs: typedEvidenceRefs,
+    admission: extendedAdmission,
+    narrative_preserved: false,
+  };
+  if (!oldMemory?.text) return passthrough;
 
   const oldFreeTextAudit = auditStandingMemoryFreeText({
     text: oldMemory.text,
     typedEvidenceRefs: oldMemory.typed_evidence_refs ?? [],
   });
-  if (!oldFreeTextAudit.ok) return { text, audit, narrative_preserved: false };
+  if (!oldFreeTextAudit.ok) return passthrough;
 
-  const newFreeTextAudit = auditStandingMemoryFreeText({
-    text,
-    typedEvidenceRefs,
-    admission: extendedAdmission,
-  });
-  const shouldPreserve = hasLockedRefs || !newFreeTextAudit.ok;
-  if (!shouldPreserve) return { text, audit, narrative_preserved: false };
+  // Rescue-only: preserve when primary fails. Prefer caller's full audit.
+  const primaryOk = audit && typeof audit === 'object' && 'ok' in audit
+    ? audit.ok === true
+    : auditStandingMemoryFreeText({
+      text,
+      typedEvidenceRefs,
+      admission: extendedAdmission,
+    }).ok;
+  if (primaryOk) return passthrough;
 
-  const preservedText = mergePreservedNarrativeWithUpdatedEvidence({
+  const oldNarrativeText = [
+    extractMarkdownSection(oldMemory.text, 'Current State'),
+    extractMarkdownSection(oldMemory.text, 'Remembered'),
+  ].join('\n');
+  const referencedAddresses = new Set(extractBracketAddresses(oldNarrativeText));
+  const oldRefs = Array.isArray(oldMemory.typed_evidence_refs) ? oldMemory.typed_evidence_refs : [];
+  const preservedMap = new Map(
+    (Array.isArray(typedEvidenceRefs) ? typedEvidenceRefs : []).map((ref) => [
+      typedEvidenceRefKey(ref),
+      { ...ref },
+    ]),
+  );
+  for (const ref of oldRefs) {
+    if (!referencedAddresses.has(ref.source_address)) continue;
+    const key = typedEvidenceRefKey(ref);
+    if (!preservedMap.has(key)) {
+      preservedMap.set(key, { ...ref });
+    }
+  }
+  const preservedRefs = [...preservedMap.values()];
+  const baseAdmission = extendedAdmission
+    ?? (reportContext ? buildMemoryAdmission(reportContext) : { seen: [], remembered: [], do_not_treat_as_seen: [] });
+  const preservedAdmission = buildExtendedMemoryAdmission(baseAdmission, preservedRefs, reportContext);
+  const allowedAddresses = preservedRefs.map((ref) => ref.source_address).filter(Boolean);
+  let preservedText = mergePreservedNarrativeWithUpdatedEvidence({
     oldText: oldMemory.text,
-    typedEvidenceRefs,
-    admission: extendedAdmission,
+    typedEvidenceRefs: preservedRefs,
+    admission: preservedAdmission,
     language,
+    allowedAddresses,
   });
+  preservedText = sanitizeStandingMemoryCosmeticIssues(preservedText);
   const preservedAudit = auditStandingMemoryMarkdown({
     text: preservedText,
-    typedEvidenceRefs,
-    admission: extendedAdmission,
+    typedEvidenceRefs: preservedRefs,
+    admission: preservedAdmission,
   });
   return {
     text: preservedText,
     audit: preservedAudit,
+    typed_evidence_refs: preservedRefs,
+    admission: preservedAdmission,
     narrative_preserved: true,
   };
 }
@@ -1855,6 +1957,7 @@ Rules:
 - Current State is judgement only. Do not restate receipt summaries, agent claims, or historical report prose.
 - Evidence, Remembered, and Do Not Treat As Seen will be rewritten by code after your output.
 - Do not copy old Standing Memory bullets unless still supported by current admission.
+- Carry forward long-lived constraints and metric directions from old Current State when they remain true and are still supported by current admission; do not keep judgements overturned by this cycle's facts.
 - State what would overturn each judgement.
 
 === Previous Standing Memory ===
@@ -1878,6 +1981,7 @@ ${contextJson}`;
 - Current State 只写判断，不要复述 receipt summary、agent claim 或历史报告正文。
 - Evidence、Remembered、Do Not Treat As Seen 会由代码在你输出后重写。
 - 不要复制旧 Standing Memory 中未被当前 admission 支持的 bullet。
+- 旧 Current State 中仍成立、且被当前 admission 支持的长期约束/指标方向应带入新版本；被本轮事实推翻的旧判断不得保留。
 - 每条判断应写明什么证据会推翻它。
 
 === 旧 Standing Memory ===
@@ -1953,34 +2057,21 @@ export async function updateStandingMemoryWithAi({
       typedEvidenceRefs,
       admission: extendedAdmission,
     });
-    let narrativePreserved = false;
-    ({
-      text,
-      audit,
-      narrative_preserved: narrativePreserved,
-    } = applyLockedNarrativePreservation({
-      text,
-      audit,
-      oldMemory,
-      typedEvidenceRefs,
-      extendedAdmission,
-      language,
-    }));
-    if (narrativePreserved) {
-      text = sanitizeStandingMemoryCosmeticIssues(text);
-      audit = auditStandingMemoryMarkdown({
-        text,
-        typedEvidenceRefs,
-        admission: extendedAdmission,
-      });
-    }
+    const primaryText = text;
+    const primaryAudit = audit;
+    const primaryRefs = typedEvidenceRefs;
+    const primaryAdmission = extendedAdmission;
+    const primaryIssues = Array.isArray(primaryAudit.issues) ? [...primaryAudit.issues] : [];
+
     let usedFallback = false;
     let fallbackReason = null;
-    let primaryIssues = [];
     let fallbackIssues = [];
-    if (!audit.ok) {
-      primaryIssues = Array.isArray(audit.issues) ? [...audit.issues] : [];
-      const minimalAdmission = buildMinimalSafeAdmission(extendedAdmission);
+    let preservedIssues = [];
+    let narrativePreserved = false;
+    let finalCandidate = 'primary';
+
+    const applyMinimalFallback = (reason) => {
+      const minimalAdmission = buildMinimalSafeAdmission(primaryAdmission);
       const minimalRefs = buildTypedEvidenceRefsFromAdmission(minimalAdmission);
       text = composeStandingMemoryMarkdown({
         currentStateBody: '- (none)',
@@ -1996,19 +2087,63 @@ export async function updateStandingMemoryWithAi({
       });
       typedEvidenceRefs = minimalRefs;
       usedFallback = true;
-      fallbackReason = 'primary_audit_failed';
+      fallbackReason = reason;
+      narrativePreserved = false;
+      finalCandidate = 'minimal_fallback';
       if (!audit.ok) {
         fallbackIssues = Array.isArray(audit.issues) ? [...audit.issues] : [];
       }
+    };
+
+    // Ladder: primary (if clean) → preserved rescue → minimal_fallback.
+    // Locked refs never veto a clean primary.
+    if (primaryAudit.ok) {
+      text = primaryText;
+      audit = primaryAudit;
+      typedEvidenceRefs = primaryRefs;
+      narrativePreserved = false;
+      finalCandidate = 'primary';
+    } else {
+      const preservation = applyLockedNarrativePreservation({
+        text: primaryText,
+        audit: primaryAudit,
+        oldMemory,
+        typedEvidenceRefs: primaryRefs,
+        extendedAdmission: primaryAdmission,
+        language,
+        reportContext,
+      });
+      if (preservation.narrative_preserved === true) {
+        preservedIssues = Array.isArray(preservation.audit?.issues)
+          ? [...preservation.audit.issues]
+          : [];
+        if (preservation.audit?.ok) {
+          text = preservation.text;
+          audit = preservation.audit;
+          typedEvidenceRefs = preservation.typed_evidence_refs;
+          narrativePreserved = true;
+          finalCandidate = 'preserved';
+        } else {
+          applyMinimalFallback('primary_and_preserved_audit_failed');
+        }
+      } else {
+        applyMinimalFallback('primary_audit_failed');
+      }
     }
+
+    // Invariant: fallback never claims narrative was preserved.
+    if (usedFallback) narrativePreserved = false;
+
     if (!text.trim()) {
       const failed = {
         status: 'failed',
         reason: 'empty-output',
         primary_issues: primaryIssues,
+        preserved_issues: preservedIssues,
         fallback_issues: fallbackIssues,
         used_fallback: usedFallback,
         narrative_preserved: narrativePreserved,
+        final_candidate: finalCandidate,
       };
       emitStandingMemoryUpdateEvent(store, { cycleId, result: failed });
       return failed;
@@ -2016,6 +2151,7 @@ export async function updateStandingMemoryWithAi({
     if (!audit.ok) {
       const reasonParts = [];
       if (primaryIssues.length) reasonParts.push(`primary:${primaryIssues.join(',')}`);
+      if (preservedIssues.length) reasonParts.push(`preserved:${preservedIssues.join(',')}`);
       if (fallbackIssues.length) reasonParts.push(`fallback:${fallbackIssues.join(',')}`);
       if (!reasonParts.length) reasonParts.push(`audit-failed:${audit.issues.join(',')}`);
       const failed = {
@@ -2023,9 +2159,11 @@ export async function updateStandingMemoryWithAi({
         reason: reasonParts.join('; '),
         audit,
         primary_issues: primaryIssues,
+        preserved_issues: preservedIssues,
         fallback_issues: fallbackIssues,
         used_fallback: usedFallback,
         narrative_preserved: narrativePreserved,
+        final_candidate: finalCandidate,
       };
       emitStandingMemoryUpdateEvent(store, { cycleId, result: failed });
       return failed;
@@ -2056,6 +2194,9 @@ export async function updateStandingMemoryWithAi({
         locked_refs_count: lockedRefsCount,
         backfill_refs_count: backfillRefsCount,
         narrative_preserved: narrativePreserved,
+        final_candidate: finalCandidate,
+        primary_issues: primaryIssues,
+        preserved_issues: preservedIssues,
       },
     });
     const result = {
@@ -2063,9 +2204,11 @@ export async function updateStandingMemoryWithAi({
       reason: written > 0 ? null : 'write-failed',
       audit,
       primary_issues: primaryIssues,
+      preserved_issues: preservedIssues,
       fallback_issues: fallbackIssues,
       used_fallback: usedFallback,
       narrative_preserved: narrativePreserved,
+      final_candidate: finalCandidate,
       evidence_depth: typedEvidenceRefs.length,
       locked_refs_count: lockedRefsCount,
       backfill_refs_count: backfillRefsCount,
@@ -2091,7 +2234,9 @@ function emitStandingMemoryUpdateEvent(store, { cycleId = null, result = null } 
       reason: result.reason ?? null,
       used_fallback: result.used_fallback === true,
       narrative_preserved: result.narrative_preserved === true,
+      final_candidate: result.final_candidate ?? null,
       primary_issues: Array.isArray(result.primary_issues) ? result.primary_issues.slice(0, 20) : [],
+      preserved_issues: Array.isArray(result.preserved_issues) ? result.preserved_issues.slice(0, 20) : [],
       fallback_issues: Array.isArray(result.fallback_issues) ? result.fallback_issues.slice(0, 20) : [],
       evidence_depth: result.evidence_depth ?? null,
     });

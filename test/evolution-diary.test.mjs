@@ -50,6 +50,7 @@ import {
 } from '../src/intelligence/evolution-diary-builder.mjs';
 import {
   extractCarryoverFromDiaryMarkdown,
+  extractCarryoverRetirementsFromDiaryMarkdown,
   formatCarryoverSuggestion,
   runDiaryStep,
   writeCarryoverItems,
@@ -214,8 +215,12 @@ describe('buildEvolutionDiary', () => {
       agentContextDocs: [{ id: 'js-evolution-agent:subject:test', text: '主体策略全文。' }],
     });
 
-    expect(context.agent_loop_carryover).toEqual(['待复核 gate.std.max', '过期：凭据探针待执行']);
+    expect(context.agent_loop_carryover).toEqual([
+      { id: 'M1', text: '待复核 gate.std.max', source: 'diary', origin: null },
+      { id: 'M2', text: '过期：凭据探针待执行', source: 'diary', origin: null },
+    ]);
     expect(prompt).toContain('agent_loop_carryover');
+    expect(prompt).toContain('Carryover 销账');
     expect(prompt).toContain('step_status_snapshot');
     expect(prompt).toContain('时间线权威');
     expect(prompt).toContain('phase2 receipt');
@@ -223,6 +228,67 @@ describe('buildEvolutionDiary', () => {
     expect(prompt).toContain('## TL;DR');
     expect(prompt).toMatch(/建议章节：[\s\S]*- TL;DR/);
     expect(context.phase1.timeline).toBe('written_at_cycle_start_describes_previous_cycle_system_state');
+  });
+
+  it('numbers mechanical carryover items and extracts Carryover retirements section', () => {
+    const { store, runtime, intelResult, execResult, verification } = makeDiaryFixture();
+    const context = buildEvolutionDiaryContext({
+      intelResult,
+      execResult,
+      verification,
+      runtime,
+      store,
+      carryoverItems: [
+        { text: 'open gap: throttle', source: 'mechanical', origin: 'open_gap' },
+        { text: 'deferred decide item', source: 'mechanical', origin: 'decide_deferred' },
+        { text: 'narrative note', source: 'diary' },
+      ],
+    });
+    expect(context.agent_loop_carryover.map((i) => i.id)).toEqual(['M1', 'M2', 'M3']);
+    expect(context.agent_loop_carryover[0]).toMatchObject({
+      id: 'M1',
+      origin: 'open_gap',
+      source: 'mechanical',
+    });
+
+    const markdown = [
+      '# 进化日记',
+      '',
+      '## 下轮应该注意什么',
+      '',
+      '- 继续关注分页',
+      '',
+      '## Carryover 销账',
+      '',
+      '- M1: throttle 已由本轮 agent_run 闭环 [action_receipts:receipt-abc]',
+      '- M2: 误销 decide_deferred 应被宿主拒绝 [action_receipts:receipt-x]',
+      '杂文不应解析',
+    ].join('\n');
+
+    expect(extractCarryoverRetirementsFromDiaryMarkdown(markdown)).toEqual([
+      {
+        id: 'M1',
+        reason: 'throttle 已由本轮 agent_run 闭环 [action_receipts:receipt-abc]',
+        evidence: '[action_receipts:receipt-abc]',
+      },
+      {
+        id: 'M2',
+        reason: '误销 decide_deferred 应被宿主拒绝 [action_receipts:receipt-x]',
+        evidence: '[action_receipts:receipt-x]',
+      },
+    ]);
+    expect(extractCarryoverRetirementsFromDiaryMarkdown('# no section')).toEqual([]);
+    expect(extractCarryoverRetirementsFromDiaryMarkdown([
+      '## Carryover retirements',
+      '',
+      '- M3: closed by verify [verify_report:exec-cycle-1.md]',
+    ].join('\n'))).toEqual([
+      {
+        id: 'M3',
+        reason: 'closed by verify [verify_report:exec-cycle-1.md]',
+        evidence: '[verify_report:exec-cycle-1.md]',
+      },
+    ]);
   });
 
   it('persistEvolutionDiary uses extractDiaryTldr and avoids list-marker truncation', () => {
@@ -326,11 +392,13 @@ describe('buildEvolutionDiary', () => {
     expect(carryover.schema_version).toBe(2);
     expect(carryover.step_status_snapshot?.goals_calibrate).toBe('applied(patch)');
     expect(carryover.items).toEqual([
-      {
+      expect.objectContaining({
         text: 'S2: 学习状态报告未写（budget）',
         source: 'mechanical',
         origin: 'suggestion_deferred',
-      },
+        seen_count: expect.any(Number),
+        fingerprint: expect.any(String),
+      }),
       { text: '模拟方差需要多次复跑', source: 'diary' },
       { text: '信念更新应消化本轮 receipt', source: 'diary' },
       { text: '过期的「凭据待执行」已完成，不再携带', source: 'diary' },

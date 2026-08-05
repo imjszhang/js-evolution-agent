@@ -23,6 +23,7 @@ import {
   assessActiveGoals,
   autoCalibrateGoals,
   buildGoalUpdate,
+  filterPatchesForRuleStatus,
   getActiveGoals,
   getGoalHistory,
   parseEvidenceRefs,
@@ -3146,6 +3147,167 @@ describe('goals command helpers', () => {
 
     expect(result).toMatchObject({ status: 'skipped', reason: 'auto_apply_disabled' });
     expect(readJsonSafe(join(runtime.goalsDir, 'active_goals.json'))).toEqual(before);
+  });
+
+  it('mutate rejects remove_child of guard goals and keeps update_child', () => {
+    const root = makeGoalsRoot('jea-goals-guard-protect-');
+    const runtime = runtimeInfoForDefaultSubject(root);
+    applyGoalObject(root, {
+      id: 'root-goal',
+      name: 'Root',
+      intent: 'Root intent',
+      good_signal: 'g',
+      bad_signal: 'b',
+      children: [
+        {
+          id: 'guard-memory-audit-v28',
+          name: 'Memory guard',
+          role: 'guard',
+          intent: 'Require free_text_clean=true',
+          good_signal: 'clean',
+          bad_signal: 'dirty',
+          children: [],
+        },
+        {
+          id: 'outcome-skill',
+          name: 'Outcome',
+          role: 'outcome',
+          intent: 'Improve rank',
+          good_signal: 'rank up',
+          bad_signal: 'rank down',
+          children: [],
+        },
+      ],
+    }, { reason: 'seed', cycle: 'seed' });
+
+    const filter = filterPatchesForRuleStatus([
+      { op: 'remove_child', child_id: 'guard-memory-audit-v28', reason: 'drop' },
+      {
+        op: 'update_child',
+        child_id: 'guard-memory-audit-v28',
+        fields: {
+          intent: 'Use audit_ok=true and empty free-text issues as structural pass',
+          good_signal: 'audit_ok=true',
+          bad_signal: 'audit_ok=false',
+        },
+        reason: 'feedback death',
+      },
+      { op: 'remove_child', child_id: 'outcome-skill', reason: 'drop outcome' },
+    ], 'mutate', readJsonSafe(join(runtime.goalsDir, 'active_goals.json')));
+
+    expect(filter.skipped).toEqual([
+      expect.objectContaining({
+        op: 'remove_child',
+        child_id: 'guard-memory-audit-v28',
+        skip_reason: 'guard_remove_forbidden_on_mutate',
+      }),
+    ]);
+    expect(filter.patches.map((p) => p.op)).toEqual(['update_child', 'remove_child']);
+
+    const result = autoCalibrateGoals(root, {
+      report: { cycle_id: 'cycle-mutate-guard' },
+      assessment: {
+        status: 'refine',
+        rule_status: 'mutate',
+        confidence: 'high',
+        goal_patches: [
+          { op: 'remove_child', child_id: 'guard-memory-audit-v28', reason: 'drop' },
+          {
+            op: 'update_child',
+            child_id: 'guard-memory-audit-v28',
+            fields: {
+              intent: 'Use audit_ok=true and empty free-text issues as structural pass',
+              good_signal: 'audit_ok=true',
+              bad_signal: 'audit_ok=false',
+            },
+            reason: 'feedback death',
+          },
+        ],
+      },
+    });
+
+    expect(result.status).toBe('applied');
+    expect(result.skipped_patches).toEqual([
+      expect.objectContaining({
+        child_id: 'guard-memory-audit-v28',
+        skip_reason: 'guard_remove_forbidden_on_mutate',
+      }),
+    ]);
+    const active = readJsonSafe(join(runtime.goalsDir, 'active_goals.json'));
+    expect(active.children.map((c) => c.id)).toContain('guard-memory-audit-v28');
+    expect(active.children.find((c) => c.id === 'guard-memory-audit-v28').intent)
+      .toContain('audit_ok=true');
+
+    const events = getGoalHistory(root, { limit: 5 }).events;
+    const patched = events.find((e) => e.type === 'patched');
+    expect(patched?.rule_status).toBe('mutate');
+  });
+
+  it('emits goal_intent_bloat warning when update_child intent exceeds soft max', () => {
+    const root = makeGoalsRoot('jea-goals-intent-bloat-');
+    const runtime = runtimeInfoForDefaultSubject(root);
+    applyGoalObject(root, {
+      id: 'root-goal',
+      name: 'Root',
+      intent: 'Root',
+      good_signal: 'g',
+      bad_signal: 'b',
+      children: [{
+        id: 'guard-memory-audit-v28',
+        name: 'Memory',
+        role: 'guard',
+        intent: 'short',
+        good_signal: 'g',
+        bad_signal: 'b',
+        children: [],
+      }],
+    }, { reason: 'seed', cycle: 'seed' });
+
+    const longIntent = `Keep memory audit. ${'detail '.repeat(300)}`;
+    expect(longIntent.length).toBeGreaterThan(1500);
+
+    const events = [];
+    const store = {
+      recordGoalEvent: (event) => {
+        events.push(event);
+        return 1;
+      },
+      recordEvolutionEvent: (event) => {
+        events.push(event);
+        return 1;
+      },
+      readCurrentBeliefs: () => ({ beliefs: [] }),
+    };
+
+    const result = autoCalibrateGoals(root, {
+      report: { cycle_id: 'cycle-bloat' },
+      assessment: {
+        status: 'refine',
+        rule_status: 'mutate',
+        confidence: 'high',
+        goal_patches: [{
+          op: 'update_child',
+          child_id: 'guard-memory-audit-v28',
+          fields: {
+            intent: longIntent,
+            good_signal: 'audit_ok=true',
+            bad_signal: 'audit_ok=false',
+          },
+          reason: 'rewrite',
+        }],
+      },
+    }, { store, env: { JEA_GOAL_INTENT_SOFT_MAX: '1500' } });
+
+    expect(result.status).toBe('applied');
+    expect(result.warnings).toEqual([
+      expect.objectContaining({
+        type: 'goal_intent_bloat',
+        goal_id: 'guard-memory-audit-v28',
+      }),
+    ]);
+    expect(events.some((e) => e.type === 'goal_intent_bloat')).toBe(true);
+    expect(readJsonSafe(join(runtime.goalsDir, 'active_goals.json'))
+      .children[0].intent.length).toBeGreaterThan(1500);
   });
 
   it('rejects missing required update inputs before writing history', () => {

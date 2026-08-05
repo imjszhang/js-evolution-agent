@@ -1,6 +1,8 @@
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { EVOLUTION_DIARIES_REL } from '../../intelligence/diary-paths.mjs';
+import { readPendingOperatorQuestions } from '../../intelligence/operator-questions.mjs';
+import { readPendingOperatorFacts } from '../../intelligence/operator-facts.mjs';
 import { readJsonSafe } from './files.mjs';
 import { runtimeForSubject } from './evolve-runs.mjs';
 import { storeForSubject } from './daemon-events.mjs';
@@ -65,6 +67,14 @@ export function buildSubjectArtifactOverview(root, subject, { projection = null,
   const runtime = runtimeForSubject(root, subject);
   const store = storeForSubject(root, subject);
   const standingMemory = store.readStandingMemory();
+  const pendingQuestions = readPendingOperatorQuestions(runtime.runtimeRoot, { limit: 20 });
+  const pendingFacts = readPendingOperatorFacts(runtime.runtimeRoot, { limit: 20 });
+  const attentionReasons = [...(projection?.health?.reasons ?? [])];
+  if (pendingQuestions.total_valid > 0) {
+    attentionReasons.push(
+      `${pendingQuestions.total_valid} pending operator question(s) awaiting human reply`,
+    );
+  }
   return {
     subject,
     namespace: runtime.dataNamespace,
@@ -82,14 +92,29 @@ export function buildSubjectArtifactOverview(root, subject, { projection = null,
       updated_at: null,
       source_cycle_id: null,
     },
+    pending_operator_questions: pendingQuestions.questions.map((q) => ({
+      id: q.id,
+      question: q.question,
+      trigger: q.trigger,
+      origin_fact_id: q.origin_fact_id,
+      created_at: q.created_at,
+    })),
+    pending_operator_facts: pendingFacts.facts.map((f) => ({
+      id: f.id,
+      content: f.content,
+      injected_by_cycle: f.injected_by_cycle,
+      created_at: f.created_at,
+    })),
     attention: {
       health_status: projection?.health?.status ?? null,
-      reasons: projection?.health?.reasons ?? [],
+      reasons: attentionReasons,
       failed_tasks: projection?.tasks?.counts?.failed ?? 0,
       pending_tasks: projection?.tasks?.counts?.pending ?? 0,
       acknowledged_tasks: projection?.tasks?.counts?.acknowledged ?? 0,
       open_cycles: projection?.cycles?.open_count ?? 0,
       stuck_steps: projection?.cycles?.stuck_steps?.length ?? 0,
+      pending_operator_questions: pendingQuestions.total_valid ?? 0,
+      pending_operator_facts: pendingFacts.total_valid ?? 0,
     },
     repo_links: repoLinks ?? { configured: false, links: [] },
   };

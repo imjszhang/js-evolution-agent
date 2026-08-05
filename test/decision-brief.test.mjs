@@ -116,15 +116,14 @@ describe('beliefs and decision brief', () => {
     const brief = buildTemporalDecisionBrief({
       generated_at: '2026-05-28T00:00:00.000Z',
       current_cycle: { cycle_id: 'cycle-test', mode: 'local' },
-      observations: [{
+      pending_operator_facts: [{
         id: 'operator-fact-rank-score',
-        kind: 'operator_fact',
-        source: 'operator',
         subject: 'agentank-tank',
         content: 'standing.rank lower is better; rankScore higher is better',
         confidence: 'high',
         created_at: '2026-05-28T00:00:00.000Z',
       }],
+      observations: [],
       action_receipts: [],
       probe_results: [],
       evolution_events: [],
@@ -138,10 +137,10 @@ describe('beliefs and decision brief', () => {
     const seenText = JSON.stringify(brief.seen);
     expect(seenText).toContain('operator_established_fact');
     expect(seenText).toContain('standing.rank lower is better');
-    expect(brief.source_ordering.some((item) => item.source_type === 'intel_observations')).toBe(true);
+    expect(brief.source_ordering.some((item) => item.source_type === 'operator_facts')).toBe(true);
   });
 
-  it('excludes superseded operator facts from seen evidence', () => {
+  it('excludes superseded operator facts from seen evidence (legacy observation fallback)', () => {
     const observations = [
       {
         id: 'operator-fact-old',
@@ -164,6 +163,7 @@ describe('beliefs and decision brief', () => {
     expect(buildSupersededIds(observations)).toEqual(new Set(['operator-fact-old']));
     expect(selectActiveOperatorFacts(observations).map((r) => r.id)).toEqual(['operator-fact-new']);
 
+    // Legacy path: pending_operator_facts omitted → fall back to observations.
     const brief = buildTemporalDecisionBrief({
       generated_at: '2026-05-28T00:00:00.000Z',
       current_cycle: { cycle_id: 'cycle-test', mode: 'local' },

@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import { createIntelligenceStore } from '../intelligence/store.mjs';
 import { writePendingOperatorBrief } from '../intelligence/operator-briefs.mjs';
+import { writePendingOperatorFact } from '../intelligence/operator-facts.mjs';
 import { runtimeForSubject } from '../cli/utils/evolve-runs.mjs';
 import { enqueueCycleStartRequestWithEvent } from '../cli/utils/cycle-dispatch.mjs';
 import {
@@ -350,11 +351,22 @@ export function ingestChannelEnvelope(root, subject, envelopeInput, { classifica
       control_reason: enqueueResult.reason ?? null,
     };
   }
-  const store = makeStore(root, subject);
   if (resolved.kind === 'operator_fact') {
-    const written = store.ingest('intel_observations', [resolved.record]);
-    return { kind: resolved.kind, source: 'intel_observations', written, record: resolved.record };
+    const { file, fact } = writePendingOperatorFact(runtime.runtimeRoot, resolved.record);
+    const cycleRequest = enqueueCycleStartRequestWithEvent(root, subject, {
+      reason: 'channel_operator_fact',
+      meta: { fact_ids: [fact.id], message_id: envelope.message_id, channel: envelope.channel },
+    });
+    return {
+      kind: resolved.kind,
+      source: 'operator_facts/pending',
+      written: 1,
+      file,
+      record: fact,
+      cycle_start_request: cycleRequest.request,
+    };
   }
+  const store = makeStore(root, subject);
   if (resolved.kind === 'inbox') {
     const source = resolved.source ?? 'intel_observations';
     const written = store.ingest(source, resolved.records ?? []);

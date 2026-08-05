@@ -13,6 +13,7 @@ export {
   enforceStandingMemoryGates,
   enforceStandingMemoryRememberedGate,
   enforceStandingMemorySeenGate,
+  applyLockedNarrativePreservation,
   hasLockedEvidenceRefs,
   mergePreservedNarrativeWithUpdatedEvidence,
   sanitizeCurrentStateBody,

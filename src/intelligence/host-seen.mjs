@@ -98,6 +98,7 @@ export function auditHostSeenReport({
   logger = null,
   eventType = 'intel_report_honesty',
   logLabel = 'host_seen',
+  runtimeRoot = null,
 } = {}) {
   if (!store) return;
   try {
@@ -106,6 +107,7 @@ export function auditHostSeenReport({
       markdown: String(markdown || ''),
       forbiddenInSeen: forbiddenPhrasesFromBriefs(operatorBriefs),
       minSeenBulletsWithRefs: 1,
+      runtimeRoot,
     });
     if (honesty.findings.length) {
       logger?.warning?.(

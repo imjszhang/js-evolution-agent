@@ -83,6 +83,15 @@ Commands:
                          Queue a one-cycle operator intent brief for the next intel cycle
   intel brief list       List pending operator intent briefs
   intel brief processed  List consumed operator intent briefs
+  intel fact put [--file PATH | --stdin]
+                         Queue a one-shot operator fact seed (default-true for one cycle, then digested)
+  intel fact list        List pending operator fact seeds
+  intel fact digested    List digested operator facts
+  intel question list    List pending operator questions (system asks human)
+  intel question resolved
+                         List resolved operator questions
+  intel question resolve <id> [--note TEXT]
+                         Mark an operator question as resolved
   intel viewer build     Build static evolution report/diary viewer (--subject, --limit)
   intel viewer serve     Serve viewer API + SSE (reads runtime; no dist required)
   goals show             Show the active goal hypothesis

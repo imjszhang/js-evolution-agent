@@ -4,6 +4,8 @@ import { getProjectRoot } from '../utils/project.mjs';
 import { createIntelligenceStore } from '../../intelligence/store.mjs';
 import { INTELLIGENCE_SPECS } from '../../intelligence/specs.mjs';
 import { resolveSubjectFromFlags, runtimeInfoForSubject } from '../utils/subjects.mjs';
+import { isOperatorFact, writePendingOperatorFact } from '../../intelligence/operator-facts.mjs';
+import { enqueueCycleStartRequestWithEvent } from '../utils/cycle-dispatch.mjs';
 
 const VALID_SOURCES = INTELLIGENCE_SPECS.map((s) => s.name);
 const ENTITY_JSONL_SOURCES = new Set(
@@ -113,6 +115,57 @@ export async function runIntelIngest({ root = getProjectRoot(), flags = {} } = {
 
   const config = resolveSubjectFromFlags(root, flags);
   const runtime = runtimeInfoForSubject(root, config);
+
+  // operator_fact records are one-shot seeds — route to pending store, not intel_observations.
+  if (source === 'intel_observations') {
+    const factRecords = records.filter((r) => isOperatorFact(r));
+    const otherRecords = records.filter((r) => !isOperatorFact(r));
+    if (factRecords.length) {
+      const queued = [];
+      const failed = [];
+      for (const record of factRecords) {
+        try {
+          const { file, fact } = writePendingOperatorFact(runtime.runtimeRoot, record);
+          queued.push({ file, fact });
+        } catch (e) {
+          failed.push({ id: record.id ?? null, reason: e?.message || String(e) });
+        }
+      }
+      if (queued.length) {
+        enqueueCycleStartRequestWithEvent(root, runtime.subject, {
+          reason: 'operator_fact',
+          meta: { fact_ids: queued.map((q) => q.fact.id) },
+        });
+      }
+      if (!otherRecords.length) {
+        const result = {
+          source: 'operator_facts/pending',
+          written: queued.length,
+          received: records.length,
+          failed: failed.length,
+          failures: failed,
+          namespace: runtime.dataNamespace,
+          facts: queued.map((q) => q.fact),
+        };
+        if (failed.length && !queued.length) {
+          console.error(`Failed to queue operator fact(s): ${failed.map((f) => f.reason).join('; ')}`);
+          return 1;
+        }
+        if (flags.json) console.log(JSON.stringify(result, null, 2));
+        else {
+          console.log(`queued ${result.written}/${result.received} operator fact seed(s) (namespace=${result.namespace})`);
+          if (failed.length) console.error(`failed: ${failed.length}`);
+        }
+        return failed.length && !queued.length ? 1 : 0;
+      }
+      // Mixed batch: queue facts, continue ingesting non-fact observations.
+      records = otherRecords;
+      if (failed.length) {
+        console.error(`Warning: ${failed.length} operator fact(s) failed to queue`);
+      }
+    }
+  }
+
   const store = makeStore(runtime);
   let written;
   try {

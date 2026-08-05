@@ -55,6 +55,40 @@ describe('report suggestions', () => {
     expect(extracted.truncated).toBe(false);
   });
 
+  it('merges run_spec field-label top-level lines into one suggestion', () => {
+    const md = `## 下一轮建议
+
+- **执行一个自主 agent_run**（workspace_write）
+- **primary_cwd_kind**: subject_runtime
+- **permission_profile**: workspace_write
+- **intent**: 复测分页聚合与记忆审计
+- **context**: belief_id 绑定本轮
+- **expected_output**:
+- 结束条件：record_observation 落盘脱敏结论
+`;
+    const extracted = extractReportSuggestions(md);
+    expect(extracted.suggestions).toHaveLength(2);
+    expect(extracted.suggestions[0].id).toBe('S1');
+    expect(extracted.suggestions[0].text).toContain('执行一个自主 agent_run');
+    expect(extracted.suggestions[0].text).toContain('primary_cwd_kind: subject_runtime');
+    expect(extracted.suggestions[0].text).toContain('intent: 复测分页聚合与记忆审计');
+    expect(extracted.suggestions[0].text).not.toContain('expected_output');
+    expect(extracted.suggestions[1].text).toContain('结束条件');
+    expect(extracted.truncated).toBe(false);
+  });
+
+  it('keeps normal top-level suggestions unchanged', () => {
+    const md = `## 下一轮建议
+
+1. 复测分页
+2. 写学习状态报告
+`;
+    expect(extractReportSuggestions(md).suggestions.map((s) => s.text)).toEqual([
+      '复测分页',
+      '写学习状态报告',
+    ]);
+  });
+
   it('overflow beyond limit becomes suggestion_overflow carryover candidates', () => {
     const bullets = Array.from({ length: 10 }, (_, i) => `${i + 1}. top-level suggestion ${i + 1}`);
     const md = `## 下一轮建议\n\n${bullets.join('\n')}\n`;

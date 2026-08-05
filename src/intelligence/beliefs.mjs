@@ -73,5 +73,8 @@ export function summarizeBeliefForPrompt(belief) {
     next_test: belief.next_test ?? null,
     evidence_refs: Array.isArray(belief.evidence_refs) ? belief.evidence_refs : [],
     recheck_trigger: belief.recheck_trigger ?? null,
+    origin: belief.origin ?? null,
+    origin_fact_id: belief.origin_fact_id ?? null,
+    origin_verification: belief.origin_verification ?? null,
   };
 }

@@ -125,6 +125,7 @@ export function buildBeliefUpdateContext({
   verification = null,
   verificationReportPath = null,
   store = null,
+  operatorAssertions = [],
 } = {}) {
   const beliefsDoc = normalizeCurrentBeliefs(currentBeliefs ?? store?.readCurrentBeliefs?.() ?? null);
   const receipts = store?.readActionReceipts
@@ -156,6 +157,12 @@ export function buildBeliefUpdateContext({
     active_goals: activeGoals,
     active_goals_flat: flattenGoals(activeGoals),
     current_beliefs: beliefsDoc,
+    operator_assertions: asArray(operatorAssertions).map((fact) => ({
+      fact_id: fact.id ?? fact.fact_id ?? null,
+      content: fact.content ?? fact.summary ?? fact.claim ?? '',
+      injected_by_cycle: fact.injected_by_cycle ?? null,
+      confidence: fact.confidence ?? 'high',
+    })),
   };
 }
 
@@ -181,6 +188,11 @@ export function buildBeliefUpdatePrompt({ context, language = 'zh' } = {}) {
 - create 新 belief 必须有 goal_id、claim、next_test。
 - unchanged 也要写出 reason。
 - 不要把 report 叙事直接当事实；优先使用 verify_report 与 action_receipt。
+- 若 Machine Context 含 operator_assertions：它们是本轮默认为真的一次性操作者种子。你必须为每一条输出 operator_fact_digestions 项：
+  - supported：本轮证据支持 → 将进入 validated 信念
+  - untested：本轮未测到 → 将进入 active 高置信信念（标记未验证）
+  - contradicted：本轮证据矛盾 → 不入库为真，系统会向操作者提问；请给出 question 文案
+  不得省略任何 assertion；宿主会对漏项机械按 untested 补齐。
 
 JSON schema:
 {
@@ -199,6 +211,18 @@ JSON schema:
       "reason": "string",
       "evidence_refs": ["action_receipt:...", "verify_report:..."]
     }
+  ],
+  "operator_fact_digestions": [
+    {
+      "fact_id": "string",
+      "outcome": "supported|untested|contradicted",
+      "reason": "string",
+      "goal_id": "string|null",
+      "claim": "string|null",
+      "next_test": "string|null",
+      "evidence_refs": ["action_receipt:...", "verify_report:..."],
+      "question": "string|null"
+    }
   ]
 }
 
@@ -216,6 +240,11 @@ Hard constraints:
 - create requires goal_id, claim, and next_test.
 - unchanged updates still require reason.
 - Prefer verify_report and action_receipt over report narrative.
+- If Machine Context includes operator_assertions: they are one-shot operator seeds that were default-true this cycle. Emit one operator_fact_digestions row per assertion:
+  - supported: cycle evidence supports it → becomes a validated belief
+  - untested: not tested this cycle → becomes an active high-confidence belief (marked unverified)
+  - contradicted: cycle evidence contradicts it → do not store as true; system will ask the operator; provide question text
+  Do not omit any assertion; the host mechanically fills omissions as untested.
 
 JSON schema:
 {
@@ -233,6 +262,18 @@ JSON schema:
       "recheck_trigger": "string|null",
       "reason": "string",
       "evidence_refs": ["action_receipt:...", "verify_report:..."]
+    }
+  ],
+  "operator_fact_digestions": [
+    {
+      "fact_id": "string",
+      "outcome": "supported|untested|contradicted",
+      "reason": "string",
+      "goal_id": "string|null",
+      "claim": "string|null",
+      "next_test": "string|null",
+      "evidence_refs": ["action_receipt:...", "verify_report:..."],
+      "question": "string|null"
     }
   ]
 }
@@ -255,11 +296,27 @@ export function parseBeliefUpdate(raw) {
     recheck_trigger: item?.recheck_trigger ?? null,
     reason: String(item?.reason || parsed.reason || 'No reason provided.'),
     evidence_refs: asArray(item?.evidence_refs).map(String),
+    origin: item?.origin ?? null,
+    origin_fact_id: item?.origin_fact_id ?? null,
+    origin_verification: item?.origin_verification ?? null,
   }));
+  const operatorFactDigestions = asArray(parsed.operator_fact_digestions).map((item) => ({
+    fact_id: item?.fact_id ?? item?.id ?? null,
+    outcome: ['supported', 'untested', 'contradicted'].includes(item?.outcome)
+      ? item.outcome
+      : 'untested',
+    reason: String(item?.reason || '').trim() || null,
+    goal_id: item?.goal_id ?? null,
+    claim: item?.claim ?? null,
+    next_test: item?.next_test ?? null,
+    evidence_refs: asArray(item?.evidence_refs).map(String),
+    question: item?.question ?? null,
+  })).filter((item) => item.fact_id);
   return {
     status,
     reason: String(parsed.reason || 'Belief update parsed.'),
     updates,
+    operator_fact_digestions: operatorFactDigestions,
   };
 }
 
@@ -297,6 +354,9 @@ export function applyBeliefUpdates(currentBeliefsDoc, updates = [], {
         evidence_refs: update.evidence_refs || [],
         next_test: update.next_test,
         recheck_trigger: update.recheck_trigger ?? null,
+        origin: update.origin ?? null,
+        origin_fact_id: update.origin_fact_id ?? null,
+        origin_verification: update.origin_verification ?? null,
         last_change: {
           cycle_id: cycleId,
           change,
@@ -326,6 +386,9 @@ export function applyBeliefUpdates(currentBeliefsDoc, updates = [], {
     if (update.goal_id) after.goal_id = update.goal_id;
     if (update.next_test != null) after.next_test = update.next_test;
     if (update.recheck_trigger != null) after.recheck_trigger = update.recheck_trigger;
+    if (update.origin != null) after.origin = update.origin;
+    if (update.origin_fact_id != null) after.origin_fact_id = update.origin_fact_id;
+    if (update.origin_verification != null) after.origin_verification = update.origin_verification;
     if (update.status) after.status = update.status;
     else if (change === 'validate') after.status = 'validated';
     else if (change === 'refute') after.status = 'refuted';
@@ -375,6 +438,7 @@ export async function updateBeliefsWithAi({
   store,
   language = 'zh',
   logger = null,
+  operatorAssertions = [],
 } = {}) {
   const context = buildBeliefUpdateContext({
     activeGoals,
@@ -383,6 +447,7 @@ export async function updateBeliefsWithAi({
     verification,
     verificationReportPath,
     store,
+    operatorAssertions,
   });
   const prompt = buildBeliefUpdatePrompt({ context, language });
   const stablePrompt = buildBeliefUpdatePrompt({ context: {}, language });
@@ -407,7 +472,10 @@ export async function updateBeliefsWithAi({
         ...promptCache,
         invariant: promptCacheInvariant,
       },
-      result: fallbackBeliefUpdate('AI client unavailable.'),
+      result: {
+        ...fallbackBeliefUpdate('AI client unavailable.'),
+        operator_fact_digestions: [],
+      },
       currentBeliefs: normalizeCurrentBeliefs(store?.readCurrentBeliefs?.() ?? emptyCurrentBeliefs()),
       eventsWritten: 0,
     };
@@ -448,7 +516,10 @@ export async function updateBeliefsWithAi({
         ...promptCache,
         invariant: promptCacheInvariant,
       },
-      result: fallbackBeliefUpdate(`AI update failed: ${msg}`),
+      result: {
+        ...fallbackBeliefUpdate(`AI update failed: ${msg}`),
+        operator_fact_digestions: [],
+      },
       currentBeliefs: normalizeCurrentBeliefs(store?.readCurrentBeliefs?.() ?? emptyCurrentBeliefs()),
       eventsWritten: 0,
     };
@@ -513,6 +584,8 @@ export async function updateActiveBeliefs(root, {
   aiClient = null,
   agentContextDocs = [],
   logger = null,
+  runtimeRoot = null,
+  operatorAssertions = null,
 } = {}) {
   const { getActiveGoals } = await import('../cli/commands/goals.mjs');
   const { getProjectRoot } = await import('../cli/utils/project.mjs');
@@ -520,12 +593,14 @@ export async function updateActiveBeliefs(root, {
   const { createIntelligenceStore } = await import('./store.mjs');
   const { runtimeInfoForDefaultSubject } = await import('../cli/utils/subjects.mjs');
   const { detectLanguage } = await import('./report-builder.mjs');
+  const { loadDigestibleOperatorFacts, applyOperatorFactDigestions } = await import('./operator-fact-digestion.mjs');
 
   const projectRoot = root || getProjectRoot();
   const active = activeGoals ? { goals: activeGoals } : getActiveGoals(projectRoot);
   const runtime = runtimeInfoForDefaultSubject(projectRoot);
+  const resolvedRuntimeRoot = runtimeRoot || runtime.runtimeRoot;
   const intelligenceStore = store ?? createIntelligenceStore({
-    baseDir: join(runtime.runtimeRoot, 'data', 'intelligence'),
+    baseDir: join(resolvedRuntimeRoot, 'data', 'intelligence'),
     timezone: 'Asia/Shanghai',
   });
 
@@ -540,6 +615,14 @@ export async function updateActiveBeliefs(root, {
     : null;
   const language = detectLanguage(subjectDoc?.text);
 
+  const assertions = Array.isArray(operatorAssertions)
+    ? operatorAssertions
+    : (resolvedRuntimeRoot
+      ? loadDigestibleOperatorFacts(resolvedRuntimeRoot, {
+        factIds: intelResult?.injected_operator_fact_ids ?? null,
+      })
+      : []);
+
   const updated = await updateBeliefsWithAi({
     aiClient: cfg.aiClient,
     activeGoals: active.goals,
@@ -550,22 +633,48 @@ export async function updateActiveBeliefs(root, {
     store: intelligenceStore,
     language,
     logger: cfg.host?.logger ?? logger,
+    operatorAssertions: assertions,
   });
+
+  let digestion = null;
+  const resolvedCycleId = cycleId ?? execResult?.cycle_id ?? intelResult?.cycle_id ?? null;
+  // Digestion runs only when belief update itself succeeded (or skipped with no AI).
+  // On failed belief_update, facts stay pending for the next cycle.
+  if (
+    resolvedRuntimeRoot
+    && assertions.length
+    && updated.result?.status !== 'failed'
+  ) {
+    digestion = applyOperatorFactDigestions({
+      runtimeRoot: resolvedRuntimeRoot,
+      store: intelligenceStore,
+      cycleId: resolvedCycleId,
+      digestions: updated.result?.operator_fact_digestions ?? [],
+      pendingFacts: assertions,
+      currentBeliefs: updated.currentBeliefs,
+    });
+    if (digestion.currentBeliefs) {
+      updated.currentBeliefs = digestion.currentBeliefs;
+    }
+  }
 
   if (updated.result.status !== 'failed' && intelligenceStore?.recordEvolutionEvent) {
     intelligenceStore.recordEvolutionEvent({
       type: 'belief_update',
       status: updated.result.status,
-      cycle_id: cycleId ?? execResult?.cycle_id ?? intelResult?.cycle_id ?? null,
+      cycle_id: resolvedCycleId,
       source: updated.source,
       updates_count: updated.result.updates?.length ?? 0,
       events_written: updated.eventsWritten,
       reason: updated.result.reason,
+      operator_facts_digested: digestion?.digested?.length ?? 0,
+      operator_questions_opened: digestion?.questions_opened?.length ?? 0,
     });
   }
 
   return {
-    runtime,
+    runtime: { ...runtime, runtimeRoot: resolvedRuntimeRoot },
     ...updated,
+    operator_fact_digestion: digestion,
   };
 }

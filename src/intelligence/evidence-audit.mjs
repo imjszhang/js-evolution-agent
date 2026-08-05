@@ -17,6 +17,7 @@ export const STORE_FILES = Object.freeze({
   action_receipts: 'intelligence/action_receipts/action-receipts.jsonl',
   verify_reports: 'evolution/verify_reports',
   intel_observations: 'intelligence/intel_observations',
+  operator_facts: 'evolution/operator_facts',
   reports: 'intelligence/reports/index.jsonl',
   probe_results: 'intelligence/probe_results/probe-results.jsonl',
   goal_events: 'intelligence/goal_events/goal-events.jsonl',
@@ -36,6 +37,8 @@ export const REF_TYPE_ALIASES = Object.freeze({
   observations: 'intel_observations',
   intel_observation: 'intel_observations',
   intel_observations: 'intel_observations',
+  operator_fact: 'operator_facts',
+  operator_facts: 'operator_facts',
   intel_report: 'reports',
   intel_reports: 'reports',
   report: 'reports',
@@ -78,6 +81,7 @@ export const ID_PREFIX_TO_STORE = Object.freeze([
   ['retro-', 'retrospectives'],
   ['exec-', 'verify_reports'],
   ['cycle-', 'verify_reports'],
+  ['operator-fact-', 'operator_facts'],
   ['obs-', 'intel_observations'],
   ['evt-', 'evolution_events'],
   ['belief-', 'beliefs'],
@@ -286,6 +290,24 @@ export function buildEvidenceIndex({ dataRoot }) {
   put('action_receipts', loadJsonlIds(join(root, STORE_FILES.action_receipts)));
   put('verify_reports', loadVerifyReportIds(join(root, STORE_FILES.verify_reports)));
   put('intel_observations', loadDirJsonlIds(join(root, STORE_FILES.intel_observations)));
+  {
+    // operator_facts live as individual JSON files under pending/ and digested/.
+    const factIds = new Set();
+    for (const sub of ['pending', 'digested']) {
+      const dir = join(root, STORE_FILES.operator_facts, sub);
+      if (!existsSync(dir)) continue;
+      for (const name of readdirSync(dir)) {
+        if (!name.endsWith('.json')) continue;
+        try {
+          const raw = JSON.parse(readFileSync(join(dir, name), 'utf-8'));
+          if (raw?.id) factIds.add(String(raw.id));
+        } catch {
+          // skip invalid
+        }
+      }
+    }
+    put('operator_facts', factIds);
+  }
   put('reports', loadJsonlIds(join(root, STORE_FILES.reports), { idFields: ['id', 'cycle_id'] }));
   put('probe_results', loadJsonlIds(join(root, STORE_FILES.probe_results)));
   put('goal_events', loadJsonlIds(join(root, STORE_FILES.goal_events)));

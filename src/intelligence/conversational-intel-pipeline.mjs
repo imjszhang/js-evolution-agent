@@ -382,6 +382,7 @@ export class ConversationalIntelligencePipeline {
         logger: this.host?.logger,
         eventType: 'phases_report_honesty',
         logLabel: 'phases',
+        runtimeRoot: this.runtime?.runtimeRoot ?? null,
       });
       result.report = persistedReport;
       const reportPromptCacheWithUsage = {
@@ -591,6 +592,12 @@ export class ConversationalIntelligencePipeline {
           processed: queuedResult.operator_briefs_processed,
         };
       }
+
+      result.injected_operator_fact_ids = Array.isArray(preparedReport.reportContext?.injected_operator_fact_ids)
+        ? preparedReport.reportContext.injected_operator_fact_ids
+        : [];
+      result.pending_operator_facts = preparedReport.reportContext?.pending_operator_facts ?? [];
+      result.pending_operator_questions = preparedReport.reportContext?.pending_operator_questions ?? [];
 
       result.success = true;
       logger.endCycle(true);

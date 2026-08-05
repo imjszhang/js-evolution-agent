@@ -265,6 +265,7 @@ Rules:
 - Write ## Inferred, ## Cyber-Taoist analysis, and next-cycle suggestions based on Final Seen + Investigation Digest + Temporal Decision Brief.
 - Inferred judgements may cite only typed refs that appear in Final Seen. Use halfwidth ASCII brackets and colons: [type:id]. Never invent ids.
 - Operator Intent Briefs are one-cycle intent, not facts. Discuss them under Inferred; never promote brief claim text into Seen.
+- Under ## 下一轮建议 / Next cycle suggestions, each top-level numbered/bullet item must be one complete independent suggestion. Field lists for a single action (intent / context / expected_output / permission_profile / etc.) belong as nested bullets under that one item — never as separate top-level suggestions.
 - Use straightforward technical prose; keep Cyber-Taoist analysis faithful to authoritative documents without ornate metaphor.`
     : `# 情报报告任务
 
@@ -278,6 +279,7 @@ Rules:
 - 基于 Final Seen + Investigation Digest + Temporal Decision Brief 撰写 ## Inferred、## Cyber-Taoist analysis 与下一轮建议。
 - Inferred 只能引用 Final Seen 中已出现的 typed ref；括号与冒号必须半角 ASCII：\`[type:id]\`。禁止编造 id。
 - Operator Intent Briefs 是单轮意图，不是事实；放在 Inferred 讨论，不得把 brief claim 原文写入 Seen。
+- 「下一轮建议」每个顶层编号/bullet 必须是一条完整独立建议；单个 action 的字段清单（intent/context/expected_output/permission_profile 等）须放在同一条的嵌套子弹内，不得拆成多条顶层项。
 - 文风为现代汉语书面语，Cyber-Taoist 分析忠于权威文献，避免文言与玄学修辞。`;
 
   // Stability-descending order for DeepSeek KV prefix cache.

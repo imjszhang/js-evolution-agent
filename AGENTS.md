@@ -149,17 +149,17 @@ Phase 1.5 intel report 持久化
 **Carryover（跨轮待续，schema v2）**：
 
 - **agent_loop step 末**：查证 `open_gaps`、Decide `deferred` / goal suggestions、`suggestion_coverage` 中 deferred/unaddressed、以及报告建议溢出项，以 **mechanical** 项写入 `data/evolution/agent_loop_carryover.json`（覆写上轮条目——此时上轮已被本轮查证消费）。写侧与 diary 合并侧共用 `CARRYOVER_MECHANICAL_LIMIT=8`；超限时按 origin 优先级裁剪（`decide_deferred` > `suggestion_deferred` > `open_gap` > `suggestion_overflow` > `goal_suggestion`），并发 `carryover_items_dropped`。
-- **diary step 末**：**合并**而非整体覆写——保留 mechanical 项，追加 diary「下轮应该注意什么」叙事 bullets（与 mechanical 归一化后完全相同文本会去重），并写入机械 `step_status_snapshot`（exec/verify/belief/goals_assess/goals_calibrate 最终状态）。若 snapshot 显示某 step 已完成，字面提及 `goals_assess`/`goals_calibrate`/`belief_update` 且含 pending/尚未/未完成/skipped 的条目会被机械丢弃（`carryover_stale_item_dropped`）。
+- **diary step 末**：**合并**而非整体覆写——保留 mechanical 项，追加 diary「下轮应该注意什么」叙事 bullets（与 mechanical 归一化后完全相同文本会去重），并写入机械 `step_status_snapshot`（exec/verify/belief/goals_assess/goals_calibrate 最终状态）。若 snapshot 显示某 step 已完成，字面提及 `goals_assess`/`goals_calibrate`/`belief_update` 且含 pending/尚未/未完成/skipped 的条目会被机械丢弃（`carryover_stale_item_dropped`）。宿主把本轮 carryover 条目编号为 `M1..Mn` 注入 diary Machine Context；diary 可选输出 `## Carryover 销账` / `## Carryover retirements`（`- M<n>: 原因 + [typed ref]`），合并时机械删除被点名且 origin ∈ `{open_gap, suggestion_overflow, suggestion_deferred, goal_suggestion}` 的 mechanical 项（`drop_reason: closed_by_exec`，进 `carryover_stale_item_dropped`）；`decide_deferred`、diary 条目、越界 id 一律拒销。缺销账章节则全保留。
 - **下轮注入**：`## Carryover from previous cycle` 先渲染状态快照，再渲染带 `[mechanical/origin]` / `[diary]` 标签的条目；指令要求条目与快照或本轮 Machine Context 冲突时以后者为准。
 - 读侧兼容 v1 纯字符串 items（映射为 diary source）。空 mechanical + 空 diary 也会写盘以清空过期项。
 
-**Suggestion coverage（P3 软闸，仅 agent_loop）**：宿主从报告「下一轮建议」只数**顶层**编号/bullet 为 S1..Sn（嵌套子弹不单独编号）；超出 8 条的顶层项进 mechanical carryover（`origin: suggestion_overflow`）并发 `report_suggestions_overflow`。Decide JSON 应输出 `suggestion_coverage`（adopted/deferred/rejected）。缺表态由宿主补 `deferred: unaddressed` 进 mechanical carryover，并发 `decide_coverage_gap` 事件；不挡轮、不重问。diary 的 `phase1.suggestion_coverage` 供复盘对照。
+**Suggestion coverage（P3 软闸，仅 agent_loop）**：宿主从报告「下一轮建议」只数**顶层**编号/bullet 为 S1..Sn（嵌套子弹不单独编号）；顶层若为纯字段标签行（如 `**intent**: …`）则并入上一条建议，空标签丢弃。超出 8 条的顶层项进 mechanical carryover（`origin: suggestion_overflow`）并发 `report_suggestions_overflow`。Decide JSON 应输出 `suggestion_coverage`（adopted/deferred/rejected）。缺表态由宿主补 `deferred: unaddressed` 进 mechanical carryover，并发 `decide_coverage_gap` 事件；不挡轮、不重问。diary 的 `phase1.suggestion_coverage` 供复盘对照。
 
 **Diary 时间线契约**：`phase1.timeline` 标明 Phase 1 叙事写于轮初（系统状态描述截至上轮末）；本轮 exec/verify/belief/assess/calibrate 必须以 phase2–phase4_5 checkpoint 为准。phase2 receipt 里「assess/calibrate 仍 pending」只是执行时刻快照，写日记时不得抄进「没有推进」或 carryover；亦不得复述 mechanical carryover 已覆盖的主题。
 
 **Diary 摘要（tldr）**：checkpoint / viewer / inbox 用的 diary `tldr` 优先读 `## TL;DR`；否则机械从「真正推进了什么」bullets 或「这一轮发生了什么」首段散文提取；编号/bullet 列表不进入 tldr（避免截断停在 `2.`）。报告 index `tldr` 另认文首 `**TL;DR**` 粗体段，且无 `#` 顶级标题时也可从文首散文提取。
 
-**Standing memory 更新**：agent_loop 末宿主调用 `updateStandingMemoryWithAi`；DNTAS 条目硬切不加省略号；compose/sanitize/audit 共用 `DO_NOT_TREAT_SECTION_MAX_CHARS=1200`；主候选失败时 fallback 也会 sanitize，并在 reason 中保留 `primary:` / `fallback:` issues。成功或失败都发 `standing_memory_update` 事件（勿手改 `standing_memory.json`）。
+**Standing memory 更新**：agent_loop 末宿主调用 `updateStandingMemoryWithAi`；DNTAS 条目硬切不加省略号；compose/sanitize/audit 共用 `DO_NOT_TREAT_SECTION_MAX_CHARS=1200`。候选阶梯：`primary`（本轮 AI/宿主组装，审计干净即用）→ `preserved`（仅当 primary 失败时救援：旧叙事 + 并入其引用的 typed refs）→ `minimal_fallback`（Current State=`- (none)`）；`_locked`/backfill refs 只撑 Evidence 深度，**不**否决干净的 primary。`final_candidate` / `preserved_issues` / `primary_issues` / `fallback_issues` 写入 result、`memory_policy`、intel checkpoint 与 `standing_memory_update` 事件。不变式：`used_fallback=true` 时 `narrative_preserved` 必为 `false`。rolling 时旧 `_locked` refs 仅在 typed 深度仍低于 `min_typed_evidence_refs` 时合并。成功或失败都发事件（勿手改 `standing_memory.json`）。
 
 **Cycle Journal（轮内信息流）**：Phase 2 exec 串行执行多个 action 时，宿主维护本轮共享笔记，避免兄弟 `agent_run` 互相看不见。
 
@@ -334,7 +334,7 @@ runtime/subjects/<data_namespace>/
 | --- | --- | --- |
 | **Constraint（约束）** | 长期必须遵守的边界或偏好 | `human_guidance.md`、subject policy、OADA 规则 |
 | **Intent（意图）** | 下一轮关注什么，**不是事实** | `jea intel brief put` |
-| **Fact（确立事实）** | 操作者已确认、可当 Seen 引用 | `operator_fact` via `intel ingest` |
+| **Fact（确立事实种子）** | 操作者断言：注入后恰好一轮默认为真，轮末消化进信念 | `jea intel fact put`（或 `intel ingest` 带 `kind: operator_fact`） |
 | **Evidence（证据）** | 世界发生了什么，可被推翻 | `intel ingest` / `inbox`、probe、receipt |
 
 另有 **Action（硬开关）**：如 `approval_granted`，由 Decide 产出、Phase 2 执行；操作者不应直接写 `pending_decisions.json` 绕过 Decide。
@@ -367,12 +367,30 @@ runtime/subjects/<data_namespace>/data/evolution/operator_briefs/processed/
 
 常用字段：`summary`、`claims_to_verify[]`、`desired_decision_effect`、`suggested_actions[]`、`kind`（如 `verification_request`、`approval_request`）、`priority`。在 chat 里口头说「同意发布」**不会**自动进入系统；操作者或自动化代理需执行 `jea intel brief put` 落盘。
 
-### Operator Fact
+### Operator Fact（一次性种子）
 
-- 入口：`jea intel ingest --source intel_observations [--file PATH | --stdin] [--json]`；记录需带 `kind: "operator_fact"`（或 `source: "operator_fact"`）。
-- 存储：`runtime/subjects/<data_namespace>/data/intelligence/` 下的 `intel_observations`（持久，**不是**单轮消费队列）。
-- 作用：在 Temporal Decision Brief 中升格为 **Seen**（`operator_established_fact`），后续 report / decide / goal assess 可当作已确立事实引用；`buildContextSummary()` 也会优先展示 operator facts。
-- 与 brief 区别：brief 是「下一轮请核实 / 请这样排优先级」的**一次性意图**；fact 是操作者已确认、希望系统长期遵守的**领域口径或基线**（如 rank 方向、术语定义）。待验证命题用 brief；已确认口径用 fact。
+operator_fact **不再是永久权威事实**。它是操作者注入的一次性种子：
+
+1. **注入**：进入 `operator_facts/pending/`，下一轮 Phase 1 升格为 Seen（`operator_established_fact`），恰好默认为真一轮。
+2. **消化**（Phase 3.5 belief_update）：对照本轮 receipts / verify_report：
+   - `supported` → 写入信念 `validated`，`origin: operator`
+   - `untested` → 写入信念 `active` + `high`，标记未验证
+   - `contradicted` → **不**入库为真，打开 operator question 向人求证
+3. 信念进入原生生命周期，后续证据可 weaken / refute——权威衰减自动发生。
+
+入口：
+
+- `jea intel fact put [--file PATH | --stdin]`（推荐）
+- `jea intel fact list` / `jea intel fact digested`
+- `jea intel ingest --source intel_observations` 若记录带 `kind: "operator_fact"`，自动改写入 pending store（兼容旧习惯）
+- channel classifier 识别的 operator_fact 同样写 pending store
+
+存储路径：
+
+```text
+runtime/subjects/<data_namespace>/data/evolution/operator_facts/pending/
+runtime/subjects/<data_namespace>/data/evolution/operator_facts/digested/
+```
 
 最小 JSON 示例：
 
@@ -386,34 +404,26 @@ runtime/subjects/<data_namespace>/data/evolution/operator_briefs/processed/
 }
 ```
 
-常用字段：`content`（或 `summary`）、`subject`、`confidence`（仅 `high` 或缺省时会进入 Seen；`medium` / `low` 不会升格为 `operator_established_fact`）、`supersedes`（字符串或字符串数组，指向要被替换的旧 fact `id`）。没有独立的 `jea intel fact put` 命令；与 generic observation 共用 `intel ingest`。自动化代理在未获操作者明确确认时，不要替其写入 operator fact。
+常用字段：`content`（或 `summary`）、`subject`、`confidence`（种子仅接受 `high` 或缺省）。长期边界类约束仍写 `human_guidance.md` / subject policy，不要用 fact 冒充永久合同。
 
-**修正或撤回已确立口径**：追加一条新的 `operator_fact`，在 `supersedes` 中列出旧 fact 的 `id`；读取侧（Temporal Decision Brief、diary anchors、`buildContextSummary`）只会把未被 supersede 的高置信 fact 升格为 `operator_established_fact`。旧记录仍保留在 store 中供审计，不要手改 JSONL。
+**修正口径**：重新 `jea intel fact put` 注入新种子即可（续期一轮后重新消化）；不必再维护 `supersedes` 链（旧读侧仍兼容 observation store 中的历史 supersedes）。自动化代理在未获操作者明确确认时，不要替其写入 operator fact。
 
-替换示例：
+**存量迁移**：cycle 开始时宿主把 observation store 中仍 active 的高置信 operator_fact 幂等迁入 pending/，随后走新消化流程。
 
-```json
-{
-  "kind": "operator_fact",
-  "source": "operator",
-  "subject": "agentank-tank",
-  "content": "standing.rank lower is better; rankScore higher is better",
-  "confidence": "high",
-  "supersedes": ["operator-fact-rank-score-old-id"]
-}
+### Operator Question（向人求证）
+
+当消化发现矛盾（或后续 stuck-detection）时，系统打开 operator question，露出在：
+
+- `jea daemon inbox`（attention 汇总）
+- Phase 1 上下文 `pending_operator_questions`
+- `jea intel question list` / `jea intel question resolve <id> [--note TEXT]`
+
+```text
+runtime/subjects/<data_namespace>/data/evolution/operator_questions/pending/
+runtime/subjects/<data_namespace>/data/evolution/operator_questions/resolved/
 ```
 
-仅撤回、无新口径时，可写入 withdrawal 类 content，并同样 `supersedes` 旧 id：
-
-```json
-{
-  "kind": "operator_fact",
-  "source": "operator",
-  "content": "Previous operator fact <old_id> is withdrawn; do not use it as an established fact.",
-  "confidence": "high",
-  "supersedes": ["<old_id>"]
-}
-```
+答复方式复用现有入口（重新 `fact put` 或 `brief put`）；`question resolve` 仅做销账。
 
 ### Operator Guidance（长期约束）
 
@@ -457,15 +467,17 @@ Decide 可调度、`Phase 2` 执行的记录型动作，用于落已有结论而
 | --- | --- |
 | 长期约束、稳定偏好 | `human_guidance.md` 或 subject policy |
 | 下一轮核实 / 审批意图 / 排优先级 | `jea intel brief put` |
-| 已确认领域口径或术语 | `operator_fact`（`intel ingest`） |
+| 已确认领域口径或术语（种子） | `jea intel fact put` |
 | 可推翻的外部观测 | `intel ingest` / `inbox`（普通 observation） |
+| 系统提问待答复 | `jea intel question list` → 再 `fact put` / `brief put`，然后 `question resolve` |
 | 调整演化目标假设 | `jea goals update` |
 | 远端发布 / 核心变更放行 | brief → Decide 产出 `approval_granted`（+ env 如 `AGENTANK_ALLOW_PUBLISH`） |
 
 | 机制 | 入口 | 生命周期 | 证据地位 |
 | --- | --- | --- | --- |
 | Operator Intent Brief | `jea intel brief put` | 单轮；入队后归档 | 软意图，不可当事实 |
-| Operator Fact | `jea intel ingest --source intel_observations` | 持久 | 高置信时可作 Seen 事实 |
+| Operator Fact | `jea intel fact put` | 一轮默认真 → Phase 3.5 消化进信念 | 种子；消化后走信念生命周期 |
+| Operator Question | 系统打开；`jea intel question resolve` 销账 | 待人答复 | 注意力信号，非事实 |
 | Operator Guidance | `human_guidance.md` ## Current | 持续，直至手动清空 | 约束，非证据 |
 | 普通 observation | `jea intel ingest --source intel_observations` | 持久（90 天 retention） | 证据，非自动 Seen |
 
@@ -539,8 +551,32 @@ Decide 可调度、`Phase 2` 执行的记录型动作，用于落已有结论而
 - `JEA_GOAL_CALIBRATE_MODE=liberal|strict`（默认 `liberal`）
 - `JEA_GOAL_MAX_OUTCOME_CHILDREN=N`（`0` = 无上限；liberal 默认不限制）
 - `JEA_GOAL_AUTO_APPLY=0`：只写 Phase 4 assessment，Phase 4.5 不落盘
+- `JEA_GOAL_INTENT_SOFT_MAX`：update_child 后 intent 长度软上限（默认 `1500`）；超限发 `goal_intent_bloat` 警告事件，不硬拦
 
-Assessor prompt 仍建议 `goal_patches` 与 `proposed_goal` 互斥；执行器先尝试 patches，失败可在 liberal 下 fallback `proposed_goal`。`add_child` 的 child 建议带 `role: outcome|guard`（供审计）。
+Assessor prompt 仍建议 `goal_patches` 与 `proposed_goal` 互斥；执行器先尝试 patches，失败可在 liberal 下 fallback `proposed_goal`。`add_child` 的 child 建议带 `role: outcome|guard`（供审计）。`rule_status=mutate` 时机械拒绝 `remove_child` 守护子目标（`role=guard` 或 id 前缀 `guard-` / `monitor-`），只允许 `update_child` 修订观测点（守功能、破形态）。`patched` goal_event 会附带 `rule_status`。
+
+**法则反馈健康度**（`rule_feedback_stats`，Phase 4 机械注入）：
+
+宿主在 goals assess 前，按 `action.serves_goal` 聚合近期 receipts 的结果签名（`key=value` 归一化 hash），并对照 carryover 跨轮计数，为每个子目标计算 `feedback_state`：
+
+| 状态 | 含义 | assess 期望 |
+| --- | --- | --- |
+| `live` | 签名随世界变化，有信息增量 | continue / learn（世界未达标或通道故障） |
+| `degraded` | 签名连续 ≥2 轮相似 | 提高敏感度；区分通道故障 vs 法则滞后 |
+| `dead` | 签名连续 ≥`JEA_RULE_FEEDBACK_DEAD_STREAK`（默认 3）且 `information_gain=0` | 按宪章第九条/十三条必须 `rule_status=mutate`，`update_child` 修订观测点；不得再 learn 等待 |
+
+相关 env：
+
+| 变量 | 默认 | 含义 |
+| --- | --- | --- |
+| `JEA_RULE_FEEDBACK_WINDOW` | `8` | 统计窗口（cycle 数） |
+| `JEA_RULE_FEEDBACK_DEAD_STREAK` | `3` | 判 dead 的连续恒定签名轮数 |
+| `JEA_RULE_FEEDBACK_ESCALATE_STREAK` | `5` | 死亡边界报警阈值（见下） |
+| `JEA_RULE_FEEDBACK_RECEIPT_LIMIT` | `120` | 参与统计的 receipt 读取上限 |
+
+**死亡边界报警**：若某子目标 `feedback_state=dead` 且 streak ≥ escalate 阈值，而本轮 assess 未 mutate 或 calibrate 未对该子目标 applied patch，则打开 operator question（`trigger: rule_feedback_dead`），并发 `rule_feedback_escalated` 事件；同 goal 已有 pending question 时去重。这是校准回路失灵的最后防线，不是常规人工审批出口。
+
+Carryover mechanical 项带跨轮字段 `fingerprint` / `first_seen_cycle` / `seen_count`（同 cycle 重写不重复计数；跨 cycle 精确或 Jaccard≥0.6 匹配继承）。
 
 信念管理：
 
@@ -1002,6 +1038,6 @@ Phase 2（exec）action 选择口径：
 - 新 subject 接飞书机器人：先 `jea subject init` + `jea data init --all`，再 `jea channel feishu setup --subject NAME --write-env --init-subject-config`，然后 `jea daemon start --domain channel`，最后在飞书私聊 `JEA BIND <口令>`；用 `jea channel events` 验收收消息与 ingest。
 - 自动化脚本需要结构化输出时，优先使用带 `--json` 的命令。
 - 发布/基线校准等人工作业：先读最新 evolution diary 与 verify report，再用 `jea intel brief put` 提交意图，然后 `jea daemon enqueue --type run_cycle` 或 `jea run`；用 `jea intel brief list` / `processed` 确认 brief 是否已被消费。
-- 已确认的领域口径或术语定义（非待验证命题）：用 `jea intel ingest --source intel_observations` 写入 `operator_fact`；待核实或单轮优先级调整仍用 `jea intel brief put`。
+- 已确认的领域口径或术语定义（非待验证命题）：用 `jea intel fact put` 写入一次性种子；待核实或单轮优先级调整仍用 `jea intel brief put`。系统打开的 operator question 用 `jea intel question list` 查看，答复后 `question resolve`。
 - 长期稳定约束写 `human_guidance.md` 的 `## Current`；一次性核实请求不要写进 guidance，改用 brief。
 - 调整演化方向用 `jea goals update`；不要手改 `standing_memory.json` 或直接写 `pending_decisions.json`。

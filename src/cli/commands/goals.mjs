@@ -25,10 +25,24 @@ import {
   normalizeRuleStatus,
   resolveGoalCalibratePolicy,
 } from '../../intelligence/goal-calibrate-policy.mjs';
+import {
+  computeRuleFeedbackStats,
+  isGuardGoal,
+} from '../../intelligence/rule-feedback.mjs';
+import { readCarryoverDocument } from '../../evolution/carryover.mjs';
 import { resolveIntelReportRecordPath } from '../../intelligence/report-paths.mjs';
 import { findReportRecord } from './intel.mjs';
 
 export { validateGoalShape };
+
+export const DEFAULT_GOAL_INTENT_SOFT_MAX = 1500;
+
+function resolveGoalIntentSoftMax(env = process.env) {
+  const raw = env?.JEA_GOAL_INTENT_SOFT_MAX;
+  if (raw == null || raw === '') return DEFAULT_GOAL_INTENT_SOFT_MAX;
+  const n = Number.parseInt(String(raw), 10);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_GOAL_INTENT_SOFT_MAX;
+}
 
 function numberFlag(flags, name, fallback) {
   const n = Number(flags[name]);
@@ -200,9 +214,58 @@ function normalizeAssessmentForCalibration(assessment) {
   };
 }
 
-/** Learn no longer uses keyword special-casing; patches pass through to liberal/strict policy. */
-function filterPatchesForRuleStatus(patches, _ruleStatus) {
-  return { patches, skipped: [] };
+/**
+ * Learn no longer uses keyword special-casing.
+ * On mutate: mechanically reject remove_child of guard goals (守功能 — core guard function must not die).
+ */
+export function filterPatchesForRuleStatus(patches, ruleStatus, previousGoal = null) {
+  const list = Array.isArray(patches) ? patches : [];
+  if (ruleStatus !== 'mutate' || !previousGoal) {
+    return { patches: list, skipped: [] };
+  }
+  const children = Array.isArray(previousGoal.children) ? previousGoal.children : [];
+  const byId = new Map(children.map((c) => [c.id, c]));
+  const kept = [];
+  const skipped = [];
+  for (const patch of list) {
+    if (patch?.op === 'remove_child') {
+      const child = byId.get(patch.child_id);
+      if (child && isGuardGoal(child)) {
+        skipped.push({
+          ...patch,
+          skip_reason: 'guard_remove_forbidden_on_mutate',
+        });
+        continue;
+      }
+      // Also reject by id prefix when child missing from tree (defensive).
+      if (!child && isGuardGoal({ id: patch.child_id, role: null })) {
+        skipped.push({
+          ...patch,
+          skip_reason: 'guard_remove_forbidden_on_mutate',
+        });
+        continue;
+      }
+    }
+    kept.push(patch);
+  }
+  return { patches: kept, skipped };
+}
+
+function collectIntentBloatWarnings(goal, softMax) {
+  const warnings = [];
+  const children = Array.isArray(goal?.children) ? goal.children : [];
+  for (const child of children) {
+    const intent = String(child?.intent || '');
+    if (intent.length > softMax) {
+      warnings.push({
+        type: 'goal_intent_bloat',
+        goal_id: child.id ?? null,
+        intent_length: intent.length,
+        soft_max: softMax,
+      });
+    }
+  }
+  return warnings;
 }
 
 export function buildGoalPatchUpdate(root = getProjectRoot(), patches, opts = {}) {
@@ -232,6 +295,7 @@ export function buildGoalPatchUpdate(root = getProjectRoot(), patches, opts = {}
     evidence_refs: Array.isArray(opts.evidenceRefs) ? opts.evidenceRefs : parseEvidenceRefs(opts.evidence),
     cycle_id: opts.cycle ?? null,
     belief_retirements: [],
+    rule_status: opts.ruleStatus ?? null,
   };
 
   return { runtime, path, previousGoal, patches: normalized, event, opts };
@@ -383,9 +447,14 @@ export function autoCalibrateGoals(root = getProjectRoot(), goalsAssessResult = 
   const previousGoal = active.goals;
   const proposedGoal = normalizeProposedGoalShape(assessment?.proposed_goal);
   const rawPatches = assessment?.goal_patches;
-  const patchFilter = filterPatchesForRuleStatus(normalizeGoalPatches(rawPatches), ruleStatus);
+  const patchFilter = filterPatchesForRuleStatus(
+    normalizeGoalPatches(rawPatches),
+    ruleStatus,
+    previousGoal,
+  );
   const normalizedPatches = patchFilter.patches;
   const hasPatches = normalizedPatches.length > 0;
+  const intentSoftMax = resolveGoalIntentSoftMax(opts.env ?? process.env);
 
   const base = {
     ...calibrateResultBase(cycleId, previousGoal, previousGoal, policy),
@@ -451,9 +520,23 @@ export function autoCalibrateGoals(root = getProjectRoot(), goalsAssessResult = 
         evidenceRefs: goalsAssessResult?.event?.evidence_refs ?? assessment.evidence_refs ?? [],
         cycle: cycleId,
         flags: opts.flags,
+        ruleStatus,
       });
       const result = commitGoalPatch(build, { store: opts.store, policy });
       const mode = allSkipped.length > 0 ? 'patch_partial' : 'patch';
+      const bloatWarnings = collectIntentBloatWarnings(result.nextGoal, intentSoftMax);
+      const store = opts.store ?? null;
+      for (const warning of bloatWarnings) {
+        store?.recordEvolutionEvent?.({
+          type: 'goal_intent_bloat',
+          status: 'warning',
+          cycle_id: cycleId,
+          goal_id: warning.goal_id,
+          intent_length: warning.intent_length,
+          soft_max: warning.soft_max,
+          rule_status: ruleStatus,
+        });
+      }
       return {
         ...base,
         status: 'applied',
@@ -466,7 +549,7 @@ export function autoCalibrateGoals(root = getProjectRoot(), goalsAssessResult = 
         applied_patches: applicable,
         skipped_patches: allSkipped,
         belief_retirements: result.belief_retirements,
-        warnings,
+        warnings: [...warnings, ...bloatWarnings],
         children_ids_after: childIdsFromGoals(result.nextGoal),
       };
     } catch (e) {
@@ -538,6 +621,15 @@ export async function assessActiveGoals(root = getProjectRoot(), flags = {}, opt
   const store = opts.store ?? makeStore(active.runtime);
   const resolvedReportRecord = { ...reportRecord, md_path: reportPath };
   const reportMarkdown = readFileSync(reportPath, 'utf-8');
+  const carryoverDoc = opts.carryoverDoc
+    ?? readCarryoverDocument(active.runtime.runtimeRoot);
+  const ruleFeedbackStats = opts.ruleFeedbackStats
+    ?? computeRuleFeedbackStats({
+      store,
+      activeGoals: active.goals,
+      carryoverDoc,
+      env: opts.env ?? process.env,
+    });
   const assessed = await assessGoalsWithAi({
     aiClient: cfg.aiClient,
     activeGoals: active.goals,
@@ -547,6 +639,7 @@ export async function assessActiveGoals(root = getProjectRoot(), flags = {}, opt
     store,
     agentContextDocs: cfg.agentContextDocs ?? [],
     logger: cfg.host?.logger,
+    ruleFeedbackStats,
   });
   const reportRef = reportEvidenceRef(resolvedReportRecord);
   const event = {
@@ -562,6 +655,7 @@ export async function assessActiveGoals(root = getProjectRoot(), flags = {}, opt
     goal_patches: assessed.assessment.goal_patches ?? null,
     cycle_id: resolvedReportRecord.cycle_id ?? null,
     source: assessed.source,
+    rule_feedback_summary: ruleFeedbackStats?.summary ?? null,
   };
   const written = store.recordGoalEvent(event);
 
@@ -573,6 +667,7 @@ export async function assessActiveGoals(root = getProjectRoot(), flags = {}, opt
     assessment: assessed.assessment,
     source: assessed.source,
     written,
+    rule_feedback_stats: ruleFeedbackStats,
   };
 }
 

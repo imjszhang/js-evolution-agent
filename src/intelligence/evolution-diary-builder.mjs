@@ -8,7 +8,11 @@ import {
 import { detectLanguage, extractDiaryTldr } from './report-builder.mjs';
 import { redactSecrets } from './redaction.mjs';
 import { resolveEvolutionDiaryWritePath } from './diary-paths.mjs';
-import { selectActiveOperatorFacts } from './operator-facts.mjs';
+import {
+  readPendingOperatorFacts,
+  selectActiveOperatorFacts,
+} from './operator-facts.mjs';
+import { normalizeCurrentBeliefs } from './beliefs.mjs';
 
 const DIARY_CONTEXT_CHAR_LIMIT = 500000;
 const OPERATOR_FACT_LIMIT = 10;
@@ -57,20 +61,57 @@ function readOperatorGuidanceCurrent(runtime) {
 }
 
 export function gatherDiaryAnchors({ store = null, runtime = null } = {}) {
-  const observations = safeReadStore(
-    store,
-    'readRecentIntel',
-    { days: OPERATOR_FACT_LOOKBACK_DAYS, limit: 50 },
-    [],
+  const anchors = [];
+
+  // Preferred: pending one-shot seeds (default-true this cycle).
+  if (runtime?.runtimeRoot) {
+    const pending = readPendingOperatorFacts(runtime.runtimeRoot, { limit: OPERATOR_FACT_LIMIT });
+    for (const fact of pending.facts) {
+      anchors.push({
+        id: fact.id ?? null,
+        content: fact.content ?? fact.summary ?? '',
+        source: 'pending_operator_fact',
+      });
+    }
+  }
+
+  // Digested operator-origin beliefs continue as interpretation anchors.
+  const beliefsDoc = normalizeCurrentBeliefs(
+    safeReadStore(store, 'readCurrentBeliefs', undefined, null),
   );
-  const operatorEstablishedFacts = selectActiveOperatorFacts(observations, {
-    limit: OPERATOR_FACT_LIMIT,
-  })
-    .map((record) => ({
-      id: record.id ?? null,
-      content: record.content ?? record.summary ?? '',
-    }))
-    .filter((record) => record.content);
+  for (const belief of beliefsDoc.beliefs || []) {
+    if (belief?.origin !== 'operator') continue;
+    if (belief.status !== 'active' && belief.status !== 'validated') continue;
+    if (!belief.claim) continue;
+    if (anchors.some((a) => a.id === belief.origin_fact_id || a.content === belief.claim)) continue;
+    anchors.push({
+      id: belief.id ?? belief.origin_fact_id ?? null,
+      content: belief.claim,
+      source: 'operator_belief',
+      belief_status: belief.status,
+    });
+  }
+
+  // Legacy fallback: observation-store operator facts not yet migrated.
+  if (!anchors.length) {
+    const observations = safeReadStore(
+      store,
+      'readRecentIntel',
+      { days: OPERATOR_FACT_LOOKBACK_DAYS, limit: 50 },
+      [],
+    );
+    for (const record of selectActiveOperatorFacts(observations, { limit: OPERATOR_FACT_LIMIT })) {
+      anchors.push({
+        id: record.id ?? null,
+        content: record.content ?? record.summary ?? '',
+        source: 'legacy_observation',
+      });
+    }
+  }
+
+  const operatorEstablishedFacts = anchors
+    .filter((record) => record.content)
+    .slice(0, OPERATOR_FACT_LIMIT);
 
   const activeGoals = readActiveGoals(runtime);
 
@@ -174,14 +215,20 @@ export function buildEvolutionDiaryContext({
     },
     // Mid-cycle carryover from agent_loop; diary may rewrite diary-source items only.
     // Host preserves mechanical items and writes step_status_snapshot at diary finalize.
+    // Host numbers items M1..Mn in array order for optional Carryover retirements.
     agent_loop_carryover: Array.isArray(carryoverItems)
-      ? carryoverItems.map((item) => (typeof item === 'string'
-        ? item
-        : {
+      ? carryoverItems.map((item, idx) => {
+        const id = `M${idx + 1}`;
+        if (typeof item === 'string') {
+          return { id, text: item, source: 'diary', origin: null };
+        }
+        return {
+          id,
           text: item?.text ?? String(item),
           source: item?.source ?? 'diary',
           origin: item?.origin ?? null,
-        }))
+        };
+      })
       : [],
     interpretation_anchors: gatherDiaryAnchors({ store, runtime }),
     phase1: {
@@ -334,6 +381,7 @@ export function buildEvolutionDiaryPrompt({
       '- Be readable and candid: say what moved, what did not move, and what the next cycle should remember.',
       '- Start with a short ## TL;DR (1–2 sentences, about ≤200 characters) covering this cycle\'s outcome and the main open gap. Do not write the TL;DR as a numbered or bullet list; put details in later sections.',
       '- The section "What the next cycle should remember" must be a short bullet list (one item per line, starting with `- `, at most 10 items) of narrative memory only. Do not restate mechanical step statuses (the host writes step_status_snapshot and preserves mechanical carryover items automatically). Do not restate themes already covered by mechanical carryover items (open gaps / deferred / suggestion deferred); only add new narrative the snapshot does not capture. Use this cycle\'s exec/verify/assess conclusions to rewrite or drop stale narrative items.',
+      '- If a mechanical carryover item (see agent_loop_carryover ids M1..Mn) was closed by this cycle\'s exec/verify evidence, emit an optional ## Carryover retirements section: one bullet per line `- M<n>: short reason + [action_receipts:receipt-...] or verify ref`. Omit the section when nothing is retireable. Never retire decide_deferred or diary-source items; when unsure, keep the item.',
       '',
       'Suggested sections:',
       '- TL;DR',
@@ -344,6 +392,7 @@ export function buildEvolutionDiaryPrompt({
       '- Belief update',
       '- My judgement of the cycle',
       '- What the next cycle should remember',
+      '- Carryover retirements (optional)',
       '',
       '## Active Subject Policy',
       subjectDoc?.text || '(missing)',
@@ -377,6 +426,7 @@ export function buildEvolutionDiaryPrompt({
     '- 使用现代汉语书面语，避免文言、玄学散文、典故标题和过度模板化表格。',
     '- 文首必须有短 ## TL;DR（1–2 句，约不超过 200 字），概括本轮结果与最关键未闭环项；TL;DR 不要用编号或 bullet 列表，细节放到后续章节。',
     '- 「下轮应该注意什么」必须用短 bullet 列表（每条一行，以 `- ` 开头，最多 10 条），只写叙事项。不要复述机械 step 状态（宿主会自动写 step_status_snapshot 并保留 mechanical carryover 项）。不要复述 mechanical carryover 已覆盖的主题（open_gap / deferred / suggestion_deferred）；只补快照之外的新叙事。请结合本轮 exec/verify/assess 结论改写或清除过期叙事项。',
+    '- 若某条 mechanical carryover（见 agent_loop_carryover 的 id M1..Mn）已被本轮 exec/verify 证据闭环，请额外输出可选章节 ## Carryover 销账：每行一条 `- M<n>: 一句原因 + [action_receipts:receipt-...] 或 verify 引用`。无可销条目则省略该节。禁止销 decide_deferred 与 diary 条目；不确定时保留。',
     '',
     '建议章节：',
     '- TL;DR',
@@ -387,6 +437,7 @@ export function buildEvolutionDiaryPrompt({
     '- 信念更新',
     '- 我对这轮的判断',
     '- 下轮应该注意什么',
+    '- Carryover 销账（可选）',
     '',
     '## Active Subject Policy',
     subjectDoc?.text || '(missing)',
@@ -472,7 +523,11 @@ function renderFallbackDiary({ context, generatedAt, reason, language }) {
       '- 这份回退日记只保留了机器可确认的事实；下一轮应优先查看情报报告、执行 receipt 和验证报告。',
       '- This fallback diary only preserves mechanically confirmed facts; inspect the intel report, execution receipts, and verification report next cycle.',
     ),
-    ...(asArray(context?.agent_loop_carryover).slice(0, 8).map((item) => `- ${item}`)),
+    ...(asArray(context?.agent_loop_carryover).slice(0, 8).map((item) => {
+      const text = typeof item === 'string' ? item : (item?.text ?? String(item));
+      const id = typeof item === 'object' && item?.id ? `${item.id}: ` : '';
+      return `- ${id}${text}`;
+    })),
     '',
   );
   return lines.join('\n');

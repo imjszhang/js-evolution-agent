@@ -11,6 +11,7 @@ import { INTELLIGENCE_SPECS } from '../src/intelligence/specs.mjs';
 import { createIntelligenceStore } from '../src/intelligence/store.mjs';
 import {
   assessGoals,
+  applyLockedNarrativePreservation,
   applyRollingTypedEvidenceRefs,
   auditStandingMemoryFreeText,
   auditStandingMemoryMarkdown,
@@ -20,6 +21,8 @@ import {
   buildPrompt,
   buildTypedEvidenceRefsFromAdmission,
   composeStandingMemoryMarkdown,
+  hasLockedEvidenceRefs,
+  mergePreservedNarrativeWithUpdatedEvidence,
   sanitizeCurrentStateBody,
   sanitizeStandingMemoryCosmeticIssues,
   summarizeEvidenceIndexItem,
@@ -31,6 +34,7 @@ import {
   gatherEvidence,
   gatherReportContext,
   readReportBuilderConfig,
+  updateStandingMemoryWithAi,
 } from '../src/intelligence/report-builder.mjs';
 import {
   assessGoalsWithAi,
@@ -1483,6 +1487,462 @@ describe('buildIntelReport', () => {
     expect(result.memoryUpdate.status).toBe('failed');
     expect(result.indexRecord.standing_memory_updated).toBe(false);
     expect(result.indexRecord.standing_memory_update_error).toContain('memory timeout');
+  });
+});
+
+describe('standing memory narrative preservation', () => {
+  const zhRememberedHint = '- 历史报告、信念与日记仅作连续性线索；重开源记录前不得当作 Seen 事实。';
+
+  function makeCleanMemoryText({ currentState, evidenceAddresses }) {
+    const evidenceBody = evidenceAddresses.map((addr) => `- ${addr}: ok`).join('\n') || '- (none)';
+    return [
+      '## Current State',
+      '',
+      currentState,
+      '',
+      '## Evidence',
+      '',
+      evidenceBody,
+      '',
+      '## Remembered',
+      '',
+      zhRememberedHint,
+      '',
+      '## Do Not Treat As Seen',
+      '',
+      '- (none)',
+    ].join('\n');
+  }
+
+  function makeSeenItem(id, { brokenBracket = false } = {}) {
+    if (brokenBracket) {
+      // Open bracket reaches Evidence (fails audit); minimal admission drops it.
+      return {
+        source: { source_type: 'evolution_event', id },
+        kind: 'fact',
+        evidence_level: 'direct',
+        summary: `healthy index note [evolution_events:${id}`,
+      };
+    }
+    return {
+      source: { source_type: 'evolution_event', id },
+      kind: 'structured_status',
+      evidence_level: 'structured_machine_record',
+      fields: { status: 'ok', type: 'task_completed' },
+      summary: 'type=task_completed status=ok',
+    };
+  }
+
+  it('applyLockedNarrativePreservation is rescue-only: clean primary is never overridden by locked refs', () => {
+    const oldRef = {
+      source_type: 'intel_observations',
+      source_id: 'obs-old',
+      source_address: '[intel_observations:obs-old]',
+    };
+    const lockedRef = {
+      source_type: 'evolution_events',
+      source_id: 'evt-locked',
+      source_address: '[evolution_events:evt-locked]',
+      _locked: true,
+      _backfill: true,
+    };
+    const cycleRef = {
+      source_type: 'evolution_events',
+      source_id: 'evt-new',
+      source_address: '[evolution_events:evt-new]',
+    };
+    const oldText = makeCleanMemoryText({
+      currentState: '- rank contract remains authoritative [intel_observations:obs-old]',
+      evidenceAddresses: [oldRef.source_address, lockedRef.source_address],
+    });
+    const oldMemory = {
+      text: oldText,
+      typed_evidence_refs: [oldRef, lockedRef],
+    };
+    const admission = {
+      seen: [{
+        source_type: 'evolution_events',
+        source_id: 'evt-new',
+        source_address: '[evolution_events:evt-new]',
+        summary: 'type=task_completed status=ok',
+      }],
+      remembered: [],
+      do_not_treat_as_seen: [],
+    };
+    const primaryText = composeStandingMemoryMarkdown({
+      currentStateBody: '- new cycle fact [evolution_events:evt-new]',
+      reportContext: {},
+      language: 'zh',
+      admission,
+    });
+    const primaryAudit = auditStandingMemoryMarkdown({
+      text: primaryText,
+      typedEvidenceRefs: [cycleRef],
+      admission,
+    });
+    expect(primaryAudit.ok).toBe(true);
+
+    const passthrough = applyLockedNarrativePreservation({
+      text: primaryText,
+      audit: primaryAudit,
+      oldMemory,
+      typedEvidenceRefs: [cycleRef],
+      extendedAdmission: admission,
+      language: 'zh',
+      reportContext: { temporal_decision_brief: { seen: [] } },
+    });
+    expect(passthrough.narrative_preserved).toBe(false);
+    expect(passthrough.text).toBe(primaryText);
+  });
+
+  it('applyLockedNarrativePreservation merges old narrative refs when primary audit fails', () => {
+    const oldRef = {
+      source_type: 'intel_observations',
+      source_id: 'obs-old',
+      source_address: '[intel_observations:obs-old]',
+    };
+    const lockedRef = {
+      source_type: 'evolution_events',
+      source_id: 'evt-locked',
+      source_address: '[evolution_events:evt-locked]',
+      _locked: true,
+      _backfill: true,
+    };
+    const cycleRef = {
+      source_type: 'evolution_events',
+      source_id: 'evt-new',
+      source_address: '[evolution_events:evt-new]',
+    };
+    const oldText = makeCleanMemoryText({
+      currentState: '- rank contract remains authoritative [intel_observations:obs-old]',
+      evidenceAddresses: [oldRef.source_address, lockedRef.source_address],
+    });
+    const oldMemory = {
+      text: oldText,
+      typed_evidence_refs: [oldRef, lockedRef],
+    };
+    const admission = {
+      seen: [{
+        source_type: 'evolution_events',
+        source_id: 'evt-new',
+        source_address: '[evolution_events:evt-new]',
+        summary: 'type=task_completed status=ok',
+      }],
+      remembered: [],
+      do_not_treat_as_seen: [],
+    };
+    const primaryText = composeStandingMemoryMarkdown({
+      currentStateBody: '- dangling invent [evolution_events:evt-missing]',
+      reportContext: {},
+      language: 'zh',
+      admission,
+    });
+    const primaryAudit = auditStandingMemoryMarkdown({
+      text: primaryText,
+      typedEvidenceRefs: [cycleRef],
+      admission,
+    });
+    expect(primaryAudit.ok).toBe(false);
+
+    const preserved = applyLockedNarrativePreservation({
+      text: primaryText,
+      audit: primaryAudit,
+      oldMemory,
+      typedEvidenceRefs: [cycleRef],
+      extendedAdmission: admission,
+      language: 'zh',
+      reportContext: { temporal_decision_brief: { seen: [] } },
+    });
+
+    expect(preserved.narrative_preserved).toBe(true);
+    expect(preserved.audit.ok).toBe(true);
+    expect(preserved.text).toContain('rank contract remains authoritative');
+    expect(preserved.text).toContain('[intel_observations:obs-old]');
+    expect(preserved.typed_evidence_refs.some((ref) => ref.source_id === 'obs-old')).toBe(true);
+    expect(preserved.typed_evidence_refs.some((ref) => ref.source_id === 'evt-new')).toBe(true);
+  });
+
+  it('mergePreservedNarrativeWithUpdatedEvidence sanitizes Current State against allowedAddresses', () => {
+    const oldText = makeCleanMemoryText({
+      currentState: [
+        '- keep me [evolution_events:evt-keep]',
+        '- drop me [evolution_events:evt-gone]',
+      ].join('\n'),
+      evidenceAddresses: ['[evolution_events:evt-keep]', '[evolution_events:evt-gone]'],
+    });
+    const merged = mergePreservedNarrativeWithUpdatedEvidence({
+      oldText,
+      typedEvidenceRefs: [{
+        source_type: 'evolution_events',
+        source_id: 'evt-keep',
+        source_address: '[evolution_events:evt-keep]',
+      }],
+      admission: {
+        seen: [{
+          source_type: 'evolution_events',
+          source_id: 'evt-keep',
+          source_address: '[evolution_events:evt-keep]',
+          summary: 'ok',
+        }],
+        remembered: [],
+        do_not_treat_as_seen: [],
+      },
+      language: 'zh',
+      allowedAddresses: ['[evolution_events:evt-keep]'],
+    });
+    expect(merged).toContain('[evolution_events:evt-keep]');
+    expect(merged).not.toContain('evt-gone');
+  });
+
+  it('applyRollingTypedEvidenceRefs only merges locked refs when below min depth', () => {
+    const cycleRefs = Array.from({ length: 8 }, (_, i) => ({
+      source_type: 'evolution_events',
+      source_id: `evt-${i}`,
+      source_address: `[evolution_events:evt-${i}]`,
+    }));
+    const lockedOld = Array.from({ length: 5 }, (_, i) => ({
+      source_type: 'evolution_events',
+      source_id: `locked-${i}`,
+      source_address: `[evolution_events:locked-${i}]`,
+      _locked: true,
+      _backfill: true,
+    }));
+    const full = applyRollingTypedEvidenceRefs({
+      cycleRefs,
+      oldMemory: { typed_evidence_refs: lockedOld },
+      currentStateBody: '- fact [evolution_events:evt-0]',
+      config: {
+        min_typed_evidence_refs: 8,
+        max_typed_evidence_refs: 12,
+        eviction_policy: 'drop_oldest_unlinked',
+        preserve_referenced_in_current_state: true,
+        preserve_remembered_leads: true,
+        backfill_when_below_min: false,
+      },
+    });
+    expect(full.some((ref) => String(ref.source_id).startsWith('locked-'))).toBe(false);
+    expect(hasLockedEvidenceRefs(full)).toBe(false);
+
+    const padded = applyRollingTypedEvidenceRefs({
+      cycleRefs: cycleRefs.slice(0, 3),
+      oldMemory: { typed_evidence_refs: lockedOld },
+      currentStateBody: '- fact [evolution_events:evt-0]',
+      config: {
+        min_typed_evidence_refs: 8,
+        max_typed_evidence_refs: 12,
+        eviction_policy: 'drop_oldest_unlinked',
+        preserve_referenced_in_current_state: true,
+        preserve_remembered_leads: true,
+        backfill_when_below_min: false,
+      },
+    });
+    expect(padded.length).toBe(8);
+    expect(padded.filter((ref) => ref._locked === true)).toHaveLength(5);
+  });
+
+  it('updateStandingMemoryWithAi prefers clean primary even when locked old memory exists', async () => {
+    const store = makeStore();
+    const events = [];
+    const origRecord = store.recordEvolutionEvent.bind(store);
+    store.recordEvolutionEvent = (payload) => {
+      events.push(payload);
+      return origRecord(payload);
+    };
+
+    const oldRef = {
+      source_type: 'intel_observations',
+      source_id: 'obs-rank',
+      source_address: '[intel_observations:obs-rank]',
+    };
+    const lockedRef = {
+      source_type: 'evolution_events',
+      source_id: 'evt-locked-old',
+      source_address: '[evolution_events:evt-locked-old]',
+      _locked: true,
+      _backfill: true,
+    };
+    store.recordStandingMemory({
+      source_cycle_id: 'cycle-old',
+      text: makeCleanMemoryText({
+        currentState: '- rank API contract baseline [intel_observations:obs-rank]',
+        evidenceAddresses: [oldRef.source_address, lockedRef.source_address],
+      }),
+      typed_evidence_refs: [oldRef, lockedRef],
+      evidence_refs: [oldRef.source_id, lockedRef.source_id],
+    });
+
+    const reportContext = {
+      temporal_decision_brief: {
+        seen: [makeSeenItem('evt-cycle')],
+        remembered: [],
+        do_not_treat_as_seen: [],
+        evidence_policy: { precedence: [] },
+      },
+      standing_memory: store.readStandingMemory(),
+    };
+    const fakeAi = {
+      chat: async () => '## Current State\n\n- cycle fact [evolution_events:evt-cycle]',
+    };
+
+    const result = await updateStandingMemoryWithAi({
+      aiClient: fakeAi,
+      store,
+      language: 'zh',
+      reportContext,
+      reportMarkdown: '# report\n\nok\n',
+      cycleId: 'cycle-primary-wins',
+      generatedAt: '2026-08-03T12:00:00.000Z',
+      runtimeRoot: null,
+    });
+
+    expect(result.status).toBe('updated');
+    expect(result.final_candidate).toBe('primary');
+    expect(result.narrative_preserved).toBe(false);
+    expect(result.used_fallback).toBe(false);
+    expect(result.preserved_issues).toEqual([]);
+    const memory = store.readStandingMemory();
+    expect(memory.text).toContain('cycle fact');
+    expect(memory.text).toContain('[evolution_events:evt-cycle]');
+    expect(memory.text).not.toContain('rank API contract baseline');
+    const updateEvent = events.find((e) => e.type === 'standing_memory_update');
+    expect(updateEvent).toMatchObject({
+      final_candidate: 'primary',
+      narrative_preserved: false,
+      used_fallback: false,
+    });
+  });
+
+  it('updateStandingMemoryWithAi rescues with preserved when primary audit fails', async () => {
+    const store = makeStore();
+    const events = [];
+    const origRecord = store.recordEvolutionEvent.bind(store);
+    store.recordEvolutionEvent = (payload) => {
+      events.push(payload);
+      return origRecord(payload);
+    };
+
+    const oldRef = {
+      source_type: 'intel_observations',
+      source_id: 'obs-rank',
+      source_address: '[intel_observations:obs-rank]',
+    };
+    store.recordStandingMemory({
+      source_cycle_id: 'cycle-old',
+      text: makeCleanMemoryText({
+        currentState: '- rank API contract baseline [intel_observations:obs-rank]',
+        evidenceAddresses: [oldRef.source_address],
+      }),
+      typed_evidence_refs: [oldRef],
+      evidence_refs: [oldRef.source_id],
+    });
+
+    const reportContext = {
+      temporal_decision_brief: {
+        seen: [makeSeenItem('evt-cycle')],
+        remembered: [],
+        do_not_treat_as_seen: [],
+        evidence_policy: { precedence: [] },
+      },
+      standing_memory: store.readStandingMemory(),
+    };
+    // Incomplete bracket on an allowed address survives sanitize but fails free-text audit;
+    // preserved old narrative (clean) rescues.
+    const fakeAi = {
+      chat: async () => '## Current State\n\n- cycle fact [evolution_events:evt-cycle] also [evolution_events:evt-partial',
+    };
+
+    const result = await updateStandingMemoryWithAi({
+      aiClient: fakeAi,
+      store,
+      language: 'zh',
+      reportContext,
+      reportMarkdown: '# report\n\nok\n',
+      cycleId: 'cycle-preserve-rescue',
+      generatedAt: '2026-08-03T12:00:00.000Z',
+      runtimeRoot: null,
+    });
+
+    expect(result.status).toBe('updated');
+    expect(result.final_candidate).toBe('preserved');
+    expect(result.narrative_preserved).toBe(true);
+    expect(result.used_fallback).toBe(false);
+    expect(result.primary_issues.length).toBeGreaterThan(0);
+    const memory = store.readStandingMemory();
+    expect(memory.text).toContain('rank API contract baseline');
+    expect(memory.text).not.toContain('evt-missing');
+    const updateEvent = events.find((e) => e.type === 'standing_memory_update');
+    expect(updateEvent).toMatchObject({
+      final_candidate: 'preserved',
+      narrative_preserved: true,
+      used_fallback: false,
+    });
+  });
+
+  it('updateStandingMemoryWithAi uses minimal fallback when both candidates fail', async () => {
+    const store = makeStore();
+    const lockedRef = {
+      source_type: 'evolution_events',
+      source_id: 'evt-locked',
+      source_address: '[evolution_events:evt-locked]',
+      _locked: true,
+      _backfill: true,
+    };
+    const oldRef = {
+      source_type: 'intel_observations',
+      source_id: 'obs-old',
+      source_address: '[intel_observations:obs-old]',
+    };
+    store.recordStandingMemory({
+      source_cycle_id: 'cycle-old',
+      text: makeCleanMemoryText({
+        currentState: '- old narrative [intel_observations:obs-old]',
+        evidenceAddresses: [oldRef.source_address, lockedRef.source_address],
+      }),
+      typed_evidence_refs: [oldRef, lockedRef],
+      evidence_refs: [oldRef.source_id, lockedRef.source_id],
+    });
+
+    // Primary Evidence gets an incomplete bracket; preserved merges old ref onto 50 cycle refs
+    // → count mismatch. Minimal admission filters the broken item so fallback can succeed.
+    const seen = [
+      ...Array.from({ length: 49 }, (_, i) => makeSeenItem(`evt-${i}`)),
+      makeSeenItem('evt-broken', { brokenBracket: true }),
+    ];
+    const reportContext = {
+      temporal_decision_brief: {
+        seen,
+        remembered: [],
+        do_not_treat_as_seen: [],
+        evidence_policy: { precedence: [] },
+      },
+      standing_memory: store.readStandingMemory(),
+    };
+    const fakeAi = {
+      chat: async () => '## Current State\n\n- cycle fact [evolution_events:evt-0]',
+    };
+
+    const result = await updateStandingMemoryWithAi({
+      aiClient: fakeAi,
+      store,
+      language: 'zh',
+      reportContext,
+      reportMarkdown: '# report\n\nok\n',
+      cycleId: 'cycle-minimal-fallback',
+      generatedAt: '2026-08-03T12:00:00.000Z',
+      runtimeRoot: null,
+    });
+
+    expect(result.status).toBe('updated');
+    expect(result.final_candidate).toBe('minimal_fallback');
+    expect(result.used_fallback).toBe(true);
+    expect(result.narrative_preserved).toBe(false);
+    expect(result.used_fallback && result.narrative_preserved).toBe(false);
+    const memory = store.readStandingMemory();
+    const currentState = memory.text.slice(
+      memory.text.indexOf('## Current State'),
+      memory.text.indexOf('## Evidence'),
+    );
+    expect(currentState).toContain('- (none)');
   });
 });
 
