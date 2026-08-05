@@ -108,6 +108,124 @@ export function safeQueueSummary(queue) {
   }
 }
 
+export function safeBacklogSummary(queue, { limit = 15 } = {}) {
+  if (!queue || typeof queue.getBacklogSummary !== 'function') return null;
+  try {
+    return queue.getBacklogSummary({ limit });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Apply Decide queue_ops against DecisionQueue with status guards.
+ * @returns {{ applied: object[], skipped: object[] }}
+ */
+export function applyQueueOps(decisionQueue, queueOps = [], {
+  emitEvent = null,
+  cycleId = null,
+} = {}) {
+  const applied = [];
+  const skipped = [];
+  if (!decisionQueue || !Array.isArray(queueOps) || !queueOps.length) {
+    return { applied, skipped };
+  }
+  for (const opItem of queueOps) {
+    const op = opItem?.op;
+    const id = opItem?.id;
+    if (!op || !id) {
+      skipped.push({ ...opItem, reason: 'invalid_op' });
+      continue;
+    }
+    let result;
+    if (op === 'requeue') {
+      if (typeof decisionQueue.requeueDecision !== 'function') {
+        skipped.push({ op, id, reason: 'unsupported' });
+        continue;
+      }
+      result = decisionQueue.requeueDecision(id);
+    } else if (op === 'retire') {
+      if (typeof decisionQueue.retireDecision !== 'function') {
+        skipped.push({ op, id, reason: 'unsupported' });
+        continue;
+      }
+      result = decisionQueue.retireDecision(id, opItem.reason || '');
+    } else {
+      skipped.push({ op, id, reason: 'unknown_op' });
+      continue;
+    }
+    if (result?.ok) {
+      const entry = { op, id, status: result.status, reason: opItem.reason || null };
+      applied.push(entry);
+      if (typeof emitEvent === 'function') {
+        try {
+          emitEvent({
+            type: 'decide_queue_op',
+            status: 'ok',
+            cycle_id: cycleId,
+            op,
+            decision_id: id,
+            reason: opItem.reason || null,
+          });
+        } catch { /* ignore */ }
+      }
+    } else {
+      skipped.push({
+        op,
+        id,
+        reason: result?.reason || 'rejected',
+        status: result?.status ?? null,
+      });
+    }
+  }
+  return { applied, skipped };
+}
+
+/**
+ * Render Decision Backlog for Decide dynamic payload.
+ */
+export function formatDecisionBacklogForPrompt(backlog, { language = 'zh' } = {}) {
+  if (!backlog) return '';
+  const pendingCount = backlog.pending_count ?? 0;
+  const blockedCount = backlog.blocked_count ?? 0;
+  if (pendingCount === 0 && blockedCount === 0) return '';
+
+  const isEn = String(language).toLowerCase().startsWith('en');
+  const lines = [
+    '## Decision Backlog',
+    '',
+    isEn
+      ? 'Structured cross-cycle queue state (not narrative carryover). Pending items continue automatically — do not re-enqueue duplicates (fingerprint dedupes). Blocked items require queue_ops (requeue or retire).'
+      : '跨轮结构化队列状态（非叙事 carryover）。pending 会自动继续执行——不要重复入队（fingerprint 去重）。blocked 必须通过 queue_ops（requeue 或 retire）表态。',
+    '',
+    `pending_count: ${pendingCount}`,
+    `blocked_count: ${blockedCount}`,
+  ];
+  if (backlog.truncated) {
+    lines.push(isEn ? '(list truncated; counts are complete)' : '（列表已截断；计数完整）');
+  }
+
+  const renderItems = (label, items) => {
+    if (!items?.length) return;
+    lines.push('', `### ${label}`);
+    for (const item of items) {
+      const bits = [
+        item.id,
+        `type=${item.type}`,
+        `attempts=${item.attempts ?? 0}/${item.max_attempts ?? '?'}`,
+      ];
+      if (item.permission_profile) bits.push(`profile=${item.permission_profile}`);
+      if (item.serves_goal) bits.push(`goal=${item.serves_goal}`);
+      if (item.last_error) bits.push(`err=${item.last_error}`);
+      if (item.description) bits.push(item.description);
+      lines.push(`- ${bits.join(' | ')}`);
+    }
+  };
+  renderItems('blocked', backlog.blocked);
+  renderItems('pending', backlog.pending);
+  return lines.join('\n');
+}
+
 export function buildStandingMemoryExtraContext({
   analysis,
   actions,
@@ -152,30 +270,26 @@ export async function queueAnalyzeDecideActions({
   conversationContextPath = null,
   reportMarkdown = null,
   operatorBriefs = [],
+  /** @deprecated Ignored: Decide actions are fully enqueued (no JEA_EXEC_LIMIT truncation). */
   maxActions = null,
   pipeline,
 } = {}) {
   if (pipeline == null || pipeline === '') {
     throw new Error('queueAnalyzeDecideActions requires an explicit pipeline (phases | agent_loop)');
   }
+  void maxActions; // retained for call-site compatibility; never truncates
   const analysisContext = summarizeAnalysis(analysis);
-  let toQueue = Array.isArray(actions) ? [...actions] : [];
-  const deferredExtra = [];
-  if (maxActions != null && Number.isFinite(Number(maxActions)) && toQueue.length > maxActions) {
-    const overflow = toQueue.slice(maxActions);
-    toQueue = toQueue.slice(0, maxActions);
-    for (const action of overflow) {
-      deferredExtra.push({
-        action: action?.type || 'action',
-        reason: `exceeded JEA_EXEC_LIMIT (${maxActions})`,
-        revisit_after: 'next cycle',
-        description: action?.description || null,
-      });
-    }
-    if (analysis && typeof analysis === 'object') {
-      analysis.deferred = [...(Array.isArray(analysis.deferred) ? analysis.deferred : []), ...deferredExtra];
-    }
-  }
+  const toQueue = Array.isArray(actions) ? [...actions] : [];
+
+  const emitEvent = (event) => {
+    try {
+      host?.intelligenceStore?.recordEvolutionEvent?.(event);
+    } catch { /* ignore */ }
+  };
+  const queueOpsResult = applyQueueOps(decisionQueue, analysis?.queue_ops || [], {
+    emitEvent,
+    cycleId,
+  });
 
   const draftDir = join(projectRoot, 'data', 'evolution', 'draft_issues', cycleId);
   mkdirSync(draftDir, { recursive: true });
@@ -253,7 +367,9 @@ export async function queueAnalyzeDecideActions({
     actions: enriched,
     decisions_queued: queued.ids || [],
     decisions_skipped: queued.skipped || [],
-    deferred_overflow: deferredExtra,
+    deferred_overflow: [],
+    queue_ops_applied: queueOpsResult.applied,
+    queue_ops_skipped: queueOpsResult.skipped,
     operator_briefs_processed: processedBriefs,
     analysisContext,
     draftDir,

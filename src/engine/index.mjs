@@ -6,7 +6,18 @@
 
 export { EvolutionEngine, AutoEvolutionEngine, ActionExecutor, verifyActions } from './engine.mjs';
 export { IntelligencePipeline } from './pipelines/intel.mjs';
-export { ExecutionPipeline } from './pipelines/exec.mjs';
+export {
+  ExecutionPipeline,
+  parseExecAgentBudgetFromEnv,
+  parseExecLimitFromEnv,
+} from './pipelines/exec.mjs';
+export {
+  classifyAgentRunScope,
+  computeAgentWaveWidth,
+  isExclusiveAgentDecision,
+  isParallelAgentDecision,
+  WRITE_PERMISSION_PROFILES,
+} from './act/scope.mjs';
 export { VerifyPipeline } from './pipelines/verify.mjs';
 
 export { NULL_HOST, normalizeHost } from './core/host.mjs';
@@ -37,7 +48,9 @@ export {
   decisionFingerprint,
   decisionIdSequence,
   compareDecisionsForClaim,
+  parseAgentMaxAttemptsFromEnv,
   STATUS_PENDING, STATUS_IN_PROGRESS, STATUS_COMPLETED, STATUS_FAILED, STATUS_EXPIRED,
+  STATUS_BLOCKED, STATUS_RETIRED,
 } from './decide/decision-queue.mjs';
 export { FeatureRequest, FeatureRequestQueue } from './decide/feature-request.mjs';
 export { GoalProvider } from './decide/goal-provider.mjs';

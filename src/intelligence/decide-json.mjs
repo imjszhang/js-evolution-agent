@@ -4,6 +4,27 @@
  */
 import { chatMessages, parseJsonFromText } from '../ai/messages.mjs';
 
+const QUEUE_OPS = new Set(['requeue', 'retire']);
+
+/**
+ * Normalize Decide `queue_ops` entries.
+ * @param {unknown} raw
+ * @returns {{ op: 'requeue'|'retire', id: string, reason: string|null }[]}
+ */
+export function normalizeQueueOps(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const op = String(item.op ?? item.operation ?? '').trim().toLowerCase();
+    const id = String(item.id ?? item.decision_id ?? '').trim();
+    if (!QUEUE_OPS.has(op) || !id) continue;
+    const reason = item.reason != null ? String(item.reason).slice(0, 500) : null;
+    out.push({ op, id, reason });
+  }
+  return out;
+}
+
 export function normalizeAnalyzeDecision(analysis = {}) {
   const next = analysis && typeof analysis === 'object' && !Array.isArray(analysis)
     ? { ...analysis }
@@ -26,6 +47,7 @@ export function normalizeAnalyzeDecision(analysis = {}) {
   next.deferred = Array.isArray(next.deferred) ? next.deferred : [];
   next.risk_mitigation = Array.isArray(next.risk_mitigation) ? next.risk_mitigation : [];
   next.goal_suggestions = Array.isArray(next.goal_suggestions) ? next.goal_suggestions : [];
+  next.queue_ops = normalizeQueueOps(next.queue_ops);
   return next;
 }
 

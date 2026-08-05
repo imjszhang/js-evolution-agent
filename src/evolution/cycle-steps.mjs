@@ -37,6 +37,8 @@ import {
   queueAnalyzeDecideActions,
   toPreDecisionReportContext,
   buildStandingMemoryExtraContext,
+  safeBacklogSummary,
+  formatDecisionBacklogForPrompt,
 } from '../intelligence/phase1-shared.mjs';
 import {
   accumulateLlmUsage,
@@ -171,14 +173,45 @@ export function skipBeliefUpdateFromEnv() {
   return v === '1' || String(v).toLowerCase() === 'true';
 }
 
+/**
+ * Per-cycle agent_run consumption budget (mechanical channel has no limit).
+ * Prefers JEA_EXEC_AGENT_BUDGET (default 8); JEA_EXEC_LIMIT is a deprecated alias.
+ */
+export function parseExecAgentBudgetFromEnv() {
+  const agentBudgetRaw = process.env.JEA_EXEC_AGENT_BUDGET;
+  if (agentBudgetRaw != null && agentBudgetRaw !== '') {
+    const n = Number(agentBudgetRaw);
+    if (Number.isFinite(n)) {
+      const i = Math.trunc(n);
+      if (i < 1) return 1;
+      if (i > 100) return 100;
+      return i;
+    }
+  }
+  const legacy = process.env.JEA_EXEC_LIMIT;
+  if (legacy != null && legacy !== '') {
+    const n = Number(legacy);
+    if (Number.isFinite(n)) {
+      const i = Math.trunc(n);
+      return Math.min(100, Math.max(1, i < 1 ? 1 : i));
+    }
+  }
+  return 8;
+}
+
+/** @deprecated Use parseExecAgentBudgetFromEnv. */
 export function parseExecLimitFromEnv() {
-  const raw = process.env.JEA_EXEC_LIMIT;
-  if (raw == null || raw === '') return 5;
+  return parseExecAgentBudgetFromEnv();
+}
+
+export function parseAgentMaxConcurrencyFromEnv() {
+  const raw = process.env.JEA_AGENT_MAX_CONCURRENCY;
+  if (raw == null || raw === '') return 2;
   const n = Number(raw);
-  if (!Number.isFinite(n)) return 5;
+  if (!Number.isFinite(n)) return 2;
   const i = Math.trunc(n);
   if (i < 1) return 1;
-  if (i > 100) return 100;
+  if (i > 16) return 16;
   return i;
 }
 
@@ -331,10 +364,11 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
   });
   const language = prepared.language || 'zh';
   const mechanicalSeen = buildSeenSection(prepared.reportContext) || '(none)';
-  const execLimit = parseExecLimitFromEnv();
+  const agentBudget = parseExecAgentBudgetFromEnv();
   const budget = {
     maxTurns: parseLoopMaxReadonlyTurns(),
-    maxActions: execLimit,
+    // Informational only: Decide no longer truncates by this value.
+    maxActions: agentBudget,
     maxWallClockMs: parseLoopWallclockMs(),
     toolResultMaxChars: parseLoopToolResultMaxChars(),
     finishReserveMs: parseLoopFinishReserveMs(),
@@ -347,7 +381,7 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
   if (autoArchive !== '0' && String(autoArchive).toLowerCase() !== 'false') {
     try {
       const archived = decisionQueue.archiveDecisions?.({
-        statuses: ['completed', 'expired', 'failed'],
+        statuses: ['completed', 'expired', 'retired', 'failed'],
         dryRun: false,
       });
       if (archived?.archived?.length) {
@@ -657,6 +691,10 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
       overflow: extractedSuggestions.overflow.slice(0, 12).map((item) => item.text),
     });
   }
+  const decisionBacklogText = formatDecisionBacklogForPrompt(
+    safeBacklogSummary(decisionQueue, { limit: 15 }),
+    { language },
+  );
   const decidePromptParts = buildDecideUserPromptParts({
     goalsText,
     rules,
@@ -669,6 +707,7 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
     includeMachineContext: true,
     observationReportFraming: 'host_assembled',
     reportSuggestions,
+    decisionBacklogText,
     language,
   });
   const decideMessages = [
@@ -771,7 +810,6 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
     conversationContextPath: conversationPath,
     reportMarkdown,
     operatorBriefs,
-    maxActions: execLimit,
     pipeline: 'agent_loop',
   });
 
@@ -1267,6 +1305,13 @@ export async function runExecStep(ctx, { recordState = null, intelResult = null,
     executionJournal.recordExecuted(item, { source: 'guard' });
   }
 
+  if (process.env.JEA_EXEC_LIMIT && !process.env.JEA_EXEC_AGENT_BUDGET) {
+    logger?.warn?.(
+      '[exec] JEA_EXEC_LIMIT is deprecated; map to JEA_EXEC_AGENT_BUDGET (agent_run budget). Mechanical actions are uncapped.',
+    );
+  }
+  const agentBudget = parseExecAgentBudgetFromEnv();
+  const agentConcurrency = parseAgentMaxConcurrencyFromEnv();
   const exec = new ExecutionPipeline({
     host: cfg.host,
     projectRoot: runtime.runtimeRoot,
@@ -1274,9 +1319,17 @@ export async function runExecStep(ctx, { recordState = null, intelResult = null,
     source: 'queue',
     cycleId: resolvedCycleId || undefined,
     executionJournal,
+    agentBudget,
+    agentConcurrency,
+    emitEvent: (event) => store.recordEvolutionEvent({
+      ...event,
+      cycle_id: resolvedCycleId,
+      subject: runtime.subject,
+    }),
   });
   const execResult = await exec.run({
-    limit: parseExecLimitFromEnv(),
+    agentBudget,
+    agentConcurrency,
     cycleId: resolvedCycleId || undefined,
   });
   // Prepend guard executions so verify can see them.
@@ -1292,6 +1345,10 @@ export async function runExecStep(ctx, { recordState = null, intelResult = null,
     executed_count: execResult.executed.length,
     guards_ran: guardResult.ran?.length ?? 0,
     journal_entries: execResult.journal?.entries?.length ?? 0,
+    mechanical_claimed: execResult.mechanical?.claimed ?? 0,
+    agent_waves: execResult.agent_waves?.length ?? 0,
+    agent_budget: execResult.agent_budget ?? agentBudget,
+    remaining_agent_pending: execResult.remaining_agent_pending ?? 0,
     error: execResult.error,
   });
   if (!execResult.success) {
@@ -1309,6 +1366,11 @@ export async function runExecStep(ctx, { recordState = null, intelResult = null,
       success: execResult.success,
       executed: execResult.executed ?? [],
       journal: execResult.journal ?? null,
+      mechanical: execResult.mechanical ?? null,
+      agent_waves: execResult.agent_waves ?? [],
+      agent_budget: execResult.agent_budget ?? agentBudget,
+      agent_concurrency: execResult.agent_concurrency ?? agentConcurrency,
+      remaining_agent_pending: execResult.remaining_agent_pending ?? 0,
       error: execResult.error ?? null,
     });
     await recordStepSidecar(recordState.root, recordState.subject, artifactCycleId, 'exec', 'done');

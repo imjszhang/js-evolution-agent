@@ -15,7 +15,15 @@ import {
   summarizeEvidenceAuditForIngest,
 } from '../../intelligence/evidence-audit.mjs';
 
-const KNOWN_STATUSES = ['pending', 'in_progress', 'completed', 'failed', 'expired'];
+const KNOWN_STATUSES = [
+  'pending',
+  'in_progress',
+  'completed',
+  'failed',
+  'expired',
+  'blocked',
+  'retired',
+];
 
 function parseTime(value) {
   const t = Date.parse(value ?? '');
@@ -30,7 +38,24 @@ function decisionTime(decision) {
     ?? null;
 }
 
-export function auditQueue(queue, validActionNames, { staleMinutes = 60 } = {}) {
+function summarizeBacklogItem(d) {
+  const runSpec = d.action?.params?.run_spec ?? d.action?.run_spec ?? {};
+  return {
+    id: d.id,
+    type: d.action?.type ?? 'unknown',
+    status: d.status,
+    attempts: d.attempts ?? 0,
+    max_attempts: d.max_attempts ?? null,
+    last_error: d.last_error?.message
+      ? String(d.last_error.message).slice(0, 160)
+      : (d.error ? String(d.error).slice(0, 160) : null),
+    permission_profile: runSpec.permission_profile ?? runSpec.permissionProfile ?? null,
+    serves_goal: d.action?.serves_goal ?? null,
+    created_at: d.created_at ?? d.timestamp ?? null,
+  };
+}
+
+export function auditQueue(queue, validActionNames, { staleMinutes = 60, backlogLimit = 10 } = {}) {
   const decisions = Array.isArray(queue?.decisions) ? queue.decisions : [];
   const counts = Object.fromEntries(KNOWN_STATUSES.map((s) => [s, 0]));
   const byStatus = {};
@@ -56,6 +81,14 @@ export function auditQueue(queue, validActionNames, { staleMinutes = 60 } = {}) 
     .map((d) => ({ decision: d, time: decisionTime(d) }))
     .sort((a, b) => (a.time ?? Infinity) - (b.time ?? Infinity))[0]?.decision ?? null;
 
+  const limit = Number.isFinite(Number(backlogLimit)) ? Math.max(0, Math.floor(Number(backlogLimit))) : 10;
+  const backlog = {
+    pending_count: (byStatus.pending ?? []).length,
+    blocked_count: (byStatus.blocked ?? []).length,
+    pending: (byStatus.pending ?? []).slice(0, limit).map(summarizeBacklogItem),
+    blocked: (byStatus.blocked ?? []).slice(0, limit).map(summarizeBacklogItem),
+  };
+
   return {
     total: decisions.length,
     counts,
@@ -66,6 +99,7 @@ export function auditQueue(queue, validActionNames, { staleMinutes = 60 } = {}) 
       type: oldestPending.action?.type ?? 'unknown',
       created_at: oldestPending.created_at ?? oldestPending.timestamp ?? null,
     } : null,
+    backlog,
     healthy: unknownActions.length === 0 && staleInProgress.length === 0,
   };
 }
@@ -83,11 +117,21 @@ function printQueueAudit(audit) {
   if (audit.oldestPending) {
     console.log(`oldest pending: ${audit.oldestPending.id} (${audit.oldestPending.type})`);
   }
+  if (audit.backlog) {
+    console.log(`# Decision Backlog`);
+    console.log(`pending: ${audit.backlog.pending_count}; blocked: ${audit.backlog.blocked_count}`);
+    for (const item of audit.backlog.blocked || []) {
+      console.log(`  - [blocked] ${item.id}: ${item.type} attempts=${item.attempts}/${item.max_attempts ?? '?'} ${item.last_error || ''}`);
+    }
+    for (const item of audit.backlog.pending || []) {
+      console.log(`  - [pending] ${item.id}: ${item.type} attempts=${item.attempts}/${item.max_attempts ?? '?'}`);
+    }
+  }
   console.log(audit.healthy ? 'queue healthy' : 'queue needs attention');
 }
 
 function parseStatuses(value) {
-  if (!value || value === true) return ['completed', 'expired'];
+  if (!value || value === true) return ['completed', 'expired', 'retired', 'failed'];
   return String(value).split(',').map((s) => s.trim()).filter(Boolean);
 }
 
@@ -102,7 +146,7 @@ function printArchiveResult(result) {
   }
 }
 
-export function archiveQueue(root, { statuses = ['completed', 'expired'], dryRun = true } = {}) {
+export function archiveQueue(root, { statuses = ['completed', 'expired', 'retired', 'failed'], dryRun = true } = {}) {
   const { runtime } = readActiveDecisionQueue(root);
   const queue = new LocalDecisionQueue({
     dataDir: join(runtime.runtimeRoot, 'data', 'evolution'),

@@ -280,7 +280,7 @@ describe('runAgentLoopStep (report-centric)', () => {
     expect(carryover.items).toEqual([]);
   });
 
-  it('truncates Decide actions beyond JEA_EXEC_LIMIT into deferred/carryover', async () => {
+  it('enqueues all Decide actions without JEA_EXEC_LIMIT truncation', async () => {
     const { ctx, cycleId, recordState, projectRoot, runtime } = makeCtx();
     const manyActions = Array.from({ length: 4 }, (_, i) => ({
       type: 'record_observation',
@@ -310,12 +310,14 @@ describe('runAgentLoopStep (report-centric)', () => {
       ],
     });
     const prevExec = process.env.JEA_EXEC_LIMIT;
+    const prevBudget = process.env.JEA_EXEC_AGENT_BUDGET;
     process.env.JEA_EXEC_LIMIT = '2';
+    delete process.env.JEA_EXEC_AGENT_BUDGET;
     try {
       mkdirSync(join(runtime.runtimeRoot, 'data', 'evolution', 'cycle-state'), { recursive: true });
       const forcedCycleId = `${cycleId}-limit`;
       const outcome = await runAgentLoopStep(ctx, { cycleId: forcedCycleId, recordState });
-      expect(outcome.intelResult.decisions_queued.length).toBe(2);
+      expect(outcome.intelResult.decisions_queued.length).toBe(4);
       const loopCp = join(
         projectRoot,
         'runtime',
@@ -328,7 +330,7 @@ describe('runAgentLoopStep (report-centric)', () => {
         'agent_loop.json',
       );
       const loopPayload = JSON.parse(readFileSync(loopCp, 'utf-8')).payload;
-      expect(loopPayload.carryover.some((item) => String(item?.text ?? item).includes('JEA_EXEC_LIMIT'))).toBe(true);
+      expect(loopPayload.carryover.some((item) => String(item?.text ?? item).includes('JEA_EXEC_LIMIT'))).toBe(false);
       expect(existsSync(join(
         projectRoot,
         'runtime',
@@ -343,10 +345,12 @@ describe('runAgentLoopStep (report-centric)', () => {
     } finally {
       if (prevExec == null) delete process.env.JEA_EXEC_LIMIT;
       else process.env.JEA_EXEC_LIMIT = prevExec;
+      if (prevBudget == null) delete process.env.JEA_EXEC_AGENT_BUDGET;
+      else process.env.JEA_EXEC_AGENT_BUDGET = prevBudget;
     }
   });
 
-  it('queueAnalyzeDecideActions helper respects maxActions', async () => {
+  it('queueAnalyzeDecideActions enqueues the full action batch', async () => {
     tempDir = mkdtempSync(join(tmpdir(), 'jea-phase1-shared-'));
     const runtimeRoot = join(tempDir, 'runtime');
     mkdirSync(join(runtimeRoot, 'data', 'evolution'), { recursive: true });
@@ -364,11 +368,11 @@ describe('runAgentLoopStep (report-centric)', () => {
         { type: 'record_observation', description: 'b', params: { content: 'b' } },
         { type: 'record_observation', description: 'c', params: { content: 'c' } },
       ],
-      maxActions: 1,
+      maxActions: 1, // ignored
       pipeline: 'agent_loop',
     });
-    expect(result.decisions_queued).toHaveLength(1);
-    expect(result.deferred_overflow).toHaveLength(2);
-    expect(analysis.deferred.length).toBeGreaterThanOrEqual(2);
+    expect(result.decisions_queued).toHaveLength(3);
+    expect(result.deferred_overflow).toHaveLength(0);
+    expect(analysis.deferred).toHaveLength(0);
   });
 });

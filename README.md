@@ -415,7 +415,10 @@ cp .env.example .env   # Windows: copy .env.example .env
 | `JEA_APPROVAL_MODE` | `manual` \| `auto_guarded` \| `auto_all` |
 | `JEA_EVOLUTION_MODE` | Default daemon evolution mode |
 | `JEA_AGENT_PROVIDER` | Default agent backend |
-| `JEA_EXEC_LIMIT` | Max decisions per exec phase (default 5) |
+| `JEA_EXEC_AGENT_BUDGET` | Max `agent_run` decisions consumed per exec phase (default 8); mechanical actions uncapped |
+| `JEA_AGENT_MAX_CONCURRENCY` | Max parallel `agent_run` width per wave (default 2) |
+| `JEA_AGENT_MAX_ATTEMPTS` | Failures before `blocked` (default 2) |
+| `JEA_EXEC_LIMIT` | Deprecated alias for `JEA_EXEC_AGENT_BUDGET` |
 
 Feishu per-subject credentials: `JEA_CHANNEL_FEISHU_<SUBJECT>_APP_ID`, etc. — see `.env.example` and `policies/subjects.example.json`.
 

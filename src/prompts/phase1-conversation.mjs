@@ -411,6 +411,7 @@ function buildDecideDynamicPayload({
   includeMachineContext = true,
   observationReportFraming = 'model_lead',
   reportSuggestionsText = '',
+  decisionBacklogText = '',
 } = {}) {
   const suggestionsBlock = reportSuggestionsText
     ? `
@@ -418,6 +419,11 @@ function buildDecideDynamicPayload({
 ## Report suggestions (numbered)
 
 ${reportSuggestionsText}`
+    : '';
+  const backlogBlock = decisionBacklogText
+    ? `
+
+${decisionBacklogText}`
     : '';
 
   const base = `## Goals
@@ -448,7 +454,7 @@ ${intelligenceContext || '(none)'}
 ${briefJson(reportContext)}
 \`\`\`
 
-${observationClaimsSection(observationReport, observationReportFraming)}${suggestionsBlock}`;
+${observationClaimsSection(observationReport, observationReportFraming)}${suggestionsBlock}${backlogBlock}`;
 
   if (!includeMachineContext) return base;
   return `${base}
@@ -472,6 +478,7 @@ export function buildDecideUserPromptParts({
   includeMachineContext = true,
   observationReportFraming = 'model_lead',
   reportSuggestions = [],
+  decisionBacklogText = '',
   language = 'zh',
 } = {}) {
   const actions = formatActions(actionRegistry);
@@ -489,6 +496,9 @@ export function buildDecideUserPromptParts({
     "S3": { "disposition": "rejected", "reason": "already covered by Seen" }
   }`
     : '';
+  const backlogRule = decisionBacklogText
+    ? '- 若 Dynamic Payload 含「Decision Backlog」：pending 会跨轮自动继续，勿重复入队相同动作；blocked 必须用 `queue_ops` 表态（`requeue` 清零 attempts 后重试，或 `retire` 销账）。可主动 `deferred` 表态，但不要再依赖宿主截断。\n'
+    : '- 可输出可选 `queue_ops`：`[{ "op": "requeue"|"retire", "id": "<decision_id>", "reason": "..." }]`，用于处置跨轮 blocked/pending 决策。\n';
   const stablePrefix = `# Strategic Analysis & Decision
 
 基于以上完整对话，尤其是你刚刚生成的情报报告，请输出本轮 Analyze+Decide 的严格 JSON。
@@ -527,9 +537,10 @@ export function buildDecideUserPromptParts({
 - 涉及权限、安全探针、越界路径或敏感目标的 run，必须通过 \`permission_profile\`、primary cwd、additional directories 和 expected_output 约束，不要只靠自然语言承诺。
 - 每个 action 必须有 serves_goal，并尽量使用目标树中的 goal id；对 \`agent_run\`，serves_goal 描述本次 run 要推进的目标。
 - 不要为了覆盖而制造行动；证据不足时可以把 decision 设为 "defer" 或让 actions 为空数组。
+- \`actions\` 全量入队（宿主不再按条数截断）；本轮 agent_run 执行预算由宿主控制，未执行完的 pending 会进入 Decision Backlog 跨轮继续。
 - \`goal_coverage.not_covered\` 必须是 JSON object，不能写成裸字符串列表；每一项必须是 \`"goal_id_or_label": "reason"\`。
-- \`actions\` 数组按期望执行顺序输出：产出信息的调查/探针类在前，依赖其结论的行动类在后。Phase 2 同批 claim 按该顺序串行执行；后序 action 的 prompt 会看到前序结果摘要（Cycle Journal / Earlier actions this cycle），因此不要把依赖结论的动作排在调查之前。
-${suggestionCoverageRule}
+- \`actions\` 数组按期望执行顺序输出：产出信息的调查/探针类在前，依赖其结论的行动类在后。Phase 2 先全量执行非 agent_run 机械动作，再按波次调度 agent_run；后序 action 的 prompt 会看到前序结果摘要（Cycle Journal / Earlier actions this cycle），因此不要把依赖结论的动作排在调查之前。
+${backlogRule}${suggestionCoverageRule}
 ## Available Action Types
 
 ${actions}
@@ -609,6 +620,10 @@ Respond with exactly this JSON shape:
   "deferred": [
     { "action": "...", "reason": "...", "revisit_after": "..." }
   ],
+  "queue_ops": [
+    { "op": "requeue", "id": "cycle-prev:0", "reason": "new evidence warrants retry" },
+    { "op": "retire", "id": "cycle-prev:1", "reason": "superseded by this cycle's actions" }
+  ],
   "risk_mitigation": ["..."],
   "goal_suggestions": [
     { "suggestion": "...", "reason": "..." }
@@ -626,6 +641,7 @@ Respond with exactly this JSON shape:
     includeMachineContext,
     observationReportFraming,
     reportSuggestionsText,
+    decisionBacklogText,
   });
   return {
     stablePrefix,
@@ -650,6 +666,7 @@ export function buildDecideUserPrompt({
   includeMachineContext = true,
   observationReportFraming = 'model_lead',
   reportSuggestions = [],
+  decisionBacklogText = '',
   language = 'zh',
 } = {}) {
   return buildDecideUserPromptParts({
@@ -664,6 +681,7 @@ export function buildDecideUserPrompt({
     includeMachineContext,
     observationReportFraming,
     reportSuggestions,
+    decisionBacklogText,
     language,
   }).content;
 }

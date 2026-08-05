@@ -54,7 +54,9 @@ import {
 import { resolveHostExternalRoots } from '../cli/utils/subjects.mjs';
 import {
   buildStandingMemoryExtraContext,
+  formatDecisionBacklogForPrompt,
   queueAnalyzeDecideActions,
+  safeBacklogSummary,
   safeQueueSummary,
   toPreDecisionReportContext,
 } from './phase1-shared.mjs';
@@ -408,6 +410,10 @@ export class ConversationalIntelligencePipeline {
         error: reportReason,
       });
 
+      const decisionBacklogText = formatDecisionBacklogForPrompt(
+        safeBacklogSummary(this.decisionQueue, { limit: 15 }),
+        { language: preparedReport.language || 'zh' },
+      );
       const decidePromptParts = buildDecideUserPromptParts({
         goalsText,
         rules,
@@ -417,6 +423,7 @@ export class ConversationalIntelligencePipeline {
         observationReport: observation.observation_report,
         reportContext: preparedReport.reportContext,
         actionRegistry: this.actionRegistry,
+        decisionBacklogText,
       });
       const decideUserPrompt = decidePromptParts.content;
       const decideMessages = [

@@ -414,7 +414,10 @@ cp .env.example .env   # Windows: copy .env.example .env
 | `JEA_APPROVAL_MODE` | `manual` \| `auto_guarded` \| `auto_all` |
 | `JEA_EVOLUTION_MODE` | Daemon 默认演化模式 |
 | `JEA_AGENT_PROVIDER` | 默认 agent 后端 |
-| `JEA_EXEC_LIMIT` | 单轮 exec 最多处理决策数（默认 5） |
+| `JEA_EXEC_AGENT_BUDGET` | 单轮最多消费的 `agent_run` 数（默认 8）；机械动作无上限 |
+| `JEA_AGENT_MAX_CONCURRENCY` | agent_run 波内并行宽度上限（默认 2） |
+| `JEA_AGENT_MAX_ATTEMPTS` | 失败后转 `blocked` 前的重试次数（默认 2） |
+| `JEA_EXEC_LIMIT` | deprecated，映射为 `JEA_EXEC_AGENT_BUDGET` |
 
 飞书 per-subject 凭证：`JEA_CHANNEL_FEISHU_<SUBJECT>_APP_ID` 等，见 `.env.example` 与 `policies/subjects.example.json`。
 

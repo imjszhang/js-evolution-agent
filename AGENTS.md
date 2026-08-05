@@ -118,8 +118,11 @@ Phase 1.5 intel report 持久化
 | `JEA_LOOP_CLOSING_TIMEOUT_SEC` | `240` | 查证强制收尾轮 LLM 超时（秒） |
 | `JEA_LOOP_TOOL_RESULT_MAX_CHARS` | `6000` | 回填模型的工具结果截断 |
 | `JEA_REPORT_REPAIR_MAX_ROUNDS` | `1` | 报告机械契约修复最大重问轮数（0 关闭，上限 2）；phases 与 agent_loop 共用 |
-| `JEA_EXEC_LIMIT` | `5` | Decide 批入队上限；超出进 deferred/carryover；Phase 2 exec 仍按该上限消费队列 |
-| `JEA_QUEUE_AUTO_ARCHIVE` | 开启 | `0`/`false` 关闭；agent_loop 开始前自动归档 completed/expired/**failed** 决策 |
+| `JEA_EXEC_AGENT_BUDGET` | `8` | 单轮 Phase 2 消费的 `agent_run` 上限；机械动作（非 agent_run）无上限；剩余 pending 跨轮继续 |
+| `JEA_EXEC_LIMIT` | （deprecated） | 旧名；若设置且未设 `JEA_EXEC_AGENT_BUDGET`，映射为 agent 预算并警告。Decide **不再**按此截断入队 |
+| `JEA_AGENT_MAX_CONCURRENCY` | `2` | agent_run 波内并行宽度上限（`read_only` 可并行；写类 profile 独占波宽 1）；设 `1` 关闭并行 |
+| `JEA_AGENT_MAX_ATTEMPTS` | `2` | agent_run 失败自动重试次数；耗尽转 `blocked`，由下轮 Decide `queue_ops` 处置 |
+| `JEA_QUEUE_AUTO_ARCHIVE` | 开启 | `0`/`false` 关闭；agent_loop 开始前自动归档 completed/expired/retired/**failed**（legacy）决策 |
 
 查证工具（仅 investigation 阶段）：
 
@@ -128,7 +131,34 @@ Phase 1.5 intel report 持久化
 
 查证阶段**不**注册 action 入队工具，也**不**在 loop 内写完整 Intel 报告。**phases 与 agent_loop 的最终 Seen 均由宿主组装**：机械底板 + `machine_context` bullets（agent_loop 另可并入已校验 `verified_facts`；phases 无查证阶段故 `verifiedFacts=[]`）。模型只写判断章节。落盘次序：首稿写入 `*_report_raw.md` → 机械契约检查（缺必需标题 / 判断章节编造 ref）→ 有界重问修复（最多 `JEA_REPORT_REPAIR_MAX_ROUNDS` 轮，默认 1；修复稿另存 `*_report_repaired.md`；事件 `intel_report_repair`）→ `transformMd` 在 `persistIntelReport` 内、`redactSecrets` 之前做字形净化与 `## Seen` splice（只写盘一次）→ persist 后发单次诚实事件（`phases_report_honesty` / `agent_loop_report_honesty`）。agent_loop 查证若最终仍有 `rejected_facts`，另发 `agent_loop_rejected_facts`（不进 carryover）。诚实矩阵 raw 列始终审修复前首稿；最终产物硬闸看 splice+脱敏后报告。有意不对称：phases 报告 prompt 仍含 intelligenceContext + observe + Machine Context JSON；agent_loop 报告 prompt 更瘦。verify 复放的是宿主最终报告（raw 仅存档）。
 
-机械守护（`evolution.guards`，不占 Decide 入队预算）：
+### Phase 2 exec（精简版 swarm 双通道）
+
+Decide 输出的 `actions` **全量入队**（fingerprint 去重）；不再按条数截断进 deferred。Decide JSON 可选 `queue_ops: [{op:"requeue"|"retire", id, reason}]` 处置跨轮 `blocked`/`pending`。动态载荷注入 `## Decision Backlog`（pending/blocked 摘要）。
+
+`runExecStep` 内部：
+
+```text
+mechanical guards
+→ 通道 A：非 agent_run 全量串行直跑（无预算）
+→ 通道 B：agent_run 波次调度
+   width = min(cap, demand, backpressureCap)
+   read_only 可并行；workspace_write / remote_write_review 等独占波宽 1
+   失败：attempts+1 < max → pending（下轮自动重试）；≥ max → blocked
+→ verify 仍消费扁平 executed[]（checkpoint 另含 mechanical / agent_waves）
+```
+
+队列状态机（`pending_decisions.json` v2）：
+
+```text
+pending → in_progress → completed
+                      → fail（attempts < max）→ pending
+                      → fail（attempts ≥ max）→ blocked
+blocked → queue_ops requeue → pending（attempts 清零）
+blocked|pending → queue_ops retire → retired
+pending TTL 72h → expired；blocked TTL 14d → expired
+```
+
+机械守护（`evolution.guards`，不占 agent_run 预算）：
 
 在 `runtime/subjects/registry.json` 的 `subjects.<name>.evolution.guards` 配置固定节奏动作（如凭据 sync、记忆审计）。`runExecStep` 在消费决策队列前按 `every_cycles` 到期执行；状态在 `data/evolution/agent_loop_guard_state.json`。
 
@@ -283,7 +313,10 @@ mock 路径 `usage` 为 `null`。真实调用时日志可见 `[prompt-cache ...]
 
 相关环境变量：
 
-- `JEA_EXEC_LIMIT`：限制单轮执行阶段最多处理的决策数，默认 `5`。
+- `JEA_EXEC_AGENT_BUDGET`：单轮最多消费的 `agent_run` 数，默认 `8`（机械动作无上限）。
+- `JEA_EXEC_LIMIT`：deprecated，映射为 agent 预算。
+- `JEA_AGENT_MAX_CONCURRENCY`：agent_run 波内并行宽度上限，默认 `2`。
+- `JEA_AGENT_MAX_ATTEMPTS`：agent_run 失败重试上限，默认 `2`。
 - `JEA_VIEWER_BUILD_LIMIT`：`jea intel viewer serve` / `build` 的轮次上限，默认 `50`。
 - `JEA_SKIP_GOALS_ASSESS=1`：跳过目标评估。
 - `JEA_SKIP_BELIEF_UPDATE=1`：跳过 post-verify 信念更新。
