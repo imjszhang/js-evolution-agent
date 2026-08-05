@@ -88,6 +88,10 @@ import {
   extractReportSuggestions,
   reconcileSuggestionCoverage,
 } from '../intelligence/report-suggestions.mjs';
+import {
+  computeRuleFeedbackStats,
+  formatRuleFeedbackForPrompt,
+} from '../intelligence/rule-feedback.mjs';
 
 export {
   assembleAgentLoopHostSeenBody,
@@ -695,6 +699,24 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
     safeBacklogSummary(decisionQueue, { limit: 15 }),
     { language },
   );
+  let ruleFeedbackText = '';
+  try {
+    const goalsPath = join(runtime.runtimeRoot, 'data', 'goals', 'active_goals.json');
+    const activeGoals = existsSync(goalsPath)
+      ? JSON.parse(readFileSync(goalsPath, 'utf-8'))
+      : null;
+    if (activeGoals) {
+      const carryoverDoc = readCarryoverDocument(runtime.runtimeRoot);
+      const ruleFeedbackStats = computeRuleFeedbackStats({
+        store,
+        activeGoals,
+        carryoverDoc,
+      });
+      ruleFeedbackText = formatRuleFeedbackForPrompt(ruleFeedbackStats, language);
+    }
+  } catch {
+    // Rule-feedback injection is best-effort; Decide must not fail open.
+  }
   const decidePromptParts = buildDecideUserPromptParts({
     goalsText,
     rules,
@@ -708,6 +730,7 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
     observationReportFraming: 'host_assembled',
     reportSuggestions,
     decisionBacklogText,
+    ruleFeedbackText,
     language,
   });
   const decideMessages = [

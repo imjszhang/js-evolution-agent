@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
   buildRuleFeedbackQuestionText,
   computeInformationGain,
+  computeMutateEffective,
   computeRuleFeedbackStats,
   computeSignatureStreak,
+  computeStarvedStreak,
   extractResultSignature,
+  formatRuleFeedbackForPrompt,
   isGuardGoal,
   selectRuleFeedbackEscalations,
 } from '../src/intelligence/rule-feedback.mjs';
@@ -393,5 +396,270 @@ describe('isGuardGoal', () => {
     expect(isGuardGoal({ id: 'guard-memory-audit-v28' })).toBe(true);
     expect(isGuardGoal({ id: 'monitor-credential-compliance-v28' })).toBe(true);
     expect(isGuardGoal({ id: 'iterate-skill-with-calibrated-sim-v28' })).toBe(false);
+  });
+});
+
+describe('computeStarvedStreak', () => {
+  it('counts trailing global cycles with no receipt for the goal', () => {
+    expect(computeStarvedStreak({
+      globalCycleIdsNewestFirst: ['c4', 'c3', 'c2', 'c1'],
+      goalCycleIds: new Set(['c1']),
+      windowCycles: 8,
+    })).toBe(3);
+    expect(computeStarvedStreak({
+      globalCycleIdsNewestFirst: ['c4', 'c3', 'c2', 'c1'],
+      goalCycleIds: new Set(['c4']),
+      windowCycles: 8,
+    })).toBe(0);
+  });
+});
+
+describe('computeMutateEffective', () => {
+  it('returns null during cooldown and false when signature unchanged after cooldown', () => {
+    const buckets = [
+      { signature: 'aaa', receipt_time_ms: 1000 },
+      { signature: 'aaa', receipt_time_ms: 3000 },
+      { signature: 'aaa', receipt_time_ms: 4000 },
+    ];
+    expect(computeMutateEffective({
+      lastMutatePatch: { recorded_at_ms: 2000 },
+      cyclesSinceMutate: 1,
+      mutateCooldown: 2,
+      signedBuckets: buckets,
+      currentSignature: 'aaa',
+    })).toBeNull();
+    expect(computeMutateEffective({
+      lastMutatePatch: { recorded_at_ms: 2000 },
+      cyclesSinceMutate: 2,
+      mutateCooldown: 2,
+      signedBuckets: buckets,
+      currentSignature: 'aaa',
+    })).toBe(false);
+    expect(computeMutateEffective({
+      lastMutatePatch: { recorded_at_ms: 2000 },
+      cyclesSinceMutate: 2,
+      mutateCooldown: 2,
+      signedBuckets: [
+        { signature: 'aaa', receipt_time_ms: 1000 },
+        { signature: 'bbb', receipt_time_ms: 3000 },
+      ],
+      currentSignature: 'bbb',
+    })).toBe(true);
+  });
+});
+
+describe('starved_streak and mutate_effective in stats', () => {
+  it('marks outcome children starved when no receipts across recent cycles', () => {
+    const receipts = [
+      makeReceipt({
+        id: 'r3',
+        cycleId: 'cycle-3',
+        servesGoal: 'guard-memory-audit-v28',
+        recordedAt: '2026-08-05T12:00:00.000Z',
+      }),
+      makeReceipt({
+        id: 'r2',
+        cycleId: 'cycle-2',
+        servesGoal: 'guard-memory-audit-v28',
+        recordedAt: '2026-08-05T11:00:00.000Z',
+      }),
+      makeReceipt({
+        id: 'r1',
+        cycleId: 'cycle-1',
+        servesGoal: 'guard-memory-audit-v28',
+        recordedAt: '2026-08-05T10:00:00.000Z',
+      }),
+    ];
+    const store = {
+      readActionReceipts: () => receipts,
+      readGoalEvents: () => [],
+    };
+    const stats = computeRuleFeedbackStats({
+      store,
+      activeGoals: {
+        id: 'root',
+        children: [
+          { id: 'guard-memory-audit-v28', role: 'guard' },
+          { id: 'iterate-skill-with-calibrated-sim-v28', role: 'outcome' },
+          { id: 'enforce-deep-analysis-and-switch', role: 'outcome' },
+        ],
+      },
+      deadStreak: 3,
+      escalateStreak: 5,
+      windowCycles: 8,
+    });
+    const iterate = stats.goals.find((g) => g.goal_id === 'iterate-skill-with-calibrated-sim-v28');
+    const enforce = stats.goals.find((g) => g.goal_id === 'enforce-deep-analysis-and-switch');
+    const guard = stats.goals.find((g) => g.goal_id === 'guard-memory-audit-v28');
+    expect(iterate.starved_streak).toBe(3);
+    expect(iterate.starved).toBe(true);
+    expect(enforce.starved_streak).toBe(3);
+    expect(enforce.starved).toBe(true);
+    expect(guard.starved_streak).toBe(0);
+    expect(guard.starved).toBe(false);
+    expect(stats.summary.starved).toBe(2);
+  });
+
+  it('ignores historical orphan serves_goal labels for starved escalation', () => {
+    const receipts = [
+      makeReceipt({
+        id: 'r1',
+        cycleId: 'cycle-1',
+        servesGoal: 'legacy-orphan-goal-name',
+        recordedAt: '2026-08-05T10:00:00.000Z',
+      }),
+      makeReceipt({
+        id: 'r2',
+        cycleId: 'cycle-2',
+        servesGoal: 'guard-memory-audit-v28',
+        recordedAt: '2026-08-05T11:00:00.000Z',
+      }),
+      makeReceipt({
+        id: 'r3',
+        cycleId: 'cycle-3',
+        servesGoal: 'guard-memory-audit-v28',
+        recordedAt: '2026-08-05T12:00:00.000Z',
+      }),
+    ];
+    const store = {
+      readActionReceipts: () => receipts,
+      readGoalEvents: () => [],
+    };
+    const stats = computeRuleFeedbackStats({
+      store,
+      activeGoals: {
+        id: 'root',
+        children: [{ id: 'guard-memory-audit-v28', role: 'guard' }],
+      },
+      deadStreak: 3,
+      escalateStreak: 5,
+    });
+    const orphan = stats.goals.find((g) => g.goal_id === 'legacy-orphan-goal-name');
+    expect(orphan.starved).toBe(false);
+    expect(orphan.escalate_eligible).toBe(false);
+  });
+
+  it('sets mutate_effective=false after cooldown when signature unchanged', () => {
+    const mutateAt = '2026-08-05T08:00:00.000Z';
+    const receipts = [
+      makeReceipt({
+        id: 'r3',
+        cycleId: 'cycle-3',
+        recordedAt: '2026-08-05T12:00:00.000Z',
+      }),
+      makeReceipt({
+        id: 'r2',
+        cycleId: 'cycle-2',
+        recordedAt: '2026-08-05T10:00:00.000Z',
+      }),
+      makeReceipt({
+        id: 'r1',
+        cycleId: 'cycle-1',
+        recordedAt: '2026-08-05T07:00:00.000Z',
+      }),
+    ];
+    const store = {
+      readActionReceipts: () => receipts,
+      readGoalEvents: () => [{
+        type: 'patched',
+        rule_status: 'mutate',
+        cycle_id: 'cycle-mutate',
+        recorded_at: mutateAt,
+        patches: [{ op: 'update_child', child_id: 'guard-memory-audit-v28' }],
+      }],
+    };
+    const stats = computeRuleFeedbackStats({
+      store,
+      activeGoals: {
+        id: 'root',
+        children: [{ id: 'guard-memory-audit-v28', role: 'guard' }],
+      },
+      deadStreak: 3,
+      escalateStreak: 5,
+      env: { JEA_RULE_FEEDBACK_MUTATE_COOLDOWN: '2' },
+    });
+    const row = stats.goals.find((g) => g.goal_id === 'guard-memory-audit-v28');
+    expect(row.feedback_state).toBe('dead');
+    expect(row.mutate_cooldown).toBe(false);
+    expect(row.mutate_effective).toBe(false);
+  });
+
+  it('does not let ineffective mutate suppress escalation', () => {
+    const escalations = selectRuleFeedbackEscalations({
+      ruleFeedbackStats: {
+        goals: [{
+          goal_id: 'guard-memory-audit-v28',
+          escalate_eligible: true,
+          mutate_effective: false,
+          constant_signature_streak: 5,
+          constant_keys: [{ key: 'free_text_clean', value: 'key_absent' }],
+        }],
+      },
+      assessment: { rule_status: 'mutate' },
+      calibrateResult: {
+        status: 'applied',
+        applied_patches: [{ op: 'update_child', child_id: 'guard-memory-audit-v28' }],
+      },
+      pendingQuestions: [],
+    });
+    expect(escalations).toHaveLength(1);
+    expect(buildRuleFeedbackQuestionText(escalations[0])).toContain('mutate_effective=false');
+  });
+
+  it('still skips escalation when mutate_effective is unknown/null and patch applied', () => {
+    const escalations = selectRuleFeedbackEscalations({
+      ruleFeedbackStats: {
+        goals: [{
+          goal_id: 'guard-memory-audit-v28',
+          escalate_eligible: true,
+          mutate_effective: null,
+          constant_signature_streak: 5,
+        }],
+      },
+      assessment: { rule_status: 'mutate' },
+      calibrateResult: {
+        status: 'applied',
+        applied_patches: [{ op: 'update_child', child_id: 'guard-memory-audit-v28' }],
+      },
+      pendingQuestions: [],
+    });
+    expect(escalations).toHaveLength(0);
+  });
+
+  it('formatRuleFeedbackForPrompt lists dead/degraded/starved only', () => {
+    const text = formatRuleFeedbackForPrompt({
+      goals: [
+        {
+          goal_id: 'iterate-skill-with-calibrated-sim-v28',
+          feedback_state: 'live',
+          starved: true,
+          starved_streak: 4,
+          constant_signature_streak: 0,
+          constant_keys: [],
+        },
+        {
+          goal_id: 'guard-memory-audit-v28',
+          feedback_state: 'degraded',
+          starved: false,
+          starved_streak: 0,
+          constant_signature_streak: 6,
+          constant_keys: [{ key: 'free_text_clean', value: 'key_absent' }],
+          mutate_cooldown: true,
+        },
+        {
+          goal_id: 'monitor-credential-compliance-v28',
+          feedback_state: 'live',
+          starved: false,
+          starved_streak: 0,
+          constant_signature_streak: 1,
+          constant_keys: [],
+        },
+      ],
+    }, 'zh');
+    expect(text).toContain('## Rule Feedback Health');
+    expect(text).toContain('iterate-skill-with-calibrated-sim-v28');
+    expect(text).toContain('starved_streak=4');
+    expect(text).toContain('guard-memory-audit-v28');
+    expect(text).not.toContain('monitor-credential-compliance-v28');
   });
 });

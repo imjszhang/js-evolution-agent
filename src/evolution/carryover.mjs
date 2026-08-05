@@ -542,7 +542,11 @@ export function formatCarryover(carryover = [], language = 'zh') {
     const tag = item.source === 'mechanical'
       ? (item.origin ? `mechanical/${item.origin}` : 'mechanical')
       : 'diary';
-    lines.push(`${idx + 1}. [${tag}] ${item.text}`);
+    const seenCount = Number(item.seen_count) || 1;
+    const streakNote = seenCount >= 2
+      ? (isEn ? ` (seen for ${seenCount} cycles)` : `（已连续 ${seenCount} 轮）`)
+      : '';
+    lines.push(`${idx + 1}. [${tag}] ${item.text}${streakNote}`);
   });
   return lines.join('\n');
 }

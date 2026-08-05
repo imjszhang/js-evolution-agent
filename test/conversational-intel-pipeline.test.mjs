@@ -269,6 +269,23 @@ describe('conversation prompt constraints', () => {
     expect(hostParts.dynamicPayload).not.toContain('## Model Observation Claims');
     expect(hostParts.stablePrefix).toBe(defaultParts.stablePrefix);
   });
+
+  it('injects Rule Feedback Health into Decide payload and prefers split agent_run waves', () => {
+    const parts = buildDecideUserPromptParts({
+      actionRegistry: { toPromptSection: () => '- `agent_run`' },
+      ruleFeedbackText: [
+        '## Rule Feedback Health',
+        '',
+        '- iterate-skill-with-calibrated-sim-v28 | state=live | starved_streak=4',
+      ].join('\n'),
+    });
+    expect(parts.dynamicPayload).toContain('## Rule Feedback Health');
+    expect(parts.dynamicPayload).toContain('starved_streak=4');
+    expect(parts.stablePrefix).toContain('Rule Feedback Health');
+    expect(parts.stablePrefix).toContain('拆成多个 agent_run');
+    expect(parts.stablePrefix).toContain('按波次并行执行');
+    expect(parts.stablePrefix).not.toContain('描述一次自主 agent 运行');
+  });
 });
 
 describe('operator intent briefs', () => {

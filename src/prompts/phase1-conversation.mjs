@@ -47,7 +47,7 @@ Use one coherent viewpoint across this conversation:
 - When writing English, use straightforward technical-or-ops prose that is faithful to Cyber-Taoist evolutionary thinking; avoid purple prose headings or journaling flourishes unless quoting authoritative docs verbatim.
 - Then, in the next turn, convert supported judgements into strict Analyze+Decide JSON.
 - Treat earlier assistant report text as your analysis product, not as new external fact.
-- Decisions must remain evidence-aware and goal-aligned. Prefer one autonomous agent_run with a concrete run_spec over subject-specific action menus.
+- Decisions must remain evidence-aware and goal-aligned. Prefer autonomous agent_run actions with concrete run_spec over subject-specific action menus. Independent investigations/probes should be separate agent_run items (the host schedules parallel waves); merge only when they truly share the same scope and context.
 
 ${buildAuthorityPrefix({ agentContextDocs })}
 
@@ -412,6 +412,7 @@ function buildDecideDynamicPayload({
   observationReportFraming = 'model_lead',
   reportSuggestionsText = '',
   decisionBacklogText = '',
+  ruleFeedbackText = '',
 } = {}) {
   const suggestionsBlock = reportSuggestionsText
     ? `
@@ -424,6 +425,11 @@ ${reportSuggestionsText}`
     ? `
 
 ${decisionBacklogText}`
+    : '';
+  const ruleFeedbackBlock = ruleFeedbackText
+    ? `
+
+${ruleFeedbackText}`
     : '';
 
   const base = `## Goals
@@ -454,7 +460,7 @@ ${intelligenceContext || '(none)'}
 ${briefJson(reportContext)}
 \`\`\`
 
-${observationClaimsSection(observationReport, observationReportFraming)}${suggestionsBlock}${backlogBlock}`;
+${observationClaimsSection(observationReport, observationReportFraming)}${suggestionsBlock}${backlogBlock}${ruleFeedbackBlock}`;
 
   if (!includeMachineContext) return base;
   return `${base}
@@ -479,6 +485,7 @@ export function buildDecideUserPromptParts({
   observationReportFraming = 'model_lead',
   reportSuggestions = [],
   decisionBacklogText = '',
+  ruleFeedbackText = '',
   language = 'zh',
 } = {}) {
   const actions = formatActions(actionRegistry);
@@ -499,6 +506,9 @@ export function buildDecideUserPromptParts({
   const backlogRule = decisionBacklogText
     ? '- 若 Dynamic Payload 含「Decision Backlog」：pending 会跨轮自动继续，勿重复入队相同动作；blocked 必须用 `queue_ops` 表态（`requeue` 清零 attempts 后重试，或 `retire` 销账）。可主动 `deferred` 表态，但不要再依赖宿主截断。\n'
     : '- 可输出可选 `queue_ops`：`[{ "op": "requeue"|"retire", "id": "<decision_id>", "reason": "..." }]`，用于处置跨轮 blocked/pending 决策。\n';
+  const ruleFeedbackRule = ruleFeedbackText
+    ? '- 若 Dynamic Payload 含「Rule Feedback Health」：签名恒定或 starved 的 goal 不应原样重复同一探针；若不行动，须在 deferred 或 goal_coverage.not_covered 说明。\n'
+    : '';
   const stablePrefix = `# Strategic Analysis & Decision
 
 基于以上完整对话，尤其是你刚刚生成的情报报告，请输出本轮 Analyze+Decide 的严格 JSON。
@@ -509,7 +519,7 @@ export function buildDecideUserPromptParts({
 - 必须优先使用 Temporal Decision Brief 中的 seen；行动前提只能来自 seen 或明确引用 seen 的 inferred。
 - remembered 只能作为线索；do_not_treat_as_seen 不得作为行动前提，除非动作本身是为了重新验证它。
 - 多源冲突时，Seen 覆盖 Remembered；Inferred 必须说明 evidence_refs 和反证条件。
-- 默认输出 \`type: "agent_run"\`，并在 \`params.run_spec\` 中描述一次自主 agent 运行。不要再把主体业务步骤拆成 \`sync/generate/simulate/evaluate/publish\` 之类的 action 菜单。
+- 默认输出 \`type: "agent_run"\`，并在 \`params.run_spec\` 中描述自主 agent 运行。不要再把主体业务步骤拆成 \`sync/generate/simulate/evaluate/publish\` 之类的 action 菜单。相互独立的调查/探针应拆成多个 agent_run（宿主按波次并行执行）；仅当共享同一 scope 与上下文时才合并。
 - Action taxonomy（Phase 2 选择规则）：
   - 主执行：\`agent_run\` — 调查、读文件、生成候选、模拟、代码修改、远端发布准备等所有“做事”任务。
   - 记录型：\`record_observation\`、\`propose_probe\`、\`write_retrospective\`、\`request_core_review\` — 只落已有结论/提案/审批请求，不用于调查或读文件。
@@ -540,7 +550,7 @@ export function buildDecideUserPromptParts({
 - \`actions\` 全量入队（宿主不再按条数截断）；本轮 agent_run 执行预算由宿主控制，未执行完的 pending 会进入 Decision Backlog 跨轮继续。
 - \`goal_coverage.not_covered\` 必须是 JSON object，不能写成裸字符串列表；每一项必须是 \`"goal_id_or_label": "reason"\`。
 - \`actions\` 数组按期望执行顺序输出：产出信息的调查/探针类在前，依赖其结论的行动类在后。Phase 2 先全量执行非 agent_run 机械动作，再按波次调度 agent_run；后序 action 的 prompt 会看到前序结果摘要（Cycle Journal / Earlier actions this cycle），因此不要把依赖结论的动作排在调查之前。
-${backlogRule}${suggestionCoverageRule}
+${backlogRule}${ruleFeedbackRule}${suggestionCoverageRule}
 ## Available Action Types
 
 ${actions}
@@ -642,6 +652,7 @@ Respond with exactly this JSON shape:
     observationReportFraming,
     reportSuggestionsText,
     decisionBacklogText,
+    ruleFeedbackText,
   });
   return {
     stablePrefix,
@@ -667,6 +678,7 @@ export function buildDecideUserPrompt({
   observationReportFraming = 'model_lead',
   reportSuggestions = [],
   decisionBacklogText = '',
+  ruleFeedbackText = '',
   language = 'zh',
 } = {}) {
   return buildDecideUserPromptParts({
@@ -682,6 +694,7 @@ export function buildDecideUserPrompt({
     observationReportFraming,
     reportSuggestions,
     decisionBacklogText,
+    ruleFeedbackText,
     language,
   }).content;
 }

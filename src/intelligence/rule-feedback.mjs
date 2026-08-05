@@ -134,6 +134,72 @@ function countSignedBucketsSinceMutate(signedBuckets = [], mutateAtMs = 0) {
   return signedBuckets.filter((bucket) => (bucket.receipt_time_ms ?? 0) > mutateAtMs).length;
 }
 
+/**
+ * Signature of the last signed bucket at or before mutate time (pre-mutate regime).
+ */
+function signatureBeforeMutate(signedBuckets = [], mutateAtMs = 0) {
+  if (!mutateAtMs || !signedBuckets.length) return null;
+  let last = null;
+  for (const bucket of signedBuckets) {
+    if ((bucket.receipt_time_ms ?? 0) <= mutateAtMs) last = bucket;
+  }
+  return last?.signature ?? null;
+}
+
+/**
+ * Whether the last mutate changed the result signature after cooldown.
+ * null = unknown (no mutate, or still in cooldown); true/false once observable.
+ */
+export function computeMutateEffective({
+  lastMutatePatch = null,
+  cyclesSinceMutate = null,
+  mutateCooldown = DEFAULT_MUTATE_COOLDOWN,
+  signedBuckets = [],
+  currentSignature = null,
+} = {}) {
+  if (!lastMutatePatch) return null;
+  if (cyclesSinceMutate == null || cyclesSinceMutate < mutateCooldown) return null;
+  const before = signatureBeforeMutate(signedBuckets, lastMutatePatch.recorded_at_ms || 0);
+  if (!before || !currentSignature) return null;
+  return before !== currentSignature;
+}
+
+/**
+ * Global cycle ids newest-first from receipts (by newest receipt time in each cycle).
+ */
+function globalCycleIdsNewestFirst(receipts = []) {
+  const cycleNewestMs = new Map();
+  for (const receipt of receipts) {
+    const cycleId = receiptCycleId(receipt);
+    if (!cycleId) continue;
+    const ms = receiptTimeMs(receipt);
+    const prev = cycleNewestMs.get(cycleId);
+    if (prev == null || ms > prev) cycleNewestMs.set(cycleId, ms);
+  }
+  return [...cycleNewestMs.entries()]
+    .sort((a, b) => (b[1] - a[1]) || String(b[0]).localeCompare(String(a[0])))
+    .map(([cycleId]) => cycleId);
+}
+
+/**
+ * Trailing cycles (newest-first global sequence) with no receipt for this goal.
+ * Window-limited; 0 when the newest cycle served this goal.
+ */
+export function computeStarvedStreak({
+  globalCycleIdsNewestFirst: cycleIds = [],
+  goalCycleIds = new Set(),
+  windowCycles = DEFAULT_WINDOW_CYCLES,
+} = {}) {
+  if (!cycleIds.length) return 0;
+  const recent = cycleIds.slice(0, windowCycles);
+  let streak = 0;
+  for (const cycleId of recent) {
+    if (goalCycleIds.has(cycleId)) break;
+    streak += 1;
+  }
+  return streak;
+}
+
 export function resolveRuleFeedbackConfig(env = process.env) {
   return {
     windowCycles: envInt('JEA_RULE_FEEDBACK_WINDOW', DEFAULT_WINDOW_CYCLES),
@@ -417,6 +483,7 @@ export function computeRuleFeedbackStats({
     cycles.get(cycleId).push(receipt);
   }
 
+  const globalCyclesNewestFirst = globalCycleIdsNewestFirst(receipts);
   const stats = [];
   const goalIds = new Set([
     ...childGoals.map((g) => g.id),
@@ -473,6 +540,8 @@ export function computeRuleFeedbackStats({
     const stuck = carryoverStuckForGoal(carryoverDoc, goalId);
     const consecutive_learn = consecutiveLearnStreak(goalEvents);
     const is_root = goalId === activeGoals?.id;
+    const is_guard = isGuardGoal(goal);
+    const in_active_tree = is_root || childGoals.some((g) => g.id === goalId);
     const last_mutate_patch = findLastMutatePatchForGoal(goalEvents, goalId);
     const cycles_since_mutate = last_mutate_patch
       ? countSignedBucketsSinceMutate(signedBuckets, last_mutate_patch.recorded_at_ms)
@@ -487,12 +556,30 @@ export function computeRuleFeedbackStats({
     if (mutate_cooldown) {
       feedback_state = 'degraded';
     }
-    const escalate_eligible = feedback_state === 'dead' && streak >= escalate;
+    const mutate_effective = computeMutateEffective({
+      lastMutatePatch: last_mutate_patch,
+      cyclesSinceMutate: cycles_since_mutate,
+      mutateCooldown,
+      signedBuckets,
+      currentSignature: signature,
+    });
+    // Active outcome children only: trailing global cycles with no serving receipt.
+    // Historical orphan serves_goal labels are ignored (not in active tree).
+    const starved_streak = (!in_active_tree || is_guard || is_root)
+      ? 0
+      : computeStarvedStreak({
+        globalCycleIdsNewestFirst: globalCyclesNewestFirst,
+        goalCycleIds: new Set(cycleMap.keys()),
+        windowCycles: window,
+      });
+    const starved = in_active_tree && !is_guard && !is_root && starved_streak >= dead;
+    const escalate_eligible = (feedback_state === 'dead' && streak >= escalate)
+      || (starved && starved_streak >= escalate);
 
     stats.push({
       goal_id: goalId,
       goal_name: goal?.name ?? null,
-      is_guard: isGuardGoal(goal),
+      is_guard,
       is_root,
       feedback_state,
       constant_signature_streak: streak,
@@ -507,14 +594,22 @@ export function computeRuleFeedbackStats({
       last_mutate_cycle: last_mutate_patch?.cycle_id ?? null,
       cycles_since_mutate,
       mutate_cooldown,
+      mutate_effective,
+      starved_streak,
+      starved,
       escalate_eligible,
     });
   }
 
-  // Sort: dead first, then degraded, then by streak desc.
+  // Sort: dead/starved first, then degraded, then by streak desc.
   const order = { dead: 0, degraded: 1, live: 2 };
-  stats.sort((a, b) => (order[a.feedback_state] - order[b.feedback_state])
-    || (b.constant_signature_streak - a.constant_signature_streak));
+  stats.sort((a, b) => {
+    const aRank = a.starved && a.feedback_state === 'live' ? 0.5 : order[a.feedback_state];
+    const bRank = b.starved && b.feedback_state === 'live' ? 0.5 : order[b.feedback_state];
+    return (aRank - bRank)
+      || (b.starved_streak - a.starved_streak)
+      || (b.constant_signature_streak - a.constant_signature_streak);
+  });
 
   return {
     config: {
@@ -529,6 +624,7 @@ export function computeRuleFeedbackStats({
       dead: stats.filter((s) => s.feedback_state === 'dead').length,
       degraded: stats.filter((s) => s.feedback_state === 'degraded').length,
       live: stats.filter((s) => s.feedback_state === 'live').length,
+      starved: stats.filter((s) => s.starved).length,
       escalate_eligible: stats.filter((s) => s.escalate_eligible).length,
     },
   };
@@ -567,12 +663,15 @@ export function selectRuleFeedbackEscalations({
     if (!stat?.escalate_eligible) continue;
     if (pendingGoalIds.has(stat.goal_id)) continue;
     const patchedThisGoal = appliedChildIds.has(stat.goal_id);
-    if (mutatedThisCycle && patchedThisGoal) continue;
+    // Cosmetic / ineffective prior mutate (same signature regime) does not suppress
+    // escalation even when this cycle also mutates the same goal.
+    const mutateExempts = mutatedThisCycle && stat.mutate_effective !== false;
+    if (mutateExempts && patchedThisGoal) continue;
     // If assess said mutate and calibrate applied any patch touching this goal, skip.
     // Also skip if mutate applied a tree-level rewrite (proposed_goal) covering it —
     // conservative: only skip when this child was explicitly patched.
     const treeRewriteModes = new Set(['replace', 'full_replace']);
-    if (mutatedThisCycle && !appliedChildIds.size && treeRewriteModes.has(calibrateResult?.mode)) {
+    if (mutateExempts && !appliedChildIds.size && treeRewriteModes.has(calibrateResult?.mode)) {
       continue;
     }
     escalations.push(stat);
@@ -585,15 +684,80 @@ export function buildRuleFeedbackQuestionText(stat) {
     .slice(0, 8)
     .map((p) => `${p.key}=${p.value}`)
     .join(', ');
+  if (stat?.starved && stat.feedback_state !== 'dead') {
+    return [
+      `Outcome goal starvation detected for ${stat.goal_id}`
+        + (stat.goal_name ? ` (${stat.goal_name})` : '')
+        + '.',
+      `No action_receipt served this goal for ${stat.starved_streak} consecutive cycles`
+        + ' (starved_streak at escalate threshold).',
+      'Please decide whether the goal exit path / observation point needs revision',
+      '(Cyber-Taoist: outcome pressure lost — conventional transactions never feed this goal).',
+      'Prefer mutating the exit condition into a path reachable by allowed actions.',
+    ].join(' ');
+  }
   return [
     `Rule feedback death detected for goal ${stat.goal_id}`
       + (stat.goal_name ? ` (${stat.goal_name})` : '')
       + '.',
     `Constant result signature persisted for ${stat.constant_signature_streak} cycles`
       + (keys ? ` with keys: ${keys}` : '')
-      + '; information_gain=0.',
+      + '; information_gain=0.'
+      + (stat.mutate_effective === false
+        ? ' Prior mutate did not change the signature (mutate_effective=false).'
+        : ''),
     'Please decide whether this acceptance criterion observation point needs revision',
     '(Cyber-Taoist: law lagged, conventional transactions no longer produce useful feedback).',
     'Prefer revising the observation point while keeping the guard function (守功能、破形态).',
   ].join(' ');
+}
+
+/**
+ * Compact prompt block for Decide (dead / degraded / starved goals only).
+ * Informational — no new required JSON fields.
+ */
+export function formatRuleFeedbackForPrompt(ruleFeedbackStats = null, language = 'zh') {
+  const isEn = language === 'en';
+  const goals = Array.isArray(ruleFeedbackStats?.goals) ? ruleFeedbackStats.goals : [];
+  const notable = goals.filter((g) => g?.feedback_state === 'dead'
+    || g?.feedback_state === 'degraded'
+    || g?.starved);
+  const header = isEn
+    ? [
+      '## Rule Feedback Health',
+      '',
+      'Mechanical per-goal feedback health (dead / degraded / starved only).',
+      'Do not repeat the same probe unchanged for a goal with a constant or starved streak;',
+      'if taking no action, explain under deferred or goal_coverage.not_covered.',
+    ].join('\n')
+    : [
+      '## Rule Feedback Health',
+      '',
+      '机械目标反馈健康度（仅列出 dead / degraded / starved）。',
+      '签名恒定或 starved 的 goal 不应原样重复同一探针；若不行动，须在 deferred 或 goal_coverage.not_covered 说明。',
+    ].join('\n');
+
+  if (!notable.length) {
+    return `${header}\n\n${isEn ? '(none notable)' : '（无异常）'}`;
+  }
+
+  const lines = notable.map((g) => {
+    const keys = (g.constant_keys || [])
+      .slice(0, 4)
+      .map((p) => `${p.key}=${p.value}`)
+      .join(',');
+    const parts = [
+      g.goal_id,
+      `state=${g.feedback_state}`,
+      g.starved ? `starved_streak=${g.starved_streak}` : null,
+      g.constant_signature_streak
+        ? `sig_streak=${g.constant_signature_streak}`
+        : null,
+      keys ? `keys=${keys}` : null,
+      g.mutate_effective === false ? 'mutate_effective=false' : null,
+      g.mutate_cooldown ? 'mutate_cooldown' : null,
+    ].filter(Boolean);
+    return `- ${parts.join(' | ')}`;
+  });
+  return `${header}\n\n${lines.join('\n')}`;
 }

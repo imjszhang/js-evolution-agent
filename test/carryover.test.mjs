@@ -104,6 +104,28 @@ describe('carryover v2', () => {
     expect(text).toContain('[diary] narrative note');
   });
 
+  it('formatCarryover appends seen_count streak when >= 2', () => {
+    const text = formatCarryover({
+      items: [
+        {
+          text: '候选生成与远端发布',
+          source: 'mechanical',
+          origin: 'decide_deferred',
+          seen_count: 4,
+        },
+        {
+          text: 'first appearance',
+          source: 'mechanical',
+          origin: 'open_gap',
+          seen_count: 1,
+        },
+      ],
+    }, 'zh');
+    expect(text).toContain('候选生成与远端发布（已连续 4 轮）');
+    expect(text).toContain('[mechanical/open_gap] first appearance');
+    expect(text).not.toContain('first appearance（已连续');
+  });
+
   it('buildStepStatusSnapshot extracts mechanical step statuses', () => {
     const snapshot = buildStepStatusSnapshot({
       execResult: { success: true, executed: [{}, {}, {}] },

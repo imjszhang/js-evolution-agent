@@ -588,9 +588,12 @@ Decide 可调度、`Phase 2` 执行的记录型动作，用于落已有结论而
 
 Assessor prompt 仍建议 `goal_patches` 与 `proposed_goal` 互斥；执行器先尝试 patches，失败可在 liberal 下 fallback `proposed_goal`。`add_child` 的 child 建议带 `role: outcome|guard`（供审计）。`rule_status=mutate` 时机械拒绝 `remove_child` 守护子目标（`role=guard` 或 id 前缀 `guard-` / `monitor-`），只允许 `update_child` 修订观测点（守功能、破形态）。`patched` goal_event 会附带 `rule_status`。
 
-**法则反馈健康度**（`rule_feedback_stats`，Phase 4 机械注入）：
+**法则反馈健康度**（`rule_feedback_stats`）：
 
-宿主在 goals assess 前，按 `action.serves_goal` 聚合近期 receipts 的结果签名（`key=value` 归一化 hash），并对照 carryover 跨轮计数，为每个子目标计算 `feedback_state`：
+宿主按 `action.serves_goal` 聚合近期 receipts 的结果签名（`key=value` 归一化 hash），并对照 carryover 跨轮计数，为每个子目标计算 `feedback_state`。注入点：
+
+- **Phase 4 goals assess**（完整 JSON，驱动 `rule_status`）
+- **Phase 1 Decide**（agent_loop 仅）：压缩段 `## Rule Feedback Health`（dead / degraded / starved），信息用法——签名恒定或 starved 的 goal 不应原样重复同一探针；不行动须在 `deferred` / `goal_coverage.not_covered` 说明。phases 路径不注入。
 
 | 状态 | 含义 | assess 期望 |
 | --- | --- | --- |
@@ -598,22 +601,27 @@ Assessor prompt 仍建议 `goal_patches` 与 `proposed_goal` 互斥；执行器�
 | `degraded` | 签名连续 ≥2 轮相似 | 提高敏感度；区分通道故障 vs 法则滞后 |
 | `dead` | 签名连续 ≥`JEA_RULE_FEEDBACK_DEAD_STREAK`（默认 3）且 `information_gain=0` | 按宪章第九条/十三条必须 `rule_status=mutate`，`update_child` 修订观测点；不得再 learn 等待 |
 | `degraded`（mutate 冷却） | 刚 mutate 后 `mutate_cooldown=true`（等待新签名） | 不要重复 mutate 同一观测点；优先 continue / learn |
+| `starved`（派生） | 成果子目标（非 guard/root）连续 ≥ dead_streak 轮无任何 serving receipt | 与 dead 同等：必须 mutate 观测点或退出条件；不得 learn 等待 |
 
-`rule_feedback_stats` 每行还含 `is_root`（receipt 的 `serves_goal` 指向 root id 时为 true）。root 判 dead 时须用 `proposed_goal` 整树换代，不能 `update_child` root。
+每行额外字段：
+
+- `is_root`：receipt 的 `serves_goal` 指向 root id 时为 true。root 判 dead 时须用 `proposed_goal` 整树换代，不能 `update_child` root。
+- `starved_streak`：全局最近 cycle 序列中，该成果子目标连续无 receipt 的轮数（guard/root/非 active-tree 孤儿 label 为 0）。
+- `mutate_effective`：`null`（无 mutate 或冷却中）/ `true`（冷却后签名已变）/ `false`（冷却后签名未变 = 化妆式 mutate）。`mutate_effective=false` 时，即使本轮再次 mutate 该 goal，**不再豁免**死亡边界报警。
 
 相关 env：
 
 | 变量 | 默认 | 含义 |
 | --- | --- | --- |
 | `JEA_RULE_FEEDBACK_WINDOW` | `8` | 统计窗口（cycle 数） |
-| `JEA_RULE_FEEDBACK_DEAD_STREAK` | `3` | 判 dead 的连续恒定签名轮数 |
-| `JEA_RULE_FEEDBACK_ESCALATE_STREAK` | `5` | 死亡边界报警阈值（见下） |
+| `JEA_RULE_FEEDBACK_DEAD_STREAK` | `3` | 判 dead / starved 的连续轮数阈值 |
+| `JEA_RULE_FEEDBACK_ESCALATE_STREAK` | `5` | 死亡/饥饿边界报警阈值（见下） |
 | `JEA_RULE_FEEDBACK_MUTATE_COOLDOWN` | `2` | mutate 后冷却轮数（`0` 关闭）；冷却期内 dead 降级为 degraded |
 | `JEA_RULE_FEEDBACK_RECEIPT_LIMIT` | `120` | 参与统计的 receipt 读取上限 |
 
-**死亡边界报警**：若某子目标 `feedback_state=dead` 且 streak ≥ escalate 阈值，而本轮 assess 未 mutate 或 calibrate 未对该子目标 applied patch（含 `mode: full_replace` 整树替换），则打开 operator question（`trigger: rule_feedback_dead`），并发 `rule_feedback_escalated` 事件；同 goal 已有 pending question 时去重。这是校准回路失灵的最后防线，不是常规人工审批出口。
+**死亡边界报警**：若某子目标 `escalate_eligible`（`feedback_state=dead` 且 sig streak ≥ escalate，或成果子目标 `starved_streak` ≥ escalate），而本轮 assess 未 mutate 或 calibrate 未对该子目标 applied patch（含 `mode: full_replace` 整树替换），**且**该 goal 的 `mutate_effective !== false`（化妆式 mutate 不豁免），则打开 operator question（`trigger: rule_feedback_dead`），并发 `rule_feedback_escalated` 事件；同 goal 已有 pending question 时去重。这是校准回路失灵的最后防线，不是常规人工审批出口。
 
-Carryover mechanical 项带跨轮字段 `fingerprint` / `first_seen_cycle` / `seen_count`（同 cycle 重写不重复计数；跨 cycle 精确或 Jaccard≥0.6 匹配继承）。
+Carryover mechanical 项带跨轮字段 `fingerprint` / `first_seen_cycle` / `seen_count`（同 cycle 重写不重复计数；跨 cycle 精确或 Jaccard≥0.6 匹配继承）。agent_loop 查证 prompt 渲染时，`seen_count≥2` 的条目会标注「已连续 N 轮」。
 
 信念管理：
 
