@@ -304,10 +304,18 @@ export function buildGoalPatchUpdate(root = getProjectRoot(), patches, opts = {}
 export function commitGoalPatch(build, {
   store = null,
   beliefRetirements = [],
+  policy = null,
 } = {}) {
   const { runtime, path, previousGoal, patches, event, opts } = build;
   const intelligenceStore = store ?? opts.store ?? makeStore(runtime);
   const cycleId = opts.cycle ?? event.cycle_id ?? null;
+  const effectivePolicy = policy ?? opts.policy ?? null;
+
+  const nextGoal = applyGoalPatches(previousGoal, patches);
+  const invariants = checkGoalInvariants(nextGoal, effectivePolicy);
+  if (invariants.ok === false) {
+    throw new Error(invariants.detail || invariants.reason);
+  }
 
   const removeIds = collectRemoveChildGoalIds(patches);
   let belief_retirements = [...beliefRetirements];
@@ -317,13 +325,6 @@ export function commitGoalPatch(build, {
       source: 'goal_patch',
     });
     belief_retirements = retired.retirements;
-  }
-
-  const nextGoal = applyGoalPatches(previousGoal, patches);
-  const policy = opts.policy ?? null;
-  const invariants = checkGoalInvariants(nextGoal, policy);
-  if (invariants.ok === false) {
-    throw new Error(invariants.detail || invariants.reason);
   }
 
   event.next_goal = nextGoal;
@@ -601,7 +602,7 @@ async function loadAssessmentConfig(root) {
 }
 
 export async function assessActiveGoals(root = getProjectRoot(), flags = {}, opts = {}) {
-  const active = getActiveGoals(root);
+  const active = getActiveGoals(root, flags);
   if (!active.goals) {
     throw new Error('No active goals found. Run `jea data init --goals` first.');
   }
@@ -738,7 +739,7 @@ export async function goalsCommand({ subcommand, flags = {} } = {}) {
   const root = getProjectRoot();
 
   if (subcommand === 'show') {
-    const result = getActiveGoals(root);
+    const result = getActiveGoals(root, flags);
     if (flags.json) console.log(JSON.stringify(result, null, 2));
     else printGoals(result);
     return result.goals ? 0 : 1;

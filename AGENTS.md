@@ -564,6 +564,9 @@ Assessor prompt 仍建议 `goal_patches` 与 `proposed_goal` 互斥；执行器�
 | `live` | 签名随世界变化，有信息增量 | continue / learn（世界未达标或通道故障） |
 | `degraded` | 签名连续 ≥2 轮相似 | 提高敏感度；区分通道故障 vs 法则滞后 |
 | `dead` | 签名连续 ≥`JEA_RULE_FEEDBACK_DEAD_STREAK`（默认 3）且 `information_gain=0` | 按宪章第九条/十三条必须 `rule_status=mutate`，`update_child` 修订观测点；不得再 learn 等待 |
+| `degraded`（mutate 冷却） | 刚 mutate 后 `mutate_cooldown=true`（等待新签名） | 不要重复 mutate 同一观测点；优先 continue / learn |
+
+`rule_feedback_stats` 每行还含 `is_root`（receipt 的 `serves_goal` 指向 root id 时为 true）。root 判 dead 时须用 `proposed_goal` 整树换代，不能 `update_child` root。
 
 相关 env：
 
@@ -572,9 +575,10 @@ Assessor prompt 仍建议 `goal_patches` 与 `proposed_goal` 互斥；执行器�
 | `JEA_RULE_FEEDBACK_WINDOW` | `8` | 统计窗口（cycle 数） |
 | `JEA_RULE_FEEDBACK_DEAD_STREAK` | `3` | 判 dead 的连续恒定签名轮数 |
 | `JEA_RULE_FEEDBACK_ESCALATE_STREAK` | `5` | 死亡边界报警阈值（见下） |
+| `JEA_RULE_FEEDBACK_MUTATE_COOLDOWN` | `2` | mutate 后冷却轮数（`0` 关闭）；冷却期内 dead 降级为 degraded |
 | `JEA_RULE_FEEDBACK_RECEIPT_LIMIT` | `120` | 参与统计的 receipt 读取上限 |
 
-**死亡边界报警**：若某子目标 `feedback_state=dead` 且 streak ≥ escalate 阈值，而本轮 assess 未 mutate 或 calibrate 未对该子目标 applied patch，则打开 operator question（`trigger: rule_feedback_dead`），并发 `rule_feedback_escalated` 事件；同 goal 已有 pending question 时去重。这是校准回路失灵的最后防线，不是常规人工审批出口。
+**死亡边界报警**：若某子目标 `feedback_state=dead` 且 streak ≥ escalate 阈值，而本轮 assess 未 mutate 或 calibrate 未对该子目标 applied patch（含 `mode: full_replace` 整树替换），则打开 operator question（`trigger: rule_feedback_dead`），并发 `rule_feedback_escalated` 事件；同 goal 已有 pending question 时去重。这是校准回路失灵的最后防线，不是常规人工审批出口。
 
 Carryover mechanical 项带跨轮字段 `fingerprint` / `first_seen_cycle` / `seen_count`（同 cycle 重写不重复计数；跨 cycle 精确或 Jaccard≥0.6 匹配继承）。
 

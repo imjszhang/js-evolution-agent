@@ -13,6 +13,7 @@ export const DEFAULT_WINDOW_CYCLES = 8;
 export const DEFAULT_DEAD_STREAK = 3;
 export const DEFAULT_DEGRADED_STREAK = 2;
 export const DEFAULT_ESCALATE_STREAK = 5;
+export const DEFAULT_MUTATE_COOLDOWN = 2;
 
 const KV_RE = /\b([a-zA-Z_][a-zA-Z0-9_.]{1,64})\s*(?:=|:)\s*([^\s,;|/"'`]+)/g;
 
@@ -65,6 +66,13 @@ function envInt(name, fallback) {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
+function envIntAllowZero(name, fallback) {
+  const raw = process.env[name];
+  if (raw == null || raw === '') return fallback;
+  const n = Number.parseInt(String(raw), 10);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
 function normalizeSignatureValue(raw) {
   let value = String(raw ?? '').toLowerCase().trim();
   value = value.replace(/[)\]}'".,;:：；。、！!]+$/g, '');
@@ -90,12 +98,49 @@ function receiptTimeMs(receipt) {
   return Number.isFinite(ms) ? ms : 0;
 }
 
+function goalEventTimeMs(event) {
+  const raw = event?.recorded_at || event?.created_at || null;
+  const ms = raw ? Date.parse(raw) : NaN;
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function patchTouchesGoalId(patch, goalId) {
+  if (!patch || !goalId) return false;
+  if (patch.op === 'update_child' || patch.op === 'remove_child') {
+    return patch.child_id === goalId;
+  }
+  if (patch.op === 'add_child') {
+    return patch.child?.id === goalId;
+  }
+  return false;
+}
+
+function findLastMutatePatchForGoal(goalEvents = [], goalId) {
+  for (const event of goalEvents) {
+    if (event?.type !== 'patched' || event?.rule_status !== 'mutate') continue;
+    const patches = Array.isArray(event.patches) ? event.patches : [];
+    if (!patches.some((patch) => patchTouchesGoalId(patch, goalId))) continue;
+    return {
+      cycle_id: event.cycle_id ?? null,
+      recorded_at: event.recorded_at ?? event.created_at ?? null,
+      recorded_at_ms: goalEventTimeMs(event),
+    };
+  }
+  return null;
+}
+
+function countSignedBucketsSinceMutate(signedBuckets = [], mutateAtMs = 0) {
+  if (!mutateAtMs) return signedBuckets.length;
+  return signedBuckets.filter((bucket) => (bucket.receipt_time_ms ?? 0) > mutateAtMs).length;
+}
+
 export function resolveRuleFeedbackConfig(env = process.env) {
   return {
     windowCycles: envInt('JEA_RULE_FEEDBACK_WINDOW', DEFAULT_WINDOW_CYCLES),
     deadStreak: envInt('JEA_RULE_FEEDBACK_DEAD_STREAK', DEFAULT_DEAD_STREAK),
     escalateStreak: envInt('JEA_RULE_FEEDBACK_ESCALATE_STREAK', DEFAULT_ESCALATE_STREAK),
     receiptLimit: envInt('JEA_RULE_FEEDBACK_RECEIPT_LIMIT', DEFAULT_RECEIPT_LIMIT),
+    mutateCooldown: envIntAllowZero('JEA_RULE_FEEDBACK_MUTATE_COOLDOWN', DEFAULT_MUTATE_COOLDOWN),
   };
 }
 
@@ -349,6 +394,7 @@ export function computeRuleFeedbackStats({
   const window = windowCycles ?? cfg.windowCycles;
   const dead = deadStreak ?? cfg.deadStreak;
   const escalate = escalateStreak ?? cfg.escalateStreak;
+  const mutateCooldown = cfg.mutateCooldown;
 
   const goals = flattenGoalNodes(activeGoals);
   const childGoals = goals.filter((g) => g?.id && g.id !== activeGoals?.id);
@@ -405,6 +451,7 @@ export function computeRuleFeedbackStats({
       return {
         cycle_id: cycleId,
         receipt_id: best?.id ?? null,
+        receipt_time_ms: receiptTimeMs(best),
         signature: extracted.signature,
         kv: signatureKv?.length ? signatureKv : (extracted.focus?.length ? extracted.focus : extracted.kv),
         focus_kv: extracted.focus,
@@ -419,17 +466,34 @@ export function computeRuleFeedbackStats({
     const prev = signedBuckets.length >= 2 ? signedBuckets[signedBuckets.length - 2] : null;
     const curr = signedBuckets.length ? signedBuckets[signedBuckets.length - 1] : null;
     const information_gain = computeInformationGain(prev, curr);
-    const feedback_state = classifyFeedbackState(streak, information_gain, {
+    let feedback_state = classifyFeedbackState(streak, information_gain, {
       deadStreak: dead,
       constantKeys: constant_keys,
     });
     const stuck = carryoverStuckForGoal(carryoverDoc, goalId);
     const consecutive_learn = consecutiveLearnStreak(goalEvents);
+    const is_root = goalId === activeGoals?.id;
+    const last_mutate_patch = findLastMutatePatchForGoal(goalEvents, goalId);
+    const cycles_since_mutate = last_mutate_patch
+      ? countSignedBucketsSinceMutate(signedBuckets, last_mutate_patch.recorded_at_ms)
+      : null;
+    const mutate_cooldown = Boolean(
+      mutateCooldown > 0
+      && last_mutate_patch
+      && feedback_state === 'dead'
+      && cycles_since_mutate != null
+      && cycles_since_mutate < mutateCooldown,
+    );
+    if (mutate_cooldown) {
+      feedback_state = 'degraded';
+    }
+    const escalate_eligible = feedback_state === 'dead' && streak >= escalate;
 
     stats.push({
       goal_id: goalId,
       goal_name: goal?.name ?? null,
       is_guard: isGuardGoal(goal),
+      is_root,
       feedback_state,
       constant_signature_streak: streak,
       constant_signature: signature,
@@ -440,7 +504,10 @@ export function computeRuleFeedbackStats({
       latest_receipt_id: curr?.receipt_id ?? null,
       carryover_stuck: stuck,
       consecutive_learn,
-      escalate_eligible: feedback_state === 'dead' && streak >= escalate,
+      last_mutate_cycle: last_mutate_patch?.cycle_id ?? null,
+      cycles_since_mutate,
+      mutate_cooldown,
+      escalate_eligible,
     });
   }
 
@@ -450,7 +517,12 @@ export function computeRuleFeedbackStats({
     || (b.constant_signature_streak - a.constant_signature_streak));
 
   return {
-    config: { window_cycles: window, dead_streak: dead, escalate_streak: escalate },
+    config: {
+      window_cycles: window,
+      dead_streak: dead,
+      escalate_streak: escalate,
+      mutate_cooldown: mutateCooldown,
+    },
     generated_at: new Date().toISOString(),
     goals: stats,
     summary: {
@@ -499,7 +571,8 @@ export function selectRuleFeedbackEscalations({
     // If assess said mutate and calibrate applied any patch touching this goal, skip.
     // Also skip if mutate applied a tree-level rewrite (proposed_goal) covering it —
     // conservative: only skip when this child was explicitly patched.
-    if (mutatedThisCycle && !appliedChildIds.size && calibrateResult?.mode === 'replace') {
+    const treeRewriteModes = new Set(['replace', 'full_replace']);
+    if (mutatedThisCycle && !appliedChildIds.size && treeRewriteModes.has(calibrateResult?.mode)) {
       continue;
     }
     escalations.push(stat);

@@ -14,10 +14,12 @@ function makeReceipt({
   cycleId = 'cycle-1',
   servesGoal = 'guard-memory-audit-v28',
   summary = 'typed=35 free_text_clean=KEY_ABSENT audit_ok=true',
+  recordedAt = null,
 } = {}) {
   return {
     id,
     cycle_id: cycleId,
+    recorded_at: recordedAt,
     action_type: 'agent_run',
     action: { type: 'agent_run', serves_goal: servesGoal },
     result: { summary, status: 'completed', success: true },
@@ -184,6 +186,127 @@ describe('computeRuleFeedbackStats', () => {
     expect(row.feedback_state).toBe('live');
     expect(row.constant_signature_streak).toBe(3);
   });
+
+  it('marks root goal rows with is_root when receipts serve the root id', () => {
+    const receipts = [
+      makeReceipt({ id: 'r1', cycleId: 'cycle-1', servesGoal: 'win-root-v28' }),
+    ];
+    const store = {
+      readActionReceipts: () => receipts,
+      readGoalEvents: () => [],
+    };
+    const stats = computeRuleFeedbackStats({
+      store,
+      activeGoals: {
+        id: 'win-root-v28',
+        children: [{ id: 'guard-memory-audit-v28', role: 'guard' }],
+      },
+      deadStreak: 3,
+    });
+    const rootRow = stats.goals.find((g) => g.goal_id === 'win-root-v28');
+    const childRow = stats.goals.find((g) => g.goal_id === 'guard-memory-audit-v28');
+    expect(rootRow?.is_root).toBe(true);
+    expect(childRow?.is_root).toBe(false);
+  });
+
+  it('downgrades dead to degraded during mutate cooldown and skips escalation', () => {
+    const mutateAt = '2026-08-05T11:30:00.000Z';
+    const receipts = [
+      makeReceipt({
+        id: 'r3',
+        cycleId: 'cycle-3',
+        recordedAt: '2026-08-05T12:00:00.000Z',
+      }),
+      makeReceipt({
+        id: 'r2',
+        cycleId: 'cycle-2',
+        recordedAt: '2026-08-05T11:00:00.000Z',
+      }),
+      makeReceipt({
+        id: 'r1',
+        cycleId: 'cycle-1',
+        recordedAt: '2026-08-05T09:00:00.000Z',
+      }),
+    ];
+    const store = {
+      readActionReceipts: () => receipts,
+      readGoalEvents: () => [{
+        type: 'patched',
+        rule_status: 'mutate',
+        cycle_id: 'cycle-mutate',
+        recorded_at: mutateAt,
+        patches: [{ op: 'update_child', child_id: 'guard-memory-audit-v28' }],
+      }],
+    };
+    const stats = computeRuleFeedbackStats({
+      store,
+      activeGoals: {
+        id: 'root',
+        children: [{ id: 'guard-memory-audit-v28', role: 'guard' }],
+      },
+      deadStreak: 3,
+      escalateStreak: 5,
+      env: { JEA_RULE_FEEDBACK_MUTATE_COOLDOWN: '2' },
+    });
+    const row = stats.goals.find((g) => g.goal_id === 'guard-memory-audit-v28');
+    expect(row.feedback_state).toBe('degraded');
+    expect(row.mutate_cooldown).toBe(true);
+    expect(row.cycles_since_mutate).toBe(1);
+    expect(row.escalate_eligible).toBe(false);
+
+    const escalations = selectRuleFeedbackEscalations({
+      ruleFeedbackStats: stats,
+      assessment: { rule_status: 'learn' },
+      calibrateResult: { status: 'skipped', applied_patches: [] },
+      pendingQuestions: [],
+    });
+    expect(escalations).toHaveLength(0);
+  });
+
+  it('restores dead after mutate cooldown expires with enough post-mutate cycles', () => {
+    const mutateAt = '2026-08-05T08:00:00.000Z';
+    const receipts = [
+      makeReceipt({
+        id: 'r3',
+        cycleId: 'cycle-3',
+        recordedAt: '2026-08-05T12:00:00.000Z',
+      }),
+      makeReceipt({
+        id: 'r2',
+        cycleId: 'cycle-2',
+        recordedAt: '2026-08-05T10:00:00.000Z',
+      }),
+      makeReceipt({
+        id: 'r1',
+        cycleId: 'cycle-1',
+        recordedAt: '2026-08-05T09:00:00.000Z',
+      }),
+    ];
+    const store = {
+      readActionReceipts: () => receipts,
+      readGoalEvents: () => [{
+        type: 'patched',
+        rule_status: 'mutate',
+        cycle_id: 'cycle-mutate',
+        recorded_at: mutateAt,
+        patches: [{ op: 'update_child', child_id: 'guard-memory-audit-v28' }],
+      }],
+    };
+    const stats = computeRuleFeedbackStats({
+      store,
+      activeGoals: {
+        id: 'root',
+        children: [{ id: 'guard-memory-audit-v28', role: 'guard' }],
+      },
+      deadStreak: 3,
+      escalateStreak: 5,
+      env: { JEA_RULE_FEEDBACK_MUTATE_COOLDOWN: '2' },
+    });
+    const row = stats.goals.find((g) => g.goal_id === 'guard-memory-audit-v28');
+    expect(row.feedback_state).toBe('dead');
+    expect(row.mutate_cooldown).toBe(false);
+    expect(row.cycles_since_mutate).toBeGreaterThanOrEqual(2);
+  });
 });
 
 describe('selectRuleFeedbackEscalations', () => {
@@ -203,6 +326,26 @@ describe('selectRuleFeedbackEscalations', () => {
     });
     expect(escalations).toHaveLength(1);
     expect(buildRuleFeedbackQuestionText(escalations[0])).toContain('guard-memory-audit-v28');
+  });
+
+  it('skips when mutate applied full_replace tree rewrite', () => {
+    const escalations = selectRuleFeedbackEscalations({
+      ruleFeedbackStats: {
+        goals: [{
+          goal_id: 'guard-memory-audit-v28',
+          escalate_eligible: true,
+          constant_signature_streak: 5,
+        }],
+      },
+      assessment: { rule_status: 'mutate' },
+      calibrateResult: {
+        status: 'applied',
+        mode: 'full_replace',
+        applied_patches: [],
+      },
+      pendingQuestions: [],
+    });
+    expect(escalations).toHaveLength(0);
   });
 
   it('skips when mutate applied a patch for that goal', () => {

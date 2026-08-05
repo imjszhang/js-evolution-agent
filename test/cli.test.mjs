@@ -22,7 +22,9 @@ import {
   applyGoalObject,
   assessActiveGoals,
   autoCalibrateGoals,
+  buildGoalPatchUpdate,
   buildGoalUpdate,
+  commitGoalPatch,
   filterPatchesForRuleStatus,
   getActiveGoals,
   getGoalHistory,
@@ -31,6 +33,7 @@ import {
   updateGoals,
   validateGoalShape,
 } from '../src/cli/commands/goals.mjs';
+import { resolveGoalCalibratePolicy } from '../src/intelligence/goal-calibrate-policy.mjs';
 import { createIntelligenceStore } from '../src/intelligence/store.mjs';
 import { buildIntelSummary, findReportRecord, intelReportCommand } from '../src/cli/commands/intel.mjs';
 import {
@@ -2351,6 +2354,63 @@ describe('goals command helpers', () => {
     expect(result.goals.id).toBe('bootstrap');
   });
 
+  it('getActiveGoals and assessActiveGoals honor --subject flags', async () => {
+    const root = makeGoalsRoot('jea-goals-subject-flags-');
+    ensureSubjectsRegistry(root);
+    createSubject(root, 'alt-subject');
+    initData(root, { goals: true, subject: 'alt-subject' });
+
+    const altGoal = {
+      id: 'alt-root',
+      name: 'Alt root',
+      intent: 'Alt subject goal tree',
+      good_signal: 'alt ok',
+      bad_signal: 'alt bad',
+      children: [],
+    };
+    applyGoalObject(root, altGoal, { reason: 'seed alt', flags: { subject: 'alt-subject' } });
+
+    const defaultActive = getActiveGoals(root);
+    const altActive = getActiveGoals(root, { subject: 'alt-subject' });
+    expect(defaultActive.runtime.subject).toBe('js-evolution-agent');
+    expect(altActive.runtime.subject).toBe('alt-subject');
+    expect(defaultActive.goals.id).toBe('bootstrap');
+    expect(altActive.goals.id).toBe('alt-root');
+    expect(defaultActive.path).not.toBe(altActive.path);
+
+    const runtime = runtimeInfoForDefaultSubject(root);
+    const store = createIntelligenceStore({
+      baseDir: runtime.intelligenceDir,
+      timezone: 'Asia/Shanghai',
+    });
+    await buildIntelReport({
+      intelResult: { cycle_id: 'cycle-subject-assess', success: true, actions: [], decisions_queued: [] },
+      runtime,
+      store,
+      aiClient: null,
+      useAi: false,
+    });
+
+    const result = await assessActiveGoals(root, { subject: 'js-evolution-agent', json: true }, {
+      aiClient: {
+        chat: async () => JSON.stringify({
+          status: 'keep',
+          confidence: 'medium',
+          reason: 'baseline',
+          evidence_refs: [{ type: 'intel_report', id: 'cycle-subject-assess', ref: 'intel_report:cycle-subject-assess' }],
+          proposed_goal: null,
+          risk: 'wait',
+        }),
+      },
+      agentContextDocs: [],
+    });
+
+    expect(result.runtime.subject).toBe('js-evolution-agent');
+    expect(result.active_goals_path).toBe(defaultActive.path);
+    expect(readJsonSafe(join(runtime.goalsDir, 'active_goals.json')).id).toBe('bootstrap');
+    expect(readJsonSafe(altActive.path).id).toBe('alt-root');
+  });
+
   it('parses evidence references into structured refs', () => {
     expect(parseEvidenceRefs('intel_report:cycle-1, obs-plain')).toEqual([
       { type: 'intel_report', id: 'cycle-1', ref: 'intel_report:cycle-1' },
@@ -2940,6 +3000,61 @@ describe('goals command helpers', () => {
       type: 'patched',
       reason: 'remove stale child',
     });
+  });
+
+  it('does not retire beliefs when commitGoalPatch fails invariants', () => {
+    const root = makeGoalsRoot('jea-goals-patch-invariant-');
+    const runtime = runtimeInfoForDefaultSubject(root);
+    const seeded = {
+      id: 'bootstrap',
+      name: 'Bootstrap',
+      intent: 'Test',
+      good_signal: 'g',
+      bad_signal: 'b',
+      children: [{
+        id: 'only-outcome',
+        name: 'Only outcome',
+        intent: 'single outcome child',
+        good_signal: 'g',
+        bad_signal: 'b',
+        role: 'outcome',
+        children: [],
+      }],
+    };
+    applyGoalObject(root, seeded, { reason: 'seed', cycle: 'seed' });
+
+    const store = createIntelligenceStore({
+      baseDir: join(runtime.intelligenceDir),
+      timezone: 'Asia/Shanghai',
+    });
+    store.recordCurrentBeliefs({
+      schema_version: 1,
+      updated_at: new Date().toISOString(),
+      source_cycle_id: 'seed',
+      beliefs: [{
+        id: 'belief-only-outcome',
+        goal_id: 'only-outcome',
+        claim: 'only outcome claim',
+        status: 'active',
+        confidence: 'medium',
+        evidence_refs: [],
+      }],
+    });
+
+    const build = buildGoalPatchUpdate(root, [
+      { op: 'remove_child', child_id: 'only-outcome' },
+    ], {
+      reason: 'remove only outcome',
+      cycle: 'cycle-invariant-fail',
+    });
+    const strictPolicy = resolveGoalCalibratePolicy({ JEA_GOAL_CALIBRATE_MODE: 'strict' });
+
+    expect(() => commitGoalPatch(build, { store, policy: strictPolicy })).toThrow(/outcome child required/i);
+
+    const beliefs = store.readCurrentBeliefs();
+    expect(beliefs.beliefs.find((b) => b.id === 'belief-only-outcome').status).toBe('active');
+    expect(readJsonSafe(join(runtime.goalsDir, 'active_goals.json')).children).toHaveLength(1);
+    expect(getGoalHistory(root, { limit: 5 }).events.filter((e) => e.type === 'patched')).toHaveLength(0);
   });
 
   it('liberal auto-calibrate applies v28-style double outcome add', () => {
