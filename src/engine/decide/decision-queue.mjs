@@ -10,7 +10,9 @@
  *                         → fail (attempts ≥ max) → blocked
  *   blocked → requeue → pending
  *   blocked|pending → retire → retired
- *   pending TTL 72h → expired; blocked TTL 14d → expired
+ *   pending cycles_seen > JEA_PENDING_TTL_CYCLES (default 5) → expired
+ *   blocked cycles_seen > JEA_BLOCKED_TTL_CYCLES (default 10) → expired
+ *   wall-clock fallback JEA_QUEUE_WALLCLOCK_TTL_DAYS (default 30d) → expired
  *
  * Legacy `failed` status is retained for compatibility and auto-archive.
  */
@@ -39,8 +41,11 @@ const DEFAULT_ARCHIVE_STATUSES = new Set([
   STATUS_RETIRED,
   STATUS_FAILED,
 ]);
-const PENDING_TTL_MS = 72 * 3600000;
-const BLOCKED_TTL_MS = 14 * 86400000;
+const DEFAULT_PENDING_TTL_CYCLES = 5;
+const DEFAULT_BLOCKED_TTL_CYCLES = 10;
+const DEFAULT_QUEUE_WALLCLOCK_TTL_DAYS = 30;
+const MAX_TTL_CYCLES = 1000;
+const MAX_WALLCLOCK_TTL_DAYS = 3650;
 const TERMINAL_CLEANUP_MS = 7 * 86400000;
 
 export {
@@ -51,6 +56,9 @@ export {
   STATUS_EXPIRED,
   STATUS_BLOCKED,
   STATUS_RETIRED,
+  DEFAULT_PENDING_TTL_CYCLES,
+  DEFAULT_BLOCKED_TTL_CYCLES,
+  DEFAULT_QUEUE_WALLCLOCK_TTL_DAYS,
 };
 
 function stableForJson(value) {
@@ -127,6 +135,30 @@ export function parseAgentMaxAttemptsFromEnv() {
   return Math.floor(n);
 }
 
+function parsePositiveIntEnv(name, fallback, { min = 1, max = MAX_TTL_CYCLES } = {}) {
+  const raw = process.env[name];
+  if (raw == null || raw === '') return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < min) return fallback;
+  return Math.min(max, Math.floor(n));
+}
+
+export function parsePendingTtlCyclesFromEnv() {
+  return parsePositiveIntEnv('JEA_PENDING_TTL_CYCLES', DEFAULT_PENDING_TTL_CYCLES);
+}
+
+export function parseBlockedTtlCyclesFromEnv() {
+  return parsePositiveIntEnv('JEA_BLOCKED_TTL_CYCLES', DEFAULT_BLOCKED_TTL_CYCLES);
+}
+
+export function parseQueueWallclockTtlDaysFromEnv() {
+  return parsePositiveIntEnv(
+    'JEA_QUEUE_WALLCLOCK_TTL_DAYS',
+    DEFAULT_QUEUE_WALLCLOCK_TTL_DAYS,
+    { min: 1, max: MAX_WALLCLOCK_TTL_DAYS },
+  );
+}
+
 function resolveMaxAttempts(action, fallback = null) {
   const fromAction = action?.max_attempts ?? action?.params?.max_attempts ?? null;
   if (fromAction != null && Number.isFinite(Number(fromAction)) && Number(fromAction) >= 1) {
@@ -136,6 +168,11 @@ function resolveMaxAttempts(action, fallback = null) {
     return Math.floor(Number(fallback));
   }
   return parseAgentMaxAttemptsFromEnv();
+}
+
+function createdAtMs(decision) {
+  const t = Date.parse(decision?.created_at ?? decision?.timestamp ?? '');
+  return Number.isFinite(t) ? t : null;
 }
 
 function ensureDecisionDefaults(decision) {
@@ -152,6 +189,11 @@ function ensureDecisionDefaults(decision) {
   }
   if (decision.last_error === undefined) decision.last_error = null;
   if (decision.last_claimed_cycle === undefined) decision.last_claimed_cycle = null;
+  if (decision.cycles_seen == null || !Number.isFinite(Number(decision.cycles_seen))) {
+    decision.cycles_seen = 0;
+  } else {
+    decision.cycles_seen = Math.max(0, Math.floor(Number(decision.cycles_seen)));
+  }
   return decision;
 }
 
@@ -350,6 +392,7 @@ export class DecisionQueue {
           max_attempts: resolveMaxAttempts(action),
           last_error: null,
           last_claimed_cycle: null,
+          cycles_seen: 0,
         };
         if (this._onDecisionAdded) {
           try { this._onDecisionAdded(decision); } catch {}
@@ -459,12 +502,14 @@ export class DecisionQueue {
         const createdMs = decisionTime(d);
         const ageMs = createdMs != null ? Math.max(0, now - createdMs) : null;
         const runSpec = d.action?.params?.run_spec ?? d.action?.run_spec ?? {};
+        ensureDecisionDefaults(d);
         const item = {
           id: d.id,
           type: d.action?.type ?? 'unknown',
           status,
           attempts: d.attempts ?? 0,
           max_attempts: d.max_attempts ?? resolveMaxAttempts(d.action),
+          cycles_seen: d.cycles_seen ?? 0,
           age_ms: ageMs,
           last_error: d.last_error?.message
             ? String(d.last_error.message).slice(0, 200)
@@ -660,6 +705,7 @@ export class DecisionQueue {
         ensureDecisionDefaults(d);
         d.status = STATUS_PENDING;
         d.attempts = 0;
+        d.cycles_seen = 0;
         d.status_updated_at = now;
         d.requeued_at = now;
         this._writeAll(data);
@@ -705,60 +751,142 @@ export class DecisionQueue {
     });
   }
 
-  /** @param {number} [maxAgeHours] pending TTL override (hours); blocked uses 14d fixed */
-  cleanupExpired(maxAgeHours = PENDING_TTL_MS / 3600000) {
-    this._withLock(() => {
-      const data = this._readAll();
-      const now = Date.now();
-      const pendingHours = Number.isFinite(maxAgeHours) ? maxAgeHours : (PENDING_TTL_MS / 3600000);
-      const pendingCutoff = now - pendingHours * 3600000;
-      const blockedCutoff = now - BLOCKED_TTL_MS;
-      const cleanupCutoff = now - TERMINAL_CLEANUP_MS;
+  /**
+   * Expire pending/blocked by cycle TTL or wall-clock fallback (no increment).
+   * @param {object} [opts]
+   * @param {number} [opts.pendingTtlCycles]
+   * @param {number} [opts.blockedTtlCycles]
+   * @param {number} [opts.wallclockTtlDays]
+   * @param {boolean} [opts.write=true]
+   * @returns {{ expired: Array<{id: string, expire_reason: string}>, removed: number }}
+   */
+  cleanupExpired({
+    pendingTtlCycles = parsePendingTtlCyclesFromEnv(),
+    blockedTtlCycles = parseBlockedTtlCyclesFromEnv(),
+    wallclockTtlDays = parseQueueWallclockTtlDaysFromEnv(),
+    write = true,
+  } = {}) {
+    return this._withLock(() => this._expireAndCleanupLocked({
+      pendingTtlCycles,
+      blockedTtlCycles,
+      wallclockTtlDays,
+      increment: false,
+      write,
+    }));
+  }
 
-      let expiredCount = 0;
-      const kept = [];
-      for (const d of data.decisions) {
-        const created = d.created_at || '';
-        const status = d.status || '';
-        ensureDecisionDefaults(d);
-
-        if (status === STATUS_PENDING && created) {
-          try {
-            if (new Date(created).getTime() < pendingCutoff) {
-              d.status = STATUS_EXPIRED;
-              d.status_updated_at = isoBeijing();
-              expiredCount++;
-            }
-          } catch {}
-        } else if (status === STATUS_BLOCKED && created) {
-          try {
-            if (new Date(created).getTime() < blockedCutoff) {
-              d.status = STATUS_EXPIRED;
-              d.status_updated_at = isoBeijing();
-              expiredCount++;
-            }
-          } catch {}
-        }
-
-        if (TERMINAL_STATUSES.has(d.status)) {
-          // Prefer status_updated_at so newly-expired blocked items (14d TTL)
-          // are not purged in the same pass via created_at age.
-          const terminalAt = d.status_updated_at || created;
-          if (terminalAt) {
-            try {
-              if (new Date(terminalAt).getTime() < cleanupCutoff) continue;
-            } catch {}
-          }
-        }
-        kept.push(d);
+  /**
+   * Per-exec queue maintenance: bump cycles_seen on unclaimed pending/blocked,
+   * then expire by cycle TTL (primary) or wall-clock fallback.
+   * @param {object} [opts]
+   * @param {string|null} [opts.cycleId]
+   * @param {number} [opts.pendingTtlCycles]
+   * @param {number} [opts.blockedTtlCycles]
+   * @param {number} [opts.wallclockTtlDays]
+   * @returns {{ incremented: number, expired: Array<{id: string, expire_reason: string}>, removed: number }}
+   */
+  runQueueMaintenance({
+    cycleId = null,
+    pendingTtlCycles = parsePendingTtlCyclesFromEnv(),
+    blockedTtlCycles = parseBlockedTtlCyclesFromEnv(),
+    wallclockTtlDays = parseQueueWallclockTtlDaysFromEnv(),
+  } = {}) {
+    return this._withLock(() => {
+      const result = this._expireAndCleanupLocked({
+        pendingTtlCycles,
+        blockedTtlCycles,
+        wallclockTtlDays,
+        increment: true,
+        write: true,
+        cycleId,
+      });
+      if (result.incremented > 0 || result.expired.length > 0 || result.removed > 0) {
+        this._log(
+          `Queue maintenance: incremented=${result.incremented}`
+          + ` expired=${result.expired.length} removed=${result.removed}`
+          + (cycleId ? ` cycle=${cycleId}` : ''),
+        );
       }
-
-      const removed = data.decisions.length - kept.length;
-      data.decisions = kept;
-      if (expiredCount > 0 || removed > 0) {
-        this._writeAll(data);
-        this._log(`Queue cleanup: ${expiredCount} expired, ${removed} removed`);
-      }
+      return result;
     });
+  }
+
+  /**
+   * @param {object} opts
+   * @param {number} opts.pendingTtlCycles
+   * @param {number} opts.blockedTtlCycles
+   * @param {number} opts.wallclockTtlDays
+   * @param {boolean} opts.increment
+   * @param {boolean} opts.write
+   * @param {string|null} [opts.cycleId]
+   */
+  _expireAndCleanupLocked({
+    pendingTtlCycles,
+    blockedTtlCycles,
+    wallclockTtlDays,
+    increment,
+    write,
+    cycleId = null,
+  }) {
+    const data = this._readAll();
+    const now = Date.now();
+    const wallclockMs = Math.max(1, Math.floor(Number(wallclockTtlDays) || DEFAULT_QUEUE_WALLCLOCK_TTL_DAYS))
+      * 86400000;
+    const wallclockCutoff = now - wallclockMs;
+    const cleanupCutoff = now - TERMINAL_CLEANUP_MS;
+    const pendingTtl = Math.max(1, Math.floor(Number(pendingTtlCycles) || DEFAULT_PENDING_TTL_CYCLES));
+    const blockedTtl = Math.max(1, Math.floor(Number(blockedTtlCycles) || DEFAULT_BLOCKED_TTL_CYCLES));
+
+    let incremented = 0;
+    const expired = [];
+    const kept = [];
+
+    for (const d of data.decisions) {
+      const status = d.status || '';
+      ensureDecisionDefaults(d);
+
+      if (increment && (status === STATUS_PENDING || status === STATUS_BLOCKED)) {
+        d.cycles_seen = (d.cycles_seen || 0) + 1;
+        incremented += 1;
+        if (cycleId) d.last_maintenance_cycle = cycleId;
+      }
+
+      if (status === STATUS_PENDING || status === STATUS_BLOCKED) {
+        const createdMs = createdAtMs(d);
+        let expireReason = null;
+        const cycleLimit = status === STATUS_PENDING ? pendingTtl : blockedTtl;
+        if (d.cycles_seen > cycleLimit) {
+          expireReason = 'cycles';
+        } else if (createdMs != null && createdMs < wallclockCutoff) {
+          expireReason = 'wallclock';
+        }
+        if (expireReason) {
+          d.status = STATUS_EXPIRED;
+          d.status_updated_at = isoBeijing();
+          d.expire_reason = expireReason;
+          expired.push({ id: d.id, expire_reason: expireReason });
+        }
+      }
+
+      if (TERMINAL_STATUSES.has(d.status)) {
+        // Prefer status_updated_at so newly-expired items are not purged
+        // in the same pass via created_at age.
+        const terminalAt = d.status_updated_at || d.created_at || '';
+        if (terminalAt) {
+          try {
+            if (new Date(terminalAt).getTime() < cleanupCutoff) continue;
+          } catch {}
+        }
+      }
+      kept.push(d);
+    }
+
+    const removed = data.decisions.length - kept.length;
+    data.decisions = kept;
+    if (write && (incremented > 0 || expired.length > 0 || removed > 0)) {
+      this._writeAll(data);
+    }
+
+    return { incremented, expired, removed };
   }
 }

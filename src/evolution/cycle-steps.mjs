@@ -1297,6 +1297,14 @@ export async function runExecStep(ctx, { recordState = null, intelResult = null,
     dataDir: join(runtime.runtimeRoot, 'data', 'evolution'),
     logFn: (msg) => logger?.info?.(`[exec] ${msg}`),
   });
+  try {
+    const maint = decisionQueue.runQueueMaintenance?.({ cycleId: resolvedCycleId });
+    if (maint?.expired?.length) {
+      logger?.info?.(`[exec] queue expired ${maint.expired.length} decision(s)`);
+    }
+  } catch {
+    // queue maintenance must not block exec
+  }
   const executor = new ActionExecutor({
     projectRoot: runtime.runtimeRoot,
     cycleId: resolvedCycleId,

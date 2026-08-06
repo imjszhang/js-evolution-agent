@@ -181,9 +181,14 @@ describe('unified DecisionQueue', () => {
     const badRequeue = queue.requeueDecision('missing');
     expect(badRequeue.ok).toBe(false);
 
+    const beforeRequeue = queue.runQueueMaintenance({ pendingTtlCycles: 100, blockedTtlCycles: 100 });
+    expect(beforeRequeue.incremented).toBeGreaterThanOrEqual(1);
+    expect(queue.getById(id)?.cycles_seen).toBeGreaterThan(0);
+
     const requeued = queue.requeueDecision(id);
     expect(requeued).toEqual({ ok: true, status: 'pending' });
     expect(queue.getById(id)?.attempts).toBe(0);
+    expect(queue.getById(id)?.cycles_seen).toBe(0);
 
     // force block again then retire
     const [c3] = queue.claimNext(1);
@@ -256,9 +261,10 @@ describe('unified DecisionQueue', () => {
     expect(d.max_attempts).toBeGreaterThanOrEqual(1);
     expect(d.last_error).toBeNull();
     expect(d.last_claimed_cycle).toBeNull();
+    expect(d.cycles_seen).toBe(0);
   });
 
-  it('cleanupExpired expires stale pending and blocked', () => {
+  it('wall-clock age alone does not expire when cycles_seen is below TTL', () => {
     tempDir = mkdtempSync(join(tmpdir(), 'jea-queue-'));
     const queue = new DecisionQueue({ dataDir: tempDir });
     const oldPending = new Date(Date.now() - 80 * 3600000).toISOString();
@@ -270,6 +276,7 @@ describe('unified DecisionQueue', () => {
           cycle_id: 'c',
           created_at: oldPending,
           status: 'pending',
+          cycles_seen: 2,
           action: { type: 'record_observation', params: { summary: 'old-p' } },
         },
         {
@@ -279,6 +286,7 @@ describe('unified DecisionQueue', () => {
           status: 'blocked',
           attempts: 2,
           max_attempts: 2,
+          cycles_seen: 3,
           action: { type: 'agent_run', params: {} },
         },
         {
@@ -291,10 +299,126 @@ describe('unified DecisionQueue', () => {
       ],
     }), 'utf-8');
 
-    queue.cleanupExpired(72);
-    expect(queue.getById('c:0')?.status).toBe('expired');
-    expect(queue.getById('c:1')?.status).toBe('expired');
+    const result = queue.cleanupExpired({
+      pendingTtlCycles: 5,
+      blockedTtlCycles: 10,
+      wallclockTtlDays: 30,
+    });
+    expect(result.expired).toHaveLength(0);
+    expect(queue.getById('c:0')?.status).toBe('pending');
+    expect(queue.getById('c:1')?.status).toBe('blocked');
     expect(queue.getById('c:2')?.status).toBe('pending');
+  });
+
+  it('runQueueMaintenance expires pending after cycles TTL', () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'jea-queue-'));
+    const queue = new DecisionQueue({ dataDir: tempDir });
+    const ids = queue.addDecisions({
+      cycleId: 'cycle-ttl',
+      actions: [{ type: 'record_observation', params: { summary: 'linger' } }],
+    });
+    const id = ids[0];
+    expect(queue.getById(id)?.cycles_seen).toBe(0);
+
+    for (let i = 0; i < 5; i += 1) {
+      const mid = queue.runQueueMaintenance({
+        cycleId: `tick-${i}`,
+        pendingTtlCycles: 5,
+        blockedTtlCycles: 10,
+        wallclockTtlDays: 30,
+      });
+      expect(mid.expired).toHaveLength(0);
+      expect(queue.getById(id)?.status).toBe('pending');
+      expect(queue.getById(id)?.cycles_seen).toBe(i + 1);
+    }
+
+    const last = queue.runQueueMaintenance({
+      cycleId: 'tick-5',
+      pendingTtlCycles: 5,
+      blockedTtlCycles: 10,
+      wallclockTtlDays: 30,
+    });
+    expect(last.expired).toEqual([{ id, expire_reason: 'cycles' }]);
+    expect(queue.getById(id)?.status).toBe('expired');
+    expect(queue.getById(id)?.expire_reason).toBe('cycles');
+    expect(queue.getById(id)?.cycles_seen).toBe(6);
+  });
+
+  it('runQueueMaintenance uses wider blocked TTL', () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'jea-queue-'));
+    const queue = new DecisionQueue({ dataDir: tempDir });
+    writeFileSync(join(tempDir, 'pending_decisions.json'), JSON.stringify({
+      decisions: [{
+        id: 'b:0',
+        cycle_id: 'b',
+        created_at: new Date().toISOString(),
+        status: 'blocked',
+        attempts: 2,
+        max_attempts: 2,
+        cycles_seen: 0,
+        action: { type: 'agent_run', params: {} },
+      }],
+    }), 'utf-8');
+
+    for (let i = 0; i < 10; i += 1) {
+      const mid = queue.runQueueMaintenance({
+        pendingTtlCycles: 5,
+        blockedTtlCycles: 10,
+        wallclockTtlDays: 30,
+      });
+      expect(mid.expired).toHaveLength(0);
+      expect(queue.getById('b:0')?.status).toBe('blocked');
+    }
+
+    const last = queue.runQueueMaintenance({
+      pendingTtlCycles: 5,
+      blockedTtlCycles: 10,
+      wallclockTtlDays: 30,
+    });
+    expect(last.expired).toEqual([{ id: 'b:0', expire_reason: 'cycles' }]);
+    expect(queue.getById('b:0')?.status).toBe('expired');
+  });
+
+  it('cleanupExpired wallclock fallback expires ancient decisions', () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'jea-queue-'));
+    const queue = new DecisionQueue({ dataDir: tempDir });
+    const ancient = new Date(Date.now() - 40 * 86400000).toISOString();
+    writeFileSync(join(tempDir, 'pending_decisions.json'), JSON.stringify({
+      decisions: [{
+        id: 'w:0',
+        cycle_id: 'w',
+        created_at: ancient,
+        status: 'pending',
+        cycles_seen: 1,
+        action: { type: 'record_observation', params: { summary: 'ancient' } },
+      }],
+    }), 'utf-8');
+
+    const result = queue.cleanupExpired({
+      pendingTtlCycles: 5,
+      blockedTtlCycles: 10,
+      wallclockTtlDays: 30,
+    });
+    expect(result.expired).toEqual([{ id: 'w:0', expire_reason: 'wallclock' }]);
+    expect(queue.getById('w:0')?.status).toBe('expired');
+    expect(queue.getById('w:0')?.expire_reason).toBe('wallclock');
+    expect(queue.getById('w:0')?.cycles_seen).toBe(1);
+  });
+
+  it('getBacklogSummary includes cycles_seen', () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'jea-queue-'));
+    const queue = new DecisionQueue({ dataDir: tempDir });
+    queue.addDecisions({
+      cycleId: 'cycle-backlog-cycles',
+      actions: [{ type: 'record_observation', params: { summary: 'x' } }],
+    });
+    queue.runQueueMaintenance({
+      pendingTtlCycles: 100,
+      blockedTtlCycles: 100,
+      wallclockTtlDays: 30,
+    });
+    const backlog = queue.getBacklogSummary({ limit: 10 });
+    expect(backlog.pending[0].cycles_seen).toBe(1);
   });
 
   afterEach(() => {
