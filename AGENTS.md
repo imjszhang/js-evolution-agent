@@ -160,7 +160,9 @@ pending TTL 72h → expired；blocked TTL 14d → expired
 
 机械守护（`evolution.guards`，不占 agent_run 预算）：
 
-在 `runtime/subjects/registry.json` 的 `subjects.<name>.evolution.guards` 配置固定节奏动作（如凭据 sync、记忆审计）。`runExecStep` 在消费决策队列前按 `every_cycles` 到期执行；状态在 `data/evolution/agent_loop_guard_state.json`。
+在 `runtime/subjects/registry.json` 的 `subjects.<name>.evolution.guards` 配置固定节奏动作（如凭据 sync、记忆审计）。`runExecStep` 在消费决策队列前按 `every_cycles` 到期执行；状态在 `data/evolution/agent_loop_guard_state.json`。action 落盘带 `origin: mechanical_guard` + `guard_id`；首见/移除时发 `mechanical_guard_registered` / `mechanical_guard_removed` 事件。
+
+**法则化退役/重生**（宪章第十三条第 5 步）：当 guard 的 `serves_goal` 已被机械确定性维持且连续健康 ≥ `JEA_RULE_FEEDBACK_DEAD_STREAK` 轮时，对应 active goal 使命已完成——assess 应 `rule_status=continue` + `status=refine` + `remove_child`（mechanized retirement；不触碰 mutate 轮的 guard 删除保护）。若机制连续失败且无 active goal 覆盖，assess 应 `add_child` 重开守护目标（rebirth）。健康且已退役是期望稳态。
 
 ```json
 {
@@ -586,28 +588,32 @@ Decide 可调度、`Phase 2` 执行的记录型动作，用于落已有结论而
 - `JEA_GOAL_AUTO_APPLY=0`：只写 Phase 4 assessment，Phase 4.5 不落盘
 - `JEA_GOAL_INTENT_SOFT_MAX`：update_child 后 intent 长度软上限（默认 `1500`）；超限发 `goal_intent_bloat` 警告事件，不硬拦
 
-Assessor prompt 仍建议 `goal_patches` 与 `proposed_goal` 互斥；执行器先尝试 patches，失败可在 liberal 下 fallback `proposed_goal`。`add_child` 的 child 建议带 `role: outcome|guard`（供审计）。`rule_status=mutate` 时机械拒绝 `remove_child` 守护子目标（`role=guard` 或 id 前缀 `guard-` / `monitor-`），只允许 `update_child` 修订观测点（守功能、破形态）。`patched` goal_event 会附带 `rule_status`。
+Assessor prompt 仍建议 `goal_patches` 与 `proposed_goal` 互斥；执行器先尝试 patches，失败可在 liberal 下 fallback `proposed_goal`。`add_child` 的 child 建议带 `role: outcome|guard`（供审计）。`rule_status=mutate` 时机械拒绝 `remove_child` 守护子目标（`role=guard` 或 id 前缀 `guard-` / `monitor-`），只允许 `update_child` 修订观测点（守功能、破形态）。**continue/learn + refine 轮允许**对已被机械维持的守护目标 `remove_child`（mechanized retirement）。`patched` goal_event 会附带 `rule_status`。
 
 **法则反馈健康度**（`rule_feedback_stats`）：
 
-宿主按 `action.serves_goal` 聚合近期 receipts 的结果签名（`key=value` 归一化 hash），并对照 carryover 跨轮计数，为每个子目标计算 `feedback_state`。注入点：
+宿主按 `action.serves_goal` 聚合近期 receipts 的结果签名（`key=value` 归一化 hash），并对照 carryover 跨轮计数与 `evolution.guards` 配置，为每个子目标计算 `feedback_state`。注入点：
 
-- **Phase 4 goals assess**（完整 JSON，驱动 `rule_status`）
-- **Phase 1 Decide**（agent_loop 仅）：压缩段 `## Rule Feedback Health`（dead / degraded / starved），信息用法——签名恒定或 starved 的 goal 不应原样重复同一探针；不行动须在 `deferred` / `goal_coverage.not_covered` 说明。phases 路径不注入。
+- **Phase 4 goals assess**（完整 JSON，含 `mechanical_guards` 段，驱动 `rule_status` 与退役/重生）
+- **Phase 1 Decide**（agent_loop 仅）：压缩段 `## Rule Feedback Health`（dead / degraded / starved / mechanized），信息用法——签名恒定或 starved 的 goal 不应原样重复同一探针；`mechanically_maintained` 目标勿再入队相同探针；不行动须在 `deferred` / `goal_coverage.not_covered` 说明。phases 路径不注入。
 
 | 状态 | 含义 | assess 期望 |
 | --- | --- | --- |
-| `live` | 签名随世界变化，有信息增量 | continue / learn（世界未达标或通道故障） |
-| `degraded` | 签名连续 ≥2 轮相似 | 提高敏感度；区分通道故障 vs 法则滞后 |
-| `dead` | 签名连续 ≥`JEA_RULE_FEEDBACK_DEAD_STREAK`（默认 3）且 `information_gain=0` | 按宪章第九条/十三条必须 `rule_status=mutate`，`update_child` 修订观测点；不得再 learn 等待 |
+| `live` | 签名随世界变化，有信息增量；**或** `mechanically_maintained` 且 trailing receipts 全 success（健康恒定签名不算死亡） | continue / learn；若 `eligible_for_retirement` 则 continue+refine remove_child |
+| `degraded` | 签名连续 ≥2 轮相似（失败信号） | 提高敏感度；区分通道故障 vs 法则滞后 |
+| `dead` | 签名连续 ≥`JEA_RULE_FEEDBACK_DEAD_STREAK`（默认 3）且 `information_gain=0`（失败信号） | 按宪章第九条/十三条必须 `rule_status=mutate`，`update_child` 修订观测点；不得再 learn 等待 |
 | `degraded`（mutate 冷却） | 刚 mutate 后 `mutate_cooldown=true`（等待新签名） | 不要重复 mutate 同一观测点；优先 continue / learn |
-| `starved`（派生） | 成果子目标（非 guard/root）连续 ≥ dead_streak 轮无任何 serving receipt | 与 dead 同等：必须 mutate 观测点或退出条件；不得 learn 等待 |
+| `starved`（派生） | **未被机械维持**的子目标（非 root）连续 ≥ dead_streak 轮无任何 serving receipt | 与 dead 同等：必须 mutate 观测点或退出条件；不得 learn 等待 |
 
 每行额外字段：
 
 - `is_root`：receipt 的 `serves_goal` 指向 root id 时为 true。root 判 dead 时须用 `proposed_goal` 整树换代，不能 `update_child` root。
-- `starved_streak`：全局最近 cycle 序列中，该成果子目标连续无 receipt 的轮数（guard/root/非 active-tree 孤儿 label 为 0）。
+- `mechanically_maintained`：goal id 被启用中的 `evolution.guards[].action.serves_goal` 覆盖。
+- `healthy_streak` / `failure_streak`：近窗内 trailing 全 success / 全 failure 轮数。
+- `starved_streak`：全局最近 cycle 序列中，该子目标连续无 receipt 的轮数（root / `mechanically_maintained` / 非 active-tree 孤儿 label 为 0）。
 - `mutate_effective`：`null`（无 mutate 或冷却中）/ `true`（冷却后签名已变）/ `false`（冷却后签名未变 = 化妆式 mutate）。`mutate_effective=false` 时，即使本轮再次 mutate 该 goal，**不再豁免**死亡边界报警。
+
+顶层另有 `mechanical_guards[]`：每条含 `guard_id`、`serves_goal`、`goal_in_active_tree`、`recent_status`、`healthy_streak`、`failure_streak`、`eligible_for_retirement`、`eligible_for_rebirth`。
 
 相关 env：
 
@@ -619,7 +625,7 @@ Assessor prompt 仍建议 `goal_patches` 与 `proposed_goal` 互斥；执行器�
 | `JEA_RULE_FEEDBACK_MUTATE_COOLDOWN` | `2` | mutate 后冷却轮数（`0` 关闭）；冷却期内 dead 降级为 degraded |
 | `JEA_RULE_FEEDBACK_RECEIPT_LIMIT` | `120` | 参与统计的 receipt 读取上限 |
 
-**死亡边界报警**：若某子目标 `escalate_eligible`（`feedback_state=dead` 且 sig streak ≥ escalate，或成果子目标 `starved_streak` ≥ escalate），而本轮 assess 未 mutate 或 calibrate 未对该子目标 applied patch（含 `mode: full_replace` 整树替换），**且**该 goal 的 `mutate_effective !== false`（化妆式 mutate 不豁免），则打开 operator question（`trigger: rule_feedback_dead`），并发 `rule_feedback_escalated` 事件；同 goal 已有 pending question 时去重。这是校准回路失灵的最后防线，不是常规人工审批出口。
+**死亡边界报警**：若某子目标 `escalate_eligible`（`feedback_state=dead` 且 sig streak ≥ escalate，或未被机械维持的子目标 `starved_streak` ≥ escalate），而本轮 assess 未 mutate 或 calibrate 未对该子目标 applied patch（含 `mode: full_replace` 整树替换），**且**该 goal 的 `mutate_effective !== false`（化妆式 mutate 不豁免），则打开 operator question（`trigger: rule_feedback_dead`），并发 `rule_feedback_escalated` 事件；同 goal 已有 pending question 时去重。这是校准回路失灵的最后防线，不是常规人工审批出口。
 
 Carryover mechanical 项带跨轮字段 `fingerprint` / `first_seen_cycle` / `seen_count`（同 cycle 重写不重复计数；跨 cycle 精确或 Jaccard≥0.6 匹配继承）。agent_loop 查证 prompt 渲染时，`seen_count≥2` 的条目会标注「已连续 N 轮」。
 

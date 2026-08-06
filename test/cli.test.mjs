@@ -3358,6 +3358,69 @@ describe('goals command helpers', () => {
     expect(patched?.rule_status).toBe('mutate');
   });
 
+  it('continue+refine allows remove_child of mechanically maintained guard (retirement path)', () => {
+    const root = makeGoalsRoot('jea-goals-mech-retire-');
+    const runtime = runtimeInfoForDefaultSubject(root);
+    applyGoalObject(root, {
+      id: 'root-goal',
+      name: 'Root',
+      intent: 'Root intent',
+      good_signal: 'g',
+      bad_signal: 'b',
+      children: [
+        {
+          id: 'guard-memory-audit-v28',
+          name: 'Memory guard',
+          role: 'guard',
+          intent: 'Audit every two cycles',
+          good_signal: 'audit_ok=true',
+          bad_signal: 'audit_ok=false',
+          children: [],
+        },
+        {
+          id: 'outcome-skill',
+          name: 'Outcome',
+          role: 'outcome',
+          intent: 'Improve rank',
+          good_signal: 'rank up',
+          bad_signal: 'rank down',
+          children: [],
+        },
+      ],
+    }, { reason: 'seed', cycle: 'seed' });
+
+    const filter = filterPatchesForRuleStatus([
+      {
+        op: 'remove_child',
+        child_id: 'guard-memory-audit-v28',
+        reason: 'mechanized retirement: memory-audit guard',
+      },
+    ], 'continue', readJsonSafe(join(runtime.goalsDir, 'active_goals.json')));
+    expect(filter.skipped).toEqual([]);
+    expect(filter.patches).toHaveLength(1);
+
+    const result = autoCalibrateGoals(root, {
+      report: { cycle_id: 'cycle-mech-retire' },
+      assessment: {
+        status: 'refine',
+        rule_status: 'continue',
+        confidence: 'medium',
+        reason: 'mechanized retirement: guard-memory-audit-v28 covered by memory-audit',
+        goal_patches: [{
+          op: 'remove_child',
+          child_id: 'guard-memory-audit-v28',
+          reason: 'mechanized retirement: memory-audit guard',
+        }],
+      },
+    });
+
+    expect(result.status).toBe('applied');
+    expect(result.skipped_patches || []).toEqual([]);
+    const active = readJsonSafe(join(runtime.goalsDir, 'active_goals.json'));
+    expect(active.children.map((c) => c.id)).not.toContain('guard-memory-audit-v28');
+    expect(active.children.map((c) => c.id)).toContain('outcome-skill');
+  });
+
   it('emits goal_intent_bloat warning when update_child intent exceeds soft max', () => {
     const root = makeGoalsRoot('jea-goals-intent-bloat-');
     const runtime = runtimeInfoForDefaultSubject(root);

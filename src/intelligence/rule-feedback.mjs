@@ -445,6 +445,59 @@ function consecutiveLearnStreak(goalEvents = []) {
 }
 
 /**
+ * Build serves_goal → enabled guard map from registry guards config.
+ * @param {object[]} mechanicalGuards
+ * @returns {Map<string, object>}
+ */
+export function buildMechanicalGuardMap(mechanicalGuards = []) {
+  const map = new Map();
+  for (const guard of Array.isArray(mechanicalGuards) ? mechanicalGuards : []) {
+    if (!guard || guard.enabled === false || !guard.id) continue;
+    const servesGoal = guard?.action?.serves_goal ?? guard?.serves_goal ?? null;
+    if (!servesGoal || typeof servesGoal !== 'string') continue;
+    map.set(servesGoal, {
+      guard_id: String(guard.id),
+      serves_goal: servesGoal,
+      every_cycles: Math.max(1, Math.trunc(Number(guard.every_cycles) || 1)),
+      action_type: guard?.action?.type ?? null,
+    });
+  }
+  return map;
+}
+
+/**
+ * Trailing consecutive success streak (newest-first) from cycle buckets.
+ * Bucket success is best-receipt result.success for that cycle.
+ */
+export function computeHealthyStreak(bucketsNewestFirst = []) {
+  let streak = 0;
+  for (const bucket of bucketsNewestFirst) {
+    if (bucket?.success !== true) break;
+    streak += 1;
+  }
+  return streak;
+}
+
+/**
+ * Trailing consecutive failure streak (newest-first).
+ */
+export function computeFailureStreak(bucketsNewestFirst = []) {
+  let streak = 0;
+  for (const bucket of bucketsNewestFirst) {
+    if (bucket?.success !== false) break;
+    streak += 1;
+  }
+  return streak;
+}
+
+function receiptSuccess(receipt) {
+  if (!receipt) return null;
+  if (receipt.result?.success === true) return true;
+  if (receipt.result?.success === false) return false;
+  return null;
+}
+
+/**
  * Build per-goal mechanical rule feedback stats.
  */
 export function computeRuleFeedbackStats({
@@ -454,6 +507,7 @@ export function computeRuleFeedbackStats({
   windowCycles = null,
   deadStreak = null,
   escalateStreak = null,
+  mechanicalGuards = null,
   env = process.env,
 } = {}) {
   const cfg = resolveRuleFeedbackConfig(env);
@@ -461,9 +515,11 @@ export function computeRuleFeedbackStats({
   const dead = deadStreak ?? cfg.deadStreak;
   const escalate = escalateStreak ?? cfg.escalateStreak;
   const mutateCooldown = cfg.mutateCooldown;
+  const guardMap = buildMechanicalGuardMap(mechanicalGuards);
 
   const goals = flattenGoalNodes(activeGoals);
   const childGoals = goals.filter((g) => g?.id && g.id !== activeGoals?.id);
+  const activeChildIds = new Set(childGoals.map((g) => g.id));
   // js-intel-store returns chronological ascending (oldest→newest). Sort newest-first.
   const receipts = [...(store?.readActionReceipts?.({ limit: cfg.receiptLimit }) ?? [])]
     .sort((a, b) => receiptTimeMs(b) - receiptTimeMs(a));
@@ -523,6 +579,7 @@ export function computeRuleFeedbackStats({
         kv: signatureKv?.length ? signatureKv : (extracted.focus?.length ? extracted.focus : extracted.kv),
         focus_kv: extracted.focus,
         canonical: extracted.canonical,
+        success: receiptSuccess(best),
       };
     });
 
@@ -533,10 +590,21 @@ export function computeRuleFeedbackStats({
     const prev = signedBuckets.length >= 2 ? signedBuckets[signedBuckets.length - 2] : null;
     const curr = signedBuckets.length ? signedBuckets[signedBuckets.length - 1] : null;
     const information_gain = computeInformationGain(prev, curr);
+    const bucketsNewestFirst = [...buckets].reverse();
+    const healthy_streak = computeHealthyStreak(bucketsNewestFirst);
+    const failure_streak = computeFailureStreak(bucketsNewestFirst);
+    const mechanically_maintained = guardMap.has(goalId);
+    const maintaining_guard = mechanically_maintained ? guardMap.get(goalId) : null;
+
     let feedback_state = classifyFeedbackState(streak, information_gain, {
       deadStreak: dead,
       constantKeys: constant_keys,
     });
+    // Mechanically maintained + trailing success: constant signature is expected
+    // (guard probes are rhythmically identical when healthy). Force live.
+    if (mechanically_maintained && healthy_streak > 0 && failure_streak === 0) {
+      feedback_state = 'live';
+    }
     const stuck = carryoverStuckForGoal(carryoverDoc, goalId);
     const consecutive_learn = consecutiveLearnStreak(goalEvents);
     const is_root = goalId === activeGoals?.id;
@@ -563,16 +631,16 @@ export function computeRuleFeedbackStats({
       signedBuckets,
       currentSignature: signature,
     });
-    // Active outcome children only: trailing global cycles with no serving receipt.
-    // Historical orphan serves_goal labels are ignored (not in active tree).
-    const starved_streak = (!in_active_tree || is_guard || is_root)
+    // Starved exemption: mechanically maintained goals (not role=guard).
+    // Unmaintained guard goals participate in starved detection.
+    const starved_streak = (!in_active_tree || is_root || mechanically_maintained)
       ? 0
       : computeStarvedStreak({
         globalCycleIdsNewestFirst: globalCyclesNewestFirst,
         goalCycleIds: new Set(cycleMap.keys()),
         windowCycles: window,
       });
-    const starved = in_active_tree && !is_guard && !is_root && starved_streak >= dead;
+    const starved = in_active_tree && !is_root && !mechanically_maintained && starved_streak >= dead;
     const escalate_eligible = (feedback_state === 'dead' && streak >= escalate)
       || (starved && starved_streak >= escalate);
 
@@ -581,6 +649,10 @@ export function computeRuleFeedbackStats({
       goal_name: goal?.name ?? null,
       is_guard,
       is_root,
+      mechanically_maintained,
+      maintaining_guard_id: maintaining_guard?.guard_id ?? null,
+      healthy_streak,
+      failure_streak,
       feedback_state,
       constant_signature_streak: streak,
       constant_signature: signature,
@@ -601,6 +673,43 @@ export function computeRuleFeedbackStats({
     });
   }
 
+  // Mechanical guards summary (including guards whose serves_goal is not in active tree).
+  const mechanical_guards = [...guardMap.values()].map((g) => {
+    const goalStat = stats.find((s) => s.goal_id === g.serves_goal) ?? null;
+    const inTree = activeChildIds.has(g.serves_goal);
+    let recent_status = 'unknown';
+    if (goalStat) {
+      if (goalStat.failure_streak > 0) recent_status = 'failed';
+      else if (goalStat.healthy_streak > 0) recent_status = 'ok';
+      else if (goalStat.cycles_observed === 0) recent_status = 'no_receipts';
+    } else if (!inTree) {
+      recent_status = 'no_active_goal';
+    }
+    return {
+      guard_id: g.guard_id,
+      serves_goal: g.serves_goal,
+      every_cycles: g.every_cycles,
+      action_type: g.action_type,
+      goal_in_active_tree: inTree,
+      recent_status,
+      healthy_streak: goalStat?.healthy_streak ?? 0,
+      failure_streak: goalStat?.failure_streak ?? 0,
+      feedback_state: goalStat?.feedback_state ?? null,
+      eligible_for_retirement: Boolean(
+        inTree
+        && goalStat
+        && goalStat.mechanically_maintained
+        && goalStat.healthy_streak >= dead
+        && goalStat.feedback_state === 'live',
+      ),
+      // Rebirth only when mechanism is failing and no active goal covers it.
+      // Healthy retired goals (guard still succeeding) must NOT request rebirth.
+      eligible_for_rebirth: Boolean(
+        !inTree && (goalStat?.failure_streak ?? 0) >= dead,
+      ),
+    };
+  });
+
   // Sort: dead/starved first, then degraded, then by streak desc.
   const order = { dead: 0, degraded: 1, live: 2 };
   stats.sort((a, b) => {
@@ -620,12 +729,16 @@ export function computeRuleFeedbackStats({
     },
     generated_at: new Date().toISOString(),
     goals: stats,
+    mechanical_guards,
     summary: {
       dead: stats.filter((s) => s.feedback_state === 'dead').length,
       degraded: stats.filter((s) => s.feedback_state === 'degraded').length,
       live: stats.filter((s) => s.feedback_state === 'live').length,
       starved: stats.filter((s) => s.starved).length,
       escalate_eligible: stats.filter((s) => s.escalate_eligible).length,
+      mechanically_maintained: stats.filter((s) => s.mechanically_maintained).length,
+      eligible_for_retirement: mechanical_guards.filter((g) => g.eligible_for_retirement).length,
+      eligible_for_rebirth: mechanical_guards.filter((g) => g.eligible_for_rebirth).length,
     },
   };
 }
@@ -713,7 +826,7 @@ export function buildRuleFeedbackQuestionText(stat) {
 }
 
 /**
- * Compact prompt block for Decide (dead / degraded / starved goals only).
+ * Compact prompt block for Decide (dead / degraded / starved / mechanized goals).
  * Informational — no new required JSON fields.
  */
 export function formatRuleFeedbackForPrompt(ruleFeedbackStats = null, language = 'zh') {
@@ -721,20 +834,23 @@ export function formatRuleFeedbackForPrompt(ruleFeedbackStats = null, language =
   const goals = Array.isArray(ruleFeedbackStats?.goals) ? ruleFeedbackStats.goals : [];
   const notable = goals.filter((g) => g?.feedback_state === 'dead'
     || g?.feedback_state === 'degraded'
-    || g?.starved);
+    || g?.starved
+    || g?.mechanically_maintained);
   const header = isEn
     ? [
       '## Rule Feedback Health',
       '',
-      'Mechanical per-goal feedback health (dead / degraded / starved only).',
+      'Mechanical per-goal feedback health (dead / degraded / starved / mechanized).',
       'Do not repeat the same probe unchanged for a goal with a constant or starved streak;',
       'if taking no action, explain under deferred or goal_coverage.not_covered.',
+      'Goals marked mechanically_maintained are already served by evolution.guards — do not re-queue the same probe.',
     ].join('\n')
     : [
       '## Rule Feedback Health',
       '',
-      '机械目标反馈健康度（仅列出 dead / degraded / starved）。',
+      '机械目标反馈健康度（dead / degraded / starved / mechanized）。',
       '签名恒定或 starved 的 goal 不应原样重复同一探针；若不行动，须在 deferred 或 goal_coverage.not_covered 说明。',
+      '标注 mechanically_maintained 的目标已由 evolution.guards 机械维持——勿再入队相同探针。',
     ].join('\n');
 
   if (!notable.length) {
@@ -749,6 +865,10 @@ export function formatRuleFeedbackForPrompt(ruleFeedbackStats = null, language =
     const parts = [
       g.goal_id,
       `state=${g.feedback_state}`,
+      g.mechanically_maintained
+        ? `mechanically_maintained${g.maintaining_guard_id ? `(${g.maintaining_guard_id})` : ''}`
+        : null,
+      g.healthy_streak ? `healthy_streak=${g.healthy_streak}` : null,
       g.starved ? `starved_streak=${g.starved_streak}` : null,
       g.constant_signature_streak
         ? `sig_streak=${g.constant_signature_streak}`

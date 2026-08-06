@@ -164,4 +164,71 @@ describe('agent-loop mechanical guards', () => {
     const second = await runMechanicalGuards({ root, loopCtx });
     expect(second.ran).toHaveLength(1);
   });
+
+  it('tags action with origin=mechanical_guard and guard_id', async () => {
+    const { root, loopCtx } = makeLoopCtx({
+      guards: [{
+        id: 'obs-guard',
+        enabled: true,
+        every_cycles: 1,
+        action: {
+          type: 'record_observation',
+          description: 'guard obs',
+          serves_goal: 'guard-memory-audit-v28',
+          params: { content: 'guarded', source: 'test' },
+        },
+      }],
+    });
+    const result = await runMechanicalGuards({ root, loopCtx });
+    expect(result.ran[0].action.origin).toBe('mechanical_guard');
+    expect(result.ran[0].action.guard_id).toBe('obs-guard');
+    expect(loopCtx.executed[0].action.origin).toBe('mechanical_guard');
+    expect(loopCtx.executed[0].action.guard_id).toBe('obs-guard');
+  });
+
+  it('emits mechanical_guard_registered on first sighting', async () => {
+    const events = [];
+    const { root, loopCtx } = makeLoopCtx({
+      guards: [{
+        id: 'new-guard',
+        enabled: true,
+        every_cycles: 1,
+        action: {
+          type: 'record_observation',
+          serves_goal: 'guard-x',
+          params: { content: 'x', source: 'test' },
+        },
+      }],
+    });
+    loopCtx.emitEvent = (e) => events.push(e);
+    await runMechanicalGuards({ root, loopCtx });
+    expect(events.some((e) => e.type === 'mechanical_guard_registered' && e.guard_id === 'new-guard')).toBe(true);
+    expect(events.find((e) => e.type === 'mechanical_guard_registered').serves_goal).toBe('guard-x');
+  });
+
+  it('emits mechanical_guard_removed when config drops a guard', async () => {
+    const { root, loopCtx } = makeLoopCtx({
+      cycleId: 'c1',
+      guards: [{
+        id: 'to-remove',
+        enabled: true,
+        every_cycles: 1,
+        action: {
+          type: 'record_observation',
+          serves_goal: 'guard-y',
+          params: { content: 'y', source: 'test' },
+        },
+      }],
+    });
+    await runMechanicalGuards({ root, loopCtx });
+
+    // Drop the guard from registry.
+    writeRegistry(root, []);
+    const events = [];
+    loopCtx.cycleId = 'c2';
+    loopCtx.emitEvent = (e) => events.push(e);
+    const result = await runMechanicalGuards({ root, loopCtx });
+    expect(result.events.some((e) => e.type === 'mechanical_guard_removed' && e.guard_id === 'to-remove')).toBe(true);
+    expect(events.some((e) => e.type === 'mechanical_guard_removed')).toBe(true);
+  });
 });

@@ -29,6 +29,7 @@ import {
   computeRuleFeedbackStats,
   isGuardGoal,
 } from '../../intelligence/rule-feedback.mjs';
+import { loadEnabledGuards } from '../../evolution/agent-loop/guard-runner.mjs';
 import { readCarryoverDocument } from '../../evolution/carryover.mjs';
 import { resolveIntelReportRecordPath } from '../../intelligence/report-paths.mjs';
 import { findReportRecord } from './intel.mjs';
@@ -624,11 +625,14 @@ export async function assessActiveGoals(root = getProjectRoot(), flags = {}, opt
   const reportMarkdown = readFileSync(reportPath, 'utf-8');
   const carryoverDoc = opts.carryoverDoc
     ?? readCarryoverDocument(active.runtime.runtimeRoot);
+  const mechanicalGuards = opts.mechanicalGuards
+    ?? loadEnabledGuards(root, active.runtime.subject);
   const ruleFeedbackStats = opts.ruleFeedbackStats
     ?? computeRuleFeedbackStats({
       store,
       activeGoals: active.goals,
       carryoverDoc,
+      mechanicalGuards,
       env: opts.env ?? process.env,
     });
   const assessed = await assessGoalsWithAi({

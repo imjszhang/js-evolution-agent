@@ -64,7 +64,7 @@ import {
 } from './carryover.mjs';
 import { buildInvestigationTools } from './agent-loop/tool-registry.mjs';
 import { runInvestigationLoop } from './agent-loop/loop-runner.mjs';
-import { runMechanicalGuards } from './agent-loop/guard-runner.mjs';
+import { loadEnabledGuards, runMechanicalGuards } from './agent-loop/guard-runner.mjs';
 import {
   buildAgentLoopInitialUserPromptParts,
   buildAgentLoopObservationReport,
@@ -707,10 +707,12 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
       : null;
     if (activeGoals) {
       const carryoverDoc = readCarryoverDocument(runtime.runtimeRoot);
+      const mechanicalGuards = loadEnabledGuards(ctx.projectRoot, runtime.subject);
       const ruleFeedbackStats = computeRuleFeedbackStats({
         store,
         activeGoals,
         carryoverDoc,
+        mechanicalGuards,
       });
       ruleFeedbackText = formatRuleFeedbackForPrompt(ruleFeedbackStats, language);
     }

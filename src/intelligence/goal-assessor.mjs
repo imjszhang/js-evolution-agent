@@ -278,15 +278,22 @@ rule_status 语义：
 三分失败判据（必须先区分，再选 rule_status）：
 1. **世界未达标**：交易反馈清晰（结果签名随世界变化），只是尚未达到 good_signal → learn 或 continue；继续诊断/等待，不改验收条款。
 2. **通道故障**：transient 的外部/配置故障（如临时 HTTP 502）→ 修通道，不改法则；可用 learn 描述通道修复，不得 mutate 验收条款。
-3. **法则反馈死亡**：rule_feedback_stats 中某子目标 feedback_state="dead"（constant_signature_streak 达阈值且 information_gain=0），**或**成果子目标 starved=true / starved_streak 达 dead_streak 阈值（连续多轮无任何 action_receipt 喂养 = 零信息的极端形式）→ 按宪章第九条/第十三条，常规交易已无法提供真实反馈，必须 rule_status="mutate"，并用 update_child 修订该条款的观测点或退出条件；**不得再以 learn 等待**。reason 必须点名该 goal_id 的 feedback_state / streak / constant_keys 或 starved_streak。
+3. **法则反馈死亡**：rule_feedback_stats 中某子目标 feedback_state="dead"（constant_signature_streak 达阈值且 information_gain=0），**或**未被机械维持的子目标 starved=true / starved_streak 达 dead_streak 阈值（连续多轮无任何 action_receipt 喂养 = 零信息的极端形式；mechanically_maintained=true 的目标豁免 starved）→ 按宪章第九条/第十三条，常规交易已无法提供真实反馈，必须 rule_status="mutate"，并用 update_child 修订该条款的观测点或退出条件；**不得再以 learn 等待**。reason 必须点名该 goal_id 的 feedback_state / streak / constant_keys 或 starved_streak。
    - 若该 goal 的 mutate_cooldown=true，表示上一轮已 mutate 修订观测点、正在等待新签名生效；**不要重复 mutate 同一观测点**，优先 continue 或 learn 等待反馈变化。
    - 若 mutate_effective=false，表示上一轮 mutate 未改变结果签名（化妆式修订）；不得再以同类文本补丁敷衍，必须改写可观测口径或可达退出路径。
    - 若 is_root=true 且 feedback_state="dead"，update_child 无法修改 root 本身；须用 proposed_goal 整树换代（status=replace），goal_patches 应为 []。
 
 守破分层（mutate 时强制）：
-- 守功能、破形态：守护子目标（role=guard 或 id 前缀 guard-/monitor-）不可 remove_child；只能 update_child 把观测点换成 receipt 证明**实际可观测**的口径。
+- 守功能、破形态：守护子目标（role=guard 或 id 前缀 guard-/monitor-）不可 remove_child；只能 update_child 把观测点换成 receipt 证明**实际可观测**的口径。此禁止**仅适用于 rule_status=mutate**。
 - mutate patch 的 evidence_refs 必须引用产生恒定签名的 action_receipt（可用 rule_feedback_stats.latest_receipt_id）。
 - update_child 的 intent/good_signal/bad_signal 应引用 belief id 或 receipt ref，**不要**把每轮失败细节原文复制进 intent（避免法则被失败叙事宪法化）。
+
+法则化退役/重生（宪章第十三条第 5 步：成功经验沉淀为新法则；与 mutate 守破分层独立）：
+- 读取 rule_feedback_stats.mechanical_guards（及 goals[].mechanically_maintained / healthy_streak）。这些目标已被 evolution.guards 机械维持。
+- **退役**：若某条 mechanical_guards.eligible_for_retirement=true（或 mechanically_maintained=true 且 healthy_streak ≥ config.dead_streak 且 feedback_state=live），该目标观测行为已默认达成，应从 active 树移除。输出 rule_status="continue"、status="refine"、goal_patches 含 remove_child；reason 必须写明 mechanized retirement 并引用 guard_id。这不是 mutate，允许 remove_child。
+- **重生**：若某条 mechanical_guards.eligible_for_rebirth=true（机制连续失败且 serves_goal 无 active goal 覆盖），应 add_child 重开守护目标（role=guard），rule_status 视严重度可为 stop 或 learn；reason 写明机制失败与 guard_id。
+- 健康且已退役（goal_in_active_tree=false 且 recent_status=ok / healthy_streak>0）是期望稳态——**不要**重开目标。
+- 未被机械维持的守护目标（mechanically_maintained=false）仍由 Decide 喂养，参与 starved 检测；勿与法则化退役混淆。
 
 硬约束：
 - 只做判定，不执行修改。
@@ -363,15 +370,22 @@ rule_status semantics:
 Three-way failure triage (classify first, then choose rule_status):
 1. **World not yet at target**: feedback is live (result signature changes with the world) but good_signal unmet → learn or continue; keep diagnosing / waiting; do not rewrite acceptance clauses.
 2. **Channel fault**: transient external/config faults (e.g. temporary HTTP 502) → repair the channel, do not mutate the law; learn may describe channel repair.
-3. **Rule feedback death**: rule_feedback_stats marks a child goal feedback_state="dead" (constant_signature_streak at threshold and information_gain=0), **or** an outcome child with starved=true / starved_streak at the dead_streak threshold (no serving action_receipt for consecutive cycles — zero-information extreme) → per Constitution Arts. 9/13, conventional transactions no longer yield useful feedback; you MUST return rule_status="mutate" with update_child revising that clause's observation point or exit condition; **do not keep learn-waiting**. reason MUST name the goal_id feedback_state / streak / constant_keys or starved_streak.
+3. **Rule feedback death**: rule_feedback_stats marks a child goal feedback_state="dead" (constant_signature_streak at threshold and information_gain=0), **or** a non-mechanically-maintained child with starved=true / starved_streak at the dead_streak threshold (no serving action_receipt for consecutive cycles — zero-information extreme; mechanically_maintained=true goals are exempt from starved) → per Constitution Arts. 9/13, conventional transactions no longer yield useful feedback; you MUST return rule_status="mutate" with update_child revising that clause's observation point or exit condition; **do not keep learn-waiting**. reason MUST name the goal_id feedback_state / streak / constant_keys or starved_streak.
    - When mutate_cooldown=true for a goal, a mutate patch was applied recently and the system is waiting for a new signature; **do not repeat mutate on the same observation point**; prefer continue or learn until feedback changes.
    - When mutate_effective=false, a prior mutate did not change the result signature (cosmetic edit); do not pad with similar text patches — rewrite the observable criterion or a reachable exit path.
    - When is_root=true and feedback_state="dead", update_child cannot target the root; use proposed_goal for a whole-tree rewrite (status=replace) with goal_patches=[].
 
 Hold/break layering (required on mutate):
-- Hold function, break form: guard children (role=guard or id prefix guard-/monitor-) must not be remove_child; only update_child to replace the observation point with a receipt-proven *actually observable* criterion.
+- Hold function, break form: guard children (role=guard or id prefix guard-/monitor-) must not be remove_child; only update_child to replace the observation point with a receipt-proven *actually observable* criterion. This ban applies **only when rule_status=mutate**.
 - mutate patch evidence_refs MUST cite the action_receipt that produced the constant signature (use rule_feedback_stats.latest_receipt_id when present).
 - update_child intent/good_signal/bad_signal should cite belief ids or receipt refs; do NOT paste per-cycle failure narrative into intent (prevents constitutionalizing failure details).
+
+Mechanized retirement / rebirth (Constitution Art. 13 step 5: successful experience sedimented into law; independent of mutate hold/break):
+- Read rule_feedback_stats.mechanical_guards (and goals[].mechanically_maintained / healthy_streak). These goals are already served by evolution.guards.
+- **Retirement**: when a mechanical_guards row has eligible_for_retirement=true (or mechanically_maintained=true with healthy_streak ≥ config.dead_streak and feedback_state=live), the observation duty is default-satisfied — remove it from the active tree. Return rule_status="continue", status="refine", and a remove_child goal_patch; reason MUST say mechanized retirement and cite guard_id. This is not mutate, so remove_child is allowed.
+- **Rebirth**: when eligible_for_rebirth=true (mechanism failing with no active goal covering serves_goal), add_child a guard goal (role=guard); rule_status may be stop or learn by severity; reason MUST name the failure and guard_id.
+- Healthy retired state (goal_in_active_tree=false with recent_status=ok / healthy_streak>0) is the desired steady state — do **not** reopen the goal.
+- Unmaintained guard goals (mechanically_maintained=false) still need Decide feeding and participate in starved detection; do not confuse them with mechanized retirement.
 
 Hard constraints:
 - Assess only; do not execute changes.

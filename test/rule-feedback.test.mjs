@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildMechanicalGuardMap,
   buildRuleFeedbackQuestionText,
+  computeHealthyStreak,
   computeInformationGain,
   computeMutateEffective,
   computeRuleFeedbackStats,
@@ -18,16 +20,34 @@ function makeReceipt({
   servesGoal = 'guard-memory-audit-v28',
   summary = 'typed=35 free_text_clean=KEY_ABSENT audit_ok=true',
   recordedAt = null,
+  success = true,
+  origin = null,
+  guardId = null,
 } = {}) {
   return {
     id,
     cycle_id: cycleId,
     recorded_at: recordedAt,
     action_type: 'agent_run',
-    action: { type: 'agent_run', serves_goal: servesGoal },
-    result: { summary, status: 'completed', success: true },
+    action: {
+      type: 'agent_run',
+      serves_goal: servesGoal,
+      ...(origin ? { origin } : {}),
+      ...(guardId ? { guard_id: guardId } : {}),
+    },
+    result: { summary, status: success ? 'completed' : 'failed', success },
   };
 }
+
+const MEMORY_AUDIT_GUARD = {
+  id: 'memory-audit',
+  enabled: true,
+  every_cycles: 2,
+  action: {
+    type: 'agent_run',
+    serves_goal: 'guard-memory-audit-v28',
+  },
+};
 
 describe('extractResultSignature', () => {
   it('extracts normalized key=value and key: value pairs', () => {
@@ -626,7 +646,7 @@ describe('starved_streak and mutate_effective in stats', () => {
     expect(escalations).toHaveLength(0);
   });
 
-  it('formatRuleFeedbackForPrompt lists dead/degraded/starved only', () => {
+  it('formatRuleFeedbackForPrompt lists dead/degraded/starved/mechanized', () => {
     const text = formatRuleFeedbackForPrompt({
       goals: [
         {
@@ -653,6 +673,17 @@ describe('starved_streak and mutate_effective in stats', () => {
           starved_streak: 0,
           constant_signature_streak: 1,
           constant_keys: [],
+          mechanically_maintained: true,
+          maintaining_guard_id: 'credential-sync',
+          healthy_streak: 3,
+        },
+        {
+          goal_id: 'quiet-live-goal',
+          feedback_state: 'live',
+          starved: false,
+          starved_streak: 0,
+          constant_signature_streak: 1,
+          constant_keys: [],
         },
       ],
     }, 'zh');
@@ -660,6 +691,218 @@ describe('starved_streak and mutate_effective in stats', () => {
     expect(text).toContain('iterate-skill-with-calibrated-sim-v28');
     expect(text).toContain('starved_streak=4');
     expect(text).toContain('guard-memory-audit-v28');
-    expect(text).not.toContain('monitor-credential-compliance-v28');
+    expect(text).toContain('monitor-credential-compliance-v28');
+    expect(text).toContain('mechanically_maintained(credential-sync)');
+    expect(text).toContain('勿再入队相同探针');
+    expect(text).not.toContain('quiet-live-goal');
+  });
+});
+
+describe('mechanically_maintained and healthy_streak', () => {
+  it('buildMechanicalGuardMap indexes enabled serves_goal', () => {
+    const map = buildMechanicalGuardMap([
+      MEMORY_AUDIT_GUARD,
+      { id: 'disabled', enabled: false, action: { serves_goal: 'x' } },
+      { id: 'no-goal', enabled: true, action: { type: 'x' } },
+    ]);
+    expect(map.has('guard-memory-audit-v28')).toBe(true);
+    expect(map.get('guard-memory-audit-v28').guard_id).toBe('memory-audit');
+    expect(map.has('x')).toBe(false);
+  });
+
+  it('computeHealthyStreak counts trailing successes newest-first', () => {
+    expect(computeHealthyStreak([
+      { success: true },
+      { success: true },
+      { success: false },
+    ])).toBe(2);
+    expect(computeHealthyStreak([{ success: false }])).toBe(0);
+  });
+
+  it('marks mechanically maintained + success as live despite failure-looking signature', () => {
+    const receipts = [
+      makeReceipt({
+        id: 'r3',
+        cycleId: 'cycle-3',
+        summary: 'typed=37 free_text_clean=KEY_ABSENT audit_ok=true',
+        recordedAt: '2026-08-05T12:00:00.000Z',
+        success: true,
+      }),
+      makeReceipt({
+        id: 'r2',
+        cycleId: 'cycle-2',
+        summary: 'typed=37 free_text_clean=KEY_ABSENT audit_ok=true',
+        recordedAt: '2026-08-05T11:00:00.000Z',
+        success: true,
+      }),
+      makeReceipt({
+        id: 'r1',
+        cycleId: 'cycle-1',
+        summary: 'typed=37 free_text_clean=KEY_ABSENT audit_ok=true',
+        recordedAt: '2026-08-05T10:00:00.000Z',
+        success: true,
+      }),
+    ];
+    const store = {
+      readActionReceipts: () => receipts,
+      readGoalEvents: () => [],
+    };
+    const stats = computeRuleFeedbackStats({
+      store,
+      activeGoals: {
+        id: 'root',
+        children: [{ id: 'guard-memory-audit-v28', role: 'guard' }],
+      },
+      mechanicalGuards: [MEMORY_AUDIT_GUARD],
+      deadStreak: 3,
+      escalateStreak: 5,
+    });
+    const row = stats.goals.find((g) => g.goal_id === 'guard-memory-audit-v28');
+    expect(row.mechanically_maintained).toBe(true);
+    expect(row.maintaining_guard_id).toBe('memory-audit');
+    expect(row.healthy_streak).toBe(3);
+    expect(row.feedback_state).toBe('live');
+    expect(row.escalate_eligible).toBe(false);
+    expect(stats.mechanical_guards).toHaveLength(1);
+    expect(stats.mechanical_guards[0].eligible_for_retirement).toBe(true);
+    expect(stats.summary.eligible_for_retirement).toBe(1);
+  });
+
+  it('keeps failure death path for mechanically maintained goals', () => {
+    const receipts = [
+      makeReceipt({
+        id: 'r3',
+        cycleId: 'cycle-3',
+        summary: 'audit_ok=false free_text_clean=KEY_ABSENT',
+        recordedAt: '2026-08-05T12:00:00.000Z',
+        success: false,
+      }),
+      makeReceipt({
+        id: 'r2',
+        cycleId: 'cycle-2',
+        summary: 'audit_ok=false free_text_clean=KEY_ABSENT',
+        recordedAt: '2026-08-05T11:00:00.000Z',
+        success: false,
+      }),
+      makeReceipt({
+        id: 'r1',
+        cycleId: 'cycle-1',
+        summary: 'audit_ok=false free_text_clean=KEY_ABSENT',
+        recordedAt: '2026-08-05T10:00:00.000Z',
+        success: false,
+      }),
+    ];
+    const store = {
+      readActionReceipts: () => receipts,
+      readGoalEvents: () => [],
+    };
+    const stats = computeRuleFeedbackStats({
+      store,
+      activeGoals: {
+        id: 'root',
+        children: [{ id: 'guard-memory-audit-v28', role: 'guard' }],
+      },
+      mechanicalGuards: [MEMORY_AUDIT_GUARD],
+      deadStreak: 3,
+      escalateStreak: 5,
+    });
+    const row = stats.goals.find((g) => g.goal_id === 'guard-memory-audit-v28');
+    expect(row.mechanically_maintained).toBe(true);
+    expect(row.failure_streak).toBe(3);
+    expect(row.feedback_state).toBe('dead');
+    expect(stats.mechanical_guards[0].eligible_for_retirement).toBe(false);
+  });
+
+  it('exempts starved only when mechanically_maintained, not merely role=guard', () => {
+    const receipts = [
+      makeReceipt({
+        id: 'r1',
+        cycleId: 'cycle-1',
+        servesGoal: 'outcome-a',
+        recordedAt: '2026-08-05T10:00:00.000Z',
+      }),
+      makeReceipt({
+        id: 'r2',
+        cycleId: 'cycle-2',
+        servesGoal: 'outcome-a',
+        recordedAt: '2026-08-05T11:00:00.000Z',
+      }),
+      makeReceipt({
+        id: 'r3',
+        cycleId: 'cycle-3',
+        servesGoal: 'outcome-a',
+        recordedAt: '2026-08-05T12:00:00.000Z',
+      }),
+    ];
+    const store = {
+      readActionReceipts: () => receipts,
+      readGoalEvents: () => [],
+    };
+    const stats = computeRuleFeedbackStats({
+      store,
+      activeGoals: {
+        id: 'root',
+        children: [
+          { id: 'guard-unmaintained', role: 'guard' },
+          { id: 'guard-memory-audit-v28', role: 'guard' },
+          { id: 'outcome-a', role: 'outcome' },
+        ],
+      },
+      mechanicalGuards: [MEMORY_AUDIT_GUARD],
+      deadStreak: 3,
+      escalateStreak: 5,
+      windowCycles: 8,
+    });
+    const unmaintained = stats.goals.find((g) => g.goal_id === 'guard-unmaintained');
+    const maintained = stats.goals.find((g) => g.goal_id === 'guard-memory-audit-v28');
+    expect(unmaintained.mechanically_maintained).toBe(false);
+    expect(unmaintained.starved_streak).toBe(3);
+    expect(unmaintained.starved).toBe(true);
+    expect(maintained.mechanically_maintained).toBe(true);
+    expect(maintained.starved_streak).toBe(0);
+    expect(maintained.starved).toBe(false);
+  });
+
+  it('marks rebirth eligibility when retired goal has failure streak', () => {
+    const receipts = [
+      makeReceipt({
+        id: 'r3',
+        cycleId: 'cycle-3',
+        summary: 'audit_ok=false',
+        recordedAt: '2026-08-05T12:00:00.000Z',
+        success: false,
+      }),
+      makeReceipt({
+        id: 'r2',
+        cycleId: 'cycle-2',
+        summary: 'audit_ok=false',
+        recordedAt: '2026-08-05T11:00:00.000Z',
+        success: false,
+      }),
+      makeReceipt({
+        id: 'r1',
+        cycleId: 'cycle-1',
+        summary: 'audit_ok=false',
+        recordedAt: '2026-08-05T10:00:00.000Z',
+        success: false,
+      }),
+    ];
+    const store = {
+      readActionReceipts: () => receipts,
+      readGoalEvents: () => [],
+    };
+    const stats = computeRuleFeedbackStats({
+      store,
+      activeGoals: {
+        id: 'root',
+        children: [{ id: 'outcome-only', role: 'outcome' }],
+      },
+      mechanicalGuards: [MEMORY_AUDIT_GUARD],
+      deadStreak: 3,
+      escalateStreak: 5,
+    });
+    expect(stats.mechanical_guards[0].goal_in_active_tree).toBe(false);
+    expect(stats.mechanical_guards[0].eligible_for_rebirth).toBe(true);
+    expect(stats.summary.eligible_for_rebirth).toBe(1);
   });
 });

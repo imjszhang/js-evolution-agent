@@ -33,7 +33,11 @@ function writeGuardState(runtimeRoot, state) {
   writeFileSync(path, JSON.stringify(state, null, 2), 'utf-8');
 }
 
-function loadGuards(root, subject) {
+/**
+ * Load evolution.guards from subject registry (enabled and disabled).
+ * Shared by guard-runner and rule-feedback callers.
+ */
+export function loadSubjectGuards(root, subject) {
   if (!root || !subject) return [];
   try {
     const entry = getSubjectEntry(root, subject);
@@ -44,16 +48,25 @@ function loadGuards(root, subject) {
   }
 }
 
+/** Enabled guards only (enabled !== false and has id). */
+export function loadEnabledGuards(root, subject) {
+  return loadSubjectGuards(root, subject).filter((g) => g && g.enabled !== false && g.id);
+}
+
 function normalizeAction(guard) {
   const raw = guard?.action && typeof guard.action === 'object' ? guard.action : {};
   const type = String(raw.type || '').trim();
   if (!type) return null;
+  const guardId = String(guard.id || '').trim();
   return {
     type,
     description: String(raw.description || `Mechanical guard: ${guard.id}`),
     serves_goal: raw.serves_goal || undefined,
     priority: raw.priority || 'high',
     params: raw.params && typeof raw.params === 'object' ? raw.params : {},
+    // Origin markers for assess / rule-feedback (not in decisionFingerprint).
+    origin: 'mechanical_guard',
+    guard_id: guardId || undefined,
   };
 }
 
@@ -62,41 +75,87 @@ function normalizeAction(guard) {
  * Does not consume agent_loop action budget. Never throws.
  *
  * @param {{ root: string, loopCtx: object }} opts
- * @returns {Promise<{ ran: object[], skipped: object[] }>}
+ * @returns {Promise<{ ran: object[], skipped: object[], events: object[] }>}
  */
 export async function runMechanicalGuards({ root, loopCtx } = {}) {
   const ran = [];
   const skipped = [];
+  const events = [];
   if (!loopCtx?.runtime?.runtimeRoot || !loopCtx.cycleId) {
-    return { ran, skipped };
+    return { ran, skipped, events };
   }
 
   const runtimeRoot = loopCtx.runtime.runtimeRoot;
   const subject = loopCtx.runtime.subject;
   const currentCycleId = loopCtx.cycleId;
-  const guards = loadGuards(root, subject).filter((g) => g && g.enabled !== false && g.id);
-  if (!guards.length) return { ran, skipped };
+  const allGuards = loadSubjectGuards(root, subject);
+  const guards = allGuards.filter((g) => g && g.enabled !== false && g.id);
 
   const state = readGuardState(runtimeRoot);
   const { decisionQueue, executor, emitEvent, dedup, executed, logger } = loopCtx;
 
+  // Detect removed guards (state entry exists but no longer in enabled config).
+  const enabledIds = new Set(guards.map((g) => String(g.id)));
+  for (const stateId of Object.keys(state.guards || {})) {
+    if (enabledIds.has(stateId)) continue;
+    if (state.guards[stateId]?._removed_emitted) continue;
+    const removedEvent = {
+      type: 'mechanical_guard_removed',
+      status: 'ok',
+      guard_id: stateId,
+      cycle_id: currentCycleId,
+      serves_goal: state.guards[stateId]?.serves_goal ?? null,
+    };
+    emitEvent?.(removedEvent);
+    events.push(removedEvent);
+    state.guards[stateId] = {
+      ...state.guards[stateId],
+      _removed_emitted: true,
+      removed_at_cycle_id: currentCycleId,
+    };
+  }
+
+  if (!guards.length) {
+    try {
+      writeGuardState(runtimeRoot, state);
+    } catch (e) {
+      logger?.warning?.(`[exec] failed to persist guard state: ${e?.message || e}`);
+    }
+    return { ran, skipped, events };
+  }
+
   for (const guard of guards) {
     const guardId = String(guard.id);
     const everyCycles = Math.max(1, Math.trunc(Number(guard.every_cycles) || 1));
+    const servesGoal = guard?.action?.serves_goal ?? null;
     let entry = state.guards[guardId];
-    if (!entry) {
-      // First sighting: treat as due without an extra increment.
+    if (!entry || entry._removed_emitted) {
+      // First sighting (or re-registered after removal): treat as due.
+      const isReregister = Boolean(entry?._removed_emitted);
       entry = {
         last_seen_cycle_id: currentCycleId,
         cycles_since_last_run: everyCycles,
         last_run_cycle_id: null,
         last_run_at: null,
         last_status: null,
+        serves_goal: servesGoal,
       };
       state.guards[guardId] = entry;
+      const registeredEvent = {
+        type: 'mechanical_guard_registered',
+        status: 'ok',
+        guard_id: guardId,
+        cycle_id: currentCycleId,
+        serves_goal: servesGoal,
+        every_cycles: everyCycles,
+        reregistered: isReregister,
+      };
+      emitEvent?.(registeredEvent);
+      events.push(registeredEvent);
     } else if (entry.last_seen_cycle_id !== currentCycleId) {
       entry.cycles_since_last_run = Number(entry.cycles_since_last_run || 0) + 1;
       entry.last_seen_cycle_id = currentCycleId;
+      if (servesGoal != null) entry.serves_goal = servesGoal;
     }
 
     if (entry.last_run_cycle_id === currentCycleId) {
@@ -208,7 +267,7 @@ export async function runMechanicalGuards({ root, loopCtx } = {}) {
     logger?.warning?.(`[exec] failed to persist guard state: ${e?.message || e}`);
   }
 
-  return { ran, skipped };
+  return { ran, skipped, events };
 }
 
-export { guardStatePath, readGuardState };
+export { guardStatePath, readGuardState, normalizeAction };
