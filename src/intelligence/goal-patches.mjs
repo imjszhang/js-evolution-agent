@@ -2,7 +2,7 @@
 
 export const GOAL_PATCH_OPS = new Set(['add_child', 'update_child', 'remove_child']);
 export const GOAL_CHILD_ROLES = new Set(['outcome', 'guard']);
-export const UPDATE_CHILD_ALLOWED_FIELDS = new Set(['intent', 'good_signal', 'bad_signal']);
+export const UPDATE_CHILD_ALLOWED_FIELDS = new Set(['intent', 'good_signal', 'bad_signal', 'role']);
 export const MAX_OUTCOME_CHILDREN = 2;
 
 const REQUIRED_GOAL_STRING_FIELDS = ['id', 'name', 'intent', 'good_signal', 'bad_signal'];
@@ -58,10 +58,14 @@ export function classifyChildRole(child) {
 
 function stripChildForStorage(child) {
   const { role, ...rest } = child;
-  return {
+  const out = {
     ...rest,
     children: Array.isArray(rest.children) ? rest.children : [],
   };
+  if (typeof role === 'string' && GOAL_CHILD_ROLES.has(role.trim())) {
+    out.role = role.trim();
+  }
+  return out;
 }
 
 export function normalizeGoalPatch(patch) {
@@ -87,7 +91,7 @@ export function normalizeGoalPatch(patch) {
     normalized.fields = {};
     for (const key of Object.keys(fields)) {
       if (UPDATE_CHILD_ALLOWED_FIELDS.has(key)) {
-        normalized.fields[key] = String(fields[key]);
+        normalized.fields[key] = String(fields[key]).trim();
       }
     }
     if (!Object.keys(normalized.fields).length) return null;
@@ -167,6 +171,9 @@ export function validateGoalPatch(patch, activeGoals) {
       }
       if (typeof patch.fields[key] !== 'string' || !patch.fields[key].trim()) {
         return { valid: false, reason: 'invalid_patch_field', detail: `${key} must be non-empty` };
+      }
+      if (key === 'role' && !GOAL_CHILD_ROLES.has(patch.fields[key].trim())) {
+        return { valid: false, reason: 'invalid_patch_field', detail: 'role must be outcome or guard' };
       }
     }
     return { valid: true, reason: null, detail: null };
