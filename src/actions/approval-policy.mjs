@@ -5,6 +5,7 @@ const AUTO_GUARDED_RECORD_TYPES = new Set([
   'record_observation',
   'propose_probe',
   'write_retrospective',
+  'request_core_review',
 ]);
 
 const AUTO_GUARDED_AGENT_PROFILES = new Set(['read_only']);
