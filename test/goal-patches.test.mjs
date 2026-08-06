@@ -69,6 +69,83 @@ describe('goal-patches', () => {
     const next = applyGoalPatches(rootGoal, patches);
     expect(next.children.map((c) => c.id).sort()).toEqual(['outcome-a', 'outcome-b']);
     expect(next.children.find((c) => c.id === 'outcome-a').intent).toBe('updated outcome intent');
+    expect(next.children.find((c) => c.id === 'outcome-b').role).toBe('outcome');
+  });
+
+  it('update_child role=outcome persists and classifyChildRole reads explicit role', () => {
+    const tree = {
+      ...rootGoal,
+      children: [{
+        id: 'mislabeled',
+        name: 'Quiet outcome',
+        intent: 'ship a measurable capability increment',
+        good_signal: 'capability improves',
+        bad_signal: 'no movement',
+        role: 'guard',
+        children: [],
+      }],
+    };
+    const patch = normalizeGoalPatches([{
+      op: 'update_child',
+      child_id: 'mislabeled',
+      fields: { role: 'outcome' },
+    }])[0];
+    expect(validateGoalPatch(patch, tree).valid).toBe(true);
+    const next = applyGoalPatches(tree, [patch]);
+    const child = next.children.find((c) => c.id === 'mislabeled');
+    expect(child.role).toBe('outcome');
+    expect(classifyChildRole(child)).toBe('outcome');
+  });
+
+  it('rejects invalid update_child role values', () => {
+    for (const role of ['probe', '', '  ']) {
+      const patch = normalizeGoalPatches([{
+        op: 'update_child',
+        child_id: 'outcome-a',
+        fields: { role },
+      }])[0];
+      if (!patch) {
+        expect(role.trim()).toBe('');
+        continue;
+      }
+      const v = validateGoalPatch(patch, rootGoal);
+      expect(v.valid).toBe(false);
+      expect(v.reason).toBe('invalid_patch_field');
+    }
+  });
+
+  it('add_child preserves role on storage and drops invalid role', () => {
+    const withRole = normalizeGoalPatches([{
+      op: 'add_child',
+      parent_id: null,
+      child: {
+        id: 'outcome-quiet',
+        name: 'Quiet',
+        intent: 'ship a measurable capability increment',
+        good_signal: 'g',
+        bad_signal: 'b',
+        role: 'outcome',
+        children: [],
+      },
+    }])[0];
+    const next = applyGoalPatches(rootGoal, [withRole]);
+    expect(next.children.find((c) => c.id === 'outcome-quiet').role).toBe('outcome');
+
+    const badRole = normalizeGoalPatches([{
+      op: 'add_child',
+      parent_id: null,
+      child: {
+        id: 'weird-role',
+        name: 'Weird',
+        intent: 'credential compliance each cycle',
+        good_signal: 'g',
+        bad_signal: 'b',
+        role: 'probe',
+        children: [],
+      },
+    }])[0];
+    const nextBad = applyGoalPatches(rootGoal, [badRole]);
+    expect(nextBad.children.find((c) => c.id === 'weird-role').role).toBeUndefined();
   });
 
   it('coerces add_child parent_id from child id to root sibling', () => {

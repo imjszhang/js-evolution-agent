@@ -3358,6 +3358,96 @@ describe('goals command helpers', () => {
     expect(patched?.rule_status).toBe('mutate');
   });
 
+  it('mutate same-batch update role + remove still blocks remove via previousGoal snapshot', () => {
+    const root = makeGoalsRoot('jea-goals-role-flip-remove-');
+    const runtime = runtimeInfoForDefaultSubject(root);
+    applyGoalObject(root, {
+      id: 'root-goal',
+      name: 'Root',
+      intent: 'Root intent',
+      good_signal: 'g',
+      bad_signal: 'b',
+      children: [
+        {
+          id: 'mislabeled-outcome',
+          name: 'Quiet outcome',
+          role: 'guard',
+          intent: 'ship a measurable capability increment',
+          good_signal: 'capability improves',
+          bad_signal: 'no movement',
+          children: [],
+        },
+        {
+          id: 'outcome-skill',
+          name: 'Outcome',
+          role: 'outcome',
+          intent: 'Improve rank',
+          good_signal: 'rank up',
+          bad_signal: 'rank down',
+          children: [],
+        },
+      ],
+    }, { reason: 'seed', cycle: 'seed' });
+
+    const previous = readJsonSafe(join(runtime.goalsDir, 'active_goals.json'));
+    const filter = filterPatchesForRuleStatus([
+      {
+        op: 'update_child',
+        child_id: 'mislabeled-outcome',
+        fields: { role: 'outcome' },
+        reason: 'correct misclassified role',
+      },
+      {
+        op: 'remove_child',
+        child_id: 'mislabeled-outcome',
+        reason: 'drop after role flip',
+      },
+    ], 'mutate', previous);
+
+    expect(filter.skipped).toEqual([
+      expect.objectContaining({
+        op: 'remove_child',
+        child_id: 'mislabeled-outcome',
+        skip_reason: 'guard_remove_forbidden_on_mutate',
+      }),
+    ]);
+    expect(filter.patches.map((p) => p.op)).toEqual(['update_child']);
+
+    const result = autoCalibrateGoals(root, {
+      report: { cycle_id: 'cycle-role-flip-remove' },
+      assessment: {
+        status: 'refine',
+        rule_status: 'mutate',
+        confidence: 'high',
+        goal_patches: [
+          {
+            op: 'update_child',
+            child_id: 'mislabeled-outcome',
+            fields: { role: 'outcome' },
+            reason: 'correct misclassified role',
+          },
+          {
+            op: 'remove_child',
+            child_id: 'mislabeled-outcome',
+            reason: 'drop after role flip',
+          },
+        ],
+      },
+    });
+
+    expect(result.status).toBe('applied');
+    expect(result.skipped_patches).toEqual([
+      expect.objectContaining({
+        child_id: 'mislabeled-outcome',
+        skip_reason: 'guard_remove_forbidden_on_mutate',
+      }),
+    ]);
+    const active = readJsonSafe(join(runtime.goalsDir, 'active_goals.json'));
+    const child = active.children.find((c) => c.id === 'mislabeled-outcome');
+    expect(child).toBeTruthy();
+    expect(child.role).toBe('outcome');
+  });
+
   it('continue+refine allows remove_child of mechanically maintained guard (retirement path)', () => {
     const root = makeGoalsRoot('jea-goals-mech-retire-');
     const runtime = runtimeInfoForDefaultSubject(root);

@@ -416,6 +416,65 @@ describe('isGuardGoal', () => {
     expect(isGuardGoal({ id: 'guard-memory-audit-v28' })).toBe(true);
     expect(isGuardGoal({ id: 'monitor-credential-compliance-v28' })).toBe(true);
     expect(isGuardGoal({ id: 'iterate-skill-with-calibrated-sim-v28' })).toBe(false);
+    expect(isGuardGoal({ id: 'quiet-capability', role: 'outcome' })).toBe(false);
+  });
+});
+
+describe('explicit role persistence for rule feedback', () => {
+  it('persisted role=outcome (no outcome keywords) is not guard and can starve', () => {
+    const receipts = [
+      makeReceipt({
+        id: 'r1',
+        cycleId: 'cycle-1',
+        servesGoal: 'other-outcome',
+        recordedAt: '2026-08-05T10:00:00.000Z',
+      }),
+      makeReceipt({
+        id: 'r2',
+        cycleId: 'cycle-2',
+        servesGoal: 'other-outcome',
+        recordedAt: '2026-08-05T11:00:00.000Z',
+      }),
+      makeReceipt({
+        id: 'r3',
+        cycleId: 'cycle-3',
+        servesGoal: 'other-outcome',
+        recordedAt: '2026-08-05T12:00:00.000Z',
+      }),
+    ];
+    const store = {
+      readActionReceipts: () => receipts,
+      readGoalEvents: () => [],
+    };
+    const stats = computeRuleFeedbackStats({
+      store,
+      activeGoals: {
+        id: 'root',
+        children: [
+          {
+            id: 'quiet-capability',
+            name: 'Quiet capability',
+            intent: 'ship a measurable capability increment',
+            role: 'outcome',
+          },
+          {
+            id: 'other-outcome',
+            name: 'Other',
+            intent: 'improve rank',
+            role: 'outcome',
+          },
+        ],
+      },
+      deadStreak: 3,
+      escalateStreak: 5,
+      windowCycles: 8,
+    });
+    const quiet = stats.goals.find((g) => g.goal_id === 'quiet-capability');
+    expect(quiet).toBeTruthy();
+    expect(quiet.is_guard).toBe(false);
+    expect(quiet.mechanically_maintained).toBe(false);
+    expect(quiet.starved).toBe(true);
+    expect(quiet.starved_streak).toBeGreaterThanOrEqual(3);
   });
 });
 
