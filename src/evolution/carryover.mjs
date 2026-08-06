@@ -1,6 +1,10 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import {
+  buildEvidenceIndex,
+  evidenceRefExists,
+} from '../intelligence/evidence-audit.mjs';
 
 export const CARRYOVER_SCHEMA_VERSION = 2;
 export const CARRYOVER_MECHANICAL_LIMIT = 8;
@@ -18,12 +22,20 @@ export const CARRYOVER_ORIGIN_PRIORITY = {
   goal_suggestion: 4,
 };
 
-/** Origins diary may retire via Carryover 销账 / retirements (not decide_deferred). */
+/** Origins diary may retire via Carryover 销账 / retirements with reason only. */
 export const RETIRABLE_ORIGINS = new Set([
   'open_gap',
   'suggestion_overflow',
   'suggestion_deferred',
   'goal_suggestion',
+]);
+
+/**
+ * Origins that may retire only when evidence is a typed ref present in the
+ * evidence index (stricter than RETIRABLE_ORIGINS; not merged into that set).
+ */
+export const EVIDENCE_REQUIRED_ORIGINS = new Set([
+  'decide_deferred',
 ]);
 
 const STALE_PIPELINE_STEPS = ['goals_assess', 'goals_calibrate', 'belief_update'];
@@ -328,10 +340,14 @@ export function writeCarryoverItems(runtimeRoot, {
 /**
  * Apply diary-declared retirements (M1..Mn) against existing items.
  * Numbering matches normalizeCarryoverItems(existingItems) order (same as diary context).
- * Only mechanical items with RETIRABLE_ORIGINS may be retired; decide_deferred / diary /
- * out-of-range ids are ignored. Returns { items, dropped }.
+ * Mechanical items in RETIRABLE_ORIGINS retire with reason only.
+ * decide_deferred (EVIDENCE_REQUIRED_ORIGINS) retires only when evidence is a
+ * typed ref present in evidenceIndex; diary / out-of-range ids are ignored.
+ * Returns { items, dropped }.
  */
-export function applyCarryoverRetirements(existingItems = [], retirements = []) {
+export function applyCarryoverRetirements(existingItems = [], retirements = [], {
+  evidenceIndex = null,
+} = {}) {
   const list = normalizeCarryoverItems(existingItems);
   const retirementById = new Map();
   for (const entry of Array.isArray(retirements) ? retirements : []) {
@@ -354,9 +370,16 @@ export function applyCarryoverRetirements(existingItems = [], retirements = []) 
       return;
     }
     const origin = item.origin || null;
-    const retirable = item.source === 'mechanical'
-      && origin
-      && RETIRABLE_ORIGINS.has(origin);
+    if (item.source !== 'mechanical' || !origin) {
+      kept.push(item);
+      return;
+    }
+    let retirable = false;
+    if (RETIRABLE_ORIGINS.has(origin)) {
+      retirable = true;
+    } else if (EVIDENCE_REQUIRED_ORIGINS.has(origin)) {
+      retirable = evidenceRefExists(retirement.evidence, evidenceIndex);
+    }
     if (!retirable) {
       kept.push(item);
       return;
@@ -384,8 +407,20 @@ export function mergeDiaryCarryover({
   diaryBullets = [],
   stepStatusSnapshot = null,
   retirements = [],
+  evidenceIndex = null,
+  dataRoot = null,
 } = {}) {
-  const retired = applyCarryoverRetirements(existingItems, retirements);
+  let index = evidenceIndex;
+  if (!index && dataRoot) {
+    try {
+      index = buildEvidenceIndex({ dataRoot });
+    } catch {
+      index = null;
+    }
+  }
+  const retired = applyCarryoverRetirements(existingItems, retirements, {
+    evidenceIndex: index,
+  });
 
   const { kept: rankedMechanical, dropped: droppedByCap } = rankAndLimitMechanicalItems(
     retired.items,

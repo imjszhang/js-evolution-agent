@@ -221,6 +221,8 @@ describe('buildEvolutionDiary', () => {
     ]);
     expect(prompt).toContain('agent_loop_carryover');
     expect(prompt).toContain('Carryover 销账');
+    expect(prompt).toContain('decide_deferred 仅当带可核验 typed ref');
+    expect(prompt).toContain('禁止销 diary 条目');
     expect(prompt).toContain('step_status_snapshot');
     expect(prompt).toContain('时间线权威');
     expect(prompt).toContain('phase2 receipt');

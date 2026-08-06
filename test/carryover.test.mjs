@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   CARRYOVER_MECHANICAL_LIMIT,
+  EVIDENCE_REQUIRED_ORIGINS,
   RETIRABLE_ORIGINS,
   applyCarryoverRetirements,
   buildStepStatusSnapshot,
@@ -18,6 +19,7 @@ import {
   readCarryoverItems,
   writeCarryoverItems,
 } from '../src/evolution/carryover.mjs';
+import { buildEvidenceIndex } from '../src/intelligence/evidence-audit.mjs';
 
 let tempDir = null;
 
@@ -29,6 +31,16 @@ afterEach(() => {
 function makeRuntimeRoot() {
   tempDir = mkdtempSync(join(tmpdir(), 'jea-carryover-'));
   return tempDir;
+}
+
+function seedActionReceipt(dataRoot, receiptId = 'receipt-1') {
+  const dir = join(dataRoot, 'intelligence', 'action_receipts');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, 'action-receipts.jsonl'),
+    `${JSON.stringify({ id: receiptId, action_type: 'agent_run' })}\n`,
+    'utf8',
+  );
 }
 
 describe('carryover v2', () => {
@@ -226,7 +238,9 @@ describe('carryover v2', () => {
     ];
     expect(RETIRABLE_ORIGINS.has('open_gap')).toBe(true);
     expect(RETIRABLE_ORIGINS.has('decide_deferred')).toBe(false);
+    expect(EVIDENCE_REQUIRED_ORIGINS.has('decide_deferred')).toBe(true);
 
+    // Without evidenceIndex, decide_deferred stays (even if evidence string is present).
     const { items, dropped } = applyCarryoverRetirements(existing, [
       {
         id: 'M1',
@@ -235,7 +249,7 @@ describe('carryover v2', () => {
       },
       {
         id: 'M2',
-        reason: 'should not retire decide_deferred',
+        reason: 'should not retire decide_deferred without index',
         evidence: '[action_receipts:receipt-2]',
       },
       {
@@ -259,6 +273,77 @@ describe('carryover v2', () => {
     expect(dropped.every((d) => d.drop_reason === 'closed_by_exec')).toBe(true);
     expect(dropped.find((d) => d.retirement_id === 'M1').evidence).toBe('[action_receipts:receipt-1]');
     expect(dropped.find((d) => d.retirement_id === 'M4').origin).toBe('suggestion_overflow');
+  });
+
+  it('applyCarryoverRetirements retires decide_deferred only with resolvable typed evidence', () => {
+    const root = makeRuntimeRoot();
+    const dataRoot = join(root, 'data');
+    seedActionReceipt(dataRoot, 'receipt-ok');
+    const evidenceIndex = buildEvidenceIndex({ dataRoot });
+
+    const existing = [
+      { text: 'deferred done', source: 'mechanical', origin: 'decide_deferred' },
+      { text: 'deferred keep no evidence', source: 'mechanical', origin: 'decide_deferred' },
+      { text: 'deferred keep dangling', source: 'mechanical', origin: 'decide_deferred' },
+      { text: 'deferred keep skip', source: 'mechanical', origin: 'decide_deferred' },
+      { text: 'open gap no evidence still ok', source: 'mechanical', origin: 'open_gap' },
+      { text: 'diary keep', source: 'diary' },
+    ];
+
+    const { items, dropped } = applyCarryoverRetirements(existing, [
+      {
+        id: 'M1',
+        reason: 'done [action_receipts:receipt-ok]',
+        evidence: '[action_receipts:receipt-ok]',
+      },
+      {
+        id: 'M2',
+        reason: 'no evidence',
+        evidence: null,
+      },
+      {
+        id: 'M3',
+        reason: 'dangling [action_receipts:receipt-missing]',
+        evidence: '[action_receipts:receipt-missing]',
+      },
+      {
+        id: 'M4',
+        reason: 'skip type [machine_context:decision_queue]',
+        evidence: '[machine_context:decision_queue]',
+      },
+      {
+        id: 'M5',
+        reason: 'ordinary origin reason only',
+        evidence: null,
+      },
+      {
+        id: 'M6',
+        reason: 'diary still blocked [action_receipts:receipt-ok]',
+        evidence: '[action_receipts:receipt-ok]',
+      },
+    ], { evidenceIndex });
+
+    expect(items.map((i) => i.text)).toEqual([
+      'deferred keep no evidence',
+      'deferred keep dangling',
+      'deferred keep skip',
+      'diary keep',
+    ]);
+    expect(dropped).toEqual([
+      expect.objectContaining({
+        text: 'deferred done',
+        origin: 'decide_deferred',
+        drop_reason: 'closed_by_exec',
+        retirement_id: 'M1',
+        evidence: '[action_receipts:receipt-ok]',
+      }),
+      expect.objectContaining({
+        text: 'open gap no evidence still ok',
+        origin: 'open_gap',
+        drop_reason: 'closed_by_exec',
+        retirement_id: 'M5',
+      }),
+    ]);
   });
 
   it('mergeDiaryCarryover applies retirements before cap and preserves behavior without them', () => {
@@ -289,6 +374,45 @@ describe('carryover v2', () => {
         text: 'gap closed',
         drop_reason: 'closed_by_exec',
         evidence: '[action_receipts:r1]',
+      }),
+    ]);
+  });
+
+  it('mergeDiaryCarryover retires decide_deferred via dataRoot evidence index', () => {
+    const root = makeRuntimeRoot();
+    const dataRoot = join(root, 'data');
+    seedActionReceipt(dataRoot, 'receipt-merge');
+
+    const merged = mergeDiaryCarryover({
+      existingItems: [
+        { text: 'deferred closed', source: 'mechanical', origin: 'decide_deferred' },
+        { text: 'deferred keep invented', source: 'mechanical', origin: 'decide_deferred' },
+      ],
+      diaryBullets: ['叙事'],
+      retirements: [
+        {
+          id: 'M1',
+          reason: 'done [action_receipts:receipt-merge]',
+          evidence: '[action_receipts:receipt-merge]',
+        },
+        {
+          id: 'M2',
+          reason: 'invented [action_receipts:receipt-nope]',
+          evidence: '[action_receipts:receipt-nope]',
+        },
+      ],
+      dataRoot,
+    });
+
+    expect(merged.items.filter((i) => i.source === 'mechanical').map((i) => i.text)).toEqual([
+      'deferred keep invented',
+    ]);
+    expect(merged.dropped).toEqual([
+      expect.objectContaining({
+        text: 'deferred closed',
+        origin: 'decide_deferred',
+        drop_reason: 'closed_by_exec',
+        evidence: '[action_receipts:receipt-merge]',
       }),
     ]);
   });
