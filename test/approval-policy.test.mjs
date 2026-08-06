@@ -200,6 +200,51 @@ describe('approval-policy', () => {
     expect(decision.reason).toBe('sensitive_signal_detected');
   });
 
+  it('auto_guarded approves request_core_review actions', () => {
+    process.env.JEA_APPROVAL_MODE = 'auto_guarded';
+    const decision = resolveApprovalDecision({
+      type: 'request_core_review',
+      description: 'Register core-layer review request for policy change',
+      params: {
+        requires_approval: true,
+        target: 'src/engine/foo.mjs',
+        rationale: 'Need human review before changing core execution path.',
+      },
+    });
+    expect(decision.approved).toBe(true);
+    expect(decision.reason).toBe('low_risk_record_action');
+    expect(decision.auto_approval).toMatchObject({ mode: 'auto_guarded' });
+  });
+
+  it('auto_guarded still blocks request_core_review when description has publish', () => {
+    process.env.JEA_APPROVAL_MODE = 'auto_guarded';
+    const decision = resolveApprovalDecision({
+      type: 'request_core_review',
+      description: 'Prepare publish checklist for operator',
+      params: {
+        requires_approval: true,
+        target: 'core module',
+        rationale: 'Harmless note.',
+      },
+    });
+    expect(decision.approved).toBe(false);
+    expect(decision.reason).toBe('sensitive_signal_detected');
+  });
+
+  it('auto_guarded never auto-approves core_apply', () => {
+    process.env.JEA_APPROVAL_MODE = 'auto_guarded';
+    const decision = resolveApprovalDecision({
+      type: 'core_apply',
+      params: {
+        requires_approval: true,
+        target: 'src/engine/foo.mjs',
+        rationale: 'Apply approved core patch.',
+      },
+    });
+    expect(decision.approved).toBe(false);
+    expect(decision.reason).toBe('core_apply_never_auto_approved');
+  });
+
   it('auto_guarded blocks read_only agent_run when subject sensitive keyword matches', () => {
     process.env.JEA_APPROVAL_MODE = 'auto_guarded';
     const decision = resolveApprovalDecision({
