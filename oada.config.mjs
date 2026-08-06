@@ -293,6 +293,7 @@ export default async function ({ cwd }) {
       resourceRoots: externalRoots,
       resourceRules,
       subjectResources,
+      subjectApproval: subjectConfig.approval ?? null,
       actionHandlers,
       actionVerifiers,
     },

@@ -21,6 +21,11 @@
           }
         ]
       },
+      "approval": {
+        "sensitive_keywords": [
+          "example-subject-specific-endpoint"
+        ]
+      },
       "lane": {
         "repo": "link:my-target-project",
         "base_branch": "main",

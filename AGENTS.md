@@ -554,9 +554,19 @@ Decide 可调度、`Phase 2` 执行的记录型动作，用于落已有结论而
 
 - 远端发布（`remote_write_review` / publish intent）
 - 更新 rank baseline
-- 解除 `iterate-skill` 人工介入阻塞
+- 解除人工介入阻塞（动作语义含 `unblock` / `human intervention` / `人工介入` 等）
 - `core_apply`（仍由 `JEA_CORE_APPLY_POLICY` 独立控制）
 - 外部工具 `--force`（如 `AGENTANK_ALLOW_PUBLISH` 路径）
+
+**敏感词闸分层**（仅影响 `auto_guarded` 的 `sensitive_signal_detected`）：
+
+| 层 | 来源 | 生效面 |
+| --- | --- | --- |
+| 动作语义词 | 核心固定（`publish` / `release` / `remote_write` / `baseline_update` / `unblock` / `core_apply` / `approval_granted` 等） | 所有分支（含 read_only / record） |
+| 通用安全词 | 核心固定（`.env` / `secret` / `credential leak`） | **仅非 read_only 的 `agent_run`**（防 safety_class 灰色通道走私）；read_only 与 record 豁免 |
+| Subject 专有词 | `subjects.<name>.approval.sensitive_keywords`（registry 可选） | 所有分支；命中即拒（操作者显式意志） |
+
+匹配面只扫动作语义字段（`type` / `description` / `params.intent|objective` / `run_spec.intent|objective` / `context.why_now|desired_decision_effect`），**不**扫 `content` / `summary` / `relevant_evidence` / `do_not_repeat`。Subject 专有词（如某 endpoint）不得写进核心层。
 
 `auto_all` **适合完全沙盒或本地实验**；生产主体（如 `agentank-tank`）慎用，因为会跳过人工 brief 与显式 `approval_granted`。
 

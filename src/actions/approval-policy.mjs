@@ -19,7 +19,8 @@ const GUARDED_SAFETY_CLASSES = new Set([
   'guarded_record',
 ]);
 
-const SENSITIVE_KEYWORDS = [
+/** Action-semantic keywords: apply on every auto_guarded branch (incl. read_only / record). */
+const ACTION_SEMANTIC_KEYWORDS = [
   'publish',
   'release',
   'remote_write',
@@ -33,11 +34,15 @@ const SENSITIVE_KEYWORDS = [
   '人工介入',
   'core_apply',
   'core apply',
-  '/api/agent/tank/code',
-  'post /api/agent/tank/code',
   'approval_granted',
   'requires_human_review',
-  'iterate-skill',
+];
+
+/**
+ * Generic security keywords: only for non-read_only agent_run (blocks safety_class smuggling).
+ * Exempt for read_only and record types — mentioning .env/secret is their job.
+ */
+const SECURITY_KEYWORDS = [
   'credential leak',
   'secret',
   '.env',
@@ -60,23 +65,39 @@ function collectActionText(action, runSpec = null) {
     action?.description,
     params.intent,
     params.objective,
-    params.content,
-    params.summary,
     spec.intent,
     spec.objective,
     context.why_now,
     context.desired_decision_effect,
-    JSON.stringify(context.relevant_evidence ?? []),
-    JSON.stringify(context.do_not_repeat ?? []),
   ]
     .filter((value) => value != null && String(value).trim() !== '')
     .join('\n')
     .toLowerCase();
 }
 
-function hasSensitiveSignal(action, runSpec = null) {
+function normalizeKeywordList(keywords) {
+  if (!Array.isArray(keywords)) return [];
+  return keywords
+    .map((keyword) => String(keyword ?? '').trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function subjectSensitiveKeywords(ctx = {}) {
+  const approval = asObject(ctx?.host?.subjectApproval);
+  return normalizeKeywordList(approval.sensitive_keywords);
+}
+
+function hasSensitiveSignal(action, runSpec = null, {
+  includeSecurityKeywords = false,
+  subjectKeywords = [],
+} = {}) {
   const text = collectActionText(action, runSpec);
-  return SENSITIVE_KEYWORDS.some((keyword) => text.includes(keyword.toLowerCase()));
+  const keywords = [
+    ...ACTION_SEMANTIC_KEYWORDS,
+    ...(includeSecurityKeywords ? SECURITY_KEYWORDS : []),
+    ...normalizeKeywordList(subjectKeywords),
+  ];
+  return keywords.some((keyword) => text.includes(keyword.toLowerCase()));
 }
 
 function hasGuardedSafetyClass(action) {
@@ -125,10 +146,11 @@ function wrapPolicyDecision(decision) {
   };
 }
 
-function evaluateAutoGuarded(action, runSpec = null) {
+function evaluateAutoGuarded(action, runSpec = null, ctx = {}) {
   const type = String(action?.type ?? '').trim();
   const params = asObject(action?.params);
   const spec = runSpec ?? asObject(params.run_spec);
+  const subjectKeywords = subjectSensitiveKeywords(ctx);
 
   if (type === 'core_apply') {
     return {
@@ -140,7 +162,11 @@ function evaluateAutoGuarded(action, runSpec = null) {
   }
 
   if (AUTO_GUARDED_RECORD_TYPES.has(type)) {
-    if (hasSensitiveSignal(action, spec)) {
+    // Record types: action-semantic + subject keywords only (security words exempt).
+    if (hasSensitiveSignal(action, spec, {
+      includeSecurityKeywords: false,
+      subjectKeywords,
+    })) {
       return {
         approved: false,
         mode: 'auto_guarded',
@@ -175,7 +201,12 @@ function evaluateAutoGuarded(action, runSpec = null) {
     };
   }
 
-  if (hasSensitiveSignal(action, spec)) {
+  const isReadOnly = AUTO_GUARDED_AGENT_PROFILES.has(permissionProfile);
+  // Security keywords only for non-read_only agent_run (e.g. safety_class grey channel).
+  if (hasSensitiveSignal(action, spec, {
+    includeSecurityKeywords: !isReadOnly,
+    subjectKeywords,
+  })) {
     return {
       approved: false,
       mode: 'auto_guarded',
@@ -193,7 +224,7 @@ function evaluateAutoGuarded(action, runSpec = null) {
     };
   }
 
-  if (!AUTO_GUARDED_AGENT_PROFILES.has(permissionProfile)) {
+  if (!isReadOnly) {
     return {
       approved: false,
       mode: 'auto_guarded',
@@ -235,7 +266,7 @@ export function resolveApprovalDecision(action, ctx = {}, options = {}) {
   }
 
   if (mode === 'auto_guarded') {
-    return wrapPolicyDecision(evaluateAutoGuarded(action, runSpec));
+    return wrapPolicyDecision(evaluateAutoGuarded(action, runSpec, ctx));
   }
 
   if (mode === 'auto_all') {

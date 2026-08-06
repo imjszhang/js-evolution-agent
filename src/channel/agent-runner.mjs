@@ -184,6 +184,7 @@ function buildContext(root, subject, runtime, store, request, effectiveEnv = {})
       dataRoot: runtime.dataRoot,
       intelligenceStore: store,
       subjectResources: runtime.config?.resources ?? {},
+      subjectApproval: runtime.config?.approval ?? null,
       logger: request.logger ?? null,
     },
     _agentRunLogMeta: {

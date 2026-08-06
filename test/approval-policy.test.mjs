@@ -82,6 +82,77 @@ describe('approval-policy', () => {
     expect(decision.reason).toBe('sensitive_signal_detected');
   });
 
+  it('auto_guarded approves read_only agent_run mentioning iterate-skill (subject word removed from core)', () => {
+    process.env.JEA_APPROVAL_MODE = 'auto_guarded';
+    const decision = resolveApprovalDecision({
+      type: 'agent_run',
+      description: 'Investigate iterate-skill replay gap for outcome goal',
+      params: {
+        requires_approval: true,
+        run_spec: {
+          permission_profile: 'read_only',
+          intent: 'Read-only analysis of iterate-skill learning path.',
+        },
+      },
+    });
+    expect(decision.approved).toBe(true);
+    expect(decision.reason).toBe('read_only_agent_run');
+  });
+
+  it('auto_guarded approves read_only agent_run mentioning .env / secret', () => {
+    process.env.JEA_APPROVAL_MODE = 'auto_guarded';
+    const decision = resolveApprovalDecision({
+      type: 'agent_run',
+      params: {
+        requires_approval: true,
+        run_spec: {
+          permission_profile: 'read_only',
+          intent: 'Probe whether .env secret credentials leak into runtime logs.',
+        },
+      },
+    });
+    expect(decision.approved).toBe(true);
+    expect(decision.reason).toBe('read_only_agent_run');
+  });
+
+  it('auto_guarded blocks non-read_only safety_class agent_run mentioning secret', () => {
+    process.env.JEA_APPROVAL_MODE = 'auto_guarded';
+    const decision = resolveApprovalDecision({
+      type: 'agent_run',
+      safety_class: 'guarded_probe',
+      params: {
+        requires_approval: true,
+        safety_class: 'guarded_probe',
+        permission_profile: 'workspace_write',
+        run_spec: {
+          permission_profile: 'workspace_write',
+          intent: 'Inspect secret material and rewrite local probe notes.',
+        },
+      },
+    });
+    // workspace_write is blocked by profile first
+    expect(decision.approved).toBe(false);
+    expect(decision.reason).toBe('blocked_permission_profile');
+  });
+
+  it('auto_guarded blocks unknown-profile safety_class agent_run mentioning secret via keyword gate', () => {
+    process.env.JEA_APPROVAL_MODE = 'auto_guarded';
+    const decision = resolveApprovalDecision({
+      type: 'agent_run',
+      safety_class: 'guarded_probe',
+      params: {
+        requires_approval: true,
+        safety_class: 'guarded_probe',
+        run_spec: {
+          permission_profile: 'diagnostic',
+          intent: 'Inspect secret material for credential leak report.',
+        },
+      },
+    });
+    expect(decision.approved).toBe(false);
+    expect(decision.reason).toBe('sensitive_signal_detected');
+  });
+
   it('auto_guarded approves record_observation actions', () => {
     process.env.JEA_APPROVAL_MODE = 'auto_guarded';
     const decision = resolveApprovalDecision({
@@ -93,6 +164,62 @@ describe('approval-policy', () => {
     });
     expect(decision.approved).toBe(true);
     expect(decision.reason).toBe('low_risk_record_action');
+  });
+
+  it('auto_guarded ignores sensitive words inside record content / relevant_evidence', () => {
+    process.env.JEA_APPROVAL_MODE = 'auto_guarded';
+    const decision = resolveApprovalDecision({
+      type: 'record_observation',
+      description: 'Record audit finding about credential probe',
+      params: {
+        requires_approval: true,
+        content: 'Found secret in .env and publish path mentioned in evidence.',
+        run_spec: {
+          context: {
+            relevant_evidence: ['secret leak in .env', 'publish candidate blocked'],
+            do_not_repeat: ['do not publish'],
+          },
+        },
+      },
+    });
+    expect(decision.approved).toBe(true);
+    expect(decision.reason).toBe('low_risk_record_action');
+  });
+
+  it('auto_guarded still blocks record_observation when description has publish', () => {
+    process.env.JEA_APPROVAL_MODE = 'auto_guarded';
+    const decision = resolveApprovalDecision({
+      type: 'record_observation',
+      description: 'Prepare publish checklist for operator',
+      params: {
+        requires_approval: true,
+        content: 'Harmless note.',
+      },
+    });
+    expect(decision.approved).toBe(false);
+    expect(decision.reason).toBe('sensitive_signal_detected');
+  });
+
+  it('auto_guarded blocks read_only agent_run when subject sensitive keyword matches', () => {
+    process.env.JEA_APPROVAL_MODE = 'auto_guarded';
+    const decision = resolveApprovalDecision({
+      type: 'agent_run',
+      params: {
+        requires_approval: true,
+        run_spec: {
+          permission_profile: 'read_only',
+          intent: 'Call tank-code-endpoint for status only.',
+        },
+      },
+    }, {
+      host: {
+        subjectApproval: {
+          sensitive_keywords: ['tank-code-endpoint'],
+        },
+      },
+    });
+    expect(decision.approved).toBe(false);
+    expect(decision.reason).toBe('sensitive_signal_detected');
   });
 
   it('manual mode never auto approves', () => {
