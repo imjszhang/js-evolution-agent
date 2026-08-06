@@ -122,6 +122,9 @@ Phase 1.5 intel report 持久化
 | `JEA_EXEC_LIMIT` | （deprecated） | 旧名；若设置且未设 `JEA_EXEC_AGENT_BUDGET`，映射为 agent 预算并警告。Decide **不再**按此截断入队 |
 | `JEA_AGENT_MAX_CONCURRENCY` | `2` | agent_run 波内并行宽度上限（`read_only` 可并行；写类 profile 独占波宽 1）；设 `1` 关闭并行 |
 | `JEA_AGENT_MAX_ATTEMPTS` | `2` | agent_run 失败自动重试次数；耗尽转 `blocked`，由下轮 Decide `queue_ops` 处置 |
+| `JEA_PENDING_TTL_CYCLES` | `5` | pending 连续经历多少轮 exec 仍未认领后过期（`cycles_seen > N`） |
+| `JEA_BLOCKED_TTL_CYCLES` | `10` | blocked 连续经历多少轮 exec 后过期（`cycles_seen > N`） |
+| `JEA_QUEUE_WALLCLOCK_TTL_DAYS` | `30` | 队列墙钟后备上限（防 cycle 计数异常时决策永生）；正常 on_demand idle 不应触发 |
 | `JEA_QUEUE_AUTO_ARCHIVE` | 开启 | `0`/`false` 关闭；agent_loop 开始前自动归档 completed/expired/retired/**failed**（legacy）决策 |
 
 查证工具（仅 investigation 阶段）：
@@ -138,7 +141,8 @@ Decide 输出的 `actions` **全量入队**（fingerprint 去重）；不再按�
 `runExecStep` 内部：
 
 ```text
-mechanical guards
+queue maintenance（pending/blocked cycles_seen+1 → cycle/墙钟后备 expire）
+→ mechanical guards
 → 通道 A：非 agent_run 全量串行直跑（无预算）
 → 通道 B：agent_run 波次调度
    width = min(cap, demand, backpressureCap)
@@ -153,9 +157,11 @@ mechanical guards
 pending → in_progress → completed
                       → fail（attempts < max）→ pending
                       → fail（attempts ≥ max）→ blocked
-blocked → queue_ops requeue → pending（attempts 清零）
+blocked → queue_ops requeue → pending（attempts / cycles_seen 清零）
 blocked|pending → queue_ops retire → retired
-pending TTL 72h → expired；blocked TTL 14d → expired
+pending cycles_seen > JEA_PENDING_TTL_CYCLES（默认 5）→ expired（expire_reason=cycles）
+blocked cycles_seen > JEA_BLOCKED_TTL_CYCLES（默认 10）→ expired
+墙钟后备 JEA_QUEUE_WALLCLOCK_TTL_DAYS（默认 30d）→ expired（expire_reason=wallclock）
 ```
 
 机械守护（`evolution.guards`，不占 agent_run 预算）：
