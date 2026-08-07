@@ -23,7 +23,7 @@ export { ActionExecutor, verifyActions };
 export class EvolutionEngine {
   /**
    * @param {object} opts
-   * @param {object} opts.aiClient            AI client (must implement chat / chatJson)
+   * @param {object} [opts.aiClient]          kept for call-site compatibility; host owns LLM calls
    * @param {object} [opts.host]              HostContext
    * @param {string} [opts.projectRoot]       default: host.basePath || cwd
    * @param {string} [opts.goalId]
@@ -33,21 +33,20 @@ export class EvolutionEngine {
    * @param {object} [opts.guidanceReader]
    * @param {object} [opts.evolutionLogger]
    * @param {Array<{id: string, source?: string, text: string}>} [opts.agentContextDocs]
-   *        Authoritative context documents (e.g. external constitutions/skills).
+   *        Accepted for call-site compatibility; unused (host pipelines keep their own copy).
    */
   constructor({
-    aiClient, host = null, projectRoot = null, goalId = null, rulesPath = null,
+    aiClient = null, host = null, projectRoot = null, goalId = null, rulesPath = null,
     actionRegistry = null,
     goalProvider = null, guidanceReader = null,
     evolutionLogger = null,
     agentContextDocs = null,
-  }) {
-    if (!aiClient) throw new Error('EvolutionEngine: aiClient is required');
+  } = {}) {
+    void aiClient;
+    void agentContextDocs;
     this.host = normalizeHost(host);
     this.projectRoot = projectRoot || this.host.basePath || process.cwd();
-    this.aiClient = aiClient;
     this.actionRegistry = actionRegistry || ACTION_REGISTRY;
-    this.agentContextDocs = Array.isArray(agentContextDocs) ? agentContextDocs : [];
 
     this._cycleId = `cycle-${nowBeijingStr('%Y%m%d-%H%M%S')}`;
     this._goalId = goalId;
@@ -57,7 +56,6 @@ export class EvolutionEngine {
     this.guidanceReader = guidanceReader || new HumanGuidanceReader(this.projectRoot, logger);
     this.evolutionLogger = evolutionLogger || new EvolutionLogger(this.projectRoot);
     this.goalProvider = goalProvider || new GoalProvider(this.projectRoot, logger);
-    this._goalsText = '';
   }
 
   get cycleId() { return this._cycleId; }
@@ -73,7 +71,6 @@ export class EvolutionEngine {
   /** @param {string|null} goalId */
   setGoalId(goalId = null) {
     this._goalId = goalId;
-    this._goalsText = this.goalProvider.formatForPrompt(goalId);
   }
 
   /** @returns {string} */

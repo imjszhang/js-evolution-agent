@@ -1094,7 +1094,7 @@ Phase 2（exec）action 选择口径：
 | `npm run exec` | Phase 2 由 `jea run` / daemon `exec` step 执行 |
 | `npm run decisons` | `jea audit queue` |
 
-底层 engine 源码位于 `src/engine/`；旧 `node_modules/js-evolution-engine` 路径不再使用。
+底层 engine 源码位于 `src/engine/`（已 vendor；旧 `node_modules/js-evolution-engine` 路径不再使用）。经典 `IntelligencePipeline` / `VerifyPipeline` / GitHub Issues 模式与 PromptBuilder 模板已删除；Phase 1 由宿主 conversational / `agent_loop` 编排，Phase 2 仍走 `ExecutionPipeline` + `verifyActions`。详见 [`src/engine/VENDORED.md`](src/engine/VENDORED.md)。
 
 ## 操作建议
 

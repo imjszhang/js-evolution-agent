@@ -136,7 +136,7 @@ decide next                →  Phase 3.5 beliefs + Phase 4/4.5 goals + 下一�
 
 | 组件 | 作用 |
 | --- | --- |
-| **OADA 引擎**（`src/engine/`，vendored） | Observe → Analyze → Decide → Act 管线与决策队列 |
+| **OADA 引擎**（`src/engine/`，vendored） | 决策队列、ExecutionPipeline，以及 Phase 1 辅助（规则 / 目标 / guidance / logger） |
 | **Cyber-Taoist 权威文献**（`policies/authority/`） | 跨 subject 共享的治理上下文（宪章、指南） |
 | **Subject 策略**（`runtime/subjects/<ns>/SUBJECT.md`） | 每个演化主体的语义边界与审批规则 |
 | **js-intel-store** | 文件型情报记忆（观测、回执、报告、信念等） |
@@ -171,8 +171,8 @@ decide next                →  Phase 3.5 beliefs + Phase 4/4.5 goals + 下一�
 │  verify→…     │  →speech→outbox       │                           │
 ├──────────────┴──────────────────────┴───────────────────────────┤
 │  src/engine/ (OADA)  │  src/actions/  │  src/intelligence/       │
-│  analyze · decide ·  │  agent_run ·   │  store · reports ·       │
-│  verify helpers      │  lane · gates  │  beliefs · goals           │
+│  queue · exec ·       │  agent_run ·   │  store · reports ·       │
+│  verifyActions       │  lane · gates  │  beliefs · goals           │
 ├──────────────────────┴────────────────┴───────────────────────────┤
 │  policies/authority/  +  runtime/subjects/<ns>/SUBJECT.md         │
 │  runtime/subjects/<ns>/data/  (evolution · intelligence · goals)  │

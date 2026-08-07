@@ -24,3 +24,4 @@ Host-specific extensions (unified `DecisionQueue`, `setCycleId`, etc.) are maint
 - `analyze/analyzer.mjs` (`SelfAnalyzer`; constructed but never called)
 - `decide/feature-request.mjs` and `act/modifier.mjs` (wired into `ctx` but no host handler consumed them)
 - Engine builtin action types (`implement_feature`, etc.); JEA registers its own via `ActionTypeRegistry`
+- `EvolutionEngine` is now a Phase 1 helper container (cycle id / rules / goals / guidance / logger); LLM calls stay in host pipelines

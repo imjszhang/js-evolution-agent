@@ -102,12 +102,10 @@ export class ConversationalIntelligencePipeline {
     this.mode = mode;
     this.goalId = goalId;
     this.engine = engine || new EvolutionEngine({
-      aiClient,
       host,
       projectRoot,
       goalId,
       actionRegistry,
-      agentContextDocs,
     });
     this.projectRoot = projectRoot || this.engine.projectRoot;
     this.agentContextDocs = Array.isArray(agentContextDocs) ? agentContextDocs : [];
