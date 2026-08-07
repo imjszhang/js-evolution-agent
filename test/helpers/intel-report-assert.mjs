@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { expect } from 'vitest';
-import { extractMarkdownSection } from '../../src/cli/utils/markdown-sections.mjs';
+import { extractMarkdownSection } from '../../src/infra/markdown-sections.mjs';
 
 export const E2E_REPORT_TOKEN = 'E2E_REPORT_TOKEN';
 

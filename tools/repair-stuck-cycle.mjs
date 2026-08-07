@@ -13,10 +13,10 @@ import {
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 import lockfile from 'proper-lockfile';
-import { getProjectRoot } from '../src/cli/utils/project.mjs';
-import { runtimeForSubject } from '../src/cli/utils/evolve-runs.mjs';
-import { writeStepArtifact, markStepStatus, isStepArtifactComplete } from '../src/cli/utils/cycle-state.mjs';
-import { acknowledgeTask, readTaskQueue } from '../src/cli/utils/daemon-tasks.mjs';
+import { getProjectRoot } from '../src/infra/project.mjs';
+import { runtimeForSubject } from '../src/daemon/evolve-runs.mjs';
+import { writeStepArtifact, markStepStatus, isStepArtifactComplete } from '../src/daemon/cycle-state.mjs';
+import { acknowledgeTask, readTaskQueue } from '../src/daemon/daemon-tasks.mjs';
 import { createIntelligenceStore } from '../src/intelligence/store.mjs';
 
 const DEFAULT_CYCLE = 'cycle-20260531123649-3cca5618';

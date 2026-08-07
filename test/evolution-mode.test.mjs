@@ -2,16 +2,16 @@ import { describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { readJsonSafe, writeJsonFile } from '../src/cli/utils/files.mjs';
+import { readJsonSafe, writeJsonFile } from '../src/infra/files.mjs';
 import {
   evolutionModeFromEnv,
   evolutionModeFromFlags,
   normalizeEvolutionMode,
   resolveEvolutionMode,
   setSubjectEvolutionMode,
-} from '../src/cli/utils/evolution-mode.mjs';
-import { applyEvolutionModeChange } from '../src/cli/utils/evolution-mode-apply.mjs';
-import { subjectsRegistryFile } from '../src/cli/utils/subjects.mjs';
+} from '../src/daemon/evolution-mode.mjs';
+import { applyEvolutionModeChange } from '../src/daemon/evolution-mode-apply.mjs';
+import { subjectsRegistryFile } from '../src/infra/subjects.mjs';
 
 function makeRoot({ subjectMode = null } = {}) {
   const tempDir = mkdtempSync(join(tmpdir(), 'jea-evolution-mode-'));

@@ -8,7 +8,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { writeJsonFile } from '../src/cli/utils/files.mjs';
+import { writeJsonFile } from '../src/infra/files.mjs';
 import { channelWorkerStatePath } from '../src/channel/paths.mjs';
 import { readChannelEvents } from '../src/channel/audit.mjs';
 import {
@@ -17,7 +17,7 @@ import {
   safeUpdateChannelWorkerHeartbeat,
   writeChannelWorkerState,
 } from '../src/channel/worker-state.mjs';
-import * as atomicWrite from '../src/cli/utils/atomic-json-write.mjs';
+import * as atomicWrite from '../src/infra/atomic-json-write.mjs';
 
 let tempDir = null;
 

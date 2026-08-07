@@ -2,10 +2,10 @@
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runtimeInfoForDefaultSubject } from './src/cli/utils/subjects.mjs';
-import { withSubjectLock } from './src/cli/utils/evolve-runs.mjs';
-import { createCycle } from './src/cli/utils/cycle-state.mjs';
-import { loadCycleStepContext } from './src/cli/utils/cycle-checkpoints.mjs';
+import { runtimeInfoForDefaultSubject } from './src/infra/subjects.mjs';
+import { withSubjectLock } from './src/daemon/evolve-runs.mjs';
+import { createCycle } from './src/daemon/cycle-state.mjs';
+import { loadCycleStepContext } from './src/daemon/cycle-checkpoints.mjs';
 import {
   buildCycleContext,
   runAgentLoopStep,
@@ -20,7 +20,7 @@ import {
   skipGoalsAssessFromEnv,
   skipBeliefUpdateFromEnv,
 } from './src/evolution/cycle-steps.mjs';
-import { resolveCyclePipeline } from './src/cli/utils/cycle-pipeline-mode.mjs';
+import { resolveCyclePipeline } from './src/daemon/cycle-pipeline-mode.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 

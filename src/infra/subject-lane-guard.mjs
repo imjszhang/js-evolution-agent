@@ -1,4 +1,4 @@
-import { checkLaneStatus } from '../../actions/lane-manager.mjs';
+import { checkLaneStatus } from '../actions/lane-manager.mjs';
 import {
   readSubjectPolicy,
   resolveSubjectRepoLane,

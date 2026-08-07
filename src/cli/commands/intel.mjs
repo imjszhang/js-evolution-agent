@@ -1,10 +1,10 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
-import { getProjectRoot } from '../utils/project.mjs';
+import { getProjectRoot } from '../../infra/project.mjs';
 import { createIntelligenceStore } from '../../intelligence/store.mjs';
 import { resolveIntelReportRecordPath } from '../../intelligence/report-paths.mjs';
-import { resolveSubjectFromFlags, runtimeInfoForSubject } from '../utils/subjects.mjs';
+import { resolveSubjectFromFlags, runtimeInfoForSubject } from '../../infra/subjects.mjs';
 import { runIntelIngest } from './intel-ingest.mjs';
 import { inboxDrain, inboxPut } from './intel-inbox.mjs';
 import { intelBriefCommand } from './intel-briefs.mjs';

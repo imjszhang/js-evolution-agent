@@ -1,4 +1,4 @@
-import { summarizeWorkerState } from '../cli/utils/daemon-worker-state.mjs';
+import { summarizeWorkerState } from '../daemon/daemon-worker-state.mjs';
 import { summarizeChannelTaskQueue, readChannelTaskQueue } from './task-queue.mjs';
 import { readChannelWorkerState, summarizeChannelWorkersState } from './worker-state.mjs';
 import { classifierConfigForApi, resolveClassifierConfig } from './classifier-config.mjs';
@@ -17,7 +17,7 @@ import {
 } from './adapters/feishu/listener.mjs';
 import { resolveFeishuConfig, feishuConfigForApi } from './adapters/feishu/config.mjs';
 import { presenceConfigForApi, resolvePresenceConfig } from './presence-config.mjs';
-import { readJsonSafe } from '../cli/utils/files.mjs';
+import { readJsonSafe } from '../infra/files.mjs';
 import { DEPRECATED_CHANNEL_TASK_TYPES } from './types.mjs';
 import { summarizeChannelEventQueue } from './event-queue.mjs';
 

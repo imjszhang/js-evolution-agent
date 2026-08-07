@@ -1,9 +1,9 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { marked } from 'marked';
-import { readCycleState } from '../../cli/utils/cycle-state.mjs';
-import { readTaskQueue } from '../../cli/utils/daemon-tasks.mjs';
-import { CYCLE_STEP_TYPES } from '../../cli/utils/cycle-reducer.mjs';
+import { readCycleState } from '../../daemon/cycle-state.mjs';
+import { readTaskQueue } from '../../daemon/daemon-tasks.mjs';
+import { CYCLE_STEP_TYPES } from '../../daemon/cycle-reducer.mjs';
 import { resolveIntelReportRecordPath } from '../report-paths.mjs';
 import { buildManifest } from './round-catalog.mjs';
 

@@ -1,4 +1,4 @@
-import { getProjectRoot } from '../utils/project.mjs';
+import { getProjectRoot } from '../../infra/project.mjs';
 import { join } from 'node:path';
 import { LocalDecisionQueue } from '../../intelligence/decision-queue.mjs';
 import {
@@ -6,7 +6,7 @@ import {
   findUnknownActions,
   readActiveDecisionQueue,
 } from './actions.mjs';
-import { resolveSubjectFromFlags, runtimeInfoForSubject } from '../utils/subjects.mjs';
+import { resolveSubjectFromFlags, runtimeInfoForSubject } from '../../infra/subjects.mjs';
 import { createIntelligenceStore } from '../../intelligence/store.mjs';
 import {
   parseCountOption,

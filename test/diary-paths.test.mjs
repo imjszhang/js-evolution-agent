@@ -12,7 +12,7 @@ import {
   resolveEvolutionDiaryWritePath,
 } from '../src/intelligence/diary-paths.mjs';
 import { persistEvolutionDiary } from '../src/intelligence/evolution-diary-builder.mjs';
-import { buildSubjectArtifactOverview } from '../src/cli/utils/subject-artifacts.mjs';
+import { buildSubjectArtifactOverview } from '../src/infra/subject-artifacts.mjs';
 
 describe('diary-paths', () => {
   it('extracts year, month, and day from cycle_id timestamps', () => {

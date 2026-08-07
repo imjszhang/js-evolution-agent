@@ -11,21 +11,21 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { writeJsonFile } from '../src/cli/utils/files.mjs';
+import { writeJsonFile } from '../src/infra/files.mjs';
 import { initData } from '../src/cli/commands/data.mjs';
-import { startCycleFromTick, reconcileOpenCycles } from '../src/cli/utils/cycle-dispatch.mjs';
+import { startCycleFromTick, reconcileOpenCycles } from '../src/daemon/cycle-dispatch.mjs';
 import {
   AGENT_LOOP_STEP_TYPES,
   TERMINAL_STEP_STATUSES,
-} from '../src/cli/utils/cycle-reducer.mjs';
+} from '../src/daemon/cycle-reducer.mjs';
 import {
   listStepArtifacts,
   readStepArtifact,
   readCycleState,
-} from '../src/cli/utils/cycle-state.mjs';
-import { readTaskQueue } from '../src/cli/utils/daemon-tasks.mjs';
+} from '../src/daemon/cycle-state.mjs';
+import { readTaskQueue } from '../src/daemon/daemon-tasks.mjs';
 import { workOnce } from '../src/cli/commands/daemon.mjs';
-import { runtimeForSubject } from '../src/cli/utils/evolve-runs.mjs';
+import { runtimeForSubject } from '../src/daemon/evolve-runs.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const SUBJECT = 'alpha';

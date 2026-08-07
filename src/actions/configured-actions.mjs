@@ -1,8 +1,8 @@
 ﻿import { join, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
-import { getProjectRoot } from '../cli/utils/project.mjs';
-import { readJsonSafe } from '../cli/utils/files.mjs';
-import { runtimeInfoForDefaultSubject } from '../cli/utils/subjects.mjs';
+import { getProjectRoot } from '../infra/project.mjs';
+import { readJsonSafe } from '../infra/files.mjs';
+import { runtimeInfoForDefaultSubject } from '../infra/subjects.mjs';
 import { resolveJeaLinkRootSync } from '../infra/links/index.mjs';
 
 const VALID_RISKS = new Set(['low', 'medium', 'high']);

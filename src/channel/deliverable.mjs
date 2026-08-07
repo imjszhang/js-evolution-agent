@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { runtimeForSubject } from '../cli/utils/evolve-runs.mjs';
+import { runtimeForSubject } from '../infra/runtime-paths.mjs';
 import { createIntelligenceStore } from '../intelligence/store.mjs';
 import { redactSecrets } from '../intelligence/redaction.mjs';
 import { channelDirForSubject } from './paths.mjs';

@@ -2,7 +2,7 @@
 import { resolveFeishuConfig } from '../src/channel/adapters/feishu/config.mjs';
 import { sendOutboundMessage } from '../src/channel/adapters/feishu/index.mjs';
 import { normalizeOutboundMessage } from '../src/channel/types.mjs';
-import { getProjectRoot, loadProjectEnv } from '../src/cli/utils/project.mjs';
+import { getProjectRoot, loadProjectEnv } from '../src/infra/project.mjs';
 
 const root = getProjectRoot();
 loadProjectEnv(root);

@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path';
 import {
   getProjectAuthorityDocsDir,
   resolveAuthorityDocsDir,
-} from '../src/cli/utils/project.mjs';
+} from '../src/infra/project.mjs';
 
 describe('resolveAuthorityDocsDir', () => {
   const originalEnv = process.env.CYBER_TAOIST_DOCS_DIR;

@@ -13,7 +13,7 @@ import {
 } from '../src/channel/adapters/feishu/binding.mjs';
 import { resolveFeishuConfig } from '../src/channel/adapters/feishu/config.mjs';
 import { FeishuPolicy } from '../src/channel/adapters/feishu/policy.mjs';
-import { writeJsonFile } from '../src/cli/utils/files.mjs';
+import { writeJsonFile } from '../src/infra/files.mjs';
 
 let tempDir = null;
 

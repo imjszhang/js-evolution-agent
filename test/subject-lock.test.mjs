@@ -2,25 +2,25 @@ import { describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { writeJsonFile } from '../src/cli/utils/files.mjs';
+import { writeJsonFile } from '../src/infra/files.mjs';
 import {
   acquireSubjectLock,
   inspectSubjectLock,
   resolveSubjectLockUpdateMs,
   subjectLockPath,
   withSubjectLock,
-} from '../src/cli/utils/evolve-runs.mjs';
+} from '../src/daemon/evolve-runs.mjs';
 import { workOnce } from '../src/cli/commands/daemon.mjs';
-import { writeWorkerState } from '../src/cli/utils/daemon-worker-state.mjs';
+import { writeWorkerState } from '../src/daemon/daemon-worker-state.mjs';
 import {
   abandonCycle,
   createCycle,
   listOpenCycles,
   markStepStatus,
   readCycleState,
-} from '../src/cli/utils/cycle-state.mjs';
-import { reconcileOpenCycles, startCycleFromTick } from '../src/cli/utils/cycle-dispatch.mjs';
-import { nextSteps } from '../src/cli/utils/cycle-reducer.mjs';
+} from '../src/daemon/cycle-state.mjs';
+import { reconcileOpenCycles, startCycleFromTick } from '../src/daemon/cycle-dispatch.mjs';
+import { nextSteps } from '../src/daemon/cycle-reducer.mjs';
 
 function makeRoot() {
   const tempDir = mkdtempSync(join(tmpdir(), 'jea-lock-'));

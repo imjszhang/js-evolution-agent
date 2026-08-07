@@ -2,10 +2,10 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import lockfile from 'proper-lockfile';
-import { writeJsonAtomic } from './atomic-json-write.mjs';
+import { writeJsonAtomic } from '../infra/atomic-json-write.mjs';
 import { runtimeForSubject, nowIso } from './evolve-runs.mjs';
 
-export { QueueWriteError, isQueueWriteError } from './atomic-json-write.mjs';
+export { QueueWriteError, isQueueWriteError } from '../infra/atomic-json-write.mjs';
 
 const HISTORY_LIMIT = 20;
 

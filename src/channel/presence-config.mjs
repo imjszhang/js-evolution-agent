@@ -1,4 +1,4 @@
-import { getSubjectEntry } from '../cli/utils/subjects.mjs';
+import { getSubjectEntry } from '../infra/subjects.mjs';
 
 export const PRESENCE_PLANNERS = Object.freeze(['deterministic', 'llm']);
 

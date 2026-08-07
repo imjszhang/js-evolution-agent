@@ -2,22 +2,22 @@ import { describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { writeJsonFile } from '../src/cli/utils/files.mjs';
+import { writeJsonFile } from '../src/infra/files.mjs';
 import {
   consumeCycleStartRequest,
   deferCycleStartRequest,
   enqueueCycleStartRequest,
   readPendingCycleStartRequest,
   summarizePendingCycleStartRequest,
-} from '../src/cli/utils/cycle-start-requests.mjs';
+} from '../src/daemon/cycle-start-requests.mjs';
 import {
   processCycleStartRequests,
   runHeartbeatTick,
-} from '../src/cli/utils/cycle-dispatch.mjs';
-import { listOpenCycles, createCycle, markStepStatus, writeStepArtifact } from '../src/cli/utils/cycle-state.mjs';
-import { enqueueTask, pendingTasksPath, readTaskQueue } from '../src/cli/utils/daemon-tasks.mjs';
-import { stepIdempotencyKey } from '../src/cli/utils/cycle-reducer.mjs';
-import { resolveEvolutionMode } from '../src/cli/utils/evolution-mode.mjs';
+} from '../src/daemon/cycle-dispatch.mjs';
+import { listOpenCycles, createCycle, markStepStatus, writeStepArtifact } from '../src/daemon/cycle-state.mjs';
+import { enqueueTask, pendingTasksPath, readTaskQueue } from '../src/daemon/daemon-tasks.mjs';
+import { stepIdempotencyKey } from '../src/daemon/cycle-reducer.mjs';
+import { resolveEvolutionMode } from '../src/daemon/evolution-mode.mjs';
 
 function makeRoot() {
   const tempDir = mkdtempSync(join(tmpdir(), 'jea-cycle-req-'));

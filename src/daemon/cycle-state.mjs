@@ -9,7 +9,7 @@ import {
   handleContractValidation,
   validateStepCheckpoint,
   validateStepCheckpointPayload,
-} from '../../contracts/index.mjs';
+} from '../contracts/index.mjs';
 
 export function cycleStateDir(root, subject) {
   return join(runtimeForSubject(root, subject).evolutionDir, 'cycle-state');

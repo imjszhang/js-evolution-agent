@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
-import { SUBJECT_ENV } from '../cli/utils/subjects.mjs';
+import { SUBJECT_ENV } from '../infra/subjects.mjs';
 
 export function buildCycleEnv(flags, subject, root = null) {
   const env = { ...process.env, [SUBJECT_ENV]: subject };

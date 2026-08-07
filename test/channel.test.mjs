@@ -2,8 +2,8 @@ import { describe, expect, it, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { writeJsonFile } from '../src/cli/utils/files.mjs';
-import { enqueueTask, pendingTasksPath } from '../src/cli/utils/daemon-tasks.mjs';
+import { writeJsonFile } from '../src/infra/files.mjs';
+import { enqueueTask, pendingTasksPath } from '../src/daemon/daemon-tasks.mjs';
 import { enqueueChannelTask, readChannelTaskQueue, channelPendingTasksPath } from '../src/channel/task-queue.mjs';
 import {
   writePendingInbound,
@@ -41,7 +41,7 @@ import { claimNextChannelTask } from '../src/channel/task-queue.mjs';
 import { resolveChannelWorkerTaskTypes, taskTypesForChannelRole, DEFAULT_CHANNEL_ROLES } from '../src/channel/channel-roles.mjs';
 import { collectAttentionSignals } from '../src/channel/notify.mjs';
 import { readPendingOperatorBriefs } from '../src/intelligence/operator-briefs.mjs';
-import { runtimeForSubject } from '../src/cli/utils/evolve-runs.mjs';
+import { runtimeForSubject } from '../src/daemon/evolve-runs.mjs';
 import { buildChannelProjection } from '../src/channel/projection.mjs';
 import { runChannelTick } from '../src/channel/dispatch.mjs';
 import { runChannelPresenceTask } from '../src/channel/presence.mjs';
@@ -72,9 +72,9 @@ import { CHANNEL_TASK_DEFAULT_PRIORITY } from '../src/channel/types.mjs';
 import { parseControlRequestFromText } from '../src/channel/control-actions.mjs';
 import { classifyChannelEnvelope, decisionFromClassifierItem } from '../src/channel/ingest.mjs';
 import { buildSpeechGenerationEventPayload, speechIntentFromDeterministic } from '../src/channel/speech-intent.mjs';
-import { resolveEvolutionMode } from '../src/cli/utils/evolution-mode.mjs';
+import { resolveEvolutionMode } from '../src/daemon/evolution-mode.mjs';
 import { channelCommand } from '../src/cli/commands/channel.mjs';
-import { readPendingCycleStartRequest } from '../src/cli/utils/cycle-start-requests.mjs';
+import { readPendingCycleStartRequest } from '../src/daemon/cycle-start-requests.mjs';
 import {
   createChannelRoleWorkerState,
   initChannelCoordinatorState,

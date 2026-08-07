@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { buildExecutionEnv } from '../src/actions/execution-env.mjs';
-import { loadProjectEnv } from '../src/cli/utils/project.mjs';
+import { loadProjectEnv } from '../src/infra/project.mjs';
 
 describe('execution env loading', () => {
   let tempDir;

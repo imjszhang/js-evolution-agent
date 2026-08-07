@@ -1,9 +1,9 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { readJsonSafe } from './files.mjs';
-import { writeJson } from '../../infra/json-store.mjs';
+import { readJsonSafe } from '../infra/files.mjs';
+import { writeJson } from '../infra/json-store.mjs';
 import { nowIso, parsePositiveInt, runtimeForSubject } from './evolve-runs.mjs';
-import { isProcessAlive } from './process-alive.mjs';
+import { isProcessAlive } from '../infra/process-alive.mjs';
 
 export function daemonStateDir(root, subject) {
   return join(runtimeForSubject(root, subject).evolutionDir, 'daemon');

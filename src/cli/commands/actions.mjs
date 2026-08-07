@@ -1,7 +1,7 @@
 import { join } from 'node:path';
-import { getProjectRoot } from '../utils/project.mjs';
-import { readJsonSafe } from '../utils/files.mjs';
-import { resolveSubjectFromFlags, runtimeInfoForSubject } from '../utils/subjects.mjs';
+import { getProjectRoot } from '../../infra/project.mjs';
+import { readJsonSafe } from '../../infra/files.mjs';
+import { resolveSubjectFromFlags, runtimeInfoForSubject } from '../../infra/subjects.mjs';
 import { loadSubjectActionConfig } from '../../actions/configured-actions.mjs';
 
 function runtimeForFlags(root, flags = {}) {

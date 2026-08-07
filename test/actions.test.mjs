@@ -24,7 +24,7 @@ import {
   parseSubjectExternalRoots,
   parseSubjectResourceRules,
   buildSubjectResourceSummary,
-} from '../src/cli/utils/subjects.mjs';
+} from '../src/infra/subjects.mjs';
 import { applyRunSpecToAction, validateAgentRunSpec } from '../src/actions/agent-run-spec.mjs';
 import { buildClaudeOptions, buildCursorOptions, buildReasonixOptions, buildReasonixRunBaseArgs, buildReasonixTurnInvocation } from '../src/actions/agent-adapter.mjs';
 import {
@@ -40,7 +40,7 @@ import {
   workBranchPrefixConflictsWithLane,
 } from '../src/actions/lane-manager.mjs';
 import { createBranchWorktree } from '../src/actions/worktree-manager.mjs';
-import { parseSubjectRepoLane } from '../src/cli/utils/subjects.mjs';
+import { parseSubjectRepoLane } from '../src/infra/subjects.mjs';
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   query: vi.fn(),

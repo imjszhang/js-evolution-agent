@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import lockfile from 'proper-lockfile';
-import { isWorkerFresh, readWorkerState } from './daemon-worker-state.mjs';
+import { isWorkerFresh, readWorkerState } from '../daemon/daemon-worker-state.mjs';
 
 /** Long-lived daemon worker lock stale (auto-renewed via proper-lockfile `update`). */
 export const SUBJECT_LOCK_DAEMON_STALE_MS_DEFAULT = 60_000;

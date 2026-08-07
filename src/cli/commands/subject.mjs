@@ -1,4 +1,4 @@
-import { getProjectRoot } from '../utils/project.mjs';
+import { getProjectRoot } from '../../infra/project.mjs';
 import { REQUIRED_POLICY_SECTIONS } from '../utils/policy-sections.mjs';
 import {
   checkLaneStatus,
@@ -19,8 +19,8 @@ import {
   resolveSubjectFromFlags,
   runtimeInfoForSubject,
   setDefaultSubject,
-} from '../utils/subjects.mjs';
-import { extractMarkdownSection } from '../utils/markdown-sections.mjs';
+} from '../../infra/subjects.mjs';
+import { extractMarkdownSection } from '../../infra/markdown-sections.mjs';
 
 export { extractMarkdownSection };
 

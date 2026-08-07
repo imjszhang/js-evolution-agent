@@ -13,7 +13,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { fileURLToPath } from 'node:url';
-import { loadProjectEnv } from '../src/cli/utils/project.mjs';
+import { loadProjectEnv } from '../src/infra/project.mjs';
 import { DeepSeekOpenAIClient } from '../src/ai/deepseek-client.mjs';
 import { runHonestyLiveIntel } from './helpers/intel-report-honesty-live-runner.mjs';
 

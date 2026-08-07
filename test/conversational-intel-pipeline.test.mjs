@@ -18,7 +18,7 @@ import {
   buildReportUserPrompt,
   buildReportUserPromptParts,
 } from '../src/intelligence/conversation-prompts.mjs';
-import { buildSubjectResourceSummary } from '../src/cli/utils/subjects.mjs';
+import { buildSubjectResourceSummary } from '../src/infra/subjects.mjs';
 import {
   markOperatorBriefsProcessed,
   readPendingOperatorBriefs,

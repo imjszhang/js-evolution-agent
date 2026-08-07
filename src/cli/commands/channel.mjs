@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { getProjectRoot } from '../utils/project.mjs';
-import { resolveSubjectFromFlags, runtimeInfoForSubject } from '../utils/subjects.mjs';
-import { parseHeartbeatStaleMs } from '../utils/daemon-worker-state.mjs';
+import { getProjectRoot } from '../../infra/project.mjs';
+import { resolveSubjectFromFlags, runtimeInfoForSubject } from '../../infra/subjects.mjs';
+import { parseHeartbeatStaleMs } from '../../daemon/daemon-worker-state.mjs';
 import { buildChannelProjection } from '../../channel/projection.mjs';
 import { readChannelEvents } from '../../channel/audit.mjs';
 import { writePendingInbound, listPendingInbound, listOutboxPending, writeOutboxMessage } from '../../channel/state.mjs';

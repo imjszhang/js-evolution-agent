@@ -1,4 +1,4 @@
-import { getSubjectEntry, resolveSubjectConfig } from './subjects.mjs';
+import { getSubjectEntry, resolveSubjectConfig } from '../infra/subjects.mjs';
 
 export const CYCLE_PIPELINES = Object.freeze(['phases', 'agent_loop']);
 

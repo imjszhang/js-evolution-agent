@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import lockfile from 'proper-lockfile';
-import { writeJsonAtomic } from '../cli/utils/atomic-json-write.mjs';
+import { writeJsonAtomic } from './atomic-json-write.mjs';
 
 export function readJson(filePath, fallback = null) {
   try {

@@ -1,8 +1,8 @@
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { getProjectRoot, loadProjectEnv, resolveAuthorityDocsDir } from '../utils/project.mjs';
-import { describeSubjectLockHealth } from '../utils/evolve-runs.mjs';
-import { readSubjectsRegistry } from '../utils/subjects.mjs';
+import { getProjectRoot, loadProjectEnv, resolveAuthorityDocsDir } from '../../infra/project.mjs';
+import { describeSubjectLockHealth } from '../../daemon/evolve-runs.mjs';
+import { readSubjectsRegistry } from '../../infra/subjects.mjs';
 import {
   getGoalCalibrateMode,
   isGoalAutoApplyEnabled,
