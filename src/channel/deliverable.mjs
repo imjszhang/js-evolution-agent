@@ -2,8 +2,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { runtimeForSubject } from '../infra/runtime-paths.mjs';
-import { createIntelligenceStore } from '../intelligence/store.mjs';
-import { redactSecrets } from '../intelligence/redaction.mjs';
+import { createIntelligenceStore, redactSecrets } from '../intelligence/channel-api.mjs';
 import { channelDirForSubject } from './paths.mjs';
 
 const TLDR_CHAR_LIMIT = 280;

@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import { createIntelligenceStore } from '../intelligence/store.mjs';
-import { writePendingOperatorBrief } from '../intelligence/operator-briefs.mjs';
+import { createIntelligenceStore, writePendingOperatorBrief } from '../intelligence/channel-api.mjs';
 import { runtimeForSubject } from '../infra/runtime-paths.mjs';
 import { enqueueCycleStartRequestWithEvent } from '../daemon/cycle-dispatch.mjs';
 import { recordChannelEvent, readChannelEvents } from './audit.mjs';

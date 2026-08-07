@@ -3,7 +3,7 @@ import { resolveFeishuConfig } from './adapters/feishu/config.mjs';
 import { buildDaemonProjection } from '../daemon/daemon-projection.mjs';
 import { storeForSubject } from '../daemon/daemon-events.mjs';
 import { runtimeForSubject } from '../infra/runtime-paths.mjs';
-import { readPendingOperatorBriefs } from '../intelligence/operator-briefs.mjs';
+import { readPendingOperatorBriefs } from '../intelligence/channel-api.mjs';
 import { cooldownActive, setCooldown, writeOutboxMessage } from './state.mjs';
 import { normalizeOutboundMessage, nowIso } from './types.mjs';
 
