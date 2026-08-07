@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { writeJsonFile } from '../src/cli/utils/files.mjs';
+import { writeJsonFile } from '../src/infra/files.mjs';
 import {
   createCycle,
   findStepStateDrift,
@@ -12,10 +12,10 @@ import {
   readCycleState,
   summarizeCycleState,
   writeStepArtifact,
-} from '../src/cli/utils/cycle-state.mjs';
-import { startCycleFromTick, dispatchCycleEvent, reconcileOpenCycles } from '../src/cli/utils/cycle-dispatch.mjs';
-import { enqueueTask, pendingTasksPath, readTaskQueue } from '../src/cli/utils/daemon-tasks.mjs';
-import { stepIdempotencyKey } from '../src/cli/utils/cycle-reducer.mjs';
+} from '../src/daemon/cycle-state.mjs';
+import { startCycleFromTick, dispatchCycleEvent, reconcileOpenCycles } from '../src/daemon/cycle-dispatch.mjs';
+import { enqueueTask, pendingTasksPath, readTaskQueue } from '../src/daemon/daemon-tasks.mjs';
+import { stepIdempotencyKey } from '../src/daemon/cycle-reducer.mjs';
 
 function makeRoot() {
   const tempDir = mkdtempSync(join(tmpdir(), 'jea-cycle-'));

@@ -588,10 +588,10 @@ export async function updateActiveBeliefs(root, {
   operatorAssertions = null,
 } = {}) {
   const { getActiveGoals } = await import('../cli/commands/goals.mjs');
-  const { getProjectRoot } = await import('../cli/utils/project.mjs');
+  const { getProjectRoot } = await import('../infra/project.mjs');
   const { join } = await import('node:path');
   const { createIntelligenceStore } = await import('./store.mjs');
-  const { runtimeInfoForDefaultSubject } = await import('../cli/utils/subjects.mjs');
+  const { runtimeInfoForDefaultSubject } = await import('../infra/subjects.mjs');
   const { detectLanguage } = await import('./report-builder.mjs');
   const { loadDigestibleOperatorFacts, applyOperatorFactDigestions } = await import('./operator-fact-digestion.mjs');
 

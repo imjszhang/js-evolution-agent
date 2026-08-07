@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { writeJsonFile } from '../src/cli/utils/files.mjs';
-import { resolveEvolutionMode } from '../src/cli/utils/evolution-mode.mjs';
+import { writeJsonFile } from '../src/infra/files.mjs';
+import { resolveEvolutionMode } from '../src/daemon/evolution-mode.mjs';
 import { refreshWorkerEvolutionMode } from '../src/cli/commands/daemon.mjs';
 
 function makeRoot() {

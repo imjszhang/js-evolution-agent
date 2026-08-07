@@ -49,9 +49,9 @@ import {
 } from '../ai/prompt-cache-metadata.mjs';
 import { chatMessagesDetailed, serializeMessages } from '../ai/messages.mjs';
 import { repairReportIfNeeded } from '../intelligence/report-repair.mjs';
-import { markStepStatus, writeStepArtifact } from '../cli/utils/cycle-state.mjs';
-import { loadCycleStepContext, loadVerifyReportForCycle } from '../cli/utils/cycle-checkpoints.mjs';
-import { extractMarkdownSection } from '../cli/utils/markdown-sections.mjs';
+import { markStepStatus, writeStepArtifact } from '../daemon/cycle-state.mjs';
+import { loadCycleStepContext, loadVerifyReportForCycle } from '../daemon/cycle-checkpoints.mjs';
+import { extractMarkdownSection } from '../infra/markdown-sections.mjs';
 import {
   CARRYOVER_MECHANICAL_LIMIT,
   buildStepStatusSnapshot,
@@ -163,7 +163,7 @@ export function extractCarryoverRetirementsFromDiaryMarkdown(markdown) {
   return out;
 }
 
-export { loadCycleStepContext } from '../cli/utils/cycle-checkpoints.mjs';
+export { loadCycleStepContext } from '../daemon/cycle-checkpoints.mjs';
 
 export function skipGoalsAssessFromEnv() {
   const v = process.env.JEA_SKIP_GOALS_ASSESS;

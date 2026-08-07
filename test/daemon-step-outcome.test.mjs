@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { writeJsonFile } from '../src/cli/utils/files.mjs';
-import { createCycle, markStepStatus, writeStepArtifact } from '../src/cli/utils/cycle-state.mjs';
+import { writeJsonFile } from '../src/infra/files.mjs';
+import { createCycle, markStepStatus, writeStepArtifact } from '../src/daemon/cycle-state.mjs';
 import { resolveStepOutcome } from '../src/cli/commands/evolve.mjs';
 
 function makeRoot() {

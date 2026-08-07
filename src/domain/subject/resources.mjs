@@ -13,4 +13,4 @@ export {
   resolveSubjectPolicyPath,
   resolveSubjectResourceRules,
   resolveSubjectSoulPath,
-} from '../../cli/utils/subjects.mjs';
+} from '../../infra/subjects.mjs';

@@ -1,6 +1,6 @@
 import { join } from 'node:path';
-import { getProjectRoot } from '../utils/project.mjs';
-import { resolveSubjectFromFlags, runtimeInfoForSubject } from '../utils/subjects.mjs';
+import { getProjectRoot } from '../../infra/project.mjs';
+import { resolveSubjectFromFlags, runtimeInfoForSubject } from '../../infra/subjects.mjs';
 import { createIntelligenceStore } from '../../intelligence/store.mjs';
 import { normalizeCurrentBeliefs } from '../../intelligence/beliefs.mjs';
 import { updateActiveBeliefs } from '../../intelligence/belief-updater.mjs';

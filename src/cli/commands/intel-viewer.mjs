@@ -1,8 +1,8 @@
 import { resolve } from 'node:path';
 import { spawn } from 'node:child_process';
-import { getProjectRoot } from '../utils/project.mjs';
-import { resolveSubjectFromFlags, resolveDefaultSubjectName, runtimeInfoForSubject } from '../utils/subjects.mjs';
-import { selectSubjects } from '../utils/subject-selection.mjs';
+import { getProjectRoot } from '../../infra/project.mjs';
+import { resolveSubjectFromFlags, resolveDefaultSubjectName, runtimeInfoForSubject } from '../../infra/subjects.mjs';
+import { selectSubjects } from '../../infra/subject-selection.mjs';
 import {
   DEFAULT_VIEWER_LIMIT,
   buildEvolutionViewerForRuntime,

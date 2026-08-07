@@ -2,7 +2,7 @@ import { describe, expect, it, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { writeJsonFile } from '../src/cli/utils/files.mjs';
+import { writeJsonFile } from '../src/infra/files.mjs';
 import {
   channelFeishuSetupCommand,
   channelFeishuRegisterCommand,

@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { decisionFingerprint } from '../../engine/index.mjs';
-import { getSubjectEntry } from '../../cli/utils/subjects.mjs';
+import { getSubjectEntry } from '../../infra/subjects.mjs';
 
 function nowIso() {
   return new Date().toISOString();

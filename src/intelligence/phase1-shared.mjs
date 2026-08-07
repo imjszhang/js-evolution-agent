@@ -4,7 +4,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { validateAgentRunSpec } from '../actions/agent-run-spec.mjs';
-import { resolveHostExternalRoots } from '../cli/utils/subjects.mjs';
+import { resolveHostExternalRoots } from '../infra/subjects.mjs';
 import { markOperatorBriefsProcessed } from './operator-briefs.mjs';
 
 export function summarizeAnalysis(analysis) {

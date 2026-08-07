@@ -12,7 +12,7 @@ import {
 import { resolveIdType, normalizeTarget } from '../src/channel/adapters/feishu/sender.mjs';
 import { FeishuPolicy } from '../src/channel/adapters/feishu/policy.mjs';
 import { envelopeFromFeishuEvent } from '../src/channel/adapters/feishu/parser.mjs';
-import { writeJsonFile } from '../src/cli/utils/files.mjs';
+import { writeJsonFile } from '../src/infra/files.mjs';
 
 let tempDir = null;
 

@@ -1,16 +1,17 @@
-import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { readJsonSafe } from './files.mjs';
-import { writeJson } from '../../infra/json-store.mjs';
-import { nowIso, parsePositiveInt, runtimeForSubject } from './evolve-runs.mjs';
-import { isProcessAlive } from './process-alive.mjs';
+import { writeJson } from '../infra/json-store.mjs';
+import { nowIso, parsePositiveInt, runtimeForSubject } from '../infra/runtime-paths.mjs';
+import {
+  isWorkerFresh,
+  readWorkerState,
+  workerStatePath,
+} from '../infra/worker-state-read.mjs';
+import { isProcessAlive } from '../infra/process-alive.mjs';
+
+export { isWorkerFresh, readWorkerState, workerStatePath };
 
 export function daemonStateDir(root, subject) {
   return join(runtimeForSubject(root, subject).evolutionDir, 'daemon');
-}
-
-export function workerStatePath(root, subject) {
-  return join(daemonStateDir(root, subject), 'worker-state.json');
 }
 
 export function defaultWorkerId() {
@@ -25,23 +26,10 @@ export function parseHeartbeatMs(value, defaultValue = 30_000) {
   return parsePositiveInt(value, { name: 'heartbeat-ms', defaultValue, min: 1 });
 }
 
-export function readWorkerState(root, subject) {
-  const filePath = workerStatePath(root, subject);
-  if (!existsSync(filePath)) return null;
-  const state = readJsonSafe(filePath, null);
-  return state && typeof state === 'object' ? state : null;
-}
-
 export function writeWorkerState(root, subject, state) {
   const filePath = workerStatePath(root, subject);
   writeJson(filePath, state);
   return state;
-}
-
-export function isWorkerFresh(state, { nowMs = Date.now(), staleMs = 60_000 } = {}) {
-  if (!state || !['running', 'stopping'].includes(state.status)) return false;
-  const heartbeatMs = Date.parse(state.heartbeat_at ?? '');
-  return Number.isFinite(heartbeatMs) && heartbeatMs > nowMs - staleMs;
 }
 
 export function isWorkerZombie(state, { nowMs = Date.now(), staleMs = 60_000 } = {}) {

@@ -1,4 +1,4 @@
-import { runtimeForSubject } from '../../../cli/utils/evolve-runs.mjs';
+import { runtimeForSubject } from '../../../infra/runtime-paths.mjs';
 import {
   readOperatorBinding,
   resolveBindSettings,

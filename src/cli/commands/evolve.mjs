@@ -1,4 +1,4 @@
-import { getProjectRoot, loadProjectEnv } from '../utils/project.mjs';
+import { getProjectRoot, loadProjectEnv } from '../../infra/project.mjs';
 import {
   appendRunEvent,
   attachCycleIdToRound,
@@ -17,15 +17,15 @@ import {
   saveRunManifest,
   summarizeManifest,
   withSubjectLock,
-} from '../utils/evolve-runs.mjs';
-import { isStepArtifactComplete } from '../utils/cycle-state.mjs';
-import { enqueueTask } from '../utils/daemon-tasks.mjs';
-import { recordDaemonEvent } from '../utils/daemon-events.mjs';
-import { ALL_CYCLE_STEP_TYPES, CYCLE_STEP_TYPES } from '../utils/cycle-reducer.mjs';
+} from '../../daemon/evolve-runs.mjs';
+import { isStepArtifactComplete } from '../../daemon/cycle-state.mjs';
+import { enqueueTask } from '../../daemon/daemon-tasks.mjs';
+import { recordDaemonEvent } from '../../daemon/daemon-events.mjs';
+import { ALL_CYCLE_STEP_TYPES, CYCLE_STEP_TYPES } from '../../daemon/cycle-reducer.mjs';
 import {
   checkSubjectLaneReady,
   printSubjectLaneGuardFailure,
-} from '../utils/subject-lane-guard.mjs';
+} from '../../infra/subject-lane-guard.mjs';
 import {
   buildCycleEnv,
   runSingleCycle,

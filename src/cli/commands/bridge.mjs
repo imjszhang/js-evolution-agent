@@ -1,4 +1,4 @@
-import { getProjectRoot } from '../utils/project.mjs';
+import { getProjectRoot } from '../../infra/project.mjs';
 import {
   deployOpenClawBridge,
   undeployOpenClawBridge,

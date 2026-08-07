@@ -1,8 +1,8 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import lockfile from 'proper-lockfile';
-import { readJsonSafe } from '../cli/utils/files.mjs';
-import { writeJsonAtomic } from '../cli/utils/atomic-json-write.mjs';
+import { readJsonSafe } from '../infra/files.mjs';
+import { writeJsonAtomic } from '../infra/atomic-json-write.mjs';
 import { recordChannelEvent } from './audit.mjs';
 import {
   defaultWorkerId,
@@ -11,8 +11,8 @@ import {
   parseHeartbeatMs,
   parseHeartbeatStaleMs,
   summarizeWorkerState,
-} from '../cli/utils/daemon-worker-state.mjs';
-import { isProcessAlive } from '../cli/utils/process-alive.mjs';
+} from '../daemon/daemon-worker-state.mjs';
+import { isProcessAlive } from '../infra/process-alive.mjs';
 import { taskTypesForChannelRole } from './channel-roles.mjs';
 import { channelWorkerStatePath } from './paths.mjs';
 import { nowIso } from './types.mjs';

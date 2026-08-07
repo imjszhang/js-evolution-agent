@@ -1,6 +1,6 @@
-import { applyEvolutionModeChange } from '../cli/utils/evolution-mode-apply.mjs';
-import { resolveEvolutionMode } from '../cli/utils/evolution-mode.mjs';
-import { enqueueCycleStartRequestWithEvent } from '../cli/utils/cycle-dispatch.mjs';
+import { applyEvolutionModeChange } from '../daemon/evolution-mode-apply.mjs';
+import { resolveEvolutionMode } from '../daemon/evolution-mode.mjs';
+import { enqueueCycleStartRequestWithEvent } from '../daemon/cycle-dispatch.mjs';
 
 export const CHANNEL_CONTROL_ACTION_IDS = Object.freeze([
   'daemon_evolution_mode_set',

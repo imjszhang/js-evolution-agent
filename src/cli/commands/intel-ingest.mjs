@@ -1,11 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { getProjectRoot } from '../utils/project.mjs';
+import { getProjectRoot } from '../../infra/project.mjs';
 import { createIntelligenceStore } from '../../intelligence/store.mjs';
 import { INTELLIGENCE_SPECS } from '../../intelligence/specs.mjs';
-import { resolveSubjectFromFlags, runtimeInfoForSubject } from '../utils/subjects.mjs';
+import { resolveSubjectFromFlags, runtimeInfoForSubject } from '../../infra/subjects.mjs';
 import { isOperatorFact, writePendingOperatorFact } from '../../intelligence/operator-facts.mjs';
-import { enqueueCycleStartRequestWithEvent } from '../utils/cycle-dispatch.mjs';
+import { enqueueCycleStartRequestWithEvent } from '../../daemon/cycle-dispatch.mjs';
 
 const VALID_SOURCES = INTELLIGENCE_SPECS.map((s) => s.name);
 const ENTITY_JSONL_SOURCES = new Set(

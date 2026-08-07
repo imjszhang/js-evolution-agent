@@ -1,9 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import { createIntelligenceStore } from '../intelligence/store.mjs';
-import { writePendingOperatorBrief } from '../intelligence/operator-briefs.mjs';
-import { runtimeForSubject } from '../cli/utils/evolve-runs.mjs';
-import { enqueueCycleStartRequestWithEvent } from '../cli/utils/cycle-dispatch.mjs';
+import { createIntelligenceStore, writePendingOperatorBrief } from '../intelligence/channel-api.mjs';
+import { runtimeForSubject } from '../infra/runtime-paths.mjs';
+import { enqueueCycleStartRequestWithEvent } from '../daemon/cycle-dispatch.mjs';
 import { recordChannelEvent, readChannelEvents } from './audit.mjs';
 import { enqueueChannelTask } from './task-queue.mjs';
 import {

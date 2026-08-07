@@ -1,4 +1,4 @@
-import { getSubjectEntry, readSubjectsRegistry, resolveSubjectConfig, writeSubjectsRegistry } from './subjects.mjs';
+import { getSubjectEntry, readSubjectsRegistry, resolveSubjectConfig, writeSubjectsRegistry } from '../infra/subjects.mjs';
 
 export const EVOLUTION_MODES = Object.freeze(['continuous', 'on_demand']);
 

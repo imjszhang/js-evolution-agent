@@ -14,7 +14,7 @@ import {
   actionVerifiers,
 } from './src/actions/handlers.mjs';
 import { createIntelligenceStore } from './src/intelligence/store.mjs';
-import { resolveAuthorityDocsDir } from './src/cli/utils/project.mjs';
+import { resolveAuthorityDocsDir } from './src/infra/project.mjs';
 import {
   runtimeInfoForDefaultSubject,
   resolveHostExternalRoots,
@@ -22,7 +22,7 @@ import {
   buildSubjectResourceSummary,
   readSubjectPolicy,
   resolveSubjectConfig,
-} from './src/cli/utils/subjects.mjs';
+} from './src/infra/subjects.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 

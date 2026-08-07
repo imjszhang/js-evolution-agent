@@ -1,10 +1,10 @@
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { EVOLUTION_DIARIES_REL } from '../../intelligence/diary-paths.mjs';
-import { readPendingOperatorQuestions } from '../../intelligence/operator-questions.mjs';
-import { readPendingOperatorFacts } from '../../intelligence/operator-facts.mjs';
-import { readJsonSafe } from './files.mjs';
-import { runtimeForSubject } from './evolve-runs.mjs';
+import { EVOLUTION_DIARIES_REL } from '../intelligence/diary-paths.mjs';
+import { readPendingOperatorQuestions } from '../intelligence/operator-questions.mjs';
+import { readPendingOperatorFacts } from '../intelligence/operator-facts.mjs';
+import { readJsonSafe } from '../infra/files.mjs';
+import { runtimeForSubject } from '../infra/runtime-paths.mjs';
 import { storeForSubject } from './daemon-events.mjs';
 function latestFileInDir(dirPath, predicate = () => true, { recursive = false } = {}) {
   if (!existsSync(dirPath)) return null;

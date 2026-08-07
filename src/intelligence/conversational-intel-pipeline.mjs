@@ -51,7 +51,7 @@ import {
   readPendingOperatorBriefs,
   summarizeOperatorBriefsForContext,
 } from './operator-briefs.mjs';
-import { resolveHostExternalRoots } from '../cli/utils/subjects.mjs';
+import { resolveHostExternalRoots } from '../infra/subjects.mjs';
 import {
   buildStandingMemoryExtraContext,
   formatDecisionBacklogForPrompt,

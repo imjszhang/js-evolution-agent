@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { runtimeForSubject } from '../cli/utils/evolve-runs.mjs';
+import { runtimeForSubject } from '../infra/runtime-paths.mjs';
 
 export function channelDirForSubject(root, subject) {
   return join(runtimeForSubject(root, subject).dataRoot, 'channel');

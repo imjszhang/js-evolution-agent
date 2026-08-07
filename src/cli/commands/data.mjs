@@ -1,6 +1,6 @@
 import { join, relative } from 'node:path';
 import { existsSync } from 'node:fs';
-import { getProjectRoot } from '../utils/project.mjs';
+import { getProjectRoot } from '../../infra/project.mjs';
 import { confirm } from '../utils/prompt.mjs';
 import {
   countFiles,
@@ -9,7 +9,7 @@ import {
   latestFile,
   removeProjectDir,
   writeJsonIfMissing,
-} from '../utils/files.mjs';
+} from '../../infra/files.mjs';
 import { extractMarkdownSection } from './subject.mjs';
 import { createIntelligenceStore } from '../../intelligence/store.mjs';
 import {
@@ -17,8 +17,8 @@ import {
   readSubjectPolicy,
   resolveSubjectFromFlags,
   runtimeInfoForSubject,
-} from '../utils/subjects.mjs';
-import { getLanguage, t, tObject } from '../utils/i18n.mjs';
+} from '../../infra/subjects.mjs';
+import { getLanguage, t, tObject } from '../../infra/i18n.mjs';
 
 const DATA_DIRS = [
   join('data', 'evolution'),

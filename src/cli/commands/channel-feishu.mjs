@@ -1,16 +1,16 @@
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { getProjectRoot, loadProjectEnv } from '../utils/project.mjs';
+import { getProjectRoot, loadProjectEnv } from '../../infra/project.mjs';
 import {
   formatEnvBlock,
   maskSecret,
   upsertEnvFile,
-} from '../utils/env-file.mjs';
+} from '../../infra/env-file.mjs';
 import {
   getSubjectEntry,
   readSubjectsRegistry,
   writeSubjectsRegistry,
-} from '../utils/subjects.mjs';
+} from '../../infra/subjects.mjs';
 import { subjectEnvSlug } from '../../channel/adapters/feishu/config.mjs';
 import { resolveFeishuConfig } from '../../channel/adapters/feishu/config.mjs';
 import { writeChannelReloadRequest } from '../../channel/state.mjs';

@@ -34,9 +34,9 @@ import { buildRoundDetail } from '../src/intelligence/evolution-viewer/round-det
 import { evolutionViewerPublicDir } from '../src/intelligence/evolution-viewer/runtime-build.mjs';
 import { resolveIntelReportPath } from '../src/intelligence/report-paths.mjs';
 import { createIntelligenceStore } from '../src/intelligence/store.mjs';
-import { createCycle } from '../src/cli/utils/cycle-state.mjs';
-import { createWorkerState } from '../src/cli/utils/daemon-worker-state.mjs';
-import { enqueueTask } from '../src/cli/utils/daemon-tasks.mjs';
+import { createCycle } from '../src/daemon/cycle-state.mjs';
+import { createWorkerState } from '../src/daemon/daemon-worker-state.mjs';
+import { enqueueTask } from '../src/daemon/daemon-tasks.mjs';
 
 const TEST_SUBJECT = 'live-test';
 

@@ -1,7 +1,7 @@
-import { getProjectRoot } from '../utils/project.mjs';
+import { getProjectRoot } from '../../infra/project.mjs';
 import { REQUIRED_POLICY_SECTIONS } from '../utils/policy-sections.mjs';
 import { extractMarkdownSection } from './subject.mjs';
-import { readSubjectPolicy, resolveSubjectFromFlags } from '../utils/subjects.mjs';
+import { readSubjectPolicy, resolveSubjectFromFlags } from '../../infra/subjects.mjs';
 
 export { REQUIRED_POLICY_SECTIONS };
 

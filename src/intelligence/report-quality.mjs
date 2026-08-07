@@ -2,7 +2,7 @@
  * Mechanical quality metrics for Intel report judgement sections.
  * Used by live honesty matrix evaluation and production report repair.
  */
-import { extractMarkdownSection } from '../cli/utils/markdown-sections.mjs';
+import { extractMarkdownSection } from '../infra/markdown-sections.mjs';
 import {
   auditIntelReportEvidenceHonesty,
   extractBracketRefs,

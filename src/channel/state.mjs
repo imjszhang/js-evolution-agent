@@ -8,7 +8,7 @@ import {
 } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { readJsonSafe, writeJsonFile } from '../cli/utils/files.mjs';
+import { readJsonSafe, writeJsonFile } from '../infra/files.mjs';
 import {
   readJson,
   updateJson,

@@ -25,4 +25,4 @@ export {
   subjectsRuntimeDir,
   writeSubjectsRegistry,
   readSubjectsRegistry,
-} from '../../cli/utils/subjects.mjs';
+} from '../../infra/subjects.mjs';

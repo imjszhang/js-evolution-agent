@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { defaultWorkBranchPrefixForSubject } from '../cli/utils/subjects.mjs';
+import { defaultWorkBranchPrefixForSubject } from '../infra/subjects.mjs';
 
 function normalizePathForCompare(filePath) {
   if (!filePath) return '';

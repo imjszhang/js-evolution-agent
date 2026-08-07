@@ -2,15 +2,15 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import lockfile from 'proper-lockfile';
-import { writeJsonAtomic } from './atomic-json-write.mjs';
+import { writeJsonAtomic } from '../infra/atomic-json-write.mjs';
 import { runtimeForSubject, nowIso, parsePositiveInt } from './evolve-runs.mjs';
 import { ALL_CYCLE_STEP_TYPES, CYCLE_STEP_TYPES, stepIdempotencyKey } from './cycle-reducer.mjs';
 import {
   handleContractValidation,
   validateDaemonTask,
-} from '../../contracts/index.mjs';
+} from '../contracts/index.mjs';
 
-export { QueueWriteError, isQueueWriteError } from './atomic-json-write.mjs';
+export { QueueWriteError, isQueueWriteError } from '../infra/atomic-json-write.mjs';
 
 export { CYCLE_STEP_TYPES, ALL_CYCLE_STEP_TYPES };
 

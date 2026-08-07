@@ -2,7 +2,7 @@ import { describe, expect, it, afterEach } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { upsertEnvFile, formatEnvBlock, maskSecret } from '../src/cli/utils/env-file.mjs';
+import { upsertEnvFile, formatEnvBlock, maskSecret } from '../src/infra/env-file.mjs';
 
 let tempDir = null;
 

@@ -1,9 +1,11 @@
 import { join } from 'node:path';
-import { createIntelligenceStore } from '../intelligence/store.mjs';
-import { writePendingOperatorBrief } from '../intelligence/operator-briefs.mjs';
-import { writePendingOperatorFact } from '../intelligence/operator-facts.mjs';
-import { runtimeForSubject } from '../cli/utils/evolve-runs.mjs';
-import { enqueueCycleStartRequestWithEvent } from '../cli/utils/cycle-dispatch.mjs';
+import {
+  createIntelligenceStore,
+  writePendingOperatorBrief,
+  writePendingOperatorFact,
+} from '../intelligence/channel-api.mjs';
+import { runtimeForSubject } from '../infra/runtime-paths.mjs';
+import { enqueueCycleStartRequestWithEvent } from '../daemon/cycle-dispatch.mjs';
 import {
   buildControlRequestFromParsed,
   parseControlRequestFromText,

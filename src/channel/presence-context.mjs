@@ -1,11 +1,15 @@
 import { join } from 'node:path';
-import { createIntelligenceStore } from '../intelligence/store.mjs';
-import { readPendingOperatorBriefs, summarizeOperatorBriefsForContext } from '../intelligence/operator-briefs.mjs';
-import { partitionBeliefs, summarizeBeliefForPrompt } from '../intelligence/beliefs.mjs';
-import { buildDaemonProjection } from '../cli/utils/daemon-projection.mjs';
-import { storeForSubject } from '../cli/utils/daemon-events.mjs';
-import { buildSubjectArtifactOverview } from '../cli/utils/subject-artifacts.mjs';
-import { runtimeForSubject } from '../cli/utils/evolve-runs.mjs';
+import {
+  createIntelligenceStore,
+  partitionBeliefs,
+  readPendingOperatorBriefs,
+  summarizeBeliefForPrompt,
+  summarizeOperatorBriefsForContext,
+} from '../intelligence/channel-api.mjs';
+import { buildDaemonProjection } from '../daemon/daemon-projection.mjs';
+import { storeForSubject } from '../daemon/daemon-events.mjs';
+import { buildSubjectArtifactOverview } from '../daemon/subject-artifacts.mjs';
+import { runtimeForSubject } from '../infra/runtime-paths.mjs';
 import { getActiveGoals } from '../cli/commands/goals.mjs';
 import { getCurrentBeliefs } from '../cli/commands/beliefs.mjs';
 import { resolveSubjectReplyIdentity } from './subject-identity.mjs';

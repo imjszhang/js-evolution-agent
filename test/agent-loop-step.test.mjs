@@ -6,7 +6,7 @@ import { MockToolsAIClient } from '../src/ai/mock-tools-client.mjs';
 import { createIntelligenceStore } from '../src/intelligence/store.mjs';
 import { actionRegistry } from '../src/actions/registry.mjs';
 import { runAgentLoopStep, runExecStep, runVerifyStep } from '../src/evolution/cycle-steps.mjs';
-import { loadCycleStepContext } from '../src/cli/utils/cycle-checkpoints.mjs';
+import { loadCycleStepContext } from '../src/daemon/cycle-checkpoints.mjs';
 import { writePendingOperatorBrief } from '../src/intelligence/operator-briefs.mjs';
 import { queueAnalyzeDecideActions } from '../src/intelligence/phase1-shared.mjs';
 import { createHostDecisionQueue } from '../src/intelligence/decision-queue.mjs';

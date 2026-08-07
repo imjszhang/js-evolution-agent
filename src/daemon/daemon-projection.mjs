@@ -1,6 +1,6 @@
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { writeJson } from '../../infra/json-store.mjs';
+import { writeJson } from '../infra/json-store.mjs';
 import { runtimeForSubject } from './evolve-runs.mjs';
 import { readTaskQueue, summarizeTaskQueue } from './daemon-tasks.mjs';
 import { readWorkerState, summarizeWorkerState } from './daemon-worker-state.mjs';
@@ -8,7 +8,7 @@ import { buildCycleProjection } from './cycle-dispatch.mjs';
 import { findStuckSteps, findStepStateDrift, getLastClosedCycle, isCycleProgressStalled, listOpenCycles, summarizeCycleState } from './cycle-state.mjs';
 import { readPendingCycleStartRequest } from './cycle-start-requests.mjs';
 import { resolveEvolutionMode } from './evolution-mode.mjs';
-import { buildChannelProjection } from '../../channel/projection.mjs';
+import { buildChannelProjection } from '../channel/projection.mjs';
 
 export function daemonViewsDir(root, subject) {
   return join(runtimeForSubject(root, subject).evolutionDir, 'views');

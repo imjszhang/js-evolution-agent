@@ -1,13 +1,13 @@
-import { getProjectRoot, loadProjectEnv } from '../cli/utils/project.mjs';
+import { getProjectRoot, loadProjectEnv } from '../infra/project.mjs';
 import {
   acquireSubjectLock,
   describeSubjectLockHealth,
   isSubjectLocked,
   parsePositiveInt,
   withSubjectLock,
-} from '../cli/utils/evolve-runs.mjs';
-import { hasMultiSubjectSelection, selectSubjects } from '../cli/utils/subject-selection.mjs';
-import { buildSubjectArtifactOverview } from '../cli/utils/subject-artifacts.mjs';
+} from './evolve-runs.mjs';
+import { hasMultiSubjectSelection, selectSubjects } from '../infra/subject-selection.mjs';
+import { buildSubjectArtifactOverview } from '../daemon/subject-artifacts.mjs';
 import { buildLinkHealthSummary } from '../infra/links/index.mjs';
 import {
   acknowledgeTask,
@@ -23,9 +23,9 @@ import {
   renewTaskLease,
   releaseTaskForRetry,
   retryTask,
-} from '../cli/utils/daemon-tasks.mjs';
-import { buildDaemonProjection, writeDaemonProjection } from '../cli/utils/daemon-projection.mjs';
-import { recordDaemonEvent, storeForSubject } from '../cli/utils/daemon-events.mjs';
+} from './daemon-tasks.mjs';
+import { buildDaemonProjection, writeDaemonProjection } from './daemon-projection.mjs';
+import { recordDaemonEvent, storeForSubject } from './daemon-events.mjs';
 import {
   createWorkerState,
   defaultWorkerId,
@@ -35,7 +35,7 @@ import {
   readWorkerState,
   requestWorkerStop,
   updateWorkerHeartbeat,
-} from '../cli/utils/daemon-worker-state.mjs';
+} from './daemon-worker-state.mjs';
 import {
   classifyCycleFailure,
   resolveStepOutcome,
@@ -46,20 +46,20 @@ import {
 import {
   checkSubjectLaneReady,
   printSubjectLaneGuardFailure,
-} from '../cli/utils/subject-lane-guard.mjs';
+} from '../infra/subject-lane-guard.mjs';
 import {
   isStepArtifactComplete,
   markStepRunning,
   readCycleState,
-} from '../cli/utils/cycle-state.mjs';
+} from './cycle-state.mjs';
 import {
   dispatchAfterStepCompletion,
   enqueueCycleStartRequestWithEvent,
   processCycleStartRequests,
   runHeartbeatTick,
-} from '../cli/utils/cycle-dispatch.mjs';
-import { resolveEvolutionMode } from '../cli/utils/evolution-mode.mjs';
-import { applyEvolutionModeChange } from '../cli/utils/evolution-mode-apply.mjs';
+} from './cycle-dispatch.mjs';
+import { resolveEvolutionMode } from './evolution-mode.mjs';
+import { applyEvolutionModeChange } from './evolution-mode-apply.mjs';
 import {
   stopFeishuListener,
   refreshChannelFeishuListener,

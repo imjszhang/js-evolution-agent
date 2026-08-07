@@ -9,7 +9,7 @@ import {
   it,
 } from 'vitest';
 import { parseArgv } from '../src/cli/utils/args.mjs';
-import { readJsonSafe, removeProjectDir, writeJsonFile } from '../src/cli/utils/files.mjs';
+import { readJsonSafe, removeProjectDir, writeJsonFile } from '../src/infra/files.mjs';
 import { extractMarkdownSection } from '../src/cli/commands/subject.mjs';
 import {
   collectValidActionNames,
@@ -88,7 +88,7 @@ import {
   readDefaultSubjectPolicy,
   setDefaultSubject,
   migrateSubjectsToRuntime,
-} from '../src/cli/utils/subjects.mjs';
+} from '../src/infra/subjects.mjs';
 import {
   appendRunEvent,
   attachCycleIdToRound,
@@ -100,7 +100,7 @@ import {
   runtimeForSubject,
   saveRunManifest,
   summarizeManifest,
-} from '../src/cli/utils/evolve-runs.mjs';
+} from '../src/daemon/evolve-runs.mjs';
 import {
   acknowledgeTask,
   claimNextTask,
@@ -111,22 +111,22 @@ import {
   readTaskQueue,
   renewTaskLease,
   retryTask,
-} from '../src/cli/utils/daemon-tasks.mjs';
+} from '../src/daemon/daemon-tasks.mjs';
 import {
   buildDaemonProjection,
   currentStatePath,
   writeDaemonProjection,
-} from '../src/cli/utils/daemon-projection.mjs';
+} from '../src/daemon/daemon-projection.mjs';
 import {
   createWorkerState,
   readWorkerState,
   requestWorkerStop,
   workerStatePath,
-} from '../src/cli/utils/daemon-worker-state.mjs';
+} from '../src/daemon/daemon-worker-state.mjs';
 import { daemonCommand, runDaemonWorker, workOnce } from '../src/cli/commands/daemon.mjs';
-import { selectSubjects } from '../src/cli/utils/subject-selection.mjs';
-import { buildSubjectArtifactOverview } from '../src/cli/utils/subject-artifacts.mjs';
-import { checkSubjectLaneReady } from '../src/cli/utils/subject-lane-guard.mjs';
+import { selectSubjects } from '../src/infra/subject-selection.mjs';
+import { buildSubjectArtifactOverview } from '../src/daemon/subject-artifacts.mjs';
+import { checkSubjectLaneReady } from '../src/infra/subject-lane-guard.mjs';
 import {
   configuredActionToSpec,
   loadSubjectActionConfig,

@@ -1,5 +1,5 @@
-import { getProjectRoot } from '../utils/project.mjs';
-import { resolveSubjectFromFlags, runtimeInfoForSubject } from '../utils/subjects.mjs';
+import { getProjectRoot } from '../../infra/project.mjs';
+import { resolveSubjectFromFlags, runtimeInfoForSubject } from '../../infra/subjects.mjs';
 import {
   formatOperatorQuestionsForPrompt,
   operatorQuestionDisplayName,

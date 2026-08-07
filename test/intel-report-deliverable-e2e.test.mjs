@@ -11,10 +11,10 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { writeJsonFile } from '../src/cli/utils/files.mjs';
+import { writeJsonFile } from '../src/infra/files.mjs';
 import { initData } from '../src/cli/commands/data.mjs';
-import { runtimeForSubject } from '../src/cli/utils/evolve-runs.mjs';
-import { createCycle, readStepArtifact } from '../src/cli/utils/cycle-state.mjs';
+import { runtimeForSubject } from '../src/daemon/evolve-runs.mjs';
+import { createCycle, readStepArtifact } from '../src/daemon/cycle-state.mjs';
 import {
   buildCycleContext,
   runAgentLoopStep,

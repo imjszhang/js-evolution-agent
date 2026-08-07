@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { runChannelAgentRunTask } from '../src/channel/agent-runner.mjs';
 import { runChannelNotifyTask } from '../src/channel/tasks.mjs';
-import { getProjectRoot, loadProjectEnv } from '../src/cli/utils/project.mjs';
+import { getProjectRoot, loadProjectEnv } from '../src/infra/project.mjs';
 
 const root = getProjectRoot();
 loadProjectEnv(root);
