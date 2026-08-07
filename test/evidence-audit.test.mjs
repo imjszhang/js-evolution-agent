@@ -4,10 +4,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   buildEvidenceIndex,
+  evidenceRefExists,
   parseCountOption,
   parseRef,
   runEvidenceAudit,
   runEvidenceAuditQuick,
+  stripEvidenceRefBrackets,
 } from '../src/intelligence/evidence-audit.mjs';
 
 let tempDir = null;
@@ -152,6 +154,34 @@ describe('parseRef', () => {
     expect(parseCountOption('0', 5)).toBe(0);
     expect(parseCountOption(undefined, 5)).toBe(5);
     expect(parseCountOption('nope', 5)).toBe(5);
+  });
+});
+
+describe('evidenceRefExists', () => {
+  it('strips brackets and accepts refs present in the index', () => {
+    const dataRoot = makeDataRoot();
+    seedHealthyFixture(dataRoot);
+    const index = buildEvidenceIndex({ dataRoot });
+    const id = 'receipt-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+
+    expect(stripEvidenceRefBrackets(`[action_receipts:${id}]`)).toBe(`action_receipts:${id}`);
+    expect(evidenceRefExists(`[action_receipts:${id}]`, index)).toBe(true);
+    expect(evidenceRefExists(`action_receipts:${id}`, index)).toBe(true);
+    expect(evidenceRefExists(`action_receipt:${id}`, index)).toBe(true);
+  });
+
+  it('rejects missing evidence, skip types, unknown types, and dangling ids', () => {
+    const dataRoot = makeDataRoot();
+    seedHealthyFixture(dataRoot);
+    const index = buildEvidenceIndex({ dataRoot });
+
+    expect(evidenceRefExists(null, index)).toBe(false);
+    expect(evidenceRefExists('', index)).toBe(false);
+    expect(evidenceRefExists('[action_receipts:receipt-missing]', index)).toBe(false);
+    expect(evidenceRefExists('[machine_context:decision_queue]', index)).toBe(false);
+    expect(evidenceRefExists('[not_a_store:foo]', index)).toBe(false);
+    expect(evidenceRefExists('[action_receipts:receipt-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee]', null)).toBe(false);
+    expect(evidenceRefExists('[action_receipts:receipt-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee]', {})).toBe(false);
   });
 });
 

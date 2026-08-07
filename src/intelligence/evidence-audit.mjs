@@ -220,6 +220,39 @@ export function parseRef(raw) {
   return null;
 }
 
+/**
+ * Strip surrounding `[…]` from a narrative typed-ref form.
+ * @param {unknown} raw
+ * @returns {string}
+ */
+export function stripEvidenceRefBrackets(raw) {
+  const text = String(raw ?? '').trim();
+  if (text.startsWith('[') && text.endsWith(']') && text.length >= 2) {
+    return text.slice(1, -1).trim();
+  }
+  return text;
+}
+
+/**
+ * True when `raw` parses as a store typed ref whose id exists in `sets`
+ * (from {@link buildEvidenceIndex}). Bracketed forms like
+ * `[action_receipts:receipt-…]` are accepted. Skip / unknown types fail.
+ *
+ * @param {unknown} raw
+ * @param {{ sets?: Map<string, Set<string>> }|null|undefined} index
+ * @returns {boolean}
+ */
+export function evidenceRefExists(raw, index = null) {
+  const sets = index?.sets;
+  if (!(sets instanceof Map)) return false;
+  const stripped = stripEvidenceRefBrackets(raw);
+  if (!stripped) return false;
+  const parsed = parseRef(stripped);
+  if (!parsed || parsed.skip || parsed.unknownType) return false;
+  if (!parsed.type || !parsed.id) return false;
+  return sets.get(parsed.type)?.has(parsed.id) === true;
+}
+
 function loadJsonlIds(absPath, { idFields = ['id'] } = {}) {
   const ids = new Set();
   for (const row of readJsonlSafe(absPath)) {

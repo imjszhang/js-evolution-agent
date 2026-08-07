@@ -1732,6 +1732,7 @@ export async function runDiaryStep(ctx, {
         diaryBullets,
         stepStatusSnapshot,
         retirements,
+        dataRoot: runtime.dataRoot,
       });
       if (Array.isArray(merged.dropped) && merged.dropped.length) {
         const byReason = merged.dropped.reduce((acc, item) => {
