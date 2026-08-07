@@ -1,0 +1,297 @@
+# Channel 通道（channel）
+
+本文件是 `src/channel` 模块的操作指引，由根 AGENTS.md 拆分而来。全局内容（基础用法、环境与诊断、运行时数据、Subject 管理、操作建议）见根 [AGENTS.md](../../AGENTS.md)；模块 ownership 与契约规则见 [OWNERSHIP.md](../contracts/OWNERSHIP.md)。
+
+Channel 是 daemon 下与 cycle 平级的通信闭环，负责接收外部消息、写入合适的情报入口，并观察运行态决定是否向外部通道通知。当前飞书适配器位于 `src/channel/adapters/feishu/`（基于 `@larksuiteoapi/node-sdk`，参考 Deepseek-Cowork `feishu-module` 的传输层实现，**不**依赖 OpenClaw 或 Cowork AI/ChannelBridge）。
+
+运行时数据位于：
+
+```text
+runtime/subjects/<data_namespace>/data/channel/
+├── worker-state.json
+├── tasks/pending_tasks.json
+├── events.jsonl
+├── reload-request.json          # setup 完成后写入；daemon 消费后移除
+├── reload-state.json            # 最近一次 listener reload 状态
+├── feishu-operator-binding.json # JEA BIND 结果
+├── feishu-register-qr.png       # setup 扫码注册时生成的二维码图片
+├── inbound/pending|processed|failed/
+└── outbox/pending|sent|failed/
+```
+
+常用命令：
+
+- `jea channel feishu setup --subject NAME [--write-env] [--init-subject-config]`：一键扫码注册飞书应用、写入 subject 凭据 env、生成 BIND 口令、写入 reload 请求（推荐新 subject 首选入口）。
+- `jea channel feishu register --subject NAME [--write-env] [--force]`：仅注册应用并拿凭据，不写 reload 请求、不自动生成 BIND 口令。
+- `jea channel status [--json]`：查看 channel worker、队列、inbound/outbox 健康。
+- `jea channel events [--limit N] [--json]`：查看 channel 审计事件。
+- `jea channel inbox put [--file PATH | --stdin]`：放入 `inbound/pending` 并入队 `channel_classifier`；Presence 只在分类完成后重算表达候选。
+- `jea channel outbox [--json]`：查看待发送消息。
+- `jea channel send --to CHAT_ID --text TEXT [--dry-run]`：手工排队或预览一条出站消息。
+- `jea channel tick`：运行一次 channel dispatcher，按 pending inbound、attention signals、outbox 入队任务。
+- `jea channel doctor [--json]`：诊断 channel worker 与任务队列；`--purge-deprecated --yes` 取消队列中 pending 的废弃任务。
+- `jea channel queue purge-deprecated [--yes]`：预览或取消 `channel_ingest` / `channel_reply` / `channel_watch` pending 任务。
+
+### 飞书快速部署（新 subject）
+
+依赖 `@larksuiteoapi/node-sdk`（`registerApp` 需 ≥ 1.61.1）与 `qrcode`（终端/PNG 二维码）。若 `npm install` 遇 peer 冲突，可用 `npm install --legacy-peer-deps`。
+
+典型流程：
+
+```powershell
+jea subject init my-bot
+jea data init --all --subject my-bot
+jea channel feishu setup --subject my-bot --write-env --init-subject-config
+jea daemon start --subject my-bot --domain channel
+```
+
+setup 会：
+
+1. 调用 SDK `registerApp()`，在终端打印 ASCII 二维码，并保存/打开 PNG：`runtime/subjects/<ns>/data/channel/feishu-register-qr.png`。
+2. 将 `client_id` / `client_secret` 写入 `.env` 的 `JEA_CHANNEL_FEISHU_<SUBJECT>_APP_ID` / `_APP_SECRET`（同名 key 已存在且值不同需 `--force`）。
+3. 若未配置 BIND 口令，自动生成 `JEA_CHANNEL_FEISHU_<SUBJECT>_BIND_TOKEN`。
+4. 可选 `--init-subject-config` 写入 `subjects.json` 最小 `channels.feishu` skeleton（Secret 不进 JSON）。
+5. 写入 `reload-request.json`，供运行中的 channel daemon 热加载。
+
+扫码完成后，在飞书**私聊**新机器人发送：
+
+```text
+JEA BIND <口令>
+```
+
+口令来自 `.env` 的 `JEA_CHANNEL_FEISHU_<SUBJECT>_BIND_TOKEN`（setup 会生成）。绑定成功后写入 `feishu-operator-binding.json`，并作为默认出站目标。
+
+setup/register 可选参数：
+
+| 参数 | 含义 |
+| --- | --- |
+| `--write-env` | 写入/更新项目根 `.env`（setup 默认开启；register 默认只打印） |
+| `--force` | 覆盖 `.env` 中已有同名 key |
+| `--init-subject-config` | 自动补齐 `subjects.json` 的 `channels.feishu` skeleton |
+| `--no-qr` | 不渲染终端二维码 |
+| `--no-qr-image` | 不生成 PNG |
+| `--no-open-qr` | 生成 PNG 但不自动用系统查看器打开 |
+| `--json` | 机器可读输出（不打印二维码） |
+
+验收建议：
+
+```powershell
+jea channel doctor --subject my-bot
+jea channel events --subject my-bot --limit 20
+```
+
+`channel status` 里的 `feishu.listener.running` 在**独立 CLI 进程**中查询时可能为 `false`（listener 状态在 daemon 进程内存中）；以 `channel events` 中的 `feishu_listener_started` / `feishu_listener_connected` / `channel_message_received` 为准。
+
+### 配置热更新（channel daemon 运行中）
+
+channel worker 每轮 loop 会：
+
+- 重新加载项目根 `.env`（`loadProjectEnv`）。
+- 消费 `reload-request.json`。
+- 调用 `ensureFeishuListener()`：凭据/domain/listener 开关变化时自动重启 WS listener；仅 allowlist、bind、operator binding 变化时只刷新 policy，不重连。
+
+因此 **setup 写入 `.env` 后，已运行的 `jea daemon start --domain channel` 通常无需重启**；数秒内应出现 `feishu_listener_started` 或 `channel_config_reloaded` 事件。
+
+仍会触发 listener 重建的变化：`app_id`、`app_secret`、`domain`、`encrypt_key`、`verification_token`、`enabled` / `listenerEnabled` 开关。
+
+`channel status --json` 的 `feishu.reload` 字段可查看 pending reload、`last_error`、`config_fingerprint`。
+
+入站分类边界（由 **`channel_classifier`** 批量 LLM/规则分类，不再在 presence 内同步正则分类）：
+
+- 审批/发布类话语 → `approval_request` operator brief（软意图，非 `approval_granted`）。
+- 已确认长期口径 → `operator_fact`（高置信且措辞明确时；否则降级为 observation）。
+- 待核实或下一轮关注 → `verification_request` brief。
+- 明确的本地控制命令 → `control_request`（见下文 Channel Control Actions）。
+- 普通外部消息 → `intel_observations` 作为可推翻 evidence。
+- 飞书 listener / `inbox put` 只写 `inbound/pending`；分类由 classifier role 按固定 `interval_ms` 批量处理（`batch_size` 上限，旧到新，超出留待下批）。
+
+出站由 **`channel_notify`** 独立任务 flush（outbox 有货即可入队，不依赖 presence 决策完成）；**所有对外表达**由 presence reactor 两阶段产出：`speech_intent`（决策）→ `channel_speech_generation`（人设/LLM 生成正文）→ outbox。旧 `channel_reply` / `channel_watch` / **`channel_ingest`** 任务类型已废弃；队列中若仍有，`jea channel doctor` 会提示 cancel。
+
+### Channel Classifier（`channels.classifier`，固定频率批量）
+
+**`channel_classifier` 任务**（classifier role worker 领取）：
+
+1. 从 `inbound/pending` 按时间顺序取最多 `batch_size` 条
+2. BIND / duplicate 机械处理（不进 LLM batch）
+3. LLM（或 `deterministic` 回退）批量输出受限 schema：`approval_request` / `verification_request` / `operator_fact` / `control_request` / `observation` / `ignore`，以及每条非 `ignore` 项的 **`understanding`** 对象（`user_intent`、`needs_immediate_action`、`action_hint`、`temporal`、`complexity`）；deterministic 回退用规则推断同等字段
+4. 写入 brief / fact / control task / observation 并移到 `processed`（`classifier.understanding` 保留在 processed JSON）；失败按 `fallback` 保留 pending 或降级 observation
+5. 非 `control_request` 分类完成后 `requestExpressionRecompute`（`reason: inbound_classified`）；`control_request` 由 control executor 完成后唤醒 presence
+
+协调器按 `classifier.interval_ms` 调度入队（幂等键 `${subject}:channel_classifier:pending`）；与 presence tick（默认 5min）独立。
+
+`runtime/subjects/registry.json` 示例：
+
+```json
+"classifier": {
+  "enabled": true,
+  "mode": "llm",
+  "interval_ms": 30000,
+  "batch_size": 20,
+  "timeout_ms": 25000,
+  "fallback": "observation"
+}
+```
+
+- `mode`: `llm` | `deterministic` | `mock`（无 API key 时 deterministic 回退）
+- `fallback`: `observation`（批内缺项降级）| `retry`（保留 pending 下轮重试）
+
+### Channel Control Actions（`control_request` + `channel_control_action`）
+
+Classifier 识别 `control_request` 后**不直接执行**配置变更，而是入队 `channel_control_action` 任务，由 **control role worker** 通过白名单 registry 执行。
+
+首批注册动作：
+
+| action_id | 含义 | 写操作 | 需要授权 |
+| --- | --- | --- | --- |
+| `daemon_evolution_mode_set` | 切换 `continuous` / `on_demand` | 是 | operator binding 或 allowlist |
+| `daemon_evolution_mode_show` | 查看当前 evolution mode | 否 | 否 |
+| `daemon_cycle_request` | 入队 cycle start request | 是 | operator binding 或 allowlist |
+
+约束：
+
+- Classifier 只能输出注册过的 `action_id` + 明确 `params`；高置信才允许写类 action；未知 action / 低置信 / 非法参数会进入 control executor 失败审计，而不是静默降级。
+- Presence planner **不能**直接改 evolution mode；只能基于 control executor 的审计事件回复结果。
+- 远端发布、`approval_granted`、凭据、subject policy 仍不可通过 channel 自动执行。
+
+默认 channel daemon roles：`notify` / `control` / `agent` / `presence` / `speech` / `classifier`。升级后需重启 channel daemon。
+
+### Channel Presence Loop（`channels.presence`，transport-agnostic，async reactor）
+
+外部刺激只请求「表达状态重算」：飞书 listener / `jea channel inbox put` 先写 `inbound/pending` 并入队 classifier；classifier 完成、presence tick、daemon attention 等统一 append `expression_recompute_requested` 并入队 `channel_presence`。**Presence 不读取 raw inbound，也不在 presence 路径分类 inbound。**
+
+**Bounded reactor**（`channel_presence` 任务 → `runPresenceReactor`）：
+
+1. claim 一批 channel events（合并多 wake）
+2. `buildPresenceContext`（读**已分类** processed、pending unclassified 计数、daemon signals、ignored/background context 等）
+3. 构建 `expression.candidates`：把可表达对象统一成 `reply.*` / `notify.*` candidates；`ignore` 只作背景，不生成 candidate
+4. `planPresence` → `no_op` / `speak` / `silence` / `act`；`speak` 只产出 `speech_intent`（**不写 outbox**）
+5. 对 `speech_intent` append `speech_generation_requested` 事件，入队 `channel_speech_generation`
+
+**内容生成**（`channel_speech_generation` → `runChannelSpeechGenerationTask`，speech role worker）：按 subject persona + `content_requirements` 生成最终文本，成功后 `writeOutboxMessage`；失败/超时记 `channel_speech_generation_failed` / `channel_presence_timeout`，不写 outbox。
+
+`runChannelTick`：presence tick（`reason: timer_tick` 的表达重算 + notify）；classifier tick 单独按 `interval_ms` 入队 classifier。默认多 role 下 notify / control / agent / presence / speech / classifier **并行领取**，互不阻塞。
+
+事件队列与审计 `events.jsonl` 分离。`jea channel status --json` 的 `presence.event_queue` / `presence.reactor` / `presence.pending_speech_generation` 可观测 reactor 与待生成话术。
+
+`runtime/subjects/registry.json` 示例：
+
+```json
+"channels": {
+  "presence": {
+    "enabled": true,
+    "planner": "llm",
+    "max_actions_per_tick": 2,
+    "cooldown_ms": 1800000,
+    "max_messages_per_hour": 8,
+    "timeout_ms": 60000,
+    "decision_timeout_ms": 15000,
+    "speech_generation_timeout_ms": 30000,
+    "default_target": "oc_xxx"
+  }
+}
+```
+
+- `enabled`: 设为 `false` 时 reactor 跳过表达（inbound 仍由 classifier 处理，若 classifier 启用）。
+- `planner`: `deterministic`（规则决定 `speech_intent` + 模板生成）或 `llm`（决策与生成均可调 DeepSeek）。
+- `timeout_ms` / `decision_timeout_ms` / `speech_generation_timeout_ms`: reactor 与两阶段 deadline；超时记 audit，worker 不永久卡死。
+- `cooldown_ms` / `max_messages_per_hour`: 出站节流（按 `channel_speech_generated` 计数）。
+- 游标 + reactor：`presence-state.json`（`handled_candidates`、`reactor.status|deadline_at|event_ids`、`pending_speech_generation`）。
+- 交互记忆：`intel_observations`（`source: channel_presence`）。
+- 审计：`channel_expression_recompute_requested` / `channel_expression_planned` / `channel_expression_noop` / `channel_expression_silenced` / `channel_speech_generated` / `channel_presence_completed` / `channel_presence_timeout` 等。
+- 决策动作：`speech_intent`（仅意图）、`start_agent_async`（只入队只读 `channel_agent_run`）、`write_operator_brief`、`record_observation`；表达计划可为 `no_op` / `speak` / `silence` / `act`，**不能**直接 `approval_granted` 或改 decision queue。
+- **Classifier understanding**：`expression.candidates` 可携带 `understanding`（来自 `inbound/processed` 的 `classifier` 字段）。LLM planner 据此决定 agent / brief；`needs_immediate_action=true` 时 **跳过** approval/verification 的 fast ack，进入完整审议；deterministic planner 在 `temporal=now` 且非 high complexity 时可自动 `start_agent_async`。
+
+**生产建议**：默认已分 role worker；仅需调试时用 `--channel-role` 启动子集。`--channel-role all` 恢复单 worker 消费全部任务类型。升级 channel 代码后需重启 channel daemon。
+
+手工跑一轮：`npm run jea -- channel presence run --subject NAME`。`jea channel work` 仅保留 `notify` 子命令（发送 pending outbox）。
+
+确定性 planner 默认行为（与旧 guarded reply 类似）：
+
+| 输入/信号 | 默认行为 |
+| --- | --- |
+| 新入站 `approval_request` | fast ack「已记录为下一轮审批意图」（若 `understanding.needs_immediate_action` 则改走 LLM 审议，可同时 agent） |
+| 新入站 `verification_request` | fast ack「已记录为下一轮核实请求」（同上） |
+| 新入站需立刻调查的 `observation` | deterministic：`start_agent_async` + ack（当 understanding 满足 now + 非 high） |
+| 新入站 `operator_fact` | ack「已记录为高置信 operator fact」 |
+| 新入站寒暄类 `observation` | 简短在场确认 |
+| 未 handled 的 `task_failed` / `daemon_health` / `cycle_drift` / `requires_human_review` 等 | 主动通知（受 cooldown） |
+
+修改 `channels.presence` 或 allowlist/bind 后，运行中的 channel daemon 会在下一轮 loop 读盘生效。修改 `app_id` / `app_secret` 或关闭 listener 时，daemon 会自动重建 WS 连接。**升级 JEA 代码后需重启 channel daemon。**
+
+### 私聊绑定（`JEA BIND`）
+
+仅私聊、未手填 `ou_` 时，可在 `channels.feishu.bind` 开启口令绑定。推荐用 `jea channel feishu setup` 自动生成 BIND 口令并写入 `.env`；也可手工设置。
+
+1. `.env` 设置 `JEA_CHANNEL_FEISHU_<SUBJECT>_BIND_TOKEN`（或 `subjects.json` 的 `bind.token_env`）。
+2. 启动 `jea daemon start --subject NAME --domain channel`（若已在运行，setup 写 env 后会通过 reload 热加载，通常无需重启）。
+3. 在飞书里**私聊**机器人，发送：`JEA BIND <口令>`（短语默认 `JEA BIND`，可在 `bind.phrase` 自定义）。
+4. 绑定结果写入 `runtime/subjects/<ns>/data/channel/feishu-operator-binding.json`，并自动作为 `allow_from` / 默认出站目标；`jea channel status --json` 的 `feishu.config.operator` 可查看（open_id 脱敏）。成功时 events 可见 `feishu_operator_bound`。
+
+未绑定前仅接受绑定握手消息；群聊可用 `group_policy: disabled` 关闭。覆盖他人绑定需再次发送带**同一口令**的 `JEA BIND`。
+
+飞书配置按 **subject 隔离**（每个 subject 可绑定不同机器人）。`app_secret` 不要明文写入 `subjects.json`，用 `app_secret_env` 指向环境变量名；`app_id` 可写在 JSON，或用 `app_id_env` / `JEA_CHANNEL_FEISHU_<SUBJECT>_APP_ID` 从环境读取。
+
+`runtime/subjects/registry.json` 示例（`my-subject` 与 `other-subject` 各用各的 bot）：
+
+```json
+{
+  "subjects": {
+    "my-subject": {
+      "channels": {
+        "feishu": {
+          "enabled": true,
+          "app_id_env": "JEA_CHANNEL_FEISHU_MY_SUBJECT_APP_ID",
+          "app_secret_env": "FEISHU_MY_SUBJECT_APP_SECRET",
+          "dm_policy": "allowlist",
+          "allow_from": [],
+          "group_policy": "allowlist",
+          "require_mention": true,
+          "bind": {
+            "enabled": true,
+            "phrase": "JEA BIND",
+            "token_env": "JEA_CHANNEL_FEISHU_MY_SUBJECT_BIND_TOKEN"
+          }
+        }
+      }
+    },
+    "other-subject": {
+      "channels": {
+        "feishu": {
+          "enabled": true,
+          "app_id": "cli_bbbb",
+          "app_secret_env": "FEISHU_OTHER_SUBJECT_APP_SECRET",
+          "default_chat_id": "oc_bbbb"
+        }
+      }
+    }
+  }
+}
+```
+
+`.env` 与上表 `my-subject` 对应的最小凭证示例：
+
+```env
+JEA_CHANNEL_FEISHU_MY_SUBJECT_APP_ID=cli_aaaa
+FEISHU_MY_SUBJECT_APP_SECRET=REPLACE_WITH_YOUR_APP_SECRET
+JEA_CHANNEL_FEISHU_MY_SUBJECT_BIND_TOKEN=choose-a-long-random-token
+```
+
+也可用 subject 前缀环境变量（无需在 JSON 里写 `app_id` / `app_id_env`）：
+
+| 变量模式 | 含义 |
+| --- | --- |
+| `JEA_CHANNEL_FEISHU_<SUBJECT>_APP_ID` | App ID（或与 `app_id_env` 配合）；如 `my-subject` → `JEA_CHANNEL_FEISHU_MY_SUBJECT_APP_ID` |
+| `FEISHU_<SUBJECT>_APP_SECRET` 或 `JEA_CHANNEL_FEISHU_<SUBJECT>_APP_SECRET` | App Secret（或与 `app_secret_env` 配合） |
+| `JEA_CHANNEL_FEISHU_<SUBJECT>_DEFAULT_CHAT_ID` | 该 subject 默认出站群 |
+| `JEA_CHANNEL_FEISHU_<SUBJECT>_BIND_TOKEN` | 私聊 `JEA BIND` 口令（或与 `bind.token_env` 配合） |
+
+`<SUBJECT>` 为 subject id 的 env slug：非字母数字替换为 `_` 并大写（见 `subjectEnvSlug()`）。
+
+全局变量（`JEA_CHANNEL_FEISHU_APP_ID` 等）仅作**未在 subject 块单独配置时**的回退，多主体并行时推荐只用 per-subject 配置。
+
+| 变量 | 含义 |
+| --- | --- |
+| `JEA_CHANNEL_FEISHU_MOCK=1` | 全部 subject 出站 mock |
+| `JEA_CHANNEL_FEISHU_DOMAIN` | 默认域名 `feishu` / `lark` |
+
+`jea daemon start --domain channel` 在凭证齐全时会为**当前 subject** 启动 Feishu WebSocket listener；多 subject 需分别启动 daemon 进程。禁用 listener：`--no-feishu-listener`。listener 是否在运行，优先看 `jea channel events` 中的 `feishu_listener_*` 事件，而非独立 CLI 进程的 `channel status`。

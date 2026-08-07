@@ -1,7 +1,7 @@
 # 模块解耦与多 Agent 并行维护实施计划
 
 - 日期：2026-08-07
-- 状态：实施中
+- 状态：已完成（含审查修复）
 - 范围：仅重组模块边界与依赖方向，不改变任何运行时行为与数据格式
 
 ### 实施进度
@@ -10,8 +10,10 @@
 | --- | --- | --- |
 | Phase A｜`cli/utils` 内核归位 | 已实施 | #27 |
 | Phase B｜channel → intelligence 收口 | 已实施 | #28 |
-| Phase C｜契约冻结与 ownership | 已实施（见 `src/contracts/OWNERSHIP.md`） | 本阶段 PR |
-| Phase D｜AGENTS.md 拆分 | 已实施 | 后续 PR |
+| Phase C｜契约冻结与 ownership | 已实施（见 `src/contracts/OWNERSHIP.md`） | #29 |
+| Phase D｜AGENTS.md 拆分 | 已实施 | #30 |
+
+> §2「现状依赖分析」保留实施前基线快照，便于对照；落地结果以本节进度表与 `src/contracts/OWNERSHIP.md` 为准。
 
 ## 1. 背景与目标
 
@@ -124,7 +126,7 @@ flowchart BT
    - `daemon-tasks.mjs`、`daemon-events.mjs`、`daemon-projection.mjs`、`daemon-worker-state.mjs`
    - `cycle-state.mjs`、`cycle-dispatch.mjs`、`cycle-reducer.mjs`、`cycle-checkpoints.mjs`、`cycle-start-requests.mjs`、`cycle-pipeline-mode.mjs`
    - `evolution-mode.mjs`、`evolution-mode-apply.mjs`、`evolve-runs.mjs`
-3. 留在 `src/cli/utils`（纯 CLI）：`args.mjs`、`prompt.mjs`、`i18n.mjs`、`register-qr.mjs`、`policy-sections.mjs` 等只被 `cli/commands` 引用的文件。
+3. 留在 `src/cli/utils`（纯 CLI）：`args.mjs`、`prompt.mjs`、`register-qr.mjs`、`policy-sections.mjs`（`i18n.mjs` 随 `subjects.mjs` 一并迁入 `src/infra`）。
 4. 全仓 import 路径机械改写（约 60+ 处非 CLI 引用 + `cli/commands` 内部引用）；每个被移动文件可先留 re-export shim 过渡，全部改写完成后删除 shim。
 
 **边界判定原则**：一个文件若被 ≥2 个业务模块引用则进 `src/infra`；只被 daemon/cycle 编排引用则进 `src/daemon`；只被 CLI 命令引用则留下。上面的清单按当前实测引用关系初分，迁移时以实际 `rg` 结果为准微调。
@@ -143,18 +145,18 @@ flowchart BT
 
 **改动范围**：
 
-1. 新建情报写入门面（建议 `src/intelligence/ingest-api.mjs`，或独立 `src/intelligence/facade/`），只导出 channel 需要的能力：
+1. 新建情报写入门面 `src/intelligence/channel-api.mjs`，只导出 channel 需要的能力：
    - operator brief 写入（`operator-briefs.mjs` 的 put）
    - operator fact 写入（`operator-facts.mjs` 的 put）
    - observation ingest（`store.mjs` 的写路径）
-   - 只读查询（presence context 需要的最近情报摘要）
-2. channel 的 12 处直接 import（分布在 `classifier.mjs`、`presence-context.mjs`、`presence-memory.mjs`、`ingest.mjs` 等）全部改走门面。
+   - 只读查询（presence context 需要的最近情报摘要 / belief 摘要 / redaction）
+2. channel 的 12 处直接 import（分布在 `presence-context.mjs`、`presence-decision-executor.mjs`、`ingest.mjs`、`notify.mjs`、`deliverable.mjs`、`agent-runner.mjs`）全部改走门面。
 3. 门面的函数签名冻结为契约级 API：变更需内核 owner 评审。
 
 **验收标准**：
 
 - `channel*.test.mjs`、`feishu-*.test.mjs`、`channel-adapter-registry.test.mjs` 全绿
-- `rg "from ['\"].*intelligence/(?!ingest-api|facade)" src/channel` 结果为空（即只剩门面引用）
+- `rg "from ['\"].*intelligence/(?!channel-api)" src/channel` 结果为空（即只剩门面引用）
 
 **风险**：中等；12 处调用点替换，语义不变。注意 `classifier` 的 fact/brief 写入路径与 CLI `jea intel fact put` 共用底层实现，门面必须复用同一实现而不是复制。
 

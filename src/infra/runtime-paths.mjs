@@ -1,20 +1,7 @@
-// Kernel-level subject runtime path helpers + subject lock wrappers.
-// Extracted from cli/utils/evolve-runs.mjs so that non-orchestration modules
-// (channel, intelligence, actions) can resolve subject runtime paths without
-// depending on the daemon/evolve orchestration layer.
+// Kernel-level subject runtime path helpers.
+// Intentionally has NO dependency on subject-lock or daemon modules so that
+// channel/intelligence/actions can resolve paths without pulling orchestration.
 import { join } from 'node:path';
-import {
-  acquireSubjectLockAt,
-  describeSubjectLockHealthAt,
-  formatSubjectLockConflictMessageAt,
-  inspectSubjectLockAt,
-  isSubjectLockHeldAt,
-  resolveSubjectLockStaleMs,
-  resolveSubjectLockUpdateMs,
-  SUBJECT_LOCK_DAEMON_STALE_MS_DEFAULT,
-  SUBJECT_LOCK_RUN_STALE_MS,
-  withSubjectLockAt,
-} from './subject-lock.mjs';
 import {
   defaultSubjectEntry,
   getDataNamespace,
@@ -66,43 +53,3 @@ export function runtimeForSubject(root, subject) {
     goalsDir: join(dataRoot, 'goals'),
   };
 }
-
-export function subjectLockPath(root, subject) {
-  const runtime = runtimeForSubject(root, subject);
-  return join(runtime.evolutionDir, '.evolve.lock');
-}
-
-export function inspectSubjectLock(root, subject, options = {}) {
-  return inspectSubjectLockAt(subjectLockPath(root, subject), { ...options, root, subject });
-}
-
-export function isSubjectLocked(root, subject, options = {}) {
-  const lockTarget = subjectLockPath(root, subject);
-  const staleMs = options.staleMs ?? SUBJECT_LOCK_DAEMON_STALE_MS_DEFAULT;
-  return isSubjectLockHeldAt(lockTarget, { staleMs });
-}
-
-export function formatSubjectLockConflictMessage(root, subject) {
-  return formatSubjectLockConflictMessageAt(root, subject, subjectLockPath(root, subject));
-}
-
-export async function acquireSubjectLock(root, subject, options = {}) {
-  const lockTarget = subjectLockPath(root, subject);
-  return acquireSubjectLockAt(lockTarget, { ...options, root, subject });
-}
-
-export async function withSubjectLock(root, subject, fn, options = {}) {
-  const lockTarget = subjectLockPath(root, subject);
-  return withSubjectLockAt(lockTarget, fn, { ...options, root, subject });
-}
-
-export function describeSubjectLockHealth(root, subject, options = {}) {
-  return describeSubjectLockHealthAt(subjectLockPath(root, subject), { root, subject, ...options });
-}
-
-export {
-  SUBJECT_LOCK_DAEMON_STALE_MS_DEFAULT,
-  SUBJECT_LOCK_RUN_STALE_MS,
-  resolveSubjectLockStaleMs,
-  resolveSubjectLockUpdateMs,
-};

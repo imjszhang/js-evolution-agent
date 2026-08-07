@@ -6,33 +6,59 @@ import {
   sanitizeSubjectName,
   subjectPolicyExists,
 } from '../infra/subjects.mjs';
+import { nowIso, parsePositiveInt, runtimeForSubject } from '../infra/runtime-paths.mjs';
 import {
-  nowIso,
-  parsePositiveInt,
-  runtimeForSubject,
-  subjectLockPath,
-  inspectSubjectLock,
-  isSubjectLocked,
-} from '../infra/runtime-paths.mjs';
+  acquireSubjectLockAt,
+  describeSubjectLockHealthAt,
+  formatSubjectLockConflictMessageAt,
+  inspectSubjectLockAt,
+  isSubjectLockHeldAt,
+  resolveSubjectLockStaleMs,
+  resolveSubjectLockUpdateMs,
+  SUBJECT_LOCK_DAEMON_STALE_MS_DEFAULT,
+  SUBJECT_LOCK_RUN_STALE_MS,
+  withSubjectLockAt,
+} from '../infra/subject-lock.mjs';
 import { listCycleStates } from './cycle-state.mjs';
 
-// Re-export kernel runtime-path / lock helpers for existing mixed consumers.
+// Re-export kernel path helpers for mixed consumers (daemon internals).
+export { nowIso, parsePositiveInt, runtimeForSubject } from '../infra/runtime-paths.mjs';
 export {
-  nowIso,
-  parsePositiveInt,
-  runtimeForSubject,
-  subjectLockPath,
-  inspectSubjectLock,
-  isSubjectLocked,
-  formatSubjectLockConflictMessage,
-  acquireSubjectLock,
-  withSubjectLock,
-  describeSubjectLockHealth,
   SUBJECT_LOCK_DAEMON_STALE_MS_DEFAULT,
   SUBJECT_LOCK_RUN_STALE_MS,
   resolveSubjectLockStaleMs,
   resolveSubjectLockUpdateMs,
-} from '../infra/runtime-paths.mjs';
+} from '../infra/subject-lock.mjs';
+
+export function subjectLockPath(root, subject) {
+  return join(runtimeForSubject(root, subject).evolutionDir, '.evolve.lock');
+}
+
+export function inspectSubjectLock(root, subject, options = {}) {
+  return inspectSubjectLockAt(subjectLockPath(root, subject), { ...options, root, subject });
+}
+
+export function isSubjectLocked(root, subject, options = {}) {
+  const lockTarget = subjectLockPath(root, subject);
+  const staleMs = options.staleMs ?? SUBJECT_LOCK_DAEMON_STALE_MS_DEFAULT;
+  return isSubjectLockHeldAt(lockTarget, { staleMs });
+}
+
+export function formatSubjectLockConflictMessage(root, subject) {
+  return formatSubjectLockConflictMessageAt(root, subject, subjectLockPath(root, subject));
+}
+
+export async function acquireSubjectLock(root, subject, options = {}) {
+  return acquireSubjectLockAt(subjectLockPath(root, subject), { ...options, root, subject });
+}
+
+export async function withSubjectLock(root, subject, fn, options = {}) {
+  return withSubjectLockAt(subjectLockPath(root, subject), fn, { ...options, root, subject });
+}
+
+export function describeSubjectLockHealth(root, subject, options = {}) {
+  return describeSubjectLockHealthAt(subjectLockPath(root, subject), { root, subject, ...options });
+}
 
 export const RUN_STATUSES = new Set(['pending', 'running', 'succeeded', 'failed', 'interrupted']);
 export const ROUND_STATUSES = new Set(['pending', 'running', 'retrying', 'succeeded', 'failed', 'interrupted']);
