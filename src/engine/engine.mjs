@@ -232,6 +232,3 @@ export class EvolutionEngine {
     if (typeof fn === 'function') fn.call(logger, `[${this.appName}] ${message}`);
   }
 }
-
-/** @deprecated Old name, kept for compatibility. */
-export const AutoEvolutionEngine = EvolutionEngine;

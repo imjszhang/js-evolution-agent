@@ -79,7 +79,6 @@ function blockedReason(fullPath, ctx, action = null) {
   }
 
   if (segments.includes('node_modules')
-    && !segments.includes('js-evolution-engine')
     && !segments.includes('js-intel-store')) {
     return 'node_modules is off-limits except known local evolution packages';
   }
