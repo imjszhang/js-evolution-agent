@@ -458,6 +458,7 @@ npm run jea -- help
 | --- | --- |
 | [cyber-taoist.ai](https://cyber-taoist.ai) | Evolution framework site: N/R/T/EC/NI and full constitution |
 | [README.zh-CN.md](./README.zh-CN.md) | Chinese README |
+| [docs/mechanism-diagram.md](./docs/mechanism-diagram.md) | Module & dual-domain mechanism diagrams (Mermaid) |
 | [AGENTS.md](./AGENTS.md) | Full CLI reference, daemon/channel workflows, operator input |
 | [policies/README.md](./policies/README.md) | Subject / registry / lane / goals setup |
 | [policies/subjects.example.json](./policies/subjects.example.json) | Registry example |
