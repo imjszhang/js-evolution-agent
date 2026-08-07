@@ -14,12 +14,10 @@ import { isoBeijing, nowBeijingStr } from '../core/time.mjs';
 import { normalizeHost } from '../core/host.mjs';
 import { DecisionQueue } from '../decide/decision-queue.mjs';
 import { ActionExecutor } from '../act/actions.mjs';
-import { SelfModifier } from '../act/modifier.mjs';
 import {
   computeAgentWaveWidth,
   isExclusiveAgentDecision,
 } from '../act/scope.mjs';
-import { FeatureRequestQueue } from '../decide/feature-request.mjs';
 import { EvolutionLogger } from '../adapters/evolution-logger.mjs';
 import { compareDecisionsForClaim } from '../decide/decision-queue.mjs';
 
@@ -91,10 +89,6 @@ export class ExecutionPipeline {
       logFn: (m) => this._log(m),
     });
 
-    this.modifier = new SelfModifier(this.projectRoot, this.host.logger);
-    this.featureQueue = new FeatureRequestQueue(
-      join(this.projectRoot, 'data', 'evolution', 'feature_requests'),
-    );
     this.evolutionLogger = new EvolutionLogger(this.projectRoot);
     this._cycleId = cycleId || `cycle-${nowBeijingStr('%Y%m%d-%H%M%S')}`;
   }
@@ -108,9 +102,7 @@ export class ExecutionPipeline {
 
   _createExecutor() {
     return new ActionExecutor({
-      modifier: this.modifier,
       aiClient: this.aiClient,
-      featureQueue: this.featureQueue,
       projectRoot: this.projectRoot,
       cycleId: this._cycleId,
       host: this.host,

@@ -28,12 +28,10 @@ export {
 } from './core/time.mjs';
 
 export { BaseAIClient, MockAIClient, AIError } from './ai/ai-client.mjs';
-export { PromptBuilder, promptBuilder } from './ai/prompt-builder.mjs';
 
 export {
   ACTION_REGISTRY, ActionTypeRegistry, ActionTypeSpec,
 } from './decide/action-registry.mjs';
-export { scanProjectStructure } from './observe/project-scanner.mjs';
 export { AIDrivenObserver } from './observe/ai-driven-observer.mjs';
 
 export {
@@ -48,11 +46,7 @@ export {
   STATUS_PENDING, STATUS_IN_PROGRESS, STATUS_COMPLETED, STATUS_FAILED, STATUS_EXPIRED,
   STATUS_BLOCKED, STATUS_RETIRED,
 } from './decide/decision-queue.mjs';
-export { FeatureRequest, FeatureRequestQueue } from './decide/feature-request.mjs';
 export { GoalProvider } from './decide/goal-provider.mjs';
-
-export { SelfAnalyzer } from './analyze/analyzer.mjs';
-export { SelfModifier } from './act/modifier.mjs';
 
 export { HumanGuidanceReader } from './adapters/human-guidance.mjs';
 export { EvolutionLogger } from './adapters/evolution-logger.mjs';
