@@ -136,7 +136,7 @@ If you know Claude Code’s `/loop` + `/goal`: JEA adds an evolution layer on to
 
 | Component | Role |
 | --- | --- |
-| **OADA engine** (`src/engine/`, vendored) | Observe → Analyze → Decide → Act pipeline and decision queue |
+| **OADA engine** (`src/engine/`, vendored) | Decision queue, ExecutionPipeline, and Phase 1 helpers (rules / goals / guidance / logger) |
 | **Cyber-Taoist authority docs** (`policies/authority/`) | Cross-subject governance context (constitution, guide) |
 | **Subject policy** (`runtime/subjects/<ns>/SUBJECT.md`) | Per-subject semantic boundaries and approval rules |
 | **js-intel-store** | File-backed intelligence memory (observations, receipts, reports, beliefs, …) |
@@ -171,8 +171,8 @@ Typical use: let an AI subject investigate, edit code, simulate, and prepare rel
 │  verify→…     │  →speech→outbox       │                           │
 ├──────────────┴──────────────────────┴───────────────────────────┤
 │  src/engine/ (OADA)  │  src/actions/  │  src/intelligence/       │
-│  analyze · decide ·  │  agent_run ·   │  store · reports ·       │
-│  verify helpers      │  lane · gates  │  beliefs · goals           │
+│  queue · exec ·       │  agent_run ·   │  store · reports ·       │
+│  verifyActions       │  lane · gates  │  beliefs · goals           │
 ├──────────────────────┴────────────────┴───────────────────────────┤
 │  policies/authority/  +  runtime/subjects/<ns>/SUBJECT.md         │
 │  runtime/subjects/<ns>/data/  (evolution · intelligence · goals)  │

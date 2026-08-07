@@ -1,27 +1,23 @@
 /**
- * Execution Pipeline — pulls pending decisions from DecisionQueue (or
- * GitHub Issues) and dispatches them to host-registered action handlers.
+ * Execution Pipeline — pulls pending decisions from DecisionQueue and
+ * dispatches them to host-registered action handlers.
  *
  * Dual-channel (swarm-lite):
  *   A. Mechanical: all non-agent_run pending decisions, serial, no budget
  *   B. Agent: agent_run waves with JEA_EXEC_AGENT_BUDGET (width=1 in v1;
  *      dynamic width added by scope/width-policy module)
  *
- * Two source modes:
- *   1. `source: 'queue'` (default): consumes from DecisionQueue
- *   2. `source: 'github'`: consumes open Issues with label `oada/pending`
+ * Source is always the local DecisionQueue (`source: 'queue'`).
  */
 import { join } from 'node:path';
 import { isoBeijing, nowBeijingStr } from '../core/time.mjs';
 import { normalizeHost } from '../core/host.mjs';
 import { DecisionQueue } from '../decide/decision-queue.mjs';
 import { ActionExecutor } from '../act/actions.mjs';
-import { SelfModifier } from '../act/modifier.mjs';
 import {
   computeAgentWaveWidth,
   isExclusiveAgentDecision,
 } from '../act/scope.mjs';
-import { FeatureRequestQueue } from '../decide/feature-request.mjs';
 import { EvolutionLogger } from '../adapters/evolution-logger.mjs';
 import { compareDecisionsForClaim } from '../decide/decision-queue.mjs';
 
@@ -63,8 +59,6 @@ export class ExecutionPipeline {
    * @param {string} [opts.projectRoot]
    * @param {object} [opts.aiClient]   exposed to handlers via ctx.ai
    * @param {DecisionQueue} [opts.decisionQueue]
-   * @param {object} [opts.githubIssues] required when source='github'
-   * @param {'queue'|'github'} [opts.source]
    * @param {object|null} [opts.executionJournal] Cycle Journal for sibling action notes
    * @param {Function|null} [opts.emitEvent]
    * @param {number|null} [opts.agentBudget]
@@ -72,7 +66,7 @@ export class ExecutionPipeline {
    */
   constructor({
     host = null, projectRoot = null, aiClient = null,
-    decisionQueue = null, githubIssues = null, source = 'queue',
+    decisionQueue = null,
     cycleId = null, executionJournal = null,
     emitEvent = null,
     agentBudget = null,
@@ -81,8 +75,7 @@ export class ExecutionPipeline {
     this.host = normalizeHost(host);
     this.projectRoot = projectRoot || this.host.basePath || process.cwd();
     this.aiClient = aiClient;
-    this.source = source;
-    this.githubIssues = githubIssues || this.host.githubIssues || null;
+    this.source = 'queue';
     this.executionJournal = executionJournal;
     this.emitEvent = typeof emitEvent === 'function' ? emitEvent : null;
     this.agentBudget = agentBudget != null
@@ -96,10 +89,6 @@ export class ExecutionPipeline {
       logFn: (m) => this._log(m),
     });
 
-    this.modifier = new SelfModifier(this.projectRoot, this.host.logger);
-    this.featureQueue = new FeatureRequestQueue(
-      join(this.projectRoot, 'data', 'evolution', 'feature_requests'),
-    );
     this.evolutionLogger = new EvolutionLogger(this.projectRoot);
     this._cycleId = cycleId || `cycle-${nowBeijingStr('%Y%m%d-%H%M%S')}`;
   }
@@ -113,9 +102,7 @@ export class ExecutionPipeline {
 
   _createExecutor() {
     return new ActionExecutor({
-      modifier: this.modifier,
       aiClient: this.aiClient,
-      featureQueue: this.featureQueue,
       projectRoot: this.projectRoot,
       cycleId: this._cycleId,
       host: this.host,
@@ -165,11 +152,7 @@ export class ExecutionPipeline {
     };
 
     try {
-      if (this.source === 'github') {
-        await this._runGithubLegacy(result, { limit: this.agentBudget, dryRun });
-      } else {
-        await this._runDualChannel(result, { dryRun });
-      }
+      await this._runDualChannel(result, { dryRun });
       result.success = true;
     } catch (e) {
       result.error = e?.message || String(e);
@@ -177,18 +160,6 @@ export class ExecutionPipeline {
     }
     result.journal = this.executionJournal?.toJSON?.() ?? null;
     return result;
-  }
-
-  async _runGithubLegacy(result, { limit, dryRun }) {
-    const decisions = await this._claimGithubDecisions(limit);
-    if (!decisions.length) {
-      this._log('no pending decisions');
-      return;
-    }
-    const executor = this._createExecutor();
-    for (const decision of decisions) {
-      await this._executeOne(executor, decision, result, { dryRun, channel: 'github' });
-    }
   }
 
   async _runDualChannel(result, { dryRun }) {
@@ -455,59 +426,20 @@ export class ExecutionPipeline {
     }
   }
 
-  async _claimGithubDecisions(limit) {
-    if (!this.githubIssues) throw new Error('source=github but no GitHubIssueManager available');
-    const issues = await this.githubIssues.listOpenIssues(['oada', 'oada/pending']);
-    const decisions = [];
-    for (const iss of (issues || []).slice(0, limit)) {
-      const action = this.githubIssues.constructor.parseActionFromIssue
-        ? this.githubIssues.constructor.parseActionFromIssue(iss)
-        : null;
-      if (!action) continue;
-      decisions.push({
-        id: `gh:${iss.number}`,
-        source: 'github',
-        issue: iss,
-        action,
-      });
-    }
-    return decisions;
-  }
-
   /** @deprecated Prefer claimWhere via dual-channel. Kept for callers/tests. */
   async _claimDecisions(limit) {
-    if (this.source === 'github') return this._claimGithubDecisions(limit);
     return this.decisionQueue.claimNext(limit);
   }
 
   async _completeDecision(decision, summary) {
-    if (decision.source === 'github' && this.githubIssues) {
-      await this.githubIssues.updateLabels(decision.issue.number, {
-        addLabels: ['oada/completed'], removeLabels: ['oada/pending', 'oada/in-progress'],
-      });
-      await this.githubIssues.closeIssue(decision.issue.number,
-        `OADA exec completed.\n\n${summary}`);
-      return;
-    }
     this.decisionQueue.completeDecision(decision.id, summary);
   }
 
   async _failDecision(decision, error) {
-    if (decision.source === 'github' && this.githubIssues) {
-      await this.githubIssues.updateLabels(decision.issue.number, {
-        addLabels: ['oada/failed'], removeLabels: ['oada/pending', 'oada/in-progress'],
-      });
-      await this.githubIssues.addComment(decision.issue.number, `OADA exec failed: ${error}`);
-      return;
-    }
     this.decisionQueue.failDecision(decision.id, error);
   }
 
   async _failOrBlockDecision(decision, error) {
-    if (decision.source === 'github') {
-      await this._failDecision(decision, error);
-      return { status: 'failed', attempts: 0, max_attempts: 0 };
-    }
     if (typeof this.decisionQueue.failOrBlock === 'function') {
       return this.decisionQueue.failOrBlock(decision.id, error);
     }
@@ -516,7 +448,6 @@ export class ExecutionPipeline {
   }
 
   async _releaseDecision(decision, _toStatus) {
-    if (decision.source === 'github') return;
     this.decisionQueue.updateStatus(decision.id, 'pending');
   }
 

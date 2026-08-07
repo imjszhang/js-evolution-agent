@@ -1,5 +1,5 @@
 /**
- * HostContext — the integration interface between js-evolution-engine and
+ * HostContext — the integration interface between the JEA engine and
  * the host application that embeds it.
  *
  * Every field is optional. Pass only what you have; the engine degrades

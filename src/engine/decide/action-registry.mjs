@@ -2,12 +2,11 @@
  * OADA Action Type Registry — single source of truth for action types.
  *
  * All action-type metadata (name, description, label, risk level, prompt hint)
- * is centralised here. Consumers (engine/exec/verify/prompt/github) read from
- * this registry. Adding a new action type requires only one registration.
+ * is centralised here. Host applications register domain-specific action types
+ * via `ACTION_REGISTRY.register(new ActionTypeSpec({...}))` at startup.
  *
- * The registry ships with a small set of generic builtins. Host applications
- * are expected to register their own domain-specific action types via
- * `ACTION_REGISTRY.register(new ActionTypeSpec({...}))` at startup.
+ * Builtin action types were removed; JEA always supplies its own registry
+ * entries (`includeBuiltins` remains for API compatibility and is a no-op).
  */
 
 /** @typedef {{ name: string, description: string, promptHint: string, defaultRisk?: string, defaultPriority?: string, autoExecutable?: boolean, labelColor?: string, labelName?: string, layer?: string }} ActionTypeSpecInit */
@@ -50,54 +49,12 @@ class ActionTypeSpec {
   }
 }
 
-/**
- * Generic, domain-agnostic builtin action types. Hosts may register more.
- * @type {Record<string, ActionTypeSpec>}
- */
-const BUILTIN_ACTION_TYPES = {
-  implement_feature: new ActionTypeSpec({
-    name: 'implement_feature',
-    description: 'Implement a new feature',
-    promptHint: 'Implement a new feature (provide feature_request_id and a design summary; spawns a sub-agent to write code)',
-    defaultRisk: 'high',
-    autoExecutable: false,
-  }),
-  fix_reliability: new ActionTypeSpec({
-    name: 'fix_reliability',
-    description: 'Fix a reliability issue',
-    promptHint: 'Fix a reliability problem (describe the symptom and root-cause hypothesis)',
-    defaultRisk: 'high',
-  }),
-  refactor_code: new ActionTypeSpec({
-    name: 'refactor_code',
-    description: 'Refactor existing code',
-    promptHint: 'Refactor existing code (describe the target module and intent)',
-    defaultRisk: 'medium',
-  }),
-  update_config: new ActionTypeSpec({
-    name: 'update_config',
-    description: 'Update configuration',
-    promptHint: 'Update a configuration file (specify the file path and the desired change)',
-    defaultRisk: 'medium',
-  }),
-  generate_content: new ActionTypeSpec({
-    name: 'generate_content',
-    description: 'Generate content artifacts',
-    promptHint: 'Generate new content artifacts (specify topic, style, count)',
-    defaultRisk: 'low',
-  }),
-};
-
 export class ActionTypeRegistry {
   /** @param {{ includeBuiltins?: boolean }} [opts] */
   constructor({ includeBuiltins = true } = {}) {
+    void includeBuiltins;
     /** @type {Map<string, ActionTypeSpec>} */
     this._specs = new Map();
-    if (includeBuiltins) {
-      for (const [k, v] of Object.entries(BUILTIN_ACTION_TYPES)) {
-        this._specs.set(k, v);
-      }
-    }
   }
 
   /** @param {ActionTypeSpec} spec */

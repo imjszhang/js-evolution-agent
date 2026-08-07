@@ -229,12 +229,10 @@ function inspectQueue(runtimeRoot) {
 export async function buildCycleContext(projectRoot, runtime) {
   const cfg = await loadConfig({ cwd: projectRoot }); // eslint-disable-line -- explicit root
   const engine = new EvolutionEngine({
-    aiClient: cfg.aiClient,
     host: cfg.host,
     projectRoot: runtime.runtimeRoot,
     goalId: 'bootstrap',
     actionRegistry: cfg.actionRegistry,
-    agentContextDocs: cfg.agentContextDocs,
   });
   return { cfg, engine, runtime, store: cfg.host.intelligenceStore, projectRoot };
 }
@@ -1349,7 +1347,6 @@ export async function runExecStep(ctx, { recordState = null, intelResult = null,
     host: cfg.host,
     projectRoot: runtime.runtimeRoot,
     aiClient: cfg.aiClient,
-    source: 'queue',
     cycleId: resolvedCycleId || undefined,
     executionJournal,
     agentBudget,

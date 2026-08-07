@@ -16,9 +16,7 @@ import { isoBeijing } from '../core/time.mjs';
 export class ActionExecutor {
   /**
    * @param {object} [opts]
-   * @param {object} [opts.modifier] SelfModifier instance, exposed to handlers as ctx.modifier
    * @param {object} [opts.aiClient] AI client, exposed to handlers as ctx.ai
-   * @param {object} [opts.featureQueue] FeatureRequestQueue, exposed as ctx.featureQueue
    * @param {string} opts.projectRoot
    * @param {string} opts.cycleId
    * @param {object} [opts.host] HostContext (provides actionHandlers + client + logger)
@@ -27,13 +25,11 @@ export class ActionExecutor {
    * @param {object|null} [opts.executionJournal] Cycle Journal for intra-exec sibling notes
    */
   constructor({
-    modifier = null, aiClient = null, featureQueue = null,
+    aiClient = null,
     projectRoot, cycleId, host = null, logFn = null, goalsText = '',
     executionJournal = null,
   } = {}) {
-    this.modifier = modifier;
     this.aiClient = aiClient;
-    this.featureQueue = featureQueue;
     this.projectRoot = projectRoot;
     this.cycleId = cycleId;
     this.host = host;
@@ -63,9 +59,7 @@ export class ActionExecutor {
       const ctx = {
         projectRoot: this.projectRoot,
         cycleId: this.cycleId,
-        modifier: this.modifier,
         ai: this.aiClient,
-        featureQueue: this.featureQueue,
         host: this.host,
         client: this.host?.client || null,
         logger: this.host?.logger || null,
