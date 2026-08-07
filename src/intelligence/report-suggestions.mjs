@@ -1,4 +1,4 @@
-import { extractMarkdownSection } from '../cli/utils/markdown-sections.mjs';
+import { extractMarkdownSection } from '../infra/markdown-sections.mjs';
 
 export const REPORT_SUGGESTION_LIMIT = 8;
 export const REPORT_SUGGESTION_MAX_CHARS = 300;

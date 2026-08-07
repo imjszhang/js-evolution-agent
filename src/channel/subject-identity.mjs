@@ -1,5 +1,5 @@
-import { extractMarkdownSection } from '../cli/utils/markdown-sections.mjs';
-import { readSubjectPolicy, readSubjectSoul } from '../cli/utils/subjects.mjs';
+import { extractMarkdownSection } from '../infra/markdown-sections.mjs';
+import { readSubjectPolicy, readSubjectSoul } from '../infra/subjects.mjs';
 
 /**
  * Subject-facing identity for channel LLM prompts (governance + persona voice).

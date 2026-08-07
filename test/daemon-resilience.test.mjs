@@ -10,28 +10,28 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { writeJsonAtomic, QueueWriteError } from '../src/cli/utils/atomic-json-write.mjs';
-import { buildDaemonProjection } from '../src/cli/utils/daemon-projection.mjs';
+import { writeJsonAtomic, QueueWriteError } from '../src/infra/atomic-json-write.mjs';
+import { buildDaemonProjection } from '../src/daemon/daemon-projection.mjs';
 import {
   createCycle,
   getLastClosedCycle,
   markStepStatus,
   writeStepArtifact,
-} from '../src/cli/utils/cycle-state.mjs';
+} from '../src/daemon/cycle-state.mjs';
 import {
   createWorkerState,
   readWorkerState,
   writeWorkerState,
-} from '../src/cli/utils/daemon-worker-state.mjs';
+} from '../src/daemon/daemon-worker-state.mjs';
 import {
   enqueueTask,
   pendingTasksPath,
   readTaskQueue,
   taskQueueLockPath,
-} from '../src/cli/utils/daemon-tasks.mjs';
-import { writeJsonFile } from '../src/cli/utils/files.mjs';
-import { stepIdempotencyKey } from '../src/cli/utils/cycle-reducer.mjs';
-import { isProcessAlive } from '../src/cli/utils/process-alive.mjs';
+} from '../src/daemon/daemon-tasks.mjs';
+import { writeJsonFile } from '../src/infra/files.mjs';
+import { stepIdempotencyKey } from '../src/daemon/cycle-reducer.mjs';
+import { isProcessAlive } from '../src/infra/process-alive.mjs';
 
 let tempDir = null;
 

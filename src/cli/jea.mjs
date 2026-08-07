@@ -2,7 +2,7 @@
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgv } from './utils/args.mjs';
-import { getProjectRoot, loadProjectEnv } from './utils/project.mjs';
+import { getProjectRoot, loadProjectEnv } from '../infra/project.mjs';
 import { warmJeaLinksCache } from '../infra/links/index.mjs';
 import { doctorCommand } from './commands/doctor.mjs';
 import { runCommand } from './commands/run.mjs';

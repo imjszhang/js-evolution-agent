@@ -1,6 +1,6 @@
 import { join } from 'node:path';
-import { runtimeForSubject } from '../../../cli/utils/evolve-runs.mjs';
-import { readJsonSafe, writeJsonFile } from '../../../cli/utils/files.mjs';
+import { runtimeForSubject } from '../../../infra/runtime-paths.mjs';
+import { readJsonSafe, writeJsonFile } from '../../../infra/files.mjs';
 import { recordChannelEvent } from '../../audit.mjs';
 import { parseTextContent } from './parser.mjs';
 import { subjectEnvSlug } from './config.mjs';

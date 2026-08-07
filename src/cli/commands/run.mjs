@@ -1,12 +1,12 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { getProjectRoot, loadProjectEnv } from '../utils/project.mjs';
-import { runNode } from '../utils/process.mjs';
+import { getProjectRoot, loadProjectEnv } from '../../infra/project.mjs';
+import { runNode } from '../../infra/process.mjs';
 import {
   checkSubjectLaneReady,
   printSubjectLaneGuardFailure,
-} from '../utils/subject-lane-guard.mjs';
-import { resolveSubjectFromFlags } from '../utils/subjects.mjs';
+} from '../../infra/subject-lane-guard.mjs';
+import { resolveSubjectFromFlags } from '../../infra/subjects.mjs';
 
 export async function runCommand({ flags = {} } = {}) {
   const root = getProjectRoot();

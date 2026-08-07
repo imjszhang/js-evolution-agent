@@ -39,7 +39,7 @@ import {
   resolveApprovalDecision,
 } from '../approval-policy.mjs';
 import { buildEvidenceContract } from '../resource-registry.mjs';
-import { resolveResourcesUsedFromRunSpec } from '../../cli/utils/subjects.mjs';
+import { resolveResourcesUsedFromRunSpec } from '../../infra/subjects.mjs';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { RESOURCE_SCOPES } from '../resource-registry.mjs';

@@ -8,7 +8,7 @@ import {
   normalizeCyclePipeline,
   resetPhasesDeprecationWarningForTests,
   resolveCyclePipeline,
-} from '../src/cli/utils/cycle-pipeline-mode.mjs';
+} from '../src/daemon/cycle-pipeline-mode.mjs';
 
 describe('cycle pipeline mode', () => {
   let tempRoot;

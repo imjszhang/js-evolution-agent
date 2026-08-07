@@ -1,5 +1,5 @@
 import { MockAIClient } from '../../engine/index.mjs';
-import { getProjectRoot, loadProjectEnv } from '../utils/project.mjs';
+import { getProjectRoot, loadProjectEnv } from '../../infra/project.mjs';
 import { DeepSeekOpenAIClient } from '../../ai/deepseek-client.mjs';
 
 export async function pingLlm({ mock = false, timeout = 30 } = {}) {

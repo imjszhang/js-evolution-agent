@@ -1,56 +1,47 @@
 import { appendFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { readJsonSafe, writeJsonFile } from './files.mjs';
+import { readJsonSafe, writeJsonFile } from '../infra/files.mjs';
 import {
-  acquireSubjectLockAt,
-  describeSubjectLockHealthAt,
-  formatSubjectLockConflictMessageAt,
-  inspectSubjectLockAt,
-  isSubjectLockHeldAt,
-  resolveSubjectLockStaleMs,
-  resolveSubjectLockUpdateMs,
-  SUBJECT_LOCK_DAEMON_STALE_MS_DEFAULT,
-  SUBJECT_LOCK_RUN_STALE_MS,
-  withSubjectLockAt,
-} from './subject-lock.mjs';
-import {
-  defaultSubjectEntry,
-  getDataNamespace,
-  getSubjectEntry,
-  getSubjectRuntimeRoot,
-  normalizeRegistryEntry,
-  readSubjectsRegistry,
   resolveDefaultSubjectName,
   sanitizeSubjectName,
-  subjectConfigToLegacy,
   subjectPolicyExists,
-} from './subjects.mjs';
+} from '../infra/subjects.mjs';
+import {
+  nowIso,
+  parsePositiveInt,
+  runtimeForSubject,
+  subjectLockPath,
+  inspectSubjectLock,
+  isSubjectLocked,
+} from '../infra/runtime-paths.mjs';
 import { listCycleStates } from './cycle-state.mjs';
+
+// Re-export kernel runtime-path / lock helpers for existing mixed consumers.
+export {
+  nowIso,
+  parsePositiveInt,
+  runtimeForSubject,
+  subjectLockPath,
+  inspectSubjectLock,
+  isSubjectLocked,
+  formatSubjectLockConflictMessage,
+  acquireSubjectLock,
+  withSubjectLock,
+  describeSubjectLockHealth,
+  SUBJECT_LOCK_DAEMON_STALE_MS_DEFAULT,
+  SUBJECT_LOCK_RUN_STALE_MS,
+  resolveSubjectLockStaleMs,
+  resolveSubjectLockUpdateMs,
+} from '../infra/runtime-paths.mjs';
 
 export const RUN_STATUSES = new Set(['pending', 'running', 'succeeded', 'failed', 'interrupted']);
 export const ROUND_STATUSES = new Set(['pending', 'running', 'retrying', 'succeeded', 'failed', 'interrupted']);
-
-export function nowIso() {
-  return new Date().toISOString();
-}
 
 export function createRunId(date = new Date()) {
   const stamp = date.toISOString()
     .replace(/[-:]/g, '')
     .replace(/\.\d{3}Z$/, 'Z');
   return `evolve-${stamp}`;
-}
-
-export function parsePositiveInt(value, { name, defaultValue = null, min = 1 } = {}) {
-  if (value == null || value === true || value === '') {
-    if (defaultValue != null) return defaultValue;
-    throw new Error(`${name} is required`);
-  }
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < min) {
-    throw new Error(`${name} must be an integer >= ${min}`);
-  }
-  return parsed;
 }
 
 export function parseSubjectList(value) {
@@ -76,31 +67,6 @@ export function normalizeEvolveSubjects(root, { subject = null, subjects = null 
     }
   }
   return unique;
-}
-
-export function runtimeForSubject(root, subject) {
-  const name = sanitizeSubjectName(subject);
-  const entry = getSubjectEntry(root, name) ?? normalizeRegistryEntry(name, defaultSubjectEntry(name));
-  const config = {
-    ...entry,
-    resolutionSource: 'explicit',
-    registrySource: readSubjectsRegistry(root).source,
-    legacyActive: subjectConfigToLegacy(entry),
-  };
-  const dataNamespace = getDataNamespace(root, config);
-  const runtimeRoot = getSubjectRuntimeRoot(root, config);
-  const dataRoot = join(runtimeRoot, 'data');
-  return {
-    config,
-    active: config.legacyActive,
-    subject: config.name,
-    dataNamespace,
-    runtimeRoot,
-    dataRoot,
-    evolutionDir: join(dataRoot, 'evolution'),
-    intelligenceDir: join(dataRoot, 'intelligence'),
-    goalsDir: join(dataRoot, 'goals'),
-  };
 }
 
 export function runsDirForSubject(root, subject) {
@@ -279,46 +245,6 @@ export function resolveClosedCycleIdSince(root, subject, startedAt = null) {
   closed.sort((a, b) => String(b.closed_at).localeCompare(String(a.closed_at)));
   return closed[0].cycle_id;
 }
-
-export function subjectLockPath(root, subject) {
-  const runtime = runtimeForSubject(root, subject);
-  return join(runtime.evolutionDir, '.evolve.lock');
-}
-
-export function inspectSubjectLock(root, subject, options = {}) {
-  return inspectSubjectLockAt(subjectLockPath(root, subject), { ...options, root, subject });
-}
-
-export function isSubjectLocked(root, subject, options = {}) {
-  const lockTarget = subjectLockPath(root, subject);
-  const staleMs = options.staleMs ?? SUBJECT_LOCK_DAEMON_STALE_MS_DEFAULT;
-  return isSubjectLockHeldAt(lockTarget, { staleMs });
-}
-
-export function formatSubjectLockConflictMessage(root, subject) {
-  return formatSubjectLockConflictMessageAt(root, subject, subjectLockPath(root, subject));
-}
-
-export async function acquireSubjectLock(root, subject, options = {}) {
-  const lockTarget = subjectLockPath(root, subject);
-  return acquireSubjectLockAt(lockTarget, { ...options, root, subject });
-}
-
-export async function withSubjectLock(root, subject, fn, options = {}) {
-  const lockTarget = subjectLockPath(root, subject);
-  return withSubjectLockAt(lockTarget, fn, { ...options, root, subject });
-}
-
-export function describeSubjectLockHealth(root, subject, options = {}) {
-  return describeSubjectLockHealthAt(subjectLockPath(root, subject), { root, subject, ...options });
-}
-
-export {
-  SUBJECT_LOCK_DAEMON_STALE_MS_DEFAULT,
-  SUBJECT_LOCK_RUN_STALE_MS,
-  resolveSubjectLockStaleMs,
-  resolveSubjectLockUpdateMs,
-};
 
 export function normalizeInterruptedManifest(root, manifest) {
   if (!manifest) return { manifest, changed: false };

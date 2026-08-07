@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { writeJsonFile } from '../src/cli/utils/files.mjs';
+import { writeJsonFile } from '../src/infra/files.mjs';
 import {
   createCycle,
   cycleStatePath,
@@ -11,11 +11,11 @@ import {
   readStepArtifact,
   writeStepArtifact,
   listStepArtifacts,
-} from '../src/cli/utils/cycle-state.mjs';
-import { loadCycleStepContext } from '../src/cli/utils/cycle-checkpoints.mjs';
-import { reconcileOpenCycles } from '../src/cli/utils/cycle-dispatch.mjs';
-import { readTaskQueue } from '../src/cli/utils/daemon-tasks.mjs';
-import { runtimeForSubject } from '../src/cli/utils/evolve-runs.mjs';
+} from '../src/daemon/cycle-state.mjs';
+import { loadCycleStepContext } from '../src/daemon/cycle-checkpoints.mjs';
+import { reconcileOpenCycles } from '../src/daemon/cycle-dispatch.mjs';
+import { readTaskQueue } from '../src/daemon/daemon-tasks.mjs';
+import { runtimeForSubject } from '../src/daemon/evolve-runs.mjs';
 
 function makeRoot() {
   const tempDir = mkdtempSync(join(tmpdir(), 'jea-checkpoint-'));

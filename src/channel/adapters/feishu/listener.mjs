@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { loadProjectEnv } from '../../../cli/utils/project.mjs';
+import { loadProjectEnv } from '../../../infra/project.mjs';
 import { recordChannelEvent } from '../../audit.mjs';
 import {
   consumeChannelReloadRequest,

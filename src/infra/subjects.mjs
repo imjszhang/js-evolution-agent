@@ -14,7 +14,7 @@ import {
   parseLinkRef,
   resolveMachinePath,
   warmJeaLinksCache,
-} from '../../infra/links/index.mjs';
+} from './links/index.mjs';
 
 export const DEFAULT_SUBJECT = 'js-evolution-agent';
 export const SUBJECT_ENV = 'JEA_SUBJECT';

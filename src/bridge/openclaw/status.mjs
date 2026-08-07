@@ -3,8 +3,8 @@ import { basename, join } from 'node:path';
 import {
   resolveSubjectConfig,
   runtimeInfoForSubject,
-} from '../../cli/utils/subjects.mjs';
-import { readJsonSafe } from '../../cli/utils/files.mjs';
+} from '../../infra/subjects.mjs';
+import { readJsonSafe } from '../../infra/files.mjs';
 import { bridgeIntentDir } from '../../channel/adapters/bridge-intent/index.mjs';
 import { bridgeConfigPath } from './deploy.mjs';
 

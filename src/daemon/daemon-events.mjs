@@ -1,4 +1,4 @@
-import { createIntelligenceStore } from '../../intelligence/store.mjs';
+import { createIntelligenceStore } from '../intelligence/store.mjs';
 import { runtimeForSubject } from './evolve-runs.mjs';
 
 export function storeForSubject(root, subject) {

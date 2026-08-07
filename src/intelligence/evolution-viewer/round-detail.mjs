@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { marked } from 'marked';
 import { resolveIntelReportRecordPath } from '../report-paths.mjs';
 import { buildManifest } from './round-catalog.mjs';
-import { CYCLE_STEP_TYPES } from '../../cli/utils/cycle-reducer.mjs';
+import { CYCLE_STEP_TYPES } from '../../daemon/cycle-reducer.mjs';
 
 function markdownToHtml(md) {
   return marked.parse(String(md ?? ''), { async: false });

@@ -1,4 +1,4 @@
-import { getSubjectEntry } from '../cli/utils/subjects.mjs';
+import { getSubjectEntry } from '../infra/subjects.mjs';
 
 /**
  * Resolve default outbound transport id (e.g. feishu) without hardcoding in presence modules.

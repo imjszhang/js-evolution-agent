@@ -2,7 +2,7 @@
  * Mechanical honesty audit for Intel report Seen/Evidence sections.
  * Used by production agent_loop splice path and by CI/live honesty tests.
  */
-import { extractMarkdownSection } from '../cli/utils/markdown-sections.mjs';
+import { extractMarkdownSection } from '../infra/markdown-sections.mjs';
 import { MACHINE_CONTEXT_IDS } from './machine-context-refs.mjs';
 import {
   readDigestedOperatorFacts,

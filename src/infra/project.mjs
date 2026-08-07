@@ -2,14 +2,14 @@ import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config as loadDotenv } from 'dotenv';
-import { invalidateLinkHealthCache } from '../../infra/links/index.mjs';
+import { invalidateLinkHealthCache } from './links/index.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 export function getProjectRoot() {
   const fromEnv = process.env.JEA_PROJECT_ROOT;
   if (fromEnv) return resolve(fromEnv);
-  return resolve(__dirname, '..', '..', '..');
+  return resolve(__dirname, '..', '..');
 }
 
 export function loadProjectEnv(root = getProjectRoot()) {

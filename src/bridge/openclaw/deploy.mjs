@@ -9,8 +9,8 @@ import {
   resolveSubjectConfig,
   runtimeInfoForSubject,
   writeSubjectsRegistry,
-} from '../../cli/utils/subjects.mjs';
-import { readJsonSafe, writeJsonFile } from '../../cli/utils/files.mjs';
+} from '../../infra/subjects.mjs';
+import { readJsonSafe, writeJsonFile } from '../../infra/files.mjs';
 import { bridgeIntentDir } from '../../channel/adapters/bridge-intent/index.mjs';
 import { buildOpenClawAgentsMd } from './templates/AGENTS.md.mjs';
 

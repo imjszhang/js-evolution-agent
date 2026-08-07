@@ -6,8 +6,8 @@ import {
   stepIdempotencyKey,
   eventFromStepCompletion,
   isStepTerminal,
-} from '../src/cli/utils/cycle-reducer.mjs';
-import { createEmptyCycleState } from '../src/cli/utils/cycle-state.mjs';
+} from '../src/daemon/cycle-reducer.mjs';
+import { createEmptyCycleState } from '../src/daemon/cycle-state.mjs';
 
 function stateWithSteps(cycleId, stepStatuses, meta = {}) {
   const base = createEmptyCycleState({ cycleId, subject: 'alpha', meta });

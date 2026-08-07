@@ -13,7 +13,7 @@ import {
   retryTask,
   summarizeTaskQueue,
   taskQueueLockPath,
-} from '../cli/utils/daemon-tasks.mjs';
+} from '../daemon/daemon-tasks.mjs';
 import { channelTasksDir } from './paths.mjs';
 
 const domain = {

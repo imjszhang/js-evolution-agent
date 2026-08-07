@@ -24,7 +24,7 @@ import {
   diagnoseSubjectRuntimeConfig,
   resolveHostExternalRoots,
   resolveSubjectRepoLane,
-} from '../src/cli/utils/subjects.mjs';
+} from '../src/infra/subjects.mjs';
 
 describe('repo links facade', () => {
   let tempRoot;
