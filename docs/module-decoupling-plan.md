@@ -1,8 +1,17 @@
 # 模块解耦与多 Agent 并行维护实施计划
 
 - 日期：2026-08-07
-- 状态：待评审（本文档只是计划，不包含任何代码变更）
+- 状态：实施中
 - 范围：仅重组模块边界与依赖方向，不改变任何运行时行为与数据格式
+
+### 实施进度
+
+| 阶段 | 状态 | PR |
+| --- | --- | --- |
+| Phase A｜`cli/utils` 内核归位 | 已实施 | #27 |
+| Phase B｜channel → intelligence 收口 | 已实施 | #28 |
+| Phase C｜契约冻结与 ownership | 已实施（见 `src/contracts/OWNERSHIP.md`） | 本阶段 PR |
+| Phase D｜AGENTS.md 拆分 | 已实施 | 后续 PR |
 
 ## 1. 背景与目标
 
