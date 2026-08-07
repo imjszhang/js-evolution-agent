@@ -1,9 +1,22 @@
 # 执行层（actions / Phase 2 exec）
 
-本文件是 `src/actions` 模块的操作指引，由根 AGENTS.md 拆分而来。全局内容（基础用法、环境与诊断、运行时数据、Subject 管理、操作建议）见根 [AGENTS.md](../../AGENTS.md)；模块 ownership 与契约规则见 [src/contracts/OWNERSHIP.md](../../src/contracts/OWNERSHIP.md)。
+本文件是 `src/actions` 模块的操作指引，由根 AGENTS.md 拆分而来。全局内容（基础用法、环境与诊断、运行时数据、Subject 管理、操作建议）见根 [AGENTS.md](../../AGENTS.md)；模块 ownership 与契约规则见 [OWNERSHIP.md](../contracts/OWNERSHIP.md)。
 
 
 ## Phase 2 exec（精简版 swarm 双通道）
+
+相关 env：
+
+| 变量 | 默认 | 含义 |
+| --- | --- | --- |
+| `JEA_EXEC_AGENT_BUDGET` | `8` | 单轮 Phase 2 消费的 `agent_run` 上限；机械动作（非 agent_run）无上限；剩余 pending 跨轮继续 |
+| `JEA_EXEC_LIMIT` | （deprecated） | 旧名；若设置且未设 `JEA_EXEC_AGENT_BUDGET`，映射为 agent 预算并警告。Decide **不再**按此截断入队 |
+| `JEA_AGENT_MAX_CONCURRENCY` | `2` | agent_run 波内并行宽度上限（`read_only` 可并行；写类 profile 独占波宽 1）；设 `1` 关闭并行 |
+| `JEA_AGENT_MAX_ATTEMPTS` | `2` | agent_run 失败自动重试次数；耗尽转 `blocked`，由下轮 Decide `queue_ops` 处置 |
+| `JEA_PENDING_TTL_CYCLES` | `5` | pending 连续经历多少轮 exec 仍未认领后过期（`cycles_seen > N`） |
+| `JEA_BLOCKED_TTL_CYCLES` | `10` | blocked 连续经历多少轮 exec 后过期（`cycles_seen > N`） |
+| `JEA_QUEUE_WALLCLOCK_TTL_DAYS` | `30` | 队列墙钟后备上限（防 cycle 计数异常时决策永生）；正常 on_demand idle 不应触发 |
+| `JEA_QUEUE_AUTO_ARCHIVE` | 开启 | `0`/`false` 关闭；agent_loop 开始前自动归档 completed/expired/retired/**failed**（legacy）决策 |
 
 Decide 输出的 `actions` **全量入队**（fingerprint 去重）；不再按条数截断进 deferred。Decide JSON 可选 `queue_ops: [{op:"requeue"|"retire", id, reason}]` 处置跨轮 `blocked`/`pending`。动态载荷注入 `## Decision Backlog`（pending/blocked 摘要）。
 

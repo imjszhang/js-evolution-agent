@@ -7,7 +7,7 @@ import {
   withSubjectLock,
 } from './evolve-runs.mjs';
 import { hasMultiSubjectSelection, selectSubjects } from '../infra/subject-selection.mjs';
-import { buildSubjectArtifactOverview } from '../infra/subject-artifacts.mjs';
+import { buildSubjectArtifactOverview } from '../daemon/subject-artifacts.mjs';
 import { buildLinkHealthSummary } from '../infra/links/index.mjs';
 import {
   acknowledgeTask,

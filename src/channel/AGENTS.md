@@ -1,9 +1,6 @@
 # Channel 通道（channel）
 
-本文件是 `src/channel` 模块的操作指引，由根 AGENTS.md 拆分而来。全局内容（基础用法、环境与诊断、运行时数据、Subject 管理、操作建议）见根 [AGENTS.md](../../AGENTS.md)；模块 ownership 与契约规则见 [src/contracts/OWNERSHIP.md](../../src/contracts/OWNERSHIP.md)。
-
-
-## Channel 通道
+本文件是 `src/channel` 模块的操作指引，由根 AGENTS.md 拆分而来。全局内容（基础用法、环境与诊断、运行时数据、Subject 管理、操作建议）见根 [AGENTS.md](../../AGENTS.md)；模块 ownership 与契约规则见 [OWNERSHIP.md](../contracts/OWNERSHIP.md)。
 
 Channel 是 daemon 下与 cycle 平级的通信闭环，负责接收外部消息、写入合适的情报入口，并观察运行态决定是否向外部通道通知。当前飞书适配器位于 `src/channel/adapters/feishu/`（基于 `@larksuiteoapi/node-sdk`，参考 Deepseek-Cowork `feishu-module` 的传输层实现，**不**依赖 OpenClaw 或 Cowork AI/ChannelBridge）。
 

@@ -1,6 +1,6 @@
 # 认知管线（intelligence / evolution）
 
-本文件是 `src/intelligence` 模块的操作指引，由根 AGENTS.md 拆分而来。全局内容（基础用法、环境与诊断、运行时数据、Subject 管理、操作建议）见根 [AGENTS.md](../../AGENTS.md)；模块 ownership 与契约规则见 [src/contracts/OWNERSHIP.md](../../src/contracts/OWNERSHIP.md)。
+本文件是 `src/intelligence` 模块的操作指引，由根 AGENTS.md 拆分而来。全局内容（基础用法、环境与诊断、运行时数据、Subject 管理、操作建议）见根 [AGENTS.md](../../AGENTS.md)；模块 ownership 与契约规则见 [OWNERSHIP.md](../contracts/OWNERSHIP.md)。
 
 
 ## 运行演化循环
@@ -65,14 +65,8 @@ Phase 1.5 intel report 持久化
 | `JEA_LOOP_CLOSING_TIMEOUT_SEC` | `240` | 查证强制收尾轮 LLM 超时（秒） |
 | `JEA_LOOP_TOOL_RESULT_MAX_CHARS` | `6000` | 回填模型的工具结果截断 |
 | `JEA_REPORT_REPAIR_MAX_ROUNDS` | `1` | 报告机械契约修复最大重问轮数（0 关闭，上限 2）；phases 与 agent_loop 共用 |
-| `JEA_EXEC_AGENT_BUDGET` | `8` | 单轮 Phase 2 消费的 `agent_run` 上限；机械动作（非 agent_run）无上限；剩余 pending 跨轮继续 |
-| `JEA_EXEC_LIMIT` | （deprecated） | 旧名；若设置且未设 `JEA_EXEC_AGENT_BUDGET`，映射为 agent 预算并警告。Decide **不再**按此截断入队 |
-| `JEA_AGENT_MAX_CONCURRENCY` | `2` | agent_run 波内并行宽度上限（`read_only` 可并行；写类 profile 独占波宽 1）；设 `1` 关闭并行 |
-| `JEA_AGENT_MAX_ATTEMPTS` | `2` | agent_run 失败自动重试次数；耗尽转 `blocked`，由下轮 Decide `queue_ops` 处置 |
-| `JEA_PENDING_TTL_CYCLES` | `5` | pending 连续经历多少轮 exec 仍未认领后过期（`cycles_seen > N`） |
-| `JEA_BLOCKED_TTL_CYCLES` | `10` | blocked 连续经历多少轮 exec 后过期（`cycles_seen > N`） |
-| `JEA_QUEUE_WALLCLOCK_TTL_DAYS` | `30` | 队列墙钟后备上限（防 cycle 计数异常时决策永生）；正常 on_demand idle 不应触发 |
-| `JEA_QUEUE_AUTO_ARCHIVE` | 开启 | `0`/`false` 关闭；agent_loop 开始前自动归档 completed/expired/retired/**failed**（legacy）决策 |
+
+Phase 2 执行预算 / 队列 TTL（`JEA_EXEC_*`、`JEA_AGENT_*`、`JEA_PENDING_TTL_*`、`JEA_QUEUE_*`）见 [src/actions/AGENTS.md](../actions/AGENTS.md)。
 
 查证工具（仅 investigation 阶段）：
 
@@ -215,7 +209,7 @@ runtime/subjects/<data_namespace>/data/evolution/operator_questions/resolved/
 
 ### 通用情报写入（Evidence，非 operator_fact）
 
-- 见上文「写入情报」的 `intel ingest` / `inbox`；可写入任意合法 source（`probe_results`、`goal_events` 等）。
+- 见上文「情报与报告」中的 `intel ingest` / `inbox`；可写入任意合法 source（`probe_results`、`goal_events` 等）。
 - 普通 observation 默认 `kind: observation`、`confidence: medium`，**不会**升格为 `operator_established_fact`。
 - 适合：外部探针结果、可推翻的手工观测；与 `operator_fact` 的「已确认口径」区分开。
 
@@ -321,7 +315,7 @@ Assessor prompt 仍建议 `goal_patches` 与 `proposed_goal` 互斥；执行器�
 
 Carryover mechanical 项带跨轮字段 `fingerprint` / `first_seen_cycle` / `seen_count`（同 cycle 重写不重复计数；跨 cycle 精确或 Jaccard≥0.6 匹配继承）。agent_loop 查证 prompt 渲染时，`seen_count≥2` 的条目会标注「已连续 N 轮」。
 
-信念管理：
+### 信念管理
 
 - `jea beliefs show`：显示当前 active/validated/refuted 信念状态。
 - `jea beliefs events [--limit N]`：查看近期信念变更事件。

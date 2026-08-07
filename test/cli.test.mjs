@@ -125,7 +125,7 @@ import {
 } from '../src/daemon/daemon-worker-state.mjs';
 import { daemonCommand, runDaemonWorker, workOnce } from '../src/cli/commands/daemon.mjs';
 import { selectSubjects } from '../src/infra/subject-selection.mjs';
-import { buildSubjectArtifactOverview } from '../src/infra/subject-artifacts.mjs';
+import { buildSubjectArtifactOverview } from '../src/daemon/subject-artifacts.mjs';
 import { checkSubjectLaneReady } from '../src/infra/subject-lane-guard.mjs';
 import {
   configuredActionToSpec,

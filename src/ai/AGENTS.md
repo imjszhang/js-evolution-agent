@@ -1,6 +1,6 @@
 # AI 网关（ai）
 
-本文件是 `src/ai` 模块的操作指引，由根 AGENTS.md 拆分而来。全局内容（基础用法、环境与诊断、运行时数据、Subject 管理、操作建议）见根 [AGENTS.md](../../AGENTS.md)；模块 ownership 与契约规则见 [src/contracts/OWNERSHIP.md](../../src/contracts/OWNERSHIP.md)。
+本文件是 `src/ai` 模块的操作指引，由根 AGENTS.md 拆分而来。全局内容（基础用法、环境与诊断、运行时数据、Subject 管理、操作建议）见根 [AGENTS.md](../../AGENTS.md)；模块 ownership 与契约规则见 [OWNERSHIP.md](../contracts/OWNERSHIP.md)。
 
 
 ## LLM 档案（DeepSeek V4）

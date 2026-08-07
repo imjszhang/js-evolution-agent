@@ -1,6 +1,6 @@
 # Daemon 编排（daemon）
 
-本文件是 `src/daemon` 模块的操作指引，由根 AGENTS.md 拆分而来。全局内容（基础用法、环境与诊断、运行时数据、Subject 管理、操作建议）见根 [AGENTS.md](../../AGENTS.md)；模块 ownership 与契约规则见 [src/contracts/OWNERSHIP.md](../../src/contracts/OWNERSHIP.md)。
+本文件是 `src/daemon` 模块的操作指引，由根 AGENTS.md 拆分而来。全局内容（基础用法、环境与诊断、运行时数据、Subject 管理、操作建议）见根 [AGENTS.md](../../AGENTS.md)；模块 ownership 与契约规则见 [OWNERSHIP.md](../contracts/OWNERSHIP.md)。
 
 
 ## Daemon 工作流
@@ -109,11 +109,9 @@ Channel worker-state 写入已使用与 task queue 相同的原子重试写入�
 
 相关环境变量：
 
-- `JEA_EXEC_AGENT_BUDGET`：单轮最多消费的 `agent_run` 数，默认 `8`（机械动作无上限）。
-- `JEA_EXEC_LIMIT`：deprecated，映射为 agent 预算。
-- `JEA_AGENT_MAX_CONCURRENCY`：agent_run 波内并行宽度上限，默认 `2`。
-- `JEA_AGENT_MAX_ATTEMPTS`：agent_run 失败重试上限，默认 `2`。
 - `JEA_VIEWER_BUILD_LIMIT`：`jea intel viewer serve` / `build` 的轮次上限，默认 `50`。
 - `JEA_SKIP_GOALS_ASSESS=1`：跳过目标评估。
 - `JEA_SKIP_BELIEF_UPDATE=1`：跳过 post-verify 信念更新。
 - `JEA_FORCE_MOCK=1`：强制使用 Mock AI。
+
+Phase 2 执行预算 / 队列 TTL（`JEA_EXEC_*`、`JEA_AGENT_*`、`JEA_PENDING_TTL_*`、`JEA_QUEUE_*`）见 [src/actions/AGENTS.md](../actions/AGENTS.md)。

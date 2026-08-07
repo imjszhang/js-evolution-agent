@@ -8,7 +8,7 @@ import {
 } from '../intelligence/channel-api.mjs';
 import { buildDaemonProjection } from '../daemon/daemon-projection.mjs';
 import { storeForSubject } from '../daemon/daemon-events.mjs';
-import { buildSubjectArtifactOverview } from '../infra/subject-artifacts.mjs';
+import { buildSubjectArtifactOverview } from '../daemon/subject-artifacts.mjs';
 import { runtimeForSubject } from '../infra/runtime-paths.mjs';
 import { getActiveGoals } from '../cli/commands/goals.mjs';
 import { getCurrentBeliefs } from '../cli/commands/beliefs.mjs';
