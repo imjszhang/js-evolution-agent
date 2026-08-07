@@ -456,6 +456,7 @@ npm run jea -- help
 | 文档 | 内容 |
 | --- | --- |
 | [README.md](./README.md) | English README（主版） |
+| [docs/mechanism-diagram.md](./docs/mechanism-diagram.md) | 模块与双域调度机制图（Mermaid） |
 | [cyber-taoist.ai](https://cyber-taoist.ai) | 进化学框架官网：N/R/T/EC/NI 概念与宪章全文 |
 | [AGENTS.md](./AGENTS.md) | CLI 完整参考、daemon/channel 工作流、操作者输入规范 |
 | [policies/README.md](./policies/README.md) | Subject / registry / lane / goals 创建指南 |
