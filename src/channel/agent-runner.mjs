@@ -1,4 +1,4 @@
-import { createIntelligenceStore } from '../intelligence/store.mjs';
+import { createIntelligenceStore } from '../intelligence/channel-api.mjs';
 import { createLlmClient } from '../ai/gateway.mjs';
 import { runtimeForSubject } from '../infra/runtime-paths.mjs';
 import { resolveEffectiveEnv } from '../actions/execution-env.mjs';

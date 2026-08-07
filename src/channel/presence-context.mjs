@@ -1,7 +1,11 @@
 import { join } from 'node:path';
-import { createIntelligenceStore } from '../intelligence/store.mjs';
-import { readPendingOperatorBriefs, summarizeOperatorBriefsForContext } from '../intelligence/operator-briefs.mjs';
-import { partitionBeliefs, summarizeBeliefForPrompt } from '../intelligence/beliefs.mjs';
+import {
+  createIntelligenceStore,
+  partitionBeliefs,
+  readPendingOperatorBriefs,
+  summarizeBeliefForPrompt,
+  summarizeOperatorBriefsForContext,
+} from '../intelligence/channel-api.mjs';
 import { buildDaemonProjection } from '../daemon/daemon-projection.mjs';
 import { storeForSubject } from '../daemon/daemon-events.mjs';
 import { buildSubjectArtifactOverview } from '../infra/subject-artifacts.mjs';
