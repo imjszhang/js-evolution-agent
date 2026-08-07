@@ -19,6 +19,8 @@ JEA 当前约 58k 行宿主源码 + 30k 行测试，经历了四个演化阶段�
 
 结构性症状：`cli/utils` 是事实内核（依赖全面倒挂 + 循环依赖）；`src/domain` 是 63 行 re-export 空壳；vendored engine 一半死代码；deprecated `phases` 双管线并存；五个 1800+ 行上帝文件；约 70 个 `JEA_*` 环境变量无收敛。
 
+关于 js-evolution-engine：npm 依赖已于 2026-06-13 通过 vendoring 移除（代码复制进 `src/engine/`，见 `VENDORED.md`），但「engine」作为独立身份保留了下来——门面导出约 40 个符号，宿主真正使用的不到一半，其余是从未接线的经典 OADA 平行世界。**本次重构彻底完成这一步：engine 身份解散，用到的能力吸收进 core 对应模块，用不上的删除，与上游仓库正式分道（不再 cherry-pick）**（见 4.5）。
+
 **结论**：不再做第三次绞杀者。采用**新核重建**（new core rebuild）——在同仓库新建 `core/`，从零实现内核，读写同一套 runtime 数据契约，跑同一份不变量测试；`src/` 降级为参考实现并最终移入 `legacy/`。
 
 ---
@@ -81,7 +83,7 @@ JEA 当前约 58k 行宿主源码 + 30k 行测试，经历了四个演化阶段�
 ### 3.4 删除清单（新核不搬运；`src/` 移入 legacy 后随之退役）
 
 1. `phases` 管线全套（`ConversationalIntelligencePipeline` + 双管线调度 + 相关测试）
-2. `src/engine` 未接线部分（IntelligencePipeline / VerifyPipeline / PromptBuilder / GitHub 面 / AutoEvolutionEngine / SelfAnalyzer）
+2. `src/engine` 整体退役：被使用的能力按 4.6 映射表吸收进 core，未接线部分（IntelligencePipeline / VerifyPipeline / PromptBuilder / GitHub 面 / AutoEvolutionEngine / SelfAnalyzer / SelfModifier / FeatureRequest / observe registry 等）直接删除；`VENDORED.md` 一并退役
 3. `src/domain` re-export 空壳
 4. `src/bridge`（OpenClaw）
 5. deprecated env 兼容（`JEA_EXEC_LIMIT`、旧 `DEEPSEEK_MODEL/THINKING/REASONING_EFFORT` 别名等）
@@ -162,7 +164,30 @@ metacognition pass（昂贵、按信号触发）
 - carryover：机械项唯一来源是结构化残留（open_gaps、queue 摘要、operator question），由宿主生成；不再接收 diary 叙事 bullets、不做销账协议。
 - 队列即工作状态：跨轮待续以队列 blocked/pending 为主载体（结构化），carryover 只补充非行动类线索。
 
-### 4.5 数据契约（新旧共用，兼容承诺）
+### 4.5 engine 吸收与解散（absorb & dissolve）
+
+原则：**core 里不存在 `engine` 目录，也不存在 engine facade**。engine 的能力按领域归位，成为 core 的普通模块；「宿主 vs 引擎」的双层叙事就此终结。
+
+**吸收映射**（依据宿主当前真实 import 面核对，2026-08-07）：
+
+| engine 现有部分 | 宿主使用情况 | core 归宿 |
+| --- | --- | --- |
+| `decide/decision-queue.mjs`（DecisionQueue、fingerprint、id 序列、claim 排序、TTL env 解析、7 态常量） | 核心底座（queue v2 状态机） | `core/domain/exec/decision-queue.mjs`；契约校验上移 `core/contracts/decision.mjs`；TTL 解析并入 `core/infra/config.mjs` |
+| `pipelines/exec.mjs`（ExecutionPipeline、agent 预算解析）+ `engine.mjs` 的 ActionExecutor | Phase 2 底座 | `core/domain/exec/`；预算解析并入 config（消除与 cycle-steps 的双份定义） |
+| `act/scope.mjs`（agent_run 波次宽度 / 独占 / 并行分类） | exec 双通道调度依赖 | `core/domain/exec/scope.mjs` |
+| `engine.mjs` 的 verifyActions | Phase 3 底座 | `core/domain/verify/` |
+| `engine.mjs` 的 EvolutionEngine（rules / guidance / goalProvider / cycleId 编排壳） | 仅作 exec/verify 的宿主壳 | **解散**：职责并入 `core/domain/cycle/`（goal、guidance、cycle_id 由 cycle 上下文直接供给，不再经引擎对象中转） |
+| `decide/action-registry.mjs`（ActionTypeRegistry / Spec） | actions 注册底座 | `core/domain/exec/action-registry.mjs` |
+| `core/time.mjs`（isoBeijing、时间快照、Current Time prompt 块） | 全核使用 | `core/infra/time.mjs` |
+| `ai/ai-client.mjs`（BaseAIClient / MockAIClient / AIError） | LLM gateway 基类 | `core/infra/llm/` |
+| `observe/ai-driven-observer.mjs`（AIDrivenObserver） | 仅 deprecated `phases` 使用 | 随 phases 删除 |
+| 其余全部：AutoEvolutionEngine、IntelligencePipeline、VerifyPipeline、PromptBuilder + `ai/prompts/*.md`、observe registry / QueryResolver / project-scanner、FeatureRequest*、SelfAnalyzer / SelfModifier、GitHubIssueManager + labels、engine 自带 cli | 宿主从未接线 | **删除**，不进入 core |
+
+**上游关系**：与 js-evolution-engine 上游仓库正式分道——不再 cherry-pick、不再维护 `VENDORED.md`；吸收后的模块按 core 自身需要自由演化。
+
+**验收（并入各阶段完成标准）**：`core/` 内 `rg "js-evolution-engine|engine/index"` 零命中；阶段 3 后 `rg js-evolution-engine` 全仓仅历史文献（journal / 本 PRD）命中。
+
+### 4.6 数据契约（新旧共用，兼容承诺）
 
 新核对以下格式**只做加法或同值填充**：
 
@@ -232,7 +257,7 @@ Channel（旧代码）与新核仅通过上述文件契约交互，无代码级�
 
 | # | 决策 | 建议（默认采纳，可否决） | 状态 |
 | --- | --- | --- | --- |
-| D1 | Channel 按「独立产品、冻结共存、文件契约交互」处理 | 采纳（见 3.3 / 4.5） | 待操作者确认 |
+| D1 | Channel 按「独立产品、冻结共存、文件契约交互」处理 | 采纳（见 3.3 / 4.6） | 待操作者确认 |
 | D2 | 新核直接采用两 tick 解耦步图，而非先照搬旧七步轮 | 采纳（见 4.2；重建是还此债成本最低的时机） | 待操作者确认 |
 
 ---
