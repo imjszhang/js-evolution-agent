@@ -3,7 +3,7 @@
 - 日期：2026-08-07
 - 状态：梳理稿（范围定义，不含实施）
 - 背景：架构方向讨论的结论是「调整架构优先于新增法则」——把认知管线从**固定 step 列车**迁往**证据流反应器**（证据到达 → 认知反应 → 行动 → 新证据）。本文先盘点现有全部「法则」（机制、闸门、阈值、补偿规则），标出哪些是**补偿性**（结构改了就能删或自然消失）、哪些是**本质性**（治理边界，必须保留），作为迁移的范围定义。
-- 相关：[`docs/mechanism-diagram.md`](./mechanism-diagram.md)、[`src/contracts/OWNERSHIP.md`](../src/contracts/OWNERSHIP.md)、`policies/authority/CONSTITUTION.md`
+- 相关：[`docs/mechanism-diagram.md`](./mechanism-diagram.md)、[`docs/reactor-target-mechanism.md`](./reactor-target-mechanism.md)（目标机制图与新规则集）、[`src/contracts/OWNERSHIP.md`](../src/contracts/OWNERSHIP.md)、`policies/authority/CONSTITUTION.md`
 
 ## 0. 分类标准
 
