@@ -66,6 +66,71 @@ function activeGoalsPath(runtime) {
   return join(runtime.runtimeRoot, 'data', 'goals', 'active_goals.json');
 }
 
+export function compareRuleFeedbackUnits(root = getProjectRoot(), flags = {}) {
+  const runtime = runtimeForFlags(root, flags);
+  const path = activeGoalsPath(runtime);
+  const activeGoals = readJsonSafe(path, null);
+  if (!activeGoals) throw new Error(`Active goals not found: ${path}`);
+  const store = makeStore(runtime);
+  const carryoverDoc = readCarryoverDocument(runtime.runtimeRoot);
+  const mechanicalGuards = loadEnabledGuards(root, runtime.subject);
+  const common = { store, activeGoals, carryoverDoc, mechanicalGuards };
+  const cycle = computeRuleFeedbackStats({
+    ...common,
+    env: { ...process.env, JEA_RULE_FEEDBACK_STREAK_UNIT: 'cycle' },
+  });
+  const evidence = computeRuleFeedbackStats({
+    ...common,
+    env: { ...process.env, JEA_RULE_FEEDBACK_STREAK_UNIT: 'evidence' },
+  });
+  const cycleByGoal = new Map(cycle.goals.map((goal) => [goal.goal_id, goal]));
+  const evidenceByGoal = new Map(evidence.goals.map((goal) => [goal.goal_id, goal]));
+  const goalIds = [...new Set([...cycleByGoal.keys(), ...evidenceByGoal.keys()])];
+  const goals = goalIds.map((id) => {
+    const a = cycleByGoal.get(id) ?? null;
+    const b = evidenceByGoal.get(id) ?? null;
+    return {
+      goal_id: id,
+      cycle: a ? {
+        state: a.feedback_state,
+        sig_streak: a.constant_signature_streak,
+        starved_streak: a.starved_streak,
+        mutate_effective: a.mutate_effective,
+        escalate_eligible: a.escalate_eligible,
+        observed: a.units_observed,
+      } : null,
+      evidence: b ? {
+        state: b.feedback_state,
+        sig_streak: b.constant_signature_streak,
+        starved_streak: b.starved_streak,
+        mutate_effective: b.mutate_effective,
+        escalate_eligible: b.escalate_eligible,
+        observed: b.units_observed,
+      } : null,
+      differs: Boolean(
+        a?.feedback_state !== b?.feedback_state
+        || a?.constant_signature_streak !== b?.constant_signature_streak
+        || a?.starved_streak !== b?.starved_streak
+        || a?.mutate_effective !== b?.mutate_effective
+        || a?.escalate_eligible !== b?.escalate_eligible
+      ),
+    };
+  });
+  return {
+    subject: runtime.subject,
+    generated_at: new Date().toISOString(),
+    read_only: true,
+    configs: { cycle: cycle.config, evidence: evidence.config },
+    summary: {
+      goals: goals.length,
+      differing: goals.filter((goal) => goal.differs).length,
+      cycle: cycle.summary,
+      evidence: evidence.summary,
+    },
+    goals,
+  };
+}
+
 function readJsonFileStrict(filePath) {
   return JSON.parse(readFileSync(filePath, 'utf-8'));
 }
@@ -803,11 +868,32 @@ export async function goalsCommand({ subcommand, flags = {} } = {}) {
     }
   }
 
-  console.error('Usage: jea goals <show|history|update|patch|assess> [...] [--subject NAME]\n' +
+  if (subcommand === 'feedback-compare') {
+    try {
+      const result = compareRuleFeedbackUnits(root, flags);
+      if (flags.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        console.log(`Rule feedback unit compare (${result.subject})`);
+        console.log(`goals=${result.summary.goals} differing=${result.summary.differing}`);
+        for (const goal of result.goals.filter((item) => item.differs)) {
+          console.log(`- ${goal.goal_id}: cycle=${goal.cycle?.state}/${goal.cycle?.sig_streak}/${goal.cycle?.starved_streak}`
+            + ` evidence=${goal.evidence?.state}/${goal.evidence?.sig_streak}/${goal.evidence?.starved_streak}`);
+        }
+      }
+      return 0;
+    } catch (e) {
+      console.error(e?.message || String(e));
+      return 1;
+    }
+  }
+
+  console.error('Usage: jea goals <show|history|update|patch|assess|feedback-compare> [...] [--subject NAME]\n' +
     '  jea goals show [--subject NAME] [--json]\n' +
     '  jea goals history [--subject NAME] [--limit N] [--json]\n' +
     '  jea goals update --file PATH --reason TEXT [--subject NAME] [--evidence REF] [--cycle ID] [--json]\n' +
     '  jea goals patch --file PATH --reason TEXT [--subject NAME] [--evidence REF] [--cycle ID] [--json]\n' +
-    '  jea goals assess [--subject NAME] [--cycle ID] [--json]');
+    '  jea goals assess [--subject NAME] [--cycle ID] [--json]\n' +
+    '  jea goals feedback-compare [--subject NAME] [--json]');
   return 2;
 }

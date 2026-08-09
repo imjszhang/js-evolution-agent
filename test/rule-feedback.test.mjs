@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildGoalReceiptBuckets,
   buildMechanicalGuardMap,
   buildRuleFeedbackQuestionText,
   computeHealthyStreak,
@@ -11,6 +12,7 @@ import {
   extractResultSignature,
   formatRuleFeedbackForPrompt,
   isGuardGoal,
+  resolveRuleFeedbackConfig,
   selectRuleFeedbackEscalations,
 } from '../src/intelligence/rule-feedback.mjs';
 
@@ -112,6 +114,68 @@ describe('streak and information gain', () => {
     const curr = { kv: [{ key: 'a', value: '2' }, { key: 'c', value: 'y' }] };
     expect(computeInformationGain(prev, curr)).toBe(3); // a changed, b removed, c added
     expect(computeInformationGain(curr, curr)).toBe(0);
+  });
+});
+
+describe('rule feedback streak units', () => {
+  it('defaults to cycle and parses evidence window independently', () => {
+    expect(resolveRuleFeedbackConfig({}).streakUnit).toBe('cycle');
+    expect(resolveRuleFeedbackConfig({
+      JEA_RULE_FEEDBACK_STREAK_UNIT: 'evidence',
+      JEA_RULE_FEEDBACK_WINDOW_EVIDENCE: '12',
+    })).toMatchObject({
+      streakUnit: 'evidence',
+      window: 12,
+      windowEvidence: 12,
+    });
+  });
+
+  it('counts same-cycle serving receipts independently in evidence mode', () => {
+    const receipts = [
+      makeReceipt({ id: 'r1', cycleId: 'cycle-1', recordedAt: '2026-01-01T00:00:01Z' }),
+      makeReceipt({ id: 'r2', cycleId: 'cycle-1', recordedAt: '2026-01-01T00:00:02Z' }),
+      makeReceipt({ id: 'r3', cycleId: 'cycle-1', recordedAt: '2026-01-01T00:00:03Z' }),
+    ];
+    expect(buildGoalReceiptBuckets(receipts, { streakUnit: 'cycle', window: 8 })).toHaveLength(1);
+    expect(buildGoalReceiptBuckets(receipts, { streakUnit: 'evidence', window: 8 })).toHaveLength(3);
+
+    const store = {
+      readActionReceipts: () => receipts,
+      readGoalEvents: () => [],
+    };
+    const activeGoals = {
+      id: 'root',
+      children: [{ id: 'guard-memory-audit-v28', name: 'memory', intent: 'x' }],
+    };
+    const cycle = computeRuleFeedbackStats({
+      store,
+      activeGoals,
+      deadStreak: 3,
+      escalateStreak: 5,
+      env: { JEA_RULE_FEEDBACK_STREAK_UNIT: 'cycle' },
+    }).goals[0];
+    const evidence = computeRuleFeedbackStats({
+      store,
+      activeGoals,
+      deadStreak: 3,
+      escalateStreak: 5,
+      env: {
+        JEA_RULE_FEEDBACK_STREAK_UNIT: 'evidence',
+        JEA_RULE_FEEDBACK_WINDOW_EVIDENCE: '8',
+      },
+    }).goals[0];
+
+    expect(cycle).toMatchObject({
+      streak_unit: 'cycle',
+      constant_signature_streak: 1,
+      feedback_state: 'live',
+    });
+    expect(evidence).toMatchObject({
+      streak_unit: 'evidence',
+      constant_signature_streak: 3,
+      feedback_state: 'dead',
+      units_observed: 3,
+    });
   });
 });
 
