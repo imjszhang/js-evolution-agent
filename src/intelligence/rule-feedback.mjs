@@ -10,10 +10,12 @@ import { normalizeCarryoverTextKey } from '../evolution/carryover.mjs';
 
 export const DEFAULT_RECEIPT_LIMIT = 120;
 export const DEFAULT_WINDOW_CYCLES = 8;
+export const DEFAULT_WINDOW_EVIDENCE = 24;
 export const DEFAULT_DEAD_STREAK = 3;
 export const DEFAULT_DEGRADED_STREAK = 2;
 export const DEFAULT_ESCALATE_STREAK = 5;
 export const DEFAULT_MUTATE_COOLDOWN = 2;
+export const RULE_FEEDBACK_STREAK_UNITS = Object.freeze(['cycle', 'evidence']);
 
 const KV_RE = /\b([a-zA-Z_][a-zA-Z0-9_.]{1,64})\s*(?:=|:)\s*([^\s,;|/"'`]+)/g;
 
@@ -59,15 +61,15 @@ const NARRATIVE_ABSENT_RE = /\b(free_text_clean|memory_policy\.free_text_clean)\
  */
 const BARE_STATUS_RE = /\b(free_text_clean|memory_policy\.free_text_clean|audit_ok|memory_policy\.audit_ok|verify_pipeline|verify_pipeline_mechanical)\b\s+(KEY_ABSENT|NOT_ACCEPTABLE_AS_CLEAN|FAIL|FAILED|PASS|TRUE|FALSE)\b/gi;
 
-function envInt(name, fallback) {
-  const raw = process.env[name];
+function envInt(name, fallback, env = process.env) {
+  const raw = env[name];
   if (raw == null || raw === '') return fallback;
   const n = Number.parseInt(String(raw), 10);
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
-function envIntAllowZero(name, fallback) {
-  const raw = process.env[name];
+function envIntAllowZero(name, fallback, env = process.env) {
+  const raw = env[name];
   if (raw == null || raw === '') return fallback;
   const n = Number.parseInt(String(raw), 10);
   return Number.isFinite(n) && n >= 0 ? n : fallback;
@@ -201,12 +203,19 @@ export function computeStarvedStreak({
 }
 
 export function resolveRuleFeedbackConfig(env = process.env) {
+  const rawUnit = String(env.JEA_RULE_FEEDBACK_STREAK_UNIT || 'cycle').trim().toLowerCase();
+  const streakUnit = RULE_FEEDBACK_STREAK_UNITS.includes(rawUnit) ? rawUnit : 'cycle';
+  const windowCycles = envInt('JEA_RULE_FEEDBACK_WINDOW', DEFAULT_WINDOW_CYCLES, env);
+  const windowEvidence = envInt('JEA_RULE_FEEDBACK_WINDOW_EVIDENCE', DEFAULT_WINDOW_EVIDENCE, env);
   return {
-    windowCycles: envInt('JEA_RULE_FEEDBACK_WINDOW', DEFAULT_WINDOW_CYCLES),
-    deadStreak: envInt('JEA_RULE_FEEDBACK_DEAD_STREAK', DEFAULT_DEAD_STREAK),
-    escalateStreak: envInt('JEA_RULE_FEEDBACK_ESCALATE_STREAK', DEFAULT_ESCALATE_STREAK),
-    receiptLimit: envInt('JEA_RULE_FEEDBACK_RECEIPT_LIMIT', DEFAULT_RECEIPT_LIMIT),
-    mutateCooldown: envIntAllowZero('JEA_RULE_FEEDBACK_MUTATE_COOLDOWN', DEFAULT_MUTATE_COOLDOWN),
+    streakUnit,
+    windowCycles,
+    windowEvidence,
+    window: streakUnit === 'evidence' ? windowEvidence : windowCycles,
+    deadStreak: envInt('JEA_RULE_FEEDBACK_DEAD_STREAK', DEFAULT_DEAD_STREAK, env),
+    escalateStreak: envInt('JEA_RULE_FEEDBACK_ESCALATE_STREAK', DEFAULT_ESCALATE_STREAK, env),
+    receiptLimit: envInt('JEA_RULE_FEEDBACK_RECEIPT_LIMIT', DEFAULT_RECEIPT_LIMIT, env),
+    mutateCooldown: envIntAllowZero('JEA_RULE_FEEDBACK_MUTATE_COOLDOWN', DEFAULT_MUTATE_COOLDOWN, env),
   };
 }
 
@@ -340,6 +349,61 @@ function receiptCycleId(receipt) {
     ?? receipt?.exec_cycle_id
     ?? receipt?.intel_cycle_id
     ?? null;
+}
+
+function receiptBucketId(receipt, index = 0) {
+  return String(receipt?.id || `receipt-anon-${receiptTimeMs(receipt)}-${index}`);
+}
+
+/**
+ * Build ordered feedback buckets.
+ * cycle: one best receipt per cycle (legacy behavior).
+ * evidence: one serving receipt per bucket.
+ */
+export function buildGoalReceiptBuckets(receipts = [], {
+  streakUnit = 'cycle',
+  window = DEFAULT_WINDOW_CYCLES,
+} = {}) {
+  const newestFirst = [...receipts].sort((a, b) => receiptTimeMs(b) - receiptTimeMs(a));
+  const groups = new Map();
+  newestFirst.forEach((receipt, index) => {
+    const key = streakUnit === 'evidence'
+      ? receiptBucketId(receipt, index)
+      : receiptCycleId(receipt);
+    if (!key) return;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(receipt);
+  });
+  const recentKeys = [...groups.keys()].slice(0, window).reverse();
+  return recentKeys.map((bucketId) => {
+    const bucketReceipts = groups.get(bucketId) || [];
+    let best = null;
+    let bestScore = -1;
+    let bestExtracted = null;
+    for (const receipt of bucketReceipts) {
+      const { score, extracted } = receiptSignatureScore(receipt);
+      if (score > bestScore) {
+        bestScore = score;
+        best = receipt;
+        bestExtracted = extracted;
+      }
+    }
+    const extracted = bestExtracted || extractResultSignature(best);
+    const signatureKv = extracted.sticky?.length
+      ? extracted.sticky
+      : (extracted.core?.length ? extracted.core : extracted.focus);
+    return {
+      bucket_id: bucketId,
+      cycle_id: receiptCycleId(best),
+      receipt_id: best?.id ?? null,
+      receipt_time_ms: receiptTimeMs(best),
+      signature: extracted.signature,
+      kv: signatureKv?.length ? signatureKv : (extracted.focus?.length ? extracted.focus : extracted.kv),
+      focus_kv: extracted.focus,
+      canonical: extracted.canonical,
+      success: receiptSuccess(best),
+    };
+  });
 }
 
 /**
@@ -511,7 +575,8 @@ export function computeRuleFeedbackStats({
   env = process.env,
 } = {}) {
   const cfg = resolveRuleFeedbackConfig(env);
-  const window = windowCycles ?? cfg.windowCycles;
+  const streakUnit = cfg.streakUnit;
+  const window = windowCycles ?? cfg.window;
   const dead = deadStreak ?? cfg.deadStreak;
   const escalate = escalateStreak ?? cfg.escalateStreak;
   const mutateCooldown = cfg.mutateCooldown;
@@ -526,20 +591,23 @@ export function computeRuleFeedbackStats({
   const goalEvents = [...(store?.readGoalEvents?.({ limit: 40 }) ?? [])]
     .sort((a, b) => receiptTimeMs(b) - receiptTimeMs(a));
 
-  // Group receipts by goal → cycle (newest receipts first after sort).
+  // Group serving receipts by goal. Bucket strategy is applied per goal below.
   const byGoal = new Map();
   for (const receipt of receipts) {
     const goalId = receiptGoalId(receipt);
     if (!goalId) continue;
-    const cycleId = receiptCycleId(receipt);
-    if (!cycleId) continue;
-    if (!byGoal.has(goalId)) byGoal.set(goalId, new Map());
-    const cycles = byGoal.get(goalId);
-    if (!cycles.has(cycleId)) cycles.set(cycleId, []);
-    cycles.get(cycleId).push(receipt);
+    if (streakUnit === 'cycle' && !receiptCycleId(receipt)) continue;
+    if (!byGoal.has(goalId)) byGoal.set(goalId, []);
+    byGoal.get(goalId).push(receipt);
   }
 
   const globalCyclesNewestFirst = globalCycleIdsNewestFirst(receipts);
+  const globalEvidenceNewestFirst = receipts
+    .filter((receipt) => receiptGoalId(receipt))
+    .map((receipt, index) => ({
+      bucket_id: receiptBucketId(receipt, index),
+      goal_id: receiptGoalId(receipt),
+    }));
   const stats = [];
   const goalIds = new Set([
     ...childGoals.map((g) => g.id),
@@ -548,40 +616,17 @@ export function computeRuleFeedbackStats({
 
   for (const goalId of goalIds) {
     const goal = childGoals.find((g) => g.id === goalId) ?? goals.find((g) => g.id === goalId) ?? { id: goalId };
-    const cycleMap = byGoal.get(goalId) ?? new Map();
-    // Map insertion follows newest-first receipt walk → keys are newest-first.
-    const cycleIdsNewestFirst = [...cycleMap.keys()];
-    // Chronological buckets (oldest→newest) within the recent window.
-    const recentCycleIds = cycleIdsNewestFirst.slice(0, window).reverse();
-    const buckets = recentCycleIds.map((cycleId) => {
-      const cycleReceipts = cycleMap.get(cycleId) || [];
-      // Prefer receipts that carry sticky law keys (e.g. free_text_clean=KEY_ABSENT).
-      let best = null;
-      let bestScore = -1;
-      let bestExtracted = null;
-      for (const receipt of cycleReceipts) {
-        const { score, extracted } = receiptSignatureScore(receipt);
-        if (score > bestScore) {
-          bestScore = score;
-          best = receipt;
-          bestExtracted = extracted;
-        }
-      }
-      const extracted = bestExtracted || extractResultSignature(best);
-      const signatureKv = extracted.sticky?.length
-        ? extracted.sticky
-        : (extracted.core?.length ? extracted.core : extracted.focus);
-      return {
-        cycle_id: cycleId,
-        receipt_id: best?.id ?? null,
-        receipt_time_ms: receiptTimeMs(best),
-        signature: extracted.signature,
-        kv: signatureKv?.length ? signatureKv : (extracted.focus?.length ? extracted.focus : extracted.kv),
-        focus_kv: extracted.focus,
-        canonical: extracted.canonical,
-        success: receiptSuccess(best),
-      };
+    const goalReceipts = byGoal.get(goalId) ?? [];
+    const buckets = buildGoalReceiptBuckets(goalReceipts, {
+      streakUnit,
+      window,
     });
+    const goalCycleIds = new Set(goalReceipts.map(receiptCycleId).filter(Boolean));
+    const goalEvidenceIds = new Set(
+      globalEvidenceNewestFirst
+        .filter((item) => item.goal_id === goalId)
+        .map((item) => item.bucket_id),
+    );
 
     // Null-signature cycles (e.g. unrelated evidence-audit summaries) must not
     // break a sticky-law death streak — drop them from streak/gain calculation.
@@ -611,22 +656,22 @@ export function computeRuleFeedbackStats({
     const is_guard = isGuardGoal(goal);
     const in_active_tree = is_root || childGoals.some((g) => g.id === goalId);
     const last_mutate_patch = findLastMutatePatchForGoal(goalEvents, goalId);
-    const cycles_since_mutate = last_mutate_patch
+    const units_since_mutate = last_mutate_patch
       ? countSignedBucketsSinceMutate(signedBuckets, last_mutate_patch.recorded_at_ms)
       : null;
     const mutate_cooldown = Boolean(
       mutateCooldown > 0
       && last_mutate_patch
       && feedback_state === 'dead'
-      && cycles_since_mutate != null
-      && cycles_since_mutate < mutateCooldown,
+      && units_since_mutate != null
+      && units_since_mutate < mutateCooldown,
     );
     if (mutate_cooldown) {
       feedback_state = 'degraded';
     }
     const mutate_effective = computeMutateEffective({
       lastMutatePatch: last_mutate_patch,
-      cyclesSinceMutate: cycles_since_mutate,
+      cyclesSinceMutate: units_since_mutate,
       mutateCooldown,
       signedBuckets,
       currentSignature: signature,
@@ -635,11 +680,17 @@ export function computeRuleFeedbackStats({
     // Unmaintained guard goals participate in starved detection.
     const starved_streak = (!in_active_tree || is_root || mechanically_maintained)
       ? 0
-      : computeStarvedStreak({
-        globalCycleIdsNewestFirst: globalCyclesNewestFirst,
-        goalCycleIds: new Set(cycleMap.keys()),
-        windowCycles: window,
-      });
+      : computeStarvedStreak(streakUnit === 'evidence'
+        ? {
+          globalCycleIdsNewestFirst: globalEvidenceNewestFirst.map((item) => item.bucket_id),
+          goalCycleIds: goalEvidenceIds,
+          windowCycles: window,
+        }
+        : {
+          globalCycleIdsNewestFirst: globalCyclesNewestFirst,
+          goalCycleIds,
+          windowCycles: window,
+        });
     const starved = in_active_tree && !is_root && !mechanically_maintained && starved_streak >= dead;
     const escalate_eligible = (feedback_state === 'dead' && streak >= escalate)
       || (starved && starved_streak >= escalate);
@@ -658,13 +709,17 @@ export function computeRuleFeedbackStats({
       constant_signature: signature,
       constant_keys,
       information_gain,
+      streak_unit: streakUnit,
+      units_observed: buckets.length,
       cycles_observed: buckets.length,
       recent_cycles: buckets.map((b) => b.cycle_id),
+      recent_buckets: buckets.map((b) => b.bucket_id),
       latest_receipt_id: curr?.receipt_id ?? null,
       carryover_stuck: stuck,
       consecutive_learn,
       last_mutate_cycle: last_mutate_patch?.cycle_id ?? null,
-      cycles_since_mutate,
+      units_since_mutate,
+      cycles_since_mutate: units_since_mutate,
       mutate_cooldown,
       mutate_effective,
       starved_streak,
@@ -722,7 +777,10 @@ export function computeRuleFeedbackStats({
 
   return {
     config: {
-      window_cycles: window,
+      streak_unit: streakUnit,
+      window: window,
+      window_cycles: streakUnit === 'cycle' ? window : null,
+      window_evidence: streakUnit === 'evidence' ? window : null,
       dead_streak: dead,
       escalate_streak: escalate,
       mutate_cooldown: mutateCooldown,
@@ -793,6 +851,7 @@ export function selectRuleFeedbackEscalations({
 }
 
 export function buildRuleFeedbackQuestionText(stat) {
+  const unit = stat?.streak_unit === 'evidence' ? 'serving evidence records' : 'cycles';
   const keys = (stat.constant_keys || [])
     .slice(0, 8)
     .map((p) => `${p.key}=${p.value}`)
@@ -802,7 +861,7 @@ export function buildRuleFeedbackQuestionText(stat) {
       `Outcome goal starvation detected for ${stat.goal_id}`
         + (stat.goal_name ? ` (${stat.goal_name})` : '')
         + '.',
-      `No action_receipt served this goal for ${stat.starved_streak} consecutive cycles`
+      `No action_receipt served this goal for ${stat.starved_streak} consecutive ${unit}`
         + ' (starved_streak at escalate threshold).',
       'Please decide whether the goal exit path / observation point needs revision',
       '(Cyber-Taoist: outcome pressure lost — conventional transactions never feed this goal).',
@@ -813,7 +872,7 @@ export function buildRuleFeedbackQuestionText(stat) {
     `Rule feedback death detected for goal ${stat.goal_id}`
       + (stat.goal_name ? ` (${stat.goal_name})` : '')
       + '.',
-    `Constant result signature persisted for ${stat.constant_signature_streak} cycles`
+    `Constant result signature persisted for ${stat.constant_signature_streak} ${unit}`
       + (keys ? ` with keys: ${keys}` : '')
       + '; information_gain=0.'
       + (stat.mutate_effective === false
@@ -831,6 +890,7 @@ export function buildRuleFeedbackQuestionText(stat) {
  */
 export function formatRuleFeedbackForPrompt(ruleFeedbackStats = null, language = 'zh') {
   const isEn = language === 'en';
+  const streakUnit = ruleFeedbackStats?.config?.streak_unit || 'cycle';
   const goals = Array.isArray(ruleFeedbackStats?.goals) ? ruleFeedbackStats.goals : [];
   const notable = goals.filter((g) => g?.feedback_state === 'dead'
     || g?.feedback_state === 'degraded'
@@ -865,6 +925,7 @@ export function formatRuleFeedbackForPrompt(ruleFeedbackStats = null, language =
     const parts = [
       g.goal_id,
       `state=${g.feedback_state}`,
+      `unit=${g.streak_unit || streakUnit}`,
       g.mechanically_maintained
         ? `mechanically_maintained${g.maintaining_guard_id ? `(${g.maintaining_guard_id})` : ''}`
         : null,

@@ -331,7 +331,7 @@ Assessor prompt 仍建议 `goal_patches` 与 `proposed_goal` 互斥；执行器�
 
 **法则反馈健康度**（`rule_feedback_stats`）：
 
-宿主按 `action.serves_goal` 聚合近期 receipts 的结果签名（`key=value` 归一化 hash），并对照 carryover 跨轮计数与 `evolution.guards` 配置，为每个子目标计算 `feedback_state`。注入点：
+宿主按 `action.serves_goal` 聚合近期 receipts 的结果签名（`key=value` 归一化 hash），并对照 carryover 跨轮计数与 `evolution.guards` 配置，为每个子目标计算 `feedback_state`。默认仍按 cycle 分桶；Phase 4 可用只读命令 `jea goals feedback-compare --subject NAME [--json]` 对比 cycle 与逐 receipt evidence 两种单位，不写运行时数据。注入点：
 
 - **Phase 4 goals assess**（完整 JSON，含 `mechanical_guards` 段，驱动 `rule_status` 与退役/重生）
 - **Phase 1 Decide**（agent_loop 仅）：压缩段 `## Rule Feedback Health`（dead / degraded / starved / mechanized），信息用法——签名恒定或 starved 的 goal 不应原样重复同一探针；`mechanically_maintained` 目标勿再入队相同探针；不行动须在 `deferred` / `goal_coverage.not_covered` 说明。phases 路径不注入。
@@ -359,10 +359,14 @@ Assessor prompt 仍建议 `goal_patches` 与 `proposed_goal` 互斥；执行器�
 | 变量 | 默认 | 含义 |
 | --- | --- | --- |
 | `JEA_RULE_FEEDBACK_WINDOW` | `8` | 统计窗口（cycle 数） |
+| `JEA_RULE_FEEDBACK_STREAK_UNIT` | `cycle` | `cycle`（生产默认）或 `evidence`（逐条 serving receipt；阈值标定完成前仅用于 replay/显式灰度） |
+| `JEA_RULE_FEEDBACK_WINDOW_EVIDENCE` | `24` | evidence 模式统计窗口（serving receipt 条数） |
 | `JEA_RULE_FEEDBACK_DEAD_STREAK` | `3` | 判 dead / starved 的连续轮数阈值 |
 | `JEA_RULE_FEEDBACK_ESCALATE_STREAK` | `5` | 死亡/饥饿边界报警阈值（见下） |
 | `JEA_RULE_FEEDBACK_MUTATE_COOLDOWN` | `2` | mutate 后冷却轮数（`0` 关闭）；冷却期内 dead 降级为 degraded |
 | `JEA_RULE_FEEDBACK_RECEIPT_LIMIT` | `120` | 参与统计的 receipt 读取上限 |
+
+`DEAD_STREAK` / `ESCALATE_STREAK` / `MUTATE_COOLDOWN` 在 evidence 模式下单位随之变为 evidence 条数；当前默认 3/5/2 仅用于双模式对照，不能直接视为生产标定值。历史回放结论见 `docs/rule-feedback-evidence-calibration.md`。
 
 **死亡边界报警**：若某子目标 `escalate_eligible`（`feedback_state=dead` 且 sig streak ≥ escalate，或未被机械维持的子目标 `starved_streak` ≥ escalate），而本轮 assess 未 mutate 或 calibrate 未对该子目标 applied patch（含 `mode: full_replace` 整树替换），**且**该 goal 的 `mutate_effective !== false`（化妆式 mutate 不豁免），则打开 operator question（`trigger: rule_feedback_dead`），并发 `rule_feedback_escalated` 事件；同 goal 已有 pending question 时去重。这是校准回路失灵的最后防线，不是常规人工审批出口。
 

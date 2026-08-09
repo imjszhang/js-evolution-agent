@@ -109,6 +109,7 @@ Commands:
                          Apply goal_patches JSON to active goals (child add/update/remove)
   goals assess [--cycle ID]
                          Ask AI to assess goal calibration and record an assessment event
+  goals feedback-compare Read-only cycle vs evidence streak replay/compare
   beliefs show             Show current actionable beliefs
   beliefs events [--limit N]
                          Show recent belief change events
