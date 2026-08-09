@@ -81,4 +81,4 @@ PY
 
 - [ ] 真实 DeepSeek 轮 token / 时长基线（`jea run` 无 `--mock`）
 - [ ] 多 subject 基线（`js-evolution-agent` sandbox）
-- [ ] Phase 1 读侧投影对账脚本（流 vs 散落源逐条一致）
+- [x] Phase 1 读侧投影对账：`jea intel stream --reconcile`（`contract_errors=0` 为通过；见 `src/intelligence/evidence-stream.mjs`）
