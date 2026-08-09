@@ -44,5 +44,9 @@ export {
 } from './belief-goal-events.mjs';
 
 export {
+  validateEvolutionEvent,
+} from './evolution-event.mjs';
+
+export {
   validateChannelEnvelope,
 } from './channel-envelope.mjs';
