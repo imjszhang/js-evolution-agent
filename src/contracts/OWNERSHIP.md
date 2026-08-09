@@ -50,6 +50,7 @@ Owner 名为角色占位（agent-*），实际分配时替换为具体维护者/
 | `evolution-events.jsonl` | 全模块（经 `recordEvolutionEvent`）→ viewer / report / evidence-audit | `src/contracts/evolution-event.mjs` |
 | evidence stream envelope（虚拟读视图） | 散落证据源 → `jea intel stream` / Phase 2 影子反应器 | `src/contracts/evidence-envelope.mjs` |
 | evidence batch claim（claim ledger） | 认知/法则/记忆反应器 claim-ack | `src/contracts/evidence-batch-claim.mjs` |
+| `agent-rate-ledger.json` | exec agent_run 墙钟速率账本（subject 持久化） | `src/contracts/agent-rate-ledger.mjs` |
 
 ## 4. 跨模块依赖规则
 

@@ -11,6 +11,7 @@ import {
   validateStepCheckpointPayload,
   validateBeliefEvent,
   validateChannelEnvelope,
+  validateAgentRateLedger,
   validateEvidenceBatchClaim,
   validateEvidenceEnvelope,
   validateEvolutionEvent,
@@ -85,6 +86,11 @@ describe('contracts', () => {
       event_ids: ['evt-1'],
       status: 'claimed',
     }).ok).toBe(true);
+    expect(validateAgentRateLedger({
+      version: 1,
+      entries: [{ ts: 1_700_000_000_000, cycle_id: 'cycle-test', decision_id: 'd1' }],
+    }).ok).toBe(true);
+    expect(validateAgentRateLedger({ version: 1, entries: [{ ts: 'bad' }] }).ok).toBe(false);
   });
 
   it('validates evolution_event required fields and evt- prefix', () => {

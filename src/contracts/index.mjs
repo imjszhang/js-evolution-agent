@@ -59,5 +59,9 @@ export {
 } from './evidence-batch-claim.mjs';
 
 export {
+  validateAgentRateLedger,
+} from './agent-rate-ledger.mjs';
+
+export {
   validateChannelEnvelope,
 } from './channel-envelope.mjs';
