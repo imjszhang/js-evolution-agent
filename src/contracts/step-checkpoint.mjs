@@ -8,6 +8,7 @@ import {
 
 export const CYCLE_STEPS = Object.freeze([
   'agent_loop',
+  'reactor',
   'intel',
   'intel_report',
   'exec',
@@ -42,12 +43,12 @@ export function validateStepCheckpointPayload(step, payload, path = 'payload') {
   if (step === 'intel' && typeof payload.success !== 'boolean') {
     errors.push(`${path}.success must be a boolean for intel`);
   }
-  if (step === 'agent_loop') {
+  if (step === 'agent_loop' || step === 'reactor') {
     if (typeof payload.success !== 'boolean') {
-      errors.push(`${path}.success must be a boolean for agent_loop`);
+      errors.push(`${path}.success must be a boolean for ${step}`);
     }
     if (payload.turns != null && typeof payload.turns !== 'number') {
-      errors.push(`${path}.turns must be a number for agent_loop`);
+      errors.push(`${path}.turns must be a number for ${step}`);
     }
   }
   if (step === 'exec' && !Array.isArray(payload.executed)) {

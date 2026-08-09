@@ -24,17 +24,39 @@ export const AGENT_LOOP_STEP_TYPES = Object.freeze([
   'diary',
 ]);
 
+export const REACTOR_STEP_TYPES = Object.freeze([
+  'reactor',
+  'exec',
+  'verify',
+  'belief_update',
+  'goals_assess',
+  'goals_calibrate',
+  'diary',
+]);
+
 export const ALL_CYCLE_STEP_TYPES = Object.freeze([
-  ...new Set([...AGENT_LOOP_STEP_TYPES, ...CYCLE_STEP_TYPES]),
+  ...new Set([...AGENT_LOOP_STEP_TYPES, ...REACTOR_STEP_TYPES, ...CYCLE_STEP_TYPES]),
 ]);
 
 export function stepTypesForPipeline(pipeline = 'phases') {
-  return pipeline === 'agent_loop' ? AGENT_LOOP_STEP_TYPES : CYCLE_STEP_TYPES;
+  if (pipeline === 'agent_loop') return AGENT_LOOP_STEP_TYPES;
+  if (pipeline === 'reactor') return REACTOR_STEP_TYPES;
+  return CYCLE_STEP_TYPES;
 }
 
 export function cyclePipelineOf(cycleState) {
   const pipeline = cycleState?.meta?.pipeline;
-  return pipeline === 'agent_loop' ? 'agent_loop' : 'phases';
+  if (pipeline === 'agent_loop') return 'agent_loop';
+  if (pipeline === 'reactor') return 'reactor';
+  return 'phases';
+}
+
+function isIntelSingleStepPipeline(pipeline) {
+  return pipeline === 'agent_loop' || pipeline === 'reactor';
+}
+
+function intelPhaseStep(pipeline) {
+  return pipeline === 'reactor' ? 'reactor' : 'agent_loop';
 }
 
 export const CYCLE_EVENT_TYPES = Object.freeze([
@@ -42,6 +64,8 @@ export const CYCLE_EVENT_TYPES = Object.freeze([
   'cycle_due',
   'agent_loop_done',
   'agent_loop_failed',
+  'reactor_done',
+  'reactor_failed',
   'intel_ready',
   'intel_failed',
   'report_ready',
@@ -104,8 +128,9 @@ function shouldSkipGoalsAssess(cycleState, options) {
 function intelReportReady(cycleState, event) {
   if (event?.intel_report_ready != null) return Boolean(event.intel_report_ready);
   if (cycleMeta(cycleState).intel_report_ready != null) return Boolean(cycleMeta(cycleState).intel_report_ready);
-  if (cyclePipelineOf(cycleState) === 'agent_loop') {
-    return isStepTerminal(cycleState, 'agent_loop') && stepStatus(cycleState, 'agent_loop') === 'done';
+  if (isIntelSingleStepPipeline(cyclePipelineOf(cycleState))) {
+    const phaseStep = intelPhaseStep(cyclePipelineOf(cycleState));
+    return isStepTerminal(cycleState, phaseStep) && stepStatus(cycleState, phaseStep) === 'done';
   }
   return isStepTerminal(cycleState, 'intel_report') && stepStatus(cycleState, 'intel_report') === 'done';
 }
@@ -142,9 +167,10 @@ function beliefUpdateReady(cycleState, event, options) {
 function diaryReady(cycleState, event, options) {
   const pipeline = cyclePipelineOf(cycleState);
 
-  if (pipeline === 'agent_loop') {
-    if (!isStepTerminal(cycleState, 'agent_loop')) return false;
-    if (stepStatus(cycleState, 'agent_loop') === 'failed') {
+  if (isIntelSingleStepPipeline(pipeline)) {
+    const phaseStep = intelPhaseStep(pipeline);
+    if (!isStepTerminal(cycleState, phaseStep)) return false;
+    if (stepStatus(cycleState, phaseStep) === 'failed') {
       return isStepRunnable(cycleState, 'diary') || !isStepTerminal(cycleState, 'diary');
     }
     if (!isStepTerminal(cycleState, 'exec')) return false;
@@ -222,6 +248,8 @@ export function nextSteps(event, cycleState = {}, options = {}) {
     case 'reconcile':
       if (pipeline === 'agent_loop') {
         enqueue('agent_loop', type);
+      } else if (pipeline === 'reactor') {
+        enqueue('reactor', type);
       } else {
         enqueue('intel', type);
       }
@@ -233,6 +261,14 @@ export function nextSteps(event, cycleState = {}, options = {}) {
 
     case 'agent_loop_failed':
       enqueue('diary', 'agent_loop_failed');
+      break;
+
+    case 'reactor_done':
+      enqueue('exec', 'reactor_done');
+      break;
+
+    case 'reactor_failed':
+      enqueue('diary', 'reactor_failed');
       break;
 
     case 'intel_ready': {
@@ -383,6 +419,16 @@ export function reconcileCycle(cycleState, options = {}) {
     if (stepStatus(cycleState, 'agent_loop') === 'failed' && isStepRunnable(cycleState, 'diary')) {
       result = mergeResults(result, nextSteps({ type: 'agent_loop_failed', cycle_id: cycleId }, cycleState, options));
     }
+  } else if (pipeline === 'reactor') {
+    if (!isStepTerminal(cycleState, 'reactor') && isStepRunnable(cycleState, 'reactor')) {
+      result = mergeResults(result, nextSteps({ type: 'cycle_due', cycle_id: cycleId }, cycleState, options));
+    }
+    if (stepStatus(cycleState, 'reactor') === 'done' && isStepRunnable(cycleState, 'exec')) {
+      result = mergeResults(result, nextSteps({ type: 'reactor_done', cycle_id: cycleId }, cycleState, options));
+    }
+    if (stepStatus(cycleState, 'reactor') === 'failed' && isStepRunnable(cycleState, 'diary')) {
+      result = mergeResults(result, nextSteps({ type: 'reactor_failed', cycle_id: cycleId }, cycleState, options));
+    }
   } else if (isStepTerminal(cycleState, 'intel') && stepStatus(cycleState, 'intel') === 'done') {
     const intelReportPending = !isStepTerminal(cycleState, 'intel_report');
     const execPending = isStepRunnable(cycleState, 'exec');
@@ -459,6 +505,7 @@ export function eventFromStepCompletion(stepType, outcome, cycleState = {}) {
 
   const map = {
     agent_loop: status === 'failed' ? 'agent_loop_failed' : 'agent_loop_done',
+    reactor: status === 'failed' ? 'reactor_failed' : 'reactor_done',
     intel: status === 'failed' ? 'intel_failed' : 'intel_ready',
     intel_report: status === 'failed' ? 'report_failed' : 'report_ready',
     exec: status === 'failed' ? 'exec_failed' : status === 'skipped' ? 'exec_skipped' : 'exec_done',

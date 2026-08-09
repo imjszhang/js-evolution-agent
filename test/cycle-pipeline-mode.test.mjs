@@ -40,7 +40,11 @@ describe('cycle pipeline mode', () => {
   }
 
   it('exposes supported pipelines', () => {
-    expect(CYCLE_PIPELINES).toEqual(['phases', 'agent_loop']);
+    expect(CYCLE_PIPELINES).toEqual(['phases', 'agent_loop', 'reactor']);
+  });
+
+  it('normalizes reactor pipeline', () => {
+    expect(normalizeCyclePipeline('reactor')).toBe('reactor');
   });
 
   it('normalizes aliases', () => {

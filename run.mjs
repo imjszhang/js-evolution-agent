@@ -9,6 +9,7 @@ import { loadCycleStepContext } from './src/daemon/cycle-checkpoints.mjs';
 import {
   buildCycleContext,
   runAgentLoopStep,
+  runReactorStep,
   runBeliefUpdateStep,
   runDiaryStep,
   runExecStep,
@@ -57,7 +58,7 @@ function requireCheckpoint(stepContext, { requireExec = false } = {}) {
 }
 
 async function runSingleStepMode(runtime, step, cycleId) {
-  if (!cycleId && step !== 'intel' && step !== 'agent_loop') {
+  if (!cycleId && step !== 'intel' && step !== 'agent_loop' && step !== 'reactor') {
     throw new Error(`JEA_CYCLE_ID is required for step: ${step}`);
   }
   const ctx = await buildCycleContext(__dirname, runtime);
@@ -67,6 +68,18 @@ async function runSingleStepMode(runtime, step, cycleId) {
     : null;
 
   switch (step) {
+    case 'reactor': {
+      const result = await runReactorStep(ctx, { cycleId, recordState });
+      console.log(`JEA_STEP_RESULT ${JSON.stringify({
+        step: 'reactor',
+        cycle_id: result.cycleId,
+        ok: true,
+        decisions_queued: result.eventPayload?.decisions_queued ?? 0,
+        intel_report_ready: result.eventPayload?.intel_report_ready ?? false,
+        skipped: result.eventPayload?.skipped ?? false,
+      })}`);
+      return;
+    }
     case 'agent_loop': {
       const result = await runAgentLoopStep(ctx, { cycleId, recordState });
       console.log(`JEA_STEP_RESULT ${JSON.stringify({
@@ -211,6 +224,20 @@ async function runCycle(runtime) {
     intelResult = loopOutcome.intelResult;
     intelReportReady = Boolean(intelResult?.report?.mdPath);
     console.log('  success:', intelResult.success);
+    console.log('  decisions queued:', intelResult.decisions_queued?.length ?? 0);
+    console.log('  report ready:', intelReportReady);
+
+    console.log('\n=== Phase 2: exec pipeline ===');
+    ({ execResult } = await runExecStep(ctx, { recordState, intelResult, stateCycleId: intelResult.cycle_id }));
+    console.log('  success:', execResult.success);
+    console.log('  executed:', execResult.executed.length);
+  } else if (pipeline === 'reactor') {
+    console.log('\n=== Cognitive reactor (Phase 3 gray) ===');
+    const reactorOutcome = await runReactorStep(ctx, { cycleId: cycleState.cycle_id, recordState });
+    intelResult = reactorOutcome.intelResult;
+    intelReportReady = Boolean(intelResult?.report?.mdPath);
+    console.log('  success:', intelResult.success);
+    console.log('  skipped:', intelResult.skipped ?? false);
     console.log('  decisions queued:', intelResult.decisions_queued?.length ?? 0);
     console.log('  report ready:', intelReportReady);
 

@@ -84,7 +84,10 @@ function emptySteps(pipeline = 'phases') {
 
 export function createEmptyCycleState({ cycleId, subject, meta = {} } = {}) {
   const now = nowIso();
-  const pipeline = meta.pipeline === 'agent_loop' ? 'agent_loop' : 'phases';
+  const rawPipeline = meta.pipeline;
+  const pipeline = rawPipeline === 'agent_loop' || rawPipeline === 'reactor'
+    ? rawPipeline
+    : 'phases';
   return {
     cycle_id: cycleId,
     subject,

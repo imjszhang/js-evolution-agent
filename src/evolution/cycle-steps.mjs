@@ -95,6 +95,7 @@ import {
   computeRuleFeedbackStats,
   formatRuleFeedbackForPrompt,
 } from '../intelligence/rule-feedback.mjs';
+import { runCognitiveLiveReaction } from './reactor/cognitive-reactor.mjs';
 
 export {
   assembleAgentLoopHostSeenBody,
@@ -318,6 +319,105 @@ function buildRestoredConversationForVerify({ systemPrompt, initialUserPrompt, r
  * investigate (readonly) → single-shot report → classic Analyze+Decide queue.
  * Does not execute side effects or write exec.json.
  */
+export async function runReactorStep(ctx, { cycleId = null, recordState = null } = {}) {
+  const { cfg, engine, runtime, store } = ctx;
+  const forcedCycleId = cycleId || process.env.JEA_CYCLE_ID;
+  if (forcedCycleId) {
+    engine.setCycleId(forcedCycleId);
+  }
+  const resolvedCycleId = engine.cycleId || forcedCycleId;
+  const logger = cfg.host?.logger || null;
+
+  const reaction = await runCognitiveLiveReaction(ctx, {
+    cycleId: resolvedCycleId,
+    skipInvestigate: process.env.JEA_REACTOR_SKIP_INVESTIGATE === '1',
+  });
+
+  if (reaction.skipped) {
+    logger?.info?.(`[reactor] skipped: ${reaction.reason}`);
+    const intelResult = {
+      cycle_id: resolvedCycleId,
+      timestamp: isoBeijing(),
+      success: true,
+      actions: [],
+      decisions_queued: [],
+      skipped: true,
+      skip_reason: reaction.reason,
+      report: null,
+    };
+    store.recordEvolutionEvent({
+      type: 'reactor_pipeline',
+      status: 'skipped',
+      cycle_id: resolvedCycleId,
+      subject: runtime.subject,
+      reason: reaction.reason,
+    });
+    if (recordState) {
+      await persistCheckpoint(recordState, resolvedCycleId, 'reactor', {
+        cycle_id: resolvedCycleId,
+        success: true,
+        skipped: true,
+        skip_reason: reaction.reason,
+        decisions_queued: [],
+        batch_id: null,
+      });
+      await recordStepSidecar(recordState.root, recordState.subject, resolvedCycleId, 'reactor', 'done', {
+        skipped: true,
+        intel_report_ready: false,
+      });
+    }
+    return {
+      cycleId: resolvedCycleId,
+      intelResult,
+      reactorResult: reaction,
+      eventPayload: {
+        decisions_queued: 0,
+        intel_report_ready: false,
+        skipped: true,
+      },
+    };
+  }
+
+  const intelResult = {
+    cycle_id: resolvedCycleId,
+    timestamp: isoBeijing(),
+    success: true,
+    actions: reaction.decisions,
+    decisions_queued: reaction.decisions_queued,
+    analysis: reaction.analysis,
+    batch_id: reaction.batch_id,
+    report: reaction.report,
+  };
+
+  if (recordState) {
+    await persistCheckpoint(recordState, resolvedCycleId, 'reactor', {
+      cycle_id: resolvedCycleId,
+      success: true,
+      batch_id: reaction.batch_id,
+      claimed_events: reaction.claimed_events,
+      decisions_queued: reaction.decisions_queued?.length ?? reaction.decisions.length,
+      report_path: reaction.report_path,
+      honesty: reaction.honesty,
+      duration_ms: reaction.duration_ms,
+    });
+    await recordStepSidecar(recordState.root, recordState.subject, resolvedCycleId, 'reactor', 'done', {
+      decisions_queued: reaction.decisions_queued?.length ?? reaction.decisions.length,
+      intel_report_ready: Boolean(reaction.report?.mdPath),
+      batch_id: reaction.batch_id,
+    });
+  }
+
+  return {
+    cycleId: resolvedCycleId,
+    intelResult,
+    reactorResult: reaction,
+    eventPayload: {
+      decisions_queued: reaction.decisions_queued?.length ?? reaction.decisions.length,
+      intel_report_ready: Boolean(reaction.report?.mdPath),
+    },
+  };
+}
+
 export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null } = {}) {
   const { cfg, engine, runtime, store } = ctx;
   const forcedCycleId = cycleId || process.env.JEA_CYCLE_ID;

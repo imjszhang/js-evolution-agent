@@ -15,23 +15,33 @@ function loadVerifyReport(runtimeRoot, cycleId) {
   return { verification, reportPath: existsSync(verifyPath) ? verifyPath : null };
 }
 
-function rebuildIntelResult(cycleId, intelCp, reportCp, agentLoopCp = null) {
+function rebuildIntelResult(cycleId, intelCp, reportCp, agentLoopCp = null, reactorCp = null) {
   const reportFromIntel = intelCp?.report ?? null;
-  const reportPath = reportCp?.report_path ?? reportFromIntel?.mdPath ?? null;
+  const reportPath = reportCp?.report_path
+    ?? reactorCp?.report_path
+    ?? reportFromIntel?.mdPath
+    ?? agentLoopCp?.report_path
+    ?? null;
   const report = reportFromIntel || (reportPath ? {
     mdPath: reportPath,
-    source: reportCp?.source ?? null,
+    source: reportCp?.source ?? reactorCp?.source ?? null,
     indexRecord: reportCp?.indexRecord ?? {},
   } : null);
+  const decisionsQueued = intelCp?.decisions_queued
+    ?? reactorCp?.decisions_queued
+    ?? agentLoopCp?.decisions_queued
+    ?? 0;
   return {
-    cycle_id: intelCp?.cycle_id || cycleId,
-    success: intelCp?.success ?? true,
-    decisions_queued: Array.from({ length: intelCp?.decisions_queued ?? 0 }),
+    cycle_id: intelCp?.cycle_id || reactorCp?.cycle_id || cycleId,
+    success: intelCp?.success ?? reactorCp?.success ?? true,
+    decisions_queued: Array.isArray(decisionsQueued) ? decisionsQueued : Array.from({ length: decisionsQueued }),
     actions: intelCp?.actions ?? [],
     suggestion_coverage: intelCp?.suggestion_coverage
       ?? agentLoopCp?.suggestion_coverage
       ?? null,
     report,
+    batch_id: reactorCp?.batch_id ?? null,
+    skipped: reactorCp?.skipped ?? false,
   };
 }
 
@@ -53,17 +63,22 @@ export function loadCycleStepContext(root, subject, cycleId, runtimeRoot) {
   const intelCp = readStepArtifact(root, subject, cycleId, 'intel');
   const reportCp = readStepArtifact(root, subject, cycleId, 'intel_report');
   const agentLoopCp = readStepArtifact(root, subject, cycleId, 'agent_loop');
+  const reactorCp = readStepArtifact(root, subject, cycleId, 'reactor');
   const execCp = readStepArtifact(root, subject, cycleId, 'exec');
   const beliefCp = readStepArtifact(root, subject, cycleId, 'belief_update');
   const assessCp = readStepArtifact(root, subject, cycleId, 'goals_assess');
   const calibrateCp = readStepArtifact(root, subject, cycleId, 'goals_calibrate');
   const { verification, reportPath } = loadVerifyReport(runtimeRoot, cycleId);
 
-  const intelReportReady = reportCp?.intel_report_ready
-    ?? Boolean(intelCp?.report?.mdPath && existsSync(intelCp.report.mdPath));
+  const intelReportReady = reportCp?.intel_report_ready != null
+    ? Boolean(reportCp.intel_report_ready)
+    : Boolean(
+      (reactorCp?.report_path && existsSync(reactorCp.report_path))
+      || (intelCp?.report?.mdPath && existsSync(intelCp.report.mdPath)),
+    );
 
   return {
-    intelResult: rebuildIntelResult(cycleId, intelCp, reportCp, agentLoopCp),
+    intelResult: rebuildIntelResult(cycleId, intelCp, reportCp, agentLoopCp, reactorCp),
     execResult: rebuildExecResult(cycleId, execCp),
     verification,
     reportPath,
