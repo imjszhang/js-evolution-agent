@@ -11,6 +11,7 @@ import {
   validateStepCheckpointPayload,
   validateBeliefEvent,
   validateChannelEnvelope,
+  validateEvidenceBatchClaim,
   validateEvidenceEnvelope,
   validateEvolutionEvent,
   validateGoalEvent,
@@ -75,6 +76,14 @@ describe('contracts', () => {
       occurred_at: '2026-06-13T00:00:00.000Z',
       provenance: { store: 'action_receipts', file: 'intelligence/action_receipts/action-receipts.jsonl', id: 'receipt-test' },
       payload: { id: 'receipt-test' },
+    }).ok).toBe(true);
+    expect(validateEvidenceBatchClaim({
+      batch_id: 'batch-test',
+      reactor: 'cognitive',
+      claimed_at: '2026-06-13T00:00:00.000Z',
+      deadline_at: '2026-06-13T00:05:00.000Z',
+      event_ids: ['evt-1'],
+      status: 'claimed',
     }).ok).toBe(true);
   });
 
