@@ -48,5 +48,10 @@ export {
 } from './evolution-event.mjs';
 
 export {
+  EVIDENCE_SOURCE_KINDS,
+  validateEvidenceEnvelope,
+} from './evidence-envelope.mjs';
+
+export {
   validateChannelEnvelope,
 } from './channel-envelope.mjs';

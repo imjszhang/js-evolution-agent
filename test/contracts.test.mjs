@@ -11,6 +11,7 @@ import {
   validateStepCheckpointPayload,
   validateBeliefEvent,
   validateChannelEnvelope,
+  validateEvidenceEnvelope,
   validateEvolutionEvent,
   validateGoalEvent,
   validateVerifyReport,
@@ -66,6 +67,14 @@ describe('contracts', () => {
       cycle_id: 'cycle-test',
       status: 'ok',
       extra_field: 'allowed',
+    }).ok).toBe(true);
+    expect(validateEvidenceEnvelope({
+      id: 'receipt-test',
+      kind: 'action_receipts',
+      type: 'record_observation',
+      occurred_at: '2026-06-13T00:00:00.000Z',
+      provenance: { store: 'action_receipts', file: 'intelligence/action_receipts/action-receipts.jsonl', id: 'receipt-test' },
+      payload: { id: 'receipt-test' },
     }).ok).toBe(true);
   });
 
