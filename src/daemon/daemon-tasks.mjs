@@ -16,6 +16,7 @@ export { CYCLE_STEP_TYPES, ALL_CYCLE_STEP_TYPES };
 
 const CYCLE_STEP_ORDER = Object.fromEntries([
   ['agent_loop', 5],
+  ['reactor', 6],
   ...CYCLE_STEP_TYPES.map((step, index) => [step, (index + 1) * 10]),
 ]);
 

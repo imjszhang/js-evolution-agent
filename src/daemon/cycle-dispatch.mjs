@@ -89,6 +89,7 @@ function enqueueStepTasks(root, subject, steps, input = {}) {
 function stepPriority(stepType) {
   const order = {
     agent_loop: 10,
+    reactor: 10,
     intel: 10,
     intel_report: 20,
     exec: 30,

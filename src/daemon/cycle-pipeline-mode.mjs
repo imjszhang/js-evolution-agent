@@ -1,6 +1,6 @@
 import { getSubjectEntry, resolveSubjectConfig } from '../infra/subjects.mjs';
 
-export const CYCLE_PIPELINES = Object.freeze(['phases', 'agent_loop']);
+export const CYCLE_PIPELINES = Object.freeze(['phases', 'agent_loop', 'reactor']);
 
 let phasesDeprecationWarned = false;
 
@@ -31,6 +31,9 @@ export function normalizeCyclePipeline(raw) {
   }
   if (normalized === 'agent_loop' || normalized === 'agent-loop' || normalized === 'loop') {
     return 'agent_loop';
+  }
+  if (normalized === 'reactor') {
+    return 'reactor';
   }
   return null;
 }
@@ -82,4 +85,12 @@ export function resolveCyclePipeline(root, { subject = null, flags = {}, env = p
 
 export function isAgentLoopPipeline(pipeline) {
   return pipeline === 'agent_loop';
+}
+
+export function isReactorPipeline(pipeline) {
+  return pipeline === 'reactor';
+}
+
+export function isIntelSingleStepPipeline(pipeline) {
+  return pipeline === 'agent_loop' || pipeline === 'reactor';
 }

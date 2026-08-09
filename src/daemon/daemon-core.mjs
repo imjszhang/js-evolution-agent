@@ -485,7 +485,7 @@ function parseTickMs(flags = {}) {
 }
 
 function isCycleStepType(type) {
-  return CYCLE_STEP_TYPES.includes(type) || type === 'agent_loop';
+  return CYCLE_STEP_TYPES.includes(type) || type === 'agent_loop' || type === 'reactor';
 }
 
 async function workRunCycleStep(root, subject, task, flags) {

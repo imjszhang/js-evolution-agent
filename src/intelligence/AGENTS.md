@@ -120,7 +120,11 @@ npm run jea -- intel stream --reconcile --subject js-evolution-agent
 npm run jea -- reactor shadow compare --cycle <上一步 cycle_id> --subject js-evolution-agent
 ```
 
-Phase 3 灰度（`evolution.pipeline: reactor` 真实入队）**尚未实现**；前置须 exec 预算换速率制（见 epic #33 / plan #34）。
+Phase 3 灰度（`evolution.pipeline: reactor` 真实入队）已可用；exec 墙钟速率预算前置见 #36（已合 main）。
+
+- registry 设 `"evolution": { "pipeline": "reactor" }`（仅灰度 subject；其他 subject 默认 `agent_loop`，一行回切）
+- `jea run` / daemon 走 `reactor` step → claim 证据批 → 真实 `pending_decisions` + reports index + `reactor_report_honesty` / `reactor_pipeline` 事件
+- 沙盒 smoke：`npm run jea -- run --mock --subject js-evolution-agent`（当前 registry 已灰度该 subject）
 
 设计文档：`docs/reactor-target-mechanism.md`、`docs/reactor-migration-rule-inventory.md`、`docs/evidence-batch-primitive-review.md`。
 

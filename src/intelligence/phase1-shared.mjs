@@ -275,7 +275,7 @@ export async function queueAnalyzeDecideActions({
   pipeline,
 } = {}) {
   if (pipeline == null || pipeline === '') {
-    throw new Error('queueAnalyzeDecideActions requires an explicit pipeline (phases | agent_loop)');
+    throw new Error('queueAnalyzeDecideActions requires an explicit pipeline (phases | agent_loop | reactor)');
   }
   void maxActions; // retained for call-site compatibility; never truncates
   const analysisContext = summarizeAnalysis(analysis);

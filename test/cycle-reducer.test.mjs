@@ -160,6 +160,24 @@ describe('cycle-reducer', () => {
     expect(steps.map((s) => s.type)).toEqual(['exec']);
   });
 
+  it('reactor pipeline enqueues reactor on cycle_due', () => {
+    const state = createEmptyCycleState({
+      cycleId: 'cycle-reactor',
+      subject: 'alpha',
+      meta: { pipeline: 'reactor' },
+    });
+    expect(state.steps.reactor).toBeTruthy();
+    expect(state.steps.intel).toBeUndefined();
+    const { steps } = nextSteps({ type: 'cycle_due', cycle_id: 'cycle-reactor' }, state);
+    expect(steps.map((s) => s.type)).toEqual(['reactor']);
+  });
+
+  it('reactor_done enqueues exec', () => {
+    const state = stateWithSteps('cycle-reactor', { reactor: 'done', exec: 'pending' }, { pipeline: 'reactor' });
+    const { steps } = nextSteps({ type: 'reactor_done', cycle_id: 'cycle-reactor' }, state);
+    expect(steps.map((s) => s.type)).toEqual(['exec']);
+  });
+
   it('maps agent_loop completion events', () => {
     expect(eventFromStepCompletion('agent_loop', { status: 'done' }, { cycle_id: 'c1' }).type)
       .toBe('agent_loop_done');

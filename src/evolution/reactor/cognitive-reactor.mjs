@@ -1,10 +1,12 @@
 /**
- * Cognitive shadow reactor (Phase 2).
- * claim → investigate → report(Seen splice) → decide → shadow artifacts only.
- * Never writes pending_decisions.json / reports index / evolution-events.
+ * Cognitive reactor (Phase 2 shadow + Phase 3 live gray).
+ * claim → investigate → report(Seen splice) → decide.
+ * Shadow: artifacts under data/evolution/reactor/ only.
+ * Live: real pending_decisions, reports index, evolution-events.
  */
 import { join } from 'node:path';
 import { chatMessagesDetailed } from '../../ai/messages.mjs';
+import { isoBeijing } from '../../engine/index.mjs';
 import { createHostDecisionQueue } from '../../intelligence/decision-queue.mjs';
 import { parseAnalyzeDecisionWithRepair } from '../../intelligence/decide-json.mjs';
 import {
@@ -16,8 +18,10 @@ import {
   readPendingOperatorBriefs,
   summarizeOperatorBriefsForContext,
 } from '../../intelligence/operator-briefs.mjs';
+import { queueAnalyzeDecideActions } from '../../intelligence/phase1-shared.mjs';
 import {
   buildSeenSection,
+  persistIntelReport,
   prepareIntelReport,
 } from '../../intelligence/report-builder.mjs';
 import { buildInvestigationTools } from '../agent-loop/tool-registry.mjs';
@@ -46,21 +50,21 @@ function formatBatchAsMechanicalSeen(events = []) {
   }).join('\n');
 }
 
-function formatBatchDigest(events = []) {
+function formatBatchDigest(events = [], { live = false } = {}) {
   return {
-    findings_summary: `Shadow batch claimed ${events.length} evidence envelope(s).`,
+    findings_summary: `${live ? 'Live' : 'Shadow'} batch claimed ${events.length} evidence envelope(s).`,
     enough_for_report: true,
     event_ids: events.map((e) => e.id),
     kinds: [...new Set(events.map((e) => e.kind))],
   };
 }
 
-function buildShadowReportPrompt({ batchId, hostSeenBody, investigationDigest, language }) {
+function buildReportPrompt({ batchId, hostSeenBody, investigationDigest, language, live = false }) {
   const langNote = language === 'zh'
     ? '用中文撰写判断章节。'
     : 'Write judgement sections in English.';
   return [
-    'Shadow Cognitive Reactor Report Task',
+    live ? 'Cognitive Reactor Report Task' : 'Shadow Cognitive Reactor Report Task',
     `batch_id: ${batchId}`,
     langNote,
     'Host owns the Seen section; write Inferred / Cyber-Taoist analysis / Next suggestions only.',
@@ -75,9 +79,9 @@ function buildShadowReportPrompt({ batchId, hostSeenBody, investigationDigest, l
   ].join('\n');
 }
 
-function buildShadowDecidePrompt({ batchId, reportMarkdown }) {
+function buildDecidePrompt({ batchId, reportMarkdown, live = false }) {
   return [
-    'Strategic Analysis & Decision (shadow reactor)',
+    live ? 'Strategic Analysis & Decision (cognitive reactor)' : 'Strategic Analysis & Decision (shadow reactor)',
     `batch_id: ${batchId}`,
     'Return JSON only with fields: decision, actions[], goal_coverage, deferred, risk_mitigation, confidence_score.',
     'Prefer record_observation / propose_probe / write_retrospective when uncertain.',
@@ -89,26 +93,36 @@ function buildShadowDecidePrompt({ batchId, reportMarkdown }) {
 
 /**
  * @param {{ cfg: object, engine: object, runtime: object, store: object, projectRoot?: string }} ctx
+ * @param {object} opts
+ * @param {'shadow'|'live'} [opts.mode]
+ * @param {string|null} [opts.cycleId] required for live
  */
-export async function runCognitiveShadowReaction(ctx, {
+export async function runCognitiveReaction(ctx, {
+  mode = 'shadow',
+  cycleId = null,
   batchLimit = 16,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   kinds = null,
   skipInvestigate = false,
 } = {}) {
-  const { cfg, engine, runtime, store } = ctx;
+  const isLive = mode === 'live';
+  const logLabel = isLive ? 'reactor:live' : 'reactor:shadow';
+  const { cfg, runtime, store } = ctx;
   const dataRoot = runtime.dataRoot || join(runtime.runtimeRoot, 'data');
   const subject = runtime.subject;
   const logger = cfg.host?.logger || null;
   const aiClient = cfg.aiClient;
 
   if (!aiClient) {
-    throw new Error('cognitive shadow reactor requires cfg.aiClient');
+    throw new Error(`cognitive ${mode} reactor requires cfg.aiClient`);
+  }
+  if (isLive && !cycleId) {
+    throw new Error('cognitive live reactor requires cycleId');
   }
 
   reconcileExpiredClaims(dataRoot);
   if (isReactorBusy(dataRoot, 'cognitive')) {
-    return { skipped: true, reason: 'reactor_busy' };
+    return { skipped: true, reason: 'reactor_busy', mode };
   }
 
   const claimed = claimEvidenceBatch(dataRoot, {
@@ -119,14 +133,24 @@ export async function runCognitiveShadowReaction(ctx, {
     timeoutMs,
   });
   if (claimed.skipped) {
-    return { skipped: true, reason: claimed.skipped };
+    return { skipped: true, reason: claimed.skipped, mode };
   }
 
   const { batch_id: batchId, events } = claimed;
   const deadlineAt = claimed.claim.deadline_at;
   const startedAt = Date.now();
+  const reactionCycleId = isLive ? cycleId : batchId;
 
-  const emitShadow = (event) => {
+  const emitReaction = (event) => {
+    if (isLive) {
+      store.recordEvolutionEvent({
+        ...event,
+        cycle_id: reactionCycleId,
+        subject,
+        batch_id: batchId,
+      });
+      return;
+    }
     appendShadowRun(dataRoot, {
       batch_id: batchId,
       subject,
@@ -145,7 +169,7 @@ export async function runCognitiveShadowReaction(ctx, {
 
     const decisionQueue = createHostDecisionQueue({
       dataDir: join(runtime.runtimeRoot, 'data', 'evolution'),
-      logFn: (msg) => logger?.info?.(`[reactor:shadow] ${msg}`),
+      logFn: (msg) => logger?.info?.(`[${logLabel}] ${msg}`),
     });
     let queueSummary = null;
     try {
@@ -156,8 +180,8 @@ export async function runCognitiveShadowReaction(ctx, {
 
     const prepared = prepareIntelReport({
       intelResult: {
-        cycle_id: batchId,
-        timestamp: new Date().toISOString(),
+        cycle_id: reactionCycleId,
+        timestamp: isoBeijing(),
         actions: [],
         decisions_queued: [],
       },
@@ -174,7 +198,7 @@ export async function runCognitiveShadowReaction(ctx, {
       .filter(Boolean)
       .join('\n\n');
 
-    let investigation = formatBatchDigest(events);
+    let investigation = formatBatchDigest(events, { live: isLive });
     let investigateResult = { turns: 0, readonlyCalls: 0 };
 
     if (!skipInvestigate && typeof aiClient.chatMessagesWithTools === 'function') {
@@ -193,7 +217,7 @@ export async function runCognitiveShadowReaction(ctx, {
         host: cfg.host,
         runtime,
         store,
-        cycleId: batchId,
+        cycleId: reactionCycleId,
         decisionQueue,
         actionRegistry: cfg.actionRegistry,
         budget,
@@ -202,25 +226,27 @@ export async function runCognitiveShadowReaction(ctx, {
         executed: [],
         investigation: null,
         queryLog: [],
-        emitEvent: emitShadow,
+        emitEvent: emitReaction,
         logger,
       };
       loopCtx.executed = loopCtx.queued;
       const tools = buildInvestigationTools(loopCtx);
-      logger?.info?.(`[reactor:shadow] investigate batch=${batchId} events=${events.length}`);
+      logger?.info?.(`[${logLabel}] investigate batch=${batchId} events=${events.length}`);
       investigateResult = await runInvestigationLoop({
         aiClient,
         tools,
-        systemPrompt: 'You are a shadow cognitive reactor investigator. Use read-only tools then finish_investigation.',
+        systemPrompt: isLive
+          ? 'You are a cognitive reactor investigator. Use read-only tools then finish_investigation.'
+          : 'You are a shadow cognitive reactor investigator. Use read-only tools then finish_investigation.',
         initialUserPrompt: [
-          `Shadow batch ${batchId}`,
+          `${isLive ? 'Live' : 'Shadow'} batch ${batchId}`,
           'Claimed evidence:',
           batchSeen,
           'Finish when enough for a short report.',
         ].join('\n'),
         budget,
         logger,
-        emitEvent: emitShadow,
+        emitEvent: emitReaction,
       });
       if (investigateResult?.investigation) {
         investigation = {
@@ -238,14 +264,17 @@ export async function runCognitiveShadowReaction(ctx, {
       verifiedFacts: investigation.verified_facts || [],
     });
 
-    logger?.info?.(`[reactor:shadow] report batch=${batchId}`);
-    const reportPrompt = buildShadowReportPrompt({
+    logger?.info?.(`[${logLabel}] report batch=${batchId}`);
+    const reportPrompt = buildReportPrompt({
       batchId,
       hostSeenBody,
       investigationDigest: investigation,
       language,
+      live: isLive,
     });
     let rawReportMarkdown = null;
+    let reportSource = 'fallback';
+    let reportReason = null;
     try {
       const reportResult = await chatMessagesDetailed(aiClient, [
         { role: 'system', content: 'You draft intelligence reports. Host owns Seen.' },
@@ -253,35 +282,69 @@ export async function runCognitiveShadowReaction(ctx, {
       ], { thinking: 'low', timeout: 180, phase: 'report' });
       if (typeof reportResult?.text === 'string' && reportResult.text.trim()) {
         rawReportMarkdown = `${reportResult.text.trim()}\n`;
+        reportSource = 'ai';
+      } else {
+        reportReason = 'empty-output';
       }
     } catch (e) {
-      logger?.warning?.(`[reactor:shadow] report failed: ${e?.message || e}`);
+      reportReason = e?.message || String(e);
+      logger?.warning?.(`[${logLabel}] report failed: ${reportReason}`);
     }
 
     if (!rawReportMarkdown) {
       rawReportMarkdown = [
-        '# Shadow Cognitive Reactor Report',
+        isLive ? '# Cognitive Reactor Report' : '# Shadow Cognitive Reactor Report',
         '',
         '## Seen',
         hostSeenBody,
         '',
         '## Inferred',
-        '- Shadow reactor fallback report (model output empty).',
+        `- ${isLive ? 'Live' : 'Shadow'} reactor fallback report (model output empty).`,
         '',
         '## Cyber-Taoist analysis',
         '- Batch claimed; awaiting richer model output.',
         '',
         '## Next cycle suggestions',
-        '- Continue dual-run comparison against the train Decide.',
+        isLive ? '- Continue reactor gray validation.' : '- Continue dual-run comparison against the train Decide.',
         '',
       ].join('\n');
     }
 
-    const reportMarkdown = spliceHostSeen(rawReportMarkdown, hostSeenBody);
-    const reportPath = writeShadowReport(dataRoot, batchId, reportMarkdown);
+    const splicedMarkdown = spliceHostSeen(rawReportMarkdown, hostSeenBody);
+    let reportPath;
+    let reportMarkdown;
+    let persistedReport = null;
+
+    if (isLive) {
+      persistedReport = await persistIntelReport({
+        intelResult: {
+          cycle_id: reactionCycleId,
+          timestamp: isoBeijing(),
+          actions: [],
+          decisions_queued: [],
+        },
+        runtime,
+        store,
+        agentContextDocs: cfg.agentContextDocs,
+        aiClient: reportSource === 'ai' ? aiClient : null,
+        logger,
+        md: splicedMarkdown,
+        source: 'reactor',
+        fallbackReason: reportReason,
+        updateStandingMemory: false,
+        transformMd: (md) => md,
+        ...prepared,
+      });
+      reportPath = persistedReport.mdPath;
+      reportMarkdown = persistedReport.markdown;
+    } else {
+      reportMarkdown = splicedMarkdown;
+      reportPath = writeShadowReport(dataRoot, batchId, reportMarkdown);
+    }
 
     let honestyStatus = 'ok';
     let honestyFindingsCount = 0;
+    const honestyEventType = isLive ? 'reactor_report_honesty' : 'shadow_report_honesty';
     auditHostSeenReport({
       markdown: reportMarkdown,
       store,
@@ -289,19 +352,19 @@ export async function runCognitiveShadowReaction(ctx, {
       emitEvent: (event) => {
         honestyStatus = event.status || 'ok';
         honestyFindingsCount = event.findings_count ?? 0;
-        emitShadow({
-          type: 'shadow_report_honesty',
+        emitReaction({
+          type: honestyEventType,
           ...event,
         });
       },
       logger,
-      eventType: 'shadow_report_honesty',
-      logLabel: 'reactor:shadow',
+      eventType: honestyEventType,
+      logLabel,
       runtimeRoot: runtime.runtimeRoot,
     });
 
-    logger?.info?.(`[reactor:shadow] decide batch=${batchId}`);
-    const decidePrompt = buildShadowDecidePrompt({ batchId, reportMarkdown });
+    logger?.info?.(`[${logLabel}] decide batch=${batchId}`);
+    const decidePrompt = buildDecidePrompt({ batchId, reportMarkdown, live: isLive });
     let rawDecision = null;
     try {
       const decideResult = await chatMessagesDetailed(aiClient, [
@@ -310,51 +373,109 @@ export async function runCognitiveShadowReaction(ctx, {
       ], { thinking: 'low', timeout: 180, phase: 'decide' });
       rawDecision = decideResult?.text ?? null;
     } catch (e) {
-      logger?.warning?.(`[reactor:shadow] decide failed: ${e?.message || e}`);
+      logger?.warning?.(`[${logLabel}] decide failed: ${e?.message || e}`);
     }
 
     const parsed = await parseAnalyzeDecisionWithRepair(aiClient, rawDecision || '{}', { logger });
     const actions = parsed.analysis?.actions || [];
-    const shadowDecisions = appendShadowDecisions(dataRoot, {
-      batchId,
-      subject,
-      actions,
-      analysis: parsed.analysis,
-    });
+    let queuedActions = actions;
+    let queuedIds = [];
+
+    if (isLive) {
+      const queuedResult = await queueAnalyzeDecideActions({
+        projectRoot: runtime.runtimeRoot,
+        host: cfg.host,
+        runtime,
+        decisionQueue,
+        cycleId: reactionCycleId,
+        timestamp: isoBeijing(),
+        goalId: 'bootstrap',
+        analysis: parsed.analysis,
+        actions,
+        reportPath,
+        reportMarkdown,
+        operatorBriefs,
+        pipeline: 'reactor',
+      });
+      queuedActions = queuedResult.actions;
+      queuedIds = queuedResult.decisions_queued;
+    } else {
+      queuedActions = appendShadowDecisions(dataRoot, {
+        batchId,
+        subject,
+        actions,
+        analysis: parsed.analysis,
+      });
+    }
 
     ackBatchHandled(dataRoot, batchId);
-    emitShadow({
-      type: 'shadow_reaction_completed',
+    const elapsedMs = Date.now() - startedAt;
+    if (isLive) {
+      store.recordEvolutionEvent({
+        type: 'reactor_pipeline',
+        status: reportSource === 'ai' ? 'ok' : 'forced',
+        cycle_id: reactionCycleId,
+        subject,
+        batch_id: batchId,
+        claimed_events: events.length,
+        decisions_queued: queuedIds.length,
+        investigate_turns: investigateResult.turns ?? 0,
+        honesty_status: honestyStatus,
+        report_source: persistedReport?.source ?? reportSource,
+        duration_ms: elapsedMs,
+      });
+    }
+    emitReaction({
+      type: isLive ? 'reactor_reaction_completed' : 'shadow_reaction_completed',
       status: 'ok',
-      decisions: shadowDecisions.length,
+      decisions: queuedActions.length,
       investigate_turns: investigateResult.turns ?? 0,
       honesty_status: honestyStatus,
       honesty_findings_count: honestyFindingsCount,
-      elapsed_ms: Date.now() - startedAt,
+      elapsed_ms: elapsedMs,
     });
 
     return {
       skipped: false,
+      mode,
       batch_id: batchId,
+      cycle_id: reactionCycleId,
       claimed_events: events.length,
       report_path: reportPath,
-      decisions: shadowDecisions,
+      report: isLive ? {
+        mdPath: reportPath,
+        source: persistedReport?.source ?? reportSource,
+        indexRecord: persistedReport?.indexRecord ?? null,
+        markdown: reportMarkdown,
+      } : null,
+      decisions: queuedActions,
+      decisions_queued: queuedIds,
       honesty: {
         status: honestyStatus,
         findings_count: honestyFindingsCount,
       },
       investigation,
       analysis: parsed.analysis,
+      duration_ms: elapsedMs,
     };
   } catch (err) {
     const message = err?.message || String(err);
     nackBatchFailed(dataRoot, batchId, { error: message });
-    emitShadow({
-      type: 'shadow_reaction_failed',
+    emitReaction({
+      type: isLive ? 'reactor_reaction_failed' : 'shadow_reaction_failed',
       status: 'failed',
       error: message,
       elapsed_ms: Date.now() - startedAt,
     });
     throw err;
   }
+}
+
+/** @deprecated alias — use runCognitiveReaction({ mode: 'shadow' }) */
+export async function runCognitiveShadowReaction(ctx, opts = {}) {
+  return runCognitiveReaction(ctx, { ...opts, mode: 'shadow' });
+}
+
+export async function runCognitiveLiveReaction(ctx, opts = {}) {
+  return runCognitiveReaction(ctx, { ...opts, mode: 'live' });
 }
