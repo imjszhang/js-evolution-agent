@@ -115,7 +115,7 @@
 
 | 法则 | 位置 | 分类 | 处置 |
 | --- | --- | --- | --- |
-| `JEA_EXEC_AGENT_BUDGET=8`（每轮 agent_run 预算） | `pipelines/exec.mjs` | 混合 | 资源治理本质；「按轮分配」是节拍绑定，改为并发上限 + 速率（墙钟）预算 |
+| `JEA_EXEC_AGENT_BUDGET=8`（每轮 agent_run 预算） | `pipelines/exec.mjs` | 混合 | **速率载体已就绪**（#36）：`JEA_EXEC_AGENT_RATE` + 滑动窗口账本；与每轮预算双闸并存；按轮预算留待 Phase 5 观察期后再删 |
 | 波次调度、写类 profile 独占波宽 1 | 同上 | **B** | 保留（写冲突安全） |
 | `JEA_AGENT_MAX_ATTEMPTS` 重试 → blocked | queue | **D** | 保留 |
 | mechanical guards `every_cycles` 到期执行 | `guard-runner.mjs` | 混合 | 本质是 cron；调度单位从轮改为时间/事件 |

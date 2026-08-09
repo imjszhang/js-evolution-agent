@@ -4,8 +4,9 @@
  *
  * Dual-channel (swarm-lite):
  *   A. Mechanical: all non-agent_run pending decisions, serial, no budget
- *   B. Agent: agent_run waves with JEA_EXEC_AGENT_BUDGET (width=1 in v1;
- *      dynamic width added by scope/width-policy module)
+ *   B. Agent: agent_run waves with JEA_EXEC_AGENT_BUDGET per-cycle cap, plus
+ *      optional wall-clock rate ledger (JEA_EXEC_AGENT_RATE) — dual gate, take
+ *      the stricter remaining count. Wave width also respects concurrency.
  *
  * Source is always the local DecisionQueue (`source: 'queue'`).
  */
@@ -18,6 +19,7 @@ import {
   computeAgentWaveWidth,
   isExclusiveAgentDecision,
 } from '../act/scope.mjs';
+import { AgentRateLedger } from '../act/agent-rate-ledger.mjs';
 import { EvolutionLogger } from '../adapters/evolution-logger.mjs';
 import { compareDecisionsForClaim } from '../decide/decision-queue.mjs';
 
@@ -63,6 +65,7 @@ export class ExecutionPipeline {
    * @param {Function|null} [opts.emitEvent]
    * @param {number|null} [opts.agentBudget]
    * @param {number|null} [opts.agentConcurrency] wave width cap (1 = serial)
+   * @param {AgentRateLedger|null} [opts.agentRateLedger] wall-clock rate gate
    */
   constructor({
     host = null, projectRoot = null, aiClient = null,
@@ -71,6 +74,7 @@ export class ExecutionPipeline {
     emitEvent = null,
     agentBudget = null,
     agentConcurrency = null,
+    agentRateLedger = null,
   } = {}) {
     this.host = normalizeHost(host);
     this.projectRoot = projectRoot || this.host.basePath || process.cwd();
@@ -84,6 +88,9 @@ export class ExecutionPipeline {
     this.agentConcurrency = agentConcurrency != null
       ? Math.max(1, Math.floor(Number(agentConcurrency)) || 1)
       : Math.max(1, Math.floor(Number(process.env.JEA_AGENT_MAX_CONCURRENCY) || 2));
+    this.agentRateLedger = agentRateLedger instanceof AgentRateLedger
+      ? agentRateLedger
+      : null;
     this.decisionQueue = decisionQueue || new DecisionQueue({
       dataDir: join(this.projectRoot, 'data', 'evolution'),
       logFn: (m) => this._log(m),
@@ -118,6 +125,7 @@ export class ExecutionPipeline {
    * @param {string|null} [opts.cycleId]
    * @param {number|null} [opts.agentBudget]
    * @param {number|null} [opts.agentConcurrency]
+   * @param {AgentRateLedger|null} [opts.agentRateLedger]
    * @returns {Promise<object>}
    */
   async run({
@@ -126,12 +134,16 @@ export class ExecutionPipeline {
     cycleId = null,
     agentBudget = null,
     agentConcurrency = null,
+    agentRateLedger = null,
   } = {}) {
     if (cycleId) this.setCycleId(cycleId);
     if (agentBudget != null) this.agentBudget = Math.max(1, Math.floor(Number(agentBudget)) || 1);
     else if (limit != null) this.agentBudget = Math.max(1, Math.floor(Number(limit)) || 1);
     if (agentConcurrency != null) {
       this.agentConcurrency = Math.max(1, Math.floor(Number(agentConcurrency)) || 1);
+    }
+    if (agentRateLedger instanceof AgentRateLedger) {
+      this.agentRateLedger = agentRateLedger;
     }
 
     const result = {
@@ -148,6 +160,9 @@ export class ExecutionPipeline {
       agent_waves: [],
       agent_budget: this.agentBudget,
       agent_concurrency: this.agentConcurrency,
+      agent_rate: this.agentRateLedger
+        ? this.agentRateLedger.snapshot({ rateLimited: false })
+        : null,
       remaining_agent_pending: 0,
     };
 
@@ -157,6 +172,9 @@ export class ExecutionPipeline {
     } catch (e) {
       result.error = e?.message || String(e);
       this._log(`exec pipeline failed: ${result.error}`, 'error');
+    }
+    if (result.agent_rate && this.agentRateLedger) {
+      result.agent_rate.used_in_window = this.agentRateLedger.usedInWindow();
     }
     result.journal = this.executionJournal?.toJSON?.() ?? null;
     return result;
@@ -187,7 +205,16 @@ export class ExecutionPipeline {
     const touchedThisCycle = new Set();
 
     while (consumed < this.agentBudget) {
-      const remainingBudget = this.agentBudget - consumed;
+      const cycleRemaining = this.agentBudget - consumed;
+      const rateRemaining = this.agentRateLedger
+        ? this.agentRateLedger.remaining()
+        : Number.POSITIVE_INFINITY;
+      if (rateRemaining < 1) {
+        if (result.agent_rate) result.agent_rate.rate_limited = true;
+        this._log('agent rate budget exhausted; stopping agent waves');
+        break;
+      }
+      const remainingBudget = Math.min(cycleRemaining, rateRemaining);
       const pendingAgents = this.decisionQueue.getPending()
         .filter((d) => isAgentRunDecision(d) && !touchedThisCycle.has(d.id))
         .sort(compareDecisionsForClaim);
@@ -215,6 +242,9 @@ export class ExecutionPipeline {
       });
       if (!claimed.length) break;
       for (const d of claimed) touchedThisCycle.add(d.id);
+      if (this.agentRateLedger) {
+        this.agentRateLedger.record(claimed, { cycleId: this._cycleId });
+      }
 
       waveIndex += 1;
       const wave = {

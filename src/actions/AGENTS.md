@@ -11,6 +11,8 @@
 | --- | --- | --- |
 | `JEA_EXEC_AGENT_BUDGET` | `8` | 单轮 Phase 2 消费的 `agent_run` 上限；机械动作（非 agent_run）无上限；剩余 pending 跨轮继续 |
 | `JEA_EXEC_LIMIT` | （deprecated） | 旧名；若设置且未设 `JEA_EXEC_AGENT_BUDGET`，映射为 agent 预算并警告。Decide **不再**按此截断入队 |
+| `JEA_EXEC_AGENT_RATE` | （未设） | 墙钟窗口内 `agent_run` 执行数上限；未设时行为与仅每轮预算一致。与 `JEA_EXEC_AGENT_BUDGET` **双闸并存**（取更严）。账本落 `data/evolution/agent-rate-ledger.json`，进程重启不重置。等价标定锚点：旧「每轮 8」× 列车节拍（如每小时约 N 轮）≈ 窗口速率 |
+| `JEA_EXEC_AGENT_RATE_WINDOW_MS` | `3600000` | 速率滑动窗口长度（毫秒）；仅在设置了 `JEA_EXEC_AGENT_RATE` 时生效 |
 | `JEA_AGENT_MAX_CONCURRENCY` | `2` | agent_run 波内并行宽度上限（`read_only` 可并行；写类 profile 独占波宽 1）；设 `1` 关闭并行 |
 | `JEA_AGENT_MAX_ATTEMPTS` | `2` | agent_run 失败自动重试次数；耗尽转 `blocked`，由下轮 Decide `queue_ops` 处置 |
 | `JEA_PENDING_TTL_CYCLES` | `5` | pending 连续经历多少轮 exec 仍未认领后过期（`cycles_seen > N`） |
@@ -27,10 +29,12 @@ queue maintenance（pending/blocked cycles_seen+1 → cycle/墙钟后备 expire�
 → mechanical guards
 → 通道 A：非 agent_run 全量串行直跑（无预算）
 → 通道 B：agent_run 波次调度
-   width = min(cap, demand, backpressureCap)
+   remaining = min(每轮预算剩余, 墙钟速率账本剩余)  # 未设 RATE 时仅每轮预算
+   width = min(cap, demand, backpressureCap, remaining)
    read_only 可并行；workspace_write / remote_write_review 等独占波宽 1
+   claim 后立即写入 agent-rate-ledger（失败重试也计入）
    失败：attempts+1 < max → pending（下轮自动重试）；≥ max → blocked
-→ verify 仍消费扁平 executed[]（checkpoint 另含 mechanical / agent_waves）
+→ verify 仍消费扁平 executed[]（checkpoint 另含 mechanical / agent_waves / agent_rate）
 ```
 
 队列状态机（`pending_decisions.json` v2）：

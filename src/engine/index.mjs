@@ -17,6 +17,14 @@ export {
   isParallelAgentDecision,
   WRITE_PERMISSION_PROFILES,
 } from './act/scope.mjs';
+export {
+  AGENT_RATE_LEDGER_FILENAME,
+  AGENT_RATE_LEDGER_VERSION,
+  AgentRateLedger,
+  DEFAULT_RATE_WINDOW_MS,
+  agentRateLedgerPath,
+  parseExecAgentRateFromEnv,
+} from './act/agent-rate-ledger.mjs';
 
 export { NULL_HOST, normalizeHost } from './core/host.mjs';
 export {

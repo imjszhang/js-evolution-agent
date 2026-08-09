@@ -2,11 +2,14 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import {
   ActionExecutor,
+  AgentRateLedger,
   EvolutionEngine,
   ExecutionPipeline,
+  agentRateLedgerPath,
   formatCurrentTimePromptBlock,
   getCurrentTimeSnapshot,
   isoBeijing,
+  parseExecAgentRateFromEnv,
   verifyActions,
 } from '../engine/index.mjs';
 import { createExecJournal } from './exec-journal.mjs';
@@ -1343,6 +1346,15 @@ export async function runExecStep(ctx, { recordState = null, intelResult = null,
   }
   const agentBudget = parseExecAgentBudgetFromEnv();
   const agentConcurrency = parseAgentMaxConcurrencyFromEnv();
+  const rateConfig = parseExecAgentRateFromEnv();
+  const agentRateLedger = rateConfig
+    ? new AgentRateLedger({
+      filePath: agentRateLedgerPath(runtime.runtimeRoot),
+      limit: rateConfig.limit,
+      windowMs: rateConfig.windowMs,
+      logFn: (msg) => logger?.warn?.(msg),
+    })
+    : null;
   const exec = new ExecutionPipeline({
     host: cfg.host,
     projectRoot: runtime.runtimeRoot,
@@ -1351,6 +1363,7 @@ export async function runExecStep(ctx, { recordState = null, intelResult = null,
     executionJournal,
     agentBudget,
     agentConcurrency,
+    agentRateLedger,
     emitEvent: (event) => store.recordEvolutionEvent({
       ...event,
       cycle_id: resolvedCycleId,
@@ -1360,6 +1373,7 @@ export async function runExecStep(ctx, { recordState = null, intelResult = null,
   const execResult = await exec.run({
     agentBudget,
     agentConcurrency,
+    agentRateLedger,
     cycleId: resolvedCycleId || undefined,
   });
   // Prepend guard executions so verify can see them.
@@ -1378,6 +1392,7 @@ export async function runExecStep(ctx, { recordState = null, intelResult = null,
     mechanical_claimed: execResult.mechanical?.claimed ?? 0,
     agent_waves: execResult.agent_waves?.length ?? 0,
     agent_budget: execResult.agent_budget ?? agentBudget,
+    agent_rate: execResult.agent_rate ?? null,
     remaining_agent_pending: execResult.remaining_agent_pending ?? 0,
     error: execResult.error,
   });
@@ -1400,6 +1415,7 @@ export async function runExecStep(ctx, { recordState = null, intelResult = null,
       agent_waves: execResult.agent_waves ?? [],
       agent_budget: execResult.agent_budget ?? agentBudget,
       agent_concurrency: execResult.agent_concurrency ?? agentConcurrency,
+      agent_rate: execResult.agent_rate ?? null,
       remaining_agent_pending: execResult.remaining_agent_pending ?? 0,
       error: execResult.error ?? null,
     });
