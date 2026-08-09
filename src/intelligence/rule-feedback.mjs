@@ -15,7 +15,12 @@ export const DEFAULT_DEAD_STREAK = 3;
 export const DEFAULT_DEGRADED_STREAK = 2;
 export const DEFAULT_ESCALATE_STREAK = 5;
 export const DEFAULT_MUTATE_COOLDOWN = 2;
+export const DEFAULT_STARVED_WINDOW_HOURS = 48;
 export const RULE_FEEDBACK_STREAK_UNITS = Object.freeze(['cycle', 'evidence']);
+export const RULE_FEEDBACK_STARVED_STRATEGIES = Object.freeze([
+  'global_count',
+  'wall_clock',
+]);
 
 const KV_RE = /\b([a-zA-Z_][a-zA-Z0-9_.]{1,64})\s*(?:=|:)\s*([^\s,;|/"'`]+)/g;
 
@@ -207,16 +212,88 @@ export function resolveRuleFeedbackConfig(env = process.env) {
   const streakUnit = RULE_FEEDBACK_STREAK_UNITS.includes(rawUnit) ? rawUnit : 'cycle';
   const windowCycles = envInt('JEA_RULE_FEEDBACK_WINDOW', DEFAULT_WINDOW_CYCLES, env);
   const windowEvidence = envInt('JEA_RULE_FEEDBACK_WINDOW_EVIDENCE', DEFAULT_WINDOW_EVIDENCE, env);
+  const deadStreak = envInt('JEA_RULE_FEEDBACK_DEAD_STREAK', DEFAULT_DEAD_STREAK, env);
+  // Independent starved threshold; default equals dead so unset env keeps legacy behavior.
+  const starvedStreak = envInt('JEA_RULE_FEEDBACK_STARVED_STREAK', deadStreak, env);
+  const starvedStreakEvidence = envInt(
+    'JEA_RULE_FEEDBACK_STARVED_STREAK_EVIDENCE',
+    starvedStreak,
+    env,
+  );
+  const rawStrategy = String(env.JEA_RULE_FEEDBACK_STARVED_STRATEGY || 'global_count')
+    .trim()
+    .toLowerCase();
+  const starvedStrategy = RULE_FEEDBACK_STARVED_STRATEGIES.includes(rawStrategy)
+    ? rawStrategy
+    : 'global_count';
   return {
     streakUnit,
     windowCycles,
     windowEvidence,
     window: streakUnit === 'evidence' ? windowEvidence : windowCycles,
-    deadStreak: envInt('JEA_RULE_FEEDBACK_DEAD_STREAK', DEFAULT_DEAD_STREAK, env),
+    deadStreak,
+    starvedStreak: streakUnit === 'evidence' ? starvedStreakEvidence : starvedStreak,
+    starvedStreakCycle: starvedStreak,
+    starvedStreakEvidence,
+    starvedStrategy,
+    starvedWindowHours: envInt(
+      'JEA_RULE_FEEDBACK_STARVED_WINDOW_HOURS',
+      DEFAULT_STARVED_WINDOW_HOURS,
+      env,
+    ),
     escalateStreak: envInt('JEA_RULE_FEEDBACK_ESCALATE_STREAK', DEFAULT_ESCALATE_STREAK, env),
     receiptLimit: envInt('JEA_RULE_FEEDBACK_RECEIPT_LIMIT', DEFAULT_RECEIPT_LIMIT, env),
     mutateCooldown: envIntAllowZero('JEA_RULE_FEEDBACK_MUTATE_COOLDOWN', DEFAULT_MUTATE_COOLDOWN, env),
   };
+}
+
+/** Truncate records so only items with time ≤ asOfMs remain (inclusive). */
+export function truncateByAsOf(records = [], asOfMs = null, timeFn = receiptTimeMs) {
+  if (asOfMs == null || !Number.isFinite(asOfMs)) return [...records];
+  return records.filter((record) => {
+    const ms = timeFn(record);
+    return Number.isFinite(ms) && ms > 0 && ms <= asOfMs;
+  });
+}
+
+/**
+ * Pick N cutpoints from receipt timeline (oldest→newest), always including newest.
+ * Returns ascending as_of ms list.
+ */
+export function selectRollingCutpoints(receipts = [], rollingN = 1) {
+  const n = Math.max(1, Math.trunc(Number(rollingN) || 1));
+  const times = [...new Set(
+    receipts
+      .map((r) => receiptTimeMs(r))
+      .filter((ms) => Number.isFinite(ms) && ms > 0),
+  )].sort((a, b) => a - b);
+  if (!times.length) return [];
+  if (n === 1 || times.length === 1) return [times[times.length - 1]];
+  const count = Math.min(n, times.length);
+  const cutpoints = [];
+  for (let i = 0; i < count; i += 1) {
+    const idx = Math.round((i * (times.length - 1)) / (count - 1));
+    cutpoints.push(times[idx]);
+  }
+  return [...new Set(cutpoints)].sort((a, b) => a - b);
+}
+
+/**
+ * Wall-clock starvation: hours since last serving receipt for this goal.
+ * Uses asOfMs (or now) as the reference "now".
+ */
+export function computeStarvedWallClockHours({
+  goalReceipts = [],
+  asOfMs = Date.now(),
+} = {}) {
+  if (!goalReceipts.length) {
+    // No receipts at all: treat as starved for the full window reference (caller thresholds).
+    return Number.POSITIVE_INFINITY;
+  }
+  const lastMs = Math.max(...goalReceipts.map((r) => receiptTimeMs(r)).filter((ms) => ms > 0));
+  if (!Number.isFinite(lastMs) || lastMs <= 0) return Number.POSITIVE_INFINITY;
+  const deltaMs = Math.max(0, asOfMs - lastMs);
+  return deltaMs / (60 * 60 * 1000);
 }
 
 function flattenGoalNodes(goals) {
@@ -571,25 +648,43 @@ export function computeRuleFeedbackStats({
   windowCycles = null,
   deadStreak = null,
   escalateStreak = null,
+  starvedStreak = null,
   mechanicalGuards = null,
+  /** Optional injected receipts (skips store read). Used by historical replay. */
+  receipts: injectedReceipts = null,
+  /** Optional injected goal events (skips store read). */
+  goalEvents: injectedGoalEvents = null,
+  /** Inclusive as-of cutoff in ms; truncates receipts/events when set. */
+  asOfMs = null,
   env = process.env,
 } = {}) {
   const cfg = resolveRuleFeedbackConfig(env);
   const streakUnit = cfg.streakUnit;
   const window = windowCycles ?? cfg.window;
   const dead = deadStreak ?? cfg.deadStreak;
+  const starvedThreshold = starvedStreak ?? cfg.starvedStreak;
   const escalate = escalateStreak ?? cfg.escalateStreak;
   const mutateCooldown = cfg.mutateCooldown;
+  const starvedStrategy = cfg.starvedStrategy;
+  const starvedWindowHours = cfg.starvedWindowHours;
   const guardMap = buildMechanicalGuardMap(mechanicalGuards);
+  const nowMs = Number.isFinite(asOfMs) ? asOfMs : Date.now();
 
   const goals = flattenGoalNodes(activeGoals);
   const childGoals = goals.filter((g) => g?.id && g.id !== activeGoals?.id);
   const activeChildIds = new Set(childGoals.map((g) => g.id));
   // js-intel-store returns chronological ascending (oldest→newest). Sort newest-first.
-  const receipts = [...(store?.readActionReceipts?.({ limit: cfg.receiptLimit }) ?? [])]
+  const receiptLimit = Math.max(cfg.receiptLimit, 40);
+  const rawReceipts = Array.isArray(injectedReceipts)
+    ? injectedReceipts
+    : (store?.readActionReceipts?.({ limit: receiptLimit }) ?? []);
+  const rawGoalEvents = Array.isArray(injectedGoalEvents)
+    ? injectedGoalEvents
+    : (store?.readGoalEvents?.({ limit: Math.max(40, Math.min(200, receiptLimit)) }) ?? []);
+  const receipts = truncateByAsOf(rawReceipts, asOfMs)
     .sort((a, b) => receiptTimeMs(b) - receiptTimeMs(a));
-  const goalEvents = [...(store?.readGoalEvents?.({ limit: 40 }) ?? [])]
-    .sort((a, b) => receiptTimeMs(b) - receiptTimeMs(a));
+  const goalEvents = truncateByAsOf(rawGoalEvents, asOfMs, goalEventTimeMs)
+    .sort((a, b) => goalEventTimeMs(b) - goalEventTimeMs(a));
 
   // Group serving receipts by goal. Bucket strategy is applied per goal below.
   const byGoal = new Map();
@@ -678,22 +773,41 @@ export function computeRuleFeedbackStats({
     });
     // Starved exemption: mechanically maintained goals (not role=guard).
     // Unmaintained guard goals participate in starved detection.
-    const starved_streak = (!in_active_tree || is_root || mechanically_maintained)
-      ? 0
-      : computeStarvedStreak(streakUnit === 'evidence'
-        ? {
-          globalCycleIdsNewestFirst: globalEvidenceNewestFirst.map((item) => item.bucket_id),
-          goalCycleIds: goalEvidenceIds,
-          windowCycles: window,
-        }
-        : {
-          globalCycleIdsNewestFirst: globalCyclesNewestFirst,
-          goalCycleIds,
-          windowCycles: window,
+    let starved_streak = 0;
+    let starved_hours = null;
+    if (!(!in_active_tree || is_root || mechanically_maintained)) {
+      if (starvedStrategy === 'wall_clock') {
+        starved_hours = computeStarvedWallClockHours({
+          goalReceipts,
+          asOfMs: nowMs,
         });
-    const starved = in_active_tree && !is_root && !mechanically_maintained && starved_streak >= dead;
+        // Represent wall-clock starvation as "hours" rounded for threshold compare.
+        starved_streak = Number.isFinite(starved_hours) ? starved_hours : starvedWindowHours + 1;
+      } else {
+        starved_streak = computeStarvedStreak(streakUnit === 'evidence'
+          ? {
+            globalCycleIdsNewestFirst: globalEvidenceNewestFirst.map((item) => item.bucket_id),
+            goalCycleIds: goalEvidenceIds,
+            windowCycles: window,
+          }
+          : {
+            globalCycleIdsNewestFirst: globalCyclesNewestFirst,
+            goalCycleIds,
+            windowCycles: window,
+          });
+      }
+    }
+    const starvedCut = starvedStrategy === 'wall_clock' ? starvedWindowHours : starvedThreshold;
+    const starved = in_active_tree
+      && !is_root
+      && !mechanically_maintained
+      && starved_streak >= starvedCut;
     const escalate_eligible = (feedback_state === 'dead' && streak >= escalate)
-      || (starved && starved_streak >= escalate);
+      || (starved && (
+        starvedStrategy === 'wall_clock'
+          ? starved_streak >= starvedWindowHours
+          : starved_streak >= escalate
+      ));
 
     stats.push({
       goal_id: goalId,
@@ -722,7 +836,9 @@ export function computeRuleFeedbackStats({
       cycles_since_mutate: units_since_mutate,
       mutate_cooldown,
       mutate_effective,
+      starved_strategy: starvedStrategy,
       starved_streak,
+      starved_hours,
       starved,
       escalate_eligible,
     });
@@ -782,8 +898,12 @@ export function computeRuleFeedbackStats({
       window_cycles: streakUnit === 'cycle' ? window : null,
       window_evidence: streakUnit === 'evidence' ? window : null,
       dead_streak: dead,
+      starved_streak: starvedThreshold,
+      starved_strategy: starvedStrategy,
+      starved_window_hours: starvedWindowHours,
       escalate_streak: escalate,
       mutate_cooldown: mutateCooldown,
+      as_of_ms: Number.isFinite(asOfMs) ? asOfMs : null,
     },
     generated_at: new Date().toISOString(),
     goals: stats,
@@ -857,12 +977,19 @@ export function buildRuleFeedbackQuestionText(stat) {
     .map((p) => `${p.key}=${p.value}`)
     .join(', ');
   if (stat?.starved && stat.feedback_state !== 'dead') {
+    const starvedDetail = stat.starved_strategy === 'wall_clock'
+      ? `No action_receipt served this goal for ~${
+        Number.isFinite(stat.starved_hours) ? Math.round(stat.starved_hours) : 'unknown'
+      } wall-clock hours (starved_strategy=wall_clock).`
+      : `No action_receipt served this goal for ${stat.starved_streak} consecutive ${unit}`
+        + ' (starved_streak at escalate threshold'
+        + (stat.streak_unit === 'evidence' ? '; unit=evidence' : '')
+        + ').';
     return [
       `Outcome goal starvation detected for ${stat.goal_id}`
         + (stat.goal_name ? ` (${stat.goal_name})` : '')
         + '.',
-      `No action_receipt served this goal for ${stat.starved_streak} consecutive ${unit}`
-        + ' (starved_streak at escalate threshold).',
+      starvedDetail,
       'Please decide whether the goal exit path / observation point needs revision',
       '(Cyber-Taoist: outcome pressure lost — conventional transactions never feed this goal).',
       'Prefer mutating the exit condition into a path reachable by allowed actions.',

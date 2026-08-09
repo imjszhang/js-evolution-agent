@@ -17,6 +17,7 @@ import {
   rankAndLimitMechanicalItems,
   readCarryoverDocument,
   readCarryoverItems,
+  isCarryoverWriteEnabled,
   writeCarryoverItems,
 } from '../src/evolution/carryover.mjs';
 import { buildEvidenceIndex } from '../src/intelligence/evidence-audit.mjs';
@@ -454,6 +455,31 @@ describe('carryover v2', () => {
     const c2 = readCarryoverDocument(root).items[0];
     expect(c2.seen_count).toBe(2);
     expect(c2.first_seen_cycle).toBe('cycle-1');
+  });
+
+  it('skips carryover writes under reactor pipeline by default (M4 stop-write)', () => {
+    const root = makeRuntimeRoot();
+    writeCarryoverItems(root, {
+      cycleId: 'cycle-1',
+      items: [{ text: 'seed', source: 'mechanical' }],
+      force: true,
+    });
+    expect(isCarryoverWriteEnabled({ pipeline: 'reactor', env: {} })).toBe(false);
+    expect(isCarryoverWriteEnabled({
+      pipeline: 'reactor',
+      env: { JEA_REACTOR_CARRYOVER_WRITE: '1' },
+    })).toBe(true);
+    expect(isCarryoverWriteEnabled({ pipeline: 'agent_loop', env: {} })).toBe(true);
+
+    const skipped = writeCarryoverItems(root, {
+      cycleId: 'cycle-2',
+      items: [{ text: 'should-not-persist', source: 'diary' }],
+      pipeline: 'reactor',
+      env: {},
+    });
+    expect(skipped.write_skipped).toBe(true);
+    expect(readCarryoverDocument(root).cycle_id).toBe('cycle-1');
+    expect(readCarryoverDocument(root).items[0].text).toBe('seed');
   });
 
   it('inheritCarryoverTracking uses Jaccard fuzzy match for rewritten mechanical text', () => {

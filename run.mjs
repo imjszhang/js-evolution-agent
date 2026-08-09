@@ -66,6 +66,15 @@ async function runSingleStepMode(runtime, step, cycleId) {
   const stepContext = cycleId
     ? loadCycleStepContext(__dirname, runtime.subject, cycleId, runtime.runtimeRoot)
     : null;
+  // Align carryover write gate with the step being executed.
+  if (step === 'reactor' || step === 'agent_loop' || step === 'intel') {
+    ctx.pipeline = step === 'reactor' ? 'reactor' : 'agent_loop';
+  } else {
+    ctx.pipeline = resolveCyclePipeline(__dirname, {
+      subject: runtime.subject,
+      env: process.env,
+    }).pipeline;
+  }
 
   switch (step) {
     case 'reactor': {
@@ -203,6 +212,8 @@ async function runCycle(runtime) {
     env: process.env,
   });
   const pipeline = pipelineResolved.pipeline;
+  // Carryover write gate and step selection both read this.
+  ctx.pipeline = pipeline;
 
   console.log('\n=== active subject runtime ===');
   console.log('  subject:', runtime.subject);

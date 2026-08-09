@@ -9,7 +9,7 @@
 | --- | --- | --- | --- |
 | 共享内核 | `src/contracts`、`src/infra`、`src/domain` | agent-kernel | schema、原子写、subject registry/路径、`runtime-paths`、`worker-state-read`、`subject-lock` |
 | AI 网关 | `src/ai` | agent-ai | DeepSeek client、LLM 档案、KV 缓存元数据、mock |
-| 认知管线 | `src/intelligence`、`src/evolution`、`src/prompts`、`src/engine` | agent-cognition | Phase 1 agent_loop / 报告 / Decide、信念、目标、carryover、诚实闸；`src/engine` 为 vendored，冻结维护 |
+| 认知管线 | `src/intelligence`、`src/evolution`、`src/prompts`、`src/engine` | agent-cognition | Phase 1 agent_loop / reactor / 报告 / Decide、信念、目标、carryover（reactor 下默认停写）、诚实闸；`src/engine` 为 vendored，冻结维护 |
 | 执行层 | `src/actions` | agent-exec | Phase 2 exec、agent adapter、lane/worktree、审批策略 |
 | Daemon 编排 | `src/daemon` | agent-daemon | task queue、worker、step runner、cycle-state、evolve runs、`subject-artifacts` 概览 |
 | Channel | `src/channel` | agent-channel | classifier / presence / speech / notify / control、飞书适配器 |

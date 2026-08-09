@@ -295,15 +295,50 @@ export function inheritCarryoverTracking(newItems = [], previousDoc = null, {
   });
 }
 
+/**
+ * Carryover write gate (Phase 5 / M4).
+ * - JEA_CARRYOVER_WRITE=0 → always skip writes (all pipelines)
+ * - pipeline=reactor → skip writes by default; opt-in with JEA_REACTOR_CARRYOVER_WRITE=1
+ * Read path is unaffected.
+ */
+export function isCarryoverWriteEnabled({
+  pipeline = null,
+  env = process.env,
+} = {}) {
+  const globalOff = String(env.JEA_CARRYOVER_WRITE ?? '').trim().toLowerCase();
+  if (globalOff === '0' || globalOff === 'false' || globalOff === 'off' || globalOff === 'no') {
+    return false;
+  }
+  const resolvedPipeline = pipeline
+    || String(env.JEA_CYCLE_PIPELINE || '').trim().toLowerCase()
+    || null;
+  if (resolvedPipeline === 'reactor') {
+    const allow = String(env.JEA_REACTOR_CARRYOVER_WRITE ?? '').trim().toLowerCase();
+    return allow === '1' || allow === 'true' || allow === 'yes' || allow === 'on';
+  }
+  return true;
+}
+
 export function writeCarryoverDocument(runtimeRoot, {
   cycleId = null,
   items = [],
   step_status_snapshot = null,
   defaultSource = 'diary',
+  pipeline = null,
+  env = process.env,
+  force = false,
 } = {}) {
+  const previousDoc = readCarryoverDocument(runtimeRoot);
+  if (!force && !isCarryoverWriteEnabled({ pipeline, env })) {
+    return {
+      ...previousDoc,
+      write_skipped: true,
+      write_skip_reason: 'carryover_write_disabled',
+      requested_cycle_id: cycleId || null,
+    };
+  }
   const path = carryoverPath(runtimeRoot);
   mkdirSync(dirname(path), { recursive: true });
-  const previousDoc = readCarryoverDocument(runtimeRoot);
   const normalized = normalizeCarryoverItems(items, { defaultSource });
   const tracked = inheritCarryoverTracking(normalized, previousDoc, { cycleId });
   const doc = {
@@ -328,12 +363,18 @@ export function writeCarryoverItems(runtimeRoot, {
   items = [],
   step_status_snapshot = null,
   defaultSource = 'diary',
+  pipeline = null,
+  env = process.env,
+  force = false,
 } = {}) {
   return writeCarryoverDocument(runtimeRoot, {
     cycleId,
     items,
     step_status_snapshot,
     defaultSource,
+    pipeline,
+    env,
+    force,
   });
 }
 

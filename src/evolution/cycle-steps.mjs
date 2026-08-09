@@ -54,6 +54,7 @@ import { chatMessagesDetailed, serializeMessages } from '../ai/messages.mjs';
 import { repairReportIfNeeded } from '../intelligence/report-repair.mjs';
 import { markStepStatus, writeStepArtifact } from '../daemon/cycle-state.mjs';
 import { loadCycleStepContext, loadVerifyReportForCycle } from '../daemon/cycle-checkpoints.mjs';
+import { cyclePipelineFromEnv } from '../daemon/cycle-pipeline-mode.mjs';
 import { extractMarkdownSection } from '../infra/markdown-sections.mjs';
 import {
   CARRYOVER_MECHANICAL_LIMIT,
@@ -1009,11 +1010,17 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
   }
 
   try {
-    writeCarryoverItems(runtime.runtimeRoot, {
+    // Prefer explicit run pipeline (set by runCycle/dispatch); env fallback for step mode.
+    const pipeline = ctx.pipeline || cyclePipelineFromEnv() || null;
+    const written = writeCarryoverItems(runtime.runtimeRoot, {
       cycleId: resolvedCycleId,
       items: finishCarryover,
       defaultSource: 'mechanical',
+      pipeline,
     });
+    if (written?.write_skipped) {
+      logger?.info?.(`[agent_loop] carryover write skipped (${written.write_skip_reason}); pipeline=${pipeline}`);
+    }
   } catch (e) {
     logger?.warning?.(`[agent_loop] failed to write carryover: ${e?.message || e}`);
   }
@@ -1893,11 +1900,18 @@ export async function runDiaryStep(ctx, {
           });
         }
       }
-      writeCarryoverItems(runtime.runtimeRoot, {
+      const pipeline = ctx.pipeline || cyclePipelineFromEnv() || null;
+      const written = writeCarryoverItems(runtime.runtimeRoot, {
         cycleId: execResult?.cycle_id || intelResult?.cycle_id,
         items: merged.items,
         step_status_snapshot: merged.step_status_snapshot,
+        pipeline,
       });
+      if (written?.write_skipped) {
+        cfg.host?.logger?.info?.(
+          `[diary] carryover write skipped (${written.write_skip_reason}); pipeline=${pipeline}`,
+        );
+      }
     } catch (carryErr) {
       cfg.host?.logger?.warning?.(
         `[diary] failed to finalize carryover from diary: ${carryErr?.message || carryErr}`,

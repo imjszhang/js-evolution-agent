@@ -33,6 +33,7 @@ import { loadEnabledGuards } from '../../evolution/agent-loop/guard-runner.mjs';
 import { readCarryoverDocument } from '../../evolution/carryover.mjs';
 import { resolveIntelReportRecordPath } from '../../intelligence/report-paths.mjs';
 import { findReportRecord } from './intel.mjs';
+import { runRuleFeedbackCompare } from './goals-feedback-compare.mjs';
 
 export { validateGoalShape };
 
@@ -74,61 +75,15 @@ export function compareRuleFeedbackUnits(root = getProjectRoot(), flags = {}) {
   const store = makeStore(runtime);
   const carryoverDoc = readCarryoverDocument(runtime.runtimeRoot);
   const mechanicalGuards = loadEnabledGuards(root, runtime.subject);
-  const common = { store, activeGoals, carryoverDoc, mechanicalGuards };
-  const cycle = computeRuleFeedbackStats({
-    ...common,
-    env: { ...process.env, JEA_RULE_FEEDBACK_STREAK_UNIT: 'cycle' },
+  return runRuleFeedbackCompare({
+    runtime,
+    activeGoals,
+    store,
+    carryoverDoc,
+    mechanicalGuards,
+    flags,
+    env: process.env,
   });
-  const evidence = computeRuleFeedbackStats({
-    ...common,
-    env: { ...process.env, JEA_RULE_FEEDBACK_STREAK_UNIT: 'evidence' },
-  });
-  const cycleByGoal = new Map(cycle.goals.map((goal) => [goal.goal_id, goal]));
-  const evidenceByGoal = new Map(evidence.goals.map((goal) => [goal.goal_id, goal]));
-  const goalIds = [...new Set([...cycleByGoal.keys(), ...evidenceByGoal.keys()])];
-  const goals = goalIds.map((id) => {
-    const a = cycleByGoal.get(id) ?? null;
-    const b = evidenceByGoal.get(id) ?? null;
-    return {
-      goal_id: id,
-      cycle: a ? {
-        state: a.feedback_state,
-        sig_streak: a.constant_signature_streak,
-        starved_streak: a.starved_streak,
-        mutate_effective: a.mutate_effective,
-        escalate_eligible: a.escalate_eligible,
-        observed: a.units_observed,
-      } : null,
-      evidence: b ? {
-        state: b.feedback_state,
-        sig_streak: b.constant_signature_streak,
-        starved_streak: b.starved_streak,
-        mutate_effective: b.mutate_effective,
-        escalate_eligible: b.escalate_eligible,
-        observed: b.units_observed,
-      } : null,
-      differs: Boolean(
-        a?.feedback_state !== b?.feedback_state
-        || a?.constant_signature_streak !== b?.constant_signature_streak
-        || a?.starved_streak !== b?.starved_streak
-        || a?.mutate_effective !== b?.mutate_effective
-        || a?.escalate_eligible !== b?.escalate_eligible
-      ),
-    };
-  });
-  return {
-    subject: runtime.subject,
-    generated_at: new Date().toISOString(),
-    read_only: true,
-    configs: { cycle: cycle.config, evidence: evidence.config },
-    summary: {
-      goals: goals.length,
-      differing: goals.filter((goal) => goal.differs).length,
-      cycle: cycle.summary,
-      evidence: evidence.summary,
-    },
-    goals,
-  };
 }
 
 function readJsonFileStrict(filePath) {
@@ -874,11 +829,19 @@ export async function goalsCommand({ subcommand, flags = {} } = {}) {
       if (flags.json) {
         console.log(JSON.stringify(result, null, 2));
       } else {
-        console.log(`Rule feedback unit compare (${result.subject})`);
-        console.log(`goals=${result.summary.goals} differing=${result.summary.differing}`);
-        for (const goal of result.goals.filter((item) => item.differs)) {
+        console.log(`Rule feedback unit compare (${result.subject}) mode=${result.mode}`);
+        console.log(`goals=${result.summary?.goals ?? 0} differing=${result.summary?.differing ?? 0}`
+          + ` cutpoints=${result.cutpoints?.length ?? 0}`
+          + ` strategies=${(result.strategies || []).join(',')}`);
+        if (result.candidate_thresholds?.suggested) {
+          console.log('candidate thresholds:', JSON.stringify(result.candidate_thresholds.suggested));
+        }
+        for (const goal of (result.goals || []).filter((item) => item.differs)) {
           console.log(`- ${goal.goal_id}: cycle=${goal.cycle?.state}/${goal.cycle?.sig_streak}/${goal.cycle?.starved_streak}`
             + ` evidence=${goal.evidence?.state}/${goal.evidence?.sig_streak}/${goal.evidence?.starved_streak}`);
+        }
+        if ((result.transitions || []).length) {
+          console.log(`transitions=${result.transitions.length}`);
         }
       }
       return 0;
@@ -894,6 +857,7 @@ export async function goalsCommand({ subcommand, flags = {} } = {}) {
     '  jea goals update --file PATH --reason TEXT [--subject NAME] [--evidence REF] [--cycle ID] [--json]\n' +
     '  jea goals patch --file PATH --reason TEXT [--subject NAME] [--evidence REF] [--cycle ID] [--json]\n' +
     '  jea goals assess [--subject NAME] [--cycle ID] [--json]\n' +
-    '  jea goals feedback-compare [--subject NAME] [--json]');
+    '  jea goals feedback-compare [--subject NAME] [--json] [--at TIMESTAMP] [--rolling N]\n' +
+    '    [--receipt-limit N] [--starved-strategy global_count|wall_clock|both] [--include-fp]');
   return 2;
 }
