@@ -44,5 +44,20 @@ export {
 } from './belief-goal-events.mjs';
 
 export {
+  validateEvolutionEvent,
+} from './evolution-event.mjs';
+
+export {
+  EVIDENCE_SOURCE_KINDS,
+  validateEvidenceEnvelope,
+} from './evidence-envelope.mjs';
+
+export {
+  EVIDENCE_BATCH_CLAIM_STATUSES,
+  EVIDENCE_BATCH_REACTORS,
+  validateEvidenceBatchClaim,
+} from './evidence-batch-claim.mjs';
+
+export {
   validateChannelEnvelope,
 } from './channel-envelope.mjs';

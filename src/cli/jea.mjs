@@ -19,6 +19,7 @@ import { evolveCommand } from './commands/evolve.mjs';
 import { daemonCommand } from './commands/daemon.mjs';
 import { channelCommand } from './commands/channel.mjs';
 import { bridgeCommand } from './commands/bridge.mjs';
+import { reactorCommand } from './commands/reactor.mjs';
 
 export function helpText() {
   return `Usage: jea <command> [options]
@@ -92,6 +93,12 @@ Commands:
                          List resolved operator questions
   intel question resolve <id> [--note TEXT]
                          Mark an operator question as resolved
+  intel stream           Virtual evidence stream (read-side projection)
+  intel stream --reconcile
+                         Reconcile stream vs scattered sources
+  reactor shadow run     Cognitive reactor shadow reaction (no real queue writes)
+  reactor shadow status  Show claim ledger / shadow runs / honesty counts
+  reactor shadow compare Compare shadow decisions vs a train cycle (--cycle ID)
   intel viewer build     Build static evolution report/diary viewer (--subject, --limit)
   intel viewer serve     Serve viewer API + SSE (reads runtime; no dist required)
   goals show             Show the active goal hypothesis
@@ -193,6 +200,7 @@ export async function main(argv = process.argv.slice(2)) {
   if (command === 'bridge') return bridgeCommand({ subcommand, flags, args });
   if (command === 'data') return dataCommand({ subcommand, flags });
   if (command === 'intel') return intelCommand({ subcommand, flags, args });
+  if (command === 'reactor') return reactorCommand({ subcommand, flags, args });
   if (command === 'goals') return goalsCommand({ subcommand, flags, args });
   if (command === 'beliefs') return beliefsCommand({ subcommand, flags, args });
   if (command === 'audit') return auditCommand({ subcommand, flags });

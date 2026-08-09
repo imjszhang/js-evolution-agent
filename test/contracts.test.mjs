@@ -11,6 +11,9 @@ import {
   validateStepCheckpointPayload,
   validateBeliefEvent,
   validateChannelEnvelope,
+  validateEvidenceBatchClaim,
+  validateEvidenceEnvelope,
+  validateEvolutionEvent,
   validateGoalEvent,
   validateVerifyReport,
 } from '../src/contracts/index.mjs';
@@ -58,6 +61,65 @@ describe('contracts', () => {
     expect(validateBeliefEvent({ type: 'updated', belief_id: 'b1' }).ok).toBe(true);
     expect(validateGoalEvent({ type: 'assessment', reason: 'ok' }).ok).toBe(true);
     expect(validateChannelEnvelope({ id: 'msg-1', text: 'hello' }).ok).toBe(true);
+    expect(validateEvolutionEvent({
+      id: 'evt-test',
+      type: 'intel_pipeline',
+      recorded_at: '2026-06-13T00:00:00.000Z',
+      cycle_id: 'cycle-test',
+      status: 'ok',
+      extra_field: 'allowed',
+    }).ok).toBe(true);
+    expect(validateEvidenceEnvelope({
+      id: 'receipt-test',
+      kind: 'action_receipts',
+      type: 'record_observation',
+      occurred_at: '2026-06-13T00:00:00.000Z',
+      provenance: { store: 'action_receipts', file: 'intelligence/action_receipts/action-receipts.jsonl', id: 'receipt-test' },
+      payload: { id: 'receipt-test' },
+    }).ok).toBe(true);
+    expect(validateEvidenceBatchClaim({
+      batch_id: 'batch-test',
+      reactor: 'cognitive',
+      claimed_at: '2026-06-13T00:00:00.000Z',
+      deadline_at: '2026-06-13T00:05:00.000Z',
+      event_ids: ['evt-1'],
+      status: 'claimed',
+    }).ok).toBe(true);
+  });
+
+  it('validates evolution_event required fields and evt- prefix', () => {
+    expect(validateEvolutionEvent({
+      type: 'intel_pipeline',
+      recorded_at: '2026-06-13T00:00:00.000Z',
+    }).ok).toBe(false);
+    expect(validateEvolutionEvent({
+      id: 'evt-test',
+      recorded_at: '2026-06-13T00:00:00.000Z',
+    }).ok).toBe(false);
+    expect(validateEvolutionEvent({
+      id: 'bad-id',
+      type: 'intel_pipeline',
+      recorded_at: '2026-06-13T00:00:00.000Z',
+    }).errors.join('\n')).toContain('evt- prefix');
+    expect(validateEvolutionEvent({
+      id: 'evt-test',
+      type: 'intel_pipeline',
+      recorded_at: '2026-06-13T00:00:00.000Z',
+      status: 1,
+    }).errors.join('\n')).toContain('status');
+
+    const missingType = validateEvolutionEvent({
+      id: 'evt-test',
+      recorded_at: '2026-06-13T00:00:00.000Z',
+    });
+    const warnings = [];
+    expect(handleContractValidation('evolution_event', missingType, {
+      mode: 'warn',
+      logger: { warn: (msg) => warnings.push(msg) },
+    })).toBe(missingType);
+    expect(warnings[0]).toContain('evolution_event contract invalid');
+    expect(() => handleContractValidation('evolution_event', missingType, { mode: 'strict' }))
+      .toThrow(/evolution_event contract invalid/);
   });
 
   it('reports contract errors without throwing unless strict mode is requested', () => {

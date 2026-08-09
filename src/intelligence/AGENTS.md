@@ -75,6 +75,55 @@ Phase 2 执行预算 / 队列 TTL（`JEA_EXEC_*`、`JEA_AGENT_*`、`JEA_PENDING_
 
 查证阶段**不**注册 action 入队工具，也**不**在 loop 内写完整 Intel 报告。**phases 与 agent_loop 的最终 Seen 均由宿主组装**：机械底板 + `machine_context` bullets（agent_loop 另可并入已校验 `verified_facts`；phases 无查证阶段故 `verifiedFacts=[]`）。模型只写判断章节。落盘次序：首稿写入 `*_report_raw.md` → 机械契约检查（缺必需标题 / 判断章节编造 ref）→ 有界重问修复（最多 `JEA_REPORT_REPAIR_MAX_ROUNDS` 轮，默认 1；修复稿另存 `*_report_repaired.md`；事件 `intel_report_repair`）→ `transformMd` 在 `persistIntelReport` 内、`redactSecrets` 之前做字形净化与 `## Seen` splice（只写盘一次）→ persist 后发单次诚实事件（`phases_report_honesty` / `agent_loop_report_honesty`）。agent_loop 查证若最终仍有 `rejected_facts`，另发 `agent_loop_rejected_facts`（不进 carryover）。诚实矩阵 raw 列始终审修复前首稿；最终产物硬闸看 splice+脱敏后报告。有意不对称：phases 报告 prompt 仍含 intelligenceContext + observe + Machine Context JSON；agent_loop 报告 prompt 更瘦。verify 复放的是宿主最终报告（raw 仅存档）。
 
+## 证据流与反应器影子（Phase 1–2，#33 / PR #35）
+
+反应器化迁移的读侧与影子认知路径。**不改变列车默认行为**；真实 `pending_decisions` / reports index / evolution-events 仍仅由 `jea run` / daemon step 写入。
+
+### 证据流读侧（Phase 1）
+
+- `jea intel stream [--limit N] [--since ISO] [--kind KIND] [--cycle ID] [--json]`：虚拟只读投影，把 receipts / verify / briefs / channel events 等散落源统一为 `EvidenceEnvelope[]`（不写盘）。
+- `jea intel stream --reconcile [--json]`：逐源对账（disk 行数 vs stream 条目；`contract_errors=0` 为通过）。duplicate id 记 data-quality 警告，不阻断 ok。
+
+实现：`src/intelligence/evidence-stream.mjs`；契约：`src/contracts/evidence-envelope.mjs`。
+
+### 认知反应器影子（Phase 2）
+
+- `jea reactor shadow run [--subject NAME] [--mock] [--limit N] [--skip-investigate] [--json]`：claim 一批未覆盖证据 → investigate（可选）→ 宿主组装 Seen → 报告 → Decide → **仅写 shadow 产物**。
+- `jea reactor shadow status [--subject NAME] [--json]`：claim ledger、近期 shadow runs、honesty 计数。
+- `jea reactor shadow compare --cycle ID [--batch BATCH] [--subject NAME] [--json]`：shadow Decide 与同期列车 `pending_decisions` 指纹对照（matched / shadow_only / train_only / coverage）。
+
+**绝不写入**（影子模式硬边界）：
+
+- `data/evolution/pending_decisions.json`
+- `data/intelligence/reports/index.jsonl`
+- `data/intelligence/evolution_events/evolution-events.jsonl`
+
+**Shadow 产物路径**（subject runtime）：
+
+```text
+data/evolution/reactor/
+├── claims.json              # 证据批 claim ledger（claimed/handled/failed）
+├── shadow_decisions.json    # 影子 Decide 队列（不入真实 exec）
+├── shadow-runs.jsonl        # 审计（含 shadow_report_honesty / shadow_reaction_*）
+└── shadow-reports/
+    └── <batch_id>.md        # 宿主 splice 后的最终报告
+```
+
+诚实闸：与列车相同，宿主组装 Seen + `auditHostSeenReport`；事件 type 为 `shadow_report_honesty`（每反应恰好一条）。硬断言见 `test/reactor-shadow-honesty-e2e.test.mjs`。
+
+典型双跑 smoke（沙盒 subject）：
+
+```powershell
+npm run jea -- run --mock --subject js-evolution-agent
+npm run jea -- reactor shadow run --mock --skip-investigate --subject js-evolution-agent
+npm run jea -- intel stream --reconcile --subject js-evolution-agent
+npm run jea -- reactor shadow compare --cycle <上一步 cycle_id> --subject js-evolution-agent
+```
+
+Phase 3 灰度（`evolution.pipeline: reactor` 真实入队）**尚未实现**；前置须 exec 预算换速率制（见 epic #33 / plan #34）。
+
+设计文档：`docs/reactor-target-mechanism.md`、`docs/reactor-migration-rule-inventory.md`、`docs/evidence-batch-primitive-review.md`。
+
 ## 情报与报告
 
 查看情报：

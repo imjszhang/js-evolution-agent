@@ -125,6 +125,7 @@ jea data init --all --subject <name>
 - 多主体并行时，用 `jea daemon status --all`、`jea daemon doctor --all` 和 `jea daemon inbox --all` 做总览。
 - 新 subject 接飞书机器人：先 `jea subject init` + `jea data init --all`，再 `jea channel feishu setup --subject NAME --write-env --init-subject-config`，然后 `jea daemon start --domain channel`，最后在飞书私聊 `JEA BIND <口令>`；用 `jea channel events` 验收收消息与 ingest。
 - 自动化脚本需要结构化输出时，优先使用带 `--json` 的命令。
+- 反应器化迁移（Phase 1–2）：证据流读侧 `jea intel stream --reconcile`；认知影子双跑 `jea reactor shadow run|compare`（不写真实决策队列）。详见 [src/intelligence/AGENTS.md](src/intelligence/AGENTS.md)「证据流与反应器影子」。
 - 发布/基线校准等人工作业：先读最新 evolution diary 与 verify report，再用 `jea intel brief put` 提交意图，然后 `jea daemon enqueue --type run_cycle` 或 `jea run`；用 `jea intel brief list` / `processed` 确认 brief 是否已被消费。
 - 已确认的领域口径或术语定义（非待验证命题）：用 `jea intel fact put` 写入一次性种子；待核实或单轮优先级调整仍用 `jea intel brief put`。系统打开的 operator question 用 `jea intel question list` 查看，答复后 `question resolve`。
 - 长期稳定约束写 `human_guidance.md` 的 `## Current`；一次性核实请求不要写进 guidance，改用 brief。

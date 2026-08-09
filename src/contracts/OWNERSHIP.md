@@ -47,12 +47,9 @@ Owner 名为角色占位（agent-*），实际分配时替换为具体维护者/
 | verify report | verify → belief / goals | `src/contracts/verify-report.mjs` |
 | agent run spec | Decide → 执行层 | `src/contracts/agent-run-spec.mjs` |
 | belief / goal events | 认知管线内部 + CLI | `src/contracts/belief-goal-events.mjs` |
-
-### 待补清单
-
-| 项 | 现状 | 处置 |
-| --- | --- | --- |
-| `evolution-events.jsonl` 事件字段 | 无 schema，各模块自由 append | 待内核 owner 补 `src/contracts/evolution-event.mjs`（登记项，不阻塞当前阶段） |
+| `evolution-events.jsonl` | 全模块（经 `recordEvolutionEvent`）→ viewer / report / evidence-audit | `src/contracts/evolution-event.mjs` |
+| evidence stream envelope（虚拟读视图） | 散落证据源 → `jea intel stream` / Phase 2 影子反应器 | `src/contracts/evidence-envelope.mjs` |
+| evidence batch claim（claim ledger） | 认知/法则/记忆反应器 claim-ack | `src/contracts/evidence-batch-claim.mjs` |
 
 ## 4. 跨模块依赖规则
 

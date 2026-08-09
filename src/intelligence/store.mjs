@@ -12,6 +12,7 @@ import {
 import {
   handleContractValidation,
   validateActionReceipt,
+  validateEvolutionEvent,
 } from '../contracts/index.mjs';
 
 export const DEFAULT_TIMEZONE = 'Asia/Shanghai';
@@ -136,10 +137,14 @@ export class IntelligenceStore {
   }
 
   recordEvolutionEvent(event) {
-    return this.engine.ingest('evolution_events', redactSecrets(withId({
+    const record = withId({
       recorded_at: new Date().toISOString(),
       ...event,
-    }, 'evt')));
+    }, 'evt');
+    handleContractValidation('evolution_event', validateEvolutionEvent(record), {
+      logger: this.engine?.logger ?? null,
+    });
+    return this.engine.ingest('evolution_events', redactSecrets(record));
   }
 
   recordRetrospective(review) {

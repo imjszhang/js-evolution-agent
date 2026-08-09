@@ -168,6 +168,32 @@ describe('IntelligenceStore', () => {
     expect(store.buildContextSummary()).toContain('README exists');
   });
 
+  it('warns on invalid evolution events but still writes in warn mode', () => {
+    const previousMode = process.env.JEA_CONTRACT_MODE;
+    process.env.JEA_CONTRACT_MODE = 'warn';
+    const warnings = [];
+    try {
+      tempDir = mkdtempSync(join(tmpdir(), 'js-evolution-agent-'));
+      const store = createIntelligenceStore({
+        baseDir: tempDir,
+        timezone: 'Asia/Shanghai',
+        logger: { warn: (msg) => warnings.push(msg) },
+      });
+
+      expect(store.recordEvolutionEvent({
+        status: 'ok',
+      })).toBe(1);
+      expect(warnings.some((msg) => String(msg).includes('evolution_event contract invalid'))).toBe(true);
+      const events = store.readEvolutionEvents({ limit: 5 });
+      expect(events).toHaveLength(1);
+      expect(events[0].id).toMatch(/^evt-/);
+      expect(events[0].status).toBe('ok');
+    } finally {
+      if (previousMode === undefined) delete process.env.JEA_CONTRACT_MODE;
+      else process.env.JEA_CONTRACT_MODE = previousMode;
+    }
+  });
+
   it('keeps operator facts visible in context summaries', () => {
     const store = makeStore();
     for (let i = 0; i < 12; i += 1) {

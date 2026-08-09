@@ -11,6 +11,7 @@ import { intelBriefCommand } from './intel-briefs.mjs';
 import { intelFactCommand } from './intel-facts.mjs';
 import { intelQuestionCommand } from './intel-questions.mjs';
 import { intelViewerCommand } from './intel-viewer.mjs';
+import { intelStreamCommand } from './intel-stream.mjs';
 
 function numberFlag(flags, name, fallback) {
   const n = Number(flags[name]);
@@ -216,7 +217,11 @@ export async function intelCommand({ subcommand, flags = {}, args = [] } = {}) {
     return intelViewerCommand(root, flags, args);
   }
 
-  console.error('Usage: jea intel <summary|report|ingest|inbox|brief|viewer> [...] [--subject NAME]\n' +
+  if (subcommand === 'stream') {
+    return intelStreamCommand({ root, flags });
+  }
+
+  console.error('Usage: jea intel <summary|report|ingest|inbox|brief|stream|viewer> [...] [--subject NAME]\n' +
     '  jea intel summary [--days N] [--limit N] [--json]\n' +
     '  jea intel report [--latest] [--cycle <id>] [--json] [--open]\n' +
     '  jea intel report list [--limit N] [--json]\n' +
@@ -226,6 +231,8 @@ export async function intelCommand({ subcommand, flags = {}, args = [] } = {}) {
     '  jea intel brief <put|list|processed> [--file PATH | --stdin] [--json]\n' +
     '  jea intel fact <put|list|digested> [--file PATH | --stdin] [--json]\n' +
     '  jea intel question <list|resolved|resolve> [id] [--json]\n' +
+    '  jea intel stream [--limit N] [--since ISO] [--kind k,k] [--cycle ID] [--json]\n' +
+    '  jea intel stream --reconcile [--json]\n' +
     '  jea intel viewer build [--subject NAME] [--limit N] [--out PATH]\n' +
     '  jea intel viewer serve [--port N] [--open] [--limit N] [--subject NAME] [--subjects a,b] (default: all subjects)');
   return 2;
