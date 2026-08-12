@@ -1,6 +1,7 @@
 # M5 列车退役单向门 Checklist
 
 **状态：未执行（需确认）**  
+观察期正式起算：**2026-08-13**（PR #41 合 main；见 `docs/reactor-migration-observation.md`）  
 关联：#33 Phase 6 / #34
 
 在**全部**勾选且 #34 有操作者明确确认留言之前，**禁止**：
