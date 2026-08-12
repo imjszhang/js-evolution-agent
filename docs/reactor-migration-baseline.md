@@ -77,8 +77,46 @@ PY
 
 ---
 
-## 5. 待补
+## 5. 待补 / 已补
 
-- [ ] 真实 DeepSeek 轮 token / 时长基线（`jea run` 无 `--mock`）
-- [ ] 多 subject 基线（`js-evolution-agent` sandbox）
 - [x] Phase 1 读侧投影对账：`jea intel stream --reconcile`（`contract_errors=0` 为通过；见 `src/intelligence/evidence-stream.mjs`）
+- [x] 真实 DeepSeek 轮时长基线（§6.2）
+- [x] 多 subject 基线（sandbox reactor + 列车 agent_loop）
+- [ ] reactor 路径完整 prompt-cache 汇总日志（列车已有；reactor 本轮未打出同款 `[prompt-cache …]` 行，M6 对照时补齐）
+
+---
+
+## 6. Phase 3 可恢复演练 + 真实基线（M3）
+
+### 6.1 kill -9 / claim 过期回收
+
+工具：`node scripts/reactor-kill9-drill.mjs`
+
+| 模式 | 命令 | 结果（2026-08-09） |
+| --- | --- | --- |
+| simulate | `… simulate --subject js-evolution-agent` | ✅ 过期 claimed → failed；无悬挂 claimed |
+| live mock | `… live --mock --delay-ms 800` | claim 无悬挂；reconcile ok；mock 过短难命中中段 |
+| **live real** | `… live --delay-ms 12000`（无 mock） | ✅ **kill -9 命中中段**；`expired_after_kill=1`；`claimed_hanging_final=0`；`duplicate_growth=[]`；`evidence_reconcile_ok=true` |
+
+验收口径（已满足）：
+
+1. kill/过期后 `claims` 无悬挂 `claimed`
+2. 重跑后证据流 reconcile ok
+3. 无**新增** fingerprint 重复（相对 kill 前）
+
+注意：kill -9 后须 `rm -rf runtime/subjects/<ns>/data/evolution/.evolve.lock.lock` 清 orphan proper-lockfile，否则下轮报 `subject_already_running`。
+
+### 6.2 真实 DeepSeek 基线（2026-08-09，`JEA_FORCE_MOCK=0`）
+
+| subject | pipeline | cycle_id | 墙钟 | prompt tokens（日志合计） | honesty/批 | reconcile |
+| --- | --- | --- | ---: | ---: | ---: | --- |
+| js-evolution-agent | reactor | `cycle-20260809054010-ff341afa` | **~588s** | （reactor 本轮未输出 `[prompt-cache]` 汇总；见待补） | **1** `reactor_report_honesty` | ok / 0 errors |
+| agentank-tank | agent_loop | `cycle-20260809054015-ff185d6a` | **~1336s** | investigate 146406 + report 70967 + decide 336900 = **554273**（hit 150272 / miss 404001） | **1** `agent_loop_report_honesty` | ok / 0 errors |
+
+沙盒 reactor 事件 type 集合：`agent_loop_turn`×4、`agent_loop_closing_turn`、`reactor_report_honesty`、`reactor_pipeline`、`reactor_reaction_completed`、`exec_pipeline`、`verify_pipeline`、`belief_update`、`goals_assess`、`goals_calibrate`、`evolution_diary`。  
+日记确认 carryover 停写：`[diary] carryover write skipped (carryover_write_disabled); pipeline=reactor`。  
+备注：Decide 曾产出 3 条缺 `action.type` 的决策（contract invalid 后仍入队 3 条），exec 跳过；属真实模型质量问题，记入基线，不阻塞可恢复验收。列车主体行为未改 pipeline。
+
+### 6.3 M6 KV/token 对照锚点
+
+列车（agent_loop）prompt 合计 **554273** 作为对照锚。reactor 需在证据批前缀稳定后补齐同款 usage 汇总，验收：不高于基线 +10%。观察期记录见 `docs/reactor-migration-observation.md`。

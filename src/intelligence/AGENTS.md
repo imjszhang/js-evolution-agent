@@ -125,8 +125,11 @@ Phase 3 灰度（`evolution.pipeline: reactor` 真实入队）已可用；exec �
 - registry 设 `"evolution": { "pipeline": "reactor" }`（仅灰度 subject；其他 subject 默认 `agent_loop`，一行回切）
 - `jea run` / daemon 走 `reactor` step → claim 证据批 → 真实 `pending_decisions` + reports index + `reactor_report_honesty` / `reactor_pipeline` 事件
 - 沙盒 smoke：`npm run jea -- run --mock --subject js-evolution-agent`（当前 registry 已灰度该 subject）
+- **M4 carryover 停写**：reactor 默认不写 `agent_loop_carryover.json`（读侧保留）；`JEA_CARRYOVER_WRITE=0` 全局关写；`JEA_REACTOR_CARRYOVER_WRITE=1` 临时恢复
+- **M2 evidence 观察**：`docs/reactor-migration-observation.md`（`STREAK_UNIT=evidence` + `STARVED_STRATEGY=wall_clock` + `JEA_GOAL_AUTO_APPLY=0`）
+- kill -9 / claim 演练：`node scripts/reactor-kill9-drill.mjs simulate|live --subject NAME`
 
-设计文档：`docs/reactor-target-mechanism.md`、`docs/reactor-migration-rule-inventory.md`、`docs/evidence-batch-primitive-review.md`。
+设计文档：`docs/reactor-target-mechanism.md`、`docs/reactor-migration-rule-inventory.md`、`docs/evidence-batch-primitive-review.md`、`docs/reactor-migration-observation.md`。
 
 ## 情报与报告
 
@@ -331,7 +334,7 @@ Assessor prompt 仍建议 `goal_patches` 与 `proposed_goal` 互斥；执行器�
 
 **法则反馈健康度**（`rule_feedback_stats`）：
 
-宿主按 `action.serves_goal` 聚合近期 receipts 的结果签名（`key=value` 归一化 hash），并对照 carryover 跨轮计数与 `evolution.guards` 配置，为每个子目标计算 `feedback_state`。默认仍按 cycle 分桶；Phase 4 可用只读命令 `jea goals feedback-compare --subject NAME [--json]` 对比 cycle 与逐 receipt evidence 两种单位，不写运行时数据。注入点：
+宿主按 `action.serves_goal` 聚合近期 receipts 的结果签名（`key=value` 归一化 hash），并对照 carryover 跨轮计数与 `evolution.guards` 配置，为每个子目标计算 `feedback_state`。默认仍按 cycle 分桶；Phase 4 可用只读命令 `jea goals feedback-compare --subject NAME [--json] [--at TIMESTAMP|--rolling N] [--starved-strategy both] [--include-fp]` 对比 cycle 与逐 receipt evidence，并做历史截点回放（不写运行时数据）。注入点：
 
 - **Phase 4 goals assess**（完整 JSON，含 `mechanical_guards` 段，驱动 `rule_status` 与退役/重生）
 - **Phase 1 Decide**（agent_loop 仅）：压缩段 `## Rule Feedback Health`（dead / degraded / starved / mechanized），信息用法——签名恒定或 starved 的 goal 不应原样重复同一探针；`mechanically_maintained` 目标勿再入队相同探针；不行动须在 `deferred` / `goal_coverage.not_covered` 说明。phases 路径不注入。
@@ -361,8 +364,12 @@ Assessor prompt 仍建议 `goal_patches` 与 `proposed_goal` 互斥；执行器�
 | `JEA_RULE_FEEDBACK_WINDOW` | `8` | 统计窗口（cycle 数） |
 | `JEA_RULE_FEEDBACK_STREAK_UNIT` | `cycle` | `cycle`（生产默认）或 `evidence`（逐条 serving receipt；阈值标定完成前仅用于 replay/显式灰度） |
 | `JEA_RULE_FEEDBACK_WINDOW_EVIDENCE` | `24` | evidence 模式统计窗口（serving receipt 条数） |
-| `JEA_RULE_FEEDBACK_DEAD_STREAK` | `3` | 判 dead / starved 的连续轮数阈值 |
-| `JEA_RULE_FEEDBACK_ESCALATE_STREAK` | `5` | 死亡/饥饿边界报警阈值（见下） |
+| `JEA_RULE_FEEDBACK_DEAD_STREAK` | `3` | 判 dead 的连续签名停滞阈值 |
+| `JEA_RULE_FEEDBACK_STARVED_STREAK` | 同 dead | 饥饿阈值（与 dead **解耦**；未设置时等于 dead，保持旧行为） |
+| `JEA_RULE_FEEDBACK_STARVED_STREAK_EVIDENCE` | 同 starved | evidence 模式下独立饥饿阈值 |
+| `JEA_RULE_FEEDBACK_STARVED_STRATEGY` | `global_count` | `global_count`（全局未服务计数）或 `wall_clock`（距上次 serving 的墙钟小时） |
+| `JEA_RULE_FEEDBACK_STARVED_WINDOW_HOURS` | `48` | `wall_clock` 策略下的饥饿小时阈值 |
+| `JEA_RULE_FEEDBACK_ESCALATE_STREAK` | `5` | 死亡/饥饿边界报警阈值（见下；`wall_clock` 下饥饿 escalate 跟窗口小时） |
 | `JEA_RULE_FEEDBACK_MUTATE_COOLDOWN` | `2` | mutate 后冷却轮数（`0` 关闭）；冷却期内 dead 降级为 degraded |
 | `JEA_RULE_FEEDBACK_RECEIPT_LIMIT` | `120` | 参与统计的 receipt 读取上限 |
 

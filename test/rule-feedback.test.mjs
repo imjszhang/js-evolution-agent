@@ -9,12 +9,16 @@ import {
   computeRuleFeedbackStats,
   computeSignatureStreak,
   computeStarvedStreak,
+  computeStarvedWallClockHours,
   extractResultSignature,
   formatRuleFeedbackForPrompt,
   isGuardGoal,
   resolveRuleFeedbackConfig,
+  selectRollingCutpoints,
   selectRuleFeedbackEscalations,
+  truncateByAsOf,
 } from '../src/intelligence/rule-feedback.mjs';
+import { runRuleFeedbackCompare } from '../src/cli/commands/goals-feedback-compare.mjs';
 
 function makeReceipt({
   id = 'receipt-1',
@@ -1027,5 +1031,215 @@ describe('mechanically_maintained and healthy_streak', () => {
     expect(stats.mechanical_guards[0].goal_in_active_tree).toBe(false);
     expect(stats.mechanical_guards[0].eligible_for_rebirth).toBe(true);
     expect(stats.summary.eligible_for_rebirth).toBe(1);
+  });
+});
+
+describe('independent starved threshold + wall_clock', () => {
+  it('defaults starved streak to dead streak when unset (legacy)', () => {
+    const cfg = resolveRuleFeedbackConfig({
+      JEA_RULE_FEEDBACK_DEAD_STREAK: '4',
+    });
+    expect(cfg.deadStreak).toBe(4);
+    expect(cfg.starvedStreak).toBe(4);
+    expect(cfg.starvedStrategy).toBe('global_count');
+  });
+
+  it('decouples starved threshold from dead streak', () => {
+    const receipts = [
+      makeReceipt({ id: 'r1', cycleId: 'c1', servesGoal: 'outcome-a', recordedAt: '2026-08-05T10:00:00.000Z' }),
+      makeReceipt({ id: 'r2', cycleId: 'c2', servesGoal: 'outcome-a', recordedAt: '2026-08-05T11:00:00.000Z' }),
+      makeReceipt({ id: 'r3', cycleId: 'c3', servesGoal: 'outcome-a', recordedAt: '2026-08-05T12:00:00.000Z' }),
+    ];
+    const store = {
+      readActionReceipts: () => receipts,
+      readGoalEvents: () => [],
+    };
+    const activeGoals = {
+      id: 'root',
+      children: [
+        { id: 'outcome-a', role: 'outcome' },
+        { id: 'outcome-b', role: 'outcome' },
+      ],
+    };
+    const legacy = computeRuleFeedbackStats({
+      store,
+      activeGoals,
+      deadStreak: 3,
+      escalateStreak: 5,
+      windowCycles: 8,
+      env: { JEA_RULE_FEEDBACK_STREAK_UNIT: 'cycle' },
+    });
+    const raised = computeRuleFeedbackStats({
+      store,
+      activeGoals,
+      deadStreak: 3,
+      escalateStreak: 5,
+      windowCycles: 8,
+      env: {
+        JEA_RULE_FEEDBACK_STREAK_UNIT: 'cycle',
+        JEA_RULE_FEEDBACK_STARVED_STREAK: '10',
+      },
+    });
+    const bLegacy = legacy.goals.find((g) => g.goal_id === 'outcome-b');
+    const bRaised = raised.goals.find((g) => g.goal_id === 'outcome-b');
+    expect(bLegacy.starved_streak).toBe(3);
+    expect(bLegacy.starved).toBe(true);
+    expect(bRaised.starved_streak).toBe(3);
+    expect(bRaised.starved).toBe(false);
+    expect(raised.config.starved_streak).toBe(10);
+  });
+
+  it('wall_clock starvation uses hours since last serving receipt', () => {
+    const asOf = Date.parse('2026-08-07T12:00:00.000Z');
+    const hours = computeStarvedWallClockHours({
+      goalReceipts: [
+        makeReceipt({ id: 'r1', recordedAt: '2026-08-05T12:00:00.000Z' }),
+      ],
+      asOfMs: asOf,
+    });
+    expect(hours).toBe(48);
+    const store = {
+      readActionReceipts: () => [
+        makeReceipt({
+          id: 'r1',
+          cycleId: 'c1',
+          servesGoal: 'outcome-a',
+          recordedAt: '2026-08-05T12:00:00.000Z',
+        }),
+      ],
+      readGoalEvents: () => [],
+    };
+    const stats = computeRuleFeedbackStats({
+      store,
+      activeGoals: {
+        id: 'root',
+        children: [
+          { id: 'outcome-a', role: 'outcome' },
+          { id: 'outcome-b', role: 'outcome' },
+        ],
+      },
+      asOfMs: asOf,
+      env: {
+        JEA_RULE_FEEDBACK_STREAK_UNIT: 'cycle',
+        JEA_RULE_FEEDBACK_STARVED_STRATEGY: 'wall_clock',
+        JEA_RULE_FEEDBACK_STARVED_WINDOW_HOURS: '48',
+      },
+    });
+    const b = stats.goals.find((g) => g.goal_id === 'outcome-b');
+    expect(b.starved_strategy).toBe('wall_clock');
+    expect(b.starved).toBe(true);
+    expect(b.starved_hours).toBe(Number.POSITIVE_INFINITY);
+  });
+
+  it('truncateByAsOf and selectRollingCutpoints are deterministic', () => {
+    const receipts = [
+      makeReceipt({ id: 'r1', recordedAt: '2026-08-01T00:00:00.000Z' }),
+      makeReceipt({ id: 'r2', recordedAt: '2026-08-02T00:00:00.000Z' }),
+      makeReceipt({ id: 'r3', recordedAt: '2026-08-03T00:00:00.000Z' }),
+      makeReceipt({ id: 'r4', recordedAt: '2026-08-04T00:00:00.000Z' }),
+    ];
+    const mid = Date.parse('2026-08-02T12:00:00.000Z');
+    expect(truncateByAsOf(receipts, mid).map((r) => r.id)).toEqual(['r1', 'r2']);
+    const cuts = selectRollingCutpoints(receipts, 3);
+    // Evenly spaced indices on [0..len-1]: 0, round(1.5)=2, 3 → days 1/3/4
+    expect(cuts).toEqual([
+      Date.parse('2026-08-01T00:00:00.000Z'),
+      Date.parse('2026-08-03T00:00:00.000Z'),
+      Date.parse('2026-08-04T00:00:00.000Z'),
+    ]);
+    expect(selectRollingCutpoints(receipts, 3)).toEqual(cuts);
+  });
+
+  it('asOfMs truncates injected receipts for historical replay', () => {
+    const receipts = [
+      makeReceipt({
+        id: 'r1',
+        cycleId: 'c1',
+        servesGoal: 'outcome-a',
+        summary: 'audit_ok=false',
+        recordedAt: '2026-08-01T10:00:00.000Z',
+        success: false,
+      }),
+      makeReceipt({
+        id: 'r2',
+        cycleId: 'c2',
+        servesGoal: 'outcome-a',
+        summary: 'audit_ok=false',
+        recordedAt: '2026-08-02T10:00:00.000Z',
+        success: false,
+      }),
+      makeReceipt({
+        id: 'r3',
+        cycleId: 'c3',
+        servesGoal: 'outcome-a',
+        summary: 'audit_ok=false',
+        recordedAt: '2026-08-03T10:00:00.000Z',
+        success: false,
+      }),
+    ];
+    const store = {
+      readActionReceipts: () => receipts,
+      readGoalEvents: () => [],
+    };
+    const early = computeRuleFeedbackStats({
+      store,
+      activeGoals: { id: 'root', children: [{ id: 'outcome-a', role: 'outcome' }] },
+      asOfMs: Date.parse('2026-08-01T12:00:00.000Z'),
+      deadStreak: 3,
+      escalateStreak: 5,
+    });
+    const late = computeRuleFeedbackStats({
+      store,
+      activeGoals: { id: 'root', children: [{ id: 'outcome-a', role: 'outcome' }] },
+      asOfMs: Date.parse('2026-08-03T12:00:00.000Z'),
+      deadStreak: 3,
+      escalateStreak: 5,
+    });
+    expect(early.goals[0].units_observed).toBe(1);
+    expect(late.goals[0].units_observed).toBe(3);
+    expect(late.goals[0].feedback_state).toBe('dead');
+  });
+
+  it('runRuleFeedbackCompare rolling is read-only and reproducible', () => {
+    const receipts = Array.from({ length: 6 }, (_, i) => makeReceipt({
+      id: `r${i}`,
+      cycleId: `c${i}`,
+      servesGoal: i % 2 === 0 ? 'outcome-a' : 'outcome-b',
+      summary: 'audit_ok=true x=1',
+      recordedAt: `2026-08-0${i + 1}T10:00:00.000Z`,
+    }));
+    const store = {
+      readActionReceipts: ({ limit } = {}) => receipts.slice(-limit),
+      readGoalEvents: () => [],
+      readEvolutionEvents: () => [],
+    };
+    const runtime = { subject: 'test', runtimeRoot: '/tmp/jea-test-no-write' };
+    const activeGoals = {
+      id: 'root',
+      children: [
+        { id: 'outcome-a', role: 'outcome' },
+        { id: 'outcome-b', role: 'outcome' },
+      ],
+    };
+    const a = runRuleFeedbackCompare({
+      runtime,
+      activeGoals,
+      store,
+      flags: { rolling: 3, 'receipt-limit': 50, 'starved-strategy': 'both' },
+      env: {},
+    });
+    const b = runRuleFeedbackCompare({
+      runtime,
+      activeGoals,
+      store,
+      flags: { rolling: 3, 'receipt-limit': 50, 'starved-strategy': 'both' },
+      env: {},
+    });
+    expect(a.read_only).toBe(true);
+    expect(a.mode).toBe('rolling');
+    expect(a.cutpoints).toHaveLength(3);
+    expect(a.strategies).toEqual(['global_count', 'wall_clock']);
+    expect(a.cutpoints.map((c) => c.as_of)).toEqual(b.cutpoints.map((c) => c.as_of));
+    expect(a.summary.cycle.escalate_eligible).toBe(b.summary.cycle.escalate_eligible);
   });
 });
