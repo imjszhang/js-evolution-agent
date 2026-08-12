@@ -43,9 +43,21 @@ node scripts/reactor-observe-check.mjs --subject js-evolution-agent --days 1
 | 停写前累计 | 14 | 列车对照累计 8 |
 | 快速 5 轮 | **0 新增** | 每轮日志 `carryover write skipped`；列车 registry 仍无 `pipeline: reactor` |
 
-## M5 — 列车退役（仍未执行）
+## 真实 DeepSeek 沙盒轮（2026-08-13，M5 前置）
 
-快速验收覆盖沙盒 M2/M4 停写段，**不**等于过 M5 单向门。仍需明确说「执行 M5」才会切默认 pipeline。
+`cycle-20260812164012-8bca93f4`（~193s，`JEA_FORCE_MOCK=0` + observe env）：
+
+| 项 | 结果 |
+| --- | --- |
+| honesty | 1 × `reactor_report_honesty` |
+| calibrate | skipped（auto_apply=0） |
+| carryover | 停写确认 |
+| reconcile | ok |
+| Decide 契约 | **未过**：`decision.action must be an object`；入队 1 条 `action` 为字符串、`type=undefined`，exec 跳过；另 skipped=2 |
+| 其他 | investigate closing `tool_choice` 400（thinking 模式）；assess/diary ECONNRESET，日记 fallback |
+
+**结论：** 沙盒 mock 灰度可收口；真实 Decide 契约仍不稳，**不能过 M5**。列车保持 `agent_loop`。
+
 
 ## M6 — 锚点
 
