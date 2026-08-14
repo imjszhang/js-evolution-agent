@@ -130,3 +130,13 @@ jea data init --all --subject <name>
 - 已确认的领域口径或术语定义（非待验证命题）：用 `jea intel fact put` 写入一次性种子；待核实或单轮优先级调整仍用 `jea intel brief put`。系统打开的 operator question 用 `jea intel question list` 查看，答复后 `question resolve`。
 - 长期稳定约束写 `human_guidance.md` 的 `## Current`；一次性核实请求不要写进 guidance，改用 brief。
 - 调整演化方向用 `jea goals update`；不要手改 `standing_memory.json` 或直接写 `pending_decisions.json`。
+
+## Cursor Cloud specific instructions
+
+Cloud Agent 运行在 **Linux + bash**，而本文其余命令示例以 Windows PowerShell 书写；命令本身跨平台，直接用 bash 执行即可，无需 PowerShell 包装（`viewer:serve:win` / `daemon:start:detached` 等 `*-win` 脚本仅限 Windows，不要在此环境使用）。
+
+- **依赖安装必须加 `--legacy-peer-deps`**：`npm install` 直接跑会因 `openai` 与 `@anthropic-ai/claude-agent-sdk` 对 `zod` 的 peer 版本冲突而 `ERESOLVE` 失败。启动 update script 已用 `npm install --legacy-peer-deps` 处理；手动重装依赖时也要带此参数。
+- **无独立 lint / build**：仓库没有 ESLint/Prettier，也没有 CLI 编译步骤（纯 ESM `.mjs`）。质量校验就是 `npm test`（vitest，约 93 个测试文件）加 `npm run doctor` 以及 `jea policy/subject/actions check`。唯一的 build 类脚本是 `npm run viewer:build`（生成 Viewer 静态快照，非必需）。
+- **无 API key 也能全流程跑**：默认走 mock。`jea doctor` 会对缺失的 `.env` / `DEEPSEEK_API_KEY` 报 WARN，这是预期的，mock 模式下不阻塞。真实模型才需要在 `.env` 里配 `DEEPSEEK_API_KEY`。用 `--mock`（或 `JEA_FORCE_MOCK=1`）跑 `jea run` / `jea daemon` / vitest。
+- **Evolution Viewer（Web UI）**：用 `npm run jea -- intel viewer serve --port 8787` 启动（默认 127.0.0.1:8787）。不要用 `npm run viewer:serve`，它带 `--open` 会尝试拉起浏览器，在无头环境无意义。属长驻服务，放到 tmux/后台运行。
+- **运行时数据在 `runtime/subjects/`（gitignored）**：`jea subject init` / `jea data init --all` 会写这里，不会污染 git。E2E 冒烟顺序见 README「Quick start」：`subject init <name> --use` → `data init --all --subject <name>` → `run --mock --subject <name>`。
