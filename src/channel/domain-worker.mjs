@@ -18,7 +18,6 @@ import {
 } from './worker-state.mjs';
 import { reclaimExpiredChannelLeases } from './task-queue.mjs';
 import { runDomainWorkerLoop } from '../infra/worker-loop.mjs';
-import { cancelDeprecatedChannelTasks } from './queue-cleanup.mjs';
 
 function sleep(ms) {
   if (!ms) return Promise.resolve();
@@ -170,10 +169,6 @@ export async function runChannelDomainWorkerMulti(root, subject, flags, {
     roles,
     staleMs: heartbeatStaleMs,
   });
-
-  if (!flags['no-purge-deprecated']) {
-    cancelDeprecatedChannelTasks(root, subject, { dryRun: false });
-  }
 
   const shared = {
     stopping: false,

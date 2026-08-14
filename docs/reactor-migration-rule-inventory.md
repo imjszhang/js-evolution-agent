@@ -1,7 +1,7 @@
 # 法则清单：补偿性 vs 本质性（反应器化前置梳理）
 
-- 日期：2026-08-07
-- 状态：梳理稿（范围定义，不含实施）
+- 日期：2026-08-07（销账表 2026-08-15）
+- 状态：M5 销账完成（A 类已挂证据；残留标专项，不在本轮删除）
 - 背景：架构方向讨论的结论是「调整架构优先于新增法则」——把认知管线从**固定 step 列车**迁往**证据流反应器**（证据到达 → 认知反应 → 行动 → 新证据）。本文先盘点现有全部「法则」（机制、闸门、阈值、补偿规则），标出哪些是**补偿性**（结构改了就能删或自然消失）、哪些是**本质性**（治理边界，必须保留），作为迁移的范围定义。
 - 相关：[`docs/mechanism-diagram.md`](./mechanism-diagram.md)、[`docs/reactor-target-mechanism.md`](./reactor-target-mechanism.md)（目标机制图与新规则集）、[`src/contracts/OWNERSHIP.md`](../src/contracts/OWNERSHIP.md)、`policies/authority/CONSTITUTION.md`
 
@@ -24,20 +24,20 @@
 | 法则 | 位置 | 补什么 | 分类 | 处置 |
 | --- | --- | --- | --- | --- |
 | continuous 模式 5min tick 自动开轮 | `daemon` worker tick（`tick-ms=300000`） | 时间驱动代偿「证据驱动」缺失 | **A** | **已停用（reactor 默认）**（2026-08-15）：heartbeat 不再入队 `reason: tick`；遗留 tick-only 请求被消费并忽略。`JEA_TICK_OPEN_CYCLE=1` 或 agent_loop/phases 可恢复 |
-| `continuous` / `on_demand` 双模式与解析优先级 | `evolution-mode.mjs`、registry、env | 同上；on_demand 是向证据驱动迈的半步 | **A** | 合并：统一为证据驱动 + 可配唤醒阈值 |
+| `continuous` / `on_demand` 双模式与解析优先级 | `evolution-mode.mjs`、registry、env | 同上；on_demand 是向证据驱动迈的半步 | **A** | **残留待专项**：reactor 下开轮行为已等价（#45）；CLI / channel control / 健康文案仍绑双模式 |
 | cycle-start-requests 消费 | `cycle-start-requests.mjs` | 人工开轮入口绑定「轮」概念 | 混合 | 保留入口，改为一条 operator 证据事件 |
-| `JEA_CYCLE_STEP` / `JEA_CYCLE_ID` / `JEA_CYCLE_DRIVER` env 接力 | `runner.mjs` | 子进程列车需要环境变量传递轮次身份 | **A** | 随 step 列车消失 |
+| `JEA_CYCLE_STEP` / `JEA_CYCLE_ID` / `JEA_CYCLE_DRIVER` env 接力 | `runner.mjs` | 子进程列车需要环境变量传递轮次身份 | **A** | **残留待专项**：daemon step 子进程（含 reactor step）仍依赖；随「去子进程列车」一起拆 |
 
 ## 2. Step 列车韧性（A 为主，是最大的补偿群之一）
 
 | 法则 | 位置 | 补什么 | 分类 | 处置 |
 | --- | --- | --- | --- | --- |
 | tick reconcile（checkpoint / task queue 漂移修复） | daemon tick | 列车 + 双源真相（cycle-state 与 task queue）必然漂移 | **A** | **部分停用**（2026-08-15）：`reconcileStepStateDrift`（按产物假完成 running task）reactor 默认关；abandon stale / 缺步入队保留。`JEA_STEP_ARTIFACT_RECONCILE=1` 或列车 pipeline 可恢复 |
-| stuck step watchdog（hang 但 checkpoint 已写 → 杀 runner 按产物完成） | daemon heartbeat | 子进程列车可能 hang | A/D 混合 | 进程超时保留（D），「按产物完成 task」的对账逻辑消失 |
-| `drift_steps` / `progress_stalled` / `stuck_steps` 健康判定 | `daemon-projection` | 观测列车是否卡住 | **A** | 换为反应器 backlog/延迟观测 |
+| stuck step watchdog（hang 但 checkpoint 已写 → 杀 runner 按产物完成） | daemon heartbeat | 子进程列车可能 hang | A/D 混合 | **拆分保留**：进程超时（D）仍在；tick 路径「按产物假完成」已关（#45） |
+| `drift_steps` / `progress_stalled` / `stuck_steps` 健康判定 | `daemon-projection` | 观测列车是否卡住 | **A** | **残留待专项**：doctor / inbox / viewer / channel 仍消费；先换 reactor backlog 指标再删 |
 | step checkpoint 接力（下游从 `<step>.json` 重建上游产物） | `cycle-checkpoints.mjs` | step 子进程隔离切断了内存传递 | 混合 | **可恢复性是本质需求**；但「按 step 切檔」是列车派生。换单位：以证据批为 checkpoint 单元 |
-| 历史 cycle-state 缺 `meta.pipeline` 按 `phases` reconcile | `cycle-pipeline-mode.mjs` | 双 pipeline 兼容 | **A** | 随 phases 退役消失 |
-| `run_cycle` 整轮任务与 step 任务并存 | daemon tasks | 新旧两种驱动方式共存 | **A** | 收敛为一种 |
+| 历史 cycle-state 缺 `meta.pipeline` 按 `phases` reconcile | `cycle-reducer.mjs` | 双 pipeline 兼容 | **A** | **残留待专项**：旧 open cycle 防误判；确认无缺 pipeline 的 open cycle 后再删 |
+| `run_cycle` 整轮任务与 step 任务并存 | daemon tasks | 新旧两种驱动方式共存 | **A** | **残留待专项**：`jea evolve --enqueue-only` / 本地整轮调试仍用；先 deprecate 再删 |
 
 ## 3. 跨轮信息流：carryover 家族（最典型的补偿群，几乎全 A）
 
@@ -50,14 +50,14 @@
 | diary 销账规则（M1..Mn 编号、typed ref 核验可销、`decide_deferred` 拒销、越界拒销） | `carryover.mjs` + diary prompt | **A** | **已删**：diary 不再要求销账章节，生产不再 apply retirements |
 | stale item 机械丢弃（`step_status_snapshot` 对照、字面提及 step + pending 词组丢弃） | `carryover.mjs` | **A** | **已停用写路径**；生产不再过滤后回写 |
 | fingerprint / `first_seen_cycle` / `seen_count` 跨轮计数与 Jaccard 匹配 | `carryover.mjs` | **A** | **已停用写路径**；换单位：证据条目自带时间戳与引用计数 |
-| suggestion coverage 软闸（S1..Sn 顶层计数、`deferred: unaddressed` 补记、`decide_coverage_gap`） | `phase1-shared.mjs` | **A** | 观察期对照 `decide_coverage_gap` 频率；报告建议若有价值即为证据条目 |
-| diary 时间线契约（phase1 叙事写于轮初、phase2 receipt 快照不得抄进日记） | diary prompt + AGENTS | **A** | 随 carryover 写侧退役一并审视 |
+| suggestion coverage 软闸（S1..Sn 顶层计数、`deferred: unaddressed` 补记、`decide_coverage_gap`） | `report-suggestions.mjs` | **A** | **reactor 已不发生**：Decide schema 无 coverage，不发 `decide_coverage_gap`。agent_loop 回退路径仍保留软闸 |
+| diary 时间线契约（phase1 叙事写于轮初、phase2 receipt 快照不得抄进日记） | diary prompt + AGENTS | **A** | **已审视**（#44）：销账章节已删；「不把 receipt 抄进日记」属诚实约束，按 B 保留 |
 
 ## 4. 决策队列跨轮生存（A / D 拆分）
 
 | 法则 | 位置 | 分类 | 处置 |
 | --- | --- | --- | --- |
-| `cycles_seen` TTL（pending>5、blocked>10 过期） | `decision-queue.mjs` | **A** | 换单位：墙钟或「该 goal 的证据事件数」 |
+| `cycles_seen` TTL（pending>5、blocked>10 过期） | `decision-queue.mjs` | **A** | **残留待专项**：墙钟后备已在（D）；按轮 TTL 等队列换单位专项 |
 | `JEA_QUEUE_WALLCLOCK_TTL_DAYS=30` 墙钟后备 | 同上 | **D** | 保留（防计数异常的最后保险，本来就是墙钟） |
 | `JEA_QUEUE_AUTO_ARCHIVE`（agent_loop 开始前归档） | `cycle-steps.mjs` | A/D | 保留归档，触发点从「轮初」改为容量/时间 |
 | `queue_ops`（requeue / retire） | Decide JSON | 混合 | **认知对积压的处置权是本质**；保留，只是不再按轮注入 backlog 摘要 |
@@ -84,7 +84,7 @@
 | operator fact 恰好一轮默认真 → 轮末消化进信念 | `operator-facts.mjs`、`operator-fact-digestion.mjs` | 混合 | **权威衰减是本质设计**；「恰好一轮」是节拍绑定，改为「默认真直至被下一批相关后果消化」 |
 | operator question 打开/销账 | `operator-questions.mjs` | **B** | 保留 |
 | guidance `## Current` 每轮注入 | report/decide prompt | 混合 | 保留语义（持续约束），注入点改为每次认知反应 |
-| 存量 operator_fact 幂等迁移（cycle 开始时） | host | **A** | 一次性迁移代码，随节拍消失 |
+| 存量 operator_fact 幂等迁移（cycle 开始时） | host | **A** | **已删生产调用**（2026-08-15）：三 subject 扫盘无遗留 observation-store fact；`migrateLegacyOperatorFacts` 仅留库函数 + 单测 |
 
 ## 7. 诚实与证据闸（本质核心，B 为主）
 
@@ -119,7 +119,7 @@
 | 波次调度、写类 profile 独占波宽 1 | 同上 | **B** | 保留（写冲突安全） |
 | `JEA_AGENT_MAX_ATTEMPTS` 重试 → blocked | queue | **D** | 保留 |
 | mechanical guards `every_cycles` 到期执行 | `guard-runner.mjs` | 混合 | 本质是 cron；调度单位从轮改为时间/事件 |
-| exec journal（轮内兄弟 action 信息共享，`Earlier actions this cycle`） | `exec-journal.mjs` | **A 倾向** | 反应器下 receipt 即证据流，后续反应天然可见；「轮内」范围概念消失 |
+| exec journal（轮内兄弟 action 信息共享，`Earlier actions this cycle`） | `exec-journal.mjs` | **A 倾向** | **残留待专项**：reactor 仍走独立 `exec` step，同轮多 agent_run 仍需兄弟上下文 |
 | decision backlog 注入 Decide prompt | `phase1-shared` | 混合 | 保留（认知需看见积压），注入时机改为反应时 |
 
 ## 10. LLM 成本与档位（C，与本次迁移无关但有一处交叉）
@@ -138,7 +138,7 @@
 | reactor deadline / 两阶段 timeout | presence | **D** | 保留 |
 | classifier 批量 interval / batch_size / fallback | classifier config | **D** | 保留 |
 | 幂等键（`${subject}:channel_classifier:pending`） | dispatch | **D** | 保留 |
-| 废弃任务类型 purge（`channel_ingest` 等） | doctor | **A**（历史债） | 一次性清理后删除 |
+| 废弃任务类型 purge（`channel_ingest` 等） | doctor | **A**（历史债） | **启动自动 purge 已删**（2026-08-15）：三 subject 队列无 deprecated pending；保留 `jea channel queue purge-deprecated` 手动命令 |
 
 Channel 的 classifier → 唤醒 → bounded reactor → 两阶段表达，正是认知侧要迁往的目标形态的**在库先例**。
 
@@ -170,3 +170,29 @@ subject lock、`worker-state` 心跳与 zombie 检测、队列写 EPERM/EBUSY �
 1. `evolution-events.jsonl` 补 schema（`src/contracts/evolution-event.mjs`，OWNERSHIP 已登记）——没有契约的事件流不能安全地成为驱动源。
 2. 定义**证据批（evidence batch）**：反应器的最小反应单元、审计单元、缓存单元；相当于把「轮」从语义单位降级为批次 id。
 3. Channel presence reactor 的 claim-batch / bounded-deadline / 幂等唤醒模式作为参考实现评审一遍，确认可推广到认知侧。
+
+---
+
+## 15. M5 销账表（2026-08-15）
+
+对照第 13 节约 17 条 A 类。**已消解** = 生产路径不再发生该补偿；**残留待专项** = 结构病灶未完全消失或仍有消费方，本轮不删。
+
+| # | 法则 | 销账 | 证据 |
+| --- | --- | --- | --- |
+| A1 | tick 自动开轮 | **已消解**（reactor 默认） | [PR #45](https://github.com/imjszhang/js-evolution-agent/pull/45) |
+| A2 | continuous / on_demand 双模式 | 残留待专项 | #45 后开轮行为已等价；API/channel 未收敛 |
+| A3 | `JEA_CYCLE_*` env 接力 | 残留待专项 | `runner.mjs` / `runReactorStep` 仍读 env |
+| A4 | tick reconcile 产物假完成 | **已消解**（reactor 默认） | [PR #45](https://github.com/imjszhang/js-evolution-agent/pull/45) |
+| A5 | stuck watchdog 按产物完成 | 部分消解 | 进程超时保留（D）；tick 假完成已关（#45） |
+| A6 | drift / stalled / stuck 健康判定 | 残留待专项 | doctor / viewer / channel 仍消费字段 |
+| A7 | 缺 `meta.pipeline` → phases | 残留待专项 | `cycle-reducer.mjs` `cyclePipelineOf` |
+| A8 | `run_cycle` 与 step 并存 | 残留待专项 | evolve enqueue-only / 本地整轮调试 |
+| A9–A13 | carryover 写侧家族（搬运 / 限额 / 销账 / stale / fingerprint） | **已消解** | [PR #44](https://github.com/imjszhang/js-evolution-agent/pull/44) |
+| A14 | suggestion coverage / `decide_coverage_gap` | **reactor 已不发生** | `cognitive-reactor.mjs` Decide 无 coverage；agent_loop 残留 |
+| A15 | diary 时间线 / 销账章节 | **已消解销账；时间线按 B 保留** | [PR #44](https://github.com/imjszhang/js-evolution-agent/pull/44) |
+| A16 | 存量 operator_fact 迁移 | **已删生产调用** | 本 PR；三 subject 扫盘无遗留 |
+| A17 | channel 废弃任务自动 purge | **已删启动自动 purge** | 本 PR；手动 `purge-deprecated` 保留 |
+| — | exec journal | 残留待专项（A 倾向） | reactor 仍走独立 exec step |
+| — | `cycles_seen` TTL | 残留待专项 | 墙钟后备已在；按轮 TTL 另立项 |
+
+M6 锚点（第 13 节结论 3）不在本表删除范围内：KV 前缀、批次 checkpoint、honesty 审计单元。
