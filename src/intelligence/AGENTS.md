@@ -7,13 +7,13 @@
 
 - `jea run [--mock] [--deepseek] [--skip-goals-assess] [--skip-belief-update] [--subject NAME]`：运行一次完整演化循环并写入情报回执。
 - `jea run --mock`：不调用真实模型，适合本地冒烟验证。
-- `jea run --loop` / `jea run --pipeline agent_loop`：显式指定 **agent_loop**（现为默认，通常可省略）。
+- `jea run --loop` / `jea run --pipeline agent_loop`：显式指定 **agent_loop**（列车回退；默认已是 reactor）。
 - `jea run --pipeline phases`：deprecated 回退路径（经典 observe→report→decide；无 tool-calling）。
 - `jea run --deepseek`：要求 DeepSeek API 配置存在。
 - `jea run --skip-goals-assess`：跳过本轮目标评估（Phase 4 / 4.5）。
 - `jea run --skip-belief-update`：跳过 post-verify 信念更新（Phase 3.5）。
 
-### Agent Loop 管道（默认）
+### Agent Loop 管道（显式回退）
 
 `agent_loop` **仅替代 Phase 1**，按报告中心生产线编排；**Phase 2 exec 仍独立执行** pending_decisions；verify / belief / goals / diary **保持固定收尾**。
 
@@ -38,9 +38,9 @@ agent_loop → exec → verify → belief_update → goals_assess → goals_cali
 模式解析优先级（仿 evolution.mode）：
 
 1. `runtime/subjects/registry.json` → `subjects.<name>.evolution.pipeline`
-2. CLI `--loop` / `--pipeline agent_loop|phases`
+2. CLI `--loop` / `--pipeline reactor|agent_loop|phases`
 3. env `JEA_CYCLE_PIPELINE`
-4. 默认 `agent_loop`
+4. 默认 `reactor`
 
 显式选择 `phases` 时会打一次 deprecation 警告；可用 `JEA_SUPPRESS_PHASES_DEPRECATION=1` 静音。历史 cycle-state 若缺 `meta.pipeline`，读盘时仍按 `phases` 步图 reconcile（避免误判旧 open cycle）。
 
@@ -122,7 +122,7 @@ npm run jea -- reactor shadow compare --cycle <上一步 cycle_id> --subject js-
 
 Phase 3 灰度（`evolution.pipeline: reactor` 真实入队）已可用；exec 墙钟速率预算前置见 #36（已合 main）。
 
-- registry 设 `"evolution": { "pipeline": "reactor" }`（仅灰度 subject；其他 subject 默认 `agent_loop`，一行回切）
+- 默认 `resolveCyclePipeline` 已是 `reactor`（M5）；registry `"evolution": { "pipeline": "agent_loop" }` 可一行回切列车
 - `jea run` / daemon 走 `reactor` step → claim 证据批 → 真实 `pending_decisions` + reports index + `reactor_report_honesty` / `reactor_pipeline` 事件
 - 沙盒 smoke：`npm run jea -- run --mock --subject js-evolution-agent`（当前 registry 已灰度该 subject）
 - **M4 carryover 停写**：reactor 默认不写 `agent_loop_carryover.json`（读侧保留）；`JEA_CARRYOVER_WRITE=0` 全局关写；`JEA_REACTOR_CARRYOVER_WRITE=1` 临时恢复

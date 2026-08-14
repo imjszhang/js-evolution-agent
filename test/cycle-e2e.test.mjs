@@ -15,7 +15,7 @@ import { writeJsonFile } from '../src/infra/files.mjs';
 import { initData } from '../src/cli/commands/data.mjs';
 import { startCycleFromTick, reconcileOpenCycles } from '../src/daemon/cycle-dispatch.mjs';
 import {
-  AGENT_LOOP_STEP_TYPES,
+  REACTOR_STEP_TYPES,
   TERMINAL_STEP_STATUSES,
 } from '../src/daemon/cycle-reducer.mjs';
 import {
@@ -129,25 +129,25 @@ describe('cycle step e2e (mock)', () => {
       const cycleId = started.cycle.cycle_id;
       expect(cycleId).toBeTruthy();
 
-      expect(started.cycle?.meta?.pipeline).toBe('agent_loop');
+      expect(started.cycle?.meta?.pipeline).toBe('reactor');
 
       const finalState = await drainCycle(root, cycleId, stepInput);
       expect(finalState?.status).toBe('closed');
 
-      for (const step of AGENT_LOOP_STEP_TYPES) {
+      for (const step of REACTOR_STEP_TYPES) {
         const status = finalState.steps[step]?.status;
         expect(TERMINAL_STEP_STATUSES.has(status), `${step}=${status}`).toBe(true);
       }
 
       const artifacts = listStepArtifacts(root, SUBJECT, cycleId);
-      expect(artifacts).toContain('agent_loop');
+      expect(artifacts).toContain('reactor');
       expect(artifacts).toContain('exec');
       expect(artifacts).toContain('verify');
       expect(artifacts).toContain('diary');
 
       const events = readEvolutionEventTypes(root);
       const types = new Set(events.map((e) => e.type));
-      expect(types.has('agent_loop_pipeline')).toBe(true);
+      expect(types.has('reactor_pipeline')).toBe(true);
       expect(types.has('exec_pipeline')).toBe(true);
       expect(types.has('verify_pipeline')).toBe(true);
       expect(types.has('evolution_diary')).toBe(true);
@@ -173,12 +173,12 @@ describe('cycle step e2e (mock)', () => {
       const cycleId = started.cycle.cycle_id;
       expect(cycleId).toBeTruthy();
 
-      expect(started.cycle?.meta?.pipeline).toBe('agent_loop');
+      expect(started.cycle?.meta?.pipeline).toBe('reactor');
 
       const finalState = await drainCycle(root, cycleId, stepInput, FULL_STEP_FLAGS);
       expect(finalState?.status).toBe('closed');
 
-      for (const step of AGENT_LOOP_STEP_TYPES) {
+      for (const step of REACTOR_STEP_TYPES) {
         const status = finalState.steps[step]?.status;
         expect(TERMINAL_STEP_STATUSES.has(status), `${step}=${status}`).toBe(true);
       }
@@ -187,7 +187,7 @@ describe('cycle step e2e (mock)', () => {
       expect(finalState.steps.goals_calibrate.status).not.toBe('skipped');
 
       const artifacts = listStepArtifacts(root, SUBJECT, cycleId);
-      for (const step of AGENT_LOOP_STEP_TYPES) {
+      for (const step of REACTOR_STEP_TYPES) {
         expect(artifacts, `missing artifact for ${step}`).toContain(step);
       }
 

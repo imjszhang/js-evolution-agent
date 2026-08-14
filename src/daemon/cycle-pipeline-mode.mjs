@@ -16,8 +16,8 @@ function maybeWarnPhasesDeprecated(env = process.env) {
   }
   phasesDeprecationWarned = true;
   console.warn(
-    '[jea] pipeline "phases" is deprecated; default is agent_loop. '
-    + 'Prefer agent_loop via registry evolution.pipeline, --pipeline agent_loop/--loop, '
+    '[jea] pipeline "phases" is deprecated; default is reactor. '
+    + 'Prefer reactor via registry evolution.pipeline, --pipeline reactor, '
     + 'or unset JEA_CYCLE_PIPELINE. '
     + 'Set JEA_SUPPRESS_PHASES_DEPRECATION=1 to silence this warning.',
   );
@@ -55,7 +55,7 @@ export function cyclePipelineFromFlags(flags = {}) {
 
 /**
  * Priority: runtime subject registry evolution.pipeline > CLI --pipeline/--loop
- * > JEA_CYCLE_PIPELINE > agent_loop (default).
+ * > JEA_CYCLE_PIPELINE > reactor (default).
  * Explicit "phases" still resolves but emits a one-time deprecation warning
  * unless JEA_SUPPRESS_PHASES_DEPRECATION=1.
  */
@@ -80,7 +80,7 @@ export function resolveCyclePipeline(root, { subject = null, flags = {}, env = p
     if (fromEnv === 'phases') maybeWarnPhasesDeprecated(env);
     return { pipeline: fromEnv, source: 'env' };
   }
-  return { pipeline: 'agent_loop', source: 'default' };
+  return { pipeline: 'reactor', source: 'default' };
 }
 
 export function isAgentLoopPipeline(pipeline) {
