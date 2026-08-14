@@ -148,6 +148,8 @@ live Decide 因 API `ECONNRESET` 未产出记录型决策，exec 缺 params 的�
 
 **M5 A 类销账**（2026-08-15）：法则清单 §15 逐条挂证据。已消解：tick 开轮 / 产物对账（#45）、carryover 写侧（#44）、operator_fact 生产迁移、channel 启动自动 purge。残留（`JEA_CYCLE_*`、`run_cycle`、双模式、drift 观测、exec journal 等）标专项，本轮不删。
 
+**A7 缺 `meta.pipeline` → phases**（2026-08-15）：三 subject 扫盘无缺字段 open cycle（列车 250 条缺字段均为 closed）。`cyclePipelineOf` 缺字段 / 未知值改为 `reactor`；显式 `phases` / `agent_loop` 不变。
+
 ## M6 — 锚点（2026-08-15 通过）
 
 ### KV 前缀对照

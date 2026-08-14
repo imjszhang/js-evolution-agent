@@ -1,7 +1,7 @@
 # 法则清单：补偿性 vs 本质性（反应器化前置梳理）
 
 - 日期：2026-08-07（销账表 2026-08-15）
-- 状态：M5 销账完成（A 类已挂证据；残留标专项，不在本轮删除）
+- 状态：M5 销账完成（A 类已挂证据；A7 已于 2026-08-15 消解；其余残留标专项）
 - 背景：架构方向讨论的结论是「调整架构优先于新增法则」——把认知管线从**固定 step 列车**迁往**证据流反应器**（证据到达 → 认知反应 → 行动 → 新证据）。本文先盘点现有全部「法则」（机制、闸门、阈值、补偿规则），标出哪些是**补偿性**（结构改了就能删或自然消失）、哪些是**本质性**（治理边界，必须保留），作为迁移的范围定义。
 - 相关：[`docs/mechanism-diagram.md`](./mechanism-diagram.md)、[`docs/reactor-target-mechanism.md`](./reactor-target-mechanism.md)（目标机制图与新规则集）、[`src/contracts/OWNERSHIP.md`](../src/contracts/OWNERSHIP.md)、`policies/authority/CONSTITUTION.md`
 
@@ -36,7 +36,7 @@
 | stuck step watchdog（hang 但 checkpoint 已写 → 杀 runner 按产物完成） | daemon heartbeat | 子进程列车可能 hang | A/D 混合 | **拆分保留**：进程超时（D）仍在；tick 路径「按产物假完成」已关（#45） |
 | `drift_steps` / `progress_stalled` / `stuck_steps` 健康判定 | `daemon-projection` | 观测列车是否卡住 | **A** | **残留待专项**：doctor / inbox / viewer / channel 仍消费；先换 reactor backlog 指标再删 |
 | step checkpoint 接力（下游从 `<step>.json` 重建上游产物） | `cycle-checkpoints.mjs` | step 子进程隔离切断了内存传递 | 混合 | **可恢复性是本质需求**；但「按 step 切檔」是列车派生。换单位：以证据批为 checkpoint 单元 |
-| 历史 cycle-state 缺 `meta.pipeline` 按 `phases` reconcile | `cycle-reducer.mjs` | 双 pipeline 兼容 | **A** | **残留待专项**：旧 open cycle 防误判；确认无缺 pipeline 的 open cycle 后再删 |
+| 历史 cycle-state 缺 `meta.pipeline` 按 `phases` reconcile | `cycle-reducer.mjs` | 双 pipeline 兼容 | **A** | **已消解**（2026-08-15）：三 subject 无缺 pipeline 的 open cycle（列车 250 条缺字段均为 closed）；`cyclePipelineOf` 缺字段 / 未知值按 `reactor`，显式 `phases` / `agent_loop` 仍按自身步图 |
 | `run_cycle` 整轮任务与 step 任务并存 | daemon tasks | 新旧两种驱动方式共存 | **A** | **残留待专项**：`jea evolve --enqueue-only` / 本地整轮调试仍用；先 deprecate 再删 |
 
 ## 3. 跨轮信息流：carryover 家族（最典型的补偿群，几乎全 A）
@@ -185,7 +185,7 @@ subject lock、`worker-state` 心跳与 zombie 检测、队列写 EPERM/EBUSY �
 | A4 | tick reconcile 产物假完成 | **已消解**（reactor 默认） | [PR #45](https://github.com/imjszhang/js-evolution-agent/pull/45) |
 | A5 | stuck watchdog 按产物完成 | 部分消解 | 进程超时保留（D）；tick 假完成已关（#45） |
 | A6 | drift / stalled / stuck 健康判定 | 残留待专项 | doctor / viewer / channel 仍消费字段 |
-| A7 | 缺 `meta.pipeline` → phases | 残留待专项 | `cycle-reducer.mjs` `cyclePipelineOf` |
+| A7 | 缺 `meta.pipeline` → phases | **已消解** | 三 subject 扫盘无缺字段 open cycle；`cyclePipelineOf` 缺字段按 reactor |
 | A8 | `run_cycle` 与 step 并存 | 残留待专项 | evolve enqueue-only / 本地整轮调试 |
 | A9–A13 | carryover 写侧家族（搬运 / 限额 / 销账 / stale / fingerprint） | **已消解** | [PR #44](https://github.com/imjszhang/js-evolution-agent/pull/44) |
 | A14 | suggestion coverage / `decide_coverage_gap` | **reactor 已不发生** | `cognitive-reactor.mjs` Decide 无 coverage；agent_loop 残留 |
