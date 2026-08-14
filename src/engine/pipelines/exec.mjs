@@ -356,7 +356,13 @@ export class ExecutionPipeline {
         try {
           const lifecycle = await this._beginDecision(decision);
           if (lifecycle?.skip) {
-            return { decision, r: { success: false, deferred: true, skipped: true }, error: null, lifecycle };
+            return {
+              decision,
+              r: { skipped: true, status: lifecycle.status || 'skipped' },
+              error: null,
+              lifecycle,
+              skipped: true,
+            };
           }
           const r = await executor.execute(action, this._execContext(decision, lifecycle));
           await this._finishDecision(decision, r, lifecycle);
@@ -375,6 +381,14 @@ export class ExecutionPipeline {
       const { decision, r, error } = payload;
       if (!decision) {
         outcomes.push({ status: 'error', error: String(error?.message || error || 'unknown') });
+        continue;
+      }
+      if (payload.skipped || r?.skipped) {
+        const skipStatus = r?.status || payload.lifecycle?.status || 'skipped';
+        if (skipStatus === 'blocked') {
+          await this.decisionQueue?.updateStatus?.(decision.id, 'blocked', 'exec_intent_uncertain');
+        }
+        outcomes.push({ id: decision.id, status: skipStatus });
         continue;
       }
       if (dryRun) {
@@ -462,7 +476,11 @@ export class ExecutionPipeline {
     try {
       lifecycle = await this._beginDecision(decision);
       if (lifecycle?.skip) {
-        return { id: decision.id, status: lifecycle.status || 'skipped' };
+        const skipStatus = lifecycle.status || 'skipped';
+        if (skipStatus === 'blocked') {
+          await this.decisionQueue?.updateStatus?.(decision.id, 'blocked', 'exec_intent_uncertain');
+        }
+        return { id: decision.id, status: skipStatus };
       }
       const r = await executor.execute(action, this._execContext(decision, lifecycle));
       await this._finishDecision(decision, r, lifecycle);

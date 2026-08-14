@@ -22,7 +22,7 @@
 | Gate | 默认 | 作用 |
 | --- | --- | --- |
 | `JEA_EVIDENCE_WAKE` | 关 | 周期请求转 cognitive wake；idle backlog 扫描 |
-| `JEA_IN_PROCESS_CYCLE` | 关 | 认知任务进程内执行（新 task 类型始终进程内） |
+| `JEA_IN_PROCESS_CYCLE` | 随 evidence-wake | 列车回退也可进程内；显式 `0` 可关，`JEA_SUBPROCESS_CYCLE=1` 强制旧子进程。新 reactor task 始终进程内 |
 | `JEA_SUBPROCESS_CYCLE` | 关 | 强制旧子进程列车 |
 | `JEA_REACTOR_HEALTH_PRIMARY` | 开 | doctor/viewer 以 reactor 投影为主 |
 | `JEA_QUEUE_DISABLE_CYCLE_TTL` | 关 | 停止递增 `cycles_seen`，只走墙钟 TTL |

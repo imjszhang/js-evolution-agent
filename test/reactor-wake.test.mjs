@@ -163,6 +163,15 @@ describe('rule evidence kinds and cursors', () => {
     expect(cursors.goals['goal-a'].last_evidence_key).toBe('action_receipts:shared');
     expect(cursors.goals['goal-b'].last_evidence_key).toBe('verify_reports:shared');
     expect(cursors.global_cursor).toBeNull();
+    const afterA = eventsAfterCursor([
+      { id: 'shared', kind: 'action_receipts' },
+      { id: 'shared', kind: 'verify_reports' },
+      { id: 'later', kind: 'action_receipts' },
+    ], cursors.goals['goal-a'].last_evidence_key);
+    expect(afterA.map((item) => `${item.kind}:${item.id}`)).toEqual([
+      'verify_reports:shared',
+      'action_receipts:later',
+    ]);
   });
 });
 

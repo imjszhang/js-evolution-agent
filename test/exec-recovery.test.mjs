@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DecisionQueue, ExecutionPipeline } from '../src/engine/index.mjs';
-import { beginExecIntent, markExecIntent, recoverOpenExecIntents } from '../src/evolution/reactor/exec-intent-store.mjs';
+import { beginExecIntent, markExecIntent, readExecIntents, recoverOpenExecIntents } from '../src/evolution/reactor/exec-intent-store.mjs';
 import {
   claimPendingVerifyResult,
   completeVerifyResult,
@@ -106,6 +106,27 @@ describe('durable intent lifecycle in ExecutionPipeline', () => {
     });
     await pipeline.run({ agentBudget: 1 });
     expect(seen[0]).toMatch(/^intent-/);
+  });
+
+  it('does not mint a new intent for an uncertain key', () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'jea-exec-uncertain-key-'));
+    const dataRoot = join(tempDir, 'data');
+    mkdirSync(dataRoot, { recursive: true });
+    const first = beginExecIntent(dataRoot, {
+      executionId: 'exec-u',
+      decisionId: 'd-u',
+      action: { type: 'record_observation' },
+    });
+    markExecIntent(dataRoot, first.id, { status: 'uncertain', error: 'side_effect_uncertain' });
+    const second = beginExecIntent(dataRoot, {
+      executionId: 'exec-u',
+      decisionId: 'd-u',
+      action: { type: 'record_observation' },
+    });
+    expect(second.id).toBe(first.id);
+    expect(second.blocked).toBe(true);
+    expect(second.status).toBe('uncertain');
+    expect(readExecIntents(dataRoot).intents.filter((item) => item.key === first.key)).toHaveLength(1);
   });
 
   it('does not replay uncertain intents', () => {

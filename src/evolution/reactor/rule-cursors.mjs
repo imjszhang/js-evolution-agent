@@ -5,6 +5,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { readJson, updateJson } from '../../infra/json-store.mjs';
 import { nowIso } from '../../infra/runtime-paths.mjs';
+import { envelopeEvidenceKey } from './eligibility.mjs';
 import { reactorDir } from './paths.mjs';
 
 export function ruleCursorsPath(dataRoot) {
@@ -66,7 +67,11 @@ export function writeRuleCursors(dataRoot, {
 
 export function eventsAfterCursor(events = [], cursorId = null) {
   if (!cursorId) return events;
-  const index = events.findIndex((item) => item.id === cursorId || item.evidence_key === cursorId);
+  const index = events.findIndex((item) => (
+    item.id === cursorId
+    || item.evidence_key === cursorId
+    || envelopeEvidenceKey(item) === cursorId
+  ));
   if (index < 0) return events;
   return events.slice(index + 1);
 }

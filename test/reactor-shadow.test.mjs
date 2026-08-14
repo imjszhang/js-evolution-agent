@@ -26,7 +26,7 @@ import {
 } from '../src/evolution/reactor/claim-ledger.mjs';
 import { compareShadowAgainstCycle } from '../src/evolution/reactor/shadow-compare.mjs';
 import { runCognitiveShadowReaction, buildDecidePrompt } from '../src/evolution/reactor/cognitive-reactor.mjs';
-import { readShadowDecisions, readShadowRuns, appendShadowDecisions } from '../src/evolution/reactor/shadow-store.mjs';
+import { readShadowDecisions, readShadowRuns, appendShadowDecisions, appendShadowRun } from '../src/evolution/reactor/shadow-store.mjs';
 import { readBatchCheckpoint, writeBatchCheckpoint } from '../src/evolution/reactor/batch-checkpoint-store.mjs';
 import { writeShadowReport } from '../src/evolution/reactor/shadow-store.mjs';
 import { MockToolsAIClient } from '../src/ai/mock-tools-client.mjs';
@@ -550,6 +550,79 @@ describe('cognitive shadow reactor e2e', () => {
     const second = await runCognitiveShadowReaction(ctx, { skipInvestigate: true });
     expect(second.skipped).toBe(true);
     expect(readClaimLedger(dataRoot).claims.filter((claim) => claim.status === 'claimed')).toHaveLength(0);
+  });
+
+  it('does not emit a second honesty event when the report file already exists', async () => {
+    const dataRoot = makeDataRoot('jea-reactor-honesty-resume-');
+    seedEvolutionEvents(dataRoot, 1);
+    const claimed = claimEvidenceBatch(dataRoot, { reactor: 'cognitive', limit: 1 });
+    const reportPath = writeShadowReport(dataRoot, claimed.batch_id, [
+      '# Shadow Cognitive Reactor Report',
+      '',
+      '## Seen',
+      '- existing',
+      '',
+      '## Inferred',
+      '- resumed',
+      '',
+      '## Cyber-Taoist analysis',
+      '- ok',
+      '',
+      '## Next cycle suggestions',
+      '- continue',
+      '',
+    ].join('\n'));
+    writeBatchCheckpoint(dataRoot, {
+      batch_id: claimed.batch_id,
+      reactor: 'cognitive',
+      subject: 'demo',
+      stage: 'investigate',
+      event_ids: claimed.events.map((item) => item.id),
+      evidence_keys: claimed.events.map((item) => `${item.kind}:${item.id}`),
+      report_path: reportPath,
+      report_source: 'fallback',
+    });
+    appendShadowRun(dataRoot, {
+      batch_id: claimed.batch_id,
+      type: 'shadow_report_honesty',
+      status: 'ok',
+      findings_count: 0,
+    });
+
+    const store = createIntelligenceStore({
+      baseDir: join(dataRoot, 'intelligence'),
+      timezone: 'Asia/Shanghai',
+    });
+    const aiClient = new MockToolsAIClient({
+      defaultResponse: { decision: 'execute', actions: [] },
+    });
+    const ctx = {
+      cfg: {
+        aiClient,
+        agentContextDocs: '',
+        actionRegistry: { list: () => [] },
+        host: {
+          logger: { info() {}, warning() {}, error() {} },
+          intelligenceStore: store,
+          knowledgeWriter: store,
+        },
+      },
+      engine: {
+        cycleId: null,
+        setCycleId() {},
+        goalProvider: { formatForPrompt: () => 'bootstrap' },
+        loadRules: () => '',
+        guidanceReader: { readGuidance: () => '' },
+      },
+      runtime: { dataRoot, runtimeRoot: tempDir, subject: 'demo' },
+      store,
+      projectRoot: tempDir,
+    };
+
+    await runCognitiveShadowReaction(ctx, { skipInvestigate: true });
+    const honesty = readShadowRuns(dataRoot, { limit: 50 })
+      .filter((row) => row.type === 'shadow_report_honesty');
+    expect(honesty).toHaveLength(1);
   });
 
   it('appendShadowDecisions skips non-object actions', () => {

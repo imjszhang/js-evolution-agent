@@ -70,6 +70,11 @@ export function beginExecIntent(dataRoot, {
   const key = execIntentKey(resolvedDecisionId || executionId || 'unknown', attempt);
   let intent = null;
   writeStore(dataRoot, (store) => {
+    const uncertain = store.intents.find((item) => item.key === key && item.status === 'uncertain');
+    if (uncertain) {
+      intent = { ...uncertain, blocked: true };
+      return store;
+    }
     const existing = store.intents.find((item) => item.key === key && isOpenStatus(item.status));
     if (existing) {
       if (existing.status === 'prepared' || existing.status === 'intended') {

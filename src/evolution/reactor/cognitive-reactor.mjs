@@ -61,6 +61,7 @@ import { envelopeEvidenceKey } from './eligibility.mjs';
 import {
   appendShadowDecisions,
   appendShadowRun,
+  readShadowRuns,
   writeShadowReport,
 } from './shadow-store.mjs';
 
@@ -73,6 +74,25 @@ function formatBatchAsMechanicalSeen(events = []) {
     const cycle = envelope.cycle_id ? ` cycle=${envelope.cycle_id}` : '';
     return `- [${envelope.kind}:${envelope.id}] ${type} @ ${envelope.occurred_at}${cycle}`;
   }).join('\n');
+}
+
+function hasHonestyEvent({
+  store,
+  dataRoot,
+  batchId,
+  eventType,
+  isLive,
+}) {
+  if (!batchId) return false;
+  if (isLive && typeof store?.readEvolutionEvents === 'function') {
+    return (store.readEvolutionEvents({ limit: 400 }) || []).some((event) => (
+      event?.type === eventType
+      && (event.batch_id === batchId || event.producer_batch_id === batchId)
+    ));
+  }
+  return readShadowRuns(dataRoot, { limit: 400 }).some((row) => (
+    row?.type === eventType && row.batch_id === batchId
+  ));
 }
 
 function formatBatchDigest(events = [], { live = false } = {}) {
@@ -427,7 +447,7 @@ export async function runCognitiveReaction(ctx, {
     let persistedReport = existingCheckpoint?.report_index ? { indexRecord: existingCheckpoint.report_index, mdPath: reportPath, source: existingCheckpoint.report_source } : null;
     let reportSource = existingCheckpoint?.report_source || 'fallback';
     let reportReason = existingCheckpoint?.report_reason || null;
-    const reuseReport = checkpointStageReached(existingCheckpoint, 'report') && reportPath && existsSync(reportPath);
+    const reuseReport = Boolean(reportPath && existsSync(reportPath));
 
     if (reuseReport) {
       try {
@@ -525,16 +545,35 @@ export async function runCognitiveReaction(ctx, {
         });
         reportPath = persistedReport.mdPath;
         reportMarkdown = persistedReport.markdown;
+        patchBatchCheckpoint(dataRoot, batchId, {
+          report_path: reportPath,
+          report_source: reportSource,
+          report_reason: reportReason,
+          report_index: persistedReport?.indexRecord ?? null,
+        });
       } else {
         reportMarkdown = splicedMarkdown;
         reportPath = writeShadowReport(dataRoot, batchId, reportMarkdown);
+        patchBatchCheckpoint(dataRoot, batchId, {
+          report_path: reportPath,
+          report_source: reportSource,
+          report_reason: reportReason,
+        });
       }
     }
 
     let honestyStatus = existingCheckpoint?.honesty?.status || 'ok';
     let honestyFindingsCount = existingCheckpoint?.honesty?.findings_count || 0;
     const honestyEventType = isLive ? 'reactor_report_honesty' : 'shadow_report_honesty';
-    if (!existingCheckpoint?.honesty) {
+    const honestyAlreadyRecorded = Boolean(existingCheckpoint?.honesty)
+      || hasHonestyEvent({
+        store,
+        dataRoot,
+        batchId,
+        eventType: honestyEventType,
+        isLive,
+      });
+    if (!honestyAlreadyRecorded) {
       auditHostSeenReport({
         markdown: reportMarkdown,
         store,
@@ -631,7 +670,6 @@ export async function runCognitiveReaction(ctx, {
     if (reuseDecide) {
       logger?.info?.(`[${logLabel}] resume decide batch=${batchId} queued=${queuedIds.length}`);
     } else {
-      patchBatchCheckpoint(dataRoot, batchId, { stage: 'decide' });
       parsed = await parseAnalyzeDecisionWithRepair(aiClient, rawDecision || '{}', { logger });
       const actions = parsed.analysis?.actions || [];
       queuedActions = actions;

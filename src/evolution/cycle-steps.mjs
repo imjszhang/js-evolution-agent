@@ -1389,6 +1389,9 @@ export async function runExecStep(ctx, { recordState = null, intelResult = null,
         action,
         source: 'mechanical_guard',
       });
+      if (intent?.blocked || intent?.status === 'uncertain') {
+        return { success: false, blocked: true, error: 'exec_intent_uncertain' };
+      }
       markExecIntent(runtime.dataRoot, intent.id, { status: 'executing' });
       try {
         const result = await executor.execute(action, {
@@ -1478,6 +1481,9 @@ export async function runExecStep(ctx, { recordState = null, intelResult = null,
         action: decision.action,
         source: 'exec_pipeline',
       });
+      if (intent?.blocked || intent?.status === 'uncertain') {
+        return { intent, skip: true, status: 'blocked' };
+      }
       markExecIntent(runtime.dataRoot, intent.id, { status: 'executing' });
       return { intent };
     },

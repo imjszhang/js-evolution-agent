@@ -77,7 +77,7 @@ Phase 2 执行预算 / 队列 TTL（`JEA_EXEC_*`、`JEA_AGENT_*`、`JEA_PENDING_
 
 ## 证据流与反应器影子（Phase 1–2，#33 / PR #35）
 
-反应器化迁移的读侧与影子认知路径。**不改变列车默认行为**；真实 `pending_decisions` / reports index / evolution-events 仍仅由 `jea run` / daemon step 写入。
+反应器化迁移的读侧、影子与 live 双轨。默认仍关 `JEA_EVIDENCE_WAKE`；gate-on 时真实 `pending_decisions` / reports index / evolution-events 由 `cognitive_reaction` 写入，gate-off 仍走 `jea run` / daemon step 列车。
 
 ### 证据流读侧（Phase 1）
 
