@@ -228,7 +228,7 @@ function buildDaemonDiagnostics(root, subject, projection) {
       severity: driftSteps.some((item) => item.artifact_complete) ? 'warning' : 'error',
       code: 'step_state_drift',
       message: `${driftSteps.length} cycle step(s) have terminal state but a running daemon task (${summary}).`,
-      action: 'Reconcile runs on tick; watchdog should abort hung step runners when checkpoints exist.',
+      action: 'Watchdog should abort hung step runners when checkpoints exist. Artifact-complete reconcile is off for reactor.',
       drift_steps: driftSteps,
     });
   }

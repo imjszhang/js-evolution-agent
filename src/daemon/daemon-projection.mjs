@@ -8,6 +8,8 @@ import { buildCycleProjection } from './cycle-dispatch.mjs';
 import { findStuckSteps, findStepStateDrift, getLastClosedCycle, isCycleProgressStalled, listOpenCycles, summarizeCycleState } from './cycle-state.mjs';
 import { readPendingCycleStartRequest } from './cycle-start-requests.mjs';
 import { resolveEvolutionMode } from './evolution-mode.mjs';
+import { resolveCyclePipeline } from './cycle-pipeline-mode.mjs';
+import { isTickOpenCycleEnabled } from './reactor-compensation-gates.mjs';
 import { buildChannelProjection } from '../channel/projection.mjs';
 
 export function daemonViewsDir(root, subject) {
@@ -48,6 +50,7 @@ function buildDaemonHealth({
   pendingCycleStartRequest = null,
   progressStalled = false,
   driftSteps = [],
+  tickOpenEnabled = false,
   nowMs = Date.now(),
 }) {
   const counts = tasks.counts || {};
@@ -94,7 +97,7 @@ function buildDaemonHealth({
       && Number.isFinite(requestUpdatedMs)
       && (nowMs - requestUpdatedMs >= tickMs * 2)
       && (pendingRequest.deferred_count ?? 0) > 0;
-    const evolutionStalled = !onDemand && noWork && pastTickWindow
+    const evolutionStalled = tickOpenEnabled && !onDemand && noWork && pastTickWindow
       && (workerUnavailable || (worker.running && tickQuiet));
 
     if (requestBlockedLong) {
@@ -124,12 +127,15 @@ function buildDaemonHealth({
       } else if (onDemand) {
         reasons.push('On-demand mode: no cycle start request queued');
         suggestions.push('Use `jea daemon cycle request` or `jea intel brief put` to queue a cycle.');
+      } else if (!tickOpenEnabled) {
+        reasons.push('Reactor idle: tick does not auto-open cycles');
+        suggestions.push('Use `jea daemon cycle request` or `jea intel brief put` to queue a cycle.');
       } else if (Number.isFinite(lastClosedMs) && nowMs - lastClosedMs < tickMs) {
         reasons.push('Worker is running; last cycle closed recently — next cycle may start on tick');
       } else {
         reasons.push('Worker is fresh and no daemon task is waiting');
       }
-      if (!onDemand) {
+      if (!onDemand && tickOpenEnabled) {
         suggestions.push('Wait for the next heartbeat tick, or use `jea daemon cycle request` to queue a cycle.');
       }
     } else if (!worker.running && active === 0) {
@@ -253,6 +259,7 @@ export function buildDaemonProjection(root, subject, { store = null, eventLimit 
   };
 
   const evolution = resolveEvolutionMode(root, { subject, flags });
+  const pipeline = resolveCyclePipeline(root, { subject, flags }).pipeline;
   const pendingCycleStartRequest = cycleProjection.pending_cycle_start_request
     ?? readPendingCycleStartRequest(root, subject);
 
@@ -273,6 +280,7 @@ export function buildDaemonProjection(root, subject, { store = null, eventLimit 
       pendingCycleStartRequest,
       progressStalled,
       driftSteps,
+      tickOpenEnabled: isTickOpenCycleEnabled({ pipeline }),
     }),
     tasks,
     cycles,

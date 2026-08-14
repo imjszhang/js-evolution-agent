@@ -31,6 +31,11 @@ import {
 } from './cycle-start-requests.mjs';
 import { isContinuousEvolutionMode } from './evolution-mode.mjs';
 import { resolveCyclePipeline } from './cycle-pipeline-mode.mjs';
+import {
+  isStepArtifactReconcileEnabled,
+  isTickOpenCycleEnabled,
+  resolveInputPipeline,
+} from './reactor-compensation-gates.mjs';
 
 const DEFAULT_TICK_MS = 5 * 60 * 1000;
 
@@ -293,7 +298,14 @@ export function processCycleStartRequests(root, subject, input = {}) {
     return { processed: false, started: false, reason: 'no_request' };
   }
 
-  if (input.evolution_mode === 'on_demand' && isTickOnlyCycleStartRequest(pending)) {
+  const env = input.env ?? process.env;
+  const pipeline = input.pipeline ?? resolveInputPipeline(root, subject, input);
+  const tickIgnoreReason = isTickOnlyCycleStartRequest(pending)
+    ? (input.evolution_mode === 'on_demand'
+      ? 'on_demand_tick_request'
+      : (isTickOpenCycleEnabled({ pipeline, env }) ? null : 'tick_open_disabled'))
+    : null;
+  if (tickIgnoreReason) {
     consumeCycleStartRequest(root, subject, pending.request_id);
     deferredEventByRequest.delete(deferredEventKey(subject, pending.request_id));
     recordDaemonEvent(root, subject, {
@@ -301,12 +313,12 @@ export function processCycleStartRequests(root, subject, input = {}) {
       status: 'skipped',
       request_id: pending.request_id,
       trigger_reasons: pending.reasons,
-      reason: 'on_demand_tick_request',
+      reason: tickIgnoreReason,
     });
     return {
       processed: true,
       started: false,
-      reason: 'on_demand_tick_request',
+      reason: tickIgnoreReason,
       request: summarizePendingCycleStartRequest(pending),
     };
   }
@@ -385,6 +397,8 @@ function reconcileStaleRunningSteps(root, subject, cycleState, taskQueue) {
 
 export function reconcileOpenCycles(root, subject, input = {}) {
   const staleMs = Number(input.stale_ms) > 0 ? Number(input.stale_ms) : 60_000;
+  const env = input.env ?? process.env;
+  const pipeline = input.pipeline ?? resolveInputPipeline(root, subject, input);
   const taskQueue = readTaskQueue(root, subject);
   let openCycles = listOpenCycles(root, subject);
   const allEnqueued = [];
@@ -416,7 +430,9 @@ export function reconcileOpenCycles(root, subject, input = {}) {
   for (const cycleState of openCycles) {
     let taskQueueFresh = readTaskQueue(root, subject);
     let refreshed = reconcileStaleRunningSteps(root, subject, cycleState, taskQueueFresh);
-    const driftResult = reconcileStepStateDrift(root, subject, refreshed, taskQueueFresh);
+    const driftResult = isStepArtifactReconcileEnabled({ pipeline, env })
+      ? reconcileStepStateDrift(root, subject, refreshed, taskQueueFresh)
+      : { resolved: [], taskQueue: taskQueueFresh };
     taskQueueFresh = driftResult.taskQueue;
     refreshed = readCycleState(root, subject, cycleState.cycle_id) ?? refreshed;
     const reconcileOptions = dispatchOptionsFromInput(
@@ -449,18 +465,24 @@ export function reconcileOpenCycles(root, subject, input = {}) {
 
 export function runHeartbeatTick(root, subject, input = {}) {
   recordDaemonEvent(root, subject, { type: 'daemon_tick', status: 'ok' });
-  const reconcileResult = reconcileOpenCycles(root, subject, input);
+  const env = input.env ?? process.env;
+  const pipeline = resolveInputPipeline(root, subject, input);
+  const gatedInput = { ...input, pipeline, env };
+  const reconcileResult = reconcileOpenCycles(root, subject, gatedInput);
   const evolutionMode = input.evolution_mode ?? 'continuous';
+  const tickOpenEnabled = isTickOpenCycleEnabled({ pipeline, env });
   let requestEnqueue = null;
-  if (isContinuousEvolutionMode(evolutionMode)) {
+  if (isContinuousEvolutionMode(evolutionMode) && tickOpenEnabled) {
     requestEnqueue = enqueueCycleStartRequestWithEvent(root, subject, { reason: 'tick' });
   }
-  const requestProcess = processCycleStartRequests(root, subject, input);
+  const requestProcess = processCycleStartRequests(root, subject, gatedInput);
   return {
     reconcile: reconcileResult,
     request_enqueue: requestEnqueue,
     request_process: requestProcess,
     start: requestProcess,
+    pipeline,
+    tick_open_enabled: tickOpenEnabled,
   };
 }
 
