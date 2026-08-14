@@ -219,7 +219,7 @@ describe('cycle-state and dispatch', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it('reconcileOpenCycles completes drift task and enqueues verify', () => {
+  it('reconcileOpenCycles does not complete drift task from artifact on reactor', () => {
     const root = makeRoot();
     const cycleId = 'cycle-drift-reconcile-1';
     createCycle(root, 'alpha', { cycleId, meta: { driver: 'daemon' } });
@@ -230,6 +230,24 @@ describe('cycle-state and dispatch', () => {
     const running = seedRunningStepTask(root, 'alpha', cycleId, 'exec');
 
     reconcileOpenCycles(root, 'alpha');
+    const queue = readTaskQueue(root, 'alpha');
+    const execTask = queue.tasks.find((t) => t.task_id === running.task_id);
+    expect(execTask.status).toBe('running');
+    expect(queue.tasks.some((t) => t.type === 'verify' && t.input.cycle_id === cycleId)).toBe(true);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('reconcileOpenCycles completes drift task when artifact reconcile is opted in', () => {
+    const root = makeRoot();
+    const cycleId = 'cycle-drift-reconcile-opt-in';
+    createCycle(root, 'alpha', { cycleId, meta: { driver: 'daemon' } });
+    markStepStatus(root, 'alpha', cycleId, 'intel', { status: 'done', metaPatch: { decisions_queued: 0 } });
+    markStepStatus(root, 'alpha', cycleId, 'intel_report', { status: 'done', metaPatch: { intel_report_ready: true } });
+    markStepStatus(root, 'alpha', cycleId, 'exec', { status: 'done' });
+    writeStepArtifact(root, 'alpha', cycleId, 'exec', { cycle_id: cycleId, success: true, executed: [] });
+    const running = seedRunningStepTask(root, 'alpha', cycleId, 'exec');
+
+    reconcileOpenCycles(root, 'alpha', { env: { JEA_STEP_ARTIFACT_RECONCILE: '1' } });
     const queue = readTaskQueue(root, 'alpha');
     const execTask = queue.tasks.find((t) => t.task_id === running.task_id);
     expect(execTask.status).toBe('completed');

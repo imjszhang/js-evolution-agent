@@ -13,6 +13,7 @@ import {
 import {
   processCycleStartRequests,
   runHeartbeatTick,
+  startCycleFromTick,
 } from '../src/daemon/cycle-dispatch.mjs';
 import { listOpenCycles, createCycle, markStepStatus, writeStepArtifact } from '../src/daemon/cycle-state.mjs';
 import { enqueueTask, pendingTasksPath, readTaskQueue } from '../src/daemon/daemon-tasks.mjs';
@@ -94,11 +95,36 @@ describe('cycle-start-requests', () => {
     expect(summary.deferred_count).toBe(2);
   });
 
-  it('continuous runHeartbeatTick starts a cycle', () => {
+  it('continuous runHeartbeatTick does not auto-open a reactor cycle', () => {
     const root = makeRoot();
     const tick = runHeartbeatTick(root, 'alpha', { evolution_mode: 'continuous' });
+    expect(tick.tick_open_enabled).toBe(false);
+    expect(tick.request_enqueue).toBeNull();
+    expect(tick.request_process?.reason).toBe('no_request');
+    expect(listOpenCycles(root, 'alpha')).toHaveLength(0);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('continuous runHeartbeatTick starts a cycle when tick open is opted in', () => {
+    const root = makeRoot();
+    const tick = runHeartbeatTick(root, 'alpha', {
+      evolution_mode: 'continuous',
+      env: { JEA_TICK_OPEN_CYCLE: '1' },
+    });
+    expect(tick.tick_open_enabled).toBe(true);
     expect(tick.request_process?.started).toBe(true);
     expect(listOpenCycles(root, 'alpha')).toHaveLength(1);
+    expect(readPendingCycleStartRequest(root, 'alpha')).toBeNull();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('ignores leftover tick-only request when tick open is disabled', () => {
+    const root = makeRoot();
+    enqueueCycleStartRequest(root, 'alpha', { reason: 'tick' });
+    const processed = processCycleStartRequests(root, 'alpha', { evolution_mode: 'continuous' });
+    expect(processed.started).toBe(false);
+    expect(processed.reason).toBe('tick_open_disabled');
+    expect(listOpenCycles(root, 'alpha')).toHaveLength(0);
     expect(readPendingCycleStartRequest(root, 'alpha')).toBeNull();
     rmSync(root, { recursive: true, force: true });
   });
@@ -133,7 +159,7 @@ describe('cycle-start-requests', () => {
 
   it('defers request when open cycle exists', () => {
     const root = makeRoot();
-    runHeartbeatTick(root, 'alpha', { evolution_mode: 'continuous' });
+    startCycleFromTick(root, 'alpha');
     enqueueCycleStartRequest(root, 'alpha', { reason: 'operator_brief' });
     const processed = processCycleStartRequests(root, 'alpha', {});
     expect(processed.started).toBe(false);
@@ -155,7 +181,10 @@ describe('cycle-start-requests', () => {
       },
     });
     const continuous = resolveEvolutionMode(root, { subject: 'alpha' });
-    const first = runHeartbeatTick(root, 'alpha', { evolution_mode: continuous.mode });
+    const first = runHeartbeatTick(root, 'alpha', {
+      evolution_mode: continuous.mode,
+      env: { JEA_TICK_OPEN_CYCLE: '1' },
+    });
     expect(first.request_enqueue).toBeTruthy();
     expect(first.request_process?.started).toBe(true);
     const cycleId = first.request_process.cycle.cycle_id;

@@ -142,7 +142,9 @@ live Decide 因 API `ECONNRESET` 未产出记录型决策，exec 缺 params 的�
 
 三轮均无 400 / 无 ECONNRESET；`reactor_report_honesty=3`（当日窗口）；列车 reconcile ok（`contract_error_count=0`）。mechanical guards 与 reactor 共存正常。
 
-**M5 默认切换已确认**（#34，2026-08-14）：`resolveCyclePipeline` 默认改为 `reactor`。tick 补偿删除与法则销账另开后续 PR。回切单个 subject：registry `"pipeline": "agent_loop"`。
+**M5 默认切换已确认**（#34，2026-08-14）：`resolveCyclePipeline` 默认改为 `reactor`。回切单个 subject：registry `"pipeline": "agent_loop"`。
+
+**M5 tick / 产物对账**（2026-08-15）：reactor 默认不再因 heartbeat tick 自动开轮，也不按 step 产物假完成 running task。`JEA_TICK_OPEN_CYCLE=1` / `JEA_STEP_ARTIFACT_RECONCILE=1` 可恢复。法则清单 A 类逐条销账仍待后续 PR。
 
 ## M6 — 锚点
 

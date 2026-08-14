@@ -23,7 +23,7 @@
 
 | 法则 | 位置 | 补什么 | 分类 | 处置 |
 | --- | --- | --- | --- | --- |
-| continuous 模式 5min tick 自动开轮 | `daemon` worker tick（`tick-ms=300000`） | 时间驱动代偿「证据驱动」缺失 | **A** | 删除：无证据则无反应，空转在结构上不可能 |
+| continuous 模式 5min tick 自动开轮 | `daemon` worker tick（`tick-ms=300000`） | 时间驱动代偿「证据驱动」缺失 | **A** | **已停用（reactor 默认）**（2026-08-15）：heartbeat 不再入队 `reason: tick`；遗留 tick-only 请求被消费并忽略。`JEA_TICK_OPEN_CYCLE=1` 或 agent_loop/phases 可恢复 |
 | `continuous` / `on_demand` 双模式与解析优先级 | `evolution-mode.mjs`、registry、env | 同上；on_demand 是向证据驱动迈的半步 | **A** | 合并：统一为证据驱动 + 可配唤醒阈值 |
 | cycle-start-requests 消费 | `cycle-start-requests.mjs` | 人工开轮入口绑定「轮」概念 | 混合 | 保留入口，改为一条 operator 证据事件 |
 | `JEA_CYCLE_STEP` / `JEA_CYCLE_ID` / `JEA_CYCLE_DRIVER` env 接力 | `runner.mjs` | 子进程列车需要环境变量传递轮次身份 | **A** | 随 step 列车消失 |
@@ -32,7 +32,7 @@
 
 | 法则 | 位置 | 补什么 | 分类 | 处置 |
 | --- | --- | --- | --- | --- |
-| tick reconcile（checkpoint / task queue 漂移修复） | daemon tick | 列车 + 双源真相（cycle-state 与 task queue）必然漂移 | **A** | 随单一事实源消失 |
+| tick reconcile（checkpoint / task queue 漂移修复） | daemon tick | 列车 + 双源真相（cycle-state 与 task queue）必然漂移 | **A** | **部分停用**（2026-08-15）：`reconcileStepStateDrift`（按产物假完成 running task）reactor 默认关；abandon stale / 缺步入队保留。`JEA_STEP_ARTIFACT_RECONCILE=1` 或列车 pipeline 可恢复 |
 | stuck step watchdog（hang 但 checkpoint 已写 → 杀 runner 按产物完成） | daemon heartbeat | 子进程列车可能 hang | A/D 混合 | 进程超时保留（D），「按产物完成 task」的对账逻辑消失 |
 | `drift_steps` / `progress_stalled` / `stuck_steps` 健康判定 | `daemon-projection` | 观测列车是否卡住 | **A** | 换为反应器 backlog/延迟观测 |
 | step checkpoint 接力（下游从 `<step>.json` 重建上游产物） | `cycle-checkpoints.mjs` | step 子进程隔离切断了内存传递 | 混合 | **可恢复性是本质需求**；但「按 step 切檔」是列车派生。换单位：以证据批为 checkpoint 单元 |

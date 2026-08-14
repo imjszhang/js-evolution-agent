@@ -239,4 +239,35 @@ describe('cycle progress stalled health', () => {
     expect(projection.health.status).toBe('idle');
     expect(projection.health.ok).toBe(true);
   });
+
+  it('reactor continuous idle after a closed cycle is healthy, not evolution_stalled', () => {
+    const root = makeRoot();
+    const cycleId = 'cycle-quiet-1';
+    createCycle(root, 'alpha', { cycleId, meta: { driver: 'daemon' } });
+    markStepStatus(root, 'alpha', cycleId, 'diary', { status: 'done' });
+    const closed = getLastClosedCycle(root, 'alpha');
+    closed.closed_at = new Date(Date.now() - 20 * 60 * 1000).toISOString();
+    writeJsonFile(
+      join(root, 'runtime', 'subjects', 'alpha', 'data', 'evolution', 'cycle-state', `${cycleId}.json`),
+      closed,
+    );
+    writeWorkerState(root, 'alpha', {
+      subject: 'alpha',
+      worker_id: 'quiet-worker',
+      pid: process.pid,
+      status: 'running',
+      started_at: new Date().toISOString(),
+      heartbeat_at: new Date().toISOString(),
+      stop_requested_at: null,
+      stopped_at: null,
+      stale_after_ms: 600_000,
+      tick_ms: 300_000,
+      last_work_result: null,
+      last_error: null,
+    });
+    const projection = buildDaemonProjection(root, 'alpha');
+    expect(projection.health.status).toBe('idle');
+    expect(projection.health.ok).toBe(true);
+    expect(projection.health.reasons.some((reason) => /tick does not auto-open/.test(reason))).toBe(true);
+  });
 });

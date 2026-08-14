@@ -5,11 +5,11 @@
 
 ## Daemon 工作流
 
-Daemon 用于 **事件驱动的 step 级演化**。推荐用 `jea daemon start` 启动 worker：默认 **持续进化模式**（`continuous`）下每 **5 分钟** heartbeat tick（独立定时器，**不**被 step 子进程阻塞）会 reconcile open cycle、入队 cycle 启动请求并尝试开新 cycle（无 open cycle 且无 pending 任务时）；step 完成后 **即时** enqueue 下一步；5min tick 同时做 reconcile 补偿（含 step checkpoint 与 task queue 漂移修复）。
+Daemon 用于 **事件驱动的 step 级演化**。推荐用 `jea daemon start` 启动 worker：默认 **持续进化模式**（`continuous`）下每 **5 分钟** heartbeat tick（独立定时器，**不**被 step 子进程阻塞）会 reconcile 已有 open cycle（abandon 过期非 daemon 轮、缺步入队），并消费已有 cycle 启动请求。**reactor 默认不再因 tick 自动开新轮**（安静即健康）；开轮入口是 `jea run`、`jea daemon cycle request`、`jea intel brief put` 等。step 完成后 **即时** enqueue 下一步。列车回退（`pipeline: agent_loop` / `phases`）或 `JEA_TICK_OPEN_CYCLE=1` 仍可恢复 tick 自动开轮。
 
-**按需进化模式**（`on_demand`）：tick **不会**自动入队开轮请求，仅 reconcile + 消费已有请求（`jea daemon cycle request`、`jea intel brief put` 等）。worker idle 时也会尝试消费 pending 请求，不必等 5 分钟。无 open cycle、无 pending request 时 long idle 为 **healthy**（不算 stalled）。
+**按需进化模式**（`on_demand`）：tick **不会**自动入队开轮请求，仅 reconcile + 消费已有请求（`jea daemon cycle request`、`jea intel brief put` 等）。worker idle 时也会尝试消费 pending 请求，不必等 5 分钟。无 open cycle、无 pending request 时 long idle 为 **healthy**（不算 stalled）。reactor 在 continuous 下同样如此：无证据 / 无请求时不报 `evolution_stalled`。
 
-**step 完成以 checkpoint 为准**：cycle-state / `cycle-state/<id>/<step>.json` 为完成依据；若子进程 hang 但 checkpoint 已写入，watchdog（约每 `heartbeat-ms`）会终止 runner 并按产物完成 task；tick reconcile 会修复「cycle-state 已 terminal 但 task 仍 running」的 drift。
+**step 完成以 checkpoint 为准**：cycle-state / `cycle-state/<id>/<step>.json` 为完成依据；若子进程 hang 但 checkpoint 已写入，watchdog（约每 `heartbeat-ms`）会终止 runner 并按产物完成 task。**reactor 默认不再**用 tick reconcile 把「cycle-state 已 terminal 但 task 仍 running」假完成为 completed（`JEA_STEP_ARTIFACT_RECONCILE=1` 或列车 pipeline 可恢复）。
 
 演化模式解析优先级：`runtime/subjects/registry.json` 中 `subjects.<name>.evolution.mode` > `jea daemon start --evolution-mode` > env `JEA_EVOLUTION_MODE` > 默认 `continuous`。
 
@@ -60,7 +60,7 @@ runtime/subjects/<data_namespace>/data/evolution/cycle-state/
 - 队列写入对 `EPERM`/`EBUSY` 自动重试；**写失败不会终止 worker**（记 `queue_write_failed` 事件，空闲循环继续）。
 - `jea daemon status` / `doctor` 健康态除 heartbeat 外会校验 **PID 是否存活**：
   - `worker_zombie`：状态文件为 running 但进程已死 → `ok=false`，应 `jea daemon start`。
-  - `evolution_stalled`：continuous 模式下无 open cycle/无 pending，且超过 `tick_ms` 未开新轮 → `ok=false`。
+  - `evolution_stalled`：仅当 tick 自动开轮启用（列车 pipeline 或 `JEA_TICK_OPEN_CYCLE=1`）时：continuous 下无 open cycle/无 pending，且超过 `tick_ms` 未开新轮 → `ok=false`。reactor 默认安静即健康。
   - `cycle_progress_stalled`：有 open cycle 但在约 `2×tick_ms` 内无 step 进展，或存在 step state drift → `ok=false`（on_demand 无 open cycle 时不触发）。
 - Worker 崩溃会尽力写入 `worker_crashed` 事件并将 `worker-state` 标为 `stopped`。
 - `daemon start` 若检测到 zombie（fresh 心跳 + 死 PID），会先清理旧状态再启动新 worker。
