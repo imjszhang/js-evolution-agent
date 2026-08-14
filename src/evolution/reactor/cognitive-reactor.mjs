@@ -7,6 +7,13 @@
 import { join } from 'node:path';
 import { actionRegistry as hostActionRegistry } from '../../actions/registry.mjs';
 import { chatMessagesDetailed } from '../../ai/messages.mjs';
+import {
+  accumulateLlmUsage,
+  buildPromptCacheMetadata,
+  formatLlmUsageSummary,
+  markPromptCacheInvariant,
+  summarizeLlmUsage,
+} from '../../ai/prompt-cache-metadata.mjs';
 import { isoBeijing } from '../../engine/index.mjs';
 import { createHostDecisionQueue } from '../../intelligence/decision-queue.mjs';
 import { parseAnalyzeDecisionWithRepair } from '../../intelligence/decide-json.mjs';
@@ -60,24 +67,45 @@ function formatBatchDigest(events = [], { live = false } = {}) {
   };
 }
 
+function recordPromptCache({ profile, messages, stablePrefix, dynamicPayload, logger }) {
+  const metadata = buildPromptCacheMetadata({
+    profile,
+    messages,
+    stablePrefix,
+    dynamicPayload,
+  });
+  const invariant = markPromptCacheInvariant({
+    scope: profile,
+    metadata,
+    logger,
+  });
+  return { metadata, invariant };
+}
+
 function buildReportPrompt({ batchId, hostSeenBody, investigationDigest, language, live = false }) {
   const langNote = language === 'zh'
     ? '用中文撰写判断章节。'
     : 'Write judgement sections in English.';
-  return [
+  const stablePrefix = [
     live ? 'Cognitive Reactor Report Task' : 'Shadow Cognitive Reactor Report Task',
-    `batch_id: ${batchId}`,
     langNote,
     'Host owns the Seen section; write Inferred / Cyber-Taoist analysis / Next suggestions only.',
+    'Return a Markdown intelligence report with ## Seen, ## Inferred, ## Cyber-Taoist analysis, ## Next cycle suggestions.',
+  ].join('\n');
+  const dynamicPayload = [
+    `batch_id: ${batchId}`,
     '',
     '## Host Seen (do not invent refs)',
     hostSeenBody || '- (none)',
     '',
     '## Investigation digest',
     JSON.stringify(investigationDigest, null, 2),
-    '',
-    'Return a Markdown intelligence report with ## Seen, ## Inferred, ## Cyber-Taoist analysis, ## Next cycle suggestions.',
   ].join('\n');
+  return {
+    stablePrefix,
+    dynamicPayload,
+    content: `${stablePrefix}\n\n## Dynamic Batch Payload\n\n${dynamicPayload}`,
+  };
 }
 
 export function buildDecidePrompt({
@@ -92,9 +120,8 @@ export function buildDecidePrompt({
   const actionTypes = typeof registry.toPromptSection === 'function'
     ? registry.toPromptSection()
     : '(no registered actions)';
-  return [
+  const stablePrefix = [
     live ? 'Strategic Analysis & Decision (cognitive reactor)' : 'Strategic Analysis & Decision (shadow reactor)',
-    `batch_id: ${batchId}`,
     'Return JSON only with fields: decision, actions[], goal_coverage, deferred, risk_mitigation, confidence_score.',
     'actions MUST be an array of objects, never strings. Each action needs type, description, serves_goal, and params.',
     'params MUST include the Required params for the chosen type (see Available Action Types). Empty params objects are invalid.',
@@ -116,10 +143,18 @@ export function buildDecidePrompt({
     '',
     '## Available Action Types',
     actionTypes,
+  ].join('\n');
+  const dynamicPayload = [
+    `batch_id: ${batchId}`,
     '',
     '## Report',
     String(reportMarkdown || '').slice(0, 12000),
   ].join('\n');
+  return {
+    stablePrefix,
+    dynamicPayload,
+    content: `${stablePrefix}\n\n## Dynamic Batch Payload\n\n${dynamicPayload}`,
+  };
 }
 
 /**
@@ -190,6 +225,7 @@ export async function runCognitiveReaction(ctx, {
   };
 
   try {
+    const promptCache = {};
     if (Date.parse(deadlineAt) <= Date.now()) {
       throw new Error('reactor_deadline_expired');
     }
@@ -263,22 +299,40 @@ export async function runCognitiveReaction(ctx, {
       loopCtx.executed = loopCtx.queued;
       const tools = buildInvestigationTools(loopCtx);
       logger?.info?.(`[${logLabel}] investigate batch=${batchId} events=${events.length}`);
+      const investigateSystem = isLive
+        ? 'You are a cognitive reactor investigator. Use read-only tools then finish_investigation.'
+        : 'You are a shadow cognitive reactor investigator. Use read-only tools then finish_investigation.';
+      const investigateUser = [
+        `${isLive ? 'Live' : 'Shadow'} batch ${batchId}`,
+        'Claimed evidence:',
+        batchSeen,
+        'Finish when enough for a short report.',
+      ].join('\n');
+      promptCache.investigate = recordPromptCache({
+        profile: isLive ? 'reactor_investigate' : 'reactor_shadow_investigate',
+        messages: [
+          { role: 'system', content: investigateSystem },
+          { role: 'user', content: investigateUser },
+        ],
+        stablePrefix: investigateSystem,
+        dynamicPayload: investigateUser,
+        logger,
+      });
       investigateResult = await runInvestigationLoop({
         aiClient,
         tools,
-        systemPrompt: isLive
-          ? 'You are a cognitive reactor investigator. Use read-only tools then finish_investigation.'
-          : 'You are a shadow cognitive reactor investigator. Use read-only tools then finish_investigation.',
-        initialUserPrompt: [
-          `${isLive ? 'Live' : 'Shadow'} batch ${batchId}`,
-          'Claimed evidence:',
-          batchSeen,
-          'Finish when enough for a short report.',
-        ].join('\n'),
+        systemPrompt: investigateSystem,
+        initialUserPrompt: investigateUser,
         budget,
         logger,
         emitEvent: emitReaction,
       });
+      promptCache.investigate.usage = investigateResult?.usage_totals ?? null;
+      const investigateUsageLog = formatLlmUsageSummary(
+        promptCache.investigate.usage,
+        'prompt-cache reactor_investigate',
+      );
+      if (investigateUsageLog) logger?.info?.(investigateUsageLog);
       if (investigateResult?.investigation) {
         investigation = {
           ...investigation,
@@ -303,14 +357,30 @@ export async function runCognitiveReaction(ctx, {
       language,
       live: isLive,
     });
+    const reportSystem = 'You draft intelligence reports. Host owns Seen.';
+    const reportMessages = [
+      { role: 'system', content: reportSystem },
+      { role: 'user', content: reportPrompt.content },
+    ];
+    promptCache.report = recordPromptCache({
+      profile: isLive ? 'reactor_report' : 'reactor_shadow_report',
+      messages: reportMessages,
+      stablePrefix: `${reportSystem}\n\n--- stable turn ---\n\n${reportPrompt.stablePrefix}`,
+      dynamicPayload: reportPrompt.dynamicPayload,
+      logger,
+    });
     let rawReportMarkdown = null;
     let reportSource = 'fallback';
     let reportReason = null;
     try {
-      const reportResult = await chatMessagesDetailed(aiClient, [
-        { role: 'system', content: 'You draft intelligence reports. Host owns Seen.' },
-        { role: 'user', content: reportPrompt },
-      ], { thinking: 'off', timeout: 180, phase: 'report' });
+      const reportResult = await chatMessagesDetailed(aiClient, reportMessages, {
+        thinking: 'off',
+        timeout: 180,
+        phase: 'report',
+      });
+      promptCache.report.usage = summarizeLlmUsage(reportResult?.usage);
+      const reportUsageLog = formatLlmUsageSummary(promptCache.report.usage, 'prompt-cache reactor_report');
+      if (reportUsageLog) logger?.info?.(reportUsageLog);
       if (typeof reportResult?.text === 'string' && reportResult.text.trim()) {
         rawReportMarkdown = `${reportResult.text.trim()}\n`;
         reportSource = 'ai';
@@ -401,13 +471,29 @@ export async function runCognitiveReaction(ctx, {
       live: isLive,
       actionRegistry: cfg.actionRegistry,
     });
+    const decideSystem = 'Return JSON decisions only.';
+    const decideMessages = [
+      { role: 'system', content: decideSystem },
+      { role: 'user', content: decidePrompt.content },
+    ];
+    promptCache.decide = recordPromptCache({
+      profile: isLive ? 'reactor_decide' : 'reactor_shadow_decide',
+      messages: decideMessages,
+      stablePrefix: `${decideSystem}\n\n--- stable turn ---\n\n${decidePrompt.stablePrefix}`,
+      dynamicPayload: decidePrompt.dynamicPayload,
+      logger,
+    });
     let rawDecision = null;
     try {
-      const decideResult = await chatMessagesDetailed(aiClient, [
-        { role: 'system', content: 'Return JSON decisions only.' },
-        { role: 'user', content: decidePrompt },
-      ], { thinking: 'off', timeout: 180, phase: 'decide' });
+      const decideResult = await chatMessagesDetailed(aiClient, decideMessages, {
+        thinking: 'off',
+        timeout: 180,
+        phase: 'decide',
+      });
       rawDecision = decideResult?.text ?? null;
+      promptCache.decide.usage = summarizeLlmUsage(decideResult?.usage);
+      const decideUsageLog = formatLlmUsageSummary(promptCache.decide.usage, 'prompt-cache reactor_decide');
+      if (decideUsageLog) logger?.info?.(decideUsageLog);
     } catch (e) {
       logger?.warning?.(`[${logLabel}] decide failed: ${e?.message || e}`);
     }
@@ -452,6 +538,13 @@ export async function runCognitiveReaction(ctx, {
 
     ackBatchHandled(dataRoot, batchId);
     const elapsedMs = Date.now() - startedAt;
+    promptCache.totals = accumulateLlmUsage([
+      promptCache.investigate?.usage,
+      promptCache.report?.usage,
+      promptCache.decide?.usage,
+    ]);
+    const totalsLog = formatLlmUsageSummary(promptCache.totals, 'prompt-cache reactor');
+    if (totalsLog) logger?.info?.(totalsLog);
     if (isLive) {
       store.recordEvolutionEvent({
         type: 'reactor_pipeline',
@@ -466,6 +559,7 @@ export async function runCognitiveReaction(ctx, {
         honesty_status: honestyStatus,
         report_source: persistedReport?.source ?? reportSource,
         duration_ms: elapsedMs,
+        prompt_cache: promptCache.totals,
       });
     }
     emitReaction({
@@ -502,6 +596,7 @@ export async function runCognitiveReaction(ctx, {
       investigation,
       analysis: parsed.analysis,
       duration_ms: elapsedMs,
+      prompt_cache: promptCache,
     };
   } catch (err) {
     const message = err?.message || String(err);
