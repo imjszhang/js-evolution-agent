@@ -119,4 +119,4 @@ PY
 
 ### 6.3 M6 KV/token 对照锚点
 
-列车（agent_loop）prompt 合计 **554273** 作为对照锚。reactor 需在证据批前缀稳定后补齐同款 usage 汇总，验收：不高于基线 +10%。观察期记录见 `docs/reactor-migration-observation.md`。
+列车（agent_loop）prompt 合计 **554273** 作为对照锚。reactor 已补同款 usage 汇总（PR #47）。沙盒两轮合计 **52989 / 55954**（hit_ratio 0.34–0.38），低于基线 +10%。详见 `docs/reactor-migration-observation.md` M6。
