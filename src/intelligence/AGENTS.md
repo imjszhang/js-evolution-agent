@@ -125,7 +125,7 @@ Phase 3 灰度（`evolution.pipeline: reactor` 真实入队）已可用；exec �
 - 默认 `resolveCyclePipeline` 已是 `reactor`（M5）；registry `"evolution": { "pipeline": "agent_loop" }` 可一行回切列车
 - `jea run` / daemon 走 `reactor` step → claim 证据批 → 真实 `pending_decisions` + reports index + `reactor_report_honesty` / `reactor_pipeline` 事件
 - 沙盒 smoke：`npm run jea -- run --mock --subject js-evolution-agent`（当前 registry 已灰度该 subject）
-- **M4 carryover 停写**：reactor 默认不写 `agent_loop_carryover.json`（读侧保留）；`JEA_CARRYOVER_WRITE=0` 全局关写；`JEA_REACTOR_CARRYOVER_WRITE=1` 临时恢复
+- **M4 carryover 写侧已删**：不再写入 `agent_loop_carryover.json`（读侧保留 leftover）；`isCarryoverWriteEnabled()` 恒为 false
 - **M2 evidence 观察**：`docs/reactor-migration-observation.md`；沙盒入口 `bash scripts/jea-sandbox-observe.sh run --mock`（`STREAK_UNIT=evidence` + `STARVED_STRATEGY=wall_clock` + `JEA_GOAL_AUTO_APPLY=0`，不污染列车 `.env`）
 - 观察快照：`node scripts/reactor-observe-check.mjs --subject js-evolution-agent --days 14`
 - kill -9 / claim 演练：`node scripts/reactor-kill9-drill.mjs simulate|live --subject NAME`

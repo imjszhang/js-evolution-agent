@@ -213,9 +213,7 @@ export function buildEvolutionDiaryContext({
       verify_report: verifyReportPath ?? null,
       phase1_conversation_context: intelResult?.conversation_context_path ?? null,
     },
-    // Mid-cycle carryover from agent_loop; diary may rewrite diary-source items only.
-    // Host preserves mechanical items and writes step_status_snapshot at diary finalize.
-    // Host numbers items M1..Mn in array order for optional Carryover retirements.
+    // Leftover carryover is read-only (M4). Host numbers items M1..Mn for display.
     agent_loop_carryover: Array.isArray(carryoverItems)
       ? carryoverItems.map((item, idx) => {
         const id = `M${idx + 1}`;
@@ -380,8 +378,7 @@ export function buildEvolutionDiaryPrompt({
       '- When interpreting metrics such as rank or score, follow interpretation_anchors.operator_established_facts. When judging progress vs no progress, use interpretation_anchors.active_goals or active_goals_flat good_signal / bad_signal. Do not infer metric direction from raw numeric delta alone (for example, a lower rank may be improvement). Execution and verification conclusions in phase2/phase3 still override anchors; anchors only interpret them.',
       '- Be readable and candid: say what moved, what did not move, and what the next cycle should remember.',
       '- Start with a short ## TL;DR (1–2 sentences, about ≤200 characters) covering this cycle\'s outcome and the main open gap. Do not write the TL;DR as a numbered or bullet list; put details in later sections.',
-      '- The section "What the next cycle should remember" must be a short bullet list (one item per line, starting with `- `, at most 10 items) of narrative memory only. Do not restate mechanical step statuses (the host writes step_status_snapshot and preserves mechanical carryover items automatically). Do not restate themes already covered by mechanical carryover items (open gaps / deferred / suggestion deferred); only add new narrative the snapshot does not capture. Use this cycle\'s exec/verify/assess conclusions to rewrite or drop stale narrative items.',
-      '- If a mechanical carryover item (see agent_loop_carryover ids M1..Mn) was closed by this cycle\'s exec/verify evidence, emit an optional ## Carryover retirements section: one bullet per line `- M<n>: short reason + [action_receipts:receipt-...] or verify ref`. Omit the section when nothing is retireable. decide_deferred may retire only with a verifiable typed ref (e.g. `[action_receipts:…]`); never retire diary-source items; when unsure, keep the item.',
+      '- The section "What the next cycle should remember" must be a short bullet list (one item per line, starting with `- `, at most 10 items) of narrative memory only. Do not restate mechanical step statuses. Leftover agent_loop_carryover is read-only (M4); do not emit a Carryover retirements section or ask the host to rewrite that file.',
       '',
       'Suggested sections:',
       '- TL;DR',
@@ -392,7 +389,6 @@ export function buildEvolutionDiaryPrompt({
       '- Belief update',
       '- My judgement of the cycle',
       '- What the next cycle should remember',
-      '- Carryover retirements (optional)',
       '',
       '## Active Subject Policy',
       subjectDoc?.text || '(missing)',
@@ -425,8 +421,7 @@ export function buildEvolutionDiaryPrompt({
     '- 文风要像认真复盘的人写给操作者看：清楚、坦诚、可读，说清楚推进了什么、没推进什么、下一轮该记住什么。',
     '- 使用现代汉语书面语，避免文言、玄学散文、典故标题和过度模板化表格。',
     '- 文首必须有短 ## TL;DR（1–2 句，约不超过 200 字），概括本轮结果与最关键未闭环项；TL;DR 不要用编号或 bullet 列表，细节放到后续章节。',
-    '- 「下轮应该注意什么」必须用短 bullet 列表（每条一行，以 `- ` 开头，最多 10 条），只写叙事项。不要复述机械 step 状态（宿主会自动写 step_status_snapshot 并保留 mechanical carryover 项）。不要复述 mechanical carryover 已覆盖的主题（open_gap / deferred / suggestion_deferred）；只补快照之外的新叙事。请结合本轮 exec/verify/assess 结论改写或清除过期叙事项。',
-    '- 若某条 mechanical carryover（见 agent_loop_carryover 的 id M1..Mn）已被本轮 exec/verify 证据闭环，请额外输出可选章节 ## Carryover 销账：每行一条 `- M<n>: 一句原因 + [action_receipts:receipt-...] 或 verify 引用`。无可销条目则省略该节。decide_deferred 仅当带可核验 typed ref（如 `[action_receipts:…]`）时可销；禁止销 diary 条目；不确定时保留。',
+    '- 「下轮应该注意什么」必须用短 bullet 列表（每条一行，以 `- ` 开头，最多 10 条），只写叙事项。不要复述机械 step 状态。遗留的 agent_loop_carryover 只读（M4 已删写侧）；不要输出 Carryover 销账章节，也不要要求宿主改写该文件。',
     '',
     '建议章节：',
     '- TL;DR',
@@ -437,7 +432,6 @@ export function buildEvolutionDiaryPrompt({
     '- 信念更新',
     '- 我对这轮的判断',
     '- 下轮应该注意什么',
-    '- Carryover 销账（可选）',
     '',
     '## Active Subject Policy',
     subjectDoc?.text || '(missing)',

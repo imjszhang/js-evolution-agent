@@ -64,16 +64,18 @@ describe('carryover v2', () => {
     expect(readCarryoverItems(root)).toEqual(['legacy item A', 'legacy item B']);
   });
 
-  it('writes mechanical items and preserves them across diary merge', () => {
+  it('merges diary bullets onto leftover mechanical items in memory (write side removed)', () => {
     const root = makeRuntimeRoot();
-    writeCarryoverItems(root, {
-      cycleId: 'cycle-1',
-      defaultSource: 'mechanical',
+    const path = join(root, 'data', 'evolution', 'agent_loop_carryover.json');
+    mkdirSync(join(root, 'data', 'evolution'), { recursive: true });
+    writeFileSync(path, JSON.stringify({
+      schema_version: 2,
+      cycle_id: 'cycle-1',
       items: [
         { text: 'open gap: throttle', source: 'mechanical', origin: 'open_gap' },
         { text: 'S2: write learning report（budget）', source: 'mechanical', origin: 'suggestion_deferred' },
       ],
-    });
+    }, null, 2));
 
     const before = readCarryoverDocument(root);
     expect(before.schema_version).toBe(2);
@@ -84,22 +86,17 @@ describe('carryover v2', () => {
       diaryBullets: ['下轮复核分页', '不要复述 calibrate skipped'],
       stepStatusSnapshot: { goals_calibrate: 'applied(patch)', exec: 'ok(3)' },
     });
-    writeCarryoverItems(root, {
-      cycleId: 'cycle-1',
-      items: merged.items,
-      step_status_snapshot: merged.step_status_snapshot,
-    });
-
-    const after = readCarryoverDocument(root);
-    expect(after.step_status_snapshot).toEqual({
+    expect(merged.step_status_snapshot).toEqual({
       goals_calibrate: 'applied(patch)',
       exec: 'ok(3)',
     });
-    expect(after.items.filter((i) => i.source === 'mechanical')).toHaveLength(2);
-    expect(after.items.filter((i) => i.source === 'diary').map((i) => i.text)).toEqual([
+    expect(merged.items.filter((i) => i.source === 'mechanical')).toHaveLength(2);
+    expect(merged.items.filter((i) => i.source === 'diary').map((i) => i.text)).toEqual([
       '下轮复核分页',
       '不要复述 calibrate skipped',
     ]);
+    expect(writeCarryoverItems(root, { cycleId: 'cycle-1' }).write_skipped).toBe(true);
+    expect(readCarryoverDocument(root).items).toHaveLength(2);
   });
 
   it('formatCarryover renders snapshot, tags, and conflict instruction', () => {
@@ -419,65 +416,45 @@ describe('carryover v2', () => {
   });
 
   it('inherits fingerprint/seen_count across cycles and does not double-count same cycle', () => {
-    const root = makeRuntimeRoot();
-    writeCarryoverItems(root, {
-      cycleId: 'cycle-1',
-      defaultSource: 'mechanical',
-      items: [
-        { text: 'verify pipeline 对磁盘 typed=35 的独立文件层机械核验未执行', source: 'mechanical', origin: 'open_gap' },
-      ],
-    });
-    const c1 = readCarryoverDocument(root);
-    expect(c1.items[0].fingerprint).toBe(
-      carryoverFingerprint('verify pipeline 对磁盘 typed=35 的独立文件层机械核验未执行'),
-    );
-    expect(c1.items[0].seen_count).toBe(1);
-    expect(c1.items[0].first_seen_cycle).toBe('cycle-1');
+    const prev = {
+      cycle_id: 'cycle-1',
+      items: [{
+        text: 'verify pipeline 对磁盘 typed=35 的独立文件层机械核验未执行',
+        source: 'mechanical',
+        origin: 'open_gap',
+        fingerprint: carryoverFingerprint('verify pipeline 对磁盘 typed=35 的独立文件层机械核验未执行'),
+        first_seen_cycle: 'cycle-1',
+        seen_count: 1,
+      }],
+    };
+    const sameCycle = inheritCarryoverTracking([
+      { text: prev.items[0].text, source: 'mechanical', origin: 'open_gap' },
+      { text: '叙事备注', source: 'diary' },
+    ], prev, { cycleId: 'cycle-1' });
+    expect(sameCycle.find((i) => i.source === 'mechanical').seen_count).toBe(1);
 
-    // Same-cycle rewrite (agent_loop → diary) must not increment.
-    writeCarryoverItems(root, {
-      cycleId: 'cycle-1',
-      items: [
-        { text: 'verify pipeline 对磁盘 typed=35 的独立文件层机械核验未执行', source: 'mechanical', origin: 'open_gap' },
-        { text: '叙事备注', source: 'diary' },
-      ],
-    });
-    expect(readCarryoverDocument(root).items.find((i) => i.source === 'mechanical').seen_count).toBe(1);
-
-    // Next cycle increments.
-    writeCarryoverItems(root, {
-      cycleId: 'cycle-2',
-      defaultSource: 'mechanical',
-      items: [
-        { text: 'verify pipeline 对磁盘 typed=35 的独立文件层机械核验未执行', source: 'mechanical', origin: 'open_gap' },
-      ],
-    });
-    const c2 = readCarryoverDocument(root).items[0];
-    expect(c2.seen_count).toBe(2);
-    expect(c2.first_seen_cycle).toBe('cycle-1');
+    const nextCycle = inheritCarryoverTracking([
+      { text: prev.items[0].text, source: 'mechanical', origin: 'open_gap' },
+    ], prev, { cycleId: 'cycle-2' });
+    expect(nextCycle[0].seen_count).toBe(2);
+    expect(nextCycle[0].first_seen_cycle).toBe('cycle-1');
   });
 
-  it('skips carryover writes under reactor pipeline by default (M4 stop-write)', () => {
+  it('never writes leftover carryover files (M4 write side removed)', () => {
     const root = makeRuntimeRoot();
-    writeCarryoverItems(root, {
-      cycleId: 'cycle-1',
+    const path = join(root, 'data', 'evolution', 'agent_loop_carryover.json');
+    mkdirSync(join(root, 'data', 'evolution'), { recursive: true });
+    writeFileSync(path, JSON.stringify({
+      schema_version: 2,
+      cycle_id: 'cycle-1',
       items: [{ text: 'seed', source: 'mechanical' }],
-      force: true,
-    });
-    expect(isCarryoverWriteEnabled({ pipeline: 'reactor', env: {} })).toBe(false);
-    expect(isCarryoverWriteEnabled({
-      pipeline: 'reactor',
-      env: { JEA_REACTOR_CARRYOVER_WRITE: '1' },
-    })).toBe(true);
-    expect(isCarryoverWriteEnabled({ pipeline: 'agent_loop', env: {} })).toBe(true);
+    }, null, 2));
+    expect(isCarryoverWriteEnabled()).toBe(false);
+    expect(isCarryoverWriteEnabled({ pipeline: 'agent_loop', env: { JEA_REACTOR_CARRYOVER_WRITE: '1' } })).toBe(false);
 
-    const skipped = writeCarryoverItems(root, {
-      cycleId: 'cycle-2',
-      items: [{ text: 'should-not-persist', source: 'diary' }],
-      pipeline: 'reactor',
-      env: {},
-    });
+    const skipped = writeCarryoverItems(root, { cycleId: 'cycle-2' });
     expect(skipped.write_skipped).toBe(true);
+    expect(skipped.write_skip_reason).toBe('carryover_write_removed');
     expect(readCarryoverDocument(root).cycle_id).toBe('cycle-1');
     expect(readCarryoverDocument(root).items[0].text).toBe('seed');
   });

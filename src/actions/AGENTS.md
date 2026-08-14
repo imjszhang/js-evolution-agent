@@ -70,12 +70,11 @@ blocked cycles_seen > JEA_BLOCKED_TTL_CYCLES（默认 10）→ expired
 }
 ```
 
-**Carryover（跨轮待续，schema v2）**：
+**Carryover（跨轮待续，schema v2，M4 写侧已删）**：
 
-- **agent_loop step 末**：查证 `open_gaps`、Decide `deferred` / goal suggestions、`suggestion_coverage` 中 deferred/unaddressed、以及报告建议溢出项，以 **mechanical** 项写入 `data/evolution/agent_loop_carryover.json`（覆写上轮条目——此时上轮已被本轮查证消费）。写侧与 diary 合并侧共用 `CARRYOVER_MECHANICAL_LIMIT=8`；超限时按 origin 优先级裁剪（`decide_deferred` > `suggestion_deferred` > `open_gap` > `suggestion_overflow` > `goal_suggestion`），并发 `carryover_items_dropped`。
-- **diary step 末**：**合并**而非整体覆写——保留 mechanical 项，追加 diary「下轮应该注意什么」叙事 bullets（与 mechanical 归一化后完全相同文本会去重），并写入机械 `step_status_snapshot`（exec/verify/belief/goals_assess/goals_calibrate 最终状态）。若 snapshot 显示某 step 已完成，字面提及 `goals_assess`/`goals_calibrate`/`belief_update` 且含 pending/尚未/未完成/skipped 的条目会被机械丢弃（`carryover_stale_item_dropped`）。宿主把本轮 carryover 条目编号为 `M1..Mn` 注入 diary Machine Context；diary 可选输出 `## Carryover 销账` / `## Carryover retirements`（`- M<n>: 原因 + [typed ref]`），合并时机械删除被点名且 origin ∈ `{open_gap, suggestion_overflow, suggestion_deferred, goal_suggestion}` 的 mechanical 项（`drop_reason: closed_by_exec`，进 `carryover_stale_item_dropped`）；`decide_deferred` 仅当销账条目带可经 evidence-audit 核验的 typed ref（store 中存在）时可销，否则拒销；diary 条目、越界 id 一律拒销。缺销账章节则全保留。
-- **下轮注入**：`## Carryover from previous cycle` 先渲染状态快照，再渲染带 `[mechanical/origin]` / `[diary]` 标签的条目；指令要求条目与快照或本轮 Machine Context 冲突时以后者为准。
-- 读侧兼容 v1 纯字符串 items（映射为 diary source）。空 mechanical + 空 diary 也会写盘以清空过期项。
+- **不再写入** `data/evolution/agent_loop_carryover.json`。agent_loop / diary 都不覆写、不合并、不销账。
+- **读侧保留**：若 leftover 文件仍在，下轮 `## Carryover from previous cycle` 与 diary Machine Context 仍会渲染（兼容 v1 字符串 items）。证据流已承担跨轮信息，新条目不再搬运。
+- diary 不再要求输出 `## Carryover 销账`。
 
 **Suggestion coverage（P3 软闸，仅 agent_loop）**：宿主从报告「下一轮建议」只数**顶层**编号/bullet 为 S1..Sn（嵌套子弹不单独编号）；顶层若为纯字段标签行（如 `**intent**: …`）则并入上一条建议，空标签丢弃。超出 8 条的顶层项进 mechanical carryover（`origin: suggestion_overflow`）并发 `report_suggestions_overflow`。Decide JSON 应输出 `suggestion_coverage`（adopted/deferred/rejected）。缺表态由宿主补 `deferred: unaddressed` 进 mechanical carryover，并发 `decide_coverage_gap` 事件；不挡轮、不重问。diary 的 `phase1.suggestion_coverage` 供复盘对照。
 

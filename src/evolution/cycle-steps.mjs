@@ -54,17 +54,11 @@ import { chatMessagesDetailed, serializeMessages } from '../ai/messages.mjs';
 import { repairReportIfNeeded } from '../intelligence/report-repair.mjs';
 import { markStepStatus, writeStepArtifact } from '../daemon/cycle-state.mjs';
 import { loadCycleStepContext, loadVerifyReportForCycle } from '../daemon/cycle-checkpoints.mjs';
-import { cyclePipelineFromEnv } from '../daemon/cycle-pipeline-mode.mjs';
 import { extractMarkdownSection } from '../infra/markdown-sections.mjs';
 import {
-  CARRYOVER_MECHANICAL_LIMIT,
-  buildStepStatusSnapshot,
   formatCarryover,
-  mergeDiaryCarryover,
-  rankAndLimitMechanicalItems,
   readCarryoverDocument,
   readCarryoverItems,
-  writeCarryoverItems,
 } from './carryover.mjs';
 import { buildInvestigationTools } from './agent-loop/tool-registry.mjs';
 import { runInvestigationLoop } from './agent-loop/loop-runner.mjs';
@@ -106,9 +100,6 @@ export {
   formatCarryover,
   readCarryoverDocument,
   readCarryoverItems,
-  writeCarryoverItems,
-  buildStepStatusSnapshot,
-  mergeDiaryCarryover,
 };
 
 export function formatCarryoverSuggestion(suggestion) {
@@ -958,73 +949,6 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
       warnings: suggestionCoverage.warnings,
     });
   }
-  const finishCarryoverRaw = [
-    ...(Array.isArray(investigation.open_gaps)
-      ? investigation.open_gaps.map((gap) => ({
-        text: String(gap),
-        source: 'mechanical',
-        origin: 'open_gap',
-      }))
-      : []),
-    ...(Array.isArray(analysis?.deferred)
-      ? analysis.deferred.map((d) => ({
-        text: typeof d === 'string'
-          ? d
-          : `${d.action || 'deferred'}: ${d.reason || d.description || ''}`.trim(),
-        source: 'mechanical',
-        origin: 'decide_deferred',
-      }))
-      : []),
-    ...(Array.isArray(analysis?.goal_suggestions)
-      ? analysis.goal_suggestions.map((s) => ({
-        text: formatCarryoverSuggestion(s),
-        source: 'mechanical',
-        origin: 'goal_suggestion',
-      })).slice(0, 5)
-      : []),
-    ...suggestionCoverage.carryoverItems,
-    ...extractedSuggestions.overflow.map((item) => ({
-      text: item.text,
-      source: 'mechanical',
-      origin: 'suggestion_overflow',
-    })),
-  ].filter((item) => item && String(item.text || '').trim());
-  const { kept: finishCarryover, dropped: finishCarryoverDropped } = rankAndLimitMechanicalItems(
-    finishCarryoverRaw,
-    { limit: CARRYOVER_MECHANICAL_LIMIT },
-  );
-  if (finishCarryoverDropped.length) {
-    store.recordEvolutionEvent({
-      type: 'carryover_items_dropped',
-      status: 'capped',
-      cycle_id: resolvedCycleId,
-      subject: runtime.subject,
-      stage: 'agent_loop',
-      dropped_count: finishCarryoverDropped.length,
-      dropped: finishCarryoverDropped.slice(0, 12).map((item) => ({
-        text: item.text,
-        origin: item.origin ?? null,
-        drop_reason: 'mechanical_cap',
-      })),
-    });
-  }
-
-  try {
-    // Prefer explicit run pipeline (set by runCycle/dispatch); env fallback for step mode.
-    const pipeline = ctx.pipeline || cyclePipelineFromEnv() || null;
-    const written = writeCarryoverItems(runtime.runtimeRoot, {
-      cycleId: resolvedCycleId,
-      items: finishCarryover,
-      defaultSource: 'mechanical',
-      pipeline,
-    });
-    if (written?.write_skipped) {
-      logger?.info?.(`[agent_loop] carryover write skipped (${written.write_skip_reason}); pipeline=${pipeline}`);
-    }
-  } catch (e) {
-    logger?.warning?.(`[agent_loop] failed to write carryover: ${e?.message || e}`);
-  }
-
   const restoredConversation = buildRestoredConversationForVerify({
     systemPrompt: systemPromptParts.content,
     initialUserPrompt: reportPromptParts.content,
@@ -1231,7 +1155,7 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
       report_raw_path: rawReportPath,
       conversation_context_path: conversationPath,
       turns_path: turnsPath,
-      carryover: finishCarryover,
+      carryover: readCarryoverDocument(runtime.runtimeRoot).items,
       suggestion_coverage: {
         summary: suggestionCoverage.summary,
         items: suggestionCoverage.items,
@@ -1833,89 +1757,8 @@ export async function runDiaryStep(ctx, {
       logger: cfg.host.logger,
       carryoverItems: readCarryoverDocument(runtime.runtimeRoot).items,
     });
-    // Diary finalizes narrative carryover; host preserves mechanical items + writes step snapshot.
-    try {
-      const diaryMarkdown = diary?.markdown
-        ?? (diary?.mdPath && existsSync(diary.mdPath) ? readFileSync(diary.mdPath, 'utf-8') : '');
-      const diaryBullets = extractCarryoverFromDiaryMarkdown(diaryMarkdown);
-      const retirements = extractCarryoverRetirementsFromDiaryMarkdown(diaryMarkdown);
-      const existing = readCarryoverDocument(runtime.runtimeRoot);
-      const stepStatusSnapshot = buildStepStatusSnapshot({
-        execResult,
-        verification,
-        beliefUpdateResult,
-        goalsAssessResult,
-        goalsCalibrateResult,
-      });
-      const merged = mergeDiaryCarryover({
-        existingItems: existing.items,
-        diaryBullets,
-        stepStatusSnapshot,
-        retirements,
-        dataRoot: runtime.dataRoot,
-      });
-      if (Array.isArray(merged.dropped) && merged.dropped.length) {
-        const byReason = merged.dropped.reduce((acc, item) => {
-          const reason = item.drop_reason || 'unknown';
-          acc[reason] = (acc[reason] || 0) + 1;
-          return acc;
-        }, {});
-        const droppedSummary = merged.dropped.slice(0, 12).map((item) => ({
-          text: item.text,
-          origin: item.origin ?? null,
-          source: item.source ?? null,
-          drop_reason: item.drop_reason ?? null,
-          evidence: item.evidence ?? null,
-        }));
-        const eventCycleId = execResult?.cycle_id || intelResult?.cycle_id;
-        store.recordEvolutionEvent({
-          type: 'carryover_items_dropped',
-          status: 'filtered',
-          cycle_id: eventCycleId,
-          subject: runtime.subject,
-          stage: 'diary',
-          dropped_count: merged.dropped.length,
-          by_reason: byReason,
-          dropped: droppedSummary,
-        });
-        const staleDropped = merged.dropped.filter((item) => (
-          item.drop_reason === 'stale_pipeline_status'
-          || item.drop_reason === 'closed_by_exec'
-        ));
-        if (staleDropped.length) {
-          store.recordEvolutionEvent({
-            type: 'carryover_stale_item_dropped',
-            status: 'filtered',
-            cycle_id: eventCycleId,
-            subject: runtime.subject,
-            stage: 'diary',
-            dropped_count: staleDropped.length,
-            dropped: staleDropped.slice(0, 12).map((item) => ({
-              text: item.text,
-              origin: item.origin ?? null,
-              source: item.source ?? null,
-              drop_reason: item.drop_reason ?? null,
-              evidence: item.evidence ?? null,
-            })),
-          });
-        }
-      }
-      const pipeline = ctx.pipeline || cyclePipelineFromEnv() || null;
-      const written = writeCarryoverItems(runtime.runtimeRoot, {
-        cycleId: execResult?.cycle_id || intelResult?.cycle_id,
-        items: merged.items,
-        step_status_snapshot: merged.step_status_snapshot,
-        pipeline,
-      });
-      if (written?.write_skipped) {
-        cfg.host?.logger?.info?.(
-          `[diary] carryover write skipped (${written.write_skip_reason}); pipeline=${pipeline}`,
-        );
-      }
-    } catch (carryErr) {
-      cfg.host?.logger?.warning?.(
-        `[diary] failed to finalize carryover from diary: ${carryErr?.message || carryErr}`,
-      );
+    if (readCarryoverDocument(runtime.runtimeRoot).items.length) {
+      cfg.host?.logger?.info?.('[diary] leftover carryover file is read-only (M4 write side removed)');
     }
     if (recordState) {
       const artifactCycleId = stateCycleId(intelResult, null, execResult);
