@@ -134,3 +134,21 @@ actionRegistry.register(new ActionTypeSpec({
   autoExecutable: true,
   layer: 'core',
 }));
+
+/** Required params aligned with builtin handler `requireParams` (params[field] or top-level field). */
+export const REQUIRED_ACTION_PARAMS = Object.freeze({
+  record_observation: Object.freeze(['content']),
+  propose_probe: Object.freeze(['hypothesis', 'success_signal', 'failure_signal', 'death_boundary']),
+  write_retrospective: Object.freeze(['summary']),
+  core_apply: Object.freeze(['target', 'rationale', 'boundary', 'acceptance', 'death_boundary']),
+});
+
+/**
+ * @param {object} action
+ * @returns {string[]}
+ */
+export function missingRequiredActionParams(action) {
+  const fields = REQUIRED_ACTION_PARAMS[action?.type];
+  if (!fields) return [];
+  return fields.filter((field) => action?.params?.[field] == null && action?.[field] == null);
+}

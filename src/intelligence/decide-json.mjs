@@ -32,8 +32,15 @@ export function normalizeAnalyzeDecision(analysis = {}) {
   next.analysis = next.analysis && typeof next.analysis === 'object' && !Array.isArray(next.analysis)
     ? next.analysis
     : { key_patterns: [], root_causes: {}, opportunities: [] };
-  next.decision = next.decision || (Array.isArray(next.actions) && next.actions.length ? 'execute' : 'defer');
-  next.actions = Array.isArray(next.actions) ? next.actions : [];
+  const rawActions = Array.isArray(next.actions) ? next.actions : [];
+  next.actions = rawActions.filter((action) => (
+    action
+    && typeof action === 'object'
+    && !Array.isArray(action)
+    && typeof action.type === 'string'
+    && action.type.trim() !== ''
+  ));
+  next.decision = next.decision || (next.actions.length ? 'execute' : 'defer');
   const coverage = next.goal_coverage && typeof next.goal_coverage === 'object' && !Array.isArray(next.goal_coverage)
     ? { ...next.goal_coverage }
     : {};

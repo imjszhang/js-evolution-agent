@@ -168,11 +168,14 @@ export async function runInvestigationLoop({
     });
 
     const finishTools = finishInvestigationOnlyList(tools);
-    const choiceLadder = [
-      { type: 'function', function: { name: 'finish_investigation' } },
-      'required',
-      'auto',
-    ];
+    const thinkingMode = aiClient.resolveCallOptions?.({ phase: 'agent_loop' })?.thinkingMode;
+    const choiceLadder = thinkingMode != null && thinkingMode !== 'off'
+      ? ['auto']
+      : [
+        { type: 'function', function: { name: 'finish_investigation' } },
+        'required',
+        'auto',
+      ];
 
     let resp = null;
     let lastError = null;

@@ -45,7 +45,9 @@ node scripts/reactor-observe-check.mjs --subject js-evolution-agent --days 1
 
 ## 真实 DeepSeek 沙盒轮（2026-08-13，M5 前置）
 
-`cycle-20260812164012-8bca93f4`（~193s，`JEA_FORCE_MOCK=0` + observe env）：
+### 修复前 — `cycle-20260812164012-8bca93f4`（~193s）
+
+`JEA_FORCE_MOCK=0` + observe env：
 
 | 项 | 结果 |
 | --- | --- |
@@ -56,8 +58,63 @@ node scripts/reactor-observe-check.mjs --subject js-evolution-agent --days 1
 | Decide 契约 | **未过**：`decision.action must be an object`；入队 1 条 `action` 为字符串、`type=undefined`，exec 跳过；另 skipped=2 |
 | 其他 | investigate closing `tool_choice` 400（thinking 模式）；assess/diary ECONNRESET，日记 fallback |
 
-**结论：** 沙盒 mock 灰度可收口；真实 Decide 契约仍不稳，**不能过 M5**。列车保持 `agent_loop`。
+脏队列 `cycle-20260812164012-8bca93f4:0` 已标 `cancelled`，不再进 exec。
 
+### 修复后 — `cycle-20260812171800-58c1c0b6`（~294s）
+
+宿主入队闸：`validateQueuedAction` 先走 `validateActionShape`；`normalizeAnalyzeDecision` 丢掉非对象 action。`JEA_FORCE_MOCK=0` + observe env：
+
+| 项 | 结果 |
+| --- | --- |
+| honesty | 1 × `reactor_report_honesty`（findings_count=0） |
+| calibrate | skipped（auto_apply=0） |
+| carryover | 停写确认 |
+| reconcile | ok（contract_error_count=0） |
+| Decide 契约 | **已过**：入队 3 条均为对象且有 `action.type`（`record_observation` / `propose_probe` / `write_retrospective`）；`queued=3 skipped=1`；日志无 `decision.action must be an object` |
+| skipped | 1 条 `agent_run` 因 `run_spec` 契约失败被拒（`primary_cwd_kind` / `expected_output`），未入队 |
+| exec | 3 条因缺记录型必填 params 失败（`content` / `success_signal` 等）——属模型质量，不是非对象入队 |
+| 其他 | closing `tool_choice` 400 后 ladder 回落到 `auto` 成功；assess/diary ECONNRESET，日记 fallback |
+
+列车 `agentank-tank` registry 仍无 `pipeline: reactor`。
+
+**结论（当时）：** 沙盒 mock 灰度可收口；真实 Decide **非对象 action 不再入队**。exec 缺 params 与 `tool_choice` 400 另跟。
+
+### 必填 params + tool_choice 修复后（2026-08-13）
+
+代码：reactor Decide prompt 注入 `actionRegistry.toPromptSection()`；`validateQueuedAction` 校验记录型必填字段；closing ladder 在 thinking≠off 时只用 `auto`；`agent_run` 契约抛错改为 skip。
+
+mock 沙盒 `cycle-20260812173350-13dc7c3e`：`queued=3 skipped=0`，exec 三条全部 completed（`record_observation` / `propose_probe` / `write_retrospective`），无 `missing required field(s)`。
+
+真实轮（observe env + `JEA_FORCE_MOCK=0`）：
+
+| cycle | 结果 |
+| --- | --- |
+| `cycle-20260812173353-7168d7fe` | 入队闸未包住 `expected_output` 非数组时契约 `.some` 抛错，整轮失败（随后已改为 skip） |
+| `cycle-20260812173641-e51343b8`（~157s） | closing 只用 `toolChoice="auto"`，**无 400**；decide ECONNRESET → queued=0；honesty=ok；calibrate skipped；carryover 停写；diary fallback |
+| `cycle-20260812173928-95398dc1`（~273s） | 同样无 400；report/decide ECONNRESET → queued=0；honesty=ok；calibrate skipped；carryover 停写；reconcile ok |
+
+live Decide 因 API `ECONNRESET` 未产出记录型决策，exec 缺 params 的真实路径本窗口未能复现；闸与 mock 路径已覆盖。closing **不再出现** `400 Thinking mode does not support this tool_choice`。
+
+### 复测 — `cycle-20260814141428-973e3b50`（2026-08-14，~493s）
+
+零成本复测（observe env + `JEA_FORCE_MOCK=0`；未改网络重试 / thinking 归一化）：
+
+| 项 | 结果 |
+| --- | --- |
+| honesty | 1 × `reactor_report_honesty`（findings_count=0） |
+| calibrate | skipped（auto_apply=0） |
+| carryover | 停写确认 |
+| reconcile | ok（contract_error_count=0） |
+| Decide | **queued=4 skipped=0**；4 条均为对象且带 `action.type` + 必填 params |
+| exec | 4/4 completed：`record_observation` ×2 / `propose_probe` / `write_retrospective`；无 `missing required field(s)` |
+| closing | 仅 `toolChoice=auto`，**无 400** |
+| 网络 | **无 ECONNRESET**；diary 走真实模型（非 fallback）；belief_update skipped（非网络失败） |
+
+此前空盘挡住的「必填参数闸」真实正向样本已补上。ECONNRESET 在本窗口未复现，暂不升优先级做网络重试。
+
+本 PR 另将 `normalizeThinkingMode('low'|'medium')` 改为 `off`（DeepSeek 仅 off/high/max；原先误升为 high，会覆盖 diary/channel 等 fast 默认）。reactor report/decide 显式传 `thinking: 'off'`。复测当时尚未改此映射。
+
+**仍不过 M5**（列车未切 reactor；#34 未确认）。
 
 ## M6 — 锚点
 

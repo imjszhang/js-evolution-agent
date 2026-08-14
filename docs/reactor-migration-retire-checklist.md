@@ -15,7 +15,7 @@
 | # | 条件 | 状态 |
 | --- | --- | --- |
 | 1 | 每个 subject 各自 ≥2 周 reactor 无回切 | 仅沙盒开 reactor；列车仍 agent_loop（按建议不在此时全切） |
-| 2 | 三不变量（诚实 / 治理 / 可恢复）在每个 subject 验证 | 沙盒 mock 过；**真实 Decide 契约未过**（2026-08-13 `action` 非 object）；列车未切 reactor |
+| 2 | 三不变量（诚实 / 治理 / 可恢复）在每个 subject 验证 | 沙盒 mock 过；真实轮 `cycle-20260814141428-973e3b50` queued=4 skipped=0、exec 4/4 completed、无 400 / 无 ECONNRESET；列车未切 reactor |
 | 3 | M2 evidence 灰度观察通过 | 快速 5 轮 mock 通过（2026-08-13）；不再等 2 周 |
 | 4 | M4 carryover 停写观察通过并完成删除段 | 停写段快速通过；**删除段未做** |
 | 5 | #34 留言确认执行 | ❌ 未确认 |
