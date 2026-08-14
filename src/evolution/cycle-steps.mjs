@@ -391,6 +391,7 @@ export async function runReactorStep(ctx, { cycleId = null, recordState = null }
       report_path: reaction.report_path,
       honesty: reaction.honesty,
       duration_ms: reaction.duration_ms,
+      prompt_cache: reaction.prompt_cache ?? null,
     });
     await recordStepSidecar(recordState.root, recordState.subject, resolvedCycleId, 'reactor', 'done', {
       decisions_queued: reaction.decisions_queued?.length ?? reaction.decisions.length,

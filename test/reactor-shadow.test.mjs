@@ -189,11 +189,13 @@ describe('cognitive shadow reactor e2e', () => {
       reportMarkdown: '# Report\n- seen',
       live: true,
     });
-    expect(prompt).toContain('## Available Action Types');
-    expect(prompt).toContain('Required params: content');
-    expect(prompt).toContain('Required params: hypothesis, success_signal, failure_signal, death_boundary');
-    expect(prompt).toContain('"params": { "content": "..." }');
-    expect(prompt).not.toContain('"params": {}');
+    expect(prompt.content).toContain('## Available Action Types');
+    expect(prompt.content).toContain('Required params: content');
+    expect(prompt.content).toContain('Required params: hypothesis, success_signal, failure_signal, death_boundary');
+    expect(prompt.content).toContain('"params": { "content": "..." }');
+    expect(prompt.content).not.toContain('"params": {}');
+    expect(prompt.stablePrefix).not.toContain('batch-prompt');
+    expect(prompt.dynamicPayload).toContain('batch_id: batch-prompt');
   });
 
   it('produces shadow artifacts without touching train files', async () => {
@@ -327,6 +329,10 @@ describe('cognitive shadow reactor e2e', () => {
     expect(result.batch_id).toMatch(/^batch-/);
     expect(result.decisions.length).toBeGreaterThanOrEqual(1);
     expect(existsSync(result.report_path)).toBe(true);
+    expect(result.prompt_cache?.report?.metadata?.stable_prefix_hash).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.prompt_cache.report.metadata.stable_prefix_hash)
+      .not.toBe(result.prompt_cache.decide.metadata.stable_prefix_hash);
+    expect(result.prompt_cache.report.invariant.status).toMatch(/baseline|stable/);
 
     const runs = readShadowRuns(runtime.dataRoot, { limit: 50 });
     const honesty = runs.filter((r) => r.type === 'shadow_report_honesty');
