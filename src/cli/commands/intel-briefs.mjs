@@ -107,12 +107,24 @@ export async function briefPut({ root = getProjectRoot(), flags = {} } = {}) {
       reason: 'operator_brief',
       meta: { brief_ids: [brief.id] },
     });
+    let wake = null;
+    try {
+      const { enqueueWakeIntent } = await import('../../evolution/reactor/wake-store.mjs');
+      wake = enqueueWakeIntent(root, runtime.subject, {
+        kind: 'cognitive',
+        reason: 'operator_brief',
+        source: 'intel_brief_put',
+      });
+    } catch {
+      // wake is best-effort; cycle-start request remains the compatibility path
+    }
     const result = {
       file,
       brief,
       namespace: runtime.dataNamespace,
       subject: runtime.subject,
       cycle_start_request: cycleRequest.request,
+      wake: wake?.intent ?? null,
     };
     if (flags.json) console.log(JSON.stringify(result, null, 2));
     else console.log(`queued operator brief ${brief.id} -> ${file}`);

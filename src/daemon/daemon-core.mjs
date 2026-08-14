@@ -90,6 +90,13 @@ import {
   updateChannelWorkerHeartbeat,
 } from '../channel/worker-state.mjs';
 import { runDomainWorkerLoop } from '../infra/worker-loop.mjs';
+import {
+  isReactorTaskType,
+  runReactorDaemonTask,
+  scanWakeBacklog,
+} from '../evolution/reactor/reactor-tasks.mjs';
+import { isEvidenceWakeEnabled } from '../evolution/reactor/feature-gates.mjs';
+import { enqueueWakeIntent } from '../evolution/reactor/wake-store.mjs';
 
 function sleep(ms) {
   if (!ms) return Promise.resolve();
@@ -210,7 +217,7 @@ function buildDaemonDiagnostics(root, subject, projection) {
       action: 'Run `jea daemon start` to start a fresh worker.',
     });
   }
-  if (projection.health?.status === 'cycle_progress_stalled') {
+  if (projection.health?.status === 'cycle_progress_stalled' && projection.pipeline !== 'reactor') {
     diagnostics.push({
       severity: 'error',
       code: 'cycle_progress_stalled',
@@ -218,7 +225,18 @@ function buildDaemonDiagnostics(root, subject, projection) {
       action: 'Wait for watchdog recovery, inspect drift with `jea daemon status --json`, or restart the worker if stuck persists.',
     });
   }
-  const driftSteps = projection.cycles?.drift_steps ?? [];
+  if (projection.health?.status === 'reactor_backlog_stalled' || projection.reactor?.ok === false) {
+    diagnostics.push({
+      severity: 'error',
+      code: projection.reactor?.status === 'blocked' ? 'reactor_blocked' : 'reactor_backlog_stalled',
+      message: (projection.reactor?.reasons ?? projection.health?.reasons ?? []).join(' ')
+        || 'Reactor evidence/claim backlog is stalled.',
+      action: (projection.reactor?.suggestions ?? projection.health?.suggestions ?? [])[0]
+        || 'Inspect `jea daemon status --json` reactor projection and run `jea daemon work --once`.',
+      reactor: projection.reactor ?? null,
+    });
+  }
+  const driftSteps = projection.pipeline === 'reactor' ? [] : (projection.cycles?.drift_steps ?? []);
   if (driftSteps.length > 0) {
     const summary = driftSteps
       .slice(0, 5)
@@ -305,7 +323,7 @@ function buildDaemonDiagnostics(root, subject, projection) {
       });
     }
   }
-  const stuckSteps = projection.cycles?.stuck_steps ?? [];
+  const stuckSteps = projection.pipeline === 'reactor' ? [] : (projection.cycles?.stuck_steps ?? []);
   if (stuckSteps.length > 0) {
     const summary = stuckSteps
       .slice(0, 5)
@@ -486,6 +504,131 @@ function parseTickMs(flags = {}) {
 
 function isCycleStepType(type) {
   return CYCLE_STEP_TYPES.includes(type) || type === 'agent_loop' || type === 'reactor';
+}
+
+function failReactorTask(root, subject, task, failure) {
+  const maxAttempts = Math.max(1, (task.input?.retries ?? 3) + 1);
+  if (task.attempts < maxAttempts) {
+    const released = releaseTaskForRetry(root, subject, task.task_id, failure);
+    recordDaemonEvent(root, subject, {
+      type: 'task_failed',
+      status: 'retry_scheduled',
+      task_id: task.task_id,
+      task_type: task.type,
+      error_code: failure.code,
+      error_reason: failure.reason,
+    });
+    return { ok: false, retryable: true, task: released.task, failure };
+  }
+  const failed = failTask(root, subject, task.task_id, failure);
+  recordDaemonEvent(root, subject, {
+    type: 'task_failed',
+    status: 'failed',
+    task_id: task.task_id,
+    task_type: task.type,
+    error_code: failure.code,
+    error_reason: failure.reason,
+  });
+  return { ok: false, retryable: false, task: failed.task, failure };
+}
+
+export async function withTaskLeaseWatchdog(root, subject, task, flags, work) {
+  const workerId = task.lease_owner || flags.worker || `worker-${process.pid}`;
+  const { leaseMs, heartbeatMs } = heartbeatDefaults(flags);
+  let lastLeaseRenewEventAt = 0;
+  let watchdog = null;
+  let leaseLost = false;
+  const tick = () => {
+    const state = readWorkerState(root, subject);
+    const stopping = Boolean(state?.stop_requested_at);
+    if (flags.watchdog) {
+      updateWorkerHeartbeat(root, subject, {
+        worker_id: workerId,
+        pid: process.pid,
+        status: stopping ? 'stopping' : 'running',
+        current_task_id: task.task_id,
+      });
+    }
+    const renewed = renewTaskLease(root, subject, task.task_id, { workerId, leaseMs });
+    if (!renewed.renewed) {
+      leaseLost = true;
+      recordDaemonEvent(root, subject, {
+        type: 'task_lease_renew_failed',
+        status: renewed.reason,
+        task_id: task.task_id,
+        task_type: task.type,
+        lease_owner: workerId,
+      });
+      return;
+    }
+    const now = Date.now();
+    if (now - lastLeaseRenewEventAt >= Math.max(heartbeatMs * 10, 60_000)) {
+      lastLeaseRenewEventAt = now;
+      recordDaemonEvent(root, subject, {
+        type: 'task_lease_renewed',
+        status: 'ok',
+        task_id: task.task_id,
+        task_type: task.type,
+        lease_owner: workerId,
+        lease_expires_at: renewed.task.lease_expires_at,
+      });
+    }
+  };
+  if (flags.watchdog !== false) {
+    tick();
+    watchdog = setInterval(tick, heartbeatMs);
+  }
+  try {
+    return await work({ leaseLost: () => leaseLost, workerId, leaseMs });
+  } finally {
+    if (watchdog) clearInterval(watchdog);
+  }
+}
+
+async function workReactorTask(root, subject, task, flags) {
+  return withTaskLeaseWatchdog(root, subject, task, flags, async ({ leaseLost }) => {
+    try {
+      const outcome = await runReactorDaemonTask(root, subject, task, {
+        ...flags,
+        canCommit: () => !leaseLost(),
+      });
+      if (leaseLost()) {
+        const released = releaseTaskForRetry(root, subject, task.task_id, {
+          code: 'lease_lost',
+          reason: 'task_lease_renew_failed',
+          message: 'Reactor task lease was lost before commit',
+          retryable: true,
+        });
+        return { ok: false, retryable: true, task: released.task, reason: 'lease_lost' };
+      }
+      if (outcome?.ok === false) {
+        return failReactorTask(root, subject, task, {
+          code: outcome?.code ?? 'reactor_task_failed',
+          reason: outcome?.reason || outcome?.result?.error || 'reactor task returned ok=false',
+          message: outcome?.reason || outcome?.result?.error || 'reactor task returned ok=false',
+          retryable: true,
+        });
+      }
+      const completed = completeTask(root, subject, task.task_id, {
+        ok: true,
+        result: outcome?.result ?? outcome,
+      });
+      recordDaemonEvent(root, subject, {
+        type: 'task_completed',
+        status: 'ok',
+        task_id: task.task_id,
+        task_type: task.type,
+      });
+      return { ok: true, task: completed.task, result: outcome };
+    } catch (err) {
+      return failReactorTask(root, subject, task, {
+        code: err?.code ?? 'reactor_task_failed',
+        reason: err?.message || String(err),
+        message: err?.message || String(err),
+        retryable: true,
+      });
+    }
+  });
 }
 
 async function workRunCycleStep(root, subject, task, flags) {
@@ -818,7 +961,25 @@ async function runWorkOnceBody(root, subject, flags = {}) {
     lease_owner: claim.task.lease_owner,
     lease_expires_at: claim.task.lease_expires_at,
   });
+  if (isReactorTaskType(claim.task.type)) {
+    const outcome = await workReactorTask(root, subject, claim.task, flags);
+    return { worked: true, ...outcome };
+  }
   if (claim.task.type === 'run_cycle') {
+    if (isEvidenceWakeEnabled(flags.env ?? process.env)) {
+      enqueueWakeIntent(root, subject, {
+        kind: 'cognitive',
+        reason: 'run_cycle_compat',
+        source: 'run_cycle',
+      });
+      const converted = {
+        ...claim.task,
+        type: 'cognitive_reaction',
+        input: { ...claim.task.input, reason: 'run_cycle_compat' },
+      };
+      const outcome = await workReactorTask(root, subject, converted, flags);
+      return { worked: true, ...outcome };
+    }
     const outcome = await workRunCycle(root, subject, claim.task, flags);
     return { worked: true, ...outcome };
   }
@@ -1205,6 +1366,11 @@ export async function runDaemonWorker(root, subject, flags = {}) {
           ...runtimeTaskInput(baseTaskInput, resolvedEvolution),
           tick_ms: tickMs,
         });
+        try {
+          scanWakeBacklog(root, subject, { enqueueTask });
+        } catch (err) {
+          recordLoopFailure(root, subject, { operation: 'wake_backlog_scan', err });
+        }
         return idleIntervalMs;
       },
       idleMs: idleIntervalMs,

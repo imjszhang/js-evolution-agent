@@ -97,7 +97,12 @@ export function normalizeOperatorBrief(input = {}) {
     evidence_boundary: input.evidence_boundary ?? 'operator intent only; verify before treating as fact',
     priority: input.priority ?? 'medium',
     metadata: input.metadata ?? {},
-    consumed_by_cycle: input.consumed_by_cycle,
+    producer: input.producer ?? 'operator',
+    activation_targets: Array.isArray(input.activation_targets)
+      ? input.activation_targets
+      : ['cognitive'],
+    consumed_by_cycle: input.consumed_by_cycle ?? input.consumed_by_batch,
+    consumed_by_batch: input.consumed_by_batch ?? input.consumed_by_cycle,
     consumed_at: input.consumed_at,
     outcome: input.outcome,
   });
@@ -208,7 +213,11 @@ export function summarizeOperatorBriefsForContext(briefs = []) {
   }));
 }
 
-export function markOperatorBriefsProcessed(runtimeRoot, briefs = [], { cycleId, outcome = 'consumed' } = {}) {
+export function markOperatorBriefsProcessed(runtimeRoot, briefs = [], {
+  cycleId,
+  batchId = null,
+  outcome = 'consumed',
+} = {}) {
   if (!briefs.length) return { moved: [], failed: [] };
   const processedDir = processedOperatorBriefsDir(runtimeRoot);
   mkdirSync(processedDir, { recursive: true });
@@ -224,6 +233,7 @@ export function markOperatorBriefsProcessed(runtimeRoot, briefs = [], { cycleId,
       ...brief,
       _file: undefined,
       consumed_by_cycle: cycleId ?? null,
+      consumed_by_batch: batchId ?? cycleId ?? null,
       consumed_at: nowIso(),
       outcome,
     });

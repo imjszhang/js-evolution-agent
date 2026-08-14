@@ -56,7 +56,7 @@ Phase 1.5 intel report 持久化
 
 | 变量 | 默认 | 含义 |
 | --- | --- | --- |
-| `JEA_CYCLE_PIPELINE` | `agent_loop` | `agent_loop` 或 `phases`（deprecated） |
+| `JEA_CYCLE_PIPELINE` | `reactor` | `reactor`（默认）或显式回退 `agent_loop` / `phases`（deprecated） |
 | `JEA_SUPPRESS_PHASES_DEPRECATION` | （关） | `1`/`true` 时静音 phases deprecation 警告 |
 | `JEA_LOOP_MAX_READONLY_TURNS` | `6` | 只读查证最大 LLM 轮数（主配置） |
 | `JEA_LOOP_MAX_TURNS` | （可选） | 与 `MAX_READONLY` 取较小值；兼容旧配置 |
@@ -77,7 +77,7 @@ Phase 2 执行预算 / 队列 TTL（`JEA_EXEC_*`、`JEA_AGENT_*`、`JEA_PENDING_
 
 ## 证据流与反应器影子（Phase 1–2，#33 / PR #35）
 
-反应器化迁移的读侧与影子认知路径。**不改变列车默认行为**；真实 `pending_decisions` / reports index / evolution-events 仍仅由 `jea run` / daemon step 写入。
+反应器化迁移的读侧、影子与 live 双轨。默认仍关 `JEA_EVIDENCE_WAKE`；gate-on 时真实 `pending_decisions` / reports index / evolution-events 由 `cognitive_reaction` 写入，gate-off 仍走 `jea run` / daemon step 列车。
 
 ### 证据流读侧（Phase 1）
 
@@ -119,6 +119,8 @@ npm run jea -- reactor shadow run --mock --skip-investigate --subject js-evoluti
 npm run jea -- intel stream --reconcile --subject js-evolution-agent
 npm run jea -- reactor shadow compare --cycle <上一步 cycle_id> --subject js-evolution-agent
 ```
+
+S0–S9 双轨已落地：默认仍关 `JEA_EVIDENCE_WAKE` / `JEA_QUEUE_DISABLE_CYCLE_TTL` / `JEA_EXEC_RATE_ONLY`。隔离 mock canary：`npm run reactor:canary`（临时 root，不写三个生产 subject）。合并后按 `feishu-flow-test → js-evolution-agent → agentank-tank` 逐级开门；S9 硬删另见 #70。
 
 Phase 3 灰度（`evolution.pipeline: reactor` 真实入队）已可用；exec 墙钟速率预算前置见 #36（已合 main）。
 
@@ -366,7 +368,7 @@ Assessor prompt 仍建议 `goal_patches` 与 `proposed_goal` 互斥；执行器�
 | 变量 | 默认 | 含义 |
 | --- | --- | --- |
 | `JEA_RULE_FEEDBACK_WINDOW` | `8` | 统计窗口（cycle 数） |
-| `JEA_RULE_FEEDBACK_STREAK_UNIT` | `cycle` | `cycle`（生产默认）或 `evidence`（逐条 serving receipt；阈值标定完成前仅用于 replay/显式灰度） |
+| `JEA_RULE_FEEDBACK_STREAK_UNIT` | `evidence` | `evidence`（生产默认，逐条 serving receipt）或显式 `cycle` 回退 |
 | `JEA_RULE_FEEDBACK_WINDOW_EVIDENCE` | `24` | evidence 模式统计窗口（serving receipt 条数） |
 | `JEA_RULE_FEEDBACK_DEAD_STREAK` | `3` | 判 dead 的连续签名停滞阈值 |
 | `JEA_RULE_FEEDBACK_STARVED_STREAK` | 同 dead | 饥饿阈值（与 dead **解耦**；未设置时等于 dead，保持旧行为） |

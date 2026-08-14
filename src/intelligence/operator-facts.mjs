@@ -174,10 +174,17 @@ export function normalizeOperatorFact(input = {}) {
     supersedes: normalizeSupersedes(input.supersedes),
     metadata: input.metadata ?? {},
     channel_source: input.channel_source ?? null,
+    producer: input.producer ?? 'operator',
+    activation_targets: Array.isArray(input.activation_targets)
+      ? input.activation_targets
+      : ['cognitive'],
     // Digestion bookkeeping (filled when moved to digested/)
-    injected_by_cycle: input.injected_by_cycle ?? null,
+    injected_by_cycle: input.injected_by_cycle ?? input.injected_by_batch ?? null,
+    injected_by_batch: input.injected_by_batch ?? input.injected_by_cycle ?? null,
+    activation_batch_id: input.activation_batch_id ?? null,
     injected_at: input.injected_at ?? null,
-    digested_by_cycle: input.digested_by_cycle ?? null,
+    digested_by_cycle: input.digested_by_cycle ?? input.digested_by_batch ?? null,
+    digested_by_batch: input.digested_by_batch ?? input.digested_by_cycle ?? null,
     digested_at: input.digested_at ?? null,
     digestion_outcome: input.digestion_outcome ?? null,
     digestion_reason: input.digestion_reason ?? null,
@@ -269,7 +276,7 @@ export function collectKnownOperatorFactIds(runtimeRoot) {
 /**
  * Mark facts as injected by the current cycle (bookkeeping only; stay in pending/).
  */
-export function markOperatorFactsInjected(runtimeRoot, facts = [], { cycleId } = {}) {
+export function markOperatorFactsInjected(runtimeRoot, facts = [], { cycleId, batchId = null } = {}) {
   if (!facts.length) return { updated: [], failed: [] };
   const updated = [];
   const failed = [];
@@ -285,6 +292,8 @@ export function markOperatorFactsInjected(runtimeRoot, facts = [], { cycleId } =
         ...fact,
         _file: undefined,
         injected_by_cycle: cycleId ?? fact.injected_by_cycle ?? null,
+        injected_by_batch: batchId ?? fact.injected_by_batch ?? null,
+        activation_batch_id: batchId ?? fact.activation_batch_id ?? null,
         injected_at: injectedAt,
       });
       writeFileSync(source, JSON.stringify(payload, null, 2), 'utf-8');
@@ -301,6 +310,7 @@ export function markOperatorFactsInjected(runtimeRoot, facts = [], { cycleId } =
  */
 export function markOperatorFactsDigested(runtimeRoot, facts = [], {
   cycleId,
+  batchId = null,
   outcome = 'untested',
   reason = null,
   resultingBeliefId = null,
@@ -328,6 +338,7 @@ export function markOperatorFactsDigested(runtimeRoot, facts = [], {
       ...fact,
       _file: undefined,
       digested_by_cycle: cycleId ?? null,
+      digested_by_batch: batchId ?? cycleId ?? null,
       digested_at: digestedAt,
       digestion_outcome: perOutcome,
       digestion_reason: fact.digestion_reason ?? reason,
@@ -430,11 +441,14 @@ export function migrateLegacyOperatorFacts(runtimeRoot, observations = [], {
  * Facts that were injected in a specific cycle (or any injected facts if cycleId omitted).
  * Used by Phase 3.5 to digest only this cycle's seeds.
  */
-export function selectInjectedOperatorFacts(facts = [], { cycleId = null } = {}) {
+export function selectInjectedOperatorFacts(facts = [], { cycleId = null, batchId = null } = {}) {
   return (facts || []).filter((fact) => {
-    if (!fact?.injected_by_cycle) return false;
-    if (cycleId == null) return true;
-    return fact.injected_by_cycle === cycleId;
+    const injected = fact?.injected_by_batch || fact?.injected_by_cycle || fact?.activation_batch_id;
+    if (!injected) return false;
+    if (batchId == null && cycleId == null) return true;
+    if (batchId && (fact.injected_by_batch === batchId || fact.activation_batch_id === batchId)) return true;
+    if (cycleId && fact.injected_by_cycle === cycleId) return true;
+    return false;
   });
 }
 

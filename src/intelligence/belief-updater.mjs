@@ -335,6 +335,8 @@ function cloneBelief(belief) {
 export function applyBeliefUpdates(currentBeliefsDoc, updates = [], {
   cycleId = null,
   source = 'post_verify_belief_update',
+  producer = null,
+  activationTargets = null,
 } = {}) {
   const base = normalizeCurrentBeliefs(currentBeliefsDoc);
   const beliefsById = new Map((base.beliefs || []).map((b) => [b.id, cloneBelief(b)]));
@@ -372,6 +374,8 @@ export function applyBeliefUpdates(currentBeliefsDoc, updates = [], {
         reason: update.reason,
         evidence_refs: update.evidence_refs || [],
         source,
+        ...(producer ? { producer } : {}),
+        ...(Array.isArray(activationTargets) ? { activation_targets: activationTargets } : {}),
         before: null,
         after,
       });
@@ -412,6 +416,8 @@ export function applyBeliefUpdates(currentBeliefsDoc, updates = [], {
       reason: update.reason,
       evidence_refs: update.evidence_refs || [],
       source,
+      ...(producer ? { producer } : {}),
+      ...(Array.isArray(activationTargets) ? { activation_targets: activationTargets } : {}),
       before,
       after,
     });
@@ -439,6 +445,10 @@ export async function updateBeliefsWithAi({
   language = 'zh',
   logger = null,
   operatorAssertions = [],
+  goalIds = null,
+  canCommit = null,
+  producer = null,
+  activationTargets = null,
 } = {}) {
   const context = buildBeliefUpdateContext({
     activeGoals,
@@ -485,9 +495,24 @@ export async function updateBeliefsWithAi({
     const raw = await chatMessages(aiClient, [{ role: 'user', content: prompt }]);
     const parsed = parseBeliefUpdate(raw);
     const cycleId = execResult?.cycle_id ?? intelResult?.cycle_id ?? null;
-    const applied = applyBeliefUpdates(context.current_beliefs, parsed.updates, { cycleId });
+    const allowedGoals = Array.isArray(goalIds) && goalIds.length
+      ? new Set(goalIds)
+      : null;
+    const filteredUpdates = allowedGoals
+      ? (parsed.updates || []).filter((update) => !update.goal_id || allowedGoals.has(update.goal_id))
+      : parsed.updates;
+    const applied = applyBeliefUpdates(context.current_beliefs, filteredUpdates, {
+      cycleId,
+      producer,
+      activationTargets,
+    });
     let eventsWritten = 0;
     if (store && parsed.status !== 'failed' && parsed.updates.length) {
+      if (typeof canCommit === 'function' && !canCommit()) {
+        const error = new Error('reactor_task_lease_lost');
+        error.code = 'lease_lost';
+        throw error;
+      }
       store.recordCurrentBeliefs(applied.currentBeliefs);
       for (const event of applied.events) {
         eventsWritten += store.recordBeliefEvent(event);
@@ -586,6 +611,10 @@ export async function updateActiveBeliefs(root, {
   logger = null,
   runtimeRoot = null,
   operatorAssertions = null,
+  goalIds = null,
+  canCommit = null,
+  producer = null,
+  activationTargets = null,
 } = {}) {
   const { getActiveGoals } = await import('../cli/commands/goals.mjs');
   const { getProjectRoot } = await import('../infra/project.mjs');
@@ -634,6 +663,10 @@ export async function updateActiveBeliefs(root, {
     language,
     logger: cfg.host?.logger ?? logger,
     operatorAssertions: assertions,
+    goalIds,
+    canCommit,
+    producer,
+    activationTargets,
   });
 
   let digestion = null;
@@ -669,6 +702,8 @@ export async function updateActiveBeliefs(root, {
       reason: updated.result.reason,
       operator_facts_digested: digestion?.digested?.length ?? 0,
       operator_questions_opened: digestion?.questions_opened?.length ?? 0,
+      ...(producer ? { producer } : {}),
+      ...(Array.isArray(activationTargets) ? { activation_targets: activationTargets } : {}),
     });
   }
 

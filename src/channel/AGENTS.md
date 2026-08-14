@@ -214,7 +214,7 @@ Classifier 识别 `control_request` 后**不直接执行**配置变更，而是�
 | 新入站需立刻调查的 `observation` | deterministic：`start_agent_async` + ack（当 understanding 满足 now + 非 high） |
 | 新入站 `operator_fact` | ack「已记录为高置信 operator fact」 |
 | 新入站寒暄类 `observation` | 简短在场确认 |
-| 未 handled 的 `task_failed` / `daemon_health` / `cycle_drift` / `requires_human_review` 等 | 主动通知（受 cooldown） |
+| 未 handled 的 `task_failed` / `daemon_health` / `reactor_backlog` / `cycle_drift` / `requires_human_review` 等 | 主动通知（受 cooldown） |
 
 修改 `channels.presence` 或 allowlist/bind 后，运行中的 channel daemon 会在下一轮 loop 读盘生效。修改 `app_id` / `app_secret` 或关闭 listener 时，daemon 会自动重建 WS 连接。**升级 JEA 代码后需重启 channel daemon。**
 

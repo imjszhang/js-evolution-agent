@@ -161,12 +161,16 @@ export class IntelligenceStore {
   recordActionReceipt(action, result, ctx = {}) {
     const record = withId({
       recorded_at: new Date().toISOString(),
-      cycle_id: ctx.cycleId ?? null,
-      exec_cycle_id: ctx.execCycleId ?? ctx.cycleId ?? null,
+      cycle_id: ctx.cycleId ?? ctx.executionId ?? null,
+      exec_cycle_id: ctx.execCycleId ?? ctx.executionId ?? ctx.cycleId ?? null,
       intel_cycle_id: ctx.intelCycleId ?? action?.intel_cycle_id ?? action?.cycle_id ?? action?.cycleId ?? null,
       decision_id: ctx.decisionId ?? action?.decision_id ?? action?.id ?? null,
       action_id: action?.id ?? ctx.actionId ?? null,
       action_type: action?.type ?? 'unknown',
+      intent_id: ctx.intentId ?? null,
+      idempotency_key: ctx.idempotencyKey ?? null,
+      producer: ctx.producer ?? 'exec',
+      activation_targets: ctx.activation_targets ?? ['cognitive', 'rule'],
       action,
       result,
     }, 'receipt');
@@ -187,6 +191,8 @@ export class IntelligenceStore {
   recordProbeResult(result) {
     return this.engine.ingest('probe_results', redactSecrets(withId({
       recorded_at: new Date().toISOString(),
+      producer: result?.producer ?? 'external',
+      activation_targets: result?.activation_targets ?? ['cognitive', 'rule'],
       ...result,
     }, 'probe-result')));
   }

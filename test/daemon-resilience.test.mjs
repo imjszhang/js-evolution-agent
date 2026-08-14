@@ -24,11 +24,13 @@ import {
   writeWorkerState,
 } from '../src/daemon/daemon-worker-state.mjs';
 import {
+  claimNextTask,
   enqueueTask,
   pendingTasksPath,
   readTaskQueue,
   taskQueueLockPath,
 } from '../src/daemon/daemon-tasks.mjs';
+import { withTaskLeaseWatchdog } from '../src/daemon/daemon-core.mjs';
 import { writeJsonFile } from '../src/infra/files.mjs';
 import { stepIdempotencyKey } from '../src/daemon/cycle-reducer.mjs';
 import { isProcessAlive } from '../src/infra/process-alive.mjs';
@@ -94,6 +96,28 @@ describe('atomic-json-write', () => {
     expect(() => writeJsonAtomic(target, { x: 1 }, { maxAttempts: 2, baseDelayMs: 0, fs }))
       .toThrow(QueueWriteError);
   });
+
+  it('uses a unique staging path for independent writers', () => {
+    const root = makeRoot();
+    const target = join(root, 'shared.json');
+    const stagingPaths = [];
+    const fs = {
+      mkdirSync,
+      writeFileSync,
+      renameSync: (src, dest) => {
+        stagingPaths.push(src);
+        return renameSync(src, dest);
+      },
+    };
+
+    writeJsonAtomic(target, { writer: 1 }, { fs });
+    writeJsonAtomic(target, { writer: 2 }, { fs });
+
+    expect(stagingPaths).toHaveLength(2);
+    expect(stagingPaths[0]).not.toBe(stagingPaths[1]);
+    expect(stagingPaths.every((path) => path.endsWith('.tmp'))).toBe(true);
+    expect(JSON.parse(readFileSync(target, 'utf-8'))).toEqual({ writer: 2 });
+  });
 });
 
 describe('daemon task queue lock', () => {
@@ -102,6 +126,45 @@ describe('daemon task queue lock', () => {
     enqueueTask(root, 'alpha', { type: 'run_cycle', idempotencyKey: 'alpha:lock-test' });
     expect(existsSync(pendingTasksPath(root, 'alpha'))).toBe(true);
     expect(existsSync(taskQueueLockPath(root, 'alpha'))).toBe(true);
+  });
+});
+
+describe('reactor task lease watchdog', () => {
+  it('renews a long-running task lease while work is active', async () => {
+    const root = makeRoot();
+    createWorkerState(root, 'alpha', {
+      workerId: 'worker-lease-test',
+      pid: process.pid,
+      staleMs: 60_000,
+    });
+    enqueueTask(root, 'alpha', {
+      type: 'memory_compaction',
+      idempotencyKey: 'alpha:memory:lease-test',
+    });
+    const claimed = claimNextTask(root, 'alpha', {
+      workerId: 'worker-lease-test',
+      leaseMs: 20,
+    });
+    const initialExpiry = Date.parse(claimed.task.lease_expires_at);
+
+    const result = await withTaskLeaseWatchdog(
+      root,
+      'alpha',
+      claimed.task,
+      {
+        worker: 'worker-lease-test',
+        watchdog: true,
+        'lease-ms': 100,
+        'heartbeat-ms': 10,
+      },
+      async ({ leaseLost }) => {
+        await new Promise((resolve) => setTimeout(resolve, 35));
+        return { lease_lost: leaseLost() };
+      },
+    );
+    const running = readTaskQueue(root, 'alpha').tasks[0];
+    expect(result.lease_lost).toBe(false);
+    expect(Date.parse(running.lease_expires_at)).toBeGreaterThan(initialExpiry);
   });
 });
 
@@ -169,6 +232,16 @@ describe('getLastClosedCycle', () => {
 describe('cycle progress stalled health', () => {
   it('reports cycle_progress_stalled when open cycle has step drift', () => {
     const root = makeRoot();
+    writeJsonFile(join(root, 'policies', 'subjects.json'), {
+      default_subject: 'alpha',
+      subjects: {
+        alpha: {
+          policy: 'subjects/alpha.md',
+          data_namespace: 'alpha',
+          evolution: { pipeline: 'agent_loop' },
+        },
+      },
+    });
     const cycleId = 'cycle-health-drift-1';
     createCycle(root, 'alpha', { cycleId, meta: { driver: 'daemon' } });
     markStepStatus(root, 'alpha', cycleId, 'exec', { status: 'done' });

@@ -2297,6 +2297,9 @@ export async function persistIntelReport({
   queueSummary = null,
   operatorBriefs = [],
   transformMd = null,
+  producer = null,
+  activation_targets = null,
+  producer_batch_id = null,
 } = {}) {
   const prepared = reportContext && evidence && assessment && language
     ? {
@@ -2391,6 +2394,9 @@ export async function persistIntelReport({
     namespace: runtime.dataNamespace,
     language: finalLanguage,
     source: finalSource,
+    ...(producer ? { producer } : {}),
+    ...(Array.isArray(activation_targets) ? { activation_targets } : {}),
+    ...(producer_batch_id ? { producer_batch_id } : {}),
   };
   store.recordIntelReport(indexRecord);
 

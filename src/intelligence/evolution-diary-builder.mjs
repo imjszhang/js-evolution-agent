@@ -536,6 +536,8 @@ export function persistEvolutionDiary({
   source = 'ai',
   fallbackReason = null,
   promptCache = null,
+  producer = null,
+  activationTargets = null,
 } = {}) {
   if (!runtime?.runtimeRoot) throw new Error('runtime.runtimeRoot is required');
   const cycleId = context?.cycle?.cycle_id;
@@ -559,6 +561,8 @@ export function persistEvolutionDiary({
     fallback_reason: fallbackReason,
     generated_at: generatedAt,
     prompt_cache: promptCache,
+    ...(producer ? { producer } : {}),
+    ...(Array.isArray(activationTargets) ? { activation_targets: activationTargets } : {}),
   };
   store?.recordEvolutionEvent?.(event);
   return { mdPath, source, markdown: finalMarkdown, tldr, event, prompt_cache: promptCache };
@@ -581,6 +585,9 @@ export async function buildEvolutionDiary({
   useAi = true,
   generatedAt = new Date().toISOString(),
   carryoverItems = null,
+  canCommit = null,
+  producer = null,
+  activationTargets = null,
 } = {}) {
   const subjectDoc = pickSubjectDoc(agentContextDocs);
   const language = detectLanguage(subjectDoc?.text);
@@ -647,6 +654,11 @@ export async function buildEvolutionDiary({
   if (!markdown) {
     markdown = renderFallbackDiary({ context, generatedAt, reason: fallbackReason, language });
   }
+  if (typeof canCommit === 'function' && !canCommit()) {
+    const error = new Error('reactor_task_lease_lost');
+    error.code = 'lease_lost';
+    throw error;
+  }
 
   return persistEvolutionDiary({
     markdown,
@@ -660,5 +672,7 @@ export async function buildEvolutionDiary({
       ...promptCache,
       invariant: promptCacheInvariant,
     },
+    producer,
+    activationTargets,
   });
 }

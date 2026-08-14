@@ -7,6 +7,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import {
   EVIDENCE_SOURCE_KINDS,
+  evidenceKey,
   validateEvidenceEnvelope,
 } from '../contracts/evidence-envelope.mjs';
 import { STORE_FILES, readJsonlSafe } from './evidence-audit.mjs';
@@ -119,11 +120,20 @@ function makeEnvelope({
   subject = null,
   payload = null,
 }) {
+  const producer = payload?.producer
+    ?? payload?.evidence_producer
+    ?? null;
+  const activationTargets = payload?.activation_targets ?? null;
+  const producerBatchId = payload?.producer_batch_id ?? payload?.batch_id ?? null;
   return {
     id: String(id),
     kind,
     type: String(type || kind),
     occurred_at: String(occurred_at),
+    evidence_key: evidenceKey(kind, id),
+    producer,
+    producer_batch_id: producerBatchId == null ? null : String(producerBatchId),
+    activation_targets: Array.isArray(activationTargets) ? activationTargets : null,
     provenance: {
       store: provenance.store ?? kind,
       file: provenance.file ?? null,

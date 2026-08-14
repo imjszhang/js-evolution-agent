@@ -244,9 +244,14 @@ export function buildPresenceContext(root, subject, {
     daemon: {
       health: projection.health,
       evolution_mode: projection.evolution_mode,
+      wake_policy: projection.wake_policy ?? null,
+      pipeline: projection.pipeline ?? null,
+      reactor: projection.reactor ?? null,
       cycles: {
         open_count: projection.cycles?.open_count ?? 0,
-        stuck_steps: (projection.cycles?.stuck_steps ?? []).slice(0, 5),
+        stuck_steps: projection.pipeline === 'reactor'
+          ? []
+          : (projection.cycles?.stuck_steps ?? []).slice(0, 5),
         last_closed_cycle_id: projection.cycles?.last_closed_cycle_id ?? null,
       },
       failed_tasks: (projection.tasks?.failed ?? []).slice(0, 5),

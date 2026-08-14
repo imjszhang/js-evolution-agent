@@ -1,6 +1,6 @@
 # 模块 Ownership 与契约变更流程
 
-- 日期：2026-08-07
+- 日期：2026-08-15
 - 背景：见 `docs/module-decoupling-plan.md`（模块解耦与多 Agent 并行维护实施计划）
 
 ## 1. 模块划分与 Owner
@@ -9,7 +9,7 @@
 | --- | --- | --- | --- |
 | 共享内核 | `src/contracts`、`src/infra`、`src/domain` | agent-kernel | schema、原子写、subject registry/路径、`runtime-paths`、`worker-state-read`、`subject-lock` |
 | AI 网关 | `src/ai` | agent-ai | DeepSeek client、LLM 档案、KV 缓存元数据、mock |
-| 认知管线 | `src/intelligence`、`src/evolution`、`src/prompts`、`src/engine` | agent-cognition | Phase 1 agent_loop / reactor / 报告 / Decide、信念、目标、carryover（reactor 下默认停写）、诚实闸；`src/engine` 为 vendored，冻结维护 |
+| 认知管线 | `src/intelligence`、`src/evolution`、`src/prompts`、`src/engine` | agent-cognition | Phase 1 reactor（默认）/ 报告 / Decide、信念、目标、carryover（reactor 下默认停写）、诚实闸；`src/evolution/investigation` 为中性调查模块；agent_loop/phases 仅显式回退；`src/engine` 为 vendored，冻结维护 |
 | 执行层 | `src/actions` | agent-exec | Phase 2 exec、agent adapter、lane/worktree、审批策略 |
 | Daemon 编排 | `src/daemon` | agent-daemon | task queue、worker、step runner、cycle-state、evolve runs、`subject-artifacts` 概览 |
 | Channel | `src/channel` | agent-channel | classifier / presence / speech / notify / control、飞书适配器 |
@@ -50,6 +50,10 @@ Owner 名为角色占位（agent-*），实际分配时替换为具体维护者/
 | `evolution-events.jsonl` | 全模块（经 `recordEvolutionEvent`）→ viewer / report / evidence-audit | `src/contracts/evolution-event.mjs` |
 | evidence stream envelope（虚拟读视图） | 散落证据源 → `jea intel stream` / Phase 2 影子反应器 | `src/contracts/evidence-envelope.mjs` |
 | evidence batch claim（claim ledger） | 认知/法则/记忆反应器 claim-ack | `src/contracts/evidence-batch-claim.mjs` |
+| batch checkpoint | 认知/法则/记忆反应器恢复真相 | `src/contracts/batch-checkpoint.mjs` |
+| wake intent | 证据/operator 生产者 → daemon 幂等唤醒 | `src/contracts/wake-intent.mjs` |
+| exec intent | exec 副作用前写入 → crash 恢复 / verify | `src/contracts/exec-intent.mjs` |
+| exec result | exec → verify 独立认领队列 | `src/contracts/exec-result.mjs` |
 | `agent-rate-ledger.json` | exec agent_run 墙钟速率账本（subject 持久化） | `src/contracts/agent-rate-ledger.mjs` |
 
 ## 4. 跨模块依赖规则

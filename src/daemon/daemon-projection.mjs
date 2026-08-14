@@ -10,6 +10,9 @@ import { readPendingCycleStartRequest } from './cycle-start-requests.mjs';
 import { resolveEvolutionMode } from './evolution-mode.mjs';
 import { resolveCyclePipeline } from './cycle-pipeline-mode.mjs';
 import { isTickOpenCycleEnabled } from './reactor-compensation-gates.mjs';
+import { isReactorPipeline } from './cycle-pipeline-mode.mjs';
+import { buildReactorHealthProjection } from './reactor-health.mjs';
+import { isReactorHealthPrimary } from '../evolution/reactor/feature-gates.mjs';
 import { buildChannelProjection } from '../channel/projection.mjs';
 
 export function daemonViewsDir(root, subject) {
@@ -51,6 +54,8 @@ function buildDaemonHealth({
   progressStalled = false,
   driftSteps = [],
   tickOpenEnabled = false,
+  reactorHealth = null,
+  pipeline = null,
   nowMs = Date.now(),
 }) {
   const counts = tasks.counts || {};
@@ -105,7 +110,10 @@ function buildDaemonHealth({
       ok = false;
       reasons.push('Pending cycle start request could not be consumed within 2 tick windows');
       suggestions.push('Check open cycles, pending tasks, or worker logs; use `jea daemon status --json` for details.');
-    } else if (progressStalled || (openCount > 0 && driftSteps.length > 0 && worker.running)) {
+    } else if (
+      !isReactorPipeline(pipeline)
+      && (progressStalled || (openCount > 0 && driftSteps.length > 0 && worker.running))
+    ) {
       status = 'cycle_progress_stalled';
       ok = false;
       reasons.push('Open cycle exists but no step progress within the expected tick window');
@@ -113,6 +121,11 @@ function buildDaemonHealth({
         reasons.push(`${driftSteps.length} step state drift item(s) detected (terminal cycle-state with running task)`);
       }
       suggestions.push('Wait for watchdog recovery, inspect with `jea daemon doctor`, or restart the worker if stuck persists.');
+    } else if (isReactorPipeline(pipeline) && reactorHealth && reactorHealth.ok === false) {
+      status = reactorHealth.status === 'blocked' ? 'blocked' : 'reactor_backlog_stalled';
+      ok = false;
+      reasons.push(...(reactorHealth.reasons ?? []));
+      suggestions.push(...(reactorHealth.suggestions ?? []));
     } else if (evolutionStalled) {
       status = 'evolution_stalled';
       ok = false;
@@ -247,27 +260,33 @@ export function buildDaemonProjection(root, subject, { store = null, eventLimit 
     }
   }
 
+  const evolution = resolveEvolutionMode(root, { subject, flags });
+  const pipeline = resolveCyclePipeline(root, { subject, flags }).pipeline;
+  const reactorPrimary = isReactorPipeline(pipeline);
   const cycles = {
     ...cycleProjection,
-    stuck_steps: stuckSteps,
-    drift_steps: driftSteps,
-    progress_stalled: progressStalled,
+    stuck_steps: reactorPrimary ? [] : stuckSteps,
+    drift_steps: reactorPrimary ? [] : driftSteps,
+    progress_stalled: reactorPrimary ? false : progressStalled,
     oldest_open_cycle_age_ms: oldestOpenCycleAgeMs,
     recent: openCycles.slice(0, 5).map((cycle) => summarizeCycleState(cycle, { taskQueue: queue, subject, root })),
     last_closed_cycle_id: lastClosedCycle?.cycle_id ?? null,
     last_closed_at: lastClosedCycle?.closed_at ?? null,
   };
-
-  const evolution = resolveEvolutionMode(root, { subject, flags });
-  const pipeline = resolveCyclePipeline(root, { subject, flags }).pipeline;
   const pendingCycleStartRequest = cycleProjection.pending_cycle_start_request
     ?? readPendingCycleStartRequest(root, subject);
+  const reactor = buildReactorHealthProjection(root, subject, { worker });
+  const wakePolicy = isReactorPipeline(pipeline) ? 'evidence_driven' : evolution.mode;
 
   return {
     subject,
     generated_at: new Date().toISOString(),
     evolution_mode: evolution.mode,
     evolution_mode_source: evolution.source,
+    evolution_mode_deprecated: isReactorPipeline(pipeline),
+    wake_policy: wakePolicy,
+    pipeline,
+    reactor,
     worker,
     health: buildDaemonHealth({
       worker,
@@ -281,6 +300,8 @@ export function buildDaemonProjection(root, subject, { store = null, eventLimit 
       progressStalled,
       driftSteps,
       tickOpenEnabled: isTickOpenCycleEnabled({ pipeline }),
+      reactorHealth: isReactorHealthPrimary() ? reactor : null,
+      pipeline,
     }),
     tasks,
     cycles,

@@ -227,7 +227,7 @@ describe('cycle-start-requests', () => {
     enqueueCycleStartRequest(root, 'alpha', { reason: 'manual' });
     const processed = processCycleStartRequests(root, 'alpha', { tick_ms: 300_000 });
     expect(processed.started).toBe(false);
-    expect(processed.reason).toBe('stalled_open_cycle');
+    expect(processed.reason).toBe('open_cycle_exists');
     rmSync(root, { recursive: true, force: true });
   });
 });

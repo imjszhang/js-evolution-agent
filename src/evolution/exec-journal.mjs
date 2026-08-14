@@ -114,11 +114,14 @@ function entryFromReceipt(receipt, seq) {
  */
 export function createExecJournal({
   cycleId = null,
+  executionId = null,
+  reactionId = null,
   store = null,
   maxEntries = EXEC_JOURNAL_MAX_ENTRIES,
   maxLineChars = EXEC_JOURNAL_MAX_LINE_CHARS,
   summaryChars = EXEC_JOURNAL_SUMMARY_CHARS,
 } = {}) {
+  const journalAnchor = executionId || reactionId || cycleId;
   const entries = [];
   const seenKeys = new Set();
   let nextSeq = 1;
@@ -151,11 +154,14 @@ export function createExecJournal({
   }
 
   // Replay receipts for idempotent rebuild after daemon exec resume.
-  if (cycleId && store && typeof store.readActionReceipts === 'function') {
+  if (journalAnchor && store && typeof store.readActionReceipts === 'function') {
     try {
       const receipts = store.readActionReceipts({ limit: 100 }) ?? [];
       const matched = receipts
-        .filter((r) => r?.cycle_id === cycleId || r?.exec_cycle_id === cycleId)
+        .filter((r) => r?.cycle_id === journalAnchor
+          || r?.exec_cycle_id === journalAnchor
+          || r?.execution_id === journalAnchor
+          || r?.reaction_id === journalAnchor)
         .slice()
         .reverse(); // readRecent typically newest-first; restore chronological
       for (const receipt of matched) {
@@ -167,7 +173,7 @@ export function createExecJournal({
   }
 
   return {
-    cycleId,
+    cycleId: journalAnchor,
     get size() {
       return entries.length;
     },
@@ -231,7 +237,9 @@ export function createExecJournal({
     },
     toJSON() {
       return {
-        cycle_id: cycleId,
+        cycle_id: journalAnchor,
+        execution_id: executionId || journalAnchor,
+        reaction_id: reactionId || null,
         entries: entries.map((e) => ({
           seq: e.seq,
           source: e.source,

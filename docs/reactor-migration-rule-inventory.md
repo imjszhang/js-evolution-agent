@@ -24,8 +24,8 @@
 | 法则 | 位置 | 补什么 | 分类 | 处置 |
 | --- | --- | --- | --- | --- |
 | continuous 模式 5min tick 自动开轮 | `daemon` worker tick（`tick-ms=300000`） | 时间驱动代偿「证据驱动」缺失 | **A** | **已停用（reactor 默认）**（2026-08-15）：heartbeat 不再入队 `reason: tick`；遗留 tick-only 请求被消费并忽略。`JEA_TICK_OPEN_CYCLE=1` 或 agent_loop/phases 可恢复 |
-| `continuous` / `on_demand` 双模式与解析优先级 | `evolution-mode.mjs`、registry、env | 同上；on_demand 是向证据驱动迈的半步 | **A** | **残留待专项**：reactor 下开轮行为已等价（#45）；CLI / channel control / 健康文案仍绑双模式 |
-| cycle-start-requests 消费 | `cycle-start-requests.mjs` | 人工开轮入口绑定「轮」概念 | 混合 | 保留入口，改为一条 operator 证据事件 |
+| `continuous` / `on_demand` 双模式与解析优先级 | `evolution-mode.mjs`、registry、env | 同上；on_demand 是向证据驱动迈的半步 | **A** | **已 deprecate（2026-08-15）**：reactor 投影 `wake_policy=evidence_driven`；channel mode set/show 标 deprecated；解析仍兼容 |
+| cycle-start-requests 消费 | `cycle-start-requests.mjs` | 人工开轮入口绑定「轮」概念 | 混合 | **已换单位（2026-08-15）**：`JEA_EVIDENCE_WAKE=1` 时转为 cognitive wake；旧开轮仍为默认兼容入口 |
 | `JEA_CYCLE_STEP` / `JEA_CYCLE_ID` / `JEA_CYCLE_DRIVER` env 接力 | `runner.mjs` | 子进程列车需要环境变量传递轮次身份 | **A** | **残留待专项**：daemon step 子进程（含 reactor step）仍依赖；随「去子进程列车」一起拆 |
 
 ## 2. Step 列车韧性（A 为主，是最大的补偿群之一）
@@ -34,10 +34,10 @@
 | --- | --- | --- | --- | --- |
 | tick reconcile（checkpoint / task queue 漂移修复） | daemon tick | 列车 + 双源真相（cycle-state 与 task queue）必然漂移 | **A** | **部分停用**（2026-08-15）：`reconcileStepStateDrift`（按产物假完成 running task）reactor 默认关；abandon stale / 缺步入队保留。`JEA_STEP_ARTIFACT_RECONCILE=1` 或列车 pipeline 可恢复 |
 | stuck step watchdog（hang 但 checkpoint 已写 → 杀 runner 按产物完成） | daemon heartbeat | 子进程列车可能 hang | A/D 混合 | **拆分保留**：进程超时（D）仍在；tick 路径「按产物假完成」已关（#45） |
-| `drift_steps` / `progress_stalled` / `stuck_steps` 健康判定 | `daemon-projection` | 观测列车是否卡住 | **A** | **残留待专项**：doctor / inbox / viewer / channel 仍消费；先换 reactor backlog 指标再删 |
+| `drift_steps` / `progress_stalled` / `stuck_steps` 健康判定 | `daemon-projection` | 观测列车是否卡住 | **A** | **已换主口径（2026-08-15）**：reactor 生产投影不再用旧字段阻断；doctor/viewer/channel 改看 `reactor` backlog |
 | step checkpoint 接力（下游从 `<step>.json` 重建上游产物） | `cycle-checkpoints.mjs` | step 子进程隔离切断了内存传递 | 混合 | **可恢复性是本质需求**；但「按 step 切檔」是列车派生。换单位：以证据批为 checkpoint 单元 |
 | 历史 cycle-state 缺 `meta.pipeline` 按 `phases` reconcile | `cycle-reducer.mjs` | 双 pipeline 兼容 | **A** | **已消解**（2026-08-15）：三 subject 无缺 pipeline 的 open cycle（列车 250 条缺字段均为 closed）；`cyclePipelineOf` 缺字段 / 未知值按 `reactor`，显式 `phases` / `agent_loop` 仍按自身步图 |
-| `run_cycle` 整轮任务与 step 任务并存 | daemon tasks | 新旧两种驱动方式共存 | **A** | **残留待专项**：`jea evolve --enqueue-only` / 本地整轮调试仍用；先 deprecate 再删 |
+| `run_cycle` 整轮任务与 step 任务并存 | daemon tasks | 新旧两种驱动方式共存 | **A** | **已双轨（2026-08-15）**：新增 `cognitive_reaction`/`exec_queue`/`verify_batch`/`rule_reaction`/`memory_compaction`；`JEA_EVIDENCE_WAKE=1` 时 `run_cycle` 转 cognitive wake；子进程列车保留显式回退 |
 
 ## 3. 跨轮信息流：carryover 家族（最典型的补偿群，几乎全 A）
 
@@ -68,8 +68,8 @@
 
 | 法则 | 位置 | 分类 | 处置 |
 | --- | --- | --- | --- |
-| 按轮聚合结果签名（`JEA_RULE_FEEDBACK_WINDOW=8` 轮） | `rule-feedback.mjs` | 混合 | 意图（后果感知）保留；聚合窗口换为证据批/时间窗 |
-| dead / starved streak 按连续轮数判定（`DEAD_STREAK=3`） | 同上 | 混合 | 换单位：连续 N 条 serving 证据无信息增量 |
+| 按轮聚合结果签名（`JEA_RULE_FEEDBACK_WINDOW=8` 轮） | `rule-feedback.mjs` | 混合 | **生产默认已切（2026-08-15）**：`streak_unit=evidence`、窗口 24 条；显式 `JEA_RULE_FEEDBACK_STREAK_UNIT=cycle` 回退 |
+| dead / starved streak 按连续轮数判定（`DEAD_STREAK=3`） | 同上 | 混合 | **生产默认 `wall_clock`（2026-08-15）**：48h 窗口；`global_count` 仍可显式回退 |
 | mutate cooldown（`MUTATE_COOLDOWN=2` 轮，冷却期 dead 降级 degraded） | 同上 | **A 倾向** | 轮次粒度太粗才需要「等两轮」；证据驱动下自然表达为「等到该 goal 下一条 serving 证据再判」 |
 | `mutate_effective`（化妆式 mutate 检测、不豁免报警） | 同上 | **B** | 保留（防目标自修正机制自欺，理论核心） |
 | 死亡边界报警（escalate → operator question，`trigger: rule_feedback_dead`） | 同上 | **B** | 保留（校准回路失灵的最后防线），触发条件换单位 |
@@ -80,8 +80,8 @@
 
 | 法则 | 位置 | 分类 | 处置 |
 | --- | --- | --- | --- |
-| brief 单轮消费 → processed 归档 | `operator-briefs.mjs` | 混合 | 「一次性意图」本质保留；消费单位从「下一轮」改为「下一次相关反应」 |
-| operator fact 恰好一轮默认真 → 轮末消化进信念 | `operator-facts.mjs`、`operator-fact-digestion.mjs` | 混合 | **权威衰减是本质设计**；「恰好一轮」是节拍绑定，改为「默认真直至被下一批相关后果消化」 |
+| brief 单轮消费 → processed 归档 | `operator-briefs.mjs` | 混合 | **已双写（2026-08-15）**：`consumed_by_batch` + 兼容 `consumed_by_cycle`；下一次相关 cognitive reaction 消费 |
+| operator fact 恰好一轮默认真 → 轮末消化进信念 | `operator-facts.mjs`、`operator-fact-digestion.mjs` | 混合 | **已换单位（2026-08-15）**：`activation_batch_id` 存在时，无相关证据不得因轮末自动转 belief |
 | operator question 打开/销账 | `operator-questions.mjs` | **B** | 保留 |
 | guidance `## Current` 每轮注入 | report/decide prompt | 混合 | 保留语义（持续约束），注入点改为每次认知反应 |
 | 存量 operator_fact 幂等迁移（cycle 开始时） | host | **A** | **已删生产调用**（2026-08-15）：三 subject 扫盘无遗留 observation-store fact；`migrateLegacyOperatorFacts` 仅留库函数 + 单测 |
@@ -115,11 +115,11 @@
 
 | 法则 | 位置 | 分类 | 处置 |
 | --- | --- | --- | --- |
-| `JEA_EXEC_AGENT_BUDGET=8`（每轮 agent_run 预算） | `pipelines/exec.mjs` | 混合 | **速率载体已就绪**（#36）：`JEA_EXEC_AGENT_RATE` + 滑动窗口账本；与每轮预算双闸并存；按轮预算留待 Phase 5 观察期后再删 |
+| `JEA_EXEC_AGENT_BUDGET=8`（每轮 agent_run 预算） | `pipelines/exec.mjs` | 混合 | **已影子+可选硬闸（2026-08-15）**：默认写 rate ledger 影子 `would_execute_without_cycle_budget`；`JEA_EXEC_RATE_ONLY=1` 时速率+并发为唯一硬闸 |
 | 波次调度、写类 profile 独占波宽 1 | 同上 | **B** | 保留（写冲突安全） |
 | `JEA_AGENT_MAX_ATTEMPTS` 重试 → blocked | queue | **D** | 保留 |
-| mechanical guards `every_cycles` 到期执行 | `guard-runner.mjs` | 混合 | 本质是 cron；调度单位从轮改为时间/事件 |
-| exec journal（轮内兄弟 action 信息共享，`Earlier actions this cycle`） | `exec-journal.mjs` | **A 倾向** | **残留待专项**：reactor 仍走独立 `exec` step，同轮多 agent_run 仍需兄弟上下文 |
+| mechanical guards `every_cycles` 到期执行 | `guard-runner.mjs` | 混合 | **已支持墙钟（2026-08-15）**：`every_ms` / `every_hours` + `last_run_at`；未设墙钟时仍按 `every_cycles` |
+| exec journal（轮内兄弟 action 信息共享，`Earlier actions this cycle`） | `exec-journal.mjs` | **A 倾向** | **已换锚点（2026-08-15）**：`execution_id` / `reaction_id` 与 cycle_id 双读 |
 | decision backlog 注入 Decide prompt | `phase1-shared` | 混合 | 保留（认知需看见积压），注入时机改为反应时 |
 
 ## 10. LLM 成本与档位（C，与本次迁移无关但有一处交叉）
@@ -180,19 +180,19 @@ subject lock、`worker-state` 心跳与 zombie 检测、队列写 EPERM/EBUSY �
 | # | 法则 | 销账 | 证据 |
 | --- | --- | --- | --- |
 | A1 | tick 自动开轮 | **已消解**（reactor 默认） | [PR #45](https://github.com/imjszhang/js-evolution-agent/pull/45) |
-| A2 | continuous / on_demand 双模式 | 残留待专项 | #45 后开轮行为已等价；API/channel 未收敛 |
-| A3 | `JEA_CYCLE_*` env 接力 | 残留待专项 | `runner.mjs` / `runReactorStep` 仍读 env |
+| A2 | continuous / on_demand 双模式 | **已 deprecate** | 2026-08-15：reactor `wake_policy=evidence_driven`；channel set/show 标 deprecated |
+| A3 | `JEA_CYCLE_*` env 接力 | **新路径已脱离** | 2026-08-15：`cognitive_reaction` 等 task 进程内执行，不读 `JEA_CYCLE_*`；子进程列车仍可读。`JEA_IN_PROCESS_CYCLE` 随 `JEA_EVIDENCE_WAKE` 生效，不是死 gate |
 | A4 | tick reconcile 产物假完成 | **已消解**（reactor 默认） | [PR #45](https://github.com/imjszhang/js-evolution-agent/pull/45) |
 | A5 | stuck watchdog 按产物完成 | 部分消解 | 进程超时保留（D）；tick 假完成已关（#45） |
-| A6 | drift / stalled / stuck 健康判定 | 残留待专项 | doctor / viewer / channel 仍消费字段 |
+| A6 | drift / stalled / stuck 健康判定 | **已换主口径** | 2026-08-15：reactor 投影 + doctor/viewer/channel 改看 backlog；旧字段仅列车 pipeline |
 | A7 | 缺 `meta.pipeline` → phases | **已消解** | 三 subject 扫盘无缺字段 open cycle；`cyclePipelineOf` 缺字段按 reactor |
-| A8 | `run_cycle` 与 step 并存 | 残留待专项 | evolve enqueue-only / 本地整轮调试 |
+| A8 | `run_cycle` 与 step 并存 | **已双轨** | 2026-08-15：wake + reactor task 类型；`JEA_EVIDENCE_WAKE=1` 时 `run_cycle` 转 cognitive |
 | A9–A13 | carryover 写侧家族（搬运 / 限额 / 销账 / stale / fingerprint） | **已消解** | [PR #44](https://github.com/imjszhang/js-evolution-agent/pull/44) |
 | A14 | suggestion coverage / `decide_coverage_gap` | **reactor 已不发生** | `cognitive-reactor.mjs` Decide 无 coverage；agent_loop 残留 |
 | A15 | diary 时间线 / 销账章节 | **已消解销账；时间线按 B 保留** | [PR #44](https://github.com/imjszhang/js-evolution-agent/pull/44) |
 | A16 | 存量 operator_fact 迁移 | **已删生产调用** | 本 PR；三 subject 扫盘无遗留 |
 | A17 | channel 废弃任务自动 purge | **已删启动自动 purge** | 本 PR；手动 `purge-deprecated` 保留 |
-| — | exec journal | 残留待专项（A 倾向） | reactor 仍走独立 exec step |
-| — | `cycles_seen` TTL | 残留待专项 | 墙钟后备已在；按轮 TTL 另立项 |
+| — | exec journal | **已换锚点** | 2026-08-15：`execution_id` / `reaction_id` 双读 |
+| — | `cycles_seen` TTL | **已双算** | 2026-08-15：`ttl_dual` + `JEA_QUEUE_DISABLE_CYCLE_TTL` 停递增 |
 
 M6 锚点（第 13 节结论 3）不在本表删除范围内：KV 前缀、批次 checkpoint、honesty 审计单元。

@@ -23,7 +23,7 @@ export function resolvePresenceAffordances(root, subject) {
     operator_commands: [
       {
         id: 'daemon_evolution_mode_continuous',
-        purpose: 'Set subject to continuous evolution (daemon auto-opens cycles).',
+        purpose: 'Deprecated under reactor. Set continuous mode (tick open is off by default).',
         cmd: `npm run jea -- daemon evolution-mode set continuous --subject ${subj}`,
       },
       {
@@ -33,7 +33,7 @@ export function resolvePresenceAffordances(root, subject) {
       },
       {
         id: 'daemon_evolution_mode_show',
-        purpose: 'Show current evolution mode and source.',
+        purpose: 'Show current evolution mode (deprecated under reactor; prefer wake_policy).',
         cmd: `npm run jea -- daemon evolution-mode show --subject ${subj}`,
       },
       {

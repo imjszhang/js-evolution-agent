@@ -31,6 +31,18 @@ function flattenGoals(goals) {
   return out;
 }
 
+function filterGoalTree(goals, goalIds = null) {
+  if (!goals || !Array.isArray(goalIds) || !goalIds.length) return goals;
+  const due = new Set(goalIds);
+  const visit = (node) => {
+    if (!node) return null;
+    const children = (node.children || []).map(visit).filter(Boolean);
+    if (!due.has(node.id) && !children.length) return null;
+    return { ...node, children };
+  };
+  return visit(goals);
+}
+
 function pickDoc(docs, idPrefix) {
   if (!Array.isArray(docs)) return null;
   return docs.find((d) => typeof d?.id === 'string' && d.id.startsWith(idPrefix)) || null;
@@ -208,8 +220,10 @@ export function buildGoalAssessmentContext({
   store,
   goalEventsLimit = 10,
   ruleFeedbackStats = null,
+  goalIds = null,
 } = {}) {
-  const goals = flattenGoals(activeGoals);
+  const scopedActiveGoals = filterGoalTree(activeGoals, goalIds);
+  const goals = flattenGoals(scopedActiveGoals);
   const evidence = gatherEvidence(store);
   const machineAssessment = assessGoals(goals, evidence);
   const recentGoalEvents = store?.readGoalEvents?.({ limit: goalEventsLimit }) ?? [];
@@ -218,7 +232,8 @@ export function buildGoalAssessmentContext({
   const markdown = reportMarkdown ?? readReportMarkdown(reportRecord);
 
   return {
-    active_goals: activeGoals,
+    active_goals: scopedActiveGoals,
+    due_goal_ids: Array.isArray(goalIds) ? goalIds : null,
     flat_goals: goals,
     current_beliefs: {
       active: beliefPartitions.active,
@@ -496,6 +511,7 @@ export async function assessGoalsWithAi({
   agentContextDocs = [],
   logger = null,
   ruleFeedbackStats = null,
+  goalIds = null,
 } = {}) {
   const context = buildGoalAssessmentContext({
     activeGoals,
@@ -504,6 +520,7 @@ export async function assessGoalsWithAi({
     verificationReportPath,
     store,
     ruleFeedbackStats,
+    goalIds,
   });
   const prompt = buildGoalAssessmentPrompt({ context, agentContextDocs });
   const stablePrompt = buildGoalAssessmentPrompt({ context: {}, agentContextDocs });

@@ -4,6 +4,7 @@ const NOTIFY_SIGNAL_TYPES = new Set([
   'task_failed',
   'daemon_health',
   'cycle_drift',
+  'reactor_backlog',
   'requires_human_review',
 ]);
 

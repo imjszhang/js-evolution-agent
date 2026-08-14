@@ -287,6 +287,7 @@ export async function queueAnalyzeDecideActions({
   /** @deprecated Ignored: Decide actions are fully enqueued (no JEA_EXEC_LIMIT truncation). */
   maxActions = null,
   pipeline,
+  batchId = null,
 } = {}) {
   if (pipeline == null || pipeline === '') {
     throw new Error('queueAnalyzeDecideActions requires an explicit pipeline (phases | agent_loop | reactor)');
@@ -374,6 +375,7 @@ export async function queueAnalyzeDecideActions({
   const runtimeRoot = runtime?.runtimeRoot || projectRoot;
   const processedBriefs = markOperatorBriefsProcessed(runtimeRoot, operatorBriefs, {
     cycleId,
+    batchId,
     outcome: queued.ids?.length ? 'consumed_with_decisions' : 'consumed_without_decisions',
   });
 

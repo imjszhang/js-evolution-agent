@@ -135,6 +135,11 @@ export function parseAgentMaxAttemptsFromEnv() {
   return Math.floor(n);
 }
 
+function isCycleTtlDisabled(env = process.env) {
+  const raw = String(env.JEA_QUEUE_DISABLE_CYCLE_TTL || '').trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+}
+
 function parsePositiveIntEnv(name, fallback, { min = 1, max = MAX_TTL_CYCLES } = {}) {
   const raw = process.env[name];
   if (raw == null || raw === '') return fallback;
@@ -845,7 +850,8 @@ export class DecisionQueue {
       const status = d.status || '';
       ensureDecisionDefaults(d);
 
-      if (increment && (status === STATUS_PENDING || status === STATUS_BLOCKED)) {
+      const disableCycleTtl = isCycleTtlDisabled();
+      if (increment && !disableCycleTtl && (status === STATUS_PENDING || status === STATUS_BLOCKED)) {
         d.cycles_seen = (d.cycles_seen || 0) + 1;
         incremented += 1;
         if (cycleId) d.last_maintenance_cycle = cycleId;
@@ -855,9 +861,16 @@ export class DecisionQueue {
         const createdMs = createdAtMs(d);
         let expireReason = null;
         const cycleLimit = status === STATUS_PENDING ? pendingTtl : blockedTtl;
-        if (d.cycles_seen > cycleLimit) {
+        const cycleDue = !disableCycleTtl && d.cycles_seen > cycleLimit;
+        const wallclockDue = createdMs != null && createdMs < wallclockCutoff;
+        d.ttl_dual = {
+          cycle_due: cycleDue,
+          wallclock_due: wallclockDue,
+          cycles_seen: d.cycles_seen ?? 0,
+        };
+        if (cycleDue) {
           expireReason = 'cycles';
-        } else if (createdMs != null && createdMs < wallclockCutoff) {
+        } else if (wallclockDue) {
           expireReason = 'wallclock';
         }
         if (expireReason) {
