@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  cyclePipelineOf,
   nextSteps,
   reconcileCycle,
   shouldStartCycleFromTick,
@@ -195,5 +196,23 @@ describe('cycle-reducer', () => {
     expect(steps.some((s) => s.type === 'exec')).toBe(true);
     expect(steps.some((s) => s.type === 'verify')).toBe(false);
     expect(steps.some((s) => s.type === 'intel')).toBe(false);
+  });
+
+  it('cyclePipelineOf treats missing pipeline as reactor, not phases', () => {
+    expect(cyclePipelineOf({ meta: {} })).toBe('reactor');
+    expect(cyclePipelineOf({ meta: { pipeline: 'phases' } })).toBe('phases');
+    expect(cyclePipelineOf({ meta: { pipeline: 'agent_loop' } })).toBe('agent_loop');
+    expect(cyclePipelineOf({ meta: { pipeline: 'reactor' } })).toBe('reactor');
+
+    const legacy = {
+      cycle_id: 'cycle-legacy',
+      subject: 'alpha',
+      status: 'open',
+      steps: {},
+      meta: {},
+    };
+    expect(cyclePipelineOf(legacy)).toBe('reactor');
+    const { steps } = nextSteps({ type: 'cycle_due', cycle_id: 'cycle-legacy' }, legacy);
+    expect(steps.map((s) => s.type)).toEqual(['reactor']);
   });
 });

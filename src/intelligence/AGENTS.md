@@ -42,7 +42,7 @@ agent_loop → exec → verify → belief_update → goals_assess → goals_cali
 3. env `JEA_CYCLE_PIPELINE`
 4. 默认 `reactor`
 
-显式选择 `phases` 时会打一次 deprecation 警告；可用 `JEA_SUPPRESS_PHASES_DEPRECATION=1` 静音。历史 cycle-state 若缺 `meta.pipeline`，读盘时仍按 `phases` 步图 reconcile（避免误判旧 open cycle）。
+显式选择 `phases` 时会打一次 deprecation 警告；可用 `JEA_SUPPRESS_PHASES_DEPRECATION=1` 静音。cycle-state 缺 `meta.pipeline` 时按 `reactor` 步图 reconcile（显式 `phases` / `agent_loop` 仍按自身步图）。
 
 **deprecated `phases` Phase 1**（仅显式启用时）：
 

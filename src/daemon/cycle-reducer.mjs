@@ -47,8 +47,8 @@ export function stepTypesForPipeline(pipeline = 'phases') {
 export function cyclePipelineOf(cycleState) {
   const pipeline = cycleState?.meta?.pipeline;
   if (pipeline === 'agent_loop') return 'agent_loop';
-  if (pipeline === 'reactor') return 'reactor';
-  return 'phases';
+  if (pipeline === 'phases') return 'phases';
+  return 'reactor';
 }
 
 function isIntelSingleStepPipeline(pipeline) {
