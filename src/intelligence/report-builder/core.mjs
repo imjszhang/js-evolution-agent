@@ -4,7 +4,6 @@ import { buildTemporalDecisionBrief } from '../decision-brief.mjs';
 import { normalizeCurrentBeliefs } from '../beliefs.mjs';
 import {
   markOperatorFactsInjected,
-  migrateLegacyOperatorFacts,
   readPendingOperatorFacts,
   summarizeOperatorFactsForContext,
 } from '../operator-facts.mjs';
@@ -364,15 +363,7 @@ export function gatherReportContext({
     pending_operator_questions: [],
   };
 
-  // Migrate legacy observation-store operator facts into pending/ (idempotent).
   if (runtime?.runtimeRoot) {
-    const migration = migrateLegacyOperatorFacts(runtime.runtimeRoot, context.observations, { store });
-    context.operator_fact_migration = {
-      migrated: migration.migrated.length,
-      skipped: migration.skipped.length,
-      ids: migration.migrated.map((m) => m.id),
-    };
-
     const pendingRead = readPendingOperatorFacts(runtime.runtimeRoot, { limit: 50 });
     const cycleId = intelResult?.cycle_id ?? null;
     // Mark as injected this cycle so Phase 3.5 digests only these seeds.

@@ -385,6 +385,7 @@ export function operatorFactDisplayName(fact) {
 /**
  * Migrate legacy high-confidence operator facts from intel_observations into pending/.
  * Idempotent: skips ids already present in pending/ or digested/.
+ * Production report gather no longer calls this (M5 write-off, 2026-08-15).
  */
 export function migrateLegacyOperatorFacts(runtimeRoot, observations = [], {
   store = null,

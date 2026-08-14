@@ -1,6 +1,6 @@
 # M5 列车退役单向门 Checklist
 
-**状态：默认切换已完成（PR #43）；tick 开轮与产物对账补偿已停用（本 PR）；法则清单 A 类销账待后续 PR**  
+**状态：默认切换（#43）、tick 补偿（#45）、A 类销账（本 PR）已完成；进入 M6 锚点**  
 观察期正式起算：**2026-08-13**（PR #41 合 main；见 `docs/reactor-migration-observation.md`）  
 关联：#33 Phase 6 / #34  
 确认留言：https://github.com/imjszhang/js-evolution-agent/issues/34#issuecomment-5295423845
@@ -19,6 +19,6 @@
 
 1. **完成**：默认 pipeline → `reactor`（PR #43，`resolveCyclePipeline` default + 文档）
 2. **完成**：停用 tick 自动开轮与 step 产物对账补偿（reactor 默认关；`JEA_TICK_OPEN_CYCLE=1` / `JEA_STEP_ARTIFACT_RECONCILE=1` 可恢复；abandon stale / 缺步入队保留）
-3. 法则清单 A 类逐条销账并附证据链接（后续 PR）
+3. **完成**：法则清单 A 类逐条销账（§15）；已消解挂 #44/#45；残留标专项。生产调用删除：operator_fact 迁移、channel 启动自动 purge
 4. **完成**（2026-08-15）：全量回归 1043 passed / 7 skipped；三 subject mock 冒烟（`feishu-flow-test` 走默认 reactor、沙盒、列车含 memory-audit guard）均整轮 closed
 5. 进入 M6 锚点验收

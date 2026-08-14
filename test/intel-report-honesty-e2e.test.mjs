@@ -26,6 +26,7 @@ import {
   runIntelStep,
 } from '../src/evolution/cycle-steps.mjs';
 import { writePendingOperatorBrief } from '../src/intelligence/operator-briefs.mjs';
+import { writePendingOperatorFact } from '../src/intelligence/operator-facts.mjs';
 import { MockToolsAIClient } from '../src/ai/mock-tools-client.mjs';
 import {
   assertIntelReportDeliverable,
@@ -162,6 +163,12 @@ function safeRm(root) {
 const SECRET_SHAPED = 'API_KEY=sk-ant-api03ABCDEFGH12345678';
 
 function seedHonestyFixture(store, runtimeRoot) {
+  writePendingOperatorFact(runtimeRoot, {
+    id: FACT_ID,
+    content: `standing.rank lower is better; rankScore higher is better; ${SECRET_SHAPED}`,
+    confidence: 'high',
+    source: 'operator',
+  });
   store.ingest('intel_observations', {
     id: FACT_ID,
     kind: 'operator_fact',
