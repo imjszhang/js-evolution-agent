@@ -48,7 +48,10 @@ export {
 } from './evolution-event.mjs';
 
 export {
+  EVIDENCE_PRODUCERS,
   EVIDENCE_SOURCE_KINDS,
+  evidenceKey,
+  parseEvidenceKey,
   validateEvidenceEnvelope,
 } from './evidence-envelope.mjs';
 
@@ -57,6 +60,28 @@ export {
   EVIDENCE_BATCH_REACTORS,
   validateEvidenceBatchClaim,
 } from './evidence-batch-claim.mjs';
+
+export {
+  BATCH_CHECKPOINT_STAGES,
+  validateBatchCheckpoint,
+} from './batch-checkpoint.mjs';
+
+export {
+  WAKE_INTENT_KINDS,
+  WAKE_INTENT_STATUSES,
+  validateWakeIntent,
+} from './wake-intent.mjs';
+
+export {
+  EXEC_INTENT_STATUSES,
+  execIntentKey,
+  validateExecIntent,
+} from './exec-intent.mjs';
+
+export {
+  EXEC_RESULT_STATUSES,
+  validateExecResult,
+} from './exec-result.mjs';
 
 export {
   validateAgentRateLedger,
