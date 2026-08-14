@@ -91,17 +91,17 @@ describe('cycle pipeline mode', () => {
       flags: { pipeline: 'garbage' },
       env: { JEA_CYCLE_PIPELINE: 'also-bad' },
     });
-    expect(resolved).toEqual({ pipeline: 'agent_loop', source: 'default' });
+    expect(resolved).toEqual({ pipeline: 'reactor', source: 'default' });
   });
 
-  it('defaults to agent_loop when unset', () => {
+  it('defaults to reactor when unset', () => {
     writeRegistry(null);
     const resolved = resolveCyclePipeline(tempRoot, {
       subject: 'demo',
       flags: {},
       env: {},
     });
-    expect(resolved).toEqual({ pipeline: 'agent_loop', source: 'default' });
+    expect(resolved).toEqual({ pipeline: 'reactor', source: 'default' });
   });
 
   it('still resolves explicit phases and warns once unless suppressed', () => {

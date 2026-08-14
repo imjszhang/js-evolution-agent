@@ -179,10 +179,10 @@ Typical use: let an AI subject investigate, edit code, simulate, and prepare rel
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-Per-cycle pipeline (default **`agent_loop`**):
+Per-cycle pipeline (default **`reactor`**):
 
 ```text
-Phase 1   agent_loop (readonly investigation → host Seen → report → Analyze+Decide)
+Phase 1   reactor (claim evidence batch → investigate → host Seen → report → Decide)
 Phase 2   exec (consume pending_decisions; Cycle Journal shares sibling action notes; carryover v2 + suggestion coverage survive into diary)
 Phase 3   verify (mechanical + semantic)
 Phase 3.5 belief_update

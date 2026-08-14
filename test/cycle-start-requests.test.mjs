@@ -127,7 +127,7 @@ describe('cycle-start-requests', () => {
     enqueueCycleStartRequest(root, 'alpha', { reason: 'manual' });
     const processed = processCycleStartRequests(root, 'alpha', { evolution_mode: 'on_demand' });
     expect(processed.started).toBe(true);
-    expect(readTaskQueue(root, 'alpha').tasks.some((t) => t.type === 'agent_loop')).toBe(true);
+    expect(readTaskQueue(root, 'alpha').tasks.some((t) => t.type === 'reactor')).toBe(true);
     rmSync(root, { recursive: true, force: true });
   });
 

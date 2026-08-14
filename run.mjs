@@ -243,7 +243,7 @@ async function runCycle(runtime) {
     console.log('  success:', execResult.success);
     console.log('  executed:', execResult.executed.length);
   } else if (pipeline === 'reactor') {
-    console.log('\n=== Cognitive reactor (Phase 3 gray) ===');
+    console.log('\n=== Cognitive reactor ===');
     const reactorOutcome = await runReactorStep(ctx, { cycleId: cycleState.cycle_id, recordState });
     intelResult = reactorOutcome.intelResult;
     intelReportReady = Boolean(intelResult?.report?.mdPath);

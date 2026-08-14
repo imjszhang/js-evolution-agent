@@ -4,7 +4,7 @@
 - **验收口径（已改为快速确认，不再等 2 周）**：5 轮沙盒 mock + 回滚对照 + 列车只读对照
 - 关联：#33 / #34 / #39
 - 沙盒主体：`js-evolution-agent`（reactor）
-- 列车主体：`agentank-tank`（保持 `agent_loop`，直至 M5 过门）
+- 列车主体：`agentank-tank`（2026-08-14 registry 灰度 `reactor`；M5 默认代码路径亦切 `reactor`）
 
 入口（仅沙盒，勿写入项目根 `.env` / 列车 daemon）：
 
@@ -114,7 +114,35 @@ live Decide 因 API `ECONNRESET` 未产出记录型决策，exec 缺 params 的�
 
 本 PR 另将 `normalizeThinkingMode('low'|'medium')` 改为 `off`（DeepSeek 仅 off/high/max；原先误升为 high，会覆盖 diary/channel 等 fast 默认）。reactor report/decide 显式传 `thinking: 'off'`。复测当时尚未改此映射。
 
-**仍不过 M5**（列车未切 reactor；#34 未确认）。
+**仍不过 M5**（当时列车未切 reactor；#34 未确认）。
+
+## 双主体真实灰度（2026-08-14，#42 合 main 后）
+
+未改 `resolveCyclePipeline` 默认值（仍 `agent_loop`）。沙盒继续 observe env；列车仅 registry 一行 `"pipeline": "reactor"`（gitignored，可回切）。
+
+### 沙盒 `js-evolution-agent`（thinking=off 后连跑 3 轮）
+
+| cycle | 时长 | Decide | exec | 备注 |
+| --- | ---: | --- | --- | --- |
+| `cycle-20260814145851-7c30f9a1` | ~358s | queued=4 skipped=1 | 4/4 completed | report/decide/diary `thinking=off` |
+| `cycle-20260814150502-70f6daa3` | ~344s | queued=3 skipped=0 | 3/3 completed | 无 400 / 无 ECONNRESET |
+| `cycle-20260814151053-df8c906f` | ~298s | queued=0 skipped=1 | 0（空盘，闸跳过） | 整轮仍完成；honesty=ok |
+
+三轮均 `reactor_report_honesty=1`、calibrate skipped、carryover 停写、reconcile ok。第 3 轮空盘是模型只产出被闸跳过的 action，不是契约漏过。
+
+### 列车 `agentank-tank`（registry 灰度 3 轮）
+
+先放弃悬挂 `cycle-20260809053128-7b6da642`。`jea run --subject agentank-tank`（无 observe env）：
+
+| cycle | 时长 | Decide | exec | 备注 |
+| --- | ---: | --- | --- | --- |
+| `cycle-20260814151622-05dfeb05` | ~359s | queued=2 skipped=2 | 3（含 credential-sync guard） | honesty=ok；calibrate applied（列车原有 auto_apply） |
+| `cycle-20260814152233-c702a696` | ~529s | queued=4 skipped=0 | 6（含 credential-sync + memory-audit） | `run_evidence_audit` 等均 completed |
+| `cycle-20260814153128-be27e074` | ~354s | queued=1 skipped=0 | 2（含 credential-sync） | calibrate skipped；carryover 停写 |
+
+三轮均无 400 / 无 ECONNRESET；`reactor_report_honesty=3`（当日窗口）；列车 reconcile ok（`contract_error_count=0`）。mechanical guards 与 reactor 共存正常。
+
+**M5 默认切换已确认**（#34，2026-08-14）：`resolveCyclePipeline` 默认改为 `reactor`。tick 补偿删除与法则销账另开后续 PR。回切单个 subject：registry `"pipeline": "agent_loop"`。
 
 ## M6 — 锚点
 

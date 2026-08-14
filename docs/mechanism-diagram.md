@@ -107,11 +107,11 @@ Channel 写情报必须经 `src/intelligence/channel-api.mjs`。
 
 ## 3. 单轮演化机制（Cycle）
 
-默认 Phase 1 为 `agent_loop`；其后 step 固定。
+默认 Phase 1 为 `reactor`；其后 step 固定。`--pipeline agent_loop` 可回退。
 
 ```mermaid
 flowchart LR
-  A["agent_loop<br/>查证 + 报告 + Decide"] --> B["exec<br/>消费 pending_decisions"]
+  A["reactor<br/>证据批 + 查证 + 报告 + Decide"] --> B["exec<br/>消费 pending_decisions"]
   B --> C["verify<br/>maker ≠ verifier"]
   C --> D["belief_update"]
   D --> E["goals_assess"]
