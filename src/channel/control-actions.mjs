@@ -1,6 +1,6 @@
 import { applyEvolutionModeChange } from '../daemon/evolution-mode-apply.mjs';
 import { resolveEvolutionMode } from '../daemon/evolution-mode.mjs';
-import { enqueueCycleStartRequestWithEvent } from '../daemon/cycle-dispatch.mjs';
+import { enqueueCognitiveWake, enqueueCycleStartRequestWithEvent } from '../daemon/cycle-dispatch.mjs';
 
 export const CHANNEL_CONTROL_ACTION_IDS = Object.freeze([
   'daemon_evolution_mode_set',
@@ -36,8 +36,9 @@ const ACTIONS = Object.freeze({
         changed: result.changed ?? false,
         source: result.resolved?.source ?? null,
         summary: result.changed
-          ? `Evolution mode changed to ${result.resolved?.mode}.`
-          : `Evolution mode already ${result.resolved?.mode}.`,
+          ? `Evolution mode changed to ${result.resolved?.mode} (deprecated under reactor; wake_policy=evidence_driven).`
+          : `Evolution mode already ${result.resolved?.mode} (deprecated under reactor; wake_policy=evidence_driven).`,
+        deprecated: true,
       };
     },
   },
@@ -57,7 +58,8 @@ const ACTIONS = Object.freeze({
         action_id: 'daemon_evolution_mode_show',
         mode: resolved.mode,
         source: resolved.source,
-        summary: `Current evolution mode is ${resolved.mode} (${resolved.source}).`,
+        summary: `Current evolution mode is ${resolved.mode} (${resolved.source}). Deprecated under reactor; prefer wake_policy=evidence_driven.`,
+        deprecated: true,
       };
     },
   },
@@ -79,12 +81,17 @@ const ACTIONS = Object.freeze({
           channel: request.channel ?? null,
         },
       });
+      const wake = enqueueCognitiveWake(root, subject, {
+        reason: 'channel_control_request',
+        source: 'channel_control',
+      });
       return {
         ok: true,
         action_id: 'daemon_cycle_request',
         request_id: cycleRequest.request?.request_id ?? null,
         created: cycleRequest.created ?? false,
         merged: cycleRequest.merged ?? false,
+        wake: wake?.intent ?? null,
         summary: cycleRequest.created || cycleRequest.merged
           ? 'Cycle start request queued.'
           : 'Cycle start request already pending.',

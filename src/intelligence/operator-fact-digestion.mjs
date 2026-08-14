@@ -61,9 +61,11 @@ export function applyOperatorFactDigestions({
   runtimeRoot,
   store = null,
   cycleId = null,
+  batchId = null,
   digestions = [],
   pendingFacts = null,
   currentBeliefs = null,
+  requireRelevantEvidence = false,
 } = {}) {
   if (!runtimeRoot) {
     return {
@@ -90,6 +92,13 @@ export function applyOperatorFactDigestions({
     const fact = injectedById.get(row.fact_id);
     if (!fact) {
       failed.push({ fact_id: row.fact_id, reason: 'not_in_injected_pending' });
+      continue;
+    }
+    const hasRelevantEvidence = (row.evidence_refs || []).length > 0
+      || row.outcome === 'supported'
+      || row.outcome === 'contradicted';
+    const gated = requireRelevantEvidence || Boolean(fact.activation_batch_id);
+    if (gated && row.outcome === 'untested' && !hasRelevantEvidence) {
       continue;
     }
 
@@ -227,6 +236,7 @@ export function applyOperatorFactDigestions({
   for (const fact of toDigest) {
     const moved = markOperatorFactsDigested(runtimeRoot, [fact], {
       cycleId,
+      batchId,
       outcome: fact.digestion_outcome || 'untested',
       reason: fact.digestion_reason,
       resultingBeliefId: fact.resulting_belief_id ?? null,

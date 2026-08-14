@@ -5,7 +5,7 @@ import {
   writePendingOperatorFact,
 } from '../intelligence/channel-api.mjs';
 import { runtimeForSubject } from '../infra/runtime-paths.mjs';
-import { enqueueCycleStartRequestWithEvent } from '../daemon/cycle-dispatch.mjs';
+import { enqueueCognitiveWake, enqueueCycleStartRequestWithEvent } from '../daemon/cycle-dispatch.mjs';
 import {
   buildControlRequestFromParsed,
   parseControlRequestFromText,
@@ -329,12 +329,17 @@ export function ingestChannelEnvelope(root, subject, envelopeInput, { classifica
       reason: 'channel_operator_brief',
       meta: { brief_ids: [brief.id], message_id: envelope.message_id, channel: envelope.channel },
     });
+    const wake = enqueueCognitiveWake(root, subject, {
+      reason: 'channel_operator_brief',
+      source: 'channel_ingest',
+    });
     return {
       kind: resolved.kind,
       written: 1,
       file,
       brief,
       cycle_start_request: cycleRequest.request,
+      wake: wake?.intent ?? null,
     };
   }
   if (resolved.kind === 'control_request') {
@@ -359,6 +364,10 @@ export function ingestChannelEnvelope(root, subject, envelopeInput, { classifica
       reason: 'channel_operator_fact',
       meta: { fact_ids: [fact.id], message_id: envelope.message_id, channel: envelope.channel },
     });
+    const wake = enqueueCognitiveWake(root, subject, {
+      reason: 'channel_operator_fact',
+      source: 'channel_ingest',
+    });
     return {
       kind: resolved.kind,
       source: 'operator_facts/pending',
@@ -366,14 +375,21 @@ export function ingestChannelEnvelope(root, subject, envelopeInput, { classifica
       file,
       record: fact,
       cycle_start_request: cycleRequest.request,
+      wake: wake?.intent ?? null,
     };
   }
   const store = makeStore(root, subject);
   if (resolved.kind === 'inbox') {
     const source = resolved.source ?? 'intel_observations';
     const written = store.ingest(source, resolved.records ?? []);
-    return { kind: resolved.kind, source, written };
+    const wake = written > 0
+      ? enqueueCognitiveWake(root, subject, { reason: 'channel_inbox', source: 'channel_ingest' })
+      : null;
+    return { kind: resolved.kind, source, written, wake: wake?.intent ?? null };
   }
   const written = store.ingest('intel_observations', [resolved.record]);
-  return { kind: 'observation', source: 'intel_observations', written, record: resolved.record };
+  const wake = written > 0
+    ? enqueueCognitiveWake(root, subject, { reason: 'channel_observation', source: 'channel_ingest' })
+    : null;
+  return { kind: 'observation', source: 'intel_observations', written, record: resolved.record, wake: wake?.intent ?? null };
 }

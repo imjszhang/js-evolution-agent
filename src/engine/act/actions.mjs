@@ -45,7 +45,7 @@ export class ActionExecutor {
    * @param {object} action shape: { type, description, params, ... }
    * @returns {Promise<object>|object}
    */
-  async execute(action) {
+  async execute(action, extra = {}) {
     const actionType = action?.type || '';
     const handlers = this.host?.actionHandlers || {};
     const handler = handlers[actionType];
@@ -58,13 +58,18 @@ export class ActionExecutor {
     try {
       const ctx = {
         projectRoot: this.projectRoot,
-        cycleId: this.cycleId,
+        cycleId: extra.executionId || extra.cycleId || this.cycleId,
         ai: this.aiClient,
         host: this.host,
         client: this.host?.client || null,
         logger: this.host?.logger || null,
         goalsText: this._goalsText,
         executionJournal: this.executionJournal,
+        decisionId: extra.decisionId ?? action?.decision_id ?? action?.id ?? null,
+        executionId: extra.executionId ?? this.cycleId,
+        intentId: extra.intentId ?? null,
+        idempotencyKey: extra.idempotencyKey ?? null,
+        ...extra,
       };
       const result = await handler(action, ctx);
       return result || { success: true };

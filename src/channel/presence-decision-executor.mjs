@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { createIntelligenceStore, writePendingOperatorBrief } from '../intelligence/channel-api.mjs';
 import { runtimeForSubject } from '../infra/runtime-paths.mjs';
-import { enqueueCycleStartRequestWithEvent } from '../daemon/cycle-dispatch.mjs';
+import { enqueueCognitiveWake, enqueueCycleStartRequestWithEvent } from '../daemon/cycle-dispatch.mjs';
 import { recordChannelEvent, readChannelEvents } from './audit.mjs';
 import { enqueueChannelTask } from './task-queue.mjs';
 import {
@@ -498,6 +498,10 @@ export async function executePresenceDecisionPlan(root, subject, plan, {
       const cycleRequest = enqueueCycleStartRequestWithEvent(root, subject, {
         reason: 'channel_presence_operator_brief',
         meta: { brief_ids: [brief.id] },
+      });
+      enqueueCognitiveWake(root, subject, {
+        reason: 'channel_presence_operator_brief',
+        source: 'channel_presence',
       });
       recordChannelEvent(root, subject, {
         type: 'channel_presence_action_applied',

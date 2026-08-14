@@ -127,6 +127,9 @@ export async function runMechanicalGuards({ root, loopCtx } = {}) {
   for (const guard of guards) {
     const guardId = String(guard.id);
     const everyCycles = Math.max(1, Math.trunc(Number(guard.every_cycles) || 1));
+    const everyMs = Number(guard.every_ms) > 0
+      ? Math.trunc(Number(guard.every_ms))
+      : (Number(guard.every_hours) > 0 ? Math.trunc(Number(guard.every_hours) * 3600_000) : null);
     const servesGoal = guard?.action?.serves_goal ?? null;
     let entry = state.guards[guardId];
     if (!entry || entry._removed_emitted) {
@@ -148,6 +151,7 @@ export async function runMechanicalGuards({ root, loopCtx } = {}) {
         cycle_id: currentCycleId,
         serves_goal: servesGoal,
         every_cycles: everyCycles,
+        every_ms: everyMs,
         reregistered: isReregister,
       };
       emitEvent?.(registeredEvent);
@@ -163,13 +167,20 @@ export async function runMechanicalGuards({ root, loopCtx } = {}) {
       continue;
     }
 
-    const due = entry.cycles_since_last_run >= everyCycles;
+    const lastRunMs = Date.parse(entry.last_run_at ?? '');
+    const wallDue = everyMs == null
+      ? true
+      : (!Number.isFinite(lastRunMs) || (Date.now() - lastRunMs) >= everyMs);
+    const cycleDue = entry.cycles_since_last_run >= everyCycles;
+    const due = everyMs != null ? wallDue : cycleDue;
     if (!due) {
       skipped.push({
         guard_id: guardId,
         reason: 'not_due',
         cycles_since_last_run: entry.cycles_since_last_run,
         every_cycles: everyCycles,
+        every_ms: everyMs,
+        last_run_at: entry.last_run_at,
       });
       continue;
     }
@@ -200,7 +211,7 @@ export async function runMechanicalGuards({ root, loopCtx } = {}) {
 
       const decisionId = queued.ids[0];
       decisionQueue.updateStatus?.(decisionId, 'in_progress');
-      const result = await executor.execute(action);
+      const result = await executor.execute(action, { decisionId });
       const summary = result?.summary
         || result?.message
         || result?.error

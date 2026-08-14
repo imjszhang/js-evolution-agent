@@ -23,6 +23,11 @@ import { AgentRateLedger } from '../act/agent-rate-ledger.mjs';
 import { EvolutionLogger } from '../adapters/evolution-logger.mjs';
 import { compareDecisionsForClaim } from '../decide/decision-queue.mjs';
 
+function isExecRateOnlyFromEnv(env = process.env) {
+  const raw = String(env.JEA_EXEC_RATE_ONLY || '').trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+}
+
 export function parseExecAgentBudgetFromEnv() {
   const agentBudgetRaw = process.env.JEA_EXEC_AGENT_BUDGET;
   if (agentBudgetRaw != null && agentBudgetRaw !== '') {
@@ -75,6 +80,9 @@ export class ExecutionPipeline {
     agentBudget = null,
     agentConcurrency = null,
     agentRateLedger = null,
+    createExecutor = null,
+    onBeforeExecute = null,
+    onAfterExecute = null,
   } = {}) {
     this.host = normalizeHost(host);
     this.projectRoot = projectRoot || this.host.basePath || process.cwd();
@@ -82,9 +90,12 @@ export class ExecutionPipeline {
     this.source = 'queue';
     this.executionJournal = executionJournal;
     this.emitEvent = typeof emitEvent === 'function' ? emitEvent : null;
-    this.agentBudget = agentBudget != null
-      ? Math.max(1, Math.floor(Number(agentBudget)) || 1)
-      : parseExecAgentBudgetFromEnv();
+    this.rateOnly = isExecRateOnlyFromEnv();
+    this.agentBudget = this.rateOnly
+      ? Number.POSITIVE_INFINITY
+      : (agentBudget != null
+        ? Math.max(1, Math.floor(Number(agentBudget)) || 1)
+        : parseExecAgentBudgetFromEnv());
     this.agentConcurrency = agentConcurrency != null
       ? Math.max(1, Math.floor(Number(agentConcurrency)) || 1)
       : Math.max(1, Math.floor(Number(process.env.JEA_AGENT_MAX_CONCURRENCY) || 2));
@@ -98,6 +109,9 @@ export class ExecutionPipeline {
 
     this.evolutionLogger = new EvolutionLogger(this.projectRoot);
     this._cycleId = cycleId || `cycle-${nowBeijingStr('%Y%m%d-%H%M%S')}`;
+    this.createExecutor = typeof createExecutor === 'function' ? createExecutor : null;
+    this.onBeforeExecute = typeof onBeforeExecute === 'function' ? onBeforeExecute : null;
+    this.onAfterExecute = typeof onAfterExecute === 'function' ? onAfterExecute : null;
   }
 
   /** @param {string|null} cycleId */
@@ -108,14 +122,16 @@ export class ExecutionPipeline {
   }
 
   _createExecutor() {
-    return new ActionExecutor({
+    const opts = {
       aiClient: this.aiClient,
       projectRoot: this.projectRoot,
       cycleId: this._cycleId,
       host: this.host,
       logFn: (m, lvl) => this._log(m, lvl),
       executionJournal: this.executionJournal,
-    });
+    };
+    if (this.createExecutor) return this.createExecutor(opts);
+    return new ActionExecutor(opts);
   }
 
   /**
@@ -137,8 +153,10 @@ export class ExecutionPipeline {
     agentRateLedger = null,
   } = {}) {
     if (cycleId) this.setCycleId(cycleId);
-    if (agentBudget != null) this.agentBudget = Math.max(1, Math.floor(Number(agentBudget)) || 1);
-    else if (limit != null) this.agentBudget = Math.max(1, Math.floor(Number(limit)) || 1);
+    if (!this.rateOnly) {
+      if (agentBudget != null) this.agentBudget = Math.max(1, Math.floor(Number(agentBudget)) || 1);
+      else if (limit != null) this.agentBudget = Math.max(1, Math.floor(Number(limit)) || 1);
+    }
     if (agentConcurrency != null) {
       this.agentConcurrency = Math.max(1, Math.floor(Number(agentConcurrency)) || 1);
     }
@@ -158,7 +176,9 @@ export class ExecutionPipeline {
       journal: null,
       mechanical: { claimed: 0, executed: 0 },
       agent_waves: [],
-      agent_budget: this.agentBudget,
+      agent_budget: Number.isFinite(this.agentBudget) ? this.agentBudget : null,
+      agent_budget_shadow: parseExecAgentBudgetFromEnv(),
+      rate_only: this.rateOnly,
       agent_concurrency: this.agentConcurrency,
       agent_rate: this.agentRateLedger
         ? this.agentRateLedger.snapshot({ rateLimited: false })
@@ -203,6 +223,8 @@ export class ExecutionPipeline {
     let lastWaveHadFailure = false;
     let blockedThisCycle = 0;
     const touchedThisCycle = new Set();
+    const pendingAgentsAll = this.decisionQueue.getPending().filter((d) => isAgentRunDecision(d));
+    result.would_execute_without_cycle_budget = pendingAgentsAll.length;
 
     while (consumed < this.agentBudget) {
       const cycleRemaining = this.agentBudget - consumed;
@@ -332,8 +354,13 @@ export class ExecutionPipeline {
           return { decision, r: { success: true, dry_run: true }, error: null };
         }
         try {
-          const r = await executor.execute(action);
-          return { decision, r, error: null };
+          const lifecycle = await this._beginDecision(decision);
+          if (lifecycle?.skip) {
+            return { decision, r: { success: false, deferred: true, skipped: true }, error: null, lifecycle };
+          }
+          const r = await executor.execute(action, this._execContext(decision, lifecycle));
+          await this._finishDecision(decision, r, lifecycle);
+          return { decision, r, error: null, lifecycle };
         } catch (e) {
           return { decision, r: null, error: e };
         }
@@ -389,6 +416,25 @@ export class ExecutionPipeline {
     return outcomes;
   }
 
+  async _beginDecision(decision) {
+    if (!this.onBeforeExecute) return null;
+    return this.onBeforeExecute(decision, { cycleId: this._cycleId });
+  }
+
+  async _finishDecision(decision, execResult, lifecycle) {
+    if (!this.onAfterExecute) return null;
+    return this.onAfterExecute(decision, execResult, lifecycle);
+  }
+
+  _execContext(decision, lifecycle) {
+    return {
+      decisionId: decision.id,
+      executionId: this._cycleId,
+      intentId: lifecycle?.intent?.id ?? null,
+      idempotencyKey: lifecycle?.intent?.key ?? null,
+    };
+  }
+
   async _executeOne(executor, decision, result, {
     dryRun,
     channel,
@@ -412,8 +458,14 @@ export class ExecutionPipeline {
       return { id: decision.id, status: 'dry_run' };
     }
 
+    let lifecycle = null;
     try {
-      const r = await executor.execute(action);
+      lifecycle = await this._beginDecision(decision);
+      if (lifecycle?.skip) {
+        return { id: decision.id, status: lifecycle.status || 'skipped' };
+      }
+      const r = await executor.execute(action, this._execContext(decision, lifecycle));
+      await this._finishDecision(decision, r, lifecycle);
       const item = {
         id: decision.id,
         action,
@@ -438,6 +490,7 @@ export class ExecutionPipeline {
       await this._failDecision(decision, r?.error || 'handler returned non-success');
       return { id: decision.id, status: 'failed' };
     } catch (e) {
+      await this._finishDecision(decision, { success: false, error: e.message }, lifecycle);
       const item = {
         id: decision.id,
         action,

@@ -13,6 +13,13 @@ import {
   verifyActions,
 } from '../engine/index.mjs';
 import { createExecJournal } from './exec-journal.mjs';
+import {
+  beginExecIntent,
+  completeExecIntent,
+  markExecIntent,
+  recoverOpenExecIntents,
+} from './reactor/exec-intent-store.mjs';
+import { isExecRateOnly } from './reactor/feature-gates.mjs';
 import loadConfig from '../../oada.config.mjs'; // project root oada.config.mjs
 import { assessActiveGoals, autoCalibrateGoals } from '../domain/cognition/index.mjs';
 import { updateActiveBeliefs } from '../intelligence/belief-updater.mjs';
@@ -1338,6 +1345,31 @@ export async function runExecStep(ctx, { recordState = null, intelResult = null,
   } catch {
     // queue maintenance must not block exec
   }
+  const recovery = runtime.dataRoot
+    ? recoverOpenExecIntents(runtime.dataRoot, {
+      store,
+      decisionQueue,
+      recoveryPolicies: cfg.host?.actionRecovery ?? null,
+    })
+    : { recovered: [], uncertain: [], retryable: [] };
+  if (recovery.uncertain.length) {
+    logger?.warn?.(
+      `[exec] ${recovery.uncertain.length} exec intent(s) marked uncertain; blocked for human review`,
+    );
+    for (const intent of recovery.uncertain) {
+      store.recordEvolutionEvent({
+        type: 'exec_intent_uncertain',
+        status: 'blocked',
+        cycle_id: resolvedCycleId,
+        decision_id: intent.decision_id,
+        intent_id: intent.id,
+        requires_human_review: true,
+        reason: 'side_effect_uncertain',
+        producer: 'exec',
+        activation_targets: ['cognitive'],
+      });
+    }
+  }
   const executor = new ActionExecutor({
     projectRoot: runtime.runtimeRoot,
     cycleId: resolvedCycleId,
@@ -1346,6 +1378,47 @@ export async function runExecStep(ctx, { recordState = null, intelResult = null,
     logFn: (msg, level = 'info') => logger?.[level]?.(`[exec] ${msg}`),
     executionJournal,
   });
+  const guardExecutor = {
+    execute: async (action, extra = {}) => {
+      if (!runtime.dataRoot) return executor.execute(action, extra);
+      const decisionId = extra.decisionId || action?.decision_id || action?.id;
+      const intent = beginExecIntent(runtime.dataRoot, {
+        executionId: resolvedCycleId,
+        decisionId,
+        attempt: 1,
+        action,
+        source: 'mechanical_guard',
+      });
+      markExecIntent(runtime.dataRoot, intent.id, { status: 'executing' });
+      try {
+        const result = await executor.execute(action, {
+          ...extra,
+          executionId: resolvedCycleId,
+          intentId: intent.id,
+          idempotencyKey: intent.key,
+        });
+        if (result?.success) {
+          markExecIntent(runtime.dataRoot, intent.id, {
+            status: 'receipt_recorded',
+            receiptId: result?.receipt_id ?? result?.id ?? null,
+          });
+          completeExecIntent(runtime.dataRoot, intent.id, { status: 'completed' });
+        } else {
+          completeExecIntent(runtime.dataRoot, intent.id, {
+            status: 'failed',
+            error: result?.error || 'guard handler returned non-success',
+          });
+        }
+        return result;
+      } catch (error) {
+        markExecIntent(runtime.dataRoot, intent.id, {
+          status: 'uncertain',
+          error: error?.message || String(error),
+        });
+        throw error;
+      }
+    },
+  };
   const guardExecuted = [];
   const guardCtx = {
     host: cfg.host,
@@ -1353,7 +1426,7 @@ export async function runExecStep(ctx, { recordState = null, intelResult = null,
     store,
     cycleId: resolvedCycleId,
     decisionQueue,
-    executor,
+    executor: guardExecutor,
     dedup: new Set(),
     executed: guardExecuted,
     emitEvent: (event) => store.recordEvolutionEvent({
@@ -1378,36 +1451,76 @@ export async function runExecStep(ctx, { recordState = null, intelResult = null,
   }
   const agentBudget = parseExecAgentBudgetFromEnv();
   const agentConcurrency = parseAgentMaxConcurrencyFromEnv();
-  const rateConfig = parseExecAgentRateFromEnv();
-  const agentRateLedger = rateConfig
-    ? new AgentRateLedger({
-      filePath: agentRateLedgerPath(runtime.runtimeRoot),
-      limit: rateConfig.limit,
-      windowMs: rateConfig.windowMs,
-      logFn: (msg) => logger?.warn?.(msg),
-    })
-    : null;
+  const rateConfig = parseExecAgentRateFromEnv() || { limit: 10_000, windowMs: 3_600_000 };
+  const agentRateLedger = new AgentRateLedger({
+    filePath: agentRateLedgerPath(runtime.runtimeRoot),
+    limit: rateConfig.limit,
+    windowMs: rateConfig.windowMs,
+    logFn: (msg) => logger?.warn?.(msg),
+  });
+  const rateOnly = isExecRateOnly();
   const exec = new ExecutionPipeline({
     host: cfg.host,
     projectRoot: runtime.runtimeRoot,
     aiClient: cfg.aiClient,
     cycleId: resolvedCycleId || undefined,
     executionJournal,
-    agentBudget,
+    agentBudget: rateOnly ? null : agentBudget,
     agentConcurrency,
     agentRateLedger,
+    createExecutor: (opts) => new ActionExecutor(opts),
+    onBeforeExecute: (decision) => {
+      if (!runtime.dataRoot) return null;
+      const intent = beginExecIntent(runtime.dataRoot, {
+        executionId: resolvedCycleId,
+        decisionId: decision.id,
+        attempt: (decision.attempts || 0) + 1,
+        action: decision.action,
+        source: 'exec_pipeline',
+      });
+      markExecIntent(runtime.dataRoot, intent.id, { status: 'executing' });
+      return { intent };
+    },
+    onAfterExecute: (decision, result, lifecycle) => {
+      if (!runtime.dataRoot) return;
+      const intentId = lifecycle?.intent?.id;
+      if (!intentId) return;
+      if (result?.success) {
+        markExecIntent(runtime.dataRoot, intentId, {
+          status: 'receipt_recorded',
+          receiptId: result?.receipt_id ?? result?.id ?? null,
+        });
+        completeExecIntent(runtime.dataRoot, intentId, { status: 'completed' });
+        return;
+      }
+      if (result?.deferred) {
+        markExecIntent(runtime.dataRoot, intentId, { status: 'prepared' });
+        return;
+      }
+      completeExecIntent(runtime.dataRoot, intentId, {
+        status: 'failed',
+        error: result?.error || 'handler returned non-success',
+      });
+    },
     emitEvent: (event) => store.recordEvolutionEvent({
       ...event,
       cycle_id: resolvedCycleId,
       subject: runtime.subject,
+      producer: 'exec',
+      activation_targets: ['cognitive', 'rule'],
     }),
   });
   const execResult = await exec.run({
-    agentBudget,
+    ...(rateOnly ? {} : { agentBudget }),
     agentConcurrency,
     agentRateLedger,
     cycleId: resolvedCycleId || undefined,
   });
+  execResult.intent_recovery = {
+    recovered: recovery.recovered.length,
+    uncertain: recovery.uncertain.length,
+    retryable: recovery.retryable.length,
+  };
   // Prepend guard executions so verify can see them.
   if (guardExecuted.length) {
     execResult.executed = [...guardExecuted, ...(execResult.executed || [])];
@@ -1417,6 +1530,8 @@ export async function runExecStep(ctx, { recordState = null, intelResult = null,
   store.recordEvolutionEvent({
     type: 'exec_pipeline',
     status: execResult.success ? 'ok' : 'failed',
+    producer: 'exec',
+    activation_targets: ['cognitive', 'rule'],
     cycle_id: execResult.cycle_id,
     executed_count: execResult.executed.length,
     guards_ran: guardResult.ran?.length ?? 0,
@@ -1480,16 +1595,26 @@ export async function runVerifyStep(ctx, { intelResult, execResult, recordState 
   }
   const reportDir = join(runtime.runtimeRoot, 'data', 'evolution', 'verify_reports');
   mkdirSync(reportDir, { recursive: true });
-  const reportPath = join(reportDir, `${execResult.cycle_id}.json`);
-  writeFileSync(reportPath, JSON.stringify(verification, null, 2), 'utf-8');
+  const executionId = execResult.execution_id || execResult.cycle_id;
+  const reportPath = join(reportDir, `${executionId}.json`);
+  writeFileSync(reportPath, JSON.stringify({
+    ...verification,
+    execution_id: executionId,
+    cycle_id: execResult.cycle_id,
+    producer: 'verify',
+    activation_targets: ['cognitive', 'rule'],
+  }, null, 2), 'utf-8');
   store.recordEvolutionEvent({
     type: 'verify_pipeline',
     status: 'ok',
     cycle_id: execResult.cycle_id,
+    execution_id: executionId,
     verified_count: verification.verified.length,
     pending_count: verification.pending.length,
     semantic_status: semanticVerification.status,
     report_path: reportPath,
+    producer: 'verify',
+    activation_targets: ['cognitive', 'rule'],
   });
   if (recordState) {
     const artifactCycleId = stateCycleId(intelResult);
@@ -1505,7 +1630,14 @@ export async function runVerifyStep(ctx, { intelResult, execResult, recordState 
 }
 
 export async function runBeliefUpdateStep(ctx, {
-  intelResult, execResult, verification, reportPath, recordState = null,
+  intelResult,
+  execResult,
+  verification,
+  reportPath,
+  recordState = null,
+  canCommit = null,
+  producer = null,
+  activationTargets = null,
 } = {}) {
   const { cfg, store } = ctx;
   if (skipBeliefUpdateFromEnv()) {
@@ -1532,6 +1664,10 @@ export async function runBeliefUpdateStep(ctx, {
       agentContextDocs: cfg.agentContextDocs,
       logger: cfg.host.logger,
       runtimeRoot: ctx.runtime?.runtimeRoot ?? null,
+      goalIds: intelResult?.goal_ids?.length ? intelResult.goal_ids : null,
+      canCommit,
+      producer,
+      activationTargets,
     });
     if (recordState) {
       const artifactCycleId = stateCycleId(intelResult, null, execResult);
@@ -1572,7 +1708,14 @@ export async function runBeliefUpdateStep(ctx, {
 }
 
 export async function runGoalsAssessStep(ctx, {
-  intelResult, reportPath, intelReportReady, recordState = null,
+  intelResult,
+  reportPath,
+  intelReportReady,
+  recordState = null,
+  canCommit = null,
+  producer = null,
+  activationTargets = null,
+  useLatestReport = false,
 } = {}) {
   const { store } = ctx;
   if (skipGoalsAssessFromEnv() || !intelReportReady) {
@@ -1587,14 +1730,22 @@ export async function runGoalsAssessStep(ctx, {
     return { skipped: true, goalsAssessResult: null };
   }
   try {
-    const assessResult = await assessActiveGoals(ctx.projectRoot, { cycle: intelResult.cycle_id }, {
+    const assessFlags = useLatestReport ? {} : { cycle: intelResult.cycle_id };
+    const assessResult = await assessActiveGoals(ctx.projectRoot, assessFlags, {
       verificationReportPath: reportPath,
+      goalIds: intelResult?.goal_ids?.length ? intelResult.goal_ids : null,
+      canCommit,
+      producer,
+      activation_targets: activationTargets,
+      eventCycleId: intelResult.cycle_id,
     });
     store.recordEvolutionEvent({
       type: 'goals_assess',
       status: 'ok',
       cycle_id: intelResult.cycle_id,
       assessment_status: assessResult.assessment.status,
+      ...(producer ? { producer } : {}),
+      ...(Array.isArray(activationTargets) ? { activation_targets: activationTargets } : {}),
     });
     if (recordState) {
       await recordStepSidecar(recordState.root, recordState.subject, intelResult.cycle_id, 'goals_assess', 'done');
@@ -1612,6 +1763,8 @@ export async function runGoalsAssessStep(ctx, {
       status: 'failed',
       cycle_id: intelResult.cycle_id,
       error: msg,
+      ...(producer ? { producer } : {}),
+      ...(Array.isArray(activationTargets) ? { activation_targets: activationTargets } : {}),
     });
     if (recordState) {
       await recordStepSidecar(recordState.root, recordState.subject, intelResult.cycle_id, 'goals_assess', 'failed', { error: msg });
@@ -1620,7 +1773,15 @@ export async function runGoalsAssessStep(ctx, {
   }
 }
 
-export async function runGoalsCalibrateStep(ctx, { intelResult, goalsAssessResult, store, recordState = null } = {}) {
+export async function runGoalsCalibrateStep(ctx, {
+  intelResult,
+  goalsAssessResult,
+  store,
+  recordState = null,
+  canCommit = null,
+  producer = null,
+  activationTargets = null,
+} = {}) {
   if (!goalsAssessResult) {
     if (recordState) {
       await recordStepSidecar(recordState.root, recordState.subject, intelResult.cycle_id, 'goals_calibrate', 'skipped');
@@ -1631,6 +1792,11 @@ export async function runGoalsCalibrateStep(ctx, { intelResult, goalsAssessResul
       });
     }
     return { skipped: true, goalsCalibrateResult: null };
+  }
+  if (typeof canCommit === 'function' && !canCommit()) {
+    const error = new Error('reactor_task_lease_lost');
+    error.code = 'lease_lost';
+    throw error;
   }
   const goalsCalibrateResult = autoCalibrateGoals(ctx.projectRoot, goalsAssessResult, { store });
   store.recordEvolutionEvent({
@@ -1649,6 +1815,8 @@ export async function runGoalsCalibrateStep(ctx, { intelResult, goalsAssessResul
     applied_patches: goalsCalibrateResult.applied_patches ?? [],
     skipped_patches: goalsCalibrateResult.skipped_patches ?? [],
     belief_retirements: goalsCalibrateResult.belief_retirements ?? [],
+    ...(producer ? { producer } : {}),
+    ...(Array.isArray(activationTargets) ? { activation_targets: activationTargets } : {}),
   });
 
   // Death-boundary escalation: feedback_state=dead for long enough without mutate apply.

@@ -4,6 +4,7 @@
  * Shadow: artifacts under data/evolution/reactor/ only.
  * Live: real pending_decisions, reports index, evolution-events.
  */
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { actionRegistry as hostActionRegistry } from '../../actions/registry.mjs';
 import { chatMessagesDetailed } from '../../ai/messages.mjs';
@@ -32,15 +33,31 @@ import {
   persistIntelReport,
   prepareIntelReport,
 } from '../../intelligence/report-builder.mjs';
-import { buildInvestigationTools } from '../agent-loop/tool-registry.mjs';
-import { runInvestigationLoop } from '../agent-loop/loop-runner.mjs';
+import { buildInvestigationTools } from '../investigation/tool-registry.mjs';
+import { runInvestigationLoop } from '../investigation/loop-runner.mjs';
+import {
+  checkpointStageReached,
+  findResumableCheckpoint,
+  patchBatchCheckpoint,
+  readBatchCheckpoint,
+} from './batch-checkpoint-store.mjs';
+import {
+  computeRuleFeedbackStats,
+  formatRuleFeedbackForPrompt,
+} from '../../intelligence/rule-feedback.mjs';
+import { formatDecisionBacklogForPrompt, safeBacklogSummary } from '../../intelligence/phase1-shared.mjs';
+import { loadEnabledGuards } from '../agent-loop/guard-runner.mjs';
+import { readCarryoverDocument } from '../carryover.mjs';
 import {
   ackBatchHandled,
   claimEvidenceBatch,
   isReactorBusy,
+  loadClaimedEvents,
   nackBatchFailed,
+  reattachBatchClaim,
   reconcileExpiredClaims,
 } from './claim-ledger.mjs';
+import { envelopeEvidenceKey } from './eligibility.mjs';
 import {
   appendShadowDecisions,
   appendShadowRun,
@@ -113,6 +130,8 @@ export function buildDecidePrompt({
   reportMarkdown,
   live = false,
   actionRegistry = null,
+  ruleFeedbackText = '',
+  decisionBacklogText = '',
 } = {}) {
   const registry = actionRegistry && typeof actionRegistry.toPromptSection === 'function'
     ? actionRegistry
@@ -149,7 +168,9 @@ export function buildDecidePrompt({
     '',
     '## Report',
     String(reportMarkdown || '').slice(0, 12000),
-  ].join('\n');
+    ruleFeedbackText ? `\n${ruleFeedbackText}` : '',
+    decisionBacklogText ? `\n## Decision Backlog\n\n${decisionBacklogText}` : '',
+  ].filter(Boolean).join('\n');
   return {
     stablePrefix,
     dynamicPayload,
@@ -170,6 +191,7 @@ export async function runCognitiveReaction(ctx, {
   timeoutMs = DEFAULT_TIMEOUT_MS,
   kinds = null,
   skipInvestigate = false,
+  canCommit = null,
 } = {}) {
   const isLive = mode === 'live';
   const logLabel = isLive ? 'reactor:live' : 'reactor:shadow';
@@ -178,31 +200,69 @@ export async function runCognitiveReaction(ctx, {
   const subject = runtime.subject;
   const logger = cfg.host?.logger || null;
   const aiClient = cfg.aiClient;
+  const assertCommitLease = () => {
+    if (typeof canCommit === 'function' && !canCommit()) {
+      const error = new Error('reactor_task_lease_lost');
+      error.code = 'lease_lost';
+      throw error;
+    }
+  };
 
   if (!aiClient) {
     throw new Error(`cognitive ${mode} reactor requires cfg.aiClient`);
   }
   if (isLive && !cycleId) {
-    throw new Error('cognitive live reactor requires cycleId');
+    cycleId = `reaction-${Date.now()}`;
   }
 
   reconcileExpiredClaims(dataRoot);
-  if (isReactorBusy(dataRoot, 'cognitive')) {
-    return { skipped: true, reason: 'reactor_busy', mode };
+  const resumable = findResumableCheckpoint(dataRoot, { reactor: 'cognitive' });
+  let claimed;
+  let resumed = false;
+  if (resumable?.batch_id) {
+    const claim = reattachBatchClaim(dataRoot, resumable.batch_id, {
+      timeoutMs,
+      reactor: 'cognitive',
+      subject,
+      eventIds: resumable.event_ids,
+      evidenceKeys: resumable.evidence_keys,
+    });
+    const events = loadClaimedEvents(dataRoot, claim || resumable, { reactor: 'cognitive' });
+    claimed = {
+      batch_id: resumable.batch_id,
+      claim,
+      events,
+      checkpoint: resumable,
+    };
+    resumed = true;
+  } else {
+    if (isReactorBusy(dataRoot, 'cognitive')) {
+      return { skipped: true, reason: 'reactor_busy', mode };
+    }
+    claimed = claimEvidenceBatch(dataRoot, {
+      reactor: 'cognitive',
+      subject,
+      limit: batchLimit,
+      kinds,
+      timeoutMs,
+    });
   }
-
-  const claimed = claimEvidenceBatch(dataRoot, {
-    reactor: 'cognitive',
-    subject,
-    limit: batchLimit,
-    kinds,
-    timeoutMs,
-  });
   if (claimed.skipped) {
     return { skipped: true, reason: claimed.skipped, mode };
   }
 
   const { batch_id: batchId, events } = claimed;
+  const existingCheckpoint = claimed.checkpoint || readBatchCheckpoint(dataRoot, batchId);
+  patchBatchCheckpoint(dataRoot, batchId, {
+    reactor: 'cognitive',
+    subject,
+    stage: existingCheckpoint?.stage || 'claimed',
+    event_ids: events.map((item) => item.id),
+    evidence_keys: events.map((item) => envelopeEvidenceKey(item)),
+    cycle_id: isLive ? (existingCheckpoint?.cycle_id || cycleId) : null,
+    attempt: claimed.claim?.attempt ?? existingCheckpoint?.attempt ?? 1,
+    resumed,
+  });
   const deadlineAt = claimed.claim.deadline_at;
   const startedAt = Date.now();
   const reactionCycleId = isLive ? cycleId : batchId;
@@ -214,6 +274,9 @@ export async function runCognitiveReaction(ctx, {
         cycle_id: reactionCycleId,
         subject,
         batch_id: batchId,
+        producer: 'cognitive',
+        activation_targets: [],
+        producer_batch_id: batchId,
       });
       return;
     }
@@ -265,10 +328,12 @@ export async function runCognitiveReaction(ctx, {
       .filter(Boolean)
       .join('\n\n');
 
-    let investigation = formatBatchDigest(events, { live: isLive });
-    let investigateResult = { turns: 0, readonlyCalls: 0 };
+    let investigation = existingCheckpoint?.investigation || formatBatchDigest(events, { live: isLive });
+    let investigateResult = existingCheckpoint?.investigation_result || { turns: 0, readonlyCalls: 0 };
+    const skipInvestigateStage = skipInvestigate
+      || checkpointStageReached(existingCheckpoint, 'investigate');
 
-    if (!skipInvestigate && typeof aiClient.chatMessagesWithTools === 'function') {
+    if (!skipInvestigateStage && typeof aiClient.chatMessagesWithTools === 'function') {
       const budget = {
         maxTurns: 4,
         maxActions: 0,
@@ -327,6 +392,14 @@ export async function runCognitiveReaction(ctx, {
         logger,
         emitEvent: emitReaction,
       });
+      patchBatchCheckpoint(dataRoot, batchId, {
+        stage: 'investigate',
+        investigation,
+        investigation_result: {
+          turns: investigateResult.turns ?? 0,
+          readonlyCalls: investigateResult.readonlyCalls ?? 0,
+        },
+      });
       promptCache.investigate.usage = investigateResult?.usage_totals ?? null;
       const investigateUsageLog = formatLlmUsageSummary(
         promptCache.investigate.usage,
@@ -349,127 +422,180 @@ export async function runCognitiveReaction(ctx, {
       verifiedFacts: investigation.verified_facts || [],
     });
 
-    logger?.info?.(`[${logLabel}] report batch=${batchId}`);
-    const reportPrompt = buildReportPrompt({
-      batchId,
-      hostSeenBody,
-      investigationDigest: investigation,
-      language,
-      live: isLive,
-    });
-    const reportSystem = 'You draft intelligence reports. Host owns Seen.';
-    const reportMessages = [
-      { role: 'system', content: reportSystem },
-      { role: 'user', content: reportPrompt.content },
-    ];
-    promptCache.report = recordPromptCache({
-      profile: isLive ? 'reactor_report' : 'reactor_shadow_report',
-      messages: reportMessages,
-      stablePrefix: `${reportSystem}\n\n--- stable turn ---\n\n${reportPrompt.stablePrefix}`,
-      dynamicPayload: reportPrompt.dynamicPayload,
-      logger,
-    });
-    let rawReportMarkdown = null;
-    let reportSource = 'fallback';
-    let reportReason = null;
-    try {
-      const reportResult = await chatMessagesDetailed(aiClient, reportMessages, {
-        thinking: 'off',
-        timeout: 180,
-        phase: 'report',
-      });
-      promptCache.report.usage = summarizeLlmUsage(reportResult?.usage);
-      const reportUsageLog = formatLlmUsageSummary(promptCache.report.usage, 'prompt-cache reactor_report');
-      if (reportUsageLog) logger?.info?.(reportUsageLog);
-      if (typeof reportResult?.text === 'string' && reportResult.text.trim()) {
-        rawReportMarkdown = `${reportResult.text.trim()}\n`;
-        reportSource = 'ai';
-      } else {
-        reportReason = 'empty-output';
+    let reportPath = existingCheckpoint?.report_path || null;
+    let reportMarkdown = existingCheckpoint?.report_markdown || null;
+    let persistedReport = existingCheckpoint?.report_index ? { indexRecord: existingCheckpoint.report_index, mdPath: reportPath, source: existingCheckpoint.report_source } : null;
+    let reportSource = existingCheckpoint?.report_source || 'fallback';
+    let reportReason = existingCheckpoint?.report_reason || null;
+    const reuseReport = checkpointStageReached(existingCheckpoint, 'report') && reportPath && existsSync(reportPath);
+
+    if (reuseReport) {
+      try {
+        reportMarkdown = readFileSync(reportPath, 'utf-8');
+      } catch {
+        reportMarkdown = existingCheckpoint?.report_markdown || reportMarkdown;
       }
-    } catch (e) {
-      reportReason = e?.message || String(e);
-      logger?.warning?.(`[${logLabel}] report failed: ${reportReason}`);
-    }
-
-    if (!rawReportMarkdown) {
-      rawReportMarkdown = [
-        isLive ? '# Cognitive Reactor Report' : '# Shadow Cognitive Reactor Report',
-        '',
-        '## Seen',
-        hostSeenBody,
-        '',
-        '## Inferred',
-        `- ${isLive ? 'Live' : 'Shadow'} reactor fallback report (model output empty).`,
-        '',
-        '## Cyber-Taoist analysis',
-        '- Batch claimed; awaiting richer model output.',
-        '',
-        '## Next cycle suggestions',
-        isLive ? '- Continue reactor gray validation.' : '- Continue dual-run comparison against the train Decide.',
-        '',
-      ].join('\n');
-    }
-
-    const splicedMarkdown = spliceHostSeen(rawReportMarkdown, hostSeenBody);
-    let reportPath;
-    let reportMarkdown;
-    let persistedReport = null;
-
-    if (isLive) {
-      persistedReport = await persistIntelReport({
-        intelResult: {
-          cycle_id: reactionCycleId,
-          timestamp: isoBeijing(),
-          actions: [],
-          decisions_queued: [],
-        },
-        runtime,
-        store,
-        agentContextDocs: cfg.agentContextDocs,
-        aiClient: reportSource === 'ai' ? aiClient : null,
-        logger,
-        md: splicedMarkdown,
-        source: 'reactor',
-        fallbackReason: reportReason,
-        updateStandingMemory: false,
-        transformMd: (md) => md,
-        ...prepared,
-      });
-      reportPath = persistedReport.mdPath;
-      reportMarkdown = persistedReport.markdown;
+      logger?.info?.(`[${logLabel}] resume report batch=${batchId} path=${reportPath}`);
     } else {
-      reportMarkdown = splicedMarkdown;
-      reportPath = writeShadowReport(dataRoot, batchId, reportMarkdown);
+      logger?.info?.(`[${logLabel}] report batch=${batchId}`);
+      const reportPrompt = buildReportPrompt({
+        batchId,
+        hostSeenBody,
+        investigationDigest: investigation,
+        language,
+        live: isLive,
+      });
+      const reportSystem = 'You draft intelligence reports. Host owns Seen.';
+      const reportMessages = [
+        { role: 'system', content: reportSystem },
+        { role: 'user', content: reportPrompt.content },
+      ];
+      promptCache.report = recordPromptCache({
+        profile: isLive ? 'reactor_report' : 'reactor_shadow_report',
+        messages: reportMessages,
+        stablePrefix: `${reportSystem}\n\n--- stable turn ---\n\n${reportPrompt.stablePrefix}`,
+        dynamicPayload: reportPrompt.dynamicPayload,
+        logger,
+      });
+      let rawReportMarkdown = null;
+      try {
+        const reportResult = await chatMessagesDetailed(aiClient, reportMessages, {
+          thinking: 'off',
+          timeout: 180,
+          phase: 'report',
+        });
+        promptCache.report.usage = summarizeLlmUsage(reportResult?.usage);
+        const reportUsageLog = formatLlmUsageSummary(promptCache.report.usage, 'prompt-cache reactor_report');
+        if (reportUsageLog) logger?.info?.(reportUsageLog);
+        if (typeof reportResult?.text === 'string' && reportResult.text.trim()) {
+          rawReportMarkdown = `${reportResult.text.trim()}\n`;
+          reportSource = 'ai';
+        } else {
+          reportReason = 'empty-output';
+        }
+      } catch (e) {
+        reportReason = e?.message || String(e);
+        logger?.warning?.(`[${logLabel}] report failed: ${reportReason}`);
+      }
+
+      if (!rawReportMarkdown) {
+        rawReportMarkdown = [
+          isLive ? '# Cognitive Reactor Report' : '# Shadow Cognitive Reactor Report',
+          '',
+          '## Seen',
+          hostSeenBody,
+          '',
+          '## Inferred',
+          `- ${isLive ? 'Live' : 'Shadow'} reactor fallback report (model output empty).`,
+          '',
+          '## Cyber-Taoist analysis',
+          '- Batch claimed; awaiting richer model output.',
+          '',
+          '## Next cycle suggestions',
+          isLive ? '- Continue reactor gray validation.' : '- Continue dual-run comparison against the train Decide.',
+          '',
+        ].join('\n');
+      }
+
+      const splicedMarkdown = spliceHostSeen(rawReportMarkdown, hostSeenBody);
+
+      if (isLive) {
+        assertCommitLease();
+        persistedReport = await persistIntelReport({
+          intelResult: {
+            cycle_id: reactionCycleId,
+            timestamp: isoBeijing(),
+            actions: [],
+            decisions_queued: [],
+          },
+          runtime,
+          store,
+          agentContextDocs: cfg.agentContextDocs,
+          aiClient: reportSource === 'ai' ? aiClient : null,
+          logger,
+          md: splicedMarkdown,
+          source: 'reactor',
+          fallbackReason: reportReason,
+          updateStandingMemory: false,
+          transformMd: (md) => md,
+          ...prepared,
+          producer: 'cognitive',
+          activation_targets: [],
+          producer_batch_id: batchId,
+        });
+        reportPath = persistedReport.mdPath;
+        reportMarkdown = persistedReport.markdown;
+      } else {
+        reportMarkdown = splicedMarkdown;
+        reportPath = writeShadowReport(dataRoot, batchId, reportMarkdown);
+      }
     }
 
-    let honestyStatus = 'ok';
-    let honestyFindingsCount = 0;
+    let honestyStatus = existingCheckpoint?.honesty?.status || 'ok';
+    let honestyFindingsCount = existingCheckpoint?.honesty?.findings_count || 0;
     const honestyEventType = isLive ? 'reactor_report_honesty' : 'shadow_report_honesty';
-    auditHostSeenReport({
-      markdown: reportMarkdown,
-      store,
-      operatorBriefs,
-      emitEvent: (event) => {
-        honestyStatus = event.status || 'ok';
-        honestyFindingsCount = event.findings_count ?? 0;
-        emitReaction({
-          type: honestyEventType,
-          ...event,
-        });
-      },
-      logger,
-      eventType: honestyEventType,
-      logLabel,
-      runtimeRoot: runtime.runtimeRoot,
-    });
+    if (!existingCheckpoint?.honesty) {
+      auditHostSeenReport({
+        markdown: reportMarkdown,
+        store,
+        operatorBriefs,
+        emitEvent: (event) => {
+          honestyStatus = event.status || 'ok';
+          honestyFindingsCount = event.findings_count ?? 0;
+          emitReaction({
+            type: honestyEventType,
+            ...event,
+          });
+        },
+        logger,
+        eventType: honestyEventType,
+        logLabel,
+        runtimeRoot: runtime.runtimeRoot,
+      });
+    }
 
+    patchBatchCheckpoint(dataRoot, batchId, {
+      stage: 'report',
+      report_path: reportPath,
+      report_source: reportSource,
+      report_reason: reportReason,
+      report_index: persistedReport?.indexRecord ?? existingCheckpoint?.report_index ?? null,
+      honesty: { status: honestyStatus, findings_count: honestyFindingsCount },
+    });
+    const reuseDecide = checkpointStageReached(existingCheckpoint, 'decide')
+      && Array.isArray(existingCheckpoint?.queued_decision_ids);
+    let rawDecision = null;
+    if (!reuseDecide) {
     logger?.info?.(`[${logLabel}] decide batch=${batchId}`);
+    let ruleFeedbackText = '';
+    let decisionBacklogText = '';
+    try {
+      decisionBacklogText = formatDecisionBacklogForPrompt(
+        safeBacklogSummary(decisionQueue, { limit: 15 }),
+      );
+      const goalsPath = join(runtime.runtimeRoot, 'data', 'goals', 'active_goals.json');
+      const activeGoals = existsSync(goalsPath)
+        ? JSON.parse(readFileSync(goalsPath, 'utf-8'))
+        : null;
+      if (activeGoals) {
+        const ruleFeedbackStats = computeRuleFeedbackStats({
+          store,
+          activeGoals,
+          carryoverDoc: readCarryoverDocument(runtime.runtimeRoot),
+          mechanicalGuards: loadEnabledGuards(ctx.projectRoot, subject),
+        });
+        ruleFeedbackText = formatRuleFeedbackForPrompt(ruleFeedbackStats);
+      }
+    } catch {
+      // Rule-feedback injection is best-effort.
+    }
     const decidePrompt = buildDecidePrompt({
       batchId,
       reportMarkdown,
       live: isLive,
       actionRegistry: cfg.actionRegistry,
+      ruleFeedbackText,
+      decisionBacklogText,
     });
     const decideSystem = 'Return JSON decisions only.';
     const decideMessages = [
@@ -483,7 +609,6 @@ export async function runCognitiveReaction(ctx, {
       dynamicPayload: decidePrompt.dynamicPayload,
       logger,
     });
-    let rawDecision = null;
     try {
       const decideResult = await chatMessagesDetailed(aiClient, decideMessages, {
         thinking: 'off',
@@ -497,45 +622,70 @@ export async function runCognitiveReaction(ctx, {
     } catch (e) {
       logger?.warning?.(`[${logLabel}] decide failed: ${e?.message || e}`);
     }
+    }
+    let parsed = { analysis: existingCheckpoint?.analysis || { actions: [] } };
+    let queuedActions = existingCheckpoint?.queued_actions || [];
+    let queuedIds = existingCheckpoint?.queued_decision_ids || [];
+    let skippedCount = existingCheckpoint?.decisions_skipped ?? 0;
 
-    const parsed = await parseAnalyzeDecisionWithRepair(aiClient, rawDecision || '{}', { logger });
-    const actions = parsed.analysis?.actions || [];
-    let queuedActions = actions;
-    let queuedIds = [];
-    let skippedCount = 0;
-
-    if (isLive) {
-      const queuedResult = await queueAnalyzeDecideActions({
-        projectRoot: runtime.runtimeRoot,
-        host: cfg.host,
-        runtime,
-        decisionQueue,
-        cycleId: reactionCycleId,
-        timestamp: isoBeijing(),
-        goalId: 'bootstrap',
-        analysis: parsed.analysis,
-        actions,
-        reportPath,
-        reportMarkdown,
-        operatorBriefs,
-        pipeline: 'reactor',
-      });
-      queuedActions = queuedResult.actions;
-      queuedIds = queuedResult.decisions_queued;
-      skippedCount = queuedResult.decisions_skipped?.length ?? 0;
-      logger?.info?.(`[${logLabel}] queued=${queuedIds.length} skipped=${skippedCount}`);
+    if (reuseDecide) {
+      logger?.info?.(`[${logLabel}] resume decide batch=${batchId} queued=${queuedIds.length}`);
     } else {
-      const shadowResult = appendShadowDecisions(dataRoot, {
-        batchId,
-        subject,
-        actions,
+      patchBatchCheckpoint(dataRoot, batchId, { stage: 'decide' });
+      parsed = await parseAnalyzeDecisionWithRepair(aiClient, rawDecision || '{}', { logger });
+      const actions = parsed.analysis?.actions || [];
+      queuedActions = actions;
+      queuedIds = [];
+      skippedCount = 0;
+
+      if (isLive) {
+        assertCommitLease();
+        const queuedResult = await queueAnalyzeDecideActions({
+          projectRoot: runtime.runtimeRoot,
+          host: cfg.host,
+          runtime,
+          decisionQueue,
+          cycleId: reactionCycleId,
+          timestamp: isoBeijing(),
+          goalId: 'bootstrap',
+          analysis: parsed.analysis,
+          actions,
+          reportPath,
+          reportMarkdown,
+          operatorBriefs,
+          pipeline: 'reactor',
+          batchId,
+        });
+        queuedActions = queuedResult.actions;
+        queuedIds = queuedResult.decisions_queued;
+        skippedCount = queuedResult.decisions_skipped?.length ?? 0;
+        logger?.info?.(`[${logLabel}] queued=${queuedIds.length} skipped=${skippedCount}`);
+      } else {
+        const shadowResult = appendShadowDecisions(dataRoot, {
+          batchId,
+          subject,
+          actions,
+          analysis: parsed.analysis,
+        });
+        queuedActions = shadowResult.decisions;
+        skippedCount = shadowResult.skipped?.length ?? 0;
+        logger?.info?.(`[${logLabel}] shadow queued=${queuedActions.length} skipped=${skippedCount}`);
+      }
+      patchBatchCheckpoint(dataRoot, batchId, {
+        stage: 'decide',
+        queued_decision_ids: queuedIds,
         analysis: parsed.analysis,
+        decisions_skipped: skippedCount,
       });
-      queuedActions = shadowResult.decisions;
-      skippedCount = shadowResult.skipped?.length ?? 0;
-      logger?.info?.(`[${logLabel}] shadow queued=${queuedActions.length} skipped=${skippedCount}`);
     }
 
+    assertCommitLease();
+    patchBatchCheckpoint(dataRoot, batchId, {
+      stage: 'committed',
+      queued_decision_ids: queuedIds,
+      analysis: parsed.analysis,
+      honesty: { status: honestyStatus, findings_count: honestyFindingsCount },
+    });
     ackBatchHandled(dataRoot, batchId);
     const elapsedMs = Date.now() - startedAt;
     promptCache.totals = accumulateLlmUsage([
@@ -552,6 +702,9 @@ export async function runCognitiveReaction(ctx, {
         cycle_id: reactionCycleId,
         subject,
         batch_id: batchId,
+        producer: 'cognitive',
+        activation_targets: [],
+        producer_batch_id: batchId,
         claimed_events: events.length,
         decisions_queued: queuedIds.length,
         decisions_skipped: skippedCount,
@@ -578,6 +731,8 @@ export async function runCognitiveReaction(ctx, {
       mode,
       batch_id: batchId,
       cycle_id: reactionCycleId,
+      event_ids: events.map((item) => item.id),
+      evidence_keys: events.map((item) => envelopeEvidenceKey(item)),
       claimed_events: events.length,
       report_path: reportPath,
       report: isLive ? {
@@ -601,6 +756,10 @@ export async function runCognitiveReaction(ctx, {
   } catch (err) {
     const message = err?.message || String(err);
     nackBatchFailed(dataRoot, batchId, { error: message });
+    patchBatchCheckpoint(dataRoot, batchId, {
+      stage: 'failed',
+      last_error: message,
+    });
     emitReaction({
       type: isLive ? 'reactor_reaction_failed' : 'shadow_reaction_failed',
       status: 'failed',

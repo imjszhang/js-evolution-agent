@@ -30,7 +30,20 @@ import {
   summarizePendingCycleStartRequest,
 } from './cycle-start-requests.mjs';
 import { isContinuousEvolutionMode } from './evolution-mode.mjs';
-import { resolveCyclePipeline } from './cycle-pipeline-mode.mjs';
+import { isReactorPipeline, resolveCyclePipeline } from './cycle-pipeline-mode.mjs';
+import { isEvidenceWakeEnabled } from '../evolution/reactor/feature-gates.mjs';
+import { enqueueWakeIntent } from '../evolution/reactor/wake-store.mjs';
+
+export function enqueueCognitiveWake(root, subject, {
+  reason = 'cognitive',
+  source = null,
+} = {}) {
+  try {
+    return enqueueWakeIntent(root, subject, { kind: 'cognitive', reason, source });
+  } catch {
+    return null;
+  }
+}
 import {
   isStepArtifactReconcileEnabled,
   isTickOpenCycleEnabled,
@@ -262,6 +275,8 @@ function reconcileStepStateDrift(root, subject, cycleState, taskQueue) {
 function openCycleStartBlockReason(root, subject, input = {}) {
   const openCycles = listOpenCycles(root, subject);
   if (!openCycles.length) return null;
+  const pipeline = resolveInputPipeline(root, subject, input);
+  if (isReactorPipeline(pipeline)) return 'open_cycle_exists';
   const queue = readTaskQueue(root, subject);
   const tickMs = Number(input.tick_ms) > 0 ? Number(input.tick_ms) : DEFAULT_TICK_MS;
   for (const cycle of openCycles) {
@@ -320,6 +335,35 @@ export function processCycleStartRequests(root, subject, input = {}) {
       started: false,
       reason: tickIgnoreReason,
       request: summarizePendingCycleStartRequest(pending),
+    };
+  }
+
+  if (isEvidenceWakeEnabled(env) && isReactorPipeline(pipeline)) {
+    const wake = enqueueWakeIntent(root, subject, {
+      kind: 'cognitive',
+      reason: (pending.reasons || ['cycle_start_request'])[0],
+      source: 'cycle_start_request',
+    });
+    enqueueTask(root, subject, {
+      type: 'cognitive_reaction',
+      priority: 40,
+      idempotencyKey: `${subject}:cognitive_reaction`,
+      input: { reason: 'cycle_start_request', wake_id: wake.intent.id },
+    });
+    consumeCycleStartRequest(root, subject, pending.request_id);
+    recordDaemonEvent(root, subject, {
+      type: 'cycle_start_consumed',
+      status: 'ok',
+      request_id: pending.request_id,
+      trigger_reasons: pending.reasons,
+      converted_to: 'cognitive_wake',
+    });
+    return {
+      processed: true,
+      started: true,
+      reason: 'evidence_wake',
+      request: summarizePendingCycleStartRequest(pending),
+      wake: wake.intent,
     };
   }
 

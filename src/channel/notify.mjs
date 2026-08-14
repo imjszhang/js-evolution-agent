@@ -27,11 +27,24 @@ export function collectAttentionSignals(root, subject, { projection = null } = {
   if (view.health && view.health.ok === false) {
     signals.push({
       type: 'daemon_health',
-      severity: view.health.status === 'cycle_progress_stalled' ? 'high' : 'medium',
+      severity: view.health.status === 'cycle_progress_stalled'
+        || view.health.status === 'reactor_backlog_stalled'
+        ? 'high'
+        : 'medium',
       title: `Daemon health: ${view.health.status}`,
       summary: (view.health.reasons ?? []).join('\n') || 'Daemon health is not ok.',
       key: `health:${view.health.status}`,
       refs: { health: view.health },
+    });
+  }
+  if (view.reactor?.ok === false) {
+    signals.push({
+      type: 'reactor_backlog',
+      severity: 'high',
+      title: `Reactor health: ${view.reactor.status}`,
+      summary: (view.reactor.reasons ?? []).join('\n') || 'Reactor backlog is stalled.',
+      key: `reactor:${view.reactor.status}`,
+      refs: { reactor: view.reactor },
     });
   }
   for (const task of view.tasks?.failed ?? []) {
@@ -44,15 +57,17 @@ export function collectAttentionSignals(root, subject, { projection = null } = {
       refs: { task },
     });
   }
-  for (const drift of view.cycles?.drift_steps ?? []) {
-    signals.push({
-      type: 'cycle_drift',
-      severity: 'high',
-      title: `Cycle step drift: ${drift.cycle_id}:${drift.step}`,
-      summary: 'Cycle-state is terminal while a matching daemon task is still running.',
-      key: `cycle_drift:${drift.cycle_id}:${drift.step}`,
-      refs: { drift },
-    });
+  if (view.pipeline !== 'reactor') {
+    for (const drift of view.cycles?.drift_steps ?? []) {
+      signals.push({
+        type: 'cycle_drift',
+        severity: 'high',
+        title: `Cycle step drift: ${drift.cycle_id}:${drift.step}`,
+        summary: 'Cycle-state is terminal while a matching daemon task is still running.',
+        key: `cycle_drift:${drift.cycle_id}:${drift.step}`,
+        refs: { drift },
+      });
+    }
   }
   const lastClosedCycleId = view.cycles?.last_closed_cycle_id;
   if (lastClosedCycleId) {

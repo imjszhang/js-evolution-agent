@@ -136,6 +136,16 @@ export async function runIntelIngest({ root = getProjectRoot(), flags = {} } = {
           reason: 'operator_fact',
           meta: { fact_ids: queued.map((q) => q.fact.id) },
         });
+        try {
+          const { enqueueWakeIntent } = await import('../../evolution/reactor/wake-store.mjs');
+          enqueueWakeIntent(root, runtime.subject, {
+            kind: 'cognitive',
+            reason: 'operator_fact',
+            source: 'intel_ingest',
+          });
+        } catch {
+          // wake is best-effort
+        }
       }
       if (!otherRecords.length) {
         const result = {

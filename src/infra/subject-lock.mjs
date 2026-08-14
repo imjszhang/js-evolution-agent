@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import lockfile from 'proper-lockfile';
 import { isWorkerFresh, readWorkerState } from './worker-state-read.mjs';
+import { isProcessAlive } from './process-alive.mjs';
 
 /** Long-lived daemon worker lock stale (auto-renewed via proper-lockfile `update`). */
 export const SUBJECT_LOCK_DAEMON_STALE_MS_DEFAULT = 60_000;
@@ -26,6 +27,21 @@ export function resolveSubjectLockUpdateMs(stale, mode = 'daemon') {
     return Math.min(30_000, Math.max(1000, Math.floor(stale / 4)));
   }
   return Math.max(1000, Math.floor(stale / 2));
+}
+
+export function reclaimDeadOwnerLock(lockTarget, { root = null, subject = null } = {}) {
+  const worker = root && subject ? readWorkerState(root, subject) : null;
+  if (!worker) return { reclaimed: false, reason: 'no_worker' };
+  if (isWorkerFresh(worker)) return { reclaimed: false, reason: 'worker_fresh' };
+  const pid = Number(worker?.pid);
+  if (!Number.isInteger(pid) || pid <= 0) return { reclaimed: false, reason: 'no_pid' };
+  if (isProcessAlive(pid)) return { reclaimed: false, reason: 'owner_alive', pid };
+  try {
+    lockfile.unlockSync(lockTarget);
+    return { reclaimed: true, reason: 'dead_owner_pid', pid };
+  } catch {
+    return { reclaimed: false, reason: 'unlock_failed', pid };
+  }
 }
 
 export function inspectSubjectLockAt(lockTarget, { staleMs = SUBJECT_LOCK_RUN_STALE_MS, root = null, subject = null } = {}) {
@@ -70,6 +86,7 @@ export function formatSubjectLockConflictMessageAt(root, subject, lockTarget) {
  */
 export async function acquireSubjectLockAt(lockTarget, { root, subject, staleMs, retries = 0, mode = 'daemon' } = {}) {
   ensureSubjectLockFile(lockTarget);
+  reclaimDeadOwnerLock(lockTarget, { root, subject });
   const stale = resolveSubjectLockStaleMs({ staleMs, mode });
   const update = resolveSubjectLockUpdateMs(stale, mode);
   try {

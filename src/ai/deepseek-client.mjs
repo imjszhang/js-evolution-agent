@@ -60,6 +60,32 @@ export class DeepSeekOpenAIClient extends BaseAIClient {
     });
   }
 
+  _isTransientNetworkError(err) {
+    const code = err?.code || err?.cause?.code || '';
+    const msg = String(err?.message || err || '');
+    return code === 'ECONNRESET'
+      || code === 'ETIMEDOUT'
+      || code === 'EAI_AGAIN'
+      || /ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up/i.test(msg);
+  }
+
+  async _createWithRetry(body, timeoutSec, { retries = 2 } = {}) {
+    const timeout = Math.max(1, Number(timeoutSec) || 120) * 1000;
+    let lastError = null;
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+      try {
+        return await this._openai.chat.completions.create(body, { timeout });
+      } catch (err) {
+        lastError = err;
+        if (!this._isTransientNetworkError(err) || attempt === retries) throw err;
+        const delayMs = 200 * (attempt + 1);
+        this._log(`DeepSeek transient ${err?.code || 'network'} retry ${attempt + 1}/${retries} in ${delayMs}ms`);
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+    throw lastError;
+  }
+
   /**
    * @param {object} [opts]
    */
@@ -106,9 +132,7 @@ export class DeepSeekOpenAIClient extends BaseAIClient {
 
     let completion;
     try {
-      completion = await this._openai.chat.completions.create(body, {
-        timeout: Math.max(1, Number(timeoutSec) || 120) * 1000,
-      });
+      completion = await this._createWithRetry(body, timeoutSec);
     } catch (e) {
       const msg = e?.message || String(e);
       this._log(`DeepSeek API error: ${msg}`, 'error');
@@ -173,9 +197,7 @@ export class DeepSeekOpenAIClient extends BaseAIClient {
 
     let completion;
     try {
-      completion = await this._openai.chat.completions.create(body, {
-        timeout: Math.max(1, Number(timeoutSec) || 120) * 1000,
-      });
+      completion = await this._createWithRetry(body, timeoutSec);
     } catch (e) {
       const msg = e?.message || String(e);
       this._log(`DeepSeek API error: ${msg}`, 'error');

@@ -110,12 +110,24 @@ export async function factPut({ root = getProjectRoot(), flags = {} } = {}) {
       reason: 'operator_fact',
       meta: { fact_ids: [fact.id] },
     });
+    let wake = null;
+    try {
+      const { enqueueWakeIntent } = await import('../../evolution/reactor/wake-store.mjs');
+      wake = enqueueWakeIntent(root, runtime.subject, {
+        kind: 'cognitive',
+        reason: 'operator_fact',
+        source: 'intel_fact_put',
+      });
+    } catch {
+      // wake is best-effort; cycle-start request remains the compatibility path
+    }
     const result = {
       file,
       fact,
       namespace: runtime.dataNamespace,
       subject: runtime.subject,
       cycle_start_request: cycleRequest.request,
+      wake: wake?.intent ?? null,
     };
     if (flags.json) console.log(JSON.stringify(result, null, 2));
     else console.log(`queued operator fact ${fact.id} -> ${file}`);

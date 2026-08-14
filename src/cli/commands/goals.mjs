@@ -665,11 +665,16 @@ export async function assessActiveGoals(root = getProjectRoot(), flags = {}, opt
     agentContextDocs: cfg.agentContextDocs ?? [],
     logger: cfg.host?.logger,
     ruleFeedbackStats,
+    goalIds: opts.goalIds ?? null,
   });
   const reportRef = reportEvidenceRef(resolvedReportRecord);
   const event = {
     type: 'assessment',
     goal_id: active.goals.id ?? null,
+    ...(opts.producer ? { producer: opts.producer } : {}),
+    ...(Array.isArray(opts.activation_targets)
+      ? { activation_targets: opts.activation_targets }
+      : {}),
     reason: assessed.assessment.reason,
     rule_status: assessed.assessment.rule_status ?? null,
     evidence_refs: assessed.assessment.evidence_refs?.length
@@ -678,10 +683,15 @@ export async function assessActiveGoals(root = getProjectRoot(), flags = {}, opt
     assessment: assessed.assessment,
     proposed_goal: assessed.assessment.proposed_goal ?? null,
     goal_patches: assessed.assessment.goal_patches ?? null,
-    cycle_id: resolvedReportRecord.cycle_id ?? null,
+    cycle_id: opts.eventCycleId ?? resolvedReportRecord.cycle_id ?? null,
     source: assessed.source,
     rule_feedback_summary: ruleFeedbackStats?.summary ?? null,
   };
+  if (typeof opts.canCommit === 'function' && !opts.canCommit()) {
+    const error = new Error('reactor_task_lease_lost');
+    error.code = 'lease_lost';
+    throw error;
+  }
   const written = store.recordGoalEvent(event);
 
   return {

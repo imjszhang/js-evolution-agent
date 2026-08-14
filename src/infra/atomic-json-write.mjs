@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
@@ -36,7 +37,10 @@ export function writeJsonAtomic(filePath, data, {
 } = {}) {
   fs.mkdirSync(dirname(filePath), { recursive: true });
   const body = JSON.stringify(data, null, 2) + '\n';
-  const tmp = `${filePath}.tmp`;
+  // A fixed `.tmp` path lets independent CLI processes overwrite/rename each
+  // other's staging file. Keep one stable, unique path for this invocation so
+  // retries still work while concurrent writers cannot steal it.
+  const tmp = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   let lastError = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {

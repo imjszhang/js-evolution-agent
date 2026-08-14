@@ -94,8 +94,42 @@ function attentionFromDaemonHealth(subject, health) {
   return items;
 }
 
-function attentionFromCycles(subject, cycles) {
+function attentionFromReactor(subject, reactor) {
   const items = [];
+  if (!reactor || reactor.ok !== false) return items;
+  const details = [
+    reactor.pending_verify?.count
+      ? `pending verify: ${reactor.pending_verify.count}`
+      : null,
+    reactor.exec_intents?.uncertain
+      ? `uncertain intents: ${reactor.exec_intents.uncertain}`
+      : null,
+    reactor.rule?.due_windows
+      ? `rule windows due: ${reactor.rule.due_windows}`
+      : null,
+    reactor.memory?.due
+      ? `memory due: ${reactor.memory.reason || 'yes'}`
+      : null,
+    reactor.lease?.stale ? 'lease stale' : null,
+  ].filter(Boolean);
+  pushAttention(items, {
+    severity: 'critical',
+    kind: 'reactor_backlog',
+    title: `Reactor: ${reactor.status}`,
+    summary: [
+      (reactor.reasons ?? []).join(' · ') || 'Reactor backlog is stalled.',
+      details.join(' · '),
+    ].filter(Boolean).join(' — '),
+    subject,
+    refs: { reactor },
+    suggested_command: `npm run jea -- daemon doctor --subject ${subject} --json`,
+  });
+  return items;
+}
+
+function attentionFromCycles(subject, cycles, { pipeline = null } = {}) {
+  const items = [];
+  if (pipeline === 'reactor') return items;
   for (const stuck of cycles?.stuck_steps ?? []) {
     pushAttention(items, {
       severity: 'critical',
@@ -131,7 +165,10 @@ function attentionFromCycles(subject, cycles) {
   return items;
 }
 
-function daemonIsCurrentlyHealthy(health, cycles) {
+function daemonIsCurrentlyHealthy(health, cycles, { pipeline = null, reactor = null } = {}) {
+  if (pipeline === 'reactor') {
+    return health?.ok !== false && reactor?.ok !== false;
+  }
   return health?.ok !== false
     && !cycles?.open_count
     && !cycles?.progress_stalled
@@ -139,9 +176,14 @@ function daemonIsCurrentlyHealthy(health, cycles) {
     && !(cycles?.drift_steps ?? []).length;
 }
 
-function attentionFromTasks(subject, tasks, { health = null, cycles = null } = {}) {
+function attentionFromTasks(subject, tasks, {
+  health = null,
+  cycles = null,
+  pipeline = null,
+  reactor = null,
+} = {}) {
   const items = [];
-  const historicalOnly = daemonIsCurrentlyHealthy(health, cycles);
+  const historicalOnly = daemonIsCurrentlyHealthy(health, cycles, { pipeline, reactor });
   for (const task of tasks?.failed ?? []) {
     pushAttention(items, {
       severity: 'warning',
@@ -304,12 +346,15 @@ function buildOperatorInputs(runtimeRoot, subject) {
 
 function buildCycleDiagnostics(daemon) {
   const cycles = daemon?.cycles ?? {};
+  const reactorPrimary = daemon?.pipeline === 'reactor';
   return {
     open_count: cycles.open_count ?? 0,
-    progress_stalled: Boolean(cycles.progress_stalled),
+    progress_stalled: reactorPrimary ? false : Boolean(cycles.progress_stalled),
     oldest_open_cycle_age_ms: cycles.oldest_open_cycle_age_ms ?? null,
-    stuck_steps: cycles.stuck_steps ?? [],
-    drift_steps: cycles.drift_steps ?? [],
+    stuck_steps: reactorPrimary ? [] : (cycles.stuck_steps ?? []),
+    drift_steps: reactorPrimary ? [] : (cycles.drift_steps ?? []),
+    reactor: daemon?.reactor ?? null,
+    wake_policy: daemon?.wake_policy ?? null,
     recent: (cycles.recent ?? []).map((cycle) => ({
       cycle_id: cycle.cycle_id,
       status: cycle.status ?? null,
@@ -370,8 +415,14 @@ export function buildSubjectObservability({ subject, runtimeRoot, daemon, repo_l
 
   const attentionItems = [
     ...attentionFromDaemonHealth(subject, daemon?.health),
-    ...attentionFromCycles(subject, daemon?.cycles),
-    ...attentionFromTasks(subject, daemon?.tasks, { health: daemon?.health, cycles: daemon?.cycles }),
+    ...attentionFromReactor(subject, daemon?.reactor),
+    ...attentionFromCycles(subject, daemon?.cycles, { pipeline: daemon?.pipeline }),
+    ...attentionFromTasks(subject, daemon?.tasks, {
+      health: daemon?.health,
+      cycles: daemon?.cycles,
+      pipeline: daemon?.pipeline,
+      reactor: daemon?.reactor,
+    }),
     ...attentionFromChannel(subject, daemon?.channel),
     ...attentionFromBriefs(subject, operator_inputs),
   ].sort((a, b) => (SEVERITY_ORDER[a.severity] ?? 9) - (SEVERITY_ORDER[b.severity] ?? 9));

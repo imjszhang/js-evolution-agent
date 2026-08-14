@@ -208,8 +208,8 @@ export function computeStarvedStreak({
 }
 
 export function resolveRuleFeedbackConfig(env = process.env) {
-  const rawUnit = String(env.JEA_RULE_FEEDBACK_STREAK_UNIT || 'cycle').trim().toLowerCase();
-  const streakUnit = RULE_FEEDBACK_STREAK_UNITS.includes(rawUnit) ? rawUnit : 'cycle';
+  const rawUnit = String(env.JEA_RULE_FEEDBACK_STREAK_UNIT || 'evidence').trim().toLowerCase();
+  const streakUnit = RULE_FEEDBACK_STREAK_UNITS.includes(rawUnit) ? rawUnit : 'evidence';
   const windowCycles = envInt('JEA_RULE_FEEDBACK_WINDOW', DEFAULT_WINDOW_CYCLES, env);
   const windowEvidence = envInt('JEA_RULE_FEEDBACK_WINDOW_EVIDENCE', DEFAULT_WINDOW_EVIDENCE, env);
   const deadStreak = envInt('JEA_RULE_FEEDBACK_DEAD_STREAK', DEFAULT_DEAD_STREAK, env);
@@ -220,7 +220,7 @@ export function resolveRuleFeedbackConfig(env = process.env) {
     starvedStreak,
     env,
   );
-  const rawStrategy = String(env.JEA_RULE_FEEDBACK_STARVED_STRATEGY || 'global_count')
+  const rawStrategy = String(env.JEA_RULE_FEEDBACK_STARVED_STRATEGY || 'wall_clock')
     .trim()
     .toLowerCase();
   const starvedStrategy = RULE_FEEDBACK_STARVED_STRATEGIES.includes(rawStrategy)
