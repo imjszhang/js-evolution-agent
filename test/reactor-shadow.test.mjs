@@ -3,6 +3,7 @@ import {
   createHash,
   randomUUID,
 } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
@@ -18,6 +19,7 @@ import {
   ackBatchHandled,
   claimEvidenceBatch,
   isReactorBusy,
+  listEligibleEvidence,
   nackBatchFailed,
   readClaimLedger,
   reconcileExpiredClaims,
@@ -25,6 +27,8 @@ import {
 import { compareShadowAgainstCycle } from '../src/evolution/reactor/shadow-compare.mjs';
 import { runCognitiveShadowReaction, buildDecidePrompt } from '../src/evolution/reactor/cognitive-reactor.mjs';
 import { readShadowDecisions, readShadowRuns, appendShadowDecisions } from '../src/evolution/reactor/shadow-store.mjs';
+import { readBatchCheckpoint, writeBatchCheckpoint } from '../src/evolution/reactor/batch-checkpoint-store.mjs';
+import { writeShadowReport } from '../src/evolution/reactor/shadow-store.mjs';
 import { MockToolsAIClient } from '../src/ai/mock-tools-client.mjs';
 import { createIntelligenceStore } from '../src/intelligence/store.mjs';
 
@@ -122,6 +126,35 @@ describe('claim ledger', () => {
     expect(empty.skipped).toBe('no_pending_evidence');
   });
 
+  it('covers event ids independently per reactor', () => {
+    const dataRoot = makeDataRoot();
+    mkdirSync(join(dataRoot, 'intelligence', 'action_receipts'), { recursive: true });
+    writeJsonl(join(dataRoot, 'intelligence', 'action_receipts', 'action-receipts.jsonl'), [
+      {
+        id: 'receipt-shared-0',
+        action_type: 'record_observation',
+        recorded_at: '2026-08-09T00:00:00.000Z',
+        action: { type: 'record_observation' },
+        result: { success: true },
+      },
+      {
+        id: 'receipt-shared-1',
+        action_type: 'record_observation',
+        recorded_at: '2026-08-09T01:00:00.000Z',
+        action: { type: 'record_observation' },
+        result: { success: true },
+      },
+    ]);
+    const cognitive = claimEvidenceBatch(dataRoot, { reactor: 'cognitive', limit: 2 });
+    expect(cognitive.events).toHaveLength(2);
+    const rule = claimEvidenceBatch(dataRoot, { reactor: 'rule', limit: 2 });
+    expect(rule.skipped).toBeUndefined();
+    expect(rule.events.map((item) => item.id)).toEqual(cognitive.events.map((item) => item.id));
+    ackBatchHandled(dataRoot, cognitive.batch_id);
+    const ruleAgain = claimEvidenceBatch(dataRoot, { reactor: 'rule', limit: 2 });
+    expect(ruleAgain.skipped).toBe('reactor_busy');
+  });
+
   it('reconciles expired claimed batches to failed', () => {
     const dataRoot = makeDataRoot();
     seedEvolutionEvents(dataRoot, 1);
@@ -136,6 +169,86 @@ describe('claim ledger', () => {
     expect(expired).toHaveLength(1);
     expect(expired[0].status).toBe('failed');
     expect(isReactorBusy(dataRoot, 'cognitive')).toBe(false);
+  });
+
+  it('does not let a second process claim the same batch', () => {
+    const dataRoot = makeDataRoot();
+    seedEvolutionEvents(dataRoot, 2);
+    const first = claimEvidenceBatch(dataRoot, { reactor: 'cognitive', limit: 2 });
+    const second = claimEvidenceBatch(dataRoot, { reactor: 'cognitive', limit: 2 });
+    expect(first.batch_id).toBeTruthy();
+    expect(second.skipped).toBe('reactor_busy');
+    expect(readClaimLedger(dataRoot).claims.filter((c) => c.status === 'claimed')).toHaveLength(1);
+  });
+
+  it('serializes claims from two node processes', async () => {
+    const dataRoot = makeDataRoot();
+    seedEvolutionEvents(dataRoot, 2);
+    const claimModule = new URL(
+      '../src/evolution/reactor/claim-ledger.mjs',
+      import.meta.url,
+    ).href;
+    const script = [
+      `import { claimEvidenceBatch } from ${JSON.stringify(claimModule)};`,
+      'console.log(JSON.stringify(claimEvidenceBatch(process.env.DATA_ROOT, { reactor: "cognitive", limit: 2 })));',
+    ].join('\n');
+    const run = () => new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, ['--input-type=module', '-e', script], {
+        env: { ...process.env, DATA_ROOT: dataRoot },
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (chunk) => { stdout += chunk; });
+      child.stderr.on('data', (chunk) => { stderr += chunk; });
+      child.on('error', reject);
+      child.on('close', (code) => {
+        if (code !== 0) {
+          reject(new Error(stderr || `child exited ${code}`));
+          return;
+        }
+        resolve(JSON.parse(stdout.trim()));
+      });
+    });
+
+    const results = await Promise.all([run(), run()]);
+    expect(results.filter((result) => result.batch_id)).toHaveLength(1);
+    expect(results.filter((result) => result.skipped === 'reactor_busy')).toHaveLength(1);
+    expect(readClaimLedger(dataRoot).claims.filter((claim) => claim.status === 'claimed'))
+      .toHaveLength(1);
+  });
+
+  it('keeps same id different kinds independently', () => {
+    const dataRoot = makeDataRoot();
+    mkdirSync(join(dataRoot, 'intelligence', 'action_receipts'), { recursive: true });
+    mkdirSync(join(dataRoot, 'evolution', 'verify_reports'), { recursive: true });
+    writeJsonl(join(dataRoot, 'intelligence', 'action_receipts', 'action-receipts.jsonl'), [{
+      id: 'shared-id',
+      action_type: 'record_observation',
+      recorded_at: '2026-08-09T00:00:00.000Z',
+      action: { type: 'record_observation' },
+      result: { success: true },
+    }]);
+    writeFileSync(join(dataRoot, 'evolution', 'verify_reports', 'shared-id.json'), JSON.stringify({
+      timestamp: '2026-08-09T00:00:00.000Z',
+      verified: [],
+      pending: [],
+    }));
+    const claimed = claimEvidenceBatch(dataRoot, { reactor: 'cognitive', limit: 10 });
+    const keys = claimed.claim.evidence_keys.sort();
+    expect(keys).toContain('action_receipts:shared-id');
+    expect(keys).toContain('verify_reports:shared-id');
+  });
+
+  it('does not treat cognitive outputs as eligible cognitive backlog', () => {
+    const dataRoot = makeDataRoot();
+    writeJsonl(join(dataRoot, 'intelligence', 'evolution_events', 'evolution-events.jsonl'), [{
+      id: 'evt-self',
+      type: 'reactor_pipeline',
+      recorded_at: '2026-08-09T00:00:00.000Z',
+      producer: 'cognitive',
+    }]);
+    const eligible = listEligibleEvidence(dataRoot, { reactor: 'cognitive' });
+    expect(eligible.map((item) => item.id)).not.toContain('evt-self');
   });
 });
 
@@ -347,6 +460,96 @@ describe('cognitive shadow reactor e2e', () => {
 
     const shadow = readShadowDecisions(runtime.dataRoot);
     expect(shadow.decisions.some((d) => d.batch_id === result.batch_id)).toBe(true);
+  });
+
+  it('resumes the same cognitive batch after a report-stage crash', async () => {
+    const dataRoot = makeDataRoot('jea-reactor-resume-');
+    seedEvolutionEvents(dataRoot, 2);
+    const claimed = claimEvidenceBatch(dataRoot, { reactor: 'cognitive', limit: 2 });
+    const reportPath = writeShadowReport(dataRoot, claimed.batch_id, [
+      '# Shadow Cognitive Reactor Report',
+      '',
+      '## Seen',
+      '- existing',
+      '',
+      '## Inferred',
+      '- resumed',
+      '',
+      '## Cyber-Taoist analysis',
+      '- ok',
+      '',
+      '## Next cycle suggestions',
+      '- continue',
+      '',
+    ].join('\n'));
+    writeBatchCheckpoint(dataRoot, {
+      batch_id: claimed.batch_id,
+      reactor: 'cognitive',
+      subject: 'demo',
+      stage: 'report',
+      event_ids: claimed.events.map((item) => item.id),
+      evidence_keys: claimed.events.map((item) => `${item.kind}:${item.id}`),
+      report_path: reportPath,
+      report_source: 'fallback',
+      honesty: { status: 'ok', findings_count: 0 },
+    });
+
+    const store = createIntelligenceStore({
+      baseDir: join(dataRoot, 'intelligence'),
+      timezone: 'Asia/Shanghai',
+    });
+    const aiClient = new MockToolsAIClient({
+      responses: [{
+        match: /Strategic Analysis & Decision/,
+        response: {
+          decision: 'execute',
+          actions: [{
+            type: 'record_observation',
+            description: 'resume note',
+            serves_goal: 'bootstrap',
+            params: { content: 'resume' },
+          }],
+          goal_coverage: { covered: ['bootstrap'], not_covered: {} },
+          deferred: [],
+          risk_mitigation: [],
+          confidence_score: 0.4,
+        },
+      }],
+      defaultResponse: { decision: 'execute', actions: [] },
+    });
+    const ctx = {
+      cfg: {
+        aiClient,
+        agentContextDocs: '',
+        actionRegistry: { list: () => [] },
+        host: {
+          logger: { info() {}, warning() {}, error() {} },
+          intelligenceStore: store,
+          knowledgeWriter: store,
+        },
+      },
+      engine: {
+        cycleId: null,
+        setCycleId() {},
+        goalProvider: { formatForPrompt: () => 'bootstrap' },
+        loadRules: () => '',
+        guidanceReader: { readGuidance: () => '' },
+      },
+      runtime: { dataRoot, runtimeRoot: tempDir, subject: 'demo' },
+      store,
+      projectRoot: tempDir,
+    };
+
+    const first = await runCognitiveShadowReaction(ctx, { skipInvestigate: true });
+    expect(first.batch_id).toBe(claimed.batch_id);
+    expect(readBatchCheckpoint(dataRoot, claimed.batch_id).stage).toBe('committed');
+    const honesty = readShadowRuns(dataRoot, { limit: 50 })
+      .filter((row) => row.type === 'shadow_report_honesty');
+    expect(honesty).toHaveLength(0);
+
+    const second = await runCognitiveShadowReaction(ctx, { skipInvestigate: true });
+    expect(second.skipped).toBe(true);
+    expect(readClaimLedger(dataRoot).claims.filter((claim) => claim.status === 'claimed')).toHaveLength(0);
   });
 
   it('appendShadowDecisions skips non-object actions', () => {

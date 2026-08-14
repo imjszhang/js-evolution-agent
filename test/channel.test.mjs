@@ -245,6 +245,8 @@ describe('channel domain', () => {
     });
 
     it('runChannelTask routes channel_agent_run and delivers result to outbox', async () => {
+      const previousProvider = process.env.JEA_AGENT_PROVIDER;
+      delete process.env.JEA_AGENT_PROVIDER;
       const root = makeRoot();
       const { task } = enqueueChannelTask(root, 'alpha', {
         type: 'channel_agent_run',
@@ -311,6 +313,8 @@ describe('channel domain', () => {
       const ctx = buildPresenceContext(root, 'alpha');
       expect(ctx.expression.candidates.some((candidate) =>
         candidate.kind === 'reply.agent_run')).toBe(false);
+      if (previousProvider == null) delete process.env.JEA_AGENT_PROVIDER;
+      else process.env.JEA_AGENT_PROVIDER = previousProvider;
     });
 
     it('runChannelAgentRunTask reports validation failures without executing an agent', async () => {

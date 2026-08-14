@@ -12,9 +12,14 @@ import {
   validateBeliefEvent,
   validateChannelEnvelope,
   validateAgentRateLedger,
+  validateBatchCheckpoint,
   validateEvidenceBatchClaim,
   validateEvidenceEnvelope,
   validateEvolutionEvent,
+  validateWakeIntent,
+  validateExecIntent,
+  validateExecResult,
+  evidenceKey,
   validateGoalEvent,
   validateVerifyReport,
 } from '../src/contracts/index.mjs';
@@ -91,6 +96,129 @@ describe('contracts', () => {
       entries: [{ ts: 1_700_000_000_000, cycle_id: 'cycle-test', decision_id: 'd1' }],
     }).ok).toBe(true);
     expect(validateAgentRateLedger({ version: 1, entries: [{ ts: 'bad' }] }).ok).toBe(false);
+    expect(validateEvidenceBatchClaim({
+      batch_id: 'batch-retry',
+      reactor: 'cognitive',
+      claimed_at: '2026-06-13T00:00:00.000Z',
+      deadline_at: '2026-06-13T00:05:00.000Z',
+      event_ids: ['evt-1'],
+      status: 'failed',
+      attempt: 2,
+      stream_cursor: 'evt-1',
+    }).ok).toBe(true);
+    expect(validateBatchCheckpoint({
+      batch_id: 'batch-cp',
+      reactor: 'cognitive',
+      written_at: '2026-06-13T00:00:00.000Z',
+      stage: 'committed',
+      event_ids: ['evt-1'],
+      queued_decision_ids: ['cycle-test:0'],
+      honesty: { status: 'ok', findings_count: 0 },
+    }).ok).toBe(true);
+    expect(validateWakeIntent({
+      id: 'wake-test',
+      kind: 'cognitive',
+      subject: 'alpha',
+      created_at: '2026-06-13T00:00:00.000Z',
+      updated_at: '2026-06-13T00:00:00.000Z',
+      status: 'pending',
+      reason: 'operator_brief',
+      merge_key: 'alpha:cognitive',
+    }).ok).toBe(true);
+    expect(validateEvidenceEnvelope({
+      id: 'evt-1',
+      kind: 'evolution_events',
+      type: 'reactor_pipeline',
+      occurred_at: '2026-06-13T00:00:00.000Z',
+      evidence_key: evidenceKey('evolution_events', 'evt-1'),
+      producer: 'cognitive',
+      activation_targets: ['rule'],
+      provenance: { store: 'evolution_events' },
+    }).ok).toBe(true);
+    expect(validateEvidenceBatchClaim({
+      batch_id: 'batch-keys',
+      reactor: 'rule',
+      claimed_at: '2026-06-13T00:00:00.000Z',
+      deadline_at: '2026-06-13T00:05:00.000Z',
+      event_ids: ['evt-1'],
+      evidence_keys: ['action_receipts:receipt-1'],
+      status: 'released',
+    }).ok).toBe(true);
+    expect(validateExecIntent({
+      id: 'intent-abc',
+      key: 'd1#1',
+      execution_id: 'exec-1',
+      decision_id: 'd1',
+      status: 'prepared',
+      created_at: '2026-06-13T00:00:00.000Z',
+    }).ok).toBe(true);
+    expect(validateExecResult({
+      execution_id: 'exec-1',
+      written_at: '2026-06-13T00:00:00.000Z',
+      verify_status: 'pending_verify',
+      executed: [],
+    }).ok).toBe(true);
+    expect(validateWakeIntent({
+      id: 'bad',
+      kind: 'cognitive',
+      subject: 'alpha',
+      created_at: '2026-06-13T00:00:00.000Z',
+      updated_at: '2026-06-13T00:00:00.000Z',
+      status: 'pending',
+      reason: 'x',
+      merge_key: 'alpha:cognitive',
+    }).ok).toBe(false);
+  });
+
+  it('rejects illegal producer/targets and accepts legacy event_ids-only claims', () => {
+    expect(validateEvidenceEnvelope({
+      id: 'evt-1',
+      kind: 'evolution_events',
+      type: 'reactor_pipeline',
+      occurred_at: '2026-06-13T00:00:00.000Z',
+      producer: 'not-a-producer',
+      provenance: { store: 'evolution_events' },
+    }).ok).toBe(false);
+    expect(validateEvidenceEnvelope({
+      id: 'evt-1',
+      kind: 'evolution_events',
+      type: 'reactor_pipeline',
+      occurred_at: '2026-06-13T00:00:00.000Z',
+      producer: 'cognitive',
+      producer_batch_id: 'batch-abc',
+      activation_targets: [''],
+      provenance: { store: 'evolution_events' },
+    }).ok).toBe(false);
+    expect(validateEvolutionEvent({
+      id: 'evt-test',
+      type: 'belief_update',
+      recorded_at: '2026-06-13T00:00:00.000Z',
+      producer: 'rule',
+      activation_targets: ['cognitive'],
+      producer_batch_id: 'batch-rule-1',
+    }).ok).toBe(true);
+    expect(validateEvolutionEvent({
+      id: 'evt-test',
+      type: 'belief_update',
+      recorded_at: '2026-06-13T00:00:00.000Z',
+      producer: 'unknown-reactor',
+    }).ok).toBe(false);
+    expect(validateEvidenceBatchClaim({
+      batch_id: 'batch-legacy',
+      reactor: 'cognitive',
+      claimed_at: '2026-06-13T00:00:00.000Z',
+      deadline_at: '2026-06-13T00:05:00.000Z',
+      event_ids: ['evt-1'],
+      status: 'claimed',
+    }).ok).toBe(true);
+    expect(validateBatchCheckpoint({
+      batch_id: 'batch-legacy-cp',
+      reactor: 'cognitive',
+      written_at: '2026-06-13T00:00:00.000Z',
+      stage: 'claimed',
+      event_ids: ['evt-1'],
+    }).ok).toBe(true);
+    expect(evidenceKey('action_receipts', 'shared')).not.toBe(evidenceKey('verify_reports', 'shared'));
   });
 
   it('validates evolution_event required fields and evt- prefix', () => {

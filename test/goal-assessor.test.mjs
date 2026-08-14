@@ -79,6 +79,26 @@ afterEach(() => {
 });
 
 describe('goal assessment', () => {
+  it('limits assessment context to due goals and their ancestors', () => {
+    const activeGoals = {
+      id: 'root',
+      name: 'Root',
+      children: [
+        { id: 'goal-a', name: 'A', children: [] },
+        { id: 'goal-b', name: 'B', children: [] },
+      ],
+    };
+    const context = buildGoalAssessmentContext({
+      activeGoals,
+      goalIds: ['goal-b'],
+      store: null,
+    });
+
+    expect(context.due_goal_ids).toEqual(['goal-b']);
+    expect(context.flat_goals.map((goal) => goal.id)).toEqual(['root', 'goal-b']);
+    expect(context.active_goals.children.map((goal) => goal.id)).toEqual(['goal-b']);
+  });
+
   it('builds context and prompt with goals, report, evidence, and recent goal events', () => {
     const { store } = makeReportFixture();
     const activeGoals = {

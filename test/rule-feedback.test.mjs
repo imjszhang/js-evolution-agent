@@ -122,8 +122,8 @@ describe('streak and information gain', () => {
 });
 
 describe('rule feedback streak units', () => {
-  it('defaults to cycle and parses evidence window independently', () => {
-    expect(resolveRuleFeedbackConfig({}).streakUnit).toBe('cycle');
+  it('defaults to evidence and parses evidence window independently', () => {
+    expect(resolveRuleFeedbackConfig({}).streakUnit).toBe('evidence');
     expect(resolveRuleFeedbackConfig({
       JEA_RULE_FEEDBACK_STREAK_UNIT: 'evidence',
       JEA_RULE_FEEDBACK_WINDOW_EVIDENCE: '12',
@@ -337,7 +337,11 @@ describe('computeRuleFeedbackStats', () => {
       },
       deadStreak: 3,
       escalateStreak: 5,
-      env: { JEA_RULE_FEEDBACK_MUTATE_COOLDOWN: '2' },
+      env: {
+        JEA_RULE_FEEDBACK_MUTATE_COOLDOWN: '2',
+        JEA_RULE_FEEDBACK_STREAK_UNIT: 'cycle',
+        JEA_RULE_FEEDBACK_STARVED_STRATEGY: 'global_count',
+      },
     });
     const row = stats.goals.find((g) => g.goal_id === 'guard-memory-audit-v28');
     expect(row.feedback_state).toBe('degraded');
@@ -634,6 +638,10 @@ describe('starved_streak and mutate_effective in stats', () => {
       deadStreak: 3,
       escalateStreak: 5,
       windowCycles: 8,
+      env: {
+        JEA_RULE_FEEDBACK_STREAK_UNIT: 'cycle',
+        JEA_RULE_FEEDBACK_STARVED_STRATEGY: 'global_count',
+      },
     });
     const iterate = stats.goals.find((g) => g.goal_id === 'iterate-skill-with-calibrated-sim-v28');
     const enforce = stats.goals.find((g) => g.goal_id === 'enforce-deep-analysis-and-switch');
@@ -979,6 +987,10 @@ describe('mechanically_maintained and healthy_streak', () => {
       deadStreak: 3,
       escalateStreak: 5,
       windowCycles: 8,
+      env: {
+        JEA_RULE_FEEDBACK_STREAK_UNIT: 'cycle',
+        JEA_RULE_FEEDBACK_STARVED_STRATEGY: 'global_count',
+      },
     });
     const unmaintained = stats.goals.find((g) => g.goal_id === 'guard-unmaintained');
     const maintained = stats.goals.find((g) => g.goal_id === 'guard-memory-audit-v28');
@@ -1041,7 +1053,7 @@ describe('independent starved threshold + wall_clock', () => {
     });
     expect(cfg.deadStreak).toBe(4);
     expect(cfg.starvedStreak).toBe(4);
-    expect(cfg.starvedStrategy).toBe('global_count');
+    expect(cfg.starvedStrategy).toBe('wall_clock');
   });
 
   it('decouples starved threshold from dead streak', () => {
@@ -1067,7 +1079,10 @@ describe('independent starved threshold + wall_clock', () => {
       deadStreak: 3,
       escalateStreak: 5,
       windowCycles: 8,
-      env: { JEA_RULE_FEEDBACK_STREAK_UNIT: 'cycle' },
+      env: {
+        JEA_RULE_FEEDBACK_STREAK_UNIT: 'cycle',
+        JEA_RULE_FEEDBACK_STARVED_STRATEGY: 'global_count',
+      },
     });
     const raised = computeRuleFeedbackStats({
       store,
@@ -1077,6 +1092,7 @@ describe('independent starved threshold + wall_clock', () => {
       windowCycles: 8,
       env: {
         JEA_RULE_FEEDBACK_STREAK_UNIT: 'cycle',
+        JEA_RULE_FEEDBACK_STARVED_STRATEGY: 'global_count',
         JEA_RULE_FEEDBACK_STARVED_STREAK: '10',
       },
     });
