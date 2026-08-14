@@ -152,6 +152,13 @@ describe('cycle step e2e (mock)', () => {
       expect(types.has('verify_pipeline')).toBe(true);
       expect(types.has('evolution_diary')).toBe(true);
 
+      const honesty = events.filter((e) => e.type === 'reactor_report_honesty' && e.cycle_id === cycleId);
+      expect(honesty).toHaveLength(1);
+      expect(honesty[0].batch_id).toMatch(/^batch-/);
+      expect(honesty[0].status).toBeTruthy();
+      const reactorCp = readStepArtifact(root, SUBJECT, cycleId, 'reactor');
+      expect(reactorCp?.batch_id).toBe(honesty[0].batch_id);
+
       const cycleEvents = events.filter((e) => e.cycle_id === cycleId || e.cycle_id?.startsWith('exec-'));
       expect(cycleEvents.length).toBeGreaterThan(0);
     } finally {
@@ -214,6 +221,9 @@ describe('cycle step e2e (mock)', () => {
       expect(types.has('belief_update')).toBe(true);
       expect(types.has('goals_assess')).toBe(true);
       expect(types.has('goals_calibrate')).toBe(true);
+      const honesty = events.filter((e) => e.type === 'reactor_report_honesty' && e.cycle_id === cycleId);
+      expect(honesty).toHaveLength(1);
+      expect(honesty[0].batch_id).toMatch(/^batch-/);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

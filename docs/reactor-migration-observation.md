@@ -148,6 +148,28 @@ live Decide 因 API `ECONNRESET` 未产出记录型决策，exec 缺 params 的�
 
 **M5 A 类销账**（2026-08-15）：法则清单 §15 逐条挂证据。已消解：tick 开轮 / 产物对账（#45）、carryover 写侧（#44）、operator_fact 生产迁移、channel 启动自动 purge。残留（`JEA_CYCLE_*`、`run_cycle`、双模式、drift 观测、exec journal 等）标专项，本轮不删。
 
-## M6 — 锚点
+## M6 — 锚点（2026-08-15 通过）
 
-仍待 M5 之后：KV 对照、关 #33/#34/#39。
+### KV 前缀对照
+
+代码：[PR #47](https://github.com/imjszhang/js-evolution-agent/pull/47)。`batch_id` 不进 stablePrefix。真实沙盒 `JEA_FORCE_MOCK=0`：
+
+| cycle | 墙钟 | investigate | report | decide | 合计 | hit_ratio |
+| --- | ---: | --- | --- | --- | ---: | ---: |
+| `cycle-20260814171018-7d989e32` | ~316s | prompt=42998 hit=17792 (0.4138) | 4363 / 0 | 5628 / 0 | **52989** | 0.3358 |
+| `cycle-20260814171544-c4a6dcd2` | ~198s | prompt=46480 hit=21376 (0.4599) | 4033 / 0 | 5441 / 0 | **55954** | 0.382 |
+
+列车基线（`docs/reactor-migration-baseline.md` §6.2）prompt 合计 **554273**。reactor 合计约 5.3–5.6 万，远低于基线 +10%。investigate 多轮 tool 前缀可命中；report/decide 稳定前缀过短，DeepSeek 未给 cache hit（先度量、不重构 prompt）。每轮恰好 1 条 `reactor_report_honesty`（带 `batch_id`）。
+
+### Honesty 硬闸
+
+`test/cycle-e2e.test.mjs` 断言 live `reactor_report_honesty` 每 cycle 恰好一条且带 `batch_id`。
+
+### Kill-9 演练
+
+- `simulate --subject js-evolution-agent`：`ok=true`（expired=1，after_claimed=0）
+- `live` 真实路径 delay 8s：kill 于 investigate `batch-84c29983-b14`；`expired_after_kill=1`，`claimed_hanging_final=0`，`duplicate_growth=[]`，`evidence_reconcile_ok=true`，`ok=true`。rerun 撞上 kill 后残留 evolve lock（基线已记录，属 D 类锁文件），claims 已可重 claim。
+
+### 观察脚本
+
+`node scripts/reactor-observe-check.mjs --subject js-evolution-agent --days 1`：`reconcile.ok=true`，`contract_error_count=0`，当日 `reactor_report_honesty` 计数与轮次对齐。

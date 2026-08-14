@@ -126,7 +126,7 @@
 
 | 法则 | 位置 | 分类 | 处置 |
 | --- | --- | --- | --- |
-| KV 缓存 stablePrefix 契约（Current Time 不进 system 前缀等） | `prompt-cache-metadata.mjs`、prompts | **C** | 保留；**注意**：轮次曾是缓存前缀的天然稳定单元，反应器化需重新设计「证据批」级的稳定前缀锚点 |
+| KV 缓存 stablePrefix 契约（Current Time 不进 system 前缀等） | `prompt-cache-metadata.mjs`、prompts | **C** | **M6 已接 reactor**（#47）：batch 级前缀 + usage 汇总；沙盒合计远低于列车基线 |
 | `JEA_LLM_PROFILE` / phase 档位覆盖 | `llm-profile.mjs` | **C** | 保留 |
 | tool result 截断（`TOOL_RESULT_MAX_CHARS`）、墙钟预留（`FINISH_RESERVE_MS`） | agent-loop | **C** | 保留 |
 
