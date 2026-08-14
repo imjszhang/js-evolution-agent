@@ -228,10 +228,7 @@ describe('runAgentLoopStep (report-centric)', () => {
     expect(verify.verification.verified.length).toBeGreaterThanOrEqual(1);
 
     const carryoverPath = join(runtime.runtimeRoot, 'data', 'evolution', 'agent_loop_carryover.json');
-    const carryover = JSON.parse(readFileSync(carryoverPath, 'utf-8'));
-    expect(carryover.schema_version).toBe(2);
-    expect(carryover.items.some((item) => String(item?.text ?? item).includes('publish candidate-demo'))).toBe(true);
-    expect(carryover.items.every((item) => item?.source === 'mechanical' || typeof item === 'string')).toBe(true);
+    expect(existsSync(carryoverPath)).toBe(false);
   });
 
   it('clears carryover when decide/investigation leave no open items', async () => {
@@ -276,8 +273,8 @@ describe('runAgentLoopStep (report-centric)', () => {
     mkdirSync(join(runtime.runtimeRoot, 'data', 'evolution', 'cycle-state'), { recursive: true });
     await runAgentLoopStep(ctx, { cycleId: `${cycleId}-clear`, recordState });
     const carryover = JSON.parse(readFileSync(carryoverPath, 'utf-8'));
-    expect(carryover.schema_version).toBe(2);
-    expect(carryover.items).toEqual([]);
+    expect(carryover.cycle_id).toBe('old');
+    expect(carryover.items).toEqual(['stale item']);
   });
 
   it('enqueues all Decide actions without JEA_EXEC_LIMIT truncation', async () => {

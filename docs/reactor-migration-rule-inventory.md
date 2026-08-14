@@ -45,11 +45,11 @@
 
 | 法则 | 位置 | 分类 | 处置 |
 | --- | --- | --- | --- |
-| mechanical carryover 项（open_gaps / deferred / overflow 搬运） | `carryover.mjs` | **A** | **M4 停写中**：reactor 默认不再写入（`isCarryoverWriteEnabled`）；读侧保留；观察期后删除写侧。补偿的「轮次切断信息流」在证据流下已不存在（待观察期数据确认） |
-| `CARRYOVER_MECHANICAL_LIMIT=8` + origin 优先级裁剪 + `carryover_items_dropped` | `carryover.mjs` | **A** | **M4 停写中**（reactor 无新写入）；删除段随写侧一并移除 |
-| diary 销账规则（M1..Mn 编号、typed ref 核验可销、`decide_deferred` 拒销、越界拒销） | `carryover.mjs` + diary prompt | **A** | **M4 停写中**；观察通过后删 |
-| stale item 机械丢弃（`step_status_snapshot` 对照、字面提及 step + pending 词组丢弃） | `carryover.mjs` | **A** | **M4 停写中**；本质补偿相位错位，证据流下待确认后删 |
-| fingerprint / `first_seen_cycle` / `seen_count` 跨轮计数与 Jaccard 匹配 | `carryover.mjs` | **A** | **M4 停写中**；换单位：证据条目自带时间戳与引用计数 |
+| mechanical carryover 项（open_gaps / deferred / overflow 搬运） | `carryover.mjs` | **A** | **已删写侧**（2026-08-15）：`writeCarryover*` 恒 no-op；读 leftover 保留 |
+| `CARRYOVER_MECHANICAL_LIMIT=8` + origin 优先级裁剪 + `carryover_items_dropped` | `carryover.mjs` | **A** | **已停用写路径**；库函数仍在，生产不再写盘/发 drop 事件 |
+| diary 销账规则（M1..Mn 编号、typed ref 核验可销、`decide_deferred` 拒销、越界拒销） | `carryover.mjs` + diary prompt | **A** | **已删**：diary 不再要求销账章节，生产不再 apply retirements |
+| stale item 机械丢弃（`step_status_snapshot` 对照、字面提及 step + pending 词组丢弃） | `carryover.mjs` | **A** | **已停用写路径**；生产不再过滤后回写 |
+| fingerprint / `first_seen_cycle` / `seen_count` 跨轮计数与 Jaccard 匹配 | `carryover.mjs` | **A** | **已停用写路径**；换单位：证据条目自带时间戳与引用计数 |
 | suggestion coverage 软闸（S1..Sn 顶层计数、`deferred: unaddressed` 补记、`decide_coverage_gap`） | `phase1-shared.mjs` | **A** | 观察期对照 `decide_coverage_gap` 频率；报告建议若有价值即为证据条目 |
 | diary 时间线契约（phase1 叙事写于轮初、phase2 receipt 快照不得抄进日记） | diary prompt + AGENTS | **A** | 随 carryover 写侧退役一并审视 |
 

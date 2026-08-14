@@ -35,8 +35,8 @@ node scripts/reactor-observe-check.mjs --subject js-evolution-agent --days 1
 
 ## M4 — carryover 停写观察：快速通过（停写段）
 
-- reactor 默认停写；agent_loop 仍写
-- 删除写侧代码仍另开 PR，不在本次做
+- 停写段（2026-08-13）：reactor 默认停写；agent_loop 当时仍写
+- **删除段（2026-08-15）**：`writeCarryover*` 恒 no-op；agent_loop / diary 不再写盘或销账；读 leftover 保留
 
 | 窗口 | coverage_gap | 备注 |
 | --- | ---: | --- |

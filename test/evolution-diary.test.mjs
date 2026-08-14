@@ -53,7 +53,6 @@ import {
   extractCarryoverRetirementsFromDiaryMarkdown,
   formatCarryoverSuggestion,
   runDiaryStep,
-  writeCarryoverItems,
 } from '../src/evolution/cycle-steps.mjs';
 import { buildTemporalDecisionBrief } from '../src/intelligence/decision-brief.mjs';
 import {
@@ -220,13 +219,11 @@ describe('buildEvolutionDiary', () => {
       { id: 'M2', text: '过期：凭据探针待执行', source: 'diary', origin: null },
     ]);
     expect(prompt).toContain('agent_loop_carryover');
-    expect(prompt).toContain('Carryover 销账');
-    expect(prompt).toContain('decide_deferred 仅当带可核验 typed ref');
-    expect(prompt).toContain('禁止销 diary 条目');
-    expect(prompt).toContain('step_status_snapshot');
+    expect(prompt).toContain('只读');
+    expect(prompt).toContain('不要输出 Carryover 销账章节');
+    expect(prompt).not.toMatch(/建议章节：[\s\S]*Carryover 销账/);
     expect(prompt).toContain('时间线权威');
     expect(prompt).toContain('phase2 receipt');
-    expect(prompt).toContain('不要复述 mechanical carryover');
     expect(prompt).toContain('## TL;DR');
     expect(prompt).toMatch(/建议章节：[\s\S]*- TL;DR/);
     expect(context.phase1.timeline).toBe('written_at_cycle_start_describes_previous_cycle_system_state');
@@ -360,13 +357,16 @@ describe('buildEvolutionDiary', () => {
     })).toBe('增设 placement 子目标（reason: isRanked=false）');
 
     const { store, runtime, intelResult, execResult, verification } = makeDiaryFixture();
-    writeCarryoverItems(runtime.runtimeRoot, {
-      cycleId: 'cycle-test-1',
-      defaultSource: 'mechanical',
+    const leftoverPath = join(runtime.runtimeRoot, 'data', 'evolution', 'agent_loop_carryover.json');
+    mkdirSync(join(runtime.runtimeRoot, 'data', 'evolution'), { recursive: true });
+    writeFileSync(leftoverPath, JSON.stringify({
+      schema_version: 2,
+      cycle_id: 'cycle-test-1',
+      created_at: new Date().toISOString(),
       items: [
         { text: 'S2: 学习状态报告未写（budget）', source: 'mechanical', origin: 'suggestion_deferred' },
       ],
-    });
+    }, null, 2));
     const fakeAi = {
       chat: async () => markdown,
     };
@@ -387,23 +387,14 @@ describe('buildEvolutionDiary', () => {
     });
 
     expect(outcome.diary?.source).toBe('ai');
-    const carryover = JSON.parse(readFileSync(
-      join(runtime.runtimeRoot, 'data', 'evolution', 'agent_loop_carryover.json'),
-      'utf-8',
-    ));
-    expect(carryover.schema_version).toBe(2);
-    expect(carryover.step_status_snapshot?.goals_calibrate).toBe('applied(patch)');
+    const carryover = JSON.parse(readFileSync(leftoverPath, 'utf-8'));
+    expect(carryover.cycle_id).toBe('cycle-test-1');
     expect(carryover.items).toEqual([
       expect.objectContaining({
         text: 'S2: 学习状态报告未写（budget）',
         source: 'mechanical',
         origin: 'suggestion_deferred',
-        seen_count: expect.any(Number),
-        fingerprint: expect.any(String),
       }),
-      { text: '模拟方差需要多次复跑', source: 'diary' },
-      { text: '信念更新应消化本轮 receipt', source: 'diary' },
-      { text: '过期的「凭据待执行」已完成，不再携带', source: 'diary' },
     ]);
   });
 
