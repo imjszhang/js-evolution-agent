@@ -5,6 +5,7 @@
  * Live: real pending_decisions, reports index, evolution-events.
  */
 import { join } from 'node:path';
+import { actionRegistry as hostActionRegistry } from '../../actions/registry.mjs';
 import { chatMessagesDetailed } from '../../ai/messages.mjs';
 import { isoBeijing } from '../../engine/index.mjs';
 import { createHostDecisionQueue } from '../../intelligence/decision-queue.mjs';
@@ -79,12 +80,42 @@ function buildReportPrompt({ batchId, hostSeenBody, investigationDigest, languag
   ].join('\n');
 }
 
-function buildDecidePrompt({ batchId, reportMarkdown, live = false }) {
+export function buildDecidePrompt({
+  batchId,
+  reportMarkdown,
+  live = false,
+  actionRegistry = null,
+} = {}) {
+  const registry = actionRegistry && typeof actionRegistry.toPromptSection === 'function'
+    ? actionRegistry
+    : hostActionRegistry;
+  const actionTypes = typeof registry.toPromptSection === 'function'
+    ? registry.toPromptSection()
+    : '(no registered actions)';
   return [
     live ? 'Strategic Analysis & Decision (cognitive reactor)' : 'Strategic Analysis & Decision (shadow reactor)',
     `batch_id: ${batchId}`,
     'Return JSON only with fields: decision, actions[], goal_coverage, deferred, risk_mitigation, confidence_score.',
+    'actions MUST be an array of objects, never strings. Each action needs type, description, serves_goal, and params.',
+    'params MUST include the Required params for the chosen type (see Available Action Types). Empty params objects are invalid.',
     'Prefer record_observation / propose_probe / write_retrospective when uncertain.',
+    'Example shape:',
+    '{',
+    '  "decision": "execute",',
+    '  "actions": [{',
+    '    "type": "record_observation",',
+    '    "description": "...",',
+    '    "serves_goal": "<goal_id>",',
+    '    "params": { "content": "..." }',
+    '  }],',
+    '  "goal_coverage": { "covered": [], "not_covered": {} },',
+    '  "deferred": [],',
+    '  "risk_mitigation": [],',
+    '  "confidence_score": 0.5',
+    '}',
+    '',
+    '## Available Action Types',
+    actionTypes,
     '',
     '## Report',
     String(reportMarkdown || '').slice(0, 12000),
@@ -279,7 +310,7 @@ export async function runCognitiveReaction(ctx, {
       const reportResult = await chatMessagesDetailed(aiClient, [
         { role: 'system', content: 'You draft intelligence reports. Host owns Seen.' },
         { role: 'user', content: reportPrompt },
-      ], { thinking: 'low', timeout: 180, phase: 'report' });
+      ], { thinking: 'off', timeout: 180, phase: 'report' });
       if (typeof reportResult?.text === 'string' && reportResult.text.trim()) {
         rawReportMarkdown = `${reportResult.text.trim()}\n`;
         reportSource = 'ai';
@@ -364,13 +395,18 @@ export async function runCognitiveReaction(ctx, {
     });
 
     logger?.info?.(`[${logLabel}] decide batch=${batchId}`);
-    const decidePrompt = buildDecidePrompt({ batchId, reportMarkdown, live: isLive });
+    const decidePrompt = buildDecidePrompt({
+      batchId,
+      reportMarkdown,
+      live: isLive,
+      actionRegistry: cfg.actionRegistry,
+    });
     let rawDecision = null;
     try {
       const decideResult = await chatMessagesDetailed(aiClient, [
         { role: 'system', content: 'Return JSON decisions only.' },
         { role: 'user', content: decidePrompt },
-      ], { thinking: 'low', timeout: 180, phase: 'decide' });
+      ], { thinking: 'off', timeout: 180, phase: 'decide' });
       rawDecision = decideResult?.text ?? null;
     } catch (e) {
       logger?.warning?.(`[${logLabel}] decide failed: ${e?.message || e}`);
@@ -380,6 +416,7 @@ export async function runCognitiveReaction(ctx, {
     const actions = parsed.analysis?.actions || [];
     let queuedActions = actions;
     let queuedIds = [];
+    let skippedCount = 0;
 
     if (isLive) {
       const queuedResult = await queueAnalyzeDecideActions({
@@ -399,13 +436,18 @@ export async function runCognitiveReaction(ctx, {
       });
       queuedActions = queuedResult.actions;
       queuedIds = queuedResult.decisions_queued;
+      skippedCount = queuedResult.decisions_skipped?.length ?? 0;
+      logger?.info?.(`[${logLabel}] queued=${queuedIds.length} skipped=${skippedCount}`);
     } else {
-      queuedActions = appendShadowDecisions(dataRoot, {
+      const shadowResult = appendShadowDecisions(dataRoot, {
         batchId,
         subject,
         actions,
         analysis: parsed.analysis,
       });
+      queuedActions = shadowResult.decisions;
+      skippedCount = shadowResult.skipped?.length ?? 0;
+      logger?.info?.(`[${logLabel}] shadow queued=${queuedActions.length} skipped=${skippedCount}`);
     }
 
     ackBatchHandled(dataRoot, batchId);
@@ -419,6 +461,7 @@ export async function runCognitiveReaction(ctx, {
         batch_id: batchId,
         claimed_events: events.length,
         decisions_queued: queuedIds.length,
+        decisions_skipped: skippedCount,
         investigate_turns: investigateResult.turns ?? 0,
         honesty_status: honestyStatus,
         report_source: persistedReport?.source ?? reportSource,
@@ -428,7 +471,8 @@ export async function runCognitiveReaction(ctx, {
     emitReaction({
       type: isLive ? 'reactor_reaction_completed' : 'shadow_reaction_completed',
       status: 'ok',
-      decisions: queuedActions.length,
+      decisions: isLive ? queuedIds.length : queuedActions.length,
+      decisions_skipped: skippedCount,
       investigate_turns: investigateResult.turns ?? 0,
       honesty_status: honestyStatus,
       honesty_findings_count: honestyFindingsCount,
@@ -450,6 +494,7 @@ export async function runCognitiveReaction(ctx, {
       } : null,
       decisions: queuedActions,
       decisions_queued: queuedIds,
+      decisions_skipped: skippedCount,
       honesty: {
         status: honestyStatus,
         findings_count: honestyFindingsCount,

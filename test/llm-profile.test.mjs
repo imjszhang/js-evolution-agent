@@ -12,8 +12,8 @@ describe('normalizeThinkingMode', () => {
   it('maps off / high / max and engine aliases', () => {
     expect(normalizeThinkingMode('off')).toBe('off');
     expect(normalizeThinkingMode('disabled')).toBe('off');
-    expect(normalizeThinkingMode('low')).toBe('high');
-    expect(normalizeThinkingMode('medium')).toBe('high');
+    expect(normalizeThinkingMode('low')).toBe('off');
+    expect(normalizeThinkingMode('medium')).toBe('off');
     expect(normalizeThinkingMode('high')).toBe('high');
     expect(normalizeThinkingMode('xhigh')).toBe('max');
     expect(normalizeThinkingMode('max')).toBe('max');
@@ -89,6 +89,15 @@ describe('resolveLlmCallOptions', () => {
     });
     expect(opts.model).toBe(DEEPSEEK_MODELS.pro);
     expect(opts.thinkingMode).toBe('max');
+  });
+
+  it('maps thinking:low override to off so it cannot bump a fast phase to high', () => {
+    const opts = resolveLlmCallOptions({
+      phase: 'diary',
+      env: {},
+      overrides: { thinking: 'low' },
+    });
+    expect(opts.thinkingMode).toBe('off');
   });
 
   it('call overrides win', () => {

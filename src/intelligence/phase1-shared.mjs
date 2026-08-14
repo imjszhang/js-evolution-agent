@@ -4,6 +4,8 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { validateAgentRunSpec } from '../actions/agent-run-spec.mjs';
+import { missingRequiredActionParams } from '../actions/registry.mjs';
+import { validateActionShape } from '../contracts/decision.mjs';
 import { resolveHostExternalRoots } from '../infra/subjects.mjs';
 import { markOperatorBriefsProcessed } from './operator-briefs.mjs';
 
@@ -72,18 +74,30 @@ export function attachExecutionContext(action, {
 }
 
 export function validateQueuedAction(action, ctx) {
-  if (action?.type !== 'agent_run') return { valid: true };
-  const validation = validateAgentRunSpec(action, ctx);
-  return {
-    valid: validation.valid,
-    errors: validation.errors,
-    warnings: validation.warnings,
-    run_spec: {
-      primary_cwd: validation.spec?.primary_cwd ?? null,
-      primary_cwd_kind: validation.spec?.primary_cwd_kind ?? null,
-      permission_profile: validation.spec?.permission_profile ?? null,
-    },
-  };
+  const shape = validateActionShape(action);
+  if (!shape.ok) {
+    return { valid: false, errors: shape.errors };
+  }
+  const missing = missingRequiredActionParams(action);
+  if (missing.length) {
+    return { valid: false, errors: [`missing required field(s): ${missing.join(', ')}`] };
+  }
+  if (action.type !== 'agent_run') return { valid: true };
+  try {
+    const validation = validateAgentRunSpec(action, ctx);
+    return {
+      valid: validation.valid,
+      errors: validation.errors,
+      warnings: validation.warnings,
+      run_spec: {
+        primary_cwd: validation.spec?.primary_cwd ?? null,
+        primary_cwd_kind: validation.spec?.primary_cwd_kind ?? null,
+        permission_profile: validation.spec?.permission_profile ?? null,
+      },
+    };
+  } catch (e) {
+    return { valid: false, errors: [e?.message || String(e)] };
+  }
 }
 
 export function toPreDecisionReportContext(reportContext) {

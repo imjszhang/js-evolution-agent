@@ -327,6 +327,89 @@ describe('runInvestigationLoop', () => {
     expect(result.investigation.findings_summary).toContain('closing model investigation summary');
   });
 
+  it('uses auto-only closing toolChoice when thinkingMode is not off', async () => {
+    const { tools, loopCtx } = makeTools();
+    const toolChoices = [];
+    const client = new MockToolsAIClient({
+      script: [
+        {
+          delayMs: 700,
+          content: 'gathering evidence before soft deadline',
+          toolCalls: [{ name: 'get_decision_queue_summary', arguments: {} }],
+        },
+      ],
+      investigation: {
+        findings_summary: 'closing with auto tool_choice',
+        enough_for_report: true,
+      },
+    });
+    client.resolveCallOptions = () => ({ thinkingMode: 'high' });
+    const orig = client.chatMessagesWithTools.bind(client);
+    client.chatMessagesWithTools = async (messages, opts) => {
+      toolChoices.push(opts.toolChoice);
+      return orig(messages, opts);
+    };
+    const result = await runInvestigationLoop({
+      aiClient: client,
+      systemPrompt: 'system',
+      initialUserPrompt: 'user',
+      tools,
+      budget: {
+        ...loopCtx.budget,
+        maxWallClockMs: 1000,
+        finishReserveMs: 500,
+        maxTurns: 10,
+      },
+    });
+    expect(result.investigation.closing).toBe('model');
+    expect(toolChoices.at(-1)).toBe('auto');
+    expect(toolChoices.filter((choice) => choice !== 'auto')).toEqual([]);
+  });
+
+  it('keeps three-rung closing ladder when thinkingMode cannot be resolved', async () => {
+    const { tools, loopCtx } = makeTools();
+    const toolChoices = [];
+    const client = new MockToolsAIClient({
+      script: [
+        {
+          delayMs: 700,
+          content: 'gathering evidence before soft deadline',
+          toolCalls: [{ name: 'get_decision_queue_summary', arguments: {} }],
+        },
+      ],
+      investigation: {
+        findings_summary: 'closing after ladder fallback',
+        enough_for_report: true,
+      },
+    });
+    const orig = client.chatMessagesWithTools.bind(client);
+    client.chatMessagesWithTools = async (messages, opts) => {
+      toolChoices.push(opts.toolChoice);
+      if (opts.toolChoice !== 'auto') {
+        throw new Error(`unsupported tool_choice ${JSON.stringify(opts.toolChoice)}`);
+      }
+      return orig(messages, opts);
+    };
+    const result = await runInvestigationLoop({
+      aiClient: client,
+      systemPrompt: 'system',
+      initialUserPrompt: 'user',
+      tools,
+      budget: {
+        ...loopCtx.budget,
+        maxWallClockMs: 1000,
+        finishReserveMs: 500,
+        maxTurns: 10,
+      },
+    });
+    expect(result.investigation.closing).toBe('model');
+    const closingChoices = toolChoices.slice(1);
+    expect(closingChoices).toHaveLength(3);
+    expect(closingChoices[0]).toEqual({ type: 'function', function: { name: 'finish_investigation' } });
+    expect(closingChoices[1]).toBe('required');
+    expect(closingChoices[2]).toBe('auto');
+  });
+
   it('forces investigation digest when closing LLM fails', async () => {
     const { tools, loopCtx } = makeTools();
     const client = new MockToolsAIClient({

@@ -51,6 +51,7 @@ const MODEL_ALIASES = Object.freeze({
 
 /**
  * Map engine / API thinking strings to off|high|max.
+ * DeepSeek has no low/medium; those aliases mean "do not spend long thinking" → off.
  * @param {unknown} value
  * @returns {'off'|'high'|'max'|null}
  */
@@ -60,9 +61,9 @@ export function normalizeThinkingMode(value) {
   if (value === true) return 'high';
   const raw = String(value).trim().toLowerCase();
   if (!raw) return null;
-  if (['off', 'disabled', 'false', '0', 'no'].includes(raw)) return 'off';
+  if (['off', 'disabled', 'false', '0', 'no', 'low', 'medium'].includes(raw)) return 'off';
   if (['max', 'xhigh'].includes(raw)) return 'max';
-  if (['high', 'low', 'medium', 'enabled', 'true', '1', 'yes', 'on'].includes(raw)) return 'high';
+  if (['high', 'enabled', 'true', '1', 'yes', 'on'].includes(raw)) return 'high';
   return null;
 }
 

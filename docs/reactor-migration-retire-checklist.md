@@ -1,6 +1,7 @@
 # M5 列车退役单向门 Checklist
 
 **状态：未执行（需确认）**  
+观察期正式起算：**2026-08-13**（PR #41 合 main；见 `docs/reactor-migration-observation.md`）  
 关联：#33 Phase 6 / #34
 
 在**全部**勾选且 #34 有操作者明确确认留言之前，**禁止**：
@@ -13,10 +14,10 @@
 
 | # | 条件 | 状态 |
 | --- | --- | --- |
-| 1 | 每个 subject 各自 ≥2 周 reactor 无回切 | ⏳ 仅沙盒 `js-evolution-agent` 已开 reactor |
-| 2 | 三不变量（诚实 / 治理 / 可恢复）在每个 subject 验证 | ⏳ 沙盒部分验证；列车未切 reactor |
-| 3 | M2 evidence 灰度观察通过 | ⏳ 观察入口已就绪 |
-| 4 | M4 carryover 停写观察通过并完成删除段 | ⏳ 停写已启用；观察中 |
+| 1 | 每个 subject 各自 ≥2 周 reactor 无回切 | 仅沙盒开 reactor；列车仍 agent_loop（按建议不在此时全切） |
+| 2 | 三不变量（诚实 / 治理 / 可恢复）在每个 subject 验证 | 沙盒 mock 过；真实轮 `cycle-20260814141428-973e3b50` queued=4 skipped=0、exec 4/4 completed、无 400 / 无 ECONNRESET；列车未切 reactor |
+| 3 | M2 evidence 灰度观察通过 | 快速 5 轮 mock 通过（2026-08-13）；不再等 2 周 |
+| 4 | M4 carryover 停写观察通过并完成删除段 | 停写段快速通过；**删除段未做** |
 | 5 | #34 留言确认执行 | ❌ 未确认 |
 
 ## 确认后执行顺序（勿提前）

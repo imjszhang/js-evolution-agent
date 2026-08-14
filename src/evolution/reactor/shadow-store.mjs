@@ -1,5 +1,6 @@
 import { appendFileSync, mkdirSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { validateActionShape } from '../../contracts/decision.mjs';
 import { readJson, writeJson } from '../../infra/json-store.mjs';
 import { decisionFingerprint } from '../../intelligence/decision-queue.mjs';
 import {
@@ -74,9 +75,20 @@ export function appendShadowDecisions(dataRoot, {
   const current = readShadowDecisions(dataRoot);
   const recordedAt = new Date().toISOString();
   const added = [];
+  const skipped = [];
   for (const [index, action] of (actions || []).entries()) {
+    const shape = validateActionShape(action);
+    if (!shape.ok) {
+      skipped.push({
+        index,
+        reason: 'invalid_action',
+        errors: shape.errors,
+        type: action?.type ?? null,
+      });
+      continue;
+    }
     const decision = {
-      id: `${batchId}:${index}`,
+      id: `${batchId}:${added.length}`,
       batch_id: batchId,
       subject,
       status: 'shadow',
@@ -93,5 +105,5 @@ export function appendShadowDecisions(dataRoot, {
     last_batch_id: batchId,
     last_analysis: analysis,
   });
-  return added;
+  return { decisions: added, skipped };
 }

@@ -23,8 +23,8 @@ import {
   reconcileExpiredClaims,
 } from '../src/evolution/reactor/claim-ledger.mjs';
 import { compareShadowAgainstCycle } from '../src/evolution/reactor/shadow-compare.mjs';
-import { runCognitiveShadowReaction } from '../src/evolution/reactor/cognitive-reactor.mjs';
-import { readShadowDecisions, readShadowRuns } from '../src/evolution/reactor/shadow-store.mjs';
+import { runCognitiveShadowReaction, buildDecidePrompt } from '../src/evolution/reactor/cognitive-reactor.mjs';
+import { readShadowDecisions, readShadowRuns, appendShadowDecisions } from '../src/evolution/reactor/shadow-store.mjs';
 import { MockToolsAIClient } from '../src/ai/mock-tools-client.mjs';
 import { createIntelligenceStore } from '../src/intelligence/store.mjs';
 
@@ -183,6 +183,19 @@ describe('shadow compare', () => {
 });
 
 describe('cognitive shadow reactor e2e', () => {
+  it('buildDecidePrompt injects action registry required params', () => {
+    const prompt = buildDecidePrompt({
+      batchId: 'batch-prompt',
+      reportMarkdown: '# Report\n- seen',
+      live: true,
+    });
+    expect(prompt).toContain('## Available Action Types');
+    expect(prompt).toContain('Required params: content');
+    expect(prompt).toContain('Required params: hypothesis, success_signal, failure_signal, death_boundary');
+    expect(prompt).toContain('"params": { "content": "..." }');
+    expect(prompt).not.toContain('"params": {}');
+  });
+
   it('produces shadow artifacts without touching train files', async () => {
     const dataRoot = makeDataRoot('jea-reactor-e2e-');
     const runtimeRoot = tempDir;
@@ -328,5 +341,24 @@ describe('cognitive shadow reactor e2e', () => {
 
     const shadow = readShadowDecisions(runtime.dataRoot);
     expect(shadow.decisions.some((d) => d.batch_id === result.batch_id)).toBe(true);
+  });
+
+  it('appendShadowDecisions skips non-object actions', () => {
+    const dataRoot = makeDataRoot('jea-reactor-shadow-skip-');
+    const result = appendShadowDecisions(dataRoot, {
+      batchId: 'batch-skip',
+      subject: 'demo',
+      actions: [
+        'propose_probe: leftover string',
+        { type: 'record_observation', description: 'keep', params: { content: 'k' } },
+        null,
+      ],
+    });
+    expect(result.decisions).toHaveLength(1);
+    expect(result.skipped).toHaveLength(2);
+    expect(result.decisions[0].action.type).toBe('record_observation');
+    const stored = readShadowDecisions(dataRoot);
+    expect(stored.decisions).toHaveLength(1);
+    expect(typeof stored.decisions[0].action).toBe('object');
   });
 });
