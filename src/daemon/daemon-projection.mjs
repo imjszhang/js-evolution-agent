@@ -105,15 +105,26 @@ function buildDaemonHealth({
     const evolutionStalled = tickOpenEnabled && !onDemand && noWork && pastTickWindow
       && (workerUnavailable || (worker.running && tickQuiet));
 
-    if (requestBlockedLong) {
+    if (isReactorPipeline(pipeline) && reactorHealth) {
+      if (reactorHealth.ok === false) {
+        status = reactorHealth.status === 'blocked' ? 'blocked' : 'reactor_backlog_stalled';
+        ok = false;
+        reasons.push(...(reactorHealth.reasons ?? []));
+        suggestions.push(...(reactorHealth.suggestions ?? []));
+      } else {
+        status = reactorHealth.status === 'idle' ? 'idle' : 'healthy';
+        ok = true;
+        reasons.push(...(reactorHealth.reasons?.length
+          ? reactorHealth.reasons
+          : ['Reactor projection is the production health source']));
+        suggestions.push(...(reactorHealth.suggestions ?? []));
+      }
+    } else if (requestBlockedLong) {
       status = 'cycle_start_blocked';
       ok = false;
       reasons.push('Pending cycle start request could not be consumed within 2 tick windows');
       suggestions.push('Check open cycles, pending tasks, or worker logs; use `jea daemon status --json` for details.');
-    } else if (
-      !isReactorPipeline(pipeline)
-      && (progressStalled || (openCount > 0 && driftSteps.length > 0 && worker.running))
-    ) {
+    } else if (progressStalled || (openCount > 0 && driftSteps.length > 0 && worker.running)) {
       status = 'cycle_progress_stalled';
       ok = false;
       reasons.push('Open cycle exists but no step progress within the expected tick window');
@@ -121,11 +132,6 @@ function buildDaemonHealth({
         reasons.push(`${driftSteps.length} step state drift item(s) detected (terminal cycle-state with running task)`);
       }
       suggestions.push('Wait for watchdog recovery, inspect with `jea daemon doctor`, or restart the worker if stuck persists.');
-    } else if (isReactorPipeline(pipeline) && reactorHealth && reactorHealth.ok === false) {
-      status = reactorHealth.status === 'blocked' ? 'blocked' : 'reactor_backlog_stalled';
-      ok = false;
-      reasons.push(...(reactorHealth.reasons ?? []));
-      suggestions.push(...(reactorHealth.suggestions ?? []));
     } else if (evolutionStalled) {
       status = 'evolution_stalled';
       ok = false;

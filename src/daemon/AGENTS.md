@@ -24,7 +24,7 @@ Daemon 用于 **事件驱动的 step 级演化**。推荐用 `jea daemon start` 
 - `jea daemon evolution-mode set continuous|on_demand [--json]`：写入 `<JEA_HOME>/subjects/registry.json` 并 emit `evolution_mode_changed`（viewer SSE / worker 热加载）。
 - `jea daemon cycle request [--reason TEXT] [--note TEXT]`：入队 cycle 启动请求（写入 `data/evolution/cycle-start-requests.json`），由 worker 在前提满足时开轮。
 - `jea daemon work --once [--mock]`：领取并执行一个 task（step、`run_cycle` 或 reactor task）后退出。
-- reactor task 类型（`JEA_EVIDENCE_WAKE=1` 时由 backlog/wake 入队）：`cognitive_reaction`、`exec_queue`、`verify_batch`、`rule_reaction`、`memory_compaction`。这些任务进程内执行，恢复真相是 batch checkpoint / exec intent / exec result，不是 cycle-state。
+- reactor task 类型（S8 默认由 backlog/wake 入队）：`cognitive_reaction`、`exec_queue`、`verify_batch`、`rule_reaction`、`memory_compaction`。这些任务进程内执行，恢复真相是 batch checkpoint / exec intent / exec result，不是 cycle-state。
 - `jea daemon enqueue --type <step|run_cycle>`：手动入队 step 任务；step 类型含 `intel`、`exec`、`verify`、`belief_update`、`goals_assess`、`goals_calibrate`、`diary` 等。
 - `jea daemon stop` / `jea daemon stop --all`：请求 worker 优雅停止。
 
@@ -57,15 +57,15 @@ Daemon 用于 **事件驱动的 step 级演化**。推荐用 `jea daemon start` 
 
 reactor 生产健康看 `daemon status --json` 的 `reactor` 字段（eligible backlog、pending verify、open/uncertain intents、rule/memory due、lease）。**不要**用旧 `stuck_steps` / `progress_stalled` 判断 reactor 是否健康。`uncertain` exec intent 表示副作用已开始但无 receipt：决策会被 `blocked`，需人工对照目标仓库/外部效果后处置；**禁止**自动重放未知副作用。
 
-相关 gate（默认除 health primary 外均关，合并后按 #69 逐 subject 开）：
+相关 gate（S8 默认开；`0`/`false`/`off` 回退）：
 
 | 变量 | 默认 | 含义 |
 | --- | --- | --- |
 | `JEA_REACTOR_HEALTH_PRIMARY` | 开 | doctor/viewer 以 reactor 投影为主 |
-| `JEA_EVIDENCE_WAKE` | 关 | 周期请求转 cognitive wake；idle backlog 扫描 |
-| `JEA_QUEUE_DISABLE_CYCLE_TTL` | 关 | 停止递增 `cycles_seen`，只走墙钟 TTL |
-| `JEA_EXEC_RATE_ONLY` | 关 | exec 只认速率+并发 |
-| `JEA_IN_PROCESS_CYCLE` | 随 evidence-wake | 列车回退也可进程内；`JEA_SUBPROCESS_CYCLE=1` 强制旧子进程 |
+| `JEA_EVIDENCE_WAKE` | 开 | 周期请求转 cognitive wake；idle backlog 扫描 |
+| `JEA_QUEUE_DISABLE_CYCLE_TTL` | 开 | 停止递增 `cycles_seen`，只走墙钟 TTL |
+| `JEA_EXEC_RATE_ONLY` | 开 | exec 只认速率+并发 |
+| `JEA_IN_PROCESS_CYCLE` | 开 | 列车 step 进程内执行；`JEA_SUBPROCESS_CYCLE=1` 强制旧子进程 |
 | `JEA_SUBPROCESS_CYCLE` | 关 | 强制列车子进程 |
 
 隔离验收：`npm run reactor:canary`。生产 subject 开门前先 `jea data backup`。

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -34,6 +34,15 @@ function makeRoot() {
 }
 
 describe('cycle-start-requests', () => {
+  const previousWake = process.env.JEA_EVIDENCE_WAKE;
+  beforeEach(() => {
+    process.env.JEA_EVIDENCE_WAKE = '0';
+  });
+  afterEach(() => {
+    if (previousWake == null) delete process.env.JEA_EVIDENCE_WAKE;
+    else process.env.JEA_EVIDENCE_WAKE = previousWake;
+  });
+
   it('creates pending request on first enqueue', () => {
     const root = makeRoot();
     const result = enqueueCycleStartRequest(root, 'alpha', { reason: 'manual', meta: { note: 'test' } });

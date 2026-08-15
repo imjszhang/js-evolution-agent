@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -75,8 +75,15 @@ describe('agent run scope', () => {
 
 describe('ExecutionPipeline dual-channel', () => {
   let tempDir;
+  const prevRateOnly = process.env.JEA_EXEC_RATE_ONLY;
+
+  beforeEach(() => {
+    process.env.JEA_EXEC_RATE_ONLY = '0';
+  });
 
   afterEach(() => {
+    if (prevRateOnly === undefined) delete process.env.JEA_EXEC_RATE_ONLY;
+    else process.env.JEA_EXEC_RATE_ONLY = prevRateOnly;
     if (tempDir) {
       try { rmSync(tempDir, { recursive: true, force: true }); } catch {}
       tempDir = null;

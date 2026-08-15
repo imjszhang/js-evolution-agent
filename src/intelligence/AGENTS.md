@@ -77,7 +77,7 @@ Phase 2 执行预算 / 队列 TTL（`JEA_EXEC_*`、`JEA_AGENT_*`、`JEA_PENDING_
 
 ## 证据流与反应器影子（Phase 1–2，#33 / PR #35）
 
-反应器化迁移的读侧、影子与 live 双轨。默认仍关 `JEA_EVIDENCE_WAKE`；gate-on 时真实 `pending_decisions` / reports index / evolution-events 由 `cognitive_reaction` 写入，gate-off 仍走 `jea run` / daemon step 列车。
+反应器化迁移的读侧、影子与 live 双轨。S8 默认开 `JEA_EVIDENCE_WAKE`：真实 `pending_decisions` / reports index / evolution-events 由 `cognitive_reaction` 写入。显式 `JEA_EVIDENCE_WAKE=0` 仍走 `jea run` / daemon step 列车。
 
 ### 证据流读侧（Phase 1）
 
@@ -120,7 +120,7 @@ npm run jea -- intel stream --reconcile --subject js-evolution-agent
 npm run jea -- reactor shadow compare --cycle <上一步 cycle_id> --subject js-evolution-agent
 ```
 
-S0–S9 双轨已落地：默认仍关 `JEA_EVIDENCE_WAKE` / `JEA_QUEUE_DISABLE_CYCLE_TTL` / `JEA_EXEC_RATE_ONLY`。隔离 mock canary：`npm run reactor:canary`（临时 root，不写三个生产 subject）。合并后按 `feishu-flow-test → js-evolution-agent → agentank-tank` 逐级开门；S9 硬删另见 #70。
+S8 默认开 `JEA_EVIDENCE_WAKE` / `JEA_QUEUE_DISABLE_CYCLE_TTL` / `JEA_EXEC_RATE_ONLY`。隔离 mock canary：`npm run reactor:canary`。隔离晋升闸：`node scripts/reactor-s8-promote-check.mjs --subject NAME`。生产灰度见 `docs/reactor-s8-gray-runbook.md`。S9 硬删见 #70。
 
 Phase 3 灰度（`evolution.pipeline: reactor` 真实入队）已可用；exec 墙钟速率预算前置见 #36（已合 main）。
 

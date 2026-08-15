@@ -1,8 +1,9 @@
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
-import { SUBJECT_ENV } from '../infra/subjects.mjs';
+import { SUBJECT_ENV, runtimeInfoForSubject } from '../infra/subjects.mjs';
 import { createRuntimeContext } from '../infra/jea-home.mjs';
+import { isInProcessCycleEnabled } from './reactor/feature-gates.mjs';
 
 export function buildCycleEnv(flags, subject, root = null) {
   const env = { ...process.env, [SUBJECT_ENV]: subject };
@@ -115,7 +116,18 @@ export function runSingleCycle({ root, subject, flags = {}, hooks = {}, signal =
   return runCycleProcess({ root, subject, flags, hooks, signal, abortKillMs });
 }
 
-export function runSingleStep({ root, subject, step, cycleId, flags = {}, hooks = {}, signal = null, abortKillMs = 5000 } = {}) {
+export async function runSingleStep({ root, subject, step, cycleId, flags = {}, hooks = {}, signal = null, abortKillMs = 5000 } = {}) {
+  const env = flags.env ?? process.env;
+  if (isInProcessCycleEnabled(env)) {
+    const { runSingleStepInProcess } = await import('./cycle-step-runner.mjs');
+    const runtime = runtimeInfoForSubject(root, subject);
+    try {
+      return await runSingleStepInProcess({ root, runtime, step, cycleId });
+    } catch (err) {
+      const message = err?.message || String(err);
+      return { exitCode: 1, output: message };
+    }
+  }
   return runCycleProcess({
     root,
     subject,

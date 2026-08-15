@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -10,6 +10,14 @@ import {
 
 describe('unified DecisionQueue', () => {
   let tempDir;
+  const previousTtl = process.env.JEA_QUEUE_DISABLE_CYCLE_TTL;
+  beforeEach(() => {
+    process.env.JEA_QUEUE_DISABLE_CYCLE_TTL = '0';
+  });
+  afterEach(() => {
+    if (previousTtl == null) delete process.env.JEA_QUEUE_DISABLE_CYCLE_TTL;
+    else process.env.JEA_QUEUE_DISABLE_CYCLE_TTL = previousTtl;
+  });
 
   it('adds, deduplicates hot decisions, claims, and completes', () => {
     tempDir = mkdtempSync(join(tmpdir(), 'jea-queue-'));

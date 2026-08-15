@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   afterEach,
+  beforeEach,
   describe,
   expect,
   it,
@@ -1170,6 +1171,21 @@ describe('evolve run manifests', () => {
 });
 
 describe('daemon task queue foundation', () => {
+  const previousWake = process.env.JEA_EVIDENCE_WAKE;
+  const previousInProcess = process.env.JEA_IN_PROCESS_CYCLE;
+
+  beforeEach(() => {
+    process.env.JEA_EVIDENCE_WAKE = '0';
+    process.env.JEA_IN_PROCESS_CYCLE = '0';
+  });
+
+  afterEach(() => {
+    if (previousWake == null) delete process.env.JEA_EVIDENCE_WAKE;
+    else process.env.JEA_EVIDENCE_WAKE = previousWake;
+    if (previousInProcess == null) delete process.env.JEA_IN_PROCESS_CYCLE;
+    else process.env.JEA_IN_PROCESS_CYCLE = previousInProcess;
+  });
+
   function delay(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }

@@ -25,7 +25,7 @@ import { compareDecisionsForClaim } from '../decide/decision-queue.mjs';
 
 function isExecRateOnlyFromEnv(env = process.env) {
   const raw = String(env.JEA_EXEC_RATE_ONLY || '').trim().toLowerCase();
-  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+  return raw !== '0' && raw !== 'false' && raw !== 'no' && raw !== 'off';
 }
 
 export function parseExecAgentBudgetFromEnv() {

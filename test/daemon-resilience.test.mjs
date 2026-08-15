@@ -341,6 +341,10 @@ describe('cycle progress stalled health', () => {
     const projection = buildDaemonProjection(root, 'alpha');
     expect(projection.health.status).toBe('idle');
     expect(projection.health.ok).toBe(true);
-    expect(projection.health.reasons.some((reason) => /tick does not auto-open/.test(reason))).toBe(true);
+    expect(projection.health.reasons.some((reason) => (
+      /tick does not auto-open/.test(reason)
+      || /Reactor idle/.test(reason)
+      || /production health source/.test(reason)
+    ))).toBe(true);
   });
 });

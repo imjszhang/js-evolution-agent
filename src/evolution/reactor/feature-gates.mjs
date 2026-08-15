@@ -1,28 +1,37 @@
 /**
  * Dual-track feature gates for S0–S9. Each gate is temporary and must be
- * removed after its one-way door. Opt-in: 1/true/yes/on.
+ * removed after its one-way door.
+ *
+ * S8 default: evidence-wake, wall-clock TTL, and rate-only are ON unless
+ * explicitly set to 0/false/off. Train rollback remains available.
+ *
+ * A partial `env` overlay merges onto process.env so callers that pass
+ * `{ JEA_TICK_OPEN_CYCLE: '1' }` do not accidentally reset other gates.
  */
 
+function resolveEnv(env) {
+  if (!env || env === process.env) return process.env;
+  return { ...process.env, ...env };
+}
+
 function envFlagOn(env, key) {
-  const raw = String(env?.[key] ?? '').trim().toLowerCase();
+  const raw = String(resolveEnv(env)?.[key] ?? '').trim().toLowerCase();
   return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
 }
 
 function envFlagOff(env, key) {
-  const raw = String(env?.[key] ?? '').trim().toLowerCase();
+  const raw = String(resolveEnv(env)?.[key] ?? '').trim().toLowerCase();
   return raw === '0' || raw === 'false' || raw === 'no' || raw === 'off';
 }
 
 export function isEvidenceWakeEnabled(env = process.env) {
-  return envFlagOn(env, 'JEA_EVIDENCE_WAKE');
+  return !envFlagOff(env, 'JEA_EVIDENCE_WAKE');
 }
 
 export function isInProcessCycleEnabled(env = process.env) {
   if (envFlagOn(env, 'JEA_SUBPROCESS_CYCLE')) return false;
   if (envFlagOff(env, 'JEA_IN_PROCESS_CYCLE')) return false;
-  // Reactor daemon tasks always run in-process. This gate also follows
-  // evidence-wake so the documented dual-track default is not a dead flag.
-  return envFlagOn(env, 'JEA_IN_PROCESS_CYCLE') || envFlagOn(env, 'JEA_EVIDENCE_WAKE');
+  return true;
 }
 
 export function isSubprocessCycleForced(env = process.env) {
@@ -34,9 +43,9 @@ export function isReactorHealthPrimary(env = process.env) {
 }
 
 export function isCycleTtlDisabled(env = process.env) {
-  return envFlagOn(env, 'JEA_QUEUE_DISABLE_CYCLE_TTL');
+  return !envFlagOff(env, 'JEA_QUEUE_DISABLE_CYCLE_TTL');
 }
 
 export function isExecRateOnly(env = process.env) {
-  return envFlagOn(env, 'JEA_EXEC_RATE_ONLY');
+  return !envFlagOff(env, 'JEA_EXEC_RATE_ONLY');
 }

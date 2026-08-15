@@ -111,4 +111,15 @@ describe('reactor health projection', () => {
     expect(health.rule.due_windows).toBe(0);
     expect(health.memory.due).toBe(false);
   });
+
+  it('uses reactor projection as production health and ignores train stuck fields', () => {
+    const root = makeRoot();
+    const projection = buildDaemonProjection(root, 'alpha');
+    expect(projection.pipeline).toBe('reactor');
+    expect(projection.cycles.stuck_steps).toEqual([]);
+    expect(projection.cycles.drift_steps).toEqual([]);
+    expect(projection.cycles.progress_stalled).toBe(false);
+    expect(projection.health.ok).toBe(projection.reactor.ok);
+    expect(['idle', 'healthy', 'reactor_backlog_stalled', 'blocked']).toContain(projection.health.status);
+  });
 });
