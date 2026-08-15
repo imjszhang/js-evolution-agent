@@ -81,7 +81,7 @@ describe('desktop renderer components', () => {
         refreshedAt={null}
         onRefresh={async () => undefined}
       />
-    )).toContain('No operational snapshot')
+    )).toContain('No subject selected')
     expect(renderToStaticMarkup(<TodoCenter subject={null} />)).toContain('Select a subject')
     expect(renderToStaticMarkup(
       <DaemonPanel
