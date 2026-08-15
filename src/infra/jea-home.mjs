@@ -39,8 +39,11 @@ export function resolveJeaHome({
 export function createRuntimeContext(input = {}) {
   if (typeof input === 'string') {
     const sourceRoot = resolve(input);
-    if (globalThis.__JEA_TEST_LEGACY_ROOT_ARGUMENT__ === true
-        || (process.env.NODE_ENV === 'test' && process.env.JEA_TEST_LEGACY_ROOT_ARGUMENT === '1')) {
+    const hasExplicitHome = Boolean(String(process.env[JEA_HOME_ENV] ?? '').trim());
+    if (!hasExplicitHome && (
+      globalThis.__JEA_TEST_LEGACY_ROOT_ARGUMENT__ === true
+      || (process.env.NODE_ENV === 'test' && process.env.JEA_TEST_LEGACY_ROOT_ARGUMENT === '1')
+    )) {
       return {
         sourceRoot,
         jeaHome: join(sourceRoot, 'runtime'),
