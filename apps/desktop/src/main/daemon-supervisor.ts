@@ -1,8 +1,9 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import {
-  createWriteStream,
+  closeSync,
   mkdirSync,
+  openSync,
   readFileSync,
   rmSync,
   writeFileSync
@@ -129,37 +130,42 @@ export class DaemonSupervisor {
       stdout: join(logDir, `daemon-${slug}.desktop.stdout.log`),
       stderr: join(logDir, `daemon-${slug}.desktop.stderr.log`)
     }
-    const stdout = createWriteStream(logPaths.stdout, { flags: 'a' })
-    const stderr = createWriteStream(logPaths.stderr, { flags: 'a' })
+    const stdoutFd = openSync(logPaths.stdout, 'a')
+    const stderrFd = openSync(logPaths.stderr, 'a')
     const cliPath = join(this.projectRoot, 'src', 'cli', 'jea.mjs')
-    const child = this.spawnImpl(process.execPath, [
-      '--preserve-symlinks',
-      cliPath,
-      'daemon',
-      'start',
-      '--subject',
-      subject,
-      '--domain',
-      domain
-    ], {
-      cwd: this.projectRoot,
-      env: {
-        ...process.env,
-        ELECTRON_RUN_AS_NODE: '1',
-        JEA_PROJECT_ROOT: this.projectRoot
-      },
-      windowsHide: true,
-      detached: false,
-      stdio: ['ignore', stdout, stderr]
-    })
+    let child: ChildProcess
+    try {
+      child = this.spawnImpl(process.execPath, [
+        '--preserve-symlinks',
+        cliPath,
+        'daemon',
+        'start',
+        '--subject',
+        subject,
+        '--domain',
+        domain
+      ], {
+        cwd: this.projectRoot,
+        env: {
+          ...process.env,
+          ELECTRON_RUN_AS_NODE: '1',
+          JEA_PROJECT_ROOT: this.projectRoot
+        },
+        windowsHide: true,
+        detached: false,
+        stdio: ['ignore', stdoutFd, stderrFd]
+      })
+    } catch (error) {
+      closeSync(stdoutFd)
+      closeSync(stderrFd)
+      throw error
+    }
+    closeSync(stdoutFd)
+    closeSync(stderrFd)
 
     await new Promise<void>((resolve, reject) => {
       child.once('spawn', resolve)
       child.once('error', reject)
-    }).catch((error) => {
-      stdout.end()
-      stderr.end()
-      throw error
     })
 
     const unregister = this.processRegistry.register({
@@ -181,8 +187,6 @@ export class DaemonSupervisor {
     this.managed.set(subject, entry)
     this.writeDiagnostic(entry)
     child.once('close', () => {
-      stdout.end()
-      stderr.end()
       if (this.managed.get(subject)?.ownerToken === ownerToken) {
         this.managed.delete(subject)
         unregister()

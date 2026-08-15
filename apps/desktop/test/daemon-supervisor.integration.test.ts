@@ -32,7 +32,11 @@ async function waitFor(check: () => boolean, timeoutMs = 5_000): Promise<void> {
 function projectFixture(): string {
   const root = mkdtempSync(join(tmpdir(), 'jea-desktop-daemon-live-'))
   roots.push(root)
-  symlinkSync(join(process.cwd(), '..', '..', 'src'), join(root, 'src'), 'dir')
+  const workspaceRoot = join(process.cwd(), '..', '..')
+  symlinkSync(join(workspaceRoot, 'src'), join(root, 'src'), 'dir')
+  symlinkSync(join(workspaceRoot, 'node_modules'), join(root, 'node_modules'), 'dir')
+  symlinkSync(join(workspaceRoot, 'oada.config.mjs'), join(root, 'oada.config.mjs'), 'file')
+  symlinkSync(join(workspaceRoot, 'package.json'), join(root, 'package.json'), 'file')
   const subjectsDir = join(root, 'runtime', 'subjects')
   mkdirSync(subjectsDir, { recursive: true })
   writeFileSync(join(subjectsDir, 'registry.json'), JSON.stringify({
