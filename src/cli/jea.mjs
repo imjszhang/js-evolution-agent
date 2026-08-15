@@ -57,6 +57,8 @@ Commands:
   channel events         Show channel communication audit events
   channel inbox put      Queue an inbound channel message JSON for ingest
   channel send           Queue or dry-run an outbound channel message
+  channel desktop send   Queue a local desktop session message for ingest
+  channel desktop read   Read a desktop session (--offset/--limit/--tail)
   channel deliverables   List or show channel agent-run deliverables
   bridge deploy          Deploy OpenClaw bridge mode for a subject
   bridge undeploy        Switch a subject back to the original Feishu transport
@@ -155,6 +157,8 @@ Examples:
   jea daemon inbox --all
   jea channel status
   jea channel send --to CHAT_ID --text "hello" --dry-run
+  jea channel desktop send --session main --text "hello"
+  jea channel desktop read main --tail 20
   jea channel deliverables list
   jea channel deliverables show delivery-20260604-120000-abcd
   jea bridge deploy --subject agentank-tank --agent-id jea-agentank-tank

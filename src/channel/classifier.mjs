@@ -1,6 +1,6 @@
 import { chatMessagesJson } from '../ai/messages.mjs';
 import { createLlmClient } from '../ai/gateway.mjs';
-import { defaultInboundAdapter } from './inbound-adapters/registry.mjs';
+import { resolveInboundAdapterForPayload } from './inbound-adapters/registry.mjs';
 import { recordChannelEvent } from './audit.mjs';
 import { runWithTimeout, ChannelTimeoutError } from './async-utils.mjs';
 import { resolveClassifierConfig } from './classifier-config.mjs';
@@ -22,11 +22,6 @@ import {
   inferDeterministicUnderstanding,
   normalizeUnderstanding,
 } from './classifier-understanding.mjs';
-
-const inboundAdapter = defaultInboundAdapter();
-const normalizeInboundPayload = (...args) => inboundAdapter.normalizeInboundPayload(...args);
-const resolveFeishuConfig = (...args) => inboundAdapter.resolveConfig(...args);
-const tryHandleFeishuBind = (...args) => inboundAdapter.tryHandleBind(...args);
 
 function normalizeClassifierItems(parsed, expectedIds, entriesById = new Map()) {
   const items = Array.isArray(parsed?.items) ? parsed.items : [];
@@ -158,8 +153,10 @@ async function mechanicalPreprocess(root, subject, file, adapterOptions, feishuC
     return { ok: false, mechanical: true, target: markInboundFailed(root, subject, file, 'parse_error') };
   }
   try {
-    const envelope = await normalizeInboundPayload(payload, adapterOptions);
-    if (feishuCfg?.bindEnabled) {
+    const adapter = resolveInboundAdapterForPayload(payload);
+    if (!adapter) throw new Error(`Unsupported channel inbound adapter: ${payload?.adapter ?? payload?.channel}`);
+    const envelope = await adapter.normalizeInboundPayload(payload, adapterOptions);
+    if (adapter.id === 'feishu' && feishuCfg?.bindEnabled) {
       const bindEvent = {
         senderOpenId: envelope.sender_id,
         senderId: envelope.sender_id,
@@ -171,7 +168,7 @@ async function mechanicalPreprocess(root, subject, file, adapterOptions, feishuC
           ? JSON.stringify({ text: envelope.content })
           : envelope.content,
       };
-      const bindResult = await tryHandleFeishuBind(root, subject, bindEvent, { config: feishuCfg });
+      const bindResult = await adapter.tryHandleBind(root, subject, bindEvent, { config: feishuCfg });
       if (bindResult.handled) {
         const target = markInboundProcessed(root, subject, file, {
           envelope,
@@ -213,7 +210,8 @@ export async function runChannelClassifierTask(root, subject, input = {}) {
     return { skipped: true, reason: 'no_pending_inbound', processed: 0 };
   }
 
-  const feishuCfg = resolveFeishuConfig(root, subject);
+  const feishuAdapter = resolveInboundAdapterForPayload({ channel: 'feishu' });
+  const feishuCfg = feishuAdapter.resolveConfig(root, subject);
   const mechanical = [];
   const forLlm = [];
 

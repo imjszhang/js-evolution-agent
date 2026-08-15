@@ -57,6 +57,14 @@ export function channelOutboxFailedDir(root, subject) {
   return join(channelOutboxDir(root, subject), 'failed');
 }
 
+export function channelDesktopSessionsDir(root, subject) {
+  return join(channelDirForSubject(root, subject), 'desktop', 'sessions');
+}
+
+export function channelDesktopSessionPath(root, subject, sessionId) {
+  return join(channelDesktopSessionsDir(root, subject), `${sessionId}.jsonl`);
+}
+
 export function channelCooldownPath(root, subject) {
   return join(channelDirForSubject(root, subject), 'cooldown.json');
 }

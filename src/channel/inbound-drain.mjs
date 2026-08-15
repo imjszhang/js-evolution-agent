@@ -1,5 +1,4 @@
-import { normalizeInboundPayload, resolveFeishuConfig } from './adapters/feishu/index.mjs';
-import { tryHandleFeishuBind } from './adapters/feishu/binding.mjs';
+import { resolveInboundAdapterForPayload } from './inbound-adapters/registry.mjs';
 import { recordChannelEvent } from './audit.mjs';
 import { ingestChannelEnvelope } from './ingest.mjs';
 import {
@@ -27,8 +26,10 @@ export async function drainChannelInbound(root, subject, input = {}) {
       continue;
     }
     try {
-      const envelope = await normalizeInboundPayload(payload, input.adapter_options ?? {});
-      const feishuCfg = envelope.channel === 'feishu' ? resolveFeishuConfig(root, subject) : null;
+      const adapter = resolveInboundAdapterForPayload(payload);
+      if (!adapter) throw new Error(`Unsupported channel inbound adapter: ${payload?.adapter ?? payload?.channel}`);
+      const envelope = await adapter.normalizeInboundPayload(payload, input.adapter_options ?? {});
+      const feishuCfg = adapter.id === 'feishu' ? adapter.resolveConfig(root, subject) : null;
       if (feishuCfg?.bindEnabled) {
         const bindEvent = {
           senderOpenId: envelope.sender_id,
@@ -41,7 +42,7 @@ export async function drainChannelInbound(root, subject, input = {}) {
             ? JSON.stringify({ text: envelope.content })
             : envelope.content,
         };
-        const bindResult = await tryHandleFeishuBind(root, subject, bindEvent, { config: feishuCfg });
+        const bindResult = await adapter.tryHandleBind(root, subject, bindEvent, { config: feishuCfg });
         if (bindResult.handled) {
           const target = markInboundProcessed(root, subject, file, {
             envelope,

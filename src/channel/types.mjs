@@ -52,7 +52,7 @@ export function normalizeChannelEnvelope(input = {}) {
   return {
     schema_version: input.schema_version ?? 1,
     channel,
-    adapter: input.adapter ?? 'feishu',
+    adapter: input.adapter ?? channel,
     direction: input.direction ?? 'inbound',
     message_id: messageId,
     chat_id: chatId,
@@ -87,7 +87,7 @@ export function normalizeOutboundMessage(input = {}) {
     id: input.id ?? null,
     idempotency_key: input.idempotency_key ?? null,
     channel,
-    adapter: input.adapter ?? 'feishu',
+    adapter: input.adapter ?? channel,
     target,
     text,
     card: input.card ?? null,

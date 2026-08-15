@@ -45,6 +45,7 @@ function summarizeRecentIngested(root, subject, { limit = 8 } = {}) {
     items.push({
       message_id: payload.envelope.message_id,
       channel: payload.envelope.channel,
+      chat_id: payload.envelope.chat_id,
       content: String(payload.envelope.content ?? '').slice(0, 500),
       ingest_kind: payload.ingest_result?.kind ?? null,
       brief_kind: payload.ingest_result?.brief?.kind ?? null,

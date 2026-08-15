@@ -22,13 +22,25 @@ export function resolveDefaultTransport(root, subject, { explicit = null } = {})
  * Resolve outbound target from planner hint: operator | channel_default | explicit id.
  * Feishu-specific resolution is delegated only when transport is feishu.
  */
-const TARGET_ALIASES = new Set(['operator', 'channel_default', 'feishu', 'lark', 'default']);
+const TARGET_ALIASES = new Set(['operator', 'channel_default', 'feishu', 'lark', 'desktop', 'default']);
 
 export async function resolveOutboundTarget(root, subject, hint, { transport = null } = {}) {
   const resolvedTransport = transport ?? resolveDefaultTransport(root, subject);
-  const normalized = String(hint ?? 'channel_default').trim().toLowerCase();
+  const rawHint = String(hint ?? 'channel_default').trim();
+  const normalized = rawHint.toLowerCase();
+  if (normalized.startsWith('desktop:')) {
+    const { sessionIdFromDesktopTarget, desktopTarget } = await import('./adapters/desktop/config.mjs');
+    return { transport: 'desktop', target: desktopTarget(sessionIdFromDesktopTarget(rawHint)) };
+  }
+  if (normalized === 'desktop') {
+    const { resolveDesktopConfig } = await import('./adapters/desktop/config.mjs');
+    return { transport: 'desktop', target: resolveDesktopConfig(root, subject).defaultTarget };
+  }
   if (normalized === 'feishu' || normalized === 'lark') {
-    return resolveOutboundTarget(root, subject, 'channel_default', { transport: normalized === 'lark' ? 'lark' : resolvedTransport });
+    const { resolveFeishuConfig } = await import('./adapters/feishu/config.mjs');
+    const cfg = resolveFeishuConfig(root, subject);
+    const target = cfg?.defaultChatId ?? cfg?.operatorBinding?.open_id ?? null;
+    return { transport: normalized, target };
   }
   if (normalized && !TARGET_ALIASES.has(normalized)) {
     return { transport: resolvedTransport, target: String(hint).trim() };
@@ -37,9 +49,16 @@ export async function resolveOutboundTarget(root, subject, hint, { transport = n
   const presenceTarget = entry?.channels?.presence?.default_target
     ?? entry?.channels?.presence?.defaultTarget;
   if (presenceTarget) {
-    return { transport: resolvedTransport, target: String(presenceTarget) };
+    const target = String(presenceTarget);
+    return target.toLowerCase().startsWith('desktop:')
+      ? { transport: 'desktop', target }
+      : { transport: resolvedTransport, target };
   }
-  if (resolvedTransport === 'feishu') {
+  if (resolvedTransport === 'desktop') {
+    const { resolveDesktopConfig } = await import('./adapters/desktop/config.mjs');
+    return { transport: 'desktop', target: resolveDesktopConfig(root, subject).defaultTarget };
+  }
+  if (resolvedTransport === 'feishu' || resolvedTransport === 'lark') {
     const { resolveFeishuConfig } = await import('./adapters/feishu/config.mjs');
     const cfg = resolveFeishuConfig(root, subject);
     const target = cfg?.defaultChatId ?? cfg?.operatorBinding?.open_id ?? null;

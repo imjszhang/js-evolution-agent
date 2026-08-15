@@ -1,11 +1,13 @@
 import { createHash } from 'node:crypto';
 import { resolveFeishuConfig } from './adapters/feishu/config.mjs';
+import { resolveDesktopConfig } from './adapters/desktop/config.mjs';
 import { buildDaemonProjection } from '../daemon/daemon-projection.mjs';
 import { storeForSubject } from '../daemon/daemon-events.mjs';
 import { runtimeForSubject } from '../infra/runtime-paths.mjs';
 import { readPendingOperatorBriefs } from '../intelligence/channel-api.mjs';
 import { cooldownActive, setCooldown, writeOutboxMessage } from './state.mjs';
 import { normalizeOutboundMessage, nowIso } from './types.mjs';
+import { resolveDefaultTransport } from './transport.mjs';
 
 const DEFAULT_COOLDOWN_MS = 30 * 60 * 1000;
 
@@ -14,7 +16,11 @@ function hashKey(value) {
 }
 
 function routeTarget(root, subject) {
-  return resolveFeishuConfig(root, subject).defaultChatId;
+  const transport = resolveDefaultTransport(root, subject);
+  if (transport === 'desktop') {
+    return { transport: 'desktop', target: resolveDesktopConfig(root, subject).defaultTarget };
+  }
+  return { transport, target: resolveFeishuConfig(root, subject).defaultChatId };
 }
 
 export function collectAttentionSignals(root, subject, { projection = null } = {}) {
@@ -148,7 +154,8 @@ export function enqueueNotificationsForSignals(root, subject, signals, {
   cooldownMs = DEFAULT_COOLDOWN_MS,
   dryRun = false,
 } = {}) {
-  const resolvedTarget = target ?? routeTarget(root, subject);
+  const route = routeTarget(root, subject);
+  const resolvedTarget = target ?? route.target;
   const results = [];
   if (!resolvedTarget) {
     return { enqueued: [], skipped: signals.map((signal) => ({ signal, reason: 'missing_target' })) };
@@ -160,7 +167,7 @@ export function enqueueNotificationsForSignals(root, subject, signals, {
       continue;
     }
     const outbound = normalizeOutboundMessage({
-      channel: 'feishu',
+      channel: String(resolvedTarget).toLowerCase().startsWith('desktop:') ? 'desktop' : route.transport,
       target: resolvedTarget,
       text: formatSignalMessage(subject, signal),
       subject,
