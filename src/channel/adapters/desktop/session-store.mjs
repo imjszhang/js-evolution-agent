@@ -23,7 +23,7 @@ import { nowIso } from '../../types.mjs';
 import { normalizeDesktopSessionId } from './config.mjs';
 
 export const DESKTOP_SESSION_SCHEMA_VERSION = 1;
-const INDEX_SCHEMA_VERSION = 1;
+const INDEX_SCHEMA_VERSION = 2;
 const INDEX_CHUNK_BYTES = 64 * 1024;
 const MAX_ID_BUCKET_BYTES = 64 * 1024;
 
@@ -131,15 +131,21 @@ function splitBucket(file, level) {
   }
 }
 
-function appendIndexEntry(paths, id, logicalOffset, byteOffset) {
+function appendIndexEntry(paths, id, logicalOffset, byteOffset, byteLength) {
   mkdirSync(paths.ids, { recursive: true });
-  const offsetBuffer = Buffer.allocUnsafe(8);
+  const offsetBuffer = Buffer.allocUnsafe(16);
   offsetBuffer.writeBigUInt64LE(BigInt(byteOffset));
+  offsetBuffer.writeBigUInt64LE(BigInt(byteLength), 8);
   appendFileSync(paths.offsets, offsetBuffer);
   const bucket = resolveBucket(paths, id);
   appendFileSync(
     bucket.file,
-    `${JSON.stringify({ id, offset: logicalOffset, byte_offset: byteOffset })}\n`,
+    `${JSON.stringify({
+      id,
+      offset: logicalOffset,
+      byte_offset: byteOffset,
+      byte_length: byteLength,
+    })}\n`,
     'utf8',
   );
   splitBucket(bucket.file, bucket.level);
@@ -148,9 +154,10 @@ function appendIndexEntry(paths, id, logicalOffset, byteOffset) {
 function appendIndexBatch(paths, offsets, bucketAppends) {
   if (offsets.length) {
     mkdirSync(paths.ids, { recursive: true });
-    const buffer = Buffer.allocUnsafe(offsets.length * 8);
-    offsets.forEach((offset, index) => {
-      buffer.writeBigUInt64LE(BigInt(offset), index * 8);
+    const buffer = Buffer.allocUnsafe(offsets.length * 16);
+    offsets.forEach((entry, index) => {
+      buffer.writeBigUInt64LE(BigInt(entry.offset), index * 16);
+      buffer.writeBigUInt64LE(BigInt(entry.length), index * 16 + 8);
     });
     appendFileSync(paths.offsets, buffer);
   }
@@ -200,7 +207,7 @@ function reconcileSessionIndex(root, subject, sessionId, file) {
     || stat.size < Number(metadata.scanned_size ?? 0)
     || !existsSync(paths.offsets)
     || !existsSync(paths.ids)
-    || (existsSync(paths.offsets) && statSync(paths.offsets).size !== Number(metadata.total ?? 0) * 8)
+    || (existsSync(paths.offsets) && statSync(paths.offsets).size !== Number(metadata.total ?? 0) * 16)
   ) {
     metadata = resetIndex(paths, identity);
   }
@@ -229,6 +236,7 @@ function reconcileSessionIndex(root, subject, sessionId, file) {
         const newline = data.indexOf(0x0a, cursor);
         if (newline < 0) break;
         const lineStart = dataStart + cursor;
+        const lineLength = newline - cursor;
         const line = data.subarray(cursor, newline).toString('utf8').trim();
         cursor = newline + 1;
         if (!line) continue;
@@ -244,12 +252,17 @@ function reconcileSessionIndex(root, subject, sessionId, file) {
           }
           if (seen.has(id)) continue;
           seen.add(id);
-          indexedOffsets.push(lineStart);
+          indexedOffsets.push({ offset: lineStart, length: lineLength });
           const group = bucketAppends.get(bucket.file) ?? {
             entries: [],
             level: bucket.level,
           };
-          group.entries.push({ id, offset: metadata.total, byte_offset: lineStart });
+          group.entries.push({
+            id,
+            offset: metadata.total,
+            byte_offset: lineStart,
+            byte_length: lineLength,
+          });
           bucketAppends.set(bucket.file, group);
           metadata.total += 1;
         } catch {
@@ -270,11 +283,16 @@ function reconcileSessionIndex(root, subject, sessionId, file) {
 }
 
 function readIndexedOffset(paths, logicalOffset) {
-  const buffer = Buffer.allocUnsafe(8);
+  const buffer = Buffer.allocUnsafe(16);
   const fd = openSync(paths.offsets, 'r');
   try {
-    const bytesRead = readSync(fd, buffer, 0, 8, logicalOffset * 8);
-    return bytesRead === 8 ? Number(buffer.readBigUInt64LE()) : null;
+    const bytesRead = readSync(fd, buffer, 0, 16, logicalOffset * 16);
+    return bytesRead === 16
+      ? {
+        offset: Number(buffer.readBigUInt64LE()),
+        length: Number(buffer.readBigUInt64LE(8)),
+      }
+      : null;
   } finally {
     closeSync(fd);
   }
@@ -282,17 +300,13 @@ function readIndexedOffset(paths, logicalOffset) {
 
 function readIndexedRecord(file, paths, metadata, logicalOffset) {
   if (logicalOffset < 0 || logicalOffset >= metadata.total) return null;
-  const start = readIndexedOffset(paths, logicalOffset);
-  const next = logicalOffset + 1 < metadata.total
-    ? readIndexedOffset(paths, logicalOffset + 1)
-    : metadata.scanned_size;
-  if (start == null || next == null || next <= start) return null;
-  const buffer = Buffer.allocUnsafe(next - start);
+  const entry = readIndexedOffset(paths, logicalOffset);
+  if (!entry || entry.length <= 0) return null;
+  const buffer = Buffer.allocUnsafe(entry.length);
   const fd = openSync(file, 'r');
   try {
-    const bytesRead = readSync(fd, buffer, 0, buffer.length, start);
-    const newline = buffer.indexOf(0x0a, 0);
-    const text = buffer.subarray(0, newline < 0 ? bytesRead : newline).toString('utf8').trim();
+    const bytesRead = readSync(fd, buffer, 0, buffer.length, entry.offset);
+    const text = buffer.subarray(0, bytesRead).toString('utf8').trim();
     return text ? JSON.parse(text) : null;
   } catch {
     return null;
@@ -346,7 +360,7 @@ export function appendDesktopSessionRecord(root, subject, sessionIdInput, input 
     };
     const line = `${JSON.stringify(record)}\n`;
     appendFileSync(file, line, 'utf-8');
-    appendIndexEntry(paths, id, metadata.total, byteOffset);
+    appendIndexEntry(paths, id, metadata.total, byteOffset, Buffer.byteLength(line));
     metadata.total += 1;
     metadata.scanned_size = byteOffset + Buffer.byteLength(line);
     metadata.identity = fileIdentity(statSync(file));
