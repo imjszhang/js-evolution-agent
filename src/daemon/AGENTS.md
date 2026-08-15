@@ -21,7 +21,7 @@ Daemon 用于 **事件驱动的 step 级演化**。推荐用 `jea daemon start` 
 
 - `jea daemon start [--mock] [--tick-ms N] [--evolution-mode continuous|on_demand] [--heartbeat-ms N] [--lease-ms N]`：前台 worker；默认 `tick-ms=300000`（5min）。**Windows 长期后台**勿用 Cursor/IDE 后台 shell（会话结束会中止子进程）；用 `npm run daemon:start:detached`（或 `scripts/daemon-start-detached-win.ps1 -Subject NAME [-StopFirst] [-Force]`），日志在 `<JEA_HOME>/logs/daemon-<subject>.*.log`。
 - `jea daemon evolution-mode show [--json]`：查看当前 subject 演化模式与来源。
-- `jea daemon evolution-mode set continuous|on_demand [--json]`：写入 `subjects.json` 并 emit `evolution_mode_changed`（viewer SSE / worker 热加载）。
+- `jea daemon evolution-mode set continuous|on_demand [--json]`：写入 `<JEA_HOME>/subjects/registry.json` 并 emit `evolution_mode_changed`（viewer SSE / worker 热加载）。
 - `jea daemon cycle request [--reason TEXT] [--note TEXT]`：入队 cycle 启动请求（写入 `data/evolution/cycle-start-requests.json`），由 worker 在前提满足时开轮。
 - `jea daemon work --once [--mock]`：领取并执行一个 task（step、`run_cycle` 或 reactor task）后退出。
 - reactor task 类型（`JEA_EVIDENCE_WAKE=1` 时由 backlog/wake 入队）：`cognitive_reaction`、`exec_queue`、`verify_batch`、`rule_reaction`、`memory_compaction`。这些任务进程内执行，恢复真相是 batch checkpoint / exec intent / exec result，不是 cycle-state。

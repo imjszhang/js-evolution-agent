@@ -206,7 +206,7 @@ async function main() {
       assertions,
     };
     console.log(JSON.stringify(report, null, 2));
-    process.exit(report.ok ? 0 : 1);
+    process.exitCode = report.ok ? 0 : 1;
   } catch (err) {
     console.log(JSON.stringify({
       ok: false,
@@ -215,7 +215,7 @@ async function main() {
       error: err?.stack || err?.message || String(err),
       assertions,
     }, null, 2));
-    process.exit(1);
+    process.exitCode = 1;
   } finally {
     for (const [key, value] of Object.entries(previous)) {
       if (value == null) delete process.env[key];

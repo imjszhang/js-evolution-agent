@@ -203,7 +203,7 @@ Phase 2（exec）action 选择口径：
 
 - 主执行：优先 `agent_run`（调查、改代码、模拟、发布准备等“做事”任务）。
 - 记录型：`record_observation`、`run_evidence_audit`（机械证据审计）、`propose_probe`、`write_retrospective`、`request_core_review` 只落已有结论/提案/审批请求/审计摘要，不用于读文件或调查。
-- 系统/兼容：`lane_status`、`lane_observe`、`lane_verify`、`github_open_lane_pr` 是机械 lane 能力；`run_probe`、`agent_execute` 是旧兼容动作；`core_apply` 仅用于 core 层审批变更。subject policy 不应维护 subject-specific action 菜单，业务能力通过 `subjects.json` 的 lane/resources 或 configured external actions 表达。
+- 系统/兼容：`lane_status`、`lane_observe`、`lane_verify`、`github_open_lane_pr` 是机械 lane 能力；`run_probe`、`agent_execute` 是旧兼容动作；`core_apply` 仅用于 core 层审批变更。subject policy 不应维护 subject-specific action 菜单，业务能力通过 `<JEA_HOME>/subjects/registry.json` 的 lane/resources 或 configured external actions 表达。
 
 ### ACP 无头 provider
 

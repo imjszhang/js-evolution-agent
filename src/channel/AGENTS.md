@@ -55,7 +55,7 @@ setup 会：
 1. 调用 SDK `registerApp()`，在终端打印 ASCII 二维码，并保存/打开 PNG：`<JEA_HOME>/subjects/<ns>/data/channel/feishu-register-qr.png`。
 2. 将 `client_id` / `client_secret` 写入 `.env` 的 `JEA_CHANNEL_FEISHU_<SUBJECT>_APP_ID` / `_APP_SECRET`（同名 key 已存在且值不同需 `--force`）。
 3. 若未配置 BIND 口令，自动生成 `JEA_CHANNEL_FEISHU_<SUBJECT>_BIND_TOKEN`。
-4. 可选 `--init-subject-config` 写入 `subjects.json` 最小 `channels.feishu` skeleton（Secret 不进 JSON）。
+4. 可选 `--init-subject-config` 写入 `<JEA_HOME>/subjects/registry.json` 最小 `channels.feishu` skeleton（Secret 不进 JSON）。
 5. 写入 `reload-request.json`，供运行中的 channel daemon 热加载。
 
 扫码完成后，在飞书**私聊**新机器人发送：
@@ -72,7 +72,7 @@ setup/register 可选参数：
 | --- | --- |
 | `--write-env` | 写入/更新项目根 `.env`（setup 默认开启；register 默认只打印） |
 | `--force` | 覆盖 `.env` 中已有同名 key |
-| `--init-subject-config` | 自动补齐 `subjects.json` 的 `channels.feishu` skeleton |
+| `--init-subject-config` | 自动补齐 JEA Home registry 的 `channels.feishu` skeleton |
 | `--no-qr` | 不渲染终端二维码 |
 | `--no-qr-image` | 不生成 PNG |
 | `--no-open-qr` | 生成 PNG 但不自动用系统查看器打开 |
@@ -248,14 +248,14 @@ Classifier 识别 `control_request` 后**不直接执行**配置变更，而是�
 
 仅私聊、未手填 `ou_` 时，可在 `channels.feishu.bind` 开启口令绑定。推荐用 `jea channel feishu setup` 自动生成 BIND 口令并写入 `.env`；也可手工设置。
 
-1. `.env` 设置 `JEA_CHANNEL_FEISHU_<SUBJECT>_BIND_TOKEN`（或 `subjects.json` 的 `bind.token_env`）。
+1. `.env` 设置 `JEA_CHANNEL_FEISHU_<SUBJECT>_BIND_TOKEN`（或 JEA Home registry 的 `bind.token_env`）。
 2. 启动 `jea daemon start --subject NAME --domain channel`（若已在运行，setup 写 env 后会通过 reload 热加载，通常无需重启）。
 3. 在飞书里**私聊**机器人，发送：`JEA BIND <口令>`（短语默认 `JEA BIND`，可在 `bind.phrase` 自定义）。
 4. 绑定结果写入 `<JEA_HOME>/subjects/<ns>/data/channel/feishu-operator-binding.json`，并自动作为 `allow_from` / 默认出站目标；`jea channel status --json` 的 `feishu.config.operator` 可查看（open_id 脱敏）。成功时 events 可见 `feishu_operator_bound`。
 
 未绑定前仅接受绑定握手消息；群聊可用 `group_policy: disabled` 关闭。覆盖他人绑定需再次发送带**同一口令**的 `JEA BIND`。
 
-飞书配置按 **subject 隔离**（每个 subject 可绑定不同机器人）。`app_secret` 不要明文写入 `subjects.json`，用 `app_secret_env` 指向环境变量名；`app_id` 可写在 JSON，或用 `app_id_env` / `JEA_CHANNEL_FEISHU_<SUBJECT>_APP_ID` 从环境读取。
+飞书配置按 **subject 隔离**（每个 subject 可绑定不同机器人）。`app_secret` 不要明文写入 JEA Home registry，用 `app_secret_env` 指向环境变量名；`app_id` 可写在 JSON，或用 `app_id_env` / `JEA_CHANNEL_FEISHU_<SUBJECT>_APP_ID` 从环境读取。
 
 `<JEA_HOME>/subjects/registry.json` 示例（`my-subject` 与 `other-subject` 各用各的 bot）：
 

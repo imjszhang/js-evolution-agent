@@ -42,6 +42,11 @@ try {
   copyFileSync(join(projectRoot, 'oada.config.mjs'), join(sourceFixtureRoot, 'oada.config.mjs'));
   copyFileSync(join(projectRoot, 'package.json'), join(sourceFixtureRoot, 'package.json'));
   const runtimeBefore = snapshotRuntimeSubjects(projectRoot);
+  const sourceRuntimeBefore = snapshotRuntimeSubjects(sourceFixtureRoot);
+  const appData = join(guardHome, 'AppData', 'Roaming');
+  const localAppData = join(guardHome, 'AppData', 'Local');
+  mkdirSync(appData, { recursive: true });
+  mkdirSync(localAppData, { recursive: true });
   if (!existsSync(entry)) {
     throw new Error('Desktop build output is missing; run npm run desktop:build first.');
   }
@@ -56,6 +61,8 @@ try {
       ...process.env,
       HOME: guardHome,
       USERPROFILE: guardHome,
+      APPDATA: appData,
+      LOCALAPPDATA: localAppData,
       JEA_PROJECT_ROOT: sourceFixtureRoot,
       JEA_HOME: fixture.jeaHome,
       JEA_DESKTOP_SMOKE: output,
@@ -90,6 +97,11 @@ try {
   const runtimeAfter = snapshotRuntimeSubjects(projectRoot);
   if (runtimeSubjectsChanged(runtimeBefore, runtimeAfter)) {
     throw new Error('Desktop smoke wrote to the real runtime/subjects directory');
+  }
+  const sourceRuntimeAfter = snapshotRuntimeSubjects(sourceFixtureRoot);
+  if (runtimeSubjectsChanged(sourceRuntimeBefore, sourceRuntimeAfter)
+      || existsSync(join(sourceFixtureRoot, 'runtime'))) {
+    throw new Error('Desktop smoke wrote runtime data into the source fixture');
   }
   if (snapshotJeaHome(join(guardHome, '.jea')).files.length > 0) {
     throw new Error('Desktop smoke ignored the isolated JEA_HOME and wrote to the default home');
