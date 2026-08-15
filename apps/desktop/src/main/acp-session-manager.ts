@@ -52,7 +52,7 @@ class DesktopTextStream {
   append(text: string): void {
     this.pending += text
     const sensitiveTail = this.pending.match(
-      /(?:[A-Z0-9_]*(?:API[_-]?KEY|AUTH[_-]?TOKEN|ACCESS[_-]?TOKEN|SECRET|PASSWORD)[A-Z0-9_]*)\s*(?:(?:=|:)\s*["']?[^\s"']*)?$/i
+      /(?:[A-Z0-9_]*(?:API[_-]?KEY|AUTH[_-]?TOKEN|ACCESS[_-]?TOKEN|SECRET|PASSWORD)[A-Z0-9_]*)\s*(?:(?:=|:)\s*["']?[^\s"']*)?\s*$/i
     )
     const protectedStart = sensitiveTail?.index ?? this.pending.length
     let boundary = -1
