@@ -113,14 +113,15 @@ export class AcpSessionManager {
     private readonly processRegistry: ManagedProcessRegistry,
     private readonly events: DesktopEventBus,
     private readonly chooseDirectory: (() => Promise<string | null>) | null = null,
-    private readonly runtimeFactory: RuntimeFactory = createStartedAcpRuntime
+    private readonly runtimeFactory: RuntimeFactory = createStartedAcpRuntime,
+    private readonly frameworkRegistry: Map<string, Record<string, any>> | null = null
   ) {
     this.broker = new AcpPermissionBroker(events)
   }
 
   async listFrameworks(): Promise<AcpFrameworkView[]> {
     const effectiveEnv = envWithLocalNodeBin(this.projectRoot, process.env)
-    const registry = createAcpFrameworkRegistry({
+    const registry = this.frameworkRegistry ?? createAcpFrameworkRegistry({
       projectRoot: this.projectRoot,
       env: effectiveEnv
     })
@@ -176,7 +177,7 @@ export class AcpSessionManager {
     if (!['read_only', 'workspace_write', 'remote_write_review'].includes(permissionProfile)) {
       throw new PublicCommandError('INVALID_REQUEST', 'Permission profile is invalid.')
     }
-    const registry = createAcpFrameworkRegistry({
+    const registry = this.frameworkRegistry ?? createAcpFrameworkRegistry({
       projectRoot: this.projectRoot,
       env: process.env
     })

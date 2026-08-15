@@ -1,7 +1,8 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createStartedAcpRuntime } from '../../../src/actions/agent-adapter/acp/runtime.mjs'
 import { AcpSessionManager } from '../src/main/acp-session-manager'
 import { DesktopEventBus } from '../src/main/event-bus'
 import { ManagedProcessRegistry } from '../src/main/managed-process-registry'
@@ -75,6 +76,86 @@ function statusEvents(events: JeaEventEnvelope[], sessionId: string): string[] {
 }
 
 describe('AcpSessionManager', () => {
+  it('runs the real ACP stdio runtime through the interactive permission bridge', async () => {
+    const root = temporaryRoot()
+    const log = join(root, 'interactive-acp.jsonl')
+    const fakeAgent = join(process.cwd(), 'test', 'fixtures', 'fake-acp-agent.mjs')
+    const processRegistry = new ManagedProcessRegistry()
+    const eventBus = new DesktopEventBus()
+    const events: JeaEventEnvelope[] = []
+    const previous = {
+      log: process.env.FAKE_ACP_LOG,
+      kind: process.env.FAKE_ACP_PERMISSION_KIND,
+      path: process.env.FAKE_ACP_PERMISSION_PATH
+    }
+    process.env.FAKE_ACP_LOG = log
+    process.env.FAKE_ACP_PERMISSION_KIND = 'edit'
+    process.env.FAKE_ACP_PERMISSION_PATH = join(root, 'file.ts')
+    const provider = 'acp:fake-desktop'
+    const registry = new Map([[provider, {
+      id: 'fake-desktop',
+      provider,
+      command: process.execPath,
+      args: [fakeAgent],
+      versionArgs: ['--version'],
+      credentialEnv: []
+    }]])
+    const manager = new AcpSessionManager(
+      root,
+      processRegistry,
+      eventBus,
+      null,
+      createStartedAcpRuntime,
+      registry
+    )
+    eventBus.subscribe((event) => {
+      events.push(event)
+      if (event.type !== 'acp_permission_requested' || !event.session_id) return
+      const options = event.payload.options as Array<{ optionId: string; kind: string }>
+      const reject = options.find((option) => option.kind === 'reject_once')
+      setTimeout(() => manager.respondPermission(
+        event.session_id!,
+        String(event.payload.request_id),
+        reject?.optionId
+      ), 0)
+    })
+
+    try {
+      const session = await manager.start({
+        provider,
+        executionRoot: root,
+        permissionProfile: 'workspace_write'
+      })
+      const result = await manager.prompt(session.id, 'edit the fixture')
+      expect(result.stop_reason).toBe('end_turn')
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'acp_permission_requested', session_id: session.id }),
+        expect.objectContaining({
+          type: 'acp_permission_resolved',
+          session_id: session.id,
+          payload: expect.objectContaining({ allowed: false })
+        }),
+        expect.objectContaining({
+          type: 'acp_tool_finished',
+          session_id: session.id,
+          payload: expect.objectContaining({ status: 'failed' })
+        }),
+        expect.objectContaining({ type: 'acp_assistant_chunk', session_id: session.id })
+      ]))
+      await manager.close(session.id, 'integration_test')
+      expect(processRegistry.list()).toEqual([])
+      expect(readFileSync(log, 'utf8')).toContain('"event":"session_close"')
+    } finally {
+      if (previous.log == null) delete process.env.FAKE_ACP_LOG
+      else process.env.FAKE_ACP_LOG = previous.log
+      if (previous.kind == null) delete process.env.FAKE_ACP_PERMISSION_KIND
+      else process.env.FAKE_ACP_PERMISSION_KIND = previous.kind
+      if (previous.path == null) delete process.env.FAKE_ACP_PERMISSION_PATH
+      else process.env.FAKE_ACP_PERMISSION_PATH = previous.path
+      await processRegistry.shutdownAll('test_cleanup')
+    }
+  }, 10_000)
+
   it('manages start, list, prompt, config, cancel, events, and close with a fake runtime', async () => {
     const {
       root,
