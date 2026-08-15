@@ -114,6 +114,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run desktop:test
+      - name: Verify Windows ACP process-tree cleanup
+        if: runner.os == 'Windows'
+        run: npm test -- --run test/acp-windows-process-tree.test.mjs
       - run: npm run desktop:typecheck
       - run: npm run desktop:build
       - run: npm run desktop:smoke

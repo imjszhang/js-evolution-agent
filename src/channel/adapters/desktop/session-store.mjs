@@ -116,14 +116,19 @@ function parseRecords(file) {
       }
     }
   }
-  sessionReadCache.set(file, cached);
-  trimSessionReadCache(file);
+  cached.records._uniqueRecords = cached.uniqueRecords;
+  if (stat.size <= MAX_SESSION_CACHE_BYTES) {
+    sessionReadCache.set(file, cached);
+    trimSessionReadCache(file);
+  } else {
+    sessionReadCache.delete(file);
+  }
   return cached.records;
 }
 
 function readUniqueRecords(file) {
-  parseRecords(file);
-  return sessionReadCache.get(file)?.uniqueRecords ?? [];
+  const parsed = parseRecords(file);
+  return parsed._uniqueRecords ?? sessionReadCache.get(file)?.uniqueRecords ?? [];
 }
 
 function lockSessionFile(file) {
@@ -231,12 +236,13 @@ export function listDesktopSessions(root, subject) {
 }
 
 export function withDesktopIngressLock(root, subject, messageId, callback) {
-  const lockId = createHash('sha256').update(String(messageId)).digest('hex').slice(0, 32);
+  const digest = createHash('sha256').update(String(messageId)).digest();
+  const lockId = String(digest[0] % 64).padStart(2, '0');
   const file = join(
     channelDirForSubject(root, subject),
     'desktop',
     'ingress-locks',
-    `${lockId}.lock`,
+    `shard-${lockId}.lock`,
   );
   mkdirSync(dirname(file), { recursive: true });
   appendFileSync(file, '', 'utf8');

@@ -112,20 +112,21 @@ export function sendDesktopInboundMessage(root, subject, {
     received_at: created_at ?? nowIso(),
     metadata,
   });
-  const appended = appendDesktopSessionRecord(root, subject, resolvedSession, {
-    id: `inbound:${messageId}`,
-    message_id: messageId,
-    direction: 'inbound',
-    role: 'user',
-    content: envelope.content,
-    content_type: envelope.content_type,
-    created_at: envelope.received_at,
-    metadata,
-  });
-  const ingress = withDesktopIngressLock(root, subject, messageId, () => {
+  const transaction = withDesktopIngressLock(root, subject, messageId, () => {
+    const appended = appendDesktopSessionRecord(root, subject, resolvedSession, {
+      id: `inbound:${messageId}`,
+      message_id: messageId,
+      direction: 'inbound',
+      role: 'user',
+      content: envelope.content,
+      content_type: envelope.content_type,
+      created_at: envelope.received_at,
+      metadata,
+    });
     const alreadyQueued = inboundExists(root, subject, messageId);
     if (alreadyQueued) {
       return {
+        appended,
         pending: null,
         classifier: { created: false, reason: 'inbound_already_queued' },
         repaired: false,
@@ -133,11 +134,13 @@ export function sendDesktopInboundMessage(root, subject, {
     }
     const pending = writeInbound(root, subject, envelope, { label: 'desktop' });
     return {
+      appended,
       pending,
       classifier: enqueueClassifier(root, subject),
       repaired: appended.duplicate,
     };
   });
+  const { appended } = transaction;
   return {
     subject,
     session_id: resolvedSession,
@@ -146,10 +149,10 @@ export function sendDesktopInboundMessage(root, subject, {
     session_record: appended.record,
     session_created: appended.created,
     duplicate: appended.duplicate,
-    ingress_repaired: ingress.repaired,
-    inbound_file: ingress.pending?.file ?? null,
-    classifier_task: ingress.classifier.task ?? null,
-    classifier_created: ingress.classifier.created ?? false,
-    classifier_reason: ingress.classifier.reason ?? null,
+    ingress_repaired: transaction.repaired,
+    inbound_file: transaction.pending?.file ?? null,
+    classifier_task: transaction.classifier.task ?? null,
+    classifier_created: transaction.classifier.created ?? false,
+    classifier_reason: transaction.classifier.reason ?? null,
   };
 }
