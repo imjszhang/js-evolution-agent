@@ -101,4 +101,3 @@ export function createHeadlessPermissionRouter({
     return { outcome: decision.response };
   };
 }
-

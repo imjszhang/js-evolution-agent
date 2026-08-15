@@ -309,4 +309,3 @@ describe('ACP Phase 2 provider', () => {
     expect(result.success).toBe(true);
   });
 });
-

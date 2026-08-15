@@ -83,4 +83,3 @@ export function normalizeAcpSessionUpdate(observer, notification, {
     session_id: notification?.sessionId ?? null,
   });
 }
-
