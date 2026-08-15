@@ -89,6 +89,7 @@ function externalDaemon(root: string): ChildProcess {
     env: {
       ...process.env,
       JEA_PROJECT_ROOT: root,
+      JEA_HOME: join(root, 'runtime'),
       JEA_FORCE_MOCK: '1'
     },
     stdio: 'inherit'
