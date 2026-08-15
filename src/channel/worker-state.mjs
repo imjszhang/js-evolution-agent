@@ -30,8 +30,24 @@ function withChannelWorkerStateLock(root, subject, fn) {
     writeFileSync(lockPath, '', 'utf-8');
   }
   let release = null;
+  let lastError = null;
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    try {
+      release = lockfile.lockSync(lockPath);
+      lastError = null;
+      break;
+    } catch (error) {
+      lastError = error;
+      if (attempt < 9) {
+        const end = Date.now() + Math.min(50 * (attempt + 1), 500);
+        while (Date.now() < end) { /* sync backoff */ }
+      }
+    }
+  }
+  if (lastError) {
+    throw new Error(`Channel worker state is locked for ${subject}: ${lastError?.message || lastError}`);
+  }
   try {
-    release = lockfile.lockSync(lockPath);
     return fn();
   } finally {
     if (release) release();

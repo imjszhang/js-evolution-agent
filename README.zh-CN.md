@@ -19,10 +19,11 @@
 
 <p align="center">
   <a href="https://github.com/imjszhang/js-evolution-agent/actions/workflows/ci.yml"><img src="https://github.com/imjszhang/js-evolution-agent/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/imjszhang/js-evolution-agent/actions/workflows/codeql.yml"><img src="https://github.com/imjszhang/js-evolution-agent/actions/workflows/codeql.yml/badge.svg" alt="CodeQL" /></a>
   <img src="https://img.shields.io/badge/License-MIT-blue?style=flat-square" alt="MIT License" />
   <img src="https://img.shields.io/badge/理论-cyber--taoist.ai-FCD228?style=flat-square&labelColor=000000" alt="cyber-taoist.ai" />
   <img src="https://img.shields.io/badge/CLI-jea-000000?style=flat-square&labelColor=FCD228" alt="jea CLI" />
-  <img src="https://img.shields.io/badge/Node.js-%3E%3D18-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node.js >= 18" />
+  <img src="https://img.shields.io/badge/Node.js-%3E%3D20-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node.js >= 20" />
 </p>
 
 > 不是「固定 `/goal` 直到测试通过」的 coding loop，而是带理论约束、治理边界与可审计回执的 **演化 loop** — 当旧目标（法则）被后果证伪时，系统进入规则更新期，而非空转或硬撑。
@@ -47,6 +48,7 @@
 - [配置](#配置)
 - [安全边界](#安全边界)
 - [开发与测试](#开发与测试)
+- [安全](#安全)
 - [文档索引](#文档索引)
 - [License](#license)
 
@@ -197,7 +199,7 @@ Phase 5   evolution diary
 
 ## 环境要求
 
-- **Node.js** ≥ 18
+- **Node.js** ≥ 20
 - 可选：**DeepSeek API Key**（无 key 时可用 `--mock` 走本地 Mock AI）
 - 可选：Claude Agent SDK / Cursor SDK / Reasonix CLI（用于 `agent_run` 执行路径）
 - 可选：飞书开放平台应用（Channel 适配器）
@@ -266,7 +268,7 @@ jea evolve resume <run-id>
 jea intel summary [--days 7]
 jea intel report [--cycle <id>] [--open]
 jea daemon inbox [--json]
-jea audit queue
+jea audit queue   # 演化证据 / 决策队列，不是 npm 供应链审计
 jea beliefs show
 jea goals show
 ```
@@ -443,15 +445,40 @@ CYBER_TAOIST_DOCS_DIR=/path/to/custom-authority jea run
 
 ```bash
 npm test
+npm run test:ci          # 默认 reporter + JUnit，输出到 test-artifacts/
+npm run test:coverage    # V8 coverage；阈值是不回退基线
 npm run check
+npm run desktop:typecheck
+npm run desktop:build
+npm run audit:ci         # 生产依赖审计 + 带到期日的例外基线
+npm run reactor:canary   # 隔离 mock canary；不跑真实 DeepSeek
 npm run jea -- help
 ```
 
-向 `main` 的 PR 与 push 会跑 GitHub Actions（`npm test` + `npm run check`）。真实 DeepSeek 测试仍需 `JEA_LIVE_DEEPSEEK=1`，不进 CI。`jea doctor` 是本地诊断，不是 CI 门禁。
+PR、向 `main` 的 push，以及 merge group 会跑：
+
+| 检查 | 内容 |
+| --- | --- |
+| `check` | 隔离主体 `ci-repo` 上的 policy / subject / actions 检查 |
+| `test (20)` | Node 20 上的 `npm run test:ci` |
+| `test (22)` | Node 22 上的 `npm run test:coverage` |
+| `desktop-build` | 桌面 typecheck + 可打包构建（不再重复跑 desktop tests） |
+| `dependency-audit` | `npm run audit:ci` |
+| CodeQL JS/TS | advanced setup，`build-mode: none` |
+
+`main` 由 Ruleset 保护：改动必须走基于最新 `main` 的 PR。上表检查为 required checks。Nightly `reactor:canary` 只跑 mock，不是 PR required check，也绝不注入 `DEEPSEEK_API_KEY`。真实 DeepSeek 测试仍需 `JEA_LIVE_DEEPSEEK=1`。`jea doctor` 是本地诊断，不是 CI 门禁。
+
+`jea audit queue` 检查的是演化证据 / 决策队列，**不是** npm 供应链审计（`npm run audit:ci`）。
 
 - 引擎 vendoring 说明：[`src/engine/VENDORED.md`](./src/engine/VENDORED.md)
 - 自动化代理与本地操作完整指引：[AGENTS.md](./AGENTS.md)
 - 变更日志与 design notes：`journal/`
+
+---
+
+## 安全
+
+漏洞报告与支持范围见 [SECURITY.md](./SECURITY.md)。尚未修复的生产依赖告警由 [`.github/security/audit-baseline.json`](./.github/security/audit-baseline.json) 及其跟踪 issue 管理，不把动态清单写进政策文档。
 
 ---
 
@@ -463,6 +490,7 @@ npm run jea -- help
 | [docs/mechanism-diagram.md](./docs/mechanism-diagram.md) | 模块与双域调度机制图（Mermaid） |
 | [cyber-taoist.ai](https://cyber-taoist.ai) | 进化学框架官网：N/R/T/EC/NI 概念与宪章全文 |
 | [AGENTS.md](./AGENTS.md) | CLI 完整参考、daemon/channel 工作流、操作者输入规范 |
+| [SECURITY.md](./SECURITY.md) | CLI 宿主与 Electron 桌面的漏洞报告渠道 |
 | [policies/README.md](./policies/README.md) | Subject / registry / lane / goals 创建指南 |
 | [policies/subjects.example.json](./policies/subjects.example.json) | Registry 配置示例 |
 | [policies/authority/](./policies/authority/) | 本地权威文献副本（CONSTITUTION、GUIDE） |

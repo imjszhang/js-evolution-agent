@@ -59,6 +59,9 @@ function selectOption(options, allow, { onceOnly = false } = {}) {
   return { outcome: 'selected', optionId: option.optionId };
 }
 
+/**
+ * @param {{ request?: any, permissionProfile?: string, roots?: string[] }} [opts]
+ */
 export function decideHeadlessPermission({
   request,
   permissionProfile = 'read_only',

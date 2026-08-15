@@ -153,6 +153,10 @@ export function actionMissingExecutionRoot(action, ctx) {
   return !roots.configuredExecutionRoot && !roots.authoritativeRoot;
 }
 
+/**
+ * @param {{ executionRoot?: string, executionRootWasConfigured?: boolean, provider?: string | null }} opts
+ * @returns {null | { success: boolean, deferred: boolean, provider?: string | null, error: string }}
+ */
 export function validateExecutionRoot({ executionRoot, executionRootWasConfigured, provider = null }) {
   if (!executionRootWasConfigured) return null;
   const value = String(executionRoot ?? '').trim();

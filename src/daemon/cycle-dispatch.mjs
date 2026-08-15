@@ -34,6 +34,11 @@ import { isReactorPipeline, resolveCyclePipeline } from './cycle-pipeline-mode.m
 import { isEvidenceWakeEnabled } from '../evolution/reactor/feature-gates.mjs';
 import { enqueueWakeIntent } from '../evolution/reactor/wake-store.mjs';
 
+/**
+ * @param {string} root
+ * @param {string} subject
+ * @param {{ reason?: string, source?: string | null }} [opts]
+ */
 export function enqueueCognitiveWake(root, subject, {
   reason = 'cognitive',
   source = null,

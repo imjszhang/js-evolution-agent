@@ -198,7 +198,9 @@ export class DaemonSupervisor {
         kind: 'daemon',
         id: subject,
         pid: child.pid ?? null,
-        cleanup: () => this.stop(subject, 'app_quit')
+        cleanup: async () => {
+          await this.stop(subject, 'app_quit')
+        }
       })
     } catch (error) {
       await this.terminateChild(child, processGroup)

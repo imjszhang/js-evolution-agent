@@ -1,0 +1,10 @@
+name: JEA JavaScript/TypeScript
+paths-ignore:
+  - archives/**
+  - runtime/**
+  - backups/**
+  - coverage/**
+  - test-artifacts/**
+  - '**/out/**'
+  - node_modules/**
+  - '**/dist/**'

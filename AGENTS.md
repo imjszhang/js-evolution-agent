@@ -27,6 +27,23 @@ jea data status
 
 ## 环境与诊断
 
+运行时要求 **Node.js ≥ 20**。本地质量命令（可复现 CI）：
+
+```powershell
+npm run check
+npm test
+npm run test:ci
+npm run test:coverage
+npm run desktop:typecheck
+npm run desktop:build
+npm run audit:ci
+npm run reactor:canary
+```
+
+`npm run audit:ci` 是生产依赖供应链门禁（高危/严重项须精确匹配未到期且仍无修复的 baseline）。`jea audit queue` 是演化证据 / 决策队列检查，二者不是同一概念。Coverage 阈值是首次实测向下取整的不回退基线；不要在 CI 里自动改 `vitest.config.mjs`。
+
+CI jobs：`check`、`test (20)`、`test (22)`、`desktop-build`、`dependency-audit`，外加 CodeQL JS/TS。`main` 禁止直接 push，须基于最新 main 开 PR。Nightly 只跑 `npm run reactor:canary`（mock-only，不注入 `DEEPSEEK_API_KEY`，不是 PR required check）。真实 DeepSeek 测试保持 opt-in。
+
 - `jea doctor`：检查 Node、依赖、`.env`、DeepSeek 配置、权威文档（`policies/authority/CONSTITUTION.md`、`GUIDE.md`）、`oada.config.mjs`，以及 `repolink.config.mjs` 声明的兄弟仓库链接（`jea doctor` 的 Repo Links 段）。
 - `jea llm ping`：测试 DeepSeek 连接。
 - `jea llm ping --mock`：测试本地 Mock AI 路径。
@@ -136,7 +153,7 @@ jea data init --all --subject <name>
 Cloud Agent 运行在 **Linux + bash**，而本文其余命令示例以 Windows PowerShell 书写；命令本身跨平台，直接用 bash 执行即可，无需 PowerShell 包装（`viewer:serve:win` / `daemon:start:detached` 等 `*-win` 脚本仅限 Windows，不要在此环境使用）。
 
 - **依赖安装**：根目录 `.npmrc` 已设 `legacy-peer-deps=true`（`openai` 与 `@anthropic-ai/claude-agent-sdk` 对 `zod` 的 peer 冲突）。`npm ci` / `npm install` 会自动带上，不必再手写 `--legacy-peer-deps`。
-- **无独立 lint / build**：仓库没有 ESLint/Prettier，也没有 CLI 编译步骤（纯 ESM `.mjs`）。质量门禁是 `npm test`（vitest）加 `npm run check`（隔离主体 `ci-repo` 上的 `jea policy/subject/actions check`）。PR 与 `main` 的 GitHub Actions 跑这两项。`jea doctor` 仍是本地诊断，不是 CI 门禁。唯一的 build 类脚本是 `npm run viewer:build`（生成 Viewer 静态快照，非必需）。
+- **无独立 lint / CLI build**：仓库没有 ESLint/Prettier，也没有 CLI 编译步骤（纯 ESM `.mjs`）。质量门禁是 `npm test` / `test:ci` / `test:coverage`、`npm run check`（隔离主体 `ci-repo` 上的 `jea policy/subject/actions check`）、`desktop:typecheck` + `desktop:build`，以及 `audit:ci`。PR 与 `main` 的 GitHub Actions 跑这些 jobs 加 CodeQL。`jea doctor` 仍是本地诊断，不是 CI 门禁。Nightly mock canary 不是 PR required check。Viewer 静态快照仍用 `npm run viewer:build`（非必需）。
 - **无 API key 也能全流程跑**：默认走 mock。`jea doctor` 会对缺失的 `.env` / `DEEPSEEK_API_KEY` 报 WARN 并以非零退出，这是预期的，mock 模式下不阻塞演化。真实模型才需要在 `.env` 里配 `DEEPSEEK_API_KEY`。用 `--mock`（或 `JEA_FORCE_MOCK=1`）跑 `jea run` / `jea daemon` / vitest。
 - **Evolution Viewer（Web UI）**：用 `npm run jea -- intel viewer serve --port 8787` 启动（默认 127.0.0.1:8787）。不要用 `npm run viewer:serve`，它带 `--open` 会尝试拉起浏览器，在无头环境无意义。属长驻服务，放到 tmux/后台运行。
 - **运行时数据在 `runtime/subjects/`（gitignored）**：`jea subject init` / `jea data init --all` 会写这里，不会污染 git。E2E 冒烟顺序见 README「Quick start」：`subject init <name> --use` → `data init --all --subject <name>` → `run --mock --subject <name>`。
