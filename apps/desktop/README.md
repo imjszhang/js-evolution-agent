@@ -124,7 +124,8 @@ Hidden-window smoke (`npm run desktop:smoke`) creates a one-off JEA fixture
 root, points `JEA_PROJECT_ROOT` at that fixture, and sends Channel traffic only
 to the fixture subject. Electron still loads the real repository build. ACP
 `startSession`, `prompt`, and `closeSession` must each succeed; `closeSession`
-always runs in `finally`. The real `runtime/subjects/` tree is not written.
+always runs in `finally`. The fixture and ACP execution roots are removed on
+success or failure, and the real `runtime/subjects/` tree is not written.
 
 The real Claude ACP smoke requires an available `claude-agent-acp` binary and
 either local agent login or configured Anthropic credentials. Protocol-level

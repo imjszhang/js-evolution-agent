@@ -66,14 +66,15 @@ CI Desktop gates run test, typecheck, build, hidden-window smoke, and
 platform process-tree tests. Smoke creates a temporary JEA fixture root,
 sends Channel traffic only to that fixture subject, and requires ACP
 `startSession`, `prompt`, and `closeSession` to each succeed. The report
-records the fixture root and ACP execution root. The real project
+records the fixture root and ACP execution root; both temporary roots are
+removed even when startup or validation fails. The real project
 `runtime/subjects/` tree must stay unchanged.
 
 | Platform | Test | Typecheck | Build | Hidden-window smoke | Process tree |
 | --- | --- | --- | --- | --- | --- |
-| Linux | local pass | pending CI | pending CI | pending CI | local pass |
-| Windows | pending CI | pending CI | pending CI | pending CI | helper + AcpRuntime coverage |
-| macOS | local pass | local pass | local pass | local pass | local pass |
+| Linux | pass | pass | pass | pass | pass |
+| Windows | pass | pass | pass | pass | pass |
+| macOS | pass | pass | pass | pass | pass |
 
 Local evidence at this revision (2026-08-15T11:47:11Z, darwin):
 
@@ -83,5 +84,6 @@ Local evidence at this revision (2026-08-15T11:47:11Z, darwin):
 - `npm run check`, `desktop:typecheck`, `desktop:build`, `desktop:smoke`: passed
 - smoke stages: fixture subject `smoke-desktop` only; Channel send ok; ACP start/prompt/close ok; leftover 0; real `runtime/subjects/` unchanged
 
-Three-platform CI evidence will be recorded after this revision's required
-checks complete. Do not treat this local macOS run as Linux/Windows proof.
+PR #106 CI at `2cd081e` passed on Ubuntu, macOS, and Windows, including
+CodeQL and dependency audit. Post-review follow-up commits must rerun the same
+required checks before merge.

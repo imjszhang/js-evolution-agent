@@ -80,23 +80,30 @@ function comparisonReport(actionId, results) {
   };
 }
 
-function cloneValue(value) {
+function isPlainObject(value) {
+  if (!value || typeof value !== 'object') return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function clonePlainContainer(value) {
   if (value == null || typeof value !== 'object') return value;
-  try {
-    return structuredClone(value);
-  } catch {
-    if (Array.isArray(value)) return value.map((item) => cloneValue(item));
-    const next = {};
-    for (const [key, item] of Object.entries(value)) {
-      next[key] = typeof item === 'function' ? item : cloneValue(item);
-    }
-    return next;
+  if (Array.isArray(value)) return value.map((item) => clonePlainContainer(item));
+  if (!isPlainObject(value)) return value;
+  const next = {};
+  for (const [key, item] of Object.entries(value)) {
+    next[key] = typeof item === 'function' ? item : clonePlainContainer(item);
   }
+  return next;
 }
 
 function cloneContext(context) {
   const { run: _run, ...rest } = context ?? {};
-  return cloneValue(rest);
+  const next = {};
+  for (const [key, value] of Object.entries(rest)) {
+    next[key] = clonePlainContainer(value);
+  }
+  return next;
 }
 
 function applyExecutionRoot(context, root) {
@@ -177,8 +184,17 @@ export async function runProviderComparison({
   if (!action || !context) throw new Error('action and context are required');
   const profile = permissionProfile(action);
   const writeProfile = profile !== 'read_only';
-  if (writeProfile && isolateRoots !== 'never' && !executionRoots) {
-    throw new Error('Write-profile comparison requires isolated execution roots');
+  if (writeProfile) {
+    if (isolateRoots === 'never') {
+      throw new Error('Write-profile comparison cannot disable execution-root isolation');
+    }
+    const roots = providers.map((provider) => executionRoots?.[provider]).filter(Boolean);
+    if (roots.length !== providers.length) {
+      throw new Error('Write-profile comparison requires isolated execution roots for every provider');
+    }
+    if (new Set(roots.map((root) => resolve(root))).size !== providers.length) {
+      throw new Error('Write-profile comparison requires distinct execution roots per provider');
+    }
   }
   const results = [];
   for (const provider of providers) {

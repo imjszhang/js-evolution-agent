@@ -14,20 +14,25 @@ export const SMOKE_FIXTURE_SUBJECT = 'smoke-desktop';
 
 export function createDesktopSmokeFixture(prefix = 'jea-desktop-smoke-root-') {
   const root = mkdtempSync(join(tmpdir(), prefix));
-  mkdirSync(join(root, 'runtime', 'subjects', SMOKE_FIXTURE_SUBJECT, 'data'), { recursive: true });
-  writeFileSync(join(root, 'runtime', 'subjects', 'registry.json'), `${JSON.stringify({
-    default_subject: SMOKE_FIXTURE_SUBJECT,
-    subjects: {
-      [SMOKE_FIXTURE_SUBJECT]: {
-        data_namespace: SMOKE_FIXTURE_SUBJECT,
-        channels: {
-          desktop: { enabled: true, default_session: 'main' },
-          classifier: { enabled: true, mode: 'deterministic' },
+  try {
+    mkdirSync(join(root, 'runtime', 'subjects', SMOKE_FIXTURE_SUBJECT, 'data'), { recursive: true });
+    writeFileSync(join(root, 'runtime', 'subjects', 'registry.json'), `${JSON.stringify({
+      default_subject: SMOKE_FIXTURE_SUBJECT,
+      subjects: {
+        [SMOKE_FIXTURE_SUBJECT]: {
+          data_namespace: SMOKE_FIXTURE_SUBJECT,
+          channels: {
+            desktop: { enabled: true, default_session: 'main' },
+            classifier: { enabled: true, mode: 'deterministic' },
+          },
         },
       },
-    },
-  }, null, 2)}\n`);
-  return { root, subject: SMOKE_FIXTURE_SUBJECT };
+    }, null, 2)}\n`);
+    return { root, subject: SMOKE_FIXTURE_SUBJECT };
+  } catch (error) {
+    rmSync(root, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 export function snapshotRuntimeSubjects(projectRoot) {

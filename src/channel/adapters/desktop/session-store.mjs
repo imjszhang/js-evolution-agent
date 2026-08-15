@@ -349,7 +349,6 @@ function lockSessionFile(file) {
 
 export function withDesktopFileLock(file, callback) {
   mkdirSync(dirname(file), { recursive: true });
-  appendFileSync(file, '', 'utf8');
   const release = lockSessionFile(file);
   try {
     return callback();
@@ -423,6 +422,9 @@ export function readDesktopSession(root, subject, sessionIdInput, {
 } = {}) {
   const sessionId = normalizeDesktopSessionId(sessionIdInput);
   const file = channelDesktopSessionPath(root, subject, sessionId);
+  if (!existsSync(file) && !existsSync(dirname(file))) {
+    return emptyDesktopSessionPage(subject, sessionId, offset);
+  }
   return withSessionLock(file, () => {
     if (!existsSync(file)) return emptyDesktopSessionPage(subject, sessionId, offset);
     const { paths, metadata } = reconcileSessionIndex(root, subject, sessionId, file);

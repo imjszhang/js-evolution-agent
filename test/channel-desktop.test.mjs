@@ -502,6 +502,8 @@ describe('desktop channel adapter', () => {
       next_offset: 0,
     });
     expect(existsSync(file)).toBe(false);
+    expect(existsSync(`${file}.lock`)).toBe(false);
+    expect(existsSync(dirname(file))).toBe(false);
     expect(listDesktopSessions(project, 'alpha')).toEqual([]);
     expect(existsSync(join(
       channelDirForSubject(project, 'alpha'),

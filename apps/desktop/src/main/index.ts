@@ -194,7 +194,10 @@ async function runDesktopSmoke(outputPath: string): Promise<void> {
         invoke: smokeInvoke,
         subjects,
         fixtureSubject: String(report.fixtureSubject),
-        listProcesses: () => processRegistry.list()
+        listProcesses: () => processRegistry.list(),
+        createExecutionRoot: process.env.JEA_DESKTOP_SMOKE_ACP_ROOT
+          ? () => String(process.env.JEA_DESKTOP_SMOKE_ACP_ROOT)
+          : undefined
       })
       : { projection: { ok: false }, channel: { ok: false }, notifications: { ok: false }, acp: { ok: false } }
   } catch (error) {
