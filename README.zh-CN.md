@@ -199,7 +199,7 @@ Phase 5   evolution diary
 
 ## 环境要求
 
-- **Node.js** ≥ 20
+- **Node.js** ≥ 22.13
 - 可选：**DeepSeek API Key**（无 key 时可用 `--mock` 走本地 Mock AI）
 - 可选：Claude Agent SDK / Cursor SDK / Reasonix CLI（用于 `agent_run` 执行路径）
 - 可选：飞书开放平台应用（Channel 适配器）

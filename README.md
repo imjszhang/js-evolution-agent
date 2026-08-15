@@ -200,7 +200,7 @@ Phase 5   evolution diary
 
 ## Requirements
 
-- **Node.js** ≥ 20
+- **Node.js** ≥ 22.13
 - Optional: **DeepSeek API key** (use `--mock` without a key)
 - Optional: Claude Agent SDK / Cursor SDK / Reasonix CLI (for `agent_run`)
 - Optional: Feishu open-platform app (Channel adapter)
