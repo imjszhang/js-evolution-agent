@@ -58,6 +58,39 @@ afterEach(() => {
 });
 
 describe('JEA Home migration', () => {
+  it('keeps a fresh source checkout free of runtime data', () => {
+    const sourceRoot = mkdtempSync(join(tmpdir(), 'jea-fresh-source-'));
+    const jeaHome = mkdtempSync(join(tmpdir(), 'jea-fresh-home-'));
+    temps.push(sourceRoot, jeaHome);
+    const cli = resolve('src/cli/jea.mjs');
+    const env = {
+      ...process.env,
+      JEA_PROJECT_ROOT: sourceRoot,
+      JEA_HOME: jeaHome,
+    };
+    const subject = spawnSync(process.execPath, [
+      '--preserve-symlinks',
+      cli,
+      'subject',
+      'init',
+      'fresh',
+      '--use',
+    ], { env, encoding: 'utf8' });
+    expect(subject.status, subject.stderr).toBe(0);
+    const data = spawnSync(process.execPath, [
+      '--preserve-symlinks',
+      cli,
+      'data',
+      'init',
+      '--all',
+      '--subject',
+      'fresh',
+    ], { env, encoding: 'utf8' });
+    expect(data.status, data.stderr).toBe(0);
+    expect(existsSync(join(sourceRoot, 'runtime'))).toBe(false);
+    expect(existsSync(join(jeaHome, 'subjects', 'fresh', 'data'))).toBe(true);
+  });
+
   it('copies and verifies the complete Subject tree while preserving legacy data', async () => {
     const fixture = makeFixture();
     const before = scanMigrationTree(fixture.legacyRoot);
