@@ -6,6 +6,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
+import lockfile from 'proper-lockfile';
 import { readJsonSafe, readTextSafe, writeJsonFile } from './files.mjs';
 import {
   createRuntimeContext,
@@ -42,6 +43,26 @@ function legacyActiveSubjectFile(root) {
 
 export function subjectsRegistryFile(root) {
   return join(subjectsRuntimeDir(root), 'registry.json');
+}
+
+export function subjectsRegistryWriteLockFile(root) {
+  return join(dirname(subjectsRuntimeDir(root)), '.subjects-registry.write-lock');
+}
+
+function withSubjectsRegistryWriteLock(root, fn) {
+  const target = subjectsRegistryWriteLockFile(root);
+  mkdirSync(dirname(target), { recursive: true });
+  if (!existsSync(target)) writeFileSync(target, '', 'utf8');
+  const release = lockfile.lockSync(target, {
+    stale: 30_000,
+    update: 10_000,
+    retries: { retries: 20, minTimeout: 10, maxTimeout: 100 },
+  });
+  try {
+    return fn();
+  } finally {
+    release();
+  }
 }
 
 export function legacySubjectsRegistryFile(root) {
@@ -217,7 +238,7 @@ export function readSubjectsRegistry(root) {
   };
 }
 
-export function writeSubjectsRegistry(root, registry) {
+function writeSubjectsRegistryUnlocked(root, registry) {
   const file = subjectsRegistryFile(root);
   const payload = {
     default_subject: sanitizeSubjectName(registry.default_subject || DEFAULT_SUBJECT),
@@ -227,15 +248,36 @@ export function writeSubjectsRegistry(root, registry) {
   return { path: file, registry: payload };
 }
 
+export function writeSubjectsRegistry(root, registry) {
+  return withSubjectsRegistryWriteLock(root, () => writeSubjectsRegistryUnlocked(root, registry));
+}
+
+export function updateSubjectsRegistry(root, updater) {
+  return withSubjectsRegistryWriteLock(root, () => {
+    const current = readSubjectsRegistry(root);
+    const next = updater({
+      default_subject: current.default_subject,
+      subjects: { ...(current.subjects ?? {}) },
+    });
+    return writeSubjectsRegistryUnlocked(root, next);
+  });
+}
+
 export function ensureSubjectsRegistry(root, { language = getLanguage() } = {}) {
   ensureSubjectLayout(root);
   const file = subjectsRegistryFile(root);
   const existed = existsSync(file);
   if (!existed) {
-    const legacyRegistry = readJsonSafe(legacySubjectsRegistryFile(root), null);
-    const legacy = readJsonSafe(legacyActiveSubjectFile(root), null);
-    const migrated = registryFromLegacyActive(legacy);
-    writeSubjectsRegistry(root, legacyRegistry?.subjects ? legacyRegistry : (migrated ?? defaultSubjectsRegistry()));
+    withSubjectsRegistryWriteLock(root, () => {
+      if (existsSync(file)) return;
+      const legacyRegistry = readJsonSafe(legacySubjectsRegistryFile(root), null);
+      const legacy = readJsonSafe(legacyActiveSubjectFile(root), null);
+      const migrated = registryFromLegacyActive(legacy);
+      writeSubjectsRegistryUnlocked(
+        root,
+        legacyRegistry?.subjects ? legacyRegistry : (migrated ?? defaultSubjectsRegistry()),
+      );
+    });
   }
 
   const registry = readSubjectsRegistry(root);
@@ -282,9 +324,8 @@ export function getSubjectEntry(root, name) {
 }
 
 export function registerSubject(root, name, entry = {}) {
-  const registry = readSubjectsRegistry(root);
   const subject = sanitizeSubjectName(name);
-  const next = {
+  return updateSubjectsRegistry(root, (registry) => ({
     default_subject: registry.default_subject || subject,
     subjects: {
       ...registry.subjects,
@@ -293,8 +334,7 @@ export function registerSubject(root, name, entry = {}) {
         ...entry,
       },
     },
-  };
-  return writeSubjectsRegistry(root, next);
+  }));
 }
 
 export function resolveSubjectConfig(root, {
@@ -542,16 +582,14 @@ export function setDefaultSubject(root, name) {
   if (!existingEntry || !existsSync(resolveSubjectPolicyPath(root, existingEntry))) {
     throw new Error(`Subject policy not found for: ${subject} (expected workspace SUBJECT.md or legacy .md)`);
   }
-  const registry = readSubjectsRegistry(root);
-  const next = {
+  const written = updateSubjectsRegistry(root, (registry) => ({
     default_subject: subject,
     subjects: {
       ...registry.subjects,
       [subject]: registry.subjects?.[subject] ?? existingEntry ?? defaultSubjectEntry(subject),
     },
-  };
-  writeSubjectsRegistry(root, next);
-  const config = normalizeRegistryEntry(subject, next.subjects[subject]);
+  }));
+  const config = normalizeRegistryEntry(subject, written.registry.subjects[subject]);
   const file = resolveSubjectPolicyPath(root, config);
   return { config, active: subjectConfigToLegacy(config), file };
 }

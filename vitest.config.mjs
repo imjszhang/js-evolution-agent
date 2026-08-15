@@ -3,6 +3,7 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
+    setupFiles: ['test/setup-legacy-runtime.mjs'],
     // Windows git/worktree fixtures can exceed 15s under full-suite parallel load.
     testTimeout: 30_000,
     coverage: {

@@ -7,7 +7,14 @@ import {
 } from '../../infra/jea-home.mjs';
 import { legacyChangedSinceMigration } from '../../infra/jea-home-migration.mjs';
 import { describeSubjectLockHealth } from '../../daemon/evolve-runs.mjs';
-import { readSubjectsRegistry, subjectsRuntimeDir } from '../../infra/subjects.mjs';
+import {
+  readSubjectPolicy,
+  readSubjectsRegistry,
+  resolveSubjectConfig,
+  resolveSubjectRepoLane,
+  runtimeInfoForSubject,
+  subjectsRuntimeDir,
+} from '../../infra/subjects.mjs';
 import {
   getGoalCalibrateMode,
   isGoalAutoApplyEnabled,
@@ -118,6 +125,24 @@ export async function doctorCommand({ context: providedContext = null } = {}) {
     for (const line of linkSummary.lines) {
       if (line.warn) statusLine(true, line.label, line.detail);
       else ok = statusLine(line.ok, line.label, line.detail) && ok;
+    }
+  }
+
+  if (authority.ok) {
+    try {
+      const config = resolveSubjectConfig(context);
+      const runtime = runtimeInfoForSubject(context, config);
+      const policy = readSubjectPolicy(context, config);
+      const lane = resolveSubjectRepoLane(policy.text, {
+        root: context.sourceRoot,
+        subject: config.name,
+        config,
+      });
+      console.log(`Subject: ${config.name}`);
+      console.log(`Subject runtime root: ${runtime.runtimeRoot}`);
+      console.log(`Execution root: ${lane.repoRoot ?? 'not configured'}`);
+    } catch (error) {
+      ok = statusLine(false, 'Subject roots', error?.message || String(error)) && ok;
     }
   }
 

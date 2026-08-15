@@ -22,7 +22,9 @@ export {
   setDefaultSubject,
   subjectsDir,
   subjectsRegistryFile,
+  subjectsRegistryWriteLockFile,
   subjectsRuntimeDir,
+  updateSubjectsRegistry,
   writeSubjectsRegistry,
   readSubjectsRegistry,
 } from '../../infra/subjects.mjs';

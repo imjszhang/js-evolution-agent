@@ -1,9 +1,11 @@
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -29,7 +31,10 @@ function makeFixture() {
   const legacyRoot = join(sourceRoot, 'runtime', 'subjects');
   const subjectRoot = join(legacyRoot, 'alpha-data');
   mkdirSync(join(subjectRoot, 'data', 'evolution', 'tasks'), { recursive: true });
+  mkdirSync(join(subjectRoot, 'data', 'evolution', 'cycle-state', 'cycle-1'), { recursive: true });
+  mkdirSync(join(subjectRoot, 'data', 'evolution', 'records', 'cycle-1'), { recursive: true });
   mkdirSync(join(subjectRoot, 'data', 'channel', 'desktop', 'sessions'), { recursive: true });
+  mkdirSync(join(subjectRoot, 'data', 'channel', 'outbox', 'pending'), { recursive: true });
   writeJsonFile(join(legacyRoot, 'registry.json'), {
     default_subject: 'alpha',
     subjects: {
@@ -44,6 +49,25 @@ function makeFixture() {
   writeJsonFile(join(subjectRoot, 'data', 'evolution', 'tasks', 'pending_tasks.json'), {
     schema_version: 1,
     tasks: [],
+  });
+  writeJsonFile(join(subjectRoot, 'data', 'evolution', 'pending_decisions.json'), {
+    schema_version: 2,
+    decisions: [{ id: 'approval-1', status: 'blocked', requires_approval: true }],
+  });
+  writeJsonFile(join(subjectRoot, 'data', 'evolution', 'cycle-state', 'cycle-1', 'intel.json'), {
+    cycle_id: 'cycle-1',
+    ok: true,
+  });
+  writeFileSync(
+    join(subjectRoot, 'data', 'evolution', 'records', 'cycle-1', 'conversation.jsonl'),
+    '{"role":"operator","content":"preserve me"}\n',
+  );
+  writeJsonFile(join(subjectRoot, 'data', 'channel', 'feishu-operator-binding.json'), {
+    open_id: 'ou_fixture',
+  });
+  writeJsonFile(join(subjectRoot, 'data', 'channel', 'outbox', 'pending', 'message-1.json'), {
+    id: 'message-1',
+    text: 'pending delivery',
   });
   writeFileSync(
     join(subjectRoot, 'data', 'channel', 'desktop', 'sessions', 'main.jsonl'),
@@ -91,6 +115,53 @@ describe('JEA Home migration', () => {
     expect(existsSync(join(jeaHome, 'subjects', 'fresh', 'data'))).toBe(true);
   });
 
+  it('uses the same default home from different checkouts and working directories', () => {
+    const firstSource = mkdtempSync(join(tmpdir(), 'jea-checkout-a-'));
+    const secondSource = mkdtempSync(join(tmpdir(), 'jea-checkout-b-'));
+    const userHome = mkdtempSync(join(tmpdir(), 'jea-device-home-'));
+    temps.push(firstSource, secondSource, userHome);
+    const cli = resolve('src/cli/jea.mjs');
+    const baseEnv = {
+      ...process.env,
+      HOME: userHome,
+      USERPROFILE: userHome,
+    };
+    delete baseEnv.JEA_HOME;
+    const created = spawnSync(process.execPath, [
+      '--preserve-symlinks',
+      cli,
+      'subject',
+      'init',
+      'shared',
+      '--use',
+    ], {
+      cwd: firstSource,
+      env: { ...baseEnv, JEA_PROJECT_ROOT: firstSource },
+      encoding: 'utf8',
+    });
+    expect(created.status, created.stderr).toBe(0);
+
+    const listed = spawnSync(process.execPath, [
+      '--preserve-symlinks',
+      cli,
+      'subject',
+      'list',
+      '--json',
+    ], {
+      cwd: secondSource,
+      env: { ...baseEnv, JEA_PROJECT_ROOT: secondSource },
+      encoding: 'utf8',
+    });
+    expect(listed.status, listed.stderr).toBe(0);
+    expect(JSON.parse(listed.stdout).subjects).toContainEqual({
+      name: 'shared',
+      default: true,
+    });
+    expect(existsSync(join(userHome, '.jea', 'subjects', 'registry.json'))).toBe(true);
+    expect(existsSync(join(firstSource, 'runtime'))).toBe(false);
+    expect(existsSync(join(secondSource, 'runtime'))).toBe(false);
+  });
+
   it('copies and verifies the complete Subject tree while preserving legacy data', async () => {
     const fixture = makeFixture();
     const before = scanMigrationTree(fixture.legacyRoot);
@@ -105,6 +176,22 @@ describe('JEA Home migration', () => {
       join(target, 'alpha-data', 'data', 'channel', 'desktop', 'sessions', 'main.jsonl'),
       'utf8',
     )).toContain('message-1');
+    expect(JSON.parse(readFileSync(
+      join(target, 'alpha-data', 'data', 'evolution', 'pending_decisions.json'),
+      'utf8',
+    )).decisions[0]).toMatchObject({ id: 'approval-1', requires_approval: true });
+    expect(JSON.parse(readFileSync(
+      join(target, 'alpha-data', 'data', 'evolution', 'cycle-state', 'cycle-1', 'intel.json'),
+      'utf8',
+    )).cycle_id).toBe('cycle-1');
+    expect(JSON.parse(readFileSync(
+      join(target, 'alpha-data', 'data', 'channel', 'feishu-operator-binding.json'),
+      'utf8',
+    )).open_id).toBe('ou_fixture');
+    expect(JSON.parse(readFileSync(
+      join(target, 'alpha-data', 'data', 'channel', 'outbox', 'pending', 'message-1.json'),
+      'utf8',
+    )).text).toBe('pending delivery');
     expect(scanMigrationTree(target).digest).toBe(before.digest);
     expect(JSON.parse(readFileSync(join(target, JEA_HOME_MIGRATION_MARKER), 'utf8')).status)
       .toBe('completed');
@@ -125,6 +212,17 @@ describe('JEA Home migration', () => {
     rmSync(join(fixture.jeaHome, 'subjects', JEA_HOME_MIGRATION_MARKER));
     const second = await migrateJeaHome(fixture);
     expect(second.status).toBe('already_migrated');
+  });
+
+  it.skipIf(process.platform === 'win32')('preserves file and directory permissions', async () => {
+    const fixture = makeFixture();
+    chmodSync(fixture.legacyRoot, 0o700);
+    chmodSync(fixture.subjectRoot, 0o700);
+    chmodSync(join(fixture.subjectRoot, '.env'), 0o600);
+    await migrateJeaHome(fixture);
+    expect(statSync(join(fixture.jeaHome, 'subjects')).mode & 0o777).toBe(0o700);
+    expect(statSync(join(fixture.jeaHome, 'subjects', 'alpha-data')).mode & 0o777).toBe(0o700);
+    expect(statSync(join(fixture.jeaHome, 'subjects', 'alpha-data', '.env')).mode & 0o777).toBe(0o600);
   });
 
   it('fails closed when target and source differ', async () => {
@@ -163,6 +261,29 @@ describe('JEA Home migration', () => {
       },
     })).rejects.toMatchObject({ code: 'migration_source_changed' });
     expect(existsSync(join(fixture.jeaHome, 'subjects'))).toBe(false);
+  });
+
+  it('blocks other runtime entrypoints while migration locks are held', async () => {
+    const fixture = makeFixture();
+    let authorityCode = null;
+    await migrateJeaHome(fixture, {
+      afterCopy: () => {
+        authorityCode = inspectJeaHomeAuthority(fixture).code;
+      },
+    });
+    expect(authorityCode).toBe('migration_in_progress');
+  });
+
+  it('never deletes target data that appears during migration', async () => {
+    const fixture = makeFixture();
+    const target = join(fixture.jeaHome, 'subjects');
+    await expect(migrateJeaHome(fixture, {
+      afterCopy: () => {
+        mkdirSync(target, { recursive: true });
+        writeFileSync(join(target, 'concurrent-writer.txt'), 'preserve\n');
+      },
+    })).rejects.toMatchObject({ code: 'migration_target_changed' });
+    expect(readFileSync(join(target, 'concurrent-writer.txt'), 'utf8')).toBe('preserve\n');
   });
 
   it('exposes migration through the CLI and blocks normal commands beforehand', () => {
@@ -212,5 +333,16 @@ describe('JEA Home migration', () => {
       jea_home: fixture.jeaHome,
       subject_runtime_root: join(fixture.jeaHome, 'subjects', 'alpha-data'),
     });
+
+    const doctor = spawnSync(process.execPath, [
+      '--preserve-symlinks',
+      cli,
+      'doctor',
+    ], {
+      env: { ...env, JEA_ACP_DOCTOR_HANDSHAKE: '0' },
+      encoding: 'utf8',
+    });
+    expect(doctor.stdout).toContain(`Subject runtime root: ${join(fixture.jeaHome, 'subjects', 'alpha-data')}`);
+    expect(doctor.stdout).toContain('Execution root: not configured');
   });
 });

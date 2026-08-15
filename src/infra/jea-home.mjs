@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { homedir as osHomedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
+import lockfile from 'proper-lockfile';
 
 export const JEA_HOME_ENV = 'JEA_HOME';
 export const JEA_HOME_MIGRATION_MARKER = '.jea-home-migration.json';
@@ -38,7 +39,7 @@ export function resolveJeaHome({
 export function createRuntimeContext(input = {}) {
   if (typeof input === 'string') {
     const sourceRoot = resolve(input);
-    if (!String(process.env[JEA_HOME_ENV] ?? '').trim()) {
+    if (globalThis.__JEA_TEST_LEGACY_ROOT_ARGUMENT__ === true) {
       return {
         sourceRoot,
         jeaHome: join(sourceRoot, 'runtime'),
@@ -115,16 +116,39 @@ function hasAuthoritativeContent(dir) {
   ].includes(name));
 }
 
+function lockIsHeld(target) {
+  if (!existsSync(target)) return false;
+  try {
+    return lockfile.checkSync(target, { stale: 30 * 60 * 1000 });
+  } catch {
+    return false;
+  }
+}
+
 function readMigrationMarker(subjectsRoot) {
   const path = join(subjectsRoot, JEA_HOME_MIGRATION_MARKER);
   if (!existsSync(path)) return { path, record: null, valid: false };
   try {
     const record = JSON.parse(readFileSync(path, 'utf8'));
+    const validSummary = (summary) => summary
+      && Number.isInteger(summary.files) && summary.files >= 0
+      && Number.isInteger(summary.directories) && summary.directories >= 0
+      && Number.isInteger(summary.bytes) && summary.bytes >= 0
+      && Number.isInteger(summary.root_mode) && summary.root_mode >= 0
+      && /^[a-f0-9]{64}$/.test(String(summary.digest ?? ''));
     const valid = record?.schema_version === 1
       && record?.status === 'completed'
+      && Number.isFinite(Date.parse(record?.completed_at ?? ''))
       && typeof record?.source_subjects_root === 'string'
       && record.source_subjects_root.length > 0
-      && samePath(record?.target_subjects_root ?? '', subjectsRoot);
+      && samePath(record?.target_subjects_root ?? '', subjectsRoot)
+      && validSummary(record?.source)
+      && validSummary(record?.target)
+      && record.source.digest === record.target.digest
+      && record.source.files === record.target.files
+      && record.source.directories === record.target.directories
+      && record.source.bytes === record.target.bytes
+      && record.source.root_mode === record.target.root_mode;
     return { path, record, valid };
   } catch {
     return { path, record: null, valid: false };
@@ -135,6 +159,24 @@ export function inspectJeaHomeAuthority(input) {
   const context = createRuntimeContext(input);
   const homeSubjectsRoot = subjectsHomeDir(context);
   const legacySubjectsRoot = legacySubjectsDir(context);
+  const migrationLocks = [
+    join(legacySubjectsRoot, '.migrate-home.lock'),
+    join(context.jeaHome, '.migrate-home.lock'),
+  ];
+  if (migrationLocks.some(lockIsHeld)) {
+    return {
+      ...context,
+      code: 'migration_in_progress',
+      ok: false,
+      authoritativeRoot: null,
+      homeSubjectsRoot,
+      legacySubjectsRoot,
+      homeNonEmpty: hasAuthoritativeContent(homeSubjectsRoot),
+      legacyNonEmpty: hasAuthoritativeContent(legacySubjectsRoot),
+      marker: readMigrationMarker(homeSubjectsRoot),
+      migrationLocks,
+    };
+  }
   if (samePath(homeSubjectsRoot, legacySubjectsRoot)) {
     return {
       ...context,
@@ -187,7 +229,9 @@ export function assertJeaHomeAuthority(input) {
   if (state.ok) return state;
   const error = new Error(state.code === 'migration_required'
     ? `Legacy Subject data exists at ${state.legacySubjectsRoot}. Run "jea data migrate-home" or explicitly set JEA_HOME=${join(state.sourceRoot, 'runtime')}.`
-    : `Both legacy and JEA Home Subject data exist without a valid migration marker (${state.legacySubjectsRoot}, ${state.homeSubjectsRoot}). Refusing to choose an authority.`);
+    : (state.code === 'migration_in_progress'
+      ? 'JEA Home migration is in progress. Runtime reads and writes are temporarily blocked.'
+      : `Both legacy and JEA Home Subject data exist without a valid migration marker (${state.legacySubjectsRoot}, ${state.homeSubjectsRoot}). Refusing to choose an authority.`));
   error.code = state.code;
   error.authority = state;
   throw error;

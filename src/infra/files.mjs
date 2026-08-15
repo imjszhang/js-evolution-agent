@@ -9,6 +9,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
 export function resolveWithinRoot(root, target) {
@@ -48,8 +49,13 @@ export function ensureProjectDir(root, relativeDir) {
 
 export function writeJsonFile(filePath, data) {
   mkdirSync(dirname(filePath), { recursive: true });
-  writeFileSync(`${filePath}.tmp`, JSON.stringify(data, null, 2) + '\n', 'utf-8');
-  renameSync(`${filePath}.tmp`, filePath);
+  const temporary = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporary, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+    renameSync(temporary, filePath);
+  } finally {
+    rmSync(temporary, { force: true });
+  }
 }
 
 export function writeJsonIfMissing(root, relativeFile, data, { force = false } = {}) {

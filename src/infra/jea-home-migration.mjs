@@ -11,7 +11,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import lockfile from 'proper-lockfile';
 import { isProcessAlive } from './process-alive.mjs';
 import { writeJsonFile } from './files.mjs';
@@ -22,6 +22,7 @@ import {
   samePath,
   subjectsHomeDir,
 } from './jea-home.mjs';
+import { subjectsRegistryWriteLockFile } from './subjects.mjs';
 
 const MIGRATION_LOCK = '.migrate-home.lock';
 const STAGING_PREFIX = '.migrate-home-staging-';
@@ -42,10 +43,11 @@ function hashFile(path) {
   return createHash('sha256').update(readFileSync(path)).digest('hex');
 }
 
-function digestEntries(entries) {
+function digestEntries(entries, rootMode = null) {
   const hash = createHash('sha256');
+  hash.update(`root\0${rootMode ?? ''}\n`);
   for (const entry of entries) {
-    hash.update(`${entry.type}\0${entry.path}\0${entry.size ?? ''}\0${entry.sha256 ?? ''}\n`);
+    hash.update(`${entry.type}\0${entry.path}\0${entry.size ?? ''}\0${entry.mode ?? ''}\0${entry.sha256 ?? ''}\n`);
   }
   return hash.digest('hex');
 }
@@ -59,10 +61,12 @@ export function scanMigrationTree(root) {
       files: 0,
       directories: 0,
       bytes: 0,
+      rootMode: null,
       digest: digestEntries([]),
     };
   }
   const entries = [];
+  const rootMode = statSync(normalizedRoot).mode & 0o777;
   const walk = (dir, relDir = '') => {
     const children = readdirSync(dir, { withFileTypes: true })
       .sort((left, right) => left.name.localeCompare(right.name));
@@ -74,7 +78,11 @@ export function scanMigrationTree(root) {
         throw migrationError('migration_symlink_unsupported', `Refusing to migrate symbolic link: ${full}`);
       }
       if (child.isDirectory()) {
-        entries.push({ type: 'directory', path: rel });
+        entries.push({
+          type: 'directory',
+          path: rel,
+          mode: statSync(full).mode & 0o777,
+        });
         walk(full, rel);
         continue;
       }
@@ -99,7 +107,8 @@ export function scanMigrationTree(root) {
     files: sorted.filter((entry) => entry.type === 'file').length,
     directories: sorted.filter((entry) => entry.type === 'directory').length,
     bytes: sorted.reduce((sum, entry) => sum + (entry.size ?? 0), 0),
-    digest: digestEntries(sorted),
+    rootMode,
+    digest: digestEntries(sorted, rootMode),
   };
 }
 
@@ -116,9 +125,22 @@ function copyScannedTree(sourceRoot, destinationRoot, manifest) {
     copyFileSync(source, destination);
     try {
       chmodSync(destination, entry.mode);
-    } catch {
-      // Windows and restrictive filesystems may not preserve POSIX modes.
+    } catch (error) {
+      if (process.platform !== 'win32') throw error;
     }
+  }
+  for (const entry of [...manifest.entries].reverse()) {
+    if (entry.type !== 'directory') continue;
+    try {
+      chmodSync(join(destinationRoot, entry.path), entry.mode);
+    } catch (error) {
+      if (process.platform !== 'win32') throw error;
+    }
+  }
+  try {
+    chmodSync(destinationRoot, manifest.rootMode);
+  } catch (error) {
+    if (process.platform !== 'win32') throw error;
   }
 }
 
@@ -151,6 +173,7 @@ function manifestSummary(manifest) {
     files: manifest.files,
     directories: manifest.directories,
     bytes: manifest.bytes,
+    root_mode: manifest.rootMode,
     digest: manifest.digest,
   };
 }
@@ -229,13 +252,16 @@ export function inspectLegacyWriters(sourceSubjectsRoot, registry = null) {
   return { active, heldLocks, ok: active.length === 0 && heldLocks.length === 0 };
 }
 
-async function acquireMigrationLock(path) {
+async function acquireMigrationLock(path, {
+  stale = 30 * 60 * 1000,
+  update = 30_000,
+} = {}) {
   mkdirSync(dirname(path), { recursive: true });
   if (!existsSync(path)) writeFileSync(path, '', 'utf8');
   try {
     return await lockfile.lock(path, {
-      stale: 30 * 60 * 1000,
-      update: 30_000,
+      stale,
+      update,
       retries: 0,
     });
   } catch {
@@ -353,12 +379,36 @@ export async function migrateJeaHome(input, {
 
   const sourceLockPath = join(sourceSubjectsRoot, MIGRATION_LOCK);
   const targetLockPath = join(context.jeaHome, MIGRATION_LOCK);
+  const sourceRegistryLockPath = subjectsRegistryWriteLockFile({
+    sourceRoot: context.sourceRoot,
+    jeaHome: dirname(sourceSubjectsRoot),
+  });
+  const targetRegistryLockPath = subjectsRegistryWriteLockFile(context);
   let releaseSource = null;
   let releaseTarget = null;
+  let releaseSourceRegistry = null;
+  let releaseTargetRegistry = null;
   let stagingRoot = null;
   try {
     releaseSource = await acquireMigrationLock(sourceLockPath);
     releaseTarget = await acquireMigrationLock(targetLockPath);
+    releaseSourceRegistry = await acquireMigrationLock(sourceRegistryLockPath, {
+      stale: 30_000,
+      update: 10_000,
+    });
+    releaseTargetRegistry = await acquireMigrationLock(targetRegistryLockPath, {
+      stale: 30_000,
+      update: 10_000,
+    });
+
+    const lockedSourceWriters = inspectLegacyWriters(sourceSubjectsRoot, registry);
+    if (!lockedSourceWriters.ok) {
+      throw migrationError(
+        'migration_writers_active',
+        'A legacy Subject writer started during migration preflight.',
+        lockedSourceWriters,
+      );
+    }
 
     const lockedSourceManifest = scanMigrationTree(sourceSubjectsRoot);
     if (lockedSourceManifest.digest !== sourceManifest.digest) {
@@ -367,6 +417,26 @@ export async function migrateJeaHome(input, {
     const lockedTargetManifest = scanMigrationTree(targetSubjectsRoot);
     if (lockedTargetManifest.digest !== existingTarget.digest) {
       throw migrationError('migration_target_changed', 'JEA Home Subject data changed during migration preflight.');
+    }
+    if (lockedTargetManifest.files > 0) {
+      const lockedTargetRegistry = validateJsonFiles(targetSubjectsRoot, lockedTargetManifest);
+      const lockedTargetWriters = inspectLegacyWriters(targetSubjectsRoot, lockedTargetRegistry);
+      if (!lockedTargetWriters.ok) {
+        throw migrationError(
+          'migration_writers_active',
+          'A JEA Home Subject writer started during migration preflight.',
+          lockedTargetWriters,
+        );
+      }
+    }
+    if (existingTarget.files === 0 && existsSync(targetSubjectsRoot)) {
+      if (readdirSync(targetSubjectsRoot).length > 0) {
+        throw migrationError(
+          'migration_target_changed',
+          'JEA Home Subject directory contains unrecognized migration metadata.',
+        );
+      }
+      rmSync(targetSubjectsRoot, { recursive: true, force: false });
     }
 
     if (existingTarget.files > 0 && existingTarget.digest === sourceManifest.digest) {
@@ -412,10 +482,7 @@ export async function migrateJeaHome(input, {
     });
     writeJsonFile(join(stagedSubjectsRoot, JEA_HOME_MIGRATION_MARKER), marker);
     if (existsSync(targetSubjectsRoot)) {
-      if (readdirSync(targetSubjectsRoot).length) {
-        throw migrationError('dual_authority_conflict', 'JEA Home Subject directory became non-empty during migration.');
-      }
-      rmSync(targetSubjectsRoot, { recursive: true, force: true });
+      throw migrationError('migration_target_changed', 'JEA Home Subject directory appeared during migration.');
     }
     mkdirSync(dirname(targetSubjectsRoot), { recursive: true });
     renameSync(stagedSubjectsRoot, targetSubjectsRoot);
@@ -432,6 +499,8 @@ export async function migrateJeaHome(input, {
     };
   } finally {
     if (stagingRoot) rmSync(stagingRoot, { recursive: true, force: true });
+    if (releaseTargetRegistry) await releaseTargetRegistry().catch(() => {});
+    if (releaseSourceRegistry) await releaseSourceRegistry().catch(() => {});
     if (releaseTarget) await releaseTarget().catch(() => {});
     if (releaseSource) await releaseSource().catch(() => {});
   }

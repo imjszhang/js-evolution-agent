@@ -5,10 +5,9 @@ import {
 } from 'node:fs';
 import { join, relative } from 'node:path';
 import {
-  readSubjectsRegistry,
   resolveSubjectConfig,
   runtimeInfoForSubject,
-  writeSubjectsRegistry,
+  updateSubjectsRegistry,
 } from '../../infra/subjects.mjs';
 import { readJsonSafe, writeJsonFile } from '../../infra/files.mjs';
 import { bridgeIntentDir } from '../../channel/adapters/bridge-intent/index.mjs';
@@ -65,18 +64,23 @@ function buildOpenClawConfigSnippet({
 }
 
 function updateSubjectEntry(root, subject, updater) {
-  const registry = readSubjectsRegistry(root);
-  const entry = registry.subjects?.[subject];
-  if (!entry) throw new Error(`Subject not found in <JEA_HOME>/subjects/registry.json: ${subject}`);
-  const nextEntry = updater(entry, registry);
-  const written = writeSubjectsRegistry(root, {
-    default_subject: registry.default_subject,
-    subjects: {
-      ...registry.subjects,
-      [subject]: nextEntry,
-    },
+  let snapshot;
+  let entry;
+  let nextEntry;
+  const written = updateSubjectsRegistry(root, (registry) => {
+    snapshot = registry;
+    entry = registry.subjects?.[subject];
+    if (!entry) throw new Error(`Subject not found in <JEA_HOME>/subjects/registry.json: ${subject}`);
+    nextEntry = updater(entry, registry);
+    return {
+      default_subject: registry.default_subject,
+      subjects: {
+        ...registry.subjects,
+        [subject]: nextEntry,
+      },
+    };
   });
-  return { registry, entry, nextEntry, written };
+  return { registry: snapshot, entry, nextEntry, written };
 }
 
 export function deployOpenClawBridge(root, {

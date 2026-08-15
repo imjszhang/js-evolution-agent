@@ -8,8 +8,7 @@ import {
 } from '../../infra/env-file.mjs';
 import {
   getSubjectEntry,
-  readSubjectsRegistry,
-  writeSubjectsRegistry,
+  updateSubjectsRegistry,
 } from '../../infra/subjects.mjs';
 import { subjectEnvSlug } from '../../channel/adapters/feishu/config.mjs';
 import { resolveFeishuConfig } from '../../channel/adapters/feishu/config.mjs';
@@ -91,29 +90,33 @@ function maybeInitSubjectConfig(root, subject, flags = {}) {
   if (!flags['init-subject-config']) {
     return { initialized: false };
   }
-  const registry = readSubjectsRegistry(root);
-  const entry = registry.subjects?.[subject];
-  if (!entry) {
-    throw new Error(`Subject not found in <JEA_HOME>/subjects/registry.json: ${subject}`);
-  }
-  if (entry.channels?.feishu || entry.channels?.lark) {
-    return { initialized: false, reason: 'already_configured' };
-  }
-  const nextEntry = {
-    ...entry,
-    channels: {
-      ...(entry.channels ?? {}),
-      feishu: buildFeishuSubjectSkeleton(subject),
-    },
-  };
-  writeSubjectsRegistry(root, {
-    default_subject: registry.default_subject,
-    subjects: {
-      ...registry.subjects,
-      [subject]: nextEntry,
-    },
+  let initialized = false;
+  let reason = null;
+  const written = updateSubjectsRegistry(root, (registry) => {
+    const entry = registry.subjects?.[subject];
+    if (!entry) {
+      throw new Error(`Subject not found in <JEA_HOME>/subjects/registry.json: ${subject}`);
+    }
+    if (entry.channels?.feishu || entry.channels?.lark) {
+      reason = 'already_configured';
+      return registry;
+    }
+    initialized = true;
+    return {
+      default_subject: registry.default_subject,
+      subjects: {
+        ...registry.subjects,
+        [subject]: {
+          ...entry,
+          channels: {
+            ...(entry.channels ?? {}),
+            feishu: buildFeishuSubjectSkeleton(subject),
+          },
+        },
+      },
+    };
   });
-  return { initialized: true, path: registry.path };
+  return { initialized, ...(reason ? { reason } : {}), path: written.path };
 }
 
 function ensureSubjectHasFeishuBlock(root, subject, flags = {}) {
