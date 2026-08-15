@@ -10,7 +10,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { DaemonSupervisor } from '../src/main/daemon-supervisor'
 import { DesktopEventBus } from '../src/main/event-bus'
@@ -35,7 +35,7 @@ async function waitFor(check: () => boolean, timeoutMs = 5_000): Promise<void> {
 function projectFixture(): string {
   const root = mkdtempSync(join(tmpdir(), 'jea-desktop-daemon-live-'))
   roots.push(root)
-  const workspaceRoot = join(process.cwd(), '..', '..')
+  const workspaceRoot = fileURLToPath(new URL('../../../', import.meta.url))
   const cliDir = join(root, 'src', 'cli')
   mkdirSync(cliDir, { recursive: true })
   writeFileSync(join(cliDir, 'jea.mjs'), [
