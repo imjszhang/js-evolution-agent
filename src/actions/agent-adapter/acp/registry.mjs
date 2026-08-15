@@ -44,7 +44,7 @@ export function createAcpFrameworkRegistry({
     id: 'claude-code',
     provider: CLAUDE_CODE_ACP_PROVIDER,
     command,
-    shell: platform === 'win32' && /\.cmd$/i.test(command),
+    shell: platform === 'win32',
     args: splitArgs(env.JEA_ACP_CLAUDE_CODE_ARGS),
     versionArgs: ['--version'],
     minNodeMajor: 22,

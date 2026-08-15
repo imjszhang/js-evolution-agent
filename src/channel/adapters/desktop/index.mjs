@@ -1,5 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { writePendingInbound } from '../../state.mjs';
+import { listJsonFiles, readJsonFile } from '../../state.mjs';
+import {
+  channelInboundFailedDir,
+  channelInboundPendingDir,
+  channelInboundProcessedDir,
+} from '../../paths.mjs';
 import { normalizeOutboundMessage, nowIso } from '../../types.mjs';
 import { enqueueClassifierIfPendingInbound } from '../../wake.mjs';
 import {
@@ -60,6 +66,24 @@ export async function sendOutboundMessage(outboundInput, options = {}) {
   };
 }
 
+function inboundExists(root, subject, messageId) {
+  for (const dir of [
+    channelInboundPendingDir(root, subject),
+    channelInboundProcessedDir(root, subject),
+    channelInboundFailedDir(root, subject),
+  ]) {
+    for (const file of listJsonFiles(dir)) {
+      const payload = readJsonFile(file, null);
+      const existingId = payload?.message_id
+        ?? payload?.messageId
+        ?? payload?.envelope?.message_id
+        ?? null;
+      if (String(existingId ?? '') === String(messageId)) return true;
+    }
+  }
+  return false;
+}
+
 export function sendDesktopInboundMessage(root, subject, {
   session_id = null,
   session = null,
@@ -70,6 +94,9 @@ export function sendDesktopInboundMessage(root, subject, {
   sender_id = 'desktop-user',
   created_at = null,
   metadata = {},
+} = {}, {
+  writeInbound = writePendingInbound,
+  enqueueClassifier = enqueueClassifierIfPendingInbound,
 } = {}) {
   const config = resolveDesktopConfig(root, subject);
   if (!config.enabled) throw new Error(`Desktop channel is disabled for subject ${subject}`);
@@ -95,9 +122,10 @@ export function sendDesktopInboundMessage(root, subject, {
   });
   let pending = null;
   let classifier = { created: false, reason: 'duplicate_session_record' };
-  if (appended.created) {
-    pending = writePendingInbound(root, subject, envelope, { label: 'desktop' });
-    classifier = enqueueClassifierIfPendingInbound(root, subject);
+  const needsIngressRepair = appended.duplicate && !inboundExists(root, subject, messageId);
+  if (appended.created || needsIngressRepair) {
+    pending = writeInbound(root, subject, envelope, { label: 'desktop' });
+    classifier = enqueueClassifier(root, subject);
   }
   return {
     subject,
@@ -107,6 +135,7 @@ export function sendDesktopInboundMessage(root, subject, {
     session_record: appended.record,
     session_created: appended.created,
     duplicate: appended.duplicate,
+    ingress_repaired: needsIngressRepair,
     inbound_file: pending?.file ?? null,
     classifier_task: classifier.task ?? null,
     classifier_created: classifier.created ?? false,

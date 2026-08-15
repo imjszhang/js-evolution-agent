@@ -109,6 +109,11 @@ function createWindow(): BrowserWindow {
   window.removeMenu()
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   window.webContents.on('will-navigate', (event) => event.preventDefault())
+  window.on('closed', () => {
+    queueMicrotask(() => {
+      if (BrowserWindow.getAllWindows().length === 0) projection.stop()
+    })
+  })
 
   if (devRendererUrl) {
     void window.loadURL(devRendererUrl)

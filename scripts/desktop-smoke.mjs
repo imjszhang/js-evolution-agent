@@ -20,7 +20,11 @@ if (!existsSync(entry)) {
   throw new Error('Desktop build output is missing; run npm run desktop:build first.');
 }
 
-const child = spawn(electron, [entry], {
+const electronArgs = [
+  ...(process.platform === 'linux' && process.env.CI ? ['--no-sandbox'] : []),
+  entry,
+];
+const child = spawn(electron, electronArgs, {
   cwd: projectRoot,
   env: {
     ...process.env,

@@ -6,7 +6,7 @@ import type {
 } from '../../../shared/contract'
 import { errorMessage, formatTime, isRecord, text } from '../utils'
 
-function mergeRecords(
+export function mergeRecords(
   current: DesktopSessionRecord[],
   incoming: DesktopSessionRecord[]
 ): DesktopSessionRecord[] {
@@ -25,6 +25,7 @@ export function ChannelChatView({ subject }: { subject: string | null }) {
   const [error, setError] = useState<string | null>(null)
   const sessionRef = useRef(sessionId)
   const offsetRef = useRef(0)
+  const requestGeneration = useRef(0)
 
   useEffect(() => {
     sessionRef.current = sessionId
@@ -32,13 +33,23 @@ export function ChannelChatView({ subject }: { subject: string | null }) {
 
   const readSession = useCallback(async (reset = false) => {
     if (!subject || !sessionRef.current) return
+    const requestedSession = sessionRef.current
+    const generation = requestGeneration.current
     try {
       const page = await window.jea.invoke<DesktopSessionPage>('channel.readSession', {
         subject,
-        sessionId: sessionRef.current,
+        sessionId: requestedSession,
         ...(reset ? { tail: 100 } : { offset: offsetRef.current, limit: 200 })
       })
-      offsetRef.current = page.next_offset
+      if (
+        generation !== requestGeneration.current
+        || requestedSession !== sessionRef.current
+        || page.subject !== subject
+        || page.session_id !== requestedSession
+      ) return
+      offsetRef.current = reset
+        ? page.next_offset
+        : Math.max(offsetRef.current, page.next_offset)
       setRecords((current) => reset ? page.records : mergeRecords(current, page.records))
     } catch (cause) {
       setError(errorMessage(cause, 'Unable to read the desktop session.'))
@@ -50,9 +61,11 @@ export function ChannelChatView({ subject }: { subject: string | null }) {
       setSnapshot(null)
       return
     }
+    const generation = ++requestGeneration.current
     setError(null)
     try {
       const next = await window.jea.invoke<ChannelSnapshot>('channel.get', { subject })
+      if (generation !== requestGeneration.current || next.subject !== subject) return
       setSnapshot(next)
       const config = isRecord(next.projection.desktop)
         && isRecord(next.projection.desktop.config)
@@ -84,6 +97,7 @@ export function ChannelChatView({ subject }: { subject: string | null }) {
   }), [readSession, subject])
 
   const selectSession = (next: string) => {
+    requestGeneration.current += 1
     setSessionId(next)
     sessionRef.current = next
     offsetRef.current = 0

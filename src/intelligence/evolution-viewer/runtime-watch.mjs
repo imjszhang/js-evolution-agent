@@ -1,14 +1,15 @@
 import { existsSync, openSync, closeSync, readSync, statSync, watch } from 'node:fs';
-import { basename, join } from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
+import { basename, dirname, join } from 'node:path';
 import { listJsonFiles, readJsonFile } from '../../channel/state.mjs';
 
 export const RUNTIME_WATCH_DEBOUNCE_MS = 1000;
 
-function safeSize(path) {
+function safeStat(path) {
   try {
-    return statSync(path).size;
+    return statSync(path);
   } catch {
-    return 0;
+    return null;
   }
 }
 
@@ -21,19 +22,26 @@ export function createJsonlTailer({
   onRecord,
   startAtEnd = true,
   watchFactory = watch,
+  reconcileMs = 1_000,
 }) {
   let offset = 0;
   let partial = '';
+  let identity = null;
+  let decoder = new StringDecoder('utf8');
   let watcher = null;
+  let reconcileTimer = null;
   let stopped = true;
 
   function syncOffset() {
-    offset = startAtEnd ? safeSize(path) : 0;
+    const stat = safeStat(path);
+    identity = stat ? `${stat.dev}:${stat.ino}` : null;
+    offset = stat && startAtEnd ? stat.size : 0;
     partial = '';
+    decoder = new StringDecoder('utf8');
   }
 
   function processChunk(chunk) {
-    partial += chunk;
+    partial += decoder.write(chunk);
     const lines = partial.split('\n');
     partial = lines.pop() ?? '';
     for (const line of lines) {
@@ -48,12 +56,33 @@ export function createJsonlTailer({
   }
 
   function readNewBytes() {
-    if (!existsSync(path)) return;
     try {
-      const size = safeSize(path);
+      const stat = safeStat(path);
+      if (!stat) {
+        if (identity) {
+          identity = null;
+          offset = 0;
+          partial = '';
+          decoder = new StringDecoder('utf8');
+          closeWatcher();
+        }
+        return;
+      }
+      const nextIdentity = `${stat.dev}:${stat.ino}`;
+      if (identity && identity !== nextIdentity) {
+        identity = nextIdentity;
+        offset = 0;
+        partial = '';
+        decoder = new StringDecoder('utf8');
+        closeWatcher();
+      } else if (!identity) {
+        identity = nextIdentity;
+      }
+      const size = stat.size;
       if (size < offset) {
         offset = 0;
         partial = '';
+        decoder = new StringDecoder('utf8');
       }
       if (size <= offset) return;
       const length = size - offset;
@@ -62,13 +91,23 @@ export function createJsonlTailer({
       try {
         const read = readSync(fd, buffer, 0, length, offset);
         offset += read;
-        processChunk(buffer.subarray(0, read).toString('utf8'));
+        processChunk(buffer.subarray(0, read));
       } finally {
         closeSync(fd);
       }
     } catch {
       // Ignore rotation/read races. Reconciliation can call readNewBytes again.
     }
+  }
+
+  function closeWatcher() {
+    if (!watcher) return;
+    try {
+      watcher.close();
+    } catch {
+      // Ignore watcher teardown races.
+    }
+    watcher = null;
   }
 
   function attachWatcher() {
@@ -85,6 +124,10 @@ export function createJsonlTailer({
     stopped = false;
     syncOffset();
     attachWatcher();
+    if (reconcileMs > 0) {
+      reconcileTimer = setInterval(reconcile, reconcileMs);
+      reconcileTimer.unref?.();
+    }
   }
 
   function reconcile() {
@@ -95,14 +138,9 @@ export function createJsonlTailer({
 
   function stop() {
     stopped = true;
-    if (watcher) {
-      try {
-        watcher.close();
-      } catch {
-        // Ignore watcher teardown races.
-      }
-      watcher = null;
-    }
+    if (reconcileTimer) clearInterval(reconcileTimer);
+    reconcileTimer = null;
+    closeWatcher();
   }
 
   return {
@@ -129,14 +167,18 @@ export function runtimeWatchPaths(runtimeRoot, {
     join(runtimeRoot, 'data', 'channel', 'worker-state.json'),
     join(runtimeRoot, 'data', 'channel', 'tasks', 'pending_tasks.json'),
     join(runtimeRoot, 'data', 'channel', 'events.jsonl'),
-    join(runtimeRoot, 'data', 'channel', 'inbound'),
-    join(runtimeRoot, 'data', 'channel', 'outbox'),
+    join(runtimeRoot, 'data', 'channel', 'inbound', 'pending'),
+    join(runtimeRoot, 'data', 'channel', 'inbound', 'processed'),
+    join(runtimeRoot, 'data', 'channel', 'inbound', 'failed'),
+    join(runtimeRoot, 'data', 'channel', 'outbox', 'pending'),
+    join(runtimeRoot, 'data', 'channel', 'outbox', 'sent'),
+    join(runtimeRoot, 'data', 'channel', 'outbox', 'failed'),
   ];
   if (includeOperator) {
     paths.push(
-      join(runtimeRoot, 'data', 'evolution', 'operator_briefs'),
-      join(runtimeRoot, 'data', 'evolution', 'operator_facts'),
-      join(runtimeRoot, 'data', 'evolution', 'operator_questions'),
+      join(runtimeRoot, 'data', 'evolution', 'operator_briefs', 'pending'),
+      join(runtimeRoot, 'data', 'evolution', 'operator_facts', 'pending'),
+      join(runtimeRoot, 'data', 'evolution', 'operator_questions', 'pending'),
     );
   }
   if (includeDesktopSessions) {
@@ -171,7 +213,7 @@ export function createRuntimeWatcher({
     includeOperator,
     includeDesktopSessions,
   });
-  const watchers = [];
+  const watchers = new Map();
   let debounceTimer = null;
   let reconcileTimer = null;
   let started = false;
@@ -187,21 +229,55 @@ export function createRuntimeWatcher({
     debounceTimer.unref?.();
   }
 
+  function nearestExisting(target) {
+    let candidate = target;
+    while (!existsSync(candidate)) {
+      const parent = dirname(candidate);
+      if (parent === candidate) return null;
+      candidate = parent;
+    }
+    return candidate;
+  }
+
   function attach(target) {
-    if (!existsSync(target)) return;
+    const watchedPath = nearestExisting(target);
+    if (!watchedPath) return;
+    const current = watchers.get(target);
+    if (current?.watchedPath === watchedPath) return;
+    if (current) {
+      try {
+        current.watcher.close();
+      } catch {
+        // Ignore replacement races.
+      }
+      watchers.delete(target);
+    }
     try {
-      watchers.push(watchFactory(target, () => notify('watch')));
+      watchers.set(target, {
+        watchedPath,
+        watcher: watchFactory(watchedPath, () => {
+          reconcileWatchers();
+          notify('watch');
+        }),
+      });
     } catch {
       // Missing and transiently replaced files are covered by reconciliation.
     }
   }
 
+  function reconcileWatchers() {
+    for (const target of paths) attach(target);
+  }
+
   function start() {
     if (started) return;
     started = true;
-    for (const target of paths) attach(target);
+    reconcileWatchers();
     if (reconcileMs > 0) {
-      reconcileTimer = setInterval(() => notify('reconcile'), reconcileMs);
+      reconcileTimer = setInterval(() => {
+        reconcileWatchers();
+        notify('reconcile');
+      }, reconcileMs);
       reconcileTimer.unref?.();
     }
   }
@@ -212,14 +288,14 @@ export function createRuntimeWatcher({
     debounceTimer = null;
     if (reconcileTimer) clearInterval(reconcileTimer);
     reconcileTimer = null;
-    for (const watcher of watchers) {
+    for (const { watcher } of watchers.values()) {
       try {
         watcher.close();
       } catch {
         // Ignore watcher teardown races.
       }
     }
-    watchers.length = 0;
+    watchers.clear();
   }
 
   return { paths, start, stop, notify };

@@ -45,6 +45,17 @@ describe('NotificationService', () => {
     expect(shown).toHaveBeenCalledOnce()
     clickRef.current?.()
     expect(navigations).toEqual(['alpha'])
+    events.publish({
+      type: 'projection.todo_updated',
+      subject: 'alpha',
+      payload: { snapshot: { ...snapshot, questions: [] } }
+    })
+    events.publish({
+      type: 'projection.todo_updated',
+      subject: 'alpha',
+      payload: { snapshot }
+    })
+    expect(shown).toHaveBeenCalledTimes(2)
     service.stop()
   })
 
@@ -75,6 +86,34 @@ describe('NotificationService', () => {
       }
     })
     expect(shown).not.toHaveBeenCalled()
+    service.stop()
+  })
+
+  it('isolates native notification errors from other event listeners', () => {
+    const events = new DesktopEventBus()
+    const service = new NotificationService(
+      join(mkdtempSync(join(tmpdir(), 'jea-notify-error-')), 'settings.json'),
+      events,
+      () => { throw new Error('native notification unavailable') }
+    )
+    const rendererListener = vi.fn()
+    events.subscribe(rendererListener)
+    expect(() => events.publish({
+      type: 'projection.todo_updated',
+      subject: 'alpha',
+      payload: {
+        snapshot: {
+          subject: 'alpha',
+          questions: [{ id: 'q1', question: 'Question' }],
+          briefs: [],
+          facts: [],
+          goals: null,
+          pending_cycle_request: null,
+          attention: {}
+        }
+      }
+    })).not.toThrow()
+    expect(rendererListener).toHaveBeenCalledOnce()
     service.stop()
   })
 })

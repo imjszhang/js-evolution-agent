@@ -314,8 +314,11 @@ export class AcpRuntime {
     const child = this.child;
     if (!child || child.exitCode != null || child.signalCode != null) return;
     const closed = new Promise((resolve) => child.once('close', resolve));
-    child.kill('SIGTERM');
-    if (this.platform === 'win32') this.killWindowsTree(child.pid, false);
+    if (this.platform === 'win32') {
+      if (!this.killWindowsTree(child.pid, false)) child.kill('SIGTERM');
+    } else {
+      child.kill('SIGTERM');
+    }
     this.observer?.emit('process_signal', { signal: 'SIGTERM', pid: child.pid ?? null });
     const exited = await Promise.race([closed.then(() => true), delay(this.killGraceMs).then(() => false)]);
     if (!exited && child.exitCode == null && child.signalCode == null) {

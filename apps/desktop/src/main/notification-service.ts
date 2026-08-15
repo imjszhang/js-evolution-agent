@@ -30,7 +30,7 @@ export class NotificationService {
     private readonly settingsPath: string,
     events: DesktopEventBus,
     private readonly createNotification: NotificationFactory,
-    private readonly cooldownMs = 60_000
+    _cooldownMs = 60_000
   ) {
     this.settings = this.readSettings()
     this.unsubscribe = events.subscribe((event) => {
@@ -75,25 +75,34 @@ export class NotificationService {
         body: String(item.title ?? item.summary ?? item.message ?? 'Runtime attention signal')
       }))
 
-    for (const item of [...questions, ...signals]) {
+    const candidates = [...questions, ...signals]
+    const currentKeys = new Set(candidates.map((item) => `${subject}:${item.id}`))
+    for (const key of this.seen) {
+      if (key.startsWith(`${subject}:`) && !currentKeys.has(key)) this.seen.delete(key)
+    }
+
+    for (const item of candidates) {
       const key = `${subject}:${item.id}`
       if (this.seen.has(key)) continue
       this.seen.add(key)
-      setTimeout(() => this.seen.delete(key), this.cooldownMs).unref?.()
       if (!this.settings.enabled) continue
-      const notification = this.createNotification({
-        title: item.title,
-        body: `${subject}: ${item.body}`,
-        silent: false
-      })
-      notification.on('click', () => {
-        events.publish({
-          type: 'desktop.navigate',
-          subject,
-          payload: { page: 'todo' }
+      try {
+        const notification = this.createNotification({
+          title: item.title,
+          body: `${subject}: ${item.body}`,
+          silent: false
         })
-      })
-      notification.show()
+        notification.on('click', () => {
+          events.publish({
+            type: 'desktop.navigate',
+            subject,
+            payload: { page: 'todo' }
+          })
+        })
+        notification.show()
+      } catch {
+        // Native notification failure must not interrupt renderer projections.
+      }
     }
   }
 

@@ -28,11 +28,12 @@ describe('desktop project root', () => {
   })
 
   it('prefers JEA_PROJECT_ROOT over marker discovery', () => {
+    const explicit = join(tmpdir(), 'explicit-jea')
     expect(resolveDesktopProjectRoot({
-      env: { JEA_PROJECT_ROOT: '/tmp/explicit-jea' },
-      cwd: '/tmp',
-      fallback: '/tmp'
-    })).toBe('/tmp/explicit-jea')
+      env: { JEA_PROJECT_ROOT: explicit },
+      cwd: tmpdir(),
+      fallback: tmpdir()
+    })).toBe(explicit)
   })
 })
 

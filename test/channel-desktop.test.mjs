@@ -175,6 +175,33 @@ describe('desktop channel adapter', () => {
       .some((record) => record.content === 'local reply')).toBe(true);
   });
 
+  it('repairs ingress when session append succeeds before pending inbound write fails', () => {
+    const project = makeRoot();
+    expect(() => sendDesktopInboundMessage(project, 'alpha', {
+      session: 'main',
+      message_id: 'repair-message',
+      text: 'repair me',
+    }, {
+      writeInbound: () => {
+        throw new Error('injected write failure');
+      },
+    })).toThrow('injected write failure');
+
+    const repaired = sendDesktopInboundMessage(project, 'alpha', {
+      session: 'main',
+      message_id: 'repair-message',
+      text: 'repair me',
+    });
+    expect(repaired).toMatchObject({
+      duplicate: true,
+      ingress_repaired: true,
+      classifier_created: true,
+    });
+    expect(repaired.inbound_file).toEqual(expect.any(String));
+    expect(readDesktopSession(project, 'alpha', 'main', { tail: 10 }).records)
+      .toHaveLength(1);
+  });
+
   it('registers both directions and projects desktop sessions', async () => {
     const project = makeRoot();
     expect(resolveInboundAdapter('desktop')?.id).toBe('desktop');

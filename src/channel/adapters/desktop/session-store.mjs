@@ -1,12 +1,16 @@
 import {
   appendFileSync,
+  closeSync,
   existsSync,
   mkdirSync,
-  readFileSync,
+  openSync,
+  readSync,
   readdirSync,
+  statSync,
 } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname } from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import lockfile from 'proper-lockfile';
 import {
   channelDesktopSessionPath,
@@ -16,6 +20,7 @@ import { nowIso } from '../../types.mjs';
 import { normalizeDesktopSessionId } from './config.mjs';
 
 export const DESKTOP_SESSION_SCHEMA_VERSION = 1;
+const sessionReadCache = new Map();
 
 function stableRecordId(input) {
   const explicit = String(input.id ?? input.message_id ?? input.messageId ?? '').trim();
@@ -32,18 +37,56 @@ function stableRecordId(input) {
 }
 
 function parseRecords(file) {
-  if (!existsSync(file)) return [];
-  return readFileSync(file, 'utf-8')
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .map((line, index) => {
+  if (!existsSync(file)) {
+    sessionReadCache.delete(file);
+    return [];
+  }
+  let stat;
+  try {
+    stat = statSync(file);
+  } catch {
+    sessionReadCache.delete(file);
+    return [];
+  }
+  const identity = `${stat.dev}:${stat.ino}`;
+  let cached = sessionReadCache.get(file);
+  if (!cached || cached.identity !== identity || stat.size < cached.size) {
+    cached = {
+      identity,
+      size: 0,
+      partial: '',
+      decoder: new StringDecoder('utf8'),
+      physicalOffset: 0,
+      records: [],
+    };
+  }
+  if (stat.size > cached.size) {
+    const length = stat.size - cached.size;
+    const buffer = Buffer.allocUnsafe(length);
+    const fd = openSync(file, 'r');
+    let bytesRead = 0;
+    try {
+      bytesRead = readSync(fd, buffer, 0, length, cached.size);
+    } finally {
+      closeSync(fd);
+    }
+    cached.size += bytesRead;
+    cached.partial += cached.decoder.write(buffer.subarray(0, bytesRead));
+    const lines = cached.partial.split(/\r?\n/);
+    cached.partial = lines.pop() ?? '';
+    for (const line of lines) {
+      if (!line) continue;
+      const physicalOffset = cached.physicalOffset;
+      cached.physicalOffset += 1;
       try {
-        return { ...JSON.parse(line), _physical_offset: index };
+        cached.records.push({ ...JSON.parse(line), _physical_offset: physicalOffset });
       } catch {
-        return null;
+        // Preserve physical offsets while ignoring malformed records.
       }
-    })
-    .filter(Boolean);
+    }
+  }
+  sessionReadCache.set(file, cached);
+  return cached.records;
 }
 
 function uniqueRecords(records) {
