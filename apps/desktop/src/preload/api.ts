@@ -1,5 +1,6 @@
 import type {
   DesktopCommand,
+  InvokeResponse,
   JeaBridge,
   JeaEventEnvelope
 } from '../shared/contract'
@@ -12,6 +13,14 @@ export type InvokeTransport = (
 export type EventTransport = (
   listener: (event: JeaEventEnvelope) => void
 ) => () => void
+
+export function unwrapInvokeResponse<T>(response: InvokeResponse<T>): T {
+  if (response.ok) return response.value
+  const error = new Error(response.error.message) as Error & { code: string }
+  error.name = 'PublicCommandError'
+  error.code = response.error.code
+  throw error
+}
 
 export function createJeaBridge(
   transport: InvokeTransport,

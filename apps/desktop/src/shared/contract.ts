@@ -60,6 +60,10 @@ export interface InvokeRequest {
   payload?: unknown
 }
 
+export type InvokeResponse<T = unknown> =
+  | { ok: true; value: T }
+  | { ok: false; error: { code: PublicErrorCode; message: string } }
+
 export interface JeaEventEnvelope {
   type: string
   ts: string

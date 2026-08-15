@@ -1,6 +1,7 @@
 import type {
   DesktopCommand,
   InvokeRequest,
+  InvokeResponse,
   OpsCommand,
   PublicErrorCode
 } from '../shared/contract'
@@ -92,4 +93,24 @@ export function createCommandRegistry(
 
 export function commandIsKnown(command: string): command is DesktopCommand {
   return (DESKTOP_COMMANDS as readonly string[]).includes(command)
+}
+
+export async function invokeForIpc(
+  invoke: (request: InvokeRequest) => Promise<unknown>,
+  request: InvokeRequest
+): Promise<InvokeResponse> {
+  try {
+    return { ok: true, value: await invoke(request) }
+  } catch (error) {
+    const publicError = error instanceof PublicCommandError
+      ? error
+      : new PublicCommandError('OPERATION_FAILED', 'Unable to complete the requested operation.')
+    return {
+      ok: false,
+      error: {
+        code: publicError.code,
+        message: publicError.message
+      }
+    }
+  }
 }

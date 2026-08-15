@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { createJeaBridge } from './api'
+import { createJeaBridge, unwrapInvokeResponse } from './api'
 import {
   JEA_EVENT_CHANNEL,
   JEA_INVOKE_CHANNEL,
@@ -7,7 +7,9 @@ import {
 } from '../shared/contract'
 
 const bridge = createJeaBridge(
-  (command, payload) => ipcRenderer.invoke(JEA_INVOKE_CHANNEL, { command, payload }),
+  async (command, payload) => unwrapInvokeResponse(
+    await ipcRenderer.invoke(JEA_INVOKE_CHANNEL, { command, payload })
+  ),
   (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, envelope: JeaEventEnvelope) => {
       if (!envelope || typeof envelope.type !== 'string') return

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   createCommandRegistry,
+  invokeForIpc,
   PublicCommandError
 } from '../src/main/command-registry'
 import type { CommandDefinitions } from '../src/main/command-registry'
@@ -88,5 +89,18 @@ describe('command registry', () => {
     })
     expect(String(error)).not.toContain('secret')
     expect(String(error)).not.toContain('/home/operator')
+  })
+
+  it('serializes only the public error contract for IPC', async () => {
+    const response = await invokeForIpc(async () => {
+      throw new PublicCommandError('CONFLICT', 'A managed process already exists.')
+    }, { command: 'daemon.startManaged' })
+    expect(response).toEqual({
+      ok: false,
+      error: {
+        code: 'CONFLICT',
+        message: 'A managed process already exists.'
+      }
+    })
   })
 })

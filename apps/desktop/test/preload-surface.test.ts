@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
-import { createJeaBridge } from '../src/preload/api'
+import { createJeaBridge, unwrapInvokeResponse } from '../src/preload/api'
 import {
   JEA_EVENT_CHANNEL,
   JEA_INVOKE_CHANNEL,
@@ -50,5 +50,23 @@ describe('preload surface', () => {
     expect(JEA_INVOKE_CHANNEL).toBe('jea:invoke')
     expect(JEA_EVENT_CHANNEL).toBe('jea:event')
     expect(source).not.toMatch(/exposeInMainWorld\(['"](?:require|process|global|Buffer)['"]/)
+  })
+
+  it('reconstructs structured public errors from IPC responses', () => {
+    expect(unwrapInvokeResponse({ ok: true, value: { saved: true } })).toEqual({ saved: true })
+    let caught: unknown
+    try {
+      unwrapInvokeResponse({
+        ok: false,
+        error: { code: 'CONFLICT', message: 'Operation conflicts with current state.' }
+      })
+    } catch (error) {
+      caught = error
+    }
+    expect(caught).toMatchObject({
+      name: 'PublicCommandError',
+      code: 'CONFLICT',
+      message: 'Operation conflicts with current state.'
+    })
   })
 })

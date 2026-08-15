@@ -2,7 +2,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { AcpSessionManager } from './acp-session-manager'
-import { createCommandRegistry } from './command-registry'
+import { createCommandRegistry, invokeForIpc } from './command-registry'
 import { DaemonSupervisor } from './daemon-supervisor'
 import { createDesktopCommandDefinitions } from './desktop-command-definitions'
 import { DesktopEventBus } from './event-bus'
@@ -90,7 +90,10 @@ if (!gotSingleInstanceLock) {
   })
 
   app.whenReady().then(() => {
-    ipcMain.handle(JEA_INVOKE_CHANNEL, (_event, request: InvokeRequest) => invoke(request))
+    ipcMain.handle(
+      JEA_INVOKE_CHANNEL,
+      (_event, request: InvokeRequest) => invokeForIpc(invoke, request)
+    )
     createWindow()
 
     app.on('activate', () => {
