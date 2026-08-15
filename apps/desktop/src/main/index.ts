@@ -151,13 +151,28 @@ async function runDesktopSmoke(outputPath: string): Promise<void> {
     })
     const renderer = await Promise.race([
       window.webContents.executeJavaScript(`
-        window.jea.invoke('ops.refresh')
-          .then((value) => ({
-            ok: true,
-            count: Array.isArray(value) ? value.length : -1,
-            names: Array.isArray(value) ? value.map((item) => item.subject?.name) : []
-          }))
-          .catch((error) => ({ ok: false, error: String(error && error.message ? error.message : error) }))
+        (async () => {
+          const runs = []
+          for (let i = 0; i < 3; i += 1) {
+            const startedAt = Date.now()
+            try {
+              const value = await window.jea.invoke('ops.refresh')
+              runs.push({
+                ok: true,
+                ms: Date.now() - startedAt,
+                count: Array.isArray(value) ? value.length : -1,
+                names: Array.isArray(value) ? value.map((item) => item.subject?.name) : []
+              })
+            } catch (error) {
+              runs.push({
+                ok: false,
+                ms: Date.now() - startedAt,
+                error: String(error && error.message ? error.message : error)
+              })
+            }
+          }
+          return { ok: runs.every((run) => run.ok), runs }
+        })()
       `),
       new Promise((_, reject) => {
         setTimeout(() => reject(new Error('renderer_invoke_timeout')), 12_000)
