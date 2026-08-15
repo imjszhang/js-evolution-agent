@@ -68,7 +68,7 @@ export default {
     unknown: '状态未知',
   },
   modeSource: {
-    'runtime-registry.json': 'runtime/subjects/registry.json',
+    'runtime-registry.json': '<JEA_HOME>/subjects/registry.json',
     'subjects.json': 'subjects.json',
     cli: 'CLI 启动参数',
     env: '环境变量',

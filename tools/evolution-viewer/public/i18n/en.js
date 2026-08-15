@@ -68,7 +68,7 @@ export default {
     unknown: 'Status unknown',
   },
   modeSource: {
-    'runtime-registry.json': 'runtime/subjects/registry.json',
+    'runtime-registry.json': '<JEA_HOME>/subjects/registry.json',
     'subjects.json': 'subjects.json',
     cli: 'CLI flag',
     env: 'Env var',

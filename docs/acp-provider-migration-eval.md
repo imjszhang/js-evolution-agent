@@ -68,7 +68,7 @@ sends Channel traffic only to that fixture subject, and requires ACP
 `startSession`, `prompt`, and `closeSession` to each succeed. The report
 records the fixture root and ACP execution root; both temporary roots are
 removed even when startup or validation fails. The real project
-`runtime/subjects/` tree must stay unchanged.
+the source checkout and default user JEA Home must stay unchanged.
 
 | Platform | Test | Typecheck | Build | Hidden-window smoke | Process tree |
 | --- | --- | --- | --- | --- | --- |
@@ -82,7 +82,7 @@ Local evidence at this revision (2026-08-15T11:47:11Z, darwin):
 - Channel / ACP compare / POSIX process-tree / smoke-fixture targeted tests: 36 passed / 2 skipped
 - `npm run desktop:test`: 77 passed
 - `npm run check`, `desktop:typecheck`, `desktop:build`, `desktop:smoke`: passed
-- smoke stages: fixture subject `smoke-desktop` only; Channel send ok; ACP start/prompt/close ok; leftover 0; real `runtime/subjects/` unchanged
+- smoke stages: fixture subject `smoke-desktop` only; Channel send ok; ACP start/prompt/close ok; leftover 0; real source checkout and default user JEA Home unchanged
 
 PR #106 CI at `2cd081e` passed on Ubuntu, macOS, and Windows, including
 CodeQL and dependency audit. Post-review follow-up commits must rerun the same

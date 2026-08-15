@@ -14,7 +14,7 @@ import { STORE_FILES, readJsonlSafe } from './evidence-audit.mjs';
 
 export const EVIDENCE_STREAM_SCHEMA = 'evidence-stream.v1';
 
-/** Paths relative to dataRoot (= runtime/subjects/<ns>/data). */
+/** Paths relative to dataRoot (= <JEA_HOME>/subjects/<ns>/data). */
 const STREAM_PATHS = Object.freeze({
   action_receipts: STORE_FILES.action_receipts,
   evolution_events: STORE_FILES.evolution_events,
@@ -342,7 +342,7 @@ function normalizeKinds(kinds) {
 /**
  * Virtual read view: merge scattered evidence sources into a sorted envelope stream.
  *
- * @param {string} dataRoot runtime/subjects/<ns>/data
+ * @param {string} dataRoot <JEA_HOME>/subjects/<ns>/data
  * @param {{ since?: string, limit?: number, kinds?: string[]|string, cycleId?: string }} [opts]
  * @returns {object[]}
  */

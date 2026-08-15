@@ -5,7 +5,7 @@ export const PRESENCE_PLANNERS = Object.freeze(['deterministic', 'llm']);
 const DEFAULT_COOLDOWN_MS = 30 * 60 * 1000;
 
 /**
- * Transport-agnostic presence loop config from runtime/subjects/registry.json channels.presence.
+ * Transport-agnostic presence loop config from <JEA_HOME>/subjects/registry.json channels.presence.
  */
 export function resolvePresenceConfig(root, subject, overrides = {}) {
   const entry = getSubjectEntry(root, subject);

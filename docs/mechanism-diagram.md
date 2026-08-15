@@ -239,7 +239,7 @@ flowchart TB
 ## 7. 运行时落盘骨架（按 Subject）
 
 ```text
-runtime/subjects/<namespace>/
+<JEA_HOME>/subjects/<namespace>/
 ├── SUBJECT.md
 └── data/
     ├── evolution/          # cycle-state · decisions · briefs · carryover · diary

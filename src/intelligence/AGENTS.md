@@ -37,7 +37,7 @@ agent_loop → exec → verify → belief_update → goals_assess → goals_cali
 
 模式解析优先级（仿 evolution.mode）：
 
-1. `runtime/subjects/registry.json` → `subjects.<name>.evolution.pipeline`
+1. `<JEA_HOME>/subjects/registry.json` → `subjects.<name>.evolution.pipeline`
 2. CLI `--loop` / `--pipeline reactor|agent_loop|phases`
 3. env `JEA_CYCLE_PIPELINE`
 4. 默认 `reactor`
@@ -179,8 +179,8 @@ Phase 3 灰度（`evolution.pipeline: reactor` 真实入队）已可用；exec �
 Brief 是**单轮人工意图**，不是已验证证据；Phase 1 的 report/decide prompt 会读取它，Analyze+Decide 成功入队后归档到 `processed/`。存储路径：
 
 ```text
-runtime/subjects/<data_namespace>/data/evolution/operator_briefs/pending/
-runtime/subjects/<data_namespace>/data/evolution/operator_briefs/processed/
+<JEA_HOME>/subjects/<data_namespace>/data/evolution/operator_briefs/pending/
+<JEA_HOME>/subjects/<data_namespace>/data/evolution/operator_briefs/processed/
 ```
 
 最小 JSON 示例：
@@ -219,8 +219,8 @@ operator_fact **不再是永久权威事实**。它是操作者注入的一次�
 存储路径：
 
 ```text
-runtime/subjects/<data_namespace>/data/evolution/operator_facts/pending/
-runtime/subjects/<data_namespace>/data/evolution/operator_facts/digested/
+<JEA_HOME>/subjects/<data_namespace>/data/evolution/operator_facts/pending/
+<JEA_HOME>/subjects/<data_namespace>/data/evolution/operator_facts/digested/
 ```
 
 最小 JSON 示例：
@@ -250,23 +250,23 @@ runtime/subjects/<data_namespace>/data/evolution/operator_facts/digested/
 - `jea intel question list` / `jea intel question resolve <id> [--note TEXT]`
 
 ```text
-runtime/subjects/<data_namespace>/data/evolution/operator_questions/pending/
-runtime/subjects/<data_namespace>/data/evolution/operator_questions/resolved/
+<JEA_HOME>/subjects/<data_namespace>/data/evolution/operator_questions/pending/
+<JEA_HOME>/subjects/<data_namespace>/data/evolution/operator_questions/resolved/
 ```
 
 答复方式复用现有入口（重新 `fact put` 或 `brief put`）；`question resolve` 仅做销账。
 
 ### Operator Guidance（长期约束）
 
-- 路径：`runtime/subjects/<data_namespace>/data/evolution/human_guidance.md` 的 `## Current` 段。
+- 路径：`<JEA_HOME>/subjects/<data_namespace>/data/evolution/human_guidance.md` 的 `## Current` 段。
 - 注入：Phase 1 report/decide 的 **Operator Guidance** 区块；**每轮**都会读，当前 pipeline 不会在 cycle 结束后自动清空。
 - 适合：稳定规则（如「ENOENT 必须带 execution_root 解释」）。
 - 不适合：「下一轮请核实 X」——应改用 `jea intel brief put`。
 
 ### 主体策略与权威文档
 
-- `runtime/subjects/<data_namespace>/SUBJECT.md`：`Off-Limits Without Human Approval` 等审批与安全边界；`SOUL.md` 为 channel persona（不参与治理权威文献）；用 `jea subject check` 校验结构。
-- `runtime/subjects/registry.json`：lane、resource root 等机器可读配置。
+- `<JEA_HOME>/subjects/<data_namespace>/SUBJECT.md`：`Off-Limits Without Human Approval` 等审批与安全边界；`SOUL.md` 为 channel persona（不参与治理权威文献）；用 `jea subject check` 校验结构。
+- `<JEA_HOME>/subjects/registry.json`：lane、resource root 等机器可读配置。
 - `policies/authority/CONSTITUTION.md`、`policies/authority/GUIDE.md`、`oada.config.mjs`：Phase 1 权威文档，优先级高于情报材料。
 
 ### 通用情报写入（Evidence，非 operator_fact）

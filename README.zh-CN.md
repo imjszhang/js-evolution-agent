@@ -141,7 +141,7 @@ decide next                →  Phase 3.5 beliefs + Phase 4/4.5 goals + 下一�
 | --- | --- |
 | **OADA 引擎**（`src/engine/`，vendored） | 决策队列、ExecutionPipeline，以及 Phase 1 辅助（规则 / 目标 / guidance / logger） |
 | **Cyber-Taoist 权威文献**（`policies/authority/`） | 跨 subject 共享的治理上下文（宪章、指南） |
-| **Subject 策略**（`runtime/subjects/<ns>/SUBJECT.md`） | 每个演化主体的语义边界与审批规则 |
+| **Subject 策略**（`<JEA_HOME>/subjects/<ns>/SUBJECT.md`） | 每个演化主体的语义边界与审批规则 |
 | **js-intel-store** | 文件型情报记忆（观测、回执、报告、信念等） |
 | **CLI `jea`** | 操作者入口：单轮运行、daemon、channel、数据与审计 |
 
@@ -177,8 +177,8 @@ decide next                →  Phase 3.5 beliefs + Phase 4/4.5 goals + 下一�
 │  queue · exec ·       │  agent_run ·   │  store · reports ·       │
 │  verifyActions       │  lane · gates  │  beliefs · goals           │
 ├──────────────────────┴────────────────┴───────────────────────────┤
-│  policies/authority/  +  runtime/subjects/<ns>/SUBJECT.md         │
-│  runtime/subjects/<ns>/data/  (evolution · intelligence · goals)  │
+│  policies/authority/  +  <JEA_HOME>/subjects/<ns>/SUBJECT.md      │
+│  <JEA_HOME>/subjects/<ns>/data/ (evolution · intelligence · goals)│
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -282,8 +282,8 @@ jea goals show
 每个 **Subject** 是独立的演化单元：自己的策略、数据 namespace、可选 lane（目标仓库 worktree）与 channel 配置。
 
 ```text
-runtime/subjects/
-├── registry.json              # 本地 registry（gitignore，勿提交）
+~/.jea/subjects/
+├── registry.json              # 设备本地 registry（勿提交）
 └── <data_namespace>/
     ├── SUBJECT.md             # 治理策略（边界、审批规则）
     ├── SOUL.md                # Channel 人设（不参与 Decide 治理）
@@ -292,6 +292,17 @@ runtime/subjects/
         ├── intelligence/
         └── goals/
 ```
+
+`JEA_HOME` 默认是 Linux/macOS 的 `~/.jea`、Windows 的 `%USERPROFILE%\.jea`，也可显式覆盖。源码继续留在 checkout，lane 仓库/worktree 继续作为 execution root；旧仓库运行数据必须显式迁移：
+
+```bash
+jea daemon stop --all
+jea data migrate-home --dry-run
+jea data migrate-home --yes
+jea doctor
+```
+
+迁移会逐文件校验并原子启用新目录，同时保留旧 `runtime/subjects/` 作为人工回退来源。详见 [JEA Home 迁移指南](./docs/jea-home-migration.md)。
 
 ```bash
 jea subject list
@@ -413,6 +424,8 @@ cp .env.example .env   # Windows: copy .env.example .env
 | --- | --- |
 | `DEEPSEEK_API_KEY` | 真实模型调用（缺省则 Mock） |
 | `DEEPSEEK_MODEL` | 默认 `deepseek-v4-flash` |
+| `JEA_HOME` | 设备级 Subject 状态根（默认 `~/.jea`） |
+| `JEA_PROJECT_ROOT` | 源码 checkout 根；不再决定 Subject 数据位置 |
 | `JEA_LANGUAGE` | UI/报告语言，`zh-CN` \| `en-US` |
 | `JEA_APPROVAL_MODE` | `manual` \| `auto_guarded` \| `auto_all` |
 | `JEA_EVOLUTION_MODE` | Daemon 默认演化模式 |

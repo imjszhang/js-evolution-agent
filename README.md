@@ -141,7 +141,7 @@ If you know Claude Code’s `/loop` + `/goal`: JEA adds an evolution layer on to
 | --- | --- |
 | **OADA engine** (`src/engine/`, vendored) | Decision queue, ExecutionPipeline, and Phase 1 helpers (rules / goals / guidance / logger) |
 | **Cyber-Taoist authority docs** (`policies/authority/`) | Cross-subject governance context (constitution, guide) |
-| **Subject policy** (`runtime/subjects/<ns>/SUBJECT.md`) | Per-subject semantic boundaries and approval rules |
+| **Subject policy** (`<JEA_HOME>/subjects/<ns>/SUBJECT.md`) | Per-subject semantic boundaries and approval rules |
 | **js-intel-store** | File-backed intelligence memory (observations, receipts, reports, beliefs, …) |
 | **CLI `jea`** | Operator entry: single runs, daemon, channel, data, audit |
 
@@ -177,8 +177,8 @@ Typical use: let an AI subject investigate, edit code, simulate, and prepare rel
 │  queue · exec ·       │  agent_run ·   │  store · reports ·       │
 │  verifyActions       │  lane · gates  │  beliefs · goals           │
 ├──────────────────────┴────────────────┴───────────────────────────┤
-│  policies/authority/  +  runtime/subjects/<ns>/SUBJECT.md         │
-│  runtime/subjects/<ns>/data/  (evolution · intelligence · goals)  │
+│  policies/authority/  +  <JEA_HOME>/subjects/<ns>/SUBJECT.md      │
+│  <JEA_HOME>/subjects/<ns>/data/ (evolution · intelligence · goals)│
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -283,8 +283,8 @@ Full CLI reference: [AGENTS.md](./AGENTS.md) (Chinese operator manual).
 Each **Subject** is an independent evolution unit: its own policy, data namespace, optional lane (target-repo worktree), and channel config.
 
 ```text
-runtime/subjects/
-├── registry.json              # local registry (gitignored — do not commit)
+~/.jea/subjects/
+├── registry.json              # device-local registry (do not commit)
 └── <data_namespace>/
     ├── SUBJECT.md             # governance (boundaries, approval rules)
     ├── SOUL.md                # channel persona (not Decide authority)
@@ -293,6 +293,17 @@ runtime/subjects/
         ├── intelligence/
         └── goals/
 ```
+
+`JEA_HOME` defaults to `~/.jea` (or `%USERPROFILE%\.jea` on Windows) and can be overridden explicitly. Source files remain in the checkout, while lane repositories/worktrees remain execution roots. Existing checkout-local data is migrated explicitly:
+
+```bash
+jea daemon stop --all
+jea data migrate-home --dry-run
+jea data migrate-home --yes
+jea doctor
+```
+
+Migration verifies every file, activates the new tree atomically, and preserves the legacy `runtime/subjects/` directory for manual rollback. See [JEA Home migration](./docs/jea-home-migration.md).
 
 ```bash
 jea subject list
@@ -414,6 +425,8 @@ cp .env.example .env   # Windows: copy .env.example .env
 | --- | --- |
 | `DEEPSEEK_API_KEY` | Real model calls (Mock if unset) |
 | `DEEPSEEK_MODEL` | Default `deepseek-v4-flash` |
+| `JEA_HOME` | Device-level Subject state root (default `~/.jea`) |
+| `JEA_PROJECT_ROOT` | Source checkout root; does not select Subject data |
 | `JEA_LANGUAGE` | UI/report language: `zh-CN` \| `en-US` |
 | `JEA_APPROVAL_MODE` | `manual` \| `auto_guarded` \| `auto_all` |
 | `JEA_EVOLUTION_MODE` | Default daemon evolution mode |
