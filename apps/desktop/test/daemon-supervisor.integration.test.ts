@@ -5,16 +5,16 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
-  symlinkSync,
   writeFileSync
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { DaemonSupervisor } from '../src/main/daemon-supervisor'
 import { DesktopEventBus } from '../src/main/event-bus'
 import { ManagedProcessRegistry } from '../src/main/managed-process-registry'
+import { DEFAULT_PROJECT_ROOT } from '../src/main/operations'
 
 const roots: string[] = []
 const children: ChildProcess[] = []
@@ -35,15 +35,19 @@ async function waitFor(check: () => boolean, timeoutMs = 5_000): Promise<void> {
 function projectFixture(): string {
   const root = mkdtempSync(join(tmpdir(), 'jea-desktop-daemon-live-'))
   roots.push(root)
-  const workspaceRoot = fileURLToPath(new URL('../../../', import.meta.url))
+  const workspaceRoot = DEFAULT_PROJECT_ROOT
+  const hostCli = join(workspaceRoot, 'src', 'cli', 'jea.mjs')
+  if (!existsSync(hostCli)) {
+    throw new Error(`fixture workspace root invalid: ${workspaceRoot} (expected ${hostCli})`)
+  }
   const cliDir = join(root, 'src', 'cli')
   mkdirSync(cliDir, { recursive: true })
   writeFileSync(join(cliDir, 'jea.mjs'), [
-    `import { main } from ${JSON.stringify(pathToFileURL(join(workspaceRoot, 'src', 'cli', 'jea.mjs')).href)};`,
+    `import { main } from ${JSON.stringify(pathToFileURL(hostCli).href)};`,
     'process.exit(await main());'
   ].join('\n'))
-  symlinkSync(join(workspaceRoot, 'oada.config.mjs'), join(root, 'oada.config.mjs'), 'file')
-  symlinkSync(join(workspaceRoot, 'package.json'), join(root, 'package.json'), 'file')
+  writeFileSync(join(root, 'oada.config.mjs'), readFileSync(join(workspaceRoot, 'oada.config.mjs')))
+  writeFileSync(join(root, 'package.json'), readFileSync(join(workspaceRoot, 'package.json')))
   const subjectsDir = join(root, 'runtime', 'subjects')
   mkdirSync(subjectsDir, { recursive: true })
   writeFileSync(join(subjectsDir, 'registry.json'), JSON.stringify({
@@ -113,6 +117,7 @@ describe.skipIf(process.platform === 'win32')('DaemonSupervisor real process smo
 
     const started = await supervisor.start('alpha', { domain: 'channel' })
     expect(started).toMatchObject({ mode: 'managed', domain: 'channel' })
+    expect(started.pid).toEqual(expect.any(Number))
     await waitFor(() => supervisor.get('alpha').heartbeat_at != null).catch((error) => {
       const stderr = started.log_paths?.stderr
       const stdout = started.log_paths?.stdout
@@ -133,7 +138,11 @@ describe.skipIf(process.platform === 'win32')('DaemonSupervisor real process smo
     const registry = new ManagedProcessRegistry()
     const supervisor = new DaemonSupervisor(root, registry, new DesktopEventBus())
     const child = externalDaemon(root)
-    await waitFor(() => supervisor.get('alpha').mode === 'attached')
+    expect(child.pid).toEqual(expect.any(Number))
+    await waitFor(() => supervisor.get('alpha').mode === 'attached' || child.exitCode != null || child.signalCode != null)
+    if (child.exitCode != null || child.signalCode != null) {
+      throw new Error(`external daemon exited with ${child.exitCode ?? child.signalCode} before attach`)
+    }
 
     await registry.shutdownAll('app_quit')
     expect(supervisor.get('alpha').mode).toBe('attached')

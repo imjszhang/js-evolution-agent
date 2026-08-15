@@ -53,7 +53,7 @@ function makeIsolatedRoot() {
     data_namespace: SUBJECT,
   });
   writeJsonFile(join(root, 'runtime', 'subjects', 'registry.json'), {
-    default: SUBJECT,
+    default_subject: SUBJECT,
     subjects: {
       [SUBJECT]: {
         policy: `subjects/${SUBJECT}.md`,

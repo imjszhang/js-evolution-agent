@@ -19,10 +19,11 @@
 
 <p align="center">
   <a href="https://github.com/imjszhang/js-evolution-agent/actions/workflows/ci.yml"><img src="https://github.com/imjszhang/js-evolution-agent/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/imjszhang/js-evolution-agent/actions/workflows/codeql.yml"><img src="https://github.com/imjszhang/js-evolution-agent/actions/workflows/codeql.yml/badge.svg" alt="CodeQL" /></a>
   <img src="https://img.shields.io/badge/License-MIT-blue?style=flat-square" alt="MIT License" />
   <img src="https://img.shields.io/badge/Theory-cyber--taoist.ai-FCD228?style=flat-square&labelColor=000000" alt="cyber-taoist.ai" />
   <img src="https://img.shields.io/badge/CLI-jea-000000?style=flat-square&labelColor=FCD228" alt="jea CLI" />
-  <img src="https://img.shields.io/badge/Node.js-%3E%3D18-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node.js >= 18" />
+  <img src="https://img.shields.io/badge/Node.js-%3E%3D20-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node.js >= 20" />
 </p>
 
 > Not a fixed `/goal` coding loop that runs until tests pass — an **evolution loop** with theoretical constraints, governance boundaries, and auditable receipts. When an old goal (law) is falsified by consequences, the system enters a rule-update phase instead of spinning or grinding.
@@ -47,6 +48,7 @@
 - [Configuration](#configuration)
 - [Safety boundaries](#safety-boundaries)
 - [Development and testing](#development-and-testing)
+- [Security](#security)
 - [Documentation index](#documentation-index)
 - [License](#license)
 
@@ -198,7 +200,7 @@ Phase 5   evolution diary
 
 ## Requirements
 
-- **Node.js** ≥ 18
+- **Node.js** ≥ 20
 - Optional: **DeepSeek API key** (use `--mock` without a key)
 - Optional: Claude Agent SDK / Cursor SDK / Reasonix CLI (for `agent_run`)
 - Optional: Feishu open-platform app (Channel adapter)
@@ -267,7 +269,7 @@ jea evolve resume <run-id>
 jea intel summary [--days 7]
 jea intel report [--cycle <id>] [--open]
 jea daemon inbox [--json]
-jea audit queue
+jea audit queue   # evolution evidence / decision queue; not npm audit
 jea beliefs show
 jea goals show
 ```
@@ -444,15 +446,40 @@ CYBER_TAOIST_DOCS_DIR=/path/to/custom-authority jea run
 
 ```bash
 npm test
+npm run test:ci          # default reporter + JUnit under test-artifacts/
+npm run test:coverage    # V8 coverage; floors are a no-regression baseline
 npm run check
+npm run desktop:typecheck
+npm run desktop:build
+npm run audit:ci         # production npm advisories + dated exception baseline
+npm run reactor:canary   # isolated mock canary; no live DeepSeek
 npm run jea -- help
 ```
 
-Pull requests and pushes to `main` run GitHub Actions (`npm test` + `npm run check`). Live DeepSeek tests stay opt-in via `JEA_LIVE_DEEPSEEK=1` and are not part of CI. `jea doctor` is a local diagnostic, not a CI gate.
+Pull requests, pushes to `main`, and merge-group checks run:
+
+| Check | What it runs |
+| --- | --- |
+| `check` | Isolated `ci-repo` policy / subject / actions checks |
+| `test (20)` | `npm run test:ci` on Node 20 |
+| `test (22)` | `npm run test:coverage` on Node 22 |
+| `desktop-build` | Desktop typecheck + packable build (not a second desktop test run) |
+| `dependency-audit` | `npm run audit:ci` |
+| CodeQL JS/TS | Advanced setup, `build-mode: none` |
+
+`main` is protected by a ruleset: changes go through a pull request based on latest `main`. Required checks are the jobs above. Nightly `reactor:canary` is mock-only, not a PR required check, and never injects `DEEPSEEK_API_KEY`. Live DeepSeek tests stay opt-in via `JEA_LIVE_DEEPSEEK=1`. `jea doctor` is a local diagnostic, not a CI gate.
+
+`jea audit queue` inspects evolution evidence / the decision queue. It is **not** the npm supply-chain audit (`npm run audit:ci`).
 
 - Engine vendoring: [`src/engine/VENDORED.md`](./src/engine/VENDORED.md)
 - Full operator / automation guide: [AGENTS.md](./AGENTS.md)
 - Design notes: `journal/`
+
+---
+
+## Security
+
+Vulnerability reporting and support scope: [SECURITY.md](./SECURITY.md). Remaining unfixed production advisories are tracked by [`.github/security/audit-baseline.json`](./.github/security/audit-baseline.json) and its GitHub issue, not by a static list in the policy doc.
 
 ---
 
@@ -464,6 +491,7 @@ Pull requests and pushes to `main` run GitHub Actions (`npm test` + `npm run che
 | [README.zh-CN.md](./README.zh-CN.md) | Chinese README |
 | [docs/mechanism-diagram.md](./docs/mechanism-diagram.md) | Module & dual-domain mechanism diagrams (Mermaid) |
 | [AGENTS.md](./AGENTS.md) | Full CLI reference, daemon/channel workflows, operator input |
+| [SECURITY.md](./SECURITY.md) | Vulnerability reporting for the CLI host and Electron desktop |
 | [policies/README.md](./policies/README.md) | Subject / registry / lane / goals setup |
 | [policies/subjects.example.json](./policies/subjects.example.json) | Registry example |
 | [policies/authority/](./policies/authority/) | Local authority doc copies (CONSTITUTION, GUIDE) |

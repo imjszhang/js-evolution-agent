@@ -27,6 +27,11 @@ export function readActiveGoalState(runtime) {
   };
 }
 
+/**
+ * @param {any} runtime
+ * @param {any} nextGoal
+ * @param {{ type?: string, reason: string, evidenceRefs?: any[], cycle?: string | null, store?: any }} [opts]
+ */
 export function applyActiveGoalState(runtime, nextGoal, {
   type = 'updated',
   reason,

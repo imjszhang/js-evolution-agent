@@ -33,6 +33,11 @@ function redactValue(value, seen, key = '') {
   );
 }
 
+/**
+ * Recursively redact secret-like strings from a JSON-compatible value.
+ * @param {any} value
+ * @returns {any}
+ */
 export function redactSecrets(value) {
   return redactValue(value, new WeakSet());
 }

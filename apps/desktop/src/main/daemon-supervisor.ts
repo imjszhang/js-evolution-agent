@@ -174,7 +174,9 @@ export class DaemonSupervisor {
       kind: 'daemon',
       id: subject,
       pid: child.pid ?? null,
-      cleanup: () => this.stop(subject, 'app_quit')
+      cleanup: async () => {
+        await this.stop(subject, 'app_quit')
+      }
     })
     const entry: ManagedDaemon = {
       subject,
