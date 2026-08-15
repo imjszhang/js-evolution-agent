@@ -4,6 +4,9 @@
   "private": true,
   "description": "A controlled self-evolution host instance with vendored OADA engine (src/engine/) and js-intel-store intelligence memory.",
   "type": "module",
+  "workspaces": [
+    "apps/*"
+  ],
   "bin": {
     "jea": "src/cli/jea.mjs"
   },
@@ -17,6 +20,9 @@
     "test:live-deepseek": "node --preserve-symlinks ./node_modules/vitest/vitest.mjs run test/intel-report-honesty-live.test.mjs test/deepseek-model-thinking-live.test.mjs",
     "test:live-deepseek:matrix": "node --preserve-symlinks ./node_modules/vitest/vitest.mjs run test/deepseek-model-thinking-live.test.mjs",
     "test:live-deepseek:intel-matrix": "node --preserve-symlinks ./node_modules/vitest/vitest.mjs run --pool=forks --maxWorkers=1 test/intel-report-honesty-matrix-live.test.mjs",
+    "desktop:dev": "npm run dev --workspace @jea/desktop",
+    "desktop:build": "npm run build --workspace @jea/desktop",
+    "desktop:test": "npm run test --workspace @jea/desktop",
     "viewer:build": "node --preserve-symlinks src/cli/jea.mjs intel viewer build",
     "viewer:serve": "node --preserve-symlinks src/cli/jea.mjs intel viewer serve --open",
     "viewer:serve:win": "powershell -ExecutionPolicy Bypass -File scripts/viewer-serve-win.ps1 -Launch",
