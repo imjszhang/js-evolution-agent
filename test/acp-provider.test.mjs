@@ -266,11 +266,12 @@ describe('ACP Phase 2 provider', () => {
       success: false,
       deferred: true,
       provider,
+      errorCode: 'acp_initialize_failed',
       provider_failure: {
         phase: 'acp_start_or_prompt',
       },
     });
-    expect(result.error).toContain('fixture initialize rejected');
+    expect(result.error).toContain('ACP initialize/session setup failed');
   });
 
   it('propagates unavailable ACP as deferred through agent_run handler', async () => {
