@@ -1,10 +1,11 @@
 import { join, relative } from 'node:path';
 import { existsSync } from 'node:fs';
 import { getProjectRoot } from '../../infra/project.mjs';
+import { migrateJeaHome } from '../../infra/jea-home-migration.mjs';
 import { confirm } from '../utils/prompt.mjs';
 import {
   countFiles,
-  copyProjectDir,
+  copyDirBetweenRoots,
   ensureProjectDir,
   latestFile,
   removeProjectDir,
@@ -130,9 +131,14 @@ export function backupData(root, flags = {}) {
   const name = String(flags.name || `data-${timestampForPath()}`)
     .replace(/[\\/]/g, '-')
     .replace(/\s+/g, '-');
-  const source = relative(root, runtime.runtimeRoot);
   const destination = join('backups', 'subjects', runtime.dataNamespace, name);
-  const result = copyProjectDir(root, source, destination, { force: !!flags.force });
+  const result = copyDirBetweenRoots(
+    runtime.runtimeRoot,
+    '.',
+    runtime.jeaHome,
+    destination,
+    { force: !!flags.force },
+  );
   return {
     ...result,
     runtime,
@@ -179,8 +185,47 @@ function printInitResult(result, root, language = getLanguage()) {
   }
 }
 
-export async function dataCommand({ subcommand, flags = {} } = {}) {
-  const root = getProjectRoot();
+export async function dataCommand({ subcommand, flags = {}, context = null } = {}) {
+  const root = context ?? getProjectRoot();
+  if (subcommand === 'migrate-home') {
+    if (!flags['dry-run'] && !flags.yes) {
+      console.log('Will copy legacy Subject data into JEA Home after verifying all files.');
+      const ok = await confirm('Daemons must be stopped. The legacy directory will be preserved.');
+      if (!ok) {
+        console.log('Cancelled.');
+        return 1;
+      }
+    }
+    try {
+      const result = await migrateJeaHome(root, { dryRun: !!flags['dry-run'] });
+      if (flags.json) console.log(JSON.stringify(result, null, 2));
+      else {
+        console.log(`JEA Home migration: ${result.status}`);
+        console.log(`source: ${result.source_subjects_root}`);
+        console.log(`target: ${result.target_subjects_root}`);
+        if (result.source) {
+          console.log(`files: ${result.source.files}`);
+          console.log(`bytes: ${result.source.bytes}`);
+          console.log(`sha256: ${result.source.digest}`);
+        }
+        if (result.legacy_preserved) console.log('Legacy source preserved: yes');
+      }
+      return 0;
+    } catch (error) {
+      const payload = {
+        ok: false,
+        code: error?.code ?? 'migration_failed',
+        error: error?.message || String(error),
+        details: error?.details ?? null,
+      };
+      if (flags.json) console.log(JSON.stringify(payload, null, 2));
+      else {
+        console.error(`${payload.code}: ${payload.error}`);
+        if (payload.details) console.error(JSON.stringify(payload.details, null, 2));
+      }
+      return 1;
+    }
+  }
   const runtime = runtimeForFlags(root, flags);
   if (subcommand === 'status') {
     const status = dataStatus(root, flags);
@@ -197,7 +242,7 @@ export async function dataCommand({ subcommand, flags = {} } = {}) {
   if (subcommand === 'init') {
     const result = initData(root, flags);
     if (flags.json) console.log(JSON.stringify(result, null, 2));
-    else printInitResult(result, root);
+    else printInitResult(result, runtime.sourceRoot);
     return 0;
   }
 
@@ -206,11 +251,11 @@ export async function dataCommand({ subcommand, flags = {} } = {}) {
     if (flags.json) {
       console.log(JSON.stringify(result, null, 2));
     } else if (result.copied) {
-      console.log(`Backup created: ${relative(root, result.destination)}`);
+      console.log(`Backup created: ${result.destination}`);
       console.log(`files: ${result.files}`);
     } else {
       console.log(`Backup skipped: ${result.reason}`);
-      console.log(`destination: ${relative(root, result.destination)}`);
+      console.log(`destination: ${result.destination}`);
     }
     return result.copied || result.reason === 'destination_exists' ? 0 : 1;
   }
@@ -227,8 +272,7 @@ export async function dataCommand({ subcommand, flags = {} } = {}) {
     }
     let removed = 0;
     for (const target of DATA_DIRS) {
-      const relativeTarget = relative(root, join(runtime.runtimeRoot, target));
-      if (removeProjectDir(root, relativeTarget)) {
+      if (removeProjectDir(runtime.runtimeRoot, target)) {
         removed++;
         console.log(`removed: ${join(runtime.runtimeRoot, target)}`);
       }
@@ -237,7 +281,7 @@ export async function dataCommand({ subcommand, flags = {} } = {}) {
     return 0;
   }
 
-  console.error('Usage: jea data <status|init|backup|reset> [--subject NAME] [--goals] [--seed] [--all] [--force] [--json] [--yes]');
+  console.error('Usage: jea data <status|init|backup|reset|migrate-home> [--subject NAME] [--goals] [--seed] [--all] [--force] [--dry-run] [--json] [--yes]');
   return 2;
 }
 

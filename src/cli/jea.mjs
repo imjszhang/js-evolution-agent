@@ -3,6 +3,10 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgv } from './utils/args.mjs';
 import { getProjectRoot, loadProjectEnv } from '../infra/project.mjs';
+import {
+  assertJeaHomeAuthority,
+  createRuntimeContext,
+} from '../infra/jea-home.mjs';
 import { warmJeaLinksCache } from '../infra/links/index.mjs';
 import { doctorCommand } from './commands/doctor.mjs';
 import { runCommand } from './commands/run.mjs';
@@ -189,6 +193,9 @@ Examples:
 export async function main(argv = process.argv.slice(2)) {
   const root = getProjectRoot();
   loadProjectEnv(root);
+  const context = createRuntimeContext({ sourceRoot: root });
+  process.env.JEA_PROJECT_ROOT = context.sourceRoot;
+  process.env.JEA_HOME = context.jeaHome;
   await warmJeaLinksCache(root).catch(() => {});
   const { positionals, flags } = parseArgv(argv);
   const [command, subcommand, ...args] = positionals;
@@ -197,13 +204,23 @@ export async function main(argv = process.argv.slice(2)) {
     console.log(helpText());
     return 0;
   }
-  if (command === 'doctor') return doctorCommand({ flags });
+  const authorityBypass = command === 'doctor'
+    || (command === 'data' && subcommand === 'migrate-home');
+  if (!authorityBypass) {
+    try {
+      assertJeaHomeAuthority(context);
+    } catch (error) {
+      console.error(error?.message || String(error));
+      return 1;
+    }
+  }
+  if (command === 'doctor') return doctorCommand({ flags, context });
   if (command === 'run') return runCommand({ flags });
   if (command === 'evolve') return evolveCommand({ subcommand, flags, args });
   if (command === 'daemon') return daemonCommand({ subcommand, flags, args });
   if (command === 'channel') return channelCommand({ subcommand, flags, args });
   if (command === 'bridge') return bridgeCommand({ subcommand, flags, args });
-  if (command === 'data') return dataCommand({ subcommand, flags });
+  if (command === 'data') return dataCommand({ subcommand, flags, context });
   if (command === 'intel') return intelCommand({ subcommand, flags, args });
   if (command === 'reactor') return reactorCommand({ subcommand, flags, args });
   if (command === 'goals') return goalsCommand({ subcommand, flags, args });
@@ -211,7 +228,7 @@ export async function main(argv = process.argv.slice(2)) {
   if (command === 'audit') return auditCommand({ subcommand, flags });
   if (command === 'llm') return llmCommand({ subcommand, flags });
   if (command === 'policy') return policyCommand({ subcommand, flags });
-  if (command === 'subject') return subjectCommand({ subcommand, flags, args });
+  if (command === 'subject') return subjectCommand({ subcommand, flags, args, context });
   if (command === 'actions') return actionsCommand({ subcommand, flags });
 
   console.error(`Unknown command: ${command}`);

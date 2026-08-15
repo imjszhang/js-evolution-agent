@@ -9,7 +9,17 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+
+export function resolveWithinRoot(root, target) {
+  const normalizedRoot = resolve(root);
+  const full = isAbsolute(target) ? resolve(target) : resolve(normalizedRoot, target);
+  const rel = relative(normalizedRoot, full);
+  if (rel === '..' || rel.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) || isAbsolute(rel)) {
+    throw new Error(`Refusing to access outside root: ${full}`);
+  }
+  return full;
+}
 
 export function readJsonSafe(filePath, fallback = null) {
   try {
@@ -30,11 +40,7 @@ export function readTextSafe(filePath, fallback = '') {
 }
 
 export function ensureProjectDir(root, relativeDir) {
-  const full = resolve(root, relativeDir);
-  const normalizedRoot = resolve(root);
-  if (!full.startsWith(normalizedRoot)) {
-    throw new Error(`Refusing to create outside project root: ${full}`);
-  }
+  const full = resolveWithinRoot(root, relativeDir);
   const existed = existsSync(full);
   mkdirSync(full, { recursive: true });
   return { path: full, created: !existed };
@@ -47,11 +53,7 @@ export function writeJsonFile(filePath, data) {
 }
 
 export function writeJsonIfMissing(root, relativeFile, data, { force = false } = {}) {
-  const full = resolve(root, relativeFile);
-  const normalizedRoot = resolve(root);
-  if (!full.startsWith(normalizedRoot)) {
-    throw new Error(`Refusing to write outside project root: ${full}`);
-  }
+  const full = resolveWithinRoot(root, relativeFile);
   const existed = existsSync(full);
   if (existed && !force) {
     return { path: full, written: false, skipped: true, existed: true };
@@ -90,23 +92,15 @@ export function latestFile(dirPath) {
 }
 
 export function removeProjectDir(root, relativeDir) {
-  const full = resolve(root, relativeDir);
-  const normalizedRoot = resolve(root);
-  if (!full.startsWith(normalizedRoot)) {
-    throw new Error(`Refusing to remove outside project root: ${full}`);
-  }
+  const full = resolveWithinRoot(root, relativeDir);
   if (!existsSync(full)) return false;
   rmSync(full, { recursive: true, force: true });
   return true;
 }
 
 export function copyProjectDir(root, relativeSource, relativeDestination, { force = false } = {}) {
-  const normalizedRoot = resolve(root);
-  const source = resolve(root, relativeSource);
-  const destination = resolve(root, relativeDestination);
-  if (!source.startsWith(normalizedRoot) || !destination.startsWith(normalizedRoot)) {
-    throw new Error(`Refusing to copy outside project root: ${source} -> ${destination}`);
-  }
+  const source = resolveWithinRoot(root, relativeSource);
+  const destination = resolveWithinRoot(root, relativeDestination);
   if (!existsSync(source)) {
     return { source, destination, copied: false, reason: 'source_missing' };
   }
@@ -114,6 +108,21 @@ export function copyProjectDir(root, relativeSource, relativeDestination, { forc
     return { source, destination, copied: false, reason: 'destination_exists' };
   }
   cpSync(source, destination, { recursive: true, force });
+  return { source, destination, copied: true };
+}
+
+export function copyDirBetweenRoots(sourceRoot, sourcePath, destinationRoot, destinationPath, {
+  force = false,
+} = {}) {
+  const source = resolveWithinRoot(sourceRoot, sourcePath);
+  const destination = resolveWithinRoot(destinationRoot, destinationPath);
+  if (!existsSync(source)) {
+    return { source, destination, copied: false, reason: 'source_missing' };
+  }
+  if (existsSync(destination) && !force) {
+    return { source, destination, copied: false, reason: 'destination_exists' };
+  }
+  cpSync(source, destination, { recursive: true, force, errorOnExist: !force });
   return { source, destination, copied: true };
 }
 

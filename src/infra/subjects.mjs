@@ -7,6 +7,11 @@ import {
 } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { readJsonSafe, readTextSafe, writeJsonFile } from './files.mjs';
+import {
+  createRuntimeContext,
+  sourceRootFor,
+  subjectsHomeDir,
+} from './jea-home.mjs';
 import { getLanguage, t } from './i18n.mjs';
 import {
   describeLinkRef,
@@ -20,19 +25,19 @@ export const DEFAULT_SUBJECT = 'js-evolution-agent';
 export const SUBJECT_ENV = 'JEA_SUBJECT';
 
 export function subjectsRuntimeDir(root) {
-  return join(root, 'runtime', 'subjects');
+  return subjectsHomeDir(root);
 }
 
 export function subjectsDir(root) {
-  return join(root, 'policies', 'subjects');
+  return join(sourceRootFor(root), 'policies', 'subjects');
 }
 
 export function templatesDir(root) {
-  return join(root, 'policies', 'templates');
+  return join(sourceRootFor(root), 'policies', 'templates');
 }
 
 function legacyActiveSubjectFile(root) {
-  return join(root, 'policies', 'active-subject.json');
+  return join(sourceRootFor(root), 'policies', 'active-subject.json');
 }
 
 export function subjectsRegistryFile(root) {
@@ -40,7 +45,7 @@ export function subjectsRegistryFile(root) {
 }
 
 export function legacySubjectsRegistryFile(root) {
-  return join(root, 'policies', 'subjects.json');
+  return join(sourceRootFor(root), 'policies', 'subjects.json');
 }
 
 export const SUBJECT_POLICY_FILENAME = 'SUBJECT.md';
@@ -345,7 +350,7 @@ export function getDataNamespace(root, config) {
 }
 
 export function getSubjectRuntimeRoot(root, config) {
-  return join(root, 'runtime', 'subjects', getDataNamespace(root, config));
+  return join(subjectsRuntimeDir(root), getDataNamespace(root, config));
 }
 
 export function getSubjectDataRoot(root, config) {
@@ -353,6 +358,7 @@ export function getSubjectDataRoot(root, config) {
 }
 
 export function runtimeInfoForSubject(root, subjectOrConfig) {
+  const context = createRuntimeContext(root);
   const config = typeof subjectOrConfig === 'string'
     ? resolveSubjectConfig(root, { subject: subjectOrConfig })
     : subjectOrConfig;
@@ -365,6 +371,9 @@ export function runtimeInfoForSubject(root, subjectOrConfig) {
     active: legacy,
     subject: config.name,
     dataNamespace,
+    sourceRoot: context.sourceRoot,
+    jeaHome: context.jeaHome,
+    jeaHomeSource: context.jeaHomeSource,
     runtimeRoot,
     dataRoot,
     evolutionDir: join(dataRoot, 'evolution'),
@@ -378,9 +387,10 @@ export function runtimeInfoForDefaultSubject(root) {
 }
 
 export function resolveSubjectPolicyPath(root, config) {
+  const sourceRoot = sourceRootFor(root);
   const legacy = subjectConfigToLegacy(config);
   const subject = legacy.active || DEFAULT_SUBJECT;
-  const policiesRoot = resolve(root, 'policies');
+  const policiesRoot = resolve(sourceRoot, 'policies');
   const runtimeWorkspaceRoot = resolve(subjectWorkspaceDir(root, config));
 
   if (legacy.policy) {
@@ -405,7 +415,7 @@ export function resolveSubjectPolicyPath(root, config) {
   const flat = subjectFile(root, subject);
   if (existsSync(flat)) return flat;
 
-  return join(root, 'policies', 'project-guidance.md');
+  return join(sourceRoot, 'policies', 'project-guidance.md');
 }
 
 export function resolveSubjectSoulPath(root, subjectOrConfig) {
@@ -1352,7 +1362,6 @@ export function buildDefaultSubjectSoul(language = getLanguage()) {
 
 export function ensureSubjectLayout(root) {
   mkdirSync(subjectsRuntimeDir(root), { recursive: true });
-  mkdirSync(templatesDir(root), { recursive: true });
   return {
     subjectsDir: subjectsRuntimeDir(root),
     templatesDir: templatesDir(root),

@@ -2,6 +2,7 @@
 // Intentionally has NO dependency on subject-lock or daemon modules so that
 // channel/intelligence/actions can resolve paths without pulling orchestration.
 import { join } from 'node:path';
+import { createRuntimeContext } from './jea-home.mjs';
 import {
   defaultSubjectEntry,
   getDataNamespace,
@@ -30,6 +31,7 @@ export function parsePositiveInt(value, { name, defaultValue = null, min = 1 } =
 }
 
 export function runtimeForSubject(root, subject) {
+  const context = createRuntimeContext(root);
   const name = sanitizeSubjectName(subject);
   const entry = getSubjectEntry(root, name) ?? normalizeRegistryEntry(name, defaultSubjectEntry(name));
   const config = {
@@ -46,6 +48,9 @@ export function runtimeForSubject(root, subject) {
     active: config.legacyActive,
     subject: config.name,
     dataNamespace,
+    sourceRoot: context.sourceRoot,
+    jeaHome: context.jeaHome,
+    jeaHomeSource: context.jeaHomeSource,
     runtimeRoot,
     dataRoot,
     evolutionDir: join(dataRoot, 'evolution'),

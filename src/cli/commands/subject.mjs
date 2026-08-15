@@ -26,7 +26,7 @@ export { extractMarkdownSection };
 
 function printSubject(root, policy, runtime, { defaultSubject = null } = {}) {
   const repoLane = resolveSubjectRepoLane(policy.text, {
-    root: getProjectRoot(),
+    root: runtime.sourceRoot,
     subject: policy.config.name,
     config: policy.config,
   });
@@ -79,7 +79,7 @@ function currentRepoLane(root, flags = {}) {
     config,
     policy,
     repoLane: resolveSubjectRepoLane(policy.text, {
-      root,
+      root: runtimeInfoForSubject(root, config).sourceRoot,
       subject: config.name,
       config,
     }),
@@ -121,8 +121,14 @@ function printMigrationResult(result) {
   }
 }
 
-export async function subjectCommand({ subcommand, flags = {}, args = [] } = {}) {
-  const root = getProjectRoot();
+export async function subjectCommand({
+  subcommand,
+  flags = {},
+  args = [],
+  context = null,
+} = {}) {
+  const root = context ?? getProjectRoot();
+  const sourceRoot = context?.sourceRoot ?? getProjectRoot();
 
   if (subcommand === 'list') {
     ensureSubjectsRegistry(root);
@@ -166,7 +172,7 @@ export async function subjectCommand({ subcommand, flags = {}, args = [] } = {})
         workspace,
         runtime,
         repoLane: resolveSubjectRepoLane(policy.text, {
-          root,
+          root: sourceRoot,
           subject: config.name,
           config,
         }),
@@ -280,7 +286,7 @@ export async function subjectCommand({ subcommand, flags = {}, args = [] } = {})
     const policy = readSubjectPolicy(root, config);
     const policyCheck = checkSubjectPolicy(policy.text);
     const runtimeCheck = diagnoseSubjectRuntimeConfig(policy.text, {
-      root,
+      root: sourceRoot,
       subject: config.name,
       config,
     });

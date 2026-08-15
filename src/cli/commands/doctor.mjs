@@ -1,8 +1,13 @@
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { getProjectRoot, loadProjectEnv, resolveAuthorityDocsDir } from '../../infra/project.mjs';
+import {
+  createRuntimeContext,
+  inspectJeaHomeAuthority,
+} from '../../infra/jea-home.mjs';
+import { legacyChangedSinceMigration } from '../../infra/jea-home-migration.mjs';
 import { describeSubjectLockHealth } from '../../daemon/evolve-runs.mjs';
-import { readSubjectsRegistry } from '../../infra/subjects.mjs';
+import { readSubjectsRegistry, subjectsRuntimeDir } from '../../infra/subjects.mjs';
 import {
   getGoalCalibrateMode,
   isGoalAutoApplyEnabled,
@@ -23,13 +28,32 @@ function statusLine(ok, label, detail = '') {
   return ok;
 }
 
-export async function doctorCommand() {
-  const root = getProjectRoot();
+export async function doctorCommand({ context: providedContext = null } = {}) {
+  const root = providedContext?.sourceRoot ?? getProjectRoot();
   const envPath = loadProjectEnv(root);
+  const context = providedContext ?? createRuntimeContext({ sourceRoot: root });
+  process.env.JEA_HOME = context.jeaHome;
+  const authority = inspectJeaHomeAuthority(context);
   const nodeMajor = Number(process.versions.node.split('.')[0]);
   let ok = true;
 
-  console.log(`Project: ${root}`);
+  console.log(`Source root: ${root}`);
+  console.log(`JEA Home: ${context.jeaHome} (${context.jeaHomeSource})`);
+  console.log(`Subject authority: ${authority.code}`);
+  console.log(`Legacy Subject root: ${authority.legacySubjectsRoot} (${authority.legacyNonEmpty ? 'non-empty' : 'empty'})`);
+  if (!authority.ok) {
+    ok = statusLine(false, 'JEA Home authority', authority.code) && ok;
+  } else {
+    statusLine(true, 'JEA Home authority', authority.code);
+  }
+  if (authority.code === 'home_migrated') {
+    const legacyDrift = legacyChangedSinceMigration(context);
+    if (legacyDrift?.changed) {
+      ok = statusLine(false, 'Legacy Subject data changed after migration', legacyDrift.source_subjects_root) && ok;
+    } else {
+      statusLine(true, 'Legacy Subject data after migration', 'unchanged');
+    }
+  }
   ok = statusLine(nodeMajor >= 18, 'Node >= 18', process.version) && ok;
   ok = statusLine(existsSync(join(root, 'package.json')), 'package.json') && ok;
   ok = statusLine(existsSync(join(root, 'node_modules')), 'node_modules') && ok;
@@ -93,9 +117,9 @@ export async function doctorCommand() {
     }
   }
 
-  const runtimeSubjects = join(root, 'runtime', 'subjects');
+  const runtimeSubjects = subjectsRuntimeDir(context);
   if (existsSync(runtimeSubjects)) {
-    const registry = readSubjectsRegistry(root);
+    const registry = readSubjectsRegistry(context);
     const namespaceToSubject = new Map();
     for (const [name, entry] of Object.entries(registry.subjects || {})) {
       const ns = entry?.data_namespace || name;
@@ -106,7 +130,7 @@ export async function doctorCommand() {
       if (!entry.isDirectory()) continue;
       const namespace = entry.name;
       const subject = namespaceToSubject.get(namespace) || namespace;
-      const health = describeSubjectLockHealth(root, subject);
+      const health = describeSubjectLockHealth(context, subject);
       if (health.code === 'lock_held_by_daemon' || health.code === 'lock_held_by_foreground') {
         heldLocks.push(`${subject} (${health.code})`);
       }
