@@ -3,3 +3,4 @@
 // this test-only switch keeps those legacy fixtures isolated while dedicated
 // JEA Home tests exercise the production default.
 globalThis.__JEA_TEST_LEGACY_ROOT_ARGUMENT__ = true;
+process.env.JEA_TEST_LEGACY_ROOT_ARGUMENT = '1';

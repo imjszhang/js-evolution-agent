@@ -62,8 +62,10 @@ describe('JEA Home resolver', () => {
     const sourceRoot = temp('jea-source-');
     const previousSwitch = globalThis.__JEA_TEST_LEGACY_ROOT_ARGUMENT__;
     const previousHome = process.env.JEA_HOME;
+    const previousLegacyArgument = process.env.JEA_TEST_LEGACY_ROOT_ARGUMENT;
     globalThis.__JEA_TEST_LEGACY_ROOT_ARGUMENT__ = false;
     delete process.env.JEA_HOME;
+    delete process.env.JEA_TEST_LEGACY_ROOT_ARGUMENT;
     try {
       const context = createRuntimeContext(sourceRoot);
       expect(context.jeaHome).not.toBe(join(sourceRoot, 'runtime'));
@@ -72,6 +74,8 @@ describe('JEA Home resolver', () => {
       globalThis.__JEA_TEST_LEGACY_ROOT_ARGUMENT__ = previousSwitch;
       if (previousHome == null) delete process.env.JEA_HOME;
       else process.env.JEA_HOME = previousHome;
+      if (previousLegacyArgument == null) delete process.env.JEA_TEST_LEGACY_ROOT_ARGUMENT;
+      else process.env.JEA_TEST_LEGACY_ROOT_ARGUMENT = previousLegacyArgument;
     }
   });
 
