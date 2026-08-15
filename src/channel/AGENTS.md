@@ -20,6 +20,8 @@ runtime/subjects/<data_namespace>/data/channel/
 └── outbox/pending|sent|failed/
 ```
 
+`worker-state.json` 由 coordinator 与各 role 共享同一 `.lock`。启动时先顺序注册 role 占位，再并行跑 loop；心跳写失败走 `safeUpdate*`。停止时 child `finally` 是唯一常规 writer；desktop supervisor 只在子进程退出后对仍 `running`/`stopping` 的 role 做 `safeMark*` 兜底，避免双写把锁打满。
+
 常用命令：
 
 - `jea channel feishu setup --subject NAME [--write-env] [--init-subject-config]`：一键扫码注册飞书应用、写入 subject 凭据 env、生成 BIND 口令、写入 reload 请求（推荐新 subject 首选入口）。

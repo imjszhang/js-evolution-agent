@@ -167,7 +167,7 @@ function isTransientHttpError(error) {
   return code === 'ECONNRESET' || code === 'ECONNABORTED' || error?.message === 'aborted';
 }
 
-function httpGetText(port, path, maxMs = 3000) {
+function readSseUntilEvent(port, path, eventName, { timeoutMs = 5000 } = {}) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let settled = false;
@@ -178,24 +178,57 @@ function httpGetText(port, path, maxMs = 3000) {
     };
     const fail = (error) => {
       if (settled) return;
-      if (isTransientHttpError(error)) {
-        finish(chunks.join(''));
-        return;
-      }
       settled = true;
       reject(error);
     };
     const req = get(`http://127.0.0.1:${port}${path}`, (res) => {
-      res.on('data', (c) => chunks.push(c));
-      res.on('end', () => finish(chunks.join('')));
-      res.on('error', fail);
+      res.on('data', (c) => {
+        chunks.push(c);
+        const body = chunks.join('');
+        if (body.includes(`event: ${eventName}\n`) && body.includes('\n\n')) {
+          req.destroy();
+          finish(body);
+        }
+      });
+      res.on('end', () => {
+        const body = chunks.join('');
+        if (body.includes(`event: ${eventName}\n`)) finish(body);
+        else fail(new Error(`SSE stream ended before event: ${eventName}`));
+      });
+      res.on('error', (error) => {
+        if (settled) return;
+        if (isTransientHttpError(error) && chunks.join('').includes(`event: ${eventName}\n`)) {
+          finish(chunks.join(''));
+          return;
+        }
+        fail(error);
+      });
     });
     req.on('error', fail);
     setTimeout(() => {
       req.destroy();
-      finish(chunks.join(''));
-    }, maxMs);
+      const body = chunks.join('');
+      if (body.includes(`event: ${eventName}\n`)) finish(body);
+      else fail(new Error(`timed out waiting for SSE event: ${eventName}`));
+    }, timeoutMs);
   });
+}
+
+async function readSseUntilEventRetry(port, path, eventName, { timeoutMs = 5000, retries = 2 } = {}) {
+  let lastError = null;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      return await readSseUntilEvent(port, path, eventName, { timeoutMs });
+    } catch (error) {
+      lastError = error;
+      if (attempt < retries && isTransientHttpError(error)) {
+        await new Promise((r) => setTimeout(r, 50 * (attempt + 1)));
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw lastError;
 }
 
 async function httpGetJson(port, path, { retries = 1 } = {}) {
@@ -432,7 +465,7 @@ describe('createViewerApiServer', () => {
   });
 
   it('serves /events with hello event', async () => {
-    const body = await httpGetText(port, '/events', 1500);
+    const body = await readSseUntilEventRetry(port, '/events', 'hello');
     expect(body).toContain('event: hello');
     expect(body).toContain('live-test');
   });

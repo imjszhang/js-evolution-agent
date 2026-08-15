@@ -31,14 +31,14 @@ function withChannelWorkerStateLock(root, subject, fn) {
   }
   let release = null;
   let lastError = null;
-  for (let attempt = 0; attempt < 10; attempt += 1) {
+  for (let attempt = 0; attempt < 15; attempt += 1) {
     try {
       release = lockfile.lockSync(lockPath);
       lastError = null;
       break;
     } catch (error) {
       lastError = error;
-      if (attempt < 9) {
+      if (attempt < 14) {
         const end = Date.now() + Math.min(50 * (attempt + 1), 500);
         while (Date.now() < end) { /* sync backoff */ }
       }
@@ -215,6 +215,9 @@ export function createChannelRoleWorkerState(root, subject, {
         stop_reason: 'zombie_pid_dead',
       };
     } else if (existing?.status === 'running' && isWorkerFresh(existing, { staleMs }) && isProcessAlive(existing.pid)) {
+      if (existing.pid === pid) {
+        return { created: true, reused: true, role, state: existing };
+      }
       return { created: false, reason: 'already_running', role, state: existing };
     }
     const now = nowIso();
@@ -398,6 +401,21 @@ export function markChannelRoleWorkerStopped(root, subject, role, patch = {}) {
 export function markChannelWorkerStopped(root, subject, patch = {}) {
   const role = patch.role ?? 'all';
   return markChannelRoleWorkerStopped(root, subject, role, patch);
+}
+
+export function safeMarkChannelRoleWorkerStopped(root, subject, role, patch = {}) {
+  try {
+    return markChannelRoleWorkerStopped(root, subject, role, patch);
+  } catch (err) {
+    recordChannelEvent(root, subject, {
+      type: 'channel_worker_state_write_failed',
+      status: 'error',
+      role,
+      error_code: err?.code ?? null,
+      error: err?.message || String(err),
+    });
+    return null;
+  }
 }
 
 export function isChannelRoleStopRequested(root, subject, role) {

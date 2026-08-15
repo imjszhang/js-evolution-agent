@@ -169,6 +169,16 @@ export async function runChannelDomainWorkerMulti(root, subject, flags, {
     roles,
     staleMs: heartbeatStaleMs,
   });
+  for (const role of roles) {
+    createChannelRoleWorkerState(root, subject, {
+      role,
+      workerId: roleWorkerId(role),
+      pid: process.pid,
+      staleMs: heartbeatStaleMs,
+      tickMs,
+      allowedTaskTypes: resolveChannelWorkerTaskTypes(flags, role) ?? taskTypesForChannelRole(role),
+    });
+  }
 
   const shared = {
     stopping: false,

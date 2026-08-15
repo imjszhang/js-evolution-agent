@@ -17,9 +17,9 @@ import {
   summarizeWorkerState
 } from '../../../../src/daemon/daemon-worker-state.mjs'
 import {
-  markChannelRoleWorkerStopped,
   readChannelWorkerState,
   requestChannelWorkerStop,
+  safeMarkChannelRoleWorkerStopped,
   summarizeChannelWorkersState
 } from '../../../../src/channel/worker-state.mjs'
 import { listRegisteredSubjects } from '../../../../src/infra/subjects.mjs'
@@ -269,8 +269,12 @@ export class DaemonSupervisor {
     }
     if (entry.domain !== 'cycle') {
       const channelState = readChannelWorkerState(this.projectRoot, subject)
-      for (const role of Object.keys(channelState?.workers ?? {})) {
-        markChannelRoleWorkerStopped(this.projectRoot, subject, role, {
+      for (const [role, worker] of Object.entries(channelState?.workers ?? {})) {
+        const status = worker && typeof worker === 'object' && 'status' in worker
+          ? String((worker as { status?: unknown }).status ?? '')
+          : ''
+        if (status !== 'running' && status !== 'stopping') continue
+        safeMarkChannelRoleWorkerStopped(this.projectRoot, subject, role, {
           stop_reason: `desktop_${reason}`
         })
       }

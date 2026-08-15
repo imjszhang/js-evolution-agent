@@ -1770,7 +1770,7 @@ function handleSsePayload(payload) {
   const event = payload?.event;
   const subject = eventSubject(payload);
 
-  if (event === 'hello') {
+  if (event === 'hello' || event === 'runtime_snapshot') {
     setLiveStatus('live.connected', null, 'connected');
     if (payload.default_subject) defaultSubject = payload.default_subject;
     if (Array.isArray(payload.subjects) && payload.subjects.length) {
@@ -1867,7 +1867,7 @@ function connectLive() {
   }
 
   for (const name of [
-    'hello', 'round_added', 'round_updated', 'daemon_event', 'channel_event', 'runtime_updated', 'error',
+    'hello', 'runtime_snapshot', 'round_added', 'round_updated', 'daemon_event', 'channel_event', 'runtime_updated', 'error',
   ]) {
     eventSource.addEventListener(name, (e) => {
       try {

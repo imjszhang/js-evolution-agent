@@ -102,9 +102,13 @@ afterEach(async () => {
     if (child.exitCode == null && child.signalCode == null) child.kill('SIGTERM')
     await Promise.race([
       new Promise<void>((resolve) => child.once('close', () => resolve())),
-      delay(1_000)
+      delay(5_000)
     ])
     if (child.exitCode == null && child.signalCode == null) child.kill('SIGKILL')
+    await Promise.race([
+      new Promise<void>((resolve) => child.once('close', () => resolve())),
+      delay(1_000)
+    ])
   }
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })

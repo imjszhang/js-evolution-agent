@@ -12,8 +12,12 @@ import { writeJsonFile } from '../src/infra/files.mjs';
 import { channelWorkerStatePath } from '../src/channel/paths.mjs';
 import { readChannelEvents } from '../src/channel/audit.mjs';
 import {
+  createChannelRoleWorkerState,
   createChannelWorkerState,
+  markChannelRoleWorkerStopped,
   readChannelWorkerState,
+  requestChannelWorkerStop,
+  safeMarkChannelRoleWorkerStopped,
   safeUpdateChannelWorkerHeartbeat,
   writeChannelWorkerState,
 } from '../src/channel/worker-state.mjs';
@@ -88,5 +92,44 @@ describe('channel worker-state', () => {
     const events = readChannelEvents(root, 'alpha', { limit: 5 });
     expect(events.some((event) => event.type === 'channel_worker_state_write_failed')).toBe(true);
     expect(events[0].error_code).toBe('EPERM');
+  });
+
+  it('creates concurrent role workers without throwing on the shared lock', async () => {
+    const root = makeRoot();
+    const roles = ['notify', 'control', 'agent', 'presence', 'speech', 'classifier'];
+    const results = await Promise.all(roles.map((role) => Promise.resolve().then(() => (
+      createChannelRoleWorkerState(root, 'alpha', {
+        role,
+        workerId: `channel-worker-${role}`,
+        pid: process.pid,
+        staleMs: 60_000,
+      })
+    ))));
+    expect(results.every((result) => result.created)).toBe(true);
+    const state = readChannelWorkerState(root, 'alpha');
+    expect(Object.keys(state.workers).sort()).toEqual(roles.slice().sort());
+  });
+
+  it('treats same-pid role create as reuse and stop as idempotent', () => {
+    const root = makeRoot();
+    const first = createChannelRoleWorkerState(root, 'alpha', {
+      role: 'notify',
+      workerId: 'channel-worker-notify',
+      pid: process.pid,
+    });
+    const reused = createChannelRoleWorkerState(root, 'alpha', {
+      role: 'notify',
+      workerId: 'channel-worker-notify',
+      pid: process.pid,
+    });
+    expect(first.created).toBe(true);
+    expect(reused).toMatchObject({ created: true, reused: true, role: 'notify' });
+
+    requestChannelWorkerStop(root, 'alpha');
+    const firstStop = markChannelRoleWorkerStopped(root, 'alpha', 'notify', { stop_reason: 'child' });
+    const secondStop = markChannelRoleWorkerStopped(root, 'alpha', 'notify', { stop_reason: 'parent' });
+    expect(firstStop.status).toBe('stopped');
+    expect(secondStop.status).toBe('stopped');
+    expect(safeMarkChannelRoleWorkerStopped(root, 'alpha', 'notify', { stop_reason: 'fallback' })?.status).toBe('stopped');
   });
 });
