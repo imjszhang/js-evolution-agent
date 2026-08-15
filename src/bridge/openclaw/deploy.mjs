@@ -67,7 +67,7 @@ function buildOpenClawConfigSnippet({
 function updateSubjectEntry(root, subject, updater) {
   const registry = readSubjectsRegistry(root);
   const entry = registry.subjects?.[subject];
-  if (!entry) throw new Error(`Subject not found in runtime/subjects/registry.json: ${subject}`);
+  if (!entry) throw new Error(`Subject not found in <JEA_HOME>/subjects/registry.json: ${subject}`);
   const nextEntry = updater(entry, registry);
   const written = writeSubjectsRegistry(root, {
     default_subject: registry.default_subject,

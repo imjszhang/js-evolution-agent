@@ -23,6 +23,7 @@ import {
 } from '../../../../src/daemon/cycle-start-requests.mjs'
 import { listRegisteredSubjects } from '../../../../src/infra/subjects.mjs'
 import { runtimeForSubject } from '../../../../src/infra/runtime-paths.mjs'
+import { createRuntimeContext } from '../../../../src/infra/jea-home.mjs'
 import type { TodoSnapshot } from '../shared/contract'
 import { PublicCommandError } from './command-registry'
 import type { OpsService } from './operations'
@@ -45,10 +46,17 @@ function publicWake(wake: any): Record<string, unknown> | null {
 }
 
 export class TodoService {
+  private readonly runtimeContext: any
+
   constructor(
     readonly projectRoot: string,
-    private readonly ops: OpsService
-  ) {}
+    private readonly ops: OpsService,
+    jeaHome: string | undefined = process.env.JEA_HOME
+  ) {
+    this.runtimeContext = jeaHome
+      ? createRuntimeContext({ sourceRoot: projectRoot, jeaHome })
+      : createRuntimeContext(projectRoot)
+  }
 
   get(subject: string): TodoSnapshot {
     const runtime = this.runtime(subject)
@@ -57,7 +65,7 @@ export class TodoService {
     const facts = readPendingOperatorFacts(runtime.runtimeRoot, { limit: 100 })
     const goalState = readActiveGoalState(runtime)
     const pending = summarizePendingCycleStartRequest(
-      readPendingCycleStartRequest(this.projectRoot, subject)
+      readPendingCycleStartRequest(this.runtimeContext, subject)
     )
     const attention = this.ops.getObservability(subject)?.attention ?? {}
 
@@ -86,7 +94,7 @@ export class TodoService {
     })
     let cycle
     try {
-      cycle = enqueueCycleStartRequestWithEvent(this.projectRoot, subject, {
+      cycle = enqueueCycleStartRequestWithEvent(this.runtimeContext, subject, {
         reason: 'operator_brief',
         meta: { brief_ids: [written.id] }
       })
@@ -96,7 +104,7 @@ export class TodoService {
     }
     let wake: any = null
     try {
-      wake = enqueueCognitiveWake(this.projectRoot, subject, {
+      wake = enqueueCognitiveWake(this.runtimeContext, subject, {
         reason: 'operator_brief',
         source: 'desktop_todo'
       })
@@ -136,7 +144,7 @@ export class TodoService {
     })
     let cycle
     try {
-      cycle = enqueueCycleStartRequestWithEvent(this.projectRoot, subject, {
+      cycle = enqueueCycleStartRequestWithEvent(this.runtimeContext, subject, {
         reason: 'operator_fact',
         meta: { fact_ids: [written.id] }
       })
@@ -146,7 +154,7 @@ export class TodoService {
     }
     let wake: any = null
     try {
-      wake = enqueueCognitiveWake(this.projectRoot, subject, {
+      wake = enqueueCognitiveWake(this.runtimeContext, subject, {
         reason: 'operator_fact',
         source: 'desktop_todo'
       })
@@ -174,13 +182,13 @@ export class TodoService {
 
   requestCycle(subject: string, note?: string): Record<string, unknown> {
     this.runtime(subject)
-    const result = enqueueCycleStartRequestWithEvent(this.projectRoot, subject, {
+    const result = enqueueCycleStartRequestWithEvent(this.runtimeContext, subject, {
       reason: 'desktop_operator',
       meta: note?.trim() ? { note: note.trim() } : {}
     })
     let wake: any = null
     try {
-      wake = enqueueCognitiveWake(this.projectRoot, subject, {
+      wake = enqueueCognitiveWake(this.runtimeContext, subject, {
         reason: 'desktop_operator',
         source: 'desktop_todo'
       })
@@ -221,9 +229,9 @@ export class TodoService {
   }
 
   private runtime(subject: string): ReturnType<typeof runtimeForSubject> {
-    if (!subject || !listRegisteredSubjects(this.projectRoot).includes(subject)) {
+    if (!subject || !listRegisteredSubjects(this.runtimeContext).includes(subject)) {
       throw new PublicCommandError('NOT_FOUND', 'Requested subject is unavailable.')
     }
-    return runtimeForSubject(this.projectRoot, subject)
+    return runtimeForSubject(this.runtimeContext, subject)
   }
 }

@@ -24,6 +24,10 @@ import {
 } from '../../../../src/channel/worker-state.mjs'
 import { listRegisteredSubjects } from '../../../../src/infra/subjects.mjs'
 import { runtimeForSubject } from '../../../../src/infra/runtime-paths.mjs'
+import {
+  createRuntimeContext,
+  jeaLogsDir
+} from '../../../../src/infra/jea-home.mjs'
 import type {
   DaemonSupervisorView,
   DaemonSupervisorMode
@@ -57,21 +61,27 @@ function processExited(child: ChildProcess): boolean {
 
 export class DaemonSupervisor {
   private readonly managed = new Map<string, ManagedDaemon>()
+  private readonly runtimeContext: any
 
   constructor(
     readonly projectRoot: string,
     private readonly processRegistry: ManagedProcessRegistry,
     private readonly events: DesktopEventBus,
     private readonly spawnImpl: SpawnDaemon = spawn,
-    private readonly killGraceMs = 10_000
-  ) {}
+    private readonly killGraceMs = 10_000,
+    jeaHome: string | undefined = process.env.JEA_HOME
+  ) {
+    this.runtimeContext = jeaHome
+      ? createRuntimeContext({ sourceRoot: projectRoot, jeaHome })
+      : createRuntimeContext(projectRoot)
+  }
 
   get(subject: string): DaemonSupervisorView {
     this.assertSubject(subject)
     const entry = this.managed.get(subject)
-    const cycleRaw = readWorkerState(this.projectRoot, subject)
+    const cycleRaw = readWorkerState(this.runtimeContext, subject)
     const cycle = summarizeWorkerState(cycleRaw)
-    const channelRaw = readChannelWorkerState(this.projectRoot, subject)
+    const channelRaw = readChannelWorkerState(this.runtimeContext, subject)
     const channel = summarizeChannelWorkersState(channelRaw)
     const channelPid = Number(channelRaw?.coordinator?.pid ?? channelRaw?.pid) || null
     const channelHeartbeat = channel.roles
@@ -120,9 +130,9 @@ export class DaemonSupervisor {
     if (this.managed.has(subject)) {
       throw new PublicCommandError('CONFLICT', 'A managed daemon is already running.')
     }
-    const cycle = summarizeWorkerState(readWorkerState(this.projectRoot, subject))
+    const cycle = summarizeWorkerState(readWorkerState(this.runtimeContext, subject))
     const channel = summarizeChannelWorkersState(
-      readChannelWorkerState(this.projectRoot, subject)
+      readChannelWorkerState(this.runtimeContext, subject)
     )
     const cycleConflict = domain !== 'channel' && (cycle.running || cycle.stale)
     const channelConflict = domain !== 'cycle'
@@ -134,7 +144,7 @@ export class DaemonSupervisor {
     const ownerToken = randomUUID()
     const startedAt = new Date().toISOString()
     const processGroup = process.platform !== 'win32' && this.spawnImpl === spawn
-    const logDir = join(this.projectRoot, 'runtime', 'logs')
+    const logDir = jeaLogsDir(this.runtimeContext)
     mkdirSync(logDir, { recursive: true })
     const slug = subject.replace(/[^a-zA-Z0-9._-]+/g, '_')
     const logPaths = {
@@ -173,7 +183,8 @@ export class DaemonSupervisor {
         env: {
           ...process.env,
           ELECTRON_RUN_AS_NODE: '1',
-          JEA_PROJECT_ROOT: this.projectRoot
+          JEA_PROJECT_ROOT: this.projectRoot,
+          JEA_HOME: this.runtimeContext.jeaHome
         },
         windowsHide: true,
         detached: processGroup,
@@ -259,22 +270,22 @@ export class DaemonSupervisor {
     entry.stopping = true
     this.writeDiagnostic(entry)
 
-    if (entry.domain !== 'channel') requestWorkerStop(this.projectRoot, subject)
-    if (entry.domain !== 'cycle') requestChannelWorkerStop(this.projectRoot, subject)
+    if (entry.domain !== 'channel') requestWorkerStop(this.runtimeContext, subject)
+    if (entry.domain !== 'cycle') requestChannelWorkerStop(this.runtimeContext, subject)
     await this.terminateChild(entry.child, entry.processGroup)
     if (entry.domain !== 'channel') {
-      markWorkerStopped(this.projectRoot, subject, {
+      markWorkerStopped(this.runtimeContext, subject, {
         stop_reason: `desktop_${reason}`
       })
     }
     if (entry.domain !== 'cycle') {
-      const channelState = readChannelWorkerState(this.projectRoot, subject)
+      const channelState = readChannelWorkerState(this.runtimeContext, subject)
       for (const [role, worker] of Object.entries(channelState?.workers ?? {})) {
         const status = worker && typeof worker === 'object' && 'status' in worker
           ? String((worker as { status?: unknown }).status ?? '')
           : ''
         if (status !== 'running' && status !== 'stopping') continue
-        safeMarkChannelRoleWorkerStopped(this.projectRoot, subject, role, {
+        safeMarkChannelRoleWorkerStopped(this.runtimeContext, subject, role, {
           stop_reason: `desktop_${reason}`
         })
       }
@@ -288,7 +299,7 @@ export class DaemonSupervisor {
   }
 
   private diagnosticPath(subject: string): string {
-    const runtime = runtimeForSubject(this.projectRoot, subject)
+    const runtime = runtimeForSubject(this.runtimeContext, subject)
     return join(runtime.evolutionDir, 'daemon', 'desktop-supervisor.json')
   }
 
@@ -348,7 +359,7 @@ export class DaemonSupervisor {
   }
 
   private assertSubject(subject: string): void {
-    if (!subject || !listRegisteredSubjects(this.projectRoot).includes(subject)) {
+    if (!subject || !listRegisteredSubjects(this.runtimeContext).includes(subject)) {
       throw new PublicCommandError('NOT_FOUND', 'Requested subject is unavailable.')
     }
   }

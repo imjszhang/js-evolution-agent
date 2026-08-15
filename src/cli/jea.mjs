@@ -74,6 +74,7 @@ Commands:
   data init --all        Create goals template and seed intelligence
   data backup            Back up subject runtime data (--subject NAME)
   data reset [--yes]     Remove local runtime data (--subject NAME)
+  data migrate-home      Verify and copy legacy runtime/subjects into JEA Home
   intel summary          Show recent intelligence memory
   intel report           Print the latest intel report (Markdown)
   intel report list      List recent intel reports
@@ -135,11 +136,11 @@ Commands:
   subject lane status    Check the subject target repo lane (--subject NAME)
   subject lane init      Create the subject lane from its base branch (--subject NAME)
   subject init <name>    Create a subject policy from a template
-  subject use <name>     Set the default subject in runtime/subjects/registry.json
+  subject use <name>     Set the default subject in <JEA_HOME>/subjects/registry.json
   subject default <name> Same as subject use
   subject check          Validate a subject policy (--subject NAME)
   subject migrate-runtime-layout
-                         Copy legacy policies/subjects layout into runtime/subjects
+                         Copy legacy policies/subjects layout into JEA Home
   actions list           List registered action types
   actions check          Check pending decisions for unknown action types
   help                   Show this help

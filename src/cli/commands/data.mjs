@@ -16,6 +16,7 @@ import { createIntelligenceStore } from '../../intelligence/store.mjs';
 import {
   ensureSubjectsRegistry,
   readSubjectPolicy,
+  resolveSubjectRepoLane,
   resolveSubjectFromFlags,
   runtimeInfoForSubject,
 } from '../../infra/subjects.mjs';
@@ -229,11 +230,27 @@ export async function dataCommand({ subcommand, flags = {}, context = null } = {
   const runtime = runtimeForFlags(root, flags);
   if (subcommand === 'status') {
     const status = dataStatus(root, flags);
-    if (flags.json) console.log(JSON.stringify({ runtime, status }, null, 2));
+    const policy = readSubjectPolicy(root, runtime.config);
+    const repoLane = resolveSubjectRepoLane(policy.text, {
+      root: runtime.sourceRoot,
+      subject: runtime.subject,
+      config: runtime.config,
+    });
+    const paths = {
+      source_root: runtime.sourceRoot,
+      jea_home: runtime.jeaHome,
+      jea_home_source: runtime.jeaHomeSource,
+      subject_runtime_root: runtime.runtimeRoot,
+      execution_root: repoLane.repoRoot ?? null,
+    };
+    if (flags.json) console.log(JSON.stringify({ runtime, paths, status }, null, 2));
     else {
       console.log(`subject: ${runtime.subject}`);
       console.log(`data namespace: ${runtime.dataNamespace}`);
+      console.log(`source root: ${paths.source_root}`);
+      console.log(`JEA Home: ${paths.jea_home} (${paths.jea_home_source})`);
       console.log(`runtime root: ${runtime.runtimeRoot}`);
+      console.log(`execution root: ${paths.execution_root ?? 'not configured'}`);
       for (const item of status) printDirStatus(runtime.runtimeRoot, item.dir);
     }
     return 0;

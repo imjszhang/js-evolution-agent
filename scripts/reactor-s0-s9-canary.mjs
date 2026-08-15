@@ -42,6 +42,8 @@ function pass(assertions, message) {
 
 function makeIsolatedRoot() {
   const root = mkdtempSync(join(tmpdir(), 'jea-reactor-canary-'));
+  const jeaHome = mkdtempSync(join(tmpdir(), 'jea-reactor-canary-home-'));
+  process.env.JEA_HOME = jeaHome;
   mkdirSync(join(root, 'policies', 'subjects'), { recursive: true });
   mkdirSync(join(root, 'policies', 'authority'), { recursive: true });
   writeFileSync(join(root, 'policies', 'subjects', `${SUBJECT}.md`), `# ${SUBJECT}\n\n## Subject\n${SUBJECT}`, 'utf-8');
@@ -52,7 +54,7 @@ function makeIsolatedRoot() {
     policy: `subjects/${SUBJECT}.md`,
     data_namespace: SUBJECT,
   });
-  writeJsonFile(join(root, 'runtime', 'subjects', 'registry.json'), {
+  writeJsonFile(join(jeaHome, 'subjects', 'registry.json'), {
     default_subject: SUBJECT,
     subjects: {
       [SUBJECT]: {
@@ -63,7 +65,7 @@ function makeIsolatedRoot() {
     },
   });
   initData(root, { subject: SUBJECT });
-  return root;
+  return { root, jeaHome };
 }
 
 async function main() {
@@ -73,6 +75,7 @@ async function main() {
     JEA_EXEC_RATE_ONLY: process.env.JEA_EXEC_RATE_ONLY,
     JEA_FORCE_MOCK: process.env.JEA_FORCE_MOCK,
     JEA_REACTOR_SKIP_INVESTIGATE: process.env.JEA_REACTOR_SKIP_INVESTIGATE,
+    JEA_HOME: process.env.JEA_HOME,
   };
   process.env.JEA_EVIDENCE_WAKE = '1';
   process.env.JEA_QUEUE_DISABLE_CYCLE_TTL = '1';
@@ -80,7 +83,7 @@ async function main() {
   process.env.JEA_FORCE_MOCK = '1';
   process.env.JEA_REACTOR_SKIP_INVESTIGATE = '1';
 
-  const root = makeIsolatedRoot();
+  const { root, jeaHome } = makeIsolatedRoot();
   const assertions = [];
   try {
     const runtime = runtimeForSubject(root, SUBJECT);
@@ -175,6 +178,7 @@ async function main() {
     const report = {
       ok: assertions.every((item) => item.ok),
       isolated_root: root,
+      isolated_jea_home: jeaHome,
       subject: SUBJECT,
       gates: {
         JEA_EVIDENCE_WAKE: '1',
@@ -207,6 +211,7 @@ async function main() {
     console.log(JSON.stringify({
       ok: false,
       isolated_root: root,
+      isolated_jea_home: jeaHome,
       error: err?.stack || err?.message || String(err),
       assertions,
     }, null, 2));
@@ -217,6 +222,7 @@ async function main() {
       else process.env[key] = value;
     }
     rmSync(root, { recursive: true, force: true });
+    rmSync(jeaHome, { recursive: true, force: true });
   }
 }
 

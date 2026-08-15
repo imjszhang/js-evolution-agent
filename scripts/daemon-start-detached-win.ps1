@@ -9,7 +9,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$LogDir = Join-Path $RepoRoot 'runtime\logs'
+$node = (Get-Command node -ErrorAction Stop).Source
+$JeaHome = & $node (Join-Path $PSScriptRoot 'print-jea-home.mjs') $RepoRoot
+if (-not $JeaHome) { throw 'Unable to resolve JEA Home.' }
+$LogDir = Join-Path $JeaHome 'logs'
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
 $stdoutLog = Join-Path $LogDir "daemon-$Subject.stdout.log"
@@ -57,7 +60,6 @@ if ($Domain -ne 'all') {
   $jeaArgs += @('--domain', $Domain)
 }
 
-$node = (Get-Command node -ErrorAction Stop).Source
 Start-Process -FilePath $node `
   -ArgumentList $jeaArgs `
   -WorkingDirectory $RepoRoot `

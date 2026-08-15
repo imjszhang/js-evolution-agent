@@ -308,6 +308,17 @@ export async function migrateJeaHome(input, {
   }
 
   const existingTarget = scanMigrationTree(targetSubjectsRoot);
+  if (existingTarget.files > 0) {
+    const targetRegistry = validateJsonFiles(targetSubjectsRoot, existingTarget);
+    const targetWriters = inspectLegacyWriters(targetSubjectsRoot, targetRegistry);
+    if (!targetWriters.ok) {
+      throw migrationError(
+        'migration_writers_active',
+        'A JEA Home daemon, channel worker, or runtime lock is active. Stop all daemons before migrating.',
+        targetWriters,
+      );
+    }
+  }
   if (existingTarget.files > 0 && existingTarget.digest !== sourceManifest.digest) {
     throw migrationError(
       'dual_authority_conflict',
@@ -352,6 +363,10 @@ export async function migrateJeaHome(input, {
     const lockedSourceManifest = scanMigrationTree(sourceSubjectsRoot);
     if (lockedSourceManifest.digest !== sourceManifest.digest) {
       throw migrationError('migration_source_changed', 'Legacy Subject data changed during migration preflight.');
+    }
+    const lockedTargetManifest = scanMigrationTree(targetSubjectsRoot);
+    if (lockedTargetManifest.digest !== existingTarget.digest) {
+      throw migrationError('migration_target_changed', 'JEA Home Subject data changed during migration preflight.');
     }
 
     if (existingTarget.files > 0 && existingTarget.digest === sourceManifest.digest) {

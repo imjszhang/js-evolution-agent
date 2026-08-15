@@ -78,7 +78,7 @@ export function readSubjectsRegistryEvolutionModes(root) {
 }
 
 /**
- * Persist evolution.mode for a subject in runtime/subjects/registry.json (hot-reloadable).
+ * Persist evolution.mode for a subject in <JEA_HOME>/subjects/registry.json (hot-reloadable).
  * @returns {{ changed: boolean, previous: string, mode: string, source: string, path: string }}
  */
 export function setSubjectEvolutionMode(root, subject, mode) {
@@ -89,7 +89,7 @@ export function setSubjectEvolutionMode(root, subject, mode) {
   const registry = readSubjectsRegistry(root);
   const subjectName = resolveSubjectConfig(root, { subject, allowDefault: true })?.name ?? subject;
   if (!registry.subjects?.[subjectName]) {
-    throw new Error(`Subject not found in runtime/subjects/registry.json: ${subjectName}`);
+    throw new Error(`Subject not found in <JEA_HOME>/subjects/registry.json: ${subjectName}`);
   }
   const previousEntry = registry.subjects[subjectName];
   const previous = evolutionModeFromSubjectEntry(previousEntry) ?? 'continuous';

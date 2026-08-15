@@ -2,9 +2,10 @@ import { spawn } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import QRCode from 'qrcode';
+import { channelDirForSubject } from '../../channel/paths.mjs';
 
 export function registerQrImagePath(root, subject) {
-  return join(root, 'runtime', 'subjects', subject, 'data', 'channel', 'feishu-register-qr.png');
+  return join(channelDirForSubject(root, subject), 'feishu-register-qr.png');
 }
 
 export async function renderRegisterQrArtifacts(url, options = {}) {

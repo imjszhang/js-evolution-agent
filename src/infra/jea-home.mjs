@@ -38,6 +38,14 @@ export function resolveJeaHome({
 export function createRuntimeContext(input = {}) {
   if (typeof input === 'string') {
     const sourceRoot = resolve(input);
+    if (!String(process.env[JEA_HOME_ENV] ?? '').trim()) {
+      return {
+        sourceRoot,
+        jeaHome: join(sourceRoot, 'runtime'),
+        jeaHomeSource: 'legacy_argument',
+        legacyCompat: true,
+      };
+    }
     const resolvedHome = resolveJeaHome({ sourceRoot });
     return {
       sourceRoot,
@@ -143,7 +151,12 @@ export function inspectJeaHomeAuthority(input) {
 
   const homeNonEmpty = hasAuthoritativeContent(homeSubjectsRoot);
   const legacyNonEmpty = hasAuthoritativeContent(legacySubjectsRoot);
-  const marker = readMigrationMarker(homeSubjectsRoot);
+  const rawMarker = readMigrationMarker(homeSubjectsRoot);
+  const marker = {
+    ...rawMarker,
+    valid: rawMarker.valid
+      && samePath(rawMarker.record?.source_subjects_root ?? homeSubjectsRoot, legacySubjectsRoot),
+  };
   let code = 'home_authoritative';
   let ok = true;
   if (legacyNonEmpty && !homeNonEmpty) {

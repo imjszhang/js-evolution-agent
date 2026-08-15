@@ -24,6 +24,7 @@ import {
   isTrustedRendererLocation,
   resolveDevRendererUrl
 } from './renderer-security'
+import { resolveDesktopRuntimeContext } from './runtime-context'
 import { TodoService } from './todo-service'
 import {
   JEA_EVENT_CHANNEL,
@@ -33,16 +34,17 @@ import {
 
 const outputDir = fileURLToPath(new URL('.', import.meta.url))
 const projectRoot = resolveDesktopProjectRoot()
+const runtimeContext = resolveDesktopRuntimeContext(projectRoot)
 const productionRendererPath = join(outputDir, '../renderer/index.html')
 const productionRendererUrl = pathToFileURL(productionRendererPath).href
 const devRendererUrl = resolveDevRendererUrl(process.env.ELECTRON_RENDERER_URL)
 const processRegistry = new ManagedProcessRegistry()
 const events = new DesktopEventBus()
-const daemon = new DaemonSupervisor(projectRoot, processRegistry, events)
-const ops = new OpsService(projectRoot, undefined, undefined, daemon)
-const todo = new TodoService(projectRoot, ops)
-const channel = new ChannelService(projectRoot)
-const projection = new ProjectionWatcher(projectRoot, ops, todo, channel, events)
+const daemon = new DaemonSupervisor(projectRoot, processRegistry, events, undefined, undefined, runtimeContext.jeaHome)
+const ops = new OpsService(projectRoot, undefined, undefined, daemon, runtimeContext.jeaHome)
+const todo = new TodoService(projectRoot, ops, runtimeContext.jeaHome)
+const channel = new ChannelService(projectRoot, runtimeContext.jeaHome)
+const projection = new ProjectionWatcher(projectRoot, ops, todo, channel, events, undefined, runtimeContext.jeaHome)
 const notifications = new NotificationService(
   join(app.getPath('userData'), 'notification-settings.json'),
   events,
@@ -176,7 +178,10 @@ async function smokeInvoke(command: string, payload: Record<string, unknown> = {
 
 async function runDesktopSmoke(outputPath: string): Promise<void> {
   const started = Date.now()
-  const report: Record<string, unknown> = { projectRoot }
+  const report: Record<string, unknown> = {
+    projectRoot,
+    jeaHome: runtimeContext.jeaHome
+  }
   try {
     const inProcess = await invokeForIpc(invoke, { command: 'ops.refresh' })
     const subjects = inProcess.ok && Array.isArray(inProcess.value)

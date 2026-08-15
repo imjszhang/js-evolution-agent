@@ -1,4 +1,5 @@
 import { runtimeForSubject } from '../../../../src/infra/runtime-paths.mjs'
+import { createRuntimeContext } from '../../../../src/infra/jea-home.mjs'
 import { createRuntimeWatcher } from '../../../../src/intelligence/evolution-viewer/runtime-watch.mjs'
 import type { SubjectSnapshot, TodoSnapshot } from '../shared/contract'
 import type { DesktopEventBus } from './event-bus'
@@ -18,6 +19,7 @@ export class ProjectionWatcher {
   private activeSubject: string | null = null
   private watcher: RuntimeWatcher | null = null
   private revision = 0
+  private readonly runtimeContext: any
 
   constructor(
     private readonly projectRoot: string,
@@ -25,8 +27,13 @@ export class ProjectionWatcher {
     private readonly todo: TodoService,
     private readonly channel: ChannelService,
     private readonly events: DesktopEventBus,
-    private readonly watcherFactory: WatcherFactory = createRuntimeWatcher as unknown as WatcherFactory
-  ) {}
+    private readonly watcherFactory: WatcherFactory = createRuntimeWatcher as unknown as WatcherFactory,
+    jeaHome: string | undefined = process.env.JEA_HOME
+  ) {
+    this.runtimeContext = jeaHome
+      ? createRuntimeContext({ sourceRoot: projectRoot, jeaHome })
+      : createRuntimeContext(projectRoot)
+  }
 
   watch(subject: string): { subject: string; watching: true } {
     this.ops.refresh(subject)
@@ -34,7 +41,7 @@ export class ProjectionWatcher {
       return { subject, watching: true }
     }
     this.stop()
-    const runtime = runtimeForSubject(this.projectRoot, subject)
+    const runtime = runtimeForSubject(this.runtimeContext, subject)
     this.activeSubject = subject
     this.watcher = this.watcherFactory({
       runtimeRoot: runtime.runtimeRoot,

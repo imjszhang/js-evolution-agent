@@ -3,6 +3,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config as loadDotenv } from 'dotenv';
 import { invalidateLinkHealthCache } from './links/index.mjs';
+import { resolveJeaHome } from './jea-home.mjs';
 
 const projectModuleDir = dirname(fileURLToPath(import.meta.url));
 
@@ -14,9 +15,14 @@ export function getProjectRoot() {
 
 export function loadProjectEnv(root = getProjectRoot()) {
   const envPath = join(root, '.env');
+  const explicitJeaHome = process.env.JEA_HOME;
   if (existsSync(envPath)) {
     // Project .env is the local source of truth; shell placeholders must not win over it.
     loadDotenv({ path: envPath, override: true, quiet: true });
+  }
+  if (explicitJeaHome) process.env.JEA_HOME = explicitJeaHome;
+  if (process.env.JEA_HOME) {
+    process.env.JEA_HOME = resolveJeaHome({ sourceRoot: root }).path;
   }
   invalidateLinkHealthCache(root);
   return envPath;

@@ -10,8 +10,10 @@ import {
 } from '../src/infra/jea-home.mjs';
 import {
   getSubjectRuntimeRoot,
+  readSubjectsRegistry,
   subjectsRegistryFile,
   subjectsRuntimeDir,
+  writeSubjectsRegistry,
 } from '../src/infra/subjects.mjs';
 
 const temps = [];
@@ -69,6 +71,20 @@ describe('JEA Home resolver', () => {
       name: 'alpha',
       data_namespace: 'alpha-data',
     })).toBe(join(jeaHome, 'subjects', 'alpha-data'));
+  });
+
+  it('shares one registry across independent checkouts', () => {
+    const firstSource = temp('jea-source-a-');
+    const secondSource = temp('jea-source-b-');
+    const jeaHome = temp('jea-shared-home-');
+    const first = createRuntimeContext({ sourceRoot: firstSource, jeaHome });
+    const second = createRuntimeContext({ sourceRoot: secondSource, jeaHome });
+    writeSubjectsRegistry(first, {
+      default_subject: 'alpha',
+      subjects: { alpha: { data_namespace: 'alpha-data' } },
+    });
+    expect(readSubjectsRegistry(second).default_subject).toBe('alpha');
+    expect(subjectsRegistryFile(first)).toBe(subjectsRegistryFile(second));
   });
 });
 

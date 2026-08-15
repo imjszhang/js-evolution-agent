@@ -6,8 +6,9 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { writeJsonFile } from '../src/infra/files.mjs';
 import {
@@ -102,6 +103,25 @@ describe('JEA Home migration', () => {
     });
   });
 
+  it('blocks migration while a legacy worker is active', async () => {
+    const fixture = makeFixture();
+    writeJsonFile(join(
+      fixture.subjectRoot,
+      'data',
+      'evolution',
+      'daemon',
+      'worker-state.json',
+    ), {
+      status: 'running',
+      pid: process.pid,
+      heartbeat_at: new Date().toISOString(),
+      stale_after_ms: 60_000,
+    });
+    await expect(migrateJeaHome(fixture)).rejects.toMatchObject({
+      code: 'migration_writers_active',
+    });
+  });
+
   it('aborts activation if the source changes during copy', async () => {
     const fixture = makeFixture();
     await expect(migrateJeaHome(fixture, {
@@ -110,5 +130,54 @@ describe('JEA Home migration', () => {
       },
     })).rejects.toMatchObject({ code: 'migration_source_changed' });
     expect(existsSync(join(fixture.jeaHome, 'subjects'))).toBe(false);
+  });
+
+  it('exposes migration through the CLI and blocks normal commands beforehand', () => {
+    const fixture = makeFixture();
+    const cli = resolve('src/cli/jea.mjs');
+    const env = {
+      ...process.env,
+      JEA_PROJECT_ROOT: fixture.sourceRoot,
+      JEA_HOME: fixture.jeaHome,
+    };
+    const blocked = spawnSync(process.execPath, ['--preserve-symlinks', cli, 'subject', 'list'], {
+      env,
+      encoding: 'utf8',
+    });
+    expect(blocked.status).toBe(1);
+    expect(blocked.stderr).toContain('migrate-home');
+
+    const migrated = spawnSync(process.execPath, [
+      '--preserve-symlinks',
+      cli,
+      'data',
+      'migrate-home',
+      '--yes',
+      '--json',
+    ], {
+      env,
+      encoding: 'utf8',
+    });
+    expect(migrated.status).toBe(0);
+    expect(JSON.parse(migrated.stdout).status).toBe('migrated');
+
+    const status = spawnSync(process.execPath, [
+      '--preserve-symlinks',
+      cli,
+      'data',
+      'status',
+      '--subject',
+      'alpha',
+      '--json',
+    ], {
+      env,
+      encoding: 'utf8',
+    });
+    expect(status.status).toBe(0);
+    expect(JSON.parse(status.stdout).paths).toMatchObject({
+      source_root: fixture.sourceRoot,
+      jea_home: fixture.jeaHome,
+      subject_runtime_root: join(fixture.jeaHome, 'subjects', 'alpha-data'),
+    });
   });
 });

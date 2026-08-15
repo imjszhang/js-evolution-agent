@@ -9,6 +9,9 @@
  *        npm run check
  */
 import { main } from '../src/cli/jea.mjs';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const SUBJECT = 'ci-repo';
 
@@ -20,10 +23,20 @@ const STEPS = [
 ];
 
 async function run() {
-  for (const argv of STEPS) {
-    console.log(`$ jea ${argv.join(' ')}`);
-    const code = await main(argv);
-    if (code) process.exit(code);
+  const previousHome = process.env.JEA_HOME;
+  const jeaHome = mkdtempSync(join(tmpdir(), 'jea-ci-home-'));
+  process.env.JEA_HOME = jeaHome;
+  try {
+    for (const argv of STEPS) {
+      console.log(`$ jea ${argv.join(' ')}`);
+      const code = await main(argv);
+      if (code) process.exitCode = code;
+      if (code) return;
+    }
+  } finally {
+    if (previousHome == null) delete process.env.JEA_HOME;
+    else process.env.JEA_HOME = previousHome;
+    rmSync(jeaHome, { recursive: true, force: true });
   }
 }
 

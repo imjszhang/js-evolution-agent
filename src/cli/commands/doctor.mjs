@@ -47,11 +47,15 @@ export async function doctorCommand({ context: providedContext = null } = {}) {
     statusLine(true, 'JEA Home authority', authority.code);
   }
   if (authority.code === 'home_migrated') {
-    const legacyDrift = legacyChangedSinceMigration(context);
-    if (legacyDrift?.changed) {
-      ok = statusLine(false, 'Legacy Subject data changed after migration', legacyDrift.source_subjects_root) && ok;
-    } else {
-      statusLine(true, 'Legacy Subject data after migration', 'unchanged');
+    try {
+      const legacyDrift = legacyChangedSinceMigration(context);
+      if (legacyDrift?.changed) {
+        ok = statusLine(false, 'Legacy Subject data changed after migration', legacyDrift.source_subjects_root) && ok;
+      } else {
+        statusLine(true, 'Legacy Subject data after migration', 'unchanged');
+      }
+    } catch (error) {
+      ok = statusLine(false, 'Legacy Subject data integrity', error?.message || String(error)) && ok;
     }
   }
   ok = statusLine(nodeMajor >= 18, 'Node >= 18', process.version) && ok;

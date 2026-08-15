@@ -6,6 +6,7 @@ import {
   readSubjectsRegistry
 } from '../../../../src/infra/subjects.mjs'
 import { loadProjectEnv } from '../../../../src/infra/project.mjs'
+import { createRuntimeContext } from '../../../../src/infra/jea-home.mjs'
 import { runtimeForSubject } from '../../../../src/infra/runtime-paths.mjs'
 import type { SubjectSnapshot, SubjectSummary } from '../shared/contract'
 import type { DaemonSupervisor } from './daemon-supervisor'
@@ -17,7 +18,7 @@ import {
 export const DEFAULT_PROJECT_ROOT = BUNDLED_PROJECT_ROOT_CANDIDATE
 
 export interface ProjectionBuilders {
-  daemon(root: string, subject: string): Record<string, any>
+  daemon(root: any, subject: string): Record<string, any>
   observability(input: {
     subject: string
     runtimeRoot: string
@@ -31,19 +32,25 @@ const directBuilders: ProjectionBuilders = {
 }
 
 export class OpsService {
+  private readonly runtimeContext: any
+
   constructor(
     readonly projectRoot = resolveDesktopProjectRoot(),
     private readonly builders: ProjectionBuilders = directBuilders,
     envLoader: (root: string) => string = loadProjectEnv,
-    private readonly supervisor: Pick<DaemonSupervisor, 'get'> | null = null
+    private readonly supervisor: Pick<DaemonSupervisor, 'get'> | null = null,
+    jeaHome: string | undefined = process.env.JEA_HOME
   ) {
     envLoader(this.projectRoot)
+    this.runtimeContext = jeaHome
+      ? createRuntimeContext({ sourceRoot: this.projectRoot, jeaHome })
+      : createRuntimeContext(this.projectRoot)
   }
 
   listSubjects(): SubjectSummary[] {
-    const registry = readSubjectsRegistry(this.projectRoot)
-    return listRegisteredSubjects(this.projectRoot).map((name: string) => {
-      const runtime = runtimeForSubject(this.projectRoot, name)
+    const registry = readSubjectsRegistry(this.runtimeContext)
+    return listRegisteredSubjects(this.runtimeContext).map((name: string) => {
+      const runtime = runtimeForSubject(this.runtimeContext, name)
       return {
         name,
         namespace: runtime.dataNamespace,
@@ -54,13 +61,13 @@ export class OpsService {
 
   getDaemon(subject: string): Record<string, any> {
     this.assertSubject(subject)
-    return this.builders.daemon(this.projectRoot, subject)
+    return this.builders.daemon(this.runtimeContext, subject)
   }
 
   getObservability(subject: string): Record<string, any> {
     this.assertSubject(subject)
-    const runtime = runtimeForSubject(this.projectRoot, subject)
-    const daemon = this.builders.daemon(this.projectRoot, subject)
+    const runtime = runtimeForSubject(this.runtimeContext, subject)
+    const daemon = this.builders.daemon(this.runtimeContext, subject)
     return this.builders.observability({
       subject,
       runtimeRoot: runtime.runtimeRoot,
@@ -74,8 +81,8 @@ export class OpsService {
     if (subject && subjects.length === 0) this.assertSubject(subject)
 
     return subjects.map((item) => {
-      const runtime = runtimeForSubject(this.projectRoot, item.name)
-      const daemon = this.builders.daemon(this.projectRoot, item.name)
+      const runtime = runtimeForSubject(this.runtimeContext, item.name)
+      const daemon = this.builders.daemon(this.runtimeContext, item.name)
       return {
         subject: item,
         daemon,
@@ -90,7 +97,7 @@ export class OpsService {
   }
 
   private assertSubject(subject: string): void {
-    if (!subject || !listRegisteredSubjects(this.projectRoot).includes(subject)) {
+    if (!subject || !listRegisteredSubjects(this.runtimeContext).includes(subject)) {
       throw new Error('Requested subject is unavailable.')
     }
   }

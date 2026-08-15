@@ -5,6 +5,7 @@ import {
   resolveDefaultSubjectName,
   sanitizeSubjectName,
   subjectPolicyExists,
+  subjectsRuntimeDir,
 } from '../infra/subjects.mjs';
 import { nowIso, parsePositiveInt, runtimeForSubject } from '../infra/runtime-paths.mjs';
 import {
@@ -195,7 +196,7 @@ export function findRunManifest(root, runId, { subject = null } = {}) {
 }
 
 export function listSubjectsWithRuns(root) {
-  const subjectsRoot = join(root, 'runtime', 'subjects');
+  const subjectsRoot = subjectsRuntimeDir(root);
   if (!existsSync(subjectsRoot)) return [];
   return readdirSync(subjectsRoot, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
