@@ -110,7 +110,7 @@ afterEach(async () => {
 })
 
 describe.skipIf(process.platform === 'win32')('DaemonSupervisor real process smoke', () => {
-  it('starts and stops a real managed channel worker', { retry: 2 }, async () => {
+  it('starts and stops a real managed channel worker', async () => {
     const root = projectFixture()
     const registry = new ManagedProcessRegistry()
     const supervisor = new DaemonSupervisor(root, registry, new DesktopEventBus(), undefined, 1_000)
@@ -131,9 +131,9 @@ describe.skipIf(process.platform === 'win32')('DaemonSupervisor real process smo
     const stopped = await supervisor.stop('alpha', 'integration_test')
     expect(stopped.mode).toBe('none')
     expect(registry.list()).toEqual([])
-  }, 10_000)
+  })
 
-  it('attaches to but never cleans up an external worker', { retry: 2 }, async () => {
+  it('attaches to but never cleans up an external worker', async () => {
     const root = projectFixture()
     const registry = new ManagedProcessRegistry()
     const supervisor = new DaemonSupervisor(root, registry, new DesktopEventBus())
@@ -147,5 +147,5 @@ describe.skipIf(process.platform === 'win32')('DaemonSupervisor real process smo
     await registry.shutdownAll('app_quit')
     expect(supervisor.get('alpha').mode).toBe('attached')
     expect(() => process.kill(child.pid!, 0)).not.toThrow()
-  }, 10_000)
+  })
 })
