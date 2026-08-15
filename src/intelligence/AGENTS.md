@@ -7,15 +7,14 @@
 
 - `jea run [--mock] [--deepseek] [--skip-goals-assess] [--skip-belief-update] [--subject NAME]`：运行一次完整演化循环并写入情报回执。
 - `jea run --mock`：不调用真实模型，适合本地冒烟验证。
-- `jea run --loop` / `jea run --pipeline agent_loop`：显式指定 **agent_loop**（列车回退；默认已是 reactor）。
-- `jea run --pipeline phases`：deprecated 回退路径（经典 observe→report→decide；无 tool-calling）。
+- `jea run --loop` / `jea run --pipeline agent_loop|phases`：S9 已删除，命令会明确失败。
 - `jea run --deepseek`：要求 DeepSeek API 配置存在。
 - `jea run --skip-goals-assess`：跳过本轮目标评估（Phase 4 / 4.5）。
 - `jea run --skip-belief-update`：跳过 post-verify 信念更新（Phase 3.5）。
 
-### Agent Loop 管道（显式回退）
+### Reactor 同步链
 
-`agent_loop` **仅替代 Phase 1**，按报告中心生产线编排；**Phase 2 exec 仍独立执行** pending_decisions；verify / belief / goals / diary **保持固定收尾**。
+`jea run` 只走 reactor：claim → cognitive_reaction → exec/verify/rule/memory 收尾。查证实现在 `src/evolution/investigation/`。**Phase 2 exec 仍独立执行** pending_decisions；verify / belief / goals / diary **保持固定收尾**。
 
 内部阶段：
 
@@ -30,7 +29,7 @@
 完整单轮 step 图：
 
 ```text
-agent_loop → exec → verify → belief_update → goals_assess → goals_calibrate → diary
+reactor → exec → verify → belief_update → goals_assess → goals_calibrate → diary
 ```
 
 信念（Belief）在 Phase 1 被 Decide 读取约束行动，在 Phase 3.5 依据 receipt 与 verify_report 正式更新。详见下文「信念管理」与 [src/actions/AGENTS.md](../actions/AGENTS.md) 的「人工审批与操作者意图」。
@@ -38,11 +37,11 @@ agent_loop → exec → verify → belief_update → goals_assess → goals_cali
 模式解析优先级（仿 evolution.mode）：
 
 1. `<JEA_HOME>/subjects/registry.json` → `subjects.<name>.evolution.pipeline`
-2. CLI `--loop` / `--pipeline reactor|agent_loop|phases`
-3. env `JEA_CYCLE_PIPELINE`
+2. CLI `--pipeline reactor`（`--loop` / `agent_loop` / `phases` 会失败）
+3. env `JEA_CYCLE_PIPELINE`（非 reactor 会失败）
 4. 默认 `reactor`
 
-显式选择 `phases` 时会打一次 deprecation 警告；可用 `JEA_SUPPRESS_PHASES_DEPRECATION=1` 静音。cycle-state 缺 `meta.pipeline` 时按 `reactor` 步图 reconcile（显式 `phases` / `agent_loop` 仍按自身步图）。
+cycle-state 缺 `meta.pipeline` 时按 `reactor` 步图只读 reconcile；历史 `phases` / `agent_loop` JSON 仍可读，不再作为 live driver。
 
 **deprecated `phases` Phase 1**（仅显式启用时）：
 
@@ -56,8 +55,7 @@ Phase 1.5 intel report 持久化
 
 | 变量 | 默认 | 含义 |
 | --- | --- | --- |
-| `JEA_CYCLE_PIPELINE` | `reactor` | `reactor`（默认）或显式回退 `agent_loop` / `phases`（deprecated） |
-| `JEA_SUPPRESS_PHASES_DEPRECATION` | （关） | `1`/`true` 时静音 phases deprecation 警告 |
+| `JEA_CYCLE_PIPELINE` | `reactor` | 仅 `reactor`；其它值会失败 |
 | `JEA_LOOP_MAX_READONLY_TURNS` | `6` | 只读查证最大 LLM 轮数（主配置） |
 | `JEA_LOOP_MAX_TURNS` | （可选） | 与 `MAX_READONLY` 取较小值；兼容旧配置 |
 | `JEA_LOOP_MAX_WALLCLOCK_MS` | `1200000` | 整步墙钟（查证+报告+Decide） |
@@ -77,7 +75,7 @@ Phase 2 执行预算 / 队列 TTL（`JEA_EXEC_*`、`JEA_AGENT_*`、`JEA_PENDING_
 
 ## 证据流与反应器影子（Phase 1–2，#33 / PR #35）
 
-反应器化迁移的读侧、影子与 live 双轨。S8 默认开 `JEA_EVIDENCE_WAKE`：真实 `pending_decisions` / reports index / evolution-events 由 `cognitive_reaction` 写入。显式 `JEA_EVIDENCE_WAKE=0` 仍走 `jea run` / daemon step 列车。
+反应器化迁移的读侧、影子与 live 路径。S9 后 evidence wake 已固化：真实 `pending_decisions` / reports index / evolution-events 由 `cognitive_reaction` 写入。列车回退已删除。
 
 ### 证据流读侧（Phase 1）
 
@@ -120,11 +118,9 @@ npm run jea -- intel stream --reconcile --subject js-evolution-agent
 npm run jea -- reactor shadow compare --cycle <上一步 cycle_id> --subject js-evolution-agent
 ```
 
-S8 默认开 `JEA_EVIDENCE_WAKE` / `JEA_QUEUE_DISABLE_CYCLE_TTL` / `JEA_EXEC_RATE_ONLY`。隔离 mock canary：`npm run reactor:canary`。隔离晋升闸：`node scripts/reactor-s8-promote-check.mjs --subject NAME`。生产灰度见 `docs/reactor-s8-gray-runbook.md`。S9 硬删见 #70。
+S9 已固化 evidence wake / 墙钟 TTL / rate-only。隔离 mock canary：`npm run reactor:canary`。隔离晋升闸：`node scripts/reactor-s8-promote-check.mjs --subject NAME`。生产操作见 `docs/reactor-s8-gray-runbook.md`。列车回退已删除。
 
-Phase 3 灰度（`evolution.pipeline: reactor` 真实入队）已可用；exec 墙钟速率预算前置见 #36（已合 main）。
-
-- 默认 `resolveCyclePipeline` 已是 `reactor`（M5）；registry `"evolution": { "pipeline": "agent_loop" }` 可一行回切列车
+- 默认 `resolveCyclePipeline` 只接受 `reactor`；`--pipeline agent_loop|phases` / registry 旧值会失败
 - `jea run` / daemon 走 `reactor` step → claim 证据批 → 真实 `pending_decisions` + reports index + `reactor_report_honesty` / `reactor_pipeline` 事件
 - 沙盒 smoke：`npm run jea -- run --mock --subject js-evolution-agent`（当前 registry 已灰度该 subject）
 - **M4 carryover 写侧已删**：不再写入 `agent_loop_carryover.json`（读侧保留 leftover）；`isCarryoverWriteEnabled()` 恒为 false

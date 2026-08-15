@@ -148,8 +148,8 @@ describe('ExecutionPipeline agent rate gate', () => {
     const result = await pipeline.run();
     expect(result.success).toBe(true);
     expect(result.agent_rate).toBeNull();
-    expect(result.remaining_agent_pending).toBe(1);
-    expect(order.filter((x) => x.startsWith('agent:'))).toHaveLength(2);
+    expect(result.remaining_agent_pending).toBe(0);
+    expect(order.filter((x) => x.startsWith('agent:'))).toHaveLength(3);
   });
 
   it('rate=2 with 5 pending agents and budget=8 executes only 2', async () => {

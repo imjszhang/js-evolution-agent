@@ -22,8 +22,6 @@ import { createCycle } from '../src/daemon/cycle-state.mjs';
 import {
   buildCycleContext,
   runAgentLoopStep,
-  runIntelReportStep,
-  runIntelStep,
 } from '../src/evolution/cycle-steps.mjs';
 import { writePendingOperatorBrief } from '../src/intelligence/operator-briefs.mjs';
 import { writePendingOperatorFact } from '../src/intelligence/operator-facts.mjs';
@@ -247,17 +245,14 @@ function makeHonestyAiClient() {
   });
 }
 
-async function runHonestyMatrix(pipeline) {
+async function runHonestyMatrix() {
   const envSnap = beginMockEnv();
   const root = makeE2eProjectRoot();
   try {
     process.env.JEA_FORCE_MOCK = '1';
     delete process.env.DEEPSEEK_API_KEY;
     process.chdir(root);
-    process.env.JEA_CYCLE_PIPELINE = pipeline;
-    if (pipeline === 'phases') {
-      process.env.JEA_SUPPRESS_PHASES_DEPRECATION = '1';
-    }
+    delete process.env.JEA_CYCLE_PIPELINE;
 
     const runtime = runtimeForSubject(root, SUBJECT);
     const ctx = await buildCycleContext(root, runtime);
@@ -265,30 +260,16 @@ async function runHonestyMatrix(pipeline) {
     ctx.cfg.aiClient = makeHonestyAiClient();
 
     const cycleState = createCycle(root, SUBJECT, {
-      meta: { driver: 'run', pipeline },
+      meta: { driver: 'run', pipeline: 'reactor' },
     });
     const recordState = { root, subject: SUBJECT };
 
-    let intelResult;
-    if (pipeline === 'phases') {
-      const intelOutcome = await runIntelStep(ctx, {
-        cycleId: cycleState.cycle_id,
-        recordState,
-      });
-      expect(intelOutcome.intelResult.success).toBe(true);
-      await runIntelReportStep(ctx, {
-        intelResult: intelOutcome.intelResult,
-        recordState,
-      });
-      intelResult = intelOutcome.intelResult;
-    } else {
-      const loopOutcome = await runAgentLoopStep(ctx, {
-        cycleId: cycleState.cycle_id,
-        recordState,
-      });
-      expect(loopOutcome.intelResult.success).toBe(true);
-      intelResult = loopOutcome.intelResult;
-    }
+    const loopOutcome = await runAgentLoopStep(ctx, {
+      cycleId: cycleState.cycle_id,
+      recordState,
+    });
+    expect(loopOutcome.intelResult.success).toBe(true);
+    const intelResult = loopOutcome.intelResult;
 
     const { markdown } = assertIntelReportDeliverable({
       store: ctx.store,
@@ -318,18 +299,8 @@ async function runHonestyMatrix(pipeline) {
     expect(seenBody).not.toContain(SECRET_SHAPED);
     expect(seenBody).toContain('[REDACTED_SECRET]');
     const events = ctx.store.readEvolutionEvents({ limit: 200 });
-    const honestyType = pipeline === 'agent_loop'
-      ? 'agent_loop_report_honesty'
-      : 'phases_report_honesty';
-    const honestyEvents = events.filter((e) => e.type === honestyType);
+    const honestyEvents = events.filter((e) => e.type === 'agent_loop_report_honesty');
     expect(honestyEvents.length).toBe(1);
-    if (pipeline === 'agent_loop') {
-      // agent_loop verified_facts can add store observations beyond operator_fact mechanical Seen.
-      expect(markdown).toContain(`[intel_observations:${OBS_ID}]`);
-      const rejectedEvents = events.filter((e) => e.type === 'agent_loop_rejected_facts');
-      expect(rejectedEvents.length).toBe(1);
-      expect(rejectedEvents[0].count).toBeGreaterThanOrEqual(1);
-    }
   } finally {
     restoreEnv(envSnap);
     safeRm(root);
@@ -337,11 +308,7 @@ async function runHonestyMatrix(pipeline) {
 }
 
 describe('Intel report evidence honesty e2e', () => {
-  it('phases Intel report Seen citations resolve and exclude brief poison', async () => {
-    await runHonestyMatrix('phases');
-  }, 180_000);
-
-  it('agent_loop Intel report Seen citations resolve and exclude brief poison', async () => {
-    await runHonestyMatrix('agent_loop');
+  it('reactor Intel report Seen citations resolve and exclude brief poison', async () => {
+    await runHonestyMatrix();
   }, 180_000);
 });

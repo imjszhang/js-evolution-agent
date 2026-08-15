@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createIntelligenceStore } from '../src/intelligence/store.mjs';
 import { createHostDecisionQueue } from '../src/intelligence/decision-queue.mjs';
-import { buildInvestigationTools, buildLoopTools } from '../src/evolution/agent-loop/tool-registry.mjs';
+import { buildInvestigationTools, buildLoopTools } from '../src/evolution/investigation/tool-registry.mjs';
 import { buildInvestigationDigest } from '../src/prompts/agent-loop.mjs';
 
 let tempDir = null;

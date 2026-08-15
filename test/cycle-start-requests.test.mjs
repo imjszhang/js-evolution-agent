@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -34,15 +34,6 @@ function makeRoot() {
 }
 
 describe('cycle-start-requests', () => {
-  const previousWake = process.env.JEA_EVIDENCE_WAKE;
-  beforeEach(() => {
-    process.env.JEA_EVIDENCE_WAKE = '0';
-  });
-  afterEach(() => {
-    if (previousWake == null) delete process.env.JEA_EVIDENCE_WAKE;
-    else process.env.JEA_EVIDENCE_WAKE = previousWake;
-  });
-
   it('creates pending request on first enqueue', () => {
     const root = makeRoot();
     const result = enqueueCycleStartRequest(root, 'alpha', { reason: 'manual', meta: { note: 'test' } });
@@ -114,7 +105,7 @@ describe('cycle-start-requests', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it('continuous runHeartbeatTick starts a cycle when tick open is opted in', () => {
+  it('continuous runHeartbeatTick converts tick-open requests to cognitive wake', () => {
     const root = makeRoot();
     const tick = runHeartbeatTick(root, 'alpha', {
       evolution_mode: 'continuous',
@@ -122,7 +113,9 @@ describe('cycle-start-requests', () => {
     });
     expect(tick.tick_open_enabled).toBe(true);
     expect(tick.request_process?.started).toBe(true);
-    expect(listOpenCycles(root, 'alpha')).toHaveLength(1);
+    expect(tick.request_process?.reason).toBe('evidence_wake');
+    expect(listOpenCycles(root, 'alpha')).toHaveLength(0);
+    expect(readTaskQueue(root, 'alpha').tasks.some((t) => t.type === 'cognitive_reaction')).toBe(true);
     expect(readPendingCycleStartRequest(root, 'alpha')).toBeNull();
     rmSync(root, { recursive: true, force: true });
   });
@@ -157,23 +150,24 @@ describe('cycle-start-requests', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it('on_demand starts cycle after enqueue', () => {
+  it('on_demand converts a manual request to cognitive wake', () => {
     const root = makeRoot();
     enqueueCycleStartRequest(root, 'alpha', { reason: 'manual' });
     const processed = processCycleStartRequests(root, 'alpha', { evolution_mode: 'on_demand' });
     expect(processed.started).toBe(true);
-    expect(readTaskQueue(root, 'alpha').tasks.some((t) => t.type === 'reactor')).toBe(true);
+    expect(processed.reason).toBe('evidence_wake');
+    expect(readTaskQueue(root, 'alpha').tasks.some((t) => t.type === 'cognitive_reaction')).toBe(true);
     rmSync(root, { recursive: true, force: true });
   });
 
-  it('defers request when open cycle exists', () => {
+  it('converts a request to wake even when a historical cycle is open', () => {
     const root = makeRoot();
     startCycleFromTick(root, 'alpha');
     enqueueCycleStartRequest(root, 'alpha', { reason: 'operator_brief' });
     const processed = processCycleStartRequests(root, 'alpha', {});
-    expect(processed.started).toBe(false);
-    expect(processed.reason).toBe('open_cycle_exists');
-    expect(readPendingCycleStartRequest(root, 'alpha')?.reasons).toContain('operator_brief');
+    expect(processed.started).toBe(true);
+    expect(processed.reason).toBe('evidence_wake');
+    expect(readPendingCycleStartRequest(root, 'alpha')).toBeNull();
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -196,8 +190,7 @@ describe('cycle-start-requests', () => {
     });
     expect(first.request_enqueue).toBeTruthy();
     expect(first.request_process?.started).toBe(true);
-    const cycleId = first.request_process.cycle.cycle_id;
-    markStepStatus(root, 'alpha', cycleId, 'diary', { status: 'done' });
+    expect(first.request_process?.reason).toBe('evidence_wake');
     expect(listOpenCycles(root, 'alpha')).toHaveLength(0);
 
     writeJsonFile(join(root, 'policies', 'subjects.json'), {
@@ -235,8 +228,8 @@ describe('cycle-start-requests', () => {
 
     enqueueCycleStartRequest(root, 'alpha', { reason: 'manual' });
     const processed = processCycleStartRequests(root, 'alpha', { tick_ms: 300_000 });
-    expect(processed.started).toBe(false);
-    expect(processed.reason).toBe('open_cycle_exists');
+    expect(processed.started).toBe(true);
+    expect(processed.reason).toBe('evidence_wake');
     rmSync(root, { recursive: true, force: true });
   });
 });

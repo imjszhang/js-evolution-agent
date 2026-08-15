@@ -29,7 +29,7 @@ import {
   computeRuleFeedbackStats,
   isGuardGoal,
 } from '../../intelligence/rule-feedback.mjs';
-import { loadEnabledGuards } from '../../evolution/agent-loop/guard-runner.mjs';
+import { loadEnabledGuards } from '../../evolution/investigation/guard-runner.mjs';
 import { readCarryoverDocument } from '../../evolution/carryover.mjs';
 import { resolveIntelReportRecordPath } from '../../intelligence/report-paths.mjs';
 import {

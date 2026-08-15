@@ -19,7 +19,6 @@ import {
   markExecIntent,
   recoverOpenExecIntents,
 } from './reactor/exec-intent-store.mjs';
-import { isExecRateOnly } from './reactor/feature-gates.mjs';
 import loadConfig from '../../oada.config.mjs'; // project root oada.config.mjs
 import { assessActiveGoals, autoCalibrateGoals } from '../domain/cognition/index.mjs';
 import { updateActiveBeliefs } from '../intelligence/belief-updater.mjs';
@@ -67,9 +66,9 @@ import {
   readCarryoverDocument,
   readCarryoverItems,
 } from './carryover.mjs';
-import { buildInvestigationTools } from './agent-loop/tool-registry.mjs';
-import { runInvestigationLoop } from './agent-loop/loop-runner.mjs';
-import { loadEnabledGuards, runMechanicalGuards } from './agent-loop/guard-runner.mjs';
+import { buildInvestigationTools } from './investigation/tool-registry.mjs';
+import { runInvestigationLoop } from './investigation/loop-runner.mjs';
+import { loadEnabledGuards, runMechanicalGuards } from './investigation/guard-runner.mjs';
 import {
   buildAgentLoopInitialUserPromptParts,
   buildAgentLoopObservationReport,
@@ -1461,7 +1460,7 @@ export async function runExecStep(ctx, { recordState = null, intelResult = null,
     windowMs: rateConfig.windowMs,
     logFn: (msg) => logger?.warn?.(msg),
   });
-  const rateOnly = isExecRateOnly();
+  const rateOnly = true;
   const exec = new ExecutionPipeline({
     host: cfg.host,
     projectRoot: runtime.runtimeRoot,

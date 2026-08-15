@@ -10,20 +10,16 @@ import { withSubjectLock } from './src/daemon/evolve-runs.mjs';
 import { createCycle } from './src/daemon/cycle-state.mjs';
 import {
   buildCycleContext,
-  runAgentLoopStep,
   runBeliefUpdateStep,
   runDiaryStep,
   runExecStep,
   runGoalsAssessStep,
   runGoalsCalibrateStep,
-  runIntelReportStep,
-  runIntelStep,
   runReactorStep,
   runVerifyStep,
   skipBeliefUpdateFromEnv,
   skipGoalsAssessFromEnv,
 } from './src/evolution/cycle-steps.mjs';
-import { runSingleStepInProcess } from './src/evolution/cycle-step-runner.mjs';
 import { resolveCyclePipeline } from './src/daemon/cycle-pipeline-mode.mjs';
 
 const sourceRoot = getProjectRoot();
@@ -49,15 +45,6 @@ function recordStateBag(runtime) {
     root: runtime,
     subject: runtime.subject,
   };
-}
-
-async function runSingleStepMode(runtime, step, cycleId) {
-  await runSingleStepInProcess({
-    root: sourceRoot,
-    runtime,
-    step,
-    cycleId,
-  });
 }
 
 function cycleDriverFromEnv() {
@@ -92,54 +79,19 @@ async function runCycle(runtime) {
   let execResult;
   let intelReportReady = false;
 
-  if (pipeline === 'agent_loop') {
-    console.log('\n=== Agent loop (intel only) ===');
-    const loopOutcome = await runAgentLoopStep(ctx, { cycleId: cycleState.cycle_id, recordState });
-    intelResult = loopOutcome.intelResult;
-    intelReportReady = Boolean(intelResult?.report?.mdPath);
-    console.log('  success:', intelResult.success);
-    console.log('  decisions queued:', intelResult.decisions_queued?.length ?? 0);
-    console.log('  report ready:', intelReportReady);
+  console.log('\n=== Cognitive reactor ===');
+  const reactorOutcome = await runReactorStep(ctx, { cycleId: cycleState.cycle_id, recordState });
+  intelResult = reactorOutcome.intelResult;
+  intelReportReady = Boolean(intelResult?.report?.mdPath);
+  console.log('  success:', intelResult.success);
+  console.log('  skipped:', intelResult.skipped ?? false);
+  console.log('  decisions queued:', intelResult.decisions_queued?.length ?? 0);
+  console.log('  report ready:', intelReportReady);
 
-    console.log('\n=== Phase 2: exec pipeline ===');
-    ({ execResult } = await runExecStep(ctx, { recordState, intelResult, stateCycleId: intelResult.cycle_id }));
-    console.log('  success:', execResult.success);
-    console.log('  executed:', execResult.executed.length);
-  } else if (pipeline === 'reactor') {
-    console.log('\n=== Cognitive reactor ===');
-    const reactorOutcome = await runReactorStep(ctx, { cycleId: cycleState.cycle_id, recordState });
-    intelResult = reactorOutcome.intelResult;
-    intelReportReady = Boolean(intelResult?.report?.mdPath);
-    console.log('  success:', intelResult.success);
-    console.log('  skipped:', intelResult.skipped ?? false);
-    console.log('  decisions queued:', intelResult.decisions_queued?.length ?? 0);
-    console.log('  report ready:', intelReportReady);
-
-    console.log('\n=== Phase 2: exec pipeline ===');
-    ({ execResult } = await runExecStep(ctx, { recordState, intelResult, stateCycleId: intelResult.cycle_id }));
-    console.log('  success:', execResult.success);
-    console.log('  executed:', execResult.executed.length);
-  } else {
-    console.log('\n=== Phase 1: intel pipeline ===');
-    const intelOutcome = await runIntelStep(ctx, { cycleId: cycleState.cycle_id, recordState });
-    intelResult = intelOutcome.intelResult;
-    console.log('  success:', intelResult.success);
-    console.log('  actions queued:', intelResult.decisions_queued.length);
-
-    console.log('\n=== Phase 1.5: intel report ===');
-    const reportOutcome = await runIntelReportStep(ctx, { intelResult, recordState });
-    intelReportReady = reportOutcome.intelReportReady;
-    if (reportOutcome.failed) {
-      console.warn('  report generation failed (non-fatal)');
-    } else {
-      console.log('  report ready:', intelReportReady);
-    }
-
-    console.log('\n=== Phase 2: exec pipeline ===');
-    ({ execResult } = await runExecStep(ctx, { recordState, intelResult, stateCycleId: intelResult.cycle_id }));
-    console.log('  success:', execResult.success);
-    console.log('  executed:', execResult.executed.length);
-  }
+  console.log('\n=== Phase 2: exec pipeline ===');
+  ({ execResult } = await runExecStep(ctx, { recordState, intelResult, stateCycleId: intelResult.cycle_id }));
+  console.log('  success:', execResult.success);
+  console.log('  executed:', execResult.executed.length);
 
   console.log('\n=== Phase 3: verify receipts ===');
   const { verification, reportPath, semanticVerification } = await runVerifyStep(ctx, {
@@ -209,15 +161,11 @@ async function main() {
   assertJeaHomeAuthority(context);
   const runtime = runtimeInfoForDefaultSubject(context);
   mkdirSync(runtime.runtimeRoot, { recursive: true });
-  const step = process.env.JEA_CYCLE_STEP;
-  const cycleId = process.env.JEA_CYCLE_ID || null;
+  if (process.env.JEA_CYCLE_STEP) {
+    throw new Error('JEA_CYCLE_STEP was removed in S9. jea run only executes the reactor sync chain.');
+  }
 
-  const run = async () => {
-    if (step) {
-      return runSingleStepMode(runtime, step, cycleId);
-    }
-    return runCycle(runtime);
-  };
+  const run = async () => runCycle(runtime);
 
   if (process.env.JEA_SUBJECT_RUN_LOCK_HELD === '1') {
     return run();

@@ -238,7 +238,7 @@ describe('cycle progress stalled health', () => {
         alpha: {
           policy: 'subjects/alpha.md',
           data_namespace: 'alpha',
-          evolution: { pipeline: 'agent_loop' },
+          evolution: { pipeline: 'reactor' },
         },
       },
     });
@@ -275,9 +275,9 @@ describe('cycle progress stalled health', () => {
     });
 
     const projection = buildDaemonProjection(root, 'alpha');
-    expect(projection.cycles.drift_steps.length).toBeGreaterThan(0);
-    expect(projection.health.status).toBe('cycle_progress_stalled');
-    expect(projection.health.ok).toBe(false);
+    expect(projection.cycles.drift_steps).toEqual([]);
+    expect(projection.health.ok).toBe(projection.reactor.ok);
+    expect(projection.health.status).not.toBe('cycle_progress_stalled');
   });
 
   it('on_demand idle without open cycle stays healthy', () => {

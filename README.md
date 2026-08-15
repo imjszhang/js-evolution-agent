@@ -194,7 +194,7 @@ Phase 4.5 goals calibrate
 Phase 5   evolution diary
 ```
 
-`phases` (classic observe → report → decide Phase 1) remains available as a deprecated fallback via `--pipeline phases` / `JEA_CYCLE_PIPELINE=phases`.
+`--pipeline agent_loop|phases` / `--loop` were removed in S9. Only `reactor` remains.
 
 ---
 

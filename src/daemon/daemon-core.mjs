@@ -37,23 +37,11 @@ import {
   updateWorkerHeartbeat,
 } from './daemon-worker-state.mjs';
 import {
-  classifyCycleFailure,
-  resolveStepOutcome,
-  runSingleCycle,
-  runSingleStep,
-  CYCLE_STEP_TYPES,
-} from '../cli/commands/evolve.mjs';
-import {
   checkSubjectLaneReady,
   printSubjectLaneGuardFailure,
 } from '../infra/subject-lane-guard.mjs';
+import { ALL_CYCLE_STEP_TYPES } from './cycle-reducer.mjs';
 import {
-  isStepArtifactComplete,
-  markStepRunning,
-  readCycleState,
-} from './cycle-state.mjs';
-import {
-  dispatchAfterStepCompletion,
   enqueueCycleStartRequestWithEvent,
   processCycleStartRequests,
   runHeartbeatTick,
@@ -95,7 +83,6 @@ import {
   runReactorDaemonTask,
   scanWakeBacklog,
 } from '../evolution/reactor/reactor-tasks.mjs';
-import { isEvidenceWakeEnabled } from '../evolution/reactor/feature-gates.mjs';
 import { enqueueWakeIntent } from '../evolution/reactor/wake-store.mjs';
 
 function sleep(ms) {
@@ -114,7 +101,7 @@ function heartbeatDefaults(flags = {}) {
 }
 
 export function enqueueDaemonTask(root, subject, {
-  type = 'run_cycle',
+  type = 'cognitive_reaction',
   idempotencyKey = null,
   input = {},
   priority = 100,
@@ -483,17 +470,6 @@ function runtimeTaskInput(base, evolution) {
   };
 }
 
-function flagsFromTask(task, overrides = {}) {
-  const input = task.input || {};
-  return {
-    mock: Boolean(input.mock || overrides.mock),
-    deepseek: Boolean(input.deepseek || overrides.deepseek),
-    'skip-goals-assess': Boolean(input.skip_goals_assess || overrides['skip-goals-assess']),
-    'skip-belief-update': Boolean(input.skip_belief_update || overrides['skip-belief-update']),
-    'exec-limit': overrides['exec-limit'] ?? input.exec_limit ?? undefined,
-  };
-}
-
 function parseTickMs(flags = {}) {
   return parsePositiveInt(flags['tick-ms'], {
     name: 'tick-ms',
@@ -502,8 +478,8 @@ function parseTickMs(flags = {}) {
   });
 }
 
-function isCycleStepType(type) {
-  return CYCLE_STEP_TYPES.includes(type) || type === 'agent_loop' || type === 'reactor';
+function isRetiredTrainTaskType(type) {
+  return type === 'run_cycle' || ALL_CYCLE_STEP_TYPES.includes(type);
 }
 
 function failReactorTask(root, subject, task, failure) {
@@ -631,327 +607,6 @@ async function workReactorTask(root, subject, task, flags) {
   });
 }
 
-async function workRunCycleStep(root, subject, task, flags) {
-  const workerId = task.lease_owner || flags.worker || `worker-${process.pid}`;
-  const { leaseMs, heartbeatMs } = heartbeatDefaults(flags);
-  const controller = flags.watchdog || flags.signal ? new AbortController() : null;
-  const abortFromSignal = () => controller?.abort();
-  if (flags.signal) {
-    if (flags.signal.aborted) abortFromSignal();
-    else flags.signal.addEventListener('abort', abortFromSignal, { once: true });
-  }
-  let lastLeaseRenewEventAt = 0;
-  let watchdog = null;
-  const step = task.type;
-  const cycleId = task.input?.cycle_id;
-  if (cycleId) {
-    try {
-      markStepRunning(root, subject, cycleId, step);
-    } catch {
-      // non-fatal
-    }
-  }
-  const tick = () => {
-    const state = readWorkerState(root, subject);
-    const stopping = Boolean(state?.stop_requested_at);
-    if (flags.watchdog) {
-      updateWorkerHeartbeat(root, subject, {
-        worker_id: workerId,
-        pid: process.pid,
-        status: stopping ? 'stopping' : 'running',
-        current_task_id: task.task_id,
-      });
-    }
-    const renewed = renewTaskLease(root, subject, task.task_id, { workerId, leaseMs });
-    if (!renewed.renewed) {
-      recordDaemonEvent(root, subject, {
-        type: 'task_lease_renew_failed',
-        status: renewed.reason,
-        task_id: task.task_id,
-        task_type: task.type,
-        lease_owner: workerId,
-      });
-      controller?.abort();
-      return;
-    }
-    const now = Date.now();
-    if (now - lastLeaseRenewEventAt >= Math.max(heartbeatMs * 10, 60_000)) {
-      lastLeaseRenewEventAt = now;
-      recordDaemonEvent(root, subject, {
-        type: 'task_lease_renewed',
-        status: 'ok',
-        task_id: task.task_id,
-        task_type: task.type,
-        lease_owner: workerId,
-        lease_expires_at: renewed.task.lease_expires_at,
-      });
-    }
-    if (cycleId && isStepArtifactComplete(root, subject, cycleId, step)) {
-      const cycleState = readCycleState(root, subject, cycleId);
-      const stepStatus = cycleState?.steps?.[step]?.status;
-      if (stepStatus === 'done' || stepStatus === 'skipped') {
-        controller?.abort();
-        return;
-      }
-    }
-    if (stopping) controller?.abort();
-  };
-  if (flags.watchdog) {
-    tick();
-    watchdog = setInterval(tick, heartbeatMs);
-  }
-  let result;
-  try {
-    result = await runSingleStep({
-      root,
-      subject,
-      step,
-      cycleId,
-      flags: flagsFromTask(task, flags),
-      signal: controller?.signal,
-      hooks: flags.watchdog ? {
-        onOutput: () => tick(),
-      } : {},
-    });
-  } finally {
-    if (watchdog) clearInterval(watchdog);
-    flags.signal?.removeEventListener('abort', abortFromSignal);
-  }
-
-  const outcome = resolveStepOutcome({
-    step,
-    cycleId,
-    exitCode: result.exitCode,
-    output: result.output,
-    root,
-    subject,
-  });
-  const stepResult = outcome.stepResult;
-  const resolvedCycleId = outcome.resolvedCycleId;
-
-  if (outcome.ok) {
-    try {
-      dispatchAfterStepCompletion(root, subject, step, {
-        cycle_id: resolvedCycleId,
-        status: 'done',
-        ok: true,
-        eventPayload: {
-          decisions_queued: stepResult?.decisions_queued,
-          intel_report_ready: stepResult?.intel_report_ready,
-        },
-        metaPatch: {
-          decisions_queued: stepResult?.decisions_queued,
-          intel_report_ready: stepResult?.intel_report_ready,
-        },
-      }, task.input || {});
-    } catch (err) {
-      recordDaemonEvent(root, subject, {
-        type: 'cycle_dispatch_failed',
-        status: 'error',
-        task_id: task.task_id,
-        task_type: task.type,
-        cycle_id: resolvedCycleId,
-        step_type: step,
-        error: err?.message || String(err),
-      });
-    }
-    const completed = completeTask(root, subject, task.task_id, {
-      exit_code: result.exitCode,
-      step_result: stepResult,
-      source: outcome.source,
-    });
-    recordDaemonEvent(root, subject, {
-      type: 'task_completed',
-      status: 'ok',
-      task_id: task.task_id,
-      task_type: task.type,
-      cycle_id: resolvedCycleId,
-      completion_source: outcome.source,
-    });
-    return { ok: true, task: completed.task, stepResult };
-  }
-
-  const failure = outcome.failure ?? classifyCycleFailure({ exitCode: result.exitCode, output: result.output });
-  try {
-    dispatchAfterStepCompletion(root, subject, step, {
-      cycle_id: resolvedCycleId,
-      status: 'failed',
-      ok: false,
-      error: failure.message,
-    }, task.input || {});
-  } catch (err) {
-    recordDaemonEvent(root, subject, {
-      type: 'cycle_dispatch_failed',
-      status: 'error',
-      task_id: task.task_id,
-      task_type: task.type,
-      cycle_id: resolvedCycleId,
-      step_type: step,
-      error: err?.message || String(err),
-    });
-  }
-
-  if (failure.code === 'daemon_stop_requested') {
-    const released = releaseTaskForRetry(root, subject, task.task_id, failure);
-    recordDaemonEvent(root, subject, {
-      type: 'task_failed',
-      status: 'stop_requested_retry_scheduled',
-      task_id: task.task_id,
-      task_type: task.type,
-      retryable: true,
-      error_code: failure.code,
-      error_reason: failure.reason,
-    });
-    return { ok: false, retryable: true, stopped: true, task: released.task, failure };
-  }
-  const maxAttempts = Math.max(1, (task.input?.retries ?? 3) + 1);
-  if (failure.retryable && task.attempts < maxAttempts) {
-    const released = releaseTaskForRetry(root, subject, task.task_id, failure);
-    recordDaemonEvent(root, subject, {
-      type: 'task_failed',
-      status: 'retry_scheduled',
-      task_id: task.task_id,
-      task_type: task.type,
-      retryable: true,
-      error_code: failure.code,
-      error_reason: failure.reason,
-    });
-    return { ok: false, retryable: true, task: released.task, failure };
-  }
-  const failed = failTask(root, subject, task.task_id, failure);
-  recordDaemonEvent(root, subject, {
-    type: 'task_failed',
-    status: 'failed',
-    task_id: task.task_id,
-    task_type: task.type,
-    retryable: failure.retryable,
-    error_code: failure.code,
-    error_reason: failure.reason,
-  });
-  return { ok: false, retryable: false, task: failed.task, failure };
-}
-
-async function workRunCycle(root, subject, task, flags) {
-  const workerId = task.lease_owner || flags.worker || `worker-${process.pid}`;
-  const { leaseMs, heartbeatMs } = heartbeatDefaults(flags);
-  const controller = flags.watchdog || flags.signal ? new AbortController() : null;
-  const abortFromSignal = () => controller?.abort();
-  if (flags.signal) {
-    if (flags.signal.aborted) abortFromSignal();
-    else flags.signal.addEventListener('abort', abortFromSignal, { once: true });
-  }
-  let lastLeaseRenewEventAt = 0;
-  let watchdog = null;
-  const tick = () => {
-    const state = readWorkerState(root, subject);
-    const stopping = Boolean(state?.stop_requested_at);
-    if (flags.watchdog) {
-      updateWorkerHeartbeat(root, subject, {
-        worker_id: workerId,
-        pid: process.pid,
-        status: stopping ? 'stopping' : 'running',
-        current_task_id: task.task_id,
-      });
-    }
-    const renewed = renewTaskLease(root, subject, task.task_id, { workerId, leaseMs });
-    if (!renewed.renewed) {
-      recordDaemonEvent(root, subject, {
-        type: 'task_lease_renew_failed',
-        status: renewed.reason,
-        task_id: task.task_id,
-        task_type: task.type,
-        lease_owner: workerId,
-      });
-      controller?.abort();
-      return;
-    }
-    const now = Date.now();
-    if (now - lastLeaseRenewEventAt >= Math.max(heartbeatMs * 10, 60_000)) {
-      lastLeaseRenewEventAt = now;
-      recordDaemonEvent(root, subject, {
-        type: 'task_lease_renewed',
-        status: 'ok',
-        task_id: task.task_id,
-        task_type: task.type,
-        lease_owner: workerId,
-        lease_expires_at: renewed.task.lease_expires_at,
-      });
-    }
-    if (stopping) controller?.abort();
-  };
-  if (flags.watchdog) {
-    tick();
-    watchdog = setInterval(tick, heartbeatMs);
-  }
-  let result;
-  try {
-    result = await runSingleCycle({
-      root,
-      subject,
-      flags: {
-        ...flagsFromTask(task, flags),
-        'cycle-driver': 'daemon',
-      },
-      signal: controller?.signal,
-      hooks: flags.watchdog ? {
-        onOutput: () => tick(),
-      } : {},
-    });
-  } finally {
-    if (watchdog) clearInterval(watchdog);
-    flags.signal?.removeEventListener('abort', abortFromSignal);
-  }
-  if (result.exitCode === 0) {
-    const completed = completeTask(root, subject, task.task_id, { exit_code: 0 });
-    recordDaemonEvent(root, subject, {
-      type: 'task_completed',
-      status: 'ok',
-      task_id: task.task_id,
-      task_type: task.type,
-    });
-    return { ok: true, task: completed.task };
-  }
-  const failure = classifyCycleFailure({ exitCode: result.exitCode, output: result.output });
-  if (failure.code === 'daemon_stop_requested') {
-    const released = releaseTaskForRetry(root, subject, task.task_id, failure);
-    recordDaemonEvent(root, subject, {
-      type: 'task_failed',
-      status: 'stop_requested_retry_scheduled',
-      task_id: task.task_id,
-      task_type: task.type,
-      retryable: true,
-      error_code: failure.code,
-      error_reason: failure.reason,
-    });
-    return { ok: false, retryable: true, stopped: true, task: released.task, failure };
-  }
-  const maxAttempts = Math.max(1, (task.input?.retries ?? 3) + 1);
-  if (failure.retryable && task.attempts < maxAttempts) {
-    const released = releaseTaskForRetry(root, subject, task.task_id, failure);
-    recordDaemonEvent(root, subject, {
-      type: 'task_failed',
-      status: 'retry_scheduled',
-      task_id: task.task_id,
-      task_type: task.type,
-      retryable: true,
-      error_code: failure.code,
-      error_reason: failure.reason,
-    });
-    return { ok: false, retryable: true, task: released.task, failure };
-  }
-  const failed = failTask(root, subject, task.task_id, failure);
-  recordDaemonEvent(root, subject, {
-    type: 'task_failed',
-    status: 'failed',
-    task_id: task.task_id,
-    task_type: task.type,
-    retryable: failure.retryable,
-    error_code: failure.code,
-    error_reason: failure.reason,
-  });
-  return { ok: false, retryable: false, task: failed.task, failure };
-}
-
 async function runWorkOnceBody(root, subject, flags = {}) {
   const workerId = flags.worker || `worker-${process.pid}`;
   const leaseMs = parseLeaseMs(flags['lease-ms']);
@@ -985,27 +640,14 @@ async function runWorkOnceBody(root, subject, flags = {}) {
     const outcome = await workReactorTask(root, subject, claim.task, flags);
     return { worked: true, ...outcome };
   }
-  if (claim.task.type === 'run_cycle') {
-    if (isEvidenceWakeEnabled(flags.env ?? process.env)) {
-      enqueueWakeIntent(root, subject, {
-        kind: 'cognitive',
-        reason: 'run_cycle_compat',
-        source: 'run_cycle',
-      });
-      const converted = {
-        ...claim.task,
-        type: 'cognitive_reaction',
-        input: { ...claim.task.input, reason: 'run_cycle_compat' },
-      };
-      const outcome = await workReactorTask(root, subject, converted, flags);
-      return { worked: true, ...outcome };
-    }
-    const outcome = await workRunCycle(root, subject, claim.task, flags);
-    return { worked: true, ...outcome };
-  }
-  if (isCycleStepType(claim.task.type)) {
-    const outcome = await workRunCycleStep(root, subject, claim.task, flags);
-    return { worked: true, ...outcome };
+  if (isRetiredTrainTaskType(claim.task.type)) {
+    const failed = failTask(root, subject, claim.task.task_id, {
+      code: claim.task.type === 'run_cycle' ? 'run_cycle_removed' : 'train_step_removed',
+      reason: claim.task.type === 'run_cycle' ? 'run_cycle_removed' : 'train_step_removed',
+      message: `${claim.task.type} was removed in S9. Use cognitive_reaction / jea run (reactor).`,
+      retryable: false,
+    });
+    return { worked: true, ok: false, task: failed.task };
   }
   const failed = failTask(root, subject, claim.task.task_id, {
     code: 'unsupported_task_type',
@@ -1791,7 +1433,11 @@ export async function daemonCommand({ subcommand, flags = {}, args = [], root = 
       console.error('daemon enqueue supports one subject at a time. Use evolve --enqueue-only --subjects for batch task creation.');
       return 2;
     }
-    const type = flags.type && flags.type !== true ? flags.type : 'run_cycle';
+    const type = flags.type && flags.type !== true ? flags.type : 'cognitive_reaction';
+    if (type === 'run_cycle' || ALL_CYCLE_STEP_TYPES.includes(type)) {
+      console.error(`${type} was removed in S9. Use --type cognitive_reaction (or exec_queue / verify_batch).`);
+      return 2;
+    }
     const result = enqueueDaemonTask(root, subject, {
       type,
       idempotencyKey: flags['idempotency-key'] && flags['idempotency-key'] !== true ? flags['idempotency-key'] : null,
@@ -2028,7 +1674,7 @@ export async function daemonCommand({ subcommand, flags = {}, args = [], root = 
 
   {
     console.error('Usage: jea daemon <enqueue|work|start|stop|status|events|doctor|tasks|inbox|cycle|evolution-mode> [--subject NAME] [--subjects a,b | --all] [--json]');
-    console.error('       jea daemon enqueue --type intel|exec|verify|...|run_cycle [--idempotency-key KEY]');
+    console.error('       jea daemon enqueue --type cognitive_reaction|exec_queue|verify_batch|rule_reaction|memory_compaction [--idempotency-key KEY]');
     console.error('       jea daemon cycle request [--reason TEXT] [--note TEXT]');
     console.error('       jea daemon evolution-mode show [--json]');
     console.error('       jea daemon evolution-mode set <continuous|on_demand> [--json]');

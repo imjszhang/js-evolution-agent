@@ -5,17 +5,17 @@
 
 ## Daemon 工作流
 
-Daemon 用于 **事件驱动的 step 级演化**。推荐用 `jea daemon start` 启动 worker：默认 **持续进化模式**（`continuous`）下每 **5 分钟** heartbeat tick（独立定时器，**不**被 step 子进程阻塞）会 reconcile 已有 open cycle（abandon 过期非 daemon 轮、缺步入队），并消费已有 cycle 启动请求。**reactor 默认不再因 tick 自动开新轮**（安静即健康）；开轮入口是 `jea run`、`jea daemon cycle request`、`jea intel brief put` 等。step 完成后 **即时** enqueue 下一步。列车回退（`pipeline: agent_loop` / `phases`）或 `JEA_TICK_OPEN_CYCLE=1` 仍可恢复 tick 自动开轮。
+Daemon 用于 **事件驱动的 reactor 演化**。推荐用 `jea daemon start` 启动 worker：默认 **持续进化模式**（`continuous`）下每 **5 分钟** heartbeat tick 会消费 cycle 启动请求并扫描 wake backlog。**reactor 默认不再因 tick 自动开新轮**（安静即健康）；开轮入口是 `jea run`、`jea daemon cycle request`、`jea intel brief put` 等。`JEA_TICK_OPEN_CYCLE=1` 仍可恢复 tick 自动开轮。
 
 **按需进化模式**（`on_demand`）：tick **不会**自动入队开轮请求，仅 reconcile + 消费已有请求（`jea daemon cycle request`、`jea intel brief put` 等）。worker idle 时也会尝试消费 pending 请求，不必等 5 分钟。无 open cycle、无 pending request 时 long idle 为 **healthy**（不算 stalled）。reactor 在 continuous 下同样如此：无证据 / 无请求时不报 `evolution_stalled`。
 
-**step 完成以 checkpoint 为准**：cycle-state / `cycle-state/<id>/<step>.json` 为完成依据；若子进程 hang 但 checkpoint 已写入，watchdog（约每 `heartbeat-ms`）会终止 runner 并按产物完成 task。**reactor 默认不再**用 tick reconcile 把「cycle-state 已 terminal 但 task 仍 running」假完成为 completed（`JEA_STEP_ARTIFACT_RECONCILE=1` 或列车 pipeline 可恢复）。
+历史 cycle-state JSON **保留可读**，不再作为 live driver。**reactor 默认不再**用 tick reconcile 把「cycle-state 已 terminal 但 task 仍 running」假完成为 completed（仅显式 `JEA_STEP_ARTIFACT_RECONCILE=1`）。
 
 演化模式解析优先级：`<JEA_HOME>/subjects/registry.json` 中 `subjects.<name>.evolution.mode` > `jea daemon start --evolution-mode` > env `JEA_EVOLUTION_MODE` > 默认 `continuous`。
 
 **热加载**：daemon worker 运行中修改 `<JEA_HOME>/subjects/registry.json` 的 `evolution.mode` **无需 restart**（下一轮 worker loop 重新读盘，通常数秒内 idle 生效；`daemon events` 可见 `evolution_mode_changed`）。修改 `.env` 的 `JEA_EVOLUTION_MODE` 或启动时的 `--evolution-mode` **需** `daemon stop` 后重新 `start` 才生效。
 
-`run_cycle` 整轮任务与 `jea run` 同步链仍保留，供本地调试与兼容；**后台长期运行请优先 step 模式**。
+`jea run` 是 reactor 同步链。`run_cycle` / 列车 step 任务已删除；`jea daemon enqueue --type run_cycle` 会报错。后台长期运行请用 reactor task。
 
 ### 任务与 worker
 
@@ -23,9 +23,9 @@ Daemon 用于 **事件驱动的 step 级演化**。推荐用 `jea daemon start` 
 - `jea daemon evolution-mode show [--json]`：查看当前 subject 演化模式与来源。
 - `jea daemon evolution-mode set continuous|on_demand [--json]`：写入 `<JEA_HOME>/subjects/registry.json` 并 emit `evolution_mode_changed`（viewer SSE / worker 热加载）。
 - `jea daemon cycle request [--reason TEXT] [--note TEXT]`：入队 cycle 启动请求（写入 `data/evolution/cycle-start-requests.json`），由 worker 在前提满足时开轮。
-- `jea daemon work --once [--mock]`：领取并执行一个 task（step、`run_cycle` 或 reactor task）后退出。
-- reactor task 类型（S8 默认由 backlog/wake 入队）：`cognitive_reaction`、`exec_queue`、`verify_batch`、`rule_reaction`、`memory_compaction`。这些任务进程内执行，恢复真相是 batch checkpoint / exec intent / exec result，不是 cycle-state。
-- `jea daemon enqueue --type <step|run_cycle>`：手动入队 step 任务；step 类型含 `intel`、`exec`、`verify`、`belief_update`、`goals_assess`、`goals_calibrate`、`diary` 等。
+- `jea daemon work --once [--mock]`：领取并执行一个 reactor task 后退出。
+- reactor task 类型：`cognitive_reaction`、`exec_queue`、`verify_batch`、`rule_reaction`、`memory_compaction`。这些任务进程内执行，恢复真相是 batch checkpoint / exec intent / exec result，不是 cycle-state。
+- `jea daemon enqueue --type cognitive_reaction|exec_queue|verify_batch|rule_reaction|memory_compaction`：手动入队 reactor 任务。`run_cycle` / 列车 step 会报错。
 - `jea daemon stop` / `jea daemon stop --all`：请求 worker 优雅停止。
 
 ### Step 状态与 checkpoint
@@ -57,18 +57,7 @@ Daemon 用于 **事件驱动的 step 级演化**。推荐用 `jea daemon start` 
 
 reactor 生产健康看 `daemon status --json` 的 `reactor` 字段（eligible backlog、pending verify、open/uncertain intents、rule/memory due、lease）。**不要**用旧 `stuck_steps` / `progress_stalled` 判断 reactor 是否健康。`uncertain` exec intent 表示副作用已开始但无 receipt：决策会被 `blocked`，需人工对照目标仓库/外部效果后处置；**禁止**自动重放未知副作用。
 
-相关 gate（S8 默认开；`0`/`false`/`off` 回退）：
-
-| 变量 | 默认 | 含义 |
-| --- | --- | --- |
-| `JEA_REACTOR_HEALTH_PRIMARY` | 开 | doctor/viewer 以 reactor 投影为主 |
-| `JEA_EVIDENCE_WAKE` | 开 | 周期请求转 cognitive wake；idle backlog 扫描 |
-| `JEA_QUEUE_DISABLE_CYCLE_TTL` | 开 | 停止递增 `cycles_seen`，只走墙钟 TTL |
-| `JEA_EXEC_RATE_ONLY` | 开 | exec 只认速率+并发 |
-| `JEA_IN_PROCESS_CYCLE` | 开 | 列车 step 进程内执行；`JEA_SUBPROCESS_CYCLE=1` 强制旧子进程 |
-| `JEA_SUBPROCESS_CYCLE` | 关 | 强制列车子进程 |
-
-隔离验收：`npm run reactor:canary`。生产 subject 开门前先 `jea data backup`。
+S9 后上述行为已固化，不再有 gate 回退。隔离验收：`npm run reactor:canary`。生产 subject 操作前先 `jea data backup`。
 
 ### 韧性（队列写入与 worker 存活）
 

@@ -8,7 +8,7 @@ import { createIntelligenceStore } from '../src/intelligence/store.mjs';
 import {
   readGuardState,
   runMechanicalGuards,
-} from '../src/evolution/agent-loop/guard-runner.mjs';
+} from '../src/evolution/investigation/guard-runner.mjs';
 
 let tempDirs = [];
 

@@ -9,10 +9,9 @@ import { findStuckSteps, findStepStateDrift, getLastClosedCycle, isCycleProgress
 import { readPendingCycleStartRequest } from './cycle-start-requests.mjs';
 import { resolveEvolutionMode } from './evolution-mode.mjs';
 import { resolveCyclePipeline } from './cycle-pipeline-mode.mjs';
-import { isTickOpenCycleEnabled } from './reactor-compensation-gates.mjs';
 import { isReactorPipeline } from './cycle-pipeline-mode.mjs';
 import { buildReactorHealthProjection } from './reactor-health.mjs';
-import { isReactorHealthPrimary } from '../evolution/reactor/feature-gates.mjs';
+import { isTickOpenCycleEnabled } from './cycle-dispatch.mjs';
 import { buildChannelProjection } from '../channel/projection.mjs';
 
 export function daemonViewsDir(root, subject) {
@@ -305,8 +304,8 @@ export function buildDaemonProjection(root, subject, { store = null, eventLimit 
       pendingCycleStartRequest,
       progressStalled,
       driftSteps,
-      tickOpenEnabled: isTickOpenCycleEnabled({ pipeline }),
-      reactorHealth: isReactorHealthPrimary() ? reactor : null,
+      tickOpenEnabled: isTickOpenCycleEnabled(),
+      reactorHealth: reactor,
       pipeline,
     }),
     tasks,

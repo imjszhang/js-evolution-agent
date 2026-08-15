@@ -21,15 +21,7 @@ node scripts/reactor-s8-promote-check.mjs --subject s8-bot
 
 晋升闸必须 `ok: true`：无 duplicate wake/intent、`pending_verify=0`、`uncertain=0`、`health.ok`、reconcile 无 contract error。
 
-回滚演练（S8 仍保留列车）：
-
-```bash
-JEA_EVIDENCE_WAKE=0 JEA_QUEUE_DISABLE_CYCLE_TTL=0 JEA_EXEC_RATE_ONLY=0 \
-  JEA_IN_PROCESS_CYCLE=0 \
-  npm run jea -- run --mock --pipeline agent_loop --subject s8-bot
-```
-
-unset 不再回退——默认已开，必须显式 `=0`。
+S9 之后不能再靠 gate 或 `--pipeline agent_loop` 回退。恢复只能用 `jea data backup` 后的运行时数据。
 
 ## 生产 subject 顺序（可选）
 
@@ -43,4 +35,4 @@ unset 不再回退——默认已开，必须显式 `=0`。
 4. `node scripts/reactor-s8-promote-check.mjs --subject NAME`
 5. 通过后再升下一级
 
-回滚该 subject：对该 daemon 设 `JEA_EVIDENCE_WAKE=0` 等，或 registry `"evolution": { "pipeline": "agent_loop" }`。
+回滚该 subject：恢复该次 `jea data backup`，不要改 pipeline / gate。

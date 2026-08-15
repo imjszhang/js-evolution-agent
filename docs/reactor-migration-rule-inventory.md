@@ -181,12 +181,12 @@ subject lock、`worker-state` 心跳与 zombie 检测、队列写 EPERM/EBUSY �
 | --- | --- | --- | --- |
 | A1 | tick 自动开轮 | **已消解**（reactor 默认） | [PR #45](https://github.com/imjszhang/js-evolution-agent/pull/45) |
 | A2 | continuous / on_demand 双模式 | **已 deprecate** | 2026-08-15：reactor `wake_policy=evidence_driven`；channel set/show 标 deprecated |
-| A3 | `JEA_CYCLE_*` env 接力 | **新路径已脱离** | 2026-08-15：`cognitive_reaction` 等 task 进程内执行，不读 `JEA_CYCLE_*`；子进程列车仍可读。`JEA_IN_PROCESS_CYCLE` 随 `JEA_EVIDENCE_WAKE` 生效，不是死 gate |
+| A3 | `JEA_CYCLE_*` env 接力 | **已消解（S9）** | 2026-08-15：`jea run` 拒绝 `JEA_CYCLE_STEP`；daemon 不再跑列车 step 子进程 |
 | A4 | tick reconcile 产物假完成 | **已消解**（reactor 默认） | [PR #45](https://github.com/imjszhang/js-evolution-agent/pull/45) |
 | A5 | stuck watchdog 按产物完成 | 部分消解 | 进程超时保留（D）；tick 假完成已关（#45） |
-| A6 | drift / stalled / stuck 健康判定 | **已换主口径** | 2026-08-15：reactor 投影 + doctor/viewer/channel 改看 backlog；旧字段仅列车 pipeline |
+| A6 | drift / stalled / stuck 健康判定 | **已换主口径（S9）** | 2026-08-15：reactor 投影是唯一生产健康真相；旧字段不再驱动 health.ok |
 | A7 | 缺 `meta.pipeline` → phases | **已消解** | 三 subject 扫盘无缺字段 open cycle；`cyclePipelineOf` 缺字段按 reactor |
-| A8 | `run_cycle` 与 step 并存 | **已双轨** | 2026-08-15：wake + reactor task 类型；`JEA_EVIDENCE_WAKE=1` 时 `run_cycle` 转 cognitive |
+| A8 | `run_cycle` 与 step 并存 | **已消解（S9）** | 2026-08-15：`run_cycle` / 列车 step 入队与执行均失败；只留 reactor task |
 | A9–A13 | carryover 写侧家族（搬运 / 限额 / 销账 / stale / fingerprint） | **已消解** | [PR #44](https://github.com/imjszhang/js-evolution-agent/pull/44) |
 | A14 | suggestion coverage / `decide_coverage_gap` | **reactor 已不发生** | `cognitive-reactor.mjs` Decide 无 coverage；agent_loop 残留 |
 | A15 | diary 时间线 / 销账章节 | **已消解销账；时间线按 B 保留** | [PR #44](https://github.com/imjszhang/js-evolution-agent/pull/44) |

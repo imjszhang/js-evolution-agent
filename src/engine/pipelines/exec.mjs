@@ -23,9 +23,8 @@ import { AgentRateLedger } from '../act/agent-rate-ledger.mjs';
 import { EvolutionLogger } from '../adapters/evolution-logger.mjs';
 import { compareDecisionsForClaim } from '../decide/decision-queue.mjs';
 
-function isExecRateOnlyFromEnv(env = process.env) {
-  const raw = String(env.JEA_EXEC_RATE_ONLY || '').trim().toLowerCase();
-  return raw !== '0' && raw !== 'false' && raw !== 'no' && raw !== 'off';
+function isExecRateOnlyFromEnv(_env = process.env) {
+  return true;
 }
 
 export function parseExecAgentBudgetFromEnv() {
