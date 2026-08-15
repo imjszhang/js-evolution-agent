@@ -199,7 +199,7 @@ describe('ACP stdio runtime', () => {
         FAKE_ACP_IGNORE_SIGTERM: '1',
       },
       observer: collector(),
-      timeoutMs: 80,
+      timeoutMs: 2_000,
       killGraceMs: 50,
     });
     await runtime.start();
@@ -242,7 +242,7 @@ describe('ACP Phase 2 provider', () => {
           permission_profile: 'read_only',
           intent: 'Inspect runtime state',
           context: { reason: 'test' },
-          expected_output: { evidence: true },
+          expected_output: ['Return execution evidence.'],
         },
       },
     };
