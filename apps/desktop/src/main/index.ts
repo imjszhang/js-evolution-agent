@@ -15,6 +15,7 @@ import { DesktopEventBus } from './event-bus'
 import { toIpcValue } from './ipc-value'
 import { ManagedProcessRegistry } from './managed-process-registry'
 import { OpsService } from './operations'
+import { ProjectionWatcher } from './projection-watcher'
 import { resolveDesktopProjectRoot } from './project-root'
 import {
   isTrustedRendererLocation,
@@ -37,6 +38,7 @@ const events = new DesktopEventBus()
 const daemon = new DaemonSupervisor(projectRoot, processRegistry, events)
 const ops = new OpsService(projectRoot, undefined, undefined, daemon)
 const todo = new TodoService(projectRoot, ops)
+const projection = new ProjectionWatcher(projectRoot, ops, todo, events)
 const acp = new AcpSessionManager(
   projectRoot,
   processRegistry,
@@ -51,7 +53,7 @@ const acp = new AcpSessionManager(
 )
 const invoke = createCommandRegistry(
   ops,
-  createDesktopCommandDefinitions({ ops, todo, daemon, acp })
+  createDesktopCommandDefinitions({ ops, todo, daemon, acp, projection })
 )
 let shutdownComplete = false
 
@@ -220,6 +222,7 @@ async function runDesktopSmoke(outputPath: string): Promise<void> {
 app.on('before-quit', (event) => {
   if (shutdownComplete) return
   event.preventDefault()
+  projection.stop()
   void processRegistry.shutdownAll('app_quit').finally(() => {
     shutdownComplete = true
     app.quit()

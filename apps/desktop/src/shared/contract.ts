@@ -23,6 +23,12 @@ export const DAEMON_COMMANDS = [
   'daemon.stopManaged'
 ] as const
 
+export const PROJECTION_COMMANDS = [
+  'projection.watch',
+  'projection.refresh',
+  'projection.stop'
+] as const
+
 export const ACP_COMMANDS = [
   'acp.listFrameworks',
   'acp.chooseExecutionRoot',
@@ -40,12 +46,14 @@ export const DESKTOP_COMMANDS = [
   ...OPS_COMMANDS,
   ...TODO_COMMANDS,
   ...DAEMON_COMMANDS,
+  ...PROJECTION_COMMANDS,
   ...ACP_COMMANDS
 ] as const
 
 export type OpsCommand = (typeof OPS_COMMANDS)[number]
 export type TodoCommand = (typeof TODO_COMMANDS)[number]
 export type DaemonCommand = (typeof DAEMON_COMMANDS)[number]
+export type ProjectionCommand = (typeof PROJECTION_COMMANDS)[number]
 export type AcpCommand = (typeof ACP_COMMANDS)[number]
 export type DesktopCommand = (typeof DESKTOP_COMMANDS)[number]
 

@@ -7,6 +7,7 @@ import {
 } from './command-registry'
 import type { DaemonSupervisor } from './daemon-supervisor'
 import type { OpsService } from './operations'
+import type { ProjectionWatcher } from './projection-watcher'
 import type { TodoService } from './todo-service'
 
 function stringField(
@@ -45,12 +46,14 @@ export function createDesktopCommandDefinitions({
   ops,
   todo,
   daemon,
-  acp
+  acp,
+  projection
 }: {
   ops: OpsService
   todo: TodoService
   daemon: DaemonSupervisor
   acp: AcpSessionManager
+  projection: ProjectionWatcher
 }): CommandDefinitions {
   return {
     ...createOpsCommandDefinitions(ops),
@@ -114,6 +117,21 @@ export function createDesktopCommandDefinitions({
     'daemon.stopManaged': {
       level: 'process',
       handler: (payload) => daemon.stop(subjectFrom(payload, true)!)
+    },
+    'projection.watch': {
+      level: 'readonly',
+      handler: (payload) => projection.watch(subjectFrom(payload, true)!)
+    },
+    'projection.refresh': {
+      level: 'readonly',
+      handler: () => {
+        projection.refresh()
+        return { queued: true }
+      }
+    },
+    'projection.stop': {
+      level: 'readonly',
+      handler: () => projection.stop()
     },
     'acp.listFrameworks': {
       level: 'readonly',

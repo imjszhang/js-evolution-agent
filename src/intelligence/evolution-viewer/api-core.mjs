@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
-import { existsSync, readFileSync, statSync, watch } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { join, extname, resolve, relative, basename } from 'node:path';
+import { join, extname, resolve, relative } from 'node:path';
 import { createIntelligenceStore } from '../store.mjs';
 import { buildDaemonProjection } from '../../daemon/daemon-projection.mjs';
 import { acknowledgeTask } from '../../daemon/daemon-tasks.mjs';
@@ -15,7 +15,7 @@ import {
   channelOutboxPendingDir,
   channelOutboxSentDir,
 } from '../../channel/paths.mjs';
-import { listJsonFiles, readJsonFile, reconcilePendingSpeechGeneration } from '../../channel/state.mjs';
+import { reconcilePendingSpeechGeneration } from '../../channel/state.mjs';
 import { buildManifest, manifestForApi } from './round-catalog.mjs';
 import { buildRoundDetail } from './round-detail.mjs';
 import { buildCycleDetail } from './cycle-detail.mjs';
@@ -29,12 +29,17 @@ import {
   buildSubjectObservability,
   cycleDiagnosticsForId,
 } from './observability-projection.mjs';
+import {
+  createJsonlTailer,
+  createRuntimeWatcher as createSharedRuntimeWatcher,
+  summarizeChannelDir,
+  summarizeInboundFile,
+  summarizeOutboxFile,
+} from './runtime-watch.mjs';
 import { getCachedLinkHealthSummary } from '../../infra/links/index.mjs';
 
 const PING_INTERVAL_MS = 25_000;
 const DEFAULT_CACHE_SIZE = 30;
-const RUNTIME_WATCH_DEBOUNCE_MS = 1000;
-
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -250,37 +255,9 @@ export function createEvolutionEventsTailer({
   onDaemonEvent,
 }) {
   const path = evolutionEventsPath(runtimeRoot);
-  let offset = 0;
-  let partial = '';
-  /** @type {import('node:fs').FSWatcher | null} */
-  let watcher = null;
-
-  function syncOffsetToEnd() {
-    if (!existsSync(path)) {
-      offset = 0;
-      return;
-    }
-    try {
-      offset = statSync(path).size;
-    } catch {
-      offset = 0;
-    }
-  }
-
-  function processChunk(chunk) {
-    partial += chunk;
-    const lines = partial.split('\n');
-    partial = lines.pop() ?? '';
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      let event;
-      try {
-        event = JSON.parse(trimmed);
-      } catch {
-        continue;
-      }
-
+  const tailer = createJsonlTailer({
+    path,
+    onRecord(event) {
       const daemonEv = daemonSseFromEvolutionLine(event);
       if (daemonEv) {
         const payload = withSubjectMeta(subjectMeta, {
@@ -304,49 +281,15 @@ export function createEvolutionEventsTailer({
         cycle_id: sseEv.cycle_id,
         ...(sseEv.has_diary != null ? { has_diary: sseEv.has_diary } : {}),
       }));
-    }
-  }
-
-  function readNewBytes() {
-    if (!existsSync(path)) return;
-    try {
-      const size = statSync(path).size;
-      if (size < offset) {
-        offset = 0;
-        partial = '';
-      }
-      if (size <= offset) return;
-      const fd = readFileSync(path);
-      const slice = fd.subarray(offset, size);
-      offset = size;
-      processChunk(slice.toString('utf-8'));
-    } catch {
-      // ignore read races
-    }
-  }
-
-  function start() {
-    syncOffsetToEnd();
-    if (!existsSync(path)) return;
-    try {
-      watcher = watch(path, () => readNewBytes());
-    } catch {
-      // ignore
-    }
-  }
-
-  function stop() {
-    if (watcher) {
-      try {
-        watcher.close();
-      } catch {
-        // ignore
-      }
-      watcher = null;
-    }
-  }
-
-  return { start, stop, readNewBytes, path };
+    },
+  });
+  return {
+    start: tailer.start,
+    stop: tailer.stop,
+    readNewBytes: tailer.readNewBytes,
+    reconcile: tailer.reconcile,
+    path,
+  };
 }
 
 function channelEventsFilePath(runtimeRoot) {
@@ -379,147 +322,23 @@ export function formatChannelEventForApi(event) {
  */
 export function createChannelEventsTailer({ runtimeRoot, subjectMeta, sse, onChannelEvent }) {
   const path = channelEventsFilePath(runtimeRoot);
-  let offset = 0;
-  let partial = '';
-  /** @type {import('node:fs').FSWatcher | null} */
-  let watcher = null;
-
-  function syncOffsetToEnd() {
-    if (!existsSync(path)) {
-      offset = 0;
-      return;
-    }
-    try {
-      offset = statSync(path).size;
-    } catch {
-      offset = 0;
-    }
-  }
-
-  function processChunk(chunk) {
-    partial += chunk;
-    const lines = partial.split('\n');
-    partial = lines.pop() ?? '';
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      let event;
-      try {
-        event = JSON.parse(trimmed);
-      } catch {
-        continue;
-      }
+  const tailer = createJsonlTailer({
+    path,
+    onRecord(event) {
       const payload = formatChannelEventForApi(event);
-      if (!payload) continue;
+      if (!payload) return;
       const enriched = withSubjectMeta(subjectMeta, { event: 'channel_event', ...payload });
       sse.broadcast('channel_event', enriched);
       onChannelEvent?.(enriched);
-    }
-  }
-
-  function readNewBytes() {
-    if (!existsSync(path)) return;
-    try {
-      const size = statSync(path).size;
-      if (size < offset) {
-        offset = 0;
-        partial = '';
-      }
-      if (size <= offset) return;
-      const fd = readFileSync(path);
-      const slice = fd.subarray(offset, size);
-      offset = size;
-      processChunk(slice.toString('utf-8'));
-    } catch {
-      // ignore read races
-    }
-  }
-
-  function start() {
-    syncOffsetToEnd();
-    if (!existsSync(path)) return;
-    try {
-      watcher = watch(path, () => readNewBytes());
-    } catch {
-      // ignore
-    }
-  }
-
-  function stop() {
-    if (watcher) {
-      try {
-        watcher.close();
-      } catch {
-        // ignore
-      }
-      watcher = null;
-    }
-  }
-
-  return { start, stop, readNewBytes, path };
-}
-
-function truncateText(value, max = 120) {
-  const s = String(value ?? '').replace(/\s+/g, ' ').trim();
-  if (s.length <= max) return s;
-  return `${s.slice(0, max)}…`;
-}
-
-/**
- * @param {object|null} payload
- * @param {string} file
- */
-function summarizeInboundFile(payload, file) {
-  const env = payload?.envelope ?? payload ?? {};
-  const cls = payload?.classifier ?? null;
-  const understanding = cls?.understanding ?? null;
+    },
+  });
   return {
-    file: basename(file),
-    message_id: payload?.message_id ?? env.message_id ?? env.messageId ?? null,
-    sender: env.sender_id ?? env.sender?.id ?? env.open_id ?? null,
-    chat_id: env.chat_id ?? env.chatId ?? null,
-    received_at: payload?.received_at ?? env.received_at ?? null,
-    text: truncateText(env.text ?? env.content ?? payload?.text ?? '', 140),
-    classification: cls?.classification ?? cls?.kind ?? null,
-    understanding: understanding
-      ? {
-        user_intent: understanding.user_intent ?? null,
-        needs_immediate_action: understanding.needs_immediate_action ?? null,
-        temporal: understanding.temporal ?? null,
-        complexity: understanding.complexity ?? null,
-      }
-      : null,
+    start: tailer.start,
+    stop: tailer.stop,
+    readNewBytes: tailer.readNewBytes,
+    reconcile: tailer.reconcile,
+    path,
   };
-}
-
-/**
- * @param {object|null} payload
- * @param {string} file
- */
-function summarizeOutboxFile(payload, file) {
-  const out = payload?.outbound ?? payload ?? {};
-  return {
-    file: basename(file),
-    to: out.chat_id ?? out.to ?? null,
-    text: truncateText(out.text ?? '', 140),
-    speech_intent_id: payload?.metadata?.speech_intent_id ?? out.metadata?.speech_intent_id ?? null,
-    message_id: payload?.send_result?.messageId ?? payload?.send_result?.message_id ?? null,
-    sent_at: payload?.sent_at ?? null,
-    failed_at: payload?.failed_at ?? null,
-    reason: payload?.reason ?? null,
-  };
-}
-
-/**
- * @param {string} dir
- * @param {(payload: object|null, file: string) => object} summarize
- * @param {number} limit
- */
-function summarizeChannelDir(dir, summarize, limit) {
-  return listJsonFiles(dir)
-    .slice(-Math.max(0, limit))
-    .reverse()
-    .map((file) => summarize(readJsonFile(file, null), file));
 }
 
 /**
@@ -533,64 +352,16 @@ export function createRuntimeWatcher({
   onRuntimeChange,
   watchSubjectsJson = true,
 }) {
-  const paths = [
-    join(runtimeRoot, 'data', 'evolution', 'tasks', 'pending_tasks.json'),
-    join(runtimeRoot, 'data', 'evolution', 'daemon', 'worker-state.json'),
-    join(runtimeRoot, 'data', 'evolution', 'views', 'current-state.json'),
-    join(runtimeRoot, 'data', 'evolution', 'cycle-state'),
-    join(runtimeRoot, 'data', 'channel', 'worker-state.json'),
-    join(runtimeRoot, 'data', 'channel', 'tasks', 'pending_tasks.json'),
-    join(runtimeRoot, 'data', 'channel', 'events.jsonl'),
-    join(runtimeRoot, 'data', 'channel', 'inbound'),
-    join(runtimeRoot, 'data', 'channel', 'outbox'),
-  ];
-  if (projectRoot && watchSubjectsJson) {
-    paths.push(join(projectRoot, 'runtime', 'subjects', 'registry.json'));
-    paths.push(join(projectRoot, 'policies', 'subjects.json'));
-  }
-
-  /** @type {import('node:fs').FSWatcher[]} */
-  const watchers = [];
-  let debounceTimer = null;
-
-  function notify() {
-    if (debounceTimer) clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => {
-      debounceTimer = null;
-      onRuntimeChange?.();
+  return createSharedRuntimeWatcher({
+    runtimeRoot,
+    projectRoot,
+    subjectMeta,
+    onRuntimeChange,
+    watchSubjectsJson,
+    onNotify: () => {
       sse.broadcast('runtime_updated', withSubjectMeta(subjectMeta, { event: 'runtime_updated' }));
-    }, RUNTIME_WATCH_DEBOUNCE_MS);
-    if (debounceTimer.unref) debounceTimer.unref();
-  }
-
-  function start() {
-    for (const target of paths) {
-      if (!existsSync(target)) continue;
-      try {
-        const watcher = watch(target, notify);
-        watchers.push(watcher);
-      } catch {
-        // ignore
-      }
-    }
-  }
-
-  function stop() {
-    if (debounceTimer) {
-      clearTimeout(debounceTimer);
-      debounceTimer = null;
-    }
-    for (const watcher of watchers) {
-      try {
-        watcher.close();
-      } catch {
-        // ignore
-      }
-    }
-    watchers.length = 0;
-  }
-
-  return { start, stop };
+    },
+  });
 }
 
 async function serveStatic(publicDir, pathname, res) {
