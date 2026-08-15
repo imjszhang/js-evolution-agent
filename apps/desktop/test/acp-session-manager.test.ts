@@ -1,6 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createStartedAcpRuntime } from '../../../src/actions/agent-adapter/acp/runtime.mjs'
 import { AcpSessionManager } from '../src/main/acp-session-manager'
@@ -79,7 +80,10 @@ describe('AcpSessionManager', () => {
   it('runs the real ACP stdio runtime through the interactive permission bridge', async () => {
     const root = temporaryRoot()
     const log = join(root, 'interactive-acp.jsonl')
-    const fakeAgent = join(process.cwd(), 'test', 'fixtures', 'fake-acp-agent.mjs')
+    const fakeAgent = fileURLToPath(new URL(
+      '../../../test/fixtures/fake-acp-agent.mjs',
+      import.meta.url
+    ))
     const processRegistry = new ManagedProcessRegistry()
     const eventBus = new DesktopEventBus()
     const events: JeaEventEnvelope[] = []
