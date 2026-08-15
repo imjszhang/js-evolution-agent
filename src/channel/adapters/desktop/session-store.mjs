@@ -7,6 +7,7 @@ import {
 } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname } from 'node:path';
+import lockfile from 'proper-lockfile';
 import {
   channelDesktopSessionPath,
   channelDesktopSessionsDir,
@@ -62,28 +63,37 @@ export function appendDesktopSessionRecord(root, subject, sessionIdInput, input 
   const sessionId = normalizeDesktopSessionId(sessionIdInput);
   const file = channelDesktopSessionPath(root, subject, sessionId);
   mkdirSync(dirname(file), { recursive: true });
-  const existing = parseRecords(file);
-  const createdAt = input.created_at ?? nowIso();
-  const base = {
-    ...input,
-    schema_version: DESKTOP_SESSION_SCHEMA_VERSION,
-    session_id: sessionId,
-    target: `desktop:${sessionId}`,
-    created_at: createdAt,
-  };
-  const id = stableRecordId(base);
-  const duplicate = existing.find((record) => record.id === id);
-  if (duplicate) {
-    const { _physical_offset: _, ...record } = duplicate;
-    return { file, record, created: false, duplicate: true };
+  appendFileSync(file, '', 'utf-8');
+  const release = lockfile.lockSync(file, {
+    realpath: false,
+    retries: { retries: 5, minTimeout: 10, maxTimeout: 100 },
+  });
+  try {
+    const existing = parseRecords(file);
+    const createdAt = input.created_at ?? nowIso();
+    const base = {
+      ...input,
+      schema_version: DESKTOP_SESSION_SCHEMA_VERSION,
+      session_id: sessionId,
+      target: `desktop:${sessionId}`,
+      created_at: createdAt,
+    };
+    const id = stableRecordId(base);
+    const duplicate = existing.find((record) => record.id === id);
+    if (duplicate) {
+      const { _physical_offset: _, ...record } = duplicate;
+      return { file, record, created: false, duplicate: true };
+    }
+    const record = {
+      ...base,
+      id,
+      offset: existing.length,
+    };
+    appendFileSync(file, `${JSON.stringify(record)}\n`, 'utf-8');
+    return { file, record, created: true, duplicate: false };
+  } finally {
+    release();
   }
-  const record = {
-    ...base,
-    id,
-    offset: existing.length,
-  };
-  appendFileSync(file, `${JSON.stringify(record)}\n`, 'utf-8');
-  return { file, record, created: true, duplicate: false };
 }
 
 export function readDesktopSession(root, subject, sessionIdInput, {
@@ -97,9 +107,10 @@ export function readDesktopSession(root, subject, sessionIdInput, {
   const start = Math.max(0, Number(offset) || 0);
   const boundedLimit = Math.max(0, Math.min(1000, Number(limit) || 50));
   const tailCount = tail == null ? null : Math.max(0, Math.min(1000, Number(tail) || 0));
+  const selectedOffset = tailCount == null ? start : Math.max(start, records.length - tailCount);
   const selected = tailCount == null
-    ? records.slice(start, start + boundedLimit)
-    : records.slice(Math.max(start, records.length - tailCount));
+    ? records.slice(selectedOffset, selectedOffset + boundedLimit)
+    : records.slice(selectedOffset);
   const nextOffset = selected.length
     ? Math.min(records.length, records.indexOf(selected[selected.length - 1]) + 1)
     : Math.min(start, records.length);
@@ -108,7 +119,7 @@ export function readDesktopSession(root, subject, sessionIdInput, {
     subject,
     session_id: sessionId,
     records: selected,
-    offset: start,
+    offset: selectedOffset,
     next_offset: nextOffset,
     total: records.length,
   };
