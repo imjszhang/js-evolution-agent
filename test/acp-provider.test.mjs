@@ -300,6 +300,7 @@ describe('ACP stdio runtime', () => {
       },
     });
     const treeKills = [];
+    const descendantKills = [];
     const runtime = new AcpRuntime({
       framework: framework(),
       cwd: tempDir(),
@@ -309,11 +310,19 @@ describe('ACP stdio runtime', () => {
         treeKills.push(force);
         return false;
       },
+      listWindowsDescendants: () => [500, 501],
+      killProcess: (pid, signal) => descendantKills.push([pid, signal]),
     });
     runtime.child = child;
     await runtime.close();
     expect(treeKills).toEqual([false, true, true]);
     expect(signals).toEqual(['SIGTERM', 'SIGKILL']);
+    expect(descendantKills).toEqual([
+      [501, 'SIGKILL'],
+      [500, 'SIGKILL'],
+      [501, 'SIGKILL'],
+      [500, 'SIGKILL'],
+    ]);
   });
 });
 

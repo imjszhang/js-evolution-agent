@@ -25,6 +25,7 @@ import { normalizeDesktopSessionId } from './config.mjs';
 export const DESKTOP_SESSION_SCHEMA_VERSION = 1;
 const INDEX_SCHEMA_VERSION = 1;
 const INDEX_CHUNK_BYTES = 64 * 1024;
+const MAX_ID_BUCKET_BYTES = 64 * 1024;
 
 function stableRecordId(input) {
   const explicit = String(input.id ?? input.message_id ?? input.messageId ?? '').trim();
@@ -68,13 +69,26 @@ function writeMetadata(paths, metadata) {
   writeFileSync(paths.metadata, `${JSON.stringify(metadata)}\n`, 'utf8');
 }
 
-function bucketPath(paths, id) {
-  const prefix = createHash('sha256').update(id).digest('hex').slice(0, 2);
-  return join(paths.ids, `${prefix}.jsonl`);
+function idHash(id) {
+  return createHash('sha256').update(id).digest('hex');
 }
 
-function readBucket(paths, id) {
-  const file = bucketPath(paths, id);
+function resolveBucket(paths, id) {
+  const hash = idHash(id);
+  let dir = paths.ids;
+  for (let level = 0; level < 32; level += 1) {
+    const segment = hash.slice(level * 2, level * 2 + 2);
+    const nested = join(dir, segment);
+    if (existsSync(nested) && statSync(nested).isDirectory()) {
+      dir = nested;
+      continue;
+    }
+    return { file: `${nested}.jsonl`, level };
+  }
+  return { file: join(dir, 'overflow.jsonl'), level: 32 };
+}
+
+function readBucketFile(file) {
   if (!existsSync(file)) return [];
   return readFileSync(file, 'utf8')
     .split(/\r?\n/)
@@ -89,7 +103,32 @@ function readBucket(paths, id) {
 }
 
 function findIndexedId(paths, id) {
-  return readBucket(paths, id).find((entry) => entry.id === id) ?? null;
+  return readBucketFile(resolveBucket(paths, id).file)
+    .find((entry) => entry.id === id) ?? null;
+}
+
+function splitBucket(file, level) {
+  if (
+    level >= 31
+    || !existsSync(file)
+    || statSync(file).size <= MAX_ID_BUCKET_BYTES
+  ) return;
+  const entries = readBucketFile(file);
+  const dir = file.slice(0, -'.jsonl'.length);
+  rmSync(file, { force: true });
+  mkdirSync(dir, { recursive: true });
+  const groups = new Map();
+  for (const entry of entries) {
+    const segment = idHash(entry.id).slice((level + 1) * 2, (level + 2) * 2);
+    const child = join(dir, `${segment}.jsonl`);
+    const rows = groups.get(child) ?? [];
+    rows.push(entry);
+    groups.set(child, rows);
+  }
+  for (const [child, rows] of groups) {
+    writeFileSync(child, `${rows.map((entry) => JSON.stringify(entry)).join('\n')}\n`, 'utf8');
+    splitBucket(child, level + 1);
+  }
 }
 
 function appendIndexEntry(paths, id, logicalOffset, byteOffset) {
@@ -97,11 +136,13 @@ function appendIndexEntry(paths, id, logicalOffset, byteOffset) {
   const offsetBuffer = Buffer.allocUnsafe(8);
   offsetBuffer.writeBigUInt64LE(BigInt(byteOffset));
   appendFileSync(paths.offsets, offsetBuffer);
+  const bucket = resolveBucket(paths, id);
   appendFileSync(
-    bucketPath(paths, id),
+    bucket.file,
     `${JSON.stringify({ id, offset: logicalOffset, byte_offset: byteOffset })}\n`,
     'utf8',
   );
+  splitBucket(bucket.file, bucket.level);
 }
 
 function appendIndexBatch(paths, offsets, bucketAppends) {
@@ -113,8 +154,13 @@ function appendIndexBatch(paths, offsets, bucketAppends) {
     });
     appendFileSync(paths.offsets, buffer);
   }
-  for (const [file, entries] of bucketAppends) {
-    appendFileSync(file, `${entries.map((entry) => JSON.stringify(entry)).join('\n')}\n`, 'utf8');
+  for (const [file, group] of bucketAppends) {
+    appendFileSync(
+      file,
+      `${group.entries.map((entry) => JSON.stringify(entry)).join('\n')}\n`,
+      'utf8',
+    );
+    splitBucket(file, group.level);
   }
 }
 
@@ -190,18 +236,21 @@ function reconcileSessionIndex(root, subject, sessionId, file) {
           const record = JSON.parse(line);
           const id = String(record?.id ?? '').trim();
           if (!id) continue;
-          const bucket = bucketPath(paths, id);
-          let seen = bucketSets.get(bucket);
+          const bucket = resolveBucket(paths, id);
+          let seen = bucketSets.get(bucket.file);
           if (!seen) {
-            seen = new Set(readBucket(paths, id).map((entry) => entry.id));
-            bucketSets.set(bucket, seen);
+            seen = new Set(readBucketFile(bucket.file).map((entry) => entry.id));
+            bucketSets.set(bucket.file, seen);
           }
           if (seen.has(id)) continue;
           seen.add(id);
           indexedOffsets.push(lineStart);
-          const entries = bucketAppends.get(bucket) ?? [];
-          entries.push({ id, offset: metadata.total, byte_offset: lineStart });
-          bucketAppends.set(bucket, entries);
+          const group = bucketAppends.get(bucket.file) ?? {
+            entries: [],
+            level: bucket.level,
+          };
+          group.entries.push({ id, offset: metadata.total, byte_offset: lineStart });
+          bucketAppends.set(bucket.file, group);
           metadata.total += 1;
         } catch {
           // Malformed complete records are skipped without blocking later lines.

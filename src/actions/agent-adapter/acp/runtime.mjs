@@ -31,6 +31,37 @@ export function killWindowsProcessTree(pid, force = false) {
   return !result.error && result.status === 0;
 }
 
+export function listWindowsDescendantPids(pid, spawnSyncImpl = spawnSync) {
+  if (!pid) return [];
+  const script = [
+    '$all = Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId;',
+    `$pending = @(${Number(pid)});`,
+    '$out = @();',
+    'while ($pending.Count -gt 0) {',
+    '  $parent = $pending[0];',
+    '  if ($pending.Count -eq 1) { $pending = @() } else { $pending = $pending[1..($pending.Count-1)] };',
+    '  $children = @($all | Where-Object { $_.ParentProcessId -eq $parent } | ForEach-Object { [int]$_.ProcessId });',
+    '  $out += $children;',
+    '  $pending += $children;',
+    '}',
+    '$out | ConvertTo-Json -Compress;',
+  ].join(' ');
+  const result = spawnSyncImpl(
+    'powershell.exe',
+    ['-NoProfile', '-NonInteractive', '-Command', script],
+    { windowsHide: true, encoding: 'utf8', timeout: 5_000 },
+  );
+  if (result.error || result.status !== 0 || !String(result.stdout ?? '').trim()) return [];
+  try {
+    const parsed = JSON.parse(String(result.stdout).trim());
+    return (Array.isArray(parsed) ? parsed : [parsed])
+      .map(Number)
+      .filter((value) => Number.isInteger(value) && value > 0);
+  } catch {
+    return [];
+  }
+}
+
 export class AcpRuntime {
   constructor({
     framework,
@@ -49,6 +80,8 @@ export class AcpRuntime {
     includeStderrText = true,
     platform = process.platform,
     killWindowsTree = killWindowsProcessTree,
+    listWindowsDescendants = listWindowsDescendantPids,
+    killProcess = (pid, signal) => process.kill(pid, signal),
   } = {}) {
     this.framework = framework;
     this.cwd = cwd;
@@ -66,6 +99,8 @@ export class AcpRuntime {
     this.includeStderrText = includeStderrText;
     this.platform = platform;
     this.killWindowsTree = killWindowsTree;
+    this.listWindowsDescendants = listWindowsDescendants;
+    this.killProcess = killProcess;
     this.child = null;
     this.connection = null;
     this.session = null;
@@ -314,9 +349,20 @@ export class AcpRuntime {
     const child = this.child;
     if (!child || child.exitCode != null || child.signalCode != null) return;
     const closed = new Promise((resolve) => child.once('close', resolve));
+    const killDescendants = () => {
+      const descendants = this.listWindowsDescendants(child.pid);
+      for (const pid of descendants.reverse()) {
+        try {
+          this.killProcess(pid, 'SIGKILL');
+        } catch {
+          // Descendants may exit between enumeration and termination.
+        }
+      }
+    };
     if (this.platform === 'win32') {
       const gracefulTreeSignal = this.killWindowsTree(child.pid, false);
       if (!gracefulTreeSignal && !this.killWindowsTree(child.pid, true)) {
+        killDescendants();
         child.kill('SIGTERM');
       }
     } else {
@@ -326,7 +372,10 @@ export class AcpRuntime {
     const exited = await Promise.race([closed.then(() => true), delay(this.killGraceMs).then(() => false)]);
     if (!exited && child.exitCode == null && child.signalCode == null) {
       if (this.platform === 'win32') {
-        if (!this.killWindowsTree(child.pid, true)) child.kill('SIGKILL');
+        if (!this.killWindowsTree(child.pid, true)) {
+          killDescendants();
+          child.kill('SIGKILL');
+        }
       } else {
         child.kill('SIGKILL');
       }

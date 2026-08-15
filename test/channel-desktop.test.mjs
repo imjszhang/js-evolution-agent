@@ -9,6 +9,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { writeJsonFile } from '../src/infra/files.mjs';
 import {
   appendDesktopSessionRecord,
@@ -147,6 +148,41 @@ describe('desktop channel adapter', () => {
     ]);
     expect(readDesktopSession(project, 'alpha', 'large', { tail: 1 }).records[0].id)
       .toBe('large-19999');
+  });
+
+  it('splits large id buckets while preserving direct duplicate lookup', () => {
+    const project = makeRoot();
+    const file = channelDesktopSessionPath(project, 'alpha', 'split');
+    mkdirSync(dirname(file), { recursive: true });
+    const ids = [];
+    for (let candidate = 0; ids.length < 1_100; candidate += 1) {
+      const id = `split-${candidate}`;
+      if (createHash('sha256').update(id).digest('hex').startsWith('00')) ids.push(id);
+    }
+    writeFileSync(file, `${ids.map((id, offset) => JSON.stringify({
+      schema_version: 1,
+      id,
+      session_id: 'split',
+      target: 'desktop:split',
+      direction: 'inbound',
+      role: 'user',
+      content: id,
+      created_at: '2026-08-15T00:00:00.000Z',
+      offset,
+    })).join('\n')}\n`);
+    expect(readDesktopSession(project, 'alpha', 'split', { tail: 1 }).total)
+      .toBe(ids.length);
+    const duplicate = appendDesktopSessionRecord(project, 'alpha', 'split', {
+      id: ids.at(-1),
+      direction: 'inbound',
+      role: 'user',
+      content: 'different content',
+    });
+    expect(duplicate).toMatchObject({
+      created: false,
+      duplicate: true,
+      record: { id: ids.at(-1) },
+    });
   });
 
   it('runs desktop inbound through classifier, presence, speech, outbox, and notify', async () => {
