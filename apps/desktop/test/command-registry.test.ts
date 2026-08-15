@@ -103,4 +103,17 @@ describe('command registry', () => {
       }
     })
   })
+
+  it('rejects non-serializable success values instead of hanging IPC', async () => {
+    const cyclic: Record<string, unknown> = {}
+    cyclic.self = cyclic
+    const response = await invokeForIpc(async () => cyclic, { command: 'ops.refresh' })
+    expect(response).toEqual({
+      ok: false,
+      error: {
+        code: 'OPERATION_FAILED',
+        message: 'Unable to complete the requested operation.'
+      }
+    })
+  })
 })

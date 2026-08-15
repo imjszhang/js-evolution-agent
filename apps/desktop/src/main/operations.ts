@@ -1,5 +1,3 @@
-import { resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
 // JEA is authored as native ESM JavaScript and is consumed directly by Electron.
 import { buildDaemonProjection } from '../../../../src/daemon/daemon-projection.mjs'
 import { buildSubjectObservability } from '../../../../src/intelligence/evolution-viewer/observability-projection.mjs'
@@ -11,8 +9,12 @@ import { loadProjectEnv } from '../../../../src/infra/project.mjs'
 import { runtimeForSubject } from '../../../../src/infra/runtime-paths.mjs'
 import type { SubjectSnapshot, SubjectSummary } from '../shared/contract'
 import type { DaemonSupervisor } from './daemon-supervisor'
+import {
+  BUNDLED_PROJECT_ROOT_CANDIDATE,
+  resolveDesktopProjectRoot
+} from './project-root'
 
-export const DEFAULT_PROJECT_ROOT = resolve(fileURLToPath(new URL('../../../..', import.meta.url)))
+export const DEFAULT_PROJECT_ROOT = BUNDLED_PROJECT_ROOT_CANDIDATE
 
 export interface ProjectionBuilders {
   daemon(root: string, subject: string): Record<string, any>
@@ -30,7 +32,7 @@ const directBuilders: ProjectionBuilders = {
 
 export class OpsService {
   constructor(
-    readonly projectRoot = process.env.JEA_PROJECT_ROOT || DEFAULT_PROJECT_ROOT,
+    readonly projectRoot = resolveDesktopProjectRoot(),
     private readonly builders: ProjectionBuilders = directBuilders,
     envLoader: (root: string) => string = loadProjectEnv,
     private readonly supervisor: Pick<DaemonSupervisor, 'get'> | null = null

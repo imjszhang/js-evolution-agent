@@ -1,3 +1,4 @@
+import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
@@ -6,8 +7,10 @@ import { createCommandRegistry, invokeForIpc } from './command-registry'
 import { DaemonSupervisor } from './daemon-supervisor'
 import { createDesktopCommandDefinitions } from './desktop-command-definitions'
 import { DesktopEventBus } from './event-bus'
+import { toIpcValue } from './ipc-value'
 import { ManagedProcessRegistry } from './managed-process-registry'
-import { OpsService, DEFAULT_PROJECT_ROOT } from './operations'
+import { OpsService } from './operations'
+import { resolveDesktopProjectRoot } from './project-root'
 import { TodoService } from './todo-service'
 import {
   JEA_EVENT_CHANNEL,
@@ -16,7 +19,7 @@ import {
 } from '../shared/contract'
 
 const outputDir = fileURLToPath(new URL('.', import.meta.url))
-const projectRoot = process.env.JEA_PROJECT_ROOT || DEFAULT_PROJECT_ROOT
+const projectRoot = resolveDesktopProjectRoot()
 const processRegistry = new ManagedProcessRegistry()
 const events = new DesktopEventBus()
 const daemon = new DaemonSupervisor(projectRoot, processRegistry, events)
@@ -41,8 +44,14 @@ const invoke = createCommandRegistry(
 let shutdownComplete = false
 
 events.subscribe((event) => {
+  let safeEvent
+  try {
+    safeEvent = toIpcValue(event)
+  } catch {
+    return
+  }
   for (const window of BrowserWindow.getAllWindows()) {
-    if (!window.isDestroyed()) window.webContents.send(JEA_EVENT_CHANNEL, event)
+    if (!window.isDestroyed()) window.webContents.send(JEA_EVENT_CHANNEL, safeEvent)
   }
 })
 
@@ -53,6 +62,7 @@ function createWindow(): BrowserWindow {
     minWidth: 960,
     minHeight: 640,
     title: 'JEA Ops',
+    show: !process.env.JEA_DESKTOP_SMOKE,
     webPreferences: {
       preload: join(outputDir, '../preload/index.cjs'),
       contextIsolation: true,
@@ -89,7 +99,7 @@ if (!gotSingleInstanceLock) {
     window.focus()
   })
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     ipcMain.handle(
       JEA_INVOKE_CHANNEL,
       (_event, request: InvokeRequest) => invokeForIpc(invoke, request)
@@ -99,7 +109,67 @@ if (!gotSingleInstanceLock) {
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()
     })
+
+    if (process.env.JEA_DESKTOP_SMOKE) {
+      await runDesktopSmoke(process.env.JEA_DESKTOP_SMOKE)
+    }
   })
+}
+
+async function runDesktopSmoke(outputPath: string): Promise<void> {
+  const started = Date.now()
+  const report: Record<string, unknown> = { projectRoot }
+  try {
+    const inProcess = await invokeForIpc(invoke, { command: 'ops.refresh' })
+    report.inProcess = {
+      ok: inProcess.ok,
+      ms: Date.now() - started,
+      subjects: inProcess.ok && Array.isArray(inProcess.value)
+        ? inProcess.value.map((item: { subject?: { name?: string } }) => item.subject?.name)
+        : null,
+      error: inProcess.ok ? null : inProcess.error
+    }
+  } catch (error) {
+    report.inProcess = { ok: false, ms: Date.now() - started, error: String(error) }
+  }
+
+  const window = BrowserWindow.getAllWindows()[0]
+  const rendererStarted = Date.now()
+  try {
+    if (!window) throw new Error('no_window')
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('window_load_timeout')), 12_000)
+      const done = () => {
+        clearTimeout(timer)
+        resolve()
+      }
+      if (!window.webContents.isLoading() && window.webContents.getURL()) {
+        done()
+        return
+      }
+      window.webContents.once('did-finish-load', done)
+    })
+    const renderer = await Promise.race([
+      window.webContents.executeJavaScript(`
+        window.jea.invoke('ops.refresh')
+          .then((value) => ({
+            ok: true,
+            count: Array.isArray(value) ? value.length : -1,
+            names: Array.isArray(value) ? value.map((item) => item.subject?.name) : []
+          }))
+          .catch((error) => ({ ok: false, error: String(error && error.message ? error.message : error) }))
+      `),
+      new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('renderer_invoke_timeout')), 12_000)
+      })
+    ])
+    report.renderer = { ...(renderer as object), ms: Date.now() - rendererStarted }
+  } catch (error) {
+    report.renderer = { ok: false, ms: Date.now() - rendererStarted, error: String(error) }
+  }
+
+  writeFileSync(outputPath, JSON.stringify(report, null, 2))
+  app.quit()
 }
 
 app.on('before-quit', (event) => {

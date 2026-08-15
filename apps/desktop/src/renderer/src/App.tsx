@@ -5,7 +5,7 @@ import { Navigation, type AppPage } from './components/Navigation'
 import { OpsView } from './components/OpsView'
 import { TodoCenter } from './components/TodoCenter'
 import { defaultSubjectSelection } from './subject-selection'
-import { errorMessage } from './utils'
+import { errorMessage, withTimeout } from './utils'
 
 export default function App() {
   const [snapshots, setSnapshots] = useState<SubjectSnapshot[]>([])
@@ -19,7 +19,11 @@ export default function App() {
     setLoading(true)
     setError(null)
     try {
-      const next = await window.jea.invoke<SubjectSnapshot[]>('ops.refresh')
+      const next = await withTimeout(
+        window.jea.invoke<SubjectSnapshot[]>('ops.refresh'),
+        15_000,
+        'Timed out while reading JEA operational state.'
+      )
       setSnapshots(next)
       setSubject((current) => {
         if (current && next.some((snapshot) => snapshot.subject.name === current)) return current

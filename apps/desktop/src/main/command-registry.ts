@@ -6,6 +6,7 @@ import type {
   PublicErrorCode
 } from '../shared/contract'
 import { DESKTOP_COMMANDS } from '../shared/contract'
+import { toIpcValue } from './ipc-value'
 import { OpsService } from './operations'
 
 export type CommandLevel = 'readonly' | 'write' | 'process' | 'destructive'
@@ -100,7 +101,7 @@ export async function invokeForIpc(
   request: InvokeRequest
 ): Promise<InvokeResponse> {
   try {
-    return { ok: true, value: await invoke(request) }
+    return { ok: true, value: toIpcValue(await invoke(request)) }
   } catch (error) {
     const publicError = error instanceof PublicCommandError
       ? error

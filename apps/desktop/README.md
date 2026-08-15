@@ -15,7 +15,17 @@ npm run desktop:test
 ```
 
 The client loads the repository from `JEA_PROJECT_ROOT` when set, otherwise it
-uses the repository containing `apps/desktop`.
+walks up from the bundled main process and the current working directory until
+it finds `oada.config.mjs` and `src/cli/jea.mjs`.
+
+Main-process IPC responses and renderer events are JSON-cloned before they
+cross the sandbox. That keeps Electron from hanging on a non-cloneable
+`ops.refresh` payload and keeps secrets / handles out of the renderer. A
+headless check is available after `npm run desktop:build`:
+
+```bash
+JEA_DESKTOP_SMOKE=/tmp/jea-desktop-smoke.json npx electron apps/desktop
+```
 
 ## Operations and controlled writes
 
