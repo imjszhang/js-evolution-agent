@@ -27,7 +27,7 @@ jea data status
 
 ## 环境与诊断
 
-运行时要求 **Node.js ≥ 20**。本地质量命令（可复现 CI）：
+运行时要求 **Node.js ≥ 22.13**。本地质量命令（可复现 CI）：
 
 ```powershell
 npm run check
@@ -42,7 +42,7 @@ npm run reactor:canary
 
 `npm run audit:ci` 是生产依赖供应链门禁（高危/严重项须精确匹配未到期且仍无修复的 baseline）。`jea audit queue` 是演化证据 / 决策队列检查，二者不是同一概念。Coverage 阈值是首次实测向下取整的不回退基线；不要在 CI 里自动改 `vitest.config.mjs`。
 
-CI jobs：`check`、`test (20)`、`test (22)`、`desktop-build`、`dependency-audit`，外加 CodeQL JS/TS。`main` 禁止直接 push，须基于最新 main 开 PR。Nightly 只跑 `npm run reactor:canary`（mock-only，不注入 `DEEPSEEK_API_KEY`，不是 PR required check）。真实 DeepSeek 测试保持 opt-in。
+CI jobs：`check`、`test (22)`、`desktop-build`、`dependency-audit`，外加 CodeQL JS/TS。`main` 禁止直接 push，须基于最新 main 开 PR。Nightly 只跑 `npm run reactor:canary`（mock-only，不注入 `DEEPSEEK_API_KEY`，不是 PR required check）。真实 DeepSeek 测试保持 opt-in。
 
 - `jea doctor`：检查 Node、依赖、`.env`、DeepSeek 配置、权威文档（`policies/authority/CONSTITUTION.md`、`GUIDE.md`）、`oada.config.mjs`，以及 `repolink.config.mjs` 声明的兄弟仓库链接（`jea doctor` 的 Repo Links 段）。
 - `jea llm ping`：测试 DeepSeek 连接。

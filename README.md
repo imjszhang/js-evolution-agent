@@ -23,7 +23,7 @@
   <img src="https://img.shields.io/badge/License-MIT-blue?style=flat-square" alt="MIT License" />
   <img src="https://img.shields.io/badge/Theory-cyber--taoist.ai-FCD228?style=flat-square&labelColor=000000" alt="cyber-taoist.ai" />
   <img src="https://img.shields.io/badge/CLI-jea-000000?style=flat-square&labelColor=FCD228" alt="jea CLI" />
-  <img src="https://img.shields.io/badge/Node.js-%3E%3D20-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node.js >= 20" />
+  <img src="https://img.shields.io/badge/Node.js-%3E%3D22.13-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node.js >= 22.13" />
 </p>
 
 > Not a fixed `/goal` coding loop that runs until tests pass — an **evolution loop** with theoretical constraints, governance boundaries, and auditable receipts. When an old goal (law) is falsified by consequences, the system enters a rule-update phase instead of spinning or grinding.
@@ -461,7 +461,6 @@ Pull requests, pushes to `main`, and merge-group checks run:
 | Check | What it runs |
 | --- | --- |
 | `check` | Isolated `ci-repo` policy / subject / actions checks |
-| `test (20)` | `npm run test:ci` on Node 20 |
 | `test (22)` | `npm run test:coverage` on Node 22 |
 | `desktop-build` | Desktop typecheck + packable build (not a second desktop test run) |
 | `dependency-audit` | `npm run audit:ci` |

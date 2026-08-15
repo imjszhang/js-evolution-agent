@@ -23,7 +23,7 @@
   <img src="https://img.shields.io/badge/License-MIT-blue?style=flat-square" alt="MIT License" />
   <img src="https://img.shields.io/badge/理论-cyber--taoist.ai-FCD228?style=flat-square&labelColor=000000" alt="cyber-taoist.ai" />
   <img src="https://img.shields.io/badge/CLI-jea-000000?style=flat-square&labelColor=FCD228" alt="jea CLI" />
-  <img src="https://img.shields.io/badge/Node.js-%3E%3D20-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node.js >= 20" />
+  <img src="https://img.shields.io/badge/Node.js-%3E%3D22.13-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node.js >= 22.13" />
 </p>
 
 > 不是「固定 `/goal` 直到测试通过」的 coding loop，而是带理论约束、治理边界与可审计回执的 **演化 loop** — 当旧目标（法则）被后果证伪时，系统进入规则更新期，而非空转或硬撑。
@@ -460,7 +460,6 @@ PR、向 `main` 的 push，以及 merge group 会跑：
 | 检查 | 内容 |
 | --- | --- |
 | `check` | 隔离主体 `ci-repo` 上的 policy / subject / actions 检查 |
-| `test (20)` | Node 20 上的 `npm run test:ci` |
 | `test (22)` | Node 22 上的 `npm run test:coverage` |
 | `desktop-build` | 桌面 typecheck + 可打包构建（不再重复跑 desktop tests） |
 | `dependency-audit` | `npm run audit:ci` |
