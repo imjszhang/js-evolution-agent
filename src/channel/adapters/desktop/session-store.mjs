@@ -4,13 +4,15 @@ import {
   existsSync,
   mkdirSync,
   openSync,
+  readFileSync,
   readSync,
   readdirSync,
+  rmSync,
   statSync,
+  writeFileSync,
 } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
-import { StringDecoder } from 'node:string_decoder';
 import lockfile from 'proper-lockfile';
 import {
   channelDirForSubject,
@@ -21,26 +23,8 @@ import { nowIso } from '../../types.mjs';
 import { normalizeDesktopSessionId } from './config.mjs';
 
 export const DESKTOP_SESSION_SCHEMA_VERSION = 1;
-const sessionReadCache = new Map();
-const MAX_SESSION_CACHE_ENTRIES = 100;
-const MAX_SESSION_CACHE_BYTES = 16 * 1024 * 1024;
-
-function trimSessionReadCache(protectedFile = null) {
-  let bytes = [...sessionReadCache.values()]
-    .reduce((sum, entry) => sum + entry.size, 0);
-  const oldestFirst = [...sessionReadCache.entries()]
-    .filter(([file]) => file !== protectedFile)
-    .sort((left, right) => left[1].lastAccess - right[1].lastAccess);
-  while (
-    sessionReadCache.size > MAX_SESSION_CACHE_ENTRIES
-    || bytes > MAX_SESSION_CACHE_BYTES
-  ) {
-    const [file, entry] = oldestFirst.shift() ?? [];
-    if (!file) break;
-    sessionReadCache.delete(file);
-    bytes -= entry.size;
-  }
-}
+const INDEX_SCHEMA_VERSION = 1;
+const INDEX_CHUNK_BYTES = 64 * 1024;
 
 function stableRecordId(input) {
   const explicit = String(input.id ?? input.message_id ?? input.messageId ?? '').trim();
@@ -56,79 +40,216 @@ function stableRecordId(input) {
   return `desktop-${createHash('sha256').update(material).digest('hex').slice(0, 24)}`;
 }
 
-function parseRecords(file) {
-  if (!existsSync(file)) {
-    sessionReadCache.delete(file);
-    return [];
-  }
-  let stat;
-  try {
-    stat = statSync(file);
-  } catch {
-    sessionReadCache.delete(file);
-    return [];
-  }
-  const identity = `${stat.dev}:${stat.ino}`;
-  let cached = sessionReadCache.get(file);
-  if (!cached || cached.identity !== identity || stat.size < cached.size) {
-    cached = {
-      identity,
-      size: 0,
-      partial: '',
-      decoder: new StringDecoder('utf8'),
-      physicalOffset: 0,
-      records: [],
-      uniqueRecords: [],
-      seenIds: new Set(),
-      lastAccess: Date.now(),
-    };
-  }
-  cached.lastAccess = Date.now();
-  if (stat.size > cached.size) {
-    const length = stat.size - cached.size;
-    const buffer = Buffer.allocUnsafe(length);
-    const fd = openSync(file, 'r');
-    let bytesRead = 0;
-    try {
-      bytesRead = readSync(fd, buffer, 0, length, cached.size);
-    } finally {
-      closeSync(fd);
-    }
-    cached.size += bytesRead;
-    cached.partial += cached.decoder.write(buffer.subarray(0, bytesRead));
-    const lines = cached.partial.split(/\r?\n/);
-    cached.partial = lines.pop() ?? '';
-    for (const line of lines) {
-      if (!line) continue;
-      const physicalOffset = cached.physicalOffset;
-      cached.physicalOffset += 1;
-      try {
-        const record = { ...JSON.parse(line), _physical_offset: physicalOffset };
-        cached.records.push(record);
-        const id = String(record.id ?? '').trim();
-        if (id && !cached.seenIds.has(id)) {
-          cached.seenIds.add(id);
-          const { _physical_offset: _, ...value } = record;
-          cached.uniqueRecords.push(value);
-        }
-      } catch {
-        // Preserve physical offsets while ignoring malformed records.
-      }
-    }
-  }
-  cached.records._uniqueRecords = cached.uniqueRecords;
-  if (stat.size <= MAX_SESSION_CACHE_BYTES) {
-    sessionReadCache.set(file, cached);
-    trimSessionReadCache(file);
-  } else {
-    sessionReadCache.delete(file);
-  }
-  return cached.records;
+function sessionIndexPaths(root, subject, sessionId) {
+  const dir = join(channelDirForSubject(root, subject), 'desktop', 'session-index', sessionId);
+  return {
+    dir,
+    metadata: join(dir, 'metadata.json'),
+    offsets: join(dir, 'offsets.bin'),
+    ids: join(dir, 'ids'),
+  };
 }
 
-function readUniqueRecords(file) {
-  const parsed = parseRecords(file);
-  return parsed._uniqueRecords ?? sessionReadCache.get(file)?.uniqueRecords ?? [];
+function fileIdentity(stat) {
+  return `${stat.dev}:${stat.ino}:${stat.birthtimeMs}`;
+}
+
+function readMetadata(paths) {
+  try {
+    const value = JSON.parse(readFileSync(paths.metadata, 'utf8'));
+    return value?.schema_version === INDEX_SCHEMA_VERSION ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeMetadata(paths, metadata) {
+  mkdirSync(paths.dir, { recursive: true });
+  writeFileSync(paths.metadata, `${JSON.stringify(metadata)}\n`, 'utf8');
+}
+
+function bucketPath(paths, id) {
+  const prefix = createHash('sha256').update(id).digest('hex').slice(0, 2);
+  return join(paths.ids, `${prefix}.jsonl`);
+}
+
+function readBucket(paths, id) {
+  const file = bucketPath(paths, id);
+  if (!existsSync(file)) return [];
+  return readFileSync(file, 'utf8')
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .flatMap((line) => {
+      try {
+        return [JSON.parse(line)];
+      } catch {
+        return [];
+      }
+    });
+}
+
+function findIndexedId(paths, id) {
+  return readBucket(paths, id).find((entry) => entry.id === id) ?? null;
+}
+
+function appendIndexEntry(paths, id, logicalOffset, byteOffset) {
+  mkdirSync(paths.ids, { recursive: true });
+  const offsetBuffer = Buffer.allocUnsafe(8);
+  offsetBuffer.writeBigUInt64LE(BigInt(byteOffset));
+  appendFileSync(paths.offsets, offsetBuffer);
+  appendFileSync(
+    bucketPath(paths, id),
+    `${JSON.stringify({ id, offset: logicalOffset, byte_offset: byteOffset })}\n`,
+    'utf8',
+  );
+}
+
+function appendIndexBatch(paths, offsets, bucketAppends) {
+  if (offsets.length) {
+    mkdirSync(paths.ids, { recursive: true });
+    const buffer = Buffer.allocUnsafe(offsets.length * 8);
+    offsets.forEach((offset, index) => {
+      buffer.writeBigUInt64LE(BigInt(offset), index * 8);
+    });
+    appendFileSync(paths.offsets, buffer);
+  }
+  for (const [file, entries] of bucketAppends) {
+    appendFileSync(file, `${entries.map((entry) => JSON.stringify(entry)).join('\n')}\n`, 'utf8');
+  }
+}
+
+function resetIndex(paths, identity) {
+  rmSync(paths.dir, { recursive: true, force: true });
+  mkdirSync(paths.ids, { recursive: true });
+  writeFileSync(paths.offsets, Buffer.alloc(0));
+  const metadata = {
+    schema_version: INDEX_SCHEMA_VERSION,
+    identity,
+    scanned_size: 0,
+    total: 0,
+  };
+  writeMetadata(paths, metadata);
+  return metadata;
+}
+
+function reconcileSessionIndex(root, subject, sessionId, file) {
+  const paths = sessionIndexPaths(root, subject, sessionId);
+  if (!existsSync(file)) {
+    return {
+      paths,
+      metadata: {
+        schema_version: INDEX_SCHEMA_VERSION,
+        identity: null,
+        scanned_size: 0,
+        total: 0,
+      },
+    };
+  }
+  const stat = statSync(file);
+  const identity = fileIdentity(stat);
+  let metadata = readMetadata(paths);
+  if (
+    !metadata
+    || metadata.identity !== identity
+    || stat.size < Number(metadata.scanned_size ?? 0)
+    || !existsSync(paths.offsets)
+    || !existsSync(paths.ids)
+    || (existsSync(paths.offsets) && statSync(paths.offsets).size !== Number(metadata.total ?? 0) * 8)
+  ) {
+    metadata = resetIndex(paths, identity);
+  }
+  if (stat.size <= metadata.scanned_size) return { paths, metadata };
+
+  const bucketSets = new Map();
+  const indexedOffsets = [];
+  const bucketAppends = new Map();
+  const fd = openSync(file, 'r');
+  let position = Number(metadata.scanned_size);
+  let partial = Buffer.alloc(0);
+  let partialStart = position;
+  try {
+    while (position < stat.size) {
+      const length = Math.min(INDEX_CHUNK_BYTES, stat.size - position);
+      const chunk = Buffer.allocUnsafe(length);
+      const bytesRead = readSync(fd, chunk, 0, length, position);
+      if (!bytesRead) break;
+      position += bytesRead;
+      const data = partial.length
+        ? Buffer.concat([partial, chunk.subarray(0, bytesRead)])
+        : chunk.subarray(0, bytesRead);
+      const dataStart = partialStart;
+      let cursor = 0;
+      for (;;) {
+        const newline = data.indexOf(0x0a, cursor);
+        if (newline < 0) break;
+        const lineStart = dataStart + cursor;
+        const line = data.subarray(cursor, newline).toString('utf8').trim();
+        cursor = newline + 1;
+        if (!line) continue;
+        try {
+          const record = JSON.parse(line);
+          const id = String(record?.id ?? '').trim();
+          if (!id) continue;
+          const bucket = bucketPath(paths, id);
+          let seen = bucketSets.get(bucket);
+          if (!seen) {
+            seen = new Set(readBucket(paths, id).map((entry) => entry.id));
+            bucketSets.set(bucket, seen);
+          }
+          if (seen.has(id)) continue;
+          seen.add(id);
+          indexedOffsets.push(lineStart);
+          const entries = bucketAppends.get(bucket) ?? [];
+          entries.push({ id, offset: metadata.total, byte_offset: lineStart });
+          bucketAppends.set(bucket, entries);
+          metadata.total += 1;
+        } catch {
+          // Malformed complete records are skipped without blocking later lines.
+        }
+      }
+      partial = data.subarray(cursor);
+      partialStart = dataStart + cursor;
+    }
+  } finally {
+    closeSync(fd);
+  }
+  appendIndexBatch(paths, indexedOffsets, bucketAppends);
+  metadata.scanned_size = partialStart;
+  metadata.identity = identity;
+  writeMetadata(paths, metadata);
+  return { paths, metadata };
+}
+
+function readIndexedOffset(paths, logicalOffset) {
+  const buffer = Buffer.allocUnsafe(8);
+  const fd = openSync(paths.offsets, 'r');
+  try {
+    const bytesRead = readSync(fd, buffer, 0, 8, logicalOffset * 8);
+    return bytesRead === 8 ? Number(buffer.readBigUInt64LE()) : null;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function readIndexedRecord(file, paths, metadata, logicalOffset) {
+  if (logicalOffset < 0 || logicalOffset >= metadata.total) return null;
+  const start = readIndexedOffset(paths, logicalOffset);
+  const next = logicalOffset + 1 < metadata.total
+    ? readIndexedOffset(paths, logicalOffset + 1)
+    : metadata.scanned_size;
+  if (start == null || next == null || next <= start) return null;
+  const buffer = Buffer.allocUnsafe(next - start);
+  const fd = openSync(file, 'r');
+  try {
+    const bytesRead = readSync(fd, buffer, 0, buffer.length, start);
+    const newline = buffer.indexOf(0x0a, 0);
+    const text = buffer.subarray(0, newline < 0 ? bytesRead : newline).toString('utf8').trim();
+    return text ? JSON.parse(text) : null;
+  } catch {
+    return null;
+  } finally {
+    closeSync(fd);
+  }
 }
 
 function lockSessionFile(file) {
@@ -153,7 +274,6 @@ export function appendDesktopSessionRecord(root, subject, sessionIdInput, input 
   appendFileSync(file, '', 'utf-8');
   const release = lockSessionFile(file);
   try {
-    const existing = parseRecords(file);
     const createdAt = input.created_at ?? nowIso();
     const base = {
       ...input,
@@ -163,17 +283,25 @@ export function appendDesktopSessionRecord(root, subject, sessionIdInput, input 
       created_at: createdAt,
     };
     const id = stableRecordId(base);
-    const duplicate = existing.find((record) => record.id === id);
+    const { paths, metadata } = reconcileSessionIndex(root, subject, sessionId, file);
+    const duplicate = findIndexedId(paths, id);
     if (duplicate) {
-      const { _physical_offset: _, ...record } = duplicate;
+      const record = readIndexedRecord(file, paths, metadata, duplicate.offset);
       return { file, record, created: false, duplicate: true };
     }
+    const byteOffset = statSync(file).size;
     const record = {
       ...base,
       id,
-      offset: existing.length,
+      offset: metadata.total,
     };
-    appendFileSync(file, `${JSON.stringify(record)}\n`, 'utf-8');
+    const line = `${JSON.stringify(record)}\n`;
+    appendFileSync(file, line, 'utf-8');
+    appendIndexEntry(paths, id, metadata.total, byteOffset);
+    metadata.total += 1;
+    metadata.scanned_size = byteOffset + Buffer.byteLength(line);
+    metadata.identity = fileIdentity(statSync(file));
+    writeMetadata(paths, metadata);
     return { file, record, created: true, duplicate: false };
   } finally {
     release();
@@ -187,26 +315,36 @@ export function readDesktopSession(root, subject, sessionIdInput, {
 } = {}) {
   const sessionId = normalizeDesktopSessionId(sessionIdInput);
   const file = channelDesktopSessionPath(root, subject, sessionId);
-  const records = readUniqueRecords(file);
-  const start = Math.max(0, Number(offset) || 0);
-  const boundedLimit = Math.max(0, Math.min(1000, Number(limit) || 50));
-  const tailCount = tail == null ? null : Math.max(0, Math.min(1000, Number(tail) || 0));
-  const selectedOffset = tailCount == null ? start : Math.max(start, records.length - tailCount);
-  const selected = tailCount == null
-    ? records.slice(selectedOffset, selectedOffset + boundedLimit)
-    : records.slice(selectedOffset);
-  const nextOffset = selected.length
-    ? Math.min(records.length, selectedOffset + selected.length)
-    : Math.min(start, records.length);
-  return {
-    schema_version: DESKTOP_SESSION_SCHEMA_VERSION,
-    subject,
-    session_id: sessionId,
-    records: selected,
-    offset: selectedOffset,
-    next_offset: nextOffset,
-    total: records.length,
-  };
+  const release = existsSync(file) ? lockSessionFile(file) : null;
+  try {
+    const { paths, metadata } = reconcileSessionIndex(root, subject, sessionId, file);
+    const start = Math.max(0, Number(offset) || 0);
+    const boundedLimit = Math.max(0, Math.min(1000, Number(limit) || 50));
+    const tailCount = tail == null ? null : Math.max(0, Math.min(1000, Number(tail) || 0));
+    const selectedOffset = tailCount == null ? start : Math.max(start, metadata.total - tailCount);
+    const end = tailCount == null
+      ? Math.min(metadata.total, selectedOffset + boundedLimit)
+      : metadata.total;
+    const selected = [];
+    for (let logicalOffset = selectedOffset; logicalOffset < end; logicalOffset += 1) {
+      const record = readIndexedRecord(file, paths, metadata, logicalOffset);
+      if (record) selected.push(record);
+    }
+    const nextOffset = selected.length
+      ? Math.min(metadata.total, selectedOffset + selected.length)
+      : Math.min(start, metadata.total);
+    return {
+      schema_version: DESKTOP_SESSION_SCHEMA_VERSION,
+      subject,
+      session_id: sessionId,
+      records: selected,
+      offset: selectedOffset,
+      next_offset: nextOffset,
+      total: metadata.total,
+    };
+  } finally {
+    release?.();
+  }
 }
 
 export function listDesktopSessions(root, subject) {
@@ -215,14 +353,6 @@ export function listDesktopSessions(root, subject) {
   const names = readdirSync(dir)
     .filter((name) => name.endsWith('.jsonl'))
     .sort();
-  const liveFiles = new Set(names.map((name) => channelDesktopSessionPath(
-    root,
-    subject,
-    name.slice(0, -'.jsonl'.length),
-  )));
-  for (const file of sessionReadCache.keys()) {
-    if (dirname(file) === dir && !liveFiles.has(file)) sessionReadCache.delete(file);
-  }
   return names.map((name) => {
       const sessionId = name.slice(0, -'.jsonl'.length);
       const view = readDesktopSession(root, subject, sessionId, { tail: 1 });

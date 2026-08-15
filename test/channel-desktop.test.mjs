@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { writeJsonFile } from '../src/infra/files.mjs';
 import {
   appendDesktopSessionRecord,
@@ -25,6 +25,7 @@ import { normalizeOutboundMessage } from '../src/channel/types.mjs';
 import { buildChannelProjection } from '../src/channel/projection.mjs';
 import { channelCommand } from '../src/cli/commands/channel.mjs';
 import { resolveOutboundTarget } from '../src/channel/transport.mjs';
+import { channelDesktopSessionPath } from '../src/channel/paths.mjs';
 
 let root = null;
 
@@ -114,6 +115,38 @@ describe('desktop channel adapter', () => {
     expect(page.total).toBe(2);
     expect(page.next_offset).toBe(2);
     expect(readDesktopSession(project, 'alpha', 'main', { tail: 1 }).records[0].id).toBe('stable-2');
+  });
+
+  it('builds a persistent byte index for large offset reads', () => {
+    const project = makeRoot();
+    const file = channelDesktopSessionPath(project, 'alpha', 'large');
+    mkdirSync(dirname(file), { recursive: true });
+    const total = 20_000;
+    writeFileSync(file, `${Array.from({ length: total }, (_, offset) => JSON.stringify({
+      schema_version: 1,
+      id: `large-${offset}`,
+      session_id: 'large',
+      target: 'desktop:large',
+      direction: 'inbound',
+      role: 'user',
+      content: `message ${offset}`,
+      created_at: '2026-08-15T00:00:00.000Z',
+      offset,
+    })).join('\n')}\n`);
+    const page = readDesktopSession(project, 'alpha', 'large', {
+      offset: total - 5,
+      limit: 5,
+    });
+    expect(page.total).toBe(total);
+    expect(page.records.map((record) => record.id)).toEqual([
+      'large-19995',
+      'large-19996',
+      'large-19997',
+      'large-19998',
+      'large-19999',
+    ]);
+    expect(readDesktopSession(project, 'alpha', 'large', { tail: 1 }).records[0].id)
+      .toBe('large-19999');
   });
 
   it('runs desktop inbound through classifier, presence, speech, outbox, and notify', async () => {

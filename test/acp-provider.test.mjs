@@ -10,6 +10,7 @@ import {
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { EventEmitter } from 'node:events';
 import {
   AcpRuntime,
   decideHeadlessPermission,
@@ -279,6 +280,40 @@ describe('ACP stdio runtime', () => {
     await runtime.close();
     expect(runtime.child.signalCode).toBe('SIGKILL');
     expect(readFileSync(log, 'utf-8')).toContain('"event":"cancel"');
+  });
+
+  it('falls back to child termination when Windows tree termination fails', async () => {
+    const child = new EventEmitter();
+    const signals = [];
+    Object.assign(child, {
+      pid: 4242,
+      exitCode: null,
+      signalCode: null,
+      stdin: { end() {} },
+      kill(signal) {
+        signals.push(signal);
+        if (signal === 'SIGKILL') {
+          this.signalCode = signal;
+          queueMicrotask(() => this.emit('close', null, signal));
+        }
+        return true;
+      },
+    });
+    const treeKills = [];
+    const runtime = new AcpRuntime({
+      framework: framework(),
+      cwd: tempDir(),
+      platform: 'win32',
+      killGraceMs: 1,
+      killWindowsTree: (_pid, force) => {
+        treeKills.push(force);
+        return false;
+      },
+    });
+    runtime.child = child;
+    await runtime.close();
+    expect(treeKills).toEqual([false, true, true]);
+    expect(signals).toEqual(['SIGTERM', 'SIGKILL']);
   });
 });
 
