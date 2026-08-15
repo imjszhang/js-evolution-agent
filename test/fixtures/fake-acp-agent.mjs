@@ -120,4 +120,7 @@ const connection = app.connect(ndJsonStream(
   Readable.toWeb(process.stdin),
 ));
 await connection.closed;
+if (process.env.FAKE_ACP_IGNORE_SIGTERM === '1') {
+  await new Promise(() => {});
+}
 

@@ -253,6 +253,7 @@ describe('ACP Phase 2 provider', () => {
       host: {
         sourceRoot: cwd,
         dataRoot: cwd,
+        runtimeRoot: cwd,
         intelligenceStore: {
           recordActionReceipt(_action, receipt) { receipts.push(receipt); },
           ingestObservation() { return 0; },
