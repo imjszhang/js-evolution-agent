@@ -53,11 +53,23 @@ function withSubjectsRegistryWriteLock(root, fn) {
   const target = subjectsRegistryWriteLockFile(root);
   mkdirSync(dirname(target), { recursive: true });
   if (!existsSync(target)) writeFileSync(target, '', 'utf8');
-  const release = lockfile.lockSync(target, {
-    stale: 30_000,
-    update: 10_000,
-    retries: { retries: 20, minTimeout: 10, maxTimeout: 100 },
-  });
+  let release = null;
+  let lastError = null;
+  const sleeper = new Int32Array(new SharedArrayBuffer(4));
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      release = lockfile.lockSync(target, {
+        stale: 30_000,
+        update: 10_000,
+      });
+      lastError = null;
+      break;
+    } catch (error) {
+      lastError = error;
+      Atomics.wait(sleeper, 0, 0, Math.min(5 + (attempt * 2), 50));
+    }
+  }
+  if (!release) throw lastError ?? new Error(`Unable to lock Subject registry: ${target}`);
   try {
     return fn();
   } finally {

@@ -1,3 +1,11 @@
+import { defineConfig } from 'vitest/config'
+
+export default defineConfig({
+  test: {
+    setupFiles: ['../../test/setup-legacy-runtime.mjs'],
+    testTimeout: 30_000
+  }
+})
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vitest/config'
