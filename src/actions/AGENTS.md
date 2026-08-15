@@ -55,7 +55,7 @@ blocked cycles_seen > JEA_BLOCKED_TTL_CYCLES（默认 10）→ expired
 
 机械守护（`evolution.guards`，不占 agent_run 预算）：
 
-在 `runtime/subjects/registry.json` 的 `subjects.<name>.evolution.guards` 配置固定节奏动作（如凭据 sync、记忆审计）。`runExecStep` 在消费决策队列前按 `every_cycles` 到期执行；状态在 `data/evolution/agent_loop_guard_state.json`。action 落盘带 `origin: mechanical_guard` + `guard_id`；首见/移除时发 `mechanical_guard_registered` / `mechanical_guard_removed` 事件。
+在 `<JEA_HOME>/subjects/registry.json` 的 `subjects.<name>.evolution.guards` 配置固定节奏动作（如凭据 sync、记忆审计）。`runExecStep` 在消费决策队列前按 `every_cycles` 到期执行；状态在 `data/evolution/agent_loop_guard_state.json`。action 落盘带 `origin: mechanical_guard` + `guard_id`；首见/移除时发 `mechanical_guard_registered` / `mechanical_guard_removed` 事件。
 
 **法则化退役/重生**（宪章第十三条第 5 步）：当 guard 的 `serves_goal` 已被机械确定性维持且连续健康 ≥ `JEA_RULE_FEEDBACK_DEAD_STREAK` 轮时，对应 active goal 使命已完成——assess 应 `rule_status=continue` + `status=refine` + `remove_child`（mechanized retirement；不触碰 mutate 轮的 guard 删除保护）。若机制连续失败且无 active goal 覆盖，assess 应 `add_child` 重开守护目标（rebirth）。健康且已退役是期望稳态。
 
@@ -152,7 +152,7 @@ $env:JEA_LIVE_DEEPSEEK='1'; npm run test:live-deepseek
 其他需人工介入的场景：
 
 - **核心层变更**：`core_apply` 默认受 `JEA_CORE_APPLY_POLICY=review` 约束；`request_core_review` 只落审批请求，不执行变更。
-- **主体边界**：`runtime/subjects/<data_namespace>/SUBJECT.md` 的 Off-Limits Without Human Approval 定义各 subject 的审批规则（凭据、远端发布、越界写入等）；AGENTS.md 不重复主体语义，用 `jea subject check` 校验 policy 结构。
+- **主体边界**：`<JEA_HOME>/subjects/<data_namespace>/SUBJECT.md` 的 Off-Limits Without Human Approval 定义各 subject 的审批规则（凭据、远端发布、越界写入等）；AGENTS.md 不重复主体语义，用 `jea subject check` 校验 policy 结构。
 
 自动化代理在未获操作者明确确认时，不要替其提交发布/基线校准类 brief，也不要在 action 上伪造 `approval_granted`。
 
@@ -203,7 +203,7 @@ Phase 2（exec）action 选择口径：
 
 - 主执行：优先 `agent_run`（调查、改代码、模拟、发布准备等“做事”任务）。
 - 记录型：`record_observation`、`run_evidence_audit`（机械证据审计）、`propose_probe`、`write_retrospective`、`request_core_review` 只落已有结论/提案/审批请求/审计摘要，不用于读文件或调查。
-- 系统/兼容：`lane_status`、`lane_observe`、`lane_verify`、`github_open_lane_pr` 是机械 lane 能力；`run_probe`、`agent_execute` 是旧兼容动作；`core_apply` 仅用于 core 层审批变更。subject policy 不应维护 subject-specific action 菜单，业务能力通过 `subjects.json` 的 lane/resources 或 configured external actions 表达。
+- 系统/兼容：`lane_status`、`lane_observe`、`lane_verify`、`github_open_lane_pr` 是机械 lane 能力；`run_probe`、`agent_execute` 是旧兼容动作；`core_apply` 仅用于 core 层审批变更。subject policy 不应维护 subject-specific action 菜单，业务能力通过 `<JEA_HOME>/subjects/registry.json` 的 lane/resources 或 configured external actions 表达。
 
 ### ACP 无头 provider
 

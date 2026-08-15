@@ -11,17 +11,17 @@ Daemon 用于 **事件驱动的 step 级演化**。推荐用 `jea daemon start` 
 
 **step 完成以 checkpoint 为准**：cycle-state / `cycle-state/<id>/<step>.json` 为完成依据；若子进程 hang 但 checkpoint 已写入，watchdog（约每 `heartbeat-ms`）会终止 runner 并按产物完成 task。**reactor 默认不再**用 tick reconcile 把「cycle-state 已 terminal 但 task 仍 running」假完成为 completed（`JEA_STEP_ARTIFACT_RECONCILE=1` 或列车 pipeline 可恢复）。
 
-演化模式解析优先级：`runtime/subjects/registry.json` 中 `subjects.<name>.evolution.mode` > `jea daemon start --evolution-mode` > env `JEA_EVOLUTION_MODE` > 默认 `continuous`。
+演化模式解析优先级：`<JEA_HOME>/subjects/registry.json` 中 `subjects.<name>.evolution.mode` > `jea daemon start --evolution-mode` > env `JEA_EVOLUTION_MODE` > 默认 `continuous`。
 
-**热加载**：daemon worker 运行中修改 `runtime/subjects/registry.json` 的 `evolution.mode` **无需 restart**（下一轮 worker loop 重新读盘，通常数秒内 idle 生效；`daemon events` 可见 `evolution_mode_changed`）。修改 `.env` 的 `JEA_EVOLUTION_MODE` 或启动时的 `--evolution-mode` **需** `daemon stop` 后重新 `start` 才生效。
+**热加载**：daemon worker 运行中修改 `<JEA_HOME>/subjects/registry.json` 的 `evolution.mode` **无需 restart**（下一轮 worker loop 重新读盘，通常数秒内 idle 生效；`daemon events` 可见 `evolution_mode_changed`）。修改 `.env` 的 `JEA_EVOLUTION_MODE` 或启动时的 `--evolution-mode` **需** `daemon stop` 后重新 `start` 才生效。
 
 `run_cycle` 整轮任务与 `jea run` 同步链仍保留，供本地调试与兼容；**后台长期运行请优先 step 模式**。
 
 ### 任务与 worker
 
-- `jea daemon start [--mock] [--tick-ms N] [--evolution-mode continuous|on_demand] [--heartbeat-ms N] [--lease-ms N]`：前台 worker；默认 `tick-ms=300000`（5min）。**Windows 长期后台**勿用 Cursor/IDE 后台 shell（会话结束会中止子进程）；用 `npm run daemon:start:detached`（或 `scripts/daemon-start-detached-win.ps1 -Subject NAME [-StopFirst] [-Force]`），日志在 `runtime/logs/daemon-<subject>.*.log`。
+- `jea daemon start [--mock] [--tick-ms N] [--evolution-mode continuous|on_demand] [--heartbeat-ms N] [--lease-ms N]`：前台 worker；默认 `tick-ms=300000`（5min）。**Windows 长期后台**勿用 Cursor/IDE 后台 shell（会话结束会中止子进程）；用 `npm run daemon:start:detached`（或 `scripts/daemon-start-detached-win.ps1 -Subject NAME [-StopFirst] [-Force]`），日志在 `<JEA_HOME>/logs/daemon-<subject>.*.log`。
 - `jea daemon evolution-mode show [--json]`：查看当前 subject 演化模式与来源。
-- `jea daemon evolution-mode set continuous|on_demand [--json]`：写入 `subjects.json` 并 emit `evolution_mode_changed`（viewer SSE / worker 热加载）。
+- `jea daemon evolution-mode set continuous|on_demand [--json]`：写入 `<JEA_HOME>/subjects/registry.json` 并 emit `evolution_mode_changed`（viewer SSE / worker 热加载）。
 - `jea daemon cycle request [--reason TEXT] [--note TEXT]`：入队 cycle 启动请求（写入 `data/evolution/cycle-start-requests.json`），由 worker 在前提满足时开轮。
 - `jea daemon work --once [--mock]`：领取并执行一个 task（step、`run_cycle` 或 reactor task）后退出。
 - reactor task 类型（`JEA_EVIDENCE_WAKE=1` 时由 backlog/wake 入队）：`cognitive_reaction`、`exec_queue`、`verify_batch`、`rule_reaction`、`memory_compaction`。这些任务进程内执行，恢复真相是 batch checkpoint / exec intent / exec result，不是 cycle-state。
@@ -33,7 +33,7 @@ Daemon 用于 **事件驱动的 step 级演化**。推荐用 `jea daemon start` 
 每轮 cycle 的状态与 step 产物位于：
 
 ```text
-runtime/subjects/<data_namespace>/data/evolution/cycle-state/
+<JEA_HOME>/subjects/<data_namespace>/data/evolution/cycle-state/
 ├── <cycleId>.json              # step 状态机（pending/running/done/skipped/failed）
 └── <cycleId>/
     ├── intel.json              # step checkpoint（可序列化输出）

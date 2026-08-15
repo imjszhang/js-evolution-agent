@@ -244,7 +244,7 @@ export function runtimeWatchPaths(runtimeRoot, {
     paths.push(join(runtimeRoot, 'data', 'channel', 'desktop', 'sessions'));
   }
   if (projectRoot && watchSubjectsJson) {
-    paths.push(join(projectRoot, 'runtime', 'subjects', 'registry.json'));
+    paths.push(join(dirname(runtimeRoot), 'registry.json'));
     paths.push(join(projectRoot, 'policies', 'subjects.json'));
   }
   return paths;

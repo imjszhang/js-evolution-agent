@@ -6,7 +6,13 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
+import lockfile from 'proper-lockfile';
 import { readJsonSafe, readTextSafe, writeJsonFile } from './files.mjs';
+import {
+  createRuntimeContext,
+  sourceRootFor,
+  subjectsHomeDir,
+} from './jea-home.mjs';
 import { getLanguage, t } from './i18n.mjs';
 import {
   describeLinkRef,
@@ -20,27 +26,59 @@ export const DEFAULT_SUBJECT = 'js-evolution-agent';
 export const SUBJECT_ENV = 'JEA_SUBJECT';
 
 export function subjectsRuntimeDir(root) {
-  return join(root, 'runtime', 'subjects');
+  return subjectsHomeDir(root);
 }
 
 export function subjectsDir(root) {
-  return join(root, 'policies', 'subjects');
+  return join(sourceRootFor(root), 'policies', 'subjects');
 }
 
 export function templatesDir(root) {
-  return join(root, 'policies', 'templates');
+  return join(sourceRootFor(root), 'policies', 'templates');
 }
 
 function legacyActiveSubjectFile(root) {
-  return join(root, 'policies', 'active-subject.json');
+  return join(sourceRootFor(root), 'policies', 'active-subject.json');
 }
 
 export function subjectsRegistryFile(root) {
   return join(subjectsRuntimeDir(root), 'registry.json');
 }
 
+export function subjectsRegistryWriteLockFile(root) {
+  return join(dirname(subjectsRuntimeDir(root)), '.subjects-registry.write-lock');
+}
+
+function withSubjectsRegistryWriteLock(root, fn) {
+  const target = subjectsRegistryWriteLockFile(root);
+  mkdirSync(dirname(target), { recursive: true });
+  if (!existsSync(target)) writeFileSync(target, '', 'utf8');
+  let release = null;
+  let lastError = null;
+  const sleeper = new Int32Array(new SharedArrayBuffer(4));
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      release = lockfile.lockSync(target, {
+        stale: 30_000,
+        update: 10_000,
+      });
+      lastError = null;
+      break;
+    } catch (error) {
+      lastError = error;
+      Atomics.wait(sleeper, 0, 0, Math.min(5 + (attempt * 2), 50));
+    }
+  }
+  if (!release) throw lastError ?? new Error(`Unable to lock Subject registry: ${target}`);
+  try {
+    return fn();
+  } finally {
+    release();
+  }
+}
+
 export function legacySubjectsRegistryFile(root) {
-  return join(root, 'policies', 'subjects.json');
+  return join(sourceRootFor(root), 'policies', 'subjects.json');
 }
 
 export const SUBJECT_POLICY_FILENAME = 'SUBJECT.md';
@@ -97,7 +135,11 @@ function extractMarkdownSection(text, heading) {
 /** True if workspace SUBJECT.md or legacy flat .md exists. */
 export function subjectPolicyExists(root, name) {
   const subject = sanitizeSubjectName(name);
-  if (existsSync(subjectGovernanceFile(root, subject))) return true;
+  const registryEntry = readSubjectsRegistry(root).subjects?.[subject];
+  const runtimeConfig = registryEntry
+    ? normalizeRegistryEntry(subject, registryEntry)
+    : subject;
+  if (existsSync(subjectGovernanceFile(root, runtimeConfig))) return true;
   if (existsSync(legacySubjectGovernanceFile(root, subject))) return true;
   if (existsSync(subjectFile(root, subject))) return true;
   return false;
@@ -212,7 +254,7 @@ export function readSubjectsRegistry(root) {
   };
 }
 
-export function writeSubjectsRegistry(root, registry) {
+function writeSubjectsRegistryUnlocked(root, registry) {
   const file = subjectsRegistryFile(root);
   const payload = {
     default_subject: sanitizeSubjectName(registry.default_subject || DEFAULT_SUBJECT),
@@ -222,15 +264,36 @@ export function writeSubjectsRegistry(root, registry) {
   return { path: file, registry: payload };
 }
 
+export function writeSubjectsRegistry(root, registry) {
+  return withSubjectsRegistryWriteLock(root, () => writeSubjectsRegistryUnlocked(root, registry));
+}
+
+export function updateSubjectsRegistry(root, updater) {
+  return withSubjectsRegistryWriteLock(root, () => {
+    const current = readSubjectsRegistry(root);
+    const next = updater({
+      default_subject: current.default_subject,
+      subjects: { ...(current.subjects ?? {}) },
+    });
+    return writeSubjectsRegistryUnlocked(root, next);
+  });
+}
+
 export function ensureSubjectsRegistry(root, { language = getLanguage() } = {}) {
   ensureSubjectLayout(root);
   const file = subjectsRegistryFile(root);
   const existed = existsSync(file);
   if (!existed) {
-    const legacyRegistry = readJsonSafe(legacySubjectsRegistryFile(root), null);
-    const legacy = readJsonSafe(legacyActiveSubjectFile(root), null);
-    const migrated = registryFromLegacyActive(legacy);
-    writeSubjectsRegistry(root, legacyRegistry?.subjects ? legacyRegistry : (migrated ?? defaultSubjectsRegistry()));
+    withSubjectsRegistryWriteLock(root, () => {
+      if (existsSync(file)) return;
+      const legacyRegistry = readJsonSafe(legacySubjectsRegistryFile(root), null);
+      const legacy = readJsonSafe(legacyActiveSubjectFile(root), null);
+      const migrated = registryFromLegacyActive(legacy);
+      writeSubjectsRegistryUnlocked(
+        root,
+        legacyRegistry?.subjects ? legacyRegistry : (migrated ?? defaultSubjectsRegistry()),
+      );
+    });
   }
 
   const registry = readSubjectsRegistry(root);
@@ -277,9 +340,8 @@ export function getSubjectEntry(root, name) {
 }
 
 export function registerSubject(root, name, entry = {}) {
-  const registry = readSubjectsRegistry(root);
   const subject = sanitizeSubjectName(name);
-  const next = {
+  return updateSubjectsRegistry(root, (registry) => ({
     default_subject: registry.default_subject || subject,
     subjects: {
       ...registry.subjects,
@@ -288,8 +350,7 @@ export function registerSubject(root, name, entry = {}) {
         ...entry,
       },
     },
-  };
-  return writeSubjectsRegistry(root, next);
+  }));
 }
 
 export function resolveSubjectConfig(root, {
@@ -345,7 +406,7 @@ export function getDataNamespace(root, config) {
 }
 
 export function getSubjectRuntimeRoot(root, config) {
-  return join(root, 'runtime', 'subjects', getDataNamespace(root, config));
+  return join(subjectsRuntimeDir(root), getDataNamespace(root, config));
 }
 
 export function getSubjectDataRoot(root, config) {
@@ -353,6 +414,7 @@ export function getSubjectDataRoot(root, config) {
 }
 
 export function runtimeInfoForSubject(root, subjectOrConfig) {
+  const context = createRuntimeContext(root);
   const config = typeof subjectOrConfig === 'string'
     ? resolveSubjectConfig(root, { subject: subjectOrConfig })
     : subjectOrConfig;
@@ -365,6 +427,9 @@ export function runtimeInfoForSubject(root, subjectOrConfig) {
     active: legacy,
     subject: config.name,
     dataNamespace,
+    sourceRoot: context.sourceRoot,
+    jeaHome: context.jeaHome,
+    jeaHomeSource: context.jeaHomeSource,
     runtimeRoot,
     dataRoot,
     evolutionDir: join(dataRoot, 'evolution'),
@@ -378,9 +443,10 @@ export function runtimeInfoForDefaultSubject(root) {
 }
 
 export function resolveSubjectPolicyPath(root, config) {
+  const sourceRoot = sourceRootFor(root);
   const legacy = subjectConfigToLegacy(config);
   const subject = legacy.active || DEFAULT_SUBJECT;
-  const policiesRoot = resolve(root, 'policies');
+  const policiesRoot = resolve(sourceRoot, 'policies');
   const runtimeWorkspaceRoot = resolve(subjectWorkspaceDir(root, config));
 
   if (legacy.policy) {
@@ -405,7 +471,7 @@ export function resolveSubjectPolicyPath(root, config) {
   const flat = subjectFile(root, subject);
   if (existsSync(flat)) return flat;
 
-  return join(root, 'policies', 'project-guidance.md');
+  return join(sourceRoot, 'policies', 'project-guidance.md');
 }
 
 export function resolveSubjectSoulPath(root, subjectOrConfig) {
@@ -532,16 +598,14 @@ export function setDefaultSubject(root, name) {
   if (!existingEntry || !existsSync(resolveSubjectPolicyPath(root, existingEntry))) {
     throw new Error(`Subject policy not found for: ${subject} (expected workspace SUBJECT.md or legacy .md)`);
   }
-  const registry = readSubjectsRegistry(root);
-  const next = {
+  const written = updateSubjectsRegistry(root, (registry) => ({
     default_subject: subject,
     subjects: {
       ...registry.subjects,
       [subject]: registry.subjects?.[subject] ?? existingEntry ?? defaultSubjectEntry(subject),
     },
-  };
-  writeSubjectsRegistry(root, next);
-  const config = normalizeRegistryEntry(subject, next.subjects[subject]);
+  }));
+  const config = normalizeRegistryEntry(subject, written.registry.subjects[subject]);
   const file = resolveSubjectPolicyPath(root, config);
   return { config, active: subjectConfigToLegacy(config), file };
 }
@@ -1352,7 +1416,6 @@ export function buildDefaultSubjectSoul(language = getLanguage()) {
 
 export function ensureSubjectLayout(root) {
   mkdirSync(subjectsRuntimeDir(root), { recursive: true });
-  mkdirSync(templatesDir(root), { recursive: true });
   return {
     subjectsDir: subjectsRuntimeDir(root),
     templatesDir: templatesDir(root),

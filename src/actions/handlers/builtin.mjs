@@ -1065,7 +1065,6 @@ function _findSimulationDir(ctx) {
     candidates.push(join(dataRoot, '..', 'simulations'));
   }
   if (projectRoot) {
-    candidates.push(join(projectRoot, 'runtime', 'subjects'));
     candidates.push(join(projectRoot, 'data', 'simulations'));
   }
   for (const dir of candidates) {
@@ -1138,7 +1137,6 @@ function _collectAllSimulationScores(ctx) {
   }
   if (projectRoot) {
     candidates.push(join(projectRoot, 'data', 'simulations'));
-    candidates.push(join(projectRoot, 'runtime', 'subjects'));
   }
   const scores = new Set();
   let foundAny = false;

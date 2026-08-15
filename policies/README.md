@@ -1,6 +1,6 @@
 # policies 目录说明
 
-`policies/` 保存可提交的项目说明、权威文档与 subject registry 示例。本地主体 registry 与 workspace 默认位于 `runtime/subjects/`；`policies/subjects.json` 和 `policies/subjects/` 仅作为旧布局兼容读取。
+`policies/` 保存可提交的项目说明、权威文档与 subject registry 示例。设备级主体 registry 与 workspace 默认位于 `<JEA_HOME>/subjects/`（默认 `~/.jea/subjects/`）；`policies/subjects.json` 和 `policies/subjects/` 仅作为旧布局兼容读取。
 
 ## 文件角色
 
@@ -8,15 +8,17 @@
 | --- | --- | --- |
 | `README.md` | 本说明 | 可提交 |
 | `authority/` | 跨 subject 共享的 Cyber-Taoist 权威文献（`CONSTITUTION.md`、`GUIDE.md`） | 可提交；见 `authority/README.md` |
-| `subjects.example.json` | 可提交的 registry 示例 | 复制/迁移到 `runtime/subjects/registry.json` 后使用；新增结构化字段时先更新这里 |
-| `subjects.json` | 旧版本地 subject registry | 仅兼容读取；新流程使用 `runtime/subjects/registry.json` |
-| `subjects/<id>/SUBJECT.md` | 旧版治理 policy workspace | 仅兼容读取；新流程使用 `runtime/subjects/<data_namespace>/SUBJECT.md` |
-| `subjects/<id>/SOUL.md` | 旧版 channel persona workspace | 仅兼容读取；新流程使用 `runtime/subjects/<data_namespace>/SOUL.md` |
+| `subjects.example.json` | 可提交的 registry 示例 | 复制/迁移到 `<JEA_HOME>/subjects/registry.json` 后使用；新增结构化字段时先更新这里 |
+| `subjects.json` | 旧版本地 subject registry | 仅兼容读取；新流程使用 `<JEA_HOME>/subjects/registry.json` |
+| `subjects/<id>/SUBJECT.md` | 旧版治理 policy workspace | 仅兼容读取；新流程使用 `<JEA_HOME>/subjects/<data_namespace>/SUBJECT.md` |
+| `subjects/<id>/SOUL.md` | 旧版 channel persona workspace | 仅兼容读取；新流程使用 `<JEA_HOME>/subjects/<data_namespace>/SOUL.md` |
 | `subjects/<id>.md` | 旧版单文件 policy（兼容） | 仍可读；若与 runtime workspace 并存，优先 runtime `SUBJECT.md` |
 | `goals/<name>.json` | 本地 goal 源文件（可选） | `jea goals update --file` 的输入；运行时读 `runtime/.../active_goals.json` |
-| `active-subject.json` | 旧版 active subject 状态（若存在） | 仅兼容旧数据；新流程使用 `runtime/subjects/registry.json` |
+| `active-subject.json` | 旧版 active subject 状态（若存在） | 仅兼容旧数据；新流程使用 `<JEA_HOME>/subjects/registry.json` |
 
 `jea subject init` 的主体 policy 模板来自宿主 i18n 内置文案，**不**依赖 `policies/templates/` 下的文件（该目录当前未纳入仓库）。
+
+若旧 checkout 中已有 `runtime/subjects/`，先停止 daemon，再运行 `jea data migrate-home --dry-run` 和 `jea data migrate-home --yes`；完整步骤见 [`docs/jea-home-migration.md`](../docs/jea-home-migration.md)。不得手工合并两个非空数据树。
 
 ## 推荐创建流程
 
@@ -30,14 +32,14 @@ npm run jea -- subject check --subject <name>
 
 这会创建或更新：
 
-- `runtime/subjects/registry.json`：注册 subject，并可设置为 default。
-- `runtime/subjects/<data_namespace>/SUBJECT.md` 与 `SOUL.md`：创建主体 workspace。
-- `runtime/subjects/<data_namespace>/`：初始化该 subject 的运行时数据。
+- `<JEA_HOME>/subjects/registry.json`：注册 subject，并可设置为 default。
+- `<JEA_HOME>/subjects/<data_namespace>/SUBJECT.md` 与 `SOUL.md`：创建主体 workspace。
+- `<JEA_HOME>/subjects/<data_namespace>/`：初始化该 subject 的运行时数据。
 
 如果要手工创建，也应按同样顺序：
 
-1. 在 `runtime/subjects/<data_namespace>/` 下创建 `SUBJECT.md`（治理）与 `SOUL.md`（persona）。
-2. 在 `runtime/subjects/registry.json` 的 `subjects` 中登记该 subject。
+1. 在 `<JEA_HOME>/subjects/<data_namespace>/` 下创建 `SUBJECT.md`（治理）与 `SOUL.md`（persona）。
+2. 在 `<JEA_HOME>/subjects/registry.json` 的 `subjects` 中登记该 subject。
 3. 如需要外部目标仓库，补充 `lane` 和 `resources`。
 4. 运行 `jea subject check --subject <name>` 校验。
 5. 运行 `jea data init --all --subject <name>` 初始化运行时数据（会写入 bootstrap 版 `active_goals.json`）。
@@ -45,7 +47,7 @@ npm run jea -- subject check --subject <name>
 
 ## goals 的创建方式
 
-演化循环**只读** `runtime/subjects/<data_namespace>/data/goals/active_goals.json`。`policies/goals/` 是可选的本地源目录，供 `jea goals update --file` 写入 runtime；直接改 `policies/goals/` 不会自动生效，必须再跑 `goals update`。
+演化循环**只读** `<JEA_HOME>/subjects/<data_namespace>/data/goals/active_goals.json`。`policies/goals/` 是可选的本地源目录，供 `jea goals update --file` 写入 runtime；直接改 `policies/goals/` 不会自动生效，必须再跑 `goals update`。
 
 `data init --all` 会先写入宿主默认 bootstrap goals；若与主体语义不符，在本地新建 JSON 后更新：
 
@@ -62,16 +64,16 @@ Phase 4.5 在 `status=refine` 且 `confidence=high` 时也可能自动改写 run
 
 ## registry.json 的创建方式
 
-`runtime/subjects/registry.json` 的推荐起点是复制 `subjects.example.json`：
+`<JEA_HOME>/subjects/registry.json` 的推荐起点是通过 `jea subject init` 创建；`subjects.example.json` 仅用于字段参考，不建议手工跨根复制：
 
 ```powershell
-Copy-Item policies\subjects.example.json runtime\subjects\registry.json
+jea subject init <name> --use
 ```
 
 然后修改：
 
 - `default_subject`：当前默认 subject 名称。
-- `subjects.<name>.policy`：治理 policy 路径，通常可省略或写 `SUBJECT.md`（相对 `runtime/subjects/<data_namespace>/`）。
+- `subjects.<name>.policy`：治理 policy 路径，通常可省略或写 `SUBJECT.md`（相对 `<JEA_HOME>/subjects/<data_namespace>/`）。
 - `subjects.<name>.data_namespace`：运行时数据命名空间，通常等于 subject 名。
 - `subjects.<name>.lane`：目标仓库、分支和验证命令。
 - `subjects.<name>.resources`：外部资源 root、alias 和路径映射。
@@ -168,13 +170,13 @@ Copy-Item policies\subjects.example.json runtime\subjects\registry.json
 
 ## Runtime Boundary Model
 
-- 说明资源 root、lane、命令和 resource mapping 由 `runtime/subjects/registry.json` 维护。
+- 说明资源 root、lane、命令和 resource mapping 由 `<JEA_HOME>/subjects/registry.json` 维护。
 - 说明敏感读取、越界写入和核心层修改必须先审批。
 ```
 
 `SUBJECT.md` 会进入 agent context 作为权威文献；因此应避免写入本地绝对路径、密钥、机器专属分支策略或会频繁变化的运行参数。`SOUL.md` 仅供 channel 表达，不参与 Decide / goals 的治理约束。
 
-不要在 subject policy 中维护 subject-specific action 菜单（例如 `sync/generate/simulate/publish` 等独立 action type）。这类业务能力应通过 `runtime/subjects/registry.json` 的 `lane` / `resources` 配置，或 `runtime/subjects/<namespace>/data/config/actions.json` 中的 configured external actions 表达；Intel 阶段默认用 `agent_run` 承载复杂任务，用记录型 action 落证据。
+不要在 subject policy 中维护 subject-specific action 菜单（例如 `sync/generate/simulate/publish` 等独立 action type）。这类业务能力应通过 `<JEA_HOME>/subjects/registry.json` 的 `lane` / `resources` 配置，或 `<JEA_HOME>/subjects/<namespace>/data/config/actions.json` 中的 configured external actions 表达；Intel 阶段默认用 `agent_run` 承载复杂任务，用记录型 action 落证据。
 
 ## 提交策略
 
@@ -185,9 +187,9 @@ Copy-Item policies\subjects.example.json runtime\subjects\registry.json
 
 **通常不要提交（已在 `.gitignore` 或应为本地状态）：**
 
-- `runtime/subjects/registry.json`
-- `runtime/subjects/<namespace>/SUBJECT.md`
-- `runtime/subjects/<namespace>/SOUL.md`
+- `<JEA_HOME>/subjects/registry.json`
+- `<JEA_HOME>/subjects/<namespace>/SUBJECT.md`
+- `<JEA_HOME>/subjects/<namespace>/SOUL.md`
 - `policies/subjects.json`（旧布局）
 - `policies/subjects/`（旧布局）
 - `policies/goals/`

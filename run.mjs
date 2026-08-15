@@ -1,8 +1,11 @@
 ﻿#!/usr/bin/env node
 import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { runtimeInfoForDefaultSubject } from './src/infra/subjects.mjs';
+import { getProjectRoot, loadProjectEnv } from './src/infra/project.mjs';
+import {
+  assertJeaHomeAuthority,
+  createRuntimeContext,
+} from './src/infra/jea-home.mjs';
 import { withSubjectLock } from './src/daemon/evolve-runs.mjs';
 import { createCycle } from './src/daemon/cycle-state.mjs';
 import { loadCycleStepContext } from './src/daemon/cycle-checkpoints.mjs';
@@ -23,7 +26,7 @@ import {
 } from './src/evolution/cycle-steps.mjs';
 import { resolveCyclePipeline } from './src/daemon/cycle-pipeline-mode.mjs';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+const sourceRoot = getProjectRoot();
 
 function buildExitRecord(err) {
   const message = err?.message || String(err);
@@ -43,7 +46,7 @@ function buildExitRecord(err) {
 
 function recordStateBag(runtime) {
   return {
-    root: __dirname,
+    root: runtime,
     subject: runtime.subject,
   };
 }
@@ -61,16 +64,16 @@ async function runSingleStepMode(runtime, step, cycleId) {
   if (!cycleId && step !== 'intel' && step !== 'agent_loop' && step !== 'reactor') {
     throw new Error(`JEA_CYCLE_ID is required for step: ${step}`);
   }
-  const ctx = await buildCycleContext(__dirname, runtime);
+  const ctx = await buildCycleContext(sourceRoot, runtime);
   const recordState = recordStateBag(runtime);
   const stepContext = cycleId
-    ? loadCycleStepContext(__dirname, runtime.subject, cycleId, runtime.runtimeRoot)
+    ? loadCycleStepContext(runtime, runtime.subject, cycleId, runtime.runtimeRoot)
     : null;
   // Align carryover write gate with the step being executed.
   if (step === 'reactor' || step === 'agent_loop' || step === 'intel') {
     ctx.pipeline = step === 'reactor' ? 'reactor' : 'agent_loop';
   } else {
-    ctx.pipeline = resolveCyclePipeline(__dirname, {
+    ctx.pipeline = resolveCyclePipeline(runtime, {
       subject: runtime.subject,
       env: process.env,
     }).pipeline;
@@ -204,10 +207,10 @@ function cycleDriverFromEnv() {
 }
 
 async function runCycle(runtime) {
-  const ctx = await buildCycleContext(__dirname, runtime);
+  const ctx = await buildCycleContext(sourceRoot, runtime);
   const recordState = recordStateBag(runtime);
   const { store } = ctx;
-  const pipelineResolved = resolveCyclePipeline(__dirname, {
+  const pipelineResolved = resolveCyclePipeline(runtime, {
     subject: runtime.subject,
     env: process.env,
   });
@@ -338,8 +341,13 @@ async function runCycle(runtime) {
 }
 
 async function main() {
-  process.chdir(__dirname);
-  const runtime = runtimeInfoForDefaultSubject(__dirname);
+  process.chdir(sourceRoot);
+  loadProjectEnv(sourceRoot);
+  const context = createRuntimeContext({ sourceRoot });
+  process.env.JEA_PROJECT_ROOT = context.sourceRoot;
+  process.env.JEA_HOME = context.jeaHome;
+  assertJeaHomeAuthority(context);
+  const runtime = runtimeInfoForDefaultSubject(context);
   mkdirSync(runtime.runtimeRoot, { recursive: true });
   const step = process.env.JEA_CYCLE_STEP;
   const cycleId = process.env.JEA_CYCLE_ID || null;
@@ -354,7 +362,7 @@ async function main() {
   if (process.env.JEA_SUBJECT_RUN_LOCK_HELD === '1') {
     return run();
   }
-  return withSubjectLock(__dirname, runtime.subject, run, { mode: 'run' });
+  return withSubjectLock(context, runtime.subject, run, { mode: 'run' });
 }
 
 main().catch((err) => {

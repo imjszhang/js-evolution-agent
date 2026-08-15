@@ -13,10 +13,10 @@ import { join } from 'node:path';
 export const SMOKE_FIXTURE_SUBJECT = 'smoke-desktop';
 
 export function createDesktopSmokeFixture(prefix = 'jea-desktop-smoke-root-') {
-  const root = mkdtempSync(join(tmpdir(), prefix));
+  const jeaHome = mkdtempSync(join(tmpdir(), prefix));
   try {
-    mkdirSync(join(root, 'runtime', 'subjects', SMOKE_FIXTURE_SUBJECT, 'data'), { recursive: true });
-    writeFileSync(join(root, 'runtime', 'subjects', 'registry.json'), `${JSON.stringify({
+    mkdirSync(join(jeaHome, 'subjects', SMOKE_FIXTURE_SUBJECT, 'data'), { recursive: true });
+    writeFileSync(join(jeaHome, 'subjects', 'registry.json'), `${JSON.stringify({
       default_subject: SMOKE_FIXTURE_SUBJECT,
       subjects: {
         [SMOKE_FIXTURE_SUBJECT]: {
@@ -28,11 +28,36 @@ export function createDesktopSmokeFixture(prefix = 'jea-desktop-smoke-root-') {
         },
       },
     }, null, 2)}\n`);
-    return { root, subject: SMOKE_FIXTURE_SUBJECT };
+    writeFileSync(
+      join(jeaHome, 'subjects', SMOKE_FIXTURE_SUBJECT, 'SUBJECT.md'),
+      `# ${SMOKE_FIXTURE_SUBJECT}\n\n## Subject\n${SMOKE_FIXTURE_SUBJECT}\n`,
+    );
+    writeFileSync(
+      join(jeaHome, 'subjects', SMOKE_FIXTURE_SUBJECT, 'SOUL.md'),
+      `# ${SMOKE_FIXTURE_SUBJECT} Soul\n`,
+    );
+    return { root: jeaHome, jeaHome, subject: SMOKE_FIXTURE_SUBJECT };
   } catch (error) {
-    rmSync(root, { recursive: true, force: true });
+    rmSync(jeaHome, { recursive: true, force: true });
     throw error;
   }
+}
+
+export function snapshotJeaHome(jeaHome) {
+  const files = [];
+  const dir = join(jeaHome, 'subjects');
+  if (!existsSync(dir)) return { dir, files };
+  const walk = (current) => {
+    for (const name of readdirSync(current)) {
+      const path = join(current, name);
+      const stat = statSync(path);
+      if (stat.isDirectory()) walk(path);
+      else files.push({ path, size: stat.size, mtimeMs: stat.mtimeMs });
+    }
+  };
+  walk(dir);
+  files.sort((a, b) => a.path.localeCompare(b.path));
+  return { dir, files };
 }
 
 export function snapshotRuntimeSubjects(projectRoot) {

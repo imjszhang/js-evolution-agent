@@ -32,9 +32,10 @@ async function waitFor(check: () => boolean, timeoutMs = 5_000): Promise<void> {
   throw new Error('condition timed out')
 }
 
-function projectFixture(): string {
+function projectFixture(): { root: string; jeaHome: string } {
   const root = mkdtempSync(join(tmpdir(), 'jea-desktop-daemon-live-'))
-  roots.push(root)
+  const jeaHome = mkdtempSync(join(tmpdir(), 'jea-desktop-daemon-home-'))
+  roots.push(root, jeaHome)
   const workspaceRoot = DEFAULT_PROJECT_ROOT
   const hostCli = join(workspaceRoot, 'src', 'cli', 'jea.mjs')
   if (!existsSync(hostCli)) {
@@ -48,7 +49,7 @@ function projectFixture(): string {
   ].join('\n'))
   writeFileSync(join(root, 'oada.config.mjs'), readFileSync(join(workspaceRoot, 'oada.config.mjs')))
   writeFileSync(join(root, 'package.json'), readFileSync(join(workspaceRoot, 'package.json')))
-  const subjectsDir = join(root, 'runtime', 'subjects')
+  const subjectsDir = join(jeaHome, 'subjects')
   mkdirSync(subjectsDir, { recursive: true })
   writeFileSync(join(subjectsDir, 'registry.json'), JSON.stringify({
     default_subject: 'alpha',
@@ -56,7 +57,7 @@ function projectFixture(): string {
       alpha: { policy: 'SUBJECT.md', data_namespace: 'alpha-data' }
     }
   }))
-  const policyDir = join(subjectsDir, 'alpha')
+  const policyDir = join(subjectsDir, 'alpha-data')
   mkdirSync(policyDir, { recursive: true })
   writeFileSync(join(policyDir, 'SUBJECT.md'), [
     '# Subject: alpha',
@@ -67,10 +68,10 @@ function projectFixture(): string {
     '## Off-Limits Without Human Approval',
     '- None in this isolated fixture.'
   ].join('\n'))
-  return root
+  return { root, jeaHome }
 }
 
-function externalDaemon(root: string): ChildProcess {
+function externalDaemon(root: string, jeaHome: string): ChildProcess {
   const child = spawn(process.execPath, [
     '--preserve-symlinks',
     join(root, 'src', 'cli', 'jea.mjs'),
@@ -89,6 +90,7 @@ function externalDaemon(root: string): ChildProcess {
     env: {
       ...process.env,
       JEA_PROJECT_ROOT: root,
+      JEA_HOME: jeaHome,
       JEA_FORCE_MOCK: '1'
     },
     stdio: 'inherit'
@@ -115,9 +117,16 @@ afterEach(async () => {
 
 describe.skipIf(process.platform === 'win32')('DaemonSupervisor real process smoke', () => {
   it('starts and stops a real managed channel worker', async () => {
-    const root = projectFixture()
+    const { root, jeaHome } = projectFixture()
     const registry = new ManagedProcessRegistry()
-    const supervisor = new DaemonSupervisor(root, registry, new DesktopEventBus(), undefined, 1_000)
+    const supervisor = new DaemonSupervisor(
+      root,
+      registry,
+      new DesktopEventBus(),
+      undefined,
+      1_000,
+      jeaHome
+    )
 
     const started = await supervisor.start('alpha', { domain: 'channel' })
     expect(started).toMatchObject({ mode: 'managed', domain: 'channel' })
@@ -135,13 +144,22 @@ describe.skipIf(process.platform === 'win32')('DaemonSupervisor real process smo
     const stopped = await supervisor.stop('alpha', 'integration_test')
     expect(stopped.mode).toBe('none')
     expect(registry.list()).toEqual([])
+    expect(existsSync(join(root, 'runtime'))).toBe(false)
+    expect(existsSync(join(jeaHome, 'subjects', 'alpha-data', 'data', 'channel'))).toBe(true)
   })
 
   it('attaches to but never cleans up an external worker', async () => {
-    const root = projectFixture()
+    const { root, jeaHome } = projectFixture()
     const registry = new ManagedProcessRegistry()
-    const supervisor = new DaemonSupervisor(root, registry, new DesktopEventBus())
-    const child = externalDaemon(root)
+    const supervisor = new DaemonSupervisor(
+      root,
+      registry,
+      new DesktopEventBus(),
+      undefined,
+      undefined,
+      jeaHome
+    )
+    const child = externalDaemon(root, jeaHome)
     expect(child.pid).toEqual(expect.any(Number))
     await waitFor(() => supervisor.get('alpha').mode === 'attached' || child.exitCode != null || child.signalCode != null)
     if (child.exitCode != null || child.signalCode != null) {
@@ -151,5 +169,6 @@ describe.skipIf(process.platform === 'win32')('DaemonSupervisor real process smo
     await registry.shutdownAll('app_quit')
     expect(supervisor.get('alpha').mode).toBe('attached')
     expect(() => process.kill(child.pid!, 0)).not.toThrow()
+    expect(existsSync(join(root, 'runtime'))).toBe(false)
   })
 })

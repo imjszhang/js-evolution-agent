@@ -19,6 +19,12 @@ The client loads the repository from `JEA_PROJECT_ROOT` when set, otherwise it
 walks up from the bundled main process and the current working directory until
 it finds `oada.config.mjs` and `src/cli/jea.mjs`.
 
+Subject state is resolved independently from `JEA_HOME` (default `~/.jea` or
+`%USERPROFILE%\.jea`). The source root supplies code and build artifacts;
+registry, governance files, Channel sessions, queues, checkpoints, backups,
+and managed-daemon logs live under JEA Home. Desktop passes both roots to every
+managed child.
+
 The current build is a repository-local client, not a relocatable installer:
 `apps/desktop/out` keeps imports to the checkout's JEA domain modules and must
 run with the source tree and dependencies present.
@@ -120,12 +126,13 @@ renderer memory without limit.
 Credentials and execution-root `.env` values remain in the main process.
 Desktop ACP sessions are separate from Channel desktop chat sessions.
 
-Hidden-window smoke (`npm run desktop:smoke`) creates a one-off JEA fixture
-root, points `JEA_PROJECT_ROOT` at that fixture, and sends Channel traffic only
-to the fixture subject. Electron still loads the real repository build. ACP
+Hidden-window smoke (`npm run desktop:smoke`) creates separate one-off source,
+JEA Home, guard-home, and ACP execution fixtures, then sends Channel traffic
+only to the fixture subject. Electron still loads the real repository build. ACP
 `startSession`, `prompt`, and `closeSession` must each succeed; `closeSession`
 always runs in `finally`. The fixture and ACP execution roots are removed on
-success or failure, and the real `runtime/subjects/` tree is not written.
+success or failure; neither the real source checkout nor a default user
+`~/.jea` is written.
 
 The real Claude ACP smoke requires an available `claude-agent-acp` binary and
 either local agent login or configured Anthropic credentials. Protocol-level

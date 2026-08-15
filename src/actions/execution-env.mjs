@@ -6,6 +6,12 @@ function hasValue(value) {
   return value != null && String(value).trim() !== '';
 }
 
+function pinRuntimeRoots(env, baseEnv) {
+  for (const key of ['JEA_PROJECT_ROOT', 'JEA_HOME']) {
+    if (hasValue(baseEnv?.[key])) env[key] = String(baseEnv[key]);
+  }
+}
+
 export function envFileForExecutionRoot(executionRoot) {
   if (!executionRoot) return null;
   return join(String(executionRoot), '.env');
@@ -42,6 +48,7 @@ export function buildExecutionEnv(executionRoot, { baseEnv = process.env, overri
     if (value == null) delete env[key];
     else env[key] = String(value);
   }
+  pinRuntimeRoots(env, baseEnv);
   return { env, envPath: loaded.envPath, envFileExists: loaded.exists, envFileError: loaded.error ?? null };
 }
 
@@ -51,6 +58,7 @@ export function resolveEffectiveEnv(envDir, { baseEnv = process.env } = {}) {
   for (const [key, value] of Object.entries(loaded.values)) {
     if (hasValue(value)) env[key] = value;
   }
+  pinRuntimeRoots(env, baseEnv);
   return { env, envPath: loaded.envPath, envFileExists: loaded.exists, envFileError: loaded.error ?? null };
 }
 

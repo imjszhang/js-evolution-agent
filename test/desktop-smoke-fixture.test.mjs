@@ -30,12 +30,12 @@ describe('desktop smoke fixture', () => {
     temps.push(fixture.root);
     expect(fixture.subject).toBe(SMOKE_FIXTURE_SUBJECT);
     const registry = JSON.parse(readFileSync(
-      join(fixture.root, 'runtime', 'subjects', 'registry.json'),
+      join(fixture.jeaHome, 'subjects', 'registry.json'),
       'utf8',
     ));
     expect(registry.subjects[SMOKE_FIXTURE_SUBJECT].channels.desktop.enabled).toBe(true);
     writeFileSync(
-      join(fixture.root, 'runtime', 'subjects', SMOKE_FIXTURE_SUBJECT, 'data', 'touched.json'),
+      join(fixture.jeaHome, 'subjects', SMOKE_FIXTURE_SUBJECT, 'data', 'touched.json'),
       '{"ok":true}\n',
     );
 

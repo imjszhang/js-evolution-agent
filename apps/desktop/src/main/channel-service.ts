@@ -21,16 +21,24 @@ import type {
   DesktopSessionSummary
 } from '../shared/contract'
 import { PublicCommandError } from './command-registry'
+import { createDesktopServiceRuntimeContext } from './runtime-context'
 
 export class ChannelService {
-  constructor(readonly projectRoot: string) {}
+  private readonly runtimeContext: any
+
+  constructor(
+    readonly projectRoot: string,
+    jeaHome: string | undefined = process.env.JEA_HOME
+  ) {
+    this.runtimeContext = createDesktopServiceRuntimeContext(projectRoot, jeaHome)
+  }
 
   get(subject: string): ChannelSnapshot {
     this.assertSubject(subject)
     return redactSecrets({
       subject,
-      projection: buildChannelProjection(this.projectRoot, subject, { eventLimit: 30 }),
-      sessions: listDesktopSessions(this.projectRoot, subject),
+      projection: buildChannelProjection(this.runtimeContext, subject, { eventLimit: 30 }),
+      sessions: listDesktopSessions(this.runtimeContext, subject),
       inbound: {
         pending: this.listInbound(subject, 'pending', 30),
         processed: this.listInbound(subject, 'processed', 50)
@@ -40,7 +48,7 @@ export class ChannelService {
 
   listSessions(subject: string): DesktopSessionSummary[] {
     this.assertSubject(subject)
-    return listDesktopSessions(this.projectRoot, subject)
+    return listDesktopSessions(this.runtimeContext, subject)
   }
 
   readSession(
@@ -50,7 +58,7 @@ export class ChannelService {
   ): DesktopSessionPage {
     this.assertSubject(subject)
     return redactSecrets((readDesktopSession as any)(
-      this.projectRoot,
+      this.runtimeContext,
       subject,
       sessionId,
       options
@@ -65,7 +73,7 @@ export class ChannelService {
   ): Record<string, unknown> {
     this.assertSubject(subject)
     try {
-      return redactSecrets((sendDesktopInboundMessage as any)(this.projectRoot, subject, {
+      return redactSecrets((sendDesktopInboundMessage as any)(this.runtimeContext, subject, {
         session_id: sessionId,
         text,
         message_id: messageId,
@@ -95,8 +103,8 @@ export class ChannelService {
   ): Record<string, unknown>[] {
     this.assertSubject(subject)
     const dir = status === 'processed'
-      ? channelInboundProcessedDir(this.projectRoot, subject)
-      : channelInboundPendingDir(this.projectRoot, subject)
+      ? channelInboundProcessedDir(this.runtimeContext, subject)
+      : channelInboundPendingDir(this.runtimeContext, subject)
     return redactSecrets(
       summarizeChannelDir(dir, summarizeInboundFile, Math.max(0, Math.min(200, limit)))
     ) as Record<string, unknown>[]
@@ -105,14 +113,14 @@ export class ChannelService {
   getInboundRecord(subject: string, file: string): Record<string, unknown> | null {
     this.assertSubject(subject)
     const safeName = file.replace(/[^a-zA-Z0-9._-]/g, '')
-    const match = listJsonFiles(channelInboundProcessedDir(this.projectRoot, subject))
+    const match = listJsonFiles(channelInboundProcessedDir(this.runtimeContext, subject))
       .find((candidate) => candidate.endsWith(safeName))
     if (!match) return null
     return redactSecrets(readJsonFile(match, null)) as Record<string, unknown> | null
   }
 
   private assertSubject(subject: string): void {
-    if (!subject || !listRegisteredSubjects(this.projectRoot).includes(subject)) {
+    if (!subject || !listRegisteredSubjects(this.runtimeContext).includes(subject)) {
       throw new PublicCommandError('NOT_FOUND', 'Requested subject is unavailable.')
     }
   }

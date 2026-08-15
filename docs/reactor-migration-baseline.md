@@ -65,7 +65,7 @@
 python3 - <<'PY'
 import json, sys
 cycle = sys.argv[1] if len(sys.argv) > 1 else "cycle-20260808234352-717bad82"
-path = "runtime/subjects/agentank-tank/data/intelligence/evolution_events/evolution-events.jsonl"
+path = "<JEA_HOME>/subjects/agentank-tank/data/intelligence/evolution_events/evolution-events.jsonl"
 for line in open(path):
     e = json.loads(line)
     if e.get("cycle_id") == cycle:
@@ -104,7 +104,7 @@ PY
 2. 重跑后证据流 reconcile ok
 3. 无**新增** fingerprint 重复（相对 kill 前）
 
-注意：kill -9 后须 `rm -rf runtime/subjects/<ns>/data/evolution/.evolve.lock.lock` 清 orphan proper-lockfile，否则下轮报 `subject_already_running`。
+注意：kill -9 后须清理 `<JEA_HOME>/subjects/<ns>/data/evolution/.evolve.lock.lock` 的 orphan proper-lockfile，否则下轮报 `subject_already_running`。
 
 ### 6.2 真实 DeepSeek 基线（2026-08-09，`JEA_FORCE_MOCK=0`）
 

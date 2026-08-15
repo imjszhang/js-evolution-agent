@@ -165,6 +165,7 @@ let tempDir = null;
 const originalJeaLanguage = process.env.JEA_LANGUAGE;
 const originalJeaSubject = process.env.JEA_SUBJECT;
 const originalJeaProjectRoot = process.env.JEA_PROJECT_ROOT;
+const originalJeaHome = process.env.JEA_HOME;
 
 async function captureConsole(fn) {
   const logs = [];
@@ -195,6 +196,8 @@ afterEach(() => {
   else process.env.JEA_SUBJECT = originalJeaSubject;
   if (originalJeaProjectRoot === undefined) delete process.env.JEA_PROJECT_ROOT;
   else process.env.JEA_PROJECT_ROOT = originalJeaProjectRoot;
+  if (originalJeaHome === undefined) delete process.env.JEA_HOME;
+  else process.env.JEA_HOME = originalJeaHome;
 });
 
 describe('CLI argument parsing', () => {
@@ -2326,7 +2329,7 @@ describe('data initialization', () => {
     const first = backupData(root, { name: 'snapshot' });
     expect(first.copied).toBe(true);
     expect(first.files).toBeGreaterThan(0);
-    expect(first.destination).toBe(join(root, 'backups', 'subjects', 'js-evolution-agent', 'snapshot'));
+    expect(first.destination).toBe(join(root, 'runtime', 'backups', 'subjects', 'js-evolution-agent', 'snapshot'));
 
     const second = backupData(root, { name: 'snapshot' });
     expect(second.copied).toBe(false);

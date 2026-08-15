@@ -12,7 +12,7 @@ import { resolveIntelReportRecordPath } from './report-paths.mjs';
 
 export const EVIDENCE_AUDIT_SCHEMA = 'evidence-audit.v1';
 
-/** Paths relative to dataRoot (= runtime/subjects/<ns>/data). */
+/** Paths relative to dataRoot (= <JEA_HOME>/subjects/<ns>/data). */
 export const STORE_FILES = Object.freeze({
   action_receipts: 'intelligence/action_receipts/action-receipts.jsonl',
   verify_reports: 'evolution/verify_reports',

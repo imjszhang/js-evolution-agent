@@ -53,13 +53,13 @@ CI jobs：`check`、`test (22)`、`desktop-build`、`dependency-audit`，外加 
 
 ## 外部仓库链接（js-repolink）
 
-JEA 通过 [js-repolink](https://github.com/imjszhang/js-repolink) 引用同机器上活跃开发中的兄弟仓库（lane 目标、configured external actions），避免在 `runtime/subjects/registry.json` 中硬编码绝对路径。
+JEA 通过 [js-repolink](https://github.com/imjszhang/js-repolink) 引用同机器上活跃开发中的兄弟仓库（lane 目标、configured external actions），避免在 `<JEA_HOME>/subjects/registry.json` 中硬编码绝对路径。
 
 | 文件 | 作用 |
 | --- | --- |
 | `repolink.config.mjs` | 声明链接 id、envVar、entry、preflight、versionProbe（可提交） |
 | `.env` | 各链接的绝对路径，如 `AGENTANK_EVOLVER_PATH=D:/github/My/agentank-evolver` |
-| `runtime/subjects/registry.json` | 使用 `link:<id>` 引用，如 `"repo": "link:agentank-evolver"` |
+| `<JEA_HOME>/subjects/registry.json` | 使用 `link:<id>` 引用，如 `"repo": "link:agentank-evolver"` |
 
 常用命令：
 
@@ -87,10 +87,10 @@ npx repolink check --link agentank-evolver
 
 ## 运行时数据
 
-运行时数据按 active subject 隔离，默认位于：
+运行时数据按 active subject 隔离。JEA Home 默认是 Linux/macOS 的 `~/.jea`、Windows 的 `%USERPROFILE%\.jea`，可由绝对或相对 source root 的 `JEA_HOME` 覆盖：
 
 ```text
-runtime/subjects/<data_namespace>/
+<JEA_HOME>/subjects/<data_namespace>/
 ```
 
 常用命令：
@@ -99,7 +99,8 @@ runtime/subjects/<data_namespace>/
 - `jea data status --json`：输出机器可读 JSON。
 - `jea data init`：创建运行时数据目录，不删除历史。
 - `jea data init --all`：创建目标模板并写入初始化情报。
-- `jea data backup [--name NAME]`：备份当前主体运行时数据到 `backups/subjects/<data_namespace>/`。
+- `jea data backup [--name NAME]`：备份当前主体运行时数据到 `<JEA_HOME>/backups/subjects/<data_namespace>/`。
+- `jea data migrate-home [--dry-run] [--json] [--yes]`：停机校验后把旧 `<sourceRoot>/runtime/subjects/` 无损复制到 JEA Home；不删除旧目录。
 - `jea data reset [--yes]`：删除当前主体本地运行时数据。此命令有破坏性，自动化代理不要在未确认的情况下执行。
 
 ## Subject 管理
@@ -109,12 +110,12 @@ Subject 决定策略、命名空间和运行时路径。
 - `jea subject list`：列出 registry 中的 subjects 与 default subject。
 - `jea subject show [--subject NAME]`：显示 subject、core layer、namespace 和 runtime paths；无 `--subject` 时使用 default subject。
 - `jea subject init <name> [--use]`：从模板创建新 subject 并写入 registry；`--use` 同时设为 default。
-- `jea subject use <name>` / `jea subject default <name>`：更新 `runtime/subjects/registry.json` 中的 default subject。
+- `jea subject use <name>` / `jea subject default <name>`：更新 `<JEA_HOME>/subjects/registry.json` 中的 default subject。
 - `jea subject check [--subject NAME]`：校验 subject policy。
 - `jea subject lane status|init [--subject NAME]`：检查或初始化目标仓库 lane。
 - `jea run --subject NAME`：显式指定单轮演化主体；`jea evolve` / `jea daemon` 已支持 `--subject` / `--subjects` / `--all`。
 
-`runtime/subjects/registry.json` 是本地 registry，可承载机器可读的 `lane` 与 `resources` 字段；字段形态参考 `policies/subjects.example.json`。主体 Markdown policy 只保留主体语义、安全边界和人工审批规则，不维护 repo、branch、resource root、resource mapping 等机器字段。
+`<JEA_HOME>/subjects/registry.json` 是设备级 registry，可承载机器可读的 `lane` 与 `resources` 字段；字段形态参考 `policies/subjects.example.json`。主体 Markdown policy 只保留主体语义、安全边界和人工审批规则，不维护 repo、branch、resource root、resource mapping 等机器字段。
 
 创建或切换 subject 后，通常先执行：
 
@@ -156,4 +157,4 @@ Cloud Agent 运行在 **Linux + bash**，而本文其余命令示例以 Windows 
 - **无独立 lint / CLI build**：仓库没有 ESLint/Prettier，也没有 CLI 编译步骤（纯 ESM `.mjs`）。质量门禁是 `npm test` / `test:ci` / `test:coverage`、`npm run check`（隔离主体 `ci-repo` 上的 `jea policy/subject/actions check`）、`desktop:typecheck` + `desktop:build`，以及 `audit:ci`。PR 与 `main` 的 GitHub Actions 跑这些 jobs 加 CodeQL。`jea doctor` 仍是本地诊断，不是 CI 门禁。Nightly mock canary 不是 PR required check。Viewer 静态快照仍用 `npm run viewer:build`（非必需）。
 - **无 API key 也能全流程跑**：默认走 mock。`jea doctor` 会对缺失的 `.env` / `DEEPSEEK_API_KEY` 报 WARN 并以非零退出，这是预期的，mock 模式下不阻塞演化。真实模型才需要在 `.env` 里配 `DEEPSEEK_API_KEY`。用 `--mock`（或 `JEA_FORCE_MOCK=1`）跑 `jea run` / `jea daemon` / vitest。
 - **Evolution Viewer（Web UI）**：用 `npm run jea -- intel viewer serve --port 8787` 启动（默认 127.0.0.1:8787）。不要用 `npm run viewer:serve`，它带 `--open` 会尝试拉起浏览器，在无头环境无意义。属长驻服务，放到 tmux/后台运行。
-- **运行时数据在 `runtime/subjects/`（gitignored）**：`jea subject init` / `jea data init --all` 会写这里，不会污染 git。E2E 冒烟顺序见 README「Quick start」：`subject init <name> --use` → `data init --all --subject <name>` → `run --mock --subject <name>`。
+- **运行时数据在 JEA Home**：Cloud/CI/测试必须显式使用临时 `JEA_HOME`，不得写真实 `~/.jea` 或仓库 `runtime/`。E2E 冒烟顺序见 README「Quick start」：`subject init <name> --use` → `data init --all --subject <name>` → `run --mock --subject <name>`。

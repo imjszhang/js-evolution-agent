@@ -83,6 +83,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Verify JEA Home paths and migration
+        run: npm test -- --run test/jea-home.test.mjs test/jea-home-migration.test.mjs
       - run: npm run desktop:test
       - run: npm test -- --run test/acp-posix-process-tree.test.mjs
       - run: npm run desktop:typecheck
@@ -114,6 +116,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Verify JEA Home paths and migration
+        run: npm test -- --run test/jea-home.test.mjs test/jea-home-migration.test.mjs
       - run: npm run desktop:test
       - name: Verify Windows ACP process-tree cleanup
         if: runner.os == 'Windows'

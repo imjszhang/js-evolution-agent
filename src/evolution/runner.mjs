@@ -2,11 +2,14 @@ import { join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { SUBJECT_ENV } from '../infra/subjects.mjs';
+import { createRuntimeContext } from '../infra/jea-home.mjs';
 
 export function buildCycleEnv(flags, subject, root = null) {
   const env = { ...process.env, [SUBJECT_ENV]: subject };
   if (root) {
-    env.JEA_PROJECT_ROOT = root;
+    const context = createRuntimeContext(root);
+    env.JEA_PROJECT_ROOT = context.sourceRoot;
+    env.JEA_HOME = context.jeaHome;
   }
   if (flags.mock) {
     delete env.DEEPSEEK_API_KEY;

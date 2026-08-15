@@ -5,6 +5,7 @@ import type { DesktopEventBus } from './event-bus'
 import type { ChannelService } from './channel-service'
 import type { OpsService } from './operations'
 import type { TodoService } from './todo-service'
+import { createDesktopServiceRuntimeContext } from './runtime-context'
 
 interface RuntimeWatcher {
   start(): void
@@ -18,6 +19,7 @@ export class ProjectionWatcher {
   private activeSubject: string | null = null
   private watcher: RuntimeWatcher | null = null
   private revision = 0
+  private readonly runtimeContext: any
 
   constructor(
     private readonly projectRoot: string,
@@ -25,8 +27,11 @@ export class ProjectionWatcher {
     private readonly todo: TodoService,
     private readonly channel: ChannelService,
     private readonly events: DesktopEventBus,
-    private readonly watcherFactory: WatcherFactory = createRuntimeWatcher as unknown as WatcherFactory
-  ) {}
+    private readonly watcherFactory: WatcherFactory = createRuntimeWatcher as unknown as WatcherFactory,
+    jeaHome: string | undefined = process.env.JEA_HOME
+  ) {
+    this.runtimeContext = createDesktopServiceRuntimeContext(projectRoot, jeaHome)
+  }
 
   watch(subject: string): { subject: string; watching: true } {
     this.ops.refresh(subject)
@@ -34,7 +39,7 @@ export class ProjectionWatcher {
       return { subject, watching: true }
     }
     this.stop()
-    const runtime = runtimeForSubject(this.projectRoot, subject)
+    const runtime = runtimeForSubject(this.runtimeContext, subject)
     this.activeSubject = subject
     this.watcher = this.watcherFactory({
       runtimeRoot: runtime.runtimeRoot,

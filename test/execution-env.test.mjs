@@ -32,6 +32,23 @@ describe('execution env loading', () => {
     expect(env.DEEPSEEK_API_KEY).toBe('from-execution-root');
   });
 
+  it('does not let execution-root env redirect JEA roots', () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'jea-exec-env-roots-'));
+    writeFileSync(
+      join(tempDir, '.env'),
+      'JEA_PROJECT_ROOT=/wrong/source\nJEA_HOME=/wrong/home\n',
+      'utf-8',
+    );
+    const { env } = buildExecutionEnv(tempDir, {
+      baseEnv: {
+        JEA_PROJECT_ROOT: '/canonical/source',
+        JEA_HOME: '/canonical/home',
+      },
+    });
+    expect(env.JEA_PROJECT_ROOT).toBe('/canonical/source');
+    expect(env.JEA_HOME).toBe('/canonical/home');
+  });
+
   it('loads project .env over pre-set process env when override is enabled', () => {
     tempDir = mkdtempSync(join(tmpdir(), 'jea-project-env-'));
     writeFileSync(join(tempDir, '.env'), 'DEEPSEEK_API_KEY=from-project-env\n', 'utf-8');
@@ -78,7 +95,11 @@ describe('execution env loading', () => {
     for (const args of commands) {
       const result = spawnSync(process.execPath, ['--preserve-symlinks', jeaCli, ...args], {
         cwd: repoRoot,
-        env: { ...process.env, JEA_PROJECT_ROOT: tempDir },
+        env: {
+          ...process.env,
+          JEA_PROJECT_ROOT: tempDir,
+          JEA_HOME: join(tempDir, '.jea'),
+        },
         encoding: 'utf-8',
       });
       const combined = `${result.stdout || ''}\n${result.stderr || ''}`;

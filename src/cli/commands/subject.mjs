@@ -26,7 +26,7 @@ export { extractMarkdownSection };
 
 function printSubject(root, policy, runtime, { defaultSubject = null } = {}) {
   const repoLane = resolveSubjectRepoLane(policy.text, {
-    root: getProjectRoot(),
+    root: runtime.sourceRoot,
     subject: policy.config.name,
     config: policy.config,
   });
@@ -36,6 +36,8 @@ function printSubject(root, policy, runtime, { defaultSubject = null } = {}) {
   const soulPath = resolveSubjectSoulPath(root, policy.config);
   if (soulPath) console.log(`soul: ${soulPath}`);
   console.log(`data namespace: ${runtime.dataNamespace}`);
+  console.log(`source root: ${runtime.sourceRoot}`);
+  console.log(`JEA Home: ${runtime.jeaHome} (${runtime.jeaHomeSource})`);
   console.log(`runtime root: ${runtime.runtimeRoot}`);
   console.log(`data root: ${runtime.dataRoot}`);
   if (repoLane.configured) {
@@ -79,7 +81,7 @@ function currentRepoLane(root, flags = {}) {
     config,
     policy,
     repoLane: resolveSubjectRepoLane(policy.text, {
-      root,
+      root: runtimeInfoForSubject(root, config).sourceRoot,
       subject: config.name,
       config,
     }),
@@ -121,8 +123,14 @@ function printMigrationResult(result) {
   }
 }
 
-export async function subjectCommand({ subcommand, flags = {}, args = [] } = {}) {
-  const root = getProjectRoot();
+export async function subjectCommand({
+  subcommand,
+  flags = {},
+  args = [],
+  context = null,
+} = {}) {
+  const root = context ?? getProjectRoot();
+  const sourceRoot = context?.sourceRoot ?? getProjectRoot();
 
   if (subcommand === 'list') {
     ensureSubjectsRegistry(root);
@@ -157,6 +165,11 @@ export async function subjectCommand({ subcommand, flags = {}, args = [] } = {})
     if (flags.json) {
       const soul = readSubjectSoul(root, config);
       const workspace = diagnoseSubjectWorkspace(root, config);
+      const repoLane = resolveSubjectRepoLane(policy.text, {
+        root: sourceRoot,
+        subject: config.name,
+        config,
+      });
       console.log(JSON.stringify({
         config,
         default_subject: defaultSubject,
@@ -165,11 +178,14 @@ export async function subjectCommand({ subcommand, flags = {}, args = [] } = {})
         soul_source: soul.source,
         workspace,
         runtime,
-        repoLane: resolveSubjectRepoLane(policy.text, {
-          root,
-          subject: config.name,
-          config,
-        }),
+        paths: {
+          source_root: runtime.sourceRoot,
+          jea_home: runtime.jeaHome,
+          jea_home_source: runtime.jeaHomeSource,
+          subject_runtime_root: runtime.runtimeRoot,
+          execution_root: repoLane.repoRoot ?? null,
+        },
+        repoLane,
         subject: extractMarkdownSection(policy.text, 'Subject'),
         coreLayer: extractMarkdownSection(policy.text, 'Core Layer'),
       }, null, 2));
@@ -198,7 +214,7 @@ export async function subjectCommand({ subcommand, flags = {}, args = [] } = {})
         console.log(`policy: ${result.file}`);
         console.log(`data namespace: ${runtime.dataNamespace}`);
         console.log(`runtime root: ${runtime.runtimeRoot}`);
-        console.log('Tip: `jea subject use` now sets the default subject in runtime/subjects/registry.json.');
+        console.log('Tip: `jea subject use` sets the default subject in <JEA_HOME>/subjects/registry.json.');
         console.log('Tip: initialize this subject with `jea data init --all --subject ' + result.config.name + '` before running.');
       }
       return 0;
@@ -280,7 +296,7 @@ export async function subjectCommand({ subcommand, flags = {}, args = [] } = {})
     const policy = readSubjectPolicy(root, config);
     const policyCheck = checkSubjectPolicy(policy.text);
     const runtimeCheck = diagnoseSubjectRuntimeConfig(policy.text, {
-      root,
+      root: sourceRoot,
       subject: config.name,
       config,
     });
