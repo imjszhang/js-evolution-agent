@@ -15,6 +15,7 @@ import {
   summarizeDoctorLinkChecks,
   warmJeaLinksCache,
 } from '../../infra/links/index.mjs';
+import { probeAcpFrameworks } from '../../actions/agent-adapter/acp/doctor.mjs';
 
 function statusLine(ok, label, detail = '') {
   const mark = ok ? 'OK ' : 'WARN';
@@ -54,6 +55,25 @@ export async function doctorCommand() {
     statusLine(true, 'JEA_GOAL_CALIBRATE_MODE', summarizeGoalCalibratePolicy(resolveGoalCalibratePolicy(process.env)));
   }
   statusLine(isGoalAutoApplyEnabled(process.env), 'JEA_GOAL_AUTO_APPLY', isGoalAutoApplyEnabled(process.env) ? 'enabled' : 'disabled (assessment only)');
+
+  const acpHandshake = !['0', 'false', 'no', 'off'].includes(
+    String(process.env.JEA_ACP_DOCTOR_HANDSHAKE ?? '1').trim().toLowerCase(),
+  );
+  const acpReports = await probeAcpFrameworks({
+    projectRoot: root,
+    env: process.env,
+    handshake: acpHandshake,
+    timeoutMs: Number(process.env.JEA_ACP_DOCTOR_TIMEOUT_MS ?? 5_000),
+  });
+  for (const report of acpReports) {
+    statusLine(report.binary_ok, `ACP ${report.provider} binary`, report.version ?? report.binary_error ?? report.command);
+    statusLine(report.credentials_ok, `ACP ${report.provider} credentials`, report.credentials_ok
+      ? report.credential_sources.join(', ')
+      : 'no environment credential found (agent-local login may still work)');
+    statusLine(report.handshake === 'ok' || report.handshake === 'skipped', `ACP ${report.provider} handshake`, report.handshake === 'ok'
+      ? `protocol ${report.protocol_version}; ${report.agent_name ?? 'agent'}`
+      : (report.handshake_error ?? report.handshake));
+  }
 
   const docsDir = resolveAuthorityDocsDir(root);
   ok = statusLine(existsSync(join(docsDir, 'CONSTITUTION.md')), 'Authority CONSTITUTION.md', docsDir) && ok;

@@ -200,6 +200,7 @@ function summarizeAgenticExecution(agentResult = {}) {
   const agent = agentResult.agent ?? {};
   const outputs = asObject(agent.outputs);
   const executionRoot = outputs.execution_root
+    ?? outputs.acp?.options?.execution_root
     ?? outputs.claude?.options?.execution_root
     ?? outputs.cursor?.options?.execution_root
     ?? outputs.claude?.options?.cwd
@@ -1397,6 +1398,7 @@ const builtInActionHandlers = {
       : {};
     const result = {
       success: executionSucceeded && schemaStatus === 'valid' && !requiresApproval,
+      deferred: !!agentResult.deferred,
       status: agentStatus,
       execution_status: executionStatus,
       schema_status: schemaStatus,
@@ -2205,7 +2207,11 @@ export const actionVerifiers = {
       const writes_count = listCount(result?.writes);
       const outputs_count = listCount(result?.outputs);
       const expectedRoot = result?.run_spec?.primary_cwd ?? null;
-      const actualRoot = result?.execution_root ?? result?.agent?.outputs?.claude?.options?.cwd ?? result?.agent?.outputs?.cursor?.options?.cwd ?? null;
+      const actualRoot = result?.execution_root
+        ?? result?.agent?.outputs?.acp?.options?.cwd
+        ?? result?.agent?.outputs?.claude?.options?.cwd
+        ?? result?.agent?.outputs?.cursor?.options?.cwd
+        ?? null;
       const rootMatches = !expectedRoot || !actualRoot || expectedRoot === actualRoot;
       const hasReceipt = Boolean(result?.agent && result?.status && result?.message);
       const hasEvidence = evidence_count > 0

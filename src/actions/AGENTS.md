@@ -15,6 +15,9 @@
 | `JEA_EXEC_AGENT_RATE_WINDOW_MS` | `3600000` | 速率滑动窗口长度（毫秒）；仅在设置了 `JEA_EXEC_AGENT_RATE` 时生效 |
 | `JEA_AGENT_MAX_CONCURRENCY` | `2` | agent_run 波内并行宽度上限（`read_only` 可并行；写类 profile 独占波宽 1）；设 `1` 关闭并行 |
 | `JEA_AGENT_MAX_ATTEMPTS` | `2` | agent_run 失败自动重试次数；耗尽转 `blocked`，由下轮 Decide `queue_ops` 处置 |
+| `JEA_AGENT_PROVIDER` | `llm_only`（代码默认；部署可覆盖） | Agent provider；除现有 provider 外支持 `acp:*`，首个 framework 为 `acp:claude-code` |
+| `JEA_ACP_TIMEOUT_MS` | `1800000` | ACP initialize/session/prompt 单次超时；超时先发 cancel，关闭时清理子进程 |
+| `JEA_ACP_KILL_GRACE_MS` | `5000` | ACP 子进程关闭时 SIGTERM 到 SIGKILL 的宽限期 |
 | `JEA_PENDING_TTL_CYCLES` | `5` | pending 连续经历多少轮 exec 仍未认领后过期（`cycles_seen > N`） |
 | `JEA_BLOCKED_TTL_CYCLES` | `10` | blocked 连续经历多少轮 exec 后过期（`cycles_seen > N`） |
 | `JEA_QUEUE_WALLCLOCK_TTL_DAYS` | `30` | 队列墙钟后备上限（防 cycle 计数异常时决策永生）；正常 on_demand idle 不应触发 |
@@ -201,3 +204,17 @@ Phase 2（exec）action 选择口径：
 - 主执行：优先 `agent_run`（调查、改代码、模拟、发布准备等“做事”任务）。
 - 记录型：`record_observation`、`run_evidence_audit`（机械证据审计）、`propose_probe`、`write_retrospective`、`request_core_review` 只落已有结论/提案/审批请求/审计摘要，不用于读文件或调查。
 - 系统/兼容：`lane_status`、`lane_observe`、`lane_verify`、`github_open_lane_pr` 是机械 lane 能力；`run_probe`、`agent_execute` 是旧兼容动作；`core_apply` 仅用于 core 层审批变更。subject policy 不应维护 subject-specific action 菜单，业务能力通过 `subjects.json` 的 lane/resources 或 configured external actions 表达。
+
+### ACP 无头 provider
+
+`provider: acp:claude-code` 通过 `@agentclientprotocol/sdk` 1.x fluent client API 和 stdio 启动 `claude-agent-acp`。运行时执行 `initialize → session/new → prompt`，验证提示复用同一 session（最多三轮），结束时在 agent 声明支持的情况下调用 `session/close`，随后关闭连接并按 SIGTERM → SIGKILL 清理子进程。现有 provider 和默认值不变。
+
+无头权限路由以 `permission_profile` 为准：
+
+- `read_only`：只允许已知本地读取类请求，拒绝 edit/delete/move/execute。
+- `workspace_write`：读取请求可通过；写请求必须提供可判定路径，且所有路径位于 execution root 或声明的 additional directories 内。
+- `remote_write_review`、远端访问、未知工具/路径/权限 profile：默认拒绝；需要交互确认的远端写不在本 issue 的无头能力内。
+
+所有权限决定和 ACP session update 都进入 agent-run observer；消息、思考、工具开始/结束、权限决定和结束状态可在 agent-run JSONL 中审计。ACP binary/framework 不可用返回 `deferred`，decision 保持 pending 且不消耗失败重试。`jea doctor` 检查 binary/version、环境凭据和 initialize/session 握手；可设置 `JEA_ACP_DOCTOR_HANDSHAKE=0` 跳过握手。
+
+真实 Claude ACP smoke 默认跳过；显式设置 `JEA_LIVE_ACP_CLAUDE_CODE=1` 后运行 `test/acp-provider.test.mjs`。该 smoke 需要 ACP agent 可用且已通过环境凭据或本地登录认证。

@@ -40,6 +40,7 @@ function resolveAgentLogger(ctx) {
 }
 
 export function providerLogTag(provider) {
+  if (String(provider ?? '').startsWith('acp:')) return 'acp';
   if (provider === CURSOR_PROVIDER) return 'cursor';
   if (provider === CLAUDE_PROVIDER) return 'claude';
   if (provider === REASONIX_PROVIDER) return 'reasonix';
