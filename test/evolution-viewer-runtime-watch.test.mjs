@@ -2,6 +2,7 @@ import {
   appendFileSync,
   mkdirSync,
   renameSync,
+  rmSync,
   truncateSync,
   writeFileSync,
 } from 'node:fs';
@@ -67,6 +68,34 @@ describe('shared runtime watch primitives', () => {
     watcher.stop();
     expect(closed.length).toBeGreaterThan(0);
     vi.useRealTimers();
+  });
+
+  it('reattaches runtime file watchers after atomic replacement', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'jea-runtime-replace-'));
+    const dir = join(root, 'data', 'evolution', 'tasks');
+    const target = join(dir, 'pending_tasks.json');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(target, '{}');
+    let changes = 0;
+    const watcher = createRuntimeWatcher({
+      runtimeRoot: root,
+      subjectMeta: { subject: 'alpha', namespace: 'alpha' },
+      debounceMs: 5,
+      reconcileMs: 0,
+      onRuntimeChange: () => { changes += 1; },
+    });
+    watcher.start();
+    const replacement = join(dir, 'pending_tasks.next.json');
+    writeFileSync(replacement, '{"version":2}');
+    rmSync(target);
+    renameSync(replacement, target);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const afterReplace = changes;
+    appendFileSync(target, '\n');
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(afterReplace).toBeGreaterThan(0);
+    expect(changes).toBeGreaterThan(afterReplace);
+    watcher.stop();
   });
 
   it('attaches after file creation and resets on equal-size rotation', () => {

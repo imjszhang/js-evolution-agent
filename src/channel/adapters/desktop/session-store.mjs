@@ -9,10 +9,11 @@ import {
   statSync,
 } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import lockfile from 'proper-lockfile';
 import {
+  channelDirForSubject,
   channelDesktopSessionPath,
   channelDesktopSessionsDir,
 } from '../../paths.mjs';
@@ -21,6 +22,25 @@ import { normalizeDesktopSessionId } from './config.mjs';
 
 export const DESKTOP_SESSION_SCHEMA_VERSION = 1;
 const sessionReadCache = new Map();
+const MAX_SESSION_CACHE_ENTRIES = 100;
+const MAX_SESSION_CACHE_BYTES = 16 * 1024 * 1024;
+
+function trimSessionReadCache(protectedFile = null) {
+  let bytes = [...sessionReadCache.values()]
+    .reduce((sum, entry) => sum + entry.size, 0);
+  const oldestFirst = [...sessionReadCache.entries()]
+    .filter(([file]) => file !== protectedFile)
+    .sort((left, right) => left[1].lastAccess - right[1].lastAccess);
+  while (
+    sessionReadCache.size > MAX_SESSION_CACHE_ENTRIES
+    || bytes > MAX_SESSION_CACHE_BYTES
+  ) {
+    const [file, entry] = oldestFirst.shift() ?? [];
+    if (!file) break;
+    sessionReadCache.delete(file);
+    bytes -= entry.size;
+  }
+}
 
 function stableRecordId(input) {
   const explicit = String(input.id ?? input.message_id ?? input.messageId ?? '').trim();
@@ -58,8 +78,12 @@ function parseRecords(file) {
       decoder: new StringDecoder('utf8'),
       physicalOffset: 0,
       records: [],
+      uniqueRecords: [],
+      seenIds: new Set(),
+      lastAccess: Date.now(),
     };
   }
+  cached.lastAccess = Date.now();
   if (stat.size > cached.size) {
     const length = stat.size - cached.size;
     const buffer = Buffer.allocUnsafe(length);
@@ -79,27 +103,27 @@ function parseRecords(file) {
       const physicalOffset = cached.physicalOffset;
       cached.physicalOffset += 1;
       try {
-        cached.records.push({ ...JSON.parse(line), _physical_offset: physicalOffset });
+        const record = { ...JSON.parse(line), _physical_offset: physicalOffset };
+        cached.records.push(record);
+        const id = String(record.id ?? '').trim();
+        if (id && !cached.seenIds.has(id)) {
+          cached.seenIds.add(id);
+          const { _physical_offset: _, ...value } = record;
+          cached.uniqueRecords.push(value);
+        }
       } catch {
         // Preserve physical offsets while ignoring malformed records.
       }
     }
   }
   sessionReadCache.set(file, cached);
+  trimSessionReadCache(file);
   return cached.records;
 }
 
-function uniqueRecords(records) {
-  const seen = new Set();
-  const result = [];
-  for (const record of records) {
-    const id = String(record?.id ?? '').trim();
-    if (!id || seen.has(id)) continue;
-    seen.add(id);
-    const { _physical_offset: _, ...value } = record;
-    result.push(value);
-  }
-  return result;
+function readUniqueRecords(file) {
+  parseRecords(file);
+  return sessionReadCache.get(file)?.uniqueRecords ?? [];
 }
 
 function lockSessionFile(file) {
@@ -158,7 +182,7 @@ export function readDesktopSession(root, subject, sessionIdInput, {
 } = {}) {
   const sessionId = normalizeDesktopSessionId(sessionIdInput);
   const file = channelDesktopSessionPath(root, subject, sessionId);
-  const records = uniqueRecords(parseRecords(file));
+  const records = readUniqueRecords(file);
   const start = Math.max(0, Number(offset) || 0);
   const boundedLimit = Math.max(0, Math.min(1000, Number(limit) || 50));
   const tailCount = tail == null ? null : Math.max(0, Math.min(1000, Number(tail) || 0));
@@ -167,7 +191,7 @@ export function readDesktopSession(root, subject, sessionIdInput, {
     ? records.slice(selectedOffset, selectedOffset + boundedLimit)
     : records.slice(selectedOffset);
   const nextOffset = selected.length
-    ? Math.min(records.length, records.indexOf(selected[selected.length - 1]) + 1)
+    ? Math.min(records.length, selectedOffset + selected.length)
     : Math.min(start, records.length);
   return {
     schema_version: DESKTOP_SESSION_SCHEMA_VERSION,
@@ -183,10 +207,18 @@ export function readDesktopSession(root, subject, sessionIdInput, {
 export function listDesktopSessions(root, subject) {
   const dir = channelDesktopSessionsDir(root, subject);
   if (!existsSync(dir)) return [];
-  return readdirSync(dir)
+  const names = readdirSync(dir)
     .filter((name) => name.endsWith('.jsonl'))
-    .sort()
-    .map((name) => {
+    .sort();
+  const liveFiles = new Set(names.map((name) => channelDesktopSessionPath(
+    root,
+    subject,
+    name.slice(0, -'.jsonl'.length),
+  )));
+  for (const file of sessionReadCache.keys()) {
+    if (dirname(file) === dir && !liveFiles.has(file)) sessionReadCache.delete(file);
+  }
+  return names.map((name) => {
       const sessionId = name.slice(0, -'.jsonl'.length);
       const view = readDesktopSession(root, subject, sessionId, { tail: 1 });
       return {
@@ -196,4 +228,22 @@ export function listDesktopSessions(root, subject) {
         last_message_at: view.records[0]?.created_at ?? null,
       };
     });
+}
+
+export function withDesktopIngressLock(root, subject, messageId, callback) {
+  const lockId = createHash('sha256').update(String(messageId)).digest('hex').slice(0, 32);
+  const file = join(
+    channelDirForSubject(root, subject),
+    'desktop',
+    'ingress-locks',
+    `${lockId}.lock`,
+  );
+  mkdirSync(dirname(file), { recursive: true });
+  appendFileSync(file, '', 'utf8');
+  const release = lockSessionFile(file);
+  try {
+    return callback();
+  } finally {
+    release();
+  }
 }

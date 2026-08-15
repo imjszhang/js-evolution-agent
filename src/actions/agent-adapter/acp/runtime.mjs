@@ -23,7 +23,7 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function killWindowsProcessTree(pid, force = false) {
+export function killWindowsProcessTree(pid, force = false) {
   if (!pid) return false;
   const args = ['/pid', String(pid), '/t'];
   if (force) args.push('/f');
@@ -315,7 +315,10 @@ export class AcpRuntime {
     if (!child || child.exitCode != null || child.signalCode != null) return;
     const closed = new Promise((resolve) => child.once('close', resolve));
     if (this.platform === 'win32') {
-      if (!this.killWindowsTree(child.pid, false)) child.kill('SIGTERM');
+      const gracefulTreeSignal = this.killWindowsTree(child.pid, false);
+      if (!gracefulTreeSignal && !this.killWindowsTree(child.pid, true)) {
+        child.kill('SIGTERM');
+      }
     } else {
       child.kill('SIGTERM');
     }

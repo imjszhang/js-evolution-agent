@@ -243,7 +243,9 @@ export function createRuntimeWatcher({
     const watchedPath = nearestExisting(target);
     if (!watchedPath) return;
     const current = watchers.get(target);
-    if (current?.watchedPath === watchedPath) return;
+    const stat = safeStat(watchedPath);
+    const identity = stat ? `${stat.dev}:${stat.ino}` : null;
+    if (current?.watchedPath === watchedPath && current.identity === identity) return;
     if (current) {
       try {
         current.watcher.close();
@@ -255,6 +257,7 @@ export function createRuntimeWatcher({
     try {
       watchers.set(target, {
         watchedPath,
+        identity,
         watcher: watchFactory(watchedPath, () => {
           reconcileWatchers();
           notify('watch');

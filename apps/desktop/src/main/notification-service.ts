@@ -22,7 +22,7 @@ function record(value: unknown): Record<string, any> {
 }
 
 export class NotificationService {
-  private readonly seen = new Set<string>()
+  private readonly seen = new Map<string, string>()
   private settings: NotificationSettings
   private readonly unsubscribe: () => void
 
@@ -63,7 +63,8 @@ export class NotificationService {
     const questions = snapshot.questions.map((item, index) => ({
       id: String(item.id ?? `question-${index}`),
       title: 'JEA needs operator input',
-      body: String(item.question ?? item.summary ?? 'Open operator question')
+      body: String(item.question ?? item.summary ?? 'Open operator question'),
+      signature: `question:${String(item.question ?? item.summary ?? '')}`
     }))
     const attention = record(snapshot.attention)
     const items = Array.isArray(attention.items) ? attention.items.map(record) : []
@@ -72,19 +73,22 @@ export class NotificationService {
       .map((item, index) => ({
         id: String(item.id ?? item.fingerprint ?? `attention-${index}`),
         title: `JEA ${String(item.severity ?? 'attention')}`,
-        body: String(item.title ?? item.summary ?? item.message ?? 'Runtime attention signal')
+        body: String(item.title ?? item.summary ?? item.message ?? 'Runtime attention signal'),
+        signature: `${String(item.severity ?? '')}:${String(
+          item.title ?? item.summary ?? item.message ?? ''
+        )}`
       }))
 
     const candidates = [...questions, ...signals]
     const currentKeys = new Set(candidates.map((item) => `${subject}:${item.id}`))
-    for (const key of this.seen) {
+    for (const key of this.seen.keys()) {
       if (key.startsWith(`${subject}:`) && !currentKeys.has(key)) this.seen.delete(key)
     }
 
     for (const item of candidates) {
       const key = `${subject}:${item.id}`
-      if (this.seen.has(key)) continue
-      this.seen.add(key)
+      if (this.seen.get(key) === item.signature) continue
+      this.seen.set(key, item.signature)
       if (!this.settings.enabled) continue
       try {
         const notification = this.createNotification({

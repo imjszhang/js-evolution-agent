@@ -89,6 +89,39 @@ describe('NotificationService', () => {
     service.stop()
   })
 
+  it('notifies again when an attention signal escalates severity', () => {
+    const events = new DesktopEventBus()
+    const shown = vi.fn()
+    const service = new NotificationService(
+      join(mkdtempSync(join(tmpdir(), 'jea-notify-escalation-')), 'settings.json'),
+      events,
+      () => ({ on: vi.fn(), show: shown })
+    )
+    const snapshot = (severity: string) => ({
+      subject: 'alpha',
+      questions: [],
+      briefs: [],
+      facts: [],
+      goals: null,
+      pending_cycle_request: null,
+      attention: {
+        items: [{ id: 'health-1', severity, title: 'Worker health degraded' }]
+      }
+    })
+    events.publish({
+      type: 'projection.todo_updated',
+      subject: 'alpha',
+      payload: { snapshot: snapshot('warning') }
+    })
+    events.publish({
+      type: 'projection.todo_updated',
+      subject: 'alpha',
+      payload: { snapshot: snapshot('critical') }
+    })
+    expect(shown).toHaveBeenCalledTimes(2)
+    service.stop()
+  })
+
   it('isolates native notification errors from other event listeners', () => {
     const events = new DesktopEventBus()
     const service = new NotificationService(

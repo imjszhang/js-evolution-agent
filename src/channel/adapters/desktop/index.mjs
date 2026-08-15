@@ -18,6 +18,7 @@ import {
   appendDesktopSessionRecord,
   listDesktopSessions,
   readDesktopSession,
+  withDesktopIngressLock,
 } from './session-store.mjs';
 
 export {
@@ -33,6 +34,7 @@ export {
   DESKTOP_SESSION_SCHEMA_VERSION,
   listDesktopSessions,
   readDesktopSession,
+  withDesktopIngressLock,
 } from './session-store.mjs';
 
 export async function sendOutboundMessage(outboundInput, options = {}) {
@@ -120,13 +122,22 @@ export function sendDesktopInboundMessage(root, subject, {
     created_at: envelope.received_at,
     metadata,
   });
-  let pending = null;
-  let classifier = { created: false, reason: 'duplicate_session_record' };
-  const needsIngressRepair = appended.duplicate && !inboundExists(root, subject, messageId);
-  if (appended.created || needsIngressRepair) {
-    pending = writeInbound(root, subject, envelope, { label: 'desktop' });
-    classifier = enqueueClassifier(root, subject);
-  }
+  const ingress = withDesktopIngressLock(root, subject, messageId, () => {
+    const alreadyQueued = inboundExists(root, subject, messageId);
+    if (alreadyQueued) {
+      return {
+        pending: null,
+        classifier: { created: false, reason: 'inbound_already_queued' },
+        repaired: false,
+      };
+    }
+    const pending = writeInbound(root, subject, envelope, { label: 'desktop' });
+    return {
+      pending,
+      classifier: enqueueClassifier(root, subject),
+      repaired: appended.duplicate,
+    };
+  });
   return {
     subject,
     session_id: resolvedSession,
@@ -135,10 +146,10 @@ export function sendDesktopInboundMessage(root, subject, {
     session_record: appended.record,
     session_created: appended.created,
     duplicate: appended.duplicate,
-    ingress_repaired: needsIngressRepair,
-    inbound_file: pending?.file ?? null,
-    classifier_task: classifier.task ?? null,
-    classifier_created: classifier.created ?? false,
-    classifier_reason: classifier.reason ?? null,
+    ingress_repaired: ingress.repaired,
+    inbound_file: ingress.pending?.file ?? null,
+    classifier_task: ingress.classifier.task ?? null,
+    classifier_created: ingress.classifier.created ?? false,
+    classifier_reason: ingress.classifier.reason ?? null,
   };
 }
