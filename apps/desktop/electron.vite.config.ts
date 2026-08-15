@@ -9,14 +9,16 @@ export default defineConfig({
   main: {
     build: {
       rollupOptions: {
-        input: resolve(desktopDir, 'src/main/index.ts')
+        input: resolve(desktopDir, 'src/main/index.ts'),
+        external: ['electron']
       }
     }
   },
   preload: {
     build: {
       rollupOptions: {
-        input: resolve(desktopDir, 'src/preload/index.ts')
+        input: resolve(desktopDir, 'src/preload/index.ts'),
+        external: ['electron']
       }
     }
   },
