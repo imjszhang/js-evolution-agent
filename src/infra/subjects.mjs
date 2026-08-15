@@ -135,7 +135,11 @@ function extractMarkdownSection(text, heading) {
 /** True if workspace SUBJECT.md or legacy flat .md exists. */
 export function subjectPolicyExists(root, name) {
   const subject = sanitizeSubjectName(name);
-  if (existsSync(subjectGovernanceFile(root, subject))) return true;
+  const registryEntry = readSubjectsRegistry(root).subjects?.[subject];
+  const runtimeConfig = registryEntry
+    ? normalizeRegistryEntry(subject, registryEntry)
+    : subject;
+  if (existsSync(subjectGovernanceFile(root, runtimeConfig))) return true;
   if (existsSync(legacySubjectGovernanceFile(root, subject))) return true;
   if (existsSync(subjectFile(root, subject))) return true;
   return false;
