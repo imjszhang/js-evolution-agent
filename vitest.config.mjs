@@ -1,9 +1,10 @@
 import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    setupFiles: ['test/setup-legacy-runtime.mjs'],
+    setupFiles: [fileURLToPath(new URL('./test/setup-legacy-runtime.mjs', import.meta.url))],
     // Windows git/worktree fixtures can exceed 15s under full-suite parallel load.
     testTimeout: 30_000,
     coverage: {
