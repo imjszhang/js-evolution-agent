@@ -985,17 +985,6 @@ export function createViewerApiServer({ runtime, runtimes, projectRoot, limit, p
 
       if (pathname === '/events') {
         const defaultCtx = contexts.get(defaultSubject);
-        const catalog = manifestForApi(defaultCtx.getCatalog(false, limit));
-        const subjectEntries = runtimeList.map((rt) => {
-          const ctx = contexts.get(rt.subject);
-          const daemon = ctx.getDaemon();
-          const summary = daemonSummaryFromProjection(rt, daemon, { runtimeRoot: rt.runtimeRoot });
-          const m = manifestForApi(ctx.getCatalog(false, limit));
-          return {
-            ...summary,
-            round_count: m.round_count ?? m.rounds?.length ?? 0,
-          };
-        });
         res.writeHead(200, {
           'Content-Type': 'text/event-stream; charset=utf-8',
           'Cache-Control': 'no-cache',
@@ -1006,10 +995,31 @@ export function createViewerApiServer({ runtime, runtimes, projectRoot, limit, p
           subject: defaultSubject,
           namespace: defaultCtx.runtime.dataNamespace,
           default_subject: defaultSubject,
-          subjects: subjectEntries,
-          round_count: catalog.round_count ?? catalog.rounds?.length ?? 0,
         }));
         sse.attach(res);
+        try {
+          const catalog = manifestForApi(defaultCtx.getCatalog(false, limit));
+          const subjectEntries = runtimeList.map((rt) => {
+            const ctx = contexts.get(rt.subject);
+            const daemon = ctx.getDaemon();
+            const summary = daemonSummaryFromProjection(rt, daemon, { runtimeRoot: rt.runtimeRoot });
+            const m = manifestForApi(ctx.getCatalog(false, limit));
+            return {
+              ...summary,
+              round_count: m.round_count ?? m.rounds?.length ?? 0,
+            };
+          });
+          sse.broadcast('runtime_snapshot', {
+            event: 'runtime_snapshot',
+            subject: defaultSubject,
+            namespace: defaultCtx.runtime.dataNamespace,
+            default_subject: defaultSubject,
+            subjects: subjectEntries,
+            round_count: catalog.round_count ?? catalog.rounds?.length ?? 0,
+          });
+        } catch (error) {
+          sse.broadcast('error', { message: error?.message ?? String(error) });
+        }
         return;
       }
 

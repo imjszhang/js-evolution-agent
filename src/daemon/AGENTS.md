@@ -115,7 +115,7 @@ jea daemon start --subject NAME --domain channel --channel-role all
 
 `worker-state.json` 的 `workers` map 记录各 role 的 `worker_id` / `pid` / `heartbeat_at`；`jea channel status --json` 可见 `workers.roles[]` 与 `classifier` 配置。
 
-Channel worker-state 写入已使用与 task queue 相同的原子重试写入；loop 内心跳写失败会记 `channel_worker_state_write_failed` 并降级继续，不会直接终止 cycle domain。
+Channel worker-state 写入已使用与 task queue 相同的原子重试写入；loop 内心跳写失败会记 `channel_worker_state_write_failed` 并降级继续，不会直接终止 cycle domain。停止路径由 child 销账，supervisor 只在子进程退出后对残留 running role 做 safe fallback。
 
 ## 批量演化
 

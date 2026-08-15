@@ -13,7 +13,7 @@ import {
   readWorkerState,
   workerStatePath
 } from '../../../src/daemon/daemon-worker-state.mjs'
-import { writeChannelWorkerState } from '../../../src/channel/worker-state.mjs'
+import { readChannelWorkerState, writeChannelWorkerState } from '../../../src/channel/worker-state.mjs'
 import { PublicCommandError } from '../src/main/command-registry'
 import { DaemonSupervisor } from '../src/main/daemon-supervisor'
 import { DesktopEventBus } from '../src/main/event-bus'
@@ -221,6 +221,35 @@ describe('DaemonSupervisor', () => {
       status: 'running',
       stop_requested_at: null
     })
+  })
+
+  it('falls back to safe channel stop only for roles still running after the child exits', async () => {
+    const root = createProjectRoot()
+    const { supervisor } = createSupervisor(root, { closeOnKill: true })
+    await supervisor.start('alpha', { domain: 'channel' })
+    writeChannelWorkerState(root, 'alpha', {
+      subject: 'alpha',
+      domain: 'channel',
+      schema_version: 2,
+      workers: {
+        notify: {
+          role: 'notify',
+          status: 'stopped',
+          stopped_at: new Date().toISOString()
+        },
+        presence: {
+          role: 'presence',
+          status: 'running',
+          heartbeat_at: new Date().toISOString()
+        }
+      }
+    })
+
+    await expect(supervisor.stop('alpha', 'operator_test')).resolves.toMatchObject({
+      mode: 'none'
+    })
+    expect(readChannelWorkerState(root, 'alpha')?.workers.presence.status).toBe('stopped')
+    expect(readChannelWorkerState(root, 'alpha')?.workers.notify.status).toBe('stopped')
   })
 
   it('stops a managed daemon without starting a real process', async () => {
