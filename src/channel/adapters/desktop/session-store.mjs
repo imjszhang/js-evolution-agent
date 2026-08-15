@@ -59,15 +59,27 @@ function uniqueRecords(records) {
   return result;
 }
 
+function lockSessionFile(file) {
+  let lastError = null;
+  const sleeper = new Int32Array(new SharedArrayBuffer(4));
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    try {
+      return lockfile.lockSync(file, { realpath: false });
+    } catch (error) {
+      lastError = error;
+      if (error?.code !== 'ELOCKED' || attempt === 5) throw error;
+      Atomics.wait(sleeper, 0, 0, 10 * (attempt + 1));
+    }
+  }
+  throw lastError;
+}
+
 export function appendDesktopSessionRecord(root, subject, sessionIdInput, input = {}) {
   const sessionId = normalizeDesktopSessionId(sessionIdInput);
   const file = channelDesktopSessionPath(root, subject, sessionId);
   mkdirSync(dirname(file), { recursive: true });
   appendFileSync(file, '', 'utf-8');
-  const release = lockfile.lockSync(file, {
-    realpath: false,
-    retries: { retries: 5, minTimeout: 10, maxTimeout: 100 },
-  });
+  const release = lockSessionFile(file);
   try {
     const existing = parseRecords(file);
     const createdAt = input.created_at ?? nowIso();
