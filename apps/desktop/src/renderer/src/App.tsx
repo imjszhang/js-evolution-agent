@@ -51,6 +51,11 @@ export default function App() {
   }, [subject])
 
   useEffect(() => window.jea.subscribe((event) => {
+    if (event.type === 'desktop.navigate') {
+      if (event.subject) setSubject(event.subject)
+      if (event.payload.page === 'todo') setPage('todo')
+      return
+    }
     if (event.type === 'projection.ops_updated') {
       const snapshot = event.payload.snapshot as SubjectSnapshot | undefined
       if (!snapshot?.subject?.name) return

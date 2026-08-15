@@ -10,6 +10,7 @@ import type { DaemonSupervisor } from './daemon-supervisor'
 import type { OpsService } from './operations'
 import type { ProjectionWatcher } from './projection-watcher'
 import type { TodoService } from './todo-service'
+import type { NotificationService } from './notification-service'
 
 function stringField(
   payload: Record<string, unknown>,
@@ -62,7 +63,8 @@ export function createDesktopCommandDefinitions({
   daemon,
   acp,
   projection,
-  channel
+  channel,
+  notifications
 }: {
   ops: OpsService
   todo: TodoService
@@ -70,6 +72,7 @@ export function createDesktopCommandDefinitions({
   acp: AcpSessionManager
   projection: ProjectionWatcher
   channel: ChannelService
+  notifications: NotificationService
 }): CommandDefinitions {
   return {
     ...createOpsCommandDefinitions(ops),
@@ -188,6 +191,19 @@ export function createDesktopCommandDefinitions({
         stringField(payload, 'text')!,
         stringField(payload, 'messageId', { required: false })
       )
+    },
+    'notifications.get': {
+      level: 'readonly',
+      handler: () => notifications.get()
+    },
+    'notifications.set': {
+      level: 'write',
+      handler: (payload) => {
+        if (typeof payload.enabled !== 'boolean') {
+          throw new PublicCommandError('INVALID_REQUEST', 'A valid enabled value is required.')
+        }
+        return notifications.set(payload.enabled)
+      }
     },
     'acp.listFrameworks': {
       level: 'readonly',

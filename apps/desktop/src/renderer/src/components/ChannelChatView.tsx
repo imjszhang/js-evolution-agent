@@ -117,6 +117,13 @@ export function ChannelChatView({ subject }: { subject: string | null }) {
   const desktop = isRecord(projection.desktop) ? projection.desktop : {}
   const config = isRecord(desktop.config) ? desktop.config : {}
   const worker = isRecord(projection.worker) ? projection.worker : {}
+  const tasks = isRecord(projection.tasks) && isRecord(projection.tasks.counts)
+    ? projection.tasks.counts
+    : {}
+  const presence = isRecord(projection.presence) ? projection.presence : {}
+  const pendingSpeech = Array.isArray(presence.pending_speech_generation)
+    ? presence.pending_speech_generation.length
+    : 0
   const inbound = useMemo(() => snapshot?.inbound.processed ?? [], [snapshot])
 
   if (!subject) {
@@ -148,6 +155,12 @@ export function ChannelChatView({ subject }: { subject: string | null }) {
           Desktop Channel is disabled for this subject. Enable <code>channels.desktop</code> before sending.
         </p>
       )}
+      <section className="todo-summary channel-progress" aria-label="Channel pipeline status">
+        <div><strong>{text(tasks.pending, '0')}</strong><span>Pending tasks</span></div>
+        <div><strong>{text(tasks.running, '0')}</strong><span>Running tasks</span></div>
+        <div><strong>{pendingSpeech}</strong><span>Speech generation</span></div>
+        <div><strong>{snapshot?.inbound.pending.length ?? 0}</strong><span>Unclassified inbound</span></div>
+      </section>
 
       <div className="channel-layout">
         <aside className="panel channel-sessions">

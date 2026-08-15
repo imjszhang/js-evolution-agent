@@ -1,7 +1,7 @@
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Notification } from 'electron'
 import { redactSecrets } from '../../../../src/intelligence/redaction.mjs'
 import { AcpSessionManager } from './acp-session-manager'
 import { ChannelService } from './channel-service'
@@ -15,6 +15,7 @@ import { createDesktopCommandDefinitions } from './desktop-command-definitions'
 import { DesktopEventBus } from './event-bus'
 import { toIpcValue } from './ipc-value'
 import { ManagedProcessRegistry } from './managed-process-registry'
+import { NotificationService } from './notification-service'
 import { OpsService } from './operations'
 import { ProjectionWatcher } from './projection-watcher'
 import { resolveDesktopProjectRoot } from './project-root'
@@ -41,6 +42,11 @@ const ops = new OpsService(projectRoot, undefined, undefined, daemon)
 const todo = new TodoService(projectRoot, ops)
 const channel = new ChannelService(projectRoot)
 const projection = new ProjectionWatcher(projectRoot, ops, todo, channel, events)
+const notifications = new NotificationService(
+  join(app.getPath('userData'), 'notification-settings.json'),
+  events,
+  (options) => new Notification(options)
+)
 const acp = new AcpSessionManager(
   projectRoot,
   processRegistry,
@@ -55,7 +61,15 @@ const acp = new AcpSessionManager(
 )
 const invoke = createCommandRegistry(
   ops,
-  createDesktopCommandDefinitions({ ops, todo, daemon, acp, projection, channel })
+  createDesktopCommandDefinitions({
+    ops,
+    todo,
+    daemon,
+    acp,
+    projection,
+    channel,
+    notifications
+  })
 )
 let shutdownComplete = false
 
@@ -225,6 +239,7 @@ app.on('before-quit', (event) => {
   if (shutdownComplete) return
   event.preventDefault()
   projection.stop()
+  notifications.stop()
   void processRegistry.shutdownAll('app_quit').finally(() => {
     shutdownComplete = true
     app.quit()

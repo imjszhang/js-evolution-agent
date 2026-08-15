@@ -563,8 +563,9 @@ code {
 
 .sidebar-foot {
   display: flex;
-  align-items: center;
-  gap: 7px;
+  align-items: stretch;
+  flex-direction: column;
+  gap: 9px;
   margin-top: auto;
   padding: 14px 9px 0;
   border-top: 1px solid var(--border-soft);
@@ -572,6 +573,22 @@ code {
   font-size: 9px;
   letter-spacing: .08em;
   text-transform: uppercase;
+}
+
+.sidebar-foot > span,
+.notification-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.notification-toggle {
+  cursor: pointer;
+}
+
+.notification-toggle input {
+  width: 14px;
+  min-height: 14px;
 }
 
 .connection-dot {

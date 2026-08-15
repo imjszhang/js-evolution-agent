@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { Readable, Writable } from 'node:stream';
 import {
   client,
@@ -23,6 +23,14 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function killWindowsProcessTree(pid, force = false) {
+  if (!pid) return false;
+  const args = ['/pid', String(pid), '/t'];
+  if (force) args.push('/f');
+  const result = spawnSync('taskkill.exe', args, { windowsHide: true, stdio: 'ignore' });
+  return !result.error && result.status === 0;
+}
+
 export class AcpRuntime {
   constructor({
     framework,
@@ -39,6 +47,8 @@ export class AcpRuntime {
     onAgentText = null,
     onProcessExit = null,
     includeStderrText = true,
+    platform = process.platform,
+    killWindowsTree = killWindowsProcessTree,
   } = {}) {
     this.framework = framework;
     this.cwd = cwd;
@@ -54,6 +64,8 @@ export class AcpRuntime {
     this.onAgentText = onAgentText;
     this.onProcessExit = onProcessExit;
     this.includeStderrText = includeStderrText;
+    this.platform = platform;
+    this.killWindowsTree = killWindowsTree;
     this.child = null;
     this.connection = null;
     this.session = null;
@@ -71,6 +83,7 @@ export class AcpRuntime {
       cwd: this.cwd,
       env: this.env,
       windowsHide: true,
+      shell: Boolean(this.framework.shell),
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     this.child.once('close', (exitCode, signal) => {
@@ -302,10 +315,12 @@ export class AcpRuntime {
     if (!child || child.exitCode != null || child.signalCode != null) return;
     const closed = new Promise((resolve) => child.once('close', resolve));
     child.kill('SIGTERM');
+    if (this.platform === 'win32') this.killWindowsTree(child.pid, false);
     this.observer?.emit('process_signal', { signal: 'SIGTERM', pid: child.pid ?? null });
     const exited = await Promise.race([closed.then(() => true), delay(this.killGraceMs).then(() => false)]);
     if (!exited && child.exitCode == null && child.signalCode == null) {
-      child.kill('SIGKILL');
+      if (this.platform === 'win32') this.killWindowsTree(child.pid, true);
+      else child.kill('SIGKILL');
       this.observer?.emit('process_signal', { signal: 'SIGKILL', pid: child.pid ?? null }, 'warning');
       await Promise.race([closed, delay(this.killGraceMs)]);
     }

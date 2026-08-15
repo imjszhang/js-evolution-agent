@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   mkdtempSync,
+  mkdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
+  writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -12,6 +14,10 @@ import {
   AcpRuntime,
   decideHeadlessPermission,
 } from '../src/actions/agent-adapter/acp/index.mjs';
+import {
+  createAcpFrameworkRegistry,
+  localAcpBin,
+} from '../src/actions/agent-adapter/acp/registry.mjs';
 import { runAgenticAction } from '../src/actions/agent-adapter/index.mjs';
 import { actionHandlers } from '../src/actions/handlers/builtin.mjs';
 import { DecisionQueue, ExecutionPipeline } from '../src/engine/index.mjs';
@@ -197,6 +203,21 @@ describe('ACP headless permissions', () => {
 });
 
 describe('ACP stdio runtime', () => {
+  it('resolves Windows cmd shims and marks them for shell spawning', () => {
+    const root = tempDir();
+    const bin = join(root, 'node_modules', '.bin');
+    const command = join(bin, 'claude-agent-acp.cmd');
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(command, '@echo off\r\n');
+    expect(localAcpBin(root, 'claude-agent-acp', 'win32')).toBe(command);
+    const entry = createAcpFrameworkRegistry({
+      projectRoot: root,
+      env: {},
+      platform: 'win32',
+    }).get('acp:claude-code');
+    expect(entry).toMatchObject({ command, shell: true });
+  });
+
   it('runs initialize/session/prompt/permission/events/close lifecycle', async () => {
     const cwd = tempDir();
     const log = join(cwd, 'fake.jsonl');

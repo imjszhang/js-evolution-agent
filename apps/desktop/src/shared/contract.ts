@@ -37,6 +37,11 @@ export const CHANNEL_COMMANDS = [
   'channel.sendMessage'
 ] as const
 
+export const NOTIFICATION_COMMANDS = [
+  'notifications.get',
+  'notifications.set'
+] as const
+
 export const ACP_COMMANDS = [
   'acp.listFrameworks',
   'acp.chooseExecutionRoot',
@@ -56,6 +61,7 @@ export const DESKTOP_COMMANDS = [
   ...DAEMON_COMMANDS,
   ...PROJECTION_COMMANDS,
   ...CHANNEL_COMMANDS,
+  ...NOTIFICATION_COMMANDS,
   ...ACP_COMMANDS
 ] as const
 
@@ -64,6 +70,7 @@ export type TodoCommand = (typeof TODO_COMMANDS)[number]
 export type DaemonCommand = (typeof DAEMON_COMMANDS)[number]
 export type ProjectionCommand = (typeof PROJECTION_COMMANDS)[number]
 export type ChannelCommand = (typeof CHANNEL_COMMANDS)[number]
+export type NotificationCommand = (typeof NOTIFICATION_COMMANDS)[number]
 export type AcpCommand = (typeof ACP_COMMANDS)[number]
 export type DesktopCommand = (typeof DESKTOP_COMMANDS)[number]
 

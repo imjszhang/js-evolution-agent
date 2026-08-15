@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import type { SubjectSummary } from '../../../shared/contract'
 
 export type AppPage = 'ops' | 'todo' | 'channel' | 'acp'
@@ -24,6 +25,13 @@ export function Navigation({
   onPageChange,
   onSubjectChange
 }: NavigationProps) {
+  const [notificationsEnabled, setNotificationsEnabled] = useState(true)
+  useEffect(() => {
+    void window.jea.invoke<{ enabled: boolean }>('notifications.get')
+      .then((settings) => setNotificationsEnabled(settings.enabled))
+      .catch(() => undefined)
+  }, [])
+
   return (
     <aside className="app-sidebar">
       <div className="brand">
@@ -91,8 +99,21 @@ export function Navigation({
       </section>
 
       <div className="sidebar-foot">
-        <span className="connection-dot" />
-        Context isolated
+        <label className="notification-toggle">
+          <input
+            type="checkbox"
+            checked={notificationsEnabled}
+            onChange={(event) => {
+              const enabled = event.target.checked
+              setNotificationsEnabled(enabled)
+              void window.jea.invoke('notifications.set', { enabled }).catch(() => {
+                setNotificationsEnabled(!enabled)
+              })
+            }}
+          />
+          System alerts
+        </label>
+        <span><span className="connection-dot" /> Context isolated</span>
       </div>
     </aside>
   )

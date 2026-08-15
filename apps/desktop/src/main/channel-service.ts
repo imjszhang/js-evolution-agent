@@ -49,7 +49,7 @@ export class ChannelService {
     options: { offset?: number; limit?: number; tail?: number | null } = {}
   ): DesktopSessionPage {
     this.assertSubject(subject)
-    return redactSecrets(readDesktopSession(
+    return redactSecrets((readDesktopSession as any)(
       this.projectRoot,
       subject,
       sessionId,
@@ -65,7 +65,7 @@ export class ChannelService {
   ): Record<string, unknown> {
     this.assertSubject(subject)
     try {
-      return redactSecrets(sendDesktopInboundMessage(this.projectRoot, subject, {
+      return redactSecrets((sendDesktopInboundMessage as any)(this.projectRoot, subject, {
         session_id: sessionId,
         text,
         message_id: messageId,
