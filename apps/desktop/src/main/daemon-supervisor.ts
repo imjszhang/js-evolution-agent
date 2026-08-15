@@ -10,11 +10,13 @@ import {
 } from 'node:fs'
 import { dirname, join } from 'node:path'
 import {
+  markWorkerStopped,
   readWorkerState,
   requestWorkerStop,
   summarizeWorkerState
 } from '../../../../src/daemon/daemon-worker-state.mjs'
 import {
+  markChannelRoleWorkerStopped,
   readChannelWorkerState,
   requestChannelWorkerStop,
   summarizeChannelWorkersState
@@ -229,6 +231,19 @@ export class DaemonSupervisor {
         new Promise<void>((resolve) => entry.child.once('close', () => resolve())),
         delay(this.killGraceMs)
       ])
+    }
+    if (entry.domain !== 'channel') {
+      markWorkerStopped(this.projectRoot, subject, {
+        stop_reason: `desktop_${reason}`
+      })
+    }
+    if (entry.domain !== 'cycle') {
+      const channelState = readChannelWorkerState(this.projectRoot, subject)
+      for (const role of Object.keys(channelState?.workers ?? {})) {
+        markChannelRoleWorkerStopped(this.projectRoot, subject, role, {
+          stop_reason: `desktop_${reason}`
+        })
+      }
     }
     this.events.publish({
       type: 'daemon_managed_stop_requested',

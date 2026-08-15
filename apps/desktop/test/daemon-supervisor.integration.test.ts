@@ -1,13 +1,16 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { DaemonSupervisor } from '../src/main/daemon-supervisor'
 import { DesktopEventBus } from '../src/main/event-bus'
@@ -33,8 +36,12 @@ function projectFixture(): string {
   const root = mkdtempSync(join(tmpdir(), 'jea-desktop-daemon-live-'))
   roots.push(root)
   const workspaceRoot = join(process.cwd(), '..', '..')
-  symlinkSync(join(workspaceRoot, 'src'), join(root, 'src'), 'dir')
-  symlinkSync(join(workspaceRoot, 'node_modules'), join(root, 'node_modules'), 'dir')
+  const cliDir = join(root, 'src', 'cli')
+  mkdirSync(cliDir, { recursive: true })
+  writeFileSync(join(cliDir, 'jea.mjs'), [
+    `import { main } from ${JSON.stringify(pathToFileURL(join(workspaceRoot, 'src', 'cli', 'jea.mjs')).href)};`,
+    'process.exit(await main());'
+  ].join('\n'))
   symlinkSync(join(workspaceRoot, 'oada.config.mjs'), join(root, 'oada.config.mjs'), 'file')
   symlinkSync(join(workspaceRoot, 'package.json'), join(root, 'package.json'), 'file')
   const subjectsDir = join(root, 'runtime', 'subjects')
@@ -45,6 +52,17 @@ function projectFixture(): string {
       alpha: { policy: 'SUBJECT.md', data_namespace: 'alpha-data' }
     }
   }))
+  const policyDir = join(subjectsDir, 'alpha')
+  mkdirSync(policyDir, { recursive: true })
+  writeFileSync(join(policyDir, 'SUBJECT.md'), [
+    '# Subject: alpha',
+    '',
+    '## Subject',
+    'Temporary daemon supervisor smoke-test subject.',
+    '',
+    '## Off-Limits Without Human Approval',
+    '- None in this isolated fixture.'
+  ].join('\n'))
   return root
 }
 
@@ -57,11 +75,11 @@ function externalDaemon(root: string): ChildProcess {
     '--subject',
     'alpha',
     '--domain',
-    'cycle',
+    'channel',
     '--tick-ms',
-    '100',
+    '1000',
     '--heartbeat-ms',
-    '50'
+    '1000'
   ], {
     cwd: root,
     env: {
@@ -69,7 +87,7 @@ function externalDaemon(root: string): ChildProcess {
       JEA_PROJECT_ROOT: root,
       JEA_FORCE_MOCK: '1'
     },
-    stdio: 'ignore'
+    stdio: 'inherit'
   })
   children.push(child)
   return child
@@ -88,14 +106,22 @@ afterEach(async () => {
 })
 
 describe.skipIf(process.platform === 'win32')('DaemonSupervisor real process smoke', () => {
-  it('starts and stops a real managed cycle worker', async () => {
+  it('starts and stops a real managed channel worker', async () => {
     const root = projectFixture()
     const registry = new ManagedProcessRegistry()
     const supervisor = new DaemonSupervisor(root, registry, new DesktopEventBus(), undefined, 1_000)
 
-    const started = await supervisor.start('alpha', { domain: 'cycle' })
-    expect(started).toMatchObject({ mode: 'managed', domain: 'cycle' })
-    await waitFor(() => supervisor.get('alpha').heartbeat_at != null)
+    const started = await supervisor.start('alpha', { domain: 'channel' })
+    expect(started).toMatchObject({ mode: 'managed', domain: 'channel' })
+    await waitFor(() => supervisor.get('alpha').heartbeat_at != null).catch((error) => {
+      const stderr = started.log_paths?.stderr
+      const stdout = started.log_paths?.stdout
+      const detail = [
+        stdout && existsSync(stdout) ? readFileSync(stdout, 'utf8') : '(no stdout)',
+        stderr && existsSync(stderr) ? readFileSync(stderr, 'utf8') : '(no stderr)'
+      ].join('\n--- stderr ---\n')
+      throw new Error(`${error.message}\n${detail}`)
+    })
 
     const stopped = await supervisor.stop('alpha', 'integration_test')
     expect(stopped.mode).toBe('none')
