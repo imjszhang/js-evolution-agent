@@ -1,4 +1,5 @@
 import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 // JEA is authored as native ESM JavaScript and is consumed directly by Electron.
 import { buildDaemonProjection } from '../../../../src/daemon/daemon-projection.mjs'
 import { buildSubjectObservability } from '../../../../src/intelligence/evolution-viewer/observability-projection.mjs'
@@ -9,7 +10,7 @@ import {
 import { runtimeForSubject } from '../../../../src/infra/runtime-paths.mjs'
 import type { SubjectSnapshot, SubjectSummary } from '../shared/contract'
 
-export const DEFAULT_PROJECT_ROOT = resolve(new URL('../../../..', import.meta.url).pathname)
+export const DEFAULT_PROJECT_ROOT = resolve(fileURLToPath(new URL('../../../..', import.meta.url)))
 
 export interface ProjectionBuilders {
   daemon(root: string, subject: string): Record<string, any>
