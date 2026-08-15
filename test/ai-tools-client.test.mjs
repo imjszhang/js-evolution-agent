@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import OpenAI from 'openai';
 import { AIError } from '../src/engine/index.mjs';
 import { DeepSeekOpenAIClient } from '../src/ai/deepseek-client.mjs';
 import { MockToolsAIClient } from '../src/ai/mock-tools-client.mjs';
@@ -18,6 +19,26 @@ const sampleTools = [{
     },
   },
 }];
+
+describe('OpenAI SDK 7 surface', () => {
+  it('exposes the default client and chat.completions.create used by DeepSeek', () => {
+    expect(typeof OpenAI).toBe('function');
+    const sdk = new OpenAI({
+      apiKey: 'sk-test-offline',
+      baseURL: 'https://api.deepseek.com',
+      timeout: 30_000,
+    });
+    expect(typeof sdk.chat.completions.create).toBe('function');
+    const client = new DeepSeekOpenAIClient({
+      apiKey: 'sk-test-offline',
+      timeout: 30,
+      env: {},
+      thinkingMode: 'off',
+    });
+    expect(client._openai).toBeInstanceOf(OpenAI);
+    expect(typeof client._openai.chat.completions.create).toBe('function');
+  });
+});
 
 describe('DeepSeekOpenAIClient.chatMessagesWithTools', () => {
   it('passes tools and parses tool_calls with tolerant JSON arguments', async () => {
