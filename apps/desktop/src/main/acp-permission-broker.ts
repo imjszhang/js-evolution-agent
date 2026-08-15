@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { decideHeadlessPermission } from '../../../../src/actions/agent-adapter/acp/permission-router.mjs'
+import { redactSecrets } from '../../../../src/intelligence/redaction.mjs'
+import type { AcpPermissionView } from '../shared/contract'
 import { PublicCommandError } from './command-registry'
 import type { DesktopEventBus } from './event-bus'
 
@@ -7,8 +9,13 @@ interface PendingPermission {
   sessionId: string
   requestId: string
   options: Array<{ optionId: string; kind: string; name?: string }>
+  view: AcpPermissionView
   resolve(response: { outcome: Record<string, unknown> }): void
   timer: NodeJS.Timeout
+}
+
+function publicPermission(value: AcpPermissionView): AcpPermissionView {
+  return redactSecrets(value) as AcpPermissionView
 }
 
 function rejectResponse(options: PendingPermission['options']): Record<string, unknown> {
@@ -52,46 +59,38 @@ export class AcpPermissionBroker {
           kind: String(option.kind ?? ''),
           name: typeof option.name === 'string' ? option.name : undefined
         }))
-      const unsafe = advisory.remote
-        || advisory.reason === 'unknown_request_default_deny'
-        || advisory.reason === 'unknown_profile_default_deny'
-        || advisory.reason === 'workspace_write_outside_or_unknown_path'
-        || advisory.reason === 'read_only_write_denied'
-      if (unsafe) {
+      const requestId = randomUUID()
+      const view = publicPermission({
+        session_id: desktopSessionId,
+        request_id: requestId,
+        tool_call_id: params?.toolCall?.toolCallId ?? null,
+        title: params?.toolCall?.title ?? params?.toolCall?.name ?? 'Tool permission',
+        tool_kind: advisory.kind,
+        input_summary: advisory.inputSummary ?? '',
+        paths: advisory.paths,
+        options,
+        reason: advisory.reason ?? null
+      })
+      const reviewable = advisory.allowed
+        || advisory.reason === 'remote_write_requires_interactive_review'
+      if (!reviewable) {
         const response = rejectResponse(options)
         this.events.publish({
           type: 'acp_permission_resolved',
           session_id: desktopSessionId,
-          payload: {
+          payload: redactSecrets({
+            request_id: requestId,
             automatic: true,
             allowed: false,
             reason: advisory.reason,
             tool_kind: advisory.kind,
             paths: advisory.paths
-          }
+          }) as Record<string, unknown>
         })
         return { outcome: response }
       }
 
-      const requestId = randomUUID()
       onPendingChange?.(true)
-      this.events.publish({
-        type: 'acp_permission_requested',
-        session_id: desktopSessionId,
-        payload: {
-          request_id: requestId,
-          tool_call_id: params?.toolCall?.toolCallId ?? null,
-          title: params?.toolCall?.title ?? params?.toolCall?.name ?? 'Tool permission',
-          tool_kind: advisory.kind,
-          paths: advisory.paths,
-          options,
-          advisory: {
-            reason: advisory.reason,
-            remote: advisory.remote
-          }
-        }
-      })
-
       return new Promise((resolve) => {
         const timer = setTimeout(() => {
           const current = this.pending.get(requestId)
@@ -109,8 +108,26 @@ export class AcpPermissionBroker {
           sessionId: desktopSessionId,
           requestId,
           options,
+          view,
           resolve,
           timer
+        })
+        this.events.publish({
+          type: 'acp_permission_requested',
+          session_id: desktopSessionId,
+          payload: {
+            request_id: view.request_id,
+            tool_call_id: view.tool_call_id,
+            title: view.title,
+            tool_kind: view.tool_kind,
+            input_summary: view.input_summary,
+            paths: view.paths,
+            options: view.options,
+            advisory: {
+              reason: view.reason,
+              remote: advisory.remote
+            }
+          }
         })
       })
     }
@@ -157,5 +174,11 @@ export class AcpPermissionBroker {
 
   hasPending(sessionId: string): boolean {
     return [...this.pending.values()].some((item) => item.sessionId === sessionId)
+  }
+
+  list(sessionId?: string): AcpPermissionView[] {
+    return [...this.pending.values()]
+      .filter((item) => !sessionId || item.sessionId === sessionId)
+      .map((item) => publicPermission(item.view))
   }
 }

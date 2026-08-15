@@ -1,3 +1,4 @@
+import { rmSync } from 'node:fs'
 import { readActiveGoalState, applyActiveGoalState } from '../../../../src/intelligence/goal-state.mjs'
 import {
   readPendingOperatorBriefs,
@@ -73,15 +74,35 @@ export class TodoService {
 
   putBrief(subject: string, brief: Record<string, unknown>): Record<string, unknown> {
     const runtime = this.runtime(subject)
-    const { brief: written } = writePendingOperatorBrief(runtime.runtimeRoot, brief)
-    const cycle = enqueueCycleStartRequestWithEvent(this.projectRoot, subject, {
-      reason: 'operator_brief',
-      meta: { brief_ids: [written.id] }
+    const { file, brief: written } = writePendingOperatorBrief(runtime.runtimeRoot, {
+      ...brief,
+      created_at: undefined,
+      created_by: 'desktop_operator',
+      producer: 'desktop',
+      consumed_by_cycle: undefined,
+      consumed_by_batch: undefined,
+      consumed_at: undefined,
+      outcome: undefined
     })
-    const wake = enqueueCognitiveWake(this.projectRoot, subject, {
-      reason: 'operator_brief',
-      source: 'desktop_todo'
-    })
+    let cycle
+    try {
+      cycle = enqueueCycleStartRequestWithEvent(this.projectRoot, subject, {
+        reason: 'operator_brief',
+        meta: { brief_ids: [written.id] }
+      })
+    } catch (error) {
+      rmSync(file, { force: true })
+      throw error
+    }
+    let wake: any = null
+    try {
+      wake = enqueueCognitiveWake(this.projectRoot, subject, {
+        reason: 'operator_brief',
+        source: 'desktop_todo'
+      })
+    } catch {
+      // The durable cycle request remains sufficient to consume the brief.
+    }
     return redactSecrets({
       subject,
       brief: written,
@@ -92,18 +113,46 @@ export class TodoService {
 
   putFact(subject: string, fact: Record<string, unknown>): Record<string, unknown> {
     const runtime = this.runtime(subject)
-    const { fact: written } = writePendingOperatorFact(runtime.runtimeRoot, {
+    const { file, fact: written } = writePendingOperatorFact(runtime.runtimeRoot, {
       ...fact,
-      subject
+      subject,
+      source: 'operator',
+      confidence: 'high',
+      created_at: undefined,
+      recorded_at: undefined,
+      created_by: 'desktop_operator',
+      producer: 'desktop',
+      injected_by_cycle: null,
+      injected_by_batch: null,
+      activation_batch_id: null,
+      injected_at: null,
+      digested_by_cycle: null,
+      digested_by_batch: null,
+      digested_at: null,
+      digestion_outcome: null,
+      digestion_reason: null,
+      resulting_belief_id: null,
+      resulting_question_id: null
     })
-    const cycle = enqueueCycleStartRequestWithEvent(this.projectRoot, subject, {
-      reason: 'operator_fact',
-      meta: { fact_ids: [written.id] }
-    })
-    const wake = enqueueCognitiveWake(this.projectRoot, subject, {
-      reason: 'operator_fact',
-      source: 'desktop_todo'
-    })
+    let cycle
+    try {
+      cycle = enqueueCycleStartRequestWithEvent(this.projectRoot, subject, {
+        reason: 'operator_fact',
+        meta: { fact_ids: [written.id] }
+      })
+    } catch (error) {
+      rmSync(file, { force: true })
+      throw error
+    }
+    let wake: any = null
+    try {
+      wake = enqueueCognitiveWake(this.projectRoot, subject, {
+        reason: 'operator_fact',
+        source: 'desktop_todo'
+      })
+    } catch {
+      // The durable cycle request remains sufficient to consume the fact.
+    }
     return redactSecrets({
       subject,
       fact: written,
@@ -129,10 +178,15 @@ export class TodoService {
       reason: 'desktop_operator',
       meta: note?.trim() ? { note: note.trim() } : {}
     })
-    const wake = enqueueCognitiveWake(this.projectRoot, subject, {
-      reason: 'desktop_operator',
-      source: 'desktop_todo'
-    })
+    let wake: any = null
+    try {
+      wake = enqueueCognitiveWake(this.projectRoot, subject, {
+        reason: 'desktop_operator',
+        source: 'desktop_todo'
+      })
+    } catch {
+      // The cycle request itself is durable; wake dispatch is best-effort.
+    }
     return redactSecrets({
       subject,
       cycle_start_request: result.request,

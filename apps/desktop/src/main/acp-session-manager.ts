@@ -12,6 +12,7 @@ import { validateExecutionRoot } from '../../../../src/actions/execution-root.mj
 import { redactSecrets } from '../../../../src/intelligence/redaction.mjs'
 import type {
   AcpFrameworkView,
+  AcpPermissionView,
   AcpSessionStatus,
   AcpSessionView
 } from '../shared/contract'
@@ -33,6 +34,7 @@ interface ManagedAcpSession {
   unregister: () => void
   activeTurn: symbol | null
   cancelRequested: boolean
+  closePromise: Promise<void> | null
 }
 
 function publicPayload(value: unknown): Record<string, unknown> {
@@ -42,16 +44,60 @@ function publicPayload(value: unknown): Record<string, unknown> {
     : { value: redacted as unknown }
 }
 
+class DesktopTextStream {
+  private pending = ''
+
+  constructor(private readonly publish: (text: string) => void) {}
+
+  append(text: string): void {
+    this.pending += text
+    const sensitiveTail = this.pending.match(
+      /(?:[A-Z0-9_]*(?:API[_-]?KEY|AUTH[_-]?TOKEN|ACCESS[_-]?TOKEN|SECRET|PASSWORD)[A-Z0-9_]*)\s*(?:(?:=|:)\s*["']?[^\s"']*)?$/i
+    )
+    const protectedStart = sensitiveTail?.index ?? this.pending.length
+    let boundary = -1
+    for (let index = 0; index < this.pending.length; index += 1) {
+      if (index < protectedStart && /\s/.test(this.pending[index])) boundary = index + 1
+    }
+    if (boundary <= 0) return
+    this.publish(this.pending.slice(0, boundary))
+    this.pending = this.pending.slice(boundary)
+  }
+
+  flush(): void {
+    if (!this.pending) return
+    this.publish(this.pending)
+    this.pending = ''
+  }
+}
+
 class DesktopAcpObserver {
   buffer: { appendAssistant(text: string): void; flushAssistant(reason?: string): void } | null = null
   private readonly openTools = new Map<string, { name: string; startedAt: number }>()
+  private readonly assistantStream: DesktopTextStream
+  private readonly thinkingStream: DesktopTextStream
 
   constructor(
     private readonly sessionId: string,
     private readonly events: DesktopEventBus
-  ) {}
+  ) {
+    this.assistantStream = new DesktopTextStream((text) => {
+      this.publish('assistant_chunk', { text })
+    })
+    this.thinkingStream = new DesktopTextStream((text) => {
+      this.publish('thinking_segment', { text })
+    })
+  }
 
   emit(event: string, fields: Record<string, unknown> = {}, level = 'info'): void {
+    if (event === 'thinking_segment' && typeof fields.text === 'string') {
+      this.thinkingStream.append(fields.text)
+      return
+    }
+    this.publish(event, fields, level)
+  }
+
+  private publish(event: string, fields: Record<string, unknown> = {}, level = 'info'): void {
     this.events.publish({
       type: `acp_${event}`,
       session_id: this.sessionId,
@@ -60,6 +106,8 @@ class DesktopAcpObserver {
   }
 
   beginTurn(): void {
+    this.assistantStream.flush()
+    this.thinkingStream.flush()
     this.buffer = {
       appendAssistant: () => {},
       flushAssistant: () => {}
@@ -67,8 +115,14 @@ class DesktopAcpObserver {
   }
 
   endTurn(fields: Record<string, unknown> = {}): void {
-    this.emit('turn_finished', fields)
+    this.assistantStream.flush()
+    this.thinkingStream.flush()
+    this.publish('turn_finished', fields)
     this.buffer = null
+  }
+
+  appendAssistantText(text: string): void {
+    this.assistantStream.append(text)
   }
 
   noteNativeType(type: string): void {
@@ -158,6 +212,11 @@ export class AcpSessionManager {
     return [...this.sessions.values()].map((session) => this.view(session))
   }
 
+  listPermissions(sessionId?: string): AcpPermissionView[] {
+    if (sessionId) this.require(sessionId)
+    return this.broker.list(sessionId)
+  }
+
   async start({
     provider,
     executionRoot,
@@ -216,7 +275,8 @@ export class AcpSessionManager {
       error: null,
       unregister: () => {},
       activeTurn: null,
-      cancelRequested: false
+      cancelRequested: false,
+      closePromise: null
     }
     this.sessions.set(id, placeholder)
     this.publishStatus(placeholder)
@@ -243,16 +303,13 @@ export class AcpSessionManager {
         env,
         observer,
         permissionHandler,
+        includeStderrText: false,
         onProcessExit: (details: {
           exitCode: number | null
           signal: NodeJS.Signals | null
           expected: boolean
         }) => this.handleProcessExit(id, details),
-        onAgentText: (text: string) => this.events.publish({
-          type: 'acp_assistant_chunk',
-          session_id: id,
-          payload: publicPayload({ text })
-        })
+        onAgentText: (text: string) => observer.appendAssistantText(text)
       })
       placeholder.runtime = runtime
       placeholder.status = 'ready'
@@ -371,10 +428,15 @@ export class AcpSessionManager {
   async close(sessionId: string, reason = 'operator'): Promise<void> {
     const session = this.sessions.get(sessionId)
     if (!session) return
-    if (session.status === 'closing' || session.status === 'closed') return
+    if (session.closePromise) return session.closePromise
+    session.closePromise = this.closeSession(session, reason)
+    return session.closePromise
+  }
+
+  private async closeSession(session: ManagedAcpSession, reason: string): Promise<void> {
     session.status = 'closing'
     this.publishStatus(session)
-    this.broker.cancelSession(sessionId, reason)
+    this.broker.cancelSession(session.id, reason)
     try {
       try {
         await session.runtime?.cancel(reason)
@@ -385,7 +447,7 @@ export class AcpSessionManager {
       session.status = 'closed'
       session.unregister()
       this.publishStatus(session)
-      this.sessions.delete(sessionId)
+      this.sessions.delete(session.id)
     }
   }
 

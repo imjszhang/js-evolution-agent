@@ -13,6 +13,7 @@ import {
   readWorkerState,
   workerStatePath
 } from '../../../src/daemon/daemon-worker-state.mjs'
+import { writeChannelWorkerState } from '../../../src/channel/worker-state.mjs'
 import { PublicCommandError } from '../src/main/command-registry'
 import { DaemonSupervisor } from '../src/main/daemon-supervisor'
 import { DesktopEventBus } from '../src/main/event-bus'
@@ -278,6 +279,39 @@ describe('DaemonSupervisor', () => {
     expect(spawnMock).not.toHaveBeenCalled()
   })
 
+  it('does not let a stale domain hide another attached worker', async () => {
+    const root = createProjectRoot()
+    const { supervisor, spawnMock } = createSupervisor(root)
+    writeCycleState(root, 'alpha', {
+      pid: 999_999_999,
+      heartbeat_at: new Date(Date.now() - 10_000).toISOString(),
+      stale_after_ms: 1
+    })
+    writeChannelWorkerState(root, 'alpha', {
+      subject: 'alpha',
+      domain: 'channel',
+      schema_version: 2,
+      coordinator: null,
+      workers: {
+        dispatch: {
+          role: 'dispatch',
+          worker_id: 'channel-dispatch',
+          pid: process.pid,
+          status: 'running',
+          started_at: new Date().toISOString(),
+          heartbeat_at: new Date().toISOString(),
+          stale_after_ms: 60_000
+        }
+      }
+    })
+
+    expect(supervisor.get('alpha').mode).toBe('attached')
+    await expect(supervisor.start('alpha', { domain: 'all' })).rejects.toMatchObject({
+      code: 'CONFLICT'
+    })
+    expect(spawnMock).not.toHaveBeenCalled()
+  })
+
   it('terminates a spawned daemon when process ownership registration fails', async () => {
     const root = createProjectRoot()
     const { supervisor, processRegistry } = createSupervisor(root, {
@@ -318,5 +352,34 @@ describe('DaemonSupervisor', () => {
       subject: 'alpha',
       payload: { reason: 'app_quit' }
     }))
+  })
+})
+
+describe('ManagedProcessRegistry', () => {
+  it('makes reentrant shutdown calls wait for the same cleanup work', async () => {
+    const registry = new ManagedProcessRegistry()
+    let releaseCleanup!: () => void
+    const cleanup = new Promise<void>((resolve) => {
+      releaseCleanup = resolve
+    })
+    registry.register({
+      kind: 'daemon',
+      id: 'alpha',
+      pid: 42,
+      cleanup: async () => cleanup
+    })
+
+    const first = registry.shutdownAll('app_quit')
+    let secondFinished = false
+    const second = registry.shutdownAll('app_quit').then(() => {
+      secondFinished = true
+    })
+    await Promise.resolve()
+    expect(secondFinished).toBe(false)
+
+    releaseCleanup()
+    await Promise.all([first, second])
+    expect(secondFinished).toBe(true)
+    expect(registry.list()).toEqual([])
   })
 })

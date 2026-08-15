@@ -1806,6 +1806,20 @@ code {
   font-weight: 600;
 }
 
+.permission-input {
+  max-height: 120px;
+  overflow: auto;
+  margin: 9px 0 0;
+  border-radius: 5px;
+  padding: 7px;
+  color: #aeb7c7;
+  background: #0b0e14;
+  font-size: 8px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .path-list {
   display: grid;
   gap: 3px;

@@ -18,6 +18,10 @@ The client loads the repository from `JEA_PROJECT_ROOT` when set, otherwise it
 walks up from the bundled main process and the current working directory until
 it finds `oada.config.mjs` and `src/cli/jea.mjs`.
 
+The current build is a repository-local client, not a relocatable installer:
+`apps/desktop/out` keeps imports to the checkout's JEA domain modules and must
+run with the source tree and dependencies present.
+
 Main-process IPC responses and renderer events are JSON-cloned before they
 cross the sandbox. That keeps Electron from hanging on a non-cloneable
 `ops.refresh` payload and keeps secrets / handles out of the renderer. A
@@ -47,13 +51,16 @@ Daemon status distinguishes:
 
 - **attached**: a worker started outside this client; closing the client leaves
   it running and the Stop control is unavailable;
-- **managed**: a non-detached child started by this client; it can be stopped
-  from the UI and is cleaned up when the client exits;
+- **managed**: a tracked child started by this client (a dedicated process
+  group on POSIX); it can be stopped from the UI and is cleaned up when the
+  client exits;
 - **stale/zombie**: worker metadata whose heartbeat or PID is unhealthy.
 
 The in-memory child handle, owner token, and PID must all match before the
 client can stop a process. Diagnostic metadata never grants ownership after an
-application restart. A single-instance lock prevents duplicate supervisors.
+application restart. A stale worker may still be alive and therefore blocks a
+replacement start; only absent or confirmed-dead state is startable. A
+single-instance lock prevents duplicate supervisors.
 
 ## ACP work sessions
 
@@ -68,9 +75,9 @@ Permission behavior:
 - allow-once and session-wide allow are distinct when both are offered;
 - unknown tools, remote access, read-only writes, and paths outside the
   execution roots are rejected by default;
-- cancel, timeout, session close, and application exit resolve pending
-  permissions and terminate the child with a bounded SIGTERM-to-SIGKILL
-  fallback.
+- cancel and timeout resolve the active turn and its pending permissions;
+- session close and application exit terminate the child with a bounded
+  SIGTERM-to-SIGKILL fallback.
 
 Credentials and execution-root `.env` values remain in the main process.
 Desktop ACP sessions are separate from Channel desktop chat sessions.

@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import {
+  chmodSync,
   closeSync,
   mkdirSync,
   openSync,
@@ -41,6 +42,7 @@ interface ManagedDaemon {
   domain: DaemonDomain
   startedAt: string
   stopping: boolean
+  processGroup: boolean
   logPaths: { stdout: string; stderr: string }
   unregister: () => void
 }
@@ -61,7 +63,7 @@ export class DaemonSupervisor {
     private readonly processRegistry: ManagedProcessRegistry,
     private readonly events: DesktopEventBus,
     private readonly spawnImpl: SpawnDaemon = spawn,
-    private readonly killGraceMs = 5_000
+    private readonly killGraceMs = 10_000
   ) {}
 
   get(subject: string): DaemonSupervisorView {
@@ -92,9 +94,9 @@ export class DaemonSupervisor {
     }
 
     let mode: DaemonSupervisorMode = 'none'
-    if (cycle.zombie || channel.zombie_count > 0) mode = 'zombie'
+    if (cycle.running || channel.running_count > 0) mode = 'attached'
     else if (cycle.stale || channel.stale_count > 0) mode = 'stale'
-    else if (cycle.running || channel.running_count > 0) mode = 'attached'
+    else if (cycle.zombie || channel.zombie_count > 0) mode = 'zombie'
 
     return {
       subject,
@@ -118,13 +120,20 @@ export class DaemonSupervisor {
     if (this.managed.has(subject)) {
       throw new PublicCommandError('CONFLICT', 'A managed daemon is already running.')
     }
-    const current = this.get(subject)
-    if (current.mode !== 'none' && current.mode !== 'zombie') {
+    const cycle = summarizeWorkerState(readWorkerState(this.projectRoot, subject))
+    const channel = summarizeChannelWorkersState(
+      readChannelWorkerState(this.projectRoot, subject)
+    )
+    const cycleConflict = domain !== 'channel' && (cycle.running || cycle.stale)
+    const channelConflict = domain !== 'cycle'
+      && (channel.running_count > 0 || channel.stale_count > 0)
+    if (cycleConflict || channelConflict) {
       throw new PublicCommandError('CONFLICT', 'An external daemon is already running.')
     }
 
     const ownerToken = randomUUID()
     const startedAt = new Date().toISOString()
+    const processGroup = process.platform !== 'win32' && this.spawnImpl === spawn
     const logDir = join(this.projectRoot, 'runtime', 'logs')
     mkdirSync(logDir, { recursive: true })
     const slug = subject.replace(/[^a-zA-Z0-9._-]+/g, '_')
@@ -132,8 +141,21 @@ export class DaemonSupervisor {
       stdout: join(logDir, `daemon-${slug}.desktop.stdout.log`),
       stderr: join(logDir, `daemon-${slug}.desktop.stderr.log`)
     }
-    const stdoutFd = openSync(logPaths.stdout, 'a')
-    const stderrFd = openSync(logPaths.stderr, 'a')
+    let stdoutFd: number | null = null
+    let stderrFd: number | null = null
+    try {
+      stdoutFd = openSync(logPaths.stdout, 'a', 0o600)
+      stderrFd = openSync(logPaths.stderr, 'a', 0o600)
+      chmodSync(logPaths.stdout, 0o600)
+      chmodSync(logPaths.stderr, 0o600)
+    } catch (error) {
+      if (stdoutFd != null) closeSync(stdoutFd)
+      if (stderrFd != null) closeSync(stderrFd)
+      throw error
+    }
+    if (stdoutFd == null || stderrFd == null) {
+      throw new Error('daemon_log_open_failed')
+    }
     const cliPath = join(this.projectRoot, 'src', 'cli', 'jea.mjs')
     let child: ChildProcess
     try {
@@ -154,7 +176,7 @@ export class DaemonSupervisor {
           JEA_PROJECT_ROOT: this.projectRoot
         },
         windowsHide: true,
-        detached: false,
+        detached: processGroup,
         stdio: ['ignore', stdoutFd, stderrFd]
       })
     } catch (error) {
@@ -179,7 +201,7 @@ export class DaemonSupervisor {
         cleanup: () => this.stop(subject, 'app_quit')
       })
     } catch (error) {
-      await this.terminateChild(child)
+      await this.terminateChild(child, processGroup)
       throw error
     }
     const entry: ManagedDaemon = {
@@ -189,6 +211,7 @@ export class DaemonSupervisor {
       domain,
       startedAt,
       stopping: false,
+      processGroup,
       logPaths,
       unregister
     }
@@ -213,7 +236,7 @@ export class DaemonSupervisor {
       }
       unregister()
       this.removeDiagnostic(subject, ownerToken)
-      await this.terminateChild(child)
+      await this.terminateChild(child, processGroup)
       throw error
     }
     this.events.publish({
@@ -236,7 +259,7 @@ export class DaemonSupervisor {
 
     if (entry.domain !== 'channel') requestWorkerStop(this.projectRoot, subject)
     if (entry.domain !== 'cycle') requestChannelWorkerStop(this.projectRoot, subject)
-    await this.terminateChild(entry.child)
+    await this.terminateChild(entry.child, entry.processGroup)
     if (entry.domain !== 'channel') {
       markWorkerStopped(this.projectRoot, subject, {
         stop_reason: `desktop_${reason}`
@@ -263,18 +286,34 @@ export class DaemonSupervisor {
     return join(runtime.evolutionDir, 'daemon', 'desktop-supervisor.json')
   }
 
-  private async terminateChild(child: ChildProcess): Promise<void> {
+  private async terminateChild(child: ChildProcess, processGroup = false): Promise<void> {
     if (processExited(child)) return
     const closed = new Promise<void>((resolve) => child.once('close', () => resolve()))
-    child.kill('SIGTERM')
+    this.signalChild(child, 'SIGTERM', processGroup)
     const exited = await Promise.race([
       closed.then(() => true),
       delay(this.killGraceMs).then(() => false)
     ])
     if (!exited && !processExited(child)) {
-      child.kill('SIGKILL')
+      this.signalChild(child, 'SIGKILL', processGroup)
       await Promise.race([closed, delay(this.killGraceMs)])
     }
+  }
+
+  private signalChild(
+    child: ChildProcess,
+    signal: NodeJS.Signals,
+    processGroup: boolean
+  ): void {
+    if (processGroup && child.pid) {
+      try {
+        process.kill(-child.pid, signal)
+        return
+      } catch {
+        // Injected test children and already-exited groups fall back to the direct handle.
+      }
+    }
+    child.kill(signal)
   }
 
   private writeDiagnostic(entry: ManagedDaemon): void {

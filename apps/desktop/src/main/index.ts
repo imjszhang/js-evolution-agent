@@ -2,6 +2,7 @@ import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import { redactSecrets } from '../../../../src/intelligence/redaction.mjs'
 import { AcpSessionManager } from './acp-session-manager'
 import {
   createCommandRegistry,
@@ -57,12 +58,17 @@ let shutdownComplete = false
 events.subscribe((event) => {
   let safeEvent
   try {
-    safeEvent = toIpcValue(event)
+    safeEvent = toIpcValue(redactSecrets(event))
   } catch {
     return
   }
   for (const window of BrowserWindow.getAllWindows()) {
-    if (!window.isDestroyed()) window.webContents.send(JEA_EVENT_CHANNEL, safeEvent)
+    if (window.isDestroyed()) continue
+    const trustedLocation = isTrustedRendererLocation(window.webContents.getURL(), {
+      devRendererUrl,
+      productionRendererUrl
+    })
+    if (trustedLocation) window.webContents.send(JEA_EVENT_CHANNEL, safeEvent)
   }
 })
 

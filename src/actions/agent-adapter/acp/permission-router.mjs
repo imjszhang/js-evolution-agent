@@ -108,6 +108,7 @@ export function decideHeadlessPermission({
     kind: kind || 'unknown',
     paths,
     remote,
+    inputSummary: raw,
     response: selectOption(request?.options ?? [], allowed, { onceOnly: executing }),
   };
 }

@@ -38,6 +38,7 @@ export class AcpRuntime {
     onSessionUpdate = null,
     onAgentText = null,
     onProcessExit = null,
+    includeStderrText = true,
   } = {}) {
     this.framework = framework;
     this.cwd = cwd;
@@ -52,6 +53,7 @@ export class AcpRuntime {
     this.onSessionUpdate = onSessionUpdate;
     this.onAgentText = onAgentText;
     this.onProcessExit = onProcessExit;
+    this.includeStderrText = includeStderrText;
     this.child = null;
     this.connection = null;
     this.session = null;
@@ -93,7 +95,12 @@ export class AcpRuntime {
     });
     this.child.stderr?.on('data', (chunk) => {
       const text = String(chunk).trim();
-      if (text) this.observer?.emit('native_event', { native_type: 'acp:stderr', text }, 'warning');
+      if (text) {
+        this.observer?.emit('native_event', {
+          native_type: 'acp:stderr',
+          ...(this.includeStderrText ? { text } : {}),
+        }, 'warning');
+      }
     });
 
     const stream = ndJsonStream(
@@ -229,9 +236,13 @@ export class AcpRuntime {
     this.closed = true;
     if (this.connection && this.session && this.closeSupported) {
       try {
-        await this.connection.agent.request(methods.agent.session.close, {
-          sessionId: this.session.sessionId,
-        });
+        await this.#withTimeout(
+          this.connection.agent.request(methods.agent.session.close, {
+            sessionId: this.session.sessionId,
+          }),
+          'session/close',
+          { timeoutMs: Math.min(this.killGraceMs, 5_000), cancel: false },
+        );
       } catch (error) {
         this.observer?.emit('session_close_failed', { error: error.message }, 'warning');
       }

@@ -249,8 +249,7 @@ describe('AcpSessionManager', () => {
     expect(events).toEqual(expect.arrayContaining([
       expect.objectContaining({
         type: 'acp_assistant_chunk',
-        session_id: started.id,
-        payload: { text: 'streamed answer' }
+        session_id: started.id
       }),
       expect.objectContaining({
         type: 'acp_native_event',
@@ -277,6 +276,10 @@ describe('AcpSessionManager', () => {
         payload: expect.objectContaining({ stop_reason: 'end_turn' })
       })
     ]))
+    expect(events
+      .filter((event) => event.type === 'acp_assistant_chunk')
+      .map((event) => String(event.payload.text ?? ''))
+      .join('')).toBe('streamed answer')
 
     await manager.close(started.id, 'test_close')
 
@@ -292,6 +295,67 @@ describe('AcpSessionManager', () => {
       'closing',
       'closed'
     ])
+  })
+
+  it('redacts secrets split across assistant chunks before publishing', async () => {
+    const { root, captured, events, manager } = harness()
+    const started = await manager.start({
+      provider: 'acp:claude-code',
+      executionRoot: root
+    })
+    captured.options.observer.beginTurn()
+
+    captured.options.onAgentText('sk-ant-split')
+    expect(events.filter((event) => event.type === 'acp_assistant_chunk')).toEqual([])
+    captured.options.onAgentText('secret123456 ')
+    captured.options.onAgentText('API_KEY ')
+    captured.options.onAgentText('= plainsecretvalue ')
+    captured.options.observer.endTurn({ stop_reason: 'end_turn' })
+
+    const assistantText = events
+      .filter((event) => event.type === 'acp_assistant_chunk')
+      .map((event) => String(event.payload.text ?? ''))
+      .join('')
+    expect(assistantText).toContain('[REDACTED_SECRET]')
+    expect(assistantText).not.toContain('splitsecret')
+    expect(assistantText).not.toContain('plainsecretvalue')
+    await manager.close(started.id, 'test_cleanup')
+  })
+
+  it('provides a recoverable snapshot of pending permission requests', async () => {
+    const { root, captured, manager } = harness()
+    const started = await manager.start({
+      provider: 'acp:claude-code',
+      executionRoot: root
+    })
+    const permission = captured.options.permissionHandler({
+      params: {
+        toolCall: {
+          toolCallId: 'snapshot-tool',
+          title: 'Edit snapshot file',
+          kind: 'edit',
+          locations: [{ path: join(root, 'snapshot.ts') }],
+          rawInput: { path: join(root, 'snapshot.ts') }
+        },
+        options: [
+          { optionId: 'allow-once', kind: 'allow_once', name: 'Allow once' },
+          { optionId: 'reject-once', kind: 'reject_once', name: 'Reject once' }
+        ]
+      }
+    })
+
+    const pendingPermission = manager.listPermissions(started.id)[0]
+    expect(pendingPermission).toMatchObject({
+      session_id: started.id,
+      tool_call_id: 'snapshot-tool',
+      tool_kind: 'edit'
+    })
+    manager.respondPermission(started.id, pendingPermission.request_id, 'reject-once')
+    await expect(permission).resolves.toEqual({
+      outcome: { outcome: 'selected', optionId: 'reject-once' }
+    })
+    expect(manager.listPermissions(started.id)).toEqual([])
+    await manager.close(started.id, 'test_cleanup')
   })
 
   it('keeps a cancelled turn busy until its prompt settles', async () => {
