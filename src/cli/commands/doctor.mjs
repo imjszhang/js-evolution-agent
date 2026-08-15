@@ -66,6 +66,9 @@ export async function doctorCommand() {
     timeoutMs: Number(process.env.JEA_ACP_DOCTOR_TIMEOUT_MS ?? 5_000),
   });
   for (const report of acpReports) {
+    statusLine(report.node_compatible, `ACP ${report.provider} Node runtime`, report.min_node_major
+      ? `${process.version}; requires >= ${report.min_node_major}`
+      : process.version);
     statusLine(report.binary_ok, `ACP ${report.provider} binary`, report.version ?? report.binary_error ?? report.command);
     statusLine(report.credentials_ok, `ACP ${report.provider} credentials`, report.credentials_ok
       ? report.credential_sources.join(', ')

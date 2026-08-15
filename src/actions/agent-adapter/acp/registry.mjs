@@ -34,6 +34,7 @@ export function createAcpFrameworkRegistry({
     command: env.JEA_ACP_CLAUDE_CODE_BIN || localBin(projectRoot, 'claude-agent-acp'),
     args: splitArgs(env.JEA_ACP_CLAUDE_CODE_ARGS),
     versionArgs: ['--version'],
+    minNodeMajor: 22,
     credentialEnv: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'],
     packageName: '@agentclientprotocol/claude-agent-acp',
   });

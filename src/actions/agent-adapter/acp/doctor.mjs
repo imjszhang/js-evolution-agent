@@ -23,6 +23,7 @@ export async function probeAcpFramework(framework, {
     windowsHide: true,
   });
   const binaryOk = !versionProbe.error && versionProbe.status === 0;
+  const nodeMajor = Number(process.versions.node.split('.')[0]);
   const credentials = (framework.credentialEnv ?? []).filter((key) => Boolean(env[key]?.trim()));
   const report = {
     provider: framework.provider,
@@ -31,12 +32,17 @@ export async function probeAcpFramework(framework, {
     version: textOutput(versionProbe).split(/\r?\n/)[0] || null,
     binary_error: versionProbe.error?.message
       ?? (binaryOk ? null : textOutput(versionProbe) || `exit ${versionProbe.status}`),
+    node_compatible: !framework.minNodeMajor || nodeMajor >= framework.minNodeMajor,
+    min_node_major: framework.minNodeMajor ?? null,
     credentials_ok: credentials.length > 0,
     credential_sources: credentials,
     handshake: handshake ? 'pending' : 'skipped',
     handshake_error: null,
   };
-  if (!binaryOk || !handshake) return report;
+  if (!binaryOk || !handshake || !report.node_compatible) {
+    if (!report.node_compatible) report.handshake = 'skipped_incompatible_node';
+    return report;
+  }
 
   let runtime;
   try {

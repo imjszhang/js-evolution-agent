@@ -35,6 +35,15 @@ export async function runAcpProviderTurns({
       error: `unknown ACP framework: ${provider}`,
     };
   }
+  const nodeMajor = Number(process.versions.node.split('.')[0]);
+  if (framework.minNodeMajor && nodeMajor < framework.minNodeMajor) {
+    return {
+      success: false,
+      deferred: true,
+      provider,
+      error: `${provider} requires Node >= ${framework.minNodeMajor}; current runtime is ${process.version}`,
+    };
+  }
 
   const executionEnv = buildExecutionEnv(cwd, { baseEnv: ctx?.env ?? process.env });
   const env = envWithLocalNodeBin(projectRoot, executionEnv.env);
