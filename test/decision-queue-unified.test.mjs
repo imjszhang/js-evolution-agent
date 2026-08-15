@@ -182,8 +182,8 @@ describe('unified DecisionQueue', () => {
     expect(badRequeue.ok).toBe(false);
 
     const beforeRequeue = queue.runQueueMaintenance({ pendingTtlCycles: 100, blockedTtlCycles: 100 });
-    expect(beforeRequeue.incremented).toBeGreaterThanOrEqual(1);
-    expect(queue.getById(id)?.cycles_seen).toBeGreaterThan(0);
+    expect(beforeRequeue.incremented).toBe(0);
+    expect(queue.getById(id)?.cycles_seen).toBe(0);
 
     const requeued = queue.requeueDecision(id);
     expect(requeued).toEqual({ ok: true, status: 'pending' });
@@ -310,7 +310,7 @@ describe('unified DecisionQueue', () => {
     expect(queue.getById('c:2')?.status).toBe('pending');
   });
 
-  it('runQueueMaintenance expires pending after cycles TTL', () => {
+  it('runQueueMaintenance does not increment cycles_seen or expire by cycle TTL', () => {
     tempDir = mkdtempSync(join(tmpdir(), 'jea-queue-'));
     const queue = new DecisionQueue({ dataDir: tempDir });
     const ids = queue.addDecisions({
@@ -320,7 +320,7 @@ describe('unified DecisionQueue', () => {
     const id = ids[0];
     expect(queue.getById(id)?.cycles_seen).toBe(0);
 
-    for (let i = 0; i < 5; i += 1) {
+    for (let i = 0; i < 6; i += 1) {
       const mid = queue.runQueueMaintenance({
         cycleId: `tick-${i}`,
         pendingTtlCycles: 5,
@@ -328,23 +328,13 @@ describe('unified DecisionQueue', () => {
         wallclockTtlDays: 30,
       });
       expect(mid.expired).toHaveLength(0);
+      expect(mid.incremented).toBe(0);
       expect(queue.getById(id)?.status).toBe('pending');
-      expect(queue.getById(id)?.cycles_seen).toBe(i + 1);
+      expect(queue.getById(id)?.cycles_seen).toBe(0);
     }
-
-    const last = queue.runQueueMaintenance({
-      cycleId: 'tick-5',
-      pendingTtlCycles: 5,
-      blockedTtlCycles: 10,
-      wallclockTtlDays: 30,
-    });
-    expect(last.expired).toEqual([{ id, expire_reason: 'cycles' }]);
-    expect(queue.getById(id)?.status).toBe('expired');
-    expect(queue.getById(id)?.expire_reason).toBe('cycles');
-    expect(queue.getById(id)?.cycles_seen).toBe(6);
   });
 
-  it('runQueueMaintenance uses wider blocked TTL', () => {
+  it('runQueueMaintenance does not expire blocked items by cycle TTL', () => {
     tempDir = mkdtempSync(join(tmpdir(), 'jea-queue-'));
     const queue = new DecisionQueue({ dataDir: tempDir });
     writeFileSync(join(tempDir, 'pending_decisions.json'), JSON.stringify({
@@ -360,7 +350,7 @@ describe('unified DecisionQueue', () => {
       }],
     }), 'utf-8');
 
-    for (let i = 0; i < 10; i += 1) {
+    for (let i = 0; i < 11; i += 1) {
       const mid = queue.runQueueMaintenance({
         pendingTtlCycles: 5,
         blockedTtlCycles: 10,
@@ -368,15 +358,8 @@ describe('unified DecisionQueue', () => {
       });
       expect(mid.expired).toHaveLength(0);
       expect(queue.getById('b:0')?.status).toBe('blocked');
+      expect(queue.getById('b:0')?.cycles_seen).toBe(0);
     }
-
-    const last = queue.runQueueMaintenance({
-      pendingTtlCycles: 5,
-      blockedTtlCycles: 10,
-      wallclockTtlDays: 30,
-    });
-    expect(last.expired).toEqual([{ id: 'b:0', expire_reason: 'cycles' }]);
-    expect(queue.getById('b:0')?.status).toBe('expired');
   });
 
   it('cleanupExpired wallclock fallback expires ancient decisions', () => {
@@ -418,7 +401,7 @@ describe('unified DecisionQueue', () => {
       wallclockTtlDays: 30,
     });
     const backlog = queue.getBacklogSummary({ limit: 10 });
-    expect(backlog.pending[0].cycles_seen).toBe(1);
+    expect(backlog.pending[0].cycles_seen).toBe(0);
   });
 
   afterEach(() => {

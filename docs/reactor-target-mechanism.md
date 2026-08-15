@@ -1,7 +1,7 @@
 # 目标机制图：证据流反应器（反应器化后的 JEA）
 
 - 日期：2026-08-15
-- 状态：S0–S8 实现已在 `feat/reactor-target-s0-s9` 落地（gate 默认仍关，除 health primary）；S9 仅文档/删除条件，旧 step 列车保留为显式回退
+- 状态：S0–S9 已完成。S8 默认开门 + 隔离验证；S9 硬删列车兼容路径。`jea run` 只走 reactor；`--pipeline agent_loop|phases` / `run_cycle` 明确失败。
 - 前置：[`docs/reactor-migration-rule-inventory.md`](./reactor-migration-rule-inventory.md)（法则清单：哪些删、哪些换单位、哪些保留）
 - 对照：[`docs/mechanism-diagram.md`](./mechanism-diagram.md)（现状机制图）
 

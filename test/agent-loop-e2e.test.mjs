@@ -4,7 +4,6 @@ import {
   existsSync,
   mkdtempSync,
   mkdirSync,
-  readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -17,7 +16,7 @@ import { runtimeForSubject } from '../src/daemon/evolve-runs.mjs';
 import { createCycle, readStepArtifact } from '../src/daemon/cycle-state.mjs';
 import {
   buildCycleContext,
-  runAgentLoopStep,
+  runReactorStep,
   runBeliefUpdateStep,
   runDiaryStep,
   runExecStep,
@@ -63,8 +62,8 @@ function makeE2eProjectRoot() {
   return root;
 }
 
-describe('agent_loop e2e (mock)', () => {
-  it('runs agent_loop then exec/verify/belief/goals/diary and closes cycle artifacts', async () => {
+describe('reactor investigation e2e (mock)', () => {
+  it('runs reactor then exec/verify/belief/goals/diary and writes cycle artifacts', async () => {
     const root = makeE2eProjectRoot();
     const prevCwd = process.cwd();
     const prevMock = process.env.JEA_FORCE_MOCK;
@@ -72,7 +71,7 @@ describe('agent_loop e2e (mock)', () => {
     try {
       process.chdir(root);
       process.env.JEA_FORCE_MOCK = '1';
-      process.env.JEA_CYCLE_PIPELINE = 'agent_loop';
+      delete process.env.JEA_CYCLE_PIPELINE;
       delete process.env.DEEPSEEK_API_KEY;
 
       const runtime = runtimeForSubject(root, SUBJECT);
@@ -81,21 +80,19 @@ describe('agent_loop e2e (mock)', () => {
       expect(typeof ctx.cfg.aiClient.chatMessagesWithTools).toBe('function');
 
       const cycleState = createCycle(root, SUBJECT, {
-        meta: { driver: 'run', pipeline: 'agent_loop' },
+        meta: { driver: 'run', pipeline: 'reactor' },
       });
       const recordState = { root, subject: SUBJECT };
 
-      const loopOutcome = await runAgentLoopStep(ctx, {
+      const loopOutcome = await runReactorStep(ctx, {
         cycleId: cycleState.cycle_id,
         recordState,
       });
       expect(loopOutcome.intelResult.success).toBe(true);
       expect(existsSync(loopOutcome.intelResult.report.mdPath)).toBe(true);
 
-      const intelCp = readStepArtifact(root, SUBJECT, cycleState.cycle_id, 'intel');
-      const loopCp = readStepArtifact(root, SUBJECT, cycleState.cycle_id, 'agent_loop');
-      expect(intelCp?.success).toBe(true);
-      expect(loopCp?.success).toBe(true);
+      const reactorCp = readStepArtifact(root, SUBJECT, cycleState.cycle_id, 'reactor');
+      expect(reactorCp?.success).toBe(true);
       expect(readStepArtifact(root, SUBJECT, cycleState.cycle_id, 'exec')).toBeNull();
 
       const { execResult } = await runExecStep(ctx, {
@@ -145,18 +142,7 @@ describe('agent_loop e2e (mock)', () => {
         recordState,
       });
       expect(diary.failed).not.toBe(true);
-
-      const turnsPath = join(
-        runtime.runtimeRoot,
-        'data',
-        'evolution',
-        'records',
-        cycleState.cycle_id,
-        'agent_loop_turns.jsonl',
-      );
-      expect(existsSync(turnsPath)).toBe(true);
-      const turns = readFileSync(turnsPath, 'utf-8').trim().split('\n').filter(Boolean);
-      expect(turns.length).toBeGreaterThanOrEqual(1);
+      expect(readStepArtifact(root, SUBJECT, cycleState.cycle_id, 'diary')).toBeTruthy();
     } finally {
       process.chdir(prevCwd);
       if (prevMock == null) delete process.env.JEA_FORCE_MOCK;

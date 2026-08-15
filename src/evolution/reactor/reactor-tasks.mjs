@@ -11,7 +11,6 @@ import { peekRuleDueWindow, runRuleReaction } from './rule-reactor.mjs';
 import { compactMemory, readMemoryCompactionProjection, shouldCompactMemory } from './memory-compactor.mjs';
 import { consumeWakeIntent, enqueueWakeIntent, listPendingWakes } from './wake-store.mjs';
 import { patchBatchCheckpoint, readBatchCheckpoint } from './batch-checkpoint-store.mjs';
-import { isEvidenceWakeEnabled } from './feature-gates.mjs';
 import { listEligibleEvidence, readClaimLedger } from './claim-ledger.mjs';
 import { listOpenExecIntents } from './exec-intent-store.mjs';
 import {
@@ -69,9 +68,6 @@ export function enqueueReactorTask(root, subject, kind, {
 }
 
 export function scanWakeBacklog(root, subject, { enqueueTask } = {}) {
-  if (!isEvidenceWakeEnabled()) {
-    return { scanned: false, enqueued: [] };
-  }
   const runtime = runtimeForSubject(root, subject);
   const enqueued = [];
   for (const intent of listPendingWakes(root, subject)) {

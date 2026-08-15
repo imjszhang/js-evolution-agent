@@ -12,8 +12,6 @@ import {
   readExecResult,
   writeExecResult,
 } from '../src/evolution/reactor/exec-result-store.mjs';
-import { isExecRateOnly } from '../src/evolution/reactor/feature-gates.mjs';
-
 let tempDir = null;
 
 afterEach(() => {
@@ -42,7 +40,6 @@ function agentAction(summary) {
 describe('rate-only gate', () => {
   it('ignores cycle budget passed to run()', async () => {
     process.env.JEA_EXEC_RATE_ONLY = '1';
-    expect(isExecRateOnly()).toBe(true);
     tempDir = mkdtempSync(join(tmpdir(), 'jea-rate-only-'));
     const queue = new DecisionQueue({ dataDir: tempDir });
     queue.addDecisionsDetailed({

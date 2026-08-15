@@ -125,8 +125,7 @@ describe('Intel report deliverable e2e (phases vs agent_loop)', () => {
       process.env.JEA_FORCE_MOCK = '1';
       delete process.env.DEEPSEEK_API_KEY;
       process.chdir(root);
-      process.env.JEA_CYCLE_PIPELINE = 'phases';
-      process.env.JEA_SUPPRESS_PHASES_DEPRECATION = '1';
+      delete process.env.JEA_CYCLE_PIPELINE;
 
       const runtime = runtimeForSubject(root, SUBJECT);
       writePendingOperatorBrief(runtime.runtimeRoot, {
@@ -189,7 +188,7 @@ describe('Intel report deliverable e2e (phases vs agent_loop)', () => {
       process.env.JEA_FORCE_MOCK = '1';
       delete process.env.DEEPSEEK_API_KEY;
       process.chdir(root);
-      process.env.JEA_CYCLE_PIPELINE = 'agent_loop';
+      delete process.env.JEA_CYCLE_PIPELINE;
 
       const runtime = runtimeForSubject(root, SUBJECT);
       writePendingOperatorBrief(runtime.runtimeRoot, {

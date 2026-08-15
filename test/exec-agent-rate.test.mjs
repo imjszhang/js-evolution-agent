@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -106,12 +106,19 @@ describe('ExecutionPipeline agent rate gate', () => {
   let tempDir;
   const prevRate = process.env.JEA_EXEC_AGENT_RATE;
   const prevWindow = process.env.JEA_EXEC_AGENT_RATE_WINDOW_MS;
+  const prevRateOnly = process.env.JEA_EXEC_RATE_ONLY;
+
+  beforeEach(() => {
+    process.env.JEA_EXEC_RATE_ONLY = '0';
+  });
 
   afterEach(() => {
     if (prevRate === undefined) delete process.env.JEA_EXEC_AGENT_RATE;
     else process.env.JEA_EXEC_AGENT_RATE = prevRate;
     if (prevWindow === undefined) delete process.env.JEA_EXEC_AGENT_RATE_WINDOW_MS;
     else process.env.JEA_EXEC_AGENT_RATE_WINDOW_MS = prevWindow;
+    if (prevRateOnly === undefined) delete process.env.JEA_EXEC_RATE_ONLY;
+    else process.env.JEA_EXEC_RATE_ONLY = prevRateOnly;
     if (tempDir) {
       try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* ignore */ }
       tempDir = null;
@@ -141,8 +148,8 @@ describe('ExecutionPipeline agent rate gate', () => {
     const result = await pipeline.run();
     expect(result.success).toBe(true);
     expect(result.agent_rate).toBeNull();
-    expect(result.remaining_agent_pending).toBe(1);
-    expect(order.filter((x) => x.startsWith('agent:'))).toHaveLength(2);
+    expect(result.remaining_agent_pending).toBe(0);
+    expect(order.filter((x) => x.startsWith('agent:'))).toHaveLength(3);
   });
 
   it('rate=2 with 5 pending agents and budget=8 executes only 2', async () => {

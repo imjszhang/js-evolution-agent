@@ -46,7 +46,7 @@ import {
   formatRuleFeedbackForPrompt,
 } from '../../intelligence/rule-feedback.mjs';
 import { formatDecisionBacklogForPrompt, safeBacklogSummary } from '../../intelligence/phase1-shared.mjs';
-import { loadEnabledGuards } from '../agent-loop/guard-runner.mjs';
+import { loadEnabledGuards } from '../investigation/guard-runner.mjs';
 import { readCarryoverDocument } from '../carryover.mjs';
 import {
   ackBatchHandled,

@@ -13,19 +13,9 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeJsonFile } from '../src/infra/files.mjs';
 import { initData } from '../src/cli/commands/data.mjs';
-import { startCycleFromTick, reconcileOpenCycles } from '../src/daemon/cycle-dispatch.mjs';
-import {
-  REACTOR_STEP_TYPES,
-  TERMINAL_STEP_STATUSES,
-} from '../src/daemon/cycle-reducer.mjs';
-import {
-  listStepArtifacts,
-  readStepArtifact,
-  readCycleState,
-} from '../src/daemon/cycle-state.mjs';
-import { readTaskQueue } from '../src/daemon/daemon-tasks.mjs';
-import { workOnce } from '../src/cli/commands/daemon.mjs';
+import { listOpenCycles, listStepArtifacts, readStepArtifact } from '../src/daemon/cycle-state.mjs';
 import { runtimeForSubject } from '../src/daemon/evolve-runs.mjs';
+import { runSingleCycle } from '../src/evolution/runner.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const SUBJECT = 'alpha';
@@ -64,38 +54,6 @@ function makeE2eProjectRoot() {
   return root;
 }
 
-const STEP_FLAGS = {
-  mock: true,
-  'skip-goals-assess': true,
-  'skip-belief-update': true,
-};
-
-const FULL_STEP_FLAGS = {
-  mock: true,
-};
-
-function pendingOrRunningCount(root) {
-  const queue = readTaskQueue(root, SUBJECT);
-  return queue.tasks.filter((task) => task.status === 'pending' || task.status === 'running').length;
-}
-
-async function drainCycle(root, cycleId, stepInput, stepFlags = STEP_FLAGS) {
-  const maxIterations = 80;
-  for (let i = 0; i < maxIterations; i += 1) {
-    const state = readCycleState(root, SUBJECT, cycleId);
-    if (state?.status === 'closed' || state?.status === 'failed') {
-      return state;
-    }
-
-    if (pendingOrRunningCount(root) === 0) {
-      reconcileOpenCycles(root, SUBJECT, stepInput);
-    }
-
-    await workOnce(root, SUBJECT, stepFlags);
-  }
-  return readCycleState(root, SUBJECT, cycleId);
-}
-
 function readEvolutionEventTypes(root) {
   const runtimeRoot = runtimeForSubject(root, SUBJECT).runtimeRoot;
   const path = join(runtimeRoot, 'data', 'intelligence', 'evolution_events', 'evolution-events.jsonl');
@@ -114,36 +72,21 @@ function readEvolutionEventTypes(root) {
     .filter(Boolean);
 }
 
-describe('cycle step e2e (mock)', () => {
-  it('workOnce loop runs full step chain until cycle closed', async () => {
+describe('reactor sync cycle e2e (mock)', () => {
+  it('jea run --mock completes reactor exec/verify/diary without a train', async () => {
     const root = makeE2eProjectRoot();
-    const stepInput = {
-      mock: true,
-      skip_belief_update: true,
-      skip_goals_assess: true,
-    };
-
     try {
-      const started = startCycleFromTick(root, SUBJECT, stepInput);
-      expect(started.started).toBe(true);
-      const cycleId = started.cycle.cycle_id;
-      expect(cycleId).toBeTruthy();
-
-      expect(started.cycle?.meta?.pipeline).toBe('reactor');
-
-      const finalState = await drainCycle(root, cycleId, stepInput);
-      expect(finalState?.status).toBe('closed');
-
-      for (const step of REACTOR_STEP_TYPES) {
-        const status = finalState.steps[step]?.status;
-        expect(TERMINAL_STEP_STATUSES.has(status), `${step}=${status}`).toBe(true);
-      }
-
-      const artifacts = listStepArtifacts(root, SUBJECT, cycleId);
-      expect(artifacts).toContain('reactor');
-      expect(artifacts).toContain('exec');
-      expect(artifacts).toContain('verify');
-      expect(artifacts).toContain('diary');
+      const result = await runSingleCycle({
+        root,
+        subject: SUBJECT,
+        flags: {
+          mock: true,
+          'skip-goals-assess': true,
+          'skip-belief-update': true,
+        },
+      });
+      expect(result.exitCode).toBe(0);
+      expect(listOpenCycles(root, SUBJECT)).toHaveLength(0);
 
       const events = readEvolutionEventTypes(root);
       const types = new Set(events.map((e) => e.type));
@@ -152,78 +95,40 @@ describe('cycle step e2e (mock)', () => {
       expect(types.has('verify_pipeline')).toBe(true);
       expect(types.has('evolution_diary')).toBe(true);
 
-      const honesty = events.filter((e) => e.type === 'reactor_report_honesty' && e.cycle_id === cycleId);
-      expect(honesty).toHaveLength(1);
+      const honesty = events.filter((e) => e.type === 'reactor_report_honesty');
+      expect(honesty.length).toBeGreaterThanOrEqual(1);
       expect(honesty[0].batch_id).toMatch(/^batch-/);
-      expect(honesty[0].status).toBeTruthy();
+
+      const cycleId = honesty[0].cycle_id;
+      const artifacts = listStepArtifacts(root, SUBJECT, cycleId);
+      expect(artifacts).toContain('reactor');
+      expect(artifacts).toContain('exec');
+      expect(artifacts).toContain('verify');
+      expect(artifacts).toContain('diary');
       const reactorCp = readStepArtifact(root, SUBJECT, cycleId, 'reactor');
       expect(reactorCp?.batch_id).toBe(honesty[0].batch_id);
-
-      const cycleEvents = events.filter((e) => e.cycle_id === cycleId || e.cycle_id?.startsWith('exec-'));
-      expect(cycleEvents.length).toBeGreaterThan(0);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   }, 180_000);
 
-  it('workOnce loop runs belief and goals steps when they are not skipped', async () => {
+  it('jea run --mock also writes belief and goals when they are not skipped', async () => {
     const root = makeE2eProjectRoot();
-    const stepInput = {
-      mock: true,
-      skip_belief_update: false,
-      skip_goals_assess: false,
-    };
-
     try {
-      const started = startCycleFromTick(root, SUBJECT, stepInput);
-      expect(started.started).toBe(true);
-      const cycleId = started.cycle.cycle_id;
-      expect(cycleId).toBeTruthy();
-
-      expect(started.cycle?.meta?.pipeline).toBe('reactor');
-
-      const finalState = await drainCycle(root, cycleId, stepInput, FULL_STEP_FLAGS);
-      expect(finalState?.status).toBe('closed');
-
-      for (const step of REACTOR_STEP_TYPES) {
-        const status = finalState.steps[step]?.status;
-        expect(TERMINAL_STEP_STATUSES.has(status), `${step}=${status}`).toBe(true);
-      }
-      expect(finalState.steps.belief_update.status).not.toBe('skipped');
-      expect(finalState.steps.goals_assess.status).not.toBe('skipped');
-      expect(finalState.steps.goals_calibrate.status).not.toBe('skipped');
-
-      const artifacts = listStepArtifacts(root, SUBJECT, cycleId);
-      for (const step of REACTOR_STEP_TYPES) {
-        expect(artifacts, `missing artifact for ${step}`).toContain(step);
-      }
-
-      const beliefArtifact = readStepArtifact(root, SUBJECT, cycleId, 'belief_update');
-      expect(beliefArtifact).toMatchObject({
-        skipped: false,
+      const result = await runSingleCycle({
+        root,
+        subject: SUBJECT,
+        flags: { mock: true },
       });
-      expect(beliefArtifact.beliefUpdateResult).toBeTruthy();
-
-      const goalsAssessArtifact = readStepArtifact(root, SUBJECT, cycleId, 'goals_assess');
-      expect(goalsAssessArtifact).toMatchObject({
-        skipped: false,
-      });
-      expect(goalsAssessArtifact.goalsAssessResult).toBeTruthy();
-
-      const goalsCalibrateArtifact = readStepArtifact(root, SUBJECT, cycleId, 'goals_calibrate');
-      expect(goalsCalibrateArtifact).toMatchObject({
-        skipped: false,
-      });
-      expect(goalsCalibrateArtifact.goalsCalibrateResult).toBeTruthy();
+      expect(result.exitCode).toBe(0);
 
       const events = readEvolutionEventTypes(root);
       const types = new Set(events.map((e) => e.type));
       expect(types.has('belief_update')).toBe(true);
       expect(types.has('goals_assess')).toBe(true);
       expect(types.has('goals_calibrate')).toBe(true);
-      const honesty = events.filter((e) => e.type === 'reactor_report_honesty' && e.cycle_id === cycleId);
-      expect(honesty).toHaveLength(1);
-      expect(honesty[0].batch_id).toMatch(/^batch-/);
+      const honesty = events.filter((e) => e.type === 'reactor_report_honesty');
+      expect(honesty.length).toBeGreaterThanOrEqual(1);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

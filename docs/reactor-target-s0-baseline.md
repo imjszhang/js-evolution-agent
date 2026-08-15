@@ -17,16 +17,14 @@
 
 旧记录保持可读；新写入不得破坏已有 claim ledger。Claim 覆盖按 `reactor` 独立计算。
 
-## 2. Feature gates（双轨，单向门后删除）
+## 2. Feature gates（S9 已删除）
 
-| Gate | 默认 | 作用 |
-| --- | --- | --- |
-| `JEA_EVIDENCE_WAKE` | 关 | 周期请求转 cognitive wake；idle backlog 扫描 |
-| `JEA_IN_PROCESS_CYCLE` | 随 evidence-wake | 列车回退也可进程内；显式 `0` 可关，`JEA_SUBPROCESS_CYCLE=1` 强制旧子进程。新 reactor task 始终进程内 |
-| `JEA_SUBPROCESS_CYCLE` | 关 | 强制旧子进程列车 |
-| `JEA_REACTOR_HEALTH_PRIMARY` | 开 | doctor/viewer 以 reactor 投影为主 |
-| `JEA_QUEUE_DISABLE_CYCLE_TTL` | 关 | 停止递增 `cycles_seen`，只走墙钟 TTL |
-| `JEA_EXEC_RATE_ONLY` | 关 | exec 只认速率+并发，忽略每轮 budget |
+S9 已删除 `src/evolution/reactor/feature-gates.mjs` 与 `src/daemon/reactor-compensation-gates.mjs`。行为固化为：
+
+- evidence wake 开、墙钟 TTL、rate-only、reactor 健康为主
+- tick 不开轮（除非显式 `JEA_TICK_OPEN_CYCLE=1`）
+- 不做 step artifact 假完成（除非显式 `JEA_STEP_ARTIFACT_RECONCILE=1`）
+- leftover `JEA_EVIDENCE_WAKE=0` / `JEA_SUBPROCESS_CYCLE=1` / registry `pipeline: agent_loop` **不再回退**，会报错或被忽略
 
 ## 3. 三 subject 实测（2026-08-15，只读）
 
@@ -62,15 +60,16 @@
 | S5 exec/verify | verify 读持久 exec 结果；`ok=false` 不 complete；durable intent | exec 不再依赖 cycle-state checkpoint 接力 |
 | S6 法则/操作者 | claim 按 reactor 独立覆盖；kind 用证据流复数名；per-goal cursor | 法则不再走固定 belief/goals step |
 | S7 记忆压实 | 写 `last_compacted_at`，只压上次之后的 handled batches | diary step 从默认步图移除 |
-| S8 删周期双源 | 当前仅 deprecate | 上列 gate 全开且三 subject 连续安静/健康一周 |
-| S9 删 agent_loop/phases | 当前仅显式回退 | 无 `--pipeline agent_loop\|phases` 调用方，且 S8 已删 |
+| S8 删周期双源 | **完成**（2026-08-15，默认开门 + 隔离验证） | 三生产 subject 一周观察改为操作者可选加固，不再挡 S9 |
+| S9 删 agent_loop/phases | **完成**（2026-08-15，隔离验证口径） | 旧入口无生产调用方；`jea run --pipeline agent_loop` 明确失败 |
 
-S8/S9 **现在不删代码**。默认 gate 仍关着（除 health primary），硬删会破坏回退与双轨对照。
+S9 硬删见 `docs/reactor-s9-deletion-manifest.md`。列车兼容路径已移除，回滚只能靠备份。
 
 ## 5. 本 PR 验收与回滚
 
 - 隔离 mock canary（不写三个生产 subject）：`npm run reactor:canary`
 - 故障套件：`npx vitest run test/contracts.test.mjs test/exec-recovery.test.mjs test/reactor-wake.test.mjs test/reactor-shadow.test.mjs test/reactor-event-driven.test.mjs`
-- 合并后灰度：`feishu-flow-test → js-evolution-agent → agentank-tank`；每级先 backup，只开一个 gate，`daemon work --once`，确认无自激 / pending verify 归零 / quiet=healthy 后再升级。
-- 回滚：unset `JEA_EVIDENCE_WAKE` / `JEA_QUEUE_DISABLE_CYCLE_TTL` / `JEA_EXEC_RATE_ONLY`；必要时 `JEA_REACTOR_HEALTH_PRIMARY=0` 或 registry `"pipeline": "agent_loop"`。
+- 隔离晋升闸：临时 `JEA_HOME` 上 `subject init` → `data init --all` → 多轮 `run --mock` → `node scripts/reactor-s8-promote-check.mjs --subject NAME`
+- 生产灰度（可选加固）：`feishu-flow-test → js-evolution-agent → agentank-tank`；每级先 `jea data backup`，见 `docs/reactor-s8-gray-runbook.md`。
+- 回滚：S9 之后不能靠 gate。恢复只能用 `jea data backup` 后的运行时数据，不能再切 `agent_loop`。
 - uncertain intent：`daemon doctor --json` 看 `reactor.exec_intents.uncertain`；人工确认外部效果后改决策状态，不要自动重放。

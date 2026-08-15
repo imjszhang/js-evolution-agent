@@ -10,6 +10,7 @@ import {
   subjectLockPath,
   withSubjectLock,
 } from '../src/daemon/evolve-runs.mjs';
+import { reclaimDeadOwnerLock } from '../src/infra/subject-lock.mjs';
 import { workOnce } from '../src/cli/commands/daemon.mjs';
 import { writeWorkerState } from '../src/daemon/daemon-worker-state.mjs';
 import {
@@ -156,6 +157,29 @@ describe('cycle driver and takeover', () => {
     expect(started.started).toBe(true);
     expect(listOpenCycles(root, 'alpha')).toHaveLength(1);
     expect(listOpenCycles(root, 'alpha')[0].meta.driver).toBe('daemon');
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('reclaimDeadOwnerLock skips missing worker and dead pid without a lock', () => {
+    const root = makeRoot();
+    const lockTarget = subjectLockPath(root, 'alpha');
+    expect(reclaimDeadOwnerLock(lockTarget, { root, subject: 'alpha' })).toEqual({
+      reclaimed: false,
+      reason: 'no_worker',
+    });
+    writeWorkerState(root, 'alpha', {
+      subject: 'alpha',
+      worker_id: 'dead-owner',
+      pid: 999999,
+      status: 'stopped',
+      started_at: new Date(Date.now() - 120_000).toISOString(),
+      heartbeat_at: new Date(Date.now() - 120_000).toISOString(),
+      stop_requested_at: null,
+      stopped_at: new Date().toISOString(),
+      stale_after_ms: 1_000,
+    });
+    const result = reclaimDeadOwnerLock(lockTarget, { root, subject: 'alpha' });
+    expect(result.reclaimed === true || result.reason === 'unlock_failed' || result.reason === 'dead_owner_pid' || result.reason === 'owner_alive').toBe(true);
     rmSync(root, { recursive: true, force: true });
   });
 

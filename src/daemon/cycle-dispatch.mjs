@@ -31,7 +31,6 @@ import {
 } from './cycle-start-requests.mjs';
 import { isContinuousEvolutionMode } from './evolution-mode.mjs';
 import { isReactorPipeline, resolveCyclePipeline } from './cycle-pipeline-mode.mjs';
-import { isEvidenceWakeEnabled } from '../evolution/reactor/feature-gates.mjs';
 import { enqueueWakeIntent } from '../evolution/reactor/wake-store.mjs';
 
 /**
@@ -49,11 +48,29 @@ export function enqueueCognitiveWake(root, subject, {
     return null;
   }
 }
-import {
-  isStepArtifactReconcileEnabled,
-  isTickOpenCycleEnabled,
-  resolveInputPipeline,
-} from './reactor-compensation-gates.mjs';
+function envFlagOn(env, key) {
+  const raw = String(env?.[key] ?? '').trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+}
+
+export function resolveInputPipeline(root, subject, input = {}) {
+  const env = input.env ?? process.env;
+  return resolveCyclePipeline(root, {
+    subject,
+    env,
+    flags: { pipeline: input.pipeline },
+  }).pipeline;
+}
+
+/** Tick auto-open is opt-in only. Reactor never inherits train compensation. */
+export function isTickOpenCycleEnabled({ env = process.env } = {}) {
+  return envFlagOn(env, 'JEA_TICK_OPEN_CYCLE');
+}
+
+/** Completing a running task from a leftover step artifact is opt-in only. */
+export function isStepArtifactReconcileEnabled({ env = process.env } = {}) {
+  return envFlagOn(env, 'JEA_STEP_ARTIFACT_RECONCILE');
+}
 
 const DEFAULT_TICK_MS = 5 * 60 * 1000;
 
@@ -343,7 +360,7 @@ export function processCycleStartRequests(root, subject, input = {}) {
     };
   }
 
-  if (isEvidenceWakeEnabled(env) && isReactorPipeline(pipeline)) {
+  if (isReactorPipeline(pipeline)) {
     const wake = enqueueWakeIntent(root, subject, {
       kind: 'cognitive',
       reason: (pending.reasons || ['cycle_start_request'])[0],

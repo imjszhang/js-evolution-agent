@@ -163,7 +163,7 @@ export function defaultIdempotencyKey({ subject, type, input = {} } = {}) {
 }
 
 export function enqueueTask(root, subject, {
-  type = 'run_cycle',
+  type = 'cognitive_reaction',
   priority = 100,
   idempotencyKey = null,
   input = {},

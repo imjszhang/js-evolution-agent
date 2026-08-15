@@ -135,9 +135,8 @@ export function parseAgentMaxAttemptsFromEnv() {
   return Math.floor(n);
 }
 
-function isCycleTtlDisabled(env = process.env) {
-  const raw = String(env.JEA_QUEUE_DISABLE_CYCLE_TTL || '').trim().toLowerCase();
-  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+function isCycleTtlDisabled(_env = process.env) {
+  return true;
 }
 
 function parsePositiveIntEnv(name, fallback, { min = 1, max = MAX_TTL_CYCLES } = {}) {

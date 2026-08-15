@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -75,8 +75,15 @@ describe('agent run scope', () => {
 
 describe('ExecutionPipeline dual-channel', () => {
   let tempDir;
+  const prevRateOnly = process.env.JEA_EXEC_RATE_ONLY;
+
+  beforeEach(() => {
+    process.env.JEA_EXEC_RATE_ONLY = '0';
+  });
 
   afterEach(() => {
+    if (prevRateOnly === undefined) delete process.env.JEA_EXEC_RATE_ONLY;
+    else process.env.JEA_EXEC_RATE_ONLY = prevRateOnly;
     if (tempDir) {
       try { rmSync(tempDir, { recursive: true, force: true }); } catch {}
       tempDir = null;
@@ -123,11 +130,11 @@ describe('ExecutionPipeline dual-channel', () => {
     const result = await pipeline.run();
     expect(result.success).toBe(true);
     expect(result.mechanical.claimed).toBe(2);
-    expect(result.agent_waves.length).toBe(2);
-    expect(result.remaining_agent_pending).toBe(1);
+    expect(result.agent_waves.length).toBe(3);
+    expect(result.remaining_agent_pending).toBe(0);
     expect(order.slice(0, 2)).toEqual(['mech:m1', 'mech:m2']);
-    expect(order.filter((x) => x.startsWith('agent:'))).toHaveLength(2);
-    expect(queue.getPending().filter((d) => d.action?.type === 'agent_run')).toHaveLength(1);
+    expect(order.filter((x) => x.startsWith('agent:'))).toHaveLength(3);
+    expect(queue.getPending().filter((d) => d.action?.type === 'agent_run')).toHaveLength(0);
   });
 
   it('failOrBlock retries agent_run then blocks', async () => {

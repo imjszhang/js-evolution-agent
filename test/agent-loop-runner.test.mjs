@@ -3,8 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { MockToolsAIClient } from '../src/ai/mock-tools-client.mjs';
-import { buildInvestigationTools } from '../src/evolution/agent-loop/tool-registry.mjs';
-import { runInvestigationLoop, runAgentLoop } from '../src/evolution/agent-loop/loop-runner.mjs';
+import { buildInvestigationTools } from '../src/evolution/investigation/tool-registry.mjs';
+import { runInvestigationLoop, runAgentLoop } from '../src/evolution/investigation/loop-runner.mjs';
 import { createHostDecisionQueue } from '../src/intelligence/decision-queue.mjs';
 import { createIntelligenceStore } from '../src/intelligence/store.mjs';
 

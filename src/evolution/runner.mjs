@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
-import { SUBJECT_ENV } from '../infra/subjects.mjs';
+import { SUBJECT_ENV, runtimeInfoForSubject } from '../infra/subjects.mjs';
 import { createRuntimeContext } from '../infra/jea-home.mjs';
 
 export function buildCycleEnv(flags, subject, root = null) {
@@ -29,23 +29,9 @@ export function buildCycleEnv(flags, subject, root = null) {
   } else {
     delete env.JEA_SUBJECT_RUN_LOCK_HELD;
   }
-  if (flags['cycle-step']) {
-    env.JEA_CYCLE_STEP = String(flags['cycle-step']);
-  } else {
-    delete env.JEA_CYCLE_STEP;
-  }
-  if (flags['cycle-id']) {
-    env.JEA_CYCLE_ID = String(flags['cycle-id']);
-  } else {
-    delete env.JEA_CYCLE_ID;
-  }
-  if (flags['cycle-driver']) {
-    env.JEA_CYCLE_DRIVER = String(flags['cycle-driver']);
-  } else if (!flags['cycle-step']) {
-    env.JEA_CYCLE_DRIVER = 'evolve';
-  } else {
-    delete env.JEA_CYCLE_DRIVER;
-  }
+  delete env.JEA_CYCLE_STEP;
+  delete env.JEA_CYCLE_ID;
+  env.JEA_CYCLE_DRIVER = flags['cycle-driver'] ? String(flags['cycle-driver']) : 'evolve';
   return env;
 }
 
@@ -115,19 +101,14 @@ export function runSingleCycle({ root, subject, flags = {}, hooks = {}, signal =
   return runCycleProcess({ root, subject, flags, hooks, signal, abortKillMs });
 }
 
-export function runSingleStep({ root, subject, step, cycleId, flags = {}, hooks = {}, signal = null, abortKillMs = 5000 } = {}) {
-  return runCycleProcess({
-    root,
-    subject,
-    flags: {
-      ...flags,
-      'cycle-step': step,
-      'cycle-id': cycleId,
-      'subject-lock-held': true,
-    },
-    hooks,
-    signal,
-    abortKillMs,
-  });
+export async function runSingleStep({ root, subject, step, cycleId } = {}) {
+  const { runSingleStepInProcess } = await import('./cycle-step-runner.mjs');
+  const runtime = runtimeInfoForSubject(root, subject);
+  try {
+    return await runSingleStepInProcess({ root, runtime, step, cycleId });
+  } catch (err) {
+    const message = err?.message || String(err);
+    return { exitCode: 1, output: message };
+  }
 }
 

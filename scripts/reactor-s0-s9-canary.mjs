@@ -70,16 +70,10 @@ function makeIsolatedRoot() {
 
 async function main() {
   const previous = {
-    JEA_EVIDENCE_WAKE: process.env.JEA_EVIDENCE_WAKE,
-    JEA_QUEUE_DISABLE_CYCLE_TTL: process.env.JEA_QUEUE_DISABLE_CYCLE_TTL,
-    JEA_EXEC_RATE_ONLY: process.env.JEA_EXEC_RATE_ONLY,
     JEA_FORCE_MOCK: process.env.JEA_FORCE_MOCK,
     JEA_REACTOR_SKIP_INVESTIGATE: process.env.JEA_REACTOR_SKIP_INVESTIGATE,
     JEA_HOME: process.env.JEA_HOME,
   };
-  process.env.JEA_EVIDENCE_WAKE = '1';
-  process.env.JEA_QUEUE_DISABLE_CYCLE_TTL = '1';
-  process.env.JEA_EXEC_RATE_ONLY = '1';
   process.env.JEA_FORCE_MOCK = '1';
   process.env.JEA_REACTOR_SKIP_INVESTIGATE = '1';
 
@@ -181,9 +175,7 @@ async function main() {
       isolated_jea_home: jeaHome,
       subject: SUBJECT,
       gates: {
-        JEA_EVIDENCE_WAKE: '1',
-        JEA_QUEUE_DISABLE_CYCLE_TTL: '1',
-        JEA_EXEC_RATE_ONLY: '1',
+        posture: 's9_baked_in',
       },
       cognitive: {
         batch_id: cognitive.result?.batch_id ?? null,
