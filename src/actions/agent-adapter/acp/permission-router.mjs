@@ -1,4 +1,9 @@
-import { isAbsolute, relative, resolve } from 'node:path';
+import {
+  isAbsolute,
+  relative,
+  resolve,
+  sep,
+} from 'node:path';
 import { summarizeToolInput } from '../../agent-run-observer.mjs';
 
 const WRITE_KINDS = new Set(['edit', 'delete', 'move']);
@@ -6,8 +11,10 @@ const READ_KINDS = new Set(['read', 'search', 'think']);
 const REMOTE_PATTERN = /\b(?:https?:\/\/|ssh:\/\/|git@|git\s+push|gh\s+(?:pr|release)|npm\s+publish|curl\b|wget\b|publish|deploy|release)\b/i;
 
 function insideRoot(path, root) {
-  const rel = relative(resolve(root), resolve(path));
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+  const resolvedRoot = resolve(root);
+  const resolvedPath = isAbsolute(path) ? resolve(path) : resolve(resolvedRoot, path);
+  const rel = relative(resolvedRoot, resolvedPath);
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }
 
 function permissionPathCandidates(toolCall = {}) {
@@ -24,8 +31,10 @@ function permissionPathCandidates(toolCall = {}) {
   return [...new Set(paths)];
 }
 
-function selectOption(options, allow) {
-  const wanted = allow ? ['allow_once', 'allow_always'] : ['reject_once', 'reject_always'];
+function selectOption(options, allow, { onceOnly = false } = {}) {
+  const wanted = allow
+    ? (onceOnly ? ['allow_once'] : ['allow_once', 'allow_always'])
+    : ['reject_once', 'reject_always'];
   const option = wanted.map((kind) => options.find((item) => item?.kind === kind)).find(Boolean);
   if (!option) return { outcome: 'cancelled' };
   return { outcome: 'selected', optionId: option.optionId };
@@ -43,6 +52,7 @@ export function decideHeadlessPermission({
   const paths = permissionPathCandidates(toolCall);
   const remote = REMOTE_PATTERN.test(`${title}\n${raw}`);
   const mutating = WRITE_KINDS.has(kind);
+  const executing = kind === 'execute';
   const knownRead = READ_KINDS.has(kind) || kind === 'fetch';
   let allowed = false;
   let reason = 'unknown_request_default_deny';
@@ -59,8 +69,13 @@ export function decideHeadlessPermission({
     } else if (mutating && paths.length > 0 && paths.every((path) => roots.some((root) => insideRoot(path, root)))) {
       allowed = true;
       reason = 'workspace_write_inside_roots';
+    } else if (executing && paths.length > 0 && paths.every((path) => roots.some((root) => insideRoot(path, root)))) {
+      allowed = true;
+      reason = 'workspace_execute_inside_roots';
     } else {
-      reason = mutating ? 'workspace_write_outside_or_unknown_path' : 'unknown_request_default_deny';
+      reason = mutating || executing
+        ? 'workspace_write_outside_or_unknown_path'
+        : 'unknown_request_default_deny';
     }
   } else {
     reason = permissionProfile === 'remote_write_review'
@@ -74,7 +89,7 @@ export function decideHeadlessPermission({
     kind: kind || 'unknown',
     paths,
     remote,
-    response: selectOption(request?.options ?? [], allowed),
+    response: selectOption(request?.options ?? [], allowed, { onceOnly: executing }),
   };
 }
 

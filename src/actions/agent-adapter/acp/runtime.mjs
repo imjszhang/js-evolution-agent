@@ -116,7 +116,14 @@ export class AcpRuntime {
         agent: this.initializeResponse?.agentInfo?.name ?? this.framework.id,
       });
       return this;
-    })();
+    })().catch((error) => {
+      if (error?.code === 'acp_spawn_failed') throw error;
+      throw acpError(
+        `ACP initialize/session setup failed: ${error?.message ?? error}`,
+        'acp_initialize_failed',
+        { cause: error },
+      );
+    });
     return this.#withTimeout(Promise.race([setup, spawnFailure]), 'initialize/session/new', {
       cancel: false,
     });

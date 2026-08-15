@@ -24,6 +24,9 @@ function update(client, update) {
 const app = agent({ name: 'fake-jea-acp-agent' })
   .onRequest(methods.agent.initialize, ({ params }) => {
     record('initialize', { protocolVersion: params.protocolVersion });
+    if (process.env.FAKE_ACP_INITIALIZE_FAIL === '1') {
+      throw new Error('fixture initialize rejected');
+    }
     return {
       protocolVersion: PROTOCOL_VERSION,
       agentCapabilities: {

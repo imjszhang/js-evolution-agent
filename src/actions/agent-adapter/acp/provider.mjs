@@ -102,7 +102,11 @@ export async function runAcpProviderTurns({
       final,
     };
   } catch (error) {
-    const deferred = ['acp_spawn_failed', 'acp_framework_unconfigured'].includes(error?.code);
+    const deferred = [
+      'acp_spawn_failed',
+      'acp_framework_unconfigured',
+      'acp_initialize_failed',
+    ].includes(error?.code);
     observer.emit('provider_finished', {
       framework: framework.id,
       error: error?.message ?? String(error),

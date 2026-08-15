@@ -65,14 +65,14 @@ function collector() {
   };
 }
 
-function permissionRequest(kind, path) {
+function permissionRequest(kind, path, rawInput = {}) {
   return {
     toolCall: {
       toolCallId: 'tool',
       kind,
       title: `${kind} ${path ?? ''}`,
       locations: path ? [{ path }] : [],
-      rawInput: path ? { path } : {},
+      rawInput: { ...(path ? { path } : {}), ...rawInput },
     },
     options: [
       { optionId: 'allow', kind: 'allow_once' },
@@ -138,8 +138,37 @@ describe('ACP headless permissions', () => {
       roots: [root],
     }).allowed).toBe(false);
     expect(decideHeadlessPermission({
-      request: permissionRequest('execute'),
+      request: permissionRequest('edit', 'src/inside.txt'),
       permissionProfile: 'workspace_write',
+      roots: [root],
+    })).toMatchObject({ allowed: true, reason: 'workspace_write_inside_roots' });
+    expect(decideHeadlessPermission({
+      request: permissionRequest('edit', '../escape.txt'),
+      permissionProfile: 'workspace_write',
+      roots: [root],
+    }).allowed).toBe(false);
+    expect(decideHeadlessPermission({
+      request: permissionRequest('execute', '.', { command: 'npm test' }),
+      permissionProfile: 'workspace_write',
+      roots: [root],
+    })).toMatchObject({
+      allowed: true,
+      reason: 'workspace_execute_inside_roots',
+      response: { outcome: 'selected', optionId: 'allow' },
+    });
+    expect(decideHeadlessPermission({
+      request: permissionRequest('execute', '.', { command: 'git push origin main' }),
+      permissionProfile: 'workspace_write',
+      roots: [root],
+    })).toMatchObject({ allowed: false, reason: 'remote_access_default_deny' });
+    expect(decideHeadlessPermission({
+      request: permissionRequest('execute', '.', { command: 'npm test' }),
+      permissionProfile: 'read_only',
+      roots: [root],
+    }).allowed).toBe(false);
+    expect(decideHeadlessPermission({
+      request: permissionRequest('execute', '.', { command: 'npm test' }),
+      permissionProfile: 'remote_write_review',
       roots: [root],
     }).allowed).toBe(false);
     expect(decideHeadlessPermission({
@@ -228,6 +257,22 @@ describe('ACP Phase 2 provider', () => {
     ]);
   });
 
+  it('maps initialize failures to deferred provider results', async () => {
+    const cwd = tempDir();
+    const result = await runAgenticAction(agentAction(cwd), runContext(cwd, {
+      FAKE_ACP_INITIALIZE_FAIL: '1',
+    }));
+    expect(result).toMatchObject({
+      success: false,
+      deferred: true,
+      provider,
+      provider_failure: {
+        phase: 'acp_start_or_prompt',
+      },
+    });
+    expect(result.error).toContain('fixture initialize rejected');
+  });
+
   it('propagates unavailable ACP as deferred through agent_run handler', async () => {
     const cwd = tempDir();
     const receipts = [];
@@ -264,8 +309,18 @@ describe('ACP Phase 2 provider', () => {
       success: false,
       deferred: true,
       provider: 'acp:missing',
+      status: 'deferred',
+      execution_status: 'deferred',
+      pipeline_status: 'deferred',
+      agent_status: 'deferred',
+      acceptance_status: 'deferred',
     });
-    expect(receipts.at(-1)?.deferred).toBe(true);
+    expect(receipts.at(-1)).toMatchObject({
+      deferred: true,
+      status: 'deferred',
+      execution_status: 'deferred',
+      pipeline_status: 'deferred',
+    });
   });
 
   it('releases deferred agent decisions without consuming retry attempts', async () => {
@@ -288,13 +343,26 @@ describe('ACP Phase 2 provider', () => {
       host: {
         basePath: cwd,
         actionHandlers: {
-          agent_run: async () => ({ success: false, deferred: true, provider: 'acp:missing' }),
+          agent_run: async () => ({
+            success: false,
+            deferred: true,
+            provider: 'acp:missing',
+            status: 'deferred',
+            execution_status: 'deferred',
+            pipeline_status: 'deferred',
+          }),
         },
       },
     });
     const execution = await pipeline.run();
     const id = execution.executed[0].id;
     expect(execution.agent_waves[0].outcomes[0].status).toBe('deferred');
+    expect(execution.executed[0].result).toMatchObject({
+      deferred: true,
+      status: 'deferred',
+      execution_status: 'deferred',
+      pipeline_status: 'deferred',
+    });
     expect(queue.getById(id)).toMatchObject({ status: 'pending', attempts: 0 });
   });
 
