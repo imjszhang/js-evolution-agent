@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { SubjectSnapshot } from '../../shared/contract'
+import {
+  defaultSubjectSelection,
+  OVERVIEW_SELECTION,
+  snapshotsForSelection
+} from './subject-selection'
 
 function number(value: unknown): number {
   return typeof value === 'number' ? value : 0
@@ -101,6 +106,7 @@ function SubjectPanel({ snapshot }: { snapshot: SubjectSnapshot }) {
 
 export default function App() {
   const [snapshots, setSnapshots] = useState<SubjectSnapshot[]>([])
+  const [selection, setSelection] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [refreshedAt, setRefreshedAt] = useState<string | null>(null)
@@ -111,6 +117,11 @@ export default function App() {
     try {
       const next = await window.jea.invoke<SubjectSnapshot[]>('ops.refresh')
       setSnapshots(next)
+      setSelection((current) => {
+        if (current === OVERVIEW_SELECTION) return current
+        if (current && next.some((snapshot) => snapshot.subject.name === current)) return current
+        return defaultSubjectSelection(next.map((snapshot) => snapshot.subject))
+      })
       setRefreshedAt(new Date().toLocaleTimeString())
     } catch {
       setError('Unable to read JEA operational state.')
@@ -122,6 +133,10 @@ export default function App() {
   useEffect(() => {
     void refresh()
   }, [refresh])
+
+  const visibleSnapshots = selection
+    ? snapshotsForSelection(snapshots, selection)
+    : []
 
   return (
     <main>
@@ -141,8 +156,33 @@ export default function App() {
 
       {error && <p className="error" role="alert">{error}</p>}
       {!loading && snapshots.length === 0 && !error && <p className="empty-state">No subjects registered.</p>}
+      {snapshots.length > 0 && (
+        <nav className="subject-switcher" aria-label="Subject view">
+          <button
+            type="button"
+            className={selection === OVERVIEW_SELECTION ? 'active' : ''}
+            aria-pressed={selection === OVERVIEW_SELECTION}
+            onClick={() => setSelection(OVERVIEW_SELECTION)}
+          >
+            Overview
+            <span>{snapshots.length}</span>
+          </button>
+          {snapshots.map((snapshot) => (
+            <button
+              type="button"
+              key={snapshot.subject.name}
+              className={selection === snapshot.subject.name ? 'active' : ''}
+              aria-pressed={selection === snapshot.subject.name}
+              onClick={() => setSelection(snapshot.subject.name)}
+            >
+              {snapshot.subject.name}
+              {snapshot.subject.isDefault && <span>default</span>}
+            </button>
+          ))}
+        </nav>
+      )}
       <div className="subjects">
-        {snapshots.map((snapshot) => (
+        {visibleSnapshots.map((snapshot) => (
           <SubjectPanel key={snapshot.subject.name} snapshot={snapshot} />
         ))}
       </div>

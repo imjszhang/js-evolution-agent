@@ -7,6 +7,7 @@ import {
   listRegisteredSubjects,
   readSubjectsRegistry
 } from '../../../../src/infra/subjects.mjs'
+import { loadProjectEnv } from '../../../../src/infra/project.mjs'
 import { runtimeForSubject } from '../../../../src/infra/runtime-paths.mjs'
 import type { SubjectSnapshot, SubjectSummary } from '../shared/contract'
 
@@ -29,8 +30,11 @@ const directBuilders: ProjectionBuilders = {
 export class OpsService {
   constructor(
     readonly projectRoot = process.env.JEA_PROJECT_ROOT || DEFAULT_PROJECT_ROOT,
-    private readonly builders: ProjectionBuilders = directBuilders
-  ) {}
+    private readonly builders: ProjectionBuilders = directBuilders,
+    envLoader: (root: string) => string = loadProjectEnv
+  ) {
+    envLoader(this.projectRoot)
+  }
 
   listSubjects(): SubjectSummary[] {
     const registry = readSubjectsRegistry(this.projectRoot)

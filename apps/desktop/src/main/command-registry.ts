@@ -2,8 +2,14 @@ import type { InvokeRequest, OpsCommand } from '../shared/contract'
 import { OPS_COMMANDS } from '../shared/contract'
 import { OpsService } from './operations'
 
-const ALLOWED = new Set<string>(OPS_COMMANDS)
-const MUTATION_HINT = /(?:^|[.:_-])(write|set|put|create|update|delete|remove|reset|start|stop|retry|cancel|ack|enqueue|run|exec|destroy)(?:$|[.:_-])/i
+export type CommandLevel = 'readonly' | 'write' | 'destructive'
+
+export interface CommandDefinition {
+  level: CommandLevel
+  handler(payload: Record<string, unknown>): unknown
+}
+
+export type CommandDefinitions = Record<string, CommandDefinition>
 
 export class PublicCommandError extends Error {
   constructor(
@@ -32,25 +38,42 @@ function subjectFrom(payload: Record<string, unknown>, required: boolean): strin
   return value.trim()
 }
 
-export function createCommandRegistry(service = new OpsService()) {
-  const handlers: Record<OpsCommand, (payload: Record<string, unknown>) => unknown> = {
-    'ops.listSubjects': () => service.listSubjects(),
-    'ops.getDaemon': (payload) => service.getDaemon(subjectFrom(payload, true)!),
-    'ops.getObservability': (payload) => service.getObservability(subjectFrom(payload, true)!),
-    'ops.refresh': (payload) => service.refresh(subjectFrom(payload, false))
+export function createOpsCommandDefinitions(service: OpsService): Record<OpsCommand, CommandDefinition> {
+  return {
+    'ops.listSubjects': { level: 'readonly', handler: () => service.listSubjects() },
+    'ops.getDaemon': {
+      level: 'readonly',
+      handler: (payload) => service.getDaemon(subjectFrom(payload, true)!)
+    },
+    'ops.getObservability': {
+      level: 'readonly',
+      handler: (payload) => service.getObservability(subjectFrom(payload, true)!)
+    },
+    'ops.refresh': {
+      level: 'readonly',
+      handler: (payload) => service.refresh(subjectFrom(payload, false))
+    }
   }
+}
+
+export function createCommandRegistry(
+  service = new OpsService(),
+  definitions: CommandDefinitions = createOpsCommandDefinitions(service)
+) {
+  const registered = new Set<string>(OPS_COMMANDS)
 
   return async function invoke(request: InvokeRequest): Promise<unknown> {
     const command = typeof request?.command === 'string' ? request.command.trim() : ''
-    if (MUTATION_HINT.test(command)) {
-      throw new PublicCommandError('READ_ONLY_VIOLATION', 'This client only permits read-only operations.')
-    }
-    if (!ALLOWED.has(command)) {
+    const definition = Object.hasOwn(definitions, command) ? definitions[command] : undefined
+    if (!definition || (!registered.has(command) && definition.level === 'readonly')) {
       throw new PublicCommandError('COMMAND_NOT_ALLOWED', 'Command is not available.')
+    }
+    if (definition.level !== 'readonly') {
+      throw new PublicCommandError('READ_ONLY_VIOLATION', 'This client only permits read-only operations.')
     }
 
     try {
-      return await handlers[command as OpsCommand](payloadObject(request.payload))
+      return await definition.handler(payloadObject(request.payload))
     } catch (error) {
       if (error instanceof PublicCommandError) throw error
       throw new PublicCommandError('OPERATION_FAILED', 'Unable to read JEA operational state.')

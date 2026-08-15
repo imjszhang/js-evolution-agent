@@ -23,7 +23,8 @@ describe('desktop projection consistency', () => {
     writeFileSync(join(subjectsDir, 'registry.json'), JSON.stringify({
       default_subject: 'alpha',
       subjects: {
-        alpha: { policy: 'SUBJECT.md', data_namespace: 'alpha-data' }
+        alpha: { policy: 'SUBJECT.md', data_namespace: 'alpha-data' },
+        beta: { policy: 'SUBJECT.md', data_namespace: 'beta-data' }
       }
     }))
 
@@ -37,7 +38,8 @@ describe('desktop projection consistency', () => {
     })
 
     expect(service.listSubjects()).toEqual([
-      { name: 'alpha', namespace: 'alpha-data', isDefault: true }
+      { name: 'alpha', namespace: 'alpha-data', isDefault: true },
+      { name: 'beta', namespace: 'beta-data', isDefault: false }
     ])
     expect(service.getDaemon('alpha')).toEqual(expectedDaemon)
     expect(service.getObservability('alpha')).toEqual(expectedObservability)
@@ -47,5 +49,42 @@ describe('desktop projection consistency', () => {
       observability: expectedObservability
     }])
     expect(existsSync(currentStatePath(root, 'alpha'))).toBe(false)
+  })
+
+  it('loads project env before projection reads without adding env to responses', () => {
+    const root = mkdtempSync(join(tmpdir(), 'jea-desktop-env-'))
+    const subjectsDir = join(root, 'runtime', 'subjects')
+    mkdirSync(subjectsDir, { recursive: true })
+    writeFileSync(join(subjectsDir, 'registry.json'), JSON.stringify({
+      default_subject: 'beta',
+      subjects: {
+        alpha: { data_namespace: 'alpha-data' },
+        beta: { data_namespace: 'beta-data' }
+      }
+    }))
+
+    const order: string[] = []
+    const service = new OpsService(root, {
+      daemon: (_projectRoot, subject) => {
+        order.push('projection')
+        return { subject, health: { ok: true } }
+      },
+      observability: ({ subject }) => ({ subject, attention: { items: [] } })
+    }, (projectRoot) => {
+      expect(projectRoot).toBe(root)
+      order.push('env')
+      process.env.DESKTOP_TEST_SECRET = 'must-not-leak'
+      return join(root, '.env')
+    })
+
+    const subjects = service.listSubjects()
+    const daemon = service.getDaemon('beta')
+
+    expect(order).toEqual(['env', 'projection'])
+    expect(subjects.find((subject) => subject.isDefault)?.name).toBe('beta')
+    expect(daemon).toEqual({ subject: 'beta', health: { ok: true } })
+    expect(JSON.stringify({ subjects, daemon })).not.toContain('must-not-leak')
+    expect(JSON.stringify({ subjects, daemon })).not.toContain('DESKTOP_TEST_SECRET')
+    delete process.env.DESKTOP_TEST_SECRET
   })
 })
