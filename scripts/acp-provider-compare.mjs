@@ -35,6 +35,30 @@ export function providerMetrics(provider, result, elapsedMs) {
   };
 }
 
+function comparisonReport(actionId, results) {
+  const legacy = results[0];
+  const acp = results.find((item) => item.provider.startsWith('acp:')) ?? results[1];
+  return {
+    schema_version: 1,
+    generated_at: new Date().toISOString(),
+    action_id: actionId ?? null,
+    providers: results,
+    recommendation: acp?.success
+      && acp.schema_status === 'valid'
+      && (!legacy?.success || acp.verification_attempts <= legacy.verification_attempts)
+      ? 'acp_candidate'
+      : 'keep_legacy_default',
+    default_changed: false,
+  };
+}
+
+export function compareProviderResults({ action_id = null, results = {} } = {}) {
+  const metrics = Object.entries(results).map(([provider, value]) =>
+    providerMetrics(provider, value?.result ?? value, value?.elapsed_ms ?? 0));
+  if (metrics.length < 2) throw new Error('At least two provider results are required');
+  return comparisonReport(action_id, metrics);
+}
+
 export async function runProviderComparison({
   action,
   context,
@@ -53,28 +77,16 @@ export async function runProviderComparison({
     const result = await run(candidate, context);
     results.push(providerMetrics(provider, result, Date.now() - started));
   }
-  const [legacy, acp] = results;
-  return {
-    schema_version: 1,
-    generated_at: new Date().toISOString(),
-    action_id: action.id ?? null,
-    providers: results,
-    recommendation: acp?.success
-      && acp.schema_status === 'valid'
-      && (!legacy?.success || acp.verification_attempts <= legacy.verification_attempts)
-      ? 'acp_candidate'
-      : 'keep_legacy_default',
-    default_changed: false,
-  };
+  return comparisonReport(action.id, results);
 }
 
 async function main() {
   const input = process.argv[2];
   if (!input) {
-    throw new Error('Usage: node scripts/acp-provider-compare.mjs <scenario.json>');
+    throw new Error('Usage: node scripts/acp-provider-compare.mjs <provider-results.json>');
   }
   const scenario = JSON.parse(readFileSync(input, 'utf8'));
-  const report = await runProviderComparison(scenario);
+  const report = compareProviderResults(scenario);
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
 }
 

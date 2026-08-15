@@ -218,3 +218,10 @@ Phase 2（exec）action 选择口径：
 所有权限决定和 ACP session update 都进入 agent-run observer；消息、思考、工具开始/结束、权限决定和结束状态可在 agent-run JSONL 中审计。ACP binary/framework 不可用返回 `deferred`，decision 保持 pending 且不消耗失败重试。`jea doctor` 检查 binary/version、环境凭据和 initialize/session 握手；可设置 `JEA_ACP_DOCTOR_HANDSHAKE=0` 跳过握手。
 
 真实 Claude ACP smoke 默认跳过；显式设置 `JEA_LIVE_ACP_CLAUDE_CODE=1` 后运行 `test/acp-provider.test.mjs`。该 smoke 需要 ACP agent 可用且已通过环境凭据或本地登录认证。
+
+兼容性与迁移评估：
+
+- `runProviderComparison()`（`scripts/acp-provider-compare.mjs`）使用同一 action / acceptance / permission profile 双跑旧 provider 与 `acp:claude-code`；CLI `node scripts/acp-provider-compare.mjs <provider-results.json>` 可对已采集结果重放报告。报告包含 receipt schema、验收状态、verify 次数、same-session、工具/权限轨迹、失败阶段与耗时，只给建议，不修改 `JEA_AGENT_PROVIDER`。
+- Windows 本地 binary 优先解析 `node_modules/.bin/claude-agent-acp.cmd`，spawn/doctor 共用 `shell` 标记；关闭时使用 `taskkill /T`，超时后 `/F`，避免只杀 `.cmd` shell 留下 agent 子进程。
+- Desktop ACP timeline 最多保留 400 个事件，连续 assistant chunk 合并后最多保留 200,000 字符；权限卡、审批与 agent-run 审计语义不变。
+- PR CI 在 Linux、Windows、macOS 执行 Desktop test/typecheck/build/smoke；真实 ACP 与 DeepSeek 调用仍保持 opt-in。
