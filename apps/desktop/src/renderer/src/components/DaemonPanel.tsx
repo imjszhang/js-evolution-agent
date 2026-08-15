@@ -65,7 +65,7 @@ export function DaemonPanel({ subject, initial, onChanged }: DaemonPanelProps) {
   }
 
   const mode = supervisor?.mode ?? 'none'
-  const canStart = mode === 'none' || mode === 'stale' || mode === 'zombie'
+  const canStart = mode === 'none' || mode === 'zombie'
   const canStop = mode === 'managed'
 
   return (
@@ -91,9 +91,14 @@ export function DaemonPanel({ subject, initial, onChanged }: DaemonPanelProps) {
       </dl>
 
       {supervisor?.detail && <p className="inline-note">{supervisor.detail}</p>}
-      {(mode === 'stale' || mode === 'zombie') && (
+      {mode === 'stale' && (
         <p className="inline-warning">
-          Starting a managed daemon will replace this non-live supervisor state.
+          The recorded process may still be alive. Inspect or stop it externally before starting another daemon.
+        </p>
+      )}
+      {mode === 'zombie' && (
+        <p className="inline-warning">
+          The recorded PID is no longer alive; starting a managed daemon will replace this state.
         </p>
       )}
       {error && <p className="form-error" role="alert">{error}</p>}

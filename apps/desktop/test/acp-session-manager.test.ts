@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -170,12 +170,14 @@ describe('AcpSessionManager', () => {
       events,
       manager
     } = harness()
+    const additionalDirectory = join(root, 'additional')
+    mkdirSync(additionalDirectory)
 
     const started = await manager.start({
       provider: 'acp:claude-code',
       executionRoot: root,
       permissionProfile: 'workspace_write',
-      additionalDirectories: [join(root, 'additional')]
+      additionalDirectories: [additionalDirectory]
     })
 
     expect(started).toMatchObject({
@@ -191,7 +193,7 @@ describe('AcpSessionManager', () => {
     expect(runtimeFactory).toHaveBeenCalledOnce()
     expect(captured.options).toMatchObject({
       cwd: root,
-      additionalDirectories: [join(root, 'additional')],
+      additionalDirectories: [additionalDirectory],
       permissionProfile: 'workspace_write'
     })
     expect(captured.options.framework).toMatchObject({
@@ -233,16 +235,14 @@ describe('AcpSessionManager', () => {
       type: 'boolean'
     })
 
-    const cancelled = await manager.cancel(started.id)
-
-    expect(cancelled.status).toBe('ready')
-    expect(runtime.cancel).toHaveBeenCalledWith('desktop_operator')
+    await expect(manager.cancel(started.id)).rejects.toMatchObject({
+      code: 'CONFLICT',
+      message: 'ACP session has no active turn to cancel.'
+    })
     expect(statusEvents(events, started.id)).toEqual([
       'starting',
       'ready',
       'prompting',
-      'ready',
-      'cancelling',
       'ready'
     ])
 
@@ -289,11 +289,106 @@ describe('AcpSessionManager', () => {
       'ready',
       'prompting',
       'ready',
-      'cancelling',
-      'ready',
       'closing',
       'closed'
     ])
+  })
+
+  it('keeps a cancelled turn busy until its prompt settles', async () => {
+    const runtime = createFakeRuntime()
+    let rejectPrompt!: (error: Error) => void
+    runtime.prompt.mockImplementationOnce(() => new Promise((_resolve, reject) => {
+      rejectPrompt = reject
+    }))
+    const { root, events, manager } = harness(runtime)
+    const started = await manager.start({
+      provider: 'acp:claude-code',
+      executionRoot: root
+    })
+    const prompt = manager.prompt(started.id, 'long-running turn')
+    await Promise.resolve()
+
+    const cancelling = await manager.cancel(started.id)
+    expect(cancelling.status).toBe('cancelling')
+    expect(runtime.cancel).toHaveBeenCalledWith('desktop_operator')
+    rejectPrompt(new Error('agent acknowledged cancellation'))
+
+    await expect(prompt).resolves.toEqual({
+      stop_reason: 'cancelled',
+      result_chars: 0
+    })
+    expect(manager.list()[0]).toMatchObject({ status: 'ready', error: null })
+    expect(statusEvents(events, started.id)).toEqual([
+      'starting',
+      'ready',
+      'prompting',
+      'cancelling',
+      'ready'
+    ])
+    await manager.close(started.id, 'test_cleanup')
+  })
+
+  it('reports an unexpected agent exit and releases process ownership', async () => {
+    const { root, captured, processRegistry, events, manager } = harness()
+    const started = await manager.start({
+      provider: 'acp:claude-code',
+      executionRoot: root
+    })
+
+    captured.options.onProcessExit({
+      exitCode: 17,
+      signal: null,
+      expected: false
+    })
+
+    expect(manager.list()).toEqual([
+      expect.objectContaining({
+        id: started.id,
+        status: 'error',
+        error: 'ACP agent process exited unexpectedly.'
+      })
+    ])
+    expect(processRegistry.get('acp', started.id)).toBeNull()
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'acp_process_exited',
+        session_id: started.id,
+        payload: { exit_code: 17, signal: null }
+      })
+    ]))
+    await manager.close(started.id, 'test_cleanup')
+  })
+
+  it('closes a started runtime when process registration fails', async () => {
+    const runtime = createFakeRuntime()
+    const { root, processRegistry, manager } = harness(runtime)
+    await processRegistry.shutdownAll('preexisting_shutdown')
+
+    await expect(manager.start({
+      provider: 'acp:claude-code',
+      executionRoot: root
+    })).rejects.toThrow('process_registry_shutting_down')
+
+    expect(runtime.close).toHaveBeenCalledOnce()
+    expect(manager.list()).toEqual([])
+    expect(processRegistry.list()).toEqual([])
+  })
+
+  it('still closes the runtime when cancellation during close fails', async () => {
+    const runtime = createFakeRuntime()
+    runtime.cancel.mockRejectedValueOnce(new Error('cancel transport failed'))
+    const { root, processRegistry, manager } = harness(runtime)
+    const started = await manager.start({
+      provider: 'acp:claude-code',
+      executionRoot: root
+    })
+
+    await expect(manager.close(started.id, 'test_close')).rejects.toThrow(
+      'cancel transport failed'
+    )
+    expect(runtime.close).toHaveBeenCalledOnce()
+    expect(processRegistry.get('acp', started.id)).toBeNull()
+    expect(manager.list()).toEqual([])
   })
 
   it('uses the process registration cleanup to close and remove a session', async () => {

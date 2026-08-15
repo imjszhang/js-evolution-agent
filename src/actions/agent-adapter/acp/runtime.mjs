@@ -37,6 +37,7 @@ export class AcpRuntime {
     permissionHandler = null,
     onSessionUpdate = null,
     onAgentText = null,
+    onProcessExit = null,
   } = {}) {
     this.framework = framework;
     this.cwd = cwd;
@@ -50,6 +51,7 @@ export class AcpRuntime {
     this.permissionHandler = permissionHandler;
     this.onSessionUpdate = onSessionUpdate;
     this.onAgentText = onAgentText;
+    this.onProcessExit = onProcessExit;
     this.child = null;
     this.connection = null;
     this.session = null;
@@ -68,6 +70,19 @@ export class AcpRuntime {
       env: this.env,
       windowsHide: true,
       stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    this.child.once('close', (exitCode, signal) => {
+      try {
+        this.onProcessExit?.({
+          exitCode,
+          signal,
+          expected: this.closed,
+        });
+      } catch (error) {
+        this.observer?.emit('process_exit_handler_failed', {
+          error: error?.message ?? String(error),
+        }, 'warning');
+      }
     });
     const spawnFailure = new Promise((_, reject) => {
       this.child.once('error', (error) => reject(acpError(
@@ -221,10 +236,24 @@ export class AcpRuntime {
         this.observer?.emit('session_close_failed', { error: error.message }, 'warning');
       }
     }
-    this.session?.dispose();
-    this.connection?.close();
-    this.child?.stdin?.end();
-    await this.#terminateChild();
+    let cleanupError = null;
+    for (const cleanup of [
+      () => this.session?.dispose(),
+      () => this.connection?.close(),
+      () => this.child?.stdin?.end(),
+    ]) {
+      try {
+        cleanup();
+      } catch (error) {
+        cleanupError ??= error;
+      }
+    }
+    try {
+      await this.#terminateChild();
+    } catch (error) {
+      cleanupError ??= error;
+    }
+    if (cleanupError) throw cleanupError;
   }
 
   async #withTimeout(promiseOrFactory, label, {

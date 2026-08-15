@@ -119,7 +119,7 @@ export class DaemonSupervisor {
       throw new PublicCommandError('CONFLICT', 'A managed daemon is already running.')
     }
     const current = this.get(subject)
-    if (current.mode !== 'none' && current.mode !== 'zombie' && current.mode !== 'stale') {
+    if (current.mode !== 'none' && current.mode !== 'zombie') {
       throw new PublicCommandError('CONFLICT', 'An external daemon is already running.')
     }
 
@@ -170,12 +170,18 @@ export class DaemonSupervisor {
       child.once('error', reject)
     })
 
-    const unregister = this.processRegistry.register({
-      kind: 'daemon',
-      id: subject,
-      pid: child.pid ?? null,
-      cleanup: () => this.stop(subject, 'app_quit')
-    })
+    let unregister: () => void
+    try {
+      unregister = this.processRegistry.register({
+        kind: 'daemon',
+        id: subject,
+        pid: child.pid ?? null,
+        cleanup: () => this.stop(subject, 'app_quit')
+      })
+    } catch (error) {
+      await this.terminateChild(child)
+      throw error
+    }
     const entry: ManagedDaemon = {
       subject,
       ownerToken,
@@ -187,7 +193,6 @@ export class DaemonSupervisor {
       unregister
     }
     this.managed.set(subject, entry)
-    this.writeDiagnostic(entry)
     child.once('close', () => {
       if (this.managed.get(subject)?.ownerToken === ownerToken) {
         this.managed.delete(subject)
@@ -200,6 +205,17 @@ export class DaemonSupervisor {
         })
       }
     })
+    try {
+      this.writeDiagnostic(entry)
+    } catch (error) {
+      if (this.managed.get(subject)?.ownerToken === ownerToken) {
+        this.managed.delete(subject)
+      }
+      unregister()
+      this.removeDiagnostic(subject, ownerToken)
+      await this.terminateChild(child)
+      throw error
+    }
     this.events.publish({
       type: 'daemon_managed_started',
       subject,
@@ -220,18 +236,7 @@ export class DaemonSupervisor {
 
     if (entry.domain !== 'channel') requestWorkerStop(this.projectRoot, subject)
     if (entry.domain !== 'cycle') requestChannelWorkerStop(this.projectRoot, subject)
-    entry.child.kill('SIGTERM')
-    const exited = await Promise.race([
-      new Promise<boolean>((resolve) => entry.child.once('close', () => resolve(true))),
-      delay(this.killGraceMs).then(() => false)
-    ])
-    if (!exited && !processExited(entry.child)) {
-      entry.child.kill('SIGKILL')
-      await Promise.race([
-        new Promise<void>((resolve) => entry.child.once('close', () => resolve())),
-        delay(this.killGraceMs)
-      ])
-    }
+    await this.terminateChild(entry.child)
     if (entry.domain !== 'channel') {
       markWorkerStopped(this.projectRoot, subject, {
         stop_reason: `desktop_${reason}`
@@ -256,6 +261,20 @@ export class DaemonSupervisor {
   private diagnosticPath(subject: string): string {
     const runtime = runtimeForSubject(this.projectRoot, subject)
     return join(runtime.evolutionDir, 'daemon', 'desktop-supervisor.json')
+  }
+
+  private async terminateChild(child: ChildProcess): Promise<void> {
+    if (processExited(child)) return
+    const closed = new Promise<void>((resolve) => child.once('close', () => resolve()))
+    child.kill('SIGTERM')
+    const exited = await Promise.race([
+      closed.then(() => true),
+      delay(this.killGraceMs).then(() => false)
+    ])
+    if (!exited && !processExited(child)) {
+      child.kill('SIGKILL')
+      await Promise.race([closed, delay(this.killGraceMs)])
+    }
   }
 
   private writeDiagnostic(entry: ManagedDaemon): void {

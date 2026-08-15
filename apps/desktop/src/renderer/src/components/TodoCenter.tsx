@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import type { TodoSnapshot } from '../../../shared/contract'
 import { errorMessage, formatTime, isRecord, text, truncate } from '../utils'
 
@@ -33,8 +33,10 @@ export function TodoCenter({ subject }: { subject: string | null }) {
   const [goalsEditor, setGoalsEditor] = useState('{}')
   const [goalsReason, setGoalsReason] = useState('')
   const [goalsConfirmed, setGoalsConfirmed] = useState(false)
+  const loadSequence = useRef(0)
 
   const load = useCallback(async (showSpinner = true) => {
+    const sequence = ++loadSequence.current
     if (!subject) {
       setSnapshot(null)
       return
@@ -42,12 +44,14 @@ export function TodoCenter({ subject }: { subject: string | null }) {
     if (showSpinner) setBusy('load')
     try {
       const next = await window.jea.invoke<TodoSnapshot>('todo.get', { subject })
+      if (sequence !== loadSequence.current) return
       setSnapshot(next)
       setGoalsEditor(JSON.stringify(next.goals ?? {}, null, 2))
     } catch (cause) {
+      if (sequence !== loadSequence.current) return
       setNotice({ kind: 'error', message: errorMessage(cause, 'Unable to load operator todos.') })
     } finally {
-      if (showSpinner) setBusy(null)
+      if (showSpinner && sequence === loadSequence.current) setBusy(null)
     }
   }, [subject])
 
@@ -55,6 +59,9 @@ export function TodoCenter({ subject }: { subject: string | null }) {
     setNotice(null)
     setQuestionNotes({})
     void load()
+    return () => {
+      loadSequence.current += 1
+    }
   }, [load])
 
   const mutate = async (

@@ -5,6 +5,10 @@ import { describe, expect, it } from 'vitest'
 import { findProjectRoot, resolveDesktopProjectRoot } from '../src/main/project-root'
 import { isDesktopMainExternal } from '../src/main/bundle-externals'
 import { toIpcValue } from '../src/main/ipc-value'
+import {
+  isTrustedRendererLocation,
+  resolveDevRendererUrl
+} from '../src/main/renderer-security'
 
 describe('desktop project root', () => {
   it('walks up to the JEA marker files', () => {
@@ -52,5 +56,37 @@ describe('ipc value sanitization', () => {
     const cyclic: Record<string, unknown> = {}
     cyclic.self = cyclic
     expect(() => toIpcValue(cyclic)).toThrow(/ipc_value_not_serializable/)
+  })
+})
+
+describe('renderer URL security', () => {
+  it('allows only unauthenticated loopback development URLs', () => {
+    expect(resolveDevRendererUrl('http://localhost:5173')).toBe('http://localhost:5173/')
+    expect(resolveDevRendererUrl('https://127.0.0.1:4173/app')).toBe(
+      'https://127.0.0.1:4173/app'
+    )
+    expect(resolveDevRendererUrl(undefined)).toBeNull()
+    expect(() => resolveDevRendererUrl('https://example.com')).toThrow(/loopback/)
+    expect(() => resolveDevRendererUrl('file:///tmp/renderer.html')).toThrow(/loopback/)
+    expect(() => resolveDevRendererUrl('http://user:pass@localhost:5173')).toThrow(/loopback/)
+  })
+
+  it('accepts only the configured renderer location', () => {
+    expect(isTrustedRendererLocation('http://localhost:5173/app', {
+      devRendererUrl: 'http://localhost:5173/',
+      productionRendererUrl: 'file:///app/index.html'
+    })).toBe(true)
+    expect(isTrustedRendererLocation('http://127.0.0.1:5173/app', {
+      devRendererUrl: 'http://localhost:5173/',
+      productionRendererUrl: 'file:///app/index.html'
+    })).toBe(false)
+    expect(isTrustedRendererLocation('file:///app/index.html', {
+      devRendererUrl: null,
+      productionRendererUrl: 'file:///app/index.html'
+    })).toBe(true)
+    expect(isTrustedRendererLocation('file:///tmp/other.html', {
+      devRendererUrl: null,
+      productionRendererUrl: 'file:///app/index.html'
+    })).toBe(false)
   })
 })

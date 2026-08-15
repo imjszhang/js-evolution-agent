@@ -3,6 +3,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -177,6 +178,22 @@ describe('ACP headless permissions', () => {
       roots: [root],
     }).reason).toBe('remote_access_default_deny');
   });
+
+  it('denies workspace writes that escape through a symlink', () => {
+    const root = tempDir();
+    const outside = tempDir('jea-acp-outside-');
+    const linkedDirectory = join(root, 'linked-outside');
+    symlinkSync(outside, linkedDirectory, 'dir');
+
+    expect(decideHeadlessPermission({
+      request: permissionRequest('edit', join(linkedDirectory, 'escaped.txt')),
+      permissionProfile: 'workspace_write',
+      roots: [root],
+    })).toMatchObject({
+      allowed: false,
+      reason: 'workspace_write_outside_or_unknown_path',
+    });
+  });
 });
 
 describe('ACP stdio runtime', () => {
@@ -184,6 +201,7 @@ describe('ACP stdio runtime', () => {
     const cwd = tempDir();
     const log = join(cwd, 'fake.jsonl');
     const obs = collector();
+    const exits = [];
     const runtime = new AcpRuntime({
       framework: framework(),
       cwd,
@@ -195,6 +213,7 @@ describe('ACP stdio runtime', () => {
         FAKE_ACP_PERMISSION_PATH: join(cwd, 'denied.txt'),
       },
       observer: obs,
+      onProcessExit: (details) => exits.push(details),
       timeoutMs: 2_000,
       killGraceMs: 100,
     });
@@ -212,6 +231,9 @@ describe('ACP stdio runtime', () => {
       expect.objectContaining({ event: 'tool_started' }),
       expect.objectContaining({ event: 'tool_finished' }),
     ]));
+    expect(exits).toEqual([
+      expect.objectContaining({ expected: true }),
+    ]);
   });
 
   it('cancels timed-out prompts and escalates cleanup to SIGKILL', async () => {

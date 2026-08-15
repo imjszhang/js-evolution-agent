@@ -246,9 +246,9 @@ describe('DaemonSupervisor', () => {
     }))
   })
 
-  it('projects stale and zombie worker-state independently of ownership', () => {
+  it('projects stale and zombie worker-state independently of ownership', async () => {
     const root = createProjectRoot()
-    const { supervisor } = createSupervisor(root)
+    const { supervisor, spawnMock } = createSupervisor(root)
 
     writeCycleState(root, 'alpha', {
       pid: process.pid,
@@ -271,6 +271,27 @@ describe('DaemonSupervisor', () => {
       mode: 'zombie',
       pid: 999_999_999
     })
+    await expect(supervisor.start('alpha')).rejects.toMatchObject({
+      code: 'CONFLICT',
+      message: 'An external daemon is already running.'
+    })
+    expect(spawnMock).not.toHaveBeenCalled()
+  })
+
+  it('terminates a spawned daemon when process ownership registration fails', async () => {
+    const root = createProjectRoot()
+    const { supervisor, processRegistry } = createSupervisor(root, {
+      closeOnKill: true
+    })
+    await processRegistry.shutdownAll('preexisting_shutdown')
+
+    await expect(supervisor.start('alpha')).rejects.toThrow(
+      'process_registry_shutting_down'
+    )
+
+    expect(children.at(-1)?.kills).toEqual(['SIGTERM'])
+    expect(supervisor.get('alpha').mode).toBe('none')
+    expect(processRegistry.list()).toEqual([])
   })
 
   it('process-registry shutdown cleans up managed daemons but leaves attached state alone', async () => {

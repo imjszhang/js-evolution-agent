@@ -125,7 +125,7 @@ describe('TodoService round trip', () => {
 
     const factResult = service.putFact(SUBJECT, {
       id: 'fact-round-trip',
-      subject: SUBJECT,
+      subject: 'forged-other-subject',
       content: `Desktop facts are one-shot seeds; token ${SECRET}`,
       confidence: 'high'
     })
@@ -133,6 +133,7 @@ describe('TodoService round trip', () => {
       subject: SUBJECT,
       fact: {
         id: 'fact-round-trip',
+        subject: SUBJECT,
         content: 'Desktop facts are one-shot seeds; token [REDACTED_SECRET]',
         confidence: 'high'
       },
@@ -154,6 +155,7 @@ describe('TodoService round trip', () => {
     expect(afterFact.facts).toHaveLength(1)
     expect(afterFact.facts[0]).toMatchObject({
       id: 'fact-round-trip',
+      subject: SUBJECT,
       content: 'Desktop facts are one-shot seeds; token [REDACTED_SECRET]'
     })
     expect(readPendingCycleStartRequest(projectRoot!, SUBJECT)).toMatchObject({

@@ -92,7 +92,10 @@ export class TodoService {
 
   putFact(subject: string, fact: Record<string, unknown>): Record<string, unknown> {
     const runtime = this.runtime(subject)
-    const { fact: written } = writePendingOperatorFact(runtime.runtimeRoot, fact)
+    const { fact: written } = writePendingOperatorFact(runtime.runtimeRoot, {
+      ...fact,
+      subject
+    })
     const cycle = enqueueCycleStartRequestWithEvent(this.projectRoot, subject, {
       reason: 'operator_fact',
       meta: { fact_ids: [written.id] }

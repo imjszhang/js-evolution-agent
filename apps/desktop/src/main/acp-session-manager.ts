@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { resolve } from 'node:path'
 import {
   createAcpFrameworkRegistry,
   envWithLocalNodeBin,
@@ -30,6 +31,8 @@ interface ManagedAcpSession {
   createdAt: string
   error: string | null
   unregister: () => void
+  activeTurn: symbol | null
+  cancelRequested: boolean
 }
 
 function publicPayload(value: unknown): Record<string, unknown> {
@@ -166,24 +169,36 @@ export class AcpSessionManager {
     permissionProfile?: string
     additionalDirectories?: string[]
   }): Promise<AcpSessionView> {
+    const normalizedRoot = resolve(executionRoot)
+    const normalizedAdditionalDirectories = [...new Set(
+      additionalDirectories.map((directory) => resolve(directory))
+    )].filter((directory) => directory !== normalizedRoot)
     const validation = validateExecutionRoot({
-      executionRoot,
+      executionRoot: normalizedRoot,
       executionRootWasConfigured: true,
       provider
     })
     if (validation) {
       throw new PublicCommandError('INVALID_REQUEST', 'Execution root is unavailable.')
     }
+    if (normalizedAdditionalDirectories.some((directory) => validateExecutionRoot({
+      executionRoot: directory,
+      executionRootWasConfigured: true,
+      provider
+    }))) {
+      throw new PublicCommandError('INVALID_REQUEST', 'An additional directory is unavailable.')
+    }
     if (!['read_only', 'workspace_write', 'remote_write_review'].includes(permissionProfile)) {
       throw new PublicCommandError('INVALID_REQUEST', 'Permission profile is invalid.')
     }
+    const effectiveEnv = envWithLocalNodeBin(this.projectRoot, process.env)
     const registry = this.frameworkRegistry ?? createAcpFrameworkRegistry({
       projectRoot: this.projectRoot,
-      env: process.env
+      env: effectiveEnv
     })
     const framework = resolveAcpFramework(provider, {
       projectRoot: this.projectRoot,
-      env: process.env,
+      env: effectiveEnv,
       registry
     })
     if (!framework) throw new PublicCommandError('NOT_FOUND', 'ACP framework is unavailable.')
@@ -194,22 +209,25 @@ export class AcpSessionManager {
     const placeholder: ManagedAcpSession = {
       id,
       framework: provider,
-      executionRoot,
+      executionRoot: normalizedRoot,
       status: 'starting',
       runtime: null,
       createdAt,
       error: null,
-      unregister: () => {}
+      unregister: () => {},
+      activeTurn: null,
+      cancelRequested: false
     }
     this.sessions.set(id, placeholder)
     this.publishStatus(placeholder)
 
+    let runtime: any = null
     try {
-      const executionEnv = buildExecutionEnv(executionRoot, { baseEnv: process.env })
+      const executionEnv = buildExecutionEnv(normalizedRoot, { baseEnv: process.env })
       const env = envWithLocalNodeBin(this.projectRoot, executionEnv.env)
       const permissionHandler = this.broker.handler(id, {
         permissionProfile,
-        roots: [executionRoot, ...additionalDirectories],
+        roots: [normalizedRoot, ...normalizedAdditionalDirectories],
         onPendingChange: (pending) => {
           const session = this.sessions.get(id)
           if (!session || session.status === 'closing' || session.status === 'closed') return
@@ -217,14 +235,19 @@ export class AcpSessionManager {
           this.publishStatus(session)
         }
       })
-      const runtime = await this.runtimeFactory({
+      runtime = await this.runtimeFactory({
         framework,
-        cwd: executionRoot,
-        additionalDirectories,
+        cwd: normalizedRoot,
+        additionalDirectories: normalizedAdditionalDirectories,
         permissionProfile,
         env,
         observer,
         permissionHandler,
+        onProcessExit: (details: {
+          exitCode: number | null
+          signal: NodeJS.Signals | null
+          expected: boolean
+        }) => this.handleProcessExit(id, details),
         onAgentText: (text: string) => this.events.publish({
           type: 'acp_assistant_chunk',
           session_id: id,
@@ -242,6 +265,15 @@ export class AcpSessionManager {
       this.publishStatus(placeholder)
       return this.view(placeholder)
     } catch (error) {
+      this.broker.cancelSession(id, 'startup_failed')
+      placeholder.unregister()
+      if (runtime) {
+        try {
+          await runtime.close()
+        } catch {
+          // Runtime close is best-effort here; it already attempts child termination.
+        }
+      }
       placeholder.status = 'error'
       placeholder.error = 'Unable to start the ACP session.'
       this.publishStatus(placeholder)
@@ -256,32 +288,55 @@ export class AcpSessionManager {
     if (session.status !== 'ready') {
       throw new PublicCommandError('CONFLICT', 'ACP session is busy.')
     }
+    const turn = Symbol('acp-turn')
+    session.activeTurn = turn
+    session.cancelRequested = false
     session.status = 'prompting'
+    session.error = null
     this.publishStatus(session)
     try {
       const result = await session.runtime.prompt(text.trim(), { label: 'desktop' })
-      session.status = 'ready'
-      this.publishStatus(session)
+      if (this.isCurrentTurn(session, turn)) {
+        session.activeTurn = null
+        session.cancelRequested = false
+        if (session.status !== 'closing' && session.status !== 'closed') {
+          session.status = 'ready'
+          this.publishStatus(session)
+        }
+      }
       return {
         stop_reason: result.response?.stopReason ?? null,
         result_chars: result.rawText?.length ?? 0
       }
     } catch (error) {
-      session.status = 'error'
-      session.error = 'ACP prompt failed.'
-      this.publishStatus(session)
+      let cancelled = false
+      if (this.isCurrentTurn(session, turn)) {
+        cancelled = session.cancelRequested
+        session.activeTurn = null
+        session.cancelRequested = false
+        if (session.status !== 'closing' && session.status !== 'closed') {
+          session.status = cancelled ? 'ready' : 'error'
+          session.error = cancelled ? null : 'ACP prompt failed.'
+          this.publishStatus(session)
+        }
+      }
+      if (cancelled) {
+        return { stop_reason: 'cancelled', result_chars: 0 }
+      }
       throw error
     }
   }
 
   async cancel(sessionId: string): Promise<AcpSessionView> {
     const session = this.require(sessionId)
+    if (!['prompting', 'awaiting_permission'].includes(session.status)) {
+      throw new PublicCommandError('CONFLICT', 'ACP session has no active turn to cancel.')
+    }
+    session.cancelRequested = true
     session.status = 'cancelling'
     this.publishStatus(session)
     this.broker.cancelSession(sessionId)
     await session.runtime.cancel('desktop_operator')
-    session.status = 'ready'
-    this.publishStatus(session)
     return this.view(session)
   }
 
@@ -291,6 +346,9 @@ export class AcpSessionManager {
     value: string | boolean
   ): Promise<AcpSessionView> {
     const session = this.require(sessionId)
+    if (session.status !== 'ready') {
+      throw new PublicCommandError('CONFLICT', 'ACP session is busy.')
+    }
     const option = session.runtime.configOptions
       .find((item: Record<string, unknown>) => item.id === configId)
     if (!option) throw new PublicCommandError('INVALID_REQUEST', 'Config option is invalid.')
@@ -318,8 +376,11 @@ export class AcpSessionManager {
     this.publishStatus(session)
     this.broker.cancelSession(sessionId, reason)
     try {
-      await session.runtime?.cancel(reason)
-      await session.runtime?.close()
+      try {
+        await session.runtime?.cancel(reason)
+      } finally {
+        await session.runtime?.close()
+      }
     } finally {
       session.status = 'closed'
       session.unregister()
@@ -346,6 +407,39 @@ export class AcpSessionManager {
     const session = this.sessions.get(sessionId)
     if (!session) throw new PublicCommandError('NOT_FOUND', 'ACP session is unavailable.')
     return session
+  }
+
+  private isCurrentTurn(session: ManagedAcpSession, turn: symbol): boolean {
+    return this.sessions.get(session.id) === session && session.activeTurn === turn
+  }
+
+  private handleProcessExit(
+    sessionId: string,
+    {
+      exitCode,
+      signal,
+      expected
+    }: {
+      exitCode: number | null
+      signal: NodeJS.Signals | null
+      expected: boolean
+    }
+  ): void {
+    if (expected) return
+    const session = this.sessions.get(sessionId)
+    if (!session || session.status === 'closing' || session.status === 'closed') return
+    this.broker.cancelSession(sessionId, 'process_exited')
+    session.activeTurn = null
+    session.cancelRequested = false
+    session.status = 'error'
+    session.error = 'ACP agent process exited unexpectedly.'
+    session.unregister()
+    this.events.publish({
+      type: 'acp_process_exited',
+      session_id: sessionId,
+      payload: { exit_code: exitCode, signal }
+    })
+    this.publishStatus(session)
   }
 
   private publishStatus(session: ManagedAcpSession): void {

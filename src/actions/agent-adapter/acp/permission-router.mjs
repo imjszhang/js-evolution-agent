@@ -1,4 +1,6 @@
+import { existsSync, realpathSync } from 'node:fs';
 import {
+  dirname,
   isAbsolute,
   relative,
   resolve,
@@ -10,9 +12,26 @@ const WRITE_KINDS = new Set(['edit', 'delete', 'move']);
 const READ_KINDS = new Set(['read', 'search', 'think']);
 const REMOTE_PATTERN = /\b(?:https?:\/\/|ssh:\/\/|git@|git\s+push|gh\s+(?:pr|release)|npm\s+publish|curl\b|wget\b|publish|deploy|release)\b/i;
 
+function canonicalPath(path) {
+  const resolvedPath = resolve(path);
+  let ancestor = resolvedPath;
+  while (!existsSync(ancestor)) {
+    const parent = dirname(ancestor);
+    if (parent === ancestor) return resolvedPath;
+    ancestor = parent;
+  }
+  try {
+    const canonicalAncestor = realpathSync.native(ancestor);
+    return resolve(canonicalAncestor, relative(ancestor, resolvedPath));
+  } catch {
+    return resolvedPath;
+  }
+}
+
 function insideRoot(path, root) {
-  const resolvedRoot = resolve(root);
-  const resolvedPath = isAbsolute(path) ? resolve(path) : resolve(resolvedRoot, path);
+  const resolvedRoot = canonicalPath(root);
+  const candidate = isAbsolute(path) ? resolve(path) : resolve(root, path);
+  const resolvedPath = canonicalPath(candidate);
   const rel = relative(resolvedRoot, resolvedPath);
   return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }
