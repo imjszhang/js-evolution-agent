@@ -276,10 +276,16 @@ function listStagingDirs(jeaHome) {
     .map((entry) => join(jeaHome, entry.name));
 }
 
-function migrationMarker({ sourceSubjectsRoot, targetSubjectsRoot, sourceManifest, completedAt }) {
+function migrationMarker({
+  sourceSubjectsRoot,
+  targetSubjectsRoot,
+  sourceManifest,
+  completedAt = null,
+  status = 'completed',
+}) {
   return {
     schema_version: 1,
-    status: 'completed',
+    status,
     completed_at: completedAt,
     source_subjects_root: sourceSubjectsRoot,
     target_subjects_root: targetSubjectsRoot,
@@ -292,6 +298,7 @@ export async function migrateJeaHome(input, {
   dryRun = false,
   now = () => new Date(),
   afterCopy = null,
+  afterActivate = null,
 } = {}) {
   const context = createRuntimeContext(input);
   const sourceSubjectsRoot = legacySubjectsDir(context);
@@ -440,6 +447,17 @@ export async function migrateJeaHome(input, {
     }
 
     if (existingTarget.files > 0 && existingTarget.digest === sourceManifest.digest) {
+      const activatingMarker = migrationMarker({
+        sourceSubjectsRoot,
+        targetSubjectsRoot,
+        sourceManifest,
+        status: 'activating',
+      });
+      writeJsonFile(join(targetSubjectsRoot, JEA_HOME_MIGRATION_MARKER), activatingMarker);
+      const adoptedSourceManifest = scanMigrationTree(sourceSubjectsRoot);
+      if (adoptedSourceManifest.digest !== sourceManifest.digest) {
+        throw migrationError('migration_source_changed', 'Legacy Subject data changed while adopting JEA Home.');
+      }
       const marker = migrationMarker({
         sourceSubjectsRoot,
         targetSubjectsRoot,
@@ -474,18 +492,33 @@ export async function migrateJeaHome(input, {
       throw migrationError('migration_source_changed', 'Legacy Subject data changed while it was being copied.');
     }
 
+    const activatingMarker = migrationMarker({
+      sourceSubjectsRoot,
+      targetSubjectsRoot,
+      sourceManifest,
+      status: 'activating',
+    });
+    writeJsonFile(join(stagedSubjectsRoot, JEA_HOME_MIGRATION_MARKER), activatingMarker);
+    if (existsSync(targetSubjectsRoot)) {
+      throw migrationError('migration_target_changed', 'JEA Home Subject directory appeared during migration.');
+    }
+    mkdirSync(dirname(targetSubjectsRoot), { recursive: true });
+    renameSync(stagedSubjectsRoot, targetSubjectsRoot);
+    await afterActivate?.({ sourceSubjectsRoot, targetSubjectsRoot });
+    const activatedSourceManifest = scanMigrationTree(sourceSubjectsRoot);
+    if (activatedSourceManifest.digest !== sourceManifest.digest) {
+      throw migrationError(
+        'migration_source_changed',
+        'Legacy Subject data changed during atomic activation; JEA Home remains fail-closed.',
+      );
+    }
     const marker = migrationMarker({
       sourceSubjectsRoot,
       targetSubjectsRoot,
       sourceManifest,
       completedAt: now().toISOString(),
     });
-    writeJsonFile(join(stagedSubjectsRoot, JEA_HOME_MIGRATION_MARKER), marker);
-    if (existsSync(targetSubjectsRoot)) {
-      throw migrationError('migration_target_changed', 'JEA Home Subject directory appeared during migration.');
-    }
-    mkdirSync(dirname(targetSubjectsRoot), { recursive: true });
-    renameSync(stagedSubjectsRoot, targetSubjectsRoot);
+    writeJsonFile(join(targetSubjectsRoot, JEA_HOME_MIGRATION_MARKER), marker);
     rmSync(stagingRoot, { recursive: true, force: true });
     stagingRoot = null;
     return {

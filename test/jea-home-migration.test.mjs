@@ -286,6 +286,21 @@ describe('JEA Home migration', () => {
     expect(readFileSync(join(target, 'concurrent-writer.txt'), 'utf8')).toBe('preserve\n');
   });
 
+  it('leaves an invalid activation marker if the source changes at cutover', async () => {
+    const fixture = makeFixture();
+    await expect(migrateJeaHome(fixture, {
+      afterActivate: () => {
+        writeFileSync(join(fixture.subjectRoot, 'changed-at-activation.txt'), 'changed\n');
+      },
+    })).rejects.toMatchObject({ code: 'migration_source_changed' });
+    const marker = JSON.parse(readFileSync(
+      join(fixture.jeaHome, 'subjects', JEA_HOME_MIGRATION_MARKER),
+      'utf8',
+    ));
+    expect(marker.status).toBe('activating');
+    expect(inspectJeaHomeAuthority(fixture).code).toBe('dual_authority_conflict');
+  });
+
   it('exposes migration through the CLI and blocks normal commands beforehand', () => {
     const fixture = makeFixture();
     const cli = resolve('src/cli/jea.mjs');
