@@ -127,6 +127,12 @@ export function createDesktopCommandDefinitions({
       level: 'readonly',
       handler: () => acp.list()
     },
+    'acp.listPermissions': {
+      level: 'readonly',
+      handler: (payload) => acp.listPermissions(
+        stringField(payload, 'sessionId', { required: false })
+      )
+    },
     'acp.startSession': {
       level: 'process',
       handler: (payload) => acp.start({

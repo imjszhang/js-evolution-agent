@@ -1,3 +1,4 @@
+import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { readJsonSafe, writeJsonFile } from '../infra/files.mjs';
 import { createIntelligenceStore } from './store.mjs';
@@ -55,7 +56,14 @@ export function applyActiveGoalState(runtime, nextGoal, {
     cycle_id: cycle,
   };
   writeJsonFile(path, nextGoal);
-  const written = (store ?? defaultStore(runtime.runtimeRoot)).recordGoalEvent(event);
+  let written;
+  try {
+    written = (store ?? defaultStore(runtime.runtimeRoot)).recordGoalEvent(event);
+  } catch (error) {
+    if (previousGoal == null) rmSync(path, { force: true });
+    else writeJsonFile(path, previousGoal);
+    throw error;
+  }
   return {
     runtime,
     path,

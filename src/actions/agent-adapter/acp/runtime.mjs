@@ -37,6 +37,8 @@ export class AcpRuntime {
     permissionHandler = null,
     onSessionUpdate = null,
     onAgentText = null,
+    onProcessExit = null,
+    includeStderrText = true,
   } = {}) {
     this.framework = framework;
     this.cwd = cwd;
@@ -50,6 +52,8 @@ export class AcpRuntime {
     this.permissionHandler = permissionHandler;
     this.onSessionUpdate = onSessionUpdate;
     this.onAgentText = onAgentText;
+    this.onProcessExit = onProcessExit;
+    this.includeStderrText = includeStderrText;
     this.child = null;
     this.connection = null;
     this.session = null;
@@ -69,6 +73,19 @@ export class AcpRuntime {
       windowsHide: true,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
+    this.child.once('close', (exitCode, signal) => {
+      try {
+        this.onProcessExit?.({
+          exitCode,
+          signal,
+          expected: this.closed,
+        });
+      } catch (error) {
+        this.observer?.emit('process_exit_handler_failed', {
+          error: error?.message ?? String(error),
+        }, 'warning');
+      }
+    });
     const spawnFailure = new Promise((_, reject) => {
       this.child.once('error', (error) => reject(acpError(
         `unable to spawn ACP agent '${this.framework.command}': ${error.message}`,
@@ -78,7 +95,12 @@ export class AcpRuntime {
     });
     this.child.stderr?.on('data', (chunk) => {
       const text = String(chunk).trim();
-      if (text) this.observer?.emit('native_event', { native_type: 'acp:stderr', text }, 'warning');
+      if (text) {
+        this.observer?.emit('native_event', {
+          native_type: 'acp:stderr',
+          ...(this.includeStderrText ? { text } : {}),
+        }, 'warning');
+      }
     });
 
     const stream = ndJsonStream(
@@ -214,17 +236,35 @@ export class AcpRuntime {
     this.closed = true;
     if (this.connection && this.session && this.closeSupported) {
       try {
-        await this.connection.agent.request(methods.agent.session.close, {
-          sessionId: this.session.sessionId,
-        });
+        await this.#withTimeout(
+          this.connection.agent.request(methods.agent.session.close, {
+            sessionId: this.session.sessionId,
+          }),
+          'session/close',
+          { timeoutMs: Math.min(this.killGraceMs, 5_000), cancel: false },
+        );
       } catch (error) {
         this.observer?.emit('session_close_failed', { error: error.message }, 'warning');
       }
     }
-    this.session?.dispose();
-    this.connection?.close();
-    this.child?.stdin?.end();
-    await this.#terminateChild();
+    let cleanupError = null;
+    for (const cleanup of [
+      () => this.session?.dispose(),
+      () => this.connection?.close(),
+      () => this.child?.stdin?.end(),
+    ]) {
+      try {
+        cleanup();
+      } catch (error) {
+        cleanupError ??= error;
+      }
+    }
+    try {
+      await this.#terminateChild();
+    } catch (error) {
+      cleanupError ??= error;
+    }
+    if (cleanupError) throw cleanupError;
   }
 
   async #withTimeout(promiseOrFactory, label, {

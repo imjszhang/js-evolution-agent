@@ -15,6 +15,10 @@ import {
   openOperatorQuestion,
   readResolvedOperatorQuestions
 } from '../../../src/intelligence/operator-questions.mjs'
+import {
+  activeGoalsPathForRuntime,
+  applyActiveGoalState
+} from '../../../src/intelligence/goal-state.mjs'
 import { OpsService } from '../src/main/operations'
 import { TodoService } from '../src/main/todo-service'
 
@@ -95,6 +99,8 @@ describe('TodoService round trip', () => {
     const briefResult = service.putBrief(SUBJECT, {
       id: 'brief-round-trip',
       summary: 'Inspect the next desktop cycle',
+      created_by: 'forged-system',
+      consumed_by_cycle: 'forged-cycle',
       metadata: { api_key: SECRET }
     })
     expect(briefResult).toMatchObject({
@@ -102,6 +108,8 @@ describe('TodoService round trip', () => {
       brief: {
         id: 'brief-round-trip',
         summary: 'Inspect the next desktop cycle',
+        created_by: 'desktop_operator',
+        producer: 'desktop',
         metadata: { api_key: '[REDACTED_SECRET]' }
       },
       cycle_start_request: {
@@ -125,16 +133,24 @@ describe('TodoService round trip', () => {
 
     const factResult = service.putFact(SUBJECT, {
       id: 'fact-round-trip',
-      subject: SUBJECT,
+      subject: 'forged-other-subject',
       content: `Desktop facts are one-shot seeds; token ${SECRET}`,
-      confidence: 'high'
+      confidence: 'low',
+      created_by: 'forged-system',
+      injected_by_cycle: 'forged-cycle',
+      digestion_outcome: 'supported'
     })
     expect(factResult).toMatchObject({
       subject: SUBJECT,
       fact: {
         id: 'fact-round-trip',
+        subject: SUBJECT,
         content: 'Desktop facts are one-shot seeds; token [REDACTED_SECRET]',
-        confidence: 'high'
+        confidence: 'high',
+        created_by: 'desktop_operator',
+        producer: 'desktop',
+        injected_by_cycle: null,
+        digestion_outcome: null
       },
       cycle_start_request: {
         reasons: ['operator_brief', 'operator_fact'],
@@ -154,6 +170,7 @@ describe('TodoService round trip', () => {
     expect(afterFact.facts).toHaveLength(1)
     expect(afterFact.facts[0]).toMatchObject({
       id: 'fact-round-trip',
+      subject: SUBJECT,
       content: 'Desktop facts are one-shot seeds; token [REDACTED_SECRET]'
     })
     expect(readPendingCycleStartRequest(projectRoot!, SUBJECT)).toMatchObject({
@@ -268,5 +285,27 @@ describe('TodoService round trip', () => {
       'memory',
       'standing_memory.json'
     ))).toBe(false)
+  })
+
+  it('rolls back an active-goal write when its audit event fails', () => {
+    const { runtime } = makeService()
+    const goals = {
+      id: 'rollback-goal',
+      name: 'Rollback goal',
+      intent: 'Keep goal state and audit state atomic',
+      good_signal: 'Both writes succeed',
+      bad_signal: 'Only one write succeeds',
+      children: []
+    }
+
+    expect(() => applyActiveGoalState(runtime, goals, {
+      reason: 'failure injection',
+      store: {
+        recordGoalEvent() {
+          throw new Error('injected audit failure')
+        }
+      }
+    })).toThrow('injected audit failure')
+    expect(existsSync(activeGoalsPathForRuntime(runtime.runtimeRoot))).toBe(false)
   })
 })

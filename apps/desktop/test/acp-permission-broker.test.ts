@@ -58,6 +58,14 @@ describe('AcpPermissionBroker', () => {
     const requestId = requestedId(events)
     expect(settled).toBe(false)
     expect(broker.hasPending('desktop-session')).toBe(true)
+    expect(broker.list('desktop-session')).toEqual([
+      expect.objectContaining({
+        session_id: 'desktop-session',
+        request_id: requestId,
+        tool_kind: 'edit',
+        reason: 'workspace_write_inside_roots'
+      })
+    ])
     expect(pendingChanges).toEqual([true])
     expect(events.find((event) => event.type === 'acp_permission_requested')).toMatchObject({
       session_id: 'desktop-session',
@@ -158,6 +166,19 @@ describe('AcpPermissionBroker', () => {
       reason: 'remote_access_default_deny'
     },
     {
+      label: 'fetch without a URL in its title',
+      params: {
+        toolCall: {
+          toolCallId: 'fetch-1',
+          title: 'Download metadata',
+          kind: 'fetch',
+          rawInput: {}
+        },
+        options: OPTIONS
+      },
+      reason: 'remote_access_default_deny'
+    },
+    {
       label: 'write outside the root',
       params: workspaceEdit('/outside/project/file.ts'),
       reason: 'workspace_write_outside_or_unknown_path'
@@ -181,9 +202,35 @@ describe('AcpPermissionBroker', () => {
       payload: {
         automatic: true,
         allowed: false,
+        request_id: expect.any(String),
         reason
       }
     })
+  })
+
+  it('redacts permission snapshots and events before renderer delivery', async () => {
+    const { broker, events } = harness()
+    const secret = 'sk-ant-secret123456'
+    const params: any = workspaceEdit()
+    params.toolCall.title = `Edit with ${secret}`
+    params.toolCall.rawInput = {
+      path: '/workspace/project/src/file.ts',
+      note: secret
+    }
+    const response = broker.handler('desktop-session', {
+      permissionProfile: 'workspace_write',
+      roots: ['/workspace/project']
+    })({ params })
+
+    const serialized = JSON.stringify({
+      events,
+      pending: broker.list('desktop-session')
+    })
+    expect(serialized).not.toContain(secret)
+    expect(serialized).toContain('[REDACTED_SECRET]')
+
+    broker.cancelSession('desktop-session', 'test_cleanup')
+    await expect(response).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
   })
 
   it('cancels every request for a session and clears its pending state', async () => {

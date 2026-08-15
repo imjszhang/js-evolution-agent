@@ -1,9 +1,14 @@
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import { redactSecrets } from '../../../../src/intelligence/redaction.mjs'
 import { AcpSessionManager } from './acp-session-manager'
-import { createCommandRegistry, invokeForIpc } from './command-registry'
+import {
+  createCommandRegistry,
+  invokeForIpc,
+  PublicCommandError
+} from './command-registry'
 import { DaemonSupervisor } from './daemon-supervisor'
 import { createDesktopCommandDefinitions } from './desktop-command-definitions'
 import { DesktopEventBus } from './event-bus'
@@ -11,6 +16,10 @@ import { toIpcValue } from './ipc-value'
 import { ManagedProcessRegistry } from './managed-process-registry'
 import { OpsService } from './operations'
 import { resolveDesktopProjectRoot } from './project-root'
+import {
+  isTrustedRendererLocation,
+  resolveDevRendererUrl
+} from './renderer-security'
 import { TodoService } from './todo-service'
 import {
   JEA_EVENT_CHANNEL,
@@ -20,6 +29,9 @@ import {
 
 const outputDir = fileURLToPath(new URL('.', import.meta.url))
 const projectRoot = resolveDesktopProjectRoot()
+const productionRendererPath = join(outputDir, '../renderer/index.html')
+const productionRendererUrl = pathToFileURL(productionRendererPath).href
+const devRendererUrl = resolveDevRendererUrl(process.env.ELECTRON_RENDERER_URL)
 const processRegistry = new ManagedProcessRegistry()
 const events = new DesktopEventBus()
 const daemon = new DaemonSupervisor(projectRoot, processRegistry, events)
@@ -46,12 +58,17 @@ let shutdownComplete = false
 events.subscribe((event) => {
   let safeEvent
   try {
-    safeEvent = toIpcValue(event)
+    safeEvent = toIpcValue(redactSecrets(event))
   } catch {
     return
   }
   for (const window of BrowserWindow.getAllWindows()) {
-    if (!window.isDestroyed()) window.webContents.send(JEA_EVENT_CHANNEL, safeEvent)
+    if (window.isDestroyed()) continue
+    const trustedLocation = isTrustedRendererLocation(window.webContents.getURL(), {
+      devRendererUrl,
+      productionRendererUrl
+    })
+    if (trustedLocation) window.webContents.send(JEA_EVENT_CHANNEL, safeEvent)
   }
 })
 
@@ -75,10 +92,10 @@ function createWindow(): BrowserWindow {
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   window.webContents.on('will-navigate', (event) => event.preventDefault())
 
-  if (process.env.ELECTRON_RENDERER_URL) {
-    void window.loadURL(process.env.ELECTRON_RENDERER_URL)
+  if (devRendererUrl) {
+    void window.loadURL(devRendererUrl)
   } else {
-    void window.loadFile(join(outputDir, '../renderer/index.html'))
+    void window.loadFile(productionRendererPath)
   }
   return window
 }
@@ -102,7 +119,20 @@ if (!gotSingleInstanceLock) {
   app.whenReady().then(async () => {
     ipcMain.handle(
       JEA_INVOKE_CHANNEL,
-      (_event, request: InvokeRequest) => invokeForIpc(invoke, request)
+      (event, request: InvokeRequest) => {
+        const ownedWindow = BrowserWindow.getAllWindows()
+          .some((window) => window.webContents === event.sender)
+        const trustedLocation = isTrustedRendererLocation(event.sender.getURL(), {
+          devRendererUrl,
+          productionRendererUrl
+        })
+        if (!ownedWindow || !trustedLocation) {
+          return invokeForIpc(async () => {
+            throw new PublicCommandError('COMMAND_NOT_ALLOWED', 'Command is not available.')
+          }, request)
+        }
+        return invokeForIpc(invoke, request)
+      }
     )
     createWindow()
 

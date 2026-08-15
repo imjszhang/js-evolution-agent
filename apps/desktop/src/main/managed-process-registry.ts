@@ -9,14 +9,14 @@ export interface ManagedProcessRegistration {
 
 export class ManagedProcessRegistry {
   private readonly entries = new Map<string, ManagedProcessRegistration>()
-  private shuttingDown = false
+  private shutdownPromise: Promise<void> | null = null
 
   private key(kind: ManagedProcessKind, id: string): string {
     return `${kind}:${id}`
   }
 
   register(entry: ManagedProcessRegistration): () => void {
-    if (this.shuttingDown) throw new Error('process_registry_shutting_down')
+    if (this.shutdownPromise) throw new Error('process_registry_shutting_down')
     const key = this.key(entry.kind, entry.id)
     if (this.entries.has(key)) throw new Error('managed_process_already_registered')
     this.entries.set(key, entry)
@@ -32,10 +32,12 @@ export class ManagedProcessRegistry {
   }
 
   async shutdownAll(reason = 'app_quit'): Promise<void> {
-    if (this.shuttingDown) return
-    this.shuttingDown = true
-    const entries = [...this.entries.values()]
-    await Promise.allSettled(entries.map((entry) => entry.cleanup(reason)))
-    this.entries.clear()
+    if (this.shutdownPromise) return this.shutdownPromise
+    this.shutdownPromise = (async () => {
+      const entries = [...this.entries.values()]
+      await Promise.allSettled(entries.map((entry) => entry.cleanup(reason)))
+      this.entries.clear()
+    })()
+    return this.shutdownPromise
   }
 }

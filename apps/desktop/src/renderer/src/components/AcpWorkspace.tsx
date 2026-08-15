@@ -8,6 +8,7 @@ import {
 } from 'react'
 import type {
   AcpFrameworkView,
+  AcpPermissionView,
   AcpSessionStatus,
   AcpSessionView,
   JeaEventEnvelope
@@ -73,11 +74,16 @@ function permissionFromPayload(payload: UnknownRecord): PermissionRequest | null
     requestId: payload.request_id,
     title: text(payload.title, 'Tool permission'),
     toolKind: text(payload.tool_kind, 'unknown'),
+    inputSummary: text(payload.input_summary, ''),
     paths: Array.isArray(payload.paths)
       ? payload.paths.filter((path): path is string => typeof path === 'string')
       : [],
     options,
-    reason: typeof advisory.reason === 'string' ? advisory.reason : null
+    reason: typeof payload.reason === 'string'
+      ? payload.reason
+      : typeof advisory.reason === 'string'
+        ? advisory.reason
+        : null
   }
 }
 
@@ -180,6 +186,7 @@ export function AcpWorkspace() {
   const [busy, setBusy] = useState<string | null>('load')
   const [notice, setNotice] = useState<{ kind: 'error' | 'success'; message: string } | null>(null)
   const eventSequence = useRef(0)
+  const permissionRevision = useRef(0)
   const timelineEnd = useRef<HTMLDivElement | null>(null)
 
   const selectedSession = sessions.find((session) => session.id === selectedSessionId) ?? null
@@ -220,8 +227,24 @@ export function AcpWorkspace() {
         window.jea.invoke<AcpFrameworkView[]>('acp.listFrameworks'),
         window.jea.invoke<AcpSessionView[]>('acp.listSessions')
       ])
+      let nextPermissionViews: AcpPermissionView[] = []
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const revision = permissionRevision.current
+        nextPermissionViews = await window.jea.invoke<AcpPermissionView[]>('acp.listPermissions')
+        if (revision === permissionRevision.current) break
+      }
+      const nextPermissions: Record<string, PermissionRequest[]> = {}
+      for (const view of nextPermissionViews) {
+        const request = permissionFromPayload(view as unknown as UnknownRecord)
+        if (!request) continue
+        nextPermissions[view.session_id] = [
+          ...(nextPermissions[view.session_id] ?? []),
+          request
+        ]
+      }
       setFrameworks(nextFrameworks)
       setSessions(nextSessions)
+      setPermissions(nextPermissions)
       setSelectedProvider((current) => {
         if (nextFrameworks.some((item) => item.provider === current)) return current
         return nextFrameworks.find((item) => item.available)?.provider
@@ -254,6 +277,7 @@ export function AcpWorkspace() {
         appendTimeline(sessionId, event)
       }
       if (event.type === 'acp_permission_requested') {
+        permissionRevision.current += 1
         const request = permissionFromPayload(event.payload)
         if (request) {
           setPermissions((current) => ({
@@ -266,6 +290,7 @@ export function AcpWorkspace() {
         }
       }
       if (event.type === 'acp_permission_resolved') {
+        permissionRevision.current += 1
         const requestId = typeof event.payload.request_id === 'string'
           ? event.payload.request_id
           : null

@@ -27,6 +27,7 @@ export const ACP_COMMANDS = [
   'acp.listFrameworks',
   'acp.chooseExecutionRoot',
   'acp.listSessions',
+  'acp.listPermissions',
   'acp.startSession',
   'acp.prompt',
   'acp.cancelSession',
@@ -144,6 +145,18 @@ export interface AcpSessionView {
   created_at: string
   config_options: Record<string, unknown>[]
   error: string | null
+}
+
+export interface AcpPermissionView {
+  session_id: string
+  request_id: string
+  tool_call_id: string | null
+  title: string
+  tool_kind: string
+  input_summary: string
+  paths: string[]
+  options: Array<{ optionId: string; kind: string; name?: string }>
+  reason: string | null
 }
 
 export interface JeaBridge {

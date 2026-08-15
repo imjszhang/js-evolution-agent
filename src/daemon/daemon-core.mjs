@@ -634,7 +634,12 @@ async function workReactorTask(root, subject, task, flags) {
 async function workRunCycleStep(root, subject, task, flags) {
   const workerId = task.lease_owner || flags.worker || `worker-${process.pid}`;
   const { leaseMs, heartbeatMs } = heartbeatDefaults(flags);
-  const controller = flags.watchdog ? new AbortController() : null;
+  const controller = flags.watchdog || flags.signal ? new AbortController() : null;
+  const abortFromSignal = () => controller?.abort();
+  if (flags.signal) {
+    if (flags.signal.aborted) abortFromSignal();
+    else flags.signal.addEventListener('abort', abortFromSignal, { once: true });
+  }
   let lastLeaseRenewEventAt = 0;
   let watchdog = null;
   const step = task.type;
@@ -695,18 +700,23 @@ async function workRunCycleStep(root, subject, task, flags) {
     tick();
     watchdog = setInterval(tick, heartbeatMs);
   }
-  const result = await runSingleStep({
-    root,
-    subject,
-    step,
-    cycleId,
-    flags: flagsFromTask(task, flags),
-    signal: controller?.signal,
-    hooks: flags.watchdog ? {
-      onOutput: () => tick(),
-    } : {},
-  });
-  if (watchdog) clearInterval(watchdog);
+  let result;
+  try {
+    result = await runSingleStep({
+      root,
+      subject,
+      step,
+      cycleId,
+      flags: flagsFromTask(task, flags),
+      signal: controller?.signal,
+      hooks: flags.watchdog ? {
+        onOutput: () => tick(),
+      } : {},
+    });
+  } finally {
+    if (watchdog) clearInterval(watchdog);
+    flags.signal?.removeEventListener('abort', abortFromSignal);
+  }
 
   const outcome = resolveStepOutcome({
     step,
@@ -824,7 +834,12 @@ async function workRunCycleStep(root, subject, task, flags) {
 async function workRunCycle(root, subject, task, flags) {
   const workerId = task.lease_owner || flags.worker || `worker-${process.pid}`;
   const { leaseMs, heartbeatMs } = heartbeatDefaults(flags);
-  const controller = flags.watchdog ? new AbortController() : null;
+  const controller = flags.watchdog || flags.signal ? new AbortController() : null;
+  const abortFromSignal = () => controller?.abort();
+  if (flags.signal) {
+    if (flags.signal.aborted) abortFromSignal();
+    else flags.signal.addEventListener('abort', abortFromSignal, { once: true });
+  }
   let lastLeaseRenewEventAt = 0;
   let watchdog = null;
   const tick = () => {
@@ -868,19 +883,24 @@ async function workRunCycle(root, subject, task, flags) {
     tick();
     watchdog = setInterval(tick, heartbeatMs);
   }
-  const result = await runSingleCycle({
-    root,
-    subject,
-    flags: {
-      ...flagsFromTask(task, flags),
-      'cycle-driver': 'daemon',
-    },
-    signal: controller?.signal,
-    hooks: flags.watchdog ? {
-      onOutput: () => tick(),
-    } : {},
-  });
-  if (watchdog) clearInterval(watchdog);
+  let result;
+  try {
+    result = await runSingleCycle({
+      root,
+      subject,
+      flags: {
+        ...flagsFromTask(task, flags),
+        'cycle-driver': 'daemon',
+      },
+      signal: controller?.signal,
+      hooks: flags.watchdog ? {
+        onOutput: () => tick(),
+      } : {},
+    });
+  } finally {
+    if (watchdog) clearInterval(watchdog);
+    flags.signal?.removeEventListener('abort', abortFromSignal);
+  }
   if (result.exitCode === 0) {
     const completed = completeTask(root, subject, task.task_id, { exit_code: 0 });
     recordDaemonEvent(root, subject, {
@@ -1262,8 +1282,10 @@ export async function runDaemonWorker(root, subject, flags = {}) {
   });
 
   let stopping = false;
+  const localStopController = new AbortController();
   const requestLocalStop = () => {
     stopping = true;
+    localStopController.abort();
     requestWorkerStop(root, subject, { staleMs: heartbeatStaleMs });
   };
   process.once('SIGINT', requestLocalStop);
@@ -1325,6 +1347,7 @@ export async function runDaemonWorker(root, subject, flags = {}) {
           'lease-ms': leaseMs,
           'heartbeat-ms': heartbeatMs,
           watchdog: true,
+          signal: localStopController.signal,
           'subject-lock-held': true,
         });
       },

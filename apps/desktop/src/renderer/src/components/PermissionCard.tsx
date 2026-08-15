@@ -10,6 +10,7 @@ export interface PermissionRequest {
   requestId: string
   title: string
   toolKind: string
+  inputSummary: string
   paths: string[]
   options: PermissionOption[]
   reason: string | null
@@ -42,6 +43,9 @@ export function PermissionCard({
           <span>Tool: <strong>{text(request.toolKind, 'unknown')}</strong></span>
           {request.reason && <span>Advisory: <strong>{request.reason}</strong></span>}
         </div>
+        {request.inputSummary && (
+          <pre className="permission-input">{request.inputSummary}</pre>
+        )}
         {request.paths.length > 0 && (
           <div className="path-list">
             {request.paths.map((path) => <code key={path}>{path}</code>)}
