@@ -4,6 +4,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { redactSecrets } from '../../../../src/intelligence/redaction.mjs'
 import { AcpSessionManager } from './acp-session-manager'
+import { ChannelService } from './channel-service'
 import {
   createCommandRegistry,
   invokeForIpc,
@@ -38,7 +39,8 @@ const events = new DesktopEventBus()
 const daemon = new DaemonSupervisor(projectRoot, processRegistry, events)
 const ops = new OpsService(projectRoot, undefined, undefined, daemon)
 const todo = new TodoService(projectRoot, ops)
-const projection = new ProjectionWatcher(projectRoot, ops, todo, events)
+const channel = new ChannelService(projectRoot)
+const projection = new ProjectionWatcher(projectRoot, ops, todo, channel, events)
 const acp = new AcpSessionManager(
   projectRoot,
   processRegistry,
@@ -53,7 +55,7 @@ const acp = new AcpSessionManager(
 )
 const invoke = createCommandRegistry(
   ops,
-  createDesktopCommandDefinitions({ ops, todo, daemon, acp, projection })
+  createDesktopCommandDefinitions({ ops, todo, daemon, acp, projection, channel })
 )
 let shutdownComplete = false
 

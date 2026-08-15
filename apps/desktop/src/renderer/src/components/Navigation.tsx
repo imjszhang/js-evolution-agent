@@ -1,10 +1,11 @@
 import type { SubjectSummary } from '../../../shared/contract'
 
-export type AppPage = 'ops' | 'todo' | 'acp'
+export type AppPage = 'ops' | 'todo' | 'channel' | 'acp'
 
 const pages: Array<{ id: AppPage; label: string; short: string; detail: string }> = [
   { id: 'ops', label: 'Operations', short: 'OP', detail: 'Health & daemons' },
   { id: 'todo', label: 'Todo Center', short: 'TD', detail: 'Operator inputs' },
+  { id: 'channel', label: 'Channel', short: 'CH', detail: 'Local & Feishu messages' },
   { id: 'acp', label: 'ACP Workspace', short: 'AC', detail: 'Agent sessions' }
 ]
 

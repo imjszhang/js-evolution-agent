@@ -272,7 +272,7 @@ export function createEvolutionEventsTailer({
       }
 
       const sseEv = sseEventFromEvolutionLine(event, runtimeRoot);
-      if (!sseEv) continue;
+      if (!sseEv) return;
       if (sseEv.type === 'round_updated') {
         onInvalidateCache?.(sseEv.cycle_id);
       }

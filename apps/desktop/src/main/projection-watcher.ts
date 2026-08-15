@@ -2,6 +2,7 @@ import { runtimeForSubject } from '../../../../src/infra/runtime-paths.mjs'
 import { createRuntimeWatcher } from '../../../../src/intelligence/evolution-viewer/runtime-watch.mjs'
 import type { SubjectSnapshot, TodoSnapshot } from '../shared/contract'
 import type { DesktopEventBus } from './event-bus'
+import type { ChannelService } from './channel-service'
 import type { OpsService } from './operations'
 import type { TodoService } from './todo-service'
 
@@ -11,7 +12,7 @@ interface RuntimeWatcher {
   notify(reason?: string): void
 }
 
-type WatcherFactory = typeof createRuntimeWatcher
+type WatcherFactory = (options: Record<string, any>) => RuntimeWatcher
 
 export class ProjectionWatcher {
   private activeSubject: string | null = null
@@ -22,8 +23,9 @@ export class ProjectionWatcher {
     private readonly projectRoot: string,
     private readonly ops: OpsService,
     private readonly todo: TodoService,
+    private readonly channel: ChannelService,
     private readonly events: DesktopEventBus,
-    private readonly watcherFactory: WatcherFactory = createRuntimeWatcher
+    private readonly watcherFactory: WatcherFactory = createRuntimeWatcher as unknown as WatcherFactory
   ) {}
 
   watch(subject: string): { subject: string; watching: true } {
@@ -77,6 +79,11 @@ export class ProjectionWatcher {
         type: 'projection.todo_updated',
         subject,
         payload: { snapshot: todo, reason, revision }
+      })
+      this.events.publish({
+        type: 'projection.channel_updated',
+        subject,
+        payload: { snapshot: this.channel.get(subject), reason, revision }
       })
     } catch {
       this.events.publish({

@@ -22,9 +22,9 @@ describe('ProjectionWatcher', () => {
     const published: string[] = []
     events.subscribe((event) => published.push(event.type))
     const stop = vi.fn()
-    let onRuntimeChange: ((event: { reason: string }) => void) | null = null
+    const callbackRef: { current?: (event: { reason: string }) => void } = {}
     const watcherFactory = vi.fn((options: any) => {
-      onRuntimeChange = options.onRuntimeChange
+      callbackRef.current = options.onRuntimeChange
       return { start: vi.fn(), stop, notify: vi.fn() }
     })
     const ops = {
@@ -49,13 +49,18 @@ describe('ProjectionWatcher', () => {
       root,
       ops as any,
       todo as any,
+      { get: vi.fn(() => ({ subject: 'alpha', projection: {}, sessions: [], inbound: {} })) } as any,
       events,
       watcherFactory as any
     )
 
     expect(projection.watch('alpha')).toEqual({ subject: 'alpha', watching: true })
-    onRuntimeChange?.({ reason: 'watch' })
-    expect(published).toEqual(['projection.ops_updated', 'projection.todo_updated'])
+    callbackRef.current?.({ reason: 'watch' })
+    expect(published).toEqual([
+      'projection.ops_updated',
+      'projection.todo_updated',
+      'projection.channel_updated'
+    ])
     expect(ops.refresh).toHaveBeenCalledTimes(2)
     expect(projection.stop()).toEqual({ stopped: true })
     expect(stop).toHaveBeenCalledOnce()
@@ -66,7 +71,7 @@ describe('ProjectionWatcher', () => {
     const events = new DesktopEventBus()
     const published: string[] = []
     events.subscribe((event) => published.push(event.type))
-    let callback: ((event: { reason: string }) => void) | null = null
+    const callbackRef: { current?: (event: { reason: string }) => void } = {}
     const ops = {
       refresh: vi.fn()
         .mockReturnValueOnce([{ subject: { name: 'alpha' } }])
@@ -76,14 +81,15 @@ describe('ProjectionWatcher', () => {
       root,
       ops as any,
       { get: vi.fn() } as any,
+      { get: vi.fn() } as any,
       events,
       ((options: any) => {
-        callback = options.onRuntimeChange
+        callbackRef.current = options.onRuntimeChange
         return { start: vi.fn(), stop: vi.fn(), notify: vi.fn() }
       }) as any
     )
     projection.watch('alpha')
-    callback?.({ reason: 'reconcile' })
+    callbackRef.current?.({ reason: 'reconcile' })
     expect(published).toEqual(['projection.refresh_failed'])
   })
 })

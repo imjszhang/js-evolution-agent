@@ -50,6 +50,138 @@ body {
     var(--bg);
 }
 
+.channel-layout {
+  display: grid;
+  grid-template-columns: minmax(170px, .55fr) minmax(360px, 1.6fr) minmax(250px, .85fr);
+  gap: 16px;
+  min-height: 640px;
+}
+
+.channel-sessions,
+.inbound-feed {
+  align-self: stretch;
+  overflow: auto;
+}
+
+.channel-session {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+  padding: 11px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  text-align: left;
+  background: var(--surface-soft);
+}
+
+.channel-session span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.channel-session.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.channel-chat {
+  display: grid;
+  min-height: 640px;
+  grid-template-rows: minmax(0, 1fr) auto;
+  overflow: hidden;
+}
+
+.channel-messages {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 12px;
+  overflow: auto;
+  padding: 4px;
+}
+
+.chat-message {
+  max-width: 86%;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px 12px 12px 3px;
+  background: var(--surface-raised);
+}
+
+.chat-message.user {
+  align-self: flex-end;
+  border-color: rgb(110 140 255 / 35%);
+  border-radius: 12px 12px 3px;
+  background: var(--accent-soft);
+}
+
+.chat-message > div,
+.inbound-item > div:first-child {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.chat-message time,
+.inbound-item span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.chat-message p,
+.inbound-item p {
+  margin: 8px 0 0;
+  color: var(--text-soft);
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.channel-compose {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.channel-compose .button {
+  align-self: end;
+  min-width: 90px;
+}
+
+.inbound-item {
+  padding: 11px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.understanding-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 9px;
+}
+
+.understanding-tags span {
+  padding: 3px 7px;
+  border-radius: 999px;
+  color: var(--accent-bright);
+  background: var(--accent-soft);
+}
+
+@media (max-width: 1180px) {
+  .channel-layout {
+    grid-template-columns: 180px minmax(0, 1fr);
+  }
+
+  .inbound-feed {
+    grid-column: 1 / -1;
+    max-height: 360px;
+  }
+}
+
 button,
 input,
 textarea,
