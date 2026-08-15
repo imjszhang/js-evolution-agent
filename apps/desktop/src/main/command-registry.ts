@@ -1,19 +1,24 @@
-import type { InvokeRequest, OpsCommand } from '../shared/contract'
-import { OPS_COMMANDS } from '../shared/contract'
+import type {
+  DesktopCommand,
+  InvokeRequest,
+  OpsCommand,
+  PublicErrorCode
+} from '../shared/contract'
+import { DESKTOP_COMMANDS } from '../shared/contract'
 import { OpsService } from './operations'
 
-export type CommandLevel = 'readonly' | 'write' | 'destructive'
+export type CommandLevel = 'readonly' | 'write' | 'process' | 'destructive'
 
 export interface CommandDefinition {
   level: CommandLevel
-  handler(payload: Record<string, unknown>): unknown
+  handler(payload: Record<string, unknown>): unknown | Promise<unknown>
 }
 
 export type CommandDefinitions = Record<string, CommandDefinition>
 
 export class PublicCommandError extends Error {
   constructor(
-    readonly code: 'COMMAND_NOT_ALLOWED' | 'READ_ONLY_VIOLATION' | 'INVALID_REQUEST' | 'OPERATION_FAILED',
+    readonly code: PublicErrorCode,
     message: string
   ) {
     super(message)
@@ -29,7 +34,10 @@ function payloadObject(payload: unknown): Record<string, unknown> {
   return payload as Record<string, unknown>
 }
 
-function subjectFrom(payload: Record<string, unknown>, required: boolean): string | undefined {
+export function subjectFrom(
+  payload: Record<string, unknown>,
+  required: boolean
+): string | undefined {
   const value = payload.subject
   if (value == null && !required) return undefined
   if (typeof value !== 'string' || !value.trim()) {
@@ -58,25 +66,30 @@ export function createOpsCommandDefinitions(service: OpsService): Record<OpsComm
 
 export function createCommandRegistry(
   service = new OpsService(),
-  definitions: CommandDefinitions = createOpsCommandDefinitions(service)
+  definitions: CommandDefinitions = createOpsCommandDefinitions(service),
+  allowedCommands: readonly string[] = DESKTOP_COMMANDS
 ) {
-  const registered = new Set<string>(OPS_COMMANDS)
+  const registered = new Set<string>(allowedCommands)
 
   return async function invoke(request: InvokeRequest): Promise<unknown> {
     const command = typeof request?.command === 'string' ? request.command.trim() : ''
     const definition = Object.hasOwn(definitions, command) ? definitions[command] : undefined
-    if (!definition || (!registered.has(command) && definition.level === 'readonly')) {
+    if (!definition || !registered.has(command) || definition.level === 'destructive') {
       throw new PublicCommandError('COMMAND_NOT_ALLOWED', 'Command is not available.')
-    }
-    if (definition.level !== 'readonly') {
-      throw new PublicCommandError('READ_ONLY_VIOLATION', 'This client only permits read-only operations.')
     }
 
     try {
       return await definition.handler(payloadObject(request.payload))
     } catch (error) {
       if (error instanceof PublicCommandError) throw error
-      throw new PublicCommandError('OPERATION_FAILED', 'Unable to read JEA operational state.')
+      const message = definition.level === 'readonly'
+        ? 'Unable to read JEA operational state.'
+        : 'Unable to complete the requested operation.'
+      throw new PublicCommandError('OPERATION_FAILED', message)
     }
   }
+}
+
+export function commandIsKnown(command: string): command is DesktopCommand {
+  return (DESKTOP_COMMANDS as readonly string[]).includes(command)
 }

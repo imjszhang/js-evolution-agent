@@ -1,11 +1,50 @@
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import { AcpSessionManager } from './acp-session-manager'
 import { createCommandRegistry } from './command-registry'
-import { JEA_INVOKE_CHANNEL, type InvokeRequest } from '../shared/contract'
+import { DaemonSupervisor } from './daemon-supervisor'
+import { createDesktopCommandDefinitions } from './desktop-command-definitions'
+import { DesktopEventBus } from './event-bus'
+import { ManagedProcessRegistry } from './managed-process-registry'
+import { OpsService, DEFAULT_PROJECT_ROOT } from './operations'
+import { TodoService } from './todo-service'
+import {
+  JEA_EVENT_CHANNEL,
+  JEA_INVOKE_CHANNEL,
+  type InvokeRequest
+} from '../shared/contract'
 
 const outputDir = fileURLToPath(new URL('.', import.meta.url))
-const invoke = createCommandRegistry()
+const projectRoot = process.env.JEA_PROJECT_ROOT || DEFAULT_PROJECT_ROOT
+const processRegistry = new ManagedProcessRegistry()
+const events = new DesktopEventBus()
+const daemon = new DaemonSupervisor(projectRoot, processRegistry, events)
+const ops = new OpsService(projectRoot, undefined, undefined, daemon)
+const todo = new TodoService(projectRoot, ops)
+const acp = new AcpSessionManager(
+  projectRoot,
+  processRegistry,
+  events,
+  async () => {
+    const result = await dialog.showOpenDialog({
+      title: 'Choose ACP execution root',
+      properties: ['openDirectory', 'createDirectory']
+    })
+    return result.canceled ? null : result.filePaths[0] ?? null
+  }
+)
+const invoke = createCommandRegistry(
+  ops,
+  createDesktopCommandDefinitions({ ops, todo, daemon, acp })
+)
+let shutdownComplete = false
+
+events.subscribe((event) => {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send(JEA_EVENT_CHANNEL, event)
+  }
+})
 
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
@@ -34,12 +73,38 @@ function createWindow(): BrowserWindow {
   return window
 }
 
-app.whenReady().then(() => {
-  ipcMain.handle(JEA_INVOKE_CHANNEL, (_event, request: InvokeRequest) => invoke(request))
-  createWindow()
+const gotSingleInstanceLock = app.requestSingleInstanceLock()
 
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+if (!gotSingleInstanceLock) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    const window = BrowserWindow.getAllWindows()[0]
+    if (!window) {
+      if (app.isReady()) createWindow()
+      return
+    }
+    if (window.isMinimized()) window.restore()
+    window.show()
+    window.focus()
+  })
+
+  app.whenReady().then(() => {
+    ipcMain.handle(JEA_INVOKE_CHANNEL, (_event, request: InvokeRequest) => invoke(request))
+    createWindow()
+
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    })
+  })
+}
+
+app.on('before-quit', (event) => {
+  if (shutdownComplete) return
+  event.preventDefault()
+  void processRegistry.shutdownAll('app_quit').finally(() => {
+    shutdownComplete = true
+    app.quit()
   })
 })
 

@@ -34,6 +34,9 @@ export class AcpRuntime {
     timeoutMs = DEFAULT_TIMEOUT_MS,
     killGraceMs = DEFAULT_KILL_GRACE_MS,
     spawnImpl = spawn,
+    permissionHandler = null,
+    onSessionUpdate = null,
+    onAgentText = null,
   } = {}) {
     this.framework = framework;
     this.cwd = cwd;
@@ -44,6 +47,9 @@ export class AcpRuntime {
     this.timeoutMs = Number(timeoutMs) || DEFAULT_TIMEOUT_MS;
     this.killGraceMs = Number(killGraceMs) || DEFAULT_KILL_GRACE_MS;
     this.spawnImpl = spawnImpl;
+    this.permissionHandler = permissionHandler;
+    this.onSessionUpdate = onSessionUpdate;
+    this.onAgentText = onAgentText;
     this.child = null;
     this.connection = null;
     this.session = null;
@@ -80,19 +86,24 @@ export class AcpRuntime {
       Readable.toWeb(this.child.stdout),
     );
     const roots = [this.cwd, ...this.additionalDirectories];
+    const permissionHandler = this.permissionHandler ?? createHeadlessPermissionRouter({
+      permissionProfile: this.permissionProfile,
+      roots,
+      observer: this.observer,
+    });
     const app = client({ name: 'js-evolution-agent' })
       .onRequest(
         methods.client.session.requestPermission,
-        createHeadlessPermissionRouter({
-          permissionProfile: this.permissionProfile,
-          roots,
-          observer: this.observer,
-        }),
+        permissionHandler,
       )
       .onNotification(methods.client.session.update, ({ params }) => {
         normalizeAcpSessionUpdate(this.observer, params, {
-          onAgentText: (text) => this.turnText.push(text),
+          onAgentText: (text) => {
+            this.turnText.push(text);
+            this.onAgentText?.(text, params);
+          },
         });
+        this.onSessionUpdate?.(params);
       });
     this.connection = app.connect(stream);
     this.connection.closed.catch(() => {});
@@ -174,6 +185,28 @@ export class AcpRuntime {
     } catch (error) {
       this.observer?.emit('run_cancel_failed', { error: error.message }, 'warning');
     }
+  }
+
+  get pid() {
+    return this.child?.pid ?? null;
+  }
+
+  get configOptions() {
+    const options = this.session?.newSessionResponse?.configOptions;
+    return Array.isArray(options) ? options : [];
+  }
+
+  async setConfigOption(configId, value, { type = null } = {}) {
+    if (!this.connection || !this.session) {
+      throw acpError('ACP session has not been started', 'acp_session_missing');
+    }
+    const params = {
+      sessionId: this.session.sessionId,
+      configId: String(configId),
+      value,
+      ...(type === 'boolean' ? { type: 'boolean' } : {}),
+    };
+    return this.connection.agent.request(methods.agent.session.setConfigOption, params);
   }
 
   async close() {

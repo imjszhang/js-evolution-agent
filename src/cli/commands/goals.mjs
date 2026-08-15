@@ -32,6 +32,10 @@ import {
 import { loadEnabledGuards } from '../../evolution/agent-loop/guard-runner.mjs';
 import { readCarryoverDocument } from '../../evolution/carryover.mjs';
 import { resolveIntelReportRecordPath } from '../../intelligence/report-paths.mjs';
+import {
+  applyActiveGoalState,
+  readActiveGoalState,
+} from '../../intelligence/goal-state.mjs';
 import { findReportRecord } from './intel.mjs';
 import { runRuleFeedbackCompare } from './goals-feedback-compare.mjs';
 
@@ -113,12 +117,7 @@ export function parseEvidenceRefs(value) {
 
 export function getActiveGoals(root = getProjectRoot(), flags = {}) {
   const runtime = runtimeForFlags(root, flags);
-  const path = activeGoalsPath(runtime);
-  return {
-    runtime,
-    path,
-    goals: readJsonSafe(path, null),
-  };
+  return readActiveGoalState(runtime);
 }
 
 export function getGoalHistory(root = getProjectRoot(), flags = {}) {
@@ -190,12 +189,17 @@ function commitGoalUpdate(update, store = makeStore(update.runtime)) {
 }
 
 export function applyGoalObject(root = getProjectRoot(), nextGoal, opts = {}) {
-  const validation = validateGoalShape(nextGoal);
-  if (!validation.valid) {
-    throw new Error(validation.detail || validation.reason);
-  }
-  const update = buildGoalObjectUpdate(root, nextGoal, opts);
-  return commitGoalUpdate(update, opts.store);
+  const runtime = runtimeForFlags(root, opts.flags ?? {});
+  const evidenceRefs = Array.isArray(opts.evidenceRefs)
+    ? opts.evidenceRefs
+    : parseEvidenceRefs(opts.evidence);
+  return applyActiveGoalState(runtime, nextGoal, {
+    type: opts.type || 'updated',
+    reason: opts.reason,
+    evidenceRefs,
+    cycle: opts.cycle ?? null,
+    store: opts.store,
+  });
 }
 
 export function updateGoals(root = getProjectRoot(), flags = {}) {

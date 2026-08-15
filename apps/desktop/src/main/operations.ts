@@ -10,6 +10,7 @@ import {
 import { loadProjectEnv } from '../../../../src/infra/project.mjs'
 import { runtimeForSubject } from '../../../../src/infra/runtime-paths.mjs'
 import type { SubjectSnapshot, SubjectSummary } from '../shared/contract'
+import type { DaemonSupervisor } from './daemon-supervisor'
 
 export const DEFAULT_PROJECT_ROOT = resolve(fileURLToPath(new URL('../../../..', import.meta.url)))
 
@@ -31,7 +32,8 @@ export class OpsService {
   constructor(
     readonly projectRoot = process.env.JEA_PROJECT_ROOT || DEFAULT_PROJECT_ROOT,
     private readonly builders: ProjectionBuilders = directBuilders,
-    envLoader: (root: string) => string = loadProjectEnv
+    envLoader: (root: string) => string = loadProjectEnv,
+    private readonly supervisor: Pick<DaemonSupervisor, 'get'> | null = null
   ) {
     envLoader(this.projectRoot)
   }
@@ -75,6 +77,7 @@ export class OpsService {
       return {
         subject: item,
         daemon,
+        ...(this.supervisor ? { supervisor: this.supervisor.get(item.name) } : {}),
         observability: this.builders.observability({
           subject: item.name,
           runtimeRoot: runtime.runtimeRoot,
