@@ -2329,7 +2329,7 @@ describe('data initialization', () => {
     const first = backupData(root, { name: 'snapshot' });
     expect(first.copied).toBe(true);
     expect(first.files).toBeGreaterThan(0);
-    expect(first.destination).toBe(join(root, 'backups', 'subjects', 'js-evolution-agent', 'snapshot'));
+    expect(first.destination).toBe(join(root, 'runtime', 'backups', 'subjects', 'js-evolution-agent', 'snapshot'));
 
     const second = backupData(root, { name: 'snapshot' });
     expect(second.copied).toBe(false);

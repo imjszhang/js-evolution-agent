@@ -16,7 +16,7 @@ export function resolveWithinRoot(root, target) {
   const full = isAbsolute(target) ? resolve(target) : resolve(normalizedRoot, target);
   const rel = relative(normalizedRoot, full);
   if (rel === '..' || rel.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) || isAbsolute(rel)) {
-    throw new Error(`Refusing to access outside root: ${full}`);
+    throw new Error(`Refusing to access outside project root: ${full}`);
   }
   return full;
 }
