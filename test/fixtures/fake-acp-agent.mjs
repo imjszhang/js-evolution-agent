@@ -121,6 +121,6 @@ const connection = app.connect(ndJsonStream(
 ));
 await connection.closed;
 if (process.env.FAKE_ACP_IGNORE_SIGTERM === '1') {
-  await new Promise(() => {});
+  await new Promise(() => setInterval(() => {}, 1_000));
 }
 
