@@ -21,6 +21,7 @@ export async function probeAcpFramework(framework, {
     encoding: 'utf-8',
     timeout: timeoutMs,
     windowsHide: true,
+    shell: Boolean(framework.shell),
   });
   const binaryOk = !versionProbe.error && versionProbe.status === 0;
   const nodeMajor = Number(process.versions.node.split('.')[0]);

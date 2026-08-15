@@ -28,11 +28,12 @@ describe('desktop project root', () => {
   })
 
   it('prefers JEA_PROJECT_ROOT over marker discovery', () => {
+    const explicit = join(tmpdir(), 'explicit-jea')
     expect(resolveDesktopProjectRoot({
-      env: { JEA_PROJECT_ROOT: '/tmp/explicit-jea' },
-      cwd: '/tmp',
-      fallback: '/tmp'
-    })).toBe('/tmp/explicit-jea')
+      env: { JEA_PROJECT_ROOT: explicit },
+      cwd: tmpdir(),
+      fallback: tmpdir()
+    })).toBe(explicit)
   })
 })
 
@@ -44,6 +45,7 @@ describe('desktop main externals', () => {
     expect(isDesktopMainExternal('dotenv')).toBe(true)
     expect(isDesktopMainExternal('../../../../src/daemon/daemon-projection.mjs')).toBe(true)
     expect(isDesktopMainExternal('/workspace/src/infra/project.mjs')).toBe(true)
+    expect(isDesktopMainExternal('D:\\repo\\apps\\desktop\\src\\main\\acp-session-manager.ts')).toBe(false)
     expect(isDesktopMainExternal('./command-registry')).toBe(false)
     expect(isDesktopMainExternal('\0vite/preload')).toBe(false)
   })

@@ -17,8 +17,13 @@ function splitArgs(value) {
   return text.split(/\s+/).filter(Boolean);
 }
 
-function localBin(projectRoot, name) {
-  const candidate = join(projectRoot, 'node_modules', '.bin', name);
+export function localAcpBin(projectRoot, name, platform = process.platform) {
+  const candidate = join(
+    projectRoot,
+    'node_modules',
+    '.bin',
+    platform === 'win32' ? `${name}.cmd` : name,
+  );
   return existsSync(candidate) ? candidate : name;
 }
 
@@ -30,12 +35,16 @@ export function createAcpFrameworkRegistry({
   projectRoot = process.cwd(),
   env = process.env,
   entries = [],
+  platform = process.platform,
 } = {}) {
   const registry = new Map();
+  const command = env.JEA_ACP_CLAUDE_CODE_BIN
+    || localAcpBin(projectRoot, 'claude-agent-acp', platform);
   registry.set(CLAUDE_CODE_ACP_PROVIDER, {
     id: 'claude-code',
     provider: CLAUDE_CODE_ACP_PROVIDER,
-    command: env.JEA_ACP_CLAUDE_CODE_BIN || localBin(projectRoot, 'claude-agent-acp'),
+    command,
+    shell: platform === 'win32',
     args: splitArgs(env.JEA_ACP_CLAUDE_CODE_ARGS),
     versionArgs: ['--version'],
     minNodeMajor: 22,

@@ -1,4 +1,5 @@
 import type { AcpSessionManager } from './acp-session-manager'
+import type { ChannelService } from './channel-service'
 import type { CommandDefinitions } from './command-registry'
 import {
   PublicCommandError,
@@ -7,7 +8,9 @@ import {
 } from './command-registry'
 import type { DaemonSupervisor } from './daemon-supervisor'
 import type { OpsService } from './operations'
+import type { ProjectionWatcher } from './projection-watcher'
 import type { TodoService } from './todo-service'
+import type { NotificationService } from './notification-service'
 
 function stringField(
   payload: Record<string, unknown>,
@@ -41,16 +44,35 @@ function stringArray(value: unknown): string[] {
   return value.map((item) => item.trim()).filter(Boolean)
 }
 
+function numberField(
+  payload: Record<string, unknown>,
+  key: string,
+  fallback: number
+): number {
+  if (payload[key] == null) return fallback
+  const value = Number(payload[key])
+  if (!Number.isFinite(value) || value < 0) {
+    throw new PublicCommandError('INVALID_REQUEST', `A valid ${key} is required.`)
+  }
+  return Math.floor(value)
+}
+
 export function createDesktopCommandDefinitions({
   ops,
   todo,
   daemon,
-  acp
+  acp,
+  projection,
+  channel,
+  notifications
 }: {
   ops: OpsService
   todo: TodoService
   daemon: DaemonSupervisor
   acp: AcpSessionManager
+  projection: ProjectionWatcher
+  channel: ChannelService
+  notifications: NotificationService
 }): CommandDefinitions {
   return {
     ...createOpsCommandDefinitions(ops),
@@ -114,6 +136,74 @@ export function createDesktopCommandDefinitions({
     'daemon.stopManaged': {
       level: 'process',
       handler: (payload) => daemon.stop(subjectFrom(payload, true)!)
+    },
+    'projection.watch': {
+      level: 'readonly',
+      handler: (payload) => projection.watch(subjectFrom(payload, true)!)
+    },
+    'projection.refresh': {
+      level: 'readonly',
+      handler: () => {
+        projection.refresh()
+        return { queued: true }
+      }
+    },
+    'projection.stop': {
+      level: 'readonly',
+      handler: () => projection.stop()
+    },
+    'channel.get': {
+      level: 'readonly',
+      handler: (payload) => channel.get(subjectFrom(payload, true)!)
+    },
+    'channel.listSessions': {
+      level: 'readonly',
+      handler: (payload) => channel.listSessions(subjectFrom(payload, true)!)
+    },
+    'channel.readSession': {
+      level: 'readonly',
+      handler: (payload) => channel.readSession(
+        subjectFrom(payload, true)!,
+        stringField(payload, 'sessionId')!,
+        {
+          offset: numberField(payload, 'offset', 0),
+          limit: Math.min(1000, numberField(payload, 'limit', 100)),
+          ...(payload.tail == null
+            ? {}
+            : { tail: Math.min(1000, numberField(payload, 'tail', 100)) })
+        }
+      )
+    },
+    'channel.listInbound': {
+      level: 'readonly',
+      handler: (payload) => channel.listInbound(
+        subjectFrom(payload, true)!,
+        (stringField(payload, 'status', { required: false }) ?? 'processed') as
+          'pending' | 'processed',
+        Math.min(200, numberField(payload, 'limit', 50))
+      )
+    },
+    'channel.sendMessage': {
+      level: 'write',
+      handler: (payload) => channel.sendMessage(
+        subjectFrom(payload, true)!,
+        stringField(payload, 'sessionId', { required: false }),
+        stringField(payload, 'text')!,
+        stringField(payload, 'messageId', { required: false })
+      )
+    },
+    'notifications.get': {
+      level: 'readonly',
+      handler: () => notifications.get()
+    },
+    'notifications.set': {
+      level: 'write',
+      handler: (payload) => {
+        if (typeof payload.enabled !== 'boolean') {
+          throw new PublicCommandError('INVALID_REQUEST', 'A valid enabled value is required.')
+        }
+        return notifications.set(payload.enabled)
+      }
     },
     'acp.listFrameworks': {
       level: 'readonly',

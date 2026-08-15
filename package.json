@@ -25,6 +25,7 @@
     "desktop:build": "npm run build --workspace @jea/desktop",
     "desktop:test": "npm run test --workspace @jea/desktop",
     "desktop:typecheck": "npm run typecheck --workspace @jea/desktop",
+    "desktop:smoke": "node scripts/desktop-smoke.mjs",
     "test:ci": "node --preserve-symlinks ./node_modules/vitest/vitest.mjs run --reporter=default --reporter=junit --outputFile.junit=test-artifacts/junit.xml",
     "test:coverage": "node --preserve-symlinks ./node_modules/vitest/vitest.mjs run --coverage",
     "audit:ci": "node --preserve-symlinks scripts/ci-audit.mjs",

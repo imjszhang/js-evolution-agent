@@ -297,6 +297,24 @@ describe('AcpSessionManager', () => {
     ])
   })
 
+  it('keeps a long multi-turn session reusable and releases its process registration', async () => {
+    const { root, runtime, processRegistry, manager } = harness()
+    const started = await manager.start({
+      provider: 'acp:claude-code',
+      executionRoot: root,
+      permissionProfile: 'read_only'
+    })
+    for (let turn = 0; turn < 50; turn += 1) {
+      await expect(manager.prompt(started.id, `turn ${turn}`)).resolves.toMatchObject({
+        stop_reason: 'end_turn'
+      })
+    }
+    expect(runtime.prompt).toHaveBeenCalledTimes(50)
+    expect(manager.list()[0]).toMatchObject({ id: started.id, status: 'ready' })
+    await manager.close(started.id, 'long_session_complete')
+    expect(processRegistry.list()).toEqual([])
+  })
+
   it('redacts secrets split across assistant chunks before publishing', async () => {
     const { root, captured, events, manager } = harness()
     const started = await manager.start({

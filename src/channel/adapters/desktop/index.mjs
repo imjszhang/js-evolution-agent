@@ -7,11 +7,13 @@ import {
   resolveDesktopConfig,
   sessionIdFromDesktopTarget,
 } from './config.mjs';
+import { findDesktopIngress, recordDesktopIngress } from './ingress-index.mjs';
 import { normalizeDesktopInboundPayload } from './parser.mjs';
 import {
   appendDesktopSessionRecord,
   listDesktopSessions,
   readDesktopSession,
+  withDesktopIngressLock,
 } from './session-store.mjs';
 
 export {
@@ -27,6 +29,7 @@ export {
   DESKTOP_SESSION_SCHEMA_VERSION,
   listDesktopSessions,
   readDesktopSession,
+  withDesktopIngressLock,
 } from './session-store.mjs';
 
 export async function sendOutboundMessage(outboundInput, options = {}) {
@@ -70,6 +73,9 @@ export function sendDesktopInboundMessage(root, subject, {
   sender_id = 'desktop-user',
   created_at = null,
   metadata = {},
+} = {}, {
+  writeInbound = writePendingInbound,
+  enqueueClassifier = enqueueClassifierIfPendingInbound,
 } = {}) {
   const config = resolveDesktopConfig(root, subject);
   if (!config.enabled) throw new Error(`Desktop channel is disabled for subject ${subject}`);
@@ -83,22 +89,46 @@ export function sendDesktopInboundMessage(root, subject, {
     received_at: created_at ?? nowIso(),
     metadata,
   });
-  const appended = appendDesktopSessionRecord(root, subject, resolvedSession, {
-    id: `inbound:${messageId}`,
-    message_id: messageId,
-    direction: 'inbound',
-    role: 'user',
-    content: envelope.content,
-    content_type: envelope.content_type,
-    created_at: envelope.received_at,
-    metadata,
-  });
-  let pending = null;
-  let classifier = { created: false, reason: 'duplicate_session_record' };
-  if (appended.created) {
-    pending = writePendingInbound(root, subject, envelope, { label: 'desktop' });
-    classifier = enqueueClassifierIfPendingInbound(root, subject);
-  }
+  const transaction = withDesktopIngressLock(root, subject, messageId, () => {
+    const existing = findDesktopIngress(root, subject, messageId);
+    if (existing?.session_id && existing.session_id !== resolvedSession) {
+      throw new Error(
+        `Desktop message ${messageId} already belongs to session ${existing.session_id}`,
+      );
+    }
+    const appended = appendDesktopSessionRecord(root, subject, resolvedSession, {
+      id: `inbound:${messageId}`,
+      message_id: messageId,
+      direction: 'inbound',
+      role: 'user',
+      content: envelope.content,
+      content_type: envelope.content_type,
+      created_at: envelope.received_at,
+      metadata,
+    });
+    if (existing) {
+      return {
+        appended,
+        pending: null,
+        classifier: enqueueClassifier(root, subject),
+        repaired: true,
+      };
+    }
+    const pending = writeInbound(root, subject, envelope, { label: 'desktop' });
+    recordDesktopIngress(root, subject, {
+      message_id: messageId,
+      session_id: resolvedSession,
+      status: 'pending',
+      file: pending?.file ?? null,
+    });
+    return {
+      appended,
+      pending,
+      classifier: enqueueClassifier(root, subject),
+      repaired: appended.duplicate,
+    };
+  }, resolvedSession);
+  const { appended } = transaction;
   return {
     subject,
     session_id: resolvedSession,
@@ -107,9 +137,10 @@ export function sendDesktopInboundMessage(root, subject, {
     session_record: appended.record,
     session_created: appended.created,
     duplicate: appended.duplicate,
-    inbound_file: pending?.file ?? null,
-    classifier_task: classifier.task ?? null,
-    classifier_created: classifier.created ?? false,
-    classifier_reason: classifier.reason ?? null,
+    ingress_repaired: transaction.repaired,
+    inbound_file: transaction.pending?.file ?? null,
+    classifier_task: transaction.classifier.task ?? null,
+    classifier_created: transaction.classifier.created ?? false,
+    classifier_reason: transaction.classifier.reason ?? null,
   };
 }

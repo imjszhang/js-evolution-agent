@@ -8,7 +8,8 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { writeJsonFile } from '../src/infra/files.mjs';
 import {
   appendDesktopSessionRecord,
@@ -25,6 +26,7 @@ import { normalizeOutboundMessage } from '../src/channel/types.mjs';
 import { buildChannelProjection } from '../src/channel/projection.mjs';
 import { channelCommand } from '../src/cli/commands/channel.mjs';
 import { resolveOutboundTarget } from '../src/channel/transport.mjs';
+import { channelDesktopSessionPath } from '../src/channel/paths.mjs';
 
 let root = null;
 
@@ -116,6 +118,73 @@ describe('desktop channel adapter', () => {
     expect(readDesktopSession(project, 'alpha', 'main', { tail: 1 }).records[0].id).toBe('stable-2');
   });
 
+  it('builds a persistent byte index for large offset reads', () => {
+    const project = makeRoot();
+    const file = channelDesktopSessionPath(project, 'alpha', 'large');
+    mkdirSync(dirname(file), { recursive: true });
+    const total = 20_000;
+    writeFileSync(file, `${Array.from({ length: total }, (_, offset) => JSON.stringify({
+      schema_version: 1,
+      id: `large-${offset}`,
+      session_id: 'large',
+      target: 'desktop:large',
+      direction: 'inbound',
+      role: 'user',
+      content: `message ${offset}`,
+      created_at: '2026-08-15T00:00:00.000Z',
+      offset,
+    })).join('\n')}\n`);
+    const page = readDesktopSession(project, 'alpha', 'large', {
+      offset: total - 5,
+      limit: 5,
+    });
+    expect(page.total).toBe(total);
+    expect(page.records.map((record) => record.id)).toEqual([
+      'large-19995',
+      'large-19996',
+      'large-19997',
+      'large-19998',
+      'large-19999',
+    ]);
+    expect(readDesktopSession(project, 'alpha', 'large', { tail: 1 }).records[0].id)
+      .toBe('large-19999');
+  });
+
+  it('splits large id buckets while preserving direct duplicate lookup', () => {
+    const project = makeRoot();
+    const file = channelDesktopSessionPath(project, 'alpha', 'split');
+    mkdirSync(dirname(file), { recursive: true });
+    const ids = [];
+    for (let candidate = 0; ids.length < 1_100; candidate += 1) {
+      const id = `split-${candidate}`;
+      if (createHash('sha256').update(id).digest('hex').startsWith('00')) ids.push(id);
+    }
+    writeFileSync(file, `${ids.map((id, offset) => JSON.stringify({
+      schema_version: 1,
+      id,
+      session_id: 'split',
+      target: 'desktop:split',
+      direction: 'inbound',
+      role: 'user',
+      content: id,
+      created_at: '2026-08-15T00:00:00.000Z',
+      offset,
+    })).join('\n')}\n`);
+    expect(readDesktopSession(project, 'alpha', 'split', { tail: 1 }).total)
+      .toBe(ids.length);
+    const duplicate = appendDesktopSessionRecord(project, 'alpha', 'split', {
+      id: ids.at(-1),
+      direction: 'inbound',
+      role: 'user',
+      content: 'different content',
+    });
+    expect(duplicate).toMatchObject({
+      created: false,
+      duplicate: true,
+      record: { id: ids.at(-1) },
+    });
+  });
+
   it('runs desktop inbound through classifier, presence, speech, outbox, and notify', async () => {
     const project = makeRoot();
     const inbound = sendDesktopInboundMessage(project, 'alpha', {
@@ -173,6 +242,33 @@ describe('desktop channel adapter', () => {
     expect(notify.failed).toHaveLength(0);
     expect(readDesktopSession(project, 'alpha', 'main', { tail: 10 }).records
       .some((record) => record.content === 'local reply')).toBe(true);
+  });
+
+  it('repairs ingress when session append succeeds before pending inbound write fails', () => {
+    const project = makeRoot();
+    expect(() => sendDesktopInboundMessage(project, 'alpha', {
+      session: 'main',
+      message_id: 'repair-message',
+      text: 'repair me',
+    }, {
+      writeInbound: () => {
+        throw new Error('injected write failure');
+      },
+    })).toThrow('injected write failure');
+
+    const repaired = sendDesktopInboundMessage(project, 'alpha', {
+      session: 'main',
+      message_id: 'repair-message',
+      text: 'repair me',
+    });
+    expect(repaired).toMatchObject({
+      duplicate: true,
+      ingress_repaired: true,
+      classifier_created: true,
+    });
+    expect(repaired.inbound_file).toEqual(expect.any(String));
+    expect(readDesktopSession(project, 'alpha', 'main', { tail: 10 }).records)
+      .toHaveLength(1);
   });
 
   it('registers both directions and projects desktop sessions', async () => {
@@ -255,5 +351,109 @@ describe('desktop channel adapter', () => {
       id: 'inbound:cli-message',
       content: 'from cli',
     });
+  });
+
+  it('locks first-time session reads against concurrent appends', async () => {
+    const project = makeRoot();
+    const [read, written] = await Promise.all([
+      Promise.resolve().then(() => readDesktopSession(project, 'alpha', 'race', { tail: 1 })),
+      Promise.resolve().then(() => appendDesktopSessionRecord(project, 'alpha', 'race', {
+        id: 'race-1',
+        direction: 'inbound',
+        role: 'user',
+        content: 'hello',
+      })),
+    ]);
+    expect(written.created).toBe(true);
+    const page = readDesktopSession(project, 'alpha', 'race', { offset: 0, limit: 10 });
+    expect(page.total).toBe(1);
+    expect(page.records.map((record) => record.id)).toEqual(['race-1']);
+    expect(read.total === 0 || read.total === 1).toBe(true);
+  });
+
+  it('rewakes the classifier after pending write succeeds and enqueue fails', () => {
+    const project = makeRoot();
+    expect(() => sendDesktopInboundMessage(project, 'alpha', {
+      session: 'main',
+      message_id: 'rewake-message',
+      text: 'rewake me',
+    }, {
+      enqueueClassifier: () => {
+        throw new Error('injected enqueue failure');
+      },
+    })).toThrow('injected enqueue failure');
+
+    const retried = sendDesktopInboundMessage(project, 'alpha', {
+      session: 'main',
+      message_id: 'rewake-message',
+      text: 'rewake me',
+    });
+    expect(retried).toMatchObject({
+      duplicate: true,
+      ingress_repaired: true,
+      classifier_created: true,
+    });
+  });
+
+  it('rejects the same message id across desktop sessions', () => {
+    const project = makeRoot();
+    sendDesktopInboundMessage(project, 'alpha', {
+      session: 'chat-a',
+      message_id: 'shared-id',
+      text: 'first',
+    });
+    expect(() => sendDesktopInboundMessage(project, 'alpha', {
+      session: 'chat-b',
+      message_id: 'shared-id',
+      text: 'second',
+    })).toThrow('already belongs to session chat-a');
+    expect(readDesktopSession(project, 'alpha', 'chat-b', { tail: 10 }).records).toHaveLength(0);
+  });
+
+  it('looks up inbound history without parsing every processed file', () => {
+    const project = makeRoot();
+    const processed = join(project, 'runtime', 'subjects', 'alpha', 'data', 'channel', 'inbound', 'processed');
+    mkdirSync(processed, { recursive: true });
+    for (let index = 0; index < 200; index += 1) {
+      writeFileSync(join(processed, `20260815-legacy-${index}.json`), JSON.stringify({
+        message_id: `legacy-${index}`,
+        envelope: { message_id: `legacy-${index}`, metadata: { session_id: 'main' } },
+      }));
+    }
+    const started = Date.now();
+    const first = sendDesktopInboundMessage(project, 'alpha', {
+      session: 'main',
+      message_id: 'legacy-12',
+      text: 'already processed',
+    });
+    const second = sendDesktopInboundMessage(project, 'alpha', {
+      session: 'main',
+      message_id: 'fresh-after-history',
+      text: 'new',
+    });
+    expect(first.ingress_repaired).toBe(true);
+    expect(first.inbound_file).toBeNull();
+    expect(second.session_created).toBe(true);
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  it('indexes oversized JSONL lines without blocking later records', () => {
+    const project = makeRoot();
+    const file = channelDesktopSessionPath(project, 'alpha', 'huge');
+    mkdirSync(dirname(file), { recursive: true });
+    const huge = `${'x'.repeat(5 * 1024 * 1024)}`;
+    writeFileSync(file, `${JSON.stringify({ id: 'too-big', content: huge })}\n${JSON.stringify({
+      schema_version: 1,
+      id: 'after-huge',
+      session_id: 'huge',
+      target: 'desktop:huge',
+      direction: 'inbound',
+      role: 'user',
+      content: 'ok',
+      created_at: '2026-08-15T00:00:00.000Z',
+      offset: 0,
+    })}\n`);
+    const page = readDesktopSession(project, 'alpha', 'huge', { tail: 2 });
+    expect(page.records.map((record) => record.id)).toEqual(['after-huge']);
   });
 });

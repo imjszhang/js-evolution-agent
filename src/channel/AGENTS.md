@@ -131,6 +131,8 @@ channel worker 每轮 loop 会：
 
 会话记录带 `schema_version`、稳定 `id` 和 append offset；存储只追加，读取 API/CLI 支持 offset、tail，并按稳定 id 去重。session id 仅允许字母、数字、点、下划线和连字符。
 
+Electron 客户端的 Channel 页复用同一 adapter：renderer 只通过受控 IPC 调用 send/read/list，消息回复仍必须经过 classifier → presence → speech → outbox → notify。主进程按逻辑 offset 增量读取 desktop session，并实时投影 processed inbound 的 `classifier.understanding`；飞书消息显示在统一 inbound feed，但不会伪装成 desktop session。`fs.watch` 只负责低延迟唤醒，30 秒 reconcile 负责补偿漏事件。
+
 ### Channel Classifier（`channels.classifier`，固定频率批量）
 
 **`channel_classifier` 任务**（classifier role worker 领取）：

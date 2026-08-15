@@ -27,6 +27,9 @@ interface TimelineEntry {
   payload: UnknownRecord
 }
 
+const MAX_TIMELINE_ENTRIES = 400
+const MAX_ASSISTANT_CHARS = 200_000
+
 const sessionStatuses: AcpSessionStatus[] = [
   'starting',
   'ready',
@@ -198,12 +201,15 @@ export function AcpWorkspace() {
       const previous = current[sessionId] ?? []
       const last = previous.at(-1)
       if (event.type === 'acp_assistant_chunk' && last?.type === event.type) {
+        const combined = `${text(last.payload.text, '')}${text(event.payload.text, '')}`
         const merged: TimelineEntry = {
           ...last,
           ts: event.ts,
           payload: {
             ...last.payload,
-            text: `${text(last.payload.text, '')}${text(event.payload.text, '')}`
+            text: combined.length > MAX_ASSISTANT_CHARS
+              ? combined.slice(-MAX_ASSISTANT_CHARS)
+              : combined
           }
         }
         return { ...current, [sessionId]: [...previous.slice(0, -1), merged] }
@@ -215,7 +221,7 @@ export function AcpWorkspace() {
         ts: event.ts,
         payload: event.payload
       }
-      return { ...current, [sessionId]: [...previous, next].slice(-400) }
+      return { ...current, [sessionId]: [...previous, next].slice(-MAX_TIMELINE_ENTRIES) }
     })
   }, [])
 

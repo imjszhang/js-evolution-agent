@@ -64,6 +64,15 @@ export function TodoCenter({ subject }: { subject: string | null }) {
     }
   }, [load])
 
+  useEffect(() => window.jea.subscribe((event) => {
+    if (event.type !== 'projection.todo_updated' || event.subject !== subject) return
+    const next = event.payload.snapshot as TodoSnapshot | undefined
+    if (!next || next.subject !== subject) return
+    loadSequence.current += 1
+    setSnapshot(next)
+    setGoalsEditor(JSON.stringify(next.goals ?? {}, null, 2))
+  }), [subject])
+
   const mutate = async (
     action: BusyAction,
     command: Parameters<typeof window.jea.invoke>[0],

@@ -1,17 +1,24 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   mkdtempSync,
+  mkdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
+  writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { EventEmitter } from 'node:events';
 import {
   AcpRuntime,
   decideHeadlessPermission,
 } from '../src/actions/agent-adapter/acp/index.mjs';
+import {
+  createAcpFrameworkRegistry,
+  localAcpBin,
+} from '../src/actions/agent-adapter/acp/registry.mjs';
 import { runAgenticAction } from '../src/actions/agent-adapter/index.mjs';
 import { actionHandlers } from '../src/actions/handlers/builtin.mjs';
 import { DecisionQueue, ExecutionPipeline } from '../src/engine/index.mjs';
@@ -197,6 +204,21 @@ describe('ACP headless permissions', () => {
 });
 
 describe('ACP stdio runtime', () => {
+  it('resolves Windows cmd shims and marks them for shell spawning', () => {
+    const root = tempDir();
+    const bin = join(root, 'node_modules', '.bin');
+    const command = join(bin, 'claude-agent-acp.cmd');
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(command, '@echo off\r\n');
+    expect(localAcpBin(root, 'claude-agent-acp', 'win32')).toBe(command);
+    const entry = createAcpFrameworkRegistry({
+      projectRoot: root,
+      env: {},
+      platform: 'win32',
+    }).get('acp:claude-code');
+    expect(entry).toMatchObject({ command, shell: true });
+  });
+
   it('runs initialize/session/prompt/permission/events/close lifecycle', async () => {
     const cwd = tempDir();
     const log = join(cwd, 'fake.jsonl');
@@ -258,6 +280,49 @@ describe('ACP stdio runtime', () => {
     await runtime.close();
     expect(runtime.child.signalCode).toBe('SIGKILL');
     expect(readFileSync(log, 'utf-8')).toContain('"event":"cancel"');
+  });
+
+  it('falls back to child termination when Windows tree termination fails', async () => {
+    const child = new EventEmitter();
+    const signals = [];
+    Object.assign(child, {
+      pid: 4242,
+      exitCode: null,
+      signalCode: null,
+      stdin: { end() {} },
+      kill(signal) {
+        signals.push(signal);
+        if (signal === 'SIGKILL') {
+          this.signalCode = signal;
+          queueMicrotask(() => this.emit('close', null, signal));
+        }
+        return true;
+      },
+    });
+    const treeKills = [];
+    const descendantKills = [];
+    const runtime = new AcpRuntime({
+      framework: framework(),
+      cwd: tempDir(),
+      platform: 'win32',
+      killGraceMs: 1,
+      killWindowsTree: (_pid, force) => {
+        treeKills.push(force);
+        return false;
+      },
+      listWindowsDescendants: () => [500, 501],
+      killProcess: (pid, signal) => descendantKills.push([pid, signal]),
+    });
+    runtime.child = child;
+    await runtime.close();
+    expect(treeKills).toEqual([false, true, true]);
+    expect(signals).toEqual(['SIGTERM', 'SIGKILL']);
+    expect(descendantKills).toEqual([
+      [501, 'SIGKILL'],
+      [500, 'SIGKILL'],
+      [501, 'SIGKILL'],
+      [500, 'SIGKILL'],
+    ]);
   });
 });
 

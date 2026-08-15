@@ -12,6 +12,7 @@ From the repository root:
 npm run desktop:dev
 npm run desktop:build
 npm run desktop:test
+npm run desktop:smoke
 ```
 
 The client loads the repository from `JEA_PROJECT_ROOT` when set, otherwise it
@@ -28,7 +29,7 @@ cross the sandbox. That keeps Electron from hanging on a non-cloneable
 headless check is available after `npm run desktop:build`:
 
 ```bash
-JEA_DESKTOP_SMOKE=/tmp/jea-desktop-smoke.json npx electron apps/desktop
+npm run desktop:smoke
 ```
 
 ## Operations and controlled writes
@@ -44,6 +45,35 @@ The Todo page uses existing domain APIs to:
 These actions never write `pending_decisions.json` or `standing_memory.json`
 directly. Destructive data reset, task cancellation, and automatic goal
 assessment are not exposed.
+
+Operations and Todo projections update from subject runtime files without a
+manual refresh. The main process coalesces file bursts, tails JSONL from byte
+offsets, and periodically reconciles missed filesystem notifications. Watchers
+are scoped to the selected subject and released when the subject or window
+changes.
+
+## Channel conversations
+
+The Channel page is a UI over the existing `channels.desktop` adapter. Sending
+a message calls the controlled inbound API; it does not write session JSONL
+from the renderer. Replies appear only after the classifier, presence, speech,
+outbox, and notify pipeline appends the assistant record.
+
+The inbound feed also shows processed Feishu messages and classifier
+understanding. Feishu chats remain external transport records and are not
+presented as local desktop sessions. A draft send reuses the same message id
+until the main process confirms success. The renderer keeps at most the latest
+400 session records; older history remains on disk and can be re-read.
+
+Start or attach a Channel daemon for the selected subject to receive replies:
+
+```bash
+npm run jea -- daemon start --subject NAME --domain channel
+```
+
+System alerts for new operator questions and warning/critical attention
+signals can be disabled in the sidebar. Clicking an alert only opens the Todo
+page; it never resolves a question or performs another write.
 
 ## Daemon ownership
 
@@ -78,6 +108,12 @@ Permission behavior:
 - cancel and timeout resolve the active turn and its pending permissions;
 - session close and application exit terminate the child with a bounded
   SIGTERM-to-SIGKILL fallback.
+
+On POSIX the ACP child is placed in its own process group so shutdown can
+signal the whole tree. On Windows the framework registry resolves local
+`.cmd` shims and uses process-tree cleanup. ACP timelines retain a bounded
+event window and cap merged assistant text so long sessions cannot grow
+renderer memory without limit.
 
 Credentials and execution-root `.env` values remain in the main process.
 Desktop ACP sessions are separate from Channel desktop chat sessions.
