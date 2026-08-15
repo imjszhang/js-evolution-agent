@@ -2,6 +2,8 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
 
+const workspaceRoot = fileURLToPath(new URL('.', import.meta.url));
+
 export default defineConfig({
   test: {
     setupFiles: [fileURLToPath(new URL('./test/setup-legacy-runtime.mjs', import.meta.url))],
@@ -36,7 +38,7 @@ export default defineConfig({
   resolve: {
     preserveSymlinks: true,
     alias: {
-      'proper-lockfile': resolve('node_modules/proper-lockfile/index.js'),
+      'proper-lockfile': resolve(workspaceRoot, 'node_modules/proper-lockfile/index.js'),
     },
   },
 });
