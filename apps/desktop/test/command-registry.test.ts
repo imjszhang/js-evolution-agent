@@ -1,75 +1,84 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   createCommandRegistry,
-  createOpsCommandDefinitions,
+  invokeForIpc,
   PublicCommandError
 } from '../src/main/command-registry'
+import type { CommandDefinitions } from '../src/main/command-registry'
 import type { OpsService } from '../src/main/operations'
 
-function serviceMock() {
-  return {
-    listSubjects: vi.fn(() => [{ name: 'alpha', namespace: 'alpha', isDefault: true }]),
-    getDaemon: vi.fn((subject: string) => ({ subject, health: { ok: true } })),
-    getObservability: vi.fn((subject: string) => ({ subject, attention: { items: [] } })),
-    refresh: vi.fn((subject?: string) => [{ subject: { name: subject ?? 'alpha' } }])
-  }
+function registry(definitions: CommandDefinitions, allowedCommands: readonly string[]) {
+  return createCommandRegistry({} as OpsService, definitions, allowedCommands)
 }
 
-describe('read-only command registry', () => {
-  it('exposes only the four Ops reads', async () => {
-    const service = serviceMock()
-    const invoke = createCommandRegistry(service as unknown as OpsService)
-    const definitions = createOpsCommandDefinitions(service as unknown as OpsService)
-
-    expect(Object.keys(definitions)).toEqual([
-      'ops.listSubjects',
-      'ops.getDaemon',
-      'ops.getObservability',
-      'ops.refresh'
+describe('command registry', () => {
+  it('dispatches allowlisted readonly, write and process commands', async () => {
+    const readonlyHandler = vi.fn(async (payload) => ({ kind: 'readonly', payload }))
+    const writeHandler = vi.fn(async (payload) => ({ kind: 'write', payload }))
+    const processHandler = vi.fn(async (payload) => ({ kind: 'process', payload }))
+    const definitions: CommandDefinitions = {
+      'test.readonly': { level: 'readonly', handler: readonlyHandler },
+      'test.write': { level: 'write', handler: writeHandler },
+      'test.process': { level: 'process', handler: processHandler }
+    }
+    const invoke = registry(definitions, [
+      'test.readonly',
+      'test.write',
+      'test.process'
     ])
-    expect(Object.values(definitions).every((definition) => definition.level === 'readonly')).toBe(true)
-    await expect(invoke({ command: 'ops.listSubjects' })).resolves.toEqual(service.listSubjects())
-    await expect(invoke({ command: 'ops.getDaemon', payload: { subject: 'alpha' } }))
-      .resolves.toEqual({ subject: 'alpha', health: { ok: true } })
-    await expect(invoke({ command: 'ops.getObservability', payload: { subject: 'alpha' } }))
-      .resolves.toEqual({ subject: 'alpha', attention: { items: [] } })
-    await expect(invoke({ command: 'ops.refresh' })).resolves.toEqual([{ subject: { name: 'alpha' } }])
+
+    await expect(invoke({
+      command: 'test.readonly',
+      payload: { subject: 'alpha' }
+    })).resolves.toEqual({ kind: 'readonly', payload: { subject: 'alpha' } })
+    await expect(invoke({ command: 'test.write' })).resolves.toEqual({
+      kind: 'write',
+      payload: {}
+    })
+    await expect(invoke({ command: 'test.process' })).resolves.toEqual({
+      kind: 'process',
+      payload: {}
+    })
+    expect(readonlyHandler).toHaveBeenCalledOnce()
+    expect(writeHandler).toHaveBeenCalledOnce()
+    expect(processHandler).toHaveBeenCalledOnce()
   })
 
-  it('rejects write, destructive and unknown command definitions before dispatch', async () => {
-    const service = serviceMock()
-    const writeHandler = vi.fn()
+  it('rejects destructive, unallowlisted and unknown commands before dispatch', async () => {
     const destructiveHandler = vi.fn()
-    const definitions = {
-      ...createOpsCommandDefinitions(service as unknown as OpsService),
-      'test.write': { level: 'write' as const, handler: writeHandler },
-      'test.destructive': { level: 'destructive' as const, handler: destructiveHandler }
+    const unallowlistedHandler = vi.fn()
+    const definitions: CommandDefinitions = {
+      'test.destructive': { level: 'destructive', handler: destructiveHandler },
+      'test.unallowlisted': { level: 'write', handler: unallowlistedHandler }
     }
-    const invoke = createCommandRegistry(service as unknown as OpsService, definitions)
+    const invoke = registry(definitions, ['test.destructive'])
 
-    await expect(invoke({ command: 'ops.inspectSecrets' })).rejects.toMatchObject({
+    await expect(invoke({ command: 'test.destructive' })).rejects.toMatchObject({
       code: 'COMMAND_NOT_ALLOWED',
       message: 'Command is not available.'
     })
-    await expect(invoke({ command: 'test.write' })).rejects.toMatchObject({
-      code: 'READ_ONLY_VIOLATION'
+    await expect(invoke({ command: 'test.unallowlisted' })).rejects.toMatchObject({
+      code: 'COMMAND_NOT_ALLOWED',
+      message: 'Command is not available.'
     })
-    await expect(invoke({ command: 'test.destructive' })).rejects.toMatchObject({
-      code: 'READ_ONLY_VIOLATION'
+    await expect(invoke({ command: 'test.unknown' })).rejects.toMatchObject({
+      code: 'COMMAND_NOT_ALLOWED',
+      message: 'Command is not available.'
     })
-    expect(writeHandler).not.toHaveBeenCalled()
     expect(destructiveHandler).not.toHaveBeenCalled()
+    expect(unallowlistedHandler).not.toHaveBeenCalled()
   })
 
   it('redacts internal operation errors', async () => {
-    const service = serviceMock()
-    service.getDaemon.mockImplementation(() => {
+    const handler = vi.fn(() => {
       throw new Error('DEEPSEEK_API_KEY=secret /home/operator/private')
     })
-    const invoke = createCommandRegistry(service as unknown as OpsService)
+    const invoke = registry({
+      'test.read': { level: 'readonly', handler }
+    }, ['test.read'])
 
     const error = await invoke({
-      command: 'ops.getDaemon',
+      command: 'test.read',
       payload: { subject: 'alpha' }
     }).catch((caught) => caught)
 
@@ -80,5 +89,31 @@ describe('read-only command registry', () => {
     })
     expect(String(error)).not.toContain('secret')
     expect(String(error)).not.toContain('/home/operator')
+  })
+
+  it('serializes only the public error contract for IPC', async () => {
+    const response = await invokeForIpc(async () => {
+      throw new PublicCommandError('CONFLICT', 'A managed process already exists.')
+    }, { command: 'daemon.startManaged' })
+    expect(response).toEqual({
+      ok: false,
+      error: {
+        code: 'CONFLICT',
+        message: 'A managed process already exists.'
+      }
+    })
+  })
+
+  it('rejects non-serializable success values instead of hanging IPC', async () => {
+    const cyclic: Record<string, unknown> = {}
+    cyclic.self = cyclic
+    const response = await invokeForIpc(async () => cyclic, { command: 'ops.refresh' })
+    expect(response).toEqual({
+      ok: false,
+      error: {
+        code: 'OPERATION_FAILED',
+        message: 'Unable to complete the requested operation.'
+      }
+    })
   })
 })

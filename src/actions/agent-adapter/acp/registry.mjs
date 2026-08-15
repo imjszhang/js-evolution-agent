@@ -22,6 +22,10 @@ function localBin(projectRoot, name) {
   return existsSync(candidate) ? candidate : name;
 }
 
+/**
+ * @param {{ projectRoot?: string, env?: NodeJS.ProcessEnv, entries?: any[] }} [opts]
+ * @returns {Map<string, any>}
+ */
 export function createAcpFrameworkRegistry({
   projectRoot = process.cwd(),
   env = process.env,
@@ -50,6 +54,11 @@ export function isAcpProvider(provider) {
   return String(provider ?? '').toLowerCase().startsWith(ACP_PROVIDER_PREFIX);
 }
 
+/**
+ * @param {string} provider
+ * @param {{ projectRoot?: string, env?: NodeJS.ProcessEnv, registry?: Map<string, any> | null }} [opts]
+ * @returns {any}
+ */
 export function resolveAcpFramework(provider, {
   projectRoot = process.cwd(),
   env = process.env,

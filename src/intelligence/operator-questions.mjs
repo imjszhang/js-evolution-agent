@@ -140,6 +140,11 @@ export function readResolvedOperatorQuestions(runtimeRoot, { limit = DEFAULT_LIM
   return { questions, invalid, dir };
 }
 
+/**
+ * @param {string} runtimeRoot
+ * @param {string} questionId
+ * @param {{ resolution?: string, resolvedBy?: string, note?: string | null }} [opts]
+ */
 export function resolveOperatorQuestion(runtimeRoot, questionId, {
   resolution = 'acknowledged',
   resolvedBy = 'operator',
