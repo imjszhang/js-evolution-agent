@@ -54,7 +54,7 @@ function createWindow(): BrowserWindow {
     minHeight: 640,
     title: 'JEA Ops',
     webPreferences: {
-      preload: join(outputDir, '../preload/index.js'),
+      preload: join(outputDir, '../preload/index.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true

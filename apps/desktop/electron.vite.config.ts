@@ -18,7 +18,11 @@ export default defineConfig({
     build: {
       rollupOptions: {
         input: resolve(desktopDir, 'src/preload/index.ts'),
-        external: ['electron']
+        external: ['electron'],
+        output: {
+          format: 'cjs',
+          entryFileNames: 'index.cjs'
+        }
       }
     }
   },
