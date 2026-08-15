@@ -152,7 +152,7 @@ jea data init --all --subject <name>
 
 Cloud Agent 运行在 **Linux + bash**，而本文其余命令示例以 Windows PowerShell 书写；命令本身跨平台，直接用 bash 执行即可，无需 PowerShell 包装（`viewer:serve:win` / `daemon:start:detached` 等 `*-win` 脚本仅限 Windows，不要在此环境使用）。
 
-- **依赖安装**：根目录 `.npmrc` 已设 `legacy-peer-deps=true`（`openai` 与 `@anthropic-ai/claude-agent-sdk` 对 `zod` 的 peer 冲突）。`npm ci` / `npm install` 会自动带上，不必再手写 `--legacy-peer-deps`。
+- **依赖安装**：根目录 `.npmrc` 已设 `legacy-peer-deps=true`。OpenAI 7 / Claude Agent SDK 0.3 之后，zod peer 已对齐；剩余冲突是 `@jea/desktop` 的 `electron-vite@5.0.0`（peer `vite@^5 || ^6 || ^7`）与工作区 `vite@8` / `@vitejs/plugin-react@6`。上游 `electron-vite` 声明 vite 8 后即可删除该开关，并在干净环境验证 `npm install` 无 `ERESOLVE`。`npm ci` / `npm install` 会自动带上，不必再手写 `--legacy-peer-deps`。
 - **无独立 lint / CLI build**：仓库没有 ESLint/Prettier，也没有 CLI 编译步骤（纯 ESM `.mjs`）。质量门禁是 `npm test` / `test:ci` / `test:coverage`、`npm run check`（隔离主体 `ci-repo` 上的 `jea policy/subject/actions check`）、`desktop:typecheck` + `desktop:build`，以及 `audit:ci`。PR 与 `main` 的 GitHub Actions 跑这些 jobs 加 CodeQL。`jea doctor` 仍是本地诊断，不是 CI 门禁。Nightly mock canary 不是 PR required check。Viewer 静态快照仍用 `npm run viewer:build`（非必需）。
 - **无 API key 也能全流程跑**：默认走 mock。`jea doctor` 会对缺失的 `.env` / `DEEPSEEK_API_KEY` 报 WARN 并以非零退出，这是预期的，mock 模式下不阻塞演化。真实模型才需要在 `.env` 里配 `DEEPSEEK_API_KEY`。用 `--mock`（或 `JEA_FORCE_MOCK=1`）跑 `jea run` / `jea daemon` / vitest。
 - **Evolution Viewer（Web UI）**：用 `npm run jea -- intel viewer serve --port 8787` 启动（默认 127.0.0.1:8787）。不要用 `npm run viewer:serve`，它带 `--open` 会尝试拉起浏览器，在无头环境无意义。属长驻服务，放到 tmux/后台运行。

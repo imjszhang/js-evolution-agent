@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "notes": "Only unfixed high/critical production findings may be listed. Review before expires. Tracking issue: https://github.com/imjszhang/js-evolution-agent/issues/77",
+  "notes": "Only unfixed high/critical production findings may be listed. Review before expires. Tracking issue: https://github.com/imjszhang/js-evolution-agent/issues/77. Last reviewed 2026-08-15: npm audit --omit=dev still reports undici 5.29.0 via @cursor/sdk > @connectrpc/connect-node with fixAvailable=false; no baseline entries removed.",
   "exceptions": [
     {
       "ghsa": "GHSA-vrm6-8vpv-qv8q",
