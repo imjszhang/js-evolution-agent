@@ -23,6 +23,7 @@ import { nowIso } from '../../types.mjs';
 import { normalizeDesktopSessionId } from './config.mjs';
 
 export const DESKTOP_SESSION_SCHEMA_VERSION = 1;
+export const MAX_DESKTOP_RECORD_BYTES = 4 * 1024 * 1024;
 const INDEX_SCHEMA_VERSION = 2;
 const INDEX_CHUNK_BYTES = 64 * 1024;
 const MAX_ID_BUCKET_BYTES = 64 * 1024;
@@ -218,27 +219,38 @@ function reconcileSessionIndex(root, subject, sessionId, file) {
   const bucketAppends = new Map();
   const fd = openSync(file, 'r');
   let position = Number(metadata.scanned_size);
-  let partial = Buffer.alloc(0);
-  let partialStart = position;
+  let leftover = Buffer.alloc(0);
+  let leftoverStart = position;
+  let skipping = false;
   try {
     while (position < stat.size) {
       const length = Math.min(INDEX_CHUNK_BYTES, stat.size - position);
       const chunk = Buffer.allocUnsafe(length);
       const bytesRead = readSync(fd, chunk, 0, length, position);
       if (!bytesRead) break;
+      const chunkStart = position;
       position += bytesRead;
-      const data = partial.length
-        ? Buffer.concat([partial, chunk.subarray(0, bytesRead)])
-        : chunk.subarray(0, bytesRead);
-      const dataStart = partialStart;
+      let slice = chunk.subarray(0, bytesRead);
+      if (skipping) {
+        const newline = slice.indexOf(0x0a);
+        if (newline < 0) continue;
+        skipping = false;
+        leftover = slice.subarray(newline + 1);
+        leftoverStart = chunkStart + newline + 1;
+        slice = Buffer.alloc(0);
+        if (!leftover.length) continue;
+      }
+      const data = leftover.length ? Buffer.concat([leftover, slice]) : slice;
+      const dataStart = leftoverStart;
       let cursor = 0;
       for (;;) {
         const newline = data.indexOf(0x0a, cursor);
         if (newline < 0) break;
         const lineStart = dataStart + cursor;
         const lineLength = newline - cursor;
-        const line = data.subarray(cursor, newline).toString('utf8').trim();
         cursor = newline + 1;
+        if (lineLength <= 0 || lineLength > MAX_DESKTOP_RECORD_BYTES) continue;
+        const line = data.subarray(newline - lineLength, newline).toString('utf8').trim();
         if (!line) continue;
         try {
           const record = JSON.parse(line);
@@ -269,14 +281,19 @@ function reconcileSessionIndex(root, subject, sessionId, file) {
           // Malformed complete records are skipped without blocking later lines.
         }
       }
-      partial = data.subarray(cursor);
-      partialStart = dataStart + cursor;
+      leftover = data.subarray(cursor);
+      leftoverStart = dataStart + cursor;
+      if (leftover.length > MAX_DESKTOP_RECORD_BYTES) {
+        leftover = Buffer.alloc(0);
+        leftoverStart = position;
+        skipping = true;
+      }
     }
   } finally {
     closeSync(fd);
   }
   appendIndexBatch(paths, indexedOffsets, bucketAppends);
-  metadata.scanned_size = partialStart;
+  metadata.scanned_size = leftoverStart;
   metadata.identity = identity;
   writeMetadata(paths, metadata);
   return { paths, metadata };
@@ -359,6 +376,9 @@ export function appendDesktopSessionRecord(root, subject, sessionIdInput, input 
       offset: metadata.total,
     };
     const line = `${JSON.stringify(record)}\n`;
+    if (Buffer.byteLength(line) > MAX_DESKTOP_RECORD_BYTES) {
+      throw new Error(`Desktop session record exceeds ${MAX_DESKTOP_RECORD_BYTES} bytes`);
+    }
     appendFileSync(file, line, 'utf-8');
     appendIndexEntry(paths, id, metadata.total, byteOffset, Buffer.byteLength(line));
     metadata.total += 1;
@@ -378,7 +398,9 @@ export function readDesktopSession(root, subject, sessionIdInput, {
 } = {}) {
   const sessionId = normalizeDesktopSessionId(sessionIdInput);
   const file = channelDesktopSessionPath(root, subject, sessionId);
-  const release = existsSync(file) ? lockSessionFile(file) : null;
+  mkdirSync(dirname(file), { recursive: true });
+  appendFileSync(file, '', 'utf-8');
+  const release = lockSessionFile(file);
   try {
     const { paths, metadata } = reconcileSessionIndex(root, subject, sessionId, file);
     const start = Math.max(0, Number(offset) || 0);
@@ -406,7 +428,7 @@ export function readDesktopSession(root, subject, sessionIdInput, {
       total: metadata.total,
     };
   } finally {
-    release?.();
+    release();
   }
 }
 
@@ -428,8 +450,8 @@ export function listDesktopSessions(root, subject) {
     });
 }
 
-export function withDesktopIngressLock(root, subject, messageId, callback) {
-  const digest = createHash('sha256').update(String(messageId)).digest();
+export function withDesktopIngressLock(root, subject, messageId, callback, sessionId = null) {
+  const digest = createHash('sha256').update(`${sessionId ?? ''}:${messageId}`).digest();
   const lockId = String(digest[0] % 64).padStart(2, '0');
   const file = join(
     channelDirForSubject(root, subject),

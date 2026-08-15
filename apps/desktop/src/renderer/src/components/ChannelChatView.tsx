@@ -6,14 +6,24 @@ import type {
 } from '../../../shared/contract'
 import { errorMessage, formatTime, isRecord, text } from '../utils'
 
+export const MAX_CHANNEL_RECORDS = 400
+
+export function resolveDraftMessageId(
+  existing: string | null,
+  createId: () => string = () => `desktop-ui-${crypto.randomUUID()}`
+): string {
+  return existing ?? createId()
+}
+
 export function mergeRecords(
   current: DesktopSessionRecord[],
   incoming: DesktopSessionRecord[]
 ): DesktopSessionRecord[] {
   const records = new Map(current.map((record) => [record.id, record]))
   for (const record of incoming) records.set(record.id, record)
-  return [...records.values()].sort((a, b) =>
-    a.offset - b.offset || a.created_at.localeCompare(b.created_at))
+  return [...records.values()]
+    .sort((a, b) => a.offset - b.offset || a.created_at.localeCompare(b.created_at))
+    .slice(-MAX_CHANNEL_RECORDS)
 }
 
 export function ChannelChatView({ subject }: { subject: string | null }) {
@@ -26,6 +36,7 @@ export function ChannelChatView({ subject }: { subject: string | null }) {
   const sessionRef = useRef(sessionId)
   const offsetRef = useRef(0)
   const requestGeneration = useRef(0)
+  const pendingMessageId = useRef<string | null>(null)
 
   useEffect(() => {
     sessionRef.current = sessionId
@@ -111,13 +122,16 @@ export function ChannelChatView({ subject }: { subject: string | null }) {
     if (!subject || !content || busy) return
     setBusy(true)
     setError(null)
+    const messageId = resolveDraftMessageId(pendingMessageId.current)
+    pendingMessageId.current = messageId
     try {
       await window.jea.invoke('channel.sendMessage', {
         subject,
         sessionId,
         text: content,
-        messageId: `desktop-ui-${crypto.randomUUID()}`
+        messageId
       })
+      pendingMessageId.current = null
       setMessage('')
       await readSession(false)
     } catch (cause) {

@@ -78,6 +78,12 @@ export class ChannelService {
           'Desktop Channel is disabled for this subject.'
         )
       }
+      if (String(error).includes('already belongs to session')) {
+        throw new PublicCommandError(
+          'CONFLICT',
+          'This message already belongs to another desktop session.'
+        )
+      }
       throw error
     }
   }

@@ -352,4 +352,108 @@ describe('desktop channel adapter', () => {
       content: 'from cli',
     });
   });
+
+  it('locks first-time session reads against concurrent appends', async () => {
+    const project = makeRoot();
+    const [read, written] = await Promise.all([
+      Promise.resolve().then(() => readDesktopSession(project, 'alpha', 'race', { tail: 1 })),
+      Promise.resolve().then(() => appendDesktopSessionRecord(project, 'alpha', 'race', {
+        id: 'race-1',
+        direction: 'inbound',
+        role: 'user',
+        content: 'hello',
+      })),
+    ]);
+    expect(written.created).toBe(true);
+    const page = readDesktopSession(project, 'alpha', 'race', { offset: 0, limit: 10 });
+    expect(page.total).toBe(1);
+    expect(page.records.map((record) => record.id)).toEqual(['race-1']);
+    expect(read.total === 0 || read.total === 1).toBe(true);
+  });
+
+  it('rewakes the classifier after pending write succeeds and enqueue fails', () => {
+    const project = makeRoot();
+    expect(() => sendDesktopInboundMessage(project, 'alpha', {
+      session: 'main',
+      message_id: 'rewake-message',
+      text: 'rewake me',
+    }, {
+      enqueueClassifier: () => {
+        throw new Error('injected enqueue failure');
+      },
+    })).toThrow('injected enqueue failure');
+
+    const retried = sendDesktopInboundMessage(project, 'alpha', {
+      session: 'main',
+      message_id: 'rewake-message',
+      text: 'rewake me',
+    });
+    expect(retried).toMatchObject({
+      duplicate: true,
+      ingress_repaired: true,
+      classifier_created: true,
+    });
+  });
+
+  it('rejects the same message id across desktop sessions', () => {
+    const project = makeRoot();
+    sendDesktopInboundMessage(project, 'alpha', {
+      session: 'chat-a',
+      message_id: 'shared-id',
+      text: 'first',
+    });
+    expect(() => sendDesktopInboundMessage(project, 'alpha', {
+      session: 'chat-b',
+      message_id: 'shared-id',
+      text: 'second',
+    })).toThrow('already belongs to session chat-a');
+    expect(readDesktopSession(project, 'alpha', 'chat-b', { tail: 10 }).records).toHaveLength(0);
+  });
+
+  it('looks up inbound history without parsing every processed file', () => {
+    const project = makeRoot();
+    const processed = join(project, 'runtime', 'subjects', 'alpha', 'data', 'channel', 'inbound', 'processed');
+    mkdirSync(processed, { recursive: true });
+    for (let index = 0; index < 200; index += 1) {
+      writeFileSync(join(processed, `20260815-legacy-${index}.json`), JSON.stringify({
+        message_id: `legacy-${index}`,
+        envelope: { message_id: `legacy-${index}`, metadata: { session_id: 'main' } },
+      }));
+    }
+    const started = Date.now();
+    const first = sendDesktopInboundMessage(project, 'alpha', {
+      session: 'main',
+      message_id: 'legacy-12',
+      text: 'already processed',
+    });
+    const second = sendDesktopInboundMessage(project, 'alpha', {
+      session: 'main',
+      message_id: 'fresh-after-history',
+      text: 'new',
+    });
+    expect(first.ingress_repaired).toBe(true);
+    expect(first.inbound_file).toBeNull();
+    expect(second.session_created).toBe(true);
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  it('indexes oversized JSONL lines without blocking later records', () => {
+    const project = makeRoot();
+    const file = channelDesktopSessionPath(project, 'alpha', 'huge');
+    mkdirSync(dirname(file), { recursive: true });
+    const huge = `${'x'.repeat(5 * 1024 * 1024)}`;
+    writeFileSync(file, `${JSON.stringify({ id: 'too-big', content: huge })}\n${JSON.stringify({
+      schema_version: 1,
+      id: 'after-huge',
+      session_id: 'huge',
+      target: 'desktop:huge',
+      direction: 'inbound',
+      role: 'user',
+      content: 'ok',
+      created_at: '2026-08-15T00:00:00.000Z',
+      offset: 0,
+    })}\n`);
+    const page = readDesktopSession(project, 'alpha', 'huge', { tail: 2 });
+    expect(page.records.map((record) => record.id)).toEqual(['after-huge']);
+  });
 });

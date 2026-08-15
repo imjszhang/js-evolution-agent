@@ -1,9 +1,12 @@
-import { existsSync, openSync, closeSync, readSync, statSync, watch } from 'node:fs';
+import { existsSync, openSync, closeSync, readSync, fstatSync, statSync, watch } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 import { basename, dirname, join } from 'node:path';
 import { listJsonFiles, readJsonFile } from '../../channel/state.mjs';
 
 export const RUNTIME_WATCH_DEBOUNCE_MS = 1000;
+export const TAIL_READ_CHUNK_BYTES = 256 * 1024;
+const HEAD_ANCHOR_BYTES = 64;
 
 function safeStat(path) {
   try {
@@ -13,9 +16,13 @@ function safeStat(path) {
   }
 }
 
+function hashHead(buffer) {
+  return createHash('sha256').update(buffer).digest('hex');
+}
+
 /**
  * Incrementally tail a JSONL file without re-reading its full history.
- * Existing content is skipped by default; truncation resets the cursor.
+ * Existing content is skipped by default; truncation or rewrite resets the cursor.
  */
 export function createJsonlTailer({
   path,
@@ -23,21 +30,23 @@ export function createJsonlTailer({
   startAtEnd = true,
   watchFactory = watch,
   reconcileMs = 1_000,
+  chunkBytes = TAIL_READ_CHUNK_BYTES,
 }) {
   let offset = 0;
+  let lastSeenSize = 0;
   let partial = '';
   let identity = null;
+  let headAnchor = null;
   let decoder = new StringDecoder('utf8');
   let watcher = null;
   let reconcileTimer = null;
   let stopped = true;
 
-  function syncOffset() {
-    const stat = safeStat(path);
-    identity = stat ? `${stat.dev}:${stat.ino}` : null;
-    offset = stat && startAtEnd ? stat.size : 0;
+  function resetCursor() {
+    offset = 0;
     partial = '';
     decoder = new StringDecoder('utf8');
+    headAnchor = null;
   }
 
   function processChunk(chunk) {
@@ -55,49 +64,79 @@ export function createJsonlTailer({
     }
   }
 
+  function captureHead(fd, size) {
+    if (size <= 0) {
+      headAnchor = null;
+      return;
+    }
+    const length = Math.min(HEAD_ANCHOR_BYTES, size);
+    const head = Buffer.allocUnsafe(length);
+    const read = readSync(fd, head, 0, length, 0);
+    headAnchor = read > 0
+      ? { hash: hashHead(head.subarray(0, read)), length: read }
+      : null;
+  }
+
+  function headChanged(fd, size) {
+    if (!headAnchor || offset === 0 || size <= 0) return false;
+    if (size < headAnchor.length) return true;
+    const head = Buffer.allocUnsafe(headAnchor.length);
+    const read = readSync(fd, head, 0, headAnchor.length, 0);
+    if (read <= 0) return true;
+    return hashHead(head.subarray(0, read)) !== headAnchor.hash;
+  }
+
   function readNewBytes() {
+    let fd = null;
     try {
-      const stat = safeStat(path);
-      if (!stat) {
-        if (identity) {
-          identity = null;
-          offset = 0;
-          partial = '';
-          decoder = new StringDecoder('utf8');
-          closeWatcher();
-        }
-        return;
+      fd = openSync(path, 'r');
+    } catch {
+      if (identity) {
+        identity = null;
+        lastSeenSize = 0;
+        resetCursor();
+        closeWatcher();
       }
+      return;
+    }
+    try {
+      const stat = fstatSync(fd);
       const nextIdentity = `${stat.dev}:${stat.ino}`;
       if (identity && identity !== nextIdentity) {
-        identity = nextIdentity;
-        offset = 0;
-        partial = '';
-        decoder = new StringDecoder('utf8');
+        resetCursor();
         closeWatcher();
-      } else if (!identity) {
-        identity = nextIdentity;
       }
-      const size = stat.size;
-      if (size < offset) {
-        offset = 0;
-        partial = '';
-        decoder = new StringDecoder('utf8');
+      identity = nextIdentity;
+
+      if (stat.size < offset || (lastSeenSize > 0 && stat.size < lastSeenSize) || headChanged(fd, stat.size)) {
+        resetCursor();
+        captureHead(fd, stat.size);
       }
-      if (size <= offset) return;
-      const length = size - offset;
-      const buffer = Buffer.allocUnsafe(length);
-      const fd = openSync(path, 'r');
-      try {
-        const read = readSync(fd, buffer, 0, length, offset);
+
+      if (stat.size <= offset) {
+        lastSeenSize = stat.size;
+        if (offset === 0) captureHead(fd, stat.size);
+        return;
+      }
+
+      if (offset === 0) captureHead(fd, stat.size);
+
+      const cap = Math.max(1, Number(chunkBytes) || TAIL_READ_CHUNK_BYTES);
+      while (offset < stat.size) {
+        const toRead = Math.min(stat.size - offset, cap);
+        const buffer = Buffer.allocUnsafe(toRead);
+        const read = readSync(fd, buffer, 0, toRead, offset);
+        if (!read) break;
         offset += read;
         processChunk(buffer.subarray(0, read));
-      } finally {
-        closeSync(fd);
       }
+      lastSeenSize = stat.size;
     } catch {
       // Ignore rotation/read races. Reconciliation can call readNewBytes again.
+    } finally {
+      if (fd != null) closeSync(fd);
     }
+    attachWatcher();
   }
 
   function closeWatcher() {
@@ -116,6 +155,26 @@ export function createJsonlTailer({
       watcher = watchFactory(path, readNewBytes);
     } catch {
       watcher = null;
+    }
+  }
+
+  function syncOffset() {
+    let fd = null;
+    try {
+      fd = openSync(path, 'r');
+      const stat = fstatSync(fd);
+      identity = `${stat.dev}:${stat.ino}`;
+      lastSeenSize = stat.size;
+      offset = startAtEnd ? stat.size : 0;
+      partial = '';
+      decoder = new StringDecoder('utf8');
+      captureHead(fd, stat.size);
+    } catch {
+      identity = null;
+      lastSeenSize = 0;
+      resetCursor();
+    } finally {
+      if (fd != null) closeSync(fd);
     }
   }
 
@@ -191,6 +250,24 @@ export function runtimeWatchPaths(runtimeRoot, {
   return paths;
 }
 
+function nearestExisting(target) {
+  let candidate = target;
+  while (!existsSync(candidate)) {
+    const parent = dirname(candidate);
+    if (parent === candidate) return null;
+    candidate = parent;
+  }
+  return candidate;
+}
+
+export function resolveWatchPath(target) {
+  const existing = nearestExisting(target);
+  if (!existing) return null;
+  const stat = safeStat(existing);
+  if (stat?.isFile()) return dirname(existing);
+  return existing;
+}
+
 /**
  * Watch runtime projections and coalesce bursts into one invalidation.
  */
@@ -213,7 +290,7 @@ export function createRuntimeWatcher({
     includeOperator,
     includeDesktopSessions,
   });
-  const watchers = new Map();
+  const watchersByPath = new Map();
   let debounceTimer = null;
   let reconcileTimer = null;
   let started = false;
@@ -229,47 +306,59 @@ export function createRuntimeWatcher({
     debounceTimer.unref?.();
   }
 
-  function nearestExisting(target) {
-    let candidate = target;
-    while (!existsSync(candidate)) {
-      const parent = dirname(candidate);
-      if (parent === candidate) return null;
-      candidate = parent;
-    }
-    return candidate;
-  }
-
-  function attach(target) {
-    const watchedPath = nearestExisting(target);
-    if (!watchedPath) return;
-    const current = watchers.get(target);
-    const stat = safeStat(watchedPath);
-    const identity = stat ? `${stat.dev}:${stat.ino}` : null;
-    if (current?.watchedPath === watchedPath && current.identity === identity) return;
-    if (current) {
-      try {
-        current.watcher.close();
-      } catch {
-        // Ignore replacement races.
-      }
-      watchers.delete(target);
-    }
+  function closeEntry(path) {
+    const current = watchersByPath.get(path);
+    if (!current) return;
     try {
-      watchers.set(target, {
-        watchedPath,
-        identity,
-        watcher: watchFactory(watchedPath, () => {
-          reconcileWatchers();
-          notify('watch');
-        }),
-      });
+      current.watcher.close();
     } catch {
-      // Missing and transiently replaced files are covered by reconciliation.
+      // Ignore replacement races.
     }
+    watchersByPath.delete(path);
   }
 
   function reconcileWatchers() {
-    for (const target of paths) attach(target);
+    const desired = new Map();
+    for (const target of paths) {
+      const watchedPath = resolveWatchPath(target);
+      if (!watchedPath) continue;
+      const stat = safeStat(watchedPath);
+      const identity = stat ? `${stat.dev}:${stat.ino}` : null;
+      const entry = desired.get(watchedPath) ?? { identity, targets: new Set() };
+      entry.targets.add(target);
+      desired.set(watchedPath, entry);
+    }
+
+    for (const [path, current] of watchersByPath) {
+      const next = desired.get(path);
+      if (!next || current.identity !== next.identity) closeEntry(path);
+    }
+
+    for (const [path, next] of desired) {
+      const current = watchersByPath.get(path);
+      if (current) {
+        current.targets = next.targets;
+        continue;
+      }
+      try {
+        watchersByPath.set(path, {
+          identity: next.identity,
+          targets: next.targets,
+          watcher: watchFactory(path, () => {
+            reconcileWatchers();
+            notify('watch');
+          }),
+        });
+      } catch {
+        // Missing and transiently replaced files are covered by reconciliation.
+      }
+    }
+  }
+
+  function reconcile(reason = 'reconcile') {
+    if (!started) return;
+    reconcileWatchers();
+    notify(reason);
   }
 
   function start() {
@@ -277,10 +366,7 @@ export function createRuntimeWatcher({
     started = true;
     reconcileWatchers();
     if (reconcileMs > 0) {
-      reconcileTimer = setInterval(() => {
-        reconcileWatchers();
-        notify('reconcile');
-      }, reconcileMs);
+      reconcileTimer = setInterval(() => reconcile('reconcile'), reconcileMs);
       reconcileTimer.unref?.();
     }
   }
@@ -291,17 +377,17 @@ export function createRuntimeWatcher({
     debounceTimer = null;
     if (reconcileTimer) clearInterval(reconcileTimer);
     reconcileTimer = null;
-    for (const { watcher } of watchers.values()) {
-      try {
-        watcher.close();
-      } catch {
-        // Ignore watcher teardown races.
-      }
-    }
-    watchers.clear();
+    for (const path of [...watchersByPath.keys()]) closeEntry(path);
   }
 
-  return { paths, start, stop, notify };
+  return {
+    paths,
+    start,
+    stop,
+    notify,
+    reconcile,
+    getWatchedPaths: () => [...watchersByPath.keys()],
+  };
 }
 
 function truncateText(value, max = 120) {

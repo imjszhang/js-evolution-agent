@@ -1,11 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import { writePendingInbound } from '../../state.mjs';
-import { listJsonFiles, readJsonFile } from '../../state.mjs';
-import {
-  channelInboundFailedDir,
-  channelInboundPendingDir,
-  channelInboundProcessedDir,
-} from '../../paths.mjs';
 import { normalizeOutboundMessage, nowIso } from '../../types.mjs';
 import { enqueueClassifierIfPendingInbound } from '../../wake.mjs';
 import {
@@ -13,6 +7,7 @@ import {
   resolveDesktopConfig,
   sessionIdFromDesktopTarget,
 } from './config.mjs';
+import { findDesktopIngress, recordDesktopIngress } from './ingress-index.mjs';
 import { normalizeDesktopInboundPayload } from './parser.mjs';
 import {
   appendDesktopSessionRecord,
@@ -68,24 +63,6 @@ export async function sendOutboundMessage(outboundInput, options = {}) {
   };
 }
 
-function inboundExists(root, subject, messageId) {
-  for (const dir of [
-    channelInboundPendingDir(root, subject),
-    channelInboundProcessedDir(root, subject),
-    channelInboundFailedDir(root, subject),
-  ]) {
-    for (const file of listJsonFiles(dir)) {
-      const payload = readJsonFile(file, null);
-      const existingId = payload?.message_id
-        ?? payload?.messageId
-        ?? payload?.envelope?.message_id
-        ?? null;
-      if (String(existingId ?? '') === String(messageId)) return true;
-    }
-  }
-  return false;
-}
-
 export function sendDesktopInboundMessage(root, subject, {
   session_id = null,
   session = null,
@@ -113,6 +90,12 @@ export function sendDesktopInboundMessage(root, subject, {
     metadata,
   });
   const transaction = withDesktopIngressLock(root, subject, messageId, () => {
+    const existing = findDesktopIngress(root, subject, messageId);
+    if (existing?.session_id && existing.session_id !== resolvedSession) {
+      throw new Error(
+        `Desktop message ${messageId} already belongs to session ${existing.session_id}`,
+      );
+    }
     const appended = appendDesktopSessionRecord(root, subject, resolvedSession, {
       id: `inbound:${messageId}`,
       message_id: messageId,
@@ -123,23 +106,28 @@ export function sendDesktopInboundMessage(root, subject, {
       created_at: envelope.received_at,
       metadata,
     });
-    const alreadyQueued = inboundExists(root, subject, messageId);
-    if (alreadyQueued) {
+    if (existing) {
       return {
         appended,
         pending: null,
-        classifier: { created: false, reason: 'inbound_already_queued' },
-        repaired: false,
+        classifier: enqueueClassifier(root, subject),
+        repaired: true,
       };
     }
     const pending = writeInbound(root, subject, envelope, { label: 'desktop' });
+    recordDesktopIngress(root, subject, {
+      message_id: messageId,
+      session_id: resolvedSession,
+      status: 'pending',
+      file: pending?.file ?? null,
+    });
     return {
       appended,
       pending,
       classifier: enqueueClassifier(root, subject),
       repaired: appended.duplicate,
     };
-  });
+  }, resolvedSession);
   const { appended } = transaction;
   return {
     subject,

@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { runProviderComparison } from '../scripts/acp-provider-compare.mjs';
+import {
+  compareProviderResults,
+  runProviderComparison,
+} from '../scripts/acp-provider-compare.mjs';
 
 describe('ACP provider comparison harness', () => {
   it('runs the same action through legacy and ACP providers without changing defaults', async () => {
@@ -59,5 +62,74 @@ describe('ACP provider comparison harness', () => {
     });
     expect(report.recommendation).toBe('acp_candidate');
     expect(report.default_changed).toBe(false);
+  });
+
+  it('keeps the legacy default when verification attempts are missing or worse', () => {
+    const missing = compareProviderResults({
+      action_id: 'missing',
+      results: {
+        'acp:claude-code': {
+          success: true,
+          agent: { schema_status: 'valid', outputs: { agent_loop: {} } },
+        },
+        claude_code_sdk: {
+          success: true,
+          agent: { schema_status: 'valid', outputs: { agent_loop: {} } },
+        },
+      },
+    });
+    expect(missing.recommendation).toBe('keep_legacy_default');
+    expect(missing.comparison_basis.attempts_comparable).toBe(false);
+
+    const worse = compareProviderResults({
+      action_id: 'worse',
+      results: {
+        'acp:claude-code': {
+          success: true,
+          agent: {
+            schema_status: 'valid',
+            outputs: { agent_loop: { verification_attempts: 5 } },
+          },
+        },
+        claude_code_sdk: {
+          success: true,
+          agent: {
+            schema_status: 'valid',
+            outputs: { agent_loop: { verification_attempts: 1 } },
+          },
+        },
+      },
+    });
+    expect(worse.recommendation).toBe('keep_legacy_default');
+  });
+
+  it('refuses write-profile comparisons without isolated execution roots', async () => {
+    await expect(runProviderComparison({
+      action: {
+        id: 'write-1',
+        params: { run_spec: { permission_profile: 'workspace_write' } },
+      },
+      context: { projectRoot: '/tmp/shared' },
+      run: async () => ({ success: true }),
+    })).rejects.toThrow('isolated execution roots');
+
+    const seen = [];
+    await runProviderComparison({
+      action: {
+        id: 'write-2',
+        params: { run_spec: { permission_profile: 'workspace_write' } },
+      },
+      context: { projectRoot: '/tmp/shared', mutated: true },
+      executionRoots: {
+        claude_code_sdk: '/tmp/legacy',
+        'acp:claude-code': '/tmp/acp',
+      },
+      run: async (_action, context) => {
+        seen.push(context.projectRoot);
+        context.mutated = true;
+        return { success: true, agent: { schema_status: 'valid' } };
+      },
+    });
+    expect(seen).toEqual(['/tmp/legacy', '/tmp/acp']);
   });
 });

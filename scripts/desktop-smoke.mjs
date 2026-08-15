@@ -30,6 +30,10 @@ const child = spawn(electron, electronArgs, {
     ...process.env,
     JEA_PROJECT_ROOT: projectRoot,
     JEA_DESKTOP_SMOKE: output,
+    JEA_ACP_CLAUDE_CODE_BIN: process.execPath,
+    JEA_ACP_CLAUDE_CODE_ARGS: JSON.stringify([
+      join(projectRoot, 'test', 'fixtures', 'fake-acp-agent.mjs'),
+    ]),
   },
   windowsHide: true,
   stdio: 'inherit',
@@ -37,7 +41,7 @@ const child = spawn(electron, electronArgs, {
 
 const timeout = setTimeout(() => {
   child.kill('SIGKILL');
-}, 30_000);
+}, 45_000);
 
 const exitCode = await new Promise((resolveExit, reject) => {
   child.once('error', reject);
@@ -48,7 +52,10 @@ try {
   if (exitCode !== 0) throw new Error(`Desktop smoke exited with code ${exitCode}.`);
   if (!existsSync(output)) throw new Error('Desktop smoke did not write a report.');
   const report = JSON.parse(readFileSync(output, 'utf8'));
-  if (!report?.inProcess?.ok || !report?.renderer?.ok) {
+  const stages = report?.stages ?? {};
+  const stagesOk = ['projection', 'channel', 'notifications', 'acp']
+    .every((name) => stages[name]?.ok);
+  if (!report?.inProcess?.ok || !report?.renderer?.ok || !stagesOk) {
     throw new Error(`Desktop smoke failed: ${JSON.stringify(report)}`);
   }
   const artifacts = join(projectRoot, 'test-artifacts');

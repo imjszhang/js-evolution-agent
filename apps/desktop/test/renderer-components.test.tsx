@@ -5,7 +5,9 @@ import { AcpWorkspace } from '../src/renderer/src/components/AcpWorkspace'
 import { DaemonPanel } from '../src/renderer/src/components/DaemonPanel'
 import {
   ChannelChatView,
-  mergeRecords
+  MAX_CHANNEL_RECORDS,
+  mergeRecords,
+  resolveDraftMessageId
 } from '../src/renderer/src/components/ChannelChatView'
 import { Navigation } from '../src/renderer/src/components/Navigation'
 import { OpsView } from '../src/renderer/src/components/OpsView'
@@ -48,6 +50,24 @@ describe('desktop renderer components', () => {
       ['a', 'updated'],
       ['b', 'reply']
     ])
+  })
+
+  it('keeps a draft message id across failed sends and bounds visible records', () => {
+    const first = resolveDraftMessageId(null, () => 'desktop-ui-stable')
+    expect(resolveDraftMessageId(first, () => 'desktop-ui-other')).toBe('desktop-ui-stable')
+    const incoming = Array.from({ length: MAX_CHANNEL_RECORDS + 20 }, (_, offset) => ({
+      id: `id-${offset}`,
+      session_id: 'main',
+      role: 'user' as const,
+      direction: 'inbound' as const,
+      content: String(offset),
+      created_at: '2026-08-15T00:00:00Z',
+      offset
+    }))
+    const bounded = mergeRecords([], incoming)
+    expect(bounded).toHaveLength(MAX_CHANNEL_RECORDS)
+    expect(bounded[0].id).toBe('id-20')
+    expect(bounded.at(-1)?.id).toBe('id-419')
   })
 
   it('renders safe empty states without a browser bridge', () => {

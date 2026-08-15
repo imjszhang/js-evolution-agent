@@ -21,17 +21,24 @@ function record(value: unknown): Record<string, any> {
     : {}
 }
 
+const MAX_SEEN = 256
+
 export class NotificationService {
-  private readonly seen = new Map<string, string>()
+  private readonly seen = new Map<string, { signature: string; lastShownAt: number }>()
   private settings: NotificationSettings
   private readonly unsubscribe: () => void
+  private readonly cooldownMs: number
+  private readonly now: () => number
 
   constructor(
     private readonly settingsPath: string,
     events: DesktopEventBus,
     private readonly createNotification: NotificationFactory,
-    _cooldownMs = 60_000
+    cooldownMs = 60_000,
+    now: () => number = () => Date.now()
   ) {
+    this.cooldownMs = Math.max(0, Number(cooldownMs) || 0)
+    this.now = now
     this.settings = this.readSettings()
     this.unsubscribe = events.subscribe((event) => {
       if (event.type !== 'projection.todo_updated' || !event.subject) return
@@ -87,8 +94,17 @@ export class NotificationService {
 
     for (const item of candidates) {
       const key = `${subject}:${item.id}`
-      if (this.seen.get(key) === item.signature) continue
-      this.seen.set(key, item.signature)
+      const previous = this.seen.get(key)
+      const now = this.now()
+      if (
+        previous?.signature === item.signature
+        && now - previous.lastShownAt < this.cooldownMs
+      ) continue
+      this.seen.set(key, { signature: item.signature, lastShownAt: now })
+      if (this.seen.size > MAX_SEEN) {
+        const oldest = this.seen.keys().next().value
+        if (oldest) this.seen.delete(oldest)
+      }
       if (!this.settings.enabled) continue
       try {
         const notification = this.createNotification({

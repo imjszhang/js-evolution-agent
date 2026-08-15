@@ -122,6 +122,56 @@ describe('NotificationService', () => {
     service.stop()
   })
 
+  it('suppresses the same signature during cooldown and allows later repeats', () => {
+    const events = new DesktopEventBus()
+    const shown = vi.fn()
+    let now = 1_000
+    const service = new NotificationService(
+      join(mkdtempSync(join(tmpdir(), 'jea-notify-cooldown-')), 'settings.json'),
+      events,
+      () => ({ on: vi.fn(), show: shown }),
+      60_000,
+      () => now
+    )
+    const snapshot = (severity: string) => ({
+      subject: 'alpha',
+      questions: [],
+      briefs: [],
+      facts: [],
+      goals: null,
+      pending_cycle_request: null,
+      attention: {
+        items: [{ id: 'health-1', severity, title: 'Worker health degraded' }]
+      }
+    })
+    events.publish({
+      type: 'projection.todo_updated',
+      subject: 'alpha',
+      payload: { snapshot: snapshot('warning') }
+    })
+    now += 10_000
+    events.publish({
+      type: 'projection.todo_updated',
+      subject: 'alpha',
+      payload: { snapshot: snapshot('warning') }
+    })
+    expect(shown).toHaveBeenCalledOnce()
+    events.publish({
+      type: 'projection.todo_updated',
+      subject: 'alpha',
+      payload: { snapshot: snapshot('critical') }
+    })
+    expect(shown).toHaveBeenCalledTimes(2)
+    now += 60_000
+    events.publish({
+      type: 'projection.todo_updated',
+      subject: 'alpha',
+      payload: { snapshot: snapshot('critical') }
+    })
+    expect(shown).toHaveBeenCalledTimes(3)
+    service.stop()
+  })
+
   it('isolates native notification errors from other event listeners', () => {
     const events = new DesktopEventBus()
     const service = new NotificationService(

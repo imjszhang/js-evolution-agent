@@ -16,6 +16,15 @@ import {
   summarizeInboundFile,
 } from '../src/intelligence/evolution-viewer/runtime-watch.mjs';
 
+async function waitFor(predicate, timeoutMs = 1_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error('condition timed out');
+}
+
 describe('shared runtime watch primitives', () => {
   it('tails only complete new JSONL records and resets after truncation', () => {
     const root = mkdtempSync(join(tmpdir(), 'jea-tail-'));
@@ -70,8 +79,72 @@ describe('shared runtime watch primitives', () => {
     vi.useRealTimers();
   });
 
+  it('deduplicates watchers that fall back to the same parent directory', () => {
+    const root = mkdtempSync(join(tmpdir(), 'jea-watch-dedupe-'));
+    mkdirSync(join(root, 'data', 'channel'), { recursive: true });
+    const watched = [];
+    const watcher = createRuntimeWatcher({
+      runtimeRoot: root,
+      subjectMeta: { subject: 'alpha', namespace: 'alpha' },
+      debounceMs: 0,
+      reconcileMs: 0,
+      includeOperator: true,
+      includeDesktopSessions: true,
+      watchFactory: (path) => {
+        watched.push(path);
+        return { close: () => {} };
+      },
+    });
+    watcher.start();
+    expect(new Set(watched).size).toBe(watched.length);
+    expect(watched.length).toBeLessThan(watcher.paths.length);
+    expect(watched.length).toBeLessThanOrEqual(7);
+    watcher.stop();
+  });
+
   it('reattaches runtime file watchers after atomic replacement', async () => {
+    vi.useFakeTimers();
     const root = mkdtempSync(join(tmpdir(), 'jea-runtime-replace-'));
+    const dir = join(root, 'data', 'evolution', 'tasks');
+    const target = join(dir, 'pending_tasks.json');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(target, '{}');
+    const closed = [];
+    const identities = [];
+    const changes = [];
+    const watcher = createRuntimeWatcher({
+      runtimeRoot: root,
+      subjectMeta: { subject: 'alpha', namespace: 'alpha' },
+      debounceMs: 5,
+      reconcileMs: 0,
+      onRuntimeChange: () => { changes.push(true); },
+      watchFactory: (path) => {
+        identities.push(path);
+        return { close: () => closed.push(path) };
+      },
+    });
+    watcher.start();
+    const before = identities.length;
+    const replacement = join(dir, 'pending_tasks.next.json');
+    writeFileSync(replacement, '{"version":2}');
+    rmSync(target);
+    renameSync(replacement, target);
+    watcher.reconcile();
+    vi.advanceTimersByTime(5);
+    expect(changes.length).toBeGreaterThan(0);
+    expect(identities.length).toBeGreaterThanOrEqual(before);
+    const afterReplace = changes.length;
+    appendFileSync(target, '\n');
+    watcher.reconcile();
+    vi.advanceTimersByTime(5);
+    expect(changes.length).toBeGreaterThan(afterReplace);
+    watcher.stop();
+    expect(closed.length).toBeGreaterThan(0);
+    vi.useRealTimers();
+  });
+
+  it('notifies after a real-filesystem atomic replacement via reconcile', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'jea-runtime-replace-fs-'));
     const dir = join(root, 'data', 'evolution', 'tasks');
     const target = join(dir, 'pending_tasks.json');
     mkdirSync(dir, { recursive: true });
@@ -89,12 +162,12 @@ describe('shared runtime watch primitives', () => {
     writeFileSync(replacement, '{"version":2}');
     rmSync(target);
     renameSync(replacement, target);
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    watcher.reconcile();
+    await waitFor(() => changes > 0);
     const afterReplace = changes;
     appendFileSync(target, '\n');
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    expect(afterReplace).toBeGreaterThan(0);
-    expect(changes).toBeGreaterThan(afterReplace);
+    watcher.reconcile();
+    await waitFor(() => changes > afterReplace);
     watcher.stop();
   });
 
@@ -115,8 +188,25 @@ describe('shared runtime watch primitives', () => {
     const rotated = join(root, 'events.old.jsonl');
     renameSync(path, rotated);
     writeFileSync(path, '{"id":"new-1"}\n');
-    tailer.reconcile();
+    tailer.readNewBytes();
     expect(records).toEqual([{ id: 'first' }, { id: 'new-1' }]);
+    tailer.stop();
+  });
+
+  it('resets after a same-inode rewrite that grows past the previous size', () => {
+    const root = mkdtempSync(join(tmpdir(), 'jea-tail-rewrite-'));
+    const path = join(root, 'events.jsonl');
+    writeFileSync(path, `${JSON.stringify({ id: 'old-1' })}\n${JSON.stringify({ id: 'old-2' })}\n`);
+    const records = [];
+    const tailer = createJsonlTailer({
+      path,
+      onRecord: (record) => records.push(record),
+      reconcileMs: 0,
+    });
+    tailer.start();
+    writeFileSync(path, `${JSON.stringify({ id: 'new-1' })}\n${JSON.stringify({ id: 'new-2' })}\n${JSON.stringify({ id: 'new-3' })}\n`);
+    tailer.readNewBytes();
+    expect(records).toEqual([{ id: 'new-1' }, { id: 'new-2' }, { id: 'new-3' }]);
     tailer.stop();
   });
 
@@ -162,7 +252,7 @@ describe('shared runtime watch primitives', () => {
     });
   });
 
-  it('reads a large JSONL stream once and continues from its byte offset', () => {
+  it('reads a large JSONL stream in bounded chunks and continues from its byte offset', () => {
     const root = mkdtempSync(join(tmpdir(), 'jea-tail-stress-'));
     const path = join(root, 'large.jsonl');
     const count = 100_000;
@@ -175,6 +265,7 @@ describe('shared runtime watch primitives', () => {
     const tailer = createJsonlTailer({
       path,
       startAtEnd: false,
+      chunkBytes: 64 * 1024,
       onRecord: () => { seen += 1; },
     });
     tailer.start();

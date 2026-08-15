@@ -82,6 +82,7 @@ export class AcpRuntime {
     killWindowsTree = killWindowsProcessTree,
     listWindowsDescendants = listWindowsDescendantPids,
     killProcess = (pid, signal) => process.kill(pid, signal),
+    processGroup = platform !== 'win32' && spawnImpl === spawn,
   } = {}) {
     this.framework = framework;
     this.cwd = cwd;
@@ -101,6 +102,7 @@ export class AcpRuntime {
     this.killWindowsTree = killWindowsTree;
     this.listWindowsDescendants = listWindowsDescendants;
     this.killProcess = killProcess;
+    this.processGroup = Boolean(processGroup);
     this.child = null;
     this.connection = null;
     this.session = null;
@@ -119,6 +121,7 @@ export class AcpRuntime {
       env: this.env,
       windowsHide: true,
       shell: Boolean(this.framework.shell),
+      detached: this.processGroup,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     this.child.once('close', (exitCode, signal) => {
@@ -365,6 +368,12 @@ export class AcpRuntime {
         killDescendants();
         child.kill('SIGTERM');
       }
+    } else if (this.processGroup && child.pid) {
+      try {
+        this.killProcess(-child.pid, 'SIGTERM');
+      } catch {
+        child.kill('SIGTERM');
+      }
     } else {
       child.kill('SIGTERM');
     }
@@ -374,6 +383,12 @@ export class AcpRuntime {
       if (this.platform === 'win32') {
         if (!this.killWindowsTree(child.pid, true)) {
           killDescendants();
+          child.kill('SIGKILL');
+        }
+      } else if (this.processGroup && child.pid) {
+        try {
+          this.killProcess(-child.pid, 'SIGKILL');
+        } catch {
           child.kill('SIGKILL');
         }
       } else {

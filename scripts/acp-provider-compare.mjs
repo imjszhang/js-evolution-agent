@@ -35,21 +35,67 @@ export function providerMetrics(provider, result, elapsedMs) {
   };
 }
 
+function pickProviders(results) {
+  const acp = results.find((item) => String(item.provider).startsWith('acp:'));
+  const legacy = results.find((item) => item.provider === 'claude_code_sdk')
+    ?? results.find((item) => !String(item.provider).startsWith('acp:'));
+  return { legacy, acp };
+}
+
+function attemptsComparable(left, right) {
+  return Number.isFinite(left) && Number.isFinite(right);
+}
+
+function recommend(legacy, acp) {
+  if (!acp?.success || acp.schema_status !== 'valid') return 'keep_legacy_default';
+  if (!legacy?.success) return 'acp_candidate';
+  if (!attemptsComparable(acp.verification_attempts, legacy.verification_attempts)) {
+    return 'keep_legacy_default';
+  }
+  return acp.verification_attempts <= legacy.verification_attempts
+    ? 'acp_candidate'
+    : 'keep_legacy_default';
+}
+
 function comparisonReport(actionId, results) {
-  const legacy = results[0];
-  const acp = results.find((item) => item.provider.startsWith('acp:')) ?? results[1];
+  const { legacy, acp } = pickProviders(results);
   return {
     schema_version: 1,
     generated_at: new Date().toISOString(),
     action_id: actionId ?? null,
     providers: results,
-    recommendation: acp?.success
-      && acp.schema_status === 'valid'
-      && (!legacy?.success || acp.verification_attempts <= legacy.verification_attempts)
-      ? 'acp_candidate'
-      : 'keep_legacy_default',
+    comparison_basis: {
+      legacy_provider: legacy?.provider ?? null,
+      acp_provider: acp?.provider ?? null,
+      attempts_comparable: attemptsComparable(
+        acp?.verification_attempts,
+        legacy?.verification_attempts,
+      ),
+    },
+    recommendation: recommend(legacy, acp),
     default_changed: false,
   };
+}
+
+function cloneContext(context) {
+  const { run: _run, ...rest } = context ?? {};
+  try {
+    return structuredClone(rest);
+  } catch {
+    return { projectRoot: rest.projectRoot };
+  }
+}
+
+function applyExecutionRoot(context, root) {
+  if (!root) return context;
+  const next = { ...context, projectRoot: root, executionRoot: root };
+  return next;
+}
+
+function permissionProfile(action) {
+  return action?.params?.run_spec?.permission_profile
+    ?? action?.params?.permission_profile
+    ?? 'read_only';
 }
 
 export function compareProviderResults({ action_id = null, results = {} } = {}) {
@@ -64,8 +110,15 @@ export async function runProviderComparison({
   context,
   providers = ['claude_code_sdk', 'acp:claude-code'],
   run = runAgenticAction,
+  isolateRoots = 'auto',
+  executionRoots = null,
 } = {}) {
   if (!action || !context) throw new Error('action and context are required');
+  const profile = permissionProfile(action);
+  const writeProfile = profile !== 'read_only';
+  if (writeProfile && isolateRoots !== 'never' && !executionRoots) {
+    throw new Error('Write-profile comparison requires isolated execution roots');
+  }
   const results = [];
   for (const provider of providers) {
     const started = Date.now();
@@ -74,8 +127,15 @@ export async function runProviderComparison({
     if (candidate.params.run_spec) {
       candidate.params.run_spec = { ...candidate.params.run_spec, provider };
     }
-    const result = await run(candidate, context);
-    results.push(providerMetrics(provider, result, Date.now() - started));
+    const nextContext = applyExecutionRoot(
+      cloneContext(context),
+      executionRoots?.[provider] ?? null,
+    );
+    const result = await run(candidate, nextContext);
+    results.push({
+      ...providerMetrics(provider, result, Date.now() - started),
+      execution_root: nextContext.projectRoot ?? context.projectRoot ?? null,
+    });
   }
   return comparisonReport(action.id, results);
 }

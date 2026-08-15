@@ -61,8 +61,11 @@ outbox, and notify pipeline appends the assistant record.
 
 The inbound feed also shows processed Feishu messages and classifier
 understanding. Feishu chats remain external transport records and are not
-presented as local desktop sessions. Start or attach a Channel daemon for the
-selected subject to receive replies:
+presented as local desktop sessions. A draft send reuses the same message id
+until the main process confirms success. The renderer keeps at most the latest
+400 session records; older history remains on disk and can be re-read.
+
+Start or attach a Channel daemon for the selected subject to receive replies:
 
 ```bash
 npm run jea -- daemon start --subject NAME --domain channel
@@ -106,10 +109,11 @@ Permission behavior:
 - session close and application exit terminate the child with a bounded
   SIGTERM-to-SIGKILL fallback.
 
-On Windows the framework registry resolves local `.cmd` shims and uses
-process-tree cleanup. ACP timelines retain a bounded event window and cap
-merged assistant text so long sessions cannot grow renderer memory without
-limit.
+On POSIX the ACP child is placed in its own process group so shutdown can
+signal the whole tree. On Windows the framework registry resolves local
+`.cmd` shims and uses process-tree cleanup. ACP timelines retain a bounded
+event window and cap merged assistant text so long sessions cannot grow
+renderer memory without limit.
 
 Credentials and execution-root `.env` values remain in the main process.
 Desktop ACP sessions are separate from Channel desktop chat sessions.

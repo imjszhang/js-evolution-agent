@@ -1,25 +1,28 @@
 # ACP provider migration evaluation
 
-- Recorded at: 2026-08-15T10:42:45Z
+- Recorded at: 2026-08-15T11:25:27Z
 - Scope: Epic #50 / issue #58
 - Decision: keep the existing provider default; retain `acp:claude-code` as an explicit opt-in
 
 ## Comparison contract
 
-`scripts/acp-provider-compare.mjs` normalizes both providers against the same
-action, objective, acceptance criteria, execution root, and permission profile.
+`scripts/acp-provider-compare.mjs` locates legacy and ACP providers by identity,
+not array order. A recommendation of `acp_candidate` requires a valid ACP
+receipt and finite verification-attempt counts; missing metrics keep the
+legacy default. Write-profile comparisons fail closed unless each provider
+receives an isolated execution root. A candidate report never changes
+`JEA_AGENT_PROVIDER`.
+
 The report records:
 
 - receipt schema and acceptance status;
 - verification attempts and same-session behavior;
 - tool start/finish and permission-decision events;
 - provider failure phase and error code;
-- elapsed time and serialized result size.
+- elapsed time, serialized result size, and execution root.
 
-The deterministic harness test confirms that both providers receive the same
-fixture and that a valid ACP receipt can be marked as a migration candidate.
 Real Claude runs remain opt-in because they require local login or Anthropic
-credentials. A candidate report never changes `JEA_AGENT_PROVIDER`.
+credentials.
 
 ## Default-switch conditions
 
@@ -30,7 +33,8 @@ runs demonstrate all of the following:
 2. ACP verification attempts are no higher over the same fixtures.
 3. Tool and permission traces remain complete.
 4. Timeout, cancellation, and application shutdown leave no child process.
-5. Windows and macOS smoke jobs remain green.
+5. Linux, Windows, and macOS smoke jobs remain green, including process-tree
+   cleanup and staged Desktop smoke.
 
 The current implementation does not meet the evidence threshold for an
 automatic switch, so the legacy deployment default remains unchanged.
@@ -44,29 +48,35 @@ assistant segment at 200,000 characters.
 The Channel pipeline does not expose DeepSeek token chunks as a public
 transport contract. Desktop therefore shows durable classifier, task, presence,
 speech-generation, outbox, and notify progress, then renders the append-only
-final assistant record. This avoids inventing partial Channel messages or
-changing approval and write semantics.
+final assistant record. Visible Channel history is capped at 400 records.
 
 Operator-question and warning/critical attention notifications are generated
-only in the Electron main process. They are deduplicated, can be disabled, and
-their click action only navigates to the Todo page.
+only in the Electron main process. They are deduplicated, cooldown-limited,
+can be disabled, and their click action only navigates to the Todo page.
+Severity escalation may notify immediately.
 
 ## Platform validation
 
-The CI desktop gates run test, typecheck, build, and hidden-window smoke on
-Linux, Windows, and macOS. Each smoke writes a platform-tagged JSON artifact.
+CI Desktop gates run test, typecheck, build, hidden-window smoke, and
+platform process-tree tests. Smoke now records projection, Channel,
+notification, and fake-ACP lifecycle stages.
 
-| Platform | Test | Typecheck | Build | Hidden-window smoke |
-| --- | --- | --- | --- | --- |
-| Linux | pass | pass | pass | pass |
-| Windows | pass | pass | pass | pass |
-| macOS | pass | pass | pass | pass |
+| Platform | Test | Typecheck | Build | Hidden-window smoke | Process tree |
+| --- | --- | --- | --- | --- | --- |
+| Linux | local pass | pending CI | pending CI | pending CI | local pass |
+| Windows | pending CI | pending CI | pending CI | pending CI | helper + AcpRuntime coverage |
+| macOS | local pass | local pass | local pass | local pass | local pass |
 
-Windows additionally verifies local `.cmd` shim resolution and process-tree
-termination. macOS exercises the same app lifecycle while retaining the
-existing application activation behavior. GitHub Actions run
-`31880129579` completed with all three Desktop platform jobs green, including
-the real Windows `.cmd` descendant-cleanup test, and uploaded platform-tagged
-smoke artifacts. The same revision passed CodeQL, repository checks, dependency
-audit, and 1,210 tests; local coverage passed at 69.54% statements, 60.11%
-branches, 78.13% functions, and 72.07% lines.
+Local evidence at this revision (2026-08-15T11:25:27Z, darwin):
+
+- `npm test`: 1224 passed / 10 skipped
+- `npm run test:coverage`: statements 69.61 / branches 60.18 / functions 78.25 / lines 72.15 (above floors)
+- watcher atomic-replace tests: 100 consecutive passes
+- Channel / ACP compare / POSIX process-tree targeted tests: 19 passed
+- `npm run desktop:test`: 68 passed
+- `npm run desktop:typecheck`, `desktop:build`, `desktop:smoke`: passed
+- smoke stages: projection ok, channel get ok (send disabled on first subject), notifications ok, fake ACP start/prompt/close with leftover 0
+- `npm run check` and `npm run audit:ci`: passed
+
+Three-platform CI evidence will be recorded after this revision's required
+checks complete. Do not treat this local macOS run as Linux/Windows proof.

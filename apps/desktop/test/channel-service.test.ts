@@ -73,6 +73,15 @@ describe('ChannelService', () => {
     })
   })
 
+  it('returns a public conflict when the same message id is reused across sessions', () => {
+    const root = fixture()
+    const service = new ChannelService(root)
+    service.sendMessage('alpha', 'main', 'hello', 'shared')
+    expect(() => service.sendMessage('alpha', 'other', 'hello', 'shared')).toThrow(
+      'This message already belongs to another desktop session.'
+    )
+  })
+
   it('returns a public conflict when desktop transport is disabled', () => {
     const service = new ChannelService(fixture(false))
     expect(() => service.sendMessage('alpha', 'main', 'hello')).toThrow(
