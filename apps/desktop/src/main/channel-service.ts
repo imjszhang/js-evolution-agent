@@ -14,7 +14,6 @@ import {
   summarizeInboundFile
 } from '../../../../src/intelligence/evolution-viewer/runtime-watch.mjs'
 import { listRegisteredSubjects } from '../../../../src/infra/subjects.mjs'
-import { createRuntimeContext } from '../../../../src/infra/jea-home.mjs'
 import { redactSecrets } from '../../../../src/intelligence/redaction.mjs'
 import type {
   ChannelSnapshot,
@@ -22,6 +21,7 @@ import type {
   DesktopSessionSummary
 } from '../shared/contract'
 import { PublicCommandError } from './command-registry'
+import { createDesktopServiceRuntimeContext } from './runtime-context'
 
 export class ChannelService {
   private readonly runtimeContext: any
@@ -30,9 +30,7 @@ export class ChannelService {
     readonly projectRoot: string,
     jeaHome: string | undefined = process.env.JEA_HOME
   ) {
-    this.runtimeContext = jeaHome
-      ? createRuntimeContext({ sourceRoot: projectRoot, jeaHome })
-      : createRuntimeContext(projectRoot)
+    this.runtimeContext = createDesktopServiceRuntimeContext(projectRoot, jeaHome)
   }
 
   get(subject: string): ChannelSnapshot {

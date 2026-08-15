@@ -6,7 +6,6 @@ import {
   readSubjectsRegistry
 } from '../../../../src/infra/subjects.mjs'
 import { loadProjectEnv } from '../../../../src/infra/project.mjs'
-import { createRuntimeContext } from '../../../../src/infra/jea-home.mjs'
 import { runtimeForSubject } from '../../../../src/infra/runtime-paths.mjs'
 import type { SubjectSnapshot, SubjectSummary } from '../shared/contract'
 import type { DaemonSupervisor } from './daemon-supervisor'
@@ -14,6 +13,7 @@ import {
   BUNDLED_PROJECT_ROOT_CANDIDATE,
   resolveDesktopProjectRoot
 } from './project-root'
+import { createDesktopServiceRuntimeContext } from './runtime-context'
 
 export const DEFAULT_PROJECT_ROOT = BUNDLED_PROJECT_ROOT_CANDIDATE
 
@@ -42,9 +42,7 @@ export class OpsService {
     jeaHome: string | undefined = process.env.JEA_HOME
   ) {
     envLoader(this.projectRoot)
-    this.runtimeContext = jeaHome
-      ? createRuntimeContext({ sourceRoot: this.projectRoot, jeaHome })
-      : createRuntimeContext(this.projectRoot)
+    this.runtimeContext = createDesktopServiceRuntimeContext(this.projectRoot, jeaHome)
   }
 
   listSubjects(): SubjectSummary[] {

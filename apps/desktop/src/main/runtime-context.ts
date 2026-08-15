@@ -3,6 +3,7 @@ import {
   createRuntimeContext
 } from '../../../../src/infra/jea-home.mjs'
 import { loadProjectEnv } from '../../../../src/infra/project.mjs'
+import { join } from 'node:path'
 import { resolveDesktopProjectRoot } from './project-root'
 
 export interface DesktopRuntimeContext {
@@ -21,4 +22,14 @@ export function resolveDesktopRuntimeContext(
   process.env.JEA_HOME = context.jeaHome
   assertJeaHomeAuthority(context)
   return context
+}
+
+export function createDesktopServiceRuntimeContext(
+  sourceRoot: string,
+  jeaHome?: string
+): DesktopRuntimeContext {
+  return createRuntimeContext({
+    sourceRoot,
+    jeaHome: jeaHome ?? join(sourceRoot, 'runtime')
+  }) as DesktopRuntimeContext
 }

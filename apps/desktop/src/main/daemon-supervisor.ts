@@ -24,10 +24,7 @@ import {
 } from '../../../../src/channel/worker-state.mjs'
 import { listRegisteredSubjects } from '../../../../src/infra/subjects.mjs'
 import { runtimeForSubject } from '../../../../src/infra/runtime-paths.mjs'
-import {
-  createRuntimeContext,
-  jeaLogsDir
-} from '../../../../src/infra/jea-home.mjs'
+import { jeaLogsDir } from '../../../../src/infra/jea-home.mjs'
 import type {
   DaemonSupervisorView,
   DaemonSupervisorMode
@@ -35,6 +32,7 @@ import type {
 import { PublicCommandError } from './command-registry'
 import type { DesktopEventBus } from './event-bus'
 import type { ManagedProcessRegistry } from './managed-process-registry'
+import { createDesktopServiceRuntimeContext } from './runtime-context'
 
 type DaemonDomain = 'all' | 'cycle' | 'channel'
 type SpawnDaemon = typeof spawn
@@ -71,9 +69,7 @@ export class DaemonSupervisor {
     private readonly killGraceMs = 10_000,
     jeaHome: string | undefined = process.env.JEA_HOME
   ) {
-    this.runtimeContext = jeaHome
-      ? createRuntimeContext({ sourceRoot: projectRoot, jeaHome })
-      : createRuntimeContext(projectRoot)
+    this.runtimeContext = createDesktopServiceRuntimeContext(projectRoot, jeaHome)
   }
 
   get(subject: string): DaemonSupervisorView {

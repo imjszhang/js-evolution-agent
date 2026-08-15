@@ -23,10 +23,10 @@ import {
 } from '../../../../src/daemon/cycle-start-requests.mjs'
 import { listRegisteredSubjects } from '../../../../src/infra/subjects.mjs'
 import { runtimeForSubject } from '../../../../src/infra/runtime-paths.mjs'
-import { createRuntimeContext } from '../../../../src/infra/jea-home.mjs'
 import type { TodoSnapshot } from '../shared/contract'
 import { PublicCommandError } from './command-registry'
 import type { OpsService } from './operations'
+import { createDesktopServiceRuntimeContext } from './runtime-context'
 
 function publicRecords(records: Record<string, unknown>[]): Record<string, unknown>[] {
   return records.map((record) => {
@@ -53,9 +53,7 @@ export class TodoService {
     private readonly ops: OpsService,
     jeaHome: string | undefined = process.env.JEA_HOME
   ) {
-    this.runtimeContext = jeaHome
-      ? createRuntimeContext({ sourceRoot: projectRoot, jeaHome })
-      : createRuntimeContext(projectRoot)
+    this.runtimeContext = createDesktopServiceRuntimeContext(projectRoot, jeaHome)
   }
 
   get(subject: string): TodoSnapshot {

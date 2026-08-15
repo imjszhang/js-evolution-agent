@@ -1,11 +1,11 @@
 import { runtimeForSubject } from '../../../../src/infra/runtime-paths.mjs'
-import { createRuntimeContext } from '../../../../src/infra/jea-home.mjs'
 import { createRuntimeWatcher } from '../../../../src/intelligence/evolution-viewer/runtime-watch.mjs'
 import type { SubjectSnapshot, TodoSnapshot } from '../shared/contract'
 import type { DesktopEventBus } from './event-bus'
 import type { ChannelService } from './channel-service'
 import type { OpsService } from './operations'
 import type { TodoService } from './todo-service'
+import { createDesktopServiceRuntimeContext } from './runtime-context'
 
 interface RuntimeWatcher {
   start(): void
@@ -30,9 +30,7 @@ export class ProjectionWatcher {
     private readonly watcherFactory: WatcherFactory = createRuntimeWatcher as unknown as WatcherFactory,
     jeaHome: string | undefined = process.env.JEA_HOME
   ) {
-    this.runtimeContext = jeaHome
-      ? createRuntimeContext({ sourceRoot: projectRoot, jeaHome })
-      : createRuntimeContext(projectRoot)
+    this.runtimeContext = createDesktopServiceRuntimeContext(projectRoot, jeaHome)
   }
 
   watch(subject: string): { subject: string; watching: true } {
