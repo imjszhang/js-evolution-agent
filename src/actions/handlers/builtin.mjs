@@ -200,6 +200,7 @@ function summarizeAgenticExecution(agentResult = {}) {
   const agent = agentResult.agent ?? {};
   const outputs = asObject(agent.outputs);
   const executionRoot = outputs.execution_root
+    ?? outputs.acp?.options?.execution_root
     ?? outputs.claude?.options?.execution_root
     ?? outputs.cursor?.options?.execution_root
     ?? outputs.claude?.options?.cwd
@@ -1358,10 +1359,13 @@ const builtInActionHandlers = {
     const approvalPolicy = preflight.approval_policy ?? null;
     const agentResult = await runAgenticAction(executionAction, ctx);
     const agent = asObject(agentResult.agent);
-    const executionStatus = agent.execution_status ?? agent.status ?? (agentResult.success ? 'completed' : 'failed');
+    const deferred = !!agentResult.deferred;
+    const executionStatus = deferred
+      ? 'deferred'
+      : (agent.execution_status ?? agent.status ?? (agentResult.success ? 'completed' : 'failed'));
     const schemaStatus = agent.schema_status ?? (agentResult.success ? 'valid' : 'invalid');
     const schemaMissing = asArray(agent.schema_missing);
-    const agentStatus = agent.status ?? executionStatus;
+    const agentStatus = deferred ? 'deferred' : (agent.status ?? executionStatus);
     const rawRequiresApproval = !!agent.requires_approval;
     const postExecutionApproval = rawRequiresApproval
       ? (autoApproval ?? resolveApprovalDecision({
@@ -1380,7 +1384,9 @@ const builtInActionHandlers = {
       || asArray(agent.created_files).length > 0;
     const executionSucceeded = ['completed', 'succeeded', 'improved'].includes(String(executionStatus).toLowerCase())
       || (hasExecutionEvidence && !['failed', 'blocked'].includes(String(executionStatus).toLowerCase()));
-    const acceptanceStatus = requiresApproval
+    const acceptanceStatus = deferred
+      ? 'deferred'
+      : requiresApproval
       ? 'requires_human_review'
       : (executionSucceeded && schemaStatus === 'valid' ? 'passed' : (executionSucceeded ? 'schema_invalid' : 'failed'));
     const rootMetadataValue = agentResult.root_metadata ?? null;
@@ -1396,12 +1402,13 @@ const builtInActionHandlers = {
       }
       : {};
     const result = {
-      success: executionSucceeded && schemaStatus === 'valid' && !requiresApproval,
+      success: !deferred && executionSucceeded && schemaStatus === 'valid' && !requiresApproval,
+      deferred,
       status: agentStatus,
       execution_status: executionStatus,
       schema_status: schemaStatus,
       schema_missing: schemaMissing,
-      pipeline_status: 'completed',
+      pipeline_status: deferred ? 'deferred' : 'completed',
       agent_status: agentStatus,
       acceptance_status: acceptanceStatus,
       goal_progress_status: executionSucceeded && hasExecutionEvidence && !requiresApproval ? 'progressed' : 'not_progressed',
@@ -2205,7 +2212,11 @@ export const actionVerifiers = {
       const writes_count = listCount(result?.writes);
       const outputs_count = listCount(result?.outputs);
       const expectedRoot = result?.run_spec?.primary_cwd ?? null;
-      const actualRoot = result?.execution_root ?? result?.agent?.outputs?.claude?.options?.cwd ?? result?.agent?.outputs?.cursor?.options?.cwd ?? null;
+      const actualRoot = result?.execution_root
+        ?? result?.agent?.outputs?.acp?.options?.cwd
+        ?? result?.agent?.outputs?.claude?.options?.cwd
+        ?? result?.agent?.outputs?.cursor?.options?.cwd
+        ?? null;
       const rootMatches = !expectedRoot || !actualRoot || expectedRoot === actualRoot;
       const hasReceipt = Boolean(result?.agent && result?.status && result?.message);
       const hasEvidence = evidence_count > 0

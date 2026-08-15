@@ -137,7 +137,7 @@ function buildVerificationPrompt({ execResult, mechanicalVerification }) {
       semantic_verified: [
         {
           action_type: 'run_probe',
-          provider: 'llm_only | claude_code_sdk | cursor_sdk | reasonix_cli | unknown',
+          provider: 'llm_only | claude_code_sdk | cursor_sdk | reasonix_cli | acp:* | unknown',
           fallback_used: false,
           final_status: 'improved | partial | neutral | regressed | blocked',
           confidence: 'high | medium | low',
