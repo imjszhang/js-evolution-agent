@@ -356,7 +356,7 @@ export class AcpSessionManager {
       if (this.isCurrentTurn(session, turn)) {
         session.activeTurn = null
         session.cancelRequested = false
-        if (session.status !== 'closing' && session.status !== 'closed') {
+        if (!this.isClosing(session)) {
           session.status = 'ready'
           this.publishStatus(session)
         }
@@ -371,7 +371,7 @@ export class AcpSessionManager {
         cancelled = session.cancelRequested
         session.activeTurn = null
         session.cancelRequested = false
-        if (session.status !== 'closing' && session.status !== 'closed') {
+        if (!this.isClosing(session)) {
           session.status = cancelled ? 'ready' : 'error'
           session.error = cancelled ? null : 'ACP prompt failed.'
           this.publishStatus(session)
@@ -473,6 +473,10 @@ export class AcpSessionManager {
 
   private isCurrentTurn(session: ManagedAcpSession, turn: symbol): boolean {
     return this.sessions.get(session.id) === session && session.activeTurn === turn
+  }
+
+  private isClosing(session: ManagedAcpSession): boolean {
+    return session.status === 'closing' || session.status === 'closed'
   }
 
   private handleProcessExit(

@@ -211,7 +211,7 @@ describe('AcpPermissionBroker', () => {
   it('redacts permission snapshots and events before renderer delivery', async () => {
     const { broker, events } = harness()
     const secret = 'sk-ant-secret123456'
-    const params = workspaceEdit()
+    const params: any = workspaceEdit()
     params.toolCall.title = `Edit with ${secret}`
     params.toolCall.rawInput = {
       path: '/workspace/project/src/file.ts',
