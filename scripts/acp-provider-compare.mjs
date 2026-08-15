@@ -1,5 +1,8 @@
 import { pathToFileURL } from 'node:url';
 import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { applyRunSpecToAction } from '../src/actions/agent-run-spec.mjs';
+import { resolveActionExecutionRoots } from '../src/actions/execution-root.mjs';
 import { runAgenticAction } from '../src/actions/agent-adapter/index.mjs';
 
 function eventRows(result) {
@@ -77,19 +80,77 @@ function comparisonReport(actionId, results) {
   };
 }
 
+function cloneValue(value) {
+  if (value == null || typeof value !== 'object') return value;
+  try {
+    return structuredClone(value);
+  } catch {
+    if (Array.isArray(value)) return value.map((item) => cloneValue(item));
+    const next = {};
+    for (const [key, item] of Object.entries(value)) {
+      next[key] = typeof item === 'function' ? item : cloneValue(item);
+    }
+    return next;
+  }
+}
+
 function cloneContext(context) {
   const { run: _run, ...rest } = context ?? {};
-  try {
-    return structuredClone(rest);
-  } catch {
-    return { projectRoot: rest.projectRoot };
-  }
+  return cloneValue(rest);
 }
 
 function applyExecutionRoot(context, root) {
   if (!root) return context;
-  const next = { ...context, projectRoot: root, executionRoot: root };
-  return next;
+  return { ...context, projectRoot: root, executionRoot: root };
+}
+
+function applyIsolatedExecutionRoot(action, root) {
+  if (!root) return action;
+  const params = { ...(action.params ?? {}) };
+  const runSpec = params.run_spec && typeof params.run_spec === 'object'
+    ? { ...params.run_spec }
+    : {};
+  params.cwd = root;
+  params.executionRoot = root;
+  params.execution_root = root;
+  params.primary_cwd = root;
+  params.primaryCwd = root;
+  runSpec.primary_cwd = root;
+  runSpec.primaryCwd = root;
+  runSpec.cwd = root;
+  runSpec.executionRoot = root;
+  runSpec.execution_root = root;
+  params.run_spec = runSpec;
+  return { ...action, params };
+}
+
+function prepareIsolatedAction(action, context, provider, isolatedRoot) {
+  const candidate = applyIsolatedExecutionRoot(structuredClone(action), isolatedRoot);
+  candidate.params = { ...(candidate.params ?? {}), provider };
+  if (candidate.params.run_spec) {
+    candidate.params.run_spec = { ...candidate.params.run_spec, provider };
+  }
+  if (!isolatedRoot) {
+    return {
+      action: candidate,
+      executionRoot: context.projectRoot ?? null,
+    };
+  }
+  const prepared = applyRunSpecToAction(candidate, context);
+  prepared.params = { ...(prepared.params ?? {}), provider };
+  if (prepared.params.run_spec) {
+    prepared.params.run_spec = { ...prepared.params.run_spec, provider };
+  }
+  const roots = resolveActionExecutionRoots(prepared, context);
+  if (resolve(roots.executionRoot) !== resolve(isolatedRoot)) {
+    throw new Error(
+      `Provider ${provider} execution root could not be isolated to ${isolatedRoot}`,
+    );
+  }
+  return {
+    action: prepared,
+    executionRoot: roots.executionRoot,
+  };
 }
 
 function permissionProfile(action) {
@@ -122,19 +183,13 @@ export async function runProviderComparison({
   const results = [];
   for (const provider of providers) {
     const started = Date.now();
-    const candidate = structuredClone(action);
-    candidate.params = { ...(candidate.params ?? {}), provider };
-    if (candidate.params.run_spec) {
-      candidate.params.run_spec = { ...candidate.params.run_spec, provider };
-    }
-    const nextContext = applyExecutionRoot(
-      cloneContext(context),
-      executionRoots?.[provider] ?? null,
-    );
-    const result = await run(candidate, nextContext);
+    const isolatedRoot = executionRoots?.[provider] ?? null;
+    const nextContext = applyExecutionRoot(cloneContext(context), isolatedRoot);
+    const prepared = prepareIsolatedAction(action, nextContext, provider, isolatedRoot);
+    const result = await run(prepared.action, nextContext);
     results.push({
       ...providerMetrics(provider, result, Date.now() - started),
-      execution_root: nextContext.projectRoot ?? context.projectRoot ?? null,
+      execution_root: prepared.executionRoot ?? nextContext.projectRoot ?? context.projectRoot ?? null,
     });
   }
   return comparisonReport(action.id, results);

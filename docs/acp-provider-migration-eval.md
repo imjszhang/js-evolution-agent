@@ -1,6 +1,6 @@
 # ACP provider migration evaluation
 
-- Recorded at: 2026-08-15T11:25:27Z
+- Recorded at: 2026-08-15T11:47:11Z
 - Scope: Epic #50 / issue #58
 - Decision: keep the existing provider default; retain `acp:claude-code` as an explicit opt-in
 
@@ -10,7 +10,12 @@
 not array order. A recommendation of `acp_candidate` requires a valid ACP
 receipt and finite verification-attempt counts; missing metrics keep the
 legacy default. Write-profile comparisons fail closed unless each provider
-receives an isolated execution root. A candidate report never changes
+receives an isolated execution root. Isolation clones comparison context while
+keeping `ai`, logger, and host services, then overwrites conflicting action
+fields (`params.cwd`, `run_spec.primary_cwd`, and related aliases). The harness
+calls `applyRunSpecToAction` / `resolveActionExecutionRoots` and refuses to run
+when the resolved root is not the requested isolation root. The report records
+the resolver's actual execution root. A candidate report never changes
 `JEA_AGENT_PROVIDER`.
 
 The report records:
@@ -58,8 +63,11 @@ Severity escalation may notify immediately.
 ## Platform validation
 
 CI Desktop gates run test, typecheck, build, hidden-window smoke, and
-platform process-tree tests. Smoke now records projection, Channel,
-notification, and fake-ACP lifecycle stages.
+platform process-tree tests. Smoke creates a temporary JEA fixture root,
+sends Channel traffic only to that fixture subject, and requires ACP
+`startSession`, `prompt`, and `closeSession` to each succeed. The report
+records the fixture root and ACP execution root. The real project
+`runtime/subjects/` tree must stay unchanged.
 
 | Platform | Test | Typecheck | Build | Hidden-window smoke | Process tree |
 | --- | --- | --- | --- | --- | --- |
@@ -67,16 +75,13 @@ notification, and fake-ACP lifecycle stages.
 | Windows | pending CI | pending CI | pending CI | pending CI | helper + AcpRuntime coverage |
 | macOS | local pass | local pass | local pass | local pass | local pass |
 
-Local evidence at this revision (2026-08-15T11:25:27Z, darwin):
+Local evidence at this revision (2026-08-15T11:47:11Z, darwin):
 
-- `npm test`: 1224 passed / 10 skipped
-- `npm run test:coverage`: statements 69.61 / branches 60.18 / functions 78.25 / lines 72.15 (above floors)
-- watcher atomic-replace tests: 100 consecutive passes
-- Channel / ACP compare / POSIX process-tree targeted tests: 19 passed
-- `npm run desktop:test`: 68 passed
-- `npm run desktop:typecheck`, `desktop:build`, `desktop:smoke`: passed
-- smoke stages: projection ok, channel get ok (send disabled on first subject), notifications ok, fake ACP start/prompt/close with leftover 0
-- `npm run check` and `npm run audit:ci`: passed
+- `npm test`: 1235 passed / 10 skipped
+- Channel / ACP compare / POSIX process-tree / smoke-fixture targeted tests: 36 passed / 2 skipped
+- `npm run desktop:test`: 77 passed
+- `npm run check`, `desktop:typecheck`, `desktop:build`, `desktop:smoke`: passed
+- smoke stages: fixture subject `smoke-desktop` only; Channel send ok; ACP start/prompt/close ok; leftover 0; real `runtime/subjects/` unchanged
 
 Three-platform CI evidence will be recorded after this revision's required
 checks complete. Do not treat this local macOS run as Linux/Windows proof.

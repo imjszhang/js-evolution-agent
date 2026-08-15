@@ -4,10 +4,13 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  renameSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
+import { withDesktopFileLock } from './session-store.mjs';
 import {
   channelDirForSubject,
   channelInboundFailedDir,
@@ -51,9 +54,20 @@ function readMetadata(root, subject) {
 }
 
 function writeMetadata(root, subject, metadata) {
-  const dir = indexDir(root, subject);
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(metadataPath(root, subject), `${JSON.stringify(metadata)}\n`, 'utf8');
+  const dest = metadataPath(root, subject);
+  mkdirSync(dirname(dest), { recursive: true });
+  const tmp = `${dest}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(metadata)}\n`, 'utf8');
+  renameSync(tmp, dest);
+}
+
+function withIngressIndexLock(root, subject, callback) {
+  return withDesktopFileLock(join(indexDir(root, subject), 'index.lock'), callback);
+}
+
+function listShardFiles(dir) {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir).filter((name) => /^shard-\d+\.jsonl$/.test(name));
 }
 
 function parseShard(file) {
@@ -126,6 +140,11 @@ function scanInboundDirs(root, subject) {
 function rebuildIngressIndex(root, subject) {
   const dir = indexDir(root, subject);
   mkdirSync(dir, { recursive: true });
+  const staleMeta = metadataPath(root, subject);
+  if (existsSync(staleMeta)) rmSync(staleMeta, { force: true });
+  for (const name of listShardFiles(dir)) {
+    rmSync(join(dir, name), { force: true });
+  }
   const groups = new Map();
   for (const entry of scanInboundDirs(root, subject)) {
     const file = shardPath(root, subject, entry.message_id);
@@ -134,6 +153,7 @@ function rebuildIngressIndex(root, subject) {
     groups.set(file, rows);
   }
   for (const [file, rows] of groups) {
+    mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, `${rows.map((entry) => JSON.stringify(entry)).join('\n')}\n`, 'utf8');
   }
   writeMetadata(root, subject, {
@@ -149,23 +169,28 @@ export function recordDesktopIngress(root, subject, {
   file = null,
 } = {}) {
   if (!message_id) return null;
-  const entry = {
-    message_id: String(message_id),
-    session_id,
-    status,
-    file,
-    recorded_at: nowIso(),
-  };
-  const path = shardPath(root, subject, entry.message_id);
-  mkdirSync(dirname(path), { recursive: true });
-  appendFileSync(path, `${JSON.stringify(entry)}\n`, 'utf8');
-  return entry;
+  return withIngressIndexLock(root, subject, () => {
+    if (!readMetadata(root, subject)) rebuildIngressIndex(root, subject);
+    const entry = {
+      message_id: String(message_id),
+      session_id,
+      status,
+      file,
+      recorded_at: nowIso(),
+    };
+    const path = shardPath(root, subject, entry.message_id);
+    mkdirSync(dirname(path), { recursive: true });
+    appendFileSync(path, `${JSON.stringify(entry)}\n`, 'utf8');
+    return entry;
+  });
 }
 
 export function findDesktopIngress(root, subject, messageId) {
   if (!messageId) return null;
-  if (!readMetadata(root, subject)) rebuildIngressIndex(root, subject);
-  return lookupInShard(root, subject, messageId);
+  return withIngressIndexLock(root, subject, () => {
+    if (!readMetadata(root, subject)) rebuildIngressIndex(root, subject);
+    return lookupInShard(root, subject, messageId);
+  });
 }
 
 export function inboundFilenameMatches(file, messageId) {

@@ -62,7 +62,9 @@ outbox, and notify pipeline appends the assistant record.
 The inbound feed also shows processed Feishu messages and classifier
 understanding. Feishu chats remain external transport records and are not
 presented as local desktop sessions. A draft send reuses the same message id
-until the main process confirms success. The renderer keeps at most the latest
+only when subject, session, and content are unchanged. Editing the draft or
+switching subject/session allocates a new id; a network or IPC retry of the
+same attempt keeps the previous id. The renderer keeps at most the latest
 400 session records; older history remains on disk and can be re-read.
 
 Start or attach a Channel daemon for the selected subject to receive replies:
@@ -117,6 +119,12 @@ renderer memory without limit.
 
 Credentials and execution-root `.env` values remain in the main process.
 Desktop ACP sessions are separate from Channel desktop chat sessions.
+
+Hidden-window smoke (`npm run desktop:smoke`) creates a one-off JEA fixture
+root, points `JEA_PROJECT_ROOT` at that fixture, and sends Channel traffic only
+to the fixture subject. Electron still loads the real repository build. ACP
+`startSession`, `prompt`, and `closeSession` must each succeed; `closeSession`
+always runs in `finally`. The real `runtime/subjects/` tree is not written.
 
 The real Claude ACP smoke requires an available `claude-agent-acp` binary and
 either local agent login or configured Anthropic credentials. Protocol-level

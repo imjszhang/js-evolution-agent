@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { resolve } from 'node:path';
 import {
   compareProviderResults,
   runProviderComparison,
@@ -131,5 +132,95 @@ describe('ACP provider comparison harness', () => {
       },
     });
     expect(seen).toEqual(['/tmp/legacy', '/tmp/acp']);
+  });
+
+  it('overrides a shared action cwd with isolated roots and keeps host services', async () => {
+    const seen = [];
+    const ping = () => 'ok';
+    const info = () => undefined;
+    const report = await runProviderComparison({
+      action: {
+        id: 'write-shared',
+        params: {
+          cwd: '/tmp/shared',
+          executionRoot: '/tmp/shared',
+          run_spec: {
+            permission_profile: 'workspace_write',
+            primary_cwd: '/tmp/shared',
+          },
+        },
+      },
+      context: {
+        projectRoot: '/tmp/shared',
+        ai: { ping },
+        host: { logger: { info } },
+      },
+      executionRoots: {
+        claude_code_sdk: '/tmp/legacy',
+        'acp:claude-code': '/tmp/acp',
+      },
+      run: async (action, context) => {
+        seen.push({
+          provider: action.params.provider,
+          cwd: action.params.cwd,
+          primary: action.params.run_spec.primary_cwd,
+          projectRoot: context.projectRoot,
+          hasAi: context.ai?.ping === ping,
+          hasHost: context.host?.logger?.info === info,
+        });
+        return { success: true, agent: { schema_status: 'valid' } };
+      },
+    });
+
+    expect(seen).toEqual([
+      {
+        provider: 'claude_code_sdk',
+        cwd: '/tmp/legacy',
+        primary: '/tmp/legacy',
+        projectRoot: '/tmp/legacy',
+        hasAi: true,
+        hasHost: true,
+      },
+      {
+        provider: 'acp:claude-code',
+        cwd: '/tmp/acp',
+        primary: '/tmp/acp',
+        projectRoot: '/tmp/acp',
+        hasAi: true,
+        hasHost: true,
+      },
+    ]);
+    expect(report.providers[0].execution_root).toBe(resolve('/tmp/legacy'));
+    expect(report.providers[1].execution_root).toBe(resolve('/tmp/acp'));
+  });
+
+  it('fails closed when an isolated execution root cannot be applied', async () => {
+    let ran = 0;
+    await expect(runProviderComparison({
+      action: {
+        id: 'write-mismatch',
+        params: {
+          cwd: '/tmp/shared',
+          resource_scope: 'source_root',
+          run_spec: {
+            permission_profile: 'workspace_write',
+            primary_cwd: '/tmp/shared',
+          },
+        },
+      },
+      context: {
+        projectRoot: '/tmp/shared',
+        host: { sourceRoot: '/tmp/other-source' },
+      },
+      executionRoots: {
+        claude_code_sdk: '/tmp/legacy',
+        'acp:claude-code': '/tmp/acp',
+      },
+      run: async () => {
+        ran += 1;
+        return { success: true };
+      },
+    })).rejects.toThrow(/execution root could not be isolated/);
+    expect(ran).toBe(0);
   });
 });
