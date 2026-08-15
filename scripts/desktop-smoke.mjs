@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -9,6 +10,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import electron from 'electron';
 import {
   createDesktopSmokeFixture,
@@ -25,11 +27,20 @@ const entry = join(projectRoot, 'apps', 'desktop', 'out', 'main', 'index.js');
 let fixture = null;
 let acpExecutionRoot = null;
 let guardHome = null;
+let sourceFixtureRoot = null;
 let child = null;
 try {
   fixture = createDesktopSmokeFixture();
   acpExecutionRoot = mkdtempSync(join(tmpdir(), 'jea-smoke-acp-'));
   guardHome = mkdtempSync(join(tmpdir(), 'jea-smoke-user-home-'));
+  sourceFixtureRoot = mkdtempSync(join(tmpdir(), 'jea-desktop-smoke-source-'));
+  mkdirSync(join(sourceFixtureRoot, 'src', 'cli'), { recursive: true });
+  writeFileSync(join(sourceFixtureRoot, 'src', 'cli', 'jea.mjs'), [
+    `import { main } from ${JSON.stringify(pathToFileURL(join(projectRoot, 'src', 'cli', 'jea.mjs')).href)};`,
+    'process.exit(await main());',
+  ].join('\n'));
+  copyFileSync(join(projectRoot, 'oada.config.mjs'), join(sourceFixtureRoot, 'oada.config.mjs'));
+  copyFileSync(join(projectRoot, 'package.json'), join(sourceFixtureRoot, 'package.json'));
   const runtimeBefore = snapshotRuntimeSubjects(projectRoot);
   if (!existsSync(entry)) {
     throw new Error('Desktop build output is missing; run npm run desktop:build first.');
@@ -45,7 +56,7 @@ try {
       ...process.env,
       HOME: guardHome,
       USERPROFILE: guardHome,
-      JEA_PROJECT_ROOT: projectRoot,
+      JEA_PROJECT_ROOT: sourceFixtureRoot,
       JEA_HOME: fixture.jeaHome,
       JEA_DESKTOP_SMOKE: output,
       JEA_DESKTOP_SMOKE_SUBJECT: fixture.subject,
@@ -89,6 +100,7 @@ try {
     join(artifacts, `desktop-smoke-${process.platform}.json`),
     `${JSON.stringify({
       platform: process.platform,
+      source_fixture_root: sourceFixtureRoot,
       fixture_jea_home: fixture.jeaHome,
       acp_execution_root: stages.acp?.execution_root ?? null,
       ...report,
@@ -96,6 +108,7 @@ try {
   );
   process.stdout.write(`${JSON.stringify({
     ...report,
+    source_fixture_root: sourceFixtureRoot,
     fixture_jea_home: fixture.jeaHome,
     acp_execution_root: stages.acp?.execution_root ?? null,
   }, null, 2)}\n`);
@@ -104,5 +117,6 @@ try {
   removeDesktopSmokeFixture(fixture?.root);
   if (acpExecutionRoot) rmSync(acpExecutionRoot, { recursive: true, force: true });
   if (guardHome) rmSync(guardHome, { recursive: true, force: true });
+  if (sourceFixtureRoot) rmSync(sourceFixtureRoot, { recursive: true, force: true });
   rmSync(outputDir, { recursive: true, force: true });
 }

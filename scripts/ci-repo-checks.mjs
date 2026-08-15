@@ -24,8 +24,11 @@ const STEPS = [
 
 async function run() {
   const previousHome = process.env.JEA_HOME;
+  const previousProjectRoot = process.env.JEA_PROJECT_ROOT;
   const jeaHome = mkdtempSync(join(tmpdir(), 'jea-ci-home-'));
+  const sourceRoot = mkdtempSync(join(tmpdir(), 'jea-ci-source-'));
   process.env.JEA_HOME = jeaHome;
+  process.env.JEA_PROJECT_ROOT = sourceRoot;
   try {
     for (const argv of STEPS) {
       console.log(`$ jea ${argv.join(' ')}`);
@@ -36,7 +39,10 @@ async function run() {
   } finally {
     if (previousHome == null) delete process.env.JEA_HOME;
     else process.env.JEA_HOME = previousHome;
+    if (previousProjectRoot == null) delete process.env.JEA_PROJECT_ROOT;
+    else process.env.JEA_PROJECT_ROOT = previousProjectRoot;
     rmSync(jeaHome, { recursive: true, force: true });
+    rmSync(sourceRoot, { recursive: true, force: true });
   }
 }
 
