@@ -1,6 +1,6 @@
 # ACP provider migration evaluation
 
-- Recorded at: 2026-08-15T10:21:22Z
+- Recorded at: 2026-08-15T10:42:45Z
 - Scope: Epic #50 / issue #58
 - Decision: keep the existing provider default; retain `acp:claude-code` as an explicit opt-in
 
@@ -65,6 +65,8 @@ Linux, Windows, and macOS. Each smoke writes a platform-tagged JSON artifact.
 Windows additionally verifies local `.cmd` shim resolution and process-tree
 termination. macOS exercises the same app lifecycle while retaining the
 existing application activation behavior. GitHub Actions run
-`31879239086` completed with all three Desktop platform jobs green and uploaded
-the platform-tagged smoke artifacts; the same revision also passed CodeQL,
-coverage, repository checks, and dependency audit.
+`31880129579` completed with all three Desktop platform jobs green, including
+the real Windows `.cmd` descendant-cleanup test, and uploaded platform-tagged
+smoke artifacts. The same revision passed CodeQL, repository checks, dependency
+audit, and 1,210 tests; local coverage passed at 69.54% statements, 60.11%
+branches, 78.13% functions, and 72.07% lines.
