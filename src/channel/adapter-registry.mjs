@@ -1,5 +1,6 @@
 const FEISHU_ALIASES = new Set(['feishu', 'lark']);
 const BRIDGE_INTENT_ALIASES = new Set(['bridge-intent', 'openclaw-intent']);
+const DESKTOP_ALIASES = new Set(['desktop', 'local-desktop']);
 
 function normalizeChannelId(channel) {
   return String(channel ?? 'feishu').trim().toLowerCase();
@@ -17,6 +18,12 @@ export async function resolveOutboundAdapter(channel) {
     return {
       id: 'bridge-intent',
       module: await import('./adapters/bridge-intent/index.mjs'),
+    };
+  }
+  if (DESKTOP_ALIASES.has(id)) {
+    return {
+      id: 'desktop',
+      module: await import('./adapters/desktop/index.mjs'),
     };
   }
   throw new Error(`Unsupported channel outbound adapter: ${channel}`);

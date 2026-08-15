@@ -39,6 +39,8 @@
         "presence": {
           "enabled": true,
           "planner": "llm",
+          "default_transport": "desktop",
+          "default_target": "desktop:main",
           "max_actions_per_tick": 2,
           "cooldown_ms": 1800000,
           "max_messages_per_hour": 8,
@@ -48,6 +50,10 @@
             "timeout": 25,
             "thinking": "low"
           }
+        },
+        "desktop": {
+          "enabled": true,
+          "default_session": "main"
         },
         "feishu": {
           "enabled": true,

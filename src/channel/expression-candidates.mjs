@@ -122,6 +122,13 @@ function attachUnderstanding(candidate, item) {
   return { ...candidate, understanding: item.understanding };
 }
 
+function replyTargetForMessage(item) {
+  if (item.channel === 'desktop' && String(item.chat_id ?? '').startsWith('desktop:')) {
+    return item.chat_id;
+  }
+  return 'operator';
+}
+
 function candidateFromMessage(item, handled) {
   const id = candidateIdForMessage(item);
   if (!id || handled[id]) return null;
@@ -134,7 +141,7 @@ function candidateFromMessage(item, handled) {
       kind: `reply.${briefKind}`,
       source: 'operator_brief',
       priority: briefKind === 'approval_request' ? 'high' : 'medium',
-      target: 'operator',
+      target: replyTargetForMessage(item),
       reply_to_message_id: item.message_id,
       recommended_intent: briefKind === 'verification_request' ? 'verification_ack' : 'approval_ack',
       summary: item.content,
@@ -147,7 +154,7 @@ function candidateFromMessage(item, handled) {
       kind: 'reply.operator_fact',
       source: 'operator_fact',
       priority: 'medium',
-      target: 'operator',
+      target: replyTargetForMessage(item),
       reply_to_message_id: item.message_id,
       recommended_intent: 'operator_fact_ack',
       summary: item.content,
@@ -160,7 +167,7 @@ function candidateFromMessage(item, handled) {
       kind: 'reply.message',
       source: 'observation',
       priority: 'low',
-      target: 'operator',
+      target: replyTargetForMessage(item),
       reply_to_message_id: item.message_id,
       recommended_intent: 'custom',
       summary: item.content,

@@ -15,6 +15,11 @@ import { cancelDeprecatedChannelTasks } from '../../channel/queue-cleanup.mjs';
 import { channelFeishuCommand } from './channel-feishu.mjs';
 import { resolveFeishuConfig } from '../../channel/adapters/feishu/config.mjs';
 import { createIntelligenceStore } from '../../intelligence/store.mjs';
+import {
+  listDesktopSessions,
+  readDesktopSession,
+  sendDesktopInboundMessage,
+} from '../../channel/adapters/desktop/index.mjs';
 
 function runtimeForFlags(root, flags = {}) {
   const config = resolveSubjectFromFlags(root, flags);
@@ -51,6 +56,9 @@ function printStatus(projection) {
   }
   if (projection.feishu?.reload?.pending) {
     console.log('feishu reload: pending');
+  }
+  if (projection.desktop?.config) {
+    console.log(`desktop: enabled=${projection.desktop.config.enabled} sessions=${projection.desktop.session_count}`);
   }
   if (projection.presence?.config) {
     console.log(`presence: enabled=${projection.presence.config.enabled} planner=${projection.presence.config.planner ?? '-'}`);
@@ -138,6 +146,51 @@ export async function channelCommand({ subcommand, flags = {}, args = [], root =
   if (subcommand === 'feishu') {
     const action = args[0] ?? 'setup';
     return channelFeishuCommand({ action, flags, root, subject });
+  }
+
+  if (subcommand === 'desktop') {
+    const action = args[0] ?? 'sessions';
+    if (action === 'send') {
+      const session = flags.session && flags.session !== true ? flags.session : args[1];
+      const text = flags.text && flags.text !== true ? flags.text : null;
+      const messageId = flags.id && flags.id !== true ? flags.id : null;
+      if (!text) {
+        console.error('Usage: jea channel desktop send [--session ID] --text TEXT [--id MESSAGE_ID] [--json]');
+        return 2;
+      }
+      const result = sendDesktopInboundMessage(root, subject, {
+        session,
+        text,
+        message_id: messageId,
+      });
+      if (flags.json) console.log(JSON.stringify(result, null, 2));
+      else console.log(`queued desktop inbound ${result.message_id} -> ${result.target}`);
+      return 0;
+    }
+    if (action === 'read' || action === 'session') {
+      const session = args[1] ?? (flags.session && flags.session !== true ? flags.session : 'main');
+      const result = readDesktopSession(root, subject, session, {
+        offset: flags.offset ?? 0,
+        limit: parseLimit(flags, 50),
+        tail: flags.tail === true ? 20 : flags.tail,
+      });
+      if (flags.json) console.log(JSON.stringify(result, null, 2));
+      else {
+        for (const record of result.records) {
+          console.log(`${record.offset} ${record.created_at} ${record.role}: ${record.content}`);
+        }
+      }
+      return 0;
+    }
+    if (action === 'sessions' || action === 'list') {
+      const sessions = listDesktopSessions(root, subject);
+      if (flags.json) console.log(JSON.stringify({ subject, sessions }, null, 2));
+      else if (!sessions.length) console.log('(none)');
+      else sessions.forEach((item) => console.log(`${item.session_id} messages=${item.message_count} last=${item.last_message_at ?? '-'}`));
+      return 0;
+    }
+    console.error('Usage: jea channel desktop <send|read|sessions> [--session ID] [--json]');
+    return 2;
   }
 
   if (subcommand === 'status' || !subcommand) {
@@ -245,7 +298,7 @@ export async function channelCommand({ subcommand, flags = {}, args = [], root =
       return 2;
     }
     const outbound = normalizeOutboundMessage({
-      channel: 'feishu',
+      channel: String(target).toLowerCase().startsWith('desktop:') ? 'desktop' : 'feishu',
       target,
       text,
       subject,
@@ -354,6 +407,6 @@ export async function channelCommand({ subcommand, flags = {}, args = [], root =
     return projection.health.ok ? 0 : 1;
   }
 
-  console.error('Usage: jea channel <status|events|inbox|outbox|deliverables|send|tick|work|presence|queue|doctor|feishu> [--subject NAME] [--json]');
+  console.error('Usage: jea channel <status|events|inbox|outbox|deliverables|send|desktop|tick|work|presence|queue|doctor|feishu> [--subject NAME] [--json]');
   return 2;
 }

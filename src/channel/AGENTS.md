@@ -15,6 +15,7 @@ runtime/subjects/<data_namespace>/data/channel/
 ├── reload-state.json            # 最近一次 listener reload 状态
 ├── feishu-operator-binding.json # JEA BIND 结果
 ├── feishu-register-qr.png       # setup 扫码注册时生成的二维码图片
+├── desktop/sessions/*.jsonl     # desktop 会话 append-only 记录
 ├── inbound/pending|processed|failed/
 └── outbox/pending|sent|failed/
 ```
@@ -28,6 +29,8 @@ runtime/subjects/<data_namespace>/data/channel/
 - `jea channel inbox put [--file PATH | --stdin]`：放入 `inbound/pending` 并入队 `channel_classifier`；Presence 只在分类完成后重算表达候选。
 - `jea channel outbox [--json]`：查看待发送消息。
 - `jea channel send --to CHAT_ID --text TEXT [--dry-run]`：手工排队或预览一条出站消息。
+- `jea channel desktop send [--session ID] --text TEXT [--id MESSAGE_ID]`：向本地 desktop 会话投递入站消息并入队 classifier；重复 `--id` 不会重复入队。
+- `jea channel desktop read [ID] [--offset N] [--limit N | --tail N]`：读取 desktop 会话；返回稳定记录 id、逻辑 offset，并在读侧按 id 去重。`desktop sessions` 列出会话。
 - `jea channel tick`：运行一次 channel dispatcher，按 pending inbound、attention signals、outbox 入队任务。
 - `jea channel doctor [--json]`：诊断 channel worker 与任务队列；`--purge-deprecated --yes` 取消队列中 pending 的废弃任务。
 - `jea channel queue purge-deprecated [--yes]`：预览或取消 `channel_ingest` / `channel_reply` / `channel_watch` pending 任务。channel daemon 启动时**不再**自动 purge；需手动执行上述命令。
@@ -106,6 +109,25 @@ channel worker 每轮 loop 会：
 - 飞书 listener / `inbox put` 只写 `inbound/pending`；分类由 classifier role 按固定 `interval_ms` 批量处理（`batch_size` 上限，旧到新，超出留待下批）。
 
 出站由 **`channel_notify`** 独立任务 flush（outbox 有货即可入队，不依赖 presence 决策完成）；**所有对外表达**由 presence reactor 两阶段产出：`speech_intent`（决策）→ `channel_speech_generation`（人设/LLM 生成正文）→ outbox。旧 `channel_reply` / `channel_watch` / **`channel_ingest`** 任务类型已废弃；队列中若仍有，`jea channel doctor` 会提示 cancel。
+
+### Desktop 本地会话
+
+`channels.desktop` 提供不依赖 UI 或外部 API 的 inbound/outbound adapter。入站仍写 `inbound/pending`，完整复用 classifier → ingest → presence → speech → outbox → notify；出站目标使用 `desktop:<session>`，notify 将 assistant 消息追加到对应 JSONL 会话。desktop 与 Feishu 可同时启用，transport 由每条 outbound 的 target/channel 决定。
+
+```json
+"channels": {
+  "desktop": {
+    "enabled": true,
+    "default_session": "main"
+  },
+  "presence": {
+    "default_transport": "desktop",
+    "default_target": "desktop:main"
+  }
+}
+```
+
+会话记录带 `schema_version`、稳定 `id` 和 append offset；存储只追加，读取 API/CLI 支持 offset、tail，并按稳定 id 去重。session id 仅允许字母、数字、点、下划线和连字符。
 
 ### Channel Classifier（`channels.classifier`，固定频率批量）
 

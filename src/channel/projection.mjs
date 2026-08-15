@@ -17,6 +17,11 @@ import {
 } from './adapters/feishu/listener.mjs';
 import { resolveFeishuConfig, feishuConfigForApi } from './adapters/feishu/config.mjs';
 import { presenceConfigForApi, resolvePresenceConfig } from './presence-config.mjs';
+import {
+  desktopConfigForApi,
+  listDesktopSessions,
+  resolveDesktopConfig,
+} from './adapters/desktop/index.mjs';
 import { readJsonSafe } from '../infra/files.mjs';
 import { DEPRECATED_CHANNEL_TASK_TYPES } from './types.mjs';
 import { summarizeChannelEventQueue } from './event-queue.mjs';
@@ -100,6 +105,8 @@ export function buildChannelProjection(root, subject, { heartbeatStaleMs = 60_00
   const pendingInbound = listPendingInbound(root, subject, { limit: 20 });
   const pendingOutbox = listOutboxPending(root, subject, { limit: 20 });
   const feishuConfig = resolveFeishuConfig(root, subject);
+  const desktopConfig = resolveDesktopConfig(root, subject);
+  const desktopSessions = listDesktopSessions(root, subject);
   const listenerStatus = getFeishuListenerStatus(root, subject);
   const reloadState = readChannelReloadState(root, subject);
   const reloadRequest = readChannelReloadRequest(root, subject);
@@ -209,6 +216,11 @@ export function buildChannelProjection(root, subject, { heartbeatStaleMs = 60_00
         last_error: reloadState.last_error ?? null,
         config_fingerprint: reloadState.config_fingerprint ?? null,
       },
+    },
+    desktop: {
+      config: desktopConfigForApi(desktopConfig),
+      session_count: desktopSessions.length,
+      sessions: desktopSessions.slice(-20).reverse(),
     },
   };
 }
