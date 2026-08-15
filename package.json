@@ -16,6 +16,7 @@
     "doctor": "node --preserve-symlinks src/cli/jea.mjs doctor",
     "reset-data": "node --preserve-symlinks src/cli/jea.mjs data reset --yes",
     "test": "node --preserve-symlinks ./node_modules/vitest/vitest.mjs run",
+    "check": "node --preserve-symlinks scripts/ci-repo-checks.mjs",
     "reactor:canary": "node --preserve-symlinks scripts/reactor-s0-s9-canary.mjs",
     "test:live-deepseek": "node --preserve-symlinks ./node_modules/vitest/vitest.mjs run test/intel-report-honesty-live.test.mjs test/deepseek-model-thinking-live.test.mjs",
     "test:live-deepseek:matrix": "node --preserve-symlinks ./node_modules/vitest/vitest.mjs run test/deepseek-model-thinking-live.test.mjs",

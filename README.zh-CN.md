@@ -18,6 +18,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/imjszhang/js-evolution-agent/actions/workflows/ci.yml"><img src="https://github.com/imjszhang/js-evolution-agent/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <img src="https://img.shields.io/badge/License-MIT-blue?style=flat-square" alt="MIT License" />
   <img src="https://img.shields.io/badge/理论-cyber--taoist.ai-FCD228?style=flat-square&labelColor=000000" alt="cyber-taoist.ai" />
   <img src="https://img.shields.io/badge/CLI-jea-000000?style=flat-square&labelColor=FCD228" alt="jea CLI" />
@@ -442,8 +443,11 @@ CYBER_TAOIST_DOCS_DIR=/path/to/custom-authority jea run
 
 ```bash
 npm test
+npm run check
 npm run jea -- help
 ```
+
+向 `main` 的 PR 与 push 会跑 GitHub Actions（`npm test` + `npm run check`）。真实 DeepSeek 测试仍需 `JEA_LIVE_DEEPSEEK=1`，不进 CI。`jea doctor` 是本地诊断，不是 CI 门禁。
 
 - 引擎 vendoring 说明：[`src/engine/VENDORED.md`](./src/engine/VENDORED.md)
 - 自动化代理与本地操作完整指引：[AGENTS.md](./AGENTS.md)
