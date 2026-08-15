@@ -21,6 +21,10 @@ import {
 import { buildExecutionEnv } from '../execution-env.mjs';
 import { resolveAgentRunCycleId } from '../agent-run-log.mjs';
 import {
+  isAcpProvider,
+  runAcpProviderTurns,
+} from './acp/index.mjs';
+import {
   CLAUDE_PROVIDER,
   CURSOR_PROVIDER,
   LLM_PROVIDER,
@@ -40,6 +44,8 @@ const REASONIX_DEFAULT_BIN = 'reasonix';
 const REASONIX_DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 const CURSOR_DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 const CURSOR_DISPOSE_TIMEOUT_MS = 10 * 1000;
+const ACP_DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
+const ACP_DEFAULT_KILL_GRACE_MS = 5 * 1000;
 // Agent run observability: standard events → terminal + JSONL at
 // data/evolution/agent-runs/<cycle-id>.jsonl (see agent-run-observer.mjs).
 const MODE_GUIDANCE = {
@@ -2149,6 +2155,149 @@ async function runReasonixCli(action, ctx) {
   };
 }
 
+async function runAcpFramework(action, ctx, provider) {
+  const executionAction = applyRunSpecToAction(action, ctx);
+  const runSpec = normalizeAgentRunSpec(executionAction, ctx);
+  const roots = resolveAgentExecutionRoots(executionAction, ctx);
+  const metadata = rootMetadata(roots);
+  const cwdFailure = validateExecutionCwd({
+    cwd: roots.executionCwd,
+    shouldValidate: roots.cwdWasConfigured || Boolean(metadata.authoritative_root),
+    provider,
+  });
+  if (cwdFailure) return cwdFailure;
+
+  const promptParts = effectiveActionType(executionAction) === 'agent_run'
+    ? buildExecutionPackagePrompt(executionAction, ctx)
+    : buildPrompt(executionAction, ctx);
+  const translated = await translateAgentTaskPrompt(executionAction, ctx, promptParts);
+  if (!translated.ok) {
+    return {
+      success: false,
+      deferred: true,
+      provider,
+      error: translated.error,
+      execution_root: roots.executionCwd,
+      root_metadata: metadata,
+    };
+  }
+  const timeoutMs = asNumber(
+    getField(executionAction, 'timeoutMs')
+      ?? getField(executionAction, 'timeout_ms')
+      ?? envValue(ctx, 'JEA_ACP_TIMEOUT_MS'),
+    ACP_DEFAULT_TIMEOUT_MS,
+  );
+  const killGraceMs = asNumber(
+    getField(executionAction, 'killGraceMs')
+      ?? getField(executionAction, 'kill_grace_ms')
+      ?? envValue(ctx, 'JEA_ACP_KILL_GRACE_MS'),
+    ACP_DEFAULT_KILL_GRACE_MS,
+  );
+  const projectRoot = roots.hostSourceRoot ?? ctx?.projectRoot ?? process.cwd();
+  const initialPrompt = [
+    translated.prompt,
+    '',
+    'ACP host constraints:',
+    `- execution_cwd: ${roots.executionCwd}`,
+    `- permission_profile: ${runSpec.permission_profile ?? 'read_only'}`,
+    `- additional_directories: ${JSON.stringify(runSpec.additional_directories ?? [])}`,
+    '- Permission requests are decided headlessly by the host. Unknown and remote requests are denied.',
+    '- Return the final receipt as one strict JSON object.',
+  ].join('\n');
+  const acpResult = await runAcpProviderTurns({
+    provider,
+    projectRoot,
+    cwd: roots.executionCwd,
+    additionalDirectories: runSpec.additional_directories,
+    permissionProfile: runSpec.permission_profile ?? 'read_only',
+    timeoutMs,
+    killGraceMs,
+    action: executionAction,
+    ctx,
+    initialPrompt,
+    verificationAttempts: AGENT_VERIFICATION_ATTEMPTS,
+    buildVerificationPrompt: (validation, attempt) => buildAgentVerificationPrompt(
+      executionAction,
+      validation,
+      attempt,
+    ),
+    parseAndValidate: (rawText) => {
+      const parsed = parseAgentJson(ctx?.ai, rawText);
+      const agent = normalizeAgentResult(parsed, rawText, provider);
+      return {
+        agent,
+        validation: validateAgentReceipt(executionAction, agent),
+      };
+    },
+  });
+
+  if (!acpResult.final?.agent) {
+    return {
+      ...acpResult,
+      execution_root: roots.executionCwd,
+      root_metadata: metadata,
+      provider_failure: {
+        provider,
+        phase: acpResult.errorCode === 'acp_timeout' ? 'acp_timeout' : 'acp_start_or_prompt',
+        message: acpResult.error ?? 'ACP execution did not return a receipt',
+        retryable: Boolean(acpResult.retryable),
+      },
+    };
+  }
+
+  const { agent, validation } = acpResult.final;
+  const stopReason = acpResult.turns.at(-1)?.response?.stopReason ?? null;
+  withAgentLoopOutputs(agent, {
+    taskPrompt: initialPrompt,
+    verificationAttempts: Math.max(0, acpResult.turns.length - 1),
+    finalValidation: validation,
+    sameSession: true,
+  });
+  agent.execution_status = agent.status;
+  agent.schema_status = validation.schema_status;
+  agent.schema_missing = validation.missing;
+  agent.raw_receipt_parse_mode = validation.raw_receipt_parse_mode;
+  if (!validation.valid) {
+    agent.verification_hints = [
+      ...agent.verification_hints,
+      `agent receipt validation missing: ${validation.missing.join(', ')}`,
+    ];
+  }
+  agent.outputs = {
+    ...agent.outputs,
+    acp: {
+      framework: acpResult.framework.id,
+      session_id: acpResult.sessionId,
+      protocol_version: acpResult.initializeResponse?.protocolVersion ?? null,
+      agent_info: acpResult.initializeResponse?.agentInfo ?? null,
+      stop_reason: stopReason,
+      run_results: acpResult.turns.map((turn) => ({
+        turn: turn.turn,
+        stop_reason: turn.response?.stopReason ?? null,
+        raw_text: turn.rawText,
+      })),
+      options: {
+        cwd: roots.executionCwd,
+        execution_root: roots.executionCwd,
+        additional_directories: runSpec.additional_directories,
+        root_metadata: metadata,
+        run_spec: runSpec.present ? runSpec : null,
+        permission_profile: runSpec.permission_profile,
+        timeout_ms: timeoutMs,
+        kill_grace_ms: killGraceMs,
+      },
+    },
+  };
+  return {
+    success: acpResult.success && stopReason !== 'cancelled',
+    provider,
+    message: agent.summary,
+    execution_root: roots.executionCwd,
+    root_metadata: metadata,
+    agent,
+  };
+}
+
 async function runLlmOnly(action, ctx) {
   const ai = ctx?.ai;
   const roots = resolveAgentExecutionRoots(action, ctx);
@@ -2238,6 +2387,7 @@ export async function runAgenticAction(action, ctx) {
   if (provider === CLAUDE_PROVIDER) return runClaudeCodeSdk(executionAction, logCtx);
   if (provider === CURSOR_PROVIDER) return runCursorSdk(executionAction, logCtx);
   if (provider === REASONIX_PROVIDER) return runReasonixCli(executionAction, logCtx);
+  if (isAcpProvider(provider)) return runAcpFramework(executionAction, logCtx, provider);
 
   if (provider === 'cli_agent') {
     return {
