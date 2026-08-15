@@ -83,4 +83,29 @@ describe('shared runtime watch primitives', () => {
       understanding: { user_intent: 'greeting', action_hint: 'none' },
     });
   });
+
+  it('reads a large JSONL stream once and continues from its byte offset', () => {
+    const root = mkdtempSync(join(tmpdir(), 'jea-tail-stress-'));
+    const path = join(root, 'large.jsonl');
+    const count = 100_000;
+    writeFileSync(path, `${Array.from(
+      { length: count },
+      (_, index) => JSON.stringify({ id: index }),
+    ).join('\n')}\n`);
+    let seen = 0;
+    const started = Date.now();
+    const tailer = createJsonlTailer({
+      path,
+      startAtEnd: false,
+      onRecord: () => { seen += 1; },
+    });
+    tailer.start();
+    tailer.readNewBytes();
+    expect(seen).toBe(count);
+    appendFileSync(path, `${JSON.stringify({ id: count })}\n`);
+    tailer.readNewBytes();
+    expect(seen).toBe(count + 1);
+    expect(Date.now() - started).toBeLessThan(5_000);
+    tailer.stop();
+  });
 });

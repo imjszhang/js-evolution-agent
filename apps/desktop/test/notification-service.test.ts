@@ -9,12 +9,12 @@ describe('NotificationService', () => {
   it('deduplicates operator questions and navigates without writing runtime state', () => {
     const events = new DesktopEventBus()
     const shown = vi.fn()
-    let clicked: (() => void) | null = null
+    const clickRef: { current?: () => void } = {}
     const service = new NotificationService(
       join(mkdtempSync(join(tmpdir(), 'jea-notify-')), 'settings.json'),
       events,
       () => ({
-        on: (_event, listener) => { clicked = listener },
+        on: (_event, listener) => { clickRef.current = listener },
         show: shown
       }),
       60_000
@@ -43,7 +43,7 @@ describe('NotificationService', () => {
       payload: { snapshot }
     })
     expect(shown).toHaveBeenCalledOnce()
-    clicked?.()
+    clickRef.current?.()
     expect(navigations).toEqual(['alpha'])
     service.stop()
   })
