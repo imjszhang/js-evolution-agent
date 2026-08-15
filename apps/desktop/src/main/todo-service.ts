@@ -150,10 +150,15 @@ export class TodoService {
       evidenceRefs,
       cycle
     })
+    const {
+      previous_goal: _previousGoal,
+      next_goal: _nextGoal,
+      ...publicEvent
+    } = result.event
     return redactSecrets({
       subject,
       goals: result.nextGoal,
-      event: result.event,
+      event: publicEvent,
       written: result.written
     }) as Record<string, unknown>
   }
