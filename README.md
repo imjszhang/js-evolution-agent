@@ -18,6 +18,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/imjszhang/js-evolution-agent/actions/workflows/ci.yml"><img src="https://github.com/imjszhang/js-evolution-agent/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <img src="https://img.shields.io/badge/License-MIT-blue?style=flat-square" alt="MIT License" />
   <img src="https://img.shields.io/badge/Theory-cyber--taoist.ai-FCD228?style=flat-square&labelColor=000000" alt="cyber-taoist.ai" />
   <img src="https://img.shields.io/badge/CLI-jea-000000?style=flat-square&labelColor=FCD228" alt="jea CLI" />
@@ -443,8 +444,11 @@ CYBER_TAOIST_DOCS_DIR=/path/to/custom-authority jea run
 
 ```bash
 npm test
+npm run check
 npm run jea -- help
 ```
+
+Pull requests and pushes to `main` run GitHub Actions (`npm test` + `npm run check`). Live DeepSeek tests stay opt-in via `JEA_LIVE_DEEPSEEK=1` and are not part of CI. `jea doctor` is a local diagnostic, not a CI gate.
 
 - Engine vendoring: [`src/engine/VENDORED.md`](./src/engine/VENDORED.md)
 - Full operator / automation guide: [AGENTS.md](./AGENTS.md)
