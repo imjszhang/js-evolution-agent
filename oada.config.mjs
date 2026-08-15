@@ -1,8 +1,7 @@
-import 'dotenv/config';
-
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { config as loadDotenv } from 'dotenv';
 import {
   ACTION_REGISTRY,
 } from './src/engine/index.mjs';
@@ -25,6 +24,10 @@ import {
 } from './src/infra/subjects.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const envPath = join(__dirname, '.env');
+if (existsSync(envPath)) {
+  loadDotenv({ path: envPath, override: true, quiet: true });
+}
 
 function resolveDocsDir(root) {
   return resolveAuthorityDocsDir(root);

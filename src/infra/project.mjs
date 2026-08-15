@@ -16,7 +16,7 @@ export function loadProjectEnv(root = getProjectRoot()) {
   const envPath = join(root, '.env');
   if (existsSync(envPath)) {
     // Project .env is the local source of truth; shell placeholders must not win over it.
-    loadDotenv({ path: envPath, override: true });
+    loadDotenv({ path: envPath, override: true, quiet: true });
   }
   invalidateLinkHealthCache(root);
   return envPath;
