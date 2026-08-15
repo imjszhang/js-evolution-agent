@@ -43,7 +43,7 @@
     "js-intel-store": "^0.1.0",
     "js-repolink": "^0.1.0",
     "js-traceability": "^0.1.0",
-    "js-yaml": "^4.3.1",
+    "js-yaml": "^5.2.3",
     "openai": "^4.73.0",
     "proper-lockfile": "^4.1.2",
     "qrcode": "^1.5.4"
