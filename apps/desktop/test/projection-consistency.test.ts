@@ -87,4 +87,16 @@ describe('desktop projection consistency', () => {
     expect(JSON.stringify({ subjects, daemon })).not.toContain('DESKTOP_TEST_SECRET')
     delete process.env.DESKTOP_TEST_SECRET
   })
+
+  it('returns IPC-cloneable snapshots for the live project root', async () => {
+    const { invokeForIpc, createCommandRegistry } = await import('../src/main/command-registry')
+    const service = new OpsService()
+    const invoke = createCommandRegistry(service)
+    const response = await invokeForIpc(invoke, { command: 'ops.refresh' })
+    expect(response.ok).toBe(true)
+    if (!response.ok) return
+    expect(Array.isArray(response.value)).toBe(true)
+    expect(() => structuredClone(response.value)).not.toThrow()
+    expect(() => JSON.stringify(response.value)).not.toThrow()
+  })
 })
