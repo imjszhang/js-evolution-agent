@@ -1,21 +1,30 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   appendFileSync,
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { writeJsonFile } from '../src/infra/files.mjs';
 import {
   appendDesktopSessionRecord,
+  listDesktopSessions,
   readDesktopSession,
   sendDesktopInboundMessage,
 } from '../src/channel/adapters/desktop/index.mjs';
+import {
+  findDesktopIngress,
+  recordDesktopIngress,
+} from '../src/channel/adapters/desktop/ingress-index.mjs';
+import { channelDirForSubject } from '../src/channel/paths.mjs';
 import { resolveInboundAdapter } from '../src/channel/inbound-adapters/registry.mjs';
 import { resolveOutboundAdapter } from '../src/channel/adapter-registry.mjs';
 import { runChannelClassifierTask } from '../src/channel/classifier.mjs';
@@ -64,6 +73,31 @@ function makeRoot({
   });
   mkdirSync(join(root, 'runtime', 'subjects', 'alpha', 'data', 'intelligence'), { recursive: true });
   return root;
+}
+
+function runDesktopChild(source) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', source], {
+      cwd: process.cwd(),
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
+    });
+    child.on('error', reject);
+    child.on('exit', () => {
+      try {
+        resolve(JSON.parse(stdout));
+      } catch {
+        resolve({ ok: false, error: stderr || stdout || 'no child output' });
+      }
+    });
+  });
 }
 
 async function captureConsole(fn) {
@@ -455,5 +489,122 @@ describe('desktop channel adapter', () => {
     })}\n`);
     const page = readDesktopSession(project, 'alpha', 'huge', { tail: 2 });
     expect(page.records.map((record) => record.id)).toEqual(['after-huge']);
+  });
+
+  it('does not create session files or list entries when reading a missing session', () => {
+    const project = makeRoot();
+    const file = channelDesktopSessionPath(project, 'alpha', 'never-created');
+    const page = readDesktopSession(project, 'alpha', 'never-created', { tail: 10 });
+    expect(page).toMatchObject({
+      session_id: 'never-created',
+      records: [],
+      total: 0,
+      next_offset: 0,
+    });
+    expect(existsSync(file)).toBe(false);
+    expect(existsSync(`${file}.lock`)).toBe(false);
+    expect(existsSync(dirname(file))).toBe(false);
+    expect(listDesktopSessions(project, 'alpha')).toEqual([]);
+    expect(existsSync(join(
+      channelDirForSubject(project, 'alpha'),
+      'desktop',
+      'session-index',
+      'never-created',
+    ))).toBe(false);
+  });
+
+  it('rejects the same inbound id across sessions even when sent concurrently', async () => {
+    const project = makeRoot();
+    const moduleUrl = pathToFileURL(join(process.cwd(), 'src/channel/adapters/desktop/index.mjs')).href;
+    const script = (session) => `
+      import { sendDesktopInboundMessage } from ${JSON.stringify(moduleUrl)};
+      try {
+        const result = sendDesktopInboundMessage(${JSON.stringify(project)}, 'alpha', {
+          session: ${JSON.stringify(session)},
+          message_id: 'concurrent-shared',
+          text: 'race',
+        });
+        process.stdout.write(JSON.stringify({ ok: true, session: result.session_id }));
+      } catch (error) {
+        process.stdout.write(JSON.stringify({ ok: false, error: String(error?.message ?? error) }));
+        process.exitCode = 2;
+      }
+    `;
+    const [first, second] = await Promise.all([
+      runDesktopChild(script('chat-a')),
+      runDesktopChild(script('chat-b')),
+    ]);
+    const accepted = [first, second].filter((item) => item.ok);
+    const rejected = [first, second].filter((item) => !item.ok);
+    expect(accepted).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0].error).toMatch(/already belongs to session/);
+    const totals = [
+      readDesktopSession(project, 'alpha', 'chat-a', { tail: 10 }).total,
+      readDesktopSession(project, 'alpha', 'chat-b', { tail: 10 }).total,
+    ];
+    expect(totals.filter((total) => total > 0)).toEqual([1]);
+    expect(existsSync(channelDesktopSessionPath(
+      project,
+      'alpha',
+      accepted[0].session === 'chat-a' ? 'chat-b' : 'chat-a',
+    ))).toBe(false);
+  });
+
+  it('drops stale ingress shards after a crash-safe rebuild', () => {
+    const project = makeRoot();
+    const indexDir = join(channelDirForSubject(project, 'alpha'), 'desktop', 'ingress-index');
+    recordDesktopIngress(project, 'alpha', {
+      message_id: 'ghost-message',
+      session_id: 'stale',
+      status: 'processed',
+    });
+    mkdirSync(indexDir, { recursive: true });
+    writeFileSync(join(indexDir, 'metadata.json'), '{broken');
+    expect(findDesktopIngress(project, 'alpha', 'ghost-message')).toBeNull();
+    expect(existsSync(join(indexDir, 'metadata.json'))).toBe(true);
+    const leftover = existsSync(indexDir)
+      ? readFileSync(join(indexDir, 'metadata.json'), 'utf8')
+      : '';
+    expect(leftover).not.toContain('ghost-message');
+    expect(findDesktopIngress(project, 'alpha', 'ghost-message')).toBeNull();
+  });
+
+  it('keeps concurrent rebuild and append records', async () => {
+    const project = makeRoot();
+    const processed = join(project, 'runtime', 'subjects', 'alpha', 'data', 'channel', 'inbound', 'processed');
+    mkdirSync(processed, { recursive: true });
+    writeFileSync(join(processed, '20260815-scanned.json'), JSON.stringify({
+      message_id: 'scanned-message',
+      envelope: { message_id: 'scanned-message', metadata: { session_id: 'main' } },
+    }));
+    const indexDir = join(channelDirForSubject(project, 'alpha'), 'desktop', 'ingress-index');
+    mkdirSync(indexDir, { recursive: true });
+    writeFileSync(join(indexDir, 'metadata.json'), '{broken');
+    const moduleUrl = pathToFileURL(join(process.cwd(), 'src/channel/adapters/desktop/ingress-index.mjs')).href;
+    const [found, recorded] = await Promise.all([
+      runDesktopChild(`
+        import { findDesktopIngress } from ${JSON.stringify(moduleUrl)};
+        const entry = findDesktopIngress(${JSON.stringify(project)}, 'alpha', 'scanned-message');
+        process.stdout.write(JSON.stringify({ ok: true, entry }));
+      `),
+      runDesktopChild(`
+        import { recordDesktopIngress } from ${JSON.stringify(moduleUrl)};
+        const entry = recordDesktopIngress(${JSON.stringify(project)}, 'alpha', {
+          message_id: 'appended-message',
+          session_id: 'main',
+          status: 'pending',
+        });
+        process.stdout.write(JSON.stringify({ ok: true, entry }));
+      `),
+    ]);
+    expect(found.entry).toMatchObject({ message_id: 'scanned-message' });
+    expect(recorded.entry).toMatchObject({ message_id: 'appended-message' });
+    expect(findDesktopIngress(project, 'alpha', 'scanned-message')).toMatchObject({
+      message_id: 'scanned-message',
+    });
+    expect(findDesktopIngress(project, 'alpha', 'appended-message')).toMatchObject({
+      message_id: 'appended-message',
+    });
   });
 });

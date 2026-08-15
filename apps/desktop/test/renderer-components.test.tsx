@@ -7,7 +7,7 @@ import {
   ChannelChatView,
   MAX_CHANNEL_RECORDS,
   mergeRecords,
-  resolveDraftMessageId
+  resolveDraftAttempt
 } from '../src/renderer/src/components/ChannelChatView'
 import { Navigation } from '../src/renderer/src/components/Navigation'
 import { OpsView } from '../src/renderer/src/components/OpsView'
@@ -52,9 +52,36 @@ describe('desktop renderer components', () => {
     ])
   })
 
-  it('keeps a draft message id across failed sends and bounds visible records', () => {
-    const first = resolveDraftMessageId(null, () => 'desktop-ui-stable')
-    expect(resolveDraftMessageId(first, () => 'desktop-ui-other')).toBe('desktop-ui-stable')
+  it('reuses a draft id only when subject, session, and content match', () => {
+    const first = resolveDraftAttempt(null, {
+      subject: 'alpha',
+      sessionId: 'main',
+      content: 'hello'
+    }, () => 'id-1')
+    expect(first.id).toBe('id-1')
+    expect(resolveDraftAttempt(first, {
+      subject: 'alpha',
+      sessionId: 'main',
+      content: 'hello'
+    }, () => 'id-2').id).toBe('id-1')
+    expect(resolveDraftAttempt(first, {
+      subject: 'alpha',
+      sessionId: 'main',
+      content: 'hello edited'
+    }, () => 'id-3').id).toBe('id-3')
+    expect(resolveDraftAttempt(first, {
+      subject: 'alpha',
+      sessionId: 'other',
+      content: 'hello'
+    }, () => 'id-4').id).toBe('id-4')
+    expect(resolveDraftAttempt(first, {
+      subject: 'beta',
+      sessionId: 'main',
+      content: 'hello'
+    }, () => 'id-5').id).toBe('id-5')
+  })
+
+  it('bounds visible Channel records to the latest 400', () => {
     const incoming = Array.from({ length: MAX_CHANNEL_RECORDS + 20 }, (_, offset) => ({
       id: `id-${offset}`,
       session_id: 'main',

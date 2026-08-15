@@ -8,11 +8,27 @@ import { errorMessage, formatTime, isRecord, text } from '../utils'
 
 export const MAX_CHANNEL_RECORDS = 400
 
-export function resolveDraftMessageId(
-  existing: string | null,
+export type DraftAttempt = {
+  id: string
+  subject: string
+  sessionId: string
+  content: string
+}
+
+export function resolveDraftAttempt(
+  existing: DraftAttempt | null,
+  next: Omit<DraftAttempt, 'id'>,
   createId: () => string = () => `desktop-ui-${crypto.randomUUID()}`
-): string {
-  return existing ?? createId()
+): DraftAttempt {
+  if (
+    existing
+    && existing.subject === next.subject
+    && existing.sessionId === next.sessionId
+    && existing.content === next.content
+  ) {
+    return existing
+  }
+  return { ...next, id: createId() }
 }
 
 export function mergeRecords(
@@ -36,7 +52,7 @@ export function ChannelChatView({ subject }: { subject: string | null }) {
   const sessionRef = useRef(sessionId)
   const offsetRef = useRef(0)
   const requestGeneration = useRef(0)
-  const pendingMessageId = useRef<string | null>(null)
+  const pendingAttempt = useRef<DraftAttempt | null>(null)
 
   useEffect(() => {
     sessionRef.current = sessionId
@@ -122,16 +138,20 @@ export function ChannelChatView({ subject }: { subject: string | null }) {
     if (!subject || !content || busy) return
     setBusy(true)
     setError(null)
-    const messageId = resolveDraftMessageId(pendingMessageId.current)
-    pendingMessageId.current = messageId
+    const attempt = resolveDraftAttempt(pendingAttempt.current, {
+      subject,
+      sessionId,
+      content
+    })
+    pendingAttempt.current = attempt
     try {
       await window.jea.invoke('channel.sendMessage', {
         subject,
         sessionId,
         text: content,
-        messageId
+        messageId: attempt.id
       })
-      pendingMessageId.current = null
+      pendingAttempt.current = null
       setMessage('')
       await readSession(false)
     } catch (cause) {

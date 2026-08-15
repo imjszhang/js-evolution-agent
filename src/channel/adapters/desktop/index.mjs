@@ -127,7 +127,7 @@ export function sendDesktopInboundMessage(root, subject, {
       classifier: enqueueClassifier(root, subject),
       repaired: appended.duplicate,
     };
-  }, resolvedSession);
+  });
   const { appended } = transaction;
   return {
     subject,

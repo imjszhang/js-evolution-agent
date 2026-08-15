@@ -335,25 +335,51 @@ function readIndexedRecord(file, paths, metadata, logicalOffset) {
 function lockSessionFile(file) {
   let lastError = null;
   const sleeper = new Int32Array(new SharedArrayBuffer(4));
-  for (let attempt = 0; attempt < 6; attempt += 1) {
+  for (let attempt = 0; attempt < 12; attempt += 1) {
     try {
       return lockfile.lockSync(file, { realpath: false });
     } catch (error) {
       lastError = error;
-      if (error?.code !== 'ELOCKED' || attempt === 5) throw error;
-      Atomics.wait(sleeper, 0, 0, 10 * (attempt + 1));
+      if (error?.code !== 'ELOCKED' || attempt === 11) throw error;
+      Atomics.wait(sleeper, 0, 0, 20 * (attempt + 1));
     }
   }
   throw lastError;
 }
 
+export function withDesktopFileLock(file, callback) {
+  mkdirSync(dirname(file), { recursive: true });
+  const release = lockSessionFile(file);
+  try {
+    return callback();
+  } finally {
+    release();
+  }
+}
+
+function withSessionLock(file, callback) {
+  return withDesktopFileLock(`${file}.lock`, callback);
+}
+
+function emptyDesktopSessionPage(subject, sessionId, offset = 0) {
+  const start = Math.max(0, Number(offset) || 0);
+  return {
+    schema_version: DESKTOP_SESSION_SCHEMA_VERSION,
+    subject,
+    session_id: sessionId,
+    records: [],
+    offset: start,
+    next_offset: 0,
+    total: 0,
+  };
+}
+
 export function appendDesktopSessionRecord(root, subject, sessionIdInput, input = {}) {
   const sessionId = normalizeDesktopSessionId(sessionIdInput);
   const file = channelDesktopSessionPath(root, subject, sessionId);
-  mkdirSync(dirname(file), { recursive: true });
-  appendFileSync(file, '', 'utf-8');
-  const release = lockSessionFile(file);
-  try {
+  return withSessionLock(file, () => {
+    mkdirSync(dirname(file), { recursive: true });
+    appendFileSync(file, '', 'utf-8');
     const createdAt = input.created_at ?? nowIso();
     const base = {
       ...input,
@@ -386,9 +412,7 @@ export function appendDesktopSessionRecord(root, subject, sessionIdInput, input 
     metadata.identity = fileIdentity(statSync(file));
     writeMetadata(paths, metadata);
     return { file, record, created: true, duplicate: false };
-  } finally {
-    release();
-  }
+  });
 }
 
 export function readDesktopSession(root, subject, sessionIdInput, {
@@ -398,10 +422,11 @@ export function readDesktopSession(root, subject, sessionIdInput, {
 } = {}) {
   const sessionId = normalizeDesktopSessionId(sessionIdInput);
   const file = channelDesktopSessionPath(root, subject, sessionId);
-  mkdirSync(dirname(file), { recursive: true });
-  appendFileSync(file, '', 'utf-8');
-  const release = lockSessionFile(file);
-  try {
+  if (!existsSync(file) && !existsSync(dirname(file))) {
+    return emptyDesktopSessionPage(subject, sessionId, offset);
+  }
+  return withSessionLock(file, () => {
+    if (!existsSync(file)) return emptyDesktopSessionPage(subject, sessionId, offset);
     const { paths, metadata } = reconcileSessionIndex(root, subject, sessionId, file);
     const start = Math.max(0, Number(offset) || 0);
     const boundedLimit = Math.max(0, Math.min(1000, Number(limit) || 50));
@@ -427,9 +452,7 @@ export function readDesktopSession(root, subject, sessionIdInput, {
       next_offset: nextOffset,
       total: metadata.total,
     };
-  } finally {
-    release();
-  }
+  });
 }
 
 export function listDesktopSessions(root, subject) {
@@ -450,8 +473,8 @@ export function listDesktopSessions(root, subject) {
     });
 }
 
-export function withDesktopIngressLock(root, subject, messageId, callback, sessionId = null) {
-  const digest = createHash('sha256').update(`${sessionId ?? ''}:${messageId}`).digest();
+export function withDesktopIngressLock(root, subject, messageId, callback) {
+  const digest = createHash('sha256').update(String(messageId)).digest();
   const lockId = String(digest[0] % 64).padStart(2, '0');
   const file = join(
     channelDirForSubject(root, subject),
@@ -459,12 +482,5 @@ export function withDesktopIngressLock(root, subject, messageId, callback, sessi
     'ingress-locks',
     `shard-${lockId}.lock`,
   );
-  mkdirSync(dirname(file), { recursive: true });
-  appendFileSync(file, '', 'utf8');
-  const release = lockSessionFile(file);
-  try {
-    return callback();
-  } finally {
-    release();
-  }
+  return withDesktopFileLock(file, callback);
 }
