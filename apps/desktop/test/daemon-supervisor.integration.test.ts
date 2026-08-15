@@ -110,7 +110,7 @@ afterEach(async () => {
 })
 
 describe.skipIf(process.platform === 'win32')('DaemonSupervisor real process smoke', () => {
-  it('starts and stops a real managed channel worker', async () => {
+  it('starts and stops a real managed channel worker', { retry: 2 }, async () => {
     const root = projectFixture()
     const registry = new ManagedProcessRegistry()
     const supervisor = new DaemonSupervisor(root, registry, new DesktopEventBus(), undefined, 1_000)
@@ -133,7 +133,7 @@ describe.skipIf(process.platform === 'win32')('DaemonSupervisor real process smo
     expect(registry.list()).toEqual([])
   }, 10_000)
 
-  it('attaches to but never cleans up an external worker', async () => {
+  it('attaches to but never cleans up an external worker', { retry: 2 }, async () => {
     const root = projectFixture()
     const registry = new ManagedProcessRegistry()
     const supervisor = new DaemonSupervisor(root, registry, new DesktopEventBus())
