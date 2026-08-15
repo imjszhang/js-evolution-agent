@@ -24,10 +24,19 @@ import { writeOutboxMessage } from '../src/channel/state.mjs';
 import { normalizeOutboundMessage } from '../src/channel/types.mjs';
 import { buildChannelProjection } from '../src/channel/projection.mjs';
 import { channelCommand } from '../src/cli/commands/channel.mjs';
+import { resolveOutboundTarget } from '../src/channel/transport.mjs';
 
 let root = null;
 
-function makeRoot() {
+function makeRoot({
+  presence = {
+    enabled: true,
+    planner: 'deterministic',
+    default_transport: 'desktop',
+    default_target: 'desktop:main',
+  },
+  additionalChannels = {},
+} = {}) {
   root = mkdtempSync(join(tmpdir(), 'jea-desktop-channel-'));
   mkdirSync(join(root, 'policies', 'subjects'), { recursive: true });
   writeFileSync(
@@ -45,12 +54,8 @@ function makeRoot() {
           desktop: { enabled: true, default_session: 'main' },
           feishu: { enabled: true, default_chat_id: 'oc_test', mock: true },
           classifier: { enabled: true, mode: 'deterministic', batch_size: 20 },
-          presence: {
-            enabled: true,
-            planner: 'deterministic',
-            default_transport: 'desktop',
-            default_target: 'desktop:main',
-          },
+          presence,
+          ...additionalChannels,
         },
       },
     },
@@ -185,6 +190,47 @@ describe('desktop channel adapter', () => {
       expect.objectContaining({ session_id: 'projected', message_count: 1 }),
     ]));
     expect(projection.feishu.config.enabled).toBe(true);
+  });
+
+  it('resolves explicit Feishu aliases without recursing when desktop is default', async () => {
+    const project = makeRoot();
+    await expect(resolveOutboundTarget(project, 'alpha', 'feishu')).resolves.toEqual({
+      transport: 'feishu',
+      target: 'oc_test',
+    });
+    await expect(resolveOutboundTarget(project, 'alpha', 'lark')).resolves.toEqual({
+      transport: 'lark',
+      target: 'oc_test',
+    });
+  });
+
+  it('keeps bridge-intent defaults while explicit desktop and Feishu routes stay isolated', async () => {
+    const project = makeRoot({
+      presence: {
+        enabled: true,
+        planner: 'deterministic',
+        default_transport: 'bridge-intent',
+      },
+      additionalChannels: {
+        'bridge-intent': { enabled: true, target: 'jea-alpha' },
+      },
+    });
+    await expect(resolveOutboundTarget(project, 'alpha', 'channel_default')).resolves.toEqual({
+      transport: 'bridge-intent',
+      target: 'jea-alpha',
+    });
+    await expect(resolveOutboundTarget(project, 'alpha', 'desktop')).resolves.toEqual({
+      transport: 'desktop',
+      target: 'desktop:main',
+    });
+    await expect(resolveOutboundTarget(project, 'alpha', 'feishu')).resolves.toEqual({
+      transport: 'feishu',
+      target: 'oc_test',
+    });
+    await expect(resolveOutboundTarget(project, 'alpha', 'channel_default')).resolves.toEqual({
+      transport: 'bridge-intent',
+      target: 'jea-alpha',
+    });
   });
 
   it('supports desktop send and offset/tail session CLI reads', async () => {

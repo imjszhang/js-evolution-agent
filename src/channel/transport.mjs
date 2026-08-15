@@ -37,7 +37,10 @@ export async function resolveOutboundTarget(root, subject, hint, { transport = n
     return { transport: 'desktop', target: resolveDesktopConfig(root, subject).defaultTarget };
   }
   if (normalized === 'feishu' || normalized === 'lark') {
-    return resolveOutboundTarget(root, subject, 'channel_default', { transport: normalized === 'lark' ? 'lark' : resolvedTransport });
+    const { resolveFeishuConfig } = await import('./adapters/feishu/config.mjs');
+    const cfg = resolveFeishuConfig(root, subject);
+    const target = cfg?.defaultChatId ?? cfg?.operatorBinding?.open_id ?? null;
+    return { transport: normalized, target };
   }
   if (normalized && !TARGET_ALIASES.has(normalized)) {
     return { transport: resolvedTransport, target: String(hint).trim() };
@@ -55,7 +58,7 @@ export async function resolveOutboundTarget(root, subject, hint, { transport = n
     const { resolveDesktopConfig } = await import('./adapters/desktop/config.mjs');
     return { transport: 'desktop', target: resolveDesktopConfig(root, subject).defaultTarget };
   }
-  if (resolvedTransport === 'feishu') {
+  if (resolvedTransport === 'feishu' || resolvedTransport === 'lark') {
     const { resolveFeishuConfig } = await import('./adapters/feishu/config.mjs');
     const cfg = resolveFeishuConfig(root, subject);
     const target = cfg?.defaultChatId ?? cfg?.operatorBinding?.open_id ?? null;
