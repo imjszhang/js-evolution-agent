@@ -29,4 +29,4 @@ npm run desktop:stage
 npm run desktop:package
 ```
 
-`desktop:package` 仅在 darwin arm64 上产出 DMG/ZIP；Linux CI 跑分阶扫描与启动器单测。
+`desktop:package` 仅在 darwin arm64 上产出 DMG/ZIP；Linux CI 跑分阶扫描与启动器单测。`electron-builder.yml` 固定 `electronVersion: 43.4.0`，因为工作区把 Electron 提升到仓库根，desktop `package.json` 里的 `^43.4.0` 范围无法被 builder 解析。

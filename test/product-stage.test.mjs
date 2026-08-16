@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -30,5 +30,10 @@ describe('stage-app-resources', () => {
     expect(existsSync(join(outDir, '.env'))).toBe(false);
     expect(existsSync(join(outDir, 'jea/.env'))).toBe(false);
     expect(JSON.stringify(report.scan.violations)).not.toMatch(/DEEPSEEK_API_KEY|\/Users\/|\/home\//);
+  });
+
+  it('pins a fixed electronVersion so electron-builder can resolve workspace-hoisted Electron', () => {
+    const yml = readFileSync(join(repoRoot, 'apps/desktop/electron-builder.yml'), 'utf8');
+    expect(yml).toMatch(/^electronVersion:\s*43\.4\.0\s*$/m);
   });
 });
