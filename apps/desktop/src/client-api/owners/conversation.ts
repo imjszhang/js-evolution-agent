@@ -49,7 +49,12 @@ export class ConversationCommandOwner {
     if (!sessionId?.trim()) {
       throw new PublicClientError('INVALID_REQUEST', 'A valid sessionId is required.')
     }
-    return redactPublicValue(readDesktopSession(this.runtime, name, sessionId, options) as ConversationPage)
+    return redactPublicValue((readDesktopSession as (...args: unknown[]) => ConversationPage)(
+      this.runtime,
+      name,
+      sessionId,
+      options
+    ))
   }
 
   sendMessage(
@@ -62,12 +67,16 @@ export class ConversationCommandOwner {
       throw new PublicClientError('INVALID_REQUEST', 'A valid text is required.')
     }
     try {
-      const result = sendDesktopInboundMessage(this.runtime, name, {
-        session_id: options.sessionId,
-        text: text.trim(),
-        message_id: options.messageId,
-        metadata: { source: 'jea_client' }
-      }) as Record<string, unknown>
+      const result = (sendDesktopInboundMessage as (...args: unknown[]) => Record<string, unknown>)(
+        this.runtime,
+        name,
+        {
+          session_id: options.sessionId,
+          text: text.trim(),
+          message_id: options.messageId,
+          metadata: { source: 'jea_client' }
+        }
+      )
       return redactPublicValue({
         subject: name,
         session_id: String(result.session_id),

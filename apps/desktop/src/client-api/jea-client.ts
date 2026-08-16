@@ -72,39 +72,40 @@ export function createTypedJeaClient(
   protocolVersion: string,
   transport: JeaClientTransport
 ): JeaClient {
-  const invoke = <T = unknown>(command: ClientApiCommandName, payload?: Record<string, unknown>) =>
+  const invoke = <T>(command: ClientApiCommandName, payload?: Record<string, unknown>): Promise<T> =>
     transport.invoke({ command, payload }) as Promise<T>
 
-  return Object.freeze({
+  const client: JeaClient = {
     protocolVersion,
     invoke,
     subscribe: transport.subscribe,
-    getProtocol: () => invoke('protocol.get'),
-    listSubjects: () => invoke('subject.list'),
-    getSubject: (subject) => invoke('subject.get', { subject }),
-    selectSubject: (subject) => invoke('subject.select', { subject }),
-    setDefaultSubject: (subject) => invoke('subject.setDefault', { subject }),
-    listSessions: (subject) => invoke('conversation.listSessions', { subject }),
-    createSession: (subject, sessionId) => invoke('conversation.createSession', { subject, sessionId }),
-    readMessages: (subject, sessionId, options) => invoke('conversation.readMessages', { subject, sessionId, ...options }),
-    sendMessage: (subject, text, options) => invoke('conversation.sendMessage', { subject, text, ...options }),
-    listCycles: (subject, limit) => invoke('evolution.listCycles', { subject, limit }),
-    getCycle: (subject, cycleId) => invoke('evolution.getCycle', { subject, cycleId }),
-    getRound: (subject, cycleId) => invoke('evolution.getRound', { subject, cycleId }),
-    getObservability: (subject) => invoke('evolution.getObservability', { subject }),
-    getServiceStatus: (subject) => invoke('service.getStatus', { subject }),
-    startService: (subject, domain) => invoke('service.start', { subject, domain }),
-    stopService: (subject) => invoke('service.stop', { subject }),
-    requestCycle: (subject, note) => invoke('service.requestCycle', { subject, note }),
-    getReadiness: (subject) => invoke('setup.getReadiness', subject ? { subject } : {}),
-    confirmHome: (path) => invoke('setup.confirmHome', path ? { path } : {}),
-    createSubject: (name, options) => invoke('setup.createSubject', { name, ...options }),
-    initData: (subject) => invoke('setup.initData', { subject }),
-    enableDesktopChannel: (subject) => invoke('setup.enableDesktopChannel', { subject }),
-    getSettings: () => invoke('settings.get'),
-    setSettings: (patch) => invoke('settings.set', patch),
-    getCliStatus: () => invoke('cli.getStatus'),
-    installCli: () => invoke('cli.install'),
-    uninstallCli: () => invoke('cli.uninstall')
-  })
+    getProtocol: () => invoke<ProtocolInfo>('protocol.get'),
+    listSubjects: () => invoke<SubjectSummary[]>('subject.list'),
+    getSubject: (subject) => invoke<SubjectRecord>('subject.get', { subject }),
+    selectSubject: (subject) => invoke<SubjectRecord>('subject.select', { subject }),
+    setDefaultSubject: (subject) => invoke<SubjectRecord>('subject.setDefault', { subject }),
+    listSessions: (subject) => invoke<ConversationSessionSummary[]>('conversation.listSessions', { subject }),
+    createSession: (subject, sessionId) => invoke<ConversationSessionSummary>('conversation.createSession', { subject, sessionId }),
+    readMessages: (subject, sessionId, options) => invoke<ConversationPage>('conversation.readMessages', { subject, sessionId, ...options }),
+    sendMessage: (subject, text, options) => invoke<ConversationSendResult>('conversation.sendMessage', { subject, text, ...options }),
+    listCycles: (subject, limit) => invoke<EvolutionCycleList>('evolution.listCycles', { subject, limit }),
+    getCycle: (subject, cycleId) => invoke<EvolutionCycleDetail>('evolution.getCycle', { subject, cycleId }),
+    getRound: (subject, cycleId) => invoke<EvolutionRoundDetail>('evolution.getRound', { subject, cycleId }),
+    getObservability: (subject) => invoke<EvolutionObservability>('evolution.getObservability', { subject }),
+    getServiceStatus: (subject) => invoke<ServiceStatus>('service.getStatus', { subject }),
+    startService: (subject, domain) => invoke<ServiceStatus>('service.start', { subject, domain }),
+    stopService: (subject) => invoke<ServiceStatus>('service.stop', { subject }),
+    requestCycle: (subject, note) => invoke<CycleRequestResult>('service.requestCycle', { subject, note }),
+    getReadiness: (subject) => invoke<SetupReadiness>('setup.getReadiness', subject ? { subject } : {}),
+    confirmHome: (path) => invoke<SetupHomeResult>('setup.confirmHome', path ? { path } : {}),
+    createSubject: (name, options) => invoke<SetupSubjectResult>('setup.createSubject', { name, ...options }),
+    initData: (subject) => invoke<{ subject: string; initialized: boolean }>('setup.initData', { subject }),
+    enableDesktopChannel: (subject) => invoke<SetupSubjectResult>('setup.enableDesktopChannel', { subject }),
+    getSettings: () => invoke<SettingsView>('settings.get'),
+    setSettings: (patch) => invoke<SettingsView>('settings.set', { ...patch }),
+    getCliStatus: () => invoke<CliStatus>('cli.getStatus'),
+    installCli: () => invoke<CliStatus>('cli.install'),
+    uninstallCli: () => invoke<CliStatus>('cli.uninstall')
+  }
+  return Object.freeze(client)
 }

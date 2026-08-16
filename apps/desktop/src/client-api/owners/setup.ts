@@ -47,7 +47,8 @@ function desktopEnabled(runtime: ClientRuntimeContext, subject: string): boolean
   try {
     return resolveDesktopConfig(runtime, subject).enabled === true
   } catch {
-    return Boolean(getSubjectEntry(runtime, subject)?.channels?.desktop?.enabled)
+    const entry = getSubjectEntry(runtime, subject) as { channels?: { desktop?: { enabled?: boolean } } } | null
+    return Boolean(entry?.channels?.desktop?.enabled)
   }
 }
 

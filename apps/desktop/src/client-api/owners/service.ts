@@ -20,7 +20,7 @@ export function createProjectionServicePort(runtime: ClientRuntimeContext): Serv
         mode: daemon.worker?.running ? 'attached' : 'none',
         pid: daemon.worker?.pid ?? null,
         domain: null,
-        heartbeat_at: daemon.worker?.heartbeat_at ?? daemon.last_tick_at ?? null,
+        heartbeat_at: daemon.worker?.heartbeat_at ?? null,
         started_at: daemon.worker?.started_at ?? null,
         health: daemon.health?.status ?? null,
         detail: daemon.health?.ok === false ? 'Service is unhealthy.' : null

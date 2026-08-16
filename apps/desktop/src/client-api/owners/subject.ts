@@ -61,7 +61,10 @@ export class SubjectCommandOwner {
     return {
       ...this.summary(name, defaultSubject),
       selected: this.selected === name || (!this.selected && name === defaultSubject),
-      desktopChannelEnabled: Boolean(desktop.enabled || entry?.channels?.desktop?.enabled)
+      desktopChannelEnabled: Boolean(
+        desktop.enabled
+        || (entry as { channels?: { desktop?: { enabled?: boolean } } } | null)?.channels?.desktop?.enabled
+      )
     }
   }
 }

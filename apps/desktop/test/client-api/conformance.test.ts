@@ -75,7 +75,8 @@ describe('Electron vs in-memory fixture conformance', () => {
         code: 'INVALID_REQUEST',
         message: 'A valid text is required.'
       })
-      expect(error.stack === undefined || !String(error.message).includes('at ')).toBe(true)
+      const publicError = error as PublicClientError
+      expect(publicError.stack === undefined || !String(publicError.message).includes('at ')).toBe(true)
     }
   })
 })

@@ -105,6 +105,6 @@ describe('application command host', () => {
       code: 'INVALID_REQUEST',
       message: 'A valid subject is required.'
     })
-    expect(String(error.message)).not.toMatch(/at\s+\S+\s+\(/)
+    expect(String((error as PublicClientError).message)).not.toMatch(/at\s+\S+\s+\(/)
   })
 })

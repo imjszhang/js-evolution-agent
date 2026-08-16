@@ -15,7 +15,7 @@ export class SettingsCommandOwner {
   ) {}
 
   get(): SettingsView {
-    const stored = readJsonSafe(this.file(), {}) as Record<string, unknown>
+    const stored = (readJsonSafe(this.file(), null) ?? {}) as Record<string, unknown>
     const registry = readSubjectsRegistry(this.runtime)
     return redactPublicValue({
       language: stored.language === 'en' ? 'en' : 'zh-CN',

@@ -85,8 +85,32 @@ const clientApi = createApplicationCommandHost({
         detail: view.detail ?? null
       }
     },
-    start: (subject, options) => daemon.start(subject, options),
-    stop: (subject) => daemon.stop(subject)
+    start: async (subject, options) => {
+      const view = await daemon.start(subject, options)
+      return {
+        subject: view.subject,
+        mode: view.mode,
+        pid: view.pid,
+        domain: view.domain,
+        heartbeat_at: view.heartbeat_at,
+        started_at: view.started_at,
+        health: null,
+        detail: view.detail ?? null
+      }
+    },
+    stop: async (subject) => {
+      const view = await daemon.stop(subject)
+      return {
+        subject: view.subject,
+        mode: view.mode,
+        pid: view.pid,
+        domain: view.domain,
+        heartbeat_at: view.heartbeat_at,
+        started_at: view.started_at,
+        health: null,
+        detail: view.detail ?? null
+      }
+    }
   }
 })
 const invoke = createCommandRegistry(

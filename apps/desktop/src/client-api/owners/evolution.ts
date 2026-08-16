@@ -92,7 +92,7 @@ export class EvolutionCommandOwner {
     }
     const runtime = subjectRuntime(this.runtime, name)
     const detail = buildCycleDetail({
-      projectRoot: this.runtime,
+      projectRoot: this.runtime.sourceRoot,
       runtime,
       store: storeFor(runtime),
       cycleId: cycleId.trim()
@@ -158,9 +158,9 @@ export class EvolutionCommandOwner {
       },
       verify: publicVerify(runtime.runtimeRoot, cycleId.trim()),
       receipts: { count: receiptCount(runtime.runtimeRoot) },
-      blockers: Object.values(round?.steps ?? {})
-        .map((step: { error?: string | null }) => step.error)
-        .filter((error: string | null | undefined): error is string => Boolean(error))
+      blockers: Object.values((round?.steps ?? {}) as Record<string, { error?: string | null }>)
+        .map((step) => step.error)
+        .filter((error): error is string => Boolean(error))
     })
   }
 
