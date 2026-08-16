@@ -17,7 +17,25 @@ const locale = (readParam('locale') === 'en' ? 'en' : 'zh') as Locale
 const settingsOpen = readParam('settings') === '1' ? true : undefined
 const empty = viewState === 'empty' || readParam('empty') === '1'
 
-const evolutionClient = createEvolutionFixtureClient()
+const inspectorMode = readParam('inspector')
+const subject = readParam('subject')
+const evolutionClient = createEvolutionFixtureClient(
+  inspectorMode === 'malformed'
+    ? {
+        lists: {
+          alpha: {
+            subject: 'alpha',
+            namespace: 'alpha-data',
+            round_count: 1,
+            cycles: [{ cycle_id: 'broken', generated_at: null, tldr: null, has_diary: false, status: null }]
+          }
+        },
+        cycles: { alpha: {} },
+        rounds: { alpha: {} },
+        observability: { alpha: { subject: 'alpha', attention: {}, open_cycles: 0 } }
+      }
+    : undefined
+)
 const features = [
   createEvolutionInspectorFeature({
     client: evolutionClient,
@@ -37,8 +55,15 @@ createRoot(document.getElementById('root')!).render(
         sessions: [],
         selectedSubjectId: null,
         selectedSessionId: null
+      } : inspectorMode === 'empty' ? {
+        subjects: [{ id: 'empty', name: 'empty', namespace: 'empty-data' }],
+        selectedSubjectId: 'empty',
+        selectedSessionId: null,
+        sessions: []
       } : viewState === 'offline' ? {
         serviceStatus: 'offline'
+      } : subject ? {
+        selectedSubjectId: subject
       } : {})}
     />
   </StrictMode>
