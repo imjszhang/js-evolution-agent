@@ -82,7 +82,7 @@ export function SubjectListPlaceholder({ adapters }: FeatureSlotProps) {
   )
 }
 
-export function ConversationPlaceholder() {
+export function ConversationPlaceholder(_props: FeatureSlotProps) {
   const { t } = useLocale()
   return (
     <div className="flex h-full min-h-0 flex-col items-center justify-center gap-3 p-6 text-center" data-slot="conversation">
@@ -99,7 +99,7 @@ export function ConversationPlaceholder() {
   )
 }
 
-export function EvolutionPlaceholder() {
+export function EvolutionPlaceholder(_props: FeatureSlotProps) {
   const { t } = useLocale()
   return (
     <div className="flex h-full min-h-0 flex-col items-center justify-center gap-3 p-6 text-center" data-slot="evolutionInspector">
@@ -109,7 +109,7 @@ export function EvolutionPlaceholder() {
   )
 }
 
-export function SettingsPlaceholder() {
+export function SettingsPlaceholder(_props: FeatureSlotProps) {
   const { t } = useLocale()
   return (
     <div className="rounded-lg border border-dashed border-border bg-surface-sunken p-4 text-sm text-muted-foreground" data-slot="settings">

@@ -58,7 +58,9 @@ npm run app:test
 npm run app:build
 ```
 
-Linux screenshot baselines live in `e2e/baselines`. Update them with:
+Linux screenshot baselines live in `e2e/baselines/visual.spec.ts-snapshots`.
+This Cloud Agent cannot capture approved macOS Apple Silicon screenshots; the
+harness is the update path for later certification. Update Linux baselines with:
 
 ```bash
 npm run test:visual:update --workspace @jea/app

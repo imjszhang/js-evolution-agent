@@ -30,12 +30,6 @@ export default defineConfig({
   },
   renderer: {
     root: resolve(desktopDir, 'src/renderer'),
-    plugins: [react(), tailwindcss()],
-    resolve: {
-      alias: {
-        '@jea/app': resolve(desktopDir, '../../packages/jea-app/src/index.ts'),
-        '@jea/app/styles.css': resolve(desktopDir, '../../packages/jea-app/src/styles/index.css')
-      }
-    }
+    plugins: [react(), tailwindcss()]
   }
 })

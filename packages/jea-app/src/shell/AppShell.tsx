@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Settings } from 'lucide-react'
 import { useLocale } from '../i18n/LocaleProvider'
 import { FeatureSlot } from '../slots/FeatureSlot'
@@ -24,33 +24,38 @@ export function AppShell({
   onSettingsOpenChange?(open: boolean): void
 }) {
   const { t } = useLocale()
+  const settingsButtonRef = useRef<HTMLButtonElement | null>(null)
   const [internalSettingsOpen, setInternalSettingsOpen] = useState(false)
   const settingsOpen = settingsOpenProp ?? internalSettingsOpen
   const setSettingsOpen = onSettingsOpenChange ?? setInternalSettingsOpen
   const presentation = useMemo(() => resolveShellPresentation({ settingsOpen }), [settingsOpen])
 
+  const changeSettingsOpen = useCallback((open: boolean) => {
+    setSettingsOpen(open)
+    if (!open) {
+      queueMicrotask(() => settingsButtonRef.current?.focus())
+    }
+  }, [setSettingsOpen])
+
   const openSettings = useCallback(() => {
-    if (presentation.allowsShortcut('settings')) setSettingsOpen(true)
-  }, [presentation, setSettingsOpen])
+    if (presentation.allowsShortcut('settings')) changeSettingsOpen(true)
+  }, [presentation, changeSettingsOpen])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (isSettingsShortcut(event) && presentation.allowsShortcut('settings')) {
         event.preventDefault()
-        setSettingsOpen(true)
+        changeSettingsOpen(true)
         return
       }
-      if (isEscapeKey(event)) {
-        const action = presentation.resolveCloseAction()
-        if (action.kind === 'close-settings') {
-          event.preventDefault()
-          setSettingsOpen(false)
-        }
+      if (isEscapeKey(event) && presentation.resolveCloseAction().kind === 'close-settings') {
+        event.preventDefault()
+        changeSettingsOpen(false)
       }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [presentation, setSettingsOpen])
+  }, [presentation, changeSettingsOpen])
 
   return (
     <div className="relative flex h-full min-h-0 flex-col bg-background text-foreground" data-testid="app-shell">
@@ -78,6 +83,7 @@ export function AppShell({
             fallback={<ServiceStatusPlaceholder slotId="serviceStatus" adapters={adapters} />}
           />
           <Button
+            ref={settingsButtonRef}
             variant="outline"
             size="sm"
             data-testid="open-settings"
@@ -101,7 +107,7 @@ export function AppShell({
       )}
       <SettingsOverlay
         open={settingsOpen}
-        onOpenChange={setSettingsOpen}
+        onOpenChange={changeSettingsOpen}
         adapters={adapters}
         registry={registry}
       />

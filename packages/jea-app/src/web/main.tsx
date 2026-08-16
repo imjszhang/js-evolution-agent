@@ -13,7 +13,7 @@ function readParam(name: string): string | null {
 
 const viewState = (readParam('state') ?? 'ready') as ShellViewState
 const locale = (readParam('locale') === 'en' ? 'en' : 'zh') as Locale
-const settingsOpen = readParam('settings') === '1'
+const settingsOpen = readParam('settings') === '1' ? true : undefined
 const empty = viewState === 'empty' || readParam('empty') === '1'
 
 createRoot(document.getElementById('root')!).render(

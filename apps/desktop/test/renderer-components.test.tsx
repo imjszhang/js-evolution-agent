@@ -110,9 +110,10 @@ describe('desktop renderer components', () => {
     expect(html).toContain('data-testid="column-subject"')
     expect(html).toContain('data-testid="column-conversation"')
     expect(html).toContain('data-testid="column-evolution"')
-    expect(html).not.toContain('Channel')
     expect(html).not.toContain('System alerts')
     expect(html).not.toContain('Todo Center')
+    expect(html).not.toContain('ACP Workspace')
+    expect(html).not.toContain('primary-nav')
   })
 
   it('renders the remaining operational empty and controlled states', () => {

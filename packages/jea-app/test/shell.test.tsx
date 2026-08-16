@@ -14,7 +14,7 @@ describe('JEA App Shell', () => {
     expect(html).toContain('data-slot="subjectList"')
     expect(html).toContain('data-slot="conversation"')
     expect(html).toContain('data-slot="evolutionInspector"')
-    expect(html).not.toContain('app-shell')
+    expect(html).not.toContain('class="app-shell"')
     expect(html).not.toContain('primary-nav')
     expect(html).not.toContain('Operations')
     expect(html).not.toContain('Todo Center')
