@@ -35,5 +35,6 @@ describe('stage-app-resources', () => {
   it('pins a fixed electronVersion so electron-builder can resolve workspace-hoisted Electron', () => {
     const yml = readFileSync(join(repoRoot, 'apps/desktop/electron-builder.yml'), 'utf8');
     expect(yml).toMatch(/^electronVersion:\s*43\.4\.0\s*$/m);
+    expect(yml).toMatch(/^electronDist:\s*\.\.\/\.\.\/node_modules\/electron\/dist\s*$/m);
   });
 });

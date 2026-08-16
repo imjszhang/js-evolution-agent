@@ -18,7 +18,7 @@ function run(command, args, cwd) {
   const result = spawnSync(command, args, { cwd, encoding: 'utf8', stdio: 'pipe' });
   if (result.status !== 0) {
     const detail = (result.stderr || result.stdout || '').trim();
-    throw new Error(`${command} ${args.join(' ')} failed: ${detail.split('\n').slice(-8).join('\n')}`);
+    throw new Error(`${command} ${args.join(' ')} failed: ${detail.split('\n').slice(-24).join('\n')}`);
   }
   return result.stdout;
 }
