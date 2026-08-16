@@ -3,6 +3,7 @@ import { isAbsolute, join, resolve } from 'node:path'
 import { readJsonSafe } from '../../../../../src/infra/files.mjs'
 import {
   createSubject,
+  DEFAULT_SUBJECT,
   getSubjectEntry,
   registerSubject,
   sanitizeSubjectName,
@@ -94,9 +95,17 @@ function readPersistedRegistry(runtime: ClientRuntimeContext): {
   }
 }
 
+function isFallbackPhantom(runtime: ClientRuntimeContext, name: string): boolean {
+  return name === DEFAULT_SUBJECT && !hasHomePolicy(runtime, name)
+}
+
 function listHomeSubjects(runtime: ClientRuntimeContext): string[] {
   const persisted = readPersistedRegistry(runtime)
-  const names = new Set(persisted.status === 'ok' ? persisted.names : [])
+  const names = new Set(
+    persisted.status === 'ok'
+      ? persisted.names.filter((name) => !isFallbackPhantom(runtime, name))
+      : []
+  )
   const runtimeDir = subjectsRuntimeDir(runtime)
   if (existsSync(runtimeDir)) {
     for (const entry of readdirSync(runtimeDir, { withFileTypes: true })) {
@@ -161,7 +170,7 @@ function stripPhantomSubjects(runtime: ClientRuntimeContext, keepDefault?: strin
   const persisted = readPersistedRegistry(runtime)
   if (persisted.status !== 'ok') return
   const real = new Set(listHomeSubjects(runtime))
-  const phantoms = persisted.names.filter((name) => !real.has(name))
+  const phantoms = persisted.names.filter((name) => isFallbackPhantom(runtime, name) || !real.has(name))
   if (phantoms.length === 0 && (!keepDefault || persisted.defaultSubject === keepDefault)) return
   updateSubjectsRegistry(runtime, (registry: {
     default_subject?: string
@@ -169,9 +178,10 @@ function stripPhantomSubjects(runtime: ClientRuntimeContext, keepDefault?: strin
   }) => {
     const subjects = { ...registry.subjects }
     for (const name of phantoms) delete subjects[name]
-    const defaultSubject = (keepDefault && real.has(keepDefault))
+    const remaining = Object.keys(subjects)
+    const defaultSubject = (keepDefault && remaining.includes(keepDefault))
       ? keepDefault
-      : (real.has(String(registry.default_subject ?? '')) ? registry.default_subject : (keepDefault ?? [...real][0]))
+      : (remaining.includes(String(registry.default_subject ?? '')) ? registry.default_subject : (keepDefault ?? remaining[0]))
     return {
       ...registry,
       default_subject: defaultSubject,
