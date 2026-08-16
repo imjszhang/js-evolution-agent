@@ -1,8 +1,16 @@
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { dirname, extname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const EXTS = ['.ts', '.tsx', '.mts', '.mjs', '.js', '.json'];
+
+function isFile(path) {
+  try {
+    return existsSync(path) && statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
 
 function candidates(base) {
   const out = [base];
@@ -26,7 +34,7 @@ export async function resolve(specifier, context, nextResolve) {
         : null;
     if (!absolute) throw error;
     for (const candidate of candidates(absolute)) {
-      if (existsSync(candidate)) {
+      if (isFile(candidate)) {
         return { url: pathToFileURL(candidate).href, shortCircuit: true };
       }
     }

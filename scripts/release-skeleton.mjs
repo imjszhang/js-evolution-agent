@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
- * Wave 1 release-skeleton runner.
+ * Release-skeleton runner for #122.
  *
- * Linux-safe: scans committed fixtures, checks version agreement for packages
- * that exist today, verifies audit:ci remains wired, and confirms the publish
- * guard fail-closes. Does not build macOS packages or publish a release.
+ * Linux-safe: scans committed fixtures, checks version agreement, verifies
+ * audit:ci remains wired, and confirms the publish guard fail-closes.
+ * Does not create a tag or GitHub Release.
  *
  * Usage:
  *   node scripts/release-skeleton.mjs [--repo DIR] [--json]
@@ -74,8 +74,8 @@ export function runReleaseSkeleton({ repoRoot } = {}) {
     dir: resolve(repoRoot, 'dist/release'),
   });
   steps.push({
-    id: 'package_smoke_pending',
-    ok: smoke.ok && smoke.status === 'pending',
+    id: 'package_smoke',
+    ok: smoke.ok && (smoke.status === 'pending' || smoke.status === 'smoked'),
     status: smoke.status,
     detail: smoke.reason,
   });
@@ -112,7 +112,7 @@ export function runReleaseSkeleton({ repoRoot } = {}) {
   return {
     ok,
     status: ok ? 'skeleton_ready' : 'skeleton_failed',
-    wave: 1,
+    wave: 3,
     publish: false,
     steps,
   };
@@ -125,7 +125,7 @@ export async function main(argv = process.argv.slice(2)) {
   report.script = 'release-skeleton';
   report.messages = [
     `status ${report.status}`,
-    'Wave 1 skeleton only — not a v0.1.0 publisher',
+    'Release skeleton — not a v0.1.0 publisher',
     ...report.steps.map((item) => `${item.ok ? 'ok' : 'fail'} ${item.id}: ${item.status} (${item.detail})`),
   ];
   printReport(report, { json: Boolean(args.json) });

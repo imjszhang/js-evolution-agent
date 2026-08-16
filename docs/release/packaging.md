@@ -29,4 +29,4 @@ npm run desktop:stage
 npm run desktop:package
 ```
 
-`desktop:package` 仅在 darwin arm64 上产出 DMG/ZIP；Linux CI 跑分阶扫描与启动器单测。`electron-builder.yml` 固定 `electronVersion: 43.4.0`，并用 `electronDist` 指向仓库根已安装的 Electron，避免工作区提升后 builder 再走网络下载。
+`desktop:package` 仅在 darwin arm64 上产出 ZIP（electron-builder，离线）和 DMG（本机 `hdiutil`，避免 builder 走代理下载）。Linux CI 跑分阶扫描与启动器单测。`electron-builder.yml` 固定 `electronVersion: 43.4.0`，并用 `electronDist` 指向仓库根已安装的 Electron。

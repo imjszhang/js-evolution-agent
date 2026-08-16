@@ -28,10 +28,23 @@
 
 > Not a fixed `/goal` coding loop that runs until tests pass — an **evolution loop** with theoretical constraints, governance boundaries, and auditable receipts. When an old goal (law) is falsified by consequences, the system enters a rule-update phase instead of spinning or grinding.
 
+## Product (0.1.0)
+
+JEA 0.1.0 is a **macOS Apple Silicon** app with a bundled `jea` CLI. The operator surface is one three-column workspace — not the retired seven-page Desktop (Operations / Todo / Channel / ACP):
+
+1. **Subject and local sessions**
+2. **Governed conversation** through the Channel classifier / presence / speech pipeline (chat text is not hard approval)
+3. **Evolution Inspector** for cycle status, report / diary / verify, and receipt / evidence summaries
+
+Settings covers JEA Home, default Subject, CLI install, appearance, and About. Electron and localhost Web load the same React app. Install and Gatekeeper notes: [docs/release/installation.md](docs/release/installation.md). Headless lifecycle: `jea start --no-open`, `jea status --json`, `jea url`, `jea stop`.
+
+The GitHub Release is not published until [#122](https://github.com/imjszhang/js-evolution-agent/issues/122) certification is complete. Checkout commands below remain the developer source-host path.
+
 ---
 
 ## Table of contents
 
+- [Product (0.1.0)](#product-010)
 - [Core innovation: goal self-correction](#core-innovation-goal-self-correction)
 - [Alignment with Loop Engineering](#alignment-with-loop-engineering)
 - [What this is](#what-this-is)
@@ -159,7 +172,7 @@ Typical use: let an AI subject investigate, edit code, simulate, and prepare rel
 - **Beliefs and goals** — formal update paths for testable hypotheses and goal trees
 - **Multiple agent backends** — DeepSeek, Claude Agent SDK, Cursor SDK, Reasonix CLI, …
 - **Channel (Feishu)** — inbound classification, presence expression, control actions (evolution mode, cycle request, …)
-- **Evolution Viewer** — local Web UI for rounds, reports, daemon state, observability
+- **Evolution Inspector** — essential cycle / report / diary / verify reading in the product workspace; the legacy Evolution Viewer remains a developer/advanced path
 
 ---
 

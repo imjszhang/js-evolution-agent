@@ -40,13 +40,20 @@ export interface ApplicationCommandHostOptions {
 }
 
 function packageVersion(): string {
-  try {
-    const here = dirname(fileURLToPath(import.meta.url))
-    const pkg = JSON.parse(readFileSync(join(here, '../../../../package.json'), 'utf8')) as { version?: string }
-    return pkg.version ?? '0.1.0'
-  } catch {
-    return '0.1.0'
+  const here = dirname(fileURLToPath(import.meta.url))
+  const candidates = [
+    join(here, '../../../../src/product/version.json'),
+    join(here, '../../../../package.json')
+  ]
+  for (const path of candidates) {
+    try {
+      const payload = JSON.parse(readFileSync(path, 'utf8')) as { version?: string }
+      if (payload.version) return payload.version
+    } catch {
+      // Try the next source.
+    }
   }
+  return '0.1.0'
 }
 
 export function createApplicationCommandHandlers(options: ApplicationCommandHostOptions): ApplicationCommandHandlers {

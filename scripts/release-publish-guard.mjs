@@ -31,8 +31,8 @@ export function evaluatePublishGuard({
       publish: false,
       reason: 'publish_not_requested',
       notes: [
-        'Wave 1 skeleton does not publish. A future publish job must call this guard.',
-        'Certification evidence, notarization, and GitHub Release publication are deferred to Wave 3 / #120.',
+        'This guard does not publish. A publish job must call it with complete evidence.',
+        'Do not create a v0.1.0 tag or GitHub Release without certification-evidence.json status=certified.',
       ],
     };
   }

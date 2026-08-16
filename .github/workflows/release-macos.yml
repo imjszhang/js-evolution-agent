@@ -1,17 +1,16 @@
-# Wave 1 skeleton — NOT the final JEA 0.1.0 publisher.
+# #122 certification workflow — still not the final GitHub Release publisher.
 # Do not create a v0.1.0 tag or GitHub Release from this workflow.
-# Real packaging / notarization / clean-install evidence is owned by #120 and #122 Wave 3.
-name: macOS Release (skeleton)
+name: macOS Release
 
 on:
   workflow_dispatch:
     inputs:
       publish:
-        description: 'Request GitHub Release publication (Wave 1 always fail-closes without certification evidence)'
+        description: 'Request GitHub Release publication (always fail-closes without certified evidence)'
         type: boolean
         default: false
       artifact_dir:
-        description: 'Directory to smoke-check if #120 artifacts already exist'
+        description: 'Directory to smoke-check after packaging'
         type: string
         default: dist/release
   workflow_call:
@@ -44,24 +43,24 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Version agreement (visible packages only)
-        run: npm run release:preflight -- --json
+      - name: Version agreement (strict)
+        run: npm run release:preflight -- --strict --json
       - name: Keep audit:ci on the certification path (#77)
         run: npm run release:audit-gate -- --json
       - name: Production dependency audit (do not replace ci-audit.mjs)
         run: npm run audit:ci
-      - name: Scan committed fixtures only
+      - name: Scan committed fixtures
         run: npm run release:scan -- --root test/fixtures/release/clean --json
       - name: Publish guard (idle unless publish=true)
         run: npm run release:publish-guard -- --json
 
-  macos-package-skeleton:
-    name: macos-package-skeleton
+  macos-package:
+    name: macos-package
     runs-on: macos-14
-    timeout-minutes: 30
+    timeout-minutes: 60
     needs: certify-preflight
-    outputs:
-      artifact_dir: ${{ steps.checklist.outputs.artifact_dir }}
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -74,35 +73,29 @@ jobs:
       - name: Refuse secret and user-runtime uploads
         run: |
           set -euo pipefail
-          echo "upload-deny:.env"
-          echo "upload-deny:.env.local"
-          echo "upload-deny:runtime/"
-          echo "upload-deny:\$HOME/.jea"
           if [ -e .env ] || [ -e .env.local ]; then
             echo "Refusing to continue while a checkout .env is present."
             exit 1
           fi
-      - name: Expected artifact checklist (#120 not required)
-        id: checklist
-        env:
-          ARTIFACT_DIR: ${{ inputs.artifact_dir }}
-        run: |
-          set -euo pipefail
-          mkdir -p test-artifacts
-          ARTIFACT_DIR="${ARTIFACT_DIR:-dist/release}"
-          echo "artifact_dir=${ARTIFACT_DIR}" >> "$GITHUB_OUTPUT"
-          node --preserve-symlinks scripts/release-package-smoke.mjs --dir "${ARTIFACT_DIR}" --json \
-            | tee test-artifacts/expected-macos-artifacts.json
-      - name: Package smoke when artifacts exist
+      - name: Build macOS arm64 artifacts
+        run: npm run desktop:package
+      - name: Package smoke
         env:
           ARTIFACT_DIR: ${{ inputs.artifact_dir }}
         run: npm run release:package-smoke -- --dir "${ARTIFACT_DIR:-dist/release}" --json
-      - name: Upload checklist only (never .env, JEA Home, or runtime)
+      - name: Scan staged resources
+        run: npm run release:scan -- --root dist/release/stage --json
+      - name: Upload macOS artifacts (never .env, JEA Home, or runtime)
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: macos-release-skeleton-checklist
-          path: test-artifacts/expected-macos-artifacts.json
+          name: macos-release-0.1.0
+          path: |
+            dist/release/JEA-0.1.0-macos-arm64.dmg
+            dist/release/JEA-0.1.0-macos-arm64.zip
+            dist/release/SHA256SUMS
+            dist/release/package-smoke.json
+            dist/release/RELEASE_NOTES.md
           retention-days: 14
           if-no-files-found: warn
 
@@ -110,7 +103,7 @@ jobs:
     name: publish-guard (not a publisher)
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: macos-package-skeleton
+    needs: macos-package
     if: ${{ inputs.publish }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -128,5 +121,5 @@ jobs:
           set -euo pipefail
           echo "This job is not allowed to tag v0.1.0 or create a GitHub Release."
           npm run release:publish-guard -- --publish --evidence "${ARTIFACT_DIR:-dist/release}" --json
-          echo "Unreachable if the guard is working: publish must fail closed in Wave 1."
+          echo "Unreachable if the guard is working: publish must fail closed without certified evidence."
           exit 1

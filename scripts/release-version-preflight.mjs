@@ -2,10 +2,8 @@
 /**
  * Version-agreement preflight for JEA 0.1.0.
  *
- * Wave 1 compares versions that exist today (root package, Desktop package).
- * Bundled CLI / Client API / About output are structured slots that report
- * skipped/pending until #116, #120, and #121 land. Those pending slots are
- * not a hard release failure unless --strict is passed (Wave 3).
+ * Compares root package, Desktop package, bundled CLI, Client API, and About
+ * versions. Pending slots fail when --strict is passed.
  *
  * Usage:
  *   node scripts/release-version-preflight.mjs [--repo DIR] [--json] [--strict]
@@ -57,9 +55,9 @@ export const VERSION_SOURCES = [
   },
   {
     id: 'bundled_cli',
-    required: false,
+    required: true,
     issue: 120,
-    note: 'Bundled CLI version file used by jea --version and the macOS package (#120).',
+    note: 'Bundled CLI version file used by jea --version and the macOS package.',
     resolve(repoRoot) {
       const path = firstExisting([
         resolve(repoRoot, 'src/product/version.json'),
@@ -72,9 +70,9 @@ export const VERSION_SOURCES = [
   },
   {
     id: 'client_api',
-    required: false,
+    required: true,
     issue: 116,
-    note: 'Client API version export is not available until #116.',
+    note: 'Client API product version (protocol version stays 1.0.0).',
     resolve(repoRoot) {
       const path = firstExisting([
         resolve(repoRoot, 'src/client-api/package.json'),
@@ -87,9 +85,9 @@ export const VERSION_SOURCES = [
   },
   {
     id: 'about_output',
-    required: false,
+    required: true,
     issue: 121,
-    note: 'About / Settings version output is not available until #121.',
+    note: 'About / Settings product version shown in the Settings overlay.',
     resolve(repoRoot) {
       const path = firstExisting([
         resolve(repoRoot, 'dist/release/about-version.json'),
