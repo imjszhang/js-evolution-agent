@@ -170,6 +170,66 @@ function withTimeout(promise, timeoutMs, label, onTimeout = null) {
   });
 }
 
+function resolveHostAbortSignal(ctx) {
+  return ctx?.host?.abortSignal ?? ctx?.signal ?? null;
+}
+
+function hostAbortError(label, signal) {
+  const reason = signal?.reason;
+  if (reason?.code === 'channel_aborted' || reason?.code === 'channel_timeout') return reason;
+  const error = new Error(`${label} aborted`);
+  error.code = 'channel_aborted';
+  error.retryable = true;
+  return error;
+}
+
+function isHostAbortError(error) {
+  return error?.code === 'channel_aborted';
+}
+
+function cancelCursorRun(run, obs, reason) {
+  if (!run) return;
+  if (typeof run.supports === 'function' && !run.supports('cancel')) {
+    obs.emit('run_cancel_skipped', {
+      run_id: run.id ?? null,
+      reason: typeof run.unsupportedReason === 'function' ? run.unsupportedReason('cancel') : 'unsupported',
+    }, 'warning');
+    return;
+  }
+  if (typeof run.cancel !== 'function') {
+    obs.emit('run_cancel_skipped', {
+      run_id: run.id ?? null,
+      reason: 'unsupported',
+    }, 'warning');
+    return;
+  }
+  Promise.resolve(run.cancel())
+    .then(() => obs.emit('run_cancelled', { run_id: run.id ?? null, reason }))
+    .catch((err) => obs.emit('run_cancel_failed', {
+      run_id: run.id ?? null,
+      error: summarizeAgentText(err?.message || String(err), 300),
+    }, 'warning'));
+}
+
+function raceWithHostAbort(promise, signal, label, onAbort = null) {
+  if (!signal) return promise;
+  if (signal.aborted) {
+    try { onAbort?.(hostAbortError(label, signal)); } catch { /* ignore */ }
+    return Promise.reject(hostAbortError(label, signal));
+  }
+  let removeAbort = null;
+  const aborted = new Promise((_, reject) => {
+    const onParentAbort = () => {
+      const error = hostAbortError(label, signal);
+      try { onAbort?.(error); } catch { /* ignore */ }
+      reject(error);
+    };
+    signal.addEventListener('abort', onParentAbort, { once: true });
+    removeAbort = () => signal.removeEventListener('abort', onParentAbort);
+  });
+  return Promise.race([promise, aborted]).finally(() => removeAbort?.());
+}
+
 function compactJson(value) {
   if (value == null || value === '') return 'not provided';
   try {
@@ -1568,6 +1628,7 @@ async function runCursorSdk(action, ctx) {
   let validation = { valid: false, missing: ['receipt'], action_type: effectiveActionType(executionAction) };
   let sameSession = false;
   const timeoutMs = cursorTimeoutMs(executionAction, ctx);
+  const parentSignal = resolveHostAbortSignal(ctx);
   const providerStartedAt = Date.now();
   const obs = createAgentRunObserver(ctx, { provider: CURSOR_PROVIDER });
   obs.emit('provider_start', {
@@ -1576,14 +1637,21 @@ async function runCursorSdk(action, ctx) {
     timeout_ms: timeoutMs,
   });
   obs.emitJsonlPath();
+  if (parentSignal?.aborted) {
+    throw hostAbortError('cursor_sdk', parentSignal);
+  }
 
   try {
     if (typeof Agent.create === 'function') {
-      cursorAgent = await withTimeout(
-        Agent.create(options),
-        timeoutMs,
+      cursorAgent = await raceWithHostAbort(
+        withTimeout(
+          Agent.create(options),
+          timeoutMs,
+          'cursor_sdk Agent.create',
+          () => obs.emit('run_timeout', { phase: 'agent_create', timeout_ms: timeoutMs }, 'warning'),
+        ),
+        parentSignal,
         'cursor_sdk Agent.create',
-        () => obs.emit('run_timeout', { phase: 'agent_create', timeout_ms: timeoutMs }, 'warning'),
       );
       sameSession = true;
 
@@ -1598,33 +1666,24 @@ async function runCursorSdk(action, ctx) {
         const runId = run?.id ?? null;
         obs.emit('run_bound', { run_id: runId, turn: turnLabel });
         const streamPromise = consumeCursorRunStream(obs, run);
-        const result = await withTimeout(Promise.all([
-          typeof run?.wait === 'function' ? run.wait() : Promise.resolve(run),
-          streamPromise,
-        ]).then(([waitResult]) => waitResult), timeoutMs, `cursor_sdk ${turnLabel}`, () => {
-          obs.emit('run_timeout', {
-            run_id: runId,
-            turn: turnLabel,
-            timeout_ms: timeoutMs,
-            open_tools: [...obs.openTools.values()].map((tool) => tool.name),
-          }, 'warning');
-          obs.checkOpenTools('timeout');
-          if (typeof run?.supports === 'function' && !run.supports('cancel')) {
-            obs.emit('run_cancel_skipped', {
+        const result = await raceWithHostAbort(
+          withTimeout(Promise.all([
+            typeof run?.wait === 'function' ? run.wait() : Promise.resolve(run),
+            streamPromise,
+          ]).then(([waitResult]) => waitResult), timeoutMs, `cursor_sdk ${turnLabel}`, () => {
+            obs.emit('run_timeout', {
               run_id: runId,
-              reason: typeof run?.unsupportedReason === 'function' ? run.unsupportedReason('cancel') : 'unsupported',
+              turn: turnLabel,
+              timeout_ms: timeoutMs,
+              open_tools: [...obs.openTools.values()].map((tool) => tool.name),
             }, 'warning');
-            return;
-          }
-          if (typeof run?.cancel === 'function') {
-            Promise.resolve(run.cancel())
-              .then(() => obs.emit('run_cancelled', { run_id: runId, reason: 'timeout' }))
-              .catch((err) => obs.emit('run_cancel_failed', {
-                run_id: runId,
-                error: summarizeAgentText(err?.message || String(err), 300),
-              }, 'warning'));
-          }
-        });
+            obs.checkOpenTools('timeout');
+            cancelCursorRun(run, obs, 'timeout');
+          }),
+          parentSignal,
+          `cursor_sdk ${turnLabel}`,
+          () => cancelCursorRun(run, obs, 'host_aborted'),
+        );
         const rawResultText = String(result?.result ?? '').trim();
         obs.endTurn({
           turn: turnLabel,
@@ -1661,11 +1720,15 @@ async function runCursorSdk(action, ctx) {
       }, roots);
       const promptStarted = Date.now();
       obs.emit('turn_start', { turn: 'prompt', prompt_chars: prompt.length });
-      runResult = await withTimeout(
-        Agent.prompt(prompt, options),
-        timeoutMs,
+      runResult = await raceWithHostAbort(
+        withTimeout(
+          Agent.prompt(prompt, options),
+          timeoutMs,
+          'cursor_sdk Agent.prompt',
+          () => obs.emit('run_timeout', { phase: 'agent_prompt', timeout_ms: timeoutMs }, 'warning'),
+        ),
+        parentSignal,
         'cursor_sdk Agent.prompt',
-        () => obs.emit('run_timeout', { phase: 'agent_prompt', timeout_ms: timeoutMs }, 'warning'),
       );
       rawText = String(runResult?.result ?? '').trim();
       obs.emit('turn_finished', {
@@ -1685,6 +1748,7 @@ async function runCursorSdk(action, ctx) {
       });
     }
   } catch (e) {
+    if (isHostAbortError(e)) throw e;
     const deferred = cursorStartupFailure(e, CursorAgentError);
     const timedOut = isCursorTimeoutError(e);
     return {

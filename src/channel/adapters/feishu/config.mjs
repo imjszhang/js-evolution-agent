@@ -6,6 +6,12 @@ import {
   operatorBindingForApi,
   DEFAULT_BIND_PHRASE,
 } from './binding.mjs';
+import {
+  DEFAULT_FEISHU_RETRY_BASE_MS,
+  DEFAULT_FEISHU_RETRY_JITTER,
+  DEFAULT_FEISHU_RETRY_MAX_MS,
+  DEFAULT_FEISHU_RETRY_MULTIPLIER,
+} from './backoff.mjs';
 
 const POLICY_OPEN = 'open';
 const POLICY_ALLOWLIST = 'allowlist';
@@ -46,6 +52,16 @@ function timeoutSetting({ override, block, envNames, fallback }) {
   for (const name of envNames) {
     const value = readEnv(name);
     if (value) return positiveMs(value, fallback);
+  }
+  return fallback;
+}
+
+function numericSetting({ override, block, envNames, fallback, min = 0, max = Number.POSITIVE_INFINITY }) {
+  const candidates = [override, block, ...envNames.map((name) => readEnv(name))];
+  for (const value of candidates) {
+    if (value == null || value === '') continue;
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed >= min && parsed <= max) return parsed;
   }
   return fallback;
 }
@@ -231,6 +247,33 @@ export function resolveFeishuConfig(root, subject, overrides = {}) {
       envNames: [`JEA_CHANNEL_FEISHU_${subjectSlug}_SHUTDOWN_GRACE_MS`, 'JEA_CHANNEL_SHUTDOWN_GRACE_MS'],
       fallback: DEFAULT_CHANNEL_SHUTDOWN_GRACE_MS,
     }),
+    retryBaseMs: timeoutSetting({
+      override: overrides.retryBaseMs,
+      block: block.retry_base_ms ?? block.retryBaseMs,
+      envNames: [`JEA_CHANNEL_FEISHU_${subjectSlug}_RETRY_BASE_MS`, 'JEA_CHANNEL_FEISHU_RETRY_BASE_MS'],
+      fallback: DEFAULT_FEISHU_RETRY_BASE_MS,
+    }),
+    retryMultiplier: numericSetting({
+      override: overrides.retryMultiplier,
+      block: block.retry_multiplier ?? block.retryMultiplier,
+      envNames: [`JEA_CHANNEL_FEISHU_${subjectSlug}_RETRY_MULTIPLIER`, 'JEA_CHANNEL_FEISHU_RETRY_MULTIPLIER'],
+      fallback: DEFAULT_FEISHU_RETRY_MULTIPLIER,
+      min: 1,
+    }),
+    retryMaxMs: timeoutSetting({
+      override: overrides.retryMaxMs,
+      block: block.retry_max_ms ?? block.retryMaxMs,
+      envNames: [`JEA_CHANNEL_FEISHU_${subjectSlug}_RETRY_MAX_MS`, 'JEA_CHANNEL_FEISHU_RETRY_MAX_MS'],
+      fallback: DEFAULT_FEISHU_RETRY_MAX_MS,
+    }),
+    retryJitter: numericSetting({
+      override: overrides.retryJitter,
+      block: block.retry_jitter ?? block.retryJitter,
+      envNames: [`JEA_CHANNEL_FEISHU_${subjectSlug}_RETRY_JITTER`, 'JEA_CHANNEL_FEISHU_RETRY_JITTER'],
+      fallback: DEFAULT_FEISHU_RETRY_JITTER,
+      min: 0,
+      max: 1,
+    }),
   };
   return mergeOperatorBinding(base, operatorBinding);
 }
@@ -259,6 +302,10 @@ export function feishuConfigForApi(config) {
     send_timeout_ms: config.sendTimeoutMs,
     stop_timeout_ms: config.stopTimeoutMs,
     shutdown_grace_ms: config.shutdownGraceMs,
+    retry_base_ms: config.retryBaseMs,
+    retry_multiplier: config.retryMultiplier,
+    retry_max_ms: config.retryMaxMs,
+    retry_jitter: config.retryJitter,
   };
 }
 

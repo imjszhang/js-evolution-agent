@@ -2765,6 +2765,40 @@ export const links = defineLinks({
     expect(vi.mocked(claudeQuery).mock.calls[1][0].options.resume).toBe('claude-default-session');
   });
 
+  it('cancels a bound Cursor run once when the host abort signal fires', async () => {
+    process.env.CURSOR_API_KEY = 'cursor-test-key';
+    const cancel = vi.fn(async () => {});
+    const dispose = vi.fn(async () => {});
+    const wait = vi.fn(() => new Promise(() => {}));
+    vi.mocked(Agent.create).mockImplementation(async () => ({
+      send: vi.fn(async () => ({
+        id: 'cursor-run-cancel',
+        cancel,
+        wait,
+        stream: vi.fn(async function* stream() {}),
+      })),
+      [Symbol.asyncDispose]: dispose,
+    }));
+
+    const controller = new AbortController();
+    const ctx = makeAgentProviderCtx('Abort the hanging Cursor run.');
+    ctx.host.abortSignal = controller.signal;
+    const pending = actionHandlers.agent_execute({
+      type: 'agent_execute',
+      params: directAgentParams({
+        provider: 'cursor_sdk',
+        objective: 'Cancel a hanging Cursor run',
+        mode: 'observe',
+      }),
+    }, ctx);
+
+    await vi.waitFor(() => expect(wait).toHaveBeenCalled());
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ code: 'channel_aborted' });
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
   it('requires Cursor SDK credentials before execution', async () => {
     delete process.env.CURSOR_API_KEY;
     const result = await actionHandlers.agent_execute({

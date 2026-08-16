@@ -60,6 +60,13 @@ export async function runAcpProviderTurns({
     permission_profile: permissionProfile,
   });
   observer.emitJsonlPath();
+  const parentSignal = ctx?.host?.abortSignal ?? ctx?.signal ?? null;
+  if (parentSignal?.aborted) {
+    const error = new Error('ACP execution aborted');
+    error.code = 'channel_aborted';
+    error.retryable = true;
+    throw error;
+  }
 
   try {
     runtime = await runtimeFactory({
@@ -72,12 +79,36 @@ export async function runAcpProviderTurns({
       timeoutMs,
       killGraceMs,
     });
-    const initial = await runtime.prompt(initialPrompt, { label: 'initial', timeoutMs });
+    const promptWithAbort = async (text, options) => {
+      if (parentSignal?.aborted) {
+        const error = new Error('ACP execution aborted');
+        error.code = 'channel_aborted';
+        error.retryable = true;
+        throw error;
+      }
+      const pending = runtime.prompt(text, options);
+      if (!parentSignal) return pending;
+      return Promise.race([
+        pending,
+        new Promise((_, reject) => {
+          const onAbort = () => {
+            void runtime.cancel('host_aborted');
+            const error = new Error('ACP execution aborted');
+            error.code = 'channel_aborted';
+            error.retryable = true;
+            reject(error);
+          };
+          parentSignal.addEventListener('abort', onAbort, { once: true });
+          pending.finally(() => parentSignal.removeEventListener('abort', onAbort));
+        }),
+      ]);
+    };
+    const initial = await promptWithAbort(initialPrompt, { label: 'initial', timeoutMs });
     turns.push({ turn: 'initial', ...initial });
 
     let validation = { valid: false, missing: ['receipt'] };
     for (let attempt = 1; attempt <= verificationAttempts; attempt += 1) {
-      const verified = await runtime.prompt(
+      const verified = await promptWithAbort(
         buildVerificationPrompt(validation, attempt),
         { label: `verify-${attempt}`, timeoutMs },
       );
@@ -102,6 +133,7 @@ export async function runAcpProviderTurns({
       final,
     };
   } catch (error) {
+    if (error?.code === 'channel_aborted') throw error;
     const deferred = [
       'acp_spawn_failed',
       'acp_framework_unconfigured',

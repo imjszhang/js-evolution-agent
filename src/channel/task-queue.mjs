@@ -8,6 +8,7 @@ import {
   pendingTasksPath,
   readTaskQueue,
   reclaimExpiredLeases,
+  releaseTaskForAbort,
   releaseTaskForRetry,
   renewTaskLease,
   retryTask,
@@ -50,6 +51,10 @@ export function failChannelTask(root, subject, taskId, failure = {}) {
 
 export function releaseChannelTaskForRetry(root, subject, taskId, failure = {}) {
   return releaseTaskForRetry(root, subject, taskId, failure, { domain });
+}
+
+export function releaseChannelTaskForAbort(root, subject, taskId, failure = {}) {
+  return releaseTaskForAbort(root, subject, taskId, failure, { domain });
 }
 
 export function retryChannelTask(root, subject, taskId, failure = {}) {

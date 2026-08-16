@@ -8,7 +8,7 @@ import { acknowledgeTask } from '../../daemon/daemon-tasks.mjs';
 import { recordDaemonEvent } from '../../daemon/daemon-events.mjs';
 import { buildChannelProjection } from '../../channel/projection.mjs';
 import { readChannelEvents, recordChannelEvent } from '../../channel/audit.mjs';
-import { requestChannelWorkerStop } from '../../channel/worker-state.mjs';
+import { reconcileChannelWorkerState } from '../../channel/worker-state.mjs';
 import {
   channelInboundPendingDir,
   channelInboundProcessedDir,
@@ -560,16 +560,17 @@ function createSubjectContext(runtime, projectRoot, catalogLimit) {
     }
 
     if (kind === 'channel_health') {
-      const result = requestChannelWorkerStop(projectRoot, runtime.subject);
+      const result = reconcileChannelWorkerState(projectRoot, runtime.subject);
       recordChannelEvent(projectRoot, runtime.subject, {
         type: 'channel_attention_acknowledged',
         status: 'ok',
         attention_kind: kind,
-        action: 'channel_worker_stale_marked_stopped',
-        reason: result.reason,
+        action: 'channel_worker_state_reconciled',
+        changed: result.changed,
+        roles: result.roles,
       });
       invalidateRuntimeCaches();
-      return { ok: true, action: 'channel_worker_stale_acknowledged', result };
+      return { ok: true, action: 'channel_worker_state_reconciled', result };
     }
 
     return { ok: false, status: 400, error: `unsupported attention kind: ${kind}` };

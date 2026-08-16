@@ -62,6 +62,7 @@ import {
   completeChannelTask,
   failChannelTask,
   reclaimExpiredChannelLeases,
+  releaseChannelTaskForAbort,
   releaseChannelTaskForRetry,
   renewChannelTaskLease,
 } from '../channel/task-queue.mjs';
@@ -72,6 +73,7 @@ import {
   parseHeartbeatMs as parseChannelHeartbeatMs,
   parseHeartbeatStaleMs as parseChannelHeartbeatStaleMs,
   readChannelWorkerState,
+  reconcileChannelWorkerState,
   requestChannelWorkerStop,
   safeUpdateChannelWorkerHeartbeat,
   updateChannelWorkerHeartbeat,
@@ -743,6 +745,18 @@ async function runChannelWorkOnceBody(root, subject, flags = {}) {
       message: err?.message || String(err),
       retryable: err?.retryable ?? true,
     };
+    if (failure.code === 'channel_aborted') {
+      const released = releaseChannelTaskForAbort(root, subject, claim.task.task_id, failure);
+      recordChannelEvent(root, subject, {
+        type: 'channel_task_aborted',
+        status: 'cancelled',
+        task_id: claim.task.task_id,
+        task_type: claim.task.type,
+        error_code: failure.code,
+        error_reason: failure.reason,
+      });
+      return { worked: true, ok: false, retryable: true, task: released.task, failure };
+    }
     const maxAttempts = Math.max(1, (claim.task.input?.retries ?? 3) + 1);
     if (failure.retryable && claim.task.attempts < maxAttempts) {
       const released = releaseChannelTaskForRetry(root, subject, claim.task.task_id, failure);
@@ -1093,6 +1107,7 @@ async function runChannelDomainWorkerSingle(root, subject, flags = {}) {
   const maxIterations = flags['max-iterations'] == null || flags['max-iterations'] === true
     ? null
     : parsePositiveInt(flags['max-iterations'], { name: 'max-iterations', min: 1 });
+  reconcileChannelWorkerState(root, subject, { staleMs: heartbeatStaleMs });
   const created = createChannelWorkerState(root, subject, {
     workerId,
     staleMs: heartbeatStaleMs,
@@ -1214,6 +1229,7 @@ async function runChannelDomainWorkerSingle(root, subject, flags = {}) {
     await listenerSupervisor;
     process.removeListener('SIGINT', requestLocalStop);
     process.removeListener('SIGTERM', requestLocalStop);
+    reconcileChannelWorkerState(root, subject, { staleMs: heartbeatStaleMs });
   }
   const stopped = markChannelWorkerStopped(root, subject, {
     worker_id: workerId,

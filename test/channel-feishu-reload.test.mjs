@@ -63,6 +63,22 @@ describe('channel feishu hot reload', () => {
     expect(projection.feishu.reload.last_reload_reason).toBe('config_changed');
   });
 
+  it('projection exposes listener retry backoff fields', () => {
+    const root = makeRoot();
+    writeChannelReloadState(root, 'alpha', {
+      retry_attempt: 3,
+      backoff_ms: 20_000,
+      next_retry_at: '2026-08-16T00:00:20.000Z',
+      last_error_code: 'channel_timeout',
+      last_error: 'feishu listener ensure timed out after 20000ms',
+    });
+    const projection = buildChannelProjection(root, 'alpha');
+    expect(projection.feishu.reload.retry_attempt).toBe(3);
+    expect(projection.feishu.reload.backoff_ms).toBe(20_000);
+    expect(projection.feishu.reload.next_retry_at).toBe('2026-08-16T00:00:20.000Z');
+    expect(projection.feishu.reload.last_error_code).toBe('channel_timeout');
+  });
+
   it('consumeChannelReloadRequest removes pending request', () => {
     const root = makeRoot();
     writeChannelReloadRequest(root, 'alpha', { reason: 'manual_reload' });

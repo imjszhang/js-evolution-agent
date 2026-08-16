@@ -214,11 +214,42 @@ export function createChannelRoleWorkerState(root, subject, {
         stopped_at: nowIso(),
         stop_reason: 'zombie_pid_dead',
       };
-    } else if (existing?.status === 'running' && isWorkerFresh(existing, { staleMs }) && isProcessAlive(existing.pid)) {
-      if (existing.pid === pid) {
-        return { created: true, reused: true, role, state: existing };
+    } else if (
+      ['running', 'stopping'].includes(existing?.status)
+      && isWorkerFresh(existing, { staleMs })
+      && isProcessAlive(existing.pid)
+    ) {
+      if (existing.pid !== pid) {
+        return { created: false, reason: 'already_running', role, state: existing };
       }
-      return { created: false, reason: 'already_running', role, state: existing };
+      const reusedAt = nowIso();
+      state.workers[role] = {
+        ...existing,
+        worker_id: workerId,
+        pid,
+        status: 'running',
+        heartbeat_at: reusedAt,
+        stop_requested_at: null,
+        stopped_at: null,
+        stale_after_ms: staleMs,
+        tick_ms: tickMs ?? existing.tick_ms ?? null,
+        allowed_task_types: allowedTaskTypes ?? existing.allowed_task_types ?? safeRoleTaskTypes(role, existing),
+      };
+      delete state.workers[role].stop_reason;
+      state.status = 'running';
+      state.heartbeat_at = reusedAt;
+      state.stop_requested_at = null;
+      state.stopped_at = null;
+      state.pid = pid;
+      if (state.coordinator) {
+        state.coordinator.pid = pid;
+        state.worker_id = `channel-coordinator-${pid}`;
+      } else {
+        state.worker_id = workerId;
+      }
+      delete state.stop_reason;
+      writeChannelWorkerState(root, subject, state);
+      return { created: true, reused: true, role, state: state.workers[role] };
     }
     const now = nowIso();
     state.workers[role] = {
@@ -320,18 +351,20 @@ export function requestChannelRoleWorkerStop(root, subject, role, { staleMs = 60
       return { requested: false, reason: 'not_running', role, state: null };
     }
     const effectiveStaleMs = previous.stale_after_ms ?? staleMs;
-    const fresh = isWorkerFresh(previous, { staleMs: effectiveStaleMs });
+    const alive = isProcessAlive(previous.pid);
+    const live = isWorkerFresh(previous, { staleMs: effectiveStaleMs }) && alive;
     state.workers[role] = {
       ...previous,
-      status: fresh ? 'stopping' : 'stopped',
+      status: live ? 'stopping' : 'stopped',
       stop_requested_at: previous.stop_requested_at || now,
-      stopped_at: fresh ? previous.stopped_at ?? null : now,
+      stopped_at: live ? previous.stopped_at ?? null : now,
+      ...(alive ? {} : { stop_reason: 'zombie_pid_dead' }),
     };
     writeChannelWorkerState(root, subject, state);
     return {
-      requested: fresh,
+      requested: live,
       role,
-      reason: fresh ? 'stop_requested' : 'stale_worker_marked_stopped',
+      reason: live ? 'stop_requested' : (alive ? 'stale_worker_marked_stopped' : 'zombie_pid_dead'),
       state: state.workers[role],
     };
   });
@@ -356,14 +389,16 @@ export function requestChannelWorkerStop(root, subject, { staleMs = 60_000, role
     for (const key of Object.keys(migrated.workers ?? {})) {
       const previous = migrated.workers[key];
       const effectiveStaleMs = previous.stale_after_ms ?? staleMs;
-      const fresh = isWorkerFresh(previous, { staleMs: effectiveStaleMs });
+      const alive = isProcessAlive(previous.pid);
+      const live = isWorkerFresh(previous, { staleMs: effectiveStaleMs }) && alive;
       migrated.workers[key] = {
         ...previous,
-        status: fresh ? 'stopping' : 'stopped',
+        status: live ? 'stopping' : 'stopped',
         stop_requested_at: previous.stop_requested_at || now,
-        stopped_at: fresh ? previous.stopped_at ?? null : now,
+        stopped_at: live ? previous.stopped_at ?? null : now,
+        ...(alive ? {} : { stop_reason: 'zombie_pid_dead' }),
       };
-      anyRequested = anyRequested || fresh;
+      anyRequested = anyRequested || live;
     }
     migrated.stop_requested_at = migrated.stop_requested_at || now;
     migrated.status = anyRequested ? 'stopping' : 'stopped';
@@ -421,4 +456,69 @@ export function safeMarkChannelRoleWorkerStopped(root, subject, role, patch = {}
 export function isChannelRoleStopRequested(root, subject, role) {
   const state = readChannelWorkerState(root, subject);
   return Boolean(state?.workers?.[role]?.stop_requested_at || state?.stop_requested_at);
+}
+
+function reconcileRoleWorker(worker, { now, staleMs }) {
+  if (!worker || !['running', 'stopping'].includes(worker.status)) {
+    return { worker, changed: false, reason: null };
+  }
+  const effectiveStaleMs = worker.stale_after_ms ?? staleMs;
+  const fresh = isWorkerFresh(worker, { staleMs: effectiveStaleMs });
+  const alive = isProcessAlive(worker.pid);
+  let reason = null;
+  if (!alive) reason = 'zombie_pid_dead';
+  else if (!fresh) reason = 'stale_heartbeat';
+  if (!reason) return { worker, changed: false, reason: null };
+  return {
+    worker: {
+      ...worker,
+      status: 'stopped',
+      stopped_at: now,
+      stop_reason: reason,
+    },
+    changed: true,
+    reason,
+  };
+}
+
+export function reconcileChannelWorkerState(root, subject, { staleMs = 60_000 } = {}) {
+  return withChannelWorkerStateLock(root, subject, () => {
+    const raw = readChannelWorkerState(root, subject);
+    if (!raw) return { changed: false, roles: [], state: null };
+    const state = migrateLegacyState(raw);
+    const now = nowIso();
+    const roles = [];
+    for (const [role, previous] of Object.entries(state.workers ?? {})) {
+      const result = reconcileRoleWorker(previous, { now, staleMs });
+      if (!result.changed) continue;
+      state.workers[role] = result.worker;
+      roles.push({
+        role,
+        from: previous.status,
+        to: 'stopped',
+        reason: result.reason,
+      });
+    }
+    const anyActive = Object.values(state.workers ?? {}).some((worker) => (
+      worker.status === 'running' || worker.status === 'stopping'
+    ));
+    const coordinatorDead = state.pid != null && !isProcessAlive(state.pid);
+    let aggregateChanged = false;
+    if (!anyActive && state.status !== 'stopped') {
+      state.status = 'stopped';
+      state.stopped_at = now;
+      if (coordinatorDead) state.stop_reason = state.stop_reason ?? 'zombie_pid_dead';
+      aggregateChanged = true;
+    } else if (anyActive && coordinatorDead && ['running', 'stopping'].includes(state.status)) {
+      state.status = 'stopped';
+      state.stopped_at = now;
+      state.stop_reason = 'zombie_pid_dead';
+      aggregateChanged = true;
+    }
+    if (!roles.length && !aggregateChanged) {
+      return { changed: false, roles, state };
+    }
+    writeChannelWorkerState(root, subject, state);
+    return { changed: true, roles, state };
+  });
 }

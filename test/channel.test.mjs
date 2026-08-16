@@ -317,6 +317,27 @@ describe('channel domain', () => {
       else process.env.JEA_AGENT_PROVIDER = previousProvider;
     });
 
+    it('runChannelAgentRunTask records abort without failed recompute', async () => {
+      const root = makeRoot();
+      const controller = new AbortController();
+      const pending = runChannelAgentRunTask(root, 'alpha', {
+        request: {
+          channel_agent_run_id: 'channel-agent-abort',
+          objective: 'Hang until cancelled',
+          mode: 'observe',
+          permission_profile: 'read_only',
+        },
+        mock_execute: () => new Promise(() => {}),
+      }, { signal: controller.signal });
+      setTimeout(() => controller.abort(new Error('test shutdown')), 10);
+      await expect(pending).rejects.toMatchObject({ code: 'channel_aborted' });
+      const events = readChannelEvents(root, 'alpha', { limit: 20 });
+      expect(events.some((event) => event.type === 'channel_agent_run_aborted'
+        && event.channel_agent_run_id === 'channel-agent-abort')).toBe(true);
+      expect(events.some((event) => event.type === 'channel_agent_run_failed')).toBe(false);
+      expect(events.some((event) => event.reason === 'channel_agent_run_failed')).toBe(false);
+    });
+
     it('runChannelAgentRunTask reports validation failures without executing an agent', async () => {
       const root = makeRoot();
       const result = await runChannelAgentRunTask(root, 'alpha', {

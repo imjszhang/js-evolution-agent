@@ -183,7 +183,7 @@ export async function runChannelTask(root, subject, task, runtime = {}) {
     case 'channel_control_action':
       return runChannelControlActionTask(root, subject, input);
     case 'channel_agent_run':
-      return runChannelAgentRunTask(root, subject, input);
+      return runChannelAgentRunTask(root, subject, input, runtime);
     case 'channel_speech_generation':
       return runChannelSpeechGenerationTask(root, subject, input);
     case 'channel_notify':

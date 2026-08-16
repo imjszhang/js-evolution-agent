@@ -68,3 +68,33 @@ export async function runWithTimeout(promiseFactory, timeoutMs, label = 'operati
     if (!settled && !controller.signal.aborted) controller.abort(abortError(label, parentSignal));
   }
 }
+
+/** Race a factory against a parent AbortSignal without a second I/O deadline. */
+export async function runUntilAbort(promiseFactory, label = 'operation', options = {}) {
+  const parentSignal = options.signal ?? null;
+  if (!parentSignal) return promiseFactory(undefined);
+  const controller = new AbortController();
+  let removeParentAbort = null;
+  let settled = false;
+  const operation = Promise.resolve().then(() => promiseFactory(controller.signal));
+  operation.catch(() => {});
+  try {
+    if (parentSignal.aborted) throw abortError(label, parentSignal);
+    const aborted = new Promise((_, reject) => {
+      const onParentAbort = () => {
+        const error = abortError(label, parentSignal);
+        controller.abort(error);
+        try { options.onCancel?.(error); } catch {}
+        reject(error);
+      };
+      parentSignal.addEventListener('abort', onParentAbort, { once: true });
+      removeParentAbort = () => parentSignal.removeEventListener('abort', onParentAbort);
+    });
+    const result = await Promise.race([operation, aborted]);
+    settled = true;
+    return result;
+  } finally {
+    removeParentAbort?.();
+    if (!settled && !controller.signal.aborted) controller.abort(abortError(label, parentSignal));
+  }
+}

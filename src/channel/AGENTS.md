@@ -34,7 +34,7 @@ Channel 是 daemon 下与 cycle 平级的通信闭环，负责接收外部消息
 - `jea channel desktop send [--session ID] --text TEXT [--id MESSAGE_ID]`：向本地 desktop 会话投递入站消息并入队 classifier；重复 `--id` 不会重复入队。
 - `jea channel desktop read [ID] [--offset N] [--limit N | --tail N]`：读取 desktop 会话；返回稳定记录 id、逻辑 offset，并在读侧按 id 去重。`desktop sessions` 列出会话。
 - `jea channel tick`：运行一次 channel dispatcher，按 pending inbound、attention signals、outbox 入队任务。
-- `jea channel doctor [--json]`：诊断 channel worker 与任务队列；`--purge-deprecated --yes` 取消队列中 pending 的废弃任务。
+- `jea channel doctor [--json]`：诊断 channel worker 与任务队列；`--purge-deprecated --yes` 取消队列中 pending 的废弃任务；`--repair-worker-state --yes` 显式收敛死亡/stale worker（`status` 只读，不会偷偷改盘）；`--probe-network` 做不泄密的 SDK/DNS/HTTPS/凭据化 bot 探测；`--probe-ws` 仅显式启用，且 live channel worker 存在时拒绝第二条 WS。
 - `jea channel queue purge-deprecated [--yes]`：预览或取消 `channel_ingest` / `channel_reply` / `channel_watch` pending 任务。channel daemon 启动时**不再**自动 purge；需手动执行上述命令。
 
 ### 飞书快速部署（新 subject）
@@ -107,10 +107,13 @@ Feishu listener 由独立 supervisor 管理，不阻塞 classifier、presence、
 
 默认边界为 listener connect 20 秒、单次 outbound send 30 秒、listener stop 5 秒、daemon shutdown grace 10 秒。可在 `channels.feishu` 中设置 `connect_timeout_ms`、`send_timeout_ms`、`stop_timeout_ms`、`shutdown_grace_ms`，或使用 `.env.example` 中对应的全局/subject 环境变量覆盖。
 
+Listener supervisor 对 **SDK 尚未连上** 的 start/reload 失败做指数退避（默认 base 5s、×2、max 5min、jitter 20%、无限次数）。SDK 已连接后的内部 reconnect 不计入该状态机。连接成功、配置 fingerprint 变化或显式 reload request 时 attempt 清零；凭据缺失/监听关闭不做高频重试。`feishu.reload` 投影 `retry_attempt`、`backoff_ms`、`next_retry_at` 与最后错误码。一次连接失败只记一组 start failure，再由 supervisor 记 `feishu_listener_retry_scheduled`。
+
 - send timeout 的远端结果可能不确定，因此不盲重试：notify task 与 outbox item 均落 `failed`，事件码为 `channel_timeout`。
-- stop request、SIGINT 或 SIGTERM 产生 `channel_aborted`：进行中的 task 释放回 `pending`，outbox 保持 `pending`，下次 daemon 启动后恢复。
-- shutdown 会取消 HTTP、强制关闭 WebSocket，并在 10 秒 grace 内结束；不应依赖 SIGKILL。
-- timeout/abort 事件只记录错误码、deadline 和 outbound id；不得写 App Secret、bind token、Authorization header 或完整请求配置。
+- stop request、SIGINT 或 SIGTERM 产生 `channel_aborted`：进行中的 task 释放回 `pending` 并清除 lease，**不消耗**本次 claim 的 attempts。`channel_agent_run` 把 daemon AbortSignal 传到 `ctx.host.abortSignal`；Cursor SDK 在已绑定 run 时调用一次 `run.cancel()`，随后有界 `asyncDispose`。abort 记 `channel_agent_run_aborted` / `channel_task_aborted`，不得记 `channel_agent_run_failed`，也不触发失败后的 expression recompute。同一 `channel_agent_run_id` 依赖 deliverable/outbox 幂等键避免重启后重复发送。
+- 启动、停止和 crash 路径会 `reconcileChannelWorkerState`：死亡 PID 或 stale 的 `running/stopping` role 转为 `stopped`，并重算 coordinator。重复 `daemon stop` 时只要 PID 已死即标 stopped，避免留下 `worker_zombie`。Viewer `channel_health` acknowledge 走 reconcile，而不是再把死亡 PID 标成 `stopping`。显式修复：`jea channel doctor --repair-worker-state --yes`。
+- shutdown 会取消 HTTP、强制关闭 WebSocket，并在 10 秒 grace 内结束；不应依赖 SIGKILL。Agent 执行中的 stop 必须在 grace 内返回：停止耗时小于 10 秒、无 `channel_shutdown_grace_exceeded`、无 `worker_zombie`、无残留 daemon/Agent 子进程。
+- timeout/abort/诊断事件只记录错误码、deadline 和 outbound id；不得写 App Secret、bind token、Authorization header、代理凭据或完整请求配置。`jea channel doctor --probe-network` 用 HTTPS token 探测做凭据化 bot check，不构造飞书 SDK Client / 不拉起 WS；区分 DNS、HTTPS/API 权限、WS 握手和 timeout。`--probe-ws` 仅显式启用，live worker 存在时拒绝第二条 WS。一次 listener connect 失败只记一组 `feishu_listener_start_failed`，再由 supervisor 记 `feishu_listener_retry_scheduled`。
 
 入站分类边界（由 **`channel_classifier`** 批量 LLM/规则分类，不再在 presence 内同步正则分类）：
 

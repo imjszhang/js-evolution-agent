@@ -326,6 +326,20 @@ export function releaseTaskForRetry(root, subject, taskIdValue, failure = {}, op
   }), options);
 }
 
+export function releaseTaskForAbort(root, subject, taskIdValue, failure = {}, options = {}) {
+  return updateTask(root, subject, taskIdValue, (task) => ({
+    ...task,
+    status: 'pending',
+    attempts: Math.max(0, (task.attempts ?? 1) - 1),
+    lease_owner: null,
+    lease_expires_at: null,
+    last_error: failure.message ?? failure.last_error ?? null,
+    last_error_code: failure.code ?? failure.last_error_code ?? null,
+    last_error_reason: failure.reason ?? failure.last_error_reason ?? null,
+    updated_at: nowIso(),
+  }), options);
+}
+
 export function retryTask(root, subject, taskIdValue, failure = {}, options = {}) {
   return updateTask(root, subject, taskIdValue, (task, queue) => {
     if (task.status === 'running' && !expiredLease(task)) {

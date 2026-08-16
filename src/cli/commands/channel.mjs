@@ -14,6 +14,9 @@ import { runChannelPresenceTask } from '../../channel/presence.mjs';
 import { cancelDeprecatedChannelTasks } from '../../channel/queue-cleanup.mjs';
 import { channelFeishuCommand } from './channel-feishu.mjs';
 import { resolveFeishuConfig } from '../../channel/adapters/feishu/config.mjs';
+import { probeFeishuNetwork } from '../../channel/adapters/feishu/diagnostics.mjs';
+import { readChannelWorkerState, reconcileChannelWorkerState } from '../../channel/worker-state.mjs';
+import { isProcessAlive } from '../../infra/process-alive.mjs';
 import { createIntelligenceStore } from '../../intelligence/store.mjs';
 import {
   listDesktopSessions,
@@ -57,6 +60,9 @@ function printStatus(projection) {
   if (projection.feishu?.reload?.pending) {
     console.log('feishu reload: pending');
   }
+  if (projection.feishu?.reload?.next_retry_at) {
+    console.log(`feishu retry: attempt=${projection.feishu.reload.retry_attempt ?? 0} backoff_ms=${projection.feishu.reload.backoff_ms ?? '-'} next=${projection.feishu.reload.next_retry_at}`);
+  }
   if (projection.desktop?.config) {
     console.log(`desktop: enabled=${projection.desktop.config.enabled} sessions=${projection.desktop.session_count}`);
   }
@@ -66,6 +72,16 @@ function printStatus(projection) {
   if (projection.tasks.deprecated?.length) {
     console.log(`deprecated tasks: ${projection.tasks.deprecated.map((t) => `${t.type}(${t.status})`).join(', ')}`);
   }
+}
+
+function hasLiveChannelWorker(root, subject) {
+  const state = readChannelWorkerState(root, subject);
+  if (!state) return false;
+  const roles = Object.values(state.workers ?? {});
+  if (roles.some((worker) => ['running', 'stopping'].includes(worker.status) && isProcessAlive(worker.pid))) {
+    return true;
+  }
+  return ['running', 'stopping'].includes(state.status) && isProcessAlive(state.pid);
 }
 
 function createChannelStore(runtime) {
@@ -131,6 +147,16 @@ function buildFeishuDoctorHints(root, subject, projection) {
   if (projection.tasks.deprecated?.length) {
     hints.push(
       '队列中存在已废弃的 channel_reply/channel_watch/channel_ingest 任务。执行 jea channel queue purge-deprecated --yes（或 doctor --purge-deprecated --yes）后重启 channel daemon。',
+    );
+  }
+  if (projection.workers?.zombie_count > 0 || projection.health?.status === 'worker_zombie') {
+    hints.push(
+      '存在已死亡 PID 的 channel worker。执行 jea channel doctor --repair-worker-state --yes 收敛状态；status 只读，不会偷偷改盘。',
+    );
+  }
+  if (projection.feishu?.reload?.next_retry_at) {
+    hints.push(
+      `飞书 listener 将按退避重试：attempt=${projection.feishu.reload.retry_attempt ?? 0} next=${projection.feishu.reload.next_retry_at}。可用 jea channel doctor --probe-network 区分 DNS / HTTPS / 权限 / 超时。`,
     );
   }
   if (!projection.presence?.config?.enabled) {
@@ -387,26 +413,64 @@ export async function channelCommand({ subcommand, flags = {}, args = [], root =
     if (flags['purge-deprecated'] && flags.yes) {
       cancelDeprecatedChannelTasks(root, subject);
     }
+    let repair = null;
+    if (flags['repair-worker-state']) {
+      if (!flags.yes) {
+        console.error('Refusing to repair channel worker state without --yes');
+        return 2;
+      }
+      repair = reconcileChannelWorkerState(root, subject, {
+        staleMs: parseHeartbeatStaleMs(flags['heartbeat-stale-ms']),
+      });
+    }
     const projection = buildChannelProjection(root, subject, {
       heartbeatStaleMs: parseHeartbeatStaleMs(flags['heartbeat-stale-ms']),
     });
     const hints = buildFeishuDoctorHints(root, subject, projection);
+    let network = null;
+    if (flags['probe-network'] || flags['probe-ws']) {
+      const feishu = resolveFeishuConfig(root, subject);
+      const liveWorker = hasLiveChannelWorker(root, subject);
+      network = await probeFeishuNetwork(feishu, {
+        probeWs: Boolean(flags['probe-ws']),
+        liveWorker,
+        timeoutMs: Math.min(feishu.connectTimeoutMs ?? 20_000, 8_000),
+      });
+    }
     const diagnostics = {
       subject,
       health: projection.health,
       queue: readChannelTaskQueue(root, subject),
       feishu: projection.feishu,
       hints,
+      ...(repair ? { repair } : {}),
+      ...(network ? { network } : {}),
     };
     if (flags.json) console.log(JSON.stringify(diagnostics, null, 2));
     else {
       printStatus(projection);
       for (const reason of projection.health.reasons ?? []) console.log(`reason: ${reason}`);
       for (const hint of hints) console.log(`hint: ${hint}`);
+      if (repair) {
+        console.log(`repair: changed=${repair.changed} roles=${repair.roles?.length ?? 0}`);
+        for (const role of repair.roles ?? []) {
+          console.log(`repair role: ${role.role} ${role.from}->${role.to} reason=${role.reason}`);
+        }
+      }
+      if (network) {
+        console.log(`network: ok=${network.ok} host=${network.host} proxy=${network.proxy?.present ? network.proxy.protocol : 'none'}`);
+        for (const check of network.checks ?? []) {
+          const kind = check.kind ? ` kind=${check.kind}` : '';
+          const skipped = check.skipped ? ` skipped=${check.reason}` : '';
+          const error = check.error ? ` error=${check.error}` : '';
+          console.log(`network ${check.name}: ok=${check.ok}${kind}${skipped}${error}`);
+        }
+      }
     }
-    return projection.health.ok ? 0 : 1;
+    return projection.health.ok && (network ? network.ok : true) ? 0 : 1;
   }
 
   console.error('Usage: jea channel <status|events|inbox|outbox|deliverables|send|desktop|tick|work|presence|queue|doctor|feishu> [--subject NAME] [--json]');
+  console.error('       jea channel doctor [--repair-worker-state --yes] [--probe-network] [--probe-ws] [--purge-deprecated --yes]');
   return 2;
 }

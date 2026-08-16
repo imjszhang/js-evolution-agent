@@ -219,6 +219,9 @@ export function buildChannelProjection(root, subject, { heartbeatStaleMs = 60_00
         listener_state: reloadState.listener_state ?? listenerStatus.state ?? 'stopped',
         listener_state_at: reloadState.listener_state_at ?? null,
         config_fingerprint: reloadState.config_fingerprint ?? null,
+        retry_attempt: reloadState.retry_attempt ?? 0,
+        backoff_ms: reloadState.backoff_ms ?? null,
+        next_retry_at: reloadState.next_retry_at ?? null,
       },
     },
     desktop: {
