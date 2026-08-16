@@ -200,6 +200,15 @@ export function catalogCommand(name: string): CatalogCommandEntry | undefined {
   return CLIENT_API_COMMAND_CATALOG.find((entry) => entry.name === name)
 }
 
+export function isWebAllowedCommand(name: string): boolean {
+  const entry = catalogCommand(name)
+  return Boolean(
+    entry
+    && entry.availability.web
+    && (entry.capability === 'readonly' || entry.capability === 'write')
+  )
+}
+
 export function isClientApiCommand(name: string): name is ClientApiCommandName {
   return (CLIENT_API_COMMANDS as readonly string[]).includes(name)
 }
