@@ -194,7 +194,7 @@ describe('conversation workspace components', () => {
     expect(web).toContain('data-testid="conversation-state-web-rejected"')
   })
 
-  it('lists subjects and local sessions in the left column', () => {
+  it('lists subjects in the left column without a session picker', () => {
     const { client } = createConversationHarness()
     const model = new ConversationWorkspaceModel(client)
     const html = renderPane(
@@ -214,19 +214,15 @@ describe('conversation workspace components', () => {
             selected: true,
             desktopChannelEnabled: true
           },
-          sessions: [{
-            session_id: 'main',
-            target: 'desktop:main',
-            message_count: 2,
-            last_message_at: '2026-08-16T00:00:00.000Z'
-          }],
           sessionId: 'main'
         }}
       />
     )
     expect(html).toContain('data-testid="subject-alpha"')
-    expect(html).toContain('data-testid="session-main"')
-    expect(html).toContain('data-testid="session-create"')
+    expect(html).toContain('data-testid="subject-beta"')
+    expect(html).not.toContain('data-testid="session-main"')
+    expect(html).not.toContain('data-testid="session-create"')
+    expect(html).not.toContain('data-testid="session-list"')
   })
 
   it('wires the desktop host through JeaClient rather than a page navigator', () => {

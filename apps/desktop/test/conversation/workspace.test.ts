@@ -198,12 +198,7 @@ describe('conversation workspace model', () => {
     await model.send()
     const secondId = model.getSnapshot().lastDraftId
     expect(secondId).not.toBe(firstId)
-
-    await model.createSession('review')
-    model.setDraft('same draft')
-    await model.send()
-    expect(model.getSnapshot().lastDraftId).not.toBe(secondId)
-    expect(harness.sent.at(-1)?.sessionId).toBe('review')
+    expect(harness.sent.at(-1)?.sessionId).toBe('main')
   })
 
   it('cancels stale reads when switching subject and never mixes messages', async () => {
@@ -233,10 +228,10 @@ describe('conversation workspace model', () => {
           isDefault: false,
           selected: false,
           desktopChannelEnabled: true,
-          sessions: [{ session_id: 'work', target: 'desktop:work', message_count: 1, last_message_at: '2026-08-16T00:00:01.000Z' }],
+          sessions: [{ session_id: 'main', target: 'desktop:main', message_count: 1, last_message_at: '2026-08-16T00:00:01.000Z' }],
           records: [{
             id: 'beta-1',
-            session_id: 'work',
+            session_id: 'main',
             role: 'user',
             direction: 'inbound',
             content: 'beta only',
@@ -255,7 +250,7 @@ describe('conversation workspace model', () => {
     await waitFor(model, () => model.getSnapshot().subject?.name === 'beta' && model.getSnapshot().records.length > 0)
     const snapshot = model.getSnapshot()
     expect(snapshot.subject?.name).toBe('beta')
-    expect(snapshot.sessionId).toBe('work')
+    expect(snapshot.sessionId).toBe('main')
     expect(snapshot.records.map((record) => record.content)).toEqual(['beta only'])
     expect(snapshot.records.some((record) => record.content.includes('alpha'))).toBe(false)
   })

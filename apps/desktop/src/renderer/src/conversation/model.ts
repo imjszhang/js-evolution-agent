@@ -145,14 +145,15 @@ export class ConversationWorkspaceModel {
 
   async selectSubject(
     name: string,
-    options: { generation?: number; sessionId?: string } = {}
+    options: { generation?: number } = {}
   ): Promise<void> {
     const generation = options.generation ?? ++this.generation
     this.offset = 0
     this.draftAttempt = null
     this.waitStartedAt = null
     this.patch({
-      sessionId: options.sessionId ?? null,
+      sessionId: DEFAULT_SESSION,
+      sessions: [],
       records: [],
       waiting: false,
       sendState: 'idle',
@@ -162,58 +163,13 @@ export class ConversationWorkspaceModel {
     try {
       const subject = await this.client.selectSubject(name)
       if (!this.isCurrent(generation)) return
-      this.patch({ subject })
-      const [sessions] = await Promise.all([
-        this.client.listSessions(name),
-        this.refreshSupport(name, generation)
-      ])
+      this.patch({ subject, sessionId: DEFAULT_SESSION, sessions: [] })
+      await this.refreshSupport(name, generation)
       if (!this.isCurrent(generation)) return
-      const sessionId = options.sessionId
-        && sessions.some((item) => item.session_id === options.sessionId)
-        ? options.sessionId
-        : sessions[0]?.session_id ?? DEFAULT_SESSION
-      this.patch({ sessions, sessionId })
       await this.readMessages(true, generation)
     } catch (error) {
       if (!this.isCurrent(generation)) return
       this.patch({ error: classifyClientError(error, 'Unable to load conversation state.') })
-    }
-  }
-
-  async selectSession(sessionId: string): Promise<void> {
-    if (!this.snapshot.subject || this.snapshot.sessionId === sessionId) {
-      this.patch({ sessionId })
-      return
-    }
-    const generation = ++this.generation
-    this.offset = 0
-    this.draftAttempt = null
-    this.waitStartedAt = null
-    this.patch({
-      sessionId,
-      records: [],
-      waiting: false,
-      sendState: 'idle',
-      lastSend: null,
-      error: null
-    })
-    await this.readMessages(true, generation)
-  }
-
-  async createSession(sessionId?: string): Promise<void> {
-    const subject = this.snapshot.subject?.name
-    if (!subject) return
-    const generation = this.generation
-    try {
-      const created = await this.client.createSession(subject, sessionId)
-      if (!this.isCurrent(generation) || this.snapshot.subject?.name !== subject) return
-      const sessions = await this.client.listSessions(subject)
-      if (!this.isCurrent(generation)) return
-      this.patch({ sessions })
-      await this.selectSession(created.session_id)
-    } catch (error) {
-      if (!this.isCurrent(generation)) return
-      this.patch({ error: classifyClientError(error, 'Unable to create a local session.') })
     }
   }
 
@@ -266,7 +222,7 @@ export class ConversationWorkspaceModel {
     try {
       await this.client.enableDesktopChannel(subject)
       if (!this.isCurrent(generation)) return
-      await this.selectSubject(subject, { generation, sessionId: this.snapshot.sessionId ?? undefined })
+      await this.selectSubject(subject, { generation })
     } catch (error) {
       if (!this.isCurrent(generation)) return
       this.patch({ error: classifyClientError(error, 'Unable to enable desktop Channel.') })
@@ -304,7 +260,7 @@ export class ConversationWorkspaceModel {
         await this.selectSubject(next)
         return
       }
-      if (subject) await this.selectSubject(subject, { sessionId: sessionId ?? undefined })
+      if (subject) await this.selectSubject(subject)
       return
     }
     if (isConversationEvent(event)) {
@@ -313,10 +269,6 @@ export class ConversationWorkspaceModel {
       await this.readMessages(false)
       if (this.snapshot.waiting && hasAssistantAfter(this.snapshot.records, this.waitStartedAt)) {
         this.stopWaiting()
-      }
-      if (subject) {
-        const sessions = await this.client.listSessions(subject)
-        if (this.snapshot.subject?.name === subject) this.patch({ sessions })
       }
       return
     }
