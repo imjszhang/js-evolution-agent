@@ -95,14 +95,22 @@ describe('release-artifact-scan', () => {
 });
 
 describe('release-version-preflight', () => {
-  it('agrees on current root and desktop package versions and pending later slots', () => {
+  it('agrees on current root, desktop, CLI, Client API, and About versions', () => {
     const report = runVersionPreflight({ repoRoot, strict: false });
     expect(report.ok).toBe(true);
-    expect(report.status).toBe('agree_with_pending');
+    expect(report.status).toBe('agree');
     expect(report.expected).toBe('0.1.0');
-    expect(report.pending).toEqual(['client_api', 'about_output']);
+    expect(report.pending).toEqual([]);
     const visible = report.sources.filter((item) => item.required);
+    expect(visible.map((item) => item.id)).toEqual([
+      'root_package',
+      'desktop_package',
+      'bundled_cli',
+      'client_api',
+      'about_output',
+    ]);
     expect(visible.every((item) => item.version === '0.1.0')).toBe(true);
+    expect(runVersionPreflight({ repoRoot, strict: true }).ok).toBe(true);
   });
 
   it('keeps missing later sources pending unless --strict', () => {
@@ -142,7 +150,7 @@ describe('release-audit-gate', () => {
 });
 
 describe('release-package-smoke', () => {
-  it('lists expected DMG/ZIP/SHA256SUMS names without requiring #120 artifacts', () => {
+  it('lists expected DMG/ZIP/SHA256SUMS names and accepts local pending or smoked artifacts', () => {
     const names = expectedArtifactNames('0.1.0');
     expect(names).toEqual({
       dmg: 'JEA-0.1.0-macos-arm64.dmg',
@@ -151,10 +159,10 @@ describe('release-package-smoke', () => {
       packageSmoke: 'package-smoke.json',
       releaseNotes: 'RELEASE_NOTES.md',
     });
-    const pending = evaluatePackageSmoke({ dir: join(repoRoot, 'dist/release') });
-    expect(pending.ok).toBe(true);
-    expect(pending.status).toBe('pending');
-    expect(pending.issue).toBe(120);
+    const local = evaluatePackageSmoke({ dir: join(repoRoot, 'dist/release') });
+    expect(local.ok).toBe(true);
+    expect(['pending', 'smoked']).toContain(local.status);
+    expect(local.issue).toBe(122);
   });
 
   it('fail-closes a partial artifact directory', () => {
@@ -212,7 +220,7 @@ describe('release-skeleton orchestrator', () => {
       'scan_missing_assets_fixture',
       'version_preflight',
       'audit_gate_wired',
-      'package_smoke_pending',
+      'package_smoke',
       'publish_guard_idle',
       'publish_guard_fail_closed',
       'scan_cli_clean',

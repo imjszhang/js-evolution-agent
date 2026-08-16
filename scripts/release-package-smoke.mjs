@@ -33,19 +33,20 @@ export function evaluatePackageSmoke({ dir, version = RELEASE_VERSION } = {}) {
   }
 
   const foundCount = Object.values(present).filter(Boolean).length;
-  if (!absDir || !existsSync(absDir) || foundCount === 0) {
+  const hasInstallers = Boolean(present.dmg || present.zip || present.checksums);
+  if (!absDir || !existsSync(absDir) || foundCount === 0 || !hasInstallers) {
     return {
       ok: true,
       status: 'pending',
       reason: 'artifacts_not_built',
-      issue: 120,
+      issue: 122,
       dir: absDir,
       expected,
       present,
       missing,
       notes: [
-        'macOS DMG/ZIP/SHA256SUMS are owned by #120 and are not required for Wave 1.',
-        'This script only smoke-checks artifacts when they already exist.',
+        'macOS DMG/ZIP/SHA256SUMS are produced by desktop:package (#120/#122).',
+        'Linux CI may stay pending; a local or macOS release job should reach smoked.',
       ],
     };
   }
@@ -75,7 +76,7 @@ export function evaluatePackageSmoke({ dir, version = RELEASE_VERSION } = {}) {
     ok: failures.length === 0,
     status: failures.length === 0 ? 'smoked' : 'failed',
     reason: failures.length === 0 ? 'artifacts_present' : 'artifact_smoke_failed',
-    issue: 120,
+    issue: 122,
     dir: absDir,
     expected,
     present,

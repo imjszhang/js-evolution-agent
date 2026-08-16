@@ -1,4 +1,4 @@
-# Linux CI for the #122 Wave 1 release skeleton.
+# Linux CI for the #122 release skeleton.
 # Runs inventory/scan scripts against committed fixtures only.
 # Does not replace or weaken check / test / desktop-build / dependency-audit / CodeQL.
 name: Release skeleton
@@ -36,4 +36,4 @@ jobs:
       - name: Fixture inventory, version preflight, #77 wiring, publish guard
         run: npm run release:skeleton -- --json
       - name: Unit tests for release-skeleton scripts
-        run: npm test -- --run test/release-skeleton.test.mjs
+        run: npm test -- --run test/release-skeleton.test.mjs test/release-product-journey.test.mjs

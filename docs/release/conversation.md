@@ -1,6 +1,6 @@
-# 对话（0.1.0 草稿）
+# 对话（0.1.0）
 
-状态：**draft / pending**。依赖 [#119](https://github.com/imjszhang/js-evolution-agent/issues/119) 受治理 Conversation workspace。
+状态：**implemented / #119**。日期：2026-08-16。认证入口见 [0.1.0-certification.md](./0.1.0-certification.md) 第 2 节。
 
 ## 产品语义（不得在终稿中写反）
 

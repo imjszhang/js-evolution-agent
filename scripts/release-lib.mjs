@@ -73,6 +73,7 @@ export function walkFiles(root) {
     for (const entry of entries) {
       const full = join(current, entry.name);
       if (entry.isDirectory()) {
+        if (entry.name === 'node_modules') continue;
         stack.push(full);
         continue;
       }

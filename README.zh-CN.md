@@ -28,10 +28,23 @@
 
 > 不是「固定 `/goal` 直到测试通过」的 coding loop，而是带理论约束、治理边界与可审计回执的 **演化 loop** — 当旧目标（法则）被后果证伪时，系统进入规则更新期，而非空转或硬撑。
 
+## 产品（0.1.0）
+
+JEA 0.1.0 是 **macOS Apple Silicon** 应用，并附带托管 `jea` CLI。操作面是单一三栏工作区，而不是已退役的七页 Desktop（Operations / Todo / Channel / ACP）：
+
+1. **Subject 与本地会话**
+2. **受治理对话**，走 Channel classifier / presence / speech 管道（聊天文本不是 hard approval）
+3. **Evolution Inspector**，查看 cycle 状态、report / diary / verify 与 receipt / evidence 摘要
+
+Settings 覆盖 JEA Home、默认 Subject、CLI 安装、外观和 About。Electron 与 localhost Web 加载同一套 React 应用。安装与 Gatekeeper 见 [docs/release/installation.md](docs/release/installation.md)。无头生命周期：`jea start --no-open`、`jea status --json`、`jea url`、`jea stop`。
+
+在 [#122](https://github.com/imjszhang/js-evolution-agent/issues/122) 认证完成前，不会发布 GitHub Release。下文仍是开发者从源码运行的路径。
+
 ---
 
 ## 目录
 
+- [产品（0.1.0）](#产品010)
 - [核心创新：目标自修正](#核心创新目标自修正)
 - [与 Loop Engineering 的对齐](#与-loop-engineering-的对齐)
 - [这是什么](#这是什么)
@@ -159,7 +172,7 @@ decide next                →  Phase 3.5 beliefs + Phase 4/4.5 goals + 下一�
 - **信念与目标管理** — 可验证假设（beliefs）与目标树（goals）的 formal 更新路径
 - **多 Agent 后端** — DeepSeek、Claude Agent SDK、Cursor SDK、Reasonix CLI 等
 - **Channel（飞书）** — 入站分类、Presence 表达、控制命令（切换演化模式、请求开轮等）
-- **Evolution Viewer** — 本地 Web UI，实时查看轮次、报告、daemon 与 observability
+- **Evolution Inspector** — 产品工作区里的 cycle / report / diary / verify 必要读取；遗留 Evolution Viewer 仍是开发 / 高级路径
 
 ---
 

@@ -44,6 +44,7 @@
     "release:package-smoke": "node --preserve-symlinks scripts/release-package-smoke.mjs",
     "release:publish-guard": "node --preserve-symlinks scripts/release-publish-guard.mjs",
     "release:skeleton": "node --preserve-symlinks scripts/release-skeleton.mjs",
+    "release:journey": "node --preserve-symlinks scripts/release-product-journey.mjs",
     "viewer:build": "node --preserve-symlinks src/cli/jea.mjs intel viewer build",
     "viewer:serve": "node --preserve-symlinks src/cli/jea.mjs intel viewer serve --open",
     "viewer:serve:win": "powershell -ExecutionPolicy Bypass -File scripts/viewer-serve-win.ps1 -Launch",

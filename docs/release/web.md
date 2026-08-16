@@ -1,6 +1,6 @@
-# Web（0.1.0 草稿）
+# Web（0.1.0）
 
-状态：**implemented / pending certification**。localhost Web host 见 [#118](https://github.com/imjszhang/js-evolution-agent/issues/118)。
+状态：**implemented / #118**。日期：2026-08-16。localhost Web host 见 [#118](https://github.com/imjszhang/js-evolution-agent/issues/118)。
 
 ## 产品边界
 

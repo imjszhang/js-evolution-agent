@@ -1,7 +1,7 @@
 # 安装（0.1.0）
 
-状态：**implemented / #120**。日期：2026-08-16。  
-这不是已发布 GitHub Release 说明；描述的是 macOS arm64 包装路径。
+状态：**implemented / #120, #122**。日期：2026-08-16。  
+这不是已发布 GitHub Release 说明；描述的是 macOS arm64 包装路径。本地构建：`npm run desktop:package`。
 
 ## 适用范围
 

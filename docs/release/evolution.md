@@ -1,6 +1,6 @@
-# Evolution（0.1.0 草稿）
+# Evolution（0.1.0）
 
-状态：**draft / pending**。依赖 [#117](https://github.com/imjszhang/js-evolution-agent/issues/117) 必要 Evolution Inspector。
+状态：**implemented / #117**。日期：2026-08-16。认证入口见 [0.1.0-certification.md](./0.1.0-certification.md) 第 2 节。
 
 ## 0.1.0 必要子集
 

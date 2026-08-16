@@ -1,6 +1,6 @@
 # 产品打包与 CLI 启动器
 
-本目录是 JEA 0.1.0 macOS 产品身份、启动器与打包路径的 owner，对应 issue #120。
+本目录是 JEA 0.1.0 macOS 产品身份、启动器与打包路径的 owner，对应 issue #120；发布认证见 #122。
 
 ## 冻结决策
 
@@ -26,4 +26,6 @@
 npm run desktop:stage
 npm run desktop:package   # 仅 darwin arm64
 npm run test:packaging
+npm run release:preflight -- --strict
+npm run release:journey   # 隔离 JEA_HOME，不写 ~/.jea
 ```

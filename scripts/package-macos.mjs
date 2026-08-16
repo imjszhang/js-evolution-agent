@@ -14,8 +14,23 @@ import { expectedArtifactNames, parseArgs, printReport, repoRootFrom } from './r
 import { PRODUCT_VERSION, SIGNING_POLICY } from '../src/product/identity.mjs';
 import { stageAppResources } from './stage-app-resources.mjs';
 
+function builderEnv() {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (/^(all|http|https|no)_?proxy$/i.test(key)) delete env[key];
+  }
+  env.CSC_IDENTITY_AUTO_DISCOVERY = env.CSC_IDENTITY_AUTO_DISCOVERY || 'false';
+  env.ELECTRON_BUILDER_OFFLINE = env.ELECTRON_BUILDER_OFFLINE || 'true';
+  return env;
+}
+
 function run(command, args, cwd) {
-  const result = spawnSync(command, args, { cwd, encoding: 'utf8', stdio: 'pipe' });
+  const result = spawnSync(command, args, {
+    cwd,
+    encoding: 'utf8',
+    stdio: 'pipe',
+    env: builderEnv(),
+  });
   if (result.status !== 0) {
     const detail = (result.stderr || result.stdout || '').trim();
     throw new Error(`${command} ${args.join(' ')} failed: ${detail.split('\n').slice(-24).join('\n')}`);
@@ -30,6 +45,17 @@ function sha256(path) {
 function adHocSign(appPath) {
   run('codesign', ['--force', '--deep', '--sign', '-', appPath]);
   run('codesign', ['--verify', '--deep', '--strict', appPath]);
+}
+
+function createDmg(appPath, destPath) {
+  run('hdiutil', [
+    'create',
+    '-volname', 'JEA',
+    '-srcfolder', appPath,
+    '-ov',
+    '-format', 'UDZO',
+    destPath,
+  ]);
 }
 
 export async function packageMacos({
@@ -64,7 +90,7 @@ export async function packageMacos({
   });
 
   const builderArgs = ['exec', '--workspace', '@jea/desktop', '--', 'electron-builder', '--mac'];
-  if (dirOnly) builderArgs.push('--dir');
+  builderArgs.push(dirOnly ? '--dir' : 'zip');
   run('npm', builderArgs, repoRoot);
 
   const buildDir = join(repoRoot, 'dist/release/build');
@@ -83,11 +109,9 @@ export async function packageMacos({
   const present = {};
 
   if (!dirOnly) {
+    createDmg(resolvedApp, join(outDir, names.dmg));
+    present.dmg = existsSync(join(outDir, names.dmg));
     for (const file of readdirSync(buildDir)) {
-      if (file.endsWith('.dmg')) {
-        cpSync(join(buildDir, file), join(outDir, names.dmg));
-        present.dmg = true;
-      }
       if (file.endsWith('.zip')) {
         cpSync(join(buildDir, file), join(outDir, names.zip));
         present.zip = true;
@@ -100,6 +124,11 @@ export async function packageMacos({
       ].join('\n');
       writeFileSync(join(outDir, names.checksums), `${sums}\n`);
       present.checksums = true;
+    }
+    const notesSrc = join(repoRoot, 'docs/release/RELEASE_NOTES.md');
+    if (existsSync(notesSrc)) {
+      cpSync(notesSrc, join(outDir, names.releaseNotes));
+      present.releaseNotes = true;
     }
   }
 
