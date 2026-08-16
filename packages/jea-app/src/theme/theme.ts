@@ -41,4 +41,4 @@ export function applyResolvedTheme(
   root.dataset.themeReady = 'true'
 }
 
-export const THEME_BOOT_SCRIPT = `(function(){try{var k=${JSON.stringify(THEME_STORAGE_KEY)};var s=localStorage.getItem(k);var p=s==='light'||s==='dark'||s==='system'?s:'system';var dark=p==='dark'||(p==='system'&&window.matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.classList.toggle('dark',dark);document.documentElement.dataset.theme=dark?'dark':'light';document.documentElement.dataset.themeReady='true';}catch(e){document.documentElement.dataset.theme='light';document.documentElement.dataset.themeReady='true';}})();`
+export const THEME_BOOT_SCRIPT = "(function(){try{var k='jea.theme';var s=localStorage.getItem(k);var p=s==='light'||s==='dark'||s==='system'?s:'system';var dark=p==='dark'||(p==='system'&&window.matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.classList.toggle('dark',dark);document.documentElement.dataset.theme=dark?'dark':'light';document.documentElement.dataset.themeReady='true';}catch(e){document.documentElement.dataset.theme='light';document.documentElement.dataset.themeReady='true';}})();"
