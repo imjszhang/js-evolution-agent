@@ -123,6 +123,8 @@ function printDeliverableList(records) {
   }
 }
 
+const CHANNEL_QUEUE_BACKLOG_WARNING_THRESHOLD = 1_000;
+
 function buildFeishuDoctorHints(root, subject, projection) {
   const hints = [];
   const feishu = resolveFeishuConfig(root, subject);
@@ -147,6 +149,12 @@ function buildFeishuDoctorHints(root, subject, projection) {
   if (projection.tasks.deprecated?.length) {
     hints.push(
       '队列中存在已废弃的 channel_reply/channel_watch/channel_ingest 任务。执行 jea channel queue purge-deprecated --yes（或 doctor --purge-deprecated --yes）后重启 channel daemon。',
+    );
+  }
+  const pendingTasks = Number(projection.tasks?.counts?.pending ?? 0);
+  if (pendingTasks >= CHANNEL_QUEUE_BACKLOG_WARNING_THRESHOLD) {
+    hints.push(
+      `Channel 任务队列积压 ${pendingTasks} 个 pending task，可能拖慢新消息处理。请先检查任务来源和 worker 处理能力；JEA 不会自动清理 pending_tasks.json，清理前必须人工确认。`,
     );
   }
   if (projection.workers?.zombie_count > 0 || projection.health?.status === 'worker_zombie') {

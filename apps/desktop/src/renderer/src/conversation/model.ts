@@ -24,6 +24,7 @@ import {
 import { hasAssistantAfter, mergeRecords, type WorkspaceMessage } from './history'
 
 export type ConversationSendState = 'idle' | 'pending' | 'sent' | 'failed'
+export type ChannelServiceStartState = 'idle' | 'pending' | 'started' | 'failed'
 
 export interface ConversationWorkspaceSnapshot {
   subjects: SubjectSummary[]
@@ -33,6 +34,7 @@ export interface ConversationWorkspaceSnapshot {
   records: WorkspaceMessage[]
   draft: string
   sendState: ConversationSendState
+  serviceStartState: ChannelServiceStartState
   waiting: boolean
   lastSend: ConversationSendResult | null
   error: ConversationErrorView | null
@@ -55,6 +57,7 @@ function emptySnapshot(): ConversationWorkspaceSnapshot {
     records: [],
     draft: '',
     sendState: 'idle',
+    serviceStartState: 'idle',
     waiting: false,
     lastSend: null,
     error: null,
@@ -157,6 +160,7 @@ export class ConversationWorkspaceModel {
       records: [],
       waiting: false,
       sendState: 'idle',
+      serviceStartState: 'idle',
       lastSend: null,
       error: null
     })
@@ -231,15 +235,21 @@ export class ConversationWorkspaceModel {
 
   async startChannelService(): Promise<void> {
     const subject = this.snapshot.subject?.name
-    if (!subject) return
+    if (!subject || this.snapshot.serviceStartState === 'pending') return
     const generation = this.generation
+    this.patch({ serviceStartState: 'pending', error: null })
     try {
-      const service = await this.client.startService(subject, 'channel')
+      await this.client.startService(subject, 'channel')
       if (!this.isCurrent(generation)) return
-      this.patch({ service, error: null })
+      const service = await this.client.getServiceStatus(subject)
+      if (!this.isCurrent(generation) || this.snapshot.subject?.name !== subject) return
+      this.patch({ service, serviceStartState: 'started', error: null })
     } catch (error) {
       if (!this.isCurrent(generation)) return
-      this.patch({ error: classifyClientError(error, 'Unable to start the channel service.') })
+      this.patch({
+        serviceStartState: 'failed',
+        error: classifyClientError(error, 'Unable to start the channel service.')
+      })
     }
   }
 

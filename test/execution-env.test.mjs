@@ -1,10 +1,14 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
-import { buildExecutionEnv } from '../src/actions/execution-env.mjs';
+import {
+  buildExecutionEnv,
+  buildJeaRuntimeEnv,
+  resolveModelReadiness,
+} from '../src/actions/execution-env.mjs';
 import { loadProjectEnv } from '../src/infra/project.mjs';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -47,6 +51,31 @@ describe('execution env loading', () => {
     });
     expect(env.JEA_PROJECT_ROOT).toBe('/canonical/source');
     expect(env.JEA_HOME).toBe('/canonical/home');
+  });
+
+  it('layers JEA Home then Subject env while keeping readiness secret-free', () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'jea-runtime-env-'));
+    const subjectRoot = join(tempDir, 'subjects', 'alpha-data');
+    mkdirSync(subjectRoot, { recursive: true });
+    writeFileSync(
+      join(tempDir, '.env'),
+      'DEEPSEEK_API_KEY=home-key\nJEA_HOME=/wrong/home\n',
+      'utf-8',
+    );
+    writeFileSync(join(subjectRoot, '.env'), 'DEEPSEEK_API_KEY=subject-key\n', 'utf-8');
+    const baseEnv = {
+      DEEPSEEK_API_KEY: 'process-key',
+      JEA_PROJECT_ROOT: '/canonical/source',
+      JEA_HOME: tempDir,
+    };
+
+    const runtime = buildJeaRuntimeEnv(tempDir, { baseEnv, subjectRoot });
+    expect(runtime.env.DEEPSEEK_API_KEY).toBe('subject-key');
+    expect(runtime.env.JEA_HOME).toBe(tempDir);
+
+    const readiness = resolveModelReadiness({ jeaHome: tempDir, baseEnv, subjectRoot });
+    expect(readiness).toEqual({ configured: true, mode: 'deepseek' });
+    expect(JSON.stringify(readiness)).not.toContain('subject-key');
   });
 
   it('loads project .env over pre-set process env when override is enabled', () => {

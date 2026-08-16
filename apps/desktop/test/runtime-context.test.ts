@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -7,6 +7,7 @@ import { resolveDesktopRuntimeContext } from '../src/main/runtime-context'
 const roots: string[] = []
 const originalProjectRoot = process.env.JEA_PROJECT_ROOT
 const originalJeaHome = process.env.JEA_HOME
+const originalDeepseekKey = process.env.DEEPSEEK_API_KEY
 
 afterEach(() => {
   while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true })
@@ -14,6 +15,8 @@ afterEach(() => {
   else process.env.JEA_PROJECT_ROOT = originalProjectRoot
   if (originalJeaHome == null) delete process.env.JEA_HOME
   else process.env.JEA_HOME = originalJeaHome
+  if (originalDeepseekKey == null) delete process.env.DEEPSEEK_API_KEY
+  else process.env.DEEPSEEK_API_KEY = originalDeepseekKey
 })
 
 describe('desktop runtime context', () => {
@@ -22,6 +25,11 @@ describe('desktop runtime context', () => {
     const jeaHome = mkdtempSync(join(tmpdir(), 'jea-desktop-home-'))
     roots.push(sourceRoot, jeaHome)
     process.env.JEA_HOME = jeaHome
+    writeFileSync(join(jeaHome, '.env'), [
+      'DEEPSEEK_API_KEY=home-key',
+      'JEA_PROJECT_ROOT=/wrong/source',
+      'JEA_HOME=/wrong/home'
+    ].join('\n'))
 
     const context = resolveDesktopRuntimeContext(sourceRoot)
 
@@ -29,5 +37,6 @@ describe('desktop runtime context', () => {
     expect(context.jeaHome).toBe(jeaHome)
     expect(process.env.JEA_PROJECT_ROOT).toBe(sourceRoot)
     expect(process.env.JEA_HOME).toBe(jeaHome)
+    expect(process.env.DEEPSEEK_API_KEY).toBe('home-key')
   })
 })

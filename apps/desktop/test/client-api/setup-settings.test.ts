@@ -168,6 +168,25 @@ describe('setup/settings JEA_HOME matrix', () => {
     expect(JSON.stringify(readiness)).not.toContain('DEEPSEEK')
   })
 
+  it('detects DeepSeek from JEA Home and Subject env files without returning the key', async () => {
+    const homeRoots = tempRoots()
+    writeFileSync(join(homeRoots.jeaHome, '.env'), 'DEEPSEEK_API_KEY=home-secret\n')
+    const homeReadiness = await clientFor(homeRoots.sourceRoot, homeRoots.jeaHome).client.getReadiness()
+    expect(homeReadiness.model).toEqual({ configured: true, mode: 'deepseek' })
+    expect(JSON.stringify(homeReadiness)).not.toContain('home-secret')
+
+    const subjectRoots = tempRoots()
+    const { client } = clientFor(subjectRoots.sourceRoot, subjectRoots.jeaHome)
+    await client.createSubject('alpha')
+    writeFileSync(
+      join(subjectRoots.jeaHome, 'subjects', 'alpha', '.env'),
+      'DEEPSEEK_API_KEY=subject-secret\n'
+    )
+    const subjectReadiness = await client.getReadiness('alpha')
+    expect(subjectReadiness.model).toEqual({ configured: true, mode: 'deepseek' })
+    expect(JSON.stringify(subjectReadiness)).not.toContain('subject-secret')
+  })
+
   it('resumes interrupted initialization without writing a second default Subject', async () => {
     const { sourceRoot, jeaHome } = tempRoots()
     const { client } = clientFor(sourceRoot, jeaHome)

@@ -21,6 +21,10 @@ import {
 } from './desktop-smoke-fixture.mjs';
 
 const projectRoot = resolve(process.cwd());
+const packagedExecutable = process.env.JEA_DESKTOP_SMOKE_EXECUTABLE
+  ? resolve(process.env.JEA_DESKTOP_SMOKE_EXECUTABLE)
+  : null;
+const keepFixture = process.env.JEA_DESKTOP_SMOKE_KEEP === '1';
 const outputDir = mkdtempSync(join(tmpdir(), 'jea-desktop-smoke-'));
 const output = join(outputDir, 'report.json');
 const entry = join(projectRoot, 'apps', 'desktop', 'out', 'main', 'index.js');
@@ -51,11 +55,14 @@ try {
     throw new Error('Desktop build output is missing; run npm run desktop:build first.');
   }
 
-  const electronArgs = [
-    ...(process.platform === 'linux' && process.env.CI ? ['--no-sandbox'] : []),
-    entry,
-  ];
-  child = spawn(electron, electronArgs, {
+  const executable = packagedExecutable ?? electron;
+  const executableArgs = packagedExecutable
+    ? [`--user-data-dir=${join(guardHome, 'electron-user-data')}`]
+    : [
+      ...(process.platform === 'linux' && process.env.CI ? ['--no-sandbox'] : []),
+      entry,
+    ];
+  child = spawn(executable, executableArgs, {
     cwd: projectRoot,
     env: {
       ...process.env,
@@ -89,7 +96,7 @@ try {
   if (!existsSync(output)) throw new Error('Desktop smoke did not write a report.');
   const report = JSON.parse(readFileSync(output, 'utf8'));
   const stages = report?.stages ?? {};
-  const stagesOk = ['projection', 'channel', 'notifications', 'acp']
+  const stagesOk = ['projection', 'channel', 'service', 'notifications', 'acp']
     .every((name) => stages[name]?.ok);
   if (!report?.inProcess?.ok || !report?.renderer?.ok || !stagesOk) {
     throw new Error(`Desktop smoke failed: ${JSON.stringify(report)}`);
@@ -126,9 +133,13 @@ try {
   }, null, 2)}\n`);
 } finally {
   if (child && child.exitCode == null) child.kill('SIGKILL');
-  removeDesktopSmokeFixture(fixture?.root);
-  if (acpExecutionRoot) rmSync(acpExecutionRoot, { recursive: true, force: true });
-  if (guardHome) rmSync(guardHome, { recursive: true, force: true });
-  if (sourceFixtureRoot) rmSync(sourceFixtureRoot, { recursive: true, force: true });
-  rmSync(outputDir, { recursive: true, force: true });
+  if (!keepFixture) {
+    removeDesktopSmokeFixture(fixture?.root);
+    if (acpExecutionRoot) rmSync(acpExecutionRoot, { recursive: true, force: true });
+    if (guardHome) rmSync(guardHome, { recursive: true, force: true });
+    if (sourceFixtureRoot) rmSync(sourceFixtureRoot, { recursive: true, force: true });
+    rmSync(outputDir, { recursive: true, force: true });
+  } else {
+    process.stderr.write(`desktop-smoke fixtures preserved: ${fixture?.jeaHome ?? outputDir}\n`);
+  }
 }

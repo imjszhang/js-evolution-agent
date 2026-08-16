@@ -1,10 +1,13 @@
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { buildWebHost, webHostBundlePath } from '../../../scripts/build-web-host.mjs';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const DEFAULT_PORT = 8788;
+
+function webHostBundlePath(root) {
+  return join(root, 'apps/desktop/out/web-host/server-main.mjs');
+}
 
 function stateDir(jeaHome) {
   return join(jeaHome, 'web-host');
@@ -78,7 +81,11 @@ export async function webStartCommand({ flags = {}, context }) {
     : fileURLToPath(new URL('../../..', import.meta.url));
   let serverMain = [fromCli, webHostBundlePath(context.sourceRoot)].find((path) => existsSync(path));
   if (!serverMain) {
-    await buildWebHost({ repoRoot: buildRoot });
+    const buildScript = join(buildRoot, 'scripts', 'build-web-host.mjs');
+    if (existsSync(buildScript)) {
+      const { buildWebHost } = await import(pathToFileURL(buildScript).href);
+      await buildWebHost({ repoRoot: buildRoot });
+    }
     serverMain = [webHostBundlePath(buildRoot), fromCli].find((path) => existsSync(path));
   }
   if (!serverMain) {

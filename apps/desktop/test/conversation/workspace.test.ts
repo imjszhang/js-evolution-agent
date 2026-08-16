@@ -291,8 +291,30 @@ describe('conversation workspace model', () => {
     const model = new ConversationWorkspaceModel(harness.client)
     await model.bootstrap()
     expect(model.getSnapshot().cards.some((card) => card.kind === 'offline')).toBe(true)
-    await model.startChannelService()
+    const start = model.startChannelService()
+    expect(model.getSnapshot().serviceStartState).toBe('pending')
+    await start
     expect(harness.started).toEqual(['alpha'])
     expect(model.getSnapshot().service?.mode).toBe('attached')
+    expect(model.getSnapshot().serviceStartState).toBe('started')
+    expect(model.getSnapshot().cards.some((card) => card.kind === 'offline')).toBe(false)
+  })
+
+  it('keeps channel startup failures visible and retryable', async () => {
+    const harness = createConversationHarness({
+      service: { mode: 'none', pid: null, health: 'idle', detail: 'Channel worker is not running.' },
+      rejectStart: new PublicClientError('OPERATION_FAILED', 'The packaged daemon exited before startup.')
+    })
+    const model = new ConversationWorkspaceModel(harness.client)
+    await model.bootstrap()
+
+    await model.startChannelService()
+
+    expect(model.getSnapshot().serviceStartState).toBe('failed')
+    expect(model.getSnapshot().error).toMatchObject({
+      code: 'OPERATION_FAILED',
+      message: 'The packaged daemon exited before startup.'
+    })
+    expect(model.getSnapshot().cards.some((card) => card.kind === 'offline')).toBe(true)
   })
 })

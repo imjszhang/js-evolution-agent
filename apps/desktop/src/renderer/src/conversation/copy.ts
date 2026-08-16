@@ -19,6 +19,8 @@ const copy = {
     enableDesktop: 'Enable desktop Channel',
     enableDesktopHint: 'This Subject does not enable channels.desktop. Enabling writes the minimum safe desktop and presence configuration. Existing Subjects are never changed unless you confirm.',
     startService: 'Start channel service',
+    startingService: 'Starting channel service…',
+    serviceStartFailed: 'Unable to start the channel service.',
     startServiceHint: 'The channel daemon is stopped or unhealthy. Start or attach it to continue.',
     serviceStartUnavailable: 'This host cannot start the channel service automatically.',
     modelMock: 'Running in mock mode. A live model key is not required.',
@@ -32,7 +34,8 @@ const copy = {
     enableFailed: 'Unable to enable desktop Channel.',
     serviceOnline: 'Channel service ready',
     serviceOffline: 'Channel service offline',
-    serviceDegraded: 'Channel service degraded'
+    serviceDegraded: 'Channel service degraded',
+    serviceStarting: 'Channel service starting'
   },
   zh: {
     subjects: '主体',
@@ -52,6 +55,8 @@ const copy = {
     enableDesktop: '启用桌面 Channel',
     enableDesktopHint: '该主体尚未启用 channels.desktop。启用只会写入最小安全的桌面与在场配置；未经确认不会改动现有主体。',
     startService: '启动 Channel 服务',
+    startingService: '正在启动 Channel 服务…',
+    serviceStartFailed: '无法启动 Channel 服务。',
     startServiceHint: 'Channel daemon 已停止或不健康。请启动或接入后再继续。',
     serviceStartUnavailable: '当前宿主无法自动启动 Channel 服务。',
     modelMock: '当前为 mock 模式，不需要真实模型密钥。',
@@ -65,7 +70,8 @@ const copy = {
     enableFailed: '无法启用桌面 Channel。',
     serviceOnline: 'Channel 服务就绪',
     serviceOffline: 'Channel 服务离线',
-    serviceDegraded: 'Channel 服务降级'
+    serviceDegraded: 'Channel 服务降级',
+    serviceStarting: 'Channel 服务启动中'
   }
 } as const
 

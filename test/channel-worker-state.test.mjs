@@ -23,6 +23,7 @@ import {
   writeChannelWorkerState,
 } from '../src/channel/worker-state.mjs';
 import { channelCommand } from '../src/cli/commands/channel.mjs';
+import { channelPendingTasksPath, readChannelTaskQueue } from '../src/channel/task-queue.mjs';
 import * as atomicWrite from '../src/infra/atomic-json-write.mjs';
 
 let tempDir = null;
@@ -293,5 +294,37 @@ describe('channel worker-state', () => {
       reason: 'zombie_pid_dead',
     });
     expect(readChannelWorkerState(root, 'alpha').status).toBe('stopped');
+  });
+
+  it('doctor warns about a large pending queue without clearing it', async () => {
+    const root = makeRoot();
+    const tasks = Array.from({ length: 1_000 }, (_, index) => ({
+      task_id: `backlog-${index}`,
+      type: 'channel_classifier',
+      status: 'pending',
+      created_at: new Date().toISOString(),
+    }));
+    writeJsonFile(channelPendingTasksPath(root, 'alpha'), {
+      tasks,
+      updated_at: new Date().toISOString(),
+    });
+    const originalLog = console.log;
+    const lines = [];
+    console.log = (...args) => lines.push(args.join(' '));
+    try {
+      await channelCommand({
+        subcommand: 'doctor',
+        flags: { json: true },
+        root,
+      });
+    } finally {
+      console.log = originalLog;
+    }
+
+    const payload = JSON.parse(lines.join('\n'));
+    expect(payload.hints.join('\n')).toMatch(/积压 1000 个 pending task/);
+    expect(payload.hints.join('\n')).toMatch(/不会自动清理 pending_tasks\.json/);
+    expect(readChannelTaskQueue(root, 'alpha').tasks).toHaveLength(1_000);
+    expect(readChannelTaskQueue(root, 'alpha').tasks.every((task) => task.status === 'pending')).toBe(true);
   });
 });
