@@ -1,0 +1,273 @@
+{
+  "protocol": "jea.client",
+  "version": "1.0.0",
+  "capabilities": [
+    "readonly",
+    "write",
+    "local-only",
+    "destructive"
+  ],
+  "errors": [
+    "COMMAND_NOT_ALLOWED",
+    "INVALID_REQUEST",
+    "OPERATION_FAILED",
+    "CONFLICT",
+    "NOT_FOUND",
+    "UNAVAILABLE"
+  ],
+  "commands": [
+    {
+      "name": "protocol.get",
+      "group": "protocol",
+      "capability": "readonly",
+      "availability": { "electron": true, "web": true },
+      "request": {},
+      "response": { "protocol": "string", "version": "string" },
+      "errors": ["OPERATION_FAILED"]
+    },
+    {
+      "name": "subject.list",
+      "group": "subject",
+      "capability": "readonly",
+      "availability": { "electron": true, "web": true },
+      "request": {},
+      "response": { "subjects": "SubjectSummary[]" },
+      "errors": ["INVALID_REQUEST", "NOT_FOUND", "OPERATION_FAILED"]
+    },
+    {
+      "name": "subject.get",
+      "group": "subject",
+      "capability": "readonly",
+      "availability": { "electron": true, "web": true },
+      "request": { "subject": "string" },
+      "response": { "subject": "SubjectRecord" },
+      "errors": ["INVALID_REQUEST", "NOT_FOUND", "OPERATION_FAILED"]
+    },
+    {
+      "name": "subject.select",
+      "group": "subject",
+      "capability": "write",
+      "availability": { "electron": true, "web": true },
+      "request": { "subject": "string" },
+      "response": { "subject": "SubjectRecord" },
+      "errors": ["INVALID_REQUEST", "NOT_FOUND", "CONFLICT", "OPERATION_FAILED"]
+    },
+    {
+      "name": "subject.setDefault",
+      "group": "subject",
+      "capability": "write",
+      "availability": { "electron": true, "web": true },
+      "request": { "subject": "string" },
+      "response": { "subject": "SubjectRecord" },
+      "errors": ["INVALID_REQUEST", "NOT_FOUND", "CONFLICT", "OPERATION_FAILED"]
+    },
+    {
+      "name": "conversation.listSessions",
+      "group": "conversation",
+      "capability": "readonly",
+      "availability": { "electron": true, "web": true },
+      "request": { "subject": "string" },
+      "response": { "sessions": "ConversationSessionSummary[]" },
+      "errors": ["INVALID_REQUEST", "NOT_FOUND", "OPERATION_FAILED"]
+    },
+    {
+      "name": "conversation.createSession",
+      "group": "conversation",
+      "capability": "write",
+      "availability": { "electron": true, "web": true },
+      "request": { "subject": "string", "sessionId": "string?" },
+      "response": { "session": "ConversationSessionSummary" },
+      "errors": ["INVALID_REQUEST", "NOT_FOUND", "CONFLICT", "OPERATION_FAILED"]
+    },
+    {
+      "name": "conversation.readMessages",
+      "group": "conversation",
+      "capability": "readonly",
+      "availability": { "electron": true, "web": true },
+      "request": { "subject": "string", "sessionId": "string", "offset": "number?", "limit": "number?", "tail": "number?" },
+      "response": { "page": "ConversationPage" },
+      "errors": ["INVALID_REQUEST", "NOT_FOUND", "OPERATION_FAILED"]
+    },
+    {
+      "name": "conversation.sendMessage",
+      "group": "conversation",
+      "capability": "write",
+      "availability": { "electron": true, "web": true },
+      "request": { "subject": "string", "sessionId": "string?", "text": "string", "messageId": "string?" },
+      "response": { "result": "ConversationSendResult" },
+      "errors": ["INVALID_REQUEST", "NOT_FOUND", "CONFLICT", "OPERATION_FAILED"]
+    },
+    {
+      "name": "evolution.listCycles",
+      "group": "evolution",
+      "capability": "readonly",
+      "availability": { "electron": true, "web": true },
+      "request": { "subject": "string", "limit": "number?" },
+      "response": { "list": "EvolutionCycleList" },
+      "errors": ["INVALID_REQUEST", "NOT_FOUND", "OPERATION_FAILED"]
+    },
+    {
+      "name": "evolution.getCycle",
+      "group": "evolution",
+      "capability": "readonly",
+      "availability": { "electron": true, "web": true },
+      "request": { "subject": "string", "cycleId": "string" },
+      "response": { "cycle": "EvolutionCycleDetail" },
+      "errors": ["INVALID_REQUEST", "NOT_FOUND", "OPERATION_FAILED"]
+    },
+    {
+      "name": "evolution.getRound",
+      "group": "evolution",
+      "capability": "readonly",
+      "availability": { "electron": true, "web": true },
+      "request": { "subject": "string", "cycleId": "string" },
+      "response": { "round": "EvolutionRoundDetail" },
+      "errors": ["INVALID_REQUEST", "NOT_FOUND", "OPERATION_FAILED"]
+    },
+    {
+      "name": "evolution.getObservability",
+      "group": "evolution",
+      "capability": "readonly",
+      "availability": { "electron": true, "web": true },
+      "request": { "subject": "string" },
+      "response": { "observability": "EvolutionObservability" },
+      "errors": ["INVALID_REQUEST", "NOT_FOUND", "OPERATION_FAILED"]
+    },
+    {
+      "name": "service.getStatus",
+      "group": "service",
+      "capability": "readonly",
+      "availability": { "electron": true, "web": true },
+      "request": { "subject": "string" },
+      "response": { "status": "ServiceStatus" },
+      "errors": ["INVALID_REQUEST", "NOT_FOUND", "OPERATION_FAILED"]
+    },
+    {
+      "name": "service.start",
+      "group": "service",
+      "capability": "local-only",
+      "availability": { "electron": true, "web": false },
+      "request": { "subject": "string", "domain": "all|cycle|channel?" },
+      "response": { "status": "ServiceStatus" },
+      "errors": ["COMMAND_NOT_ALLOWED", "INVALID_REQUEST", "NOT_FOUND", "CONFLICT", "UNAVAILABLE", "OPERATION_FAILED"]
+    },
+    {
+      "name": "service.stop",
+      "group": "service",
+      "capability": "local-only",
+      "availability": { "electron": true, "web": false },
+      "request": { "subject": "string" },
+      "response": { "status": "ServiceStatus" },
+      "errors": ["COMMAND_NOT_ALLOWED", "INVALID_REQUEST", "NOT_FOUND", "CONFLICT", "UNAVAILABLE", "OPERATION_FAILED"]
+    },
+    {
+      "name": "service.requestCycle",
+      "group": "service",
+      "capability": "write",
+      "availability": { "electron": true, "web": true },
+      "request": { "subject": "string", "note": "string?" },
+      "response": { "result": "CycleRequestResult" },
+      "errors": ["INVALID_REQUEST", "NOT_FOUND", "CONFLICT", "OPERATION_FAILED"]
+    },
+    {
+      "name": "setup.getReadiness",
+      "group": "setup",
+      "capability": "readonly",
+      "availability": { "electron": true, "web": true },
+      "request": { "subject": "string?" },
+      "response": { "readiness": "SetupReadiness" },
+      "errors": ["INVALID_REQUEST", "NOT_FOUND", "OPERATION_FAILED"]
+    },
+    {
+      "name": "setup.confirmHome",
+      "group": "setup",
+      "capability": "local-only",
+      "availability": { "electron": true, "web": false },
+      "request": { "path": "string?" },
+      "response": { "home": "SetupHomeResult" },
+      "errors": ["COMMAND_NOT_ALLOWED", "INVALID_REQUEST", "NOT_FOUND", "CONFLICT", "UNAVAILABLE", "OPERATION_FAILED"]
+    },
+    {
+      "name": "setup.createSubject",
+      "group": "setup",
+      "capability": "write",
+      "availability": { "electron": true, "web": true },
+      "request": { "name": "string", "enableDesktopChannel": "boolean?" },
+      "response": { "subject": "SetupSubjectResult" },
+      "errors": ["INVALID_REQUEST", "NOT_FOUND", "CONFLICT", "OPERATION_FAILED"]
+    },
+    {
+      "name": "setup.initData",
+      "group": "setup",
+      "capability": "write",
+      "availability": { "electron": true, "web": true },
+      "request": { "subject": "string" },
+      "response": { "initialized": "boolean" },
+      "errors": ["INVALID_REQUEST", "NOT_FOUND", "CONFLICT", "OPERATION_FAILED"]
+    },
+    {
+      "name": "setup.enableDesktopChannel",
+      "group": "setup",
+      "capability": "write",
+      "availability": { "electron": true, "web": true },
+      "request": { "subject": "string" },
+      "response": { "subject": "SetupSubjectResult" },
+      "errors": ["INVALID_REQUEST", "NOT_FOUND", "CONFLICT", "OPERATION_FAILED"]
+    },
+    {
+      "name": "settings.get",
+      "group": "settings",
+      "capability": "readonly",
+      "availability": { "electron": true, "web": true },
+      "request": {},
+      "response": { "settings": "SettingsView" },
+      "errors": ["INVALID_REQUEST", "NOT_FOUND", "OPERATION_FAILED"]
+    },
+    {
+      "name": "settings.set",
+      "group": "settings",
+      "capability": "write",
+      "availability": { "electron": true, "web": true },
+      "request": { "language": "string?", "theme": "string?", "defaultSubject": "string?" },
+      "response": { "settings": "SettingsView" },
+      "errors": ["INVALID_REQUEST", "NOT_FOUND", "CONFLICT", "OPERATION_FAILED"]
+    },
+    {
+      "name": "cli.getStatus",
+      "group": "cli",
+      "capability": "readonly",
+      "availability": { "electron": true, "web": true },
+      "request": {},
+      "response": { "status": "CliStatus" },
+      "errors": ["INVALID_REQUEST", "NOT_FOUND", "OPERATION_FAILED"]
+    },
+    {
+      "name": "cli.install",
+      "group": "cli",
+      "capability": "local-only",
+      "availability": { "electron": true, "web": false },
+      "request": {},
+      "response": { "status": "CliStatus" },
+      "errors": ["COMMAND_NOT_ALLOWED", "INVALID_REQUEST", "NOT_FOUND", "CONFLICT", "UNAVAILABLE", "OPERATION_FAILED"]
+    },
+    {
+      "name": "cli.uninstall",
+      "group": "cli",
+      "capability": "local-only",
+      "availability": { "electron": true, "web": false },
+      "request": {},
+      "response": { "status": "CliStatus" },
+      "errors": ["COMMAND_NOT_ALLOWED", "INVALID_REQUEST", "NOT_FOUND", "CONFLICT", "UNAVAILABLE", "OPERATION_FAILED"]
+    }
+  ],
+  "events": [
+    { "name": "client.hello", "payload": { "version": "string" } },
+    { "name": "subject.changed", "payload": { "subject": "string", "reason": "string" } },
+    { "name": "conversation.updated", "payload": { "subject": "string", "session_id": "string" } },
+    { "name": "evolution.updated", "payload": { "subject": "string", "cycle_id": "string?" } },
+    { "name": "service.status", "payload": { "subject": "string", "mode": "string" } },
+    { "name": "setup.readiness", "payload": { "ready": "boolean" } },
+    { "name": "settings.changed", "payload": { "language": "string?", "theme": "string?" } },
+    { "name": "cli.status", "payload": { "installed": "boolean", "onPath": "boolean" } }
+  ]
+}

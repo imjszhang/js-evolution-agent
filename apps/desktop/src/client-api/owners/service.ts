@@ -1,0 +1,86 @@
+import { enqueueCycleStartRequestWithEvent } from '../../../../../src/daemon/cycle-dispatch.mjs'
+import { buildDaemonProjection } from '../../../../../src/daemon/daemon-projection.mjs'
+import { PublicClientError } from '../errors'
+import { redactPublicValue } from '../redact'
+import type { CycleRequestResult, ServiceStatus } from '../types'
+import { requireSubject, type ClientRuntimeContext } from './runtime'
+
+export interface ServiceProcessPort {
+  get(subject: string): ServiceStatus
+  start(subject: string, options?: { domain?: 'all' | 'cycle' | 'channel' }): Promise<ServiceStatus> | ServiceStatus
+  stop(subject: string): Promise<ServiceStatus> | ServiceStatus
+}
+
+export function createProjectionServicePort(runtime: ClientRuntimeContext): ServiceProcessPort {
+  return {
+    get(subject: string): ServiceStatus {
+      const daemon = buildDaemonProjection(runtime, subject, { eventLimit: 10 })
+      return {
+        subject,
+        mode: daemon.worker?.running ? 'attached' : 'none',
+        pid: daemon.worker?.pid ?? null,
+        domain: null,
+        heartbeat_at: daemon.worker?.heartbeat_at ?? daemon.last_tick_at ?? null,
+        started_at: daemon.worker?.started_at ?? null,
+        health: daemon.health?.status ?? null,
+        detail: daemon.health?.ok === false ? 'Service is unhealthy.' : null
+      }
+    },
+    start() {
+      throw new PublicClientError('UNAVAILABLE', 'Service process control is not available in this host.')
+    },
+    stop() {
+      throw new PublicClientError('UNAVAILABLE', 'Service process control is not available in this host.')
+    }
+  }
+}
+
+export class ServiceCommandOwner {
+  constructor(
+    private readonly runtime: ClientRuntimeContext,
+    private readonly processPort: ServiceProcessPort
+  ) {}
+
+  getStatus(subject: string): ServiceStatus {
+    const name = requireSubject(this.runtime, subject)
+    const daemon = buildDaemonProjection(this.runtime, name, { eventLimit: 10 })
+    const view = this.processPort.get(name)
+    return redactPublicValue({
+      subject: name,
+      mode: view.mode ?? (daemon.worker?.running ? 'attached' : 'none'),
+      pid: view.pid ?? daemon.worker?.pid ?? null,
+      domain: view.domain ?? null,
+      heartbeat_at: view.heartbeat_at ?? daemon.worker?.heartbeat_at ?? null,
+      started_at: view.started_at ?? daemon.worker?.started_at ?? null,
+      health: view.health ?? daemon.health?.status ?? null,
+      detail: view.detail ?? null
+    })
+  }
+
+  async start(subject: string, domain: 'all' | 'cycle' | 'channel' = 'all'): Promise<ServiceStatus> {
+    const name = requireSubject(this.runtime, subject)
+    if (!['all', 'cycle', 'channel'].includes(domain)) {
+      throw new PublicClientError('INVALID_REQUEST', 'A valid domain is required.')
+    }
+    await this.processPort.start(name, { domain })
+    return this.getStatus(name)
+  }
+
+  async stop(subject: string): Promise<ServiceStatus> {
+    const name = requireSubject(this.runtime, subject)
+    await this.processPort.stop(name)
+    return this.getStatus(name)
+  }
+
+  requestCycle(subject: string, note?: string): CycleRequestResult {
+    const name = requireSubject(this.runtime, subject)
+    const result = enqueueCycleStartRequestWithEvent(this.runtime, name, {
+      reason: 'jea_client',
+      meta: note?.trim() ? { note: note.trim() } : {}
+    })
+    return redactPublicValue({
+      subject: name,
+      cycle_start_request: result.request ?? null
+    })
+  }
+}

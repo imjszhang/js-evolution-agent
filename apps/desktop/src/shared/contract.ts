@@ -74,12 +74,19 @@ export type NotificationCommand = (typeof NOTIFICATION_COMMANDS)[number]
 export type AcpCommand = (typeof ACP_COMMANDS)[number]
 export type DesktopCommand = (typeof DESKTOP_COMMANDS)[number]
 
+export {
+  CLIENT_API_COMMANDS,
+  JEA_CLIENT_PROTOCOL_VERSION
+} from '../client-api/protocol'
+export type { ClientApiCommandName } from '../client-api/protocol'
+
 export type PublicErrorCode =
   | 'COMMAND_NOT_ALLOWED'
   | 'INVALID_REQUEST'
   | 'OPERATION_FAILED'
   | 'CONFLICT'
   | 'NOT_FOUND'
+  | 'UNAVAILABLE'
 
 export interface InvokeRequest {
   command: string
@@ -224,6 +231,9 @@ export interface AcpPermissionView {
 }
 
 export interface JeaBridge {
-  invoke<T = unknown>(command: DesktopCommand, payload?: Record<string, unknown>): Promise<T>
+  invoke<T = unknown>(
+    command: DesktopCommand | import('../client-api/protocol').ClientApiCommandName,
+    payload?: Record<string, unknown>
+  ): Promise<T>
   subscribe(listener: (event: JeaEventEnvelope) => void): () => void
 }
