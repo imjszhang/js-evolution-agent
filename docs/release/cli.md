@@ -24,7 +24,7 @@ jea url
 jea stop
 ```
 
-- `start --no-open` 不打开浏览器、不创建窗口、不操作 Dock。已在跑的健康实例会被检测，不会再起一份。
+- `start --no-open` 不打开浏览器、不创建窗口、不操作 Dock。已在跑的健康实例会被检测，不会再起一份。Web host 入口是 `apps/desktop/out/web-host/server-main.mjs`（`npm run web-host:build` / `desktop:build`），不再走 Node `--experimental-strip-types`。
 - `status --json` 不含 Web token。
 - 只有 `jea url` 可以打印带 `access_token` 的 URL。
 - `stop` 先 SIGTERM，超时后再对**自己拥有的 pid** 做有界 SIGKILL。
