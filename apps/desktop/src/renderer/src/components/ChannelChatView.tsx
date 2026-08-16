@@ -4,43 +4,15 @@ import type {
   DesktopSessionPage,
   DesktopSessionRecord
 } from '../../../shared/contract'
+import {
+  MAX_CHANNEL_RECORDS,
+  mergeRecords,
+  resolveDraftAttempt,
+  type DraftAttempt
+} from '../conversation'
 import { errorMessage, formatTime, isRecord, text } from '../utils'
 
-export const MAX_CHANNEL_RECORDS = 400
-
-export type DraftAttempt = {
-  id: string
-  subject: string
-  sessionId: string
-  content: string
-}
-
-export function resolveDraftAttempt(
-  existing: DraftAttempt | null,
-  next: Omit<DraftAttempt, 'id'>,
-  createId: () => string = () => `desktop-ui-${crypto.randomUUID()}`
-): DraftAttempt {
-  if (
-    existing
-    && existing.subject === next.subject
-    && existing.sessionId === next.sessionId
-    && existing.content === next.content
-  ) {
-    return existing
-  }
-  return { ...next, id: createId() }
-}
-
-export function mergeRecords(
-  current: DesktopSessionRecord[],
-  incoming: DesktopSessionRecord[]
-): DesktopSessionRecord[] {
-  const records = new Map(current.map((record) => [record.id, record]))
-  for (const record of incoming) records.set(record.id, record)
-  return [...records.values()]
-    .sort((a, b) => a.offset - b.offset || a.created_at.localeCompare(b.created_at))
-    .slice(-MAX_CHANNEL_RECORDS)
-}
+export { MAX_CHANNEL_RECORDS, mergeRecords, resolveDraftAttempt, type DraftAttempt }
 
 export function ChannelChatView({ subject }: { subject: string | null }) {
   const [snapshot, setSnapshot] = useState<ChannelSnapshot | null>(null)

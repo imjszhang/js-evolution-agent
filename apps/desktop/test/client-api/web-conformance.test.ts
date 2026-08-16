@@ -147,10 +147,12 @@ describe('Electron vs Web characterization', () => {
   it('proves Electron and Web renderer entries mount the same JeaApp source', () => {
     const webEntry = readFileSync(fileURLToPath(new URL('../../../../packages/jea-app/src/web/main.tsx', import.meta.url)), 'utf8')
     const electronEntry = readFileSync(fileURLToPath(new URL('../../src/renderer/src/main.tsx', import.meta.url)), 'utf8')
+    const electronRoot = readFileSync(fileURLToPath(new URL('../../src/renderer/src/DesktopRoot.tsx', import.meta.url)), 'utf8')
     expect(webEntry).toMatch(/from ['"]\.\.\/JeaApp['"]/)
-    expect(electronEntry).toMatch(/from ['"]@jea\/app['"]/)
+    expect(electronEntry).toMatch(/from ['"]\.\/DesktopRoot['"]/)
+    expect(electronRoot).toMatch(/from ['"]@jea\/app['"]/)
     expect(webEntry).toContain('JeaApp')
-    expect(electronEntry).toContain('JeaApp')
+    expect(electronRoot).toContain('JeaApp')
   })
 })
 

@@ -1,0 +1,391 @@
+import type { JeaClient } from '../../../client-api/jea-client'
+import type {
+  ConversationSendResult,
+  ConversationSessionSummary,
+  EvolutionObservability,
+  JeaEventEnvelope,
+  ServiceStatus,
+  SetupReadiness,
+  SubjectRecord,
+  SubjectSummary
+} from '../../../client-api/types'
+import { deriveInlineCards, type ConversationCard } from './cards'
+import { resolveDraftAttempt, type DraftAttempt } from './draft'
+import { classifyClientError, type ConversationErrorView } from './errors'
+import {
+  eventSessionId,
+  eventSubject,
+  isConversationEvent,
+  isEventForContext,
+  isEvolutionEvent,
+  isServiceEvent,
+  isSubjectEvent
+} from './events'
+import { hasAssistantAfter, mergeRecords, type WorkspaceMessage } from './history'
+
+export type ConversationSendState = 'idle' | 'pending' | 'sent' | 'failed'
+
+export interface ConversationWorkspaceSnapshot {
+  subjects: SubjectSummary[]
+  subject: SubjectRecord | null
+  sessions: ConversationSessionSummary[]
+  sessionId: string | null
+  records: WorkspaceMessage[]
+  draft: string
+  sendState: ConversationSendState
+  waiting: boolean
+  lastSend: ConversationSendResult | null
+  error: ConversationErrorView | null
+  service: ServiceStatus | null
+  readiness: SetupReadiness | null
+  observability: EvolutionObservability | null
+  cards: ConversationCard[]
+  loading: boolean
+  lastDraftId: string | null
+}
+
+const DEFAULT_SESSION = 'main'
+
+function emptySnapshot(): ConversationWorkspaceSnapshot {
+  return {
+    subjects: [],
+    subject: null,
+    sessions: [],
+    sessionId: null,
+    records: [],
+    draft: '',
+    sendState: 'idle',
+    waiting: false,
+    lastSend: null,
+    error: null,
+    service: null,
+    readiness: null,
+    observability: null,
+    cards: [],
+    loading: true,
+    lastDraftId: null
+  }
+}
+
+export class ConversationWorkspaceModel {
+  private refs = 0
+  private generation = 0
+  private offset = 0
+  private draftAttempt: DraftAttempt | null = null
+  private unsubscribeEvents: (() => void) | null = null
+  private readonly listeners = new Set<() => void>()
+  private snapshot: ConversationWorkspaceSnapshot = emptySnapshot()
+  private waitStartedAt: string | null = null
+  private disposed = false
+
+  constructor(private readonly client: JeaClient) {
+    this.subscribe = this.subscribe.bind(this)
+    this.getSnapshot = this.getSnapshot.bind(this)
+  }
+
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener)
+    return () => this.listeners.delete(listener)
+  }
+
+  getSnapshot(): ConversationWorkspaceSnapshot {
+    return this.snapshot
+  }
+
+  retain(): void {
+    this.refs += 1
+    if (this.refs === 1) {
+      this.disposed = false
+      void this.bootstrap()
+    }
+  }
+
+  release(): void {
+    this.refs = Math.max(0, this.refs - 1)
+    if (this.refs === 0) this.dispose()
+  }
+
+  dispose(): void {
+    this.disposed = true
+    this.generation += 1
+    this.unsubscribeEvents?.()
+    this.unsubscribeEvents = null
+  }
+
+  setDraft(draft: string): void {
+    this.patch({ draft })
+  }
+
+  stopWaiting(): void {
+    this.waitStartedAt = null
+    this.patch({ waiting: false })
+  }
+
+  async bootstrap(preferredSubject?: string | null): Promise<void> {
+    const generation = ++this.generation
+    this.patch({ loading: true, error: null })
+    try {
+      const subjects = await this.client.listSubjects()
+      if (!this.isCurrent(generation)) return
+      const selectedName = preferredSubject
+        && subjects.some((item) => item.name === preferredSubject)
+        ? preferredSubject
+        : subjects.find((item) => item.isDefault)?.name ?? subjects[0]?.name ?? null
+      this.patch({ subjects, loading: false })
+      this.watchEvents()
+      if (selectedName) await this.selectSubject(selectedName, { generation })
+    } catch (error) {
+      if (!this.isCurrent(generation)) return
+      this.patch({
+        loading: false,
+        error: classifyClientError(error, 'Unable to load conversation state.')
+      })
+    }
+  }
+
+  async selectSubject(
+    name: string,
+    options: { generation?: number; sessionId?: string } = {}
+  ): Promise<void> {
+    const generation = options.generation ?? ++this.generation
+    this.offset = 0
+    this.draftAttempt = null
+    this.waitStartedAt = null
+    this.patch({
+      sessionId: options.sessionId ?? null,
+      records: [],
+      waiting: false,
+      sendState: 'idle',
+      lastSend: null,
+      error: null
+    })
+    try {
+      const subject = await this.client.selectSubject(name)
+      if (!this.isCurrent(generation)) return
+      this.patch({ subject })
+      const [sessions] = await Promise.all([
+        this.client.listSessions(name),
+        this.refreshSupport(name, generation)
+      ])
+      if (!this.isCurrent(generation)) return
+      const sessionId = options.sessionId
+        && sessions.some((item) => item.session_id === options.sessionId)
+        ? options.sessionId
+        : sessions[0]?.session_id ?? DEFAULT_SESSION
+      this.patch({ sessions, sessionId })
+      await this.readMessages(true, generation)
+    } catch (error) {
+      if (!this.isCurrent(generation)) return
+      this.patch({ error: classifyClientError(error, 'Unable to load conversation state.') })
+    }
+  }
+
+  async selectSession(sessionId: string): Promise<void> {
+    if (!this.snapshot.subject || this.snapshot.sessionId === sessionId) {
+      this.patch({ sessionId })
+      return
+    }
+    const generation = ++this.generation
+    this.offset = 0
+    this.draftAttempt = null
+    this.waitStartedAt = null
+    this.patch({
+      sessionId,
+      records: [],
+      waiting: false,
+      sendState: 'idle',
+      lastSend: null,
+      error: null
+    })
+    await this.readMessages(true, generation)
+  }
+
+  async createSession(sessionId?: string): Promise<void> {
+    const subject = this.snapshot.subject?.name
+    if (!subject) return
+    const generation = this.generation
+    try {
+      const created = await this.client.createSession(subject, sessionId)
+      if (!this.isCurrent(generation) || this.snapshot.subject?.name !== subject) return
+      const sessions = await this.client.listSessions(subject)
+      if (!this.isCurrent(generation)) return
+      this.patch({ sessions })
+      await this.selectSession(created.session_id)
+    } catch (error) {
+      if (!this.isCurrent(generation)) return
+      this.patch({ error: classifyClientError(error, 'Unable to create a local session.') })
+    }
+  }
+
+  async send(): Promise<void> {
+    const subject = this.snapshot.subject?.name
+    const sessionId = this.snapshot.sessionId
+    const content = this.snapshot.draft.trim()
+    if (!subject || !sessionId || !content || this.snapshot.sendState === 'pending') return
+    const attempt = resolveDraftAttempt(this.draftAttempt, { subject, sessionId, content })
+    this.draftAttempt = attempt
+    this.patch({ sendState: 'pending', error: null, lastDraftId: attempt.id })
+    try {
+      const result = await this.client.sendMessage(subject, content, {
+        sessionId,
+        messageId: attempt.id
+      })
+      if (this.snapshot.subject?.name !== subject || this.snapshot.sessionId !== sessionId) return
+      this.draftAttempt = null
+      this.waitStartedAt = new Date().toISOString()
+      this.patch({
+        draft: '',
+        sendState: 'sent',
+        waiting: true,
+        lastSend: result,
+        lastDraftId: attempt.id
+      })
+      await this.readMessages(false)
+      if (hasAssistantAfter(this.snapshot.records, this.waitStartedAt)) {
+        this.stopWaiting()
+      }
+    } catch (error) {
+      if (this.snapshot.subject?.name !== subject || this.snapshot.sessionId !== sessionId) return
+      this.patch({
+        sendState: 'failed',
+        waiting: false,
+        error: classifyClientError(error, 'Unable to send the desktop message.')
+      })
+    }
+  }
+
+  async retry(): Promise<void> {
+    if (this.snapshot.sendState !== 'failed') return
+    await this.send()
+  }
+
+  async enableDesktopChannel(): Promise<void> {
+    const subject = this.snapshot.subject?.name
+    if (!subject) return
+    const generation = this.generation
+    try {
+      await this.client.enableDesktopChannel(subject)
+      if (!this.isCurrent(generation)) return
+      await this.selectSubject(subject, { generation, sessionId: this.snapshot.sessionId ?? undefined })
+    } catch (error) {
+      if (!this.isCurrent(generation)) return
+      this.patch({ error: classifyClientError(error, 'Unable to enable desktop Channel.') })
+    }
+  }
+
+  async startChannelService(): Promise<void> {
+    const subject = this.snapshot.subject?.name
+    if (!subject) return
+    const generation = this.generation
+    try {
+      const service = await this.client.startService(subject, 'channel')
+      if (!this.isCurrent(generation)) return
+      this.patch({ service, error: null })
+    } catch (error) {
+      if (!this.isCurrent(generation)) return
+      this.patch({ error: classifyClientError(error, 'Unable to start the channel service.') })
+    }
+  }
+
+  private watchEvents(): void {
+    this.unsubscribeEvents?.()
+    this.unsubscribeEvents = this.client.subscribe((event) => {
+      void this.onEvent(event)
+    })
+  }
+
+  private async onEvent(event: JeaEventEnvelope): Promise<void> {
+    const subject = this.snapshot.subject?.name ?? null
+    const sessionId = this.snapshot.sessionId
+    if (!isEventForContext(event, subject, sessionId)) return
+    if (isSubjectEvent(event)) {
+      const next = eventSubject(event)
+      if (next && next !== subject) {
+        await this.selectSubject(next)
+        return
+      }
+      if (subject) await this.selectSubject(subject, { sessionId: sessionId ?? undefined })
+      return
+    }
+    if (isConversationEvent(event)) {
+      const eventSession = eventSessionId(event)
+      if (eventSession && eventSession !== sessionId) return
+      await this.readMessages(false)
+      if (this.snapshot.waiting && hasAssistantAfter(this.snapshot.records, this.waitStartedAt)) {
+        this.stopWaiting()
+      }
+      if (subject) {
+        const sessions = await this.client.listSessions(subject)
+        if (this.snapshot.subject?.name === subject) this.patch({ sessions })
+      }
+      return
+    }
+    if (isServiceEvent(event) && subject) {
+      await this.refreshSupport(subject, this.generation)
+      return
+    }
+    if (isEvolutionEvent(event) && subject) {
+      await this.refreshSupport(subject, this.generation)
+    }
+  }
+
+  private async readMessages(reset: boolean, generation = this.generation): Promise<void> {
+    const subject = this.snapshot.subject?.name
+    const sessionId = this.snapshot.sessionId
+    if (!subject || !sessionId) return
+    try {
+      const page = await this.client.readMessages(subject, sessionId, reset
+        ? { tail: 100 }
+        : { offset: this.offset, limit: 200 })
+      if (
+        !this.isCurrent(generation)
+        || this.snapshot.subject?.name !== subject
+        || this.snapshot.sessionId !== sessionId
+        || page.subject !== subject
+        || page.session_id !== sessionId
+      ) {
+        return
+      }
+      this.offset = reset ? page.next_offset : Math.max(this.offset, page.next_offset)
+      this.patch({
+        records: reset ? page.records as WorkspaceMessage[] : mergeRecords(this.snapshot.records, page.records as WorkspaceMessage[])
+      })
+    } catch (error) {
+      if (!this.isCurrent(generation)) return
+      this.patch({ error: classifyClientError(error, 'Unable to load conversation state.') })
+    }
+  }
+
+  private async refreshSupport(subject: string, generation: number): Promise<void> {
+    try {
+      const [service, readiness, observability] = await Promise.all([
+        this.client.getServiceStatus(subject),
+        this.client.getReadiness(subject),
+        this.client.getObservability(subject)
+      ])
+      if (!this.isCurrent(generation)) return
+      if (this.snapshot.subject && this.snapshot.subject.name !== subject) return
+      this.patch({ service, readiness, observability })
+    } catch {
+      // Support reads are best-effort and must not block conversation.
+    }
+  }
+
+  private isCurrent(generation: number): boolean {
+    return !this.disposed && generation === this.generation
+  }
+
+  private patch(partial: Partial<ConversationWorkspaceSnapshot>): void {
+    const next = { ...this.snapshot, ...partial }
+    next.cards = deriveInlineCards({
+      subject: next.subject,
+      service: next.service,
+      readiness: next.readiness,
+      observability: next.observability,
+      records: next.records,
+      error: next.error
+    })
+    this.snapshot = next
+    for (const listener of this.listeners) listener()
+  }
+}

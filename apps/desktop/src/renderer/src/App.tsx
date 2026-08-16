@@ -1,5 +1,5 @@
-import { JeaApp } from '@jea/app'
+import { DesktopRoot } from './DesktopRoot'
 
 export default function App() {
-  return <JeaApp />
+  return <DesktopRoot />
 }
