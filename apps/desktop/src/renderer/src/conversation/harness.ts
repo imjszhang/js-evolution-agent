@@ -118,8 +118,16 @@ export function createConversationHarness(options: ConversationHarnessOptions = 
       supported: false,
       detail: null
     },
+    conversationReady: false,
     ...options.readiness
   }
+  readiness.conversationReady = options.readiness?.conversationReady ?? Boolean(
+    readiness.jeaHome.writable
+    && readiness.subjects.count > 0
+    && readiness.subjects.defaultSubject
+    && readiness.data.initialized
+    && readiness.conversation.desktopChannelEnabled
+  )
 
   const observability: EvolutionObservability = {
     subject: TEST_CONVERSATION_SUBJECT,

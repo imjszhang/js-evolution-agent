@@ -115,6 +115,7 @@ describe('conversation workspace helpers', () => {
         model: { configured: false, mode: 'unset' },
         data: { initialized: true },
         conversation: { desktopChannelEnabled: false, subject: 'beta' },
+        conversationReady: false,
         cli: {
           installed: false,
           onPath: false,
