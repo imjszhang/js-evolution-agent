@@ -28,7 +28,9 @@ describe('desktop smoke stages', () => {
     })
     expect(stages.channel.ok).toBe(false)
     expect(stages.projection.ok).toBe(false)
+    expect(stages.service.ok).toBe(false)
     expect(commands.some((item) => item.command === 'channel.sendMessage')).toBe(false)
+    expect(commands.some((item) => item.command === 'service.start')).toBe(false)
   })
 
   it('fails when ACP prompt fails and still closes the session', async () => {
@@ -58,6 +60,9 @@ describe('desktop smoke stages', () => {
     expect(commands.map((item) => item.command)).toContain('acp.closeSession')
     expect(commands.find((item) => item.command === 'channel.sendMessage')?.payload)
       .toMatchObject({ subject: 'smoke-desktop' })
+    expect(commands.find((item) => item.command === 'service.start')?.payload)
+      .toMatchObject({ subject: 'smoke-desktop', domain: 'channel' })
+    expect(commands.map((item) => item.command)).toContain('service.stop')
   })
 
   it('requires start, prompt, and close to succeed', async () => {

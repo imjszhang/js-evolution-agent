@@ -107,6 +107,7 @@ export function ConversationPane({
   const disabled = !snapshot.subject?.desktopChannelEnabled
   const sending = snapshot.sendState === 'pending'
   const failed = snapshot.sendState === 'failed'
+  const serviceStarting = snapshot.serviceStartState === 'pending'
   const canSend = Boolean(snapshot.subject && snapshot.sessionId && snapshot.draft.trim() && !disabled && !sending)
 
   return (
@@ -155,11 +156,23 @@ export function ConversationPane({
               size="sm"
               variant="outline"
               data-testid="conversation-start-service"
+              disabled={serviceStarting}
               onClick={() => void model.startChannelService()}
             >
-              {conversationText(locale, 'startService')}
+              {serviceStarting
+                ? conversationText(locale, 'startingService')
+                : conversationText(locale, 'startService')}
             </Button>
           </div>
+        ) : null}
+        {snapshot.serviceStartState === 'failed' ? (
+          <p
+            className="text-sm text-status-error-foreground"
+            data-testid="conversation-state-start-failed"
+            role="alert"
+          >
+            {snapshot.error?.message ?? conversationText(locale, 'serviceStartFailed')}
+          </p>
         ) : null}
         {snapshot.error?.kind === 'web_rejected' ? (
           <p className="text-sm text-status-error-foreground" data-testid="conversation-state-web-rejected" role="alert">
@@ -261,12 +274,21 @@ export function ServiceStatusPane({
   const { locale } = useLocale()
   const offline = snapshot.cards.some((card) => card.kind === 'offline')
   const degraded = snapshot.cards.some((card) => card.kind === 'daemon_unhealthy' || card.kind === 'desktop_disabled')
-  const label = offline
+  const starting = snapshot.serviceStartState === 'pending'
+  const label = starting
+    ? conversationText(locale, 'serviceStarting')
+    : offline
     ? conversationText(locale, 'serviceOffline')
     : degraded
       ? conversationText(locale, 'serviceDegraded')
       : conversationText(locale, 'serviceOnline')
-  const tone = offline ? 'bg-status-offline' : degraded ? 'bg-status-warn' : 'bg-status-ok'
+  const tone = starting
+    ? 'bg-status-warn'
+    : offline
+      ? 'bg-status-offline'
+      : degraded
+        ? 'bg-status-warn'
+        : 'bg-status-ok'
 
   return (
     <div className="flex items-center gap-2 text-xs text-muted-foreground" data-slot="serviceStatus" data-testid="conversation-service-status">
@@ -277,9 +299,12 @@ export function ServiceStatusPane({
           size="sm"
           variant="ghost"
           data-testid="conversation-service-start"
+          disabled={starting}
           onClick={() => void model.startChannelService()}
         >
-          {conversationText(locale, 'startService')}
+          {starting
+            ? conversationText(locale, 'startingService')
+            : conversationText(locale, 'startService')}
         </Button>
       ) : null}
     </div>

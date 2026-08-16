@@ -16,6 +16,7 @@ import {
 } from '../../../../../src/infra/subjects.mjs'
 import { initData } from '../../../../../src/cli/commands/data.mjs'
 import { resolveDesktopConfig } from '../../../../../src/channel/adapters/desktop/config.mjs'
+import { resolveModelReadiness } from '../../../../../src/actions/execution-env.mjs'
 import { PublicClientError } from '../errors'
 import { redactPublicValue } from '../redact'
 import type { CliStatus, SetupHomeResult, SetupReadiness, SetupSubjectResult } from '../types'
@@ -239,7 +240,10 @@ export class SetupCommandOwner {
       ?? names[0]
       ?? null
     const initialized = selected ? dataInitialized(this.runtime, selected) : false
-    const modelConfigured = Boolean(process.env.DEEPSEEK_API_KEY)
+    const model = resolveModelReadiness({
+      jeaHome: this.runtime.jeaHome,
+      subjectRoot: selected ? subjectRuntime(this.runtime, selected).runtimeRoot : null
+    })
     const readiness: SetupReadiness = {
       jeaHome: {
         path: this.runtime.jeaHome,
@@ -252,8 +256,8 @@ export class SetupCommandOwner {
         names
       },
       model: {
-        configured: modelConfigured,
-        mode: modelConfigured ? 'deepseek' : 'mock'
+        configured: model.configured,
+        mode: model.mode
       },
       data: { initialized },
       conversation: {

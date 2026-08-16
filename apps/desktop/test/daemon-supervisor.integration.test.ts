@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
+import { discoverDevElectronBinary } from '../../../src/product/app-paths.mjs'
 import { DaemonSupervisor } from '../src/main/daemon-supervisor'
 import { DesktopEventBus } from '../src/main/event-bus'
 import { ManagedProcessRegistry } from '../src/main/managed-process-registry'
@@ -18,6 +19,7 @@ import { DEFAULT_PROJECT_ROOT } from '../src/main/operations'
 
 const roots: string[] = []
 const children: ChildProcess[] = []
+const devElectronBinary = discoverDevElectronBinary(DEFAULT_PROJECT_ROOT)
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -146,6 +148,29 @@ describe.skipIf(process.platform === 'win32')('DaemonSupervisor real process smo
     expect(registry.list()).toEqual([])
     expect(existsSync(join(root, 'runtime'))).toBe(false)
     expect(existsSync(join(jeaHome, 'subjects', 'alpha-data', 'data', 'channel'))).toBe(true)
+  })
+
+  it.skipIf(!devElectronBinary)('starts a channel worker with Electron in Node mode', async () => {
+    const { root, jeaHome } = projectFixture()
+    const registry = new ManagedProcessRegistry()
+    const supervisor = new DaemonSupervisor(
+      root,
+      registry,
+      new DesktopEventBus(),
+      undefined,
+      1_000,
+      jeaHome,
+      10_000,
+      devElectronBinary!
+    )
+
+    const started = await supervisor.start('alpha', { domain: 'channel' })
+    expect(started).toMatchObject({ mode: 'managed', domain: 'channel' })
+    await waitFor(() => supervisor.get('alpha').heartbeat_at != null)
+
+    const stopped = await supervisor.stop('alpha', 'electron_node_integration_test')
+    expect(stopped.mode).toBe('none')
+    expect(registry.list()).toEqual([])
   })
 
   it('attaches to but never cleans up an external worker', async () => {

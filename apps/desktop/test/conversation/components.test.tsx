@@ -135,6 +135,32 @@ describe('conversation workspace components', () => {
     expect(offline).toContain('data-testid="conversation-state-offline"')
     expect(offline).toContain('data-testid="conversation-start-service"')
 
+    const startFailed = renderPane(
+      <ConversationPane
+        model={model}
+        snapshot={{
+          ...base,
+          loading: false,
+          subject: {
+            name: 'alpha',
+            namespace: 'alpha-data',
+            isDefault: true,
+            selected: true,
+            desktopChannelEnabled: true
+          },
+          sessionId: 'main',
+          serviceStartState: 'failed',
+          error: {
+            kind: 'failed',
+            code: 'OPERATION_FAILED',
+            message: 'The packaged daemon exited before startup.'
+          }
+        }}
+      />
+    )
+    expect(startFailed).toContain('data-testid="conversation-state-start-failed"')
+    expect(startFailed).toContain('The packaged daemon exited before startup.')
+
     const question = renderPane(
       <ConversationPane
         model={model}

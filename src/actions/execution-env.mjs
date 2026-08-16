@@ -68,6 +68,44 @@ export function resolveEffectiveEnv(envDir, { baseEnv = process.env } = {}) {
   };
 }
 
+/**
+ * @param {string} jeaHome
+ * @param {{ baseEnv?: Record<string, string | undefined>, subjectRoot?: string | null }} options
+ */
+export function buildJeaRuntimeEnv(
+  jeaHome,
+  { baseEnv = process.env, subjectRoot = null } = {},
+) {
+  const home = resolveEffectiveEnv(jeaHome, { baseEnv });
+  const subject = subjectRoot
+    ? resolveEffectiveEnv(subjectRoot, { baseEnv: home.env })
+    : null;
+  return {
+    env: subject?.env ?? home.env,
+    homeEnvPath: home.envPath,
+    homeEnvFileExists: home.envFileExists,
+    homeEnvFileError: home.envFileError,
+    subjectEnvPath: subject?.envPath ?? null,
+    subjectEnvFileExists: subject?.envFileExists ?? false,
+    subjectEnvFileError: subject?.envFileError ?? null,
+  };
+}
+
+/**
+ * @param {{ jeaHome: string, subjectRoot?: string | null, baseEnv?: Record<string, string | undefined> }} options
+ * @returns {{ configured: boolean, mode: 'deepseek' | 'mock' }}
+ */
+export function resolveModelReadiness(
+  { jeaHome, subjectRoot = null, baseEnv = process.env } = {},
+) {
+  const { env } = buildJeaRuntimeEnv(jeaHome, { baseEnv, subjectRoot });
+  const configured = hasValue(env.DEEPSEEK_API_KEY);
+  return {
+    configured,
+    mode: configured ? 'deepseek' : 'mock',
+  };
+}
+
 function applyProcessEnv(env) {
   const previous = new Map();
   const added = new Set();

@@ -22,6 +22,8 @@ export interface HarnessSubject extends SubjectRecord {
 export interface ConversationHarnessOptions {
   subjects?: HarnessSubject[]
   rejectSend?: PublicClientError | null
+  rejectStart?: PublicClientError | null
+  startDelayMs?: number
   readDelayMs?: number
   service?: Partial<ServiceStatus>
   readiness?: Partial<SetupReadiness>
@@ -243,6 +245,10 @@ export function createConversationHarness(options: ConversationHarnessOptions = 
         return { ...service, subject }
       }
       if (command === 'service.start') {
+        if (options.startDelayMs) {
+          await new Promise((resolve) => setTimeout(resolve, options.startDelayMs))
+        }
+        if (options.rejectStart) throw options.rejectStart
         started.push(subject)
         service.mode = 'attached'
         service.pid = 4242

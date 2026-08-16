@@ -130,6 +130,13 @@ function createSupervisor(root: string, { closeOnKill = false } = {}) {
 describe('DaemonSupervisor', () => {
   it('moves a subject from none to a client-managed daemon using injected spawn', async () => {
     const root = createProjectRoot()
+    writeFileSync(join(root, 'runtime', '.env'), [
+      'DEEPSEEK_API_KEY=home-key',
+      'JEA_PROJECT_ROOT=/must-not-win'
+    ].join('\n'))
+    const subjectRoot = join(root, 'runtime', 'subjects', 'alpha-data')
+    mkdirSync(subjectRoot, { recursive: true })
+    writeFileSync(join(subjectRoot, '.env'), 'DEEPSEEK_API_KEY=subject-key\n')
     const { supervisor, processRegistry, published, spawnMock } = createSupervisor(root)
 
     expect(supervisor.get('alpha')).toMatchObject({
@@ -165,7 +172,9 @@ describe('DaemonSupervisor', () => {
         windowsHide: true,
         env: expect.objectContaining({
           ELECTRON_RUN_AS_NODE: '1',
-          JEA_PROJECT_ROOT: root
+          JEA_PROJECT_ROOT: root,
+          JEA_HOME: join(root, 'runtime'),
+          DEEPSEEK_API_KEY: 'subject-key'
         })
       })
     )

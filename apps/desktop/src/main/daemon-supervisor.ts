@@ -25,6 +25,7 @@ import {
 import { listRegisteredSubjects } from '../../../../src/infra/subjects.mjs'
 import { runtimeForSubject } from '../../../../src/infra/runtime-paths.mjs'
 import { jeaLogsDir } from '../../../../src/infra/jea-home.mjs'
+import { buildJeaRuntimeEnv } from '../../../../src/actions/execution-env.mjs'
 import type {
   DaemonSupervisorView,
   DaemonSupervisorMode
@@ -67,7 +68,9 @@ export class DaemonSupervisor {
     private readonly events: DesktopEventBus,
     private readonly spawnImpl: SpawnDaemon = spawn,
     private readonly killGraceMs = 10_000,
-    jeaHome: string | undefined = process.env.JEA_HOME
+    jeaHome: string | undefined = process.env.JEA_HOME,
+    private readonly startupTimeoutMs = spawnImpl === spawn ? 10_000 : 0,
+    private readonly runtimeExecPath = process.execPath
   ) {
     this.runtimeContext = createDesktopServiceRuntimeContext(projectRoot, jeaHome)
   }
@@ -163,9 +166,14 @@ export class DaemonSupervisor {
       throw new Error('daemon_log_open_failed')
     }
     const cliPath = join(this.projectRoot, 'src', 'cli', 'jea.mjs')
+    const subjectRoot = runtimeForSubject(this.runtimeContext, subject).runtimeRoot
+    const effectiveEnv = buildJeaRuntimeEnv(this.runtimeContext.jeaHome, {
+      baseEnv: process.env,
+      subjectRoot
+    }).env
     let child: ChildProcess
     try {
-      child = this.spawnImpl(process.execPath, [
+      child = this.spawnImpl(this.runtimeExecPath, [
         '--preserve-symlinks',
         cliPath,
         'daemon',
@@ -177,7 +185,7 @@ export class DaemonSupervisor {
       ], {
         cwd: this.projectRoot,
         env: {
-          ...process.env,
+          ...effectiveEnv,
           ELECTRON_RUN_AS_NODE: '1',
           JEA_PROJECT_ROOT: this.projectRoot,
           JEA_HOME: this.runtimeContext.jeaHome
@@ -248,12 +256,48 @@ export class DaemonSupervisor {
       await this.terminateChild(child, processGroup)
       throw error
     }
+    try {
+      await this.waitForStartup(entry)
+    } catch (error) {
+      if (this.managed.get(subject)?.ownerToken === ownerToken) {
+        this.managed.delete(subject)
+      }
+      unregister()
+      this.removeDiagnostic(subject, ownerToken)
+      if (!processExited(child)) await this.terminateChild(child, processGroup)
+      throw error
+    }
     this.events.publish({
       type: 'daemon_managed_started',
       subject,
       payload: { pid: child.pid ?? null, domain }
     })
     return this.get(subject)
+  }
+
+  private async waitForStartup(entry: ManagedDaemon): Promise<void> {
+    if (this.startupTimeoutMs <= 0) return
+    const deadline = Date.now() + this.startupTimeoutMs
+    while (Date.now() < deadline) {
+      if (processExited(entry.child)) {
+        throw new PublicCommandError(
+          'OPERATION_FAILED',
+          'The JEA daemon exited before becoming ready. Check the JEA daemon logs.'
+        )
+      }
+      const cycle = summarizeWorkerState(readWorkerState(this.runtimeContext, entry.subject))
+      const channel = summarizeChannelWorkersState(
+        readChannelWorkerState(this.runtimeContext, entry.subject)
+      )
+      const cycleReady = entry.domain === 'channel' || cycle.running
+      const channelReady = entry.domain === 'cycle' || channel.running_count > 0
+      if (cycleReady && channelReady) return
+      await delay(50)
+    }
+    throw new PublicCommandError(
+      'OPERATION_FAILED',
+      'The JEA daemon did not become ready before the startup deadline. Check the JEA daemon logs.'
+    )
   }
 
   async stop(subject: string, reason = 'operator'): Promise<DaemonSupervisorView> {

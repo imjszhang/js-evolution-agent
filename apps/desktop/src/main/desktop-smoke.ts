@@ -40,6 +40,7 @@ export async function runDesktopSmokeStages({
     const error = `fixture subject ${fixtureSubject} was not listed`
     stages.projection = { ok: false, error }
     stages.channel = { ok: false, error }
+    stages.service = { ok: false, error }
   } else {
     const watch = await invoke('projection.watch', { subject })
     stages.projection = { ok: watch.ok, error: watch.ok ? null : watch.error }
@@ -57,6 +58,16 @@ export async function runDesktopSmokeStages({
       get: channelGet.ok,
       send: Boolean(send.ok),
       error: send.ok ? null : (channelGet.ok ? send.error : channelGet.error)
+    }
+    const serviceStart = await invoke('service.start', { subject, domain: 'channel' })
+    const serviceStop = serviceStart.ok
+      ? await invoke('service.stop', { subject })
+      : { ok: false as const, error: serviceStart.error }
+    stages.service = {
+      ok: Boolean(serviceStart.ok && serviceStop.ok),
+      started: serviceStart.ok,
+      stopped: serviceStop.ok,
+      error: serviceStart.ok ? (serviceStop.ok ? null : serviceStop.error) : serviceStart.error
     }
   }
 
