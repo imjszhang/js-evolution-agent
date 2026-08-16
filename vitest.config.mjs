@@ -32,6 +32,9 @@ export default defineConfig({
         'archives/**',
         'runtime/**',
         'backups/**',
+        // 0.1.0 Client API is a new owner with dedicated `test:client-api`.
+        // Do not fold it into the 2026-08-15 root coverage baseline.
+        'apps/desktop/src/client-api/**',
       ],
     },
   },
