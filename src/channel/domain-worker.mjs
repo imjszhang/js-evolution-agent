@@ -22,7 +22,7 @@ import { reclaimExpiredChannelLeases } from './task-queue.mjs';
 import { readChannelReloadRequest, writeChannelReloadState } from './state.mjs';
 import { runDomainWorkerLoop } from '../infra/worker-loop.mjs';
 import { isProcessAlive } from '../infra/process-alive.mjs';
-import { runWithTimeout } from './async-utils.mjs';
+import { runUntilAbort, runWithTimeout } from './async-utils.mjs';
 import { resolveFeishuConfig } from './adapters/feishu/config.mjs';
 import { feishuListenerConfigFingerprint } from './adapters/feishu/listener.mjs';
 import { sanitizeFeishuError } from './adapters/feishu/errors.mjs';
@@ -91,10 +91,13 @@ export async function runChannelListenerSupervisor(root, subject, flags = {}, {
 
       let result;
       try {
-        // Connect deadline lives inside ensureListener / createAndStartListener.
-        // Supervisor must not wrap a second identical timeout or one failure
-        // is recorded twice.
-        result = await ensureListener(root, subject, { ...flags, signal });
+        // Connect deadline lives inside ensureListener. Supervisor only
+        // cancels on shutdown so a hung ensure cannot block role workers.
+        result = await runUntilAbort(
+          (operationSignal) => ensureListener(root, subject, { ...flags, signal: operationSignal }),
+          'feishu listener ensure',
+          { signal },
+        );
       } catch (err) {
         if (signal?.aborted || err?.code === 'channel_aborted') break;
         result = {
