@@ -49,7 +49,8 @@ describe('Client API architecture boundaries', () => {
   it('keeps transport adapters free of domain decisions and runtime-file writes', () => {
     const files = [
       join(desktopRoot, 'src/client-api/adapters/electron.ts'),
-      join(desktopRoot, 'src/client-api/adapters/memory.ts')
+      join(desktopRoot, 'src/client-api/adapters/memory.ts'),
+      join(desktopRoot, 'src/client-api/adapters/web.ts')
     ]
     for (const file of files) {
       const source = readFileSync(file, 'utf8')

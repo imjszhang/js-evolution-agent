@@ -17,6 +17,7 @@ export {
   assertCatalogComplete,
   catalogCommand,
   isClientApiCommand,
+  isWebAllowedCommand,
   serializeClientApiCatalog
 } from './catalog'
 export { PublicClientError, isPublicClientError, publicErrorShape, toPublicClientError } from './errors'
@@ -24,6 +25,7 @@ export { createTypedJeaClient, type JeaClient, type JeaClientTransport } from '.
 export { createApplicationCommandHost, createApplicationCommandHandlers, createClientApiCommandDefinitions } from './host'
 export { createElectronJeaClient, type ElectronClientTransport } from './adapters/electron'
 export { createMemoryJeaClient, createMemoryCommandTransport } from './adapters/memory'
+export { createWebJeaClient, type WebJeaClientOptions } from './adapters/web'
 export { createProductSurfaceFixture, fixtureCommandResult, PRODUCT_FIXTURE_SUBJECT } from './fixtures/product-surface'
 export { redactPublicValue } from './redact'
 export type {

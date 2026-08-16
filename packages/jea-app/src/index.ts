@@ -56,6 +56,13 @@ export {
   type MessageKey
 } from './i18n/messages'
 export { createWave1Adapters, WAVE1_SUBJECTS, WAVE1_SESSIONS } from './fixtures/wave1'
+export {
+  fetchWebBootstrap,
+  isJeaWebHosted,
+  resolveHostedViewState,
+  BOOTSTRAP_PATH,
+  JEA_HOST_META
+} from './web/host-connection'
 export { Button, buttonVariants } from './ui/button'
 export { Dialog, DialogContent, DialogTitle, DialogDescription, DialogClose } from './ui/dialog'
 export { Separator } from './ui/separator'
