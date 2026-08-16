@@ -92,48 +92,6 @@ export function SubjectListPane({
           </ul>
         )}
       </section>
-      <section className="border-t border-border p-3" aria-labelledby="jea-sessions-label">
-        <div className="mb-2 flex items-center justify-between">
-          <h2 id="jea-sessions-label" className="text-xs font-medium text-muted-foreground">
-            {conversationText(locale, 'sessions')}
-          </h2>
-          <Button
-            size="sm"
-            variant="outline"
-            data-testid="session-create"
-            disabled={!snapshot.subject}
-            onClick={() => void model.createSession()}
-          >
-            {conversationText(locale, 'newSession')}
-          </Button>
-        </div>
-        {snapshot.sessions.length === 0 ? (
-          <p className="text-sm text-muted-foreground">{conversationText(locale, 'noSessions')}</p>
-        ) : (
-          <ul className="space-y-1" data-testid="session-list">
-            {snapshot.sessions.map((session) => {
-              const active = session.session_id === snapshot.sessionId
-              return (
-                <li key={session.session_id}>
-                  <button
-                    type="button"
-                    data-testid={`session-${session.session_id}`}
-                    className={cn(
-                      'w-full rounded-md px-2 py-1.5 text-left text-sm hover:bg-surface-hover',
-                      active && 'bg-secondary'
-                    )}
-                    aria-pressed={active}
-                    onClick={() => void model.selectSession(session.session_id)}
-                  >
-                    <strong className="block truncate">{session.session_id}</strong>
-                    <span className="block text-xs text-muted-foreground">{session.message_count} messages</span>
-                  </button>
-                </li>
-              )
-            })}
-          </ul>
-        )}
-      </section>
     </div>
   )
 }
@@ -159,7 +117,6 @@ export function ConversationPane({
         </p>
         <h2 className="truncate text-sm font-semibold">
           {snapshot.subject?.name ?? '—'}
-          {snapshot.sessionId ? ` / ${snapshot.sessionId}` : ''}
         </h2>
         <p className="mt-1 text-xs text-muted-foreground">{conversationText(locale, 'conversationHint')}</p>
       </header>

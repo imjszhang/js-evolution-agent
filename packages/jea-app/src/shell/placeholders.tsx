@@ -6,7 +6,6 @@ import { cn } from '../lib/cn'
 export function SubjectListPlaceholder({ adapters }: FeatureSlotProps) {
   const { t } = useLocale()
   const subjects = adapters.subjects ?? []
-  const sessions = (adapters.sessions ?? []).filter((session) => session.subjectId === adapters.selectedSubjectId)
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-slot="subjectList">
@@ -44,33 +43,6 @@ export function SubjectListPlaceholder({ adapters }: FeatureSlotProps) {
                         {t('defaultSubject')}
                       </span>
                     ) : null}
-                  </button>
-                </li>
-              )
-            })}
-          </ul>
-        )}
-      </section>
-      <section className="border-t border-border p-3" aria-labelledby="jea-sessions-label">
-        <h2 id="jea-sessions-label" className="mb-2 text-xs font-medium text-muted-foreground">{t('sessions')}</h2>
-        {sessions.length === 0 ? (
-          <p className="text-sm text-muted-foreground">{t('noSessions')}</p>
-        ) : (
-          <ul className="space-y-1">
-            {sessions.map((session) => {
-              const selected = session.id === adapters.selectedSessionId
-              return (
-                <li key={session.id}>
-                  <button
-                    type="button"
-                    className={cn(
-                      'w-full rounded-md px-2 py-1.5 text-left text-sm hover:bg-surface-hover',
-                      selected && 'bg-secondary'
-                    )}
-                    aria-pressed={selected}
-                    onClick={() => adapters.onSelectSession?.(session.id)}
-                  >
-                    {session.title}
                   </button>
                 </li>
               )
