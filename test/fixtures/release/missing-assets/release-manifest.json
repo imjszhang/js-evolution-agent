@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "product": "jea",
+  "release": "0.1.0",
+  "platform": "macos-arm64",
+  "note": "Intentionally incomplete fixture: required runtime/Web/CLI/policy names are absent.",
+  "requiredAssets": {
+    "runtime": [
+      "resources/host/package.json"
+    ],
+    "web": [
+      "resources/web/index.html"
+    ],
+    "cli": [
+      "resources/cli/jea"
+    ],
+    "policy": [
+      "resources/policies/authority/CONSTITUTION.md"
+    ]
+  }
+}
