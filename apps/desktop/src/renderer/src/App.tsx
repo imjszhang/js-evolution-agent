@@ -1,5 +1,8 @@
-import { JeaApp } from '@jea/app'
+import { JeaProductApp } from '@jea/app'
+import { createDesktopRendererClient } from './jea-desktop-client'
+
+const desktopClient = createDesktopRendererClient()
 
 export default function App() {
-  return <JeaApp />
+  return <JeaProductApp client={desktopClient} host="electron" />
 }

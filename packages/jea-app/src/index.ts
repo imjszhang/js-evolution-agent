@@ -56,6 +56,31 @@ export {
   type MessageKey
 } from './i18n/messages'
 export { createWave1Adapters, WAVE1_SUBJECTS, WAVE1_SESSIONS } from './fixtures/wave1'
+export { JeaProductApp, type JeaProductAppProps } from './features/JeaProductApp'
+export { JeaClientProvider, useJeaClientContext, useOptionalJeaClient } from './features/client-context'
+export { settingsFeature } from './features/settings/module'
+export { SettingsPanel } from './features/settings/SettingsPanel'
+export { SetupFlow } from './features/setup/SetupFlow'
+export { isConversationReady, resolveSetupStep, type SetupStep } from './features/readiness'
+export {
+  createFixtureSetupClient,
+  createSetupFixtureState,
+  cliFixture,
+  createEmptyReadiness,
+  createReadyReadiness,
+  createDisabledChannelReadiness
+} from './features/fixtures'
+export type {
+  CliStatus,
+  ProductHostKind,
+  SettingsPatch,
+  SettingsView,
+  SetupHomeResult,
+  SetupReadiness,
+  SetupSettingsClient,
+  SetupSubjectResult,
+  SubjectSummary
+} from './features/client-types'
 export { Button, buttonVariants } from './ui/button'
 export { Dialog, DialogContent, DialogTitle, DialogDescription, DialogClose } from './ui/dialog'
 export { Separator } from './ui/separator'

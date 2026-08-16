@@ -174,6 +174,7 @@ export function createProductSurfaceFixture(): ProductSurfaceFixture {
       model: { configured: false, mode: 'mock' },
       data: { initialized: true },
       conversation: { desktopChannelEnabled: true, subject: 'alpha' },
+      conversationReady: true,
       cli
     },
     home: { path: '/tmp/jea-fixture-home', source: 'fixture', writable: true },
