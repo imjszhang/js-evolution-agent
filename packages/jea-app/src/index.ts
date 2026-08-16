@@ -56,6 +56,42 @@ export {
   type MessageKey
 } from './i18n/messages'
 export { createWave1Adapters, WAVE1_SUBJECTS, WAVE1_SESSIONS } from './fixtures/wave1'
+export {
+  EvolutionInspector,
+  createEvolutionInspectorFeature,
+  createEvolutionFixtureClient,
+  createEvolutionFixtureData,
+  EVOLUTION_OPEN_CYCLE_EVENT,
+  openEvolutionCycle,
+  subscribeEvolutionNavigation,
+  resetEvolutionNavigation,
+  projectEvolutionCore,
+  projectTimeline,
+  pickDefaultCycleId,
+  resolveSafeState,
+  shouldRefreshForEvent,
+  mergeCycleRecords,
+  coreFromLegacy,
+  sanitizeCycleList,
+  sanitizeCycleDetail,
+  sanitizeRoundDetail,
+  sanitizeObservability,
+  createInspectorController,
+  EVOLUTION_PARITY_INVENTORY,
+  parityInventoryMarkdown
+} from './features/evolution'
+export type {
+  EvolutionInspectorProps,
+  EvolutionInspectorFeatureOptions,
+  EvolutionInspectorClient,
+  EvolutionInspectorSnapshot,
+  EvolutionInspectorCore,
+  EvolutionOpenCycleDetail,
+  EvolutionNavigationListener,
+  EvolutionFixtureClient,
+  TimelineCycleView,
+  InspectorSafeState
+} from './features/evolution'
 export { Button, buttonVariants } from './ui/button'
 export { Dialog, DialogContent, DialogTitle, DialogDescription, DialogClose } from './ui/dialog'
 export { Separator } from './ui/separator'

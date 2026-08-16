@@ -19,6 +19,13 @@ export async function prepareVisualPage(page: Page, path: string): Promise<void>
       throw new Error('bundled JeaUI/JeaCJK fonts did not load')
     }
   })
+  const inspector = page.locator('[data-testid="evolution-inspector"]')
+  if (await inspector.count()) {
+    await page.locator('[data-testid="evolution-inspector"][data-ready="true"]').waitFor({
+      state: 'attached',
+      timeout: 10_000
+    })
+  }
 }
 
 export const visualScreenshotOptions = {

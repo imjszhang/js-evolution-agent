@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { JeaApp } from '../JeaApp'
 import { createWave1Adapters } from '../fixtures/wave1'
+import { createEvolutionFixtureClient, createEvolutionInspectorFeature } from '../features/evolution'
 import type { ShellViewState } from '../shell/GlobalStates'
 import type { Locale } from '../i18n/messages'
 import '../styles/index.css'
@@ -16,12 +17,21 @@ const locale = (readParam('locale') === 'en' ? 'en' : 'zh') as Locale
 const settingsOpen = readParam('settings') === '1' ? true : undefined
 const empty = viewState === 'empty' || readParam('empty') === '1'
 
+const evolutionClient = createEvolutionFixtureClient()
+const features = [
+  createEvolutionInspectorFeature({
+    client: evolutionClient,
+    navFixtureCycleId: 'cycle-20260815-closed'
+  })
+]
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <JeaApp
       locale={locale}
       viewState={viewState === 'empty' ? 'empty' : viewState}
       settingsOpen={settingsOpen}
+      features={features}
       adapters={createWave1Adapters(empty ? {
         subjects: [],
         sessions: [],
