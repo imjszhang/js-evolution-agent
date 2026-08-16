@@ -1,6 +1,10 @@
 import { StrictMode, useCallback, useEffect, useMemo, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { JeaApp } from '../JeaApp'
+import { JeaProductApp } from '../features/JeaProductApp'
+import { JeaClientProvider } from '../features/client-context'
+import { createFixtureSetupClient, createSetupFixtureState, type CliFixtureKind } from '../features/fixtures'
+import { settingsFeature } from '../features/settings/module'
 import { createWave1Adapters } from '../fixtures/wave1'
 import { createEvolutionFixtureClient, createEvolutionInspectorFeature } from '../features/evolution'
 import type { Locale } from '../i18n/messages'
@@ -20,12 +24,26 @@ function WebHostRoot() {
   const empty = queryState === 'empty' || readParam('empty') === '1'
   const inspectorMode = readParam('inspector')
   const subject = readParam('subject')
+  const setupKind = readParam('setup')
+  const cliKind = (readParam('cli') ?? (setupKind ? 'unsupported' : 'native')) as CliFixtureKind
   const [connected, setConnected] = useState<boolean | null>(hosted && !queryState ? null : true)
   const viewState = resolveHostedViewState({
     queryState,
     hosted,
     connected
   })
+
+  const fixture = useMemo(() => createSetupFixtureState({
+    kind: setupKind === '1' || setupKind === 'empty'
+      ? 'empty'
+      : setupKind === 'channel'
+        ? 'channel'
+        : 'ready',
+    cli: cliKind,
+    model: readParam('model') === 'deepseek' ? 'deepseek' : 'mock'
+  }), [cliKind, setupKind])
+  const client = useMemo(() => createFixtureSetupClient(fixture), [fixture])
+  const host = cliKind === 'native' || !readParam('cli') ? 'web' : 'electron'
 
   const features = useMemo(() => {
     const evolutionClient = createEvolutionFixtureClient(
@@ -49,7 +67,8 @@ function WebHostRoot() {
       createEvolutionInspectorFeature({
         client: evolutionClient,
         navFixtureCycleId: 'cycle-20260815-closed'
-      })
+      }),
+      settingsFeature
     ]
   }, [inspectorMode])
 
@@ -64,29 +83,42 @@ function WebHostRoot() {
     void refresh()
   }, [refresh])
 
+  if (setupKind) {
+    return (
+      <JeaProductApp
+        locale={locale}
+        host={host}
+        client={client}
+        initialReadiness={fixture.readiness}
+      />
+    )
+  }
+
   return (
-    <JeaApp
-      locale={locale}
-      viewState={viewState === 'empty' ? 'empty' : viewState}
-      settingsOpen={settingsOpen}
-      features={features}
-      adapters={createWave1Adapters(empty ? {
-        subjects: [],
-        sessions: [],
-        selectedSubjectId: null,
-        selectedSessionId: null
-      } : inspectorMode === 'empty' ? {
-        subjects: [{ id: 'empty', name: 'empty', namespace: 'empty-data' }],
-        selectedSubjectId: 'empty',
-        selectedSessionId: null,
-        sessions: []
-      } : viewState === 'offline' || connected === false ? {
-        serviceStatus: 'offline',
-        onRetry: () => { void refresh() }
-      } : subject ? {
-        selectedSubjectId: subject
-      } : {})}
-    />
+    <JeaClientProvider client={client} host={host}>
+      <JeaApp
+        locale={locale}
+        viewState={viewState === 'empty' ? 'empty' : viewState}
+        settingsOpen={settingsOpen}
+        features={features}
+        adapters={createWave1Adapters(empty ? {
+          subjects: [],
+          sessions: [],
+          selectedSubjectId: null,
+          selectedSessionId: null
+        } : inspectorMode === 'empty' ? {
+          subjects: [{ id: 'empty', name: 'empty', namespace: 'empty-data' }],
+          selectedSubjectId: 'empty',
+          selectedSessionId: null,
+          sessions: []
+        } : viewState === 'offline' || connected === false ? {
+          serviceStatus: 'offline',
+          onRetry: () => { void refresh() }
+        } : subject ? {
+          selectedSubjectId: subject
+        } : {})}
+      />
+    </JeaClientProvider>
   )
 }
 

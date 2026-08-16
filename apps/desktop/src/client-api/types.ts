@@ -170,6 +170,7 @@ export interface SetupReadiness {
     desktopChannelEnabled: boolean
     subject: string | null
   }
+  conversationReady: boolean
   cli: CliStatus
 }
 

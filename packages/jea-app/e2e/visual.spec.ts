@@ -3,10 +3,13 @@ import { prepareVisualPage, visualScreenshotOptions } from './visual-ready'
 
 const states = [
   { name: 'workspace', path: '/?locale=en' },
-  { name: 'settings', path: '/?locale=en&settings=1' },
+  { name: 'settings', path: '/?locale=en&settings=1&cli=native' },
+  { name: 'settings-cli-installed', path: '/?locale=en&settings=1&cli=installed' },
   { name: 'loading', path: '/?locale=en&state=loading' },
   { name: 'empty', path: '/?locale=en&state=empty' },
-  { name: 'offline', path: '/?locale=en&state=offline' }
+  { name: 'offline', path: '/?locale=en&state=offline' },
+  { name: 'setup-fresh', path: '/?locale=en&setup=1' },
+  { name: 'setup-channel', path: '/?locale=en&setup=channel' }
 ] as const
 
 const viewports = [
@@ -22,8 +25,15 @@ for (const viewport of viewports) {
       if (state.name === 'workspace') {
         await expect(page.getByTestId('workspace')).toBeVisible()
       }
-      if (state.name === 'settings') {
+      if (state.name === 'settings' || state.name === 'settings-cli-installed') {
         await expect(page.getByTestId('settings-overlay')).toBeVisible()
+        await expect(page.getByTestId('settings-panel')).toBeVisible()
+      }
+      if (state.name === 'setup-fresh') {
+        await expect(page.getByTestId('setup-flow')).toBeVisible()
+      }
+      if (state.name === 'setup-channel') {
+        await expect(page.getByTestId('setup-step-channel')).toBeVisible()
       }
       await expect(page).toHaveScreenshot(`${viewport.name}-${state.name}.png`, visualScreenshotOptions)
     })

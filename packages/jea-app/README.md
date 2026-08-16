@@ -42,6 +42,12 @@ registerFeature({
 Slot ids: `subjectList`, `conversation`, `evolutionInspector`, `serviceStatus`,
 `settings`, `workspaceHeader`.
 
+`settingsFeature` fills the Settings overlay slot (General / Runtime / Command
+Line / About). First-run uses `JeaProductApp` and existing `viewState` loading
+or error chrome; an empty JEA Home renders `SetupFlow` instead of the empty
+workspace. Inject a Wave 1 `JeaClient` (or the in-package fixture client). Do
+not invent a second command catalog.
+
 Wave 1 injects fixture adapters only. Do not invent a JeaClient here; #116 owns
 the command catalog. Feature teams inject that client through a feature factory.
 

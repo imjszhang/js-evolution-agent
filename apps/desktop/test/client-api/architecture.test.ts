@@ -60,4 +60,14 @@ describe('Client API architecture boundaries', () => {
       expect(source).not.toMatch(/writeFileSync|rmSync|mkdirSync/)
     }
   })
+
+  it('keeps renderer setup/settings off host owners and registry files', () => {
+    const files = walk(join(desktopRoot, 'src/renderer'))
+    for (const file of files) {
+      const source = readFileSync(file, 'utf8')
+      expect(source, file).not.toMatch(/from\s+['"][^'"]*\/client-api\/host['"]/)
+      expect(source, file).not.toMatch(/from\s+['"][^'"]*\/owners\/(?:setup|settings|cli)['"]/)
+      expect(source, file).not.toMatch(/writeFileSync|registry\.json/)
+    }
+  })
 })
