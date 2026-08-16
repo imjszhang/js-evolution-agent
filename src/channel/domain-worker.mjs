@@ -99,6 +99,38 @@ export async function runChannelListenerSupervisor(root, subject, flags = {}, {
   return { stopped: true };
 }
 
+async function awaitWorkersWithShutdownGrace(root, subject, workerPromise, signal) {
+  const { shutdownGraceMs } = resolveFeishuConfig(root, subject);
+  let removeAbort = null;
+  const shutdown = new Promise((resolve) => {
+    const onAbort = () => {
+      runWithTimeout(
+        () => workerPromise,
+        shutdownGraceMs,
+        'channel worker shutdown',
+      ).then(resolve, (error) => {
+        recordChannelEvent(root, subject, {
+          type: 'channel_shutdown_grace_exceeded',
+          status: 'error',
+          error_code: error?.code ?? null,
+          grace_ms: shutdownGraceMs,
+        });
+        resolve([]);
+      });
+    };
+    if (signal.aborted) onAbort();
+    else {
+      signal.addEventListener('abort', onAbort, { once: true });
+      removeAbort = () => signal.removeEventListener('abort', onAbort);
+    }
+  });
+  try {
+    return await Promise.race([workerPromise, shutdown]);
+  } finally {
+    removeAbort?.();
+  }
+}
+
 function workResultSummary(result) {
   return {
     worked: Boolean(result.worked),
@@ -206,6 +238,7 @@ export async function runChannelRoleWorkerLoop(root, subject, role, flags, share
       },
       afterExecute: async (result) => (result?.worked ? workIntervalMs : idleIntervalMs),
       idleMs: idleIntervalMs,
+      signal: shared.signal,
     });
     if (isChannelRoleStopRequested(root, subject, role)) stopReason = 'stop_requested';
   } finally {
@@ -327,13 +360,14 @@ export async function runChannelDomainWorkerMulti(root, subject, flags, {
   });
   try {
     try {
-      workerResults = await Promise.all(roles.map((role) => runChannelRoleWorkerLoop(root, subject, role, flags, shared, {
+      const workerPromise = Promise.all(roles.map((role) => runChannelRoleWorkerLoop(root, subject, role, flags, shared, {
         leaseMs,
         workIntervalMs,
         idleIntervalMs,
         maxIterations,
         channelWorkOnce,
       })));
+      workerResults = await awaitWorkersWithShutdownGrace(root, subject, workerPromise, stopController.signal);
     } catch (err) {
       shared.stopping = true;
       if (!stopController.signal.aborted) stopController.abort(err);

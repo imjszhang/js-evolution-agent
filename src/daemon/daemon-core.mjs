@@ -84,9 +84,17 @@ import {
 } from '../evolution/reactor/reactor-tasks.mjs';
 import { enqueueWakeIntent } from '../evolution/reactor/wake-store.mjs';
 
-function sleep(ms) {
-  if (!ms) return Promise.resolve();
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms, signal = null) {
+  if (!ms || signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(done, ms);
+    function done() {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', done);
+      resolve();
+    }
+    signal?.addEventListener('abort', done, { once: true });
+  });
 }
 
 function heartbeatDefaults(flags = {}) {
@@ -1197,7 +1205,7 @@ async function runChannelDomainWorkerSingle(root, subject, flags = {}) {
         stopReason = afterWork?.stop_requested_at ? 'stop_requested' : 'signal';
         break;
       }
-      await sleep(result.worked ? workIntervalMs : idleIntervalMs);
+      await sleep(result.worked ? workIntervalMs : idleIntervalMs, stopController.signal);
     }
   } finally {
     if (!stopController.signal.aborted) stopController.abort(new Error('channel worker stopped'));

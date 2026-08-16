@@ -4,6 +4,7 @@ import { readJsonSafe, writeJsonFile } from '../../../infra/files.mjs';
 import { recordChannelEvent } from '../../audit.mjs';
 import { parseTextContent } from './parser.mjs';
 import { subjectEnvSlug } from './config.mjs';
+import { sanitizeFeishuError } from './errors.mjs';
 
 export const DEFAULT_BIND_PHRASE = 'JEA BIND';
 const BIND_FILE = 'feishu-operator-binding.json';
@@ -240,7 +241,7 @@ async function sendBindReply(client, event, text) {
       text,
     });
   } catch (err) {
-    console.error('[FeishuBind] reply failed:', err?.message || err);
+    console.error('[FeishuBind] reply failed:', sanitizeFeishuError(err, client?.config));
   }
 }
 

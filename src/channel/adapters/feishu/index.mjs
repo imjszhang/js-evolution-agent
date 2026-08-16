@@ -4,6 +4,7 @@ import { normalizeInboundPayload } from './parser.mjs';
 import { FeishuClient } from './client.mjs';
 import { FeishuSender } from './sender.mjs';
 import { runWithTimeout } from '../../async-utils.mjs';
+import { sanitizeFeishuError } from './errors.mjs';
 
 export { resolveFeishuConfig, feishuConfigForApi, assertFeishuCredentials, subjectEnvSlug } from './config.mjs';
 export {
@@ -118,7 +119,7 @@ export async function sendOutboundMessage(outbound, options = {}) {
           chatId: message.target,
           chunks: result.chunks,
           document_fallback: 'text',
-          document_error: docErr?.message || String(docErr),
+          document_error: sanitizeFeishuError(docErr, cfg),
         };
       }
     }

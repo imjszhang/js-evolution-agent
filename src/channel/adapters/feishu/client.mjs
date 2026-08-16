@@ -20,11 +20,19 @@ function domainFor(Lark, domain) {
   return Lark.Domain?.Feishu ?? Lark.Domain?.Feishu;
 }
 
-function boundedHttpInstance(timeoutMs, signal = null) {
-  return axios.create({
+export function createBoundedFeishuHttpInstance(timeoutMs, signal = null) {
+  const instance = axios.create({
     timeout: Math.max(1, Number(timeoutMs) || 30_000),
     ...(signal ? { signal } : {}),
   });
+  // Lark's HttpInstance contract returns the response body, not AxiosResponse.
+  instance.interceptors.response.use((response) => {
+    if (response.config.$return_headers) {
+      return { data: response.data, headers: response.headers };
+    }
+    return response.data;
+  });
+  return instance;
 }
 
 function assertOk(response, action) {
@@ -178,7 +186,7 @@ export class FeishuClient {
         appSecret: this.config.appSecret,
         appType: Lark.AppType?.SelfBuild,
         domain: domainFor(Lark, this.config.domain),
-        httpInstance: boundedHttpInstance(this.config.sendTimeoutMs, signal),
+        httpInstance: createBoundedFeishuHttpInstance(this.config.sendTimeoutMs, signal),
       });
     }
     if (!this._client) {
@@ -187,7 +195,7 @@ export class FeishuClient {
         appSecret: this.config.appSecret,
         appType: Lark.AppType?.SelfBuild,
         domain: domainFor(Lark, this.config.domain),
-        httpInstance: boundedHttpInstance(this.config.sendTimeoutMs),
+        httpInstance: createBoundedFeishuHttpInstance(this.config.sendTimeoutMs),
       });
     }
     return this._client;
@@ -201,7 +209,7 @@ export class FeishuClient {
       appSecret: this.config.appSecret,
       domain: domainFor(Lark, this.config.domain),
       loggerLevel: Lark.LoggerLevel?.info,
-      httpInstance: boundedHttpInstance(this.config.connectTimeoutMs, signal),
+      httpInstance: createBoundedFeishuHttpInstance(this.config.connectTimeoutMs, signal),
       handshakeTimeoutMs: this.config.connectTimeoutMs,
       onReady,
       onError,

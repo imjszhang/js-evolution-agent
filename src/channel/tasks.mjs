@@ -24,6 +24,12 @@ function readJsonStrict(file) {
   return JSON.parse(readFileSync(file, 'utf-8'));
 }
 
+function sanitizedErrorMessage(error) {
+  return String(redactSecrets(error?.message || String(error)))
+    .replace(/authorization\s*[:=]\s*(?:bearer\s+)?\S+/gi, 'Authorization: [REDACTED]')
+    .replace(/(app[_-]?secret|bind[_-]?token)\s*[:=]\s*\S+/gi, '$1=[REDACTED]');
+}
+
 export async function runChannelInboundTask(root, subject, input = {}) {
   const files = Array.isArray(input.files) ? input.files : [];
   let queued = 0;
@@ -102,7 +108,7 @@ export async function runChannelNotifyTask(root, subject, input = {}, runtime = 
         }, { store: deliverableStoreFor() });
       }
     } catch (err) {
-      const reason = String(redactSecrets(err?.message || String(err)));
+      const reason = sanitizedErrorMessage(err);
       if (err?.code === 'channel_aborted') {
         recordChannelEvent(root, subject, {
           type: 'channel_message_send_aborted',

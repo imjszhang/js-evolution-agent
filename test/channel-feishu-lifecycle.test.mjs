@@ -15,6 +15,9 @@ import {
 import { channelOutboxFailedDir } from '../src/channel/paths.mjs';
 import { channelWorkOnce } from '../src/daemon/daemon-core.mjs';
 import { requestChannelWorkerStop } from '../src/channel/worker-state.mjs';
+import { createBoundedFeishuHttpInstance } from '../src/channel/adapters/feishu/client.mjs';
+import { FeishuMonitor } from '../src/channel/adapters/feishu/monitor.mjs';
+import { sanitizeFeishuError } from '../src/channel/adapters/feishu/errors.mjs';
 
 let root = null;
 let previousJeaHome;
@@ -126,6 +129,69 @@ describe('bounded Feishu lifecycle', () => {
     expect(Date.now() - startedAt).toBeLessThan(1000);
     const events = readChannelEvents(sourceRoot, 'alpha', { limit: 50 });
     expect(events.some((event) => event.type === 'channel_worker_started')).toBe(true);
+  });
+
+  it('preserves the Lark HttpInstance response-body contract', async () => {
+    const http = createBoundedFeishuHttpInstance(100);
+    const response = await http.request({
+      url: 'https://unit.test',
+      adapter: async (config) => ({
+        data: { code: 0, data: { message_id: 'om_test' } },
+        status: 200,
+        statusText: 'OK',
+        headers: { 'x-request-id': 'req-1' },
+        config,
+      }),
+    });
+    expect(response).toEqual({ code: 0, data: { message_id: 'om_test' } });
+  });
+
+  it('does not report listener start complete before SDK onReady', async () => {
+    let callbacks;
+    let closed = false;
+    const client = {
+      getBotOpenId: async () => 'ou_bot',
+      getBotInfo: () => ({ botOpenId: 'ou_bot' }),
+      createEventDispatcher: async () => ({ register() {} }),
+      createWSClient: async (options) => {
+        callbacks = options;
+        return {
+          start: async () => {},
+          close: async () => { closed = true; },
+        };
+      },
+    };
+    const monitor = new FeishuMonitor({ client, onMessage: () => {} });
+    let started = false;
+    const start = monitor.start().then(() => { started = true; });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(started).toBe(false);
+    callbacks.onReady();
+    await start;
+    expect(monitor.getStatus().connected).toBe(true);
+    await monitor.stop();
+    expect(closed).toBe(true);
+  });
+
+  it('sanitizes credential-bearing Feishu errors', () => {
+    const safe = sanitizeFeishuError(
+      new Error('Authorization: Bearer token-value app_secret=secret-value'),
+      { appSecret: 'secret-value' },
+    );
+    expect(safe).toBe('Authorization: [REDACTED] app_secret=[REDACTED]');
+  });
+
+  it('can stop cleanly after SDK construction fails', async () => {
+    const monitor = new FeishuMonitor({
+      client: {
+        config: { appSecret: 'secret-value' },
+        getBotOpenId: async () => 'ou_bot',
+        createWSClient: async () => { throw new Error('SDK construction failed'); },
+      },
+      onMessage: () => {},
+    });
+    await expect(monitor.start()).rejects.toThrow('SDK construction failed');
+    await expect(monitor.stop()).resolves.toBeUndefined();
   });
 
   it('fails a hung send and moves its outbox item out of pending', async () => {

@@ -14,6 +14,7 @@ import { FeishuPolicy } from './policy.mjs';
 import { FeishuMonitor } from './monitor.mjs';
 import { tryHandleFeishuBind } from './binding.mjs';
 import { runWithTimeout } from '../../async-utils.mjs';
+import { sanitizeFeishuError } from './errors.mjs';
 
 /** @type {Map<string, {
  *   monitor: FeishuMonitor,
@@ -32,16 +33,6 @@ const listenerGenerations = new Map();
 
 function listenerKey(root, subject) {
   return `${root}\u0000${subject}`;
-}
-
-function sanitizeError(error, config = {}) {
-  let message = error?.message || String(error);
-  for (const secret of [config.appSecret, config.bindToken, config.encryptKey, config.verificationToken]) {
-    if (secret) message = message.replaceAll(String(secret), '[REDACTED]');
-  }
-  return message
-    .replace(/authorization\s*[:=]\s*\S+/gi, 'Authorization: [REDACTED]')
-    .replace(/(app[_-]?secret|bind[_-]?token)\s*[:=]\s*\S+/gi, '$1=[REDACTED]');
 }
 
 function serializeListener(root, subject, operation) {
@@ -179,7 +170,7 @@ async function createAndStartListener(root, subject, config, { reloadReason = nu
           if (generation !== listenerGenerations.get(key)) return;
           if (state.botOpenId) botOpenId = state.botOpenId;
           const nextState = state.state ?? (state.connected ? 'connected' : 'disconnected');
-          const safeMessage = state.error ? sanitizeError(state.error, config) : null;
+          const safeMessage = state.error ? sanitizeFeishuError(state.error, config) : null;
           setListenerState(root, subject, nextState, {
             last_error_code: state.error?.code ?? null,
             last_error_at: state.error ? new Date().toISOString() : null,
@@ -270,7 +261,7 @@ async function createAndStartListener(root, subject, config, { reloadReason = nu
     activeListeners.set(key, entry);
   } catch (error) {
     if (activeListeners.get(key)?.configFingerprint === configFingerprint) activeListeners.delete(key);
-    const safeMessage = sanitizeError(error, config);
+    const safeMessage = sanitizeFeishuError(error, config);
     setListenerState(root, subject, 'failed', {
       last_error_code: error?.code ?? 'feishu_listener_start_failed',
       last_error_at: new Date().toISOString(),
@@ -422,6 +413,19 @@ async function ensureFeishuListenerUnlocked(root, subject, options = {}) {
 
   if (entry) {
     if (entry.configFingerprint === fingerprint) {
+      if (entry.monitor.getStatus().state === 'failed') {
+        const reloadResult = await reloadFeishuListenerUnlocked(
+          root,
+          subject,
+          options.reason ?? 'connection_failed',
+          options,
+        );
+        return {
+          action: reloadResult.started ? 'reloaded' : 'reload_failed',
+          fingerprint,
+          ...reloadResult,
+        };
+      }
       syncListenerSoftConfig(entry, config);
       return { action: 'unchanged', fingerprint };
     }
