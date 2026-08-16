@@ -13,6 +13,7 @@ import { FeishuClient } from './client.mjs';
 import { FeishuPolicy } from './policy.mjs';
 import { FeishuMonitor } from './monitor.mjs';
 import { tryHandleFeishuBind } from './binding.mjs';
+import { runWithTimeout } from '../../async-utils.mjs';
 
 /** @type {Map<string, {
  *   monitor: FeishuMonitor,
@@ -25,9 +26,41 @@ import { tryHandleFeishuBind } from './binding.mjs';
  *   get config(): object,
  * }>} */
 const activeListeners = new Map();
+const listenerOperations = new Map();
+const listenerStates = new Map();
+const listenerGenerations = new Map();
 
 function listenerKey(root, subject) {
   return `${root}\u0000${subject}`;
+}
+
+function sanitizeError(error, config = {}) {
+  let message = error?.message || String(error);
+  for (const secret of [config.appSecret, config.bindToken, config.encryptKey, config.verificationToken]) {
+    if (secret) message = message.replaceAll(String(secret), '[REDACTED]');
+  }
+  return message
+    .replace(/authorization\s*[:=]\s*\S+/gi, 'Authorization: [REDACTED]')
+    .replace(/(app[_-]?secret|bind[_-]?token)\s*[:=]\s*\S+/gi, '$1=[REDACTED]');
+}
+
+function serializeListener(root, subject, operation) {
+  const key = listenerKey(root, subject);
+  const previous = listenerOperations.get(key) ?? Promise.resolve();
+  const current = previous.catch(() => {}).then(operation);
+  listenerOperations.set(key, current);
+  return current.finally(() => {
+    if (listenerOperations.get(key) === current) listenerOperations.delete(key);
+  });
+}
+
+function setListenerState(root, subject, state, extra = {}) {
+  listenerStates.set(listenerKey(root, subject), {
+    state,
+    connected: state === 'connected',
+    updated_at: new Date().toISOString(),
+    ...extra,
+  });
 }
 
 function hashSecret(secret) {
@@ -44,8 +77,8 @@ export function feishuListenerConfigFingerprint(config = {}) {
     hashSecret(config.appSecret),
     config.domain ?? 'feishu',
     config.connectionMode ?? 'websocket',
-    config.encryptKey ?? '',
-    config.verificationToken ?? '',
+    hashSecret(config.encryptKey),
+    hashSecret(config.verificationToken),
   ].join('|');
 }
 
@@ -78,9 +111,13 @@ function getListenerEntry(root, subject) {
 export function getFeishuListenerStatus(root, subject) {
   const entry = getListenerEntry(root, subject);
   if (!entry) {
+    const lifecycle = listenerStates.get(listenerKey(root, subject));
     return {
       running: false,
-      connected: false,
+      connected: lifecycle?.connected ?? false,
+      state: lifecycle?.state ?? 'stopped',
+      last_error_code: lifecycle?.last_error_code ?? null,
+      last_error_at: lifecycle?.last_error_at ?? null,
       botOpenId: null,
       config_fingerprint: null,
       started_at: null,
@@ -92,6 +129,7 @@ export function getFeishuListenerStatus(root, subject) {
   return {
     running: status.isRunning,
     connected: status.connected,
+    state: status.state,
     botOpenId: status.botOpenId,
     enabled: entry.config.listenerEnabled,
     config_fingerprint: entry.configFingerprint,
@@ -115,78 +153,126 @@ function attachLiveConfig(entry, initialConfig) {
 
 async function createAndStartListener(root, subject, config, { reloadReason = null } = {}) {
   const key = listenerKey(root, subject);
-  const client = new FeishuClient(config);
-  const policy = new FeishuPolicy(config);
+  const generation = (listenerGenerations.get(key) ?? 0) + 1;
+  listenerGenerations.set(key, generation);
   let botOpenId = null;
   const live = attachLiveConfig({}, config);
   const configFingerprint = feishuListenerConfigFingerprint(config);
   const startedAt = new Date().toISOString();
-
-  const monitor = new FeishuMonitor({
-    client,
-    policy,
-    onConnectionChange: (state) => {
-      if (state.botOpenId) botOpenId = state.botOpenId;
-      recordChannelEvent(root, subject, {
-        type: state.connected ? 'feishu_listener_connected' : 'feishu_listener_disconnected',
-        status: 'ok',
-        bot_open_id: state.botOpenId ?? null,
-      });
-    },
-    onMessage: async (event) => {
-      const bindResult = await tryHandleFeishuBind(root, subject, event, {
+  setListenerState(root, subject, 'starting');
+  try {
+    const entry = await runWithTimeout(async (signal) => {
+      const client = new FeishuClient({ ...config, signal });
+      const policy = new FeishuPolicy(config);
+      const monitor = new FeishuMonitor({
         client,
-        config: live.config,
-      });
-      if (bindResult.handled) {
-        if (bindResult.ok) {
-          live.setConfig(resolveFeishuConfig(root, subject));
-          syncPolicyFromConfig(policy, live.config);
-        }
-        return;
-      }
-      const envelope = envelopeFromFeishuEvent(
-        {
-          sender: { sender_id: { open_id: event.senderOpenId, user_id: event.senderId } },
-          message: {
-            message_id: event.messageId,
-            chat_id: event.chatId,
-            chat_type: event.chatType,
-            message_type: event.messageType,
-            content: event.content,
-            mentions: event.mentions,
-            root_id: event.rootId,
-            parent_id: event.parentId,
-          },
+        policy,
+        signal,
+        onConnectionChange: (state) => {
+          if (generation !== listenerGenerations.get(key)) return;
+          if (state.botOpenId) botOpenId = state.botOpenId;
+          const nextState = state.state ?? (state.connected ? 'connected' : 'disconnected');
+          const safeMessage = state.error ? sanitizeError(state.error, config) : null;
+          setListenerState(root, subject, nextState, {
+            last_error_code: state.error?.code ?? null,
+            last_error_at: state.error ? new Date().toISOString() : null,
+          });
+          recordChannelEvent(root, subject, {
+            type: `feishu_listener_${nextState}`,
+            status: state.error ? 'error' : 'ok',
+            bot_open_id: state.botOpenId ?? null,
+            error: safeMessage,
+            error_code: state.error?.code ?? null,
+          });
         },
-        { botOpenId },
-      );
-      writePendingInbound(root, subject, envelope, { label: 'feishu-ws' });
-      recordChannelEvent(root, subject, {
-        type: 'channel_message_received',
-        status: 'ok',
-        message_id: envelope.message_id,
-        chat_id: envelope.chat_id,
-        channel: 'feishu',
+        onMessage: async (event) => {
+          if (generation !== listenerGenerations.get(key)) return;
+          const bindResult = await tryHandleFeishuBind(root, subject, event, {
+            client,
+            config: live.config,
+          });
+          if (bindResult.handled) {
+            if (bindResult.ok) {
+              live.setConfig(resolveFeishuConfig(root, subject));
+              syncPolicyFromConfig(policy, live.config);
+            }
+            return;
+          }
+          const envelope = envelopeFromFeishuEvent(
+            {
+              sender: { sender_id: { open_id: event.senderOpenId, user_id: event.senderId } },
+              message: {
+                message_id: event.messageId,
+                chat_id: event.chatId,
+                chat_type: event.chatType,
+                message_type: event.messageType,
+                content: event.content,
+                mentions: event.mentions,
+                root_id: event.rootId,
+                parent_id: event.parentId,
+              },
+            },
+            { botOpenId },
+          );
+          writePendingInbound(root, subject, envelope, { label: 'feishu-ws' });
+          recordChannelEvent(root, subject, {
+            type: 'channel_message_received',
+            status: 'ok',
+            message_id: envelope.message_id,
+            chat_id: envelope.chat_id,
+            channel: 'feishu',
+          });
+          enqueueClassifierIfPendingInbound(root, subject);
+        },
       });
-      enqueueClassifierIfPendingInbound(root, subject);
-    },
-  });
-
-  await monitor.start();
-  activeListeners.set(key, {
-    monitor,
-    client,
-    policy,
-    live,
-    configFingerprint,
-    startedAt,
-    lastReloadAt: reloadReason ? startedAt : null,
-    lastReloadReason: reloadReason,
-    get config() {
-      return live.config;
-    },
-  });
+      const candidate = {
+        monitor,
+        client,
+        policy,
+        live,
+        configFingerprint,
+        startedAt,
+        lastReloadAt: reloadReason ? startedAt : null,
+        lastReloadReason: reloadReason,
+        get config() {
+          return live.config;
+        },
+      };
+      activeListeners.set(key, candidate);
+      try {
+        await monitor.start();
+      } catch (error) {
+        if (activeListeners.get(key) === candidate) activeListeners.delete(key);
+        await monitor.stop();
+        throw error;
+      }
+      if (generation !== listenerGenerations.get(key)) {
+        await monitor.stop();
+        const error = new Error('Feishu listener start superseded');
+        error.code = 'channel_aborted';
+        throw error;
+      }
+      return candidate;
+    }, config.connectTimeoutMs, 'feishu listener connect', {
+      signal: config.signal,
+      onCancel: () => {
+        const candidate = activeListeners.get(key);
+        if (candidate) void candidate.monitor.stop();
+      },
+    });
+    activeListeners.set(key, entry);
+  } catch (error) {
+    if (activeListeners.get(key)?.configFingerprint === configFingerprint) activeListeners.delete(key);
+    const safeMessage = sanitizeError(error, config);
+    setListenerState(root, subject, 'failed', {
+      last_error_code: error?.code ?? 'feishu_listener_start_failed',
+      last_error_at: new Date().toISOString(),
+    });
+    throw Object.assign(new Error(safeMessage), {
+      code: error?.code ?? 'feishu_listener_start_failed',
+      retryable: error?.retryable,
+    });
+  }
   recordChannelEvent(root, subject, {
     type: reloadReason ? 'feishu_listener_reloaded' : 'feishu_listener_started',
     status: 'ok',
@@ -206,7 +292,7 @@ async function createAndStartListener(root, subject, config, { reloadReason = nu
 /**
  * Start Feishu WebSocket listener for a subject (channel domain sidecar).
  */
-export async function startFeishuListener(root, subject, options = {}) {
+async function startFeishuListenerUnlocked(root, subject, options = {}) {
   const config = resolveFeishuConfig(root, subject, options);
   if (!config.listenerEnabled) {
     return { started: false, reason: 'listener_disabled' };
@@ -241,16 +327,26 @@ export async function startFeishuListener(root, subject, options = {}) {
   }
 }
 
-export async function stopFeishuListener(root, subject) {
+async function stopFeishuListenerUnlocked(root, subject, options = {}) {
   const key = listenerKey(root, subject);
   const entry = activeListeners.get(key);
   if (!entry) return { stopped: false, reason: 'not_running' };
-  try {
-    await entry.monitor.stop();
-  } catch {
-    // ignore
-  }
+  listenerGenerations.set(key, (listenerGenerations.get(key) ?? 0) + 1);
   activeListeners.delete(key);
+  try {
+    await runWithTimeout(
+      () => entry.monitor.stop(),
+      options.stopTimeoutMs ?? entry.config.stopTimeoutMs,
+      'feishu listener stop',
+      { signal: options.signal },
+    );
+  } catch (error) {
+    setListenerState(root, subject, 'stopped', {
+      last_error_code: error?.code ?? null,
+      last_error_at: new Date().toISOString(),
+    });
+  }
+  setListenerState(root, subject, 'stopped');
   recordChannelEvent(root, subject, {
     type: 'feishu_listener_stopped',
     status: 'ok',
@@ -258,9 +354,9 @@ export async function stopFeishuListener(root, subject) {
   return { stopped: true };
 }
 
-export async function reloadFeishuListener(root, subject, reason = 'reload') {
-  await stopFeishuListener(root, subject);
-  const result = await startFeishuListener(root, subject, { reloadReason: reason });
+async function reloadFeishuListenerUnlocked(root, subject, reason = 'reload', options = {}) {
+  await stopFeishuListenerUnlocked(root, subject, options);
+  const result = await startFeishuListenerUnlocked(root, subject, { ...options, reloadReason: reason });
   if (result.started) {
     recordChannelEvent(root, subject, {
       type: 'channel_config_reloaded',
@@ -286,7 +382,7 @@ function syncListenerSoftConfig(entry, config) {
   }
 }
 
-export async function ensureFeishuListener(root, subject, options = {}) {
+async function ensureFeishuListenerUnlocked(root, subject, options = {}) {
   const config = resolveFeishuConfig(root, subject, options);
   const fingerprint = feishuListenerConfigFingerprint(config);
   const entry = getListenerEntry(root, subject);
@@ -294,7 +390,7 @@ export async function ensureFeishuListener(root, subject, options = {}) {
 
   if (!run) {
     if (entry) {
-      await stopFeishuListener(root, subject);
+      await stopFeishuListenerUnlocked(root, subject, options);
       return {
         action: 'stopped',
         reason: !config.listenerEnabled
@@ -320,10 +416,11 @@ export async function ensureFeishuListener(root, subject, options = {}) {
       syncListenerSoftConfig(entry, config);
       return { action: 'unchanged', fingerprint };
     }
-    const reloadResult = await reloadFeishuListener(
+    const reloadResult = await reloadFeishuListenerUnlocked(
       root,
       subject,
       options.reason ?? 'config_changed',
+      options,
     );
     return {
       action: reloadResult.started ? 'reloaded' : 'reload_failed',
@@ -332,12 +429,28 @@ export async function ensureFeishuListener(root, subject, options = {}) {
     };
   }
 
-  const startResult = await startFeishuListener(root, subject, options);
+  const startResult = await startFeishuListenerUnlocked(root, subject, options);
   return {
     action: startResult.started ? 'started' : 'start_failed',
     fingerprint,
     ...startResult,
   };
+}
+
+export function startFeishuListener(root, subject, options = {}) {
+  return serializeListener(root, subject, () => startFeishuListenerUnlocked(root, subject, options));
+}
+
+export function stopFeishuListener(root, subject, options = {}) {
+  return serializeListener(root, subject, () => stopFeishuListenerUnlocked(root, subject, options));
+}
+
+export function reloadFeishuListener(root, subject, reason = 'reload', options = {}) {
+  return serializeListener(root, subject, () => reloadFeishuListenerUnlocked(root, subject, reason, options));
+}
+
+export function ensureFeishuListener(root, subject, options = {}) {
+  return serializeListener(root, subject, () => ensureFeishuListenerUnlocked(root, subject, options));
 }
 
 export async function refreshChannelFeishuListener(root, subject, options = {}) {

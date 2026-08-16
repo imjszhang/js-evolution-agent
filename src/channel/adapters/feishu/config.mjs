@@ -10,6 +10,10 @@ import {
 const POLICY_OPEN = 'open';
 const POLICY_ALLOWLIST = 'allowlist';
 const POLICY_DISABLED = 'disabled';
+export const DEFAULT_FEISHU_CONNECT_TIMEOUT_MS = 20_000;
+export const DEFAULT_FEISHU_SEND_TIMEOUT_MS = 30_000;
+export const DEFAULT_FEISHU_STOP_TIMEOUT_MS = 5_000;
+export const DEFAULT_CHANNEL_SHUTDOWN_GRACE_MS = 10_000;
 
 function envFlag(name) {
   if (!name) return false;
@@ -29,6 +33,21 @@ function readEnv(name) {
   if (!name) return '';
   const v = process.env[name];
   return v == null ? '' : String(v).trim();
+}
+
+function positiveMs(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function timeoutSetting({ override, block, envNames, fallback }) {
+  if (override != null) return positiveMs(override, fallback);
+  if (block != null) return positiveMs(block, fallback);
+  for (const name of envNames) {
+    const value = readEnv(name);
+    if (value) return positiveMs(value, fallback);
+  }
+  return fallback;
 }
 
 function readLegacyLarkBlock(entry) {
@@ -156,6 +175,7 @@ export function resolveFeishuConfig(root, subject, overrides = {}) {
 
   const bindSettings = resolveBindSettings(block, subject);
   const operatorBinding = readOperatorBinding(root, subject);
+  const subjectSlug = subjectEnvSlug(subject);
   const base = {
     subject,
     mock: Boolean(mock),
@@ -186,6 +206,31 @@ export function resolveFeishuConfig(root, subject, overrides = {}) {
     bindToken: bindSettings.token,
     bindTokenEnv: bindSettings.tokenEnv,
     operatorBinding,
+    signal: overrides.signal ?? null,
+    connectTimeoutMs: timeoutSetting({
+      override: overrides.connectTimeoutMs,
+      block: block.connect_timeout_ms ?? block.connectTimeoutMs,
+      envNames: [`JEA_CHANNEL_FEISHU_${subjectSlug}_CONNECT_TIMEOUT_MS`, 'JEA_CHANNEL_FEISHU_CONNECT_TIMEOUT_MS'],
+      fallback: DEFAULT_FEISHU_CONNECT_TIMEOUT_MS,
+    }),
+    sendTimeoutMs: timeoutSetting({
+      override: overrides.sendTimeoutMs,
+      block: block.send_timeout_ms ?? block.sendTimeoutMs,
+      envNames: [`JEA_CHANNEL_FEISHU_${subjectSlug}_SEND_TIMEOUT_MS`, 'JEA_CHANNEL_FEISHU_SEND_TIMEOUT_MS'],
+      fallback: DEFAULT_FEISHU_SEND_TIMEOUT_MS,
+    }),
+    stopTimeoutMs: timeoutSetting({
+      override: overrides.stopTimeoutMs,
+      block: block.stop_timeout_ms ?? block.stopTimeoutMs,
+      envNames: [`JEA_CHANNEL_FEISHU_${subjectSlug}_STOP_TIMEOUT_MS`, 'JEA_CHANNEL_FEISHU_STOP_TIMEOUT_MS'],
+      fallback: DEFAULT_FEISHU_STOP_TIMEOUT_MS,
+    }),
+    shutdownGraceMs: timeoutSetting({
+      override: overrides.shutdownGraceMs,
+      block: block.shutdown_grace_ms ?? block.shutdownGraceMs,
+      envNames: [`JEA_CHANNEL_FEISHU_${subjectSlug}_SHUTDOWN_GRACE_MS`, 'JEA_CHANNEL_SHUTDOWN_GRACE_MS'],
+      fallback: DEFAULT_CHANNEL_SHUTDOWN_GRACE_MS,
+    }),
   };
   return mergeOperatorBinding(base, operatorBinding);
 }
@@ -210,6 +255,10 @@ export function feishuConfigForApi(config) {
     requireMention: config.requireMention,
     operator: operatorBindingForApi(config.operatorBinding, config),
     bind_phrase: config.bindPhrase ?? DEFAULT_BIND_PHRASE,
+    connect_timeout_ms: config.connectTimeoutMs,
+    send_timeout_ms: config.sendTimeoutMs,
+    stop_timeout_ms: config.stopTimeoutMs,
+    shutdown_grace_ms: config.shutdownGraceMs,
   };
 }
 

@@ -37,49 +37,50 @@ export class FeishuSender {
     return chunks;
   }
 
-  async sendText(to, text) {
+  async sendText(to, text, { signal = null } = {}) {
     const receiveId = normalizeTarget(to);
     const receiveIdType = resolveIdType(to);
     const chunks = this._splitMessage(text);
     const messageIds = [];
     for (const chunk of chunks) {
-      const result = await this.client.sendText({ receiveId, receiveIdType, text: chunk });
+      const result = await this.client.sendText({ receiveId, receiveIdType, text: chunk, signal });
       messageIds.push(result.messageId);
     }
     return { success: true, messageIds, chunks: chunks.length };
   }
 
-  async replyText(messageId, text) {
+  async replyText(messageId, text, { signal = null } = {}) {
     const chunks = this._splitMessage(text);
     const messageIds = [];
     for (let i = 0; i < chunks.length; i += 1) {
       if (i === 0) {
-        const result = await this.client.replyText({ messageId, text: chunks[i] });
+        const result = await this.client.replyText({ messageId, text: chunks[i], signal });
         messageIds.push(result.messageId);
       }
     }
     return { success: true, messageIds, chunks: chunks.length };
   }
 
-  async sendCard(to, card) {
+  async sendCard(to, card, { signal = null } = {}) {
     const receiveId = normalizeTarget(to);
     const receiveIdType = resolveIdType(to);
-    const result = await this.client.sendCard({ receiveId, receiveIdType, card });
+    const result = await this.client.sendCard({ receiveId, receiveIdType, card, signal });
     return { success: true, messageId: result.messageId };
   }
 
-  async sendDocumentDelivery(to, document = {}) {
+  async sendDocumentDelivery(to, document = {}, { signal = null } = {}) {
     const created = await this.client.createDocumentFromMarkdown({
       title: document.title,
       markdown: document.markdown,
       folderToken: document.folder_token ?? document.folderToken ?? this.config.docFolderToken,
       docBaseUrl: document.doc_base_url ?? document.docBaseUrl ?? this.config.docBaseUrl,
+      signal,
     });
     const summary = document.message_text
       ?? document.messageText
       ?? `交付物已生成：${created.title || document.title || created.documentId}`;
     const message = String(summary).includes(created.url) ? String(summary) : `${summary}\n${created.url}`;
-    const sent = await this.sendText(to, message);
+    const sent = await this.sendText(to, message, { signal });
     return {
       success: true,
       document: created,

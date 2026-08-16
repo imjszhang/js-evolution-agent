@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import axios from 'axios';
 
 let LarkModule = null;
 
@@ -17,6 +18,13 @@ async function loadLarkSdk() {
 function domainFor(Lark, domain) {
   if (domain === 'lark') return Lark.Domain?.Lark ?? Lark.Domain?.Lark;
   return Lark.Domain?.Feishu ?? Lark.Domain?.Feishu;
+}
+
+function boundedHttpInstance(timeoutMs, signal = null) {
+  return axios.create({
+    timeout: Math.max(1, Number(timeoutMs) || 30_000),
+    ...(signal ? { signal } : {}),
+  });
 }
 
 function assertOk(response, action) {
@@ -161,21 +169,31 @@ export class FeishuClient {
     }
   }
 
-  async getClient() {
+  async getClient({ signal = this.config.signal ?? null } = {}) {
     const Lark = await loadLarkSdk();
     this.checkCredentials();
+    if (signal) {
+      return new Lark.Client({
+        appId: this.config.appId,
+        appSecret: this.config.appSecret,
+        appType: Lark.AppType?.SelfBuild,
+        domain: domainFor(Lark, this.config.domain),
+        httpInstance: boundedHttpInstance(this.config.sendTimeoutMs, signal),
+      });
+    }
     if (!this._client) {
       this._client = new Lark.Client({
         appId: this.config.appId,
         appSecret: this.config.appSecret,
         appType: Lark.AppType?.SelfBuild,
         domain: domainFor(Lark, this.config.domain),
+        httpInstance: boundedHttpInstance(this.config.sendTimeoutMs),
       });
     }
     return this._client;
   }
 
-  async createWSClient() {
+  async createWSClient({ signal = this.config.signal ?? null, onReady, onError, onReconnecting, onReconnected } = {}) {
     const Lark = await loadLarkSdk();
     this.checkCredentials();
     return new Lark.WSClient({
@@ -183,6 +201,12 @@ export class FeishuClient {
       appSecret: this.config.appSecret,
       domain: domainFor(Lark, this.config.domain),
       loggerLevel: Lark.LoggerLevel?.info,
+      httpInstance: boundedHttpInstance(this.config.connectTimeoutMs, signal),
+      handshakeTimeoutMs: this.config.connectTimeoutMs,
+      onReady,
+      onError,
+      onReconnecting,
+      onReconnected,
     });
   }
 
@@ -194,9 +218,9 @@ export class FeishuClient {
     });
   }
 
-  async probe() {
+  async probe({ signal = this.config.signal ?? null } = {}) {
     try {
-      const client = await this.getClient();
+      const client = await this.getClient({ signal });
       let response;
       if (client?.application?.bot?.get) {
         response = await client.application.bot.get();
@@ -220,6 +244,7 @@ export class FeishuClient {
       };
       return { ok: true, ...this._botInfo };
     } catch (err) {
+      if (signal?.aborted || axios.isCancel(err)) throw err;
       return { ok: false, error: err?.message || String(err) };
     }
   }
@@ -228,14 +253,19 @@ export class FeishuClient {
     return this._botInfo;
   }
 
-  async getBotOpenId() {
+  async getBotOpenId(options = {}) {
     if (this._botInfo?.botOpenId) return this._botInfo.botOpenId;
-    const probeResult = await this.probe();
-    return probeResult.ok ? probeResult.botOpenId : undefined;
+    const probeResult = await this.probe(options);
+    if (!probeResult.ok) {
+      const error = new Error(`Feishu bot probe failed: ${probeResult.error || 'unknown error'}`);
+      error.code = 'feishu_probe_failed';
+      throw error;
+    }
+    return probeResult.botOpenId;
   }
 
-  async sendText({ receiveId, receiveIdType, text }) {
-    const client = await this.getClient();
+  async sendText({ receiveId, receiveIdType, text, signal = null }) {
+    const client = await this.getClient({ signal });
     const response = await client.im.message.create({
       params: { receive_id_type: receiveIdType },
       data: {
@@ -250,8 +280,8 @@ export class FeishuClient {
     return { messageId: response.data?.message_id, success: true };
   }
 
-  async replyText({ messageId, text }) {
-    const client = await this.getClient();
+  async replyText({ messageId, text, signal = null }) {
+    const client = await this.getClient({ signal });
     const response = await client.im.message.reply({
       path: { message_id: messageId },
       data: {
@@ -265,8 +295,8 @@ export class FeishuClient {
     return { messageId: response.data?.message_id, success: true };
   }
 
-  async sendCard({ receiveId, receiveIdType, card }) {
-    const client = await this.getClient();
+  async sendCard({ receiveId, receiveIdType, card, signal = null }) {
+    const client = await this.getClient({ signal });
     const response = await client.im.message.create({
       params: { receive_id_type: receiveIdType },
       data: {
@@ -286,8 +316,9 @@ export class FeishuClient {
     markdown,
     folderToken = null,
     docBaseUrl = null,
+    signal = null,
   } = {}) {
-    const client = await this.getClient();
+    const client = await this.getClient({ signal });
     const createResponse = assertOk(await client.docx.document.create({
       data: {
         title: String(title || 'Agent 交付物').slice(0, 200),

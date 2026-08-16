@@ -48,13 +48,12 @@ import {
 } from './cycle-dispatch.mjs';
 import { resolveEvolutionMode } from './evolution-mode.mjs';
 import { applyEvolutionModeChange } from './evolution-mode-apply.mjs';
-import {
-  stopFeishuListener,
-  refreshChannelFeishuListener,
-  getFeishuListenerStatus,
-} from '../channel/adapters/feishu/index.mjs';
 import { runChannelTick } from '../channel/dispatch.mjs';
-import { resolveChannelDomainRoles, runChannelDomainWorkerMulti } from '../channel/domain-worker.mjs';
+import {
+  resolveChannelDomainRoles,
+  runChannelDomainWorkerMulti,
+  runChannelListenerSupervisor,
+} from '../channel/domain-worker.mjs';
 import { recordChannelEvent } from '../channel/audit.mjs';
 import { isChannelTaskType } from '../channel/types.mjs';
 import { runChannelTask } from '../channel/tasks.mjs';
@@ -717,7 +716,7 @@ async function runChannelWorkOnceBody(root, subject, flags = {}) {
     return { worked: true, ok: false, task: failed.task };
   }
   try {
-    const result = await runChannelTask(root, subject, claim.task);
+    const result = await runChannelTask(root, subject, claim.task, { signal: flags.signal ?? null });
     const completed = completeChannelTask(root, subject, claim.task.task_id, result);
     recordChannelEvent(root, subject, {
       type: 'channel_task_completed',
@@ -1107,8 +1106,10 @@ async function runChannelDomainWorkerSingle(root, subject, flags = {}) {
   });
 
   let stopping = false;
+  const stopController = new AbortController();
   const requestLocalStop = () => {
     stopping = true;
+    if (!stopController.signal.aborted) stopController.abort(new Error('channel worker stopping'));
     requestChannelWorkerStop(root, subject, { staleMs: heartbeatStaleMs });
   };
   process.once('SIGINT', requestLocalStop);
@@ -1117,6 +1118,7 @@ async function runChannelDomainWorkerSingle(root, subject, flags = {}) {
   let iterations = 0;
   let stopReason = 'stopped';
   let tickTimer = null;
+  let stopPollTimer = null;
   const runScheduledTick = () => {
     if (stopping) return;
     try {
@@ -1132,17 +1134,14 @@ async function runChannelDomainWorkerSingle(root, subject, flags = {}) {
   };
   runScheduledTick();
   tickTimer = setInterval(runScheduledTick, tickMs);
-
-  if (!flags['no-feishu-listener']) {
-    const initialEnsure = await refreshChannelFeishuListener(root, subject, flags);
-    if (initialEnsure.action === 'start_failed' || initialEnsure.action === 'reload_failed') {
-      recordChannelEvent(root, subject, {
-        type: 'feishu_listener_start_skipped',
-        status: 'not_running',
-        reason: initialEnsure.reason ?? initialEnsure.action,
-      });
-    }
-  }
+  stopPollTimer = setInterval(() => {
+    if (readChannelWorkerState(root, subject)?.stop_requested_at) requestLocalStop();
+  }, 250);
+  stopPollTimer.unref?.();
+  const listenerSupervisor = runChannelListenerSupervisor(root, subject, flags, {
+    signal: stopController.signal,
+    refreshIntervalMs: Math.max(workIntervalMs, 1000),
+  });
 
   try {
     for (;;) {
@@ -1150,18 +1149,6 @@ async function runChannelDomainWorkerSingle(root, subject, flags = {}) {
       if (stopping || current?.stop_requested_at) {
         stopReason = current?.stop_requested_at ? 'stop_requested' : 'signal';
         break;
-      }
-      if (!flags['no-feishu-listener']) {
-        try {
-          await refreshChannelFeishuListener(root, subject, flags);
-        } catch (err) {
-          recordChannelEvent(root, subject, {
-            type: 'channel_config_reload_failed',
-            status: 'error',
-            error: err?.message || String(err),
-            error_code: err?.code ?? null,
-          });
-        }
       }
       safeUpdateChannelWorkerHeartbeat(root, subject, {
         worker_id: workerId,
@@ -1182,6 +1169,7 @@ async function runChannelDomainWorkerSingle(root, subject, flags = {}) {
         ...flags,
         worker: workerId,
         'lease-ms': leaseMs,
+        signal: stopController.signal,
       });
       iterations += 1;
       const summary = workResultSummary(result);
@@ -1208,10 +1196,10 @@ async function runChannelDomainWorkerSingle(root, subject, flags = {}) {
       await sleep(result.worked ? workIntervalMs : idleIntervalMs);
     }
   } finally {
+    if (!stopController.signal.aborted) stopController.abort(new Error('channel worker stopped'));
     if (tickTimer) clearInterval(tickTimer);
-    if (getFeishuListenerStatus(root, subject).running) {
-      await stopFeishuListener(root, subject);
-    }
+    if (stopPollTimer) clearInterval(stopPollTimer);
+    await listenerSupervisor;
     process.removeListener('SIGINT', requestLocalStop);
     process.removeListener('SIGTERM', requestLocalStop);
   }

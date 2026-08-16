@@ -16,49 +16,70 @@ export class FeishuMonitor {
     this.policy = options.policy;
     this.onMessage = options.onMessage;
     this.onConnectionChange = options.onConnectionChange ?? (() => {});
+    this.signal = options.signal ?? null;
     this._wsClient = null;
     this._eventDispatcher = null;
     this._isRunning = false;
     this._botOpenId = null;
+    this._connectionState = 'stopped';
+    this._generation = 0;
   }
 
   async start() {
     if (this._isRunning) return;
     if (!this.client) throw new Error('FeishuClient not initialized');
-    this._botOpenId = await this.client.getBotOpenId();
-    this._wsClient = await this.client.createWSClient();
+    const generation = ++this._generation;
+    this._isRunning = true;
+    this._connectionState = 'starting';
+    this.onConnectionChange({ connected: false, state: 'starting' });
+    this._botOpenId = await this.client.getBotOpenId({ signal: this.signal });
+    const updateState = (state, error = null) => {
+      if (!this._isRunning || generation !== this._generation) return;
+      this._connectionState = state;
+      this.onConnectionChange({
+        connected: state === 'connected',
+        state,
+        error,
+        botOpenId: this._botOpenId,
+        botInfo: this.client.getBotInfo(),
+      });
+    };
+    this._wsClient = await this.client.createWSClient({
+      signal: this.signal,
+      onReady: () => updateState('connected'),
+      onError: (error) => updateState('failed', error),
+      onReconnecting: () => updateState('reconnecting'),
+      onReconnected: () => updateState('connected'),
+    });
     this._eventDispatcher = await this.client.createEventDispatcher();
     this._registerHandlers();
-    this._wsClient.start({ eventDispatcher: this._eventDispatcher });
-    this._isRunning = true;
-    this.onConnectionChange({
-      connected: true,
-      botOpenId: this._botOpenId,
-      botInfo: this.client.getBotInfo(),
-    });
+    await this._wsClient.start({ eventDispatcher: this._eventDispatcher });
   }
 
   async stop() {
+    this._generation += 1;
     this._isRunning = false;
+    this._connectionState = 'stopped';
     const wsClient = this._wsClient;
     this._wsClient = null;
     this._eventDispatcher = null;
     if (wsClient) {
       try {
-        if (typeof wsClient.stop === 'function') await wsClient.stop();
-        else if (typeof wsClient.close === 'function') await wsClient.close();
+        if (typeof wsClient.close === 'function') await wsClient.close({ force: true });
+        else if (typeof wsClient.stop === 'function') await wsClient.stop();
         else if (typeof wsClient.shutdown === 'function') await wsClient.shutdown();
       } catch (err) {
         console.error('[FeishuMonitor] stop error:', err?.message || err);
       }
     }
-    this.onConnectionChange({ connected: false });
+    this.onConnectionChange({ connected: false, state: 'stopped' });
   }
 
   getStatus() {
     return {
       isRunning: this._isRunning,
-      connected: this._isRunning && Boolean(this._wsClient),
+      connected: this._isRunning && this._connectionState === 'connected',
+      state: this._connectionState,
       botOpenId: this._botOpenId,
     };
   }

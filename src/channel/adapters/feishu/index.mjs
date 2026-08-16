@@ -3,6 +3,7 @@ import { resolveFeishuConfig, assertFeishuCredentials } from './config.mjs';
 import { normalizeInboundPayload } from './parser.mjs';
 import { FeishuClient } from './client.mjs';
 import { FeishuSender } from './sender.mjs';
+import { runWithTimeout } from '../../async-utils.mjs';
 
 export { resolveFeishuConfig, feishuConfigForApi, assertFeishuCredentials, subjectEnvSlug } from './config.mjs';
 export {
@@ -88,56 +89,63 @@ export async function sendOutboundMessage(outbound, options = {}) {
     };
   }
 
-  const sender = await getSender(cfg);
-  if (message.document) {
-    try {
-      const result = await sender.sendDocumentDelivery(message.target, message.document);
+  const key = senderCacheKey(cfg);
+  return runWithTimeout(async (signal) => {
+    const sender = await getSender(cfg);
+    if (message.document) {
+      try {
+        const result = await sender.sendDocumentDelivery(message.target, message.document, { signal });
+        return {
+          messageId: result.messageIds?.[0],
+          chatId: message.target,
+          chunks: result.chunks,
+          document: result.document,
+        };
+      } catch (docErr) {
+        if (signal.aborted) throw signal.reason ?? docErr;
+        // Defense-in-depth: never silently lose the content if the docx API fails.
+        // Fall back to delivering the markdown body as a chunked text message.
+        const title = message.document.title ? `${message.document.title}\n\n` : '';
+        const body = message.document.markdown
+          ?? message.document.message_text
+          ?? message.text
+          ?? '';
+        const fallbackText = `${title}${body}`.trim();
+        if (!fallbackText) throw docErr;
+        const result = await sender.sendText(message.target, fallbackText, { signal });
+        return {
+          messageId: result.messageIds?.[0],
+          chatId: message.target,
+          chunks: result.chunks,
+          document_fallback: 'text',
+          document_error: docErr?.message || String(docErr),
+        };
+      }
+    }
+    if (message.card) {
+      const result = await sender.sendCard(message.target, message.card, { signal });
       return {
-        messageId: result.messageIds?.[0],
+        messageId: result.messageId,
         chatId: message.target,
-        chunks: result.chunks,
-        document: result.document,
-      };
-    } catch (docErr) {
-      // Defense-in-depth: never silently lose the content if the docx API fails.
-      // Fall back to delivering the markdown body as a chunked text message.
-      const title = message.document.title ? `${message.document.title}\n\n` : '';
-      const body = message.document.markdown
-        ?? message.document.message_text
-        ?? message.text
-        ?? '';
-      const fallbackText = `${title}${body}`.trim();
-      if (!fallbackText) throw docErr;
-      const result = await sender.sendText(message.target, fallbackText);
-      return {
-        messageId: result.messageIds?.[0],
-        chatId: message.target,
-        chunks: result.chunks,
-        document_fallback: 'text',
-        document_error: docErr?.message || String(docErr),
+        chunks: 1,
       };
     }
-  }
-  if (message.card) {
-    const result = await sender.sendCard(message.target, message.card);
-    return {
-      messageId: result.messageId,
-      chatId: message.target,
-      chunks: 1,
-    };
-  }
-  if (message.reply_to_message_id) {
-    const result = await sender.replyText(message.reply_to_message_id, message.text);
+    if (message.reply_to_message_id) {
+      const result = await sender.replyText(message.reply_to_message_id, message.text, { signal });
+      return {
+        messageId: result.messageIds?.[0],
+        chatId: message.target,
+        chunks: result.chunks,
+      };
+    }
+    const result = await sender.sendText(message.target, message.text, { signal });
     return {
       messageId: result.messageIds?.[0],
       chatId: message.target,
       chunks: result.chunks,
     };
-  }
-  const result = await sender.sendText(message.target, message.text);
-  return {
-    messageId: result.messageIds?.[0],
-    chatId: message.target,
-    chunks: result.chunks,
-  };
+  }, cfg.sendTimeoutMs, 'feishu send', {
+    signal: options.signal,
+    onCancel: () => senderCache.delete(key),
+  });
 }
