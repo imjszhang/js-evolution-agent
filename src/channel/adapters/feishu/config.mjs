@@ -1,3 +1,5 @@
+import { join } from 'node:path';
+import { resolveEffectiveEnv } from '../../../actions/execution-env.mjs';
 import { runtimeForSubject } from '../../../infra/runtime-paths.mjs';
 import {
   readOperatorBinding,
@@ -12,6 +14,7 @@ import {
   DEFAULT_FEISHU_RETRY_MAX_MS,
   DEFAULT_FEISHU_RETRY_MULTIPLIER,
 } from './backoff.mjs';
+import { DEFAULT_RECEIPT_REACTION_EMOJI } from './receipt.mjs';
 
 const POLICY_OPEN = 'open';
 const POLICY_ALLOWLIST = 'allowlist';
@@ -21,9 +24,9 @@ export const DEFAULT_FEISHU_SEND_TIMEOUT_MS = 30_000;
 export const DEFAULT_FEISHU_STOP_TIMEOUT_MS = 5_000;
 export const DEFAULT_CHANNEL_SHUTDOWN_GRACE_MS = 10_000;
 
-function envFlag(name) {
+function envFlag(name, env = process.env) {
   if (!name) return false;
-  const v = process.env[name];
+  const v = env?.[name];
   return v === '1' || v === 'true';
 }
 
@@ -35,9 +38,14 @@ export function subjectEnvSlug(subject) {
     .toUpperCase();
 }
 
-function readEnv(name) {
+/** Preferred per-subject env file: `<JEA_HOME>/subjects/<ns>/.env`. */
+export function subjectRuntimeEnvPath(root, subject) {
+  return join(runtimeForSubject(root, subject).runtimeRoot, '.env');
+}
+
+function readEnv(name, env = process.env) {
   if (!name) return '';
-  const v = process.env[name];
+  const v = env?.[name];
   return v == null ? '' : String(v).trim();
 }
 
@@ -46,18 +54,18 @@ function positiveMs(value, fallback) {
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
 }
 
-function timeoutSetting({ override, block, envNames, fallback }) {
+function timeoutSetting({ override, block, envNames, fallback, env }) {
   if (override != null) return positiveMs(override, fallback);
   if (block != null) return positiveMs(block, fallback);
   for (const name of envNames) {
-    const value = readEnv(name);
+    const value = readEnv(name, env);
     if (value) return positiveMs(value, fallback);
   }
   return fallback;
 }
 
-function numericSetting({ override, block, envNames, fallback, min = 0, max = Number.POSITIVE_INFINITY }) {
-  const candidates = [override, block, ...envNames.map((name) => readEnv(name))];
+function numericSetting({ override, block, envNames, fallback, min = 0, max = Number.POSITIVE_INFINITY, env }) {
+  const candidates = [override, block, ...envNames.map((name) => readEnv(name, env))];
   for (const value of candidates) {
     if (value == null || value === '') continue;
     const parsed = Number(value);
@@ -74,16 +82,47 @@ function readLegacyLarkBlock(entry) {
     ?? {};
 }
 
+/** Names used inside a subject runtime `.env` — the file is already per-subject. */
+export const FEISHU_LOCAL_ENV = {
+  appId: 'JEA_CHANNEL_FEISHU_APP_ID',
+  appSecret: 'JEA_CHANNEL_FEISHU_APP_SECRET',
+  bindToken: 'JEA_CHANNEL_FEISHU_BIND_TOKEN',
+  defaultChatId: 'JEA_CHANNEL_FEISHU_DEFAULT_CHAT_ID',
+  docFolderToken: 'JEA_CHANNEL_FEISHU_DOC_FOLDER_TOKEN',
+  docBaseUrl: 'JEA_CHANNEL_FEISHU_DOC_BASE_URL',
+  mock: 'JEA_CHANNEL_FEISHU_MOCK',
+  receiptReaction: 'JEA_CHANNEL_FEISHU_RECEIPT_REACTION',
+  receiptReactionEmoji: 'JEA_CHANNEL_FEISHU_RECEIPT_REACTION_EMOJI',
+};
+
 function subjectPrefixedEnvNames(subject) {
   const slug = subjectEnvSlug(subject);
   return {
     appId: `JEA_CHANNEL_FEISHU_${slug}_APP_ID`,
     appSecret: `JEA_CHANNEL_FEISHU_${slug}_APP_SECRET`,
+    bindToken: `JEA_CHANNEL_FEISHU_${slug}_BIND_TOKEN`,
     defaultChatId: `JEA_CHANNEL_FEISHU_${slug}_DEFAULT_CHAT_ID`,
     docFolderToken: `JEA_CHANNEL_FEISHU_${slug}_DOC_FOLDER_TOKEN`,
     docBaseUrl: `JEA_CHANNEL_FEISHU_${slug}_DOC_BASE_URL`,
     mock: `JEA_CHANNEL_FEISHU_${slug}_MOCK`,
+    receiptReaction: `JEA_CHANNEL_FEISHU_${slug}_RECEIPT_REACTION`,
+    receiptReactionEmoji: `JEA_CHANNEL_FEISHU_${slug}_RECEIPT_REACTION_EMOJI`,
   };
+}
+
+function optionalBoolSetting({ override, block, envNames, fallback, env }) {
+  if (override === true || override === false) return override;
+  if (block === true || block === false) return block;
+  if (typeof block === 'string') {
+    if (/^(1|true|yes)$/i.test(block)) return true;
+    if (/^(0|false|no)$/i.test(block)) return false;
+  }
+  for (const name of envNames) {
+    const value = readEnv(name, env);
+    if (/^(1|true|yes)$/i.test(value)) return true;
+    if (/^(0|false|no)$/i.test(value)) return false;
+  }
+  return fallback;
 }
 
 function resolveCredentialField({
@@ -91,21 +130,29 @@ function resolveCredentialField({
   blockValue,
   blockEnvKey,
   blockSecretValue,
+  localEnvName,
   subjectEnvName,
   globalEnvNames = [],
   legacyEnvNames = [],
+  env,
+  runtimeValues = {},
 }) {
   if (blockValue) return { value: String(blockValue).trim(), source: 'subjects.json' };
-  const namedEnv = readEnv(blockEnvKey);
+  const fromRuntime = readEnv(localEnvName, runtimeValues);
+  if (fromRuntime) return { value: fromRuntime, source: localEnvName };
+  const namedEnv = readEnv(blockEnvKey, env);
   if (namedEnv) return { value: namedEnv, source: blockEnvKey };
-  const subjectEnv = readEnv(subjectEnvName);
+  const subjectEnv = readEnv(subjectEnvName, env);
   if (subjectEnv) return { value: subjectEnv, source: subjectEnvName };
+  const local = readEnv(localEnvName, env);
+  if (local) return { value: local, source: localEnvName };
   for (const name of globalEnvNames) {
-    const v = readEnv(name);
+    if (name === localEnvName) continue;
+    const v = readEnv(name, env);
     if (v) return { value: v, source: name };
   }
   for (const name of legacyEnvNames) {
-    const v = readEnv(name);
+    const v = readEnv(name, env);
     if (v) return { value: v, source: name };
   }
   if (blockSecretValue) {
@@ -121,64 +168,80 @@ function resolveCredentialField({
  * @param {object} [overrides]
  */
 export function resolveFeishuConfig(root, subject, overrides = {}) {
-  const entry = runtimeForSubject(root, subject).config;
+  const runtime = runtimeForSubject(root, subject);
+  const entry = runtime.config;
   const block = readLegacyLarkBlock(entry);
   const prefixed = subjectPrefixedEnvNames(subject);
+  const loadedEnv = resolveEffectiveEnv(runtime.runtimeRoot, {
+    baseEnv: overrides.env ?? process.env,
+  });
+  const env = loadedEnv.env;
+  const runtimeValues = loadedEnv.values ?? {};
 
   const mock = overrides.mock
     ?? (block.mock === true || block.mock === 'true')
-    ?? (typeof block.mock === 'string' && !/^(true|false|1|0)$/i.test(block.mock) ? envFlag(block.mock) : false)
-    ?? envFlag(readEnv(prefixed.mock))
-    ?? envFlag('JEA_CHANNEL_FEISHU_MOCK')
-    ?? envFlag('JEA_CHANNEL_LARK_MOCK');
+    ?? (typeof block.mock === 'string' && !/^(true|false|1|0)$/i.test(block.mock) ? envFlag(block.mock, env) : false)
+    ?? envFlag(FEISHU_LOCAL_ENV.mock, env)
+    ?? envFlag(prefixed.mock, env)
+    ?? envFlag('JEA_CHANNEL_LARK_MOCK', env);
 
   const appIdResolved = resolveCredentialField({
     subject,
     blockValue: overrides.appId ?? block.app_id ?? block.appId,
     blockEnvKey: block.app_id_env ?? block.appIdEnv,
+    localEnvName: FEISHU_LOCAL_ENV.appId,
     subjectEnvName: prefixed.appId,
-    globalEnvNames: ['JEA_CHANNEL_FEISHU_APP_ID'],
     legacyEnvNames: ['FEISHU_APP_ID'],
+    env,
+    runtimeValues,
   });
 
   const appSecretResolved = resolveCredentialField({
     subject,
     blockSecretValue: overrides.appSecret ?? block.app_secret ?? block.appSecret,
     blockEnvKey: block.app_secret_env ?? block.appSecretEnv,
+    localEnvName: FEISHU_LOCAL_ENV.appSecret,
     subjectEnvName: prefixed.appSecret,
-    globalEnvNames: ['JEA_CHANNEL_FEISHU_APP_SECRET'],
     legacyEnvNames: ['FEISHU_APP_SECRET'],
+    env,
+    runtimeValues,
   });
 
   const defaultChatResolved = resolveCredentialField({
     subject,
     blockValue: overrides.defaultChatId ?? block.default_chat_id ?? block.defaultChatId,
     blockEnvKey: block.default_chat_id_env ?? block.defaultChatIdEnv,
+    localEnvName: FEISHU_LOCAL_ENV.defaultChatId,
     subjectEnvName: prefixed.defaultChatId,
-    globalEnvNames: ['JEA_CHANNEL_FEISHU_DEFAULT_CHAT_ID'],
     legacyEnvNames: ['JEA_CHANNEL_LARK_CHAT_ID'],
+    env,
+    runtimeValues,
   });
 
   const docFolderResolved = resolveCredentialField({
     subject,
     blockValue: overrides.docFolderToken ?? block.doc_folder_token ?? block.docFolderToken,
     blockEnvKey: block.doc_folder_token_env ?? block.docFolderTokenEnv,
+    localEnvName: FEISHU_LOCAL_ENV.docFolderToken,
     subjectEnvName: prefixed.docFolderToken,
-    globalEnvNames: ['JEA_CHANNEL_FEISHU_DOC_FOLDER_TOKEN'],
+    env,
+    runtimeValues,
   });
 
   const docBaseUrlResolved = resolveCredentialField({
     subject,
     blockValue: overrides.docBaseUrl ?? block.doc_base_url ?? block.docBaseUrl,
     blockEnvKey: block.doc_base_url_env ?? block.docBaseUrlEnv,
+    localEnvName: FEISHU_LOCAL_ENV.docBaseUrl,
     subjectEnvName: prefixed.docBaseUrl,
-    globalEnvNames: ['JEA_CHANNEL_FEISHU_DOC_BASE_URL'],
+    env,
+    runtimeValues,
   });
 
   const domain = overrides.domain
     ?? block.domain
-    ?? readEnv(`JEA_CHANNEL_FEISHU_${subjectEnvSlug(subject)}_DOMAIN`)
-    ?? readEnv('JEA_CHANNEL_FEISHU_DOMAIN')
+    ?? readEnv(`JEA_CHANNEL_FEISHU_${subjectEnvSlug(subject)}_DOMAIN`, env)
+    ?? readEnv('JEA_CHANNEL_FEISHU_DOMAIN', env)
     ?? 'feishu';
 
   const explicitEnabled = block.enabled;
@@ -189,7 +252,7 @@ export function resolveFeishuConfig(root, subject, overrides = {}) {
     ?? block.listenerEnabled
     ?? (enabled && block.listener_enabled !== false);
 
-  const bindSettings = resolveBindSettings(block, subject);
+  const bindSettings = resolveBindSettings(block, subject, env, runtimeValues);
   const operatorBinding = readOperatorBinding(root, subject);
   const subjectSlug = subjectEnvSlug(subject);
   const base = {
@@ -217,41 +280,63 @@ export function resolveFeishuConfig(root, subject, overrides = {}) {
     requireMention: block.require_mention ?? block.requireMention ?? true,
     groups: block.groups ?? {},
     textChunkLimit: block.text_chunk_limit ?? 4000,
+    receiptReactionEnabled: optionalBoolSetting({
+      override: overrides.receiptReactionEnabled,
+      block: block.receipt_reaction ?? block.receiptReaction,
+      envNames: [FEISHU_LOCAL_ENV.receiptReaction, prefixed.receiptReaction],
+      fallback: true,
+      env,
+    }),
+    receiptReactionEmoji: String(
+      overrides.receiptReactionEmoji
+        ?? block.receipt_reaction_emoji
+        ?? block.receiptReactionEmoji
+        ?? readEnv(FEISHU_LOCAL_ENV.receiptReactionEmoji, env)
+        ?? readEnv(prefixed.receiptReactionEmoji, env)
+        ?? DEFAULT_RECEIPT_REACTION_EMOJI,
+    ).trim() || DEFAULT_RECEIPT_REACTION_EMOJI,
     bindEnabled: bindSettings.enabled,
     bindPhrase: bindSettings.phrase,
     bindToken: bindSettings.token,
     bindTokenEnv: bindSettings.tokenEnv,
     operatorBinding,
+    runtimeEnvPath: loadedEnv.envPath,
+    runtimeEnvExists: loadedEnv.envFileExists,
     signal: overrides.signal ?? null,
     connectTimeoutMs: timeoutSetting({
       override: overrides.connectTimeoutMs,
       block: block.connect_timeout_ms ?? block.connectTimeoutMs,
       envNames: [`JEA_CHANNEL_FEISHU_${subjectSlug}_CONNECT_TIMEOUT_MS`, 'JEA_CHANNEL_FEISHU_CONNECT_TIMEOUT_MS'],
       fallback: DEFAULT_FEISHU_CONNECT_TIMEOUT_MS,
+      env,
     }),
     sendTimeoutMs: timeoutSetting({
       override: overrides.sendTimeoutMs,
       block: block.send_timeout_ms ?? block.sendTimeoutMs,
       envNames: [`JEA_CHANNEL_FEISHU_${subjectSlug}_SEND_TIMEOUT_MS`, 'JEA_CHANNEL_FEISHU_SEND_TIMEOUT_MS'],
       fallback: DEFAULT_FEISHU_SEND_TIMEOUT_MS,
+      env,
     }),
     stopTimeoutMs: timeoutSetting({
       override: overrides.stopTimeoutMs,
       block: block.stop_timeout_ms ?? block.stopTimeoutMs,
       envNames: [`JEA_CHANNEL_FEISHU_${subjectSlug}_STOP_TIMEOUT_MS`, 'JEA_CHANNEL_FEISHU_STOP_TIMEOUT_MS'],
       fallback: DEFAULT_FEISHU_STOP_TIMEOUT_MS,
+      env,
     }),
     shutdownGraceMs: timeoutSetting({
       override: overrides.shutdownGraceMs,
       block: block.shutdown_grace_ms ?? block.shutdownGraceMs,
       envNames: [`JEA_CHANNEL_FEISHU_${subjectSlug}_SHUTDOWN_GRACE_MS`, 'JEA_CHANNEL_SHUTDOWN_GRACE_MS'],
       fallback: DEFAULT_CHANNEL_SHUTDOWN_GRACE_MS,
+      env,
     }),
     retryBaseMs: timeoutSetting({
       override: overrides.retryBaseMs,
       block: block.retry_base_ms ?? block.retryBaseMs,
       envNames: [`JEA_CHANNEL_FEISHU_${subjectSlug}_RETRY_BASE_MS`, 'JEA_CHANNEL_FEISHU_RETRY_BASE_MS'],
       fallback: DEFAULT_FEISHU_RETRY_BASE_MS,
+      env,
     }),
     retryMultiplier: numericSetting({
       override: overrides.retryMultiplier,
@@ -259,12 +344,14 @@ export function resolveFeishuConfig(root, subject, overrides = {}) {
       envNames: [`JEA_CHANNEL_FEISHU_${subjectSlug}_RETRY_MULTIPLIER`, 'JEA_CHANNEL_FEISHU_RETRY_MULTIPLIER'],
       fallback: DEFAULT_FEISHU_RETRY_MULTIPLIER,
       min: 1,
+      env,
     }),
     retryMaxMs: timeoutSetting({
       override: overrides.retryMaxMs,
       block: block.retry_max_ms ?? block.retryMaxMs,
       envNames: [`JEA_CHANNEL_FEISHU_${subjectSlug}_RETRY_MAX_MS`, 'JEA_CHANNEL_FEISHU_RETRY_MAX_MS'],
       fallback: DEFAULT_FEISHU_RETRY_MAX_MS,
+      env,
     }),
     retryJitter: numericSetting({
       override: overrides.retryJitter,
@@ -273,6 +360,7 @@ export function resolveFeishuConfig(root, subject, overrides = {}) {
       fallback: DEFAULT_FEISHU_RETRY_JITTER,
       min: 0,
       max: 1,
+      env,
     }),
   };
   return mergeOperatorBinding(base, operatorBinding);
@@ -290,6 +378,10 @@ export function feishuConfigForApi(config) {
     hasAppId: Boolean(config.appId),
     hasAppSecret: Boolean(config.appSecret),
     credentialSources: config.credentialSources ?? {},
+    runtime_env: {
+      path: config.runtimeEnvPath ?? null,
+      exists: Boolean(config.runtimeEnvExists),
+    },
     defaultChatId: config.defaultChatId,
     docFolderToken: config.docFolderToken ? `***${String(config.docFolderToken).slice(-4)}` : null,
     docBaseUrl: config.docBaseUrl ?? null,
@@ -306,6 +398,8 @@ export function feishuConfigForApi(config) {
     retry_multiplier: config.retryMultiplier,
     retry_max_ms: config.retryMaxMs,
     retry_jitter: config.retryJitter,
+    receipt_reaction: config.receiptReactionEnabled !== false,
+    receipt_reaction_emoji: config.receiptReactionEmoji ?? DEFAULT_RECEIPT_REACTION_EMOJI,
   };
 }
 
@@ -316,8 +410,9 @@ export function assertFeishuCredentials(config) {
     const slug = subjectEnvSlug(subject);
     const err = new Error(
       `Feishu credentials missing for subject "${subject}". `
-      + `Set subjects.json channels.feishu.app_id + app_secret_env, or `
-      + `JEA_CHANNEL_FEISHU_${slug}_APP_ID / JEA_CHANNEL_FEISHU_${slug}_APP_SECRET.`,
+      + `Set <JEA_HOME>/subjects/<ns>/.env JEA_CHANNEL_FEISHU_APP_ID / JEA_CHANNEL_FEISHU_APP_SECRET `
+      + `(legacy JEA_CHANNEL_FEISHU_${slug}_APP_ID still works), `
+      + `or registry app_id + app_secret_env.`,
     );
     err.code = 'feishu_credentials_missing';
     throw err;

@@ -436,7 +436,7 @@ cp .env.example .env   # Windows: copy .env.example .env
 | `JEA_AGENT_MAX_ATTEMPTS` | Failures before `blocked` (default 2) |
 | `JEA_EXEC_LIMIT` | Deprecated alias for `JEA_EXEC_AGENT_BUDGET` |
 
-Feishu per-subject credentials: `JEA_CHANNEL_FEISHU_<SUBJECT>_APP_ID`, etc. — see `.env.example` and `policies/subjects.example.json`.
+Feishu per-subject credentials live in `<JEA_HOME>/subjects/<ns>/.env` as `JEA_CHANNEL_FEISHU_APP_ID` / `_APP_SECRET` — see `.env.example` and `policies/subjects.example.json`.
 
 Override authority docs directory:
 

@@ -12,7 +12,7 @@ import {
   consumeChannelReloadRequest,
 } from '../src/channel/state.mjs';
 import { buildChannelProjection } from '../src/channel/projection.mjs';
-import { subjectEnvSlug } from '../src/channel/adapters/feishu/config.mjs';
+import { FEISHU_LOCAL_ENV, subjectRuntimeEnvPath } from '../src/channel/adapters/feishu/config.mjs';
 
 let tempDir = null;
 
@@ -28,11 +28,11 @@ function makeRoot(subject = 'alpha') {
         channels: {
           feishu: {
             enabled: true,
-            app_id_env: `JEA_CHANNEL_FEISHU_${subjectEnvSlug(subject)}_APP_ID`,
-            app_secret_env: `JEA_CHANNEL_FEISHU_${subjectEnvSlug(subject)}_APP_SECRET`,
+            app_id_env: FEISHU_LOCAL_ENV.appId,
+            app_secret_env: FEISHU_LOCAL_ENV.appSecret,
             bind: {
               enabled: true,
-              token_env: `JEA_CHANNEL_FEISHU_${subjectEnvSlug(subject)}_BIND_TOKEN`,
+              token_env: FEISHU_LOCAL_ENV.bindToken,
             },
           },
         },
@@ -57,7 +57,6 @@ describe('channel feishu setup', () => {
 
   it('register writes env vars when --write-env is set', async () => {
     const root = makeRoot('alpha');
-    const slug = subjectEnvSlug('alpha');
     const code = await channelFeishuRegisterCommand({
       root,
       subject: 'alpha',
@@ -65,16 +64,16 @@ describe('channel feishu setup', () => {
       registerFn: mockRegister,
     });
     expect(code).toBe(0);
-    const envPath = join(root, '.env');
+    const envPath = subjectRuntimeEnvPath(root, 'alpha');
     expect(existsSync(envPath)).toBe(true);
+    expect(existsSync(join(root, '.env'))).toBe(false);
     const env = readFileSync(envPath, 'utf-8');
-    expect(env).toContain(`JEA_CHANNEL_FEISHU_${slug}_APP_ID=cli_test_app`);
-    expect(env).toContain(`JEA_CHANNEL_FEISHU_${slug}_APP_SECRET=sec_test_secret`);
+    expect(env).toContain(`${FEISHU_LOCAL_ENV.appId}=cli_test_app`);
+    expect(env).toContain(`${FEISHU_LOCAL_ENV.appSecret}=sec_test_secret`);
   });
 
   it('setup writes reload request and bind token env', async () => {
     const root = makeRoot('beta');
-    const slug = subjectEnvSlug('beta');
     const code = await channelFeishuSetupCommand({
       root,
       subject: 'beta',
@@ -85,8 +84,8 @@ describe('channel feishu setup', () => {
     const reload = readChannelReloadRequest(root, 'beta');
     expect(reload?.reason).toBe('feishu_setup_completed');
     expect(reload?.changed).toContain('feishu_credentials');
-    const env = readFileSync(join(root, '.env'), 'utf-8');
-    expect(env).toContain(`JEA_CHANNEL_FEISHU_${slug}_BIND_TOKEN=`);
+    const env = readFileSync(subjectRuntimeEnvPath(root, 'beta'), 'utf-8');
+    expect(env).toContain(`${FEISHU_LOCAL_ENV.bindToken}=`);
     const projection = buildChannelProjection(root, 'beta');
     expect(projection.feishu.reload.pending).toBe(true);
     const consumed = consumeChannelReloadRequest(root, 'beta');

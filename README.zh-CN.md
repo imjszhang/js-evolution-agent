@@ -435,7 +435,7 @@ cp .env.example .env   # Windows: copy .env.example .env
 | `JEA_AGENT_MAX_ATTEMPTS` | 失败后转 `blocked` 前的重试次数（默认 2） |
 | `JEA_EXEC_LIMIT` | deprecated，映射为 `JEA_EXEC_AGENT_BUDGET` |
 
-飞书 per-subject 凭证：`JEA_CHANNEL_FEISHU_<SUBJECT>_APP_ID` 等，见 `.env.example` 与 `policies/subjects.example.json`。
+飞书 per-subject 凭证写在 `<JEA_HOME>/subjects/<ns>/.env`，变量名为 `JEA_CHANNEL_FEISHU_APP_ID` / `_APP_SECRET`，见 `.env.example` 与 `policies/subjects.example.json`。
 
 权威文献目录覆盖：
 

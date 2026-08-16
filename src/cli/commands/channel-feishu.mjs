@@ -1,6 +1,7 @@
-import { join } from 'node:path';
+import { dirname } from 'node:path';
+import { mkdirSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
-import { getProjectRoot, loadProjectEnv } from '../../infra/project.mjs';
+import { getProjectRoot } from '../../infra/project.mjs';
 import {
   formatEnvBlock,
   maskSecret,
@@ -10,35 +11,33 @@ import {
   getSubjectEntry,
   updateSubjectsRegistry,
 } from '../../infra/subjects.mjs';
-import { subjectEnvSlug } from '../../channel/adapters/feishu/config.mjs';
-import { resolveFeishuConfig } from '../../channel/adapters/feishu/config.mjs';
+import { resolveEffectiveEnv } from '../../actions/execution-env.mjs';
+import { runtimeForSubject } from '../../infra/runtime-paths.mjs';
+import {
+  FEISHU_LOCAL_ENV,
+  resolveFeishuConfig,
+  subjectEnvSlug,
+  subjectRuntimeEnvPath,
+} from '../../channel/adapters/feishu/config.mjs';
 import { writeChannelReloadRequest } from '../../channel/state.mjs';
 import { printRegisterQrPrompt } from '../utils/register-qr.mjs';
 
-function envNamesForSubject(subject) {
-  const slug = subjectEnvSlug(subject);
-  return {
-    appId: `JEA_CHANNEL_FEISHU_${slug}_APP_ID`,
-    appSecret: `JEA_CHANNEL_FEISHU_${slug}_APP_SECRET`,
-    bindToken: `JEA_CHANNEL_FEISHU_${slug}_BIND_TOKEN`,
-  };
-}
-
-function buildFeishuSubjectSkeleton(subject) {
-  const envNames = envNamesForSubject(subject);
+function buildFeishuSubjectSkeleton() {
   return {
     enabled: true,
-    app_id_env: envNames.appId,
-    app_secret_env: envNames.appSecret,
+    app_id_env: FEISHU_LOCAL_ENV.appId,
+    app_secret_env: FEISHU_LOCAL_ENV.appSecret,
     domain: 'feishu',
     dm_policy: 'allowlist',
     allow_from: [],
     group_policy: 'disabled',
     require_mention: false,
+    receipt_reaction: true,
+    receipt_reaction_emoji: 'OK',
     bind: {
       enabled: true,
       phrase: 'JEA BIND',
-      token_env: envNames.bindToken,
+      token_env: FEISHU_LOCAL_ENV.bindToken,
     },
   };
 }
@@ -110,7 +109,7 @@ function maybeInitSubjectConfig(root, subject, flags = {}) {
           ...entry,
           channels: {
             ...(entry.channels ?? {}),
-            feishu: buildFeishuSubjectSkeleton(subject),
+            feishu: buildFeishuSubjectSkeleton(),
           },
         },
       },
@@ -134,11 +133,21 @@ function ensureSubjectHasFeishuBlock(root, subject, flags = {}) {
   };
 }
 
-function buildCredentialUpdates(subject, credentials) {
-  const envNames = envNamesForSubject(subject);
+function writeSubjectRuntimeEnv(root, subject, updates, { force = false } = {}) {
+  const envPath = subjectRuntimeEnvPath(root, subject);
+  mkdirSync(dirname(envPath), { recursive: true });
+  return upsertEnvFile(envPath, updates, { force });
+}
+
+function subjectHasEnvValue(root, subject, name) {
+  const { env } = resolveEffectiveEnv(runtimeForSubject(root, subject).runtimeRoot);
+  return Boolean(String(env[name] ?? '').trim());
+}
+
+function buildCredentialUpdates(_subject, credentials) {
   return {
-    [envNames.appId]: credentials.client_id,
-    [envNames.appSecret]: credentials.client_secret,
+    [FEISHU_LOCAL_ENV.appId]: credentials.client_id,
+    [FEISHU_LOCAL_ENV.appSecret]: credentials.client_secret,
   };
 }
 
@@ -208,19 +217,17 @@ export async function channelFeishuRegisterCommand({
   }
 
   if (flags['write-env']) {
-    const envPath = join(root, '.env');
     try {
-      upsertEnvFile(envPath, updates, { force: Boolean(flags.force) });
-      loadProjectEnv(root);
+      const written = writeSubjectRuntimeEnv(root, subject, updates, { force: Boolean(flags.force) });
       if (!flags.quiet && !flags.json) {
-        console.log(`\n已写入 ${envPath}`);
+        console.log(`\n已写入 ${written.path}`);
       }
     } catch (err) {
       console.error(err.message);
       return err.code === 'env_conflict' ? 2 : 1;
     }
   } else if (!flags.json && !flags.quiet) {
-    console.log('\n如需自动写入 .env，请加 --write-env');
+    console.log('\n如需自动写入 subject 运行时 .env，请加 --write-env');
   }
 
   return 0;
@@ -243,10 +250,11 @@ export async function channelFeishuSetupCommand({
     return 2;
   }
 
-  const envNames = envNamesForSubject(subject);
-  const bindTokenName = envNames.bindToken;
+  const bindTokenName = FEISHU_LOCAL_ENV.bindToken;
+  const prefixedBindToken = `JEA_CHANNEL_FEISHU_${subjectEnvSlug(subject)}_BIND_TOKEN`;
   const bindUpdates = {};
-  if (!process.env[bindTokenName]?.trim()) {
+  if (!subjectHasEnvValue(root, subject, bindTokenName)
+    && !subjectHasEnvValue(root, subject, prefixedBindToken)) {
     bindUpdates[bindTokenName] = randomBytes(24).toString('hex');
   }
 
@@ -263,10 +271,8 @@ export async function channelFeishuSetupCommand({
   if (registerExit !== 0) return registerExit;
 
   if (Object.keys(bindUpdates).length) {
-    const envPath = join(root, '.env');
     try {
-      upsertEnvFile(envPath, bindUpdates, { force: Boolean(flags.force) });
-      loadProjectEnv(root);
+      writeSubjectRuntimeEnv(root, subject, bindUpdates, { force: Boolean(flags.force) });
       if (!flags.json) {
         console.log(`已生成绑定口令 env: ${bindTokenName}`);
       }

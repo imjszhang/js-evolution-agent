@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   classifyNetworkFailure,
   probeFeishuNetwork,
+  resolveFeishuAxiosProxy,
   summarizeProxyEnv,
 } from '../src/channel/adapters/feishu/diagnostics.mjs';
 
@@ -16,11 +17,23 @@ describe('feishu network diagnostics', () => {
   });
 
   it('reports proxy protocol without credentials', () => {
-    expect(summarizeProxyEnv({})).toEqual({ present: false, protocol: null });
+    expect(summarizeProxyEnv({})).toEqual({ present: false, protocol: null, axios_compatible: true });
     expect(summarizeProxyEnv({ HTTPS_PROXY: 'http://user:pass@proxy.example:8080' })).toEqual({
       present: true,
       protocol: 'http',
+      axios_compatible: true,
     });
+    expect(summarizeProxyEnv({ ALL_PROXY: 'socks5://127.0.0.1:1080' })).toEqual({
+      present: true,
+      protocol: 'socks5',
+      axios_compatible: false,
+    });
+  });
+
+  it('disables axios env proxy for SOCKS so Feishu HTTP can go direct', () => {
+    expect(resolveFeishuAxiosProxy({})).toBeUndefined();
+    expect(resolveFeishuAxiosProxy({ HTTPS_PROXY: 'http://proxy.example:8080' })).toBeUndefined();
+    expect(resolveFeishuAxiosProxy({ ALL_PROXY: 'socks5://127.0.0.1:1080' })).toBe(false);
   });
 
   it('uses injected SDK/DNS/HTTPS/WS checks and redacts secrets', async () => {
@@ -43,7 +56,7 @@ describe('feishu network diagnostics', () => {
       },
     });
 
-    expect(result.proxy).toEqual({ present: true, protocol: 'https' });
+    expect(result.proxy).toEqual({ present: true, protocol: 'https', axios_compatible: true });
     expect(result.checks.find((check) => check.name === 'sdk').kind).toBe('sdk');
     expect(result.checks.find((check) => check.name === 'dns').ok).toBe(true);
     expect(result.checks.find((check) => check.name === 'https').ok).toBe(true);

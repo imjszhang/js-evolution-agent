@@ -14,7 +14,7 @@ import { runChannelPresenceTask } from '../../channel/presence.mjs';
 import { cancelDeprecatedChannelTasks } from '../../channel/queue-cleanup.mjs';
 import { channelFeishuCommand } from './channel-feishu.mjs';
 import { resolveFeishuConfig } from '../../channel/adapters/feishu/config.mjs';
-import { probeFeishuNetwork } from '../../channel/adapters/feishu/diagnostics.mjs';
+import { probeFeishuNetwork, summarizeProxyEnv } from '../../channel/adapters/feishu/diagnostics.mjs';
 import { readChannelWorkerState, reconcileChannelWorkerState } from '../../channel/worker-state.mjs';
 import { isProcessAlive } from '../../infra/process-alive.mjs';
 import { createIntelligenceStore } from '../../intelligence/store.mjs';
@@ -157,6 +157,12 @@ function buildFeishuDoctorHints(root, subject, projection) {
   if (projection.feishu?.reload?.next_retry_at) {
     hints.push(
       `飞书 listener 将按退避重试：attempt=${projection.feishu.reload.retry_attempt ?? 0} next=${projection.feishu.reload.next_retry_at}。可用 jea channel doctor --probe-network 区分 DNS / HTTPS / 权限 / 超时。`,
+    );
+  }
+  const proxy = summarizeProxyEnv();
+  if (proxy.present && !proxy.axios_compatible) {
+    hints.push(
+      `本机 ${proxy.protocol} 代理对 axios 不兼容（只会当 HTTP CONNECT 用）。飞书 HTTP 已改为直连；若 listener 仍超时，检查 WebSocket 出口，或改用 HTTP 代理。`,
     );
   }
   if (!projection.presence?.config?.enabled) {

@@ -59,7 +59,13 @@ export function resolveEffectiveEnv(envDir, { baseEnv = process.env } = {}) {
     if (hasValue(value)) env[key] = value;
   }
   pinRuntimeRoots(env, baseEnv);
-  return { env, envPath: loaded.envPath, envFileExists: loaded.exists, envFileError: loaded.error ?? null };
+  return {
+    env,
+    envPath: loaded.envPath,
+    envFileExists: loaded.exists,
+    envFileError: loaded.error ?? null,
+    values: loaded.values,
+  };
 }
 
 function applyProcessEnv(env) {

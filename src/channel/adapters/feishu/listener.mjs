@@ -13,6 +13,7 @@ import { FeishuClient } from './client.mjs';
 import { FeishuPolicy } from './policy.mjs';
 import { FeishuMonitor } from './monitor.mjs';
 import { tryHandleFeishuBind } from './binding.mjs';
+import { acknowledgeFeishuReceipt } from './receipt.mjs';
 import { runWithTimeout } from '../../async-utils.mjs';
 import { sanitizeFeishuError } from './errors.mjs';
 
@@ -194,6 +195,13 @@ async function createAndStartListener(root, subject, config, { reloadReason = nu
               live.setConfig(resolveFeishuConfig(root, subject));
               syncPolicyFromConfig(policy, live.config);
             }
+            void acknowledgeFeishuReceipt({
+              client,
+              config: live.config,
+              messageId: event.messageId,
+              root,
+              subject,
+            });
             return;
           }
           const envelope = envelopeFromFeishuEvent(
@@ -221,6 +229,13 @@ async function createAndStartListener(root, subject, config, { reloadReason = nu
             channel: 'feishu',
           });
           enqueueClassifierIfPendingInbound(root, subject);
+          void acknowledgeFeishuReceipt({
+            client,
+            config: live.config,
+            messageId: envelope.message_id,
+            root,
+            subject,
+          });
         },
       });
       const candidate = {
