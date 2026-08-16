@@ -1,6 +1,8 @@
 {
   "name": "@jea/desktop",
   "version": "0.1.0",
+  "description": "JEA 0.1.0 desktop host",
+  "author": "JEA",
   "private": true,
   "type": "module",
   "main": "./out/main/index.js",
@@ -17,6 +19,7 @@
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^6.0.5",
     "electron": "^43.4.0",
+    "electron-builder": "^26.0.12",
     "electron-vite": "^5.0.0",
     "tailwindcss": "^4.1.18",
     "typescript": "^7.0.2",

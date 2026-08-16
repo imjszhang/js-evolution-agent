@@ -1,12 +1,12 @@
-# 卸载与数据（0.1.0 草稿）
+# 卸载与数据（0.1.0）
 
-状态：**draft / pending**。依赖 [#120](https://github.com/imjszhang/js-evolution-agent/issues/120)、[#121](https://github.com/imjszhang/js-evolution-agent/issues/121)。
+状态：**implemented / #120, #121**。日期：2026-08-16。
 
 ## 必须写清的区别
 
 | 操作 | 删除什么 | 默认是否保留 JEA Home |
 | --- | --- | --- |
-| 从 Settings 卸载托管 `jea` 启动器 | `~/.local/bin/jea`（以 #120 为准） | 保留 |
+| 从 Settings 卸载托管 `jea` 启动器 | 仅当文件带 `# jea-managed-launcher 1` 时删除 `~/.local/bin/jea` | 保留 |
 | 删除 `JEA.app` | 应用包 | 保留 |
 | 删除 JEA Home | `<JEA_HOME>/subjects/<namespace>/` 运行时数据 | 否，这是破坏性操作 |
 

@@ -88,6 +88,7 @@ npx repolink check --link agentank-evolver
 | Client API | [apps/desktop/src/client-api/AGENTS.md](apps/desktop/src/client-api/AGENTS.md) | 统一 `JeaClient` 契约、命令/事件目录、应用命令层 |
 | 共享 App Shell | [packages/jea-app/README.md](packages/jea-app/README.md) | Open Science 风格工作区壳层、主题、i18n、feature slots；Electron/Web 共用同一 React 源 |
 | localhost Web host | [apps/desktop/src/web-host/AGENTS.md](apps/desktop/src/web-host/AGENTS.md) | loopback HTTP/RPC、认证、可续传事件、共享 renderer 静态资源 |
+| 产品打包 / CLI 启动器 | [src/product/AGENTS.md](src/product/AGENTS.md) | macOS arm64 包装、托管 `jea` 启动器、`start/status/url/stop` |
 
 ## 运行时数据
 

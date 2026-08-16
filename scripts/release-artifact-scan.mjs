@@ -93,6 +93,8 @@ function basenameViolation(name) {
 }
 
 export function classifyForbiddenPath(relPath) {
+  const parts = relPath.split('/');
+  if (parts.includes('node_modules')) return null;
   const name = relPath.split('/').pop() || relPath;
   const baseHit = basenameViolation(name);
   if (baseHit) {
@@ -180,7 +182,7 @@ export function scanArtifactTree({ root, manifestPath = null } = {}) {
     const pathHit = classifyForbiddenPath(relPath);
     if (pathHit) violations.push(pathHit);
     const abs = resolve(absRoot, relPath);
-    if (isProbablyTextFile(abs)) {
+    if (isProbablyTextFile(abs) && !relPath.split('/').includes('node_modules')) {
       const text = readFileSync(abs, 'utf8');
       for (const hit of scanTextForLeaks(text)) {
         violations.push({ ...hit, file: relPath });

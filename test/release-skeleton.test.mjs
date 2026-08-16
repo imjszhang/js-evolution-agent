@@ -100,7 +100,7 @@ describe('release-version-preflight', () => {
     expect(report.ok).toBe(true);
     expect(report.status).toBe('agree_with_pending');
     expect(report.expected).toBe('0.1.0');
-    expect(report.pending).toEqual(['bundled_cli', 'client_api', 'about_output']);
+    expect(report.pending).toEqual(['client_api', 'about_output']);
     const visible = report.sources.filter((item) => item.required);
     expect(visible.every((item) => item.version === '0.1.0')).toBe(true);
   });

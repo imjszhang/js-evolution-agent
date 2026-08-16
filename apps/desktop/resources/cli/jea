@@ -1,0 +1,6 @@
+#!/bin/sh
+# jea-managed-launcher 1
+# product=JEA
+# Packaged inventory entry. Settings writes the real launcher to ~/.local/bin/jea.
+echo "JEA CLI is launched through the managed ~/.local/bin/jea wrapper." >&2
+exit 2
