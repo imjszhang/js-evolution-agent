@@ -1,0 +1,2 @@
+#!/usr/bin/env node
+console.log('jea fixture placeholder — not a bundled CLI');
