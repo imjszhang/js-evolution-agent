@@ -14,7 +14,7 @@ import {
 } from '../src/channel/state.mjs';
 import { channelOutboxFailedDir } from '../src/channel/paths.mjs';
 import { channelWorkOnce } from '../src/daemon/daemon-core.mjs';
-import { requestChannelWorkerStop } from '../src/channel/worker-state.mjs';
+import { readChannelWorkerState, requestChannelWorkerStop } from '../src/channel/worker-state.mjs';
 import { createBoundedFeishuHttpInstance } from '../src/channel/adapters/feishu/client.mjs';
 import { FeishuMonitor } from '../src/channel/adapters/feishu/monitor.mjs';
 import { sanitizeFeishuError } from '../src/channel/adapters/feishu/errors.mjs';
@@ -284,6 +284,80 @@ describe('bounded Feishu lifecycle', () => {
     const exit = waitForExit(child);
     requestChannelWorkerStop(sourceRoot, 'alpha');
     await expect(exit).resolves.toEqual({ code: 0, signal: null });
+  });
+
+  it('aborts a hung channel_agent_run and returns the task to pending without consuming attempts', async () => {
+    const sourceRoot = makeRoot();
+    enqueueChannelTask(sourceRoot, 'alpha', {
+      type: 'channel_agent_run',
+      input: {
+        request: {
+          objective: 'Hang until cancelled',
+          mode: 'observe',
+          permission_profile: 'read_only',
+          channel_agent_run_id: 'run-abort-1',
+        },
+        retries: 2,
+      },
+      idempotency_key: 'agent-abort',
+    });
+    const controller = new AbortController();
+    const pending = channelWorkOnce(sourceRoot, 'alpha', {
+      worker: 'agent-abort-worker',
+      signal: controller.signal,
+      adapterOptions: {
+        mock_execute: never,
+      },
+    });
+    setTimeout(() => controller.abort(new Error('test shutdown')), 10);
+    const result = await pending;
+
+    expect(result.failure.code).toBe('channel_aborted');
+    expect(result.task.status).toBe('pending');
+    expect(result.task.attempts).toBe(0);
+    expect(result.task.lease_owner).toBeNull();
+    expect(result.task.lease_expires_at).toBeNull();
+    const events = readChannelEvents(sourceRoot, 'alpha', { limit: 50 });
+    expect(events.some((event) => event.type === 'channel_agent_run_aborted')).toBe(true);
+    expect(events.some((event) => event.type === 'channel_task_aborted')).toBe(true);
+    expect(events.some((event) => event.type === 'channel_agent_run_failed')).toBe(false);
+  });
+
+  it('exits on SIGTERM while a channel_agent_run is hung and leaves workers stopped', async () => {
+    const sourceRoot = makeRoot();
+    enqueueChannelTask(sourceRoot, 'alpha', {
+      type: 'channel_agent_run',
+      input: {
+        request: {
+          objective: 'Hang until SIGTERM',
+          mode: 'observe',
+          permission_profile: 'read_only',
+          channel_agent_run_id: 'run-sigterm-1',
+        },
+        retries: 1,
+      },
+      idempotency_key: 'agent-sigterm',
+    });
+    const child = spawnHangWorker(sourceRoot, 'agent');
+    await waitForOutput(child, 'BLOCKED:agent', 4000);
+    const startedAt = Date.now();
+    const exit = waitForExit(child, 8000);
+    child.kill('SIGTERM');
+    await expect(exit).resolves.toEqual({ code: 0, signal: null });
+    expect(Date.now() - startedAt).toBeLessThan(10_000);
+
+    const task = readChannelTaskQueue(sourceRoot, 'alpha').tasks.find((item) => item.type === 'channel_agent_run');
+    expect(task.status).toBe('pending');
+    expect(task.lease_owner).toBeNull();
+    expect(task.attempts).toBe(0);
+    const state = readChannelWorkerState(sourceRoot, 'alpha');
+    expect(state.status).toBe('stopped');
+    for (const worker of Object.values(state.workers ?? {})) {
+      expect(worker.status).toBe('stopped');
+    }
+    const events = readChannelEvents(sourceRoot, 'alpha', { limit: 80 });
+    expect(events.some((event) => event.type === 'channel_shutdown_grace_exceeded')).toBe(false);
+    expect(events.some((event) => event.type === 'channel_agent_run_failed')).toBe(false);
   });
 
   it('exits on SIGTERM while a Feishu send is hung', async () => {

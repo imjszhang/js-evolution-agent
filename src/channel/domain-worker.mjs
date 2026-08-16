@@ -13,13 +13,24 @@ import {
   isChannelRoleStopRequested,
   markChannelRoleWorkerStopped,
   readChannelWorkerState,
+  reconcileChannelWorkerState,
   requestChannelWorkerStop,
+  safeMarkChannelRoleWorkerStopped,
   safeUpdateChannelRoleWorkerHeartbeat,
 } from './worker-state.mjs';
 import { reclaimExpiredChannelLeases } from './task-queue.mjs';
+import { readChannelReloadRequest, writeChannelReloadState } from './state.mjs';
 import { runDomainWorkerLoop } from '../infra/worker-loop.mjs';
+import { isProcessAlive } from '../infra/process-alive.mjs';
 import { runWithTimeout } from './async-utils.mjs';
 import { resolveFeishuConfig } from './adapters/feishu/config.mjs';
+import { feishuListenerConfigFingerprint } from './adapters/feishu/listener.mjs';
+import { sanitizeFeishuError } from './adapters/feishu/errors.mjs';
+import {
+  computeFeishuListenerBackoff,
+  isFeishuListenerRetryableFailure,
+  isFeishuListenerSuccess,
+} from './adapters/feishu/backoff.mjs';
 
 function sleep(ms) {
   if (!ms) return Promise.resolve();
@@ -45,37 +56,121 @@ export async function runChannelListenerSupervisor(root, subject, flags = {}, {
   refreshIntervalMs = 1000,
   ensureListener = ensureChannelListener,
   stopListener = stopChannelListener,
+  now = Date.now,
+  sleep = sleepWithSignal,
+  random = Math.random,
+  writeReloadState = writeChannelReloadState,
+  readReloadRequest = readChannelReloadRequest,
 } = {}) {
   if (flags['no-feishu-listener']) return { skipped: true, reason: 'listener_disabled_flag' };
+  let attempt = 0;
+  let lastFingerprint = null;
+  let lastRetryEventKey = null;
+  const persistRetry = (patch) => writeReloadState(root, subject, patch);
   try {
     while (!signal?.aborted) {
+      const config = resolveFeishuConfig(root, subject);
+      const fingerprint = feishuListenerConfigFingerprint(config);
+      const reloadRequest = readReloadRequest(root, subject);
+      if (fingerprint !== lastFingerprint || reloadRequest) {
+        attempt = 0;
+        lastFingerprint = fingerprint;
+        lastRetryEventKey = null;
+      }
+
+      const canRetry = Boolean(config.listenerEnabled && !config.mock && config.appId && config.appSecret);
+      if (!canRetry) {
+        persistRetry({
+          retry_attempt: 0,
+          backoff_ms: null,
+          next_retry_at: null,
+        });
+        await sleep(Math.max(refreshIntervalMs, 1000), signal);
+        continue;
+      }
+
+      let result;
       try {
-        const config = resolveFeishuConfig(root, subject);
-        const result = await runWithTimeout(
+        result = await runWithTimeout(
           (operationSignal) => ensureListener(root, subject, { ...flags, signal: operationSignal }),
           config.connectTimeoutMs,
           'feishu listener ensure',
           { signal },
         );
-        if (result.action === 'start_failed' || result.action === 'reload_failed') {
-          recordChannelEvent(root, subject, {
-            type: 'feishu_listener_start_skipped',
-            status: 'not_running',
-            reason: result.reason ?? result.action,
-            error_code: result.error_code ?? null,
-          });
-        }
       } catch (err) {
-        if (!signal?.aborted) {
-          recordChannelEvent(root, subject, {
-            type: 'channel_config_reload_failed',
-            status: 'error',
-            error: err?.message || String(err),
-            error_code: err?.code ?? null,
-          });
-        }
+        if (signal?.aborted || err?.code === 'channel_aborted') break;
+        const safeError = sanitizeFeishuError(err, config);
+        result = {
+          action: 'start_failed',
+          reason: safeError,
+          error_code: err?.code ?? 'feishu_listener_start_failed',
+        };
+        recordChannelEvent(root, subject, {
+          type: err?.code === 'channel_timeout' ? 'feishu_listener_start_failed' : 'channel_config_reload_failed',
+          status: 'error',
+          error: safeError,
+          error_code: err?.code ?? null,
+          source: 'supervisor',
+        });
       }
-      await sleepWithSignal(Math.max(refreshIntervalMs, 1000), signal);
+
+      if (isFeishuListenerSuccess(result)) {
+        attempt = 0;
+        lastRetryEventKey = null;
+        persistRetry({
+          retry_attempt: 0,
+          backoff_ms: null,
+          next_retry_at: null,
+          last_error: null,
+          last_error_code: null,
+        });
+        await sleep(Math.max(refreshIntervalMs, 1000), signal);
+        continue;
+      }
+
+      if (!isFeishuListenerRetryableFailure(result)) {
+        persistRetry({
+          retry_attempt: 0,
+          backoff_ms: null,
+          next_retry_at: null,
+        });
+        await sleep(Math.max(refreshIntervalMs, 1000), signal);
+        continue;
+      }
+
+      attempt += 1;
+      const backoffMs = computeFeishuListenerBackoff({
+        attempt,
+        baseMs: config.retryBaseMs,
+        multiplier: config.retryMultiplier,
+        maxMs: config.retryMaxMs,
+        jitter: config.retryJitter,
+        random,
+      });
+      const nextRetryAt = new Date(now() + backoffMs).toISOString();
+      const safeReason = sanitizeFeishuError(result.reason ?? result.error_code ?? 'feishu_listener_start_failed', config);
+      persistRetry({
+        retry_attempt: attempt,
+        backoff_ms: backoffMs,
+        next_retry_at: nextRetryAt,
+        last_error: safeReason,
+        last_error_code: result.error_code ?? null,
+        last_error_at: new Date(now()).toISOString(),
+      });
+      const eventKey = `${fingerprint}:${result.error_code ?? result.reason}:${attempt}`;
+      if (eventKey !== lastRetryEventKey) {
+        lastRetryEventKey = eventKey;
+        recordChannelEvent(root, subject, {
+          type: 'feishu_listener_retry_scheduled',
+          status: 'retry_scheduled',
+          retry_attempt: attempt,
+          backoff_ms: backoffMs,
+          next_retry_at: nextRetryAt,
+          error_code: result.error_code ?? null,
+          reason: safeReason,
+        });
+      }
+      await sleep(backoffMs, signal);
     }
   } finally {
     if (getChannelListenerStatus(root, subject).running) {
@@ -242,7 +337,7 @@ export async function runChannelRoleWorkerLoop(root, subject, role, flags, share
     });
     if (isChannelRoleStopRequested(root, subject, role)) stopReason = 'stop_requested';
   } finally {
-    markChannelRoleWorkerStopped(root, subject, role, {
+    safeMarkChannelRoleWorkerStopped(root, subject, role, {
       worker_id: workerId,
       pid: process.pid,
       stop_reason: stopReason,
@@ -273,6 +368,7 @@ export async function runChannelDomainWorkerMulti(root, subject, flags, {
   stopListener = stopChannelListener,
 }) {
   const classifierConfig = resolveClassifierConfig(root, subject);
+  reconcileChannelWorkerState(root, subject, { staleMs: heartbeatStaleMs });
   initChannelCoordinatorState(root, subject, {
     pid: process.pid,
     tickMs,
@@ -307,6 +403,46 @@ export async function runChannelDomainWorkerMulti(root, subject, flags, {
   };
   process.once('SIGINT', requestLocalStop);
   process.once('SIGTERM', requestLocalStop);
+
+  let fatalHandled = false;
+  const handleFatal = (label, err) => {
+    if (fatalHandled) return;
+    fatalHandled = true;
+    shared.stopping = true;
+    if (!stopController.signal.aborted) {
+      stopController.abort(err instanceof Error ? err : new Error(String(err)));
+    }
+    try {
+      recordChannelEvent(root, subject, {
+        type: 'channel_worker_crashed',
+        status: 'error',
+        reason: label,
+        error: err?.message || String(err),
+        error_code: err?.code ?? null,
+        pid: process.pid,
+      });
+      const state = readChannelWorkerState(root, subject);
+      for (const role of Object.keys(state?.workers ?? {})) {
+        const worker = state.workers[role];
+        if (worker?.pid === process.pid || !worker?.pid) {
+          safeMarkChannelRoleWorkerStopped(root, subject, role, {
+            worker_id: worker?.worker_id,
+            pid: process.pid,
+            stop_reason: 'crashed',
+          });
+        }
+      }
+      reconcileChannelWorkerState(root, subject, { staleMs: heartbeatStaleMs });
+    } catch {
+      // best effort
+    }
+  };
+  const onUncaughtException = (err) => handleFatal('uncaughtException', err);
+  const onUnhandledRejection = (reason) => {
+    handleFatal('unhandledRejection', reason instanceof Error ? reason : new Error(String(reason)));
+  };
+  process.once('uncaughtException', onUncaughtException);
+  process.once('unhandledRejection', onUnhandledRejection);
 
   let presenceTickTimer = null;
   let classifierTickTimer = null;
@@ -381,8 +517,22 @@ export async function runChannelDomainWorkerMulti(root, subject, flags, {
     if (classifierTickTimer) clearInterval(classifierTickTimer);
     if (stopPollTimer) clearInterval(stopPollTimer);
     await listenerSupervisor;
+    const leftover = readChannelWorkerState(root, subject);
+    for (const [role, worker] of Object.entries(leftover?.workers ?? {})) {
+      if (!['running', 'stopping'].includes(worker.status)) continue;
+      if (worker.pid === process.pid || !isProcessAlive(worker.pid)) {
+        safeMarkChannelRoleWorkerStopped(root, subject, role, {
+          worker_id: worker.worker_id,
+          pid: worker.pid,
+          stop_reason: 'shutdown_fallback',
+        });
+      }
+    }
+    reconcileChannelWorkerState(root, subject, { staleMs: heartbeatStaleMs });
     process.removeListener('SIGINT', requestLocalStop);
     process.removeListener('SIGTERM', requestLocalStop);
+    process.removeListener('uncaughtException', onUncaughtException);
+    process.removeListener('unhandledRejection', onUnhandledRejection);
   }
 
   return {

@@ -13,8 +13,10 @@ const never = () => {
   return new Promise(() => {});
 };
 
+const role = mode === 'send' ? 'notify' : mode === 'agent' ? 'agent' : 'classifier';
+
 await runChannelDomainWorkerMulti(root, 'alpha', { force: true }, {
-  roles: [mode === 'send' ? 'notify' : 'classifier'],
+  roles: [role],
   tickMs: 60_000,
   leaseMs: 1000,
   heartbeatStaleMs: 5000,
@@ -39,8 +41,15 @@ await runChannelDomainWorkerMulti(root, 'alpha', { force: true }, {
         sender: { sendText: never },
       },
     })
-    : async () => {
-      announce();
-      return { worked: false, ok: true, task: null };
-    },
+    : mode === 'agent'
+      ? (sourceRoot, subject, flags) => channelWorkOnce(sourceRoot, subject, {
+        ...flags,
+        adapterOptions: {
+          mock_execute: never,
+        },
+      })
+      : async () => {
+        announce();
+        return { worked: false, ok: true, task: null };
+      },
 });

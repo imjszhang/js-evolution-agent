@@ -8,6 +8,8 @@ import { requestExpressionRecompute, enqueueNotifyIfOutboxPending } from './wake
 import { writeOutboxMessage } from './state.mjs';
 import { persistChannelDeliverable } from './deliverable.mjs';
 import { renderDeliveryToOutbox } from './delivery-renderer.mjs';
+import { runWithTimeout } from './async-utils.mjs';
+import { resolveChannelAgentConfig } from './agent-config.mjs';
 
 const DEFAULT_AGENT_PROVIDER = 'llm_only';
 
@@ -173,7 +175,7 @@ function buildAction(root, subject, runtime, request, validation, env = {}) {
   };
 }
 
-function buildContext(root, subject, runtime, store, request, effectiveEnv = {}) {
+function buildContext(root, subject, runtime, store, request, effectiveEnv = {}, abortSignal = null) {
   return {
     projectRoot: root,
     env: effectiveEnv,
@@ -186,6 +188,7 @@ function buildContext(root, subject, runtime, store, request, effectiveEnv = {})
       subjectResources: runtime.config?.resources ?? {},
       subjectApproval: runtime.config?.approval ?? null,
       logger: request.logger ?? null,
+      abortSignal,
     },
     _agentRunLogMeta: {
       cycle_id: request.channel_agent_run_id ?? null,
@@ -211,7 +214,11 @@ function recordResultObservation(store, subject, request, result) {
   });
 }
 
-export async function runChannelAgentRunTask(root, subject, input = {}) {
+function isChannelAbort(error) {
+  return error?.code === 'channel_aborted';
+}
+
+export async function runChannelAgentRunTask(root, subject, input = {}, taskRuntime = {}) {
   const request = normalizeRequest(input);
   const validation = validateRequest(request);
   const runId = request.channel_agent_run_id ?? null;
@@ -235,7 +242,11 @@ export async function runChannelAgentRunTask(root, subject, input = {}) {
   const store = createStore(runtime);
   const { env: effectiveEnv, envPath, envFileExists, envFileError } = resolveEffectiveEnv(runtime.runtimeRoot);
   const action = buildAction(root, subject, runtime, request, validation, effectiveEnv);
-  const ctx = buildContext(root, subject, runtime, store, request, effectiveEnv);
+  const parentSignal = taskRuntime.signal ?? input.signal ?? null;
+  const agentConfig = resolveChannelAgentConfig(root, subject, {
+    timeoutMs: input.timeout_ms ?? input.timeoutMs ?? taskRuntime.timeoutMs,
+  });
+  const ctx = buildContext(root, subject, runtime, store, request, effectiveEnv, parentSignal);
 
   recordChannelEvent(root, subject, {
     type: 'channel_agent_run_started',
@@ -252,7 +263,21 @@ export async function runChannelAgentRunTask(root, subject, input = {}) {
   });
 
   try {
-    const result = input.mock_result ?? await actionHandlers.agent_execute(action, ctx);
+    const result = input.mock_result ?? await runWithTimeout(
+      async (operationSignal) => {
+        ctx.host.abortSignal = operationSignal;
+        const mockExecute = typeof input.mock_execute === 'function'
+          ? input.mock_execute
+          : taskRuntime.adapterOptions?.mock_execute;
+        if (typeof mockExecute === 'function') {
+          return mockExecute(action, ctx, operationSignal);
+        }
+        return actionHandlers.agent_execute(action, ctx);
+      },
+      agentConfig.timeout_ms,
+      'channel agent run',
+      { signal: parentSignal },
+    );
 
     let deliverable = null;
     let dispatch = null;
@@ -359,6 +384,17 @@ export async function runChannelAgentRunTask(root, subject, input = {}) {
       dispatch,
     };
   } catch (err) {
+    if (isChannelAbort(err)) {
+      recordChannelEvent(root, subject, {
+        type: 'channel_agent_run_aborted',
+        status: 'cancelled',
+        channel_agent_run_id: action.id,
+        candidate_id: request.candidate_id ?? null,
+        reply_to_message_id: request.reply_to_message_id ?? null,
+        error_code: err.code,
+      });
+      throw err;
+    }
     recordChannelEvent(root, subject, {
       type: 'channel_agent_run_failed',
       status: 'error',
