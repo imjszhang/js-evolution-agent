@@ -43,8 +43,36 @@ Slot ids: `subjectList`, `conversation`, `evolutionInspector`, `serviceStatus`,
 `settings`, `workspaceHeader`.
 
 Wave 1 injects fixture adapters only. Do not invent a JeaClient here; #116 owns
-the command catalog. Feature teams should accept an injected client through
-their own slot props after that contract lands.
+the command catalog. Feature teams inject that client through a feature factory.
+
+### Evolution Inspector (#117)
+
+Register the right-column reader from the desktop or web host. Do not edit
+`JeaApp.tsx` / `AppShell.tsx` / `Workspace.tsx` to add Evolution content.
+
+```ts
+import {
+  createEvolutionInspectorFeature,
+  openEvolutionCycle
+} from '@jea/app'
+
+const features = [
+  createEvolutionInspectorFeature({ client })
+]
+
+<JeaApp features={features} />
+
+// Conversation cards (#119) open a cycle without importing Inspector internals:
+openEvolutionCycle(cycleId, subject)
+// or adapters.selectedCycleId / adapters.onSelectCycle
+```
+
+Data access is `client.listCycles` / `getCycle` / `getRound` / `getObservability`
+plus `evolution.updated`. Collapse/resize/expand is owned by the shell (#115);
+the Inspector stays mounted and keeps the selected cycle.
+
+Parity inventory: `EVOLUTION_PARITY_INVENTORY` / `parityInventoryMarkdown()`.
+Deferred Viewer features are not removed.
 
 ## Theme and i18n
 

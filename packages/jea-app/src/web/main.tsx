@@ -1,8 +1,8 @@
-import { StrictMode, useCallback, useEffect, useState } from 'react'
+import { StrictMode, useCallback, useEffect, useMemo, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { JeaApp } from '../JeaApp'
 import { createWave1Adapters } from '../fixtures/wave1'
-import type { ShellViewState } from '../shell/GlobalStates'
+import { createEvolutionFixtureClient, createEvolutionInspectorFeature } from '../features/evolution'
 import type { Locale } from '../i18n/messages'
 import { fetchWebBootstrap, isJeaWebHosted, resolveHostedViewState } from './host-connection'
 import '../styles/index.css'
@@ -18,12 +18,40 @@ function WebHostRoot() {
   const settingsOpen = readParam('settings') === '1' ? true : undefined
   const hosted = isJeaWebHosted()
   const empty = queryState === 'empty' || readParam('empty') === '1'
+  const inspectorMode = readParam('inspector')
+  const subject = readParam('subject')
   const [connected, setConnected] = useState<boolean | null>(hosted && !queryState ? null : true)
   const viewState = resolveHostedViewState({
     queryState,
     hosted,
     connected
   })
+
+  const features = useMemo(() => {
+    const evolutionClient = createEvolutionFixtureClient(
+      inspectorMode === 'malformed'
+        ? {
+            lists: {
+              alpha: {
+                subject: 'alpha',
+                namespace: 'alpha-data',
+                round_count: 1,
+                cycles: [{ cycle_id: 'broken', generated_at: null, tldr: null, has_diary: false, status: null }]
+              }
+            },
+            cycles: { alpha: {} },
+            rounds: { alpha: {} },
+            observability: { alpha: { subject: 'alpha', attention: {}, open_cycles: 0 } }
+          }
+        : undefined
+    )
+    return [
+      createEvolutionInspectorFeature({
+        client: evolutionClient,
+        navFixtureCycleId: 'cycle-20260815-closed'
+      })
+    ]
+  }, [inspectorMode])
 
   const refresh = useCallback(async () => {
     if (!hosted || queryState) return
@@ -41,14 +69,22 @@ function WebHostRoot() {
       locale={locale}
       viewState={viewState === 'empty' ? 'empty' : viewState}
       settingsOpen={settingsOpen}
+      features={features}
       adapters={createWave1Adapters(empty ? {
         subjects: [],
         sessions: [],
         selectedSubjectId: null,
         selectedSessionId: null
+      } : inspectorMode === 'empty' ? {
+        subjects: [{ id: 'empty', name: 'empty', namespace: 'empty-data' }],
+        selectedSubjectId: 'empty',
+        selectedSessionId: null,
+        sessions: []
       } : viewState === 'offline' || connected === false ? {
         serviceStatus: 'offline',
         onRetry: () => { void refresh() }
+      } : subject ? {
+        selectedSubjectId: subject
       } : {})}
     />
   )
