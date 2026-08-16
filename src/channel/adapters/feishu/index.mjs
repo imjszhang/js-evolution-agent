@@ -6,7 +6,14 @@ import { FeishuSender } from './sender.mjs';
 import { runWithTimeout } from '../../async-utils.mjs';
 import { sanitizeFeishuError } from './errors.mjs';
 
-export { resolveFeishuConfig, feishuConfigForApi, assertFeishuCredentials, subjectEnvSlug } from './config.mjs';
+export {
+  resolveFeishuConfig,
+  feishuConfigForApi,
+  assertFeishuCredentials,
+  subjectEnvSlug,
+  subjectRuntimeEnvPath,
+  FEISHU_LOCAL_ENV,
+} from './config.mjs';
 export {
   tryHandleFeishuBind,
   readOperatorBinding,

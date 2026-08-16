@@ -57,8 +57,8 @@
         },
         "feishu": {
           "enabled": true,
-          "app_id_env": "JEA_CHANNEL_FEISHU_MY_SUBJECT_APP_ID",
-          "app_secret_env": "FEISHU_MY_SUBJECT_APP_SECRET",
+          "app_id_env": "JEA_CHANNEL_FEISHU_APP_ID",
+          "app_secret_env": "JEA_CHANNEL_FEISHU_APP_SECRET",
           "domain": "feishu",
           "connect_timeout_ms": 20000,
           "send_timeout_ms": 30000,
@@ -72,10 +72,12 @@
           "allow_from": [],
           "group_policy": "disabled",
           "require_mention": false,
+          "receipt_reaction": true,
+          "receipt_reaction_emoji": "OK",
           "bind": {
             "enabled": true,
             "phrase": "JEA BIND",
-            "token_env": "JEA_CHANNEL_FEISHU_MY_SUBJECT_BIND_TOKEN"
+            "token_env": "JEA_CHANNEL_FEISHU_BIND_TOKEN"
           }
         }
       },

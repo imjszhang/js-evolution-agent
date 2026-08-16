@@ -17,7 +17,11 @@ import { channelWorkOnce } from '../src/daemon/daemon-core.mjs';
 import { readChannelWorkerState, requestChannelWorkerStop } from '../src/channel/worker-state.mjs';
 import { createBoundedFeishuHttpInstance } from '../src/channel/adapters/feishu/client.mjs';
 import { FeishuMonitor } from '../src/channel/adapters/feishu/monitor.mjs';
-import { sanitizeFeishuError } from '../src/channel/adapters/feishu/errors.mjs';
+import {
+  createFeishuSdkLogger,
+  redactAxiosError,
+  sanitizeFeishuError,
+} from '../src/channel/adapters/feishu/errors.mjs';
 
 let root = null;
 let previousJeaHome;
@@ -131,6 +135,13 @@ describe('bounded Feishu lifecycle', () => {
     expect(events.some((event) => event.type === 'channel_worker_started')).toBe(true);
   });
 
+  it('forces axios to skip SOCKS env proxies', () => {
+    const http = createBoundedFeishuHttpInstance(100, null, {
+      env: { ALL_PROXY: 'socks5://127.0.0.1:1080', HTTPS_PROXY: 'socks5://127.0.0.1:1080' },
+    });
+    expect(http.defaults.proxy).toBe(false);
+  });
+
   it('preserves the Lark HttpInstance response-body contract', async () => {
     const http = createBoundedFeishuHttpInstance(100);
     const response = await http.request({
@@ -179,6 +190,38 @@ describe('bounded Feishu lifecycle', () => {
       { appSecret: 'secret-value' },
     );
     expect(safe).toBe('Authorization: [REDACTED] app_secret=[REDACTED]');
+  });
+
+  it('redacts axios token request bodies in logs and thrown errors', () => {
+    const secret = 'never-log-this-secret';
+    const axiosLike = {
+      isAxiosError: true,
+      message: 'canceled',
+      code: 'ERR_CANCELED',
+      config: {
+        url: 'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal',
+        data: JSON.stringify({ app_id: 'cli_alpha', app_secret: secret }),
+        headers: { Authorization: 'Bearer token-value' },
+      },
+    };
+    const dumped = sanitizeFeishuError(axiosLike, { appSecret: secret });
+    expect(dumped).not.toContain(secret);
+    expect(dumped).toMatch(/app_secret":"\[REDACTED\]"|app_secret=\[REDACTED\]/);
+
+    redactAxiosError(axiosLike);
+    expect(axiosLike.config.data).toBe('[REDACTED]');
+    expect(axiosLike.config.headers.Authorization).toBe('[REDACTED]');
+
+    const logs = [];
+    const originalError = console.error;
+    console.error = (...args) => { logs.push(args.join(' ')); };
+    try {
+      createFeishuSdkLogger({ appSecret: secret }).error([axiosLike]);
+    } finally {
+      console.error = originalError;
+    }
+    expect(logs.join('\n')).toBe('[feishu] request canceled');
+    expect(logs.join('\n')).not.toContain(secret);
   });
 
   it('can stop cleanly after SDK construction fails', async () => {

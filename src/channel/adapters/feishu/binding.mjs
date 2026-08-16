@@ -6,12 +6,14 @@ import { parseTextContent } from './parser.mjs';
 import { subjectEnvSlug } from './config.mjs';
 import { sanitizeFeishuError } from './errors.mjs';
 
+const LOCAL_BIND_TOKEN_ENV = 'JEA_CHANNEL_FEISHU_BIND_TOKEN';
+
 export const DEFAULT_BIND_PHRASE = 'JEA BIND';
 const BIND_FILE = 'feishu-operator-binding.json';
 
-function readEnv(name) {
+function readEnv(name, env = process.env) {
   if (!name) return '';
-  const v = process.env[name];
+  const v = env?.[name];
   return v == null ? '' : String(v).trim();
 }
 
@@ -34,18 +36,26 @@ export function isUnresolvedOperatorId(id) {
   return /REPLACE/i.test(s);
 }
 
-export function resolveBindSettings(block = {}, subject = '') {
+export function resolveBindSettings(block = {}, subject = '', env = process.env, runtimeValues = {}) {
   const bind = block.bind ?? {};
   const slug = subjectEnvSlug(subject);
   const enabled = bind.enabled !== false && block.bind_enabled !== false;
   const phrase = String(bind.phrase ?? block.bind_phrase ?? DEFAULT_BIND_PHRASE).trim() || DEFAULT_BIND_PHRASE;
-  const tokenEnv = bind.token_env ?? bind.tokenEnv ?? block.bind_token_env
-    ?? `JEA_CHANNEL_FEISHU_${slug}_BIND_TOKEN`;
+  const prefixedTokenEnv = `JEA_CHANNEL_FEISHU_${slug}_BIND_TOKEN`;
+  const namedTokenEnv = bind.token_env ?? bind.tokenEnv ?? block.bind_token_env ?? null;
+  const candidates = [
+    LOCAL_BIND_TOKEN_ENV,
+    namedTokenEnv,
+    prefixedTokenEnv,
+  ].filter(Boolean);
+  const fromRuntime = candidates.find((name) => readEnv(name, runtimeValues));
+  const fromEnv = candidates.find((name) => readEnv(name, env));
+  const tokenEnv = fromRuntime ?? fromEnv ?? namedTokenEnv ?? LOCAL_BIND_TOKEN_ENV;
   return {
     enabled,
     phrase,
-    token: readEnv(tokenEnv) || (bind.token ? String(bind.token).trim() : ''),
-    tokenEnv: readEnv(tokenEnv) ? tokenEnv : (bind.token_env ?? bind.tokenEnv ?? null),
+    token: readEnv(tokenEnv, runtimeValues) || readEnv(tokenEnv, env) || (bind.token ? String(bind.token).trim() : ''),
+    tokenEnv: (fromRuntime || fromEnv) ? tokenEnv : (namedTokenEnv ?? null),
   };
 }
 

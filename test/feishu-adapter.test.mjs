@@ -1,7 +1,8 @@
 import { describe, expect, it, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { runtimeForSubject } from '../src/infra/runtime-paths.mjs';
 import {
   normalizeInboundPayload,
   sendOutboundMessage,
@@ -59,6 +60,7 @@ describe('feishu adapter', () => {
     tempDir = null;
     delete process.env.FEISHU_SECRET_ALPHA;
     delete process.env.FEISHU_SECRET_BETA;
+    delete process.env.JEA_CHANNEL_FEISHU_ALPHA_APP_ID;
   });
 
   it('resolveFeishuConfig uses per-subject subjects.json and secret env', () => {
@@ -73,6 +75,25 @@ describe('feishu adapter', () => {
     expect(beta.appId).toBe('cli_beta');
     expect(beta.appSecret).toBe('secret-beta');
     expect(beta.defaultChatId).toBe('oc_beta');
+  });
+
+  it('resolveFeishuConfig prefers subject runtime .env over process.env', () => {
+    const root = makeSubjectsRoot();
+    process.env.FEISHU_SECRET_ALPHA = 'secret-from-process';
+    const { runtimeRoot } = runtimeForSubject(root, 'alpha');
+    writeFileSync(
+      join(runtimeRoot, '.env'),
+      [
+        'JEA_CHANNEL_FEISHU_APP_SECRET=secret-from-runtime',
+        'FEISHU_SECRET_ALPHA=secret-from-named-env-should-lose',
+      ].join('\n'),
+      'utf-8',
+    );
+    const alpha = resolveFeishuConfig(root, 'alpha');
+    expect(alpha.appSecret).toBe('secret-from-runtime');
+    expect(alpha.credentialSources.app_secret).toBe('JEA_CHANNEL_FEISHU_APP_SECRET');
+    expect(alpha.runtimeEnvExists).toBe(true);
+    expect(process.env.FEISHU_SECRET_ALPHA).toBe('secret-from-process');
   });
 
   it('subjectEnvSlug normalizes subject names for env vars', () => {

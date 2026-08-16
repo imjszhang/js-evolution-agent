@@ -53,8 +53,8 @@ jea daemon start --subject my-bot --domain channel
 setup 会：
 
 1. 调用 SDK `registerApp()`，在终端打印 ASCII 二维码，并保存/打开 PNG：`<JEA_HOME>/subjects/<ns>/data/channel/feishu-register-qr.png`。
-2. 将 `client_id` / `client_secret` 写入 `.env` 的 `JEA_CHANNEL_FEISHU_<SUBJECT>_APP_ID` / `_APP_SECRET`（同名 key 已存在且值不同需 `--force`）。
-3. 若未配置 BIND 口令，自动生成 `JEA_CHANNEL_FEISHU_<SUBJECT>_BIND_TOKEN`。
+2. 将 `client_id` / `client_secret` 写入 **subject 运行时** `.env`（`<JEA_HOME>/subjects/<ns>/.env`）的 `JEA_CHANNEL_FEISHU_APP_ID` / `JEA_CHANNEL_FEISHU_APP_SECRET`（文件已按 subject 隔离，变量名不再带 slug；同名 key 已存在且值不同需 `--force`）。项目根 `.env` 里带 slug 的旧变量仍可作为回退。
+3. 若未配置 BIND 口令，自动生成 `JEA_CHANNEL_FEISHU_BIND_TOKEN` 并写入同一运行时 `.env`。
 4. 可选 `--init-subject-config` 写入 `<JEA_HOME>/subjects/registry.json` 最小 `channels.feishu` skeleton（Secret 不进 JSON）。
 5. 写入 `reload-request.json`，供运行中的 channel daemon 热加载。
 
@@ -64,14 +64,14 @@ setup 会：
 JEA BIND <口令>
 ```
 
-口令来自 `.env` 的 `JEA_CHANNEL_FEISHU_<SUBJECT>_BIND_TOKEN`（setup 会生成）。绑定成功后写入 `feishu-operator-binding.json`，并作为默认出站目标。
+口令来自 subject 运行时 `.env` 的 `JEA_CHANNEL_FEISHU_BIND_TOKEN`（setup 会生成；项目根带 slug 的旧变量为回退）。绑定成功后写入 `feishu-operator-binding.json`，并作为默认出站目标。
 
 setup/register 可选参数：
 
 | 参数 | 含义 |
 | --- | --- |
-| `--write-env` | 写入/更新项目根 `.env`（setup 默认开启；register 默认只打印） |
-| `--force` | 覆盖 `.env` 中已有同名 key |
+| `--write-env` | 写入/更新 `<JEA_HOME>/subjects/<ns>/.env`（setup 默认开启；register 默认只打印） |
+| `--force` | 覆盖该 `.env` 中已有同名 key |
 | `--init-subject-config` | 自动补齐 JEA Home registry 的 `channels.feishu` skeleton |
 | `--no-qr` | 不渲染终端二维码 |
 | `--no-qr-image` | 不生成 PNG |
@@ -91,11 +91,11 @@ jea channel events --subject my-bot --limit 20
 
 channel worker 每轮 loop 会：
 
-- 重新加载项目根 `.env`（`loadProjectEnv`）。
+- 重新加载项目根 `.env`（`loadProjectEnv`），再按 subject 叠加运行时 `<JEA_HOME>/subjects/<ns>/.env`（后者优先，不写进全局 `process.env`）。
 - 消费 `reload-request.json`。
 - 调用 `ensureFeishuListener()`：凭据/domain/listener 开关变化时自动重启 WS listener；仅 allowlist、bind、operator binding 变化时只刷新 policy，不重连。
 
-因此 **setup 写入 `.env` 后，已运行的 `jea daemon start --domain channel` 通常无需重启**；数秒内应出现 `feishu_listener_started` 或 `channel_config_reloaded` 事件。
+因此 **setup 写入 subject 运行时 `.env` 后，已运行的 `jea daemon start --domain channel` 通常无需重启**；数秒内应出现 `feishu_listener_started` 或 `channel_config_reloaded` 事件。
 
 仍会触发 listener 重建的变化：`app_id`、`app_secret`、`domain`、`encrypt_key`、`verification_token`、`enabled` / `listenerEnabled` 开关。
 
@@ -123,6 +123,7 @@ Listener supervisor 对 **SDK 尚未连上** 的 start/reload 失败做指数退
 - 明确的本地控制命令 → `control_request`（见下文 Channel Control Actions）。
 - 普通外部消息 → `intel_observations` 作为可推翻 evidence。
 - 飞书 listener / `inbox put` 只写 `inbound/pending`；分类由 classifier role 按固定 `interval_ms` 批量处理（`batch_size` 上限，旧到新，超出留待下批）。
+- 飞书入站（含 `JEA BIND`）默认立刻加表情回复 `OK`，用户消息下方会出现机器人小头像表示已收到。回执异步发出，失败只记 `feishu_receipt_reaction`，不挡 ingest / classifier。开放平台需开通「添加消息表情回复」权限（`im:message.reactions:write`）。可用 `channels.feishu.receipt_reaction=false` 或运行时 `.env` 的 `JEA_CHANNEL_FEISHU_RECEIPT_REACTION=0` 关闭；`receipt_reaction_emoji` / `JEA_CHANNEL_FEISHU_RECEIPT_REACTION_EMOJI` 改表情（如 `DONE`、`THUMBSUP`）。
 
 出站由 **`channel_notify`** 独立任务 flush（outbox 有货即可入队，不依赖 presence 决策完成）；**所有对外表达**由 presence reactor 两阶段产出：`speech_intent`（决策）→ `channel_speech_generation`（人设/LLM 生成正文）→ outbox。旧 `channel_reply` / `channel_watch` / **`channel_ingest`** 任务类型已废弃；队列中若仍有，`jea channel doctor` 会提示 cancel。
 
@@ -260,16 +261,16 @@ Classifier 识别 `control_request` 后**不直接执行**配置变更，而是�
 
 ### 私聊绑定（`JEA BIND`）
 
-仅私聊、未手填 `ou_` 时，可在 `channels.feishu.bind` 开启口令绑定。推荐用 `jea channel feishu setup` 自动生成 BIND 口令并写入 `.env`；也可手工设置。
+仅私聊、未手填 `ou_` 时，可在 `channels.feishu.bind` 开启口令绑定。推荐用 `jea channel feishu setup` 自动生成 BIND 口令并写入 subject 运行时 `.env`；也可手工设置。
 
-1. `.env` 设置 `JEA_CHANNEL_FEISHU_<SUBJECT>_BIND_TOKEN`（或 JEA Home registry 的 `bind.token_env`）。
+1. `<JEA_HOME>/subjects/<ns>/.env` 设置 `JEA_CHANNEL_FEISHU_BIND_TOKEN`（或 JEA Home registry 的 `bind.token_env`；项目根带 slug 的旧变量为回退）。
 2. 启动 `jea daemon start --subject NAME --domain channel`（若已在运行，setup 写 env 后会通过 reload 热加载，通常无需重启）。
 3. 在飞书里**私聊**机器人，发送：`JEA BIND <口令>`（短语默认 `JEA BIND`，可在 `bind.phrase` 自定义）。
 4. 绑定结果写入 `<JEA_HOME>/subjects/<ns>/data/channel/feishu-operator-binding.json`，并自动作为 `allow_from` / 默认出站目标；`jea channel status --json` 的 `feishu.config.operator` 可查看（open_id 脱敏）。成功时 events 可见 `feishu_operator_bound`。
 
 未绑定前仅接受绑定握手消息；群聊可用 `group_policy: disabled` 关闭。覆盖他人绑定需再次发送带**同一口令**的 `JEA BIND`。
 
-飞书配置按 **subject 隔离**（每个 subject 可绑定不同机器人）。`app_secret` 不要明文写入 JEA Home registry，用 `app_secret_env` 指向环境变量名；`app_id` 可写在 JSON，或用 `app_id_env` / `JEA_CHANNEL_FEISHU_<SUBJECT>_APP_ID` 从环境读取。
+飞书配置按 **subject 隔离**（每个 subject 可绑定不同机器人）。凭据写在该 subject 的运行时 `.env`，用短变量名即可。`app_secret` 不要明文写入 JEA Home registry，用 `app_secret_env` 指向环境变量名。
 
 `<JEA_HOME>/subjects/registry.json` 示例（`my-subject` 与 `other-subject` 各用各的 bot）：
 
@@ -280,8 +281,8 @@ Classifier 识别 `control_request` 后**不直接执行**配置变更，而是�
       "channels": {
         "feishu": {
           "enabled": true,
-          "app_id_env": "JEA_CHANNEL_FEISHU_MY_SUBJECT_APP_ID",
-          "app_secret_env": "FEISHU_MY_SUBJECT_APP_SECRET",
+          "app_id_env": "JEA_CHANNEL_FEISHU_APP_ID",
+          "app_secret_env": "JEA_CHANNEL_FEISHU_APP_SECRET",
           "dm_policy": "allowlist",
           "allow_from": [],
           "group_policy": "allowlist",
@@ -289,7 +290,7 @@ Classifier 识别 `control_request` 后**不直接执行**配置变更，而是�
           "bind": {
             "enabled": true,
             "phrase": "JEA BIND",
-            "token_env": "JEA_CHANNEL_FEISHU_MY_SUBJECT_BIND_TOKEN"
+            "token_env": "JEA_CHANNEL_FEISHU_BIND_TOKEN"
           }
         }
       }
@@ -299,7 +300,7 @@ Classifier 识别 `control_request` 后**不直接执行**配置变更，而是�
         "feishu": {
           "enabled": true,
           "app_id": "cli_bbbb",
-          "app_secret_env": "FEISHU_OTHER_SUBJECT_APP_SECRET",
+          "app_secret_env": "JEA_CHANNEL_FEISHU_APP_SECRET",
           "default_chat_id": "oc_bbbb"
         }
       }
@@ -308,26 +309,24 @@ Classifier 识别 `control_request` 后**不直接执行**配置变更，而是�
 }
 ```
 
-`.env` 与上表 `my-subject` 对应的最小凭证示例：
+优先写 `<JEA_HOME>/subjects/my-subject/.env`。文件已经按 subject 隔离，变量名不带 slug：
 
 ```env
-JEA_CHANNEL_FEISHU_MY_SUBJECT_APP_ID=cli_aaaa
-FEISHU_MY_SUBJECT_APP_SECRET=REPLACE_WITH_YOUR_APP_SECRET
-JEA_CHANNEL_FEISHU_MY_SUBJECT_BIND_TOKEN=choose-a-long-random-token
+JEA_CHANNEL_FEISHU_APP_ID=cli_aaaa
+JEA_CHANNEL_FEISHU_APP_SECRET=REPLACE_WITH_YOUR_APP_SECRET
+JEA_CHANNEL_FEISHU_BIND_TOKEN=choose-a-long-random-token
 ```
 
-也可用 subject 前缀环境变量（无需在 JSON 里写 `app_id` / `app_id_env`）：
-
-| 变量模式 | 含义 |
+| 变量 | 含义 |
 | --- | --- |
-| `JEA_CHANNEL_FEISHU_<SUBJECT>_APP_ID` | App ID（或与 `app_id_env` 配合）；如 `my-subject` → `JEA_CHANNEL_FEISHU_MY_SUBJECT_APP_ID` |
-| `FEISHU_<SUBJECT>_APP_SECRET` 或 `JEA_CHANNEL_FEISHU_<SUBJECT>_APP_SECRET` | App Secret（或与 `app_secret_env` 配合） |
-| `JEA_CHANNEL_FEISHU_<SUBJECT>_DEFAULT_CHAT_ID` | 该 subject 默认出站群 |
-| `JEA_CHANNEL_FEISHU_<SUBJECT>_BIND_TOKEN` | 私聊 `JEA BIND` 口令（或与 `bind.token_env` 配合） |
+| `JEA_CHANNEL_FEISHU_APP_ID` | App ID |
+| `JEA_CHANNEL_FEISHU_APP_SECRET` | App Secret |
+| `JEA_CHANNEL_FEISHU_DEFAULT_CHAT_ID` | 默认出站群（可选） |
+| `JEA_CHANNEL_FEISHU_BIND_TOKEN` | 私聊 `JEA BIND` 口令 |
+| `JEA_CHANNEL_FEISHU_RECEIPT_REACTION` | `0` 关闭入站表情回执（默认开） |
+| `JEA_CHANNEL_FEISHU_RECEIPT_REACTION_EMOJI` | 回执表情，默认 `OK` |
 
-`<SUBJECT>` 为 subject id 的 env slug：非字母数字替换为 `_` 并大写（见 `subjectEnvSlug()`）。
-
-全局变量（`JEA_CHANNEL_FEISHU_APP_ID` 等）仅作**未在 subject 块单独配置时**的回退，多主体并行时推荐只用 per-subject 配置。
+项目根 `.env` 里带 slug 的旧变量（`JEA_CHANNEL_FEISHU_<SUBJECT>_APP_ID` 等）仍可作回退；`<SUBJECT>` 为 subject id 的 env slug（见 `subjectEnvSlug()`）。多主体并行时把凭据放进各自的运行时 `.env`，不要共用一份全局 `JEA_CHANNEL_FEISHU_APP_ID`。
 
 | 变量 | 含义 |
 | --- | --- |

@@ -11,13 +11,29 @@ export function feishuApiHost(domain = 'feishu') {
 
 export function summarizeProxyEnv(env = process.env) {
   const raw = env.HTTPS_PROXY || env.https_proxy || env.HTTP_PROXY || env.http_proxy || env.ALL_PROXY || env.all_proxy || '';
-  if (!raw) return { present: false, protocol: null };
+  if (!raw) return { present: false, protocol: null, axios_compatible: true };
   try {
     const url = new URL(raw);
-    return { present: true, protocol: (url.protocol || '').replace(/:$/, '') || 'unknown' };
+    const protocol = (url.protocol || '').replace(/:$/, '') || 'unknown';
+    return {
+      present: true,
+      protocol,
+      axios_compatible: protocol === 'http' || protocol === 'https',
+    };
   } catch {
-    return { present: true, protocol: 'unknown' };
+    return { present: true, protocol: 'unknown', axios_compatible: false };
   }
+}
+
+/**
+ * Axios only tunnels HTTP(S) proxies. `socks5://` in HTTPS_PROXY/ALL_PROXY
+ * makes HttpsProxyAgent hang until abort. Return `false` to force direct
+ * sockets, matching the doctor HTTPS probe (`https.request`).
+ */
+export function resolveFeishuAxiosProxy(env = process.env) {
+  const proxy = summarizeProxyEnv(env);
+  if (proxy.present && !proxy.axios_compatible) return false;
+  return undefined;
 }
 
 export function classifyNetworkFailure(error) {

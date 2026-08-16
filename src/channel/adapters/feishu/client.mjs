@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import axios from 'axios';
+import { resolveFeishuAxiosProxy } from './diagnostics.mjs';
+import { createFeishuSdkLogger, redactAxiosError } from './errors.mjs';
 
 let LarkModule = null;
 
@@ -20,9 +22,11 @@ function domainFor(Lark, domain) {
   return Lark.Domain?.Feishu ?? Lark.Domain?.Feishu;
 }
 
-export function createBoundedFeishuHttpInstance(timeoutMs, signal = null) {
+export function createBoundedFeishuHttpInstance(timeoutMs, signal = null, { env = process.env } = {}) {
+  const proxy = resolveFeishuAxiosProxy(env);
   const instance = axios.create({
     timeout: Math.max(1, Number(timeoutMs) || 30_000),
+    ...(proxy === false ? { proxy: false } : {}),
     ...(signal ? { signal } : {}),
   });
   // Lark's HttpInstance contract returns the response body, not AxiosResponse.
@@ -31,7 +35,7 @@ export function createBoundedFeishuHttpInstance(timeoutMs, signal = null) {
       return { data: response.data, headers: response.headers };
     }
     return response.data;
-  });
+  }, (error) => Promise.reject(redactAxiosError(error)));
   return instance;
 }
 
@@ -186,6 +190,7 @@ export class FeishuClient {
         appSecret: this.config.appSecret,
         appType: Lark.AppType?.SelfBuild,
         domain: domainFor(Lark, this.config.domain),
+        logger: createFeishuSdkLogger(this.config),
         httpInstance: createBoundedFeishuHttpInstance(this.config.sendTimeoutMs, signal),
       });
     }
@@ -195,6 +200,7 @@ export class FeishuClient {
         appSecret: this.config.appSecret,
         appType: Lark.AppType?.SelfBuild,
         domain: domainFor(Lark, this.config.domain),
+        logger: createFeishuSdkLogger(this.config),
         httpInstance: createBoundedFeishuHttpInstance(this.config.sendTimeoutMs),
       });
     }
@@ -209,6 +215,7 @@ export class FeishuClient {
       appSecret: this.config.appSecret,
       domain: domainFor(Lark, this.config.domain),
       loggerLevel: Lark.LoggerLevel?.info,
+      logger: createFeishuSdkLogger(this.config),
       httpInstance: createBoundedFeishuHttpInstance(this.config.connectTimeoutMs, signal),
       handshakeTimeoutMs: this.config.connectTimeoutMs,
       onReady,
@@ -270,6 +277,22 @@ export class FeishuClient {
       throw error;
     }
     return probeResult.botOpenId;
+  }
+
+  async addMessageReaction({ messageId, emojiType = 'OK', signal = null }) {
+    const client = await this.getClient({ signal });
+    const response = await client.im.messageReaction.create({
+      path: { message_id: messageId },
+      data: {
+        reaction_type: { emoji_type: emojiType },
+      },
+    });
+    if (response.code !== 0) {
+      const error = new Error(`Add reaction failed: ${response.msg || `code ${response.code}`}`);
+      error.code = response.code;
+      throw error;
+    }
+    return { success: true, reactionId: response.data?.reaction_id ?? null };
   }
 
   async sendText({ receiveId, receiveIdType, text, signal = null }) {
