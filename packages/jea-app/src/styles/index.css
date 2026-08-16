@@ -1,0 +1,170 @@
+@import "./fonts.css";
+@import "tailwindcss";
+
+@source "../";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+  --color-surface-sunken: var(--surface-sunken);
+  --color-surface-hover: var(--surface-hover);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-status-ok: var(--status-ok);
+  --color-status-ok-foreground: var(--status-ok-foreground);
+  --color-status-warn: var(--status-warn);
+  --color-status-warn-foreground: var(--status-warn-foreground);
+  --color-status-error: var(--status-error);
+  --color-status-error-foreground: var(--status-error-foreground);
+  --color-status-offline: var(--status-offline);
+  --font-sans: var(--font-sans);
+  --text-xs: 0.75rem;
+  --text-sm: 0.8125rem;
+  --text-base: 0.9375rem;
+  --text-lg: 1.0625rem;
+  --text-xl: 1.25rem;
+  --text-2xl: 1.5rem;
+  --spacing: 0.25rem;
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --shadow-panel: var(--shadow-panel-value);
+  --shadow-overlay: var(--shadow-overlay-value);
+}
+
+:root {
+  color-scheme: light;
+  --radius: 0.625rem;
+  --font-sans: JeaUI, JeaCJK;
+  --background: #f6f5f1;
+  --foreground: #1f211e;
+  --surface: #fbfaf6;
+  --surface-raised: #ffffff;
+  --surface-sunken: #efeee8;
+  --surface-hover: #e8e6de;
+  --card: #ffffff;
+  --card-foreground: #1f211e;
+  --popover: #ffffff;
+  --popover-foreground: #1f211e;
+  --primary: #2f6f6a;
+  --primary-foreground: #f4fffb;
+  --secondary: #eceae3;
+  --secondary-foreground: #1f211e;
+  --muted: #eceae3;
+  --muted-foreground: #64655f;
+  --accent: #d9b25a;
+  --accent-foreground: #2a2414;
+  --border: #d8d5cb;
+  --input: #d8d5cb;
+  --ring: #3d8a83;
+  --destructive: #b4232d;
+  --destructive-foreground: #fff7f6;
+  --status-ok: #2f7d57;
+  --status-ok-foreground: #effaf4;
+  --status-warn: #9a6b12;
+  --status-warn-foreground: #fff6e5;
+  --status-error: #b4232d;
+  --status-error-foreground: #fff7f6;
+  --status-offline: #6b6c66;
+  --shadow-panel-value: 0 0 0 1px rgb(28 28 24 / 0.06), 0 8px 28px rgb(28 28 24 / 0.05);
+  --shadow-overlay-value: 0 16px 48px rgb(20 20 16 / 0.18);
+}
+
+.dark {
+  color-scheme: dark;
+  --background: #161614;
+  --foreground: #ece8df;
+  --surface: #1d1c19;
+  --surface-raised: #26251f;
+  --surface-sunken: #121210;
+  --surface-hover: #312f28;
+  --card: #26251f;
+  --card-foreground: #ece8df;
+  --popover: #26251f;
+  --popover-foreground: #ece8df;
+  --primary: #7dcdc4;
+  --primary-foreground: #10211f;
+  --secondary: #333129;
+  --secondary-foreground: #ece8df;
+  --muted: #333129;
+  --muted-foreground: #a8a49a;
+  --accent: #e0c06a;
+  --accent-foreground: #2a2414;
+  --border: #3c3a32;
+  --input: #3c3a32;
+  --ring: #7dcdc4;
+  --destructive: #f07178;
+  --destructive-foreground: #2a1012;
+  --status-ok: #5dca96;
+  --status-ok-foreground: #0d2418;
+  --status-warn: #e0b15a;
+  --status-warn-foreground: #2a1f0a;
+  --status-error: #f07178;
+  --status-error-foreground: #2a1012;
+  --status-offline: #9a968c;
+  --shadow-panel-value: 0 0 0 1px rgb(0 0 0 / 0.45), 0 10px 28px rgb(0 0 0 / 0.4);
+  --shadow-overlay-value: 0 20px 56px rgb(0 0 0 / 0.55);
+}
+
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  :focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--ring) 70%, transparent);
+    outline-offset: 2px;
+  }
+
+  html,
+  body,
+  #root {
+    min-height: 100%;
+    height: 100%;
+  }
+
+  html {
+    background: var(--background);
+  }
+
+  body {
+    margin: 0;
+    background: var(--background);
+    color: var(--foreground);
+    font-family: JeaUI, JeaCJK;
+    font-size: var(--text-base);
+    line-height: 1.5;
+    text-rendering: geometricPrecision;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+  }
+}

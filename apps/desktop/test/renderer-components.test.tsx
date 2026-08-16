@@ -9,7 +9,7 @@ import {
   mergeRecords,
   resolveDraftAttempt
 } from '../src/renderer/src/components/ChannelChatView'
-import { Navigation } from '../src/renderer/src/components/Navigation'
+import { JeaApp } from '@jea/app'
 import { OpsView } from '../src/renderer/src/components/OpsView'
 import { PermissionCard } from '../src/renderer/src/components/PermissionCard'
 import { TodoCenter } from '../src/renderer/src/components/TodoCenter'
@@ -104,19 +104,16 @@ describe('desktop renderer components', () => {
     expect(acp).toContain('ACP')
   })
 
-  it('renders Channel navigation and notification preference controls', () => {
-    const html = renderToStaticMarkup(
-      <Navigation
-        page="channel"
-        subjects={[{ name: 'alpha', namespace: 'alpha-data', isDefault: true }]}
-        subject="alpha"
-        onPageChange={() => undefined}
-        onSubjectChange={() => undefined}
-      />
-    )
-    expect(html).toContain('Channel')
-    expect(html).toContain('System alerts')
-    expect(html).toContain('alpha-data')
+  it('renders the shared three-column workspace instead of page navigation', () => {
+    const html = renderToStaticMarkup(<JeaApp locale="en" />)
+    expect(html).toContain('data-testid="workspace"')
+    expect(html).toContain('data-testid="column-subject"')
+    expect(html).toContain('data-testid="column-conversation"')
+    expect(html).toContain('data-testid="column-evolution"')
+    expect(html).not.toContain('System alerts')
+    expect(html).not.toContain('Todo Center')
+    expect(html).not.toContain('ACP Workspace')
+    expect(html).not.toContain('primary-nav')
   })
 
   it('renders the remaining operational empty and controlled states', () => {

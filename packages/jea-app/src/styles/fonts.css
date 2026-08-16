@@ -1,0 +1,31 @@
+@font-face {
+  font-family: JeaUI;
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url("./fonts/inter-latin-400.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: JeaUI;
+  font-style: normal;
+  font-weight: 600;
+  font-display: block;
+  src: url("./fonts/inter-latin-600.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: JeaCJK;
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url("./fonts/noto-sans-sc-subset.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: JeaCJK;
+  font-style: normal;
+  font-weight: 600;
+  font-display: block;
+  src: url("./fonts/noto-sans-sc-subset.woff2") format("woff2");
+}

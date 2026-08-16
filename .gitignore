@@ -16,6 +16,9 @@ lerna-debug.log*
 .env.*.local
 
 # Test / coverage
+packages/jea-app/test-results/
+packages/jea-app/playwright-report/
+packages/jea-app/blob-report/
 coverage/
 *.lcov
 .nyc_output/

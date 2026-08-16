@@ -84,6 +84,8 @@ npx repolink check --link agentank-evolver
 | AI 网关 | [src/ai/AGENTS.md](src/ai/AGENTS.md) | LLM 档案（DeepSeek V4）、KV 缓存约定 |
 | Daemon 编排 | [src/daemon/AGENTS.md](src/daemon/AGENTS.md) | Daemon 工作流、step 状态与 checkpoint、批量演化 |
 | Channel | [src/channel/AGENTS.md](src/channel/AGENTS.md) | Channel 通道、飞书部署、classifier / presence |
+| Client API | [apps/desktop/src/client-api/AGENTS.md](apps/desktop/src/client-api/AGENTS.md) | 统一 `JeaClient` 契约、命令/事件目录、应用命令层 |
+| 共享 App Shell | [packages/jea-app/README.md](packages/jea-app/README.md) | Open Science 风格工作区壳层、主题、i18n、feature slots；Electron/Web 共用同一 React 源 |
 
 ## 运行时数据
 

@@ -4,9 +4,10 @@ import type {
   JeaBridge,
   JeaEventEnvelope
 } from '../shared/contract'
+import type { ClientApiCommandName } from '../client-api/protocol'
 
 export type InvokeTransport = (
-  command: DesktopCommand,
+  command: DesktopCommand | ClientApiCommandName,
   payload?: Record<string, unknown>
 ) => Promise<unknown>
 
@@ -27,7 +28,7 @@ export function createJeaBridge(
   eventTransport: EventTransport = () => () => {}
 ): Readonly<JeaBridge> {
   return Object.freeze({
-    invoke<T = unknown>(command: DesktopCommand, payload?: Record<string, unknown>): Promise<T> {
+    invoke<T = unknown>(command: DesktopCommand | ClientApiCommandName, payload?: Record<string, unknown>): Promise<T> {
       return transport(command, payload) as Promise<T>
     },
     subscribe(listener: (event: JeaEventEnvelope) => void): () => void {

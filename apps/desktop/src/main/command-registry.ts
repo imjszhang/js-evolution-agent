@@ -6,10 +6,11 @@ import type {
   PublicErrorCode
 } from '../shared/contract'
 import { DESKTOP_COMMANDS } from '../shared/contract'
+import { isPublicClientError } from '../client-api/errors'
 import { toIpcValue } from './ipc-value'
 import { OpsService } from './operations'
 
-export type CommandLevel = 'readonly' | 'write' | 'process' | 'destructive'
+export type CommandLevel = 'readonly' | 'write' | 'process' | 'local-only' | 'destructive'
 
 export interface CommandDefinition {
   level: CommandLevel
@@ -84,6 +85,9 @@ export function createCommandRegistry(
       return await definition.handler(payloadObject(request.payload))
     } catch (error) {
       if (error instanceof PublicCommandError) throw error
+      if (isPublicClientError(error)) {
+        throw new PublicCommandError(error.code, error.message)
+      }
       const message = definition.level === 'readonly'
         ? 'Unable to read JEA operational state.'
         : 'Unable to complete the requested operation.'
