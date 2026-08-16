@@ -14,6 +14,8 @@
 | Daemon 编排 | `src/daemon` | agent-daemon | task queue、worker、step runner、cycle-state、evolve runs、`subject-artifacts` 概览 |
 | Channel | `src/channel` | agent-channel | classifier / presence / speech / notify / control、飞书适配器 |
 | 观测与门面 | `tools/evolution-viewer`、`src/cli`（含仅剩的 `cli/utils` 纯 CLI 文件）、`src/bridge` | agent-facade | 只读 viewer、CLI 命令薄壳、openclaw bridge |
+| Client API | `apps/desktop/src/client-api` | agent-desktop | 统一 `JeaClient`、命令目录、应用命令层；Web adapter 不得做领域决策 |
+| localhost Web host | `apps/desktop/src/web-host` | agent-web | loopback HTTP/RPC/事件；只通过 application commands 复用 Viewer 读模型 |
 
 Owner 名为角色占位（agent-*），实际分配时替换为具体维护者/agent 标识。
 
