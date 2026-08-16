@@ -119,6 +119,7 @@ describe('feishu listener backoff', () => {
     expect(retries).toHaveLength(2);
     expect(retries.map((event) => event.retry_attempt).sort((a, b) => a - b)).toEqual([1, 2]);
     expect(events.filter((event) => event.type === 'feishu_listener_start_skipped')).toHaveLength(0);
+    expect(events.filter((event) => event.type === 'feishu_listener_start_failed')).toHaveLength(0);
     expect(JSON.stringify(events)).not.toContain('never-log-this-secret');
     const state = readChannelReloadState(sourceRoot, 'alpha');
     expect(state.retry_attempt).toBe(0);
@@ -182,5 +183,29 @@ describe('feishu listener backoff', () => {
     expect(sleeps.every((ms) => ms >= 1_000)).toBe(true);
     expect(readChannelEvents(sourceRoot, 'alpha', { limit: 10 })
       .some((event) => event.type === 'feishu_listener_retry_scheduled')).toBe(false);
+  });
+
+  it('does not record a second start_failed when ensure already returned failure', async () => {
+    const sourceRoot = makeRoot();
+    const controller = new AbortController();
+    let calls = 0;
+    await runChannelListenerSupervisor(sourceRoot, 'alpha', {}, {
+      signal: controller.signal,
+      refreshIntervalMs: 1,
+      ensureListener: async () => {
+        calls += 1;
+        if (calls >= 2) controller.abort();
+        const error = new Error('feishu listener ensure timed out after 20000ms');
+        error.code = 'channel_timeout';
+        throw error;
+      },
+      stopListener: async () => ({ stopped: true }),
+      now: () => 1_700_000_000_000,
+      random: () => 0.5,
+      sleep: async () => {},
+    });
+    const events = readChannelEvents(sourceRoot, 'alpha', { limit: 20 });
+    expect(events.filter((event) => event.type === 'feishu_listener_start_failed')).toHaveLength(0);
+    expect(events.filter((event) => event.type === 'feishu_listener_retry_scheduled')).toHaveLength(1);
   });
 });

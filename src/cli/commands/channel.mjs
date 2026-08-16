@@ -14,7 +14,6 @@ import { runChannelPresenceTask } from '../../channel/presence.mjs';
 import { cancelDeprecatedChannelTasks } from '../../channel/queue-cleanup.mjs';
 import { channelFeishuCommand } from './channel-feishu.mjs';
 import { resolveFeishuConfig } from '../../channel/adapters/feishu/config.mjs';
-import { FeishuClient } from '../../channel/adapters/feishu/client.mjs';
 import { probeFeishuNetwork } from '../../channel/adapters/feishu/diagnostics.mjs';
 import { readChannelWorkerState, reconcileChannelWorkerState } from '../../channel/worker-state.mjs';
 import { isProcessAlive } from '../../infra/process-alive.mjs';
@@ -432,12 +431,10 @@ export async function channelCommand({ subcommand, flags = {}, args = [], root =
     if (flags['probe-network'] || flags['probe-ws']) {
       const feishu = resolveFeishuConfig(root, subject);
       const liveWorker = hasLiveChannelWorker(root, subject);
-      const client = feishu.appId && feishu.appSecret ? new FeishuClient(feishu) : null;
       network = await probeFeishuNetwork(feishu, {
         probeWs: Boolean(flags['probe-ws']),
         liveWorker,
         timeoutMs: Math.min(feishu.connectTimeoutMs ?? 20_000, 8_000),
-        botProbe: client ? () => client.probe() : null,
       });
     }
     const diagnostics = {

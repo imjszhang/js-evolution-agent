@@ -113,7 +113,7 @@ Listener supervisor 对 **SDK 尚未连上** 的 start/reload 失败做指数退
 - stop request、SIGINT 或 SIGTERM 产生 `channel_aborted`：进行中的 task 释放回 `pending` 并清除 lease，**不消耗**本次 claim 的 attempts。`channel_agent_run` 把 daemon AbortSignal 传到 `ctx.host.abortSignal`；Cursor SDK 在已绑定 run 时调用一次 `run.cancel()`，随后有界 `asyncDispose`。abort 记 `channel_agent_run_aborted` / `channel_task_aborted`，不得记 `channel_agent_run_failed`，也不触发失败后的 expression recompute。同一 `channel_agent_run_id` 依赖 deliverable/outbox 幂等键避免重启后重复发送。
 - 启动、停止和 crash 路径会 `reconcileChannelWorkerState`：死亡 PID 或 stale 的 `running/stopping` role 转为 `stopped`，并重算 coordinator。重复 `daemon stop` 时只要 PID 已死即标 stopped，避免留下 `worker_zombie`。Viewer `channel_health` acknowledge 走 reconcile，而不是再把死亡 PID 标成 `stopping`。显式修复：`jea channel doctor --repair-worker-state --yes`。
 - shutdown 会取消 HTTP、强制关闭 WebSocket，并在 10 秒 grace 内结束；不应依赖 SIGKILL。Agent 执行中的 stop 必须在 grace 内返回：停止耗时小于 10 秒、无 `channel_shutdown_grace_exceeded`、无 `worker_zombie`、无残留 daemon/Agent 子进程。
-- timeout/abort/诊断事件只记录错误码、deadline 和 outbound id；不得写 App Secret、bind token、Authorization header、代理凭据或完整请求配置。`jea channel doctor --probe-network` 区分 DNS、HTTPS/API 权限、WS 握手和 timeout；`--probe-ws` 仅显式启用，live worker 存在时拒绝第二条 WS。
+- timeout/abort/诊断事件只记录错误码、deadline 和 outbound id；不得写 App Secret、bind token、Authorization header、代理凭据或完整请求配置。`jea channel doctor --probe-network` 用 HTTPS token 探测做凭据化 bot check，不构造飞书 SDK Client / 不拉起 WS；区分 DNS、HTTPS/API 权限、WS 握手和 timeout。`--probe-ws` 仅显式启用，live worker 存在时拒绝第二条 WS。一次 listener connect 失败只记一组 `feishu_listener_start_failed`，再由 supervisor 记 `feishu_listener_retry_scheduled`。
 
 入站分类边界（由 **`channel_classifier`** 批量 LLM/规则分类，不再在 presence 内同步正则分类）：
 

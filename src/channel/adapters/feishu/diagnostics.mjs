@@ -54,10 +54,21 @@ function defaultHttpsProbe({ hostname, path, method = 'GET', body = null, header
       timeout: timeoutMs,
       headers,
     }, (res) => {
-      res.resume();
-      resolve({
-        status_code: res.statusCode ?? null,
-        ok: (res.statusCode ?? 500) < 500,
+      const chunks = [];
+      let size = 0;
+      res.on('data', (chunk) => {
+        size += chunk.length;
+        if (size <= 64 * 1024) chunks.push(chunk);
+      });
+      res.on('end', () => {
+        const raw = Buffer.concat(chunks).toString('utf8');
+        let json = null;
+        try { json = raw ? JSON.parse(raw) : null; } catch { json = null; }
+        resolve({
+          status_code: res.statusCode ?? null,
+          ok: (res.statusCode ?? 500) < 500,
+          body: json,
+        });
       });
     });
     req.on('timeout', () => {
@@ -72,13 +83,50 @@ function defaultHttpsProbe({ hostname, path, method = 'GET', body = null, header
   });
 }
 
+function tokenPath() {
+  return '/open-apis/auth/v3/tenant_access_token/internal';
+}
+
+async function defaultBotProbe(config, { httpsProbe, host, timeoutMs }) {
+  const payload = JSON.stringify({
+    app_id: config.appId,
+    app_secret: config.appSecret,
+  });
+  const response = await httpsProbe({
+    hostname: host,
+    path: tokenPath(),
+    method: 'POST',
+    timeoutMs,
+    headers: {
+      'content-type': 'application/json',
+      'content-length': String(Buffer.byteLength(payload)),
+    },
+    body: payload,
+  });
+  const code = response?.body?.code;
+  if (response?.ok !== false && (code === 0 || response?.body?.tenant_access_token)) {
+    return { ok: true };
+  }
+  const error = new Error(response?.body?.msg || `bot probe failed with HTTP ${response?.status_code ?? 'unknown'}`);
+  error.code = code ?? 'feishu_bot_probe_failed';
+  return {
+    ok: false,
+    error: error.message,
+    error_code: error.code,
+  };
+}
+
 export async function probeFeishuNetwork(config = {}, options = {}) {
   const host = feishuApiHost(config.domain);
   const timeoutMs = Math.max(1, Number(options.timeoutMs) || 5_000);
   const loadSdk = options.loadSdk ?? defaultLoadSdk;
   const dnsLookup = options.dnsLookup ?? defaultDnsLookup;
   const httpsProbe = options.httpsProbe ?? defaultHttpsProbe;
-  const botProbe = options.botProbe ?? null;
+  const botProbe = options.botProbe ?? (
+    config.appId && config.appSecret
+      ? (cfg) => defaultBotProbe(cfg, { httpsProbe, host, timeoutMs })
+      : null
+  );
   const wsHandshake = options.wsHandshake ?? null;
   const env = options.env ?? process.env;
   const checks = [];
@@ -113,7 +161,7 @@ export async function probeFeishuNetwork(config = {}, options = {}) {
   try {
     const https = await httpsProbe({
       hostname: host,
-      path: '/open-apis/auth/v3/tenant_access_token/internal',
+      path: tokenPath(),
       method: 'POST',
       timeoutMs,
       headers: { 'content-type': 'application/json' },

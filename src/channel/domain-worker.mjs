@@ -91,27 +91,17 @@ export async function runChannelListenerSupervisor(root, subject, flags = {}, {
 
       let result;
       try {
-        result = await runWithTimeout(
-          (operationSignal) => ensureListener(root, subject, { ...flags, signal: operationSignal }),
-          config.connectTimeoutMs,
-          'feishu listener ensure',
-          { signal },
-        );
+        // Connect deadline lives inside ensureListener / createAndStartListener.
+        // Supervisor must not wrap a second identical timeout or one failure
+        // is recorded twice.
+        result = await ensureListener(root, subject, { ...flags, signal });
       } catch (err) {
         if (signal?.aborted || err?.code === 'channel_aborted') break;
-        const safeError = sanitizeFeishuError(err, config);
         result = {
           action: 'start_failed',
-          reason: safeError,
+          reason: sanitizeFeishuError(err, config),
           error_code: err?.code ?? 'feishu_listener_start_failed',
         };
-        recordChannelEvent(root, subject, {
-          type: err?.code === 'channel_timeout' ? 'feishu_listener_start_failed' : 'channel_config_reload_failed',
-          status: 'error',
-          error: safeError,
-          error_code: err?.code ?? null,
-          source: 'supervisor',
-        });
       }
 
       if (isFeishuListenerSuccess(result)) {

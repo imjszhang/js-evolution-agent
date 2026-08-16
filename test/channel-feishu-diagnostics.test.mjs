@@ -69,4 +69,33 @@ describe('feishu network diagnostics', () => {
     expect(ws.ok).toBe(false);
     expect(ws.error_code).toBe('feishu_ws_probe_blocked_live_worker');
   });
+
+  it('probes bot credentials over HTTPS without constructing the Feishu SDK client', async () => {
+    const calls = [];
+    const result = await probeFeishuNetwork({
+      domain: 'feishu',
+      appId: 'cli_alpha',
+      appSecret: 'never-log-this-secret',
+    }, {
+      loadSdk: async () => ({ name: '@larksuiteoapi/node-sdk' }),
+      dnsLookup: async () => ({ family: 4 }),
+      httpsProbe: async (request) => {
+        calls.push({ path: request.path, hasSecret: String(request.body || '').includes('never-log-this-secret') });
+        if (String(request.body || '').includes('never-log-this-secret')) {
+          return {
+            ok: true,
+            status_code: 200,
+            body: { code: 99991663, msg: 'app secret invalid never-log-this-secret' },
+          };
+        }
+        return { ok: true, status_code: 400, body: { code: 99991672, msg: 'invalid request' } };
+      },
+    });
+    const bot = result.checks.find((check) => check.name === 'bot');
+    expect(bot.ok).toBe(false);
+    expect(bot.kind).toBe('api_permission');
+    expect(bot.error_code).toBe(99991663);
+    expect(calls.some((call) => call.hasSecret)).toBe(true);
+    expect(JSON.stringify(result)).not.toContain('never-log-this-secret');
+  });
 });
