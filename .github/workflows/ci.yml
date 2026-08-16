@@ -83,6 +83,9 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+      - run: npm run app:check
       - name: Verify JEA Home paths and migration
         run: npm test -- --run test/jea-home.test.mjs test/jea-home-migration.test.mjs
       - run: npm run desktop:test

@@ -9,6 +9,12 @@ export default defineConfig({
     setupFiles: [fileURLToPath(new URL('./test/setup-legacy-runtime.mjs', import.meta.url))],
     // Windows git/worktree fixtures can exceed 15s under full-suite parallel load.
     testTimeout: 30_000,
+    exclude: [
+      '**/node_modules/**',
+      '**/dist/**',
+      '**/e2e/**',
+      '**/*.spec.ts',
+    ],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json-summary', 'lcov'],

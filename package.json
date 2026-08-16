@@ -5,7 +5,8 @@
   "description": "A controlled self-evolution host instance with vendored OADA engine (src/engine/) and js-intel-store intelligence memory.",
   "type": "module",
   "workspaces": [
-    "apps/*"
+    "apps/*",
+    "packages/*"
   ],
   "bin": {
     "jea": "src/cli/jea.mjs"
@@ -25,6 +26,9 @@
     "desktop:build": "npm run build --workspace @jea/desktop",
     "desktop:test": "npm run test --workspace @jea/desktop",
     "desktop:typecheck": "npm run typecheck --workspace @jea/desktop",
+    "app:check": "npm run check --workspace @jea/app",
+    "app:test": "npm run test --workspace @jea/app",
+    "app:build": "npm run build --workspace @jea/app",
     "desktop:smoke": "node scripts/desktop-smoke.mjs",
     "test:ci": "node --preserve-symlinks ./node_modules/vitest/vitest.mjs run --reporter=default --reporter=junit --outputFile.junit=test-artifacts/junit.xml",
     "test:coverage": "node --preserve-symlinks ./node_modules/vitest/vitest.mjs run --coverage",
