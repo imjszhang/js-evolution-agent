@@ -36,7 +36,7 @@ describe('release-artifact-scan', () => {
     expect(report.missingAssets).toEqual([]);
     expect(report.files).toEqual(expect.arrayContaining([
       'release-manifest.json',
-      'resources/runtime/package.json',
+      'resources/host/package.json',
       'resources/web/index.html',
       'resources/cli/jea',
       'resources/policies/authority/CONSTITUTION.md',

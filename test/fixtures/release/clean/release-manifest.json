@@ -6,7 +6,7 @@
   "note": "Wave 1 fixture only. Real macOS resource layout is owned by #120.",
   "requiredAssets": {
     "runtime": [
-      "resources/runtime/package.json"
+      "resources/host/package.json"
     ],
     "web": [
       "resources/web/index.html"

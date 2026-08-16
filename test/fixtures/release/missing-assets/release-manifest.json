@@ -6,7 +6,7 @@
   "note": "Intentionally incomplete fixture: required runtime/Web/CLI/policy names are absent.",
   "requiredAssets": {
     "runtime": [
-      "resources/runtime/package.json"
+      "resources/host/package.json"
     ],
     "web": [
       "resources/web/index.html"
