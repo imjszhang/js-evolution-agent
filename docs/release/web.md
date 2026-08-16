@@ -1,6 +1,6 @@
 # Web（0.1.0 草稿）
 
-状态：**draft / pending**。依赖 [#118](https://github.com/imjszhang/js-evolution-agent/issues/118) localhost Web host。
+状态：**implemented / pending certification**。localhost Web host 见 [#118](https://github.com/imjszhang/js-evolution-agent/issues/118)。
 
 ## 产品边界
 
@@ -10,8 +10,21 @@
 
 ## 提纲
 
-1. 默认只绑定 loopback。
-2. 拒绝缺失或无效认证。
-3. 拒绝 local-only / 破坏性命令；只允许显式分类的写入。
+1. 默认只绑定 loopback（`127.0.0.1`）。`0.0.0.0` 会被拒绝，不会静默扩大。
+2. 拒绝缺失或无效认证（RPC / events / bootstrap）。
+3. 拒绝 local-only / 破坏性命令；只允许目录里 `availability.web === true` 且 capability 为 `readonly` 或 `write` 的命令。
 4. token 不得出现在普通日志、status JSON、events 或错误里；只有 `jea url` 打印已认证 URL。
 5. 与 Electron 的能力差异必须写清（哪些命令 Web 不可用）。
+
+## 生命周期
+
+```text
+jea start --no-open [--port 8788]
+jea status --json
+jea url
+jea stop
+```
+
+- `GET /jea/bootstrap`：协议版本、允许/拒绝的命令能力、事件传输元数据（不含 token）。
+- `POST /jea/rpc`：已认证 same-origin 应用命令。
+- `GET /jea/events`：SSE，支持 `cursor` / `Last-Event-ID` 续传。
