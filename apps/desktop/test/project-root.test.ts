@@ -27,13 +27,38 @@ describe('desktop project root', () => {
     })).toBe(root)
   })
 
-  it('prefers JEA_PROJECT_ROOT over marker discovery', () => {
+  it('prefers JEA_PROJECT_ROOT over marker discovery when not running a packaged app', () => {
     const explicit = join(tmpdir(), 'explicit-jea')
     expect(resolveDesktopProjectRoot({
       env: { JEA_PROJECT_ROOT: explicit },
       cwd: tmpdir(),
       fallback: tmpdir()
     })).toBe(explicit)
+  })
+
+  it('does not walk out of a .app bundle to a parent checkout', () => {
+    const checkout = mkdtempSync(join(tmpdir(), 'jea-checkout-'))
+    mkdirSync(join(checkout, 'src', 'cli'), { recursive: true })
+    writeFileSync(join(checkout, 'oada.config.mjs'), 'export default {}\n')
+    writeFileSync(join(checkout, 'src', 'cli', 'jea.mjs'), 'export {}\n')
+    const nested = join(
+      checkout,
+      'dist',
+      'release',
+      'build',
+      'mac-arm64',
+      'JEA.app',
+      'Contents',
+      'Resources',
+      'app',
+      'apps',
+      'desktop',
+      'out',
+      'main'
+    )
+    mkdirSync(nested, { recursive: true })
+
+    expect(findProjectRoot(nested)).toBeNull()
   })
 
   it('resolves a packaged JEA.app Resources/app tree from JEA_APP_PATH', () => {
@@ -50,6 +75,30 @@ describe('desktop project root', () => {
       env: { JEA_APP_PATH: appPath },
       cwd: tmpdir(),
       fallback: tmpdir(),
+      execPath: join(appPath, 'Contents', 'MacOS', 'JEA')
+    })).toBe(sourceRoot)
+  })
+
+  it('keeps a packaged JEA.app source root even when JEA_PROJECT_ROOT points at a checkout', () => {
+    const checkout = mkdtempSync(join(tmpdir(), 'jea-checkout-home-'))
+    mkdirSync(join(checkout, 'src', 'cli'), { recursive: true })
+    mkdirSync(join(checkout, 'runtime', 'subjects', 'alpha'), { recursive: true })
+    writeFileSync(join(checkout, 'oada.config.mjs'), 'export default {}\n')
+    writeFileSync(join(checkout, 'src', 'cli', 'jea.mjs'), 'export {}\n')
+    writeFileSync(join(checkout, 'runtime', 'subjects', 'alpha', 'marker.json'), '{}\n')
+
+    const appPath = join(checkout, 'dist', 'release', 'build', 'mac-arm64', 'JEA.app')
+    const sourceRoot = join(appPath, 'Contents', 'Resources', 'app')
+    mkdirSync(join(sourceRoot, 'src', 'cli'), { recursive: true })
+    mkdirSync(join(appPath, 'Contents', 'MacOS'), { recursive: true })
+    writeFileSync(join(sourceRoot, 'oada.config.mjs'), 'export default {}\n')
+    writeFileSync(join(sourceRoot, 'src', 'cli', 'jea.mjs'), 'export {}\n')
+    writeFileSync(join(appPath, 'Contents', 'MacOS', 'JEA'), '#!/bin/sh\n')
+
+    expect(resolveDesktopProjectRoot({
+      env: { JEA_PROJECT_ROOT: checkout },
+      cwd: checkout,
+      fallback: checkout,
       execPath: join(appPath, 'Contents', 'MacOS', 'JEA')
     })).toBe(sourceRoot)
   })
