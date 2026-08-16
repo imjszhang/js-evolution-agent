@@ -18,9 +18,16 @@ import { runChannelControlActionTask } from './control-executor.mjs';
 import { runChannelAgentRunTask } from './agent-runner.mjs';
 import { createDeliverableStore, recordDeliveryOutcome } from './deliverable.mjs';
 import { enqueueClassifierIfPendingInbound, enqueueNotifyIfOutboxPending } from './wake.mjs';
+import { redactSecrets } from '../intelligence/redaction.mjs';
 
 function readJsonStrict(file) {
   return JSON.parse(readFileSync(file, 'utf-8'));
+}
+
+function sanitizedErrorMessage(error) {
+  return String(redactSecrets(error?.message || String(error)))
+    .replace(/authorization\s*[:=]\s*(?:bearer\s+)?\S+/gi, 'Authorization: [REDACTED]')
+    .replace(/(app[_-]?secret|bind[_-]?token)\s*[:=]\s*\S+/gi, '$1=[REDACTED]');
 }
 
 export async function runChannelInboundTask(root, subject, input = {}) {
@@ -43,7 +50,7 @@ export async function runChannelInboundTask(root, subject, input = {}) {
   return { queued, classifier_task: classifier.task ?? null, classifier_created: classifier.created ?? false };
 }
 
-export async function runChannelNotifyTask(root, subject, input = {}) {
+export async function runChannelNotifyTask(root, subject, input = {}, runtime = {}) {
   const files = listOutboxPending(root, subject, { limit: input.limit ?? 10 });
   const sent = [];
   const failed = [];
@@ -67,6 +74,8 @@ export async function runChannelNotifyTask(root, subject, input = {}) {
         root,
         subject,
         ...(input.adapter_options ?? {}),
+        ...(runtime.adapterOptions ?? {}),
+        signal: runtime.signal ?? input.adapter_options?.signal ?? null,
       });
       const target = markOutboxSent(root, subject, file, { outbound, send_result: result });
       sent.push({ file, target, result });
@@ -99,13 +108,24 @@ export async function runChannelNotifyTask(root, subject, input = {}) {
         }, { store: deliverableStoreFor() });
       }
     } catch (err) {
-      const reason = err?.message || String(err);
+      const reason = sanitizedErrorMessage(err);
+      if (err?.code === 'channel_aborted') {
+        recordChannelEvent(root, subject, {
+          type: 'channel_message_send_aborted',
+          status: 'cancelled',
+          error_code: err.code,
+        });
+        throw err;
+      }
       const target = markOutboxFailed(root, subject, file, reason, payload);
       failed.push({ file, target, reason });
       recordChannelEvent(root, subject, {
         type: 'channel_message_send_failed',
         status: 'error',
         error: reason,
+        error_code: err?.code ?? null,
+        timeout_ms: err?.timeoutMs ?? null,
+        outbound_id: payload.id ?? payload.outbound?.id ?? null,
       });
       if (meta.deliverable_id) {
         recordDeliveryOutcome(root, subject, {
@@ -118,6 +138,10 @@ export async function runChannelNotifyTask(root, subject, input = {}) {
           delivery_format: meta.delivery_format ?? meta.delivery_item ?? null,
           error: reason,
         }, { store: deliverableStoreFor() });
+      }
+      if (err?.code === 'channel_timeout') {
+        err.retryable = false;
+        throw err;
       }
     }
   }
@@ -142,7 +166,7 @@ export async function runChannelNotifyTask(root, subject, input = {}) {
   return { sent, failed };
 }
 
-export async function runChannelTask(root, subject, task) {
+export async function runChannelTask(root, subject, task, runtime = {}) {
   const input = task.input ?? {};
   if (isDeprecatedChannelTaskType(task.type)) {
     throw new Error(
@@ -164,7 +188,7 @@ export async function runChannelTask(root, subject, task) {
       return runChannelSpeechGenerationTask(root, subject, input);
     case 'channel_notify':
     case 'channel_retry':
-      return runChannelNotifyTask(root, subject, input);
+      return runChannelNotifyTask(root, subject, input, runtime);
     default:
       throw new Error(`Unsupported channel task type: ${task.type}`);
   }

@@ -18,10 +18,117 @@ import {
 } from './worker-state.mjs';
 import { reclaimExpiredChannelLeases } from './task-queue.mjs';
 import { runDomainWorkerLoop } from '../infra/worker-loop.mjs';
+import { runWithTimeout } from './async-utils.mjs';
+import { resolveFeishuConfig } from './adapters/feishu/config.mjs';
 
 function sleep(ms) {
   if (!ms) return Promise.resolve();
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function sleepWithSignal(ms, signal) {
+  if (!ms || signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(done, ms);
+    timer.unref?.();
+    function done() {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', done);
+      resolve();
+    }
+    signal?.addEventListener('abort', done, { once: true });
+  });
+}
+
+export async function runChannelListenerSupervisor(root, subject, flags = {}, {
+  signal = null,
+  refreshIntervalMs = 1000,
+  ensureListener = ensureChannelListener,
+  stopListener = stopChannelListener,
+} = {}) {
+  if (flags['no-feishu-listener']) return { skipped: true, reason: 'listener_disabled_flag' };
+  try {
+    while (!signal?.aborted) {
+      try {
+        const config = resolveFeishuConfig(root, subject);
+        const result = await runWithTimeout(
+          (operationSignal) => ensureListener(root, subject, { ...flags, signal: operationSignal }),
+          config.connectTimeoutMs,
+          'feishu listener ensure',
+          { signal },
+        );
+        if (result.action === 'start_failed' || result.action === 'reload_failed') {
+          recordChannelEvent(root, subject, {
+            type: 'feishu_listener_start_skipped',
+            status: 'not_running',
+            reason: result.reason ?? result.action,
+            error_code: result.error_code ?? null,
+          });
+        }
+      } catch (err) {
+        if (!signal?.aborted) {
+          recordChannelEvent(root, subject, {
+            type: 'channel_config_reload_failed',
+            status: 'error',
+            error: err?.message || String(err),
+            error_code: err?.code ?? null,
+          });
+        }
+      }
+      await sleepWithSignal(Math.max(refreshIntervalMs, 1000), signal);
+    }
+  } finally {
+    if (getChannelListenerStatus(root, subject).running) {
+      const config = resolveFeishuConfig(root, subject);
+      try {
+        await runWithTimeout(
+          () => stopListener(root, subject, { stopTimeoutMs: config.stopTimeoutMs }),
+          config.stopTimeoutMs,
+          'feishu listener supervisor stop',
+        );
+      } catch (err) {
+        recordChannelEvent(root, subject, {
+          type: 'feishu_listener_stop_failed',
+          status: 'error',
+          error: err?.message || String(err),
+          error_code: err?.code ?? null,
+        });
+      }
+    }
+  }
+  return { stopped: true };
+}
+
+async function awaitWorkersWithShutdownGrace(root, subject, workerPromise, signal) {
+  const { shutdownGraceMs } = resolveFeishuConfig(root, subject);
+  let removeAbort = null;
+  const shutdown = new Promise((resolve) => {
+    const onAbort = () => {
+      runWithTimeout(
+        () => workerPromise,
+        shutdownGraceMs,
+        'channel worker shutdown',
+      ).then(resolve, (error) => {
+        recordChannelEvent(root, subject, {
+          type: 'channel_shutdown_grace_exceeded',
+          status: 'error',
+          error_code: error?.code ?? null,
+          grace_ms: shutdownGraceMs,
+        });
+        resolve([]);
+      });
+    };
+    if (signal.aborted) onAbort();
+    else {
+      signal.addEventListener('abort', onAbort, { once: true });
+      removeAbort = () => signal.removeEventListener('abort', onAbort);
+    }
+  });
+  try {
+    return await Promise.race([workerPromise, shutdown]);
+  } finally {
+    removeAbort?.();
+  }
 }
 
 function workResultSummary(result) {
@@ -107,6 +214,7 @@ export async function runChannelRoleWorkerLoop(root, subject, role, flags, share
           role,
           types,
           'lease-ms': leaseMs,
+          signal: shared.signal,
         });
       },
       execute: async (result) => {
@@ -130,6 +238,7 @@ export async function runChannelRoleWorkerLoop(root, subject, role, flags, share
       },
       afterExecute: async (result) => (result?.worked ? workIntervalMs : idleIntervalMs),
       idleMs: idleIntervalMs,
+      signal: shared.signal,
     });
     if (isChannelRoleStopRequested(root, subject, role)) stopReason = 'stop_requested';
   } finally {
@@ -160,6 +269,8 @@ export async function runChannelDomainWorkerMulti(root, subject, flags, {
   idleIntervalMs,
   maxIterations,
   channelWorkOnce,
+  ensureListener = ensureChannelListener,
+  stopListener = stopChannelListener,
 }) {
   const classifierConfig = resolveClassifierConfig(root, subject);
   initChannelCoordinatorState(root, subject, {
@@ -185,9 +296,13 @@ export async function runChannelDomainWorkerMulti(root, subject, flags, {
     tickMs,
     heartbeatStaleMs,
   };
+  const stopController = new AbortController();
+  shared.signal = stopController.signal;
 
   const requestLocalStop = () => {
+    if (shared.stopping) return;
     shared.stopping = true;
+    if (!stopController.signal.aborted) stopController.abort(new Error('channel domain stopping'));
     requestChannelWorkerStop(root, subject, { staleMs: heartbeatStaleMs });
   };
   process.once('SIGINT', requestLocalStop);
@@ -195,6 +310,7 @@ export async function runChannelDomainWorkerMulti(root, subject, flags, {
 
   let presenceTickTimer = null;
   let classifierTickTimer = null;
+  let stopPollTimer = null;
 
   const runPresenceSchedule = () => {
     if (shared.stopping) return;
@@ -230,57 +346,41 @@ export async function runChannelDomainWorkerMulti(root, subject, flags, {
     runClassifierSchedule();
     classifierTickTimer = setInterval(runClassifierSchedule, classifierConfig.interval_ms);
   }
-
-  if (!flags['no-feishu-listener']) {
-    const initialEnsure = await ensureChannelListener(root, subject, flags);
-    if (initialEnsure.action === 'start_failed' || initialEnsure.action === 'reload_failed') {
-      recordChannelEvent(root, subject, {
-        type: 'feishu_listener_start_skipped',
-        status: 'not_running',
-        reason: initialEnsure.reason ?? initialEnsure.action,
-      });
-    }
-  }
+  stopPollTimer = setInterval(() => {
+    if (readChannelWorkerState(root, subject)?.stop_requested_at) requestLocalStop();
+  }, 250);
+  stopPollTimer.unref?.();
 
   let workerResults = [];
-  let listenerRefresh = null;
+  const listenerSupervisor = runChannelListenerSupervisor(root, subject, flags, {
+    signal: stopController.signal,
+    refreshIntervalMs: Math.max(workIntervalMs, 1000),
+    ensureListener,
+    stopListener,
+  });
   try {
-    listenerRefresh = !flags['no-feishu-listener']
-      ? setInterval(async () => {
-        if (shared.stopping) return;
-        try {
-          await ensureChannelListener(root, subject, flags);
-        } catch (err) {
-          recordChannelEvent(root, subject, {
-            type: 'channel_config_reload_failed',
-            status: 'error',
-            error: err?.message || String(err),
-          });
-        }
-      }, Math.max(workIntervalMs, 1000))
-      : null;
-
     try {
-      workerResults = await Promise.all(roles.map((role) => runChannelRoleWorkerLoop(root, subject, role, flags, shared, {
+      const workerPromise = Promise.all(roles.map((role) => runChannelRoleWorkerLoop(root, subject, role, flags, shared, {
         leaseMs,
         workIntervalMs,
         idleIntervalMs,
         maxIterations,
         channelWorkOnce,
       })));
+      workerResults = await awaitWorkersWithShutdownGrace(root, subject, workerPromise, stopController.signal);
     } catch (err) {
       shared.stopping = true;
+      if (!stopController.signal.aborted) stopController.abort(err);
       requestChannelWorkerStop(root, subject, { staleMs: heartbeatStaleMs });
       throw err;
     }
   } finally {
     shared.stopping = true;
-    if (listenerRefresh) clearInterval(listenerRefresh);
+    if (!stopController.signal.aborted) stopController.abort(new Error('channel domain stopped'));
     if (presenceTickTimer) clearInterval(presenceTickTimer);
     if (classifierTickTimer) clearInterval(classifierTickTimer);
-    if (getChannelListenerStatus(root, subject).running) {
-      await stopChannelListener(root, subject);
-    }
+    if (stopPollTimer) clearInterval(stopPollTimer);
+    await listenerSupervisor;
     process.removeListener('SIGINT', requestLocalStop);
     process.removeListener('SIGTERM', requestLocalStop);
   }

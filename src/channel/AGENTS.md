@@ -101,6 +101,17 @@ channel worker 每轮 loop 会：
 
 `channel status --json` 的 `feishu.reload` 字段可查看 pending reload、`last_error`、`config_fingerprint`。
 
+### 飞书 I/O deadline 与关闭
+
+Feishu listener 由独立 supervisor 管理，不阻塞 classifier、presence、notify、speech、agent、control role 启动。`channel status --json` 的 `feishu.listener.state` / `feishu.reload.listener_state` 区分 `starting`、`connected`、`reconnecting`、`failed` 与 `stopped`；只有 `connected` 表示 SDK 已真实 ready。
+
+默认边界为 listener connect 20 秒、单次 outbound send 30 秒、listener stop 5 秒、daemon shutdown grace 10 秒。可在 `channels.feishu` 中设置 `connect_timeout_ms`、`send_timeout_ms`、`stop_timeout_ms`、`shutdown_grace_ms`，或使用 `.env.example` 中对应的全局/subject 环境变量覆盖。
+
+- send timeout 的远端结果可能不确定，因此不盲重试：notify task 与 outbox item 均落 `failed`，事件码为 `channel_timeout`。
+- stop request、SIGINT 或 SIGTERM 产生 `channel_aborted`：进行中的 task 释放回 `pending`，outbox 保持 `pending`，下次 daemon 启动后恢复。
+- shutdown 会取消 HTTP、强制关闭 WebSocket，并在 10 秒 grace 内结束；不应依赖 SIGKILL。
+- timeout/abort 事件只记录错误码、deadline 和 outbound id；不得写 App Secret、bind token、Authorization header 或完整请求配置。
+
 入站分类边界（由 **`channel_classifier`** 批量 LLM/规则分类，不再在 presence 内同步正则分类）：
 
 - 审批/发布类话语 → `approval_request` operator brief（软意图，非 `approval_granted`）。

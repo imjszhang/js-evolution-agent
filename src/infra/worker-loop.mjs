@@ -1,5 +1,14 @@
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms, signal = null) {
+  if (signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(done, ms);
+    function done() {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', done);
+      resolve();
+    }
+    signal?.addEventListener('abort', done, { once: true });
+  });
 }
 
 export function shouldContinueLoop({ once = false, signal = null, iteration = 0 } = {}) {
@@ -44,14 +53,14 @@ export async function runDomainWorkerLoop({
       const postDelay = typeof afterExecute === 'function'
         ? Number(await afterExecute(task, { iteration, executed })) || 0
         : 0;
-      if (postDelay > 0) await sleep(postDelay);
+      if (postDelay > 0) await sleep(postDelay, signal);
       continue;
     }
 
     await onIdle?.({ iteration, executed });
     iteration += 1;
     if (once) break;
-    if (idleMs > 0) await sleep(idleMs);
+    if (idleMs > 0) await sleep(idleMs, signal);
   }
 
   return { stopped: true, executed, lastTask };

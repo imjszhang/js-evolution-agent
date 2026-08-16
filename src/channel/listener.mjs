@@ -12,6 +12,6 @@ export function getChannelListenerStatus(root, subject) {
   return getFeishuListenerStatus(root, subject);
 }
 
-export async function stopChannelListener(root, subject) {
-  return stopFeishuListener(root, subject);
+export async function stopChannelListener(root, subject, options = {}) {
+  return stopFeishuListener(root, subject, options);
 }
