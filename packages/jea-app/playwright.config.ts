@@ -7,9 +7,25 @@ export default defineConfig({
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 1 : 0,
   reporter: process.env.CI ? [['list'], ['html', { open: 'never' }]] : 'list',
+  expect: {
+    toHaveScreenshot: {
+      animations: 'disabled',
+      caret: 'hide',
+      maxDiffPixelRatio: 0.02
+    }
+  },
   use: {
     baseURL: 'http://127.0.0.1:4177',
-    trace: 'on-first-retry'
+    trace: 'on-first-retry',
+    deviceScaleFactor: 1,
+    colorScheme: 'light',
+    launchOptions: {
+      args: [
+        '--font-render-hinting=none',
+        '--disable-lcd-text',
+        '--disable-font-subpixel-positioning'
+      ]
+    }
   },
   webServer: {
     command: 'npx vite build && npx vite preview --host 127.0.0.1 --port 4177 --strictPort',

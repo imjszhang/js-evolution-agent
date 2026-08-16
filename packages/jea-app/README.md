@@ -58,6 +58,12 @@ npm run app:test
 npm run app:build
 ```
 
+The renderer ships Inter + a Noto Sans SC subset as `JeaUI` / `JeaCJK` and
+does not use system UI fonts. Playwright waits for `document.fonts.ready`
+before capturing. Comparisons allow `maxDiffPixelRatio: 0.02` because
+Chromium antialiasing still differs slightly between this environment and
+GitHub Actions ubuntu runners after fonts are pinned.
+
 Linux screenshot baselines live in `e2e/baselines/visual.spec.ts-snapshots`.
 This Cloud Agent cannot capture approved macOS Apple Silicon screenshots; the
 harness is the update path for later certification. Update Linux baselines with:

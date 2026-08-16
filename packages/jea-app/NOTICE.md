@@ -22,3 +22,13 @@ Third-party runtime dependencies keep their own licenses:
 shadcn-style primitives in `src/ui/` were written against public Radix APIs and
 semantic tokens owned by this package; they are not a vendored copy of the
 shadcn/ui repository.
+
+Bundled UI fonts in `src/styles/fonts/` are SIL Open Font License 1.1:
+
+- Inter (latin 400/600) — The Inter Project Authors
+- Noto Sans SC subset (shell CJK) — Google / Adobe Source Han
+
+Visual screenshot comparisons wait for `document.fonts.ready` and force these
+faces. A `maxDiffPixelRatio` of 0.02 remains because Chromium LCD/antialias
+still differs slightly between developer VMs and GitHub Actions ubuntu
+runners even with identical WOFF2 files.

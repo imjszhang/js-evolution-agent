@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { prepareVisualPage, visualScreenshotOptions } from './visual-ready'
 
 const states = [
   { name: 'workspace', path: '/?locale=en' },
@@ -17,23 +18,14 @@ for (const viewport of viewports) {
   for (const state of states) {
     test(`${viewport.name} ${state.name}`, async ({ page }) => {
       await page.setViewportSize({ width: viewport.width, height: viewport.height })
-      await page.emulateMedia({ colorScheme: 'light' })
-      await page.addInitScript(() => {
-        localStorage.setItem('jea.theme', 'light')
-        localStorage.setItem('jea.locale', 'en')
-      })
-      await page.goto(state.path)
-      await expect(page.locator('#root')).toBeVisible()
+      await prepareVisualPage(page, state.path)
       if (state.name === 'workspace') {
         await expect(page.getByTestId('workspace')).toBeVisible()
       }
       if (state.name === 'settings') {
         await expect(page.getByTestId('settings-overlay')).toBeVisible()
       }
-      await expect(page).toHaveScreenshot(`${viewport.name}-${state.name}.png`, {
-        animations: 'disabled',
-        caret: 'hide'
-      })
+      await expect(page).toHaveScreenshot(`${viewport.name}-${state.name}.png`, visualScreenshotOptions)
     })
   }
 }
