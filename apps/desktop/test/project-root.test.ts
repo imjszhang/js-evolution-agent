@@ -35,6 +35,24 @@ describe('desktop project root', () => {
       fallback: tmpdir()
     })).toBe(explicit)
   })
+
+  it('resolves a packaged JEA.app Resources/app tree from JEA_APP_PATH', () => {
+    const root = mkdtempSync(join(tmpdir(), 'jea-packaged-root-'))
+    const appPath = join(root, 'JEA.app')
+    const sourceRoot = join(appPath, 'Contents', 'Resources', 'app')
+    mkdirSync(join(sourceRoot, 'src', 'cli'), { recursive: true })
+    mkdirSync(join(appPath, 'Contents', 'MacOS'), { recursive: true })
+    writeFileSync(join(sourceRoot, 'oada.config.mjs'), 'export default {}\n')
+    writeFileSync(join(sourceRoot, 'src', 'cli', 'jea.mjs'), 'export {}\n')
+    writeFileSync(join(appPath, 'Contents', 'MacOS', 'JEA'), '#!/bin/sh\n')
+
+    expect(resolveDesktopProjectRoot({
+      env: { JEA_APP_PATH: appPath },
+      cwd: tmpdir(),
+      fallback: tmpdir(),
+      execPath: join(appPath, 'Contents', 'MacOS', 'JEA')
+    })).toBe(sourceRoot)
+  })
 })
 
 describe('desktop main externals', () => {

@@ -1,10 +1,15 @@
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createApplicationCommandHost, createTypedJeaClient, JEA_CLIENT_PROTOCOL_VERSION } from '../../src/client-api'
 import { PublicClientError } from '../../src/client-api/errors'
 import type { SetupReadiness } from '../../src/client-api/types'
+
+beforeEach(() => {
+  delete process.env.DEEPSEEK_API_KEY
+  delete process.env.JEA_HOME
+})
 
 afterEach(() => {
   delete process.env.DEEPSEEK_API_KEY

@@ -24,6 +24,7 @@ import { NotificationService } from './notification-service'
 import { OpsService } from './operations'
 import { ProjectionWatcher } from './projection-watcher'
 import { DEFAULT_SMOKE_FIXTURE_SUBJECT, runDesktopSmokeStages } from './desktop-smoke'
+import { createManagedCliLauncher } from './cli-launcher'
 import { resolveDesktopProjectRoot } from './project-root'
 import {
   isTrustedRendererLocation,
@@ -71,6 +72,7 @@ const acp = new AcpSessionManager(
 const clientApi = createApplicationCommandHost({
   sourceRoot: projectRoot,
   jeaHome: runtimeContext.jeaHome,
+  cliLauncher: createManagedCliLauncher({ sourceRoot: projectRoot }),
   serviceProcess: {
     get: (subject) => {
       const view = daemon.get(subject)

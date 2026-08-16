@@ -161,6 +161,9 @@ jobs:
       - run: npm run desktop:typecheck
       - run: npm run desktop:build
       - run: npm run desktop:smoke
+      - name: Stage packaged resources
+        if: runner.os == 'macOS'
+        run: npm run desktop:stage
       - name: Upload desktop smoke
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

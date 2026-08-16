@@ -82,6 +82,7 @@ export async function webStartCommand({ flags = {}, context }) {
   ], {
     env: {
       ...process.env,
+      ELECTRON_RUN_AS_NODE: '1',
       JEA_HOME: context.jeaHome,
       JEA_PROJECT_ROOT: context.sourceRoot,
       JEA_WEB_PORT: String(port),
@@ -118,6 +119,11 @@ export async function webStartCommand({ flags = {}, context }) {
 
   child.unref();
   console.log(`JEA Web host listening on ${host}:${port}`);
+  if (flags.open) {
+    console.error('Refusing to open a browser. Use `jea url` to print the authenticated URL.');
+  } else if (flags['no-open'] || flags.noOpen) {
+    console.log('Started without opening a browser or creating a window.');
+  }
   return 0;
 }
 
@@ -140,13 +146,29 @@ export async function webUrlCommand({ context }) {
   return 0;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export async function webStopCommand({ context }) {
   const status = currentStatus(context.jeaHome);
-  if (status.pid && processAlive(status.pid)) {
+  const ownedPid = status.pid;
+  if (ownedPid && processAlive(ownedPid)) {
     try {
-      process.kill(status.pid, 'SIGTERM');
+      process.kill(ownedPid, 'SIGTERM');
     } catch {
       // Already gone.
+    }
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline && processAlive(ownedPid)) {
+      await sleep(50);
+    }
+    if (processAlive(ownedPid)) {
+      try {
+        process.kill(ownedPid, 'SIGKILL');
+      } catch {
+        // Already gone.
+      }
     }
   }
   rmSync(stateDir(context.jeaHome), { recursive: true, force: true });

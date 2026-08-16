@@ -1,8 +1,10 @@
 #!/usr/bin/env node
-import { resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgv } from './utils/args.mjs';
 import { getProjectRoot, loadProjectEnv } from '../infra/project.mjs';
+import { PRODUCT_VERSION } from '../product/identity.mjs';
 import {
   assertJeaHomeAuthority,
   createRuntimeContext,
@@ -145,10 +147,11 @@ Commands:
   actions list           List registered action types
   actions check          Check pending decisions for unknown action types
   start [--port N] [--no-open]
-                         Start the localhost Web host (loopback only)
+                         Start the localhost Web host (loopback only; never opens a browser)
   status [--json]        Show localhost Web host bind/pid without the token
   url                    Print the authenticated localhost Web URL (only command that may)
   stop                   Stop the localhost Web host and close listeners
+  --version              Print the product version
   help                   Show this help
 
 Examples:
@@ -184,6 +187,11 @@ Examples:
   jea subject list
   jea subject init my-product --use
   jea data reset --yes
+  jea --version
+  jea start --no-open
+  jea status --json
+  jea url
+  jea stop
   jea actions check
   echo '{"content":"manual note"}' | jea intel ingest --source intel_observations
   echo '{"summary":"verify next cycle","claims_to_verify":["candidate hash changed"]}' | jea intel brief put --stdin
@@ -198,14 +206,19 @@ Examples:
 }
 
 export async function main(argv = process.argv.slice(2)) {
+  const { positionals, flags } = parseArgv(argv);
+  const [command, subcommand, ...args] = positionals;
+  if (flags.version || command === 'version' || argv.includes('-v')) {
+    console.log(readCliVersion(getProjectRoot()));
+    return 0;
+  }
+
   const root = getProjectRoot();
   loadProjectEnv(root);
   const context = createRuntimeContext({ sourceRoot: root });
   process.env.JEA_PROJECT_ROOT = context.sourceRoot;
   process.env.JEA_HOME = context.jeaHome;
   await warmJeaLinksCache(root).catch(() => {});
-  const { positionals, flags } = parseArgv(argv);
-  const [command, subcommand, ...args] = positionals;
 
   if (!command || command === 'help' || flags.help) {
     console.log(helpText());
@@ -245,6 +258,15 @@ export async function main(argv = process.argv.slice(2)) {
   console.error(`Unknown command: ${command}`);
   console.log(helpText());
   return 2;
+}
+
+function readCliVersion(root) {
+  try {
+    const payload = JSON.parse(readFileSync(join(root, 'src/product/version.json'), 'utf8'));
+    return payload.version || PRODUCT_VERSION;
+  } catch {
+    return PRODUCT_VERSION;
+  }
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {

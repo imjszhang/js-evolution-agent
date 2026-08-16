@@ -59,11 +59,12 @@ export const VERSION_SOURCES = [
     id: 'bundled_cli',
     required: false,
     issue: 120,
-    note: 'Bundled CLI version file / jea --version from the macOS package is not available until #120.',
+    note: 'Bundled CLI version file used by jea --version and the macOS package (#120).',
     resolve(repoRoot) {
       const path = firstExisting([
-        resolve(repoRoot, 'dist/release/cli-version.json'),
+        resolve(repoRoot, 'src/product/version.json'),
         resolve(repoRoot, 'apps/desktop/resources/cli/version.json'),
+        resolve(repoRoot, 'dist/release/cli-version.json'),
       ]);
       if (!path) return { status: 'skipped/pending', path: null };
       return { status: 'ok', path, version: readVersionFile(path) };
