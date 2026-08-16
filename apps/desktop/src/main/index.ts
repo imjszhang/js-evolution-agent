@@ -3,6 +3,11 @@ import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { app, BrowserWindow, dialog, ipcMain, Notification } from 'electron'
 import { redactSecrets } from '../../../../src/intelligence/redaction.mjs'
+import {
+  CLIENT_API_COMMANDS,
+  createApplicationCommandHost,
+  createClientApiCommandDefinitions
+} from '../client-api'
 import { AcpSessionManager } from './acp-session-manager'
 import { ChannelService } from './channel-service'
 import {
@@ -27,6 +32,7 @@ import {
 import { resolveDesktopRuntimeContext } from './runtime-context'
 import { TodoService } from './todo-service'
 import {
+  DESKTOP_COMMANDS,
   JEA_EVENT_CHANNEL,
   JEA_INVOKE_CHANNEL,
   type InvokeRequest
@@ -62,17 +68,66 @@ const acp = new AcpSessionManager(
     return result.canceled ? null : result.filePaths[0] ?? null
   }
 )
+const clientApi = createApplicationCommandHost({
+  sourceRoot: projectRoot,
+  jeaHome: runtimeContext.jeaHome,
+  serviceProcess: {
+    get: (subject) => {
+      const view = daemon.get(subject)
+      return {
+        subject: view.subject,
+        mode: view.mode,
+        pid: view.pid,
+        domain: view.domain,
+        heartbeat_at: view.heartbeat_at,
+        started_at: view.started_at,
+        health: null,
+        detail: view.detail ?? null
+      }
+    },
+    start: async (subject, options) => {
+      const view = await daemon.start(subject, options)
+      return {
+        subject: view.subject,
+        mode: view.mode,
+        pid: view.pid,
+        domain: view.domain,
+        heartbeat_at: view.heartbeat_at,
+        started_at: view.started_at,
+        health: null,
+        detail: view.detail ?? null
+      }
+    },
+    stop: async (subject) => {
+      const view = await daemon.stop(subject)
+      return {
+        subject: view.subject,
+        mode: view.mode,
+        pid: view.pid,
+        domain: view.domain,
+        heartbeat_at: view.heartbeat_at,
+        started_at: view.started_at,
+        health: null,
+        detail: view.detail ?? null
+      }
+    }
+  }
+})
 const invoke = createCommandRegistry(
   ops,
-  createDesktopCommandDefinitions({
-    ops,
-    todo,
-    daemon,
-    acp,
-    projection,
-    channel,
-    notifications
-  })
+  {
+    ...createDesktopCommandDefinitions({
+      ops,
+      todo,
+      daemon,
+      acp,
+      projection,
+      channel,
+      notifications
+    }),
+    ...createClientApiCommandDefinitions(clientApi)
+  },
+  [...DESKTOP_COMMANDS, ...CLIENT_API_COMMANDS]
 )
 let shutdownComplete = false
 
