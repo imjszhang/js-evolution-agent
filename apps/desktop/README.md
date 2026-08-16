@@ -1,8 +1,9 @@
 # JEA Desktop
 
-JEA Desktop is an Electron operations client for local JEA subjects. It keeps
-runtime files authoritative: the renderer never receives Node.js access,
-credentials, child-process handles, or direct file-write capabilities.
+JEA Desktop is an Electron host for the shared `@jea/app` workspace. The
+renderer never receives Node.js access, credentials, child-process handles, or
+direct file-write capabilities. Wave 1 mounts the Open Science-style App Shell
+with fixture slots; Conversation, Evolution, and Setup register later.
 
 ## Run
 

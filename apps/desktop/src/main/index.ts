@@ -154,7 +154,7 @@ function createWindow(): BrowserWindow {
     height: 960,
     minWidth: 960,
     minHeight: 640,
-    title: 'JEA Ops',
+    title: 'JEA',
     show: !process.env.JEA_DESKTOP_SMOKE,
     webPreferences: {
       preload: join(outputDir, '../preload/index.cjs'),

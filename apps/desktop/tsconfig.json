@@ -8,7 +8,11 @@
     "skipLibCheck": true,
     "allowJs": true,
     "resolveJsonModule": true,
-    "types": ["node", "vite/client"]
+    "types": ["node", "vite/client"],
+    "paths": {
+      "@jea/app": ["../../packages/jea-app/src/index.ts"],
+      "@jea/app/styles.css": ["../../packages/jea-app/src/styles/index.css"]
+    }
   },
   "include": ["src", "electron.vite.config.ts", "test"]
 }
