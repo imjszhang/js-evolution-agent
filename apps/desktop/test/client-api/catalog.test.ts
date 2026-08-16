@@ -7,6 +7,7 @@ import {
   createApplicationCommandHandlers,
   JEA_CLIENT_CATALOG,
   JEA_CLIENT_PROTOCOL_VERSION,
+  isWebAllowedCommand,
   serializeClientApiCatalog
 } from '../../src/client-api'
 import { CAPABILITY_LEVELS, CLIENT_API_COMMANDS, CLIENT_API_EVENTS } from '../../src/client-api/protocol'
@@ -52,6 +53,9 @@ describe('Client API catalog', () => {
         web: expect.any(Boolean)
       })
       if (entry.capability === 'local-only') expect(entry.availability.web).toBe(false)
+      expect(isWebAllowedCommand(entry.name)).toBe(
+        entry.availability.web && (entry.capability === 'readonly' || entry.capability === 'write')
+      )
     }
   })
 

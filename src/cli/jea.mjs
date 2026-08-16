@@ -24,6 +24,7 @@ import { daemonCommand } from './commands/daemon.mjs';
 import { channelCommand } from './commands/channel.mjs';
 import { bridgeCommand } from './commands/bridge.mjs';
 import { reactorCommand } from './commands/reactor.mjs';
+import { webStartCommand, webStatusCommand, webStopCommand, webUrlCommand } from './commands/web.mjs';
 
 export function helpText() {
   return `Usage: jea <command> [options]
@@ -143,6 +144,11 @@ Commands:
                          Copy legacy policies/subjects layout into JEA Home
   actions list           List registered action types
   actions check          Check pending decisions for unknown action types
+  start [--port N] [--no-open]
+                         Start the localhost Web host (loopback only)
+  status [--json]        Show localhost Web host bind/pid without the token
+  url                    Print the authenticated localhost Web URL (only command that may)
+  stop                   Stop the localhost Web host and close listeners
   help                   Show this help
 
 Examples:
@@ -231,6 +237,10 @@ export async function main(argv = process.argv.slice(2)) {
   if (command === 'policy') return policyCommand({ subcommand, flags });
   if (command === 'subject') return subjectCommand({ subcommand, flags, args, context });
   if (command === 'actions') return actionsCommand({ subcommand, flags });
+  if (command === 'start') return webStartCommand({ flags, context });
+  if (command === 'status') return webStatusCommand({ flags, context });
+  if (command === 'url') return webUrlCommand({ context });
+  if (command === 'stop') return webStopCommand({ context });
 
   console.error(`Unknown command: ${command}`);
   console.log(helpText());

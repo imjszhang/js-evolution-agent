@@ -35,9 +35,11 @@ export interface ShellAdapters {
   sessions?: FixtureSession[]
   selectedSubjectId?: string | null
   selectedSessionId?: string | null
+  selectedCycleId?: string | null
   serviceStatus?: ServiceStatusKind
   onSelectSubject?(subjectId: string): void
   onSelectSession?(sessionId: string): void
+  onSelectCycle?(cycleId: string): void
   onRetry?(): void
 }
 
