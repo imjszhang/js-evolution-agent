@@ -1,0 +1,8 @@
+export { createConversationFeature, CONVERSATION_FEATURE_ID } from './feature'
+export { createRendererJeaClient } from './host-client'
+export { ConversationWorkspaceModel } from './model'
+export { createConversationHarness, TEST_CONVERSATION_SUBJECT } from './harness'
+export { resolveDraftAttempt, type DraftAttempt } from './draft'
+export { MAX_CHANNEL_RECORDS, mergeRecords, type WorkspaceMessage } from './history'
+export { deriveInlineCards, cardKindFromMessage } from './cards'
+export { classifyClientError } from './errors'
