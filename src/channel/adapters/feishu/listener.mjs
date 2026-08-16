@@ -55,11 +55,18 @@ function serializeListener(root, subject, operation) {
 }
 
 function setListenerState(root, subject, state, extra = {}) {
-  listenerStates.set(listenerKey(root, subject), {
+  const record = {
     state,
     connected: state === 'connected',
     updated_at: new Date().toISOString(),
     ...extra,
+  };
+  listenerStates.set(listenerKey(root, subject), record);
+  writeChannelReloadState(root, subject, {
+    listener_state: state,
+    listener_state_at: record.updated_at,
+    last_error_code: record.last_error_code ?? null,
+    last_error_at: record.last_error_at ?? null,
   });
 }
 
@@ -316,6 +323,8 @@ async function startFeishuListenerUnlocked(root, subject, options = {}) {
   } catch (err) {
     writeChannelReloadState(root, subject, {
       last_error: err?.message || String(err),
+      last_error_code: err?.code ?? null,
+      last_error_at: new Date().toISOString(),
     });
     recordChannelEvent(root, subject, {
       type: 'feishu_listener_start_failed',

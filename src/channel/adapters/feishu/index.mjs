@@ -91,7 +91,7 @@ export async function sendOutboundMessage(outbound, options = {}) {
 
   const key = senderCacheKey(cfg);
   return runWithTimeout(async (signal) => {
-    const sender = await getSender(cfg);
+    const sender = options.sender ?? await getSender(cfg);
     if (message.document) {
       try {
         const result = await sender.sendDocumentDelivery(message.target, message.document, { signal });

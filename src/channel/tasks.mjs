@@ -68,6 +68,7 @@ export async function runChannelNotifyTask(root, subject, input = {}, runtime = 
         root,
         subject,
         ...(input.adapter_options ?? {}),
+        ...(runtime.adapterOptions ?? {}),
         signal: runtime.signal ?? input.adapter_options?.signal ?? null,
       });
       const target = markOutboxSent(root, subject, file, { outbound, send_result: result });

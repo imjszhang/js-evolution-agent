@@ -716,7 +716,10 @@ async function runChannelWorkOnceBody(root, subject, flags = {}) {
     return { worked: true, ok: false, task: failed.task };
   }
   try {
-    const result = await runChannelTask(root, subject, claim.task, { signal: flags.signal ?? null });
+    const result = await runChannelTask(root, subject, claim.task, {
+      signal: flags.signal ?? null,
+      adapterOptions: flags.adapterOptions ?? null,
+    });
     const completed = completeChannelTask(root, subject, claim.task.task_id, result);
     recordChannelEvent(root, subject, {
       type: 'channel_task_completed',
@@ -1108,6 +1111,7 @@ async function runChannelDomainWorkerSingle(root, subject, flags = {}) {
   let stopping = false;
   const stopController = new AbortController();
   const requestLocalStop = () => {
+    if (stopping) return;
     stopping = true;
     if (!stopController.signal.aborted) stopController.abort(new Error('channel worker stopping'));
     requestChannelWorkerStop(root, subject, { staleMs: heartbeatStaleMs });

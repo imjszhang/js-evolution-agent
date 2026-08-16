@@ -18,6 +18,8 @@ import {
 } from './worker-state.mjs';
 import { reclaimExpiredChannelLeases } from './task-queue.mjs';
 import { runDomainWorkerLoop } from '../infra/worker-loop.mjs';
+import { runWithTimeout } from './async-utils.mjs';
+import { resolveFeishuConfig } from './adapters/feishu/config.mjs';
 
 function sleep(ms) {
   if (!ms) return Promise.resolve();
@@ -48,7 +50,13 @@ export async function runChannelListenerSupervisor(root, subject, flags = {}, {
   try {
     while (!signal?.aborted) {
       try {
-        const result = await ensureListener(root, subject, { ...flags, signal });
+        const config = resolveFeishuConfig(root, subject);
+        const result = await runWithTimeout(
+          (operationSignal) => ensureListener(root, subject, { ...flags, signal: operationSignal }),
+          config.connectTimeoutMs,
+          'feishu listener ensure',
+          { signal },
+        );
         if (result.action === 'start_failed' || result.action === 'reload_failed') {
           recordChannelEvent(root, subject, {
             type: 'feishu_listener_start_skipped',
@@ -71,7 +79,21 @@ export async function runChannelListenerSupervisor(root, subject, flags = {}, {
     }
   } finally {
     if (getChannelListenerStatus(root, subject).running) {
-      await stopListener(root, subject);
+      const config = resolveFeishuConfig(root, subject);
+      try {
+        await runWithTimeout(
+          () => stopListener(root, subject, { stopTimeoutMs: config.stopTimeoutMs }),
+          config.stopTimeoutMs,
+          'feishu listener supervisor stop',
+        );
+      } catch (err) {
+        recordChannelEvent(root, subject, {
+          type: 'feishu_listener_stop_failed',
+          status: 'error',
+          error: err?.message || String(err),
+          error_code: err?.code ?? null,
+        });
+      }
     }
   }
   return { stopped: true };
@@ -214,6 +236,8 @@ export async function runChannelDomainWorkerMulti(root, subject, flags, {
   idleIntervalMs,
   maxIterations,
   channelWorkOnce,
+  ensureListener = ensureChannelListener,
+  stopListener = stopChannelListener,
 }) {
   const classifierConfig = resolveClassifierConfig(root, subject);
   initChannelCoordinatorState(root, subject, {
@@ -243,6 +267,7 @@ export async function runChannelDomainWorkerMulti(root, subject, flags, {
   shared.signal = stopController.signal;
 
   const requestLocalStop = () => {
+    if (shared.stopping) return;
     shared.stopping = true;
     if (!stopController.signal.aborted) stopController.abort(new Error('channel domain stopping'));
     requestChannelWorkerStop(root, subject, { staleMs: heartbeatStaleMs });
@@ -297,6 +322,8 @@ export async function runChannelDomainWorkerMulti(root, subject, flags, {
   const listenerSupervisor = runChannelListenerSupervisor(root, subject, flags, {
     signal: stopController.signal,
     refreshIntervalMs: Math.max(workIntervalMs, 1000),
+    ensureListener,
+    stopListener,
   });
   try {
     try {
