@@ -10,12 +10,12 @@
 - `release-package-smoke`：`smoked`。
 - `release-artifact-scan --root dist/release/stage`：`clean`（无 `.env` / 凭据 / 开发者路径）。
 - `codesign --verify --deep --strict`：adhoc。
-- 隔离 `JEA_HOME`：`jea --version`、`subject init`、`data init`、打包 CLI `--version` 通过；未写 `~/.jea`。
+- 隔离 `JEA_HOME`：`jea --version`、`subject init`、`data init`、`start --no-open`、`status --json`、`url`、`stop`、打包 CLI `--version` 通过；未写 `~/.jea`。
+- `jea start` 使用预编译 ESM bundle，不再走 `--experimental-strip-types`。
 - #77 baseline 仍精确、未过期（2026-11-15）。
 
 ## 未放行原因
 
 - 未创建 GitHub Release。
 - 无独立 Node 的干净机器旅程未跑。
-- checkout 上 `jea start` 仍受 Node `--experimental-strip-types` 限制（TypeScript parameter properties），不能当作干净安装放行证据。
 - #122 保持 OPEN。

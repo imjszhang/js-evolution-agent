@@ -2,10 +2,9 @@ import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { buildWebHost, webHostBundlePath } from '../../../scripts/build-web-host.mjs';
 
 const DEFAULT_PORT = 8788;
-const serverMain = fileURLToPath(new URL('../../../apps/desktop/src/web-host/server-main.ts', import.meta.url));
-const registerLoader = fileURLToPath(new URL('../../../scripts/register-ts-resolve.mjs', import.meta.url));
 
 function stateDir(jeaHome) {
   return join(jeaHome, 'web-host');
@@ -73,13 +72,21 @@ export async function webStartCommand({ flags = {}, context }) {
     return 1;
   }
 
-  const child = spawn(process.execPath, [
-    '--experimental-strip-types',
-    '--no-warnings=ExperimentalWarning',
-    '--import',
-    registerLoader,
-    serverMain,
-  ], {
+  const fromCli = fileURLToPath(new URL('../../../apps/desktop/out/web-host/server-main.mjs', import.meta.url));
+  const buildRoot = existsSync(join(context.sourceRoot, 'apps/desktop/src/web-host/server-main.ts'))
+    ? context.sourceRoot
+    : fileURLToPath(new URL('../../..', import.meta.url));
+  let serverMain = [fromCli, webHostBundlePath(context.sourceRoot)].find((path) => existsSync(path));
+  if (!serverMain) {
+    await buildWebHost({ repoRoot: buildRoot });
+    serverMain = [webHostBundlePath(buildRoot), fromCli].find((path) => existsSync(path));
+  }
+  if (!serverMain) {
+    console.error('The localhost Web host bundle is missing. Run `npm run desktop:build` or `node scripts/build-web-host.mjs`.');
+    return 1;
+  }
+
+  const child = spawn(process.execPath, [serverMain], {
     env: {
       ...process.env,
       ELECTRON_RUN_AS_NODE: '1',
@@ -113,7 +120,7 @@ export async function webStartCommand({ flags = {}, context }) {
 
   if (!ready) {
     const detail = errors.join('').trim() || 'Web host failed to start.';
-    console.error(detail.split('\n')[0]);
+    console.error(detail.split('\n').slice(-8).join('\n'));
     return 1;
   }
 
