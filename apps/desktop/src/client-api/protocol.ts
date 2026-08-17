@@ -34,6 +34,7 @@ export const CLIENT_API_COMMANDS = [
   'evolution.getRound',
   'evolution.getObservability',
   'service.getStatus',
+  'service.getReadiness',
   'service.start',
   'service.stop',
   'service.requestCycle',

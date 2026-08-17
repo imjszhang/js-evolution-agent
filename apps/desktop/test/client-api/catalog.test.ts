@@ -36,6 +36,7 @@ describe('Client API catalog', () => {
       'evolution.listCycles',
       'evolution.getRound',
       'service.getStatus',
+      'service.getReadiness',
       'service.requestCycle',
       'setup.getReadiness',
       'settings.get',
