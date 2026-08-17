@@ -11,13 +11,17 @@ import {
 } from 'node:fs'
 import { dirname, join } from 'node:path'
 import {
+  inspectWorkerRepair,
   markWorkerStopped,
   readWorkerState,
+  reconcileWorkerState,
   requestWorkerStop,
   summarizeWorkerState
 } from '../../../../src/daemon/daemon-worker-state.mjs'
 import {
+  inspectChannelWorkerRepair,
   readChannelWorkerState,
+  repairChannelWorkerState,
   requestChannelWorkerStop,
   safeMarkChannelRoleWorkerStopped,
   summarizeChannelWorkersState
@@ -37,13 +41,21 @@ import type { DesktopEventBus } from './event-bus'
 import type { ManagedProcessRegistry } from './managed-process-registry'
 import { createDesktopServiceRuntimeContext } from './runtime-context'
 
-type DaemonDomain = 'all' | 'cycle' | 'channel'
+export type DaemonDomain = 'all' | 'cycle' | 'channel'
 type SpawnDaemon = typeof spawn
+
+const OWNERSHIP_ERROR = 'The daemon is not managed by this client.'
+const ATTACHED_START_ERROR = 'An external daemon is already running.'
+const LIVE_WORKER_START_ERROR = 'A live worker is still present and cannot be replaced safely.'
+const LIVE_REPAIR_ERROR = 'The worker process is still alive and cannot be repaired.'
+const UNSAFE_REPAIR_ERROR = 'Worker ownership cannot be established safely.'
+const PARTIAL_MANAGED_ERROR = 'A managed daemon already covers part of this domain.'
 
 interface ManagedDaemon {
   subject: string
   ownerToken: string
   child: ChildProcess
+  ownedPid: number | null
   domain: DaemonDomain
   startedAt: string
   stopping: boolean
@@ -60,8 +72,22 @@ function processExited(child: ChildProcess): boolean {
   return child.exitCode != null || child.signalCode != null
 }
 
+function domainsOverlap(left: DaemonDomain, right: DaemonDomain): boolean {
+  if (left === 'all' || right === 'all') return true
+  return left === right
+}
+
+function managedKey(subject: string, domain: DaemonDomain): string {
+  return `${subject}::${domain}`
+}
+
+function registryId(subject: string, domain: DaemonDomain): string {
+  return domain === 'all' ? subject : `${subject}:${domain}`
+}
+
 export class DaemonSupervisor {
   private readonly managed = new Map<string, ManagedDaemon>()
+  private readonly startLocks = new Map<string, Promise<unknown>>()
   private readonly runtimeContext: any
 
   constructor(
@@ -79,7 +105,7 @@ export class DaemonSupervisor {
 
   get(subject: string): DaemonSupervisorView {
     this.assertSubject(subject)
-    const entry = this.managed.get(subject)
+    const entries = this.managedEntriesFor(subject)
     const cycleRaw = readWorkerState(this.runtimeContext, subject)
     const cycle = summarizeWorkerState(cycleRaw)
     const channelRaw = readChannelWorkerState(this.runtimeContext, subject)
@@ -91,15 +117,19 @@ export class DaemonSupervisor {
       .sort()
       .at(-1) ?? channelRaw?.heartbeat_at ?? null
 
-    if (entry && !processExited(entry.child)) {
+    if (entries.length > 0) {
+      const primary = entries.find((entry) => entry.domain === 'all') ?? entries[0]
+      const hasCycle = entries.some((entry) => entry.domain === 'cycle' || entry.domain === 'all')
+      const hasChannel = entries.some((entry) => entry.domain === 'channel' || entry.domain === 'all')
+      const domain = primary.domain === 'all' || (hasCycle && hasChannel) ? 'all' : primary.domain
       return {
         subject,
-        mode: entry.stopping ? 'stopping' : 'managed',
-        pid: entry.child.pid ?? null,
-        domain: entry.domain,
+        mode: entries.every((entry) => entry.stopping) ? 'stopping' : 'managed',
+        pid: primary.child.pid ?? primary.ownedPid,
+        domain,
         heartbeat_at: cycle.heartbeat_at ?? channelHeartbeat,
-        started_at: entry.startedAt,
-        log_paths: entry.logPaths,
+        started_at: primary.startedAt,
+        log_paths: primary.logPaths,
         detail: null
       }
     }
@@ -125,21 +155,107 @@ export class DaemonSupervisor {
     domain = 'all'
   }: { domain?: DaemonDomain } = {}): Promise<DaemonSupervisorView> {
     this.assertSubject(subject)
-    if (!['all', 'cycle', 'channel'].includes(domain)) {
-      throw new PublicCommandError('INVALID_REQUEST', 'Invalid daemon domain.')
-    }
-    if (this.managed.has(subject)) {
+    this.assertDomain(domain)
+    return this.withStartLock(subject, () => this.startLocked(subject, domain))
+  }
+
+  async repair(subject: string, {
+    domain = 'all'
+  }: { domain?: DaemonDomain } = {}): Promise<DaemonSupervisorView> {
+    this.assertSubject(subject)
+    this.assertDomain(domain)
+    if (this.coveringManaged(subject, domain) || this.overlappingManaged(subject, domain)) {
       throw new PublicCommandError('CONFLICT', 'A managed daemon is already running.')
     }
+    const cycleNeeded = domain !== 'channel'
+    const channelNeeded = domain !== 'cycle'
+    const cycleInspection = cycleNeeded
+      ? inspectWorkerRepair(readWorkerState(this.runtimeContext, subject))
+      : { blocked: false, needed: false, reason: 'skipped' }
+    const channelInspection = channelNeeded
+      ? inspectChannelWorkerRepair(readChannelWorkerState(this.runtimeContext, subject))
+      : { blocked: false, needed: false, reason: 'skipped' }
+    if (cycleInspection.blocked || channelInspection.blocked) {
+      const reason = cycleInspection.blocked ? cycleInspection.reason : channelInspection.reason
+      throw new PublicCommandError(
+        'CONFLICT',
+        reason === 'pid_alive' ? LIVE_REPAIR_ERROR : UNSAFE_REPAIR_ERROR
+      )
+    }
+    if (cycleNeeded && cycleInspection.needed) {
+      const result = reconcileWorkerState(this.runtimeContext, subject)
+      if (result.blocked) {
+        throw new PublicCommandError(
+          'CONFLICT',
+          result.reason === 'pid_alive' ? LIVE_REPAIR_ERROR : UNSAFE_REPAIR_ERROR
+        )
+      }
+    }
+    if (channelNeeded && channelInspection.needed) {
+      const result = repairChannelWorkerState(this.runtimeContext, subject)
+      if (result.blocked) {
+        throw new PublicCommandError(
+          'CONFLICT',
+          result.reason === 'pid_alive' ? LIVE_REPAIR_ERROR : UNSAFE_REPAIR_ERROR
+        )
+      }
+    }
+    return this.get(subject)
+  }
+
+  async stop(subject: string, reason = 'operator', {
+    domain
+  }: { domain?: DaemonDomain } = {}): Promise<DaemonSupervisorView> {
+    this.assertSubject(subject)
+    if (domain) this.assertDomain(domain)
+    const entries = domain
+      ? [this.managed.get(managedKey(subject, domain))].filter((entry): entry is ManagedDaemon => (
+        Boolean(entry && !processExited(entry.child))
+      ))
+      : this.managedEntriesFor(subject)
+    if (entries.length === 0) {
+      throw new PublicCommandError('CONFLICT', OWNERSHIP_ERROR)
+    }
+    for (const entry of entries) {
+      await this.stopEntry(entry, reason)
+    }
+    return this.get(subject)
+  }
+
+  private async startLocked(subject: string, domain: DaemonDomain): Promise<DaemonSupervisorView> {
+    const covered = this.coveringManaged(subject, domain)
+    if (covered) return this.get(subject)
+    if (this.overlappingManaged(subject, domain)) {
+      throw new PublicCommandError('CONFLICT', PARTIAL_MANAGED_ERROR)
+    }
+
     const cycle = summarizeWorkerState(readWorkerState(this.runtimeContext, subject))
     const channel = summarizeChannelWorkersState(
       readChannelWorkerState(this.runtimeContext, subject)
     )
-    const cycleConflict = domain !== 'channel' && (cycle.running || cycle.stale)
-    const channelConflict = domain !== 'cycle'
-      && (channel.running_count > 0 || channel.stale_count > 0)
-    if (cycleConflict || channelConflict) {
-      throw new PublicCommandError('CONFLICT', 'An external daemon is already running.')
+    if (domain !== 'channel' && cycle.running) {
+      throw new PublicCommandError('CONFLICT', ATTACHED_START_ERROR)
+    }
+    if (domain !== 'cycle' && channel.running_count > 0) {
+      throw new PublicCommandError('CONFLICT', ATTACHED_START_ERROR)
+    }
+    if (domain !== 'channel' && cycle.stale) {
+      throw new PublicCommandError('CONFLICT', LIVE_WORKER_START_ERROR)
+    }
+    if (domain !== 'cycle' && channel.stale_count > 0) {
+      throw new PublicCommandError('CONFLICT', LIVE_WORKER_START_ERROR)
+    }
+    if (domain !== 'channel' && cycle.zombie) {
+      const repaired = reconcileWorkerState(this.runtimeContext, subject)
+      if (repaired.blocked) {
+        throw new PublicCommandError('CONFLICT', LIVE_REPAIR_ERROR)
+      }
+    }
+    if (domain !== 'cycle' && channel.zombie_count > 0) {
+      const repaired = repairChannelWorkerState(this.runtimeContext, subject)
+      if (repaired.blocked) {
+        throw new PublicCommandError('CONFLICT', LIVE_REPAIR_ERROR)
+      }
     }
 
     const ownerToken = randomUUID()
@@ -204,23 +320,24 @@ export class DaemonSupervisor {
     closeSync(stdoutFd)
     closeSync(stderrFd)
 
-    await new Promise<void>((resolve, reject) => {
-      child.once('spawn', resolve)
+    await new Promise<void>((resolvePromise, reject) => {
+      child.once('spawn', resolvePromise)
       child.once('error', reject)
     })
 
+    const ownedPid = child.pid ?? null
     let unregister: () => void
     try {
       unregister = this.processRegistry.register({
         kind: 'daemon',
-        id: subject,
-        pid: child.pid ?? null,
+        id: registryId(subject, domain),
+        pid: ownedPid,
         cleanup: async () => {
-          await this.stop(subject, 'app_quit')
+          await this.stop(subject, 'app_quit', { domain })
         }
       })
     } catch (error) {
-      await this.terminateChild(child, processGroup)
+      await this.terminateChild(child, processGroup, ownedPid)
       this.recordStartupFailure(subject, error, logPaths)
       throw this.withLogPaths(error, logPaths)
     }
@@ -228,6 +345,7 @@ export class DaemonSupervisor {
       subject,
       ownerToken,
       child,
+      ownedPid,
       domain,
       startedAt,
       stopping: false,
@@ -235,46 +353,46 @@ export class DaemonSupervisor {
       logPaths,
       unregister
     }
-    this.managed.set(subject, entry)
+    this.managed.set(managedKey(subject, domain), entry)
     child.once('close', () => {
-      if (this.managed.get(subject)?.ownerToken === ownerToken) {
-        this.managed.delete(subject)
+      if (this.managed.get(managedKey(subject, domain))?.ownerToken === ownerToken) {
+        this.managed.delete(managedKey(subject, domain))
         unregister()
-        this.removeDiagnostic(subject, ownerToken)
+        this.removeDiagnostic(subject, domain, ownerToken)
         this.events.publish({
           type: 'daemon_managed_stopped',
           subject,
-          payload: { pid: child.pid ?? null }
+          payload: { pid: ownedPid, domain }
         })
       }
     })
     try {
       this.writeDiagnostic(entry)
     } catch (error) {
-      if (this.managed.get(subject)?.ownerToken === ownerToken) {
-        this.managed.delete(subject)
+      if (this.managed.get(managedKey(subject, domain))?.ownerToken === ownerToken) {
+        this.managed.delete(managedKey(subject, domain))
       }
       unregister()
-      this.removeDiagnostic(subject, ownerToken)
-      await this.terminateChild(child, processGroup)
+      this.removeDiagnostic(subject, domain, ownerToken)
+      await this.terminateChild(child, processGroup, ownedPid)
       throw error
     }
     try {
       await this.waitForStartup(entry)
     } catch (error) {
-      if (this.managed.get(subject)?.ownerToken === ownerToken) {
-        this.managed.delete(subject)
+      if (this.managed.get(managedKey(subject, domain))?.ownerToken === ownerToken) {
+        this.managed.delete(managedKey(subject, domain))
       }
       unregister()
-      this.removeDiagnostic(subject, ownerToken)
-      if (!processExited(child)) await this.terminateChild(child, processGroup)
+      this.removeDiagnostic(subject, domain, ownerToken)
+      if (!processExited(child)) await this.terminateChild(child, processGroup, ownedPid)
       this.recordStartupFailure(subject, error, logPaths)
       throw this.withLogPaths(error, logPaths)
     }
     this.events.publish({
       type: 'daemon_managed_started',
       subject,
-      payload: { pid: child.pid ?? null, domain }
+      payload: { pid: ownedPid, domain }
     })
     return this.get(subject)
   }
@@ -282,11 +400,12 @@ export class DaemonSupervisor {
   private async waitForStartup(entry: ManagedDaemon): Promise<void> {
     if (this.startupTimeoutMs <= 0) return
     const deadline = Date.now() + this.startupTimeoutMs
+    const logHint = this.redactLogPath(entry.logPaths.stderr)
     while (Date.now() < deadline) {
       if (processExited(entry.child)) {
         throw new PublicCommandError(
           'OPERATION_FAILED',
-          'The JEA daemon exited before becoming ready. Check the JEA daemon logs.'
+          `The JEA daemon exited before becoming ready. See ${logHint}.`
         )
       }
       const cycle = summarizeWorkerState(readWorkerState(this.runtimeContext, entry.subject))
@@ -300,63 +419,66 @@ export class DaemonSupervisor {
     }
     throw new PublicCommandError(
       'OPERATION_FAILED',
-      'The JEA daemon did not become ready before the startup deadline. Check the JEA daemon logs.'
+      `The JEA daemon did not become ready before the startup timeout. See ${logHint}.`
     )
   }
 
-  async stop(subject: string, reason = 'operator'): Promise<DaemonSupervisorView> {
-    this.assertSubject(subject)
-    const entry = this.managed.get(subject)
-    if (!entry || processExited(entry.child)) {
-      throw new PublicCommandError('CONFLICT', 'The daemon is not managed by this client.')
+  private async stopEntry(entry: ManagedDaemon, reason: string): Promise<void> {
+    const pid = entry.child.pid ?? null
+    if (entry.ownedPid == null || pid == null || pid !== entry.ownedPid) {
+      throw new PublicCommandError('CONFLICT', OWNERSHIP_ERROR)
     }
-    if (entry.stopping) return this.get(subject)
+    if (entry.stopping) return
     entry.stopping = true
     this.writeDiagnostic(entry)
 
-    if (entry.domain !== 'channel') requestWorkerStop(this.runtimeContext, subject)
-    if (entry.domain !== 'cycle') requestChannelWorkerStop(this.runtimeContext, subject)
-    await this.terminateChild(entry.child, entry.processGroup)
+    if (entry.domain !== 'channel') requestWorkerStop(this.runtimeContext, entry.subject)
+    if (entry.domain !== 'cycle') requestChannelWorkerStop(this.runtimeContext, entry.subject)
+    await this.terminateChild(entry.child, entry.processGroup, entry.ownedPid)
     if (entry.domain !== 'channel') {
-      markWorkerStopped(this.runtimeContext, subject, {
+      markWorkerStopped(this.runtimeContext, entry.subject, {
         stop_reason: `desktop_${reason}`
       })
     }
     if (entry.domain !== 'cycle') {
-      const channelState = readChannelWorkerState(this.runtimeContext, subject)
+      const channelState = readChannelWorkerState(this.runtimeContext, entry.subject)
       for (const [role, worker] of Object.entries(channelState?.workers ?? {})) {
         const status = worker && typeof worker === 'object' && 'status' in worker
           ? String((worker as { status?: unknown }).status ?? '')
           : ''
         if (status !== 'running' && status !== 'stopping') continue
-        safeMarkChannelRoleWorkerStopped(this.runtimeContext, subject, role, {
+        safeMarkChannelRoleWorkerStopped(this.runtimeContext, entry.subject, role, {
           stop_reason: `desktop_${reason}`
         })
       }
     }
     this.events.publish({
       type: 'daemon_managed_stop_requested',
-      subject,
+      subject: entry.subject,
       payload: { reason }
     })
-    return this.get(subject)
   }
 
-  private diagnosticPath(subject: string): string {
+  private diagnosticPath(subject: string, domain: DaemonDomain): string {
     const runtime = runtimeForSubject(this.runtimeContext, subject)
-    return join(runtime.evolutionDir, 'daemon', 'desktop-supervisor.json')
+    const suffix = domain === 'all' ? '' : `-${domain}`
+    return join(runtime.evolutionDir, 'daemon', `desktop-supervisor${suffix}.json`)
   }
 
-  private async terminateChild(child: ChildProcess, processGroup = false): Promise<void> {
+  private async terminateChild(
+    child: ChildProcess,
+    processGroup = false,
+    ownedPid: number | null = child.pid ?? null
+  ): Promise<void> {
     if (processExited(child)) return
-    const closed = new Promise<void>((resolve) => child.once('close', () => resolve()))
-    this.signalChild(child, 'SIGTERM', processGroup)
+    const closed = new Promise<void>((resolvePromise) => child.once('close', () => resolvePromise()))
+    this.signalChild(child, 'SIGTERM', processGroup, ownedPid)
     const exited = await Promise.race([
       closed.then(() => true),
       delay(this.killGraceMs).then(() => false)
     ])
     if (!exited && !processExited(child)) {
-      this.signalChild(child, 'SIGKILL', processGroup)
+      this.signalChild(child, 'SIGKILL', processGroup, ownedPid)
       await Promise.race([closed, delay(this.killGraceMs)])
     }
   }
@@ -364,11 +486,15 @@ export class DaemonSupervisor {
   private signalChild(
     child: ChildProcess,
     signal: NodeJS.Signals,
-    processGroup: boolean
+    processGroup: boolean,
+    ownedPid: number | null
   ): void {
-    if (processGroup && child.pid) {
+    if (processExited(child)) return
+    const pid = child.pid ?? null
+    if (ownedPid == null || pid == null || pid !== ownedPid) return
+    if (processGroup) {
       try {
-        process.kill(-child.pid, signal)
+        process.kill(-ownedPid, signal)
         return
       } catch {
         // Injected test children and already-exited groups fall back to the direct handle.
@@ -378,13 +504,13 @@ export class DaemonSupervisor {
   }
 
   private writeDiagnostic(entry: ManagedDaemon): void {
-    const path = this.diagnosticPath(entry.subject)
+    const path = this.diagnosticPath(entry.subject, entry.domain)
     mkdirSync(dirname(path), { recursive: true })
     writeFileSync(path, JSON.stringify({
       schema_version: 1,
       supervisor: 'jea-desktop',
       owner_token: entry.ownerToken,
-      pid: entry.child.pid ?? null,
+      pid: entry.ownedPid,
       domain: entry.domain,
       started_at: entry.startedAt,
       stopping: entry.stopping,
@@ -392,8 +518,8 @@ export class DaemonSupervisor {
     }, null, 2), 'utf8')
   }
 
-  private removeDiagnostic(subject: string, ownerToken: string): void {
-    const path = this.diagnosticPath(subject)
+  private removeDiagnostic(subject: string, domain: DaemonDomain, ownerToken: string): void {
+    const path = this.diagnosticPath(subject, domain)
     try {
       const record = JSON.parse(readFileSync(path, 'utf8'))
       if (record?.owner_token === ownerToken) rmSync(path, { force: true })
@@ -404,7 +530,7 @@ export class DaemonSupervisor {
 
   private recordStartupFailure(subject: string, error: unknown, logPaths: { stdout: string; stderr: string }): void {
     const message = error instanceof Error ? error.message : String(error)
-    const reason = message.includes('startup deadline')
+    const reason = message.includes('startup deadline') || message.includes('startup timeout')
       ? 'startup_deadline'
       : (message.includes('exited before becoming ready') ? 'exited_before_ready' : 'startup_failed')
     try {
@@ -416,12 +542,56 @@ export class DaemonSupervisor {
 
   private withLogPaths(error: unknown, logPaths: { stdout: string; stderr: string }): unknown {
     if (!(error instanceof PublicCommandError)) return error
-    const stdout = redactJeaOwnedPath(logPaths.stdout, this.runtimeContext.jeaHome)
-    const stderr = redactJeaOwnedPath(logPaths.stderr, this.runtimeContext.jeaHome)
+    const stdout = this.redactLogPath(logPaths.stdout)
+    const stderr = this.redactLogPath(logPaths.stderr)
+    if (error.message.includes(stdout) || error.message.includes(stderr)) return error
     return new PublicCommandError(
       error.code,
       `${error.message} Logs: ${stdout}, ${stderr}`
     )
+  }
+
+  private redactLogPath(absPath: string): string {
+    return redactJeaOwnedPath(absPath, this.runtimeContext.jeaHome) || '<JEA_HOME>/logs/daemon.log'
+  }
+
+  private managedEntriesFor(subject: string): ManagedDaemon[] {
+    return [...this.managed.values()].filter((entry) => (
+      entry.subject === subject && !processExited(entry.child)
+    ))
+  }
+
+  private coveringManaged(subject: string, domain: DaemonDomain): ManagedDaemon | null {
+    const entries = this.managedEntriesFor(subject)
+    if (domain === 'all') {
+      const all = entries.find((entry) => entry.domain === 'all')
+      if (all) return all
+      const hasCycle = entries.some((entry) => entry.domain === 'cycle' || entry.domain === 'all')
+      const hasChannel = entries.some((entry) => entry.domain === 'channel' || entry.domain === 'all')
+      return hasCycle && hasChannel ? entries[0] ?? null : null
+    }
+    return entries.find((entry) => entry.domain === domain || entry.domain === 'all') ?? null
+  }
+
+  private overlappingManaged(subject: string, domain: DaemonDomain): boolean {
+    return this.managedEntriesFor(subject).some((entry) => domainsOverlap(entry.domain, domain))
+  }
+
+  private async withStartLock<T>(subject: string, fn: () => Promise<T>): Promise<T> {
+    const previous = this.startLocks.get(subject) ?? Promise.resolve()
+    const run = previous.catch(() => undefined).then(fn)
+    this.startLocks.set(subject, run)
+    try {
+      return await run
+    } finally {
+      if (this.startLocks.get(subject) === run) this.startLocks.delete(subject)
+    }
+  }
+
+  private assertDomain(domain: DaemonDomain): void {
+    if (!['all', 'cycle', 'channel'].includes(domain)) {
+      throw new PublicCommandError('INVALID_REQUEST', 'Invalid daemon domain.')
+    }
   }
 
   private assertSubject(subject: string): void {

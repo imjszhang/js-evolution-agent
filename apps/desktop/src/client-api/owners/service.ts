@@ -13,6 +13,10 @@ export interface ServiceProcessPort {
   get(subject: string): ServiceStatus
   start(subject: string, options?: { domain?: 'all' | 'cycle' | 'channel' }): Promise<ServiceStatus> | ServiceStatus
   stop(subject: string): Promise<ServiceStatus> | ServiceStatus
+  repair?(
+    subject: string,
+    options?: { domain?: 'all' | 'cycle' | 'channel' }
+  ): Promise<ServiceStatus> | ServiceStatus
 }
 
 export function createProjectionServicePort(runtime: ClientRuntimeContext): ServiceProcessPort {
@@ -34,6 +38,9 @@ export function createProjectionServicePort(runtime: ClientRuntimeContext): Serv
       throw new PublicClientError('UNAVAILABLE', 'Service process control is not available in this host.')
     },
     stop() {
+      throw new PublicClientError('UNAVAILABLE', 'Service process control is not available in this host.')
+    },
+    repair() {
       throw new PublicClientError('UNAVAILABLE', 'Service process control is not available in this host.')
     }
   }

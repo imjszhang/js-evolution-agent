@@ -3,12 +3,14 @@ import { EventEmitter } from 'node:events'
 import {
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createRuntimeContext } from '../../../src/infra/jea-home.mjs'
 import {
   readWorkerState,
   workerStatePath
@@ -24,12 +26,14 @@ class FakeChild extends EventEmitter {
   signalCode: NodeJS.Signals | null = null
   readonly kills: Array<NodeJS.Signals | number> = []
   private closed = false
+  pid: number
 
   constructor(
-    readonly pid: number,
+    pid: number,
     private readonly closeOnKill = false
   ) {
     super()
+    this.pid = pid
   }
 
   kill(signal: NodeJS.Signals | number = 'SIGTERM'): boolean {
@@ -63,10 +67,11 @@ afterEach(async () => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-function createProjectRoot(): string {
+function createProjectRoot(): { root: string; jeaHome: string; context: ReturnType<typeof createRuntimeContext> } {
   const root = mkdtempSync(join(tmpdir(), 'jea-daemon-supervisor-'))
   roots.push(root)
-  const subjectsDir = join(root, 'runtime', 'subjects')
+  const jeaHome = join(root, 'runtime')
+  const subjectsDir = join(jeaHome, 'subjects')
   mkdirSync(subjectsDir, { recursive: true })
   writeFileSync(join(subjectsDir, 'registry.json'), JSON.stringify({
     default_subject: 'alpha',
@@ -75,15 +80,16 @@ function createProjectRoot(): string {
       beta: { policy: 'SUBJECT.md', data_namespace: 'beta-data' }
     }
   }))
-  return root
+  const context = createRuntimeContext({ sourceRoot: root, jeaHome })
+  return { root, jeaHome, context }
 }
 
 function writeCycleState(
-  root: string,
+  context: ReturnType<typeof createRuntimeContext>,
   subject: string,
   state: Record<string, unknown>
 ): void {
-  const path = workerStatePath(root, subject)
+  const path = workerStatePath(context, subject)
   mkdirSync(dirname(path), { recursive: true })
   writeFileSync(path, JSON.stringify({
     subject,
@@ -96,6 +102,62 @@ function writeCycleState(
     stale_after_ms: 60_000,
     ...state
   }))
+}
+
+function writeHistoryFixtures(context: ReturnType<typeof createRuntimeContext>, subject: string) {
+  const cycleQueue = join(context.jeaHome, 'subjects', `${subject}-data`, 'data', 'evolution', 'tasks', 'pending_tasks.json')
+  const channelQueue = join(context.jeaHome, 'subjects', `${subject}-data`, 'data', 'channel', 'tasks', 'pending_tasks.json')
+  const evidence = join(context.jeaHome, 'subjects', `${subject}-data`, 'data', 'intelligence', 'evidence.jsonl')
+  const checkpoint = join(context.jeaHome, 'subjects', `${subject}-data`, 'data', 'evolution', 'cycle-state', 'cycle-1.json')
+  const receipt = join(context.jeaHome, 'subjects', `${subject}-data`, 'data', 'evolution', 'receipts', 'r-1.json')
+  const message = join(context.jeaHome, 'subjects', `${subject}-data`, 'data', 'channel', 'desktop', 'sessions', 'main.jsonl')
+  const files = {
+    cycleQueue: { tasks: [{ task_id: 'cycle-1', type: 'cognitive_reaction', status: 'pending' }], updated_at: '2026-01-01T00:00:00.000Z' },
+    channelQueue: { tasks: [{ task_id: 'channel-1', type: 'channel_classifier', status: 'pending' }], updated_at: '2026-01-01T00:00:00.000Z' },
+    evidence: '{"id":"ev-1"}\n',
+    checkpoint: { cycle_id: 'cycle-1', status: 'open' },
+    receipt: { receipt_id: 'r-1' },
+    message: '{"id":"m-1","content":"hello"}\n'
+  }
+  mkdirSync(dirname(cycleQueue), { recursive: true })
+  mkdirSync(dirname(channelQueue), { recursive: true })
+  mkdirSync(dirname(evidence), { recursive: true })
+  mkdirSync(dirname(checkpoint), { recursive: true })
+  mkdirSync(dirname(receipt), { recursive: true })
+  mkdirSync(dirname(message), { recursive: true })
+  writeFileSync(cycleQueue, JSON.stringify(files.cycleQueue))
+  writeFileSync(channelQueue, JSON.stringify(files.channelQueue))
+  writeFileSync(evidence, files.evidence)
+  writeFileSync(checkpoint, JSON.stringify(files.checkpoint))
+  writeFileSync(receipt, JSON.stringify(files.receipt))
+  writeFileSync(message, files.message)
+  return {
+    cycleQueue,
+    channelQueue,
+    evidence,
+    checkpoint,
+    receipt,
+    message,
+    checksums: {
+      cycleQueue: readFileSync(cycleQueue, 'utf8'),
+      channelQueue: readFileSync(channelQueue, 'utf8'),
+      evidence: readFileSync(evidence, 'utf8'),
+      checkpoint: readFileSync(checkpoint, 'utf8'),
+      receipt: readFileSync(receipt, 'utf8'),
+      message: readFileSync(message, 'utf8')
+    }
+  }
+}
+
+function expectHistoryUnchanged(
+  fixtures: ReturnType<typeof writeHistoryFixtures>
+): void {
+  expect(readFileSync(fixtures.cycleQueue, 'utf8')).toBe(fixtures.checksums.cycleQueue)
+  expect(readFileSync(fixtures.channelQueue, 'utf8')).toBe(fixtures.checksums.channelQueue)
+  expect(readFileSync(fixtures.evidence, 'utf8')).toBe(fixtures.checksums.evidence)
+  expect(readFileSync(fixtures.checkpoint, 'utf8')).toBe(fixtures.checksums.checkpoint)
+  expect(readFileSync(fixtures.receipt, 'utf8')).toBe(fixtures.checksums.receipt)
+  expect(readFileSync(fixtures.message, 'utf8')).toBe(fixtures.checksums.message)
 }
 
 function createSpawnHarness({ closeOnKill = false } = {}) {
@@ -111,8 +173,20 @@ function createSpawnHarness({ closeOnKill = false } = {}) {
   }
 }
 
-function createSupervisor(root: string, { closeOnKill = false } = {}) {
-  const processRegistry = new ManagedProcessRegistry()
+function createSupervisor(
+  root: string,
+  {
+    closeOnKill = false,
+    startupTimeoutMs,
+    killGraceMs = 10,
+    processRegistry = new ManagedProcessRegistry()
+  }: {
+    closeOnKill?: boolean
+    startupTimeoutMs?: number
+    killGraceMs?: number
+    processRegistry?: ManagedProcessRegistry
+  } = {}
+) {
   const events = new DesktopEventBus()
   const published: Array<{ type: string; subject?: string; payload: Record<string, unknown> }> = []
   events.subscribe((event) => published.push(event))
@@ -122,14 +196,16 @@ function createSupervisor(root: string, { closeOnKill = false } = {}) {
     processRegistry,
     events,
     spawn.spawnImpl,
-    10
+    killGraceMs,
+    join(root, 'runtime'),
+    startupTimeoutMs
   )
   return { supervisor, processRegistry, published, ...spawn }
 }
 
 describe('DaemonSupervisor', () => {
   it('moves a subject from none to a client-managed daemon using injected spawn', async () => {
-    const root = createProjectRoot()
+    const { root } = createProjectRoot()
     writeFileSync(join(root, 'runtime', '.env'), [
       'DEEPSEEK_API_KEY=home-key',
       'JEA_PROJECT_ROOT=/must-not-win'
@@ -178,9 +254,9 @@ describe('DaemonSupervisor', () => {
         })
       })
     )
-    expect(processRegistry.get('daemon', 'alpha')).toMatchObject({
+    expect(processRegistry.get('daemon', 'alpha:cycle')).toMatchObject({
       kind: 'daemon',
-      id: 'alpha',
+      id: 'alpha:cycle',
       pid: 40_000
     })
     expect(published).toContainEqual(expect.objectContaining({
@@ -190,29 +266,61 @@ describe('DaemonSupervisor', () => {
     }))
   })
 
-  it('rejects duplicate managed starts and conflicts with an external daemon', async () => {
-    const root = createProjectRoot()
+  it('returns current status for a repeated managed start and coalesces concurrent starts', async () => {
+    const { root } = createProjectRoot()
     const { supervisor, spawnMock } = createSupervisor(root)
 
-    await supervisor.start('alpha')
-    await expect(supervisor.start('alpha')).rejects.toMatchObject({
-      code: 'CONFLICT',
-      message: 'A managed daemon is already running.'
-    })
+    const [first, second] = await Promise.all([
+      supervisor.start('alpha', { domain: 'cycle' }),
+      supervisor.start('alpha', { domain: 'cycle' })
+    ])
+    const third = await supervisor.start('alpha', { domain: 'cycle' })
 
-    writeCycleState(root, 'beta', { pid: process.pid })
+    expect(first).toMatchObject({ mode: 'managed', domain: 'cycle', pid: 40_000 })
+    expect(second).toMatchObject({ mode: 'managed', domain: 'cycle', pid: 40_000 })
+    expect(third).toMatchObject({ mode: 'managed', domain: 'cycle', pid: 40_000 })
+    expect(spawnMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('starts independent cycle and channel workers without duplicating either domain', async () => {
+    const { root } = createProjectRoot()
+    const { supervisor, spawnMock, processRegistry } = createSupervisor(root)
+
+    await supervisor.start('alpha', { domain: 'cycle' })
+    await supervisor.start('alpha', { domain: 'channel' })
+
+    expect(spawnMock).toHaveBeenCalledTimes(2)
+    expect(processRegistry.get('daemon', 'alpha:cycle')?.pid).toBe(40_000)
+    expect(processRegistry.get('daemon', 'alpha:channel')?.pid).toBe(40_001)
+    expect(supervisor.get('alpha')).toMatchObject({
+      mode: 'managed',
+      domain: 'all'
+    })
+    await expect(supervisor.start('alpha', { domain: 'all' })).resolves.toMatchObject({
+      mode: 'managed',
+      domain: 'all'
+    })
+    expect(spawnMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not start or adopt a fresh external daemon', async () => {
+    const { root, context } = createProjectRoot()
+    const { supervisor, spawnMock } = createSupervisor(root)
+    writeCycleState(context, 'beta', { pid: process.pid })
+
     expect(supervisor.get('beta').mode).toBe('attached')
     await expect(supervisor.start('beta')).rejects.toMatchObject({
       code: 'CONFLICT',
       message: 'An external daemon is already running.'
     })
-    expect(spawnMock).toHaveBeenCalledTimes(1)
+    expect(spawnMock).not.toHaveBeenCalled()
   })
 
   it('does not stop an attached daemon owned outside the desktop client', async () => {
-    const root = createProjectRoot()
+    const { root, context } = createProjectRoot()
     const { supervisor, spawnMock } = createSupervisor(root)
-    writeCycleState(root, 'alpha', { pid: process.pid })
+    writeCycleState(context, 'alpha', { pid: process.pid })
+    const killSpy = vi.spyOn(process, 'kill')
 
     expect(supervisor.get('alpha')).toMatchObject({
       mode: 'attached',
@@ -226,17 +334,36 @@ describe('DaemonSupervisor', () => {
       })
     )
     expect(spawnMock).not.toHaveBeenCalled()
-    expect(readWorkerState(root, 'alpha')).toMatchObject({
+    expect(killSpy.mock.calls.filter(([, signal]) => signal && signal !== 0)).toEqual([])
+    expect(readWorkerState(context, 'alpha')).toMatchObject({
       status: 'running',
       stop_requested_at: null
     })
+    killSpy.mockRestore()
+  })
+
+  it('refuses to signal a child whose pid no longer matches the owned handle', async () => {
+    const { root } = createProjectRoot()
+    const { supervisor } = createSupervisor(root)
+    const killSpy = vi.spyOn(process, 'kill')
+    await supervisor.start('alpha')
+    const child = children.at(-1)!
+    child.pid = process.pid
+
+    await expect(supervisor.stop('alpha')).rejects.toMatchObject({
+      code: 'CONFLICT',
+      message: 'The daemon is not managed by this client.'
+    })
+    expect(child.kills).toEqual([])
+    expect(killSpy.mock.calls.filter(([, signal]) => signal && signal !== 0)).toEqual([])
+    killSpy.mockRestore()
   })
 
   it('falls back to safe channel stop only for roles still running after the child exits', async () => {
-    const root = createProjectRoot()
+    const { root, context } = createProjectRoot()
     const { supervisor } = createSupervisor(root, { closeOnKill: true })
     await supervisor.start('alpha', { domain: 'channel' })
-    writeChannelWorkerState(root, 'alpha', {
+    writeChannelWorkerState(context, 'alpha', {
       subject: 'alpha',
       domain: 'channel',
       schema_version: 2,
@@ -257,12 +384,12 @@ describe('DaemonSupervisor', () => {
     await expect(supervisor.stop('alpha', 'operator_test')).resolves.toMatchObject({
       mode: 'none'
     })
-    expect(readChannelWorkerState(root, 'alpha')?.workers.presence.status).toBe('stopped')
-    expect(readChannelWorkerState(root, 'alpha')?.workers.notify.status).toBe('stopped')
+    expect(readChannelWorkerState(context, 'alpha')?.workers.presence.status).toBe('stopped')
+    expect(readChannelWorkerState(context, 'alpha')?.workers.notify.status).toBe('stopped')
   })
 
   it('stops a managed daemon without starting a real process', async () => {
-    const root = createProjectRoot()
+    const { root, context } = createProjectRoot()
     const { supervisor, processRegistry, published } = createSupervisor(root, {
       closeOnKill: true
     })
@@ -274,7 +401,7 @@ describe('DaemonSupervisor', () => {
     expect(child.kills).toEqual(['SIGTERM'])
     expect(result.mode).toBe('none')
     expect(processRegistry.get('daemon', 'alpha')).toBeNull()
-    expect(readWorkerState(root, 'alpha')).toMatchObject({
+    expect(readWorkerState(context, 'alpha')).toMatchObject({
       status: 'stopped',
       stop_requested_at: expect.any(String)
     })
@@ -286,15 +413,15 @@ describe('DaemonSupervisor', () => {
   })
 
   it('projects stale and zombie worker-state independently of ownership', async () => {
-    const root = createProjectRoot()
+    const { root, context } = createProjectRoot()
     const { supervisor, spawnMock } = createSupervisor(root)
 
-    writeCycleState(root, 'alpha', {
+    writeCycleState(context, 'alpha', {
       pid: process.pid,
       heartbeat_at: new Date(Date.now() - 10_000).toISOString(),
       stale_after_ms: 1
     })
-    writeCycleState(root, 'beta', {
+    writeCycleState(context, 'beta', {
       pid: 999_999_999,
       heartbeat_at: new Date().toISOString(),
       stale_after_ms: 60_000
@@ -312,20 +439,20 @@ describe('DaemonSupervisor', () => {
     })
     await expect(supervisor.start('alpha')).rejects.toMatchObject({
       code: 'CONFLICT',
-      message: 'An external daemon is already running.'
+      message: 'A live worker is still present and cannot be replaced safely.'
     })
     expect(spawnMock).not.toHaveBeenCalled()
   })
 
   it('does not let a stale domain hide another attached worker', async () => {
-    const root = createProjectRoot()
+    const { root, context } = createProjectRoot()
     const { supervisor, spawnMock } = createSupervisor(root)
-    writeCycleState(root, 'alpha', {
+    writeCycleState(context, 'alpha', {
       pid: 999_999_999,
       heartbeat_at: new Date(Date.now() - 10_000).toISOString(),
       stale_after_ms: 1
     })
-    writeChannelWorkerState(root, 'alpha', {
+    writeChannelWorkerState(context, 'alpha', {
       subject: 'alpha',
       domain: 'channel',
       schema_version: 2,
@@ -350,12 +477,138 @@ describe('DaemonSupervisor', () => {
     expect(spawnMock).not.toHaveBeenCalled()
   })
 
-  it('exposes redacted JEA-owned log paths when managed startup fails', async () => {
-    const root = createProjectRoot()
-    const processRegistry = new ManagedProcessRegistry()
-    const events = new DesktopEventBus()
-    const spawnMock = vi.fn(() => {
-      const child = new FakeChild(41_000 + children.length, true)
+  it('repairs a dead-PID worker without deleting queued work or history', async () => {
+    const { root, context } = createProjectRoot()
+    const { supervisor, spawnMock } = createSupervisor(root)
+    const history = writeHistoryFixtures(context, 'alpha')
+    writeCycleState(context, 'alpha', { pid: 999_999_991 })
+    writeChannelWorkerState(context, 'alpha', {
+      subject: 'alpha',
+      domain: 'channel',
+      schema_version: 2,
+      pid: 999_999_992,
+      status: 'running',
+      workers: {
+        notify: {
+          role: 'notify',
+          pid: 999_999_992,
+          status: 'running',
+          heartbeat_at: new Date().toISOString(),
+          stale_after_ms: 60_000
+        }
+      }
+    })
+
+    expect(supervisor.get('alpha').mode).toBe('zombie')
+    await expect(supervisor.repair('alpha', { domain: 'cycle' })).resolves.toMatchObject({
+      mode: 'zombie'
+    })
+    expect(readWorkerState(context, 'alpha')?.status).toBe('stopped')
+    expect(readChannelWorkerState(context, 'alpha')?.workers.notify.status).toBe('running')
+    expectHistoryUnchanged(history)
+
+    await expect(supervisor.repair('alpha', { domain: 'channel' })).resolves.toMatchObject({
+      mode: 'none'
+    })
+    expect(readChannelWorkerState(context, 'alpha')?.workers.notify.status).toBe('stopped')
+    expect(readWorkerState(context, 'alpha')?.status).toBe('stopped')
+    expectHistoryUnchanged(history)
+
+    const started = await supervisor.start('alpha', { domain: 'cycle' })
+    expect(started.mode).toBe('managed')
+    expect(spawnMock).toHaveBeenCalledTimes(1)
+    expectHistoryUnchanged(history)
+  })
+
+  it('rejects repair when a pid is still alive', async () => {
+    const { root, context } = createProjectRoot()
+    const { supervisor } = createSupervisor(root)
+    writeCycleState(context, 'alpha', { pid: process.pid })
+    const history = writeHistoryFixtures(context, 'alpha')
+
+    await expect(supervisor.repair('alpha', { domain: 'cycle' })).rejects.toMatchObject({
+      code: 'CONFLICT',
+      message: 'The worker process is still alive and cannot be repaired.'
+    })
+    expect(readWorkerState(context, 'alpha')).toMatchObject({
+      status: 'running',
+      pid: process.pid
+    })
+    expectHistoryUnchanged(history)
+  })
+
+  it('keeps cycle and channel repair isolated from each other', async () => {
+    const { root, context } = createProjectRoot()
+    const { supervisor } = createSupervisor(root)
+    writeCycleState(context, 'alpha', { pid: 999_999_993 })
+    writeChannelWorkerState(context, 'alpha', {
+      subject: 'alpha',
+      domain: 'channel',
+      schema_version: 2,
+      pid: process.pid,
+      status: 'running',
+      workers: {
+        agent: {
+          role: 'agent',
+          pid: process.pid,
+          status: 'running',
+          heartbeat_at: new Date().toISOString(),
+          stale_after_ms: 60_000
+        }
+      }
+    })
+    const beforeChannel = JSON.stringify(readChannelWorkerState(context, 'alpha'))
+    const beforeCycle = JSON.stringify(readWorkerState(context, 'alpha'))
+
+    await supervisor.repair('alpha', { domain: 'cycle' })
+    expect(readWorkerState(context, 'alpha')?.status).toBe('stopped')
+    expect(JSON.stringify(readChannelWorkerState(context, 'alpha'))).toBe(beforeChannel)
+
+    await expect(supervisor.repair('alpha', { domain: 'channel' })).rejects.toMatchObject({
+      code: 'CONFLICT',
+      message: 'The worker process is still alive and cannot be repaired.'
+    })
+    expect(JSON.stringify(readChannelWorkerState(context, 'alpha'))).toBe(beforeChannel)
+    expect(readWorkerState(context, 'alpha')?.status).toBe('stopped')
+    expect(JSON.stringify(readWorkerState(context, 'alpha'))).not.toBe(beforeCycle)
+  })
+
+  it('does not repair cycle when domain=all is blocked by a live channel pid', async () => {
+    const { root, context } = createProjectRoot()
+    const { supervisor } = createSupervisor(root)
+    writeCycleState(context, 'alpha', { pid: 999_999_994 })
+    writeChannelWorkerState(context, 'alpha', {
+      subject: 'alpha',
+      domain: 'channel',
+      schema_version: 2,
+      pid: process.pid,
+      status: 'running',
+      workers: {
+        agent: {
+          role: 'agent',
+          pid: process.pid,
+          status: 'running',
+          heartbeat_at: new Date().toISOString(),
+          stale_after_ms: 60_000
+        }
+      }
+    })
+    const beforeCycle = JSON.stringify(readWorkerState(context, 'alpha'))
+    const beforeChannel = JSON.stringify(readChannelWorkerState(context, 'alpha'))
+
+    await expect(supervisor.repair('alpha', { domain: 'all' })).rejects.toMatchObject({
+      code: 'CONFLICT',
+      message: 'The worker process is still alive and cannot be repaired.'
+    })
+    expect(JSON.stringify(readWorkerState(context, 'alpha'))).toBe(beforeCycle)
+    expect(JSON.stringify(readChannelWorkerState(context, 'alpha'))).toBe(beforeChannel)
+  })
+
+  it('reports a redacted log path when a managed daemon exits before ready', async () => {
+    const { root, jeaHome } = createProjectRoot()
+    const { supervisor, spawnMock } = createSupervisor(root, { startupTimeoutMs: 200 })
+    spawnMock.mockImplementationOnce(() => {
+      const child = new FakeChild(41_000, false)
       children.push(child)
       queueMicrotask(() => {
         child.emit('spawn')
@@ -363,27 +616,40 @@ describe('DaemonSupervisor', () => {
       })
       return child as unknown as ChildProcess
     })
-    const supervisor = new DaemonSupervisor(
-      root,
-      processRegistry,
-      events,
-      spawnMock as unknown as typeof import('node:child_process').spawn,
-      10,
-      join(root, 'runtime'),
-      80
-    )
+
+    const error = await supervisor.start('alpha', { domain: 'cycle' }).catch((caught) => caught)
+    expect(error).toMatchObject({
+      code: 'OPERATION_FAILED',
+      message: expect.stringMatching(
+        /exited before becoming ready\. See <JEA_HOME>\/logs\/daemon-alpha\.desktop\.stderr\.log\.$/
+      )
+    })
+    expect(String((error as Error).message)).not.toContain(jeaHome)
+  })
+
+  it('terminates a managed daemon that misses the startup timeout', async () => {
+    const { root } = createProjectRoot()
+    const { supervisor } = createSupervisor(root, {
+      startupTimeoutMs: 120,
+      closeOnKill: true
+    })
 
     await expect(supervisor.start('alpha', { domain: 'cycle' })).rejects.toMatchObject({
       code: 'OPERATION_FAILED',
-      message: expect.stringMatching(/<JEA_HOME>\/logs\/daemon-alpha\.desktop\.(stdout|stderr)\.log/)
+      message: expect.stringMatching(
+        /did not become ready before the startup timeout\. See <JEA_HOME>\/logs\/daemon-alpha\.desktop\.stderr\.log\.$/
+      )
     })
+    expect(children.at(-1)?.kills).toEqual(['SIGTERM'])
     expect(supervisor.get('alpha').mode).toBe('none')
   })
 
   it('terminates a spawned daemon when process ownership registration fails', async () => {
-    const root = createProjectRoot()
-    const { supervisor, processRegistry } = createSupervisor(root, {
-      closeOnKill: true
+    const { root } = createProjectRoot()
+    const processRegistry = new ManagedProcessRegistry()
+    const { supervisor } = createSupervisor(root, {
+      closeOnKill: true,
+      processRegistry
     })
     await processRegistry.shutdownAll('preexisting_shutdown')
 
@@ -397,11 +663,11 @@ describe('DaemonSupervisor', () => {
   })
 
   it('process-registry shutdown cleans up managed daemons but leaves attached state alone', async () => {
-    const root = createProjectRoot()
+    const { root, context } = createProjectRoot()
     const { supervisor, processRegistry, published } = createSupervisor(root, {
       closeOnKill: true
     })
-    writeCycleState(root, 'beta', { pid: process.pid })
+    writeCycleState(context, 'beta', { pid: process.pid })
     await supervisor.start('alpha')
     const managedChild = children.at(-1)!
 
@@ -411,7 +677,7 @@ describe('DaemonSupervisor', () => {
     expect(supervisor.get('alpha').mode).toBe('none')
     expect(processRegistry.list()).toEqual([])
     expect(supervisor.get('beta').mode).toBe('attached')
-    expect(readWorkerState(root, 'beta')).toMatchObject({
+    expect(readWorkerState(context, 'beta')).toMatchObject({
       status: 'running',
       stop_requested_at: null
     })
@@ -448,6 +714,21 @@ describe('ManagedProcessRegistry', () => {
     releaseCleanup()
     await Promise.all([first, second])
     expect(secondFinished).toBe(true)
+    expect(registry.list()).toEqual([])
+  })
+
+  it('bounds app-quit cleanup to the shutdown deadline', async () => {
+    const registry = new ManagedProcessRegistry(20)
+    registry.register({
+      kind: 'daemon',
+      id: 'alpha',
+      pid: 7,
+      cleanup: () => new Promise(() => undefined)
+    })
+
+    const started = Date.now()
+    await registry.shutdownAll('app_quit')
+    expect(Date.now() - started).toBeLessThan(1_000)
     expect(registry.list()).toEqual([])
   })
 })
