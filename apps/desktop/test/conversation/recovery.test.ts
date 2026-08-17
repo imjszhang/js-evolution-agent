@@ -47,6 +47,29 @@ describe('conversation recovery derivation', () => {
     }
   })
 
+  it('does not allow sending while Channel is starting', () => {
+    const pending = deriveConversationRecovery({
+      subjectReadiness: fixtureSubjectReadiness('alpha', {
+        channel: { state: 'stopped', reasons: ['channel_stopped'] },
+        conversation: { state: 'blocked', reasons: ['conversation_blocked_channel'] }
+      }),
+      desktopChannelEnabled: true,
+      serviceStartState: 'pending'
+    })
+    expect(pending).toMatchObject({ kind: 'starting', canSend: false, showStartChannel: false })
+    expect(conversationCanCompose(pending, { sessionId: 'main', draft: 'hello', sendState: 'idle' })).toBe(false)
+
+    const starting = deriveConversationRecovery({
+      subjectReadiness: fixtureSubjectReadiness('alpha', {
+        channel: { state: 'starting', reasons: ['channel_starting'] },
+        conversation: { state: 'blocked', reasons: ['conversation_blocked_channel'] }
+      }),
+      desktopChannelEnabled: true,
+      serviceStartState: 'idle'
+    })
+    expect(starting).toMatchObject({ kind: 'starting', canSend: false, showStartChannel: false })
+  })
+
   it('keeps sending enabled when Cycle is stalled and Channel is ready', () => {
     const recovery = deriveConversationRecovery({
       subjectReadiness: fixtureSubjectReadiness('alpha', {

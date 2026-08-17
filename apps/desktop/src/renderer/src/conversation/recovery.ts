@@ -62,7 +62,7 @@ export function deriveConversationRecovery(input: {
   if (input.serviceStartState === 'pending' || channelState === 'starting') {
     return {
       kind: 'starting',
-      canSend: !modelBlocked,
+      canSend: false,
       showStartChannel: false,
       showNativeOnly: false,
       blockedReasons,
