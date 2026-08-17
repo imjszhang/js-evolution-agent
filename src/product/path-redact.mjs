@@ -13,6 +13,13 @@ function normalizePrefix(value) {
   return resolve(value).replace(/[\\/]+$/, '');
 }
 
+function candidatePrefixes(value) {
+  if (!value) return [];
+  const raw = String(value).replace(/[\\/]+$/, '');
+  const resolved = normalizePrefix(value);
+  return [...new Set([raw, resolved].filter(Boolean))];
+}
+
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -22,24 +29,39 @@ function prefixPattern(prefix) {
   return new RegExp(escaped.replace(/\\\\\//g, '[\\\\/]').replace(/\\\\/g, '[\\\\/]'), 'g');
 }
 
+function toPublicSeparators(value) {
+  return String(value || '').replace(/\\/g, '/');
+}
+
+function startsWithPrefix(path, prefix) {
+  return path === prefix || path.startsWith(`${prefix}/`) || path.startsWith(`${prefix}\\`);
+}
+
 export function redactAbsolutePath(path, {
   home = osHomedir(),
   jeaHome = null,
 } = {}) {
   if (typeof path !== 'string' || !path) return path;
   let next = path;
-  const jea = jeaHome ? normalizePrefix(jeaHome) : '';
-  const homePrefix = home ? normalizePrefix(home) : '';
-  if (jea && (next === jea || next.startsWith(`${jea}/`) || next.startsWith(`${jea}\\`))) {
-    next = `${JEA_HOME_TOKEN}${next.slice(jea.length)}`;
+  for (const jea of candidatePrefixes(jeaHome)) {
+    if (startsWithPrefix(next, jea)) {
+      next = `${JEA_HOME_TOKEN}${toPublicSeparators(next.slice(jea.length))}`;
+      break;
+    }
   }
-  if (homePrefix && (next === homePrefix || next.startsWith(`${homePrefix}/`) || next.startsWith(`${homePrefix}\\`))) {
-    next = `${HOME_TOKEN}${next.slice(homePrefix.length)}`;
+  for (const homePrefix of candidatePrefixes(home)) {
+    if (startsWithPrefix(next, homePrefix)) {
+      next = `${HOME_TOKEN}${toPublicSeparators(next.slice(homePrefix.length))}`;
+      break;
+    }
   }
   next = next
     .replace(/(?:file:\/\/)?\/Users\/[^/\\"'`\s]+/g, `${HOME_TOKEN}`)
     .replace(/(?:file:\/\/)?\/home\/[^/\\"'`\s]+/g, `${HOME_TOKEN}`)
     .replace(/[A-Za-z]:\\Users\\[^\\"'`\s]+/g, HOME_TOKEN);
+  if (next.startsWith(JEA_HOME_TOKEN) || next.startsWith(HOME_TOKEN)) {
+    next = toPublicSeparators(next);
+  }
   return next;
 }
 

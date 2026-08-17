@@ -88,7 +88,8 @@ export function evaluatePublishGuard({
     };
   }
 
-  const fileMetadata = absDir ? readBuildMetadataFile(resolve(absDir, 'build-metadata.json')) : null;
+  const metadataPath = absDir ? resolve(absDir, 'build-metadata.json') : null;
+  const fileMetadata = metadataPath ? readBuildMetadataFile(metadataPath) : null;
   const dirty = evidence.dirty === true
     || evidence.provenance?.dirty === true
     || fileMetadata?.dirty === true;
@@ -105,21 +106,32 @@ export function evaluatePublishGuard({
       ],
     };
   }
-  if (fileMetadata) {
-    const clean = assertCleanProvenance(fileMetadata);
-    if (!clean.ok) {
-      return {
-        ok: false,
-        status: 'blocked',
-        publish: true,
-        reason: clean.reason,
-        evidencePath,
-        evidence,
-        notes: [
-          'Fail closed: embedded build metadata is not a clean, traceable provenance record.',
-        ],
-      };
-    }
+  if (!fileMetadata) {
+    return {
+      ok: false,
+      status: 'blocked',
+      publish: true,
+      reason: 'build_metadata_missing',
+      evidencePath,
+      evidence,
+      notes: [
+        'Fail closed: publish requires an embedded build-metadata.json next to certification evidence.',
+      ],
+    };
+  }
+  const clean = assertCleanProvenance(fileMetadata);
+  if (!clean.ok) {
+    return {
+      ok: false,
+      status: 'blocked',
+      publish: true,
+      reason: clean.reason,
+      evidencePath,
+      evidence,
+      notes: [
+        'Fail closed: embedded build metadata is not a clean, traceable provenance record.',
+      ],
+    };
   }
 
   return {

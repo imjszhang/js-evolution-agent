@@ -165,6 +165,19 @@ describe('package smoke commit certification', () => {
 });
 
 describe('release publish dirty provenance', () => {
+  it('blocks certified evidence when build-metadata.json is missing', () => {
+    const dir = tempDir('jea-publish-meta-missing-');
+    writeFileSync(join(dir, 'certification-evidence.json'), JSON.stringify({
+      status: 'certified',
+      release: '0.1.0',
+      platform: 'macos-arm64',
+      issue77: 'ok',
+    }));
+    const report = evaluatePublishGuard({ publish: true, evidenceDir: dir });
+    expect(report.ok).toBe(false);
+    expect(report.reason).toBe('build_metadata_missing');
+  });
+
   it('blocks certified evidence when the source tree is dirty', () => {
     const dir = tempDir('jea-publish-dirty-');
     writeFileSync(join(dir, 'certification-evidence.json'), JSON.stringify({

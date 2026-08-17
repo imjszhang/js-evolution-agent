@@ -44,6 +44,10 @@ describe('path redaction', () => {
       .toBe(`${HOME_TOKEN}/projects/secret`);
     expect(redactAbsolutePath(USER_HOME_CANARY, { home: '/tmp/other', jeaHome: '/tmp/jea' }))
       .toBe(`${HOME_TOKEN}/github/js-evolution-agent`);
+    expect(redactAbsolutePath('D:\\jea-home\\logs\\daemon-alpha.desktop.stdout.log', {
+      home: 'C:\\Users\\canary',
+      jeaHome: 'D:\\jea-home',
+    })).toBe(`${JEA_HOME_TOKEN}/logs/daemon-alpha.desktop.stdout.log`);
   });
 
   it('walks objects and never leaves machine-specific absolute homes', () => {
