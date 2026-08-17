@@ -89,11 +89,15 @@ export function ChannelChatView({ subject }: { subject: string | null }) {
   }, [load])
 
   useEffect(() => window.jea.subscribe((event) => {
-    if (event.type !== 'projection.channel_updated' || event.subject !== subject) return
-    const next = event.payload.snapshot as ChannelSnapshot | undefined
-    if (next?.subject === subject) setSnapshot(next)
-    void readSession(false)
-  }), [readSession, subject])
+    if (event.subject && event.subject !== subject) return
+    if (event.type === 'projection.refresh_failed') {
+      setError('Channel projection is stale.')
+      return
+    }
+    if (event.type === 'projection.channel_updated') {
+      void load()
+    }
+  }), [load, subject])
 
   const selectSession = (next: string) => {
     requestGeneration.current += 1

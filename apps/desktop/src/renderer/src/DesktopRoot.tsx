@@ -9,7 +9,7 @@ import {
 } from '@jea/app'
 import type { JeaClient } from '../../client-api/jea-client'
 import { createConversationFeature } from './conversation/feature'
-import { createRendererJeaClient } from './conversation/host-client'
+import { createDesktopProjectionWatchPort, createRendererJeaClient } from './conversation/host-client'
 
 export function DesktopRoot({
   client,
@@ -18,7 +18,9 @@ export function DesktopRoot({
   const resolved = client ?? createRendererJeaClient()
   const features = useMemo(
     () => [
-      createConversationFeature(resolved),
+      createConversationFeature(resolved, {
+        projectionWatch: createDesktopProjectionWatchPort()
+      }),
       createEvolutionInspectorFeature({ client: resolved }),
       ...(props.features ?? [])
     ],

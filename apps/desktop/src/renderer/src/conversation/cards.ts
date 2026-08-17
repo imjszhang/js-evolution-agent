@@ -8,6 +8,7 @@ export type ConversationCardKind =
   | 'cycle_failed'
   | 'blocked'
   | 'offline'
+  | 'stale'
   | 'desktop_disabled'
   | 'daemon_unhealthy'
   | 'model_unavailable'
@@ -70,6 +71,7 @@ export function deriveInlineCards(input: {
   observability: EvolutionObservability | null
   records: WorkspaceMessage[]
   error: ConversationErrorView | null
+  stale?: boolean
 }): ConversationCard[] {
   const cards: ConversationCard[] = []
   const seen = new Set<string>()
@@ -112,9 +114,20 @@ export function deriveInlineCards(input: {
     })
   }
 
+  if (input.stale || input.error?.kind === 'unavailable' && /stale|offline/i.test(input.error.message)) {
+    push({
+      id: 'status:stale',
+      kind: 'stale',
+      title: 'Projection is stale',
+      body: 'Live status updates stopped. The last green reading is no longer trusted.',
+      tone: 'warn',
+      source: 'service'
+    })
+  }
+
   const health = input.service?.health ?? ''
   const stopped = !input.service?.pid && (input.service?.mode === 'none' || input.service?.mode === 'stopped')
-  const unhealthy = /unhealthy|error|failed|offline/i.test(health) || Boolean(input.service?.detail)
+  const unhealthy = /unhealthy|error|failed|offline|stale/i.test(health) || Boolean(input.service?.detail)
   if (input.service && (stopped || unhealthy || input.error?.kind === 'daemon_unhealthy' || input.error?.kind === 'unavailable')) {
     push({
       id: 'status:daemon',

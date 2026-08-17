@@ -1,18 +1,31 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { DesktopEventBus } from '../src/main/event-bus'
 import { ProjectionWatcher } from '../src/main/projection-watcher'
 
-function projectRoot(): string {
+function projectRoot(subjects = ['alpha', 'beta']): string {
   const root = mkdtempSync(join(tmpdir(), 'jea-desktop-projection-'))
-  mkdirSync(join(root, 'runtime', 'subjects', 'alpha-data'), { recursive: true })
+  const registrySubjects = Object.fromEntries(subjects.map((name) => [name, { data_namespace: `${name}-data` }]))
+  mkdirSync(join(root, 'runtime', 'subjects'), { recursive: true })
+  for (const name of subjects) {
+    mkdirSync(join(root, 'runtime', 'subjects', `${name}-data`, 'data', 'evolution'), { recursive: true })
+    mkdirSync(join(root, 'runtime', 'subjects', `${name}-data`, 'data', 'channel'), { recursive: true })
+  }
   writeFileSync(join(root, 'runtime', 'subjects', 'registry.json'), JSON.stringify({
-    default_subject: 'alpha',
-    subjects: { alpha: { data_namespace: 'alpha-data' } }
+    default_subject: subjects[0],
+    subjects: registrySubjects
   }))
   return root
+}
+
+function fdCount(): number | null {
+  try {
+    return readdirSync('/proc/self/fd').length
+  } catch {
+    return null
+  }
 }
 
 describe('ProjectionWatcher', () => {
@@ -25,13 +38,13 @@ describe('ProjectionWatcher', () => {
     const callbackRef: { current?: (event: { reason: string }) => void } = {}
     const watcherFactory = vi.fn((options: any) => {
       callbackRef.current = options.onRuntimeChange
-      return { start: vi.fn(), stop, notify: vi.fn() }
+      return { start: vi.fn(), stop, notify: vi.fn(), getWatchedPaths: () => ['/tmp/watch'] }
     })
     const ops = {
       refresh: vi.fn(() => [{
         subject: { name: 'alpha', namespace: 'alpha-data', isDefault: true },
-        daemon: {},
-        observability: {}
+        daemon: { worker: { running: true, pid: 11 }, health: { status: 'healthy', ok: true }, tasks: { counts: { pending: 2 } } },
+        observability: { attention: { cycle_status: 'completed', cycle_id: 'c1', count: 1 }, open_cycles: 0 }
       }])
     }
     const todo = {
@@ -49,33 +62,37 @@ describe('ProjectionWatcher', () => {
       root,
       ops as any,
       todo as any,
-      { get: vi.fn(() => ({ subject: 'alpha', projection: {}, sessions: [], inbound: {} })) } as any,
+      { get: vi.fn(() => ({ subject: 'alpha', projection: { worker: { running: true } }, sessions: [], inbound: {} })) } as any,
       events,
       watcherFactory as any
     )
 
     expect(projection.watch('alpha')).toEqual({ subject: 'alpha', watching: true })
+    expect(projection.status()).toMatchObject({ subject: 'alpha', watching: true, watcherCount: 1 })
     callbackRef.current?.({ reason: 'watch' })
     expect(published).toEqual([
       'projection.ops_updated',
+      'service.status',
       'projection.todo_updated',
+      'evolution.updated',
       'projection.channel_updated'
     ])
     expect(ops.refresh).toHaveBeenCalledTimes(2)
     expect(projection.stop()).toEqual({ stopped: true })
     expect(stop).toHaveBeenCalledOnce()
+    expect(projection.status().watcherCount).toBe(0)
   })
 
   it('publishes a safe failure event when rebuilding a projection fails', () => {
     const root = projectRoot()
     const events = new DesktopEventBus()
-    const published: string[] = []
-    events.subscribe((event) => published.push(event.type))
+    const published: Array<{ type: string; payload: Record<string, unknown> }> = []
+    events.subscribe((event) => published.push({ type: event.type, payload: event.payload }))
     const callbackRef: { current?: (event: { reason: string }) => void } = {}
     const ops = {
       refresh: vi.fn()
         .mockReturnValueOnce([{ subject: { name: 'alpha' } }])
-        .mockImplementationOnce(() => { throw new Error('secret') })
+        .mockImplementationOnce(() => { throw new Error('DEEPSEEK_API_KEY=sk-secret owner_token=abc') })
     }
     const projection = new ProjectionWatcher(
       root,
@@ -90,6 +107,142 @@ describe('ProjectionWatcher', () => {
     )
     projection.watch('alpha')
     callbackRef.current?.({ reason: 'reconcile' })
-    expect(published).toEqual(['projection.refresh_failed'])
+    expect(published.map((item) => item.type)).toEqual(['projection.refresh_failed', 'evolution.updated'])
+    const dumped = JSON.stringify(published)
+    expect(dumped).not.toContain('sk-secret')
+    expect(dumped).not.toContain('owner_token')
+    expect(dumped).not.toContain('DEEPSEEK_API_KEY')
+    expect(published[0]?.payload).toMatchObject({ stale: true, reason: 'reconcile' })
+  })
+
+  it('retargets the previous watch before a new subject can apply and ignores late events', () => {
+    const root = projectRoot()
+    const events = new DesktopEventBus()
+    const published: Array<{ type: string; subject?: string }> = []
+    events.subscribe((event) => published.push({ type: event.type, subject: event.subject }))
+    const callbacks = new Map<string, (event: { reason: string }) => void>()
+    const stops: string[] = []
+    const watcherFactory = vi.fn((options: any) => {
+      const subject = options.subjectMeta.subject
+      callbacks.set(subject, options.onRuntimeChange)
+      return {
+        start: vi.fn(),
+        stop: vi.fn(() => { stops.push(subject) }),
+        notify: vi.fn()
+      }
+    })
+    const ops = {
+      refresh: vi.fn((subject: string) => [{
+        subject: { name: subject },
+        daemon: {},
+        observability: { attention: { cycle_status: subject === 'alpha' ? 'failed' : 'completed' } }
+      }])
+    }
+    const projection = new ProjectionWatcher(
+      root,
+      ops as any,
+      { get: vi.fn((subject: string) => ({ subject, questions: [], briefs: [], facts: [], goals: null, pending_cycle_request: null, attention: {} })) } as any,
+      { get: vi.fn((subject: string) => ({ subject, projection: {}, sessions: [], inbound: {} })) } as any,
+      events,
+      watcherFactory as any
+    )
+
+    projection.watch('alpha')
+    projection.watch('beta')
+    expect(stops).toEqual(['alpha'])
+    expect(projection.status()).toMatchObject({ subject: 'beta', watcherCount: 1 })
+    const before = published.length
+    callbacks.get('alpha')?.({ reason: 'late' })
+    expect(published.slice(before)).toEqual([])
+    callbacks.get('beta')?.({ reason: 'watch' })
+    expect(published.slice(before).some((item) => item.type === 'evolution.updated' && item.subject === 'beta')).toBe(true)
+  })
+
+  it('keeps one watcher after ten subject switches and does not grow file handles', () => {
+    const root = projectRoot()
+    const events = new DesktopEventBus()
+    const live: Array<{ start: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn> }> = []
+    const watcherFactory = vi.fn(() => {
+      const handle = { start: vi.fn(), stop: vi.fn(), notify: vi.fn(), getWatchedPaths: () => ['a'] }
+      live.push(handle)
+      return handle
+    })
+    const ops = { refresh: vi.fn((subject: string) => [{ subject: { name: subject }, daemon: {}, observability: {} }]) }
+    const projection = new ProjectionWatcher(
+      root,
+      ops as any,
+      { get: vi.fn((subject: string) => ({ subject, questions: [], briefs: [], facts: [], goals: null, pending_cycle_request: null, attention: {} })) } as any,
+      { get: vi.fn((subject: string) => ({ subject, projection: {}, sessions: [], inbound: {} })) } as any,
+      events,
+      watcherFactory as any
+    )
+
+    projection.watch('alpha')
+    const baseline = { watchers: projection.status().watcherCount, fds: fdCount() }
+    for (let index = 0; index < 10; index += 1) {
+      projection.watch(index % 2 === 0 ? 'beta' : 'alpha')
+    }
+    const final = { watchers: projection.status().watcherCount, fds: fdCount() }
+    expect(final.watchers).toBe(1)
+    expect(final.watchers).toBe(baseline.watchers)
+    expect(live.filter((item) => item.stop.mock.calls.length === 0)).toHaveLength(1)
+    if (baseline.fds != null && final.fds != null) {
+      expect(final.fds).toBeLessThanOrEqual(baseline.fds + 2)
+    }
+    projection.stop()
+    expect(projection.status().watcherCount).toBe(0)
+  })
+
+  it('omits secrets and conversation message content from live event payloads', () => {
+    const root = projectRoot()
+    const events = new DesktopEventBus()
+    const published: unknown[] = []
+    events.subscribe((event) => published.push(event))
+    const callbackRef: { current?: (event: { reason: string }) => void } = {}
+    const projection = new ProjectionWatcher(
+      root,
+      {
+        refresh: vi.fn(() => [{
+          subject: { name: 'alpha' },
+          daemon: { health: { status: 'healthy' }, api_key: 'sk-live', owner_token: 'own' },
+          observability: { attention: { cycle_status: 'completed' } }
+        }])
+      } as any,
+      {
+        get: vi.fn(() => ({
+          subject: 'alpha',
+          questions: [{ id: 'q1', question: 'Need a decision?' }],
+          briefs: [],
+          facts: [],
+          goals: null,
+          pending_cycle_request: null,
+          attention: {},
+          access_token: 'web-token'
+        }))
+      } as any,
+      {
+        get: vi.fn(() => ({
+          subject: 'alpha',
+          projection: { worker: { running: false, blocked: true } },
+          sessions: [],
+          inbound: { processed: [{ content: 'secret user message', text: 'hello' }] }
+        }))
+      } as any,
+      events,
+      ((options: any) => {
+        callbackRef.current = options.onRuntimeChange
+        return { start: vi.fn(), stop: vi.fn(), notify: vi.fn() }
+      }) as any
+    )
+    projection.watch('alpha')
+    callbackRef.current?.({ reason: 'watch' })
+    const dumped = JSON.stringify(published)
+    expect(dumped).not.toContain('sk-live')
+    expect(dumped).not.toContain('own')
+    expect(dumped).not.toContain('web-token')
+    expect(dumped).not.toContain('secret user message')
+    expect(dumped).not.toMatch(/"content":"hello"/)
+    expect(published.some((event: any) => event.type === 'evolution.updated' && event.payload.cycle_status === 'completed')).toBe(true)
+    expect(published.some((event: any) => event.type === 'projection.channel_updated' && event.payload.channel.blocked === true)).toBe(true)
   })
 })

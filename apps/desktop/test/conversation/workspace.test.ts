@@ -300,6 +300,98 @@ describe('conversation workspace model', () => {
     expect(model.getSnapshot().cards.some((card) => card.kind === 'offline')).toBe(false)
   })
 
+  it('starts a product projection watch for the selected Subject and releases it on dispose', async () => {
+    const harness = createConversationHarness()
+    const model = new ConversationWorkspaceModel(harness.client, harness.projectionWatch)
+    await model.bootstrap()
+    expect(harness.watched).toEqual(['alpha'])
+    await model.selectSubject('beta')
+    expect(harness.watched).toEqual(['alpha', 'beta'])
+    model.dispose()
+    expect(harness.watchStops).toBe(1)
+  })
+
+  it('does not let a late previous-Subject event overwrite readiness or messages', async () => {
+    const harness = createConversationHarness({
+      subjects: [
+        {
+          name: 'alpha',
+          namespace: 'alpha-data',
+          isDefault: true,
+          selected: true,
+          desktopChannelEnabled: true,
+          sessions: [{ session_id: 'main', target: 'desktop:main', message_count: 1, last_message_at: '2026-08-16T00:00:00.000Z' }],
+          records: [{
+            id: 'alpha-1',
+            session_id: 'main',
+            role: 'user',
+            direction: 'inbound',
+            content: 'alpha only',
+            created_at: '2026-08-16T00:00:00.000Z',
+            offset: 0,
+            message_id: 'alpha-1'
+          }]
+        },
+        {
+          name: 'beta',
+          namespace: 'beta-data',
+          isDefault: false,
+          selected: false,
+          desktopChannelEnabled: true,
+          sessions: [{ session_id: 'main', target: 'desktop:main', message_count: 1, last_message_at: '2026-08-16T00:00:01.000Z' }],
+          records: [{
+            id: 'beta-1',
+            session_id: 'main',
+            role: 'user',
+            direction: 'inbound',
+            content: 'beta only',
+            created_at: '2026-08-16T00:00:01.000Z',
+            offset: 0,
+            message_id: 'beta-1'
+          }]
+        }
+      ]
+    })
+    harness.setSupport('alpha', {
+      readiness: { model: { configured: true, mode: 'deepseek' } },
+      observability: { attention: { cycle_status: 'failed', tldr: 'alpha failed' }, open_cycles: 1 }
+    })
+    harness.setSupport('beta', {
+      readiness: { model: { configured: false, mode: 'mock' } },
+      observability: { attention: { cycle_status: 'completed', tldr: 'beta done' }, open_cycles: 0 }
+    })
+    const model = new ConversationWorkspaceModel(harness.client, harness.projectionWatch)
+    await model.bootstrap()
+    harness.setSupportDelay(40)
+    harness.emit('projection.ops_updated', 'alpha', undefined, { reason: 'late-start' })
+    await model.selectSubject('beta')
+    harness.emit('projection.ops_updated', 'alpha', undefined, {
+      snapshot: { daemon: { health: { status: 'healthy' } } },
+      reason: 'late'
+    })
+    harness.emit('conversation.updated', 'alpha', 'main', { subject: 'alpha', session_id: 'main' })
+    await waitFor(model, () => model.getSnapshot().subject?.name === 'beta' && model.getSnapshot().records.length > 0)
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    const snapshot = model.getSnapshot()
+    expect(snapshot.subject?.name).toBe('beta')
+    expect(snapshot.records.map((record) => record.content)).toEqual(['beta only'])
+    expect(snapshot.readiness?.model.mode).toBe('mock')
+    expect(snapshot.observability?.attention?.cycle_status).toBe('completed')
+    expect(snapshot.observability?.attention?.tldr).not.toBe('alpha failed')
+  })
+
+  it('surfaces watcher failure as a visible stale state instead of keeping a green status', async () => {
+    const harness = createConversationHarness()
+    const model = new ConversationWorkspaceModel(harness.client, harness.projectionWatch)
+    await model.bootstrap()
+    expect(model.getSnapshot().stale).toBe(false)
+    harness.emit('projection.refresh_failed', 'alpha', undefined, { stale: true, reason: 'watch' })
+    await waitFor(model, () => model.getSnapshot().stale === true)
+    const snapshot = model.getSnapshot()
+    expect(snapshot.cards.some((card) => card.kind === 'stale')).toBe(true)
+    expect(snapshot.stale).toBe(true)
+  })
+
   it('keeps channel startup failures visible and retryable', async () => {
     const harness = createConversationHarness({
       service: { mode: 'none', pid: null, health: 'idle', detail: 'Channel worker is not running.' },
