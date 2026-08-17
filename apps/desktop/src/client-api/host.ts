@@ -180,6 +180,10 @@ export function createApplicationCommandHandlers(options: ApplicationCommandHost
         stringField(payload, 'note', { required: false })
       )
     },
+    'service.processCycleOnce': {
+      capability: 'write',
+      handle: (payload) => service.processCycleOnce(stringField(payload, 'subject')!)
+    },
     'setup.getReadiness': {
       capability: 'readonly',
       handle: (payload) => setup.getReadiness(stringField(payload, 'subject', { required: false }))

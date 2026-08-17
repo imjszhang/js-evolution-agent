@@ -8,6 +8,7 @@ import type {
   JeaEventEnvelope,
   ServiceStatus,
   SetupReadiness,
+  SubjectReadiness,
   SubjectRecord,
   SubjectSummary
 } from '../../../client-api/types'
@@ -247,6 +248,38 @@ export function createConversationHarness(options: ConversationHarnessOptions = 
           duplicate
         }
       }
+      if (command === 'service.getReadiness') {
+        requireSubject(subject)
+        return {
+          subject,
+          generated_at: nowIso(),
+          web_host: { state: 'stopped', reasons: ['web_host_stopped'] },
+          cycle: { state: 'stopped', reasons: ['cycle_stopped'] },
+          channel: { state: 'stopped', reasons: ['channel_stopped'] },
+          model: { state: 'running', mode: 'mock', reasons: ['model_mock'] },
+          conversation: { state: 'blocked', reasons: ['conversation_blocked_channel'] },
+          reasons: ['web_host_stopped', 'cycle_stopped', 'channel_stopped', 'model_mock', 'conversation_blocked_channel'],
+          allowed_actions: ['start_channel', 'start_cycle'],
+          actions: []
+        } satisfies SubjectReadiness
+      }
+      if (command === 'service.processCycleOnce') {
+        requireSubject(subject)
+        emit('evolution.updated', subject, undefined, { subject })
+        return {
+          subject,
+          status: 'idle',
+          reason: 'no_pending_evidence',
+          scanned: { scanned: true, enqueued_count: 0 },
+          backlog: { before: 0, after: 0 },
+          health: { before: { health: 'idle' }, after: { health: 'idle' } },
+          claim: null,
+          checkpoint: null,
+          events: [],
+          channel: { before: { pid: null }, after: { pid: null }, unchanged: true },
+          work: null
+        }
+      }
       if (command === 'service.getStatus') {
         if (supportDelayMs > 0) {
           await new Promise((resolve) => setTimeout(resolve, supportDelayMs))
@@ -261,7 +294,9 @@ export function createConversationHarness(options: ConversationHarnessOptions = 
         started.push(subject)
         service.mode = 'attached'
         service.pid = 4242
-        service.domain = 'channel'
+        service.domain = payload.domain === 'cycle' || payload.domain === 'all' || payload.domain === 'channel'
+          ? payload.domain
+          : 'channel'
         service.health = 'ok'
         service.detail = null
         emit('service.status', subject, undefined, { subject, mode: service.mode })

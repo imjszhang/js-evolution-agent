@@ -48,6 +48,8 @@ export function EvolutionInspector({
   )
   const [liveLoading, setLiveLoading] = useState(Boolean(client) && !snapshotProp)
   const [section, setSection] = useState<SectionId>('report')
+  const [cycleBusy, setCycleBusy] = useState<'process' | 'start' | null>(null)
+  const [allowedActions, setAllowedActions] = useState<string[]>([])
   const subject = adapters.selectedSubjectId ?? null
 
   const apply = useCallback((next: EvolutionInspectorSnapshot, loading = false) => {
@@ -73,6 +75,13 @@ export function EvolutionInspector({
         if (!cancelled) apply(next)
       })
     })
+    if (client.getServiceReadiness && subject) {
+      void client.getServiceReadiness(subject).then((readiness) => {
+        if (!cancelled) setAllowedActions(readiness.allowed_actions ?? [])
+      }).catch(() => {
+        if (!cancelled) setAllowedActions([])
+      })
+    }
     return () => {
       cancelled = true
       stopClient()
@@ -86,6 +95,36 @@ export function EvolutionInspector({
   const core = useMemo(() => projectEvolutionCore(snapshot), [snapshot])
   const safeState = resolveSafeState(snapshot, loading)
   const selected = timeline.find((item) => item.cycle_id === core.selected_cycle_id) ?? null
+
+  const backlogCount = typeof snapshot.observability?.attention?.backlog_count === 'number'
+    ? snapshot.observability.attention.backlog_count
+    : null
+  const canProcessOnce = Boolean(client?.processCycleOnce) && Boolean(subject)
+  const canStartCycle = Boolean(client?.startService)
+    && Boolean(subject)
+    && allowedActions.includes('start_cycle')
+
+  const onProcessOnce = () => {
+    if (!client?.processCycleOnce || !subject || cycleBusy) return
+    setCycleBusy('process')
+    void client.processCycleOnce(subject).finally(() => {
+      setCycleBusy(null)
+      if (controllerRef.current && !snapshotProp) {
+        void controllerRef.current.load(subject, snapshot.selectedCycleId).then((next) => apply(next))
+      }
+    })
+  }
+
+  const onStartCycle = () => {
+    if (!client?.startService || !subject || cycleBusy) return
+    setCycleBusy('start')
+    void client.startService(subject, 'cycle').finally(() => {
+      setCycleBusy(null)
+      if (controllerRef.current && !snapshotProp) {
+        void controllerRef.current.load(subject, snapshot.selectedCycleId).then((next) => apply(next))
+      }
+    })
+  }
 
   const onSelect = (cycleId: string) => {
     adapters.onSelectCycle?.(cycleId)
@@ -115,18 +154,43 @@ export function EvolutionInspector({
           <p className="truncate text-xs text-muted-foreground">
             {core.open_cycles > 0 ? t('evolutionOpenCycle') : t('evolutionRecentCycles')}
             {core.round_count ? ` · ${core.round_count}` : ''}
+            {backlogCount != null ? ` · ${t('evolutionBacklog')} ${backlogCount}` : ''}
           </p>
         </div>
-        {navFixtureCycleId ? (
-          <Button
-            variant="outline"
-            size="sm"
-            data-testid="evolution-open-cycle-fixture"
-            onClick={() => onSelect(navFixtureCycleId)}
-          >
-            {t('evolutionOpenFixtureCycle')}
-          </Button>
-        ) : null}
+        <div className="flex shrink-0 flex-wrap items-center gap-1">
+          {canProcessOnce ? (
+            <Button
+              variant="outline"
+              size="sm"
+              data-testid="evolution-process-once"
+              disabled={cycleBusy != null}
+              onClick={onProcessOnce}
+            >
+              {cycleBusy === 'process' ? t('evolutionProcessingOnce') : t('evolutionProcessOnce')}
+            </Button>
+          ) : null}
+          {canStartCycle ? (
+            <Button
+              variant="outline"
+              size="sm"
+              data-testid="evolution-start-cycle"
+              disabled={cycleBusy != null}
+              onClick={onStartCycle}
+            >
+              {cycleBusy === 'start' ? t('evolutionStartingCycle') : t('evolutionStartCycle')}
+            </Button>
+          ) : null}
+          {navFixtureCycleId ? (
+            <Button
+              variant="outline"
+              size="sm"
+              data-testid="evolution-open-cycle-fixture"
+              onClick={() => onSelect(navFixtureCycleId)}
+            >
+              {t('evolutionOpenFixtureCycle')}
+            </Button>
+          ) : null}
+        </div>
       </header>
 
       <SafeBanner state={safeState} />

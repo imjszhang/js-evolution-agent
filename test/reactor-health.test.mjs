@@ -101,6 +101,8 @@ describe('reactor health projection', () => {
     expect(health.status).toBe('stalled');
     expect(health.worker.running).toBe(false);
     expect(health.reasons.some((reason) => reason.includes('No fresh worker'))).toBe(true);
+    expect(health.suggestions.join(' ')).toMatch(/process_cycle_once/);
+    expect(health.suggestions.join(' ')).not.toMatch(/start_channel/);
   });
 
   it('exposes pending verify, rule due, and memory due fields', () => {

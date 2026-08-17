@@ -106,6 +106,25 @@ describe('Evolution Inspector component', () => {
     expect(html).not.toContain('data-state="open"')
   })
 
+  it('shows Cycle backlog and Process once when the client supports recovery', () => {
+    const client = createEvolutionFixtureClient()
+    client.processCycleOnce = async () => ({ status: 'ok' })
+    const html = renderToStaticMarkup(
+      <LocaleProvider initialLocale="en">
+        <EvolutionInspector
+          slotId="evolutionInspector"
+          adapters={createWave1Adapters({ selectedSubjectId: 'alpha' })}
+          snapshot={snapshotFromFixture('alpha')}
+          loading={false}
+          client={client}
+        />
+      </LocaleProvider>
+    )
+    expect(html).toContain('Cycle backlog 1')
+    expect(html).toContain('data-testid="evolution-process-once"')
+    expect(html).not.toContain('data-testid="evolution-start-cycle"')
+  })
+
   it('keeps timeline and section controls keyboard reachable', () => {
     const html = renderInspector(snapshotFromFixture('alpha'))
     expect(html).toContain('data-testid="evolution-cycle-cycle-20260816-open"')

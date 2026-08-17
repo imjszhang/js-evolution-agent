@@ -38,6 +38,7 @@ describe('Client API catalog', () => {
       'service.getStatus',
       'service.getReadiness',
       'service.requestCycle',
+      'service.processCycleOnce',
       'setup.getReadiness',
       'settings.get',
       'cli.getStatus'

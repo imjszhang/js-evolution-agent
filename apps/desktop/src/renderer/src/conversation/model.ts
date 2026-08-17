@@ -6,6 +6,7 @@ import type {
   JeaEventEnvelope,
   ServiceStatus,
   SetupReadiness,
+  SubjectReadiness,
   SubjectRecord,
   SubjectSummary
 } from '../../../client-api/types'
@@ -27,6 +28,7 @@ import type { ProjectionWatchPort } from './watch'
 
 export type ConversationSendState = 'idle' | 'pending' | 'sent' | 'failed'
 export type ChannelServiceStartState = 'idle' | 'pending' | 'started' | 'failed'
+export type CycleRemediationState = 'idle' | 'pending' | 'done' | 'failed'
 
 export interface ConversationWorkspaceSnapshot {
   subjects: SubjectSummary[]
@@ -37,6 +39,9 @@ export interface ConversationWorkspaceSnapshot {
   draft: string
   sendState: ConversationSendState
   serviceStartState: ChannelServiceStartState
+  serviceReadiness: SubjectReadiness | null
+  cycleProcessState: CycleRemediationState
+  cycleStartState: CycleRemediationState
   waiting: boolean
   lastSend: ConversationSendResult | null
   error: ConversationErrorView | null
@@ -61,6 +66,9 @@ function emptySnapshot(): ConversationWorkspaceSnapshot {
     draft: '',
     sendState: 'idle',
     serviceStartState: 'idle',
+    serviceReadiness: null,
+    cycleProcessState: 'idle',
+    cycleStartState: 'idle',
     waiting: false,
     lastSend: null,
     error: null,
@@ -173,6 +181,9 @@ export class ConversationWorkspaceModel {
       waiting: false,
       sendState: 'idle',
       serviceStartState: 'idle',
+      serviceReadiness: null,
+      cycleProcessState: 'idle',
+      cycleStartState: 'idle',
       lastSend: null,
       error: null,
       stale: false,
@@ -246,6 +257,46 @@ export class ConversationWorkspaceModel {
     } catch (error) {
       if (!this.isCurrent(generation)) return
       this.patch({ error: classifyClientError(error, 'Unable to enable desktop Channel.') })
+    }
+  }
+
+  async processCycleOnce(): Promise<void> {
+    const subject = this.snapshot.subject?.name
+    if (!subject || this.snapshot.cycleProcessState === 'pending') return
+    const generation = this.generation
+    this.patch({ cycleProcessState: 'pending', error: null })
+    try {
+      await this.client.processCycleOnce(subject)
+      if (!this.isCurrent(generation) || this.snapshot.subject?.name !== subject) return
+      await this.refreshSupport(subject, generation)
+      if (!this.isCurrent(generation)) return
+      this.patch({ cycleProcessState: 'done' })
+    } catch (error) {
+      if (!this.isCurrent(generation)) return
+      this.patch({
+        cycleProcessState: 'failed',
+        error: classifyClientError(error, 'Unable to process the Cycle backlog.')
+      })
+    }
+  }
+
+  async startCycleService(): Promise<void> {
+    const subject = this.snapshot.subject?.name
+    if (!subject || this.snapshot.cycleStartState === 'pending') return
+    const generation = this.generation
+    this.patch({ cycleStartState: 'pending', error: null })
+    try {
+      await this.client.startService(subject, 'cycle')
+      if (!this.isCurrent(generation)) return
+      await this.refreshSupport(subject, generation)
+      if (!this.isCurrent(generation) || this.snapshot.subject?.name !== subject) return
+      this.patch({ cycleStartState: 'done' })
+    } catch (error) {
+      if (!this.isCurrent(generation)) return
+      this.patch({
+        cycleStartState: 'failed',
+        error: classifyClientError(error, 'Unable to start the Cycle service.')
+      })
     }
   }
 
@@ -342,15 +393,16 @@ export class ConversationWorkspaceModel {
 
   private async refreshSupport(subject: string, generation: number): Promise<void> {
     try {
-      const [service, readiness, observability] = await Promise.all([
+      const [service, readiness, observability, serviceReadiness] = await Promise.all([
         this.client.getServiceStatus(subject),
         this.client.getReadiness(subject),
-        this.client.getObservability(subject)
+        this.client.getObservability(subject),
+        this.client.getServiceReadiness(subject)
       ])
       if (!this.isCurrent(generation)) return
       if (this.selectedName && this.selectedName !== subject) return
       if (this.snapshot.subject && this.snapshot.subject.name !== subject) return
-      this.patch({ service, readiness, observability, stale: false })
+      this.patch({ service, readiness, observability, serviceReadiness, stale: false })
     } catch {
       // Support reads are best-effort and must not block conversation.
     }
