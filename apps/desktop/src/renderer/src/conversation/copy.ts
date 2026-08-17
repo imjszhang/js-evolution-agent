@@ -35,7 +35,8 @@ const copy = {
     serviceOnline: 'Channel service ready',
     serviceOffline: 'Channel service offline',
     serviceDegraded: 'Channel service degraded',
-    serviceStarting: 'Channel service starting'
+    serviceStarting: 'Channel service starting',
+    serviceStale: 'Live status is stale'
   },
   zh: {
     subjects: '主体',
@@ -71,7 +72,8 @@ const copy = {
     serviceOnline: 'Channel 服务就绪',
     serviceOffline: 'Channel 服务离线',
     serviceDegraded: 'Channel 服务降级',
-    serviceStarting: 'Channel 服务启动中'
+    serviceStarting: 'Channel 服务启动中',
+    serviceStale: '实时状态已过期'
   }
 } as const
 

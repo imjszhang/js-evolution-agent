@@ -84,9 +84,15 @@ export function createConversationHarness(options: ConversationHarnessOptions = 
   const sent: Array<{ subject: string; text: string; sessionId?: string; messageId?: string }> = []
   const enabled: string[] = []
   const started: string[] = []
+  const watched: string[] = []
+  let watchStops = 0
   let rejectSend = options.rejectSend ?? null
   let readDelayMs = options.readDelayMs ?? 0
+  let supportDelayMs = 0
   let selected = subjects.find((item) => item.isDefault)?.name ?? subjects[0]?.name ?? null
+  const serviceBySubject = new Map<string, ServiceStatus>()
+  const readinessBySubject = new Map<string, SetupReadiness>()
+  const observabilityBySubject = new Map<string, EvolutionObservability>()
 
   const service: ServiceStatus = {
     subject: TEST_CONVERSATION_SUBJECT,
@@ -242,7 +248,10 @@ export function createConversationHarness(options: ConversationHarnessOptions = 
         }
       }
       if (command === 'service.getStatus') {
-        return { ...service, subject }
+        if (supportDelayMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, supportDelayMs))
+        }
+        return { ...(serviceBySubject.get(subject) ?? service), subject }
       }
       if (command === 'service.start') {
         if (options.startDelayMs) {
@@ -259,8 +268,12 @@ export function createConversationHarness(options: ConversationHarnessOptions = 
         return { ...service, subject }
       }
       if (command === 'setup.getReadiness') {
+        if (supportDelayMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, supportDelayMs))
+        }
+        const current = readinessBySubject.get(subject) ?? readiness
         return {
-          ...readiness,
+          ...current,
           conversation: {
             desktopChannelEnabled: requireSubject(subject).desktopChannelEnabled,
             subject
@@ -280,7 +293,10 @@ export function createConversationHarness(options: ConversationHarnessOptions = 
         }
       }
       if (command === 'evolution.getObservability') {
-        return { ...observability, subject }
+        if (supportDelayMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, supportDelayMs))
+        }
+        return { ...(observabilityBySubject.get(subject) ?? observability), subject }
       }
       if (command === 'protocol.get') {
         return {
@@ -298,17 +314,49 @@ export function createConversationHarness(options: ConversationHarnessOptions = 
     }
   })
 
+  const projectionWatch = {
+    watch(subject: string) {
+      watched.push(subject)
+      return { subject, watching: true as const }
+    },
+    stop() {
+      watchStops += 1
+      return { stopped: true }
+    }
+  }
+
   return {
     client,
     sent,
     enabled,
     started,
+    watched,
+    get watchStops() { return watchStops },
+    projectionWatch,
     emit,
     setRejectSend(error: PublicClientError | null) {
       rejectSend = error
     },
     setReadDelay(ms: number) {
       readDelayMs = ms
+    },
+    setSupportDelay(ms: number) {
+      supportDelayMs = ms
+    },
+    setSupport(subject: string, next: {
+      service?: Partial<ServiceStatus>
+      readiness?: Partial<SetupReadiness>
+      observability?: Partial<EvolutionObservability>
+    }) {
+      if (next.service) {
+        serviceBySubject.set(subject, { ...service, ...next.service, subject })
+      }
+      if (next.readiness) {
+        readinessBySubject.set(subject, { ...readiness, ...next.readiness })
+      }
+      if (next.observability) {
+        observabilityBySubject.set(subject, { ...observability, ...next.observability, subject })
+      }
     },
     appendAssistant(subject: string, sessionId: string, content: string, extras: Partial<ConversationMessage> = {}) {
       const existing = records.get(key(subject, sessionId)) ?? []

@@ -10,6 +10,7 @@ import {
 } from './auth'
 import { createWebHostBootstrap, type WebHostBootstrap } from './bootstrap'
 import { formatSseEvent, WebHostEventLog, type SequencedJeaEvent } from './events'
+import { createWebHostProjectionBridge, type WebHostProjectionBridge } from './projection-bridge'
 import { redactWebHostText, redactWebHostValue } from './redact'
 import { readHostAsset, resolveAppAssetDir } from './static-assets'
 import { createApplicationCommandHost, isWebAllowedCommand, publicErrorShape, toPublicClientError } from '../client-api'
@@ -125,6 +126,14 @@ export async function createWebHost(options: WebHostOptions): Promise<JeaWebHost
   })
   const invoke = options.invoke ?? ((request: InvokeRequest) => commandHost.invoke(request))
   const events = new WebHostEventLog({ limit: options.eventLimit })
+  const projectionBridge: WebHostProjectionBridge | null = options.watcher
+    ? null
+    : createWebHostProjectionBridge({
+      sourceRoot: options.sourceRoot,
+      jeaHome: options.jeaHome,
+      publish: (event) => events.publish(event)
+    })
+  const watcher = options.watcher ?? projectionBridge
   const assetDir = resolveAppAssetDir(options.sourceRoot, options.assetDir)
   const sseClients = new Set<ServerResponse>()
   const logger: WebHostLogger = {
@@ -174,7 +183,12 @@ export async function createWebHost(options: WebHostOptions): Promise<JeaWebHost
         ? body.payload as Record<string, unknown>
         : {}
       const eventFactory = WRITE_EVENTS[command]
-      if (eventFactory) events.publish(redactWebHostValue(eventFactory(payload, value), token))
+      if (eventFactory) {
+        const published = events.publish(redactWebHostValue(eventFactory(payload, value), token))
+        if (published.type === 'subject.changed' && published.subject) {
+          projectionBridge?.watch(published.subject)
+        }
+      }
       sendJson(res, 200, { ok: true, value: redactWebHostValue(value, token) }, token)
     } catch (error) {
       const publicError = toPublicClientError(error)
@@ -310,7 +324,7 @@ export async function createWebHost(options: WebHostOptions): Promise<JeaWebHost
     return bound && typeof bound === 'object' ? bound.port : requestedPort
   }
 
-  options.watcher?.start()
+  watcher?.start()
   logger.info(`JEA Web host listening on ${address}:${hostPort()}`)
 
   const host: JeaWebHost = {
@@ -339,7 +353,7 @@ export async function createWebHost(options: WebHostOptions): Promise<JeaWebHost
       return events.publish(redactWebHostValue(event, token))
     },
     async close() {
-      options.watcher?.stop()
+      watcher?.stop()
       events.close()
       for (const client of sseClients) {
         client.end()

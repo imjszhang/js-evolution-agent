@@ -3,6 +3,7 @@ import { createMemoryJeaClient } from '../../../client-api/adapters/memory'
 import type { JeaClient } from '../../../client-api/jea-client'
 import type { ClientApiCommandName } from '../../../client-api/protocol'
 import type { JeaEventEnvelope } from '../../../client-api/types'
+import type { ProjectionWatchPort } from './watch'
 
 function hasDesktopBridge(): boolean {
   return typeof window !== 'undefined'
@@ -19,4 +20,16 @@ export function createRendererJeaClient(): JeaClient {
     invoke: (command, payload) => window.jea.invoke(command as ClientApiCommandName, payload),
     subscribe: (listener: (event: JeaEventEnvelope) => void) => window.jea.subscribe(listener)
   })
+}
+
+export function createDesktopProjectionWatchPort(): ProjectionWatchPort | null {
+  if (!hasDesktopBridge()) return null
+  return {
+    watch(subject) {
+      return window.jea.invoke('projection.watch', { subject })
+    },
+    stop() {
+      return window.jea.invoke('projection.stop')
+    }
+  }
 }

@@ -103,6 +103,7 @@ export function EvolutionInspector({
       data-testid="evolution-inspector"
       data-ready={loading ? 'false' : 'true'}
       data-state={safeState}
+      data-stale={snapshot.stale ? 'true' : 'false'}
       data-subject={snapshot.subject ?? ''}
     >
       <header className="flex items-start justify-between gap-2 border-b border-border px-3 py-2">
@@ -193,6 +194,8 @@ function SafeBanner({ state }: { state: InspectorSafeState }) {
     loading: t('evolutionLoading'),
     empty: t('evolutionNoCycles'),
     error: t('evolutionLoadError'),
+    stale: t('evolutionStale'),
+    offline: t('evolutionOffline'),
     'verify-unavailable': t('evolutionVerifyUnavailable'),
     malformed: t('evolutionMalformed')
   }[state]
@@ -370,6 +373,8 @@ function emptyCopy(state: InspectorSafeState, translate: (key: MessageKey) => st
   if (state === 'no-subject') return translate('evolutionNoSubject')
   if (state === 'loading') return translate('evolutionLoading')
   if (state === 'error') return translate('evolutionLoadError')
+  if (state === 'stale') return translate('evolutionStale')
+  if (state === 'offline') return translate('evolutionOffline')
   if (state === 'malformed') return translate('evolutionMalformed')
   return translate('evolutionNoCycles')
 }

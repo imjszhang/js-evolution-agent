@@ -95,6 +95,17 @@ describe('Evolution Inspector component', () => {
     expect(core.receipt_count).toBe(3)
   })
 
+  it('renders a visible stale state instead of keeping a green open status', () => {
+    const html = renderInspector({
+      ...snapshotFromFixture('alpha'),
+      stale: true
+    })
+    expect(html).toContain('data-state="stale"')
+    expect(html).toContain('data-stale="true"')
+    expect(html).toContain('Evolution status is stale')
+    expect(html).not.toContain('data-state="open"')
+  })
+
   it('keeps timeline and section controls keyboard reachable', () => {
     const html = renderInspector(snapshotFromFixture('alpha'))
     expect(html).toContain('data-testid="evolution-cycle-cycle-20260816-open"')

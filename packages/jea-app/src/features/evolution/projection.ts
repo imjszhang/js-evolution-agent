@@ -123,6 +123,7 @@ function uniqueBlockers(
 
 export function resolveSafeState(snapshot: EvolutionInspectorSnapshot, loading: boolean): InspectorSafeState {
   if (!snapshot.subject) return 'no-subject'
+  if (snapshot.stale) return snapshot.error === 'offline' ? 'offline' : 'stale'
   if (snapshot.error) return 'error'
   if (loading && !snapshot.list) return 'loading'
   if (!snapshot.list || snapshot.list.cycles.length === 0) return 'empty'
@@ -137,16 +138,41 @@ export function resolveSafeState(snapshot: EvolutionInspectorSnapshot, loading: 
   return core.selected_kind === 'open' ? 'open' : 'historical'
 }
 
+const LIVE_REFRESH_EVENTS = new Set([
+  'evolution.updated',
+  'projection.todo_updated',
+  'projection.ops_updated'
+])
+
+const STALE_EVENTS = new Set([
+  'projection.refresh_failed'
+])
+
+export function eventSubjectOf(
+  event: { subject?: string; payload?: Record<string, unknown> } | null
+): string | null {
+  if (!event) return null
+  if (typeof event.subject === 'string' && event.subject.trim()) return event.subject.trim()
+  return typeof event.payload?.subject === 'string' && event.payload.subject.trim()
+    ? event.payload.subject.trim()
+    : null
+}
+
+export function isStaleProjectionEvent(
+  event: { type: string; payload?: Record<string, unknown> } | null
+): boolean {
+  if (!event) return false
+  if (STALE_EVENTS.has(event.type)) return true
+  return event.payload?.stale === true && LIVE_REFRESH_EVENTS.has(event.type)
+}
+
 export function shouldRefreshForEvent(
   event: { type: string; subject?: string; payload?: Record<string, unknown> } | null,
   subject: string | null
 ): boolean {
-  if (!subject || !event || event.type !== 'evolution.updated') return false
-  const eventSubject = typeof event.subject === 'string' && event.subject.trim()
-    ? event.subject.trim()
-    : typeof event.payload?.subject === 'string' && event.payload.subject.trim()
-      ? event.payload.subject.trim()
-      : null
+  if (!subject || !event || !LIVE_REFRESH_EVENTS.has(event.type)) return false
+  if (isStaleProjectionEvent(event)) return false
+  const eventSubject = eventSubjectOf(event)
   if (eventSubject && eventSubject !== subject) return false
   return true
 }

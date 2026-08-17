@@ -57,5 +57,7 @@ describe('Evolution Inspector malformed data', () => {
     expect(resolveSafeState({ ...snapshot, subject: null, list: null, selectedCycleId: null }, false)).toBe('no-subject')
     expect(resolveSafeState({ ...snapshot, list: { ...snapshot.list!, cycles: [], round_count: 0 }, selectedCycleId: null }, false)).toBe('empty')
     expect(resolveSafeState({ ...snapshot, error: 'unavailable' }, false)).toBe('error')
+    expect(resolveSafeState({ ...snapshot, stale: true }, false)).toBe('stale')
+    expect(resolveSafeState({ ...snapshot, stale: true, error: 'offline' }, false)).toBe('offline')
   })
 })
