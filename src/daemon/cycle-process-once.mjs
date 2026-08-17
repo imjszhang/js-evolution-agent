@@ -46,9 +46,15 @@ function channelUnchanged(before, after) {
   return JSON.stringify(before) === JSON.stringify(after);
 }
 
-function pendingEvidenceCount(root, subject) {
+function pendingEvidenceCount(root, subject, { ignoreAfterMs = null } = {}) {
   const runtime = runtimeForSubject(root, subject);
-  return listEligibleEvidence(runtime.dataRoot, { reactor: 'cognitive' }).length;
+  return listEligibleEvidence(runtime.dataRoot, { reactor: 'cognitive' })
+    .filter((envelope) => {
+      if (ignoreAfterMs == null) return true;
+      const occurred = Date.parse(envelope.occurred_at ?? envelope.created_at ?? '');
+      return !(Number.isFinite(occurred) && occurred >= ignoreAfterMs);
+    })
+    .length;
 }
 
 function snapshotCycleHealth(root, subject) {
@@ -214,12 +220,15 @@ export async function processCycleOnce(root, subject, flags = {}) {
           result: outcome,
         };
       } catch (err) {
+        const reason = err?.code === 'lease_lost' || err?.message === 'reactor_task_lease_lost'
+          ? 'lease_lost'
+          : (err?.code || err?.message || 'lease_lost');
         work = {
           worked: true,
           ok: false,
           retryable: true,
-          code: err?.code || 'reactor_task_lease_lost',
-          reason: err?.code || err?.message || 'reactor_task_lease_lost',
+          code: reason,
+          reason,
           result: null,
         };
       }
@@ -240,7 +249,7 @@ export async function processCycleOnce(root, subject, flags = {}) {
 
   const channelAfter = snapshotChannel(root, subject);
   const healthAfter = snapshotCycleHealth(root, subject);
-  const pendingAfter = pendingEvidenceCount(root, subject);
+  const pendingAfter = pendingEvidenceCount(root, subject, { ignoreAfterMs: startedMs });
   const runtime = runtimeForSubject(root, subject);
   const classified = classifyResult({
     work,

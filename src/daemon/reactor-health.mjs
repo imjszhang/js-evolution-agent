@@ -168,12 +168,12 @@ export function buildReactorHealthProjection(root, subject, {
     reasons.push(`${evidence.pending_count} eligible unclaimed evidence envelope(s); oldest age ${evidence.oldest_unclaimed_age_ms}ms`);
     if (workerZombie) {
       reasons.push('Cycle worker PID is dead (zombie); do not start another worker');
-      suggestions.push('Use process_cycle_once. Repair the worker state instead of start_cycle.');
+      suggestions.push('Use process_cycle_once. Repair the worker state; do not start a new Cycle worker.');
     } else if (workerStale) {
       reasons.push('Cycle worker heartbeat is stale; a live PID is not a fresh worker');
-      suggestions.push('Use process_cycle_once. Repair the worker state instead of start_cycle.');
+      suggestions.push('Use process_cycle_once. Repair the worker state; do not start a new Cycle worker.');
     } else if (workerMissing) {
-      reasons.push('No fresh Cycle worker is running to drain the backlog');
+      reasons.push('No fresh worker is running to drain the Cycle backlog');
       suggestions.push('Use process_cycle_once or start_cycle to drain the Cycle backlog.');
     } else if (workerRunning) {
       suggestions.push('Use process_cycle_once. A Cycle worker is already running.');
