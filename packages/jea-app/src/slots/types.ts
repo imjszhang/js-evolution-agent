@@ -31,16 +31,23 @@ export interface ShellDomainReadiness {
   reasons: string[]
 }
 
+export interface ShellRemediationAction {
+  id: string
+  allowed: boolean
+  capability: 'readonly' | 'write' | 'local-only'
+}
+
 export interface ShellSubjectReadiness {
   subject: string
   generated_at: string
   web_host: ShellDomainReadiness
   cycle: ShellDomainReadiness
   channel: ShellDomainReadiness
-  model: ShellDomainReadiness & { mode?: string }
+  model: ShellDomainReadiness & { mode: 'deepseek' | 'mock' | 'unset' }
   conversation: ShellDomainReadiness
   reasons: string[]
   allowed_actions: string[]
+  actions: ShellRemediationAction[]
 }
 
 /**
