@@ -17,6 +17,7 @@ import {
   printReport,
   readJson,
 } from './release-lib.mjs';
+import { assertCleanProvenance, readBuildMetadataFile } from '../src/product/build-metadata.mjs';
 
 export const EVIDENCE_FILE = 'certification-evidence.json';
 
@@ -85,6 +86,40 @@ export function evaluatePublishGuard({
         'issue77 must be fixed or an exact unexpired documented audit-baseline exception.',
       ],
     };
+  }
+
+  const fileMetadata = absDir ? readBuildMetadataFile(resolve(absDir, 'build-metadata.json')) : null;
+  const dirty = evidence.dirty === true
+    || evidence.provenance?.dirty === true
+    || fileMetadata?.dirty === true;
+  if (dirty) {
+    return {
+      ok: false,
+      status: 'blocked',
+      publish: true,
+      reason: 'dirty_source_tree',
+      evidencePath,
+      evidence,
+      notes: [
+        'Fail closed: release publish rejects dirty provenance.',
+      ],
+    };
+  }
+  if (fileMetadata) {
+    const clean = assertCleanProvenance(fileMetadata);
+    if (!clean.ok) {
+      return {
+        ok: false,
+        status: 'blocked',
+        publish: true,
+        reason: clean.reason,
+        evidencePath,
+        evidence,
+        notes: [
+          'Fail closed: embedded build metadata is not a clean, traceable provenance record.',
+        ],
+      };
+    }
   }
 
   return {

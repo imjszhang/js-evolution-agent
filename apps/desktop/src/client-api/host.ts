@@ -15,6 +15,7 @@ import { EvolutionCommandOwner } from './owners/evolution'
 import { ServiceCommandOwner, createProjectionServicePort, type ServiceProcessPort } from './owners/service'
 import { SetupCommandOwner, createInjectedHomePort, type HomePort } from './owners/setup'
 import { SettingsCommandOwner } from './owners/settings'
+import { DiagnosticsCommandOwner } from './owners/diagnostics'
 import { CliCommandOwner, createUnsupportedCliLauncher, type CliLauncherPort } from './owners/cli'
 
 export interface ApplicationCommandHandler {
@@ -70,6 +71,7 @@ export function createApplicationCommandHandlers(options: ApplicationCommandHost
   )
   const versions = options.versions ?? { appVersion: packageVersion(), cliVersion: packageVersion() }
   const settings = new SettingsCommandOwner(runtime, versions)
+  const diagnostics = new DiagnosticsCommandOwner(runtime, setup, service, settings)
 
   const handlers: ApplicationCommandHandlers = {
     'protocol.get': {
@@ -199,6 +201,13 @@ export function createApplicationCommandHandlers(options: ApplicationCommandHost
         language: stringField(payload, 'language', { required: false }) as SettingsPatch['language'],
         theme: stringField(payload, 'theme', { required: false }) as SettingsPatch['theme'],
         defaultSubject: stringField(payload, 'defaultSubject', { required: false })
+      })
+    },
+    'settings.exportDiagnostics': {
+      capability: 'readonly',
+      handle: (payload) => diagnostics.exportDiagnostics({
+        subject: stringField(payload, 'subject', { required: false }),
+        redactPaths: optionalBoolean(payload, 'redactPaths') ?? true
       })
     },
     'cli.getStatus': { capability: 'readonly', handle: () => cli.getStatus() },

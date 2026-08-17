@@ -44,6 +44,7 @@ export const CLIENT_API_COMMANDS = [
   'setup.enableDesktopChannel',
   'settings.get',
   'settings.set',
+  'settings.exportDiagnostics',
   'cli.getStatus',
   'cli.install',
   'cli.uninstall'

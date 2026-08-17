@@ -34,6 +34,7 @@ const FIXTURE_PAYLOADS: Record<string, Record<string, unknown>> = {
   'setup.enableDesktopChannel': { subject: 'alpha' },
   'settings.get': {},
   'settings.set': { language: 'zh-CN' },
+  'settings.exportDiagnostics': { redactPaths: true },
   'cli.getStatus': {},
   'cli.install': {},
   'cli.uninstall': {}

@@ -25,6 +25,8 @@ import {
 import { listRegisteredSubjects } from '../../../../src/infra/subjects.mjs'
 import { runtimeForSubject } from '../../../../src/infra/runtime-paths.mjs'
 import { jeaLogsDir } from '../../../../src/infra/jea-home.mjs'
+import { recordDaemonStartupFailure } from '../../../../src/product/diagnostics-store.mjs'
+import { redactJeaOwnedPath } from '../../../../src/product/path-redact.mjs'
 import { buildJeaRuntimeEnv } from '../../../../src/actions/execution-env.mjs'
 import type {
   DaemonSupervisorView,
@@ -219,7 +221,8 @@ export class DaemonSupervisor {
       })
     } catch (error) {
       await this.terminateChild(child, processGroup)
-      throw error
+      this.recordStartupFailure(subject, error, logPaths)
+      throw this.withLogPaths(error, logPaths)
     }
     const entry: ManagedDaemon = {
       subject,
@@ -265,7 +268,8 @@ export class DaemonSupervisor {
       unregister()
       this.removeDiagnostic(subject, ownerToken)
       if (!processExited(child)) await this.terminateChild(child, processGroup)
-      throw error
+      this.recordStartupFailure(subject, error, logPaths)
+      throw this.withLogPaths(error, logPaths)
     }
     this.events.publish({
       type: 'daemon_managed_started',
@@ -396,6 +400,28 @@ export class DaemonSupervisor {
     } catch {
       // Missing or invalid diagnostic metadata is non-authoritative.
     }
+  }
+
+  private recordStartupFailure(subject: string, error: unknown, logPaths: { stdout: string; stderr: string }): void {
+    const message = error instanceof Error ? error.message : String(error)
+    const reason = message.includes('startup deadline')
+      ? 'startup_deadline'
+      : (message.includes('exited before becoming ready') ? 'exited_before_ready' : 'startup_failed')
+    try {
+      recordDaemonStartupFailure(this.runtimeContext, { subject, reason, logPaths })
+    } catch {
+      // Diagnostic persistence must not change start/stop/repair outcomes.
+    }
+  }
+
+  private withLogPaths(error: unknown, logPaths: { stdout: string; stderr: string }): unknown {
+    if (!(error instanceof PublicCommandError)) return error
+    const stdout = redactJeaOwnedPath(logPaths.stdout, this.runtimeContext.jeaHome)
+    const stderr = redactJeaOwnedPath(logPaths.stderr, this.runtimeContext.jeaHome)
+    return new PublicCommandError(
+      error.code,
+      `${error.message} Logs: ${stdout}, ${stderr}`
+    )
   }
 
   private assertSubject(subject: string): void {

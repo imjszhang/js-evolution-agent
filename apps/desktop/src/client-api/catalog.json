@@ -233,6 +233,15 @@
       "errors": ["INVALID_REQUEST", "NOT_FOUND", "CONFLICT", "OPERATION_FAILED"]
     },
     {
+      "name": "settings.exportDiagnostics",
+      "group": "settings",
+      "capability": "readonly",
+      "availability": { "electron": true, "web": true },
+      "request": { "subject": "string?", "redactPaths": "boolean?" },
+      "response": { "report": "DiagnosticReport" },
+      "errors": ["INVALID_REQUEST", "NOT_FOUND", "OPERATION_FAILED"]
+    },
+    {
       "name": "cli.getStatus",
       "group": "cli",
       "capability": "readonly",

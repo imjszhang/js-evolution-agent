@@ -350,6 +350,36 @@ describe('DaemonSupervisor', () => {
     expect(spawnMock).not.toHaveBeenCalled()
   })
 
+  it('exposes redacted JEA-owned log paths when managed startup fails', async () => {
+    const root = createProjectRoot()
+    const processRegistry = new ManagedProcessRegistry()
+    const events = new DesktopEventBus()
+    const spawnMock = vi.fn(() => {
+      const child = new FakeChild(41_000 + children.length, true)
+      children.push(child)
+      queueMicrotask(() => {
+        child.emit('spawn')
+        child.close(1, null)
+      })
+      return child as unknown as ChildProcess
+    })
+    const supervisor = new DaemonSupervisor(
+      root,
+      processRegistry,
+      events,
+      spawnMock as unknown as typeof import('node:child_process').spawn,
+      10,
+      join(root, 'runtime'),
+      80
+    )
+
+    await expect(supervisor.start('alpha', { domain: 'cycle' })).rejects.toMatchObject({
+      code: 'OPERATION_FAILED',
+      message: expect.stringMatching(/<JEA_HOME>\/logs\/daemon-alpha\.desktop\.(stdout|stderr)\.log/)
+    })
+    expect(supervisor.get('alpha').mode).toBe('none')
+  })
+
   it('terminates a spawned daemon when process ownership registration fails', async () => {
     const root = createProjectRoot()
     const { supervisor, processRegistry } = createSupervisor(root, {

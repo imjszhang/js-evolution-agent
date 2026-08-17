@@ -1,5 +1,6 @@
 import { join } from 'node:path'
 import { readJsonSafe, writeJsonFile } from '../../../../../src/infra/files.mjs'
+import { loadBuildMetadata } from '../../../../../src/product/build-metadata.mjs'
 import { readSubjectsRegistry, setDefaultSubject } from '../../../../../src/infra/subjects.mjs'
 import { PublicClientError } from '../errors'
 import { redactPublicValue } from '../redact'
@@ -17,12 +18,19 @@ export class SettingsCommandOwner {
   get(): SettingsView {
     const stored = (readJsonSafe(this.file(), null) ?? {}) as Record<string, unknown>
     const registry = readSubjectsRegistry(this.runtime)
+    const metadata = loadBuildMetadata({ sourceRoot: this.runtime.sourceRoot })
     return redactPublicValue({
       language: stored.language === 'en' ? 'en' : 'zh-CN',
       theme: stored.theme === 'light' || stored.theme === 'dark' ? stored.theme : 'system',
       defaultSubject: registry.default_subject ?? null,
       appVersion: this.versions.appVersion,
-      cliVersion: this.versions.cliVersion
+      cliVersion: this.versions.cliVersion,
+      commitSha: metadata.commit,
+      commitShort: metadata.commit_short,
+      buildTime: metadata.built_at,
+      platform: metadata.platform || process.platform,
+      architecture: metadata.arch || process.arch,
+      dirty: metadata.dirty
     })
   }
 

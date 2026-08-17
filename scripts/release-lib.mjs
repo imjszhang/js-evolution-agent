@@ -23,6 +23,7 @@ export function expectedArtifactNames(version = RELEASE_VERSION) {
     checksums: 'SHA256SUMS',
     packageSmoke: 'package-smoke.json',
     releaseNotes: 'RELEASE_NOTES.md',
+    buildMetadata: 'build-metadata.json',
   };
 }
 

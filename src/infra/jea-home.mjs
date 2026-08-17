@@ -112,6 +112,10 @@ export function jeaLogsDir(input) {
   return join(jeaHomeFor(input), 'logs');
 }
 
+export function jeaDiagnosticsDir(input) {
+  return join(jeaHomeFor(input), 'diagnostics');
+}
+
 function hasAuthoritativeContent(dir) {
   if (!existsSync(dir)) return false;
   return readdirSync(dir).some((name) => ![
