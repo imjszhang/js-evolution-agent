@@ -9,6 +9,7 @@
 | 文件 | 状态 | 对应 issue |
 | --- | --- | --- |
 | [0.1.0-certification.md](./0.1.0-certification.md) | in progress | #122 |
+| [0.1.1-certification.md](./0.1.1-certification.md) | in progress | #143 |
 | [0.1.0-security-debt.md](./0.1.0-security-debt.md) | pending | #77 |
 | [RELEASE_NOTES.md](./RELEASE_NOTES.md) | draft | #122 |
 | [packaging.md](./packaging.md) | implemented | #120 |

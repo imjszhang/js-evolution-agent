@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
- * Fail-closed publish guard for JEA 0.1.0.
+ * Fail-closed publish guard for the current shipped release identity.
  *
- * This is not a publisher. Wave 1 never creates a tag or GitHub Release.
- * If a future real publish job is invoked without certification evidence,
- * this guard exits non-zero.
+ * This is not a publisher. It never creates a tag or GitHub Release.
+ * `expectedRelease` is parameterized (do not hard-code a 0.1.1 bump here).
+ * 0.1.1 certification additionally requires recovery-matrix and soak evidence.
  *
  * Usage:
  *   node scripts/release-publish-guard.mjs [--publish] [--evidence DIR] [--json]
@@ -16,14 +16,19 @@ import {
   parseArgs,
   printReport,
   readJson,
+  RELEASE_VERSION,
 } from './release-lib.mjs';
 import { assertCleanProvenance, readBuildMetadataFile } from '../src/product/build-metadata.mjs';
+import { evaluateRecoverySoakEvidence } from './release-certification-evidence.mjs';
 
 export const EVIDENCE_FILE = 'certification-evidence.json';
 
 export function evaluatePublishGuard({
   publish = false,
   evidenceDir = null,
+  expectedRelease = RELEASE_VERSION,
+  maxEvidenceAgeMs,
+  now,
 } = {}) {
   if (!publish) {
     return {
@@ -33,7 +38,7 @@ export function evaluatePublishGuard({
       reason: 'publish_not_requested',
       notes: [
         'This guard does not publish. A publish job must call it with complete evidence.',
-        'Do not create a v0.1.0 tag or GitHub Release without certification-evidence.json status=certified.',
+        `Do not create a v${expectedRelease} tag or GitHub Release without certification-evidence.json status=certified.`,
       ],
     };
   }
@@ -49,7 +54,7 @@ export function evaluatePublishGuard({
       evidencePath,
       notes: [
         'Fail closed: publish was requested without certification-evidence.json.',
-        'Do not create a v0.1.0 tag or GitHub Release from this workflow.',
+        `Do not create a v${expectedRelease} tag or GitHub Release from this workflow.`,
       ],
     };
   }
@@ -69,7 +74,7 @@ export function evaluatePublishGuard({
   }
 
   const certified = evidence.status === 'certified'
-    && evidence.release === '0.1.0'
+    && evidence.release === expectedRelease
     && evidence.platform === 'macos-arm64'
     && evidence.issue77 !== 'blocked';
 
@@ -81,8 +86,9 @@ export function evaluatePublishGuard({
       reason: 'certification_not_complete',
       evidencePath,
       evidence,
+      expectedRelease,
       notes: [
-        'Fail closed: evidence exists but is not a complete 0.1.0 macos-arm64 certification.',
+        `Fail closed: evidence exists but is not a complete ${expectedRelease} macos-arm64 certification.`,
         'issue77 must be fixed or an exact unexpired documented audit-baseline exception.',
       ],
     };
@@ -134,6 +140,24 @@ export function evaluatePublishGuard({
     };
   }
 
+  const recovery = evaluateRecoverySoakEvidence(evidence, fileMetadata, {
+    maxAgeMs: maxEvidenceAgeMs,
+    now,
+  });
+  if (!recovery.ok) {
+    return {
+      ok: false,
+      status: 'blocked',
+      publish: true,
+      reason: recovery.reason,
+      evidencePath,
+      evidence,
+      notes: [
+        'Fail closed: publish requires passed, current, same-build recovery-matrix and soak evidence.',
+      ],
+    };
+  }
+
   return {
     ok: true,
     status: 'certified',
@@ -142,7 +166,7 @@ export function evaluatePublishGuard({
     evidencePath,
     evidence,
     notes: [
-      'Evidence is present. Wave 1 still does not upload a GitHub Release.',
+      'Evidence is present. This guard still does not upload a GitHub Release.',
     ],
   };
 }
@@ -152,6 +176,7 @@ export async function main(argv = process.argv.slice(2)) {
   const report = evaluatePublishGuard({
     publish: Boolean(args.publish),
     evidenceDir: args.evidence || args.dir || null,
+    expectedRelease: args.release || RELEASE_VERSION,
   });
   report.script = 'release-publish-guard';
   report.messages = [

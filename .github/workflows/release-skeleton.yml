@@ -23,7 +23,7 @@ jobs:
   release-skeleton:
     name: release-skeleton
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -35,5 +35,7 @@ jobs:
       - run: npm ci
       - name: Fixture inventory, version preflight, #77 wiring, publish guard
         run: npm run release:skeleton -- --json
-      - name: Unit tests for release-skeleton scripts
-        run: npm test -- --run test/release-skeleton.test.mjs test/release-product-journey.test.mjs
+      - name: Bounded recovery matrix (no JEA.app)
+        run: npm run release:recovery-matrix -- --bounded --json
+      - name: Unit tests for release-skeleton and 0.1.1 recovery certification
+        run: npm test -- --run test/release-skeleton.test.mjs test/release-product-journey.test.mjs test/release-recovery-matrix.test.mjs

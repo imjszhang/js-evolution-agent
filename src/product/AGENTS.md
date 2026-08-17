@@ -33,5 +33,8 @@ npm run desktop:stage
 npm run desktop:package   # 仅 darwin arm64
 npm run test:packaging
 npm run release:preflight -- --strict
-npm run release:journey   # 隔离 JEA_HOME，不写 ~/.jea
+npm run release:journey            # 隔离 JEA_HOME，不写 ~/.jea
+npm run release:recovery-matrix    # 0.1.1 有界恢复矩阵（Linux 可用 --bounded）
+npm run release:recovery-soak      # 仅发布用 30 分钟 soak，勿进 PR required
+npm run release:certification-evidence
 ```
