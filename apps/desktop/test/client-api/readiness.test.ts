@@ -249,7 +249,7 @@ describe('service.getReadiness contract', () => {
     expect(readinessCodeView(electron)).toEqual(readinessCodeView(web))
   })
 
-  it('dead-PID worker-state is stale or zombie and never running', async () => {
+  it('dead-PID worker-state is zombie and live stale heartbeat is stale', async () => {
     const { sourceRoot, jeaHome } = tempHome()
     const host = electronHost(sourceRoot, jeaHome)
     writeCycle(host.runtime, {
@@ -264,23 +264,52 @@ describe('service.getReadiness contract', () => {
       started_at: nowIso(-180_000),
       heartbeat_at: nowIso(-120_000)
     })
+    const dead = await readinessOf(host)
+    expect(dead.cycle.state).toBe('zombie')
+    expect(dead.channel.state).toBe('zombie')
+    expect(dead.cycle.state).not.toBe('running')
+    expect(dead.channel.state).not.toBe('running')
+    expect(dead.allowed_actions).toContain('repair_worker_state')
+    expect(dead.allowed_actions).not.toContain('start_cycle')
+    expect(dead.allowed_actions).not.toContain('start_channel')
+
+    writeCycle(host.runtime, {
+      pid: process.pid,
+      status: 'running',
+      started_at: nowIso(-180_000),
+      heartbeat_at: nowIso(-120_000)
+    })
+    writeChannel(host.runtime, {
+      pid: process.pid,
+      status: 'running',
+      started_at: nowIso(-180_000),
+      heartbeat_at: nowIso(-120_000)
+    })
     const stale = await readinessOf(host)
     expect(stale.cycle.state).toBe('stale')
     expect(stale.channel.state).toBe('stale')
-    expect(stale.cycle.state).not.toBe('running')
-    expect(stale.channel.state).not.toBe('running')
     expect(stale.allowed_actions).toContain('repair_worker_state')
+  })
 
-    writeCycle(host.runtime, {
-      pid: DEAD_PID,
-      status: 'running',
-      started_at: nowIso(),
-      heartbeat_at: nowIso()
+  it('running worker with blocked health stays live and does not recommend start', () => {
+    const value = projectSubjectReadiness({
+      subject: 'alpha',
+      generatedAt: '2026-08-17T00:00:00.000Z',
+      hostKind: 'electron',
+      webHost: { running: false, pid: null },
+      cycleWorker: { status: 'running', running: true, fresh: true, pid_alive: true, pid: process.pid },
+      cycleHealth: { status: 'blocked', ok: false },
+      channelWorker: { status: 'running', running: true, fresh: true, pid_alive: true, pid: process.pid },
+      channelHealth: { status: 'blocked', ok: false },
+      model: { configured: false, mode: 'mock' },
+      desktopChannelEnabled: true,
+      ownership: { mode: 'none', domain: null }
     })
-    const zombie = await readinessOf(host)
-    expect(zombie.cycle.state).toBe('zombie')
-    expect(zombie.cycle.state).not.toBe('running')
-    expect(zombie.allowed_actions).toContain('repair_worker_state')
+    expect(value.cycle.state).toBe('attached')
+    expect(value.channel.state).toBe('attached')
+    expect(value.allowed_actions).toEqual(['none'])
+    expect(value.allowed_actions).not.toContain('start_cycle')
+    expect(value.allowed_actions).not.toContain('start_channel')
   })
 
   it('externally fresh daemon reports attached, not managed', async () => {

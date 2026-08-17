@@ -145,17 +145,19 @@ function mapProcessDomain(
 ): DomainReadiness {
   const owned = domainOwned(ownership, prefix)
   const running = Boolean(worker?.running)
-  const pidAlive = worker?.pid_alive ?? (running || Boolean(worker?.pid && isProcessAlive(worker.pid)))
-  const claimedActive = ['running', 'stopping', 'starting'].includes(String(worker?.status ?? ''))
+  const observedPid = Number(worker?.pid)
+  const hasPid = Number.isInteger(observedPid) && observedPid > 0
+  const pidAlive = hasPid ? isProcessAlive(observedPid) : Boolean(worker?.pid_alive ?? running)
+  const status = String(worker?.status ?? '')
+  const claimedActive = ['running', 'stopping', 'starting', 'stale', 'zombie'].includes(status)
+    || Boolean(worker?.stale)
+    || Boolean(worker?.zombie)
 
-  if (worker?.zombie || (claimedActive && worker?.fresh && !pidAlive)) {
+  if (worker?.zombie || (claimedActive && !pidAlive)) {
     return { state: 'zombie', reasons: [`${prefix}_zombie`] }
   }
-  if (worker?.stale || (claimedActive && !worker?.fresh && !pidAlive)) {
+  if (worker?.stale || (claimedActive && pidAlive && worker?.fresh === false)) {
     return { state: 'stale', reasons: [`${prefix}_stale`] }
-  }
-  if (claimedActive && !pidAlive) {
-    return { state: 'zombie', reasons: [`${prefix}_zombie`] }
   }
 
   if (owned && ownership.mode === 'stopping' && (running || worker?.status === 'stopping')) {
@@ -176,7 +178,7 @@ function mapProcessDomain(
     return { state: 'stalled', reasons }
   }
 
-  if (health?.status === 'blocked') {
+  if (health?.status === 'blocked' && !running) {
     return { state: 'blocked', reasons: [`${prefix}_blocked`] }
   }
 
@@ -215,6 +217,10 @@ function mapConversation(
   return { state: 'running', reasons: ['conversation_ready'] }
 }
 
+function needsStart(domain: DomainReadiness): boolean {
+  return domain.state === 'stopped' || domain.state === 'blocked'
+}
+
 function neededActionIds(input: {
   cycle: DomainReadiness
   channel: DomainReadiness
@@ -226,7 +232,7 @@ function neededActionIds(input: {
     input.cycle.reasons.includes('cycle_running') || input.cycle.reasons.includes('cycle_attached')
   ))
 
-  if (input.channel.state === 'stopped' || input.channel.state === 'blocked') {
+  if (needsStart(input.channel)) {
     needed.push('start_channel')
   }
   if (
@@ -240,7 +246,7 @@ function neededActionIds(input: {
   if (cycleStalledNow) {
     needed.push('process_cycle_once')
     if (!cycleLive) needed.push('start_cycle')
-  } else if (input.cycle.state === 'stopped' || input.cycle.state === 'blocked') {
+  } else if (needsStart(input.cycle)) {
     needed.push('start_cycle')
   }
 
