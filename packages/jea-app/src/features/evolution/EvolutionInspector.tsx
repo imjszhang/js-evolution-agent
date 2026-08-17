@@ -6,6 +6,12 @@ import type { FeatureSlotProps } from '../../slots/types'
 import { Button } from '../../ui/button'
 import { Separator } from '../../ui/separator'
 import { cn } from '../../lib/cn'
+import {
+  canShowProcessOnce,
+  canShowStartCycle,
+  messageFromUnknownError,
+  processOnceResultFailed
+} from './cycle-remediation'
 import { createInspectorController } from './controller'
 import { subscribeEvolutionNavigation } from './navigation'
 import { projectEvolutionCore, projectTimeline, resolveSafeState } from './projection'
@@ -48,6 +54,9 @@ export function EvolutionInspector({
   )
   const [liveLoading, setLiveLoading] = useState(Boolean(client) && !snapshotProp)
   const [section, setSection] = useState<SectionId>('report')
+  const [cycleBusy, setCycleBusy] = useState<'process' | 'start' | null>(null)
+  const [cycleError, setCycleError] = useState<string | null>(null)
+  const [allowedActions, setAllowedActions] = useState<string[]>([])
   const subject = adapters.selectedSubjectId ?? null
 
   const apply = useCallback((next: EvolutionInspectorSnapshot, loading = false) => {
@@ -80,12 +89,84 @@ export function EvolutionInspector({
     }
   }, [adapters.selectedCycleId, apply, client, snapshotProp, subject])
 
+  useEffect(() => {
+    if (!client?.getServiceReadiness || !subject) {
+      setAllowedActions([])
+      return
+    }
+    let cancelled = false
+    void client.getServiceReadiness(subject).then((readiness) => {
+      if (!cancelled) setAllowedActions(readiness.allowed_actions ?? [])
+    }).catch(() => {
+      if (!cancelled) setAllowedActions([])
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [client, subject])
+
   const snapshot = snapshotProp ?? liveSnapshot
   const loading = loadingProp ?? liveLoading
   const timeline = useMemo(() => projectTimeline(snapshot), [snapshot])
   const core = useMemo(() => projectEvolutionCore(snapshot), [snapshot])
   const safeState = resolveSafeState(snapshot, loading)
   const selected = timeline.find((item) => item.cycle_id === core.selected_cycle_id) ?? null
+
+  const backlogCount = typeof snapshot.observability?.attention?.backlog_count === 'number'
+    ? snapshot.observability.attention.backlog_count
+    : null
+  const canProcessOnce = canShowProcessOnce(allowedActions, {
+    hasClient: Boolean(client?.processCycleOnce),
+    subject
+  })
+  const canStartCycle = canShowStartCycle(allowedActions, {
+    hasClient: Boolean(client?.startService),
+    subject
+  })
+
+  const refreshAfterCycleAction = () => {
+    if (controllerRef.current && !snapshotProp && subject) {
+      void controllerRef.current.load(subject, snapshot.selectedCycleId).then((next) => apply(next))
+    }
+    if (client?.getServiceReadiness && subject) {
+      void client.getServiceReadiness(subject).then((readiness) => {
+        setAllowedActions(readiness.allowed_actions ?? [])
+      }).catch(() => {})
+    }
+  }
+
+  const onProcessOnce = () => {
+    if (!client?.processCycleOnce || !subject || cycleBusy || !canProcessOnce) return
+    setCycleBusy('process')
+    setCycleError(null)
+    void client.processCycleOnce(subject).then((result) => {
+      if (processOnceResultFailed(result as { status?: string })) {
+        const reason = typeof (result as { reason?: unknown })?.reason === 'string'
+          ? (result as { reason: string }).reason
+          : t('evolutionProcessOnceFailed')
+        setCycleError(reason)
+        return
+      }
+      refreshAfterCycleAction()
+    }).catch((error) => {
+      setCycleError(messageFromUnknownError(error, t('evolutionProcessOnceFailed')))
+    }).finally(() => {
+      setCycleBusy(null)
+    })
+  }
+
+  const onStartCycle = () => {
+    if (!client?.startService || !subject || cycleBusy || !canStartCycle) return
+    setCycleBusy('start')
+    setCycleError(null)
+    void client.startService(subject, 'cycle').then(() => {
+      refreshAfterCycleAction()
+    }).catch((error) => {
+      setCycleError(messageFromUnknownError(error, t('evolutionStartCycleFailed')))
+    }).finally(() => {
+      setCycleBusy(null)
+    })
+  }
 
   const onSelect = (cycleId: string) => {
     adapters.onSelectCycle?.(cycleId)
@@ -115,19 +196,49 @@ export function EvolutionInspector({
           <p className="truncate text-xs text-muted-foreground">
             {core.open_cycles > 0 ? t('evolutionOpenCycle') : t('evolutionRecentCycles')}
             {core.round_count ? ` · ${core.round_count}` : ''}
+            {backlogCount != null ? ` · ${t('evolutionBacklog')} ${backlogCount}` : ''}
           </p>
         </div>
-        {navFixtureCycleId ? (
-          <Button
-            variant="outline"
-            size="sm"
-            data-testid="evolution-open-cycle-fixture"
-            onClick={() => onSelect(navFixtureCycleId)}
-          >
-            {t('evolutionOpenFixtureCycle')}
-          </Button>
-        ) : null}
+        <div className="flex shrink-0 flex-wrap items-center gap-1">
+          {canProcessOnce ? (
+            <Button
+              variant="outline"
+              size="sm"
+              data-testid="evolution-process-once"
+              disabled={cycleBusy != null}
+              onClick={onProcessOnce}
+            >
+              {cycleBusy === 'process' ? t('evolutionProcessingOnce') : t('evolutionProcessOnce')}
+            </Button>
+          ) : null}
+          {canStartCycle ? (
+            <Button
+              variant="outline"
+              size="sm"
+              data-testid="evolution-start-cycle"
+              disabled={cycleBusy != null}
+              onClick={onStartCycle}
+            >
+              {cycleBusy === 'start' ? t('evolutionStartingCycle') : t('evolutionStartCycle')}
+            </Button>
+          ) : null}
+          {navFixtureCycleId ? (
+            <Button
+              variant="outline"
+              size="sm"
+              data-testid="evolution-open-cycle-fixture"
+              onClick={() => onSelect(navFixtureCycleId)}
+            >
+              {t('evolutionOpenFixtureCycle')}
+            </Button>
+          ) : null}
+        </div>
       </header>
+      {cycleError ? (
+        <p className="border-b border-status-error/40 bg-status-error/10 px-3 py-2 text-xs text-status-error-foreground" data-testid="evolution-cycle-error" role="alert">
+          {cycleError}
+        </p>
+      ) : null}
 
       <SafeBanner state={safeState} />
 

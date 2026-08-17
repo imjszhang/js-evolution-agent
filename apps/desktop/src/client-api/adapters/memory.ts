@@ -61,6 +61,7 @@ export function createMemoryCommandTransport(options: MemoryJeaClientOptions = {
         'service.start',
         'service.stop',
         'service.requestCycle',
+        'service.processCycleOnce',
         'setup.initData',
         'setup.enableDesktopChannel'
       ].includes(command)) {

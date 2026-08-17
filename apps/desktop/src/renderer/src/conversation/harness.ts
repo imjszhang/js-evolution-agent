@@ -356,6 +356,23 @@ export function createConversationHarness(options: ConversationHarnessOptions = 
           duplicate
         }
       }
+      if (command === 'service.processCycleOnce') {
+        requireSubject(subject)
+        emit('evolution.updated', subject, undefined, { subject })
+        return {
+          subject,
+          status: 'idle',
+          reason: 'no_pending_evidence',
+          scanned: { scanned: true, enqueued_count: 0 },
+          backlog: { before: 0, after: 0 },
+          health: { before: { health: 'idle' }, after: { health: 'idle' } },
+          claim: null,
+          checkpoint: null,
+          events: [],
+          channel: { before: { pid: null }, after: { pid: null }, unchanged: true },
+          work: null
+        }
+      }
       if (command === 'service.getStatus') {
         if (supportDelayMs > 0) {
           await new Promise((resolve) => setTimeout(resolve, supportDelayMs))
@@ -372,22 +389,24 @@ export function createConversationHarness(options: ConversationHarnessOptions = 
           : 'all'
         started.push(subject)
         startedDomains.push(domain)
-        if (domain !== 'cycle') {
-          service.mode = 'managed'
-          service.pid = 4242
-          service.domain = domain === 'all' ? 'all' : 'channel'
-          service.health = 'ok'
-          service.detail = null
-          const next = fixtureSubjectReadiness(subject, {
-            channel: { state: 'running', reasons: ['channel_running'] },
-            conversation: { state: 'running', reasons: ['conversation_ready'] },
-            cycle: domain === 'all'
-              ? { state: 'running', reasons: ['cycle_running'] }
-              : defaultSubjectReadiness.cycle
-          }, hostKind)
-          subjectReadinessBySubject.set(subject, next)
-          Object.assign(defaultSubjectReadiness, next)
-        }
+        service.mode = domain === 'cycle' ? 'attached' : 'managed'
+        service.pid = 4242
+        service.domain = domain
+        service.health = 'ok'
+        service.detail = null
+        const next = fixtureSubjectReadiness(subject, {
+          channel: domain === 'cycle'
+            ? defaultSubjectReadiness.channel
+            : { state: 'running', reasons: ['channel_running'] },
+          conversation: domain === 'cycle'
+            ? defaultSubjectReadiness.conversation
+            : { state: 'running', reasons: ['conversation_ready'] },
+          cycle: domain === 'channel'
+            ? defaultSubjectReadiness.cycle
+            : { state: 'running', reasons: ['cycle_running'] }
+        }, hostKind)
+        subjectReadinessBySubject.set(subject, next)
+        Object.assign(defaultSubjectReadiness, next)
         emit('service.status', subject, undefined, { subject, mode: service.mode, domain: service.domain })
         return { ...service, subject }
       }

@@ -255,6 +255,33 @@ export interface CycleRequestResult {
   cycle_start_request: Record<string, unknown> | null
 }
 
+export interface CycleProcessOnceResult {
+  subject: string
+  status: 'ok' | 'idle' | 'retryable' | 'blocked'
+  reason: string
+  scanned: {
+    scanned: boolean
+    enqueued_count: number
+  }
+  backlog: {
+    before: number
+    after: number
+  }
+  health: {
+    before: Record<string, unknown>
+    after: Record<string, unknown>
+  }
+  claim: Record<string, unknown> | null
+  checkpoint: Record<string, unknown> | null
+  events: Array<Record<string, unknown>>
+  channel: {
+    before: Record<string, unknown> | null
+    after: Record<string, unknown> | null
+    unchanged: boolean
+  }
+  work: Record<string, unknown> | null
+}
+
 export interface SetupReadiness {
   jeaHome: {
     path: string

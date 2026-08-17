@@ -1,12 +1,12 @@
 import { resolveDesktopConfig } from '../../../../../src/channel/adapters/desktop/config.mjs'
-import { enqueueCycleStartRequestWithEvent } from '../../../../../src/daemon/cycle-dispatch.mjs'
+import { enqueueCycleStartRequestWithEvent, processCycleOnce } from '../../../../../src/daemon/cycle-dispatch.mjs'
 import { buildDaemonProjection } from '../../../../../src/daemon/daemon-projection.mjs'
 import { resolveModelReadiness } from '../../../../../src/actions/execution-env.mjs'
 import { getSubjectEntry } from '../../../../../src/infra/subjects.mjs'
 import { PublicClientError } from '../errors'
 import { observeWebHost, projectSubjectReadiness } from '../readiness'
 import { redactPublicValue } from '../redact'
-import type { ClientHostKind, CycleRequestResult, ServiceStatus, SubjectReadiness } from '../types'
+import type { ClientHostKind, CycleProcessOnceResult, CycleRequestResult, ServiceStatus, SubjectReadiness } from '../types'
 import { requireSubject, subjectRuntime, type ClientRuntimeContext } from './runtime'
 
 export interface ServiceProcessPort {
@@ -129,5 +129,18 @@ export class ServiceCommandOwner {
       subject: name,
       cycle_start_request: result.request ?? null
     })
+  }
+
+  async processCycleOnce(subject: string): Promise<CycleProcessOnceResult> {
+    const name = requireSubject(this.runtime, subject)
+    const model = resolveModelReadiness({
+      jeaHome: this.runtime.jeaHome,
+      subjectRoot: subjectRuntime(this.runtime, name).runtimeRoot
+    })
+    const result = await processCycleOnce(this.runtime, name, {
+      mock: model.mode === 'mock' || process.env.JEA_FORCE_MOCK === '1',
+      'skip-investigate': process.env.JEA_REACTOR_SKIP_INVESTIGATE === '1' || model.mode === 'mock'
+    })
+    return redactPublicValue(result as CycleProcessOnceResult)
   }
 }

@@ -552,6 +552,8 @@ export function runHeartbeatTick(root, subject, input = {}) {
   };
 }
 
+export { processCycleOnce, processOnceCommandExitCode, processOnceSucceeded } from './cycle-process-once.mjs';
+
 export function buildCycleProjection(root, subject) {
   const open = listOpenCycles(root, subject);
   const queue = readTaskQueue(root, subject);

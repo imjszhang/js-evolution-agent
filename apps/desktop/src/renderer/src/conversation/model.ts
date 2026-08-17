@@ -1,3 +1,4 @@
+import { PublicClientError } from '../../../client-api/errors'
 import type { JeaClient } from '../../../client-api/jea-client'
 import type {
   ConversationSendResult,
@@ -29,6 +30,7 @@ import type { ProjectionWatchPort } from './watch'
 
 export type ConversationSendState = 'idle' | 'pending' | 'sent' | 'failed'
 export type { ChannelServiceStartState }
+export type CycleRemediationState = 'idle' | 'pending' | 'done' | 'failed'
 
 export interface ConversationWorkspaceSnapshot {
   subjects: SubjectSummary[]
@@ -39,6 +41,8 @@ export interface ConversationWorkspaceSnapshot {
   draft: string
   sendState: ConversationSendState
   serviceStartState: ChannelServiceStartState
+  cycleProcessState: CycleRemediationState
+  cycleStartState: CycleRemediationState
   waiting: boolean
   lastSend: ConversationSendResult | null
   error: ConversationErrorView | null
@@ -73,6 +77,8 @@ function emptySnapshot(): ConversationWorkspaceSnapshot {
     draft: '',
     sendState: 'idle',
     serviceStartState: 'idle',
+    cycleProcessState: 'idle',
+    cycleStartState: 'idle',
     waiting: false,
     lastSend: null,
     error: null,
@@ -187,6 +193,8 @@ export class ConversationWorkspaceModel {
       waiting: false,
       sendState: 'idle',
       serviceStartState: 'idle',
+      cycleProcessState: 'idle',
+      cycleStartState: 'idle',
       lastSend: null,
       error: null,
       stale: false,
@@ -262,6 +270,49 @@ export class ConversationWorkspaceModel {
     } catch (error) {
       if (!this.isCurrent(generation)) return
       this.patch({ error: classifyClientError(error, 'Unable to enable desktop Channel.') })
+    }
+  }
+
+  async processCycleOnce(): Promise<void> {
+    const subject = this.snapshot.subject?.name
+    if (!subject || this.snapshot.cycleProcessState === 'pending') return
+    const generation = this.generation
+    this.patch({ cycleProcessState: 'pending', error: null })
+    try {
+      const result = await this.client.processCycleOnce(subject)
+      if (result.status === 'retryable' || result.status === 'blocked') {
+        throw new PublicClientError('OPERATION_FAILED', result.reason || 'Unable to process the Cycle backlog.')
+      }
+      if (!this.isCurrent(generation) || this.snapshot.subject?.name !== subject) return
+      await this.refreshSupport(subject, generation)
+      if (!this.isCurrent(generation)) return
+      this.patch({ cycleProcessState: 'done' })
+    } catch (error) {
+      if (!this.isCurrent(generation)) return
+      this.patch({
+        cycleProcessState: 'failed',
+        error: classifyClientError(error, 'Unable to process the Cycle backlog.')
+      })
+    }
+  }
+
+  async startCycleService(): Promise<void> {
+    const subject = this.snapshot.subject?.name
+    if (!subject || this.snapshot.cycleStartState === 'pending') return
+    const generation = this.generation
+    this.patch({ cycleStartState: 'pending', error: null })
+    try {
+      await this.client.startService(subject, 'cycle')
+      if (!this.isCurrent(generation)) return
+      await this.refreshSupport(subject, generation)
+      if (!this.isCurrent(generation) || this.snapshot.subject?.name !== subject) return
+      this.patch({ cycleStartState: 'done' })
+    } catch (error) {
+      if (!this.isCurrent(generation)) return
+      this.patch({
+        cycleStartState: 'failed',
+        error: classifyClientError(error, 'Unable to start the Cycle service.')
+      })
     }
   }
 

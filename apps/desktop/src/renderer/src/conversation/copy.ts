@@ -43,7 +43,12 @@ const copy = {
     serviceOffline: 'Channel service offline',
     serviceDegraded: 'Channel service degraded',
     serviceStarting: 'Channel service starting',
-    serviceStale: 'Live status is stale'
+    serviceStale: 'Live status is stale',
+    cycleBacklog: 'Cycle backlog',
+    processCycleOnce: 'Process once',
+    processingCycleOnce: 'Processing Cycle…',
+    startCycle: 'Start Cycle',
+    startingCycle: 'Starting Cycle…'
   },
   zh: {
     subjects: '主体',
@@ -87,7 +92,12 @@ const copy = {
     serviceOffline: 'Channel 服务离线',
     serviceDegraded: 'Channel 服务降级',
     serviceStarting: 'Channel 服务启动中',
-    serviceStale: '实时状态已过期'
+    serviceStale: '实时状态已过期',
+    cycleBacklog: 'Cycle 积压',
+    processCycleOnce: '处理一次',
+    processingCycleOnce: '正在处理 Cycle…',
+    startCycle: '启动 Cycle',
+    startingCycle: '正在启动 Cycle…'
   }
 } as const
 

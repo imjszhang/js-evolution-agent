@@ -43,6 +43,8 @@ import {
 import { ALL_CYCLE_STEP_TYPES } from './cycle-reducer.mjs';
 import {
   enqueueCycleStartRequestWithEvent,
+  processCycleOnce,
+  processOnceCommandExitCode,
   processCycleStartRequests,
   runHeartbeatTick,
 } from './cycle-dispatch.mjs';
@@ -1465,6 +1467,27 @@ export async function daemonCommand({ subcommand, flags = {}, args = [], root = 
     return 0;
   }
 
+  if (subcommand === 'process-once') {
+    if (multiSubject) {
+      console.error('daemon process-once supports one subject at a time.');
+      return 2;
+    }
+    const laneGuard = checkSubjectLaneReady(root, { subject });
+    if (!laneGuard.ok) {
+      printSubjectLaneGuardFailure(laneGuard, { json: !!flags.json });
+      return 1;
+    }
+    const result = await processCycleOnce(root, subject, flags);
+    if (flags.json) console.log(JSON.stringify(result, null, 2));
+    else {
+      console.log(`status: ${result.status}`);
+      console.log(`reason: ${result.reason}`);
+      console.log(`backlog: ${result.backlog.before} -> ${result.backlog.after}`);
+      if (!result.channel.unchanged) console.log('warning: Channel worker state changed');
+    }
+    return processOnceCommandExitCode(result.status);
+  }
+
   if (subcommand === 'work') {
     if (multiSubject) {
       console.error('daemon work supports one subject at a time. Start one worker per subject for parallel evolution.');
@@ -1689,11 +1712,12 @@ export async function daemonCommand({ subcommand, flags = {}, args = [], root = 
   }
 
   {
-    console.error('Usage: jea daemon <enqueue|work|start|stop|status|events|doctor|tasks|inbox|cycle|evolution-mode> [--subject NAME] [--subjects a,b | --all] [--json]');
+    console.error('Usage: jea daemon <enqueue|work|process-once|start|stop|status|events|doctor|tasks|inbox|cycle|evolution-mode> [--subject NAME] [--subjects a,b | --all] [--json]');
     console.error('       jea daemon enqueue --type cognitive_reaction|exec_queue|verify_batch|rule_reaction|memory_compaction [--idempotency-key KEY]');
     console.error('       jea daemon cycle request [--reason TEXT] [--note TEXT]');
     console.error('       jea daemon evolution-mode show [--json]');
     console.error('       jea daemon evolution-mode set <continuous|on_demand> [--json]');
+    console.error('       jea daemon process-once [--mock] [--subject NAME] [--json]');
     console.error('       jea daemon work --once');
     console.error('       jea daemon start [--tick-ms N] [--evolution-mode continuous|on_demand] [--interval-ms N] [--idle-interval-ms N] [--heartbeat-ms N]');
     console.error('       jea daemon stop');

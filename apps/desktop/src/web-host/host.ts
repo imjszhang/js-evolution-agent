@@ -89,6 +89,11 @@ const WRITE_EVENTS: Record<string, (payload: Record<string, unknown>, result: un
     subject: String(payload.subject ?? ''),
     payload: { subject: payload.subject }
   }),
+  'service.processCycleOnce': (payload) => ({
+    type: 'evolution.updated',
+    subject: String(payload.subject ?? ''),
+    payload: { subject: payload.subject }
+  }),
   'settings.set': () => ({
     type: 'settings.changed',
     payload: {}

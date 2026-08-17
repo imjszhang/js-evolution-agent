@@ -4,6 +4,7 @@ import type {
   ConversationPage,
   ConversationSendResult,
   ConversationSessionSummary,
+  CycleProcessOnceResult,
   CycleRequestResult,
   EvolutionCycleDetail,
   EvolutionCycleList,
@@ -59,6 +60,7 @@ export interface JeaClient {
   startService(subject: string, domain?: 'all' | 'cycle' | 'channel'): Promise<ServiceStatus>
   stopService(subject: string): Promise<ServiceStatus>
   requestCycle(subject: string, note?: string): Promise<CycleRequestResult>
+  processCycleOnce(subject: string): Promise<CycleProcessOnceResult>
   getReadiness(subject?: string): Promise<SetupReadiness>
   confirmHome(path?: string): Promise<SetupHomeResult>
   createSubject(name: string, options?: { enableDesktopChannel?: boolean }): Promise<SetupSubjectResult>
@@ -101,6 +103,7 @@ export function createTypedJeaClient(
     startService: (subject, domain) => invoke<ServiceStatus>('service.start', { subject, domain }),
     stopService: (subject) => invoke<ServiceStatus>('service.stop', { subject }),
     requestCycle: (subject, note) => invoke<CycleRequestResult>('service.requestCycle', { subject, note }),
+    processCycleOnce: (subject) => invoke<CycleProcessOnceResult>('service.processCycleOnce', { subject }),
     getReadiness: (subject) => invoke<SetupReadiness>('setup.getReadiness', subject ? { subject } : {}),
     confirmHome: (path) => invoke<SetupHomeResult>('setup.confirmHome', path ? { path } : {}),
     createSubject: (name, options) => invoke<SetupSubjectResult>('setup.createSubject', { name, ...options }),

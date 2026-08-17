@@ -406,6 +406,62 @@ export function ServiceStatusPane({
             : conversationText(locale, 'startService')}
         </Button>
       ) : null}
+      <CycleRemediationActions snapshot={snapshot} model={model} locale={locale} />
     </div>
+  )
+}
+
+function CycleRemediationActions({
+  snapshot,
+  model,
+  locale
+}: {
+  snapshot: ConversationWorkspaceSnapshot
+  model: ConversationWorkspaceModel
+  locale: 'en' | 'zh'
+}) {
+  const actions = snapshot.subjectReadiness?.allowed_actions ?? []
+  const backlog = typeof snapshot.observability?.attention?.backlog_count === 'number'
+    ? snapshot.observability.attention.backlog_count
+    : null
+  const canProcess = actions.includes('process_cycle_once')
+  const canStartCycle = actions.includes('start_cycle')
+  if (!snapshot.subject || (!canProcess && !canStartCycle && backlog == null)) return null
+  const processing = snapshot.cycleProcessState === 'pending'
+  const startingCycle = snapshot.cycleStartState === 'pending'
+  return (
+    <span className="flex items-center gap-1" data-testid="conversation-cycle-remediation">
+      {backlog != null ? (
+        <span data-testid="conversation-cycle-backlog">
+          {conversationText(locale, 'cycleBacklog')} {backlog}
+        </span>
+      ) : null}
+      {canProcess ? (
+        <Button
+          size="sm"
+          variant="ghost"
+          data-testid="conversation-process-cycle-once"
+          disabled={processing}
+          onClick={() => void model.processCycleOnce()}
+        >
+          {processing
+            ? conversationText(locale, 'processingCycleOnce')
+            : conversationText(locale, 'processCycleOnce')}
+        </Button>
+      ) : null}
+      {canStartCycle ? (
+        <Button
+          size="sm"
+          variant="ghost"
+          data-testid="conversation-start-cycle"
+          disabled={startingCycle}
+          onClick={() => void model.startCycleService()}
+        >
+          {startingCycle
+            ? conversationText(locale, 'startingCycle')
+            : conversationText(locale, 'startCycle')}
+        </Button>
+      ) : null}
+    </span>
   )
 }

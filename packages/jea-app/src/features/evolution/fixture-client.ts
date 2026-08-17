@@ -151,17 +151,17 @@ export function createEvolutionFixtureData(): EvolutionFixtureStore {
     observability: {
       alpha: {
         subject: 'alpha',
-        attention: { count: 1, highest_severity: 'info' },
+        attention: { count: 1, highest_severity: 'info', backlog_count: 1 },
         open_cycles: 1
       },
       beta: {
         subject: 'beta',
-        attention: { count: 0, highest_severity: null },
+        attention: { count: 0, highest_severity: null, backlog_count: 0 },
         open_cycles: 0
       },
       empty: {
         subject: 'empty',
-        attention: { count: 0, highest_severity: null },
+        attention: { count: 0, highest_severity: null, backlog_count: 0 },
         open_cycles: 0
       }
     }

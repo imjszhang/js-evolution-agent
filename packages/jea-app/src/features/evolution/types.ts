@@ -78,6 +78,9 @@ export interface EvolutionInspectorClient {
   getRound(subject: string, cycleId: string): Promise<EvolutionRoundDetail>
   getObservability(subject: string): Promise<EvolutionObservability>
   subscribe(listener: (event: EvolutionEventEnvelope) => void): () => void
+  processCycleOnce?(subject: string): Promise<unknown>
+  startService?(subject: string, domain?: 'all' | 'cycle' | 'channel'): Promise<unknown>
+  getServiceReadiness?(subject: string): Promise<{ allowed_actions?: string[] }>
 }
 
 export type CycleKind = 'open' | 'historical'
