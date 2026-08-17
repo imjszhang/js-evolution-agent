@@ -100,9 +100,17 @@ describe('recovery journeys', () => {
     const home = createIsolatedRecoveryHome({ prefix: 'jea-channel-journey-' });
     temps.push(home.jeaHome, home.sourceRoot);
     const result = await runChannelJourney(home.runtime, home.subject);
-    expect(result.ok).toBe(true);
-    expect(result.assistant).toBeGreaterThan(0);
-    expect(result.leakedApproval).toBe(false);
+    try {
+      expect(result.ok).toBe(true);
+      expect(result.assistant).toBeGreaterThan(0);
+      expect(result.leakedApproval).toBe(false);
+      expect(result.workerPid).not.toBe(process.pid);
+      expect(result.workerAlive).toBe(true);
+    } finally {
+      if (result.child?.pid && isProcessAlive(result.child.pid)) {
+        try { process.kill(result.child.pid, 'SIGKILL'); } catch { /* cleanup */ }
+      }
+    }
   }, 30_000);
 
   it('processes one mock envelope without duplicate consumption', async () => {
@@ -114,14 +122,16 @@ describe('recovery journeys', () => {
     expect(result.fixtureStillEligible).toBe(false);
   }, 60_000);
 
-  it('leaves an externally attached daemon alive after the product exits', () => {
+  it('leaves an externally attached daemon alive after the product exits', async () => {
     const home = createIsolatedRecoveryHome({ prefix: 'jea-attach-journey-' });
     temps.push(home.jeaHome, home.sourceRoot);
-    const result = runExternalAttachJourney(home.runtime, home.subject);
+    const result = await runExternalAttachJourney(home.runtime, home.subject);
     try {
       expect(result.ok).toBe(true);
       expect(result.stillAlive).toBe(true);
+      expect(result.productGone).toBe(true);
       expect(isProcessAlive(result.pid)).toBe(true);
+      expect(isProcessAlive(result.productPid)).toBe(false);
     } finally {
       if (result.child?.pid && isProcessAlive(result.child.pid)) {
         try { process.kill(result.child.pid, 'SIGKILL'); } catch { /* cleanup */ }
@@ -135,6 +145,7 @@ describe('recovery journeys', () => {
     const result = await runThreeRestartCycles(home.runtime, home.subject, { withWeb: false });
     expect(result.ok).toBe(true);
     expect(result.cycles).toHaveLength(3);
+    expect(result.cycles.every((item) => item.productGone && item.productPid !== process.pid)).toBe(true);
   });
 
   it('redacts diagnostic canaries and machine paths', () => {
@@ -172,6 +183,10 @@ describe('release recovery soak detectors', () => {
     const report = await runRecoverySoak({ durationMs: 40, sampleMs: 10 });
     expect(report.ok).toBe(true);
     expect(report.status).toBe('passed');
+    expect(report.launched_app).toBe(false);
+    expect(report.samples.length).toBeGreaterThan(0);
+    expect(report.samples[0]).toHaveProperty('workers');
+    expect(report.samples[0]).toHaveProperty('claims');
   });
 
   it('refuses a full 30-minute soak without a macOS packaged app', async () => {

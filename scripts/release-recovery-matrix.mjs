@@ -8,7 +8,6 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, printReport, repoRootFrom } from './release-lib.mjs';
 import {
@@ -44,6 +43,7 @@ import {
   packagedSourceRootFromApp,
 } from '../src/product/app-paths.mjs';
 import { isProcessAlive } from '../src/infra/process-alive.mjs';
+import { spawnStandInProcess, waitForExit } from './release-recovery-process.mjs';
 import { processCycleOnce } from '../src/daemon/cycle-process-once.mjs';
 import { listEligibleEvidence, readClaimLedger } from '../src/evolution/reactor/claim-ledger.mjs';
 import { runtimeForSubject } from '../src/infra/runtime-paths.mjs';
@@ -135,19 +135,11 @@ async function captureIo(run) {
   }
 }
 
-function spawnExternalDaemon() {
-  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
-    stdio: 'ignore',
-    detached: true,
-  });
-  child.unref();
-  return child;
-}
-
 export async function runChannelJourney(runtime, subject) {
   const previousMock = process.env.JEA_FORCE_MOCK;
   process.env.JEA_FORCE_MOCK = '1';
   process.env.JEA_HOME = runtime.jeaHome;
+  const worker = spawnStandInProcess({ detached: true });
   try {
     initData(runtime.sourceRoot, { subject, all: true });
     const before = readSubjectReadiness(runtime, subject, { hostKind: 'electron' });
@@ -156,16 +148,17 @@ export async function runChannelJourney(runtime, subject) {
         ok: false,
         detail: `expected stopped/blocked, got channel=${before.channel.state} conversation=${before.conversation.state}`,
         before,
+        child: worker,
       };
     }
     if (!before.allowed_actions.includes('start_channel')) {
-      return { ok: false, detail: 'stopped channel did not recommend start_channel', before };
+      return { ok: false, detail: 'stopped channel did not recommend start_channel', before, child: worker };
     }
 
-    writeRunningChannelRecovery(runtime, subject);
+    writeRunningChannelRecovery(runtime, subject, { pid: worker.pid });
     const afterStart = readSubjectReadiness(runtime, subject, { hostKind: 'electron' });
     if (afterStart.channel.state !== 'running' && afterStart.channel.state !== 'attached') {
-      return { ok: false, detail: `channel not recovered: ${afterStart.channel.state}`, afterStart };
+      return { ok: false, detail: `channel not recovered: ${afterStart.channel.state}`, afterStart, child: worker };
     }
 
     sendDesktopInboundMessage(runtime, subject, {
@@ -179,17 +172,23 @@ export async function runChannelJourney(runtime, subject) {
     const page = readDesktopSession(runtime, subject, 'main', { tail: 20 });
     const assistant = (page.records || []).filter((record) => record.role === 'assistant');
     const leakedApproval = JSON.stringify(page).includes('approval_granted');
+    const workerAlive = isProcessAlive(worker.pid);
     return {
       ok: classified.classified > 0
         && Boolean(presence.plan?.kind || presence.skipped)
         && assistant.length > 0
         && assistant.every((record) => String(record.content || '').trim().length > 0)
-        && !leakedApproval,
+        && !leakedApproval
+        && workerAlive
+        && worker.pid !== process.pid,
       classified: classified.classified,
       assistant: assistant.length,
       leakedApproval,
+      workerPid: worker.pid,
+      workerAlive,
       before,
       afterStart,
+      child: worker,
     };
   } finally {
     if (previousMock == null) delete process.env.JEA_FORCE_MOCK;
@@ -254,24 +253,33 @@ export async function runCycleJourney(runtime, subject) {
   }
 }
 
-export function runExternalAttachJourney(runtime, subject, { child } = {}) {
-  const owned = child || spawnExternalDaemon();
+export async function runExternalAttachJourney(runtime, subject, { child } = {}) {
+  const daemon = child || spawnStandInProcess({ detached: true });
+  const product = spawnStandInProcess({ detached: false });
   try {
-    applyRecoveryFixture(runtime, 'externally-attached', { subject, livePid: owned.pid });
+    applyRecoveryFixture(runtime, 'externally-attached', { subject, livePid: daemon.pid });
     const readiness = readSubjectReadiness(runtime, subject, { hostKind: 'electron' });
-    const stillAlive = isProcessAlive(owned.pid);
     const attached = readiness.cycle.state === 'attached' || readiness.channel.state === 'attached';
+    const productGone = await waitForExit(product);
+    const stillAlive = isProcessAlive(daemon.pid);
     return {
-      ok: stillAlive && attached && !readiness.allowed_actions.includes('stop_managed'),
-      pid: owned.pid,
+      ok: stillAlive
+        && productGone
+        && attached
+        && !readiness.allowed_actions.includes('stop_managed'),
+      pid: daemon.pid,
+      productPid: product.pid,
       stillAlive,
+      productGone,
       attached,
       cycle: readiness.cycle.state,
       channel: readiness.channel.state,
-      child: owned,
+      child: daemon,
+      product,
     };
   } catch (error) {
-    return { ok: false, detail: error.message, child: owned };
+    await waitForExit(product);
+    return { ok: false, detail: error.message, child: daemon, product };
   }
 }
 
@@ -301,6 +309,20 @@ export async function runThreeRestartCycles(runtime, subject, {
         after,
       });
     } else {
+      const product = spawnStandInProcess({ detached: false });
+      writeChannelFixture(runtime, subject, {
+        status: 'running',
+        pid: product.pid,
+        heartbeat_at: new Date().toISOString(),
+        started_at: new Date().toISOString(),
+      });
+      writeCycleFixture(runtime, subject, {
+        status: 'running',
+        pid: product.pid,
+        heartbeat_at: new Date().toISOString(),
+        started_at: new Date().toISOString(),
+      });
+      const productGone = await waitForExit(product);
       writeChannelFixture(runtime, subject, { status: 'stopped', pid: null });
       writeCycleFixture(runtime, subject, { status: 'stopped', pid: null, heartbeat_at: null });
       const readiness = readSubjectReadiness(runtime, subject, { hostKind: 'electron' });
@@ -311,8 +333,12 @@ export async function runThreeRestartCycles(runtime, subject, {
         || readiness.channel.state === 'stale';
       cycles.push({
         index,
-        ok: !falseStale && !currentStatus(runtime.jeaHome).running,
+        ok: productGone
+          && !falseStale
+          && !currentStatus(runtime.jeaHome).running,
         web: false,
+        productPid: product.pid,
+        productGone,
         cycle: readiness.cycle.state,
         channel: readiness.channel.state,
         held: snap.held.length,
@@ -503,10 +529,15 @@ export async function runRecoveryMatrix({
       }));
     }
 
-    steps.push(await timed('channel_journey', () => runChannelJourney(home.runtime, home.subject)));
+    const channel = await timed('channel_journey', () => runChannelJourney(home.runtime, home.subject));
+    steps.push(channel);
+    if (channel.child?.pid) {
+      await waitForExit(channel.child);
+      delete channel.child;
+    }
     steps.push(await timed('cycle_journey', () => runCycleJourney(home.runtime, home.subject)));
 
-    const attach = runExternalAttachJourney(home.runtime, home.subject);
+    const attach = await runExternalAttachJourney(home.runtime, home.subject);
     attachChild = attach.child;
     steps.push({
       id: 'external_attach',

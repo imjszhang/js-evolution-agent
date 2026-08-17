@@ -4,12 +4,19 @@
  * Default duration is 30 minutes. Do not put this on PR required checks.
  * Linux/unit tests use --duration-ms for a short detector pass.
  */
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { looksLikePackagedApp } from '../src/product/app-paths.mjs';
+import { looksLikePackagedApp, packagedSourceRootFromApp } from '../src/product/app-paths.mjs';
+import { isProcessAlive } from '../src/infra/process-alive.mjs';
 import { parseArgs, printReport, repoRootFrom } from './release-lib.mjs';
 import { createIsolatedRecoveryHome, applyRecoveryFixture } from './release-recovery-fixtures.mjs';
+import {
+  collectRuntimeSoakSample,
+  launchPackagedProduct,
+  waitForExit,
+} from './release-recovery-process.mjs';
 
 export const SOAK_DEFAULT_MS = 30 * 60 * 1000;
 export const CPU_ABNORMAL_RATIO = 0.8;
@@ -19,7 +26,7 @@ export function detectHelperCrashes(processFailures = []) {
   return (processFailures || []).filter((item) => {
     const processType = String(item.process_type || item.process || item.name || '');
     const reason = String(item.reason || item.status || '');
-    return /helper/i.test(processType) && /crash/i.test(reason);
+    return /helper|renderer|utility|gpu/i.test(processType) && /crash|abort|sigabrt/i.test(reason);
   });
 }
 
@@ -164,28 +171,43 @@ export async function runRecoverySoak({
 
   const home = createIsolatedRecoveryHome({ prefix: 'jea-soak-' });
   applyRecoveryFixture(home.runtime, 'all-stopped');
+  const userHome = mkdtempSync(join(tmpdir(), 'jea-soak-user-'));
+  let appChild = null;
+  const launchedApp = Boolean(fullDuration && appPath && looksLikePackagedApp(appPath));
+  if (launchedApp) {
+    appChild = launchPackagedProduct({
+      appPath,
+      jeaHome: home.jeaHome,
+      userHome,
+      sourceRoot: packagedSourceRootFromApp(appPath),
+    });
+  }
+
   const started = Date.now();
   const samples = [];
   const cpuSamples = [];
   let usage = process.cpuUsage();
   let hr = process.hrtime.bigint();
 
-  while (Date.now() - started < durationMs) {
-    const slice = Math.min(sampleMs, Math.max(1, durationMs - (Date.now() - started)));
-    await sleep(slice);
-    const nextUsage = process.cpuUsage();
-    const nextHr = process.hrtime.bigint();
-    const ratio = cpuRatio(usage, hr, nextUsage, nextHr);
-    usage = nextUsage;
-    hr = nextHr;
-    cpuSamples.push({ ratio, at: new Date().toISOString() });
-    samples.push({
-      at: new Date().toISOString(),
-      process_failures: [],
-      workers: [],
-      claims: [],
-      listener: { ownedPort: null, listening: false, running: false },
-    });
+  try {
+    while (Date.now() - started < durationMs) {
+      const slice = Math.min(sampleMs, Math.max(1, durationMs - (Date.now() - started)));
+      await sleep(slice);
+      const nextUsage = process.cpuUsage();
+      const nextHr = process.hrtime.bigint();
+      const ratio = cpuRatio(usage, hr, nextUsage, nextHr);
+      usage = nextUsage;
+      hr = nextHr;
+      cpuSamples.push({ ratio, at: new Date().toISOString() });
+      samples.push(collectRuntimeSoakSample(home.runtime, home.subject));
+    }
+  } finally {
+    if (appChild?.pid) {
+      await waitForExit(appChild, 5_000);
+    }
+    if (!keepHome) {
+      rmSync(userHome, { recursive: true, force: true });
+    }
   }
 
   const duration = Date.now() - started;
@@ -201,10 +223,19 @@ export async function runRecoverySoak({
     reason: evaluated.ok ? 'soak_passed' : evaluated.failures[0],
     platform: `${process.platform}-${process.arch}`,
     appPath: appPath && looksLikePackagedApp(appPath) ? appPath : null,
+    launched_app: launchedApp,
+    app_pid: appChild?.pid ?? null,
+    app_alive_after_quit: appChild?.pid ? isProcessAlive(appChild.pid) : false,
     jeaHome: keepHome ? home.jeaHome : '(removed)',
     samples,
     cpuSamples,
   };
+  if (report.app_alive_after_quit) {
+    report.ok = false;
+    report.status = 'failed';
+    report.failures = [...(report.failures || []), 'app_still_running'];
+    report.reason = 'app_still_running';
+  }
   return report;
 }
 
