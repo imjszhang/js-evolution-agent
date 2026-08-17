@@ -552,7 +552,7 @@ export function runHeartbeatTick(root, subject, input = {}) {
   };
 }
 
-export { processCycleOnce } from './cycle-process-once.mjs';
+export { processCycleOnce, processOnceCommandExitCode, processOnceSucceeded } from './cycle-process-once.mjs';
 
 export function buildCycleProjection(root, subject) {
   const open = listOpenCycles(root, subject);

@@ -44,6 +44,7 @@ import { ALL_CYCLE_STEP_TYPES } from './cycle-reducer.mjs';
 import {
   enqueueCycleStartRequestWithEvent,
   processCycleOnce,
+  processOnceCommandExitCode,
   processCycleStartRequests,
   runHeartbeatTick,
 } from './cycle-dispatch.mjs';
@@ -1484,7 +1485,7 @@ export async function daemonCommand({ subcommand, flags = {}, args = [], root = 
       console.log(`backlog: ${result.backlog.before} -> ${result.backlog.after}`);
       if (!result.channel.unchanged) console.log('warning: Channel worker state changed');
     }
-    return result.status === 'blocked' ? 1 : 0;
+    return processOnceCommandExitCode(result.status);
   }
 
   if (subcommand === 'work') {

@@ -308,3 +308,11 @@ export async function processCycleOnce(root, subject, flags = {}) {
       : null,
   };
 }
+
+export function processOnceSucceeded(status) {
+  return status === 'ok' || status === 'idle';
+}
+
+export function processOnceCommandExitCode(status) {
+  return processOnceSucceeded(status) ? 0 : 1;
+}

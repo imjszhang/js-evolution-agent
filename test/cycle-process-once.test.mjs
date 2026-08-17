@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { writeJsonFile } from '../src/infra/files.mjs';
 import { initData } from '../src/cli/commands/data.mjs';
 import { writePendingOperatorBrief } from '../src/intelligence/operator-briefs.mjs';
-import { processCycleOnce } from '../src/daemon/cycle-process-once.mjs';
+import { processCycleOnce, processOnceCommandExitCode } from '../src/daemon/cycle-process-once.mjs';
 import { buildDaemonProjection } from '../src/daemon/daemon-projection.mjs';
 import { buildReactorHealthProjection } from '../src/daemon/reactor-health.mjs';
 import { createChannelWorkerState, readChannelWorkerState } from '../src/channel/worker-state.mjs';
@@ -263,6 +263,10 @@ describe('Cycle process-once recovery', () => {
 
     expect(failed.status).toBe('retryable');
     expect(failed.reason).toBe('lease_lost');
+    expect(processOnceCommandExitCode(failed.status)).toBe(1);
+    expect(processOnceCommandExitCode('ok')).toBe(0);
+    expect(processOnceCommandExitCode('idle')).toBe(0);
+    expect(processOnceCommandExitCode('blocked')).toBe(1);
     expect(pendingAfterFail.length).toBeGreaterThan(0);
     expect(failedClaims.some((claim) => claim.status === 'failed')).toBe(true);
     expect(failedClaims.some((claim) => claim.status === 'handled')).toBe(false);

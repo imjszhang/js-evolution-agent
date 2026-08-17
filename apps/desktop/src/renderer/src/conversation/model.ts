@@ -1,3 +1,4 @@
+import { PublicClientError } from '../../../client-api/errors'
 import type { JeaClient } from '../../../client-api/jea-client'
 import type {
   ConversationSendResult,
@@ -266,7 +267,10 @@ export class ConversationWorkspaceModel {
     const generation = this.generation
     this.patch({ cycleProcessState: 'pending', error: null })
     try {
-      await this.client.processCycleOnce(subject)
+      const result = await this.client.processCycleOnce(subject)
+      if (result.status === 'retryable' || result.status === 'blocked') {
+        throw new PublicClientError('OPERATION_FAILED', result.reason || 'Unable to process the Cycle backlog.')
+      }
       if (!this.isCurrent(generation) || this.snapshot.subject?.name !== subject) return
       await this.refreshSupport(subject, generation)
       if (!this.isCurrent(generation)) return

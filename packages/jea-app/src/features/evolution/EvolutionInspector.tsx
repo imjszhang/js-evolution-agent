@@ -6,6 +6,12 @@ import type { FeatureSlotProps } from '../../slots/types'
 import { Button } from '../../ui/button'
 import { Separator } from '../../ui/separator'
 import { cn } from '../../lib/cn'
+import {
+  canShowProcessOnce,
+  canShowStartCycle,
+  messageFromUnknownError,
+  processOnceResultFailed
+} from './cycle-remediation'
 import { createInspectorController } from './controller'
 import { subscribeEvolutionNavigation } from './navigation'
 import { projectEvolutionCore, projectTimeline, resolveSafeState } from './projection'
@@ -49,6 +55,7 @@ export function EvolutionInspector({
   const [liveLoading, setLiveLoading] = useState(Boolean(client) && !snapshotProp)
   const [section, setSection] = useState<SectionId>('report')
   const [cycleBusy, setCycleBusy] = useState<'process' | 'start' | null>(null)
+  const [cycleError, setCycleError] = useState<string | null>(null)
   const [allowedActions, setAllowedActions] = useState<string[]>([])
   const subject = adapters.selectedSubjectId ?? null
 
@@ -75,19 +82,28 @@ export function EvolutionInspector({
         if (!cancelled) apply(next)
       })
     })
-    if (client.getServiceReadiness && subject) {
-      void client.getServiceReadiness(subject).then((readiness) => {
-        if (!cancelled) setAllowedActions(readiness.allowed_actions ?? [])
-      }).catch(() => {
-        if (!cancelled) setAllowedActions([])
-      })
-    }
     return () => {
       cancelled = true
       stopClient()
       stopNav()
     }
   }, [adapters.selectedCycleId, apply, client, snapshotProp, subject])
+
+  useEffect(() => {
+    if (!client?.getServiceReadiness || !subject) {
+      setAllowedActions([])
+      return
+    }
+    let cancelled = false
+    void client.getServiceReadiness(subject).then((readiness) => {
+      if (!cancelled) setAllowedActions(readiness.allowed_actions ?? [])
+    }).catch(() => {
+      if (!cancelled) setAllowedActions([])
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [client, subject])
 
   const snapshot = snapshotProp ?? liveSnapshot
   const loading = loadingProp ?? liveLoading
@@ -99,30 +115,56 @@ export function EvolutionInspector({
   const backlogCount = typeof snapshot.observability?.attention?.backlog_count === 'number'
     ? snapshot.observability.attention.backlog_count
     : null
-  const canProcessOnce = Boolean(client?.processCycleOnce) && Boolean(subject)
-  const canStartCycle = Boolean(client?.startService)
-    && Boolean(subject)
-    && allowedActions.includes('start_cycle')
+  const canProcessOnce = canShowProcessOnce(allowedActions, {
+    hasClient: Boolean(client?.processCycleOnce),
+    subject
+  })
+  const canStartCycle = canShowStartCycle(allowedActions, {
+    hasClient: Boolean(client?.startService),
+    subject
+  })
+
+  const refreshAfterCycleAction = () => {
+    if (controllerRef.current && !snapshotProp && subject) {
+      void controllerRef.current.load(subject, snapshot.selectedCycleId).then((next) => apply(next))
+    }
+    if (client?.getServiceReadiness && subject) {
+      void client.getServiceReadiness(subject).then((readiness) => {
+        setAllowedActions(readiness.allowed_actions ?? [])
+      }).catch(() => {})
+    }
+  }
 
   const onProcessOnce = () => {
-    if (!client?.processCycleOnce || !subject || cycleBusy) return
+    if (!client?.processCycleOnce || !subject || cycleBusy || !canProcessOnce) return
     setCycleBusy('process')
-    void client.processCycleOnce(subject).finally(() => {
-      setCycleBusy(null)
-      if (controllerRef.current && !snapshotProp) {
-        void controllerRef.current.load(subject, snapshot.selectedCycleId).then((next) => apply(next))
+    setCycleError(null)
+    void client.processCycleOnce(subject).then((result) => {
+      if (processOnceResultFailed(result as { status?: string })) {
+        const reason = typeof (result as { reason?: unknown })?.reason === 'string'
+          ? (result as { reason: string }).reason
+          : t('evolutionProcessOnceFailed')
+        setCycleError(reason)
+        return
       }
+      refreshAfterCycleAction()
+    }).catch((error) => {
+      setCycleError(messageFromUnknownError(error, t('evolutionProcessOnceFailed')))
+    }).finally(() => {
+      setCycleBusy(null)
     })
   }
 
   const onStartCycle = () => {
-    if (!client?.startService || !subject || cycleBusy) return
+    if (!client?.startService || !subject || cycleBusy || !canStartCycle) return
     setCycleBusy('start')
-    void client.startService(subject, 'cycle').finally(() => {
+    setCycleError(null)
+    void client.startService(subject, 'cycle').then(() => {
+      refreshAfterCycleAction()
+    }).catch((error) => {
+      setCycleError(messageFromUnknownError(error, t('evolutionStartCycleFailed')))
+    }).finally(() => {
       setCycleBusy(null)
-      if (controllerRef.current && !snapshotProp) {
-        void controllerRef.current.load(subject, snapshot.selectedCycleId).then((next) => apply(next))
-      }
     })
   }
 
@@ -192,6 +234,11 @@ export function EvolutionInspector({
           ) : null}
         </div>
       </header>
+      {cycleError ? (
+        <p className="border-b border-status-error/40 bg-status-error/10 px-3 py-2 text-xs text-status-error-foreground" data-testid="evolution-cycle-error" role="alert">
+          {cycleError}
+        </p>
+      ) : null}
 
       <SafeBanner state={safeState} />
 

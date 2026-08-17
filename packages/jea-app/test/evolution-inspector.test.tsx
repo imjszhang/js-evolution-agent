@@ -2,6 +2,7 @@ import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { JeaApp } from '../src/JeaApp'
+import { canShowProcessOnce, canShowStartCycle, processOnceResultFailed } from '../src/features/evolution/cycle-remediation'
 import { EvolutionInspector } from '../src/features/evolution/EvolutionInspector'
 import { createEvolutionFixtureClient, createEvolutionFixtureData } from '../src/features/evolution/fixture-client'
 import { createEvolutionInspectorFeature } from '../src/features/evolution/feature'
@@ -106,9 +107,10 @@ describe('Evolution Inspector component', () => {
     expect(html).not.toContain('data-state="open"')
   })
 
-  it('shows Cycle backlog and Process once when the client supports recovery', () => {
+  it('shows Cycle backlog but hides Process once until readiness allows it', () => {
     const client = createEvolutionFixtureClient()
     client.processCycleOnce = async () => ({ status: 'ok' })
+    client.startService = async () => ({})
     const html = renderToStaticMarkup(
       <LocaleProvider initialLocale="en">
         <EvolutionInspector
@@ -121,8 +123,13 @@ describe('Evolution Inspector component', () => {
       </LocaleProvider>
     )
     expect(html).toContain('Cycle backlog 1')
-    expect(html).toContain('data-testid="evolution-process-once"')
+    expect(html).not.toContain('data-testid="evolution-process-once"')
     expect(html).not.toContain('data-testid="evolution-start-cycle"')
+    expect(canShowProcessOnce(['process_cycle_once'], { hasClient: true, subject: 'alpha' })).toBe(true)
+    expect(canShowProcessOnce([], { hasClient: true, subject: 'alpha' })).toBe(false)
+    expect(canShowStartCycle(['start_cycle'], { hasClient: true, subject: 'alpha' })).toBe(true)
+    expect(processOnceResultFailed({ status: 'retryable' })).toBe(true)
+    expect(processOnceResultFailed({ status: 'ok' })).toBe(false)
   })
 
   it('keeps timeline and section controls keyboard reachable', () => {
