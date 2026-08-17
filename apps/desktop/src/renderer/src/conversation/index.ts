@@ -1,5 +1,6 @@
 export { createConversationFeature, CONVERSATION_FEATURE_ID } from './feature'
-export { createRendererJeaClient } from './host-client'
+export { createDesktopProjectionWatchPort, createRendererJeaClient } from './host-client'
+export type { ProjectionWatchPort } from './watch'
 export { ConversationWorkspaceModel } from './model'
 export { createConversationHarness, TEST_CONVERSATION_SUBJECT } from './harness'
 export { resolveDraftAttempt, type DraftAttempt } from './draft'

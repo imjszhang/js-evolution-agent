@@ -55,9 +55,37 @@ describe('Evolution Inspector realtime refresh', () => {
     expect(shouldRefreshForEvent({ type: 'conversation.updated', subject: 'alpha' }, 'alpha')).toBe(false)
     expect(shouldRefreshForEvent({ type: 'evolution.updated', subject: 'alpha' }, 'beta')).toBe(false)
     expect(shouldRefreshForEvent({ type: 'evolution.updated', payload: { subject: 'alpha' } }, 'alpha')).toBe(true)
+    expect(shouldRefreshForEvent({ type: 'projection.todo_updated', subject: 'alpha' }, 'alpha')).toBe(true)
+    expect(shouldRefreshForEvent({ type: 'evolution.updated', subject: 'alpha', payload: { stale: true } }, 'alpha')).toBe(false)
     expect(mergeCycleRecords(
       [{ cycle_id: 'a' }, { cycle_id: 'b' }],
       [{ cycle_id: 'a' }, { cycle_id: 'a' }, { cycle_id: 'c' }]
     ).map((item) => item.cycle_id)).toEqual(['a', 'c', 'b'])
+  })
+
+  it('marks the Inspector stale without changing the current Subject selection', async () => {
+    const client = createEvolutionFixtureClient()
+    const controller = createInspectorController(client)
+    const loaded = await controller.load('alpha')
+    expect(loaded.selectedCycleId).toBe('cycle-20260816-open')
+    const ignored = await controller.handleEvent({
+      type: 'projection.refresh_failed',
+      ts: '2026-08-16T03:00:00.000Z',
+      subject: 'beta',
+      payload: { stale: true }
+    })
+    expect(ignored).toBeNull()
+    expect(controller.snapshot.selectedCycleId).toBe('cycle-20260816-open')
+    expect(controller.snapshot.stale).toBeFalsy()
+
+    const stale = await controller.handleEvent({
+      type: 'projection.refresh_failed',
+      ts: '2026-08-16T03:00:01.000Z',
+      subject: 'alpha',
+      payload: { stale: true }
+    })
+    expect(stale?.stale).toBe(true)
+    expect(stale?.selectedCycleId).toBe('cycle-20260816-open')
+    expect(stale?.subject).toBe('alpha')
   })
 })

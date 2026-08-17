@@ -19,9 +19,11 @@ import {
   isEventForContext,
   isEvolutionEvent,
   isServiceEvent,
+  isStaleProjectionEvent,
   isSubjectEvent
 } from './events'
 import { hasAssistantAfter, mergeRecords, type WorkspaceMessage } from './history'
+import type { ProjectionWatchPort } from './watch'
 
 export type ConversationSendState = 'idle' | 'pending' | 'sent' | 'failed'
 export type ChannelServiceStartState = 'idle' | 'pending' | 'started' | 'failed'
@@ -41,6 +43,7 @@ export interface ConversationWorkspaceSnapshot {
   service: ServiceStatus | null
   readiness: SetupReadiness | null
   observability: EvolutionObservability | null
+  stale: boolean
   cards: ConversationCard[]
   loading: boolean
   lastDraftId: string | null
@@ -64,6 +67,7 @@ function emptySnapshot(): ConversationWorkspaceSnapshot {
     service: null,
     readiness: null,
     observability: null,
+    stale: false,
     cards: [],
     loading: true,
     lastDraftId: null
@@ -79,9 +83,13 @@ export class ConversationWorkspaceModel {
   private readonly listeners = new Set<() => void>()
   private snapshot: ConversationWorkspaceSnapshot = emptySnapshot()
   private waitStartedAt: string | null = null
+  private selectedName: string | null = null
   private disposed = false
 
-  constructor(private readonly client: JeaClient) {
+  constructor(
+    private readonly client: JeaClient,
+    private readonly projectionWatch: ProjectionWatchPort | null = null
+  ) {
     this.subscribe = this.subscribe.bind(this)
     this.getSnapshot = this.getSnapshot.bind(this)
   }
@@ -113,6 +121,7 @@ export class ConversationWorkspaceModel {
     this.generation += 1
     this.unsubscribeEvents?.()
     this.unsubscribeEvents = null
+    void this.releaseWatch()
   }
 
   setDraft(draft: string): void {
@@ -151,9 +160,12 @@ export class ConversationWorkspaceModel {
     options: { generation?: number } = {}
   ): Promise<void> {
     const generation = options.generation ?? ++this.generation
+    this.selectedName = name
     this.offset = 0
     this.draftAttempt = null
     this.waitStartedAt = null
+    await this.retargetWatch(name, generation)
+    if (!this.isCurrent(generation)) return
     this.patch({
       sessionId: DEFAULT_SESSION,
       sessions: [],
@@ -162,7 +174,11 @@ export class ConversationWorkspaceModel {
       sendState: 'idle',
       serviceStartState: 'idle',
       lastSend: null,
-      error: null
+      error: null,
+      stale: false,
+      service: null,
+      readiness: null,
+      observability: null
     })
     try {
       const subject = await this.client.selectSubject(name)
@@ -261,33 +277,39 @@ export class ConversationWorkspaceModel {
   }
 
   private async onEvent(event: JeaEventEnvelope): Promise<void> {
-    const subject = this.snapshot.subject?.name ?? null
+    const generation = this.generation
+    const subject = this.selectedName ?? this.snapshot.subject?.name ?? null
     const sessionId = this.snapshot.sessionId
     if (!isEventForContext(event, subject, sessionId)) return
+    if (isStaleProjectionEvent(event)) {
+      if (!this.isCurrent(generation) || this.snapshot.subject?.name !== subject) return
+      this.patch({ stale: true })
+      return
+    }
     if (isSubjectEvent(event)) {
       const next = eventSubject(event)
       if (next && next !== subject) {
         await this.selectSubject(next)
         return
       }
-      if (subject) await this.selectSubject(subject)
+      if (subject) await this.selectSubject(subject, { generation })
       return
     }
     if (isConversationEvent(event)) {
       const eventSession = eventSessionId(event)
       if (eventSession && eventSession !== sessionId) return
-      await this.readMessages(false)
-      if (this.snapshot.waiting && hasAssistantAfter(this.snapshot.records, this.waitStartedAt)) {
+      await this.readMessages(false, generation)
+      if (
+        this.isCurrent(generation)
+        && this.snapshot.waiting
+        && hasAssistantAfter(this.snapshot.records, this.waitStartedAt)
+      ) {
         this.stopWaiting()
       }
       return
     }
-    if (isServiceEvent(event) && subject) {
-      await this.refreshSupport(subject, this.generation)
-      return
-    }
-    if (isEvolutionEvent(event) && subject) {
-      await this.refreshSupport(subject, this.generation)
+    if ((isServiceEvent(event) || isEvolutionEvent(event)) && subject) {
+      await this.refreshSupport(subject, generation)
     }
   }
 
@@ -326,10 +348,30 @@ export class ConversationWorkspaceModel {
         this.client.getObservability(subject)
       ])
       if (!this.isCurrent(generation)) return
+      if (this.selectedName && this.selectedName !== subject) return
       if (this.snapshot.subject && this.snapshot.subject.name !== subject) return
-      this.patch({ service, readiness, observability })
+      this.patch({ service, readiness, observability, stale: false })
     } catch {
       // Support reads are best-effort and must not block conversation.
+    }
+  }
+
+  private async retargetWatch(subject: string, generation: number): Promise<void> {
+    if (!this.projectionWatch) return
+    try {
+      await this.projectionWatch.watch(subject)
+    } catch {
+      if (!this.isCurrent(generation)) return
+      this.patch({ stale: true })
+    }
+  }
+
+  private async releaseWatch(): Promise<void> {
+    if (!this.projectionWatch) return
+    try {
+      await this.projectionWatch.stop()
+    } catch {
+      // Workspace disposal must still complete if the host watch is already gone.
     }
   }
 
@@ -345,7 +387,8 @@ export class ConversationWorkspaceModel {
       readiness: next.readiness,
       observability: next.observability,
       records: next.records,
-      error: next.error
+      error: next.error,
+      stale: next.stale
     })
     this.snapshot = next
     for (const listener of this.listeners) listener()

@@ -20,6 +20,8 @@ export {
   pickDefaultCycleId,
   resolveSafeState,
   shouldRefreshForEvent,
+  isStaleProjectionEvent,
+  eventSubjectOf,
   mergeCycleRecords,
   coreFromLegacy,
   isOpenCycleStatus,

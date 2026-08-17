@@ -1,5 +1,5 @@
-import { eventCycleId, isEvolutionUpdatedEvent, sanitizeCycleDetail, sanitizeCycleList, sanitizeObservability, sanitizeRoundDetail } from './sanitize'
-import { pickDefaultCycleId, shouldRefreshForEvent } from './projection'
+import { eventCycleId, sanitizeCycleDetail, sanitizeCycleList, sanitizeObservability, sanitizeRoundDetail } from './sanitize'
+import { isStaleProjectionEvent, pickDefaultCycleId, shouldRefreshForEvent } from './projection'
 import type {
   EvolutionCycleDetail,
   EvolutionInspectorClient,
@@ -59,7 +59,8 @@ export function createInspectorController(client: EvolutionInspectorClient): Ins
         cycles: details.cycles,
         rounds: details.rounds,
         selectedCycleId: null,
-        error: list ? null : 'unavailable'
+        error: list ? null : 'unavailable',
+        stale: false
       }
       const preferred = preferredCycleId && cycleIds.includes(preferredCycleId)
         ? preferredCycleId
@@ -87,11 +88,20 @@ export function createInspectorController(client: EvolutionInspectorClient): Ins
       return state.snapshot
     },
     async handleEvent(event) {
-      if (!isEvolutionUpdatedEvent(event) || !shouldRefreshForEvent(event, state.snapshot.subject)) {
+      const subject = state.snapshot.subject
+      if (isStaleProjectionEvent(event)) {
+        const eventSubject = typeof event.subject === 'string' ? event.subject : event.payload?.subject
+        if (subject && eventSubject && eventSubject !== subject) return null
+        if (!subject) return null
+        state.snapshot = { ...state.snapshot, stale: true }
+        return state.snapshot
+      }
+      if (!shouldRefreshForEvent(event, subject)) {
         return null
       }
       const cycleId = eventCycleId(event)
-      return state.load(state.snapshot.subject, cycleId ?? state.snapshot.selectedCycleId)
+      const selected = state.snapshot.selectedCycleId
+      return state.load(subject, cycleId ?? selected)
     },
     subscribe(onChange) {
       return client.subscribe((event) => {
@@ -112,7 +122,8 @@ function emptySnapshot(subject: string | null): EvolutionInspectorSnapshot {
     cycles: {},
     rounds: {},
     selectedCycleId: null,
-    error: null
+    error: null,
+    stale: false
   }
 }
 

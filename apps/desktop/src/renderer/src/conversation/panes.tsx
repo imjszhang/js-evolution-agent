@@ -273,12 +273,15 @@ export function ServiceStatusPane({
 }) {
   const { locale } = useLocale()
   const offline = snapshot.cards.some((card) => card.kind === 'offline')
+  const stale = snapshot.stale || snapshot.cards.some((card) => card.kind === 'stale')
   const degraded = snapshot.cards.some((card) => card.kind === 'daemon_unhealthy' || card.kind === 'desktop_disabled')
   const starting = snapshot.serviceStartState === 'pending'
   const label = starting
     ? conversationText(locale, 'serviceStarting')
     : offline
     ? conversationText(locale, 'serviceOffline')
+    : stale
+      ? conversationText(locale, 'serviceStale')
     : degraded
       ? conversationText(locale, 'serviceDegraded')
       : conversationText(locale, 'serviceOnline')
@@ -286,12 +289,17 @@ export function ServiceStatusPane({
     ? 'bg-status-warn'
     : offline
       ? 'bg-status-offline'
-      : degraded
+      : stale || degraded
         ? 'bg-status-warn'
         : 'bg-status-ok'
 
   return (
-    <div className="flex items-center gap-2 text-xs text-muted-foreground" data-slot="serviceStatus" data-testid="conversation-service-status">
+    <div
+      className="flex items-center gap-2 text-xs text-muted-foreground"
+      data-slot="serviceStatus"
+      data-testid="conversation-service-status"
+      data-stale={stale ? 'true' : 'false'}
+    >
       <span className={cn('size-2 rounded-full', tone)} aria-hidden="true" />
       <span>{label}</span>
       {(offline || degraded) && snapshot.subject ? (

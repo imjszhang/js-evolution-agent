@@ -122,6 +122,7 @@ export interface EvolutionInspectorSnapshot {
   rounds: Record<string, EvolutionRoundDetail | null>
   selectedCycleId: string | null
   error: string | null
+  stale?: boolean
 }
 
 export type InspectorSafeState =
@@ -129,6 +130,8 @@ export type InspectorSafeState =
   | 'loading'
   | 'empty'
   | 'error'
+  | 'stale'
+  | 'offline'
   | 'open'
   | 'historical'
   | 'verify-unavailable'
