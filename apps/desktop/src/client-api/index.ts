@@ -28,6 +28,12 @@ export { createMemoryJeaClient, createMemoryCommandTransport } from './adapters/
 export { createWebJeaClient, type WebJeaClientOptions } from './adapters/web'
 export { createProductSurfaceFixture, fixtureCommandResult, PRODUCT_FIXTURE_SUBJECT } from './fixtures/product-surface'
 export { redactPublicValue } from './redact'
+export {
+  observeWebHost,
+  projectSubjectReadiness,
+  readinessCodeView,
+  READINESS_ACTION_CAPABILITY
+} from './readiness'
 export type {
   CatalogCommandEntry,
   ClientApiCatalog,
@@ -45,7 +51,16 @@ export type {
   InvokeResponse,
   JeaEventEnvelope,
   ProtocolInfo,
+  ClientHostKind,
+  ConversationReadinessView,
+  DomainReadiness,
+  ModelReadinessView,
+  RemediationAction,
   ServiceStatus,
+  SubjectReadiness,
+  SubjectReadinessActionId,
+  SubjectReadinessDomainState,
+  SubjectReadinessReasonCode,
   SettingsPatch,
   SettingsView,
   SetupHomeResult,
@@ -53,4 +68,9 @@ export type {
   SetupSubjectResult,
   SubjectRecord,
   SubjectSummary
+} from './types'
+export {
+  SUBJECT_READINESS_ACTION_IDS,
+  SUBJECT_READINESS_DOMAIN_STATES,
+  SUBJECT_READINESS_REASON_CODES
 } from './types'

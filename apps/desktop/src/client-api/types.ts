@@ -143,6 +143,106 @@ export interface ServiceStatus {
   detail: string | null
 }
 
+export const SUBJECT_READINESS_DOMAIN_STATES = [
+  'running',
+  'stopped',
+  'blocked',
+  'stalled',
+  'stale',
+  'zombie',
+  'attached',
+  'starting',
+  'stopping',
+  'unavailable'
+] as const
+
+export type SubjectReadinessDomainState = (typeof SUBJECT_READINESS_DOMAIN_STATES)[number]
+
+export const SUBJECT_READINESS_ACTION_IDS = [
+  'start_channel',
+  'start_cycle',
+  'process_cycle_once',
+  'repair_worker_state',
+  'stop_managed',
+  'open_desktop',
+  'none'
+] as const
+
+export type SubjectReadinessActionId = (typeof SUBJECT_READINESS_ACTION_IDS)[number]
+
+export const SUBJECT_READINESS_REASON_CODES = [
+  'web_host_running',
+  'web_host_stopped',
+  'web_host_zombie',
+  'web_host_unavailable',
+  'cycle_running',
+  'cycle_attached',
+  'cycle_stopped',
+  'cycle_blocked',
+  'cycle_stalled',
+  'cycle_stale',
+  'cycle_zombie',
+  'cycle_starting',
+  'cycle_stopping',
+  'cycle_unavailable',
+  'channel_running',
+  'channel_attached',
+  'channel_stopped',
+  'channel_blocked',
+  'channel_stale',
+  'channel_zombie',
+  'channel_starting',
+  'channel_stopping',
+  'channel_unavailable',
+  'reactor_backlog_stalled',
+  'model_ready',
+  'model_mock',
+  'model_unset',
+  'conversation_ready',
+  'conversation_blocked_channel',
+  'conversation_blocked_model',
+  'desktop_channel_disabled'
+] as const
+
+export type SubjectReadinessReasonCode = (typeof SUBJECT_READINESS_REASON_CODES)[number]
+
+export type ClientHostKind = 'electron' | 'web'
+
+export interface DomainReadiness {
+  state: SubjectReadinessDomainState
+  reasons: SubjectReadinessReasonCode[]
+}
+
+export interface ModelReadinessView {
+  state: SubjectReadinessDomainState
+  mode: 'deepseek' | 'mock' | 'unset'
+  reasons: SubjectReadinessReasonCode[]
+}
+
+export interface ConversationReadinessView {
+  state: SubjectReadinessDomainState
+  reasons: SubjectReadinessReasonCode[]
+}
+
+export interface RemediationAction {
+  id: SubjectReadinessActionId
+  allowed: boolean
+  capability: 'readonly' | 'write' | 'local-only'
+}
+
+export interface SubjectReadiness {
+  subject: string
+  generated_at: string
+  web_host: DomainReadiness
+  cycle: DomainReadiness
+  channel: DomainReadiness
+  model: ModelReadinessView
+  conversation: ConversationReadinessView
+  reasons: SubjectReadinessReasonCode[]
+  allowed_actions: SubjectReadinessActionId[]
+  actions: RemediationAction[]
+}
+
 export interface CycleRequestResult {
   subject: string
   cycle_start_request: Record<string, unknown> | null

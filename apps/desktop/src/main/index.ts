@@ -73,6 +73,7 @@ const acp = new AcpSessionManager(
 const clientApi = createApplicationCommandHost({
   sourceRoot: projectRoot,
   jeaHome: runtimeContext.jeaHome,
+  hostKind: 'electron',
   cliLauncher: createManagedCliLauncher({ sourceRoot: projectRoot }),
   serviceProcess: {
     get: (subject) => {

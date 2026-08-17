@@ -143,6 +143,15 @@
       "errors": ["INVALID_REQUEST", "NOT_FOUND", "OPERATION_FAILED"]
     },
     {
+      "name": "service.getReadiness",
+      "group": "service",
+      "capability": "readonly",
+      "availability": { "electron": true, "web": true },
+      "request": { "subject": "string" },
+      "response": { "readiness": "SubjectReadiness" },
+      "errors": ["INVALID_REQUEST", "NOT_FOUND", "OPERATION_FAILED"]
+    },
+    {
       "name": "service.start",
       "group": "service",
       "capability": "local-only",

@@ -7,7 +7,7 @@ import { PublicClientError, toPublicClientError } from './errors'
 import { payloadObject, optionalBoolean, numberField, stringField } from './payload'
 import { redactPublicValue } from './redact'
 import type { CapabilityLevel } from './protocol'
-import type { InvokeRequest, SettingsPatch } from './types'
+import type { ClientHostKind, InvokeRequest, SettingsPatch } from './types'
 import { createClientRuntimeContext, type ClientRuntimeContext } from './owners/runtime'
 import { SubjectCommandOwner } from './owners/subject'
 import { ConversationCommandOwner } from './owners/conversation'
@@ -38,6 +38,7 @@ export interface ApplicationCommandHostOptions {
   home?: HomePort
   cliLauncher?: CliLauncherPort
   versions?: { appVersion: string; cliVersion: string }
+  hostKind?: ClientHostKind
 }
 
 function packageVersion(): string {
@@ -63,7 +64,11 @@ export function createApplicationCommandHandlers(options: ApplicationCommandHost
   const conversation = new ConversationCommandOwner(runtime)
   const evolution = new EvolutionCommandOwner(runtime)
   const cli = new CliCommandOwner(options.cliLauncher ?? createUnsupportedCliLauncher())
-  const service = new ServiceCommandOwner(runtime, options.serviceProcess ?? createProjectionServicePort(runtime))
+  const service = new ServiceCommandOwner(
+    runtime,
+    options.serviceProcess ?? createProjectionServicePort(runtime),
+    options.hostKind ?? 'electron'
+  )
   const setup = new SetupCommandOwner(
     runtime,
     options.home ?? createInjectedHomePort(runtime),
@@ -152,6 +157,10 @@ export function createApplicationCommandHandlers(options: ApplicationCommandHost
     'service.getStatus': {
       capability: 'readonly',
       handle: (payload) => service.getStatus(stringField(payload, 'subject')!)
+    },
+    'service.getReadiness': {
+      capability: 'readonly',
+      handle: (payload) => service.getReadiness(stringField(payload, 'subject')!)
     },
     'service.start': {
       capability: 'local-only',

@@ -57,6 +57,7 @@ export function createMemoryCommandTransport(options: MemoryJeaClientOptions = {
         'evolution.getRound',
         'evolution.getObservability',
         'service.getStatus',
+        'service.getReadiness',
         'service.start',
         'service.stop',
         'service.requestCycle',
