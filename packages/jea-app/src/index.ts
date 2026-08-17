@@ -63,9 +63,12 @@ export { serviceStatusFeature } from './features/service-status/module'
 export { ServiceStatusView } from './features/service-status/ServiceStatusView'
 export {
   deriveServiceStatusKind,
+  eventSubjectOf,
   needsOpenDesktop,
+  shouldRefreshServiceReadiness,
   webHostStoppedIsNotOutage
 } from './features/service-status/derive'
+export { featuresProvideSlot, withDefaultProductFeatures } from './features/product-features'
 export { SettingsPanel } from './features/settings/SettingsPanel'
 export { SetupFlow } from './features/setup/SetupFlow'
 export { isConversationReady, resolveSetupStep, type SetupStep } from './features/readiness'
@@ -80,6 +83,7 @@ export {
 } from './features/fixtures'
 export type {
   CliStatus,
+  ProductEventEnvelope,
   ProductHostKind,
   DiagnosticReport,
   SettingsPatch,

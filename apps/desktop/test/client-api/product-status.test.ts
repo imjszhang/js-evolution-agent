@@ -14,7 +14,9 @@ import {
 import { createWebHost } from '../../src/web-host'
 import { writeChannelWorkerState } from '../../../../src/channel/worker-state.mjs'
 import { writeWorkerState } from '../../../../src/daemon/daemon-worker-state.mjs'
+import { writePendingOperatorBrief } from '../../../../src/intelligence/operator-briefs.mjs'
 import { productStatusPayload } from '../../../../src/cli/commands/product.mjs'
+import { subjectRuntime } from '../../src/client-api/owners/runtime'
 import type { SubjectReadiness } from '../../src/client-api/types'
 
 const WEB_TOKEN = 'a'.repeat(32) + 'product-status-web-token'
@@ -173,11 +175,21 @@ const FIXTURES = [
         heartbeat_at: nowIso()
       })
     }
+  },
+  {
+    name: 'reactor-backlog-stalled',
+    apply: (runtime: ReturnType<typeof electronHost>['runtime']) => {
+      writePendingOperatorBrief(subjectRuntime(runtime, 'alpha').runtimeRoot, {
+        id: 'brief-stalled-product-status',
+        summary: 'stale evidence for product status',
+        created_at: nowIso(-2 * 60 * 60 * 1000)
+      })
+    }
   }
 ] as const
 
 describe('Electron / Web / CLI product status conformance', () => {
-  it.each(FIXTURES)('$name: CLI and Client API share state/reason codes', async ({ apply }) => {
+  it.each(FIXTURES)('$name: CLI and Client API share state/reason codes', async ({ name, apply }) => {
     const { sourceRoot, jeaHome } = tempHome()
     const electron = electronHost(sourceRoot, jeaHome)
     apply(electron.runtime)
@@ -195,6 +207,12 @@ describe('Electron / Web / CLI product status conformance', () => {
     expect(webValue.allowed_actions).not.toContain('start_cycle')
     expect(webValue.allowed_actions).not.toContain('repair_worker_state')
     expect(JSON.stringify({ electronValue, webValue, cliValue })).not.toContain(WEB_TOKEN)
+    if (name === 'reactor-backlog-stalled') {
+      expect(electronValue.cycle.state).toBe('stalled')
+      expect(electronValue.cycle.reasons).toContain('reactor_backlog_stalled')
+      expect(electronValue.allowed_actions).toContain('process_cycle_once')
+      expect(webValue.allowed_actions).toContain('process_cycle_once')
+    }
   })
 
   it('Web RPC matches Electron codes and rejects lifecycle mutations', async () => {

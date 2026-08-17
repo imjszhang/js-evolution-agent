@@ -338,6 +338,9 @@ export function createFixtureSetupClient(state: SetupFixtureState = createSetupF
     },
     async setDefaultSubject(subject) {
       return this.setSettings({ defaultSubject: subject })
+    },
+    subscribe() {
+      return () => {}
     }
   }
 }

@@ -163,6 +163,14 @@ export interface PublicCommandErrorShape {
   message: string
 }
 
+export interface ProductEventEnvelope {
+  type: string
+  ts?: string
+  subject?: string
+  session_id?: string
+  payload?: Record<string, unknown>
+}
+
 export interface SetupSettingsClient {
   getReadiness(subject?: string): Promise<SetupReadiness>
   confirmHome(path?: string): Promise<SetupHomeResult>
@@ -178,6 +186,7 @@ export interface SetupSettingsClient {
   listSubjects(): Promise<SubjectSummary[]>
   setDefaultSubject?(subject: string): Promise<unknown>
   getServiceReadiness?(subject: string): Promise<SubjectReadiness>
+  subscribe?(listener: (event: ProductEventEnvelope) => void): () => void
 }
 
 export type ProductHostKind = 'electron' | 'web'

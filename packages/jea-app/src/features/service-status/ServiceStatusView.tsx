@@ -1,9 +1,8 @@
-import { useEffect, useState } from 'react'
 import { useLocale } from '../../i18n/LocaleProvider'
 import type { FeatureSlotProps } from '../../slots/types'
 import { cn } from '../../lib/cn'
 import { useJeaClientContext } from '../client-context'
-import type { SubjectReadiness } from '../client-types'
+import { useLiveSubjectReadiness } from '../useLiveSubjectReadiness'
 import { deriveServiceStatusKind, needsOpenDesktop, webHostStoppedIsNotOutage } from './derive'
 
 function toneClass(kind: 'online' | 'offline' | 'degraded'): string {
@@ -38,28 +37,11 @@ export function ServiceStatusView({ adapters }: FeatureSlotProps) {
   const { t } = useLocale()
   const { client, host } = useJeaClientContext()
   const selected = adapters.selectedSubjectId
-  const [readiness, setReadiness] = useState<SubjectReadiness | null>(adapters.subjectReadiness ?? null)
-
-  useEffect(() => {
-    if (adapters.subjectReadiness) {
-      setReadiness(adapters.subjectReadiness)
-      return
-    }
-    if (!client?.getServiceReadiness || !selected) return
-    let cancelled = false
-    void client.getServiceReadiness(selected).then((next) => {
-      if (!cancelled) setReadiness(next)
-    }).catch(() => {
-      if (!cancelled) setReadiness(null)
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [adapters.subjectReadiness, client, selected])
-
-  const kind = adapters.serviceStatus === 'offline'
-    ? 'offline'
-    : deriveServiceStatusKind(readiness, { host: adapters.hostKind ?? host })
+  const readiness = useLiveSubjectReadiness(client, selected, adapters.subjectReadiness)
+  const kind = deriveServiceStatusKind(readiness, {
+    host: adapters.hostKind ?? host,
+    connection: adapters.serviceStatus === 'offline' ? 'offline' : undefined
+  })
   const label = kind === 'offline'
     ? t('statusOffline')
     : kind === 'degraded'

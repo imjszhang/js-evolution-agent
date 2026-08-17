@@ -3,8 +3,7 @@ import {
   createEvolutionInspectorFeature,
   JeaApp,
   JeaProductApp,
-  serviceStatusFeature,
-  settingsFeature,
+  withDefaultProductFeatures,
   type JeaAppProps,
   type SetupSettingsClient
 } from '@jea/app'
@@ -29,7 +28,7 @@ export function DesktopRoot({
   )
 
   if (client) {
-    return <JeaApp {...props} features={[...features, serviceStatusFeature, settingsFeature]} />
+    return <JeaApp {...props} features={withDefaultProductFeatures(features)} />
   }
 
   return (

@@ -4,12 +4,12 @@ import { LocaleProvider } from '../i18n/LocaleProvider'
 import type { ShellAdapters } from '../slots/types'
 import { ThemeProvider } from '../theme/ThemeProvider'
 import { JeaClientProvider } from './client-context'
-import type { ProductHostKind, SetupReadiness, SetupSettingsClient, SubjectReadiness, SubjectSummary } from './client-types'
+import type { ProductHostKind, SetupReadiness, SetupSettingsClient, SubjectSummary } from './client-types'
+import { withDefaultProductFeatures } from './product-features'
 import { isConversationReady } from './readiness'
-import { settingsFeature } from './settings/module'
-import { serviceStatusFeature } from './service-status/module'
 import { deriveServiceStatusKind } from './service-status/derive'
 import { SetupFlow } from './setup/SetupFlow'
+import { useLiveSubjectReadiness } from './useLiveSubjectReadiness'
 
 export interface JeaProductAppProps extends Omit<JeaAppProps, 'features' | 'viewState'> {
   client?: SetupSettingsClient | null
@@ -29,7 +29,6 @@ export function JeaProductApp({
   ...appProps
 }: JeaProductAppProps) {
   const [readiness, setReadiness] = useState<SetupReadiness | null>(initialReadiness)
-  const [serviceReadiness, setServiceReadiness] = useState<SubjectReadiness | null>(null)
   const [subjects, setSubjects] = useState<SubjectSummary[]>([])
   const [loadState, setLoadState] = useState<'loading' | 'ready' | 'error'>(
     initialReadiness || !client ? 'ready' : 'loading'
@@ -61,21 +60,14 @@ export function JeaProductApp({
     ?? readiness?.subjects.defaultSubject
     ?? null
 
-  useEffect(() => {
-    if (!client?.getServiceReadiness || !selectedSubject) return
-    let cancelled = false
-    void client.getServiceReadiness(selectedSubject).then((next) => {
-      if (!cancelled) setServiceReadiness(next)
-    }).catch(() => {
-      if (!cancelled) setServiceReadiness(null)
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [client, selectedSubject])
+  const serviceReadiness = useLiveSubjectReadiness(
+    client,
+    selectedSubject,
+    adapters?.subjectReadiness
+  )
 
   const resolvedFeatures = useMemo(
-    () => [...features, serviceStatusFeature, settingsFeature],
+    () => withDefaultProductFeatures(features),
     [features]
   )
 
@@ -95,8 +87,9 @@ export function JeaProductApp({
       ?? adapters?.selectedSubjectId,
     hostKind: host,
     subjectReadiness: serviceReadiness ?? adapters?.subjectReadiness ?? null,
-    serviceStatus: adapters?.serviceStatus
-      ?? deriveServiceStatusKind(serviceReadiness ?? adapters?.subjectReadiness ?? null, { host }),
+    serviceStatus: adapters?.serviceStatus === 'offline'
+      ? 'offline'
+      : deriveServiceStatusKind(serviceReadiness ?? adapters?.subjectReadiness ?? null, { host }),
     onRetry: adapters?.onRetry ?? (() => {
       if (!client) return
       setLoadState('loading')
