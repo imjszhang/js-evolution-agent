@@ -9,6 +9,10 @@ on:
         description: 'Request GitHub Release publication (always fail-closes without certified evidence)'
         type: boolean
         default: false
+      soak:
+        description: 'Run the release-only 30-minute packaged recovery soak (not a PR required check)'
+        type: boolean
+        default: false
       artifact_dir:
         description: 'Directory to smoke-check after packaging'
         type: string
@@ -16,6 +20,9 @@ on:
   workflow_call:
     inputs:
       publish:
+        type: boolean
+        default: false
+      soak:
         type: boolean
         default: false
       artifact_dir:
@@ -83,6 +90,10 @@ jobs:
         env:
           ARTIFACT_DIR: ${{ inputs.artifact_dir }}
         run: npm run release:package-smoke -- --dir "${ARTIFACT_DIR:-dist/release}" --json
+      - name: Packaged recovery matrix
+        env:
+          ARTIFACT_DIR: ${{ inputs.artifact_dir }}
+        run: npm run release:recovery-matrix -- --packaged --app dist/release/build/mac-arm64/JEA.app --with-web --out "${ARTIFACT_DIR:-dist/release}" --json
       - name: Scan staged resources
         run: npm run release:scan -- --root dist/release/stage --json
       - name: Upload macOS artifacts (never .env, JEA Home, or runtime)
@@ -96,6 +107,49 @@ jobs:
             dist/release/SHA256SUMS
             dist/release/package-smoke.json
             dist/release/RELEASE_NOTES.md
+            dist/release/recovery-matrix.json
+            dist/release/certification-evidence.json
+            dist/release/build-metadata.json
+          retention-days: 14
+          if-no-files-found: warn
+
+  recovery-soak:
+    name: recovery-soak (release-only, 30 min)
+    runs-on: macos-14
+    timeout-minutes: 90
+    needs: macos-package
+    if: ${{ inputs.soak }}
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build dir-only JEA.app for soak
+        run: node --preserve-symlinks scripts/package-macos.mjs --dir-only --json
+      - name: 30-minute packaged soak
+        env:
+          ARTIFACT_DIR: ${{ inputs.artifact_dir }}
+        run: |
+          set -euo pipefail
+          APP="dist/release/build/mac-arm64/JEA.app"
+          if [ ! -d "$APP" ]; then
+            echo "JEA.app is required for the release soak."
+            exit 1
+          fi
+          npm run release:recovery-soak -- --packaged --app "$APP" --duration-ms 1800000 --out "${ARTIFACT_DIR:-dist/release}/soak-report.json" --json
+      - name: Upload soak evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: macos-recovery-soak-0.1.1
+          path: |
+            dist/release/soak-report.json
           retention-days: 14
           if-no-files-found: warn
 

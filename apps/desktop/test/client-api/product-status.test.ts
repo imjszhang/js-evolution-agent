@@ -12,15 +12,15 @@ import {
   readSubjectReadiness
 } from '../../src/client-api'
 import { createWebHost } from '../../src/web-host'
-import { writeChannelWorkerState } from '../../../../src/channel/worker-state.mjs'
-import { writeWorkerState } from '../../../../src/daemon/daemon-worker-state.mjs'
-import { writePendingOperatorBrief } from '../../../../src/intelligence/operator-briefs.mjs'
 import { productStatusPayload } from '../../../../src/cli/commands/product.mjs'
-import { subjectRuntime } from '../../src/client-api/owners/runtime'
 import type { SubjectReadiness } from '../../src/client-api/types'
+import {
+  applyRecoveryFixture,
+  nowIso,
+  writeChannelFixture
+} from '../../../../scripts/release-recovery-fixtures.mjs'
 
 const WEB_TOKEN = 'a'.repeat(32) + 'product-status-web-token'
-const DEAD_PID = 999_999_999
 const hosts: Array<{ close(): Promise<void> }> = []
 
 beforeEach(() => {
@@ -35,10 +35,6 @@ afterEach(async () => {
   delete process.env.DEEPSEEK_API_KEY
   delete process.env.JEA_HOME
 })
-
-function nowIso(offsetMs = 0): string {
-  return new Date(Date.now() + offsetMs).toISOString()
-}
 
 function tempHome() {
   const sourceRoot = mkdtempSync(join(tmpdir(), 'jea-product-api-src-'))
@@ -80,119 +76,19 @@ async function readinessOf(
   return client.getServiceReadiness(subject)
 }
 
-function writeChannel(runtime: ReturnType<typeof electronHost>['runtime'], patch: {
-  pid?: number | null
-  status?: string
-  heartbeat_at?: string | null
-  started_at?: string | null
-} = {}) {
-  const status = patch.status ?? 'stopped'
-  const pid = patch.pid ?? null
-  const heartbeat = patch.heartbeat_at ?? null
-  writeChannelWorkerState(runtime, 'alpha', {
-    subject: 'alpha',
-    domain: 'channel',
-    schema_version: 2,
-    workers: status === 'stopped'
-      ? {}
-      : {
-        notify: {
-          role: 'notify',
-          worker_id: 'channel-fixture',
-          pid,
-          status,
-          started_at: patch.started_at ?? heartbeat,
-          heartbeat_at: heartbeat,
-          stale_after_ms: 60_000
-        }
-      },
-    coordinator: pid ? { pid, started_at: patch.started_at ?? heartbeat } : null,
-    worker_id: null,
-    pid,
-    status,
-    started_at: patch.started_at ?? null,
-    heartbeat_at: heartbeat,
-    stale_after_ms: 60_000
-  })
-}
-
-function writeCycle(runtime: ReturnType<typeof electronHost>['runtime'], patch: Record<string, unknown>) {
-  writeWorkerState(runtime, 'alpha', {
-    subject: 'alpha',
-    worker_id: 'cycle-fixture',
-    pid: null,
-    status: 'stopped',
-    started_at: null,
-    heartbeat_at: null,
-    stale_after_ms: 60_000,
-    ...patch
-  })
-}
-
 const FIXTURES = [
-  { name: 'all-stopped', apply: () => {} },
-  {
-    name: 'mixed-domain',
-    apply: (runtime: ReturnType<typeof electronHost>['runtime']) => {
-      writeChannel(runtime, {
-        pid: process.pid,
-        status: 'running',
-        heartbeat_at: nowIso(),
-        started_at: nowIso()
-      })
-    }
-  },
-  {
-    name: 'dead-pid-zombie',
-    apply: (runtime: ReturnType<typeof electronHost>['runtime']) => {
-      writeCycle(runtime, {
-        pid: DEAD_PID,
-        status: 'running',
-        started_at: nowIso(-180_000),
-        heartbeat_at: nowIso(-120_000)
-      })
-      writeChannel(runtime, {
-        pid: DEAD_PID,
-        status: 'running',
-        started_at: nowIso(-180_000),
-        heartbeat_at: nowIso(-120_000)
-      })
-    }
-  },
-  {
-    name: 'externally-attached',
-    apply: (runtime: ReturnType<typeof electronHost>['runtime']) => {
-      writeCycle(runtime, {
-        pid: process.pid,
-        status: 'running',
-        started_at: nowIso(),
-        heartbeat_at: nowIso()
-      })
-      writeChannel(runtime, {
-        pid: process.pid,
-        status: 'running',
-        started_at: nowIso(),
-        heartbeat_at: nowIso()
-      })
-    }
-  },
-  {
-    name: 'reactor-backlog-stalled',
-    apply: (runtime: ReturnType<typeof electronHost>['runtime']) => {
-      writePendingOperatorBrief(subjectRuntime(runtime, 'alpha').runtimeRoot, {
-        id: 'brief-stalled-product-status',
-        summary: 'stale evidence for product status',
-        created_at: nowIso(-2 * 60 * 60 * 1000)
-      })
-    }
-  }
+  { name: 'all-stopped' },
+  { name: 'mixed-domain' },
+  { name: 'dead-pid-zombie' },
+  { name: 'externally-attached' },
+  { name: 'reactor-backlog-stalled' }
 ] as const
 
 describe('Electron / Web / CLI product status conformance', () => {
-  it.each(FIXTURES)('$name: CLI and Client API share state/reason codes', async ({ name, apply }) => {
+  it.each(FIXTURES)('$name: CLI and Client API share state/reason codes', async ({ name }) => {
     const { sourceRoot, jeaHome } = tempHome()
     const electron = electronHost(sourceRoot, jeaHome)
-    apply(electron.runtime)
+    applyRecoveryFixture(electron.runtime, name)
     const web = webCommandHost(sourceRoot, jeaHome)
     const electronValue = await readinessOf(electron)
     const webValue = await readinessOf(web)
@@ -218,7 +114,7 @@ describe('Electron / Web / CLI product status conformance', () => {
   it('Web RPC matches Electron codes and rejects lifecycle mutations', async () => {
     const { sourceRoot, jeaHome } = tempHome()
     const electron = electronHost(sourceRoot, jeaHome)
-    writeChannel(electron.runtime, {
+    writeChannelFixture(electron.runtime, 'alpha', {
       pid: process.pid,
       status: 'running',
       heartbeat_at: nowIso(),
