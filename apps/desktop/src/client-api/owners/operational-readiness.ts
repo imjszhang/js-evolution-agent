@@ -1,15 +1,13 @@
 /**
- * Typed seam for the dedicated readiness command owned by #138.
- * Diagnostics consume existing setup.getReadiness, service.getStatus, and
- * web/daemon/channel projections until that command lands. Do not register
- * a second readiness catalog entry here.
+ * Diagnostics consume service.getReadiness (#138) as the single operational
+ * readiness source. The leftover projector is only a no-subject fallback.
  */
-import type { ServiceStatus, SetupReadiness } from '../types'
+import type { ServiceStatus, SetupReadiness, SubjectReadiness } from '../types'
 
 export const OPERATIONAL_READINESS_SEAM = {
   issue: 138,
   reservedCommand: 'service.getReadiness',
-  source: 'existing_projections',
+  source: 'service.getReadiness',
 } as const
 
 export type OperationalDomainId = 'web' | 'cycle' | 'channel' | 'model' | 'conversation'
@@ -79,6 +77,47 @@ function domain(
   ...reasonGroups: Array<string[] | undefined | null>
 ): OperationalDomainReadiness {
   return { id, status, reasons: reasonsOf(...reasonGroups) }
+}
+
+function mapDomainState(state: string): OperationalDomainStatus {
+  switch (state) {
+    case 'running':
+    case 'starting':
+      return 'ready'
+    case 'stopping':
+    case 'stalled':
+      return 'degraded'
+    case 'attached':
+      return 'attached'
+    case 'blocked':
+      return 'blocked'
+    case 'stopped':
+      return 'stopped'
+    case 'unavailable':
+      return 'unavailable'
+    case 'stale':
+      return 'stale'
+    case 'zombie':
+      return 'zombie'
+    default:
+      return 'unavailable'
+  }
+}
+
+export function fromSubjectReadiness(readiness: SubjectReadiness): OperationalReadinessProjection {
+  return {
+    source: OPERATIONAL_READINESS_SEAM.source,
+    reservedCommand: OPERATIONAL_READINESS_SEAM.reservedCommand,
+    web: domain('web', mapDomainState(readiness.web_host.state), readiness.web_host.reasons),
+    cycle: domain('cycle', mapDomainState(readiness.cycle.state), readiness.cycle.reasons),
+    channel: domain('channel', mapDomainState(readiness.channel.state), readiness.channel.reasons),
+    model: domain('model', mapDomainState(readiness.model.state), readiness.model.reasons),
+    conversation: domain(
+      'conversation',
+      mapDomainState(readiness.conversation.state),
+      readiness.conversation.reasons
+    ),
+  }
 }
 
 export function projectOperationalReadiness(input: OperationalReadinessInput): OperationalReadinessProjection {

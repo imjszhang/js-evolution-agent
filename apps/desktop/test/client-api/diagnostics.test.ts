@@ -73,13 +73,13 @@ function assertNoCanaries(value: unknown) {
 }
 
 describe('settings.exportDiagnostics', () => {
-  it('does not invent a second readiness command catalog', () => {
+  it('reuses service.getReadiness instead of inventing a second catalog', () => {
     expect(CLIENT_API_COMMANDS).toContain('settings.exportDiagnostics')
-    expect(CLIENT_API_COMMANDS).not.toContain('service.getReadiness')
+    expect(CLIENT_API_COMMANDS).toContain('service.getReadiness')
     expect(OPERATIONAL_READINESS_SEAM).toEqual({
       issue: 138,
       reservedCommand: 'service.getReadiness',
-      source: 'existing_projections'
+      source: 'service.getReadiness'
     })
   })
 
@@ -100,7 +100,7 @@ describe('settings.exportDiagnostics', () => {
     })
     expect(report.host.jea_home).toBe('<JEA_HOME>')
     expect(report.host.subject).toBe('alpha')
-    expect(report.readiness.source).toBe('existing_projections')
+    expect(report.readiness.source).toBe('service.getReadiness')
     expect(report.readiness.reservedCommand).toBe('service.getReadiness')
     for (const id of ['web', 'cycle', 'channel', 'model', 'conversation'] as const) {
       expect(report.readiness[id].id).toBe(id)

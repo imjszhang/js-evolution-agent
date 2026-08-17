@@ -90,7 +90,7 @@ export interface DiagnosticReport {
     subject: string | null
   }
   readiness: {
-    source: 'existing_projections'
+    source: 'service.getReadiness'
     reservedCommand: 'service.getReadiness'
     web: OperationalDomainReadiness
     cycle: OperationalDomainReadiness

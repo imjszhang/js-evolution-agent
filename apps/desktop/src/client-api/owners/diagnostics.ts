@@ -1,6 +1,4 @@
 import { homedir } from 'node:os'
-import { buildDaemonProjection } from '../../../../../src/daemon/daemon-projection.mjs'
-import { buildChannelProjection } from '../../../../../src/channel/projection.mjs'
 import { webHostStatusView } from '../../web-host/lifecycle'
 import { loadBuildMetadata } from '../../../../../src/product/build-metadata.mjs'
 import {
@@ -11,7 +9,7 @@ import {
 import { redactMachinePaths } from '../../../../../src/product/path-redact.mjs'
 import { redactPublicValue } from '../redact'
 import type { DiagnosticReport, SettingsView } from '../types'
-import { projectOperationalReadiness } from './operational-readiness'
+import { fromSubjectReadiness, projectOperationalReadiness } from './operational-readiness'
 import type { ClientRuntimeContext } from './runtime'
 import type { ServiceCommandOwner } from './service'
 import type { SetupCommandOwner } from './setup'
@@ -49,69 +47,26 @@ export class DiagnosticsCommandOwner {
       || null
     const settings = this.settings.get()
     const metadata = loadBuildMetadata({ sourceRoot: this.runtime.sourceRoot })
-    let service = null
-    let cycle: {
-      running?: boolean
-      stale?: boolean
-      zombie?: boolean
-      health?: string | null
-      reasons?: string[]
-    } | null = null
-    let channel: {
-      running?: boolean
-      stale?: boolean
-      zombie?: boolean
-      health?: string | null
-      reasons?: string[]
-    } | null = null
+    let readiness
     if (selected) {
       try {
-        service = this.service.getStatus(selected)
+        readiness = fromSubjectReadiness(this.service.getReadiness(selected))
       } catch {
-        service = null
-      }
-      try {
-        const daemon = buildDaemonProjection(this.runtime, selected, { eventLimit: 5 }) as {
-          worker?: { running?: boolean; stale?: boolean; zombie?: boolean }
-          health?: { status?: string; reasons?: string[] }
-        }
-        cycle = {
-          running: Boolean(daemon.worker?.running),
-          stale: Boolean(daemon.worker?.stale),
-          zombie: Boolean(daemon.worker?.zombie),
-          health: daemon.health?.status ?? service?.health ?? null,
-          reasons: Array.isArray(daemon.health?.reasons) ? daemon.health.reasons : [],
-        }
-      } catch {
-        cycle = service
-          ? { running: service.mode === 'managed' || service.mode === 'attached', health: service.health }
-          : null
-      }
-      try {
-        const projection = buildChannelProjection(this.runtime, selected) as {
-          worker?: { running?: boolean; stale?: boolean; zombie?: boolean }
-          health?: { status?: string; reasons?: string[] }
-        }
-        channel = {
-          running: Boolean(projection.worker?.running),
-          stale: Boolean(projection.worker?.stale),
-          zombie: Boolean(projection.worker?.zombie),
-          health: projection.health?.status ?? null,
-          reasons: Array.isArray(projection.health?.reasons) ? projection.health.reasons : [],
-        }
-      } catch {
-        channel = null
+        readiness = null
       }
     }
-
-    const web = webHostStatusView(this.runtime.jeaHome) as { running?: boolean }
-    const readiness = projectOperationalReadiness({
-      setup,
-      service,
-      web,
-      cycle,
-      channel,
-    })
+    if (!readiness) {
+      let service = null
+      if (selected) {
+        try {
+          service = this.service.getStatus(selected)
+        } catch {
+          service = null
+        }
+      }
+      const web = webHostStatusView(this.runtime.jeaHome) as { running?: boolean }
+      readiness = projectOperationalReadiness({ setup, service, web })
+    }
     const startupFailure = selected
       ? readDaemonStartupFailure(this.runtime, selected)
       : readDaemonStartupFailure(this.runtime)

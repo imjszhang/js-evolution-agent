@@ -156,7 +156,7 @@ export function createFixtureDiagnosticReport(state: SetupFixtureState = createS
       subject: state.readiness.subjects.defaultSubject
     },
     readiness: {
-      source: 'existing_projections',
+      source: 'service.getReadiness',
       reservedCommand: 'service.getReadiness',
       web: { id: 'web', status: 'stopped', reasons: ['web_host_stopped'] },
       cycle: { id: 'cycle', status: 'stopped', reasons: ['cycle_worker_stopped'] },

@@ -253,7 +253,7 @@ export function createProductSurfaceFixture(): ProductSurfaceFixture {
         subject: 'alpha'
       },
       readiness: {
-        source: 'existing_projections',
+        source: 'service.getReadiness',
         reservedCommand: 'service.getReadiness',
         web: { id: 'web', status: 'stopped', reasons: ['web_host_stopped'] },
         cycle: { id: 'cycle', status: 'stopped', reasons: ['cycle_worker_stopped'] },
