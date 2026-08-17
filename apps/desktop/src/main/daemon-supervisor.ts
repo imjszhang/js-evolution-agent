@@ -11,6 +11,7 @@ import {
 } from 'node:fs'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import {
+  inspectWorkerRepair,
   markWorkerStopped,
   readWorkerState,
   reconcileWorkerState,
@@ -18,6 +19,7 @@ import {
   summarizeWorkerState
 } from '../../../../src/daemon/daemon-worker-state.mjs'
 import {
+  inspectChannelWorkerRepair,
   readChannelWorkerState,
   repairChannelWorkerState,
   requestChannelWorkerStop,
@@ -165,7 +167,20 @@ export class DaemonSupervisor {
     }
     const cycleNeeded = domain !== 'channel'
     const channelNeeded = domain !== 'cycle'
-    if (cycleNeeded) {
+    const cycleInspection = cycleNeeded
+      ? inspectWorkerRepair(readWorkerState(this.runtimeContext, subject))
+      : { blocked: false, needed: false, reason: 'skipped' }
+    const channelInspection = channelNeeded
+      ? inspectChannelWorkerRepair(readChannelWorkerState(this.runtimeContext, subject))
+      : { blocked: false, needed: false, reason: 'skipped' }
+    if (cycleInspection.blocked || channelInspection.blocked) {
+      const reason = cycleInspection.blocked ? cycleInspection.reason : channelInspection.reason
+      throw new PublicCommandError(
+        'CONFLICT',
+        reason === 'pid_alive' ? LIVE_REPAIR_ERROR : UNSAFE_REPAIR_ERROR
+      )
+    }
+    if (cycleNeeded && cycleInspection.needed) {
       const result = reconcileWorkerState(this.runtimeContext, subject)
       if (result.blocked) {
         throw new PublicCommandError(
@@ -174,7 +189,7 @@ export class DaemonSupervisor {
         )
       }
     }
-    if (channelNeeded) {
+    if (channelNeeded && channelInspection.needed) {
       const result = repairChannelWorkerState(this.runtimeContext, subject)
       if (result.blocked) {
         throw new PublicCommandError(

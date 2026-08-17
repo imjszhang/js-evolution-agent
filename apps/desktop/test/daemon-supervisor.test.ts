@@ -573,6 +573,37 @@ describe('DaemonSupervisor', () => {
     expect(JSON.stringify(readWorkerState(context, 'alpha'))).not.toBe(beforeCycle)
   })
 
+  it('does not repair cycle when domain=all is blocked by a live channel pid', async () => {
+    const { root, context } = createProjectRoot()
+    const { supervisor } = createSupervisor(root)
+    writeCycleState(context, 'alpha', { pid: 999_999_994 })
+    writeChannelWorkerState(context, 'alpha', {
+      subject: 'alpha',
+      domain: 'channel',
+      schema_version: 2,
+      pid: process.pid,
+      status: 'running',
+      workers: {
+        agent: {
+          role: 'agent',
+          pid: process.pid,
+          status: 'running',
+          heartbeat_at: new Date().toISOString(),
+          stale_after_ms: 60_000
+        }
+      }
+    })
+    const beforeCycle = JSON.stringify(readWorkerState(context, 'alpha'))
+    const beforeChannel = JSON.stringify(readChannelWorkerState(context, 'alpha'))
+
+    await expect(supervisor.repair('alpha', { domain: 'all' })).rejects.toMatchObject({
+      code: 'CONFLICT',
+      message: 'The worker process is still alive and cannot be repaired.'
+    })
+    expect(JSON.stringify(readWorkerState(context, 'alpha'))).toBe(beforeCycle)
+    expect(JSON.stringify(readChannelWorkerState(context, 'alpha'))).toBe(beforeChannel)
+  })
+
   it('reports a redacted log path when a managed daemon exits before ready', async () => {
     const { root, jeaHome } = createProjectRoot()
     const { supervisor, spawnMock } = createSupervisor(root, { startupTimeoutMs: 200 })
