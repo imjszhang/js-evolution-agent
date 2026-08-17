@@ -4,6 +4,7 @@ import type {
   SettingsView,
   SetupReadiness,
   SetupSettingsClient,
+  SubjectReadiness,
   SubjectSummary
 } from './client-types'
 
@@ -85,6 +86,49 @@ export function createReadyReadiness(cli: CliStatus = cliFixture('unsupported'))
     conversation: { desktopChannelEnabled: true, subject: 'alpha' },
     conversationReady: true,
     cli
+  }
+}
+
+export function createSubjectReadinessFixture(options: {
+  subject?: string
+  host?: 'electron' | 'web'
+  webHost?: string
+  cycle?: string
+  channel?: string
+  conversation?: string
+} = {}): SubjectReadiness {
+  const webState = options.webHost ?? 'stopped'
+  const cycleState = options.cycle ?? 'stopped'
+  const channelState = options.channel ?? 'stopped'
+  const conversationState = options.conversation ?? (channelState === 'running' || channelState === 'attached' ? 'running' : 'blocked')
+  const localNeeded = channelState === 'stopped' || cycleState === 'stopped'
+  const openDesktop = options.host === 'web' && localNeeded
+  return {
+    subject: options.subject ?? 'alpha',
+    generated_at: '2026-08-17T00:00:00.000Z',
+    web_host: { state: webState, reasons: [`web_host_${webState}`] },
+    cycle: { state: cycleState, reasons: [`cycle_${cycleState}`] },
+    channel: { state: channelState, reasons: [`channel_${channelState}`] },
+    model: { state: 'running', mode: 'mock', reasons: ['model_mock'] },
+    conversation: {
+      state: conversationState,
+      reasons: conversationState === 'running' ? ['conversation_ready'] : ['conversation_blocked_channel']
+    },
+    reasons: [`web_host_${webState}`, `cycle_${cycleState}`, `channel_${channelState}`],
+    allowed_actions: openDesktop
+      ? ['open_desktop']
+      : localNeeded
+        ? ['start_channel', 'start_cycle']
+        : ['none'],
+    actions: [
+      { id: 'start_channel', allowed: !openDesktop && channelState === 'stopped', capability: 'local-only' },
+      { id: 'start_cycle', allowed: !openDesktop && cycleState === 'stopped', capability: 'local-only' },
+      { id: 'process_cycle_once', allowed: false, capability: 'write' },
+      { id: 'repair_worker_state', allowed: false, capability: 'local-only' },
+      { id: 'stop_managed', allowed: false, capability: 'local-only' },
+      { id: 'open_desktop', allowed: openDesktop, capability: 'readonly' },
+      { id: 'none', allowed: !localNeeded && !openDesktop, capability: 'readonly' }
+    ]
   }
 }
 
@@ -279,11 +323,24 @@ export function createFixtureSetupClient(state: SetupFixtureState = createSetupF
     },
     installCli: () => failIfUnsupported('install'),
     uninstallCli: () => failIfUnsupported('uninstall'),
+    async getServiceReadiness(subject) {
+      return createSubjectReadinessFixture({
+        subject,
+        host: current.cli.supported ? 'electron' : 'web',
+        webHost: 'stopped',
+        cycle: 'stopped',
+        channel: current.readiness.conversation.desktopChannelEnabled ? 'attached' : 'stopped',
+        conversation: current.readiness.conversationReady ? 'running' : 'blocked'
+      })
+    },
     async listSubjects() {
       return current.subjects.map((item) => ({ ...item }))
     },
     async setDefaultSubject(subject) {
       return this.setSettings({ defaultSubject: subject })
+    },
+    subscribe() {
+      return () => {}
     }
   }
 }

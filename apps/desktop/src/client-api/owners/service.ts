@@ -1,10 +1,8 @@
-import { resolveDesktopConfig } from '../../../../../src/channel/adapters/desktop/config.mjs'
+import { resolveModelReadiness } from '../../../../../src/actions/execution-env.mjs'
 import { enqueueCycleStartRequestWithEvent, processCycleOnce } from '../../../../../src/daemon/cycle-dispatch.mjs'
 import { buildDaemonProjection } from '../../../../../src/daemon/daemon-projection.mjs'
-import { resolveModelReadiness } from '../../../../../src/actions/execution-env.mjs'
-import { getSubjectEntry } from '../../../../../src/infra/subjects.mjs'
 import { PublicClientError } from '../errors'
-import { observeWebHost, projectSubjectReadiness } from '../readiness'
+import { readSubjectReadiness } from '../readiness'
 import { redactPublicValue } from '../redact'
 import type { ClientHostKind, CycleProcessOnceResult, CycleRequestResult, ServiceStatus, SubjectReadiness } from '../types'
 import { requireSubject, subjectRuntime, type ClientRuntimeContext } from './runtime'
@@ -46,15 +44,6 @@ export function createProjectionServicePort(runtime: ClientRuntimeContext): Serv
   }
 }
 
-function desktopChannelEnabled(runtime: ClientRuntimeContext, subject: string): boolean {
-  try {
-    return resolveDesktopConfig(runtime, subject).enabled === true
-  } catch {
-    const entry = getSubjectEntry(runtime, subject) as { channels?: { desktop?: { enabled?: boolean } } } | null
-    return Boolean(entry?.channels?.desktop?.enabled)
-  }
-}
-
 export class ServiceCommandOwner {
   constructor(
     private readonly runtime: ClientRuntimeContext,
@@ -64,27 +53,9 @@ export class ServiceCommandOwner {
 
   getReadiness(subject: string): SubjectReadiness {
     const name = requireSubject(this.runtime, subject)
-    const daemon = buildDaemonProjection(this.runtime, name, { eventLimit: 10 })
-    const view = this.processPort.get(name)
-    const model = resolveModelReadiness({
-      jeaHome: this.runtime.jeaHome,
-      subjectRoot: subjectRuntime(this.runtime, name).runtimeRoot
-    })
-    return redactPublicValue(projectSubjectReadiness({
-      subject: name,
-      generatedAt: new Date().toISOString(),
+    return redactPublicValue(readSubjectReadiness(this.runtime, name, {
       hostKind: this.hostKind,
-      webHost: observeWebHost(this.runtime.jeaHome),
-      cycleWorker: daemon.worker ?? null,
-      cycleHealth: daemon.health ?? null,
-      channelWorker: daemon.channel?.worker ?? null,
-      channelHealth: daemon.channel?.health ?? null,
-      model,
-      desktopChannelEnabled: desktopChannelEnabled(this.runtime, name),
-      ownership: {
-        mode: view.mode ?? null,
-        domain: view.domain ?? null
-      }
+      processPort: this.processPort
     }))
   }
 

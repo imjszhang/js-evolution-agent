@@ -26,6 +26,30 @@ export interface FixtureSession {
 
 export type ServiceStatusKind = 'online' | 'offline' | 'degraded'
 
+export interface ShellDomainReadiness {
+  state: string
+  reasons: string[]
+}
+
+export interface ShellRemediationAction {
+  id: string
+  allowed: boolean
+  capability: 'readonly' | 'write' | 'local-only'
+}
+
+export interface ShellSubjectReadiness {
+  subject: string
+  generated_at: string
+  web_host: ShellDomainReadiness
+  cycle: ShellDomainReadiness
+  channel: ShellDomainReadiness
+  model: ShellDomainReadiness & { mode: 'deepseek' | 'mock' | 'unset' }
+  conversation: ShellDomainReadiness
+  reasons: string[]
+  allowed_actions: string[]
+  actions: ShellRemediationAction[]
+}
+
 /**
  * Wave 1 host adapters. This is not a JeaClient catalog.
  * Feature teams inject their own clients through slot props after #116 lands.
@@ -37,6 +61,8 @@ export interface ShellAdapters {
   selectedSessionId?: string | null
   selectedCycleId?: string | null
   serviceStatus?: ServiceStatusKind
+  subjectReadiness?: ShellSubjectReadiness | null
+  hostKind?: 'electron' | 'web'
   onSelectSubject?(subjectId: string): void
   onSelectSession?(sessionId: string): void
   onSelectCycle?(cycleId: string): void

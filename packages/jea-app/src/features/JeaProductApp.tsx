@@ -5,9 +5,11 @@ import type { ShellAdapters } from '../slots/types'
 import { ThemeProvider } from '../theme/ThemeProvider'
 import { JeaClientProvider } from './client-context'
 import type { ProductHostKind, SetupReadiness, SetupSettingsClient, SubjectSummary } from './client-types'
+import { withDefaultProductFeatures } from './product-features'
 import { isConversationReady } from './readiness'
-import { settingsFeature } from './settings/module'
+import { deriveServiceStatusKind } from './service-status/derive'
 import { SetupFlow } from './setup/SetupFlow'
+import { useLiveSubjectReadiness } from './useLiveSubjectReadiness'
 
 export interface JeaProductAppProps extends Omit<JeaAppProps, 'features' | 'viewState'> {
   client?: SetupSettingsClient | null
@@ -53,8 +55,19 @@ export function JeaProductApp({
     }
   }, [client])
 
+  const selectedSubject = adapters?.selectedSubjectId
+    ?? readiness?.conversation.subject
+    ?? readiness?.subjects.defaultSubject
+    ?? null
+
+  const serviceReadiness = useLiveSubjectReadiness(
+    client,
+    selectedSubject,
+    adapters?.subjectReadiness
+  )
+
   const resolvedFeatures = useMemo(
-    () => [...features, settingsFeature],
+    () => withDefaultProductFeatures(features),
     [features]
   )
 
@@ -72,6 +85,11 @@ export function JeaProductApp({
       ?? readiness?.conversation.subject
       ?? readiness?.subjects.defaultSubject
       ?? adapters?.selectedSubjectId,
+    hostKind: host,
+    subjectReadiness: serviceReadiness ?? adapters?.subjectReadiness ?? null,
+    serviceStatus: adapters?.serviceStatus === 'offline'
+      ? 'offline'
+      : deriveServiceStatusKind(serviceReadiness ?? adapters?.subjectReadiness ?? null, { host }),
     onRetry: adapters?.onRetry ?? (() => {
       if (!client) return
       setLoadState('loading')
@@ -84,7 +102,7 @@ export function JeaProductApp({
         })
         .catch(() => setLoadState('error'))
     })
-  }), [adapters, client, readiness, subjects])
+  }), [adapters, client, host, readiness, serviceReadiness, subjects])
 
   const shell = (
     loadState === 'loading' && !initialReadiness ? (

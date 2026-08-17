@@ -167,6 +167,14 @@ describe('localhost Web host', () => {
       message: 'Command is not available on the Web host.'
     })
 
+    const stop = await client.stopService('alpha').catch((caught) => caught)
+    expect(stop).toMatchObject({
+      code: 'COMMAND_NOT_ALLOWED',
+      message: 'Command is not available on the Web host.'
+    })
+    const repair = await client.invoke('service.repair' as 'service.stop', { subject: 'alpha' }).catch((caught) => caught)
+    expect(repair).toMatchObject({ code: 'COMMAND_NOT_ALLOWED' })
+
     const raw = await fetch(`${host.origin}/jea/rpc`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...headers(TOKEN) },

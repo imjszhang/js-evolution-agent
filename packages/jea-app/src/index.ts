@@ -59,6 +59,16 @@ export { createWave1Adapters, WAVE1_SUBJECTS, WAVE1_SESSIONS } from './fixtures/
 export { JeaProductApp, type JeaProductAppProps } from './features/JeaProductApp'
 export { JeaClientProvider, useJeaClientContext, useOptionalJeaClient } from './features/client-context'
 export { settingsFeature } from './features/settings/module'
+export { serviceStatusFeature } from './features/service-status/module'
+export { ServiceStatusView } from './features/service-status/ServiceStatusView'
+export {
+  deriveServiceStatusKind,
+  eventSubjectOf,
+  needsOpenDesktop,
+  shouldRefreshServiceReadiness,
+  webHostStoppedIsNotOutage
+} from './features/service-status/derive'
+export { featuresProvideSlot, withDefaultProductFeatures } from './features/product-features'
 export { SettingsPanel } from './features/settings/SettingsPanel'
 export { SetupFlow } from './features/setup/SetupFlow'
 export { isConversationReady, resolveSetupStep, type SetupStep } from './features/readiness'
@@ -68,10 +78,12 @@ export {
   cliFixture,
   createEmptyReadiness,
   createReadyReadiness,
-  createDisabledChannelReadiness
+  createDisabledChannelReadiness,
+  createSubjectReadinessFixture
 } from './features/fixtures'
 export type {
   CliStatus,
+  ProductEventEnvelope,
   ProductHostKind,
   DiagnosticReport,
   SettingsPatch,
@@ -80,6 +92,7 @@ export type {
   SetupReadiness,
   SetupSettingsClient,
   SetupSubjectResult,
+  SubjectReadiness,
   SubjectSummary
 } from './features/client-types'
 export {
