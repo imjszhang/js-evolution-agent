@@ -53,6 +53,12 @@ export interface ConversationMessage {
   message_id?: string | null
 }
 
+export interface ChannelProjectionHealth {
+  status: string
+  ok: boolean
+  reasons: string[]
+}
+
 export interface ConversationPage {
   schema_version: number
   subject: string
@@ -61,6 +67,7 @@ export interface ConversationPage {
   offset: number
   next_offset: number
   total: number
+  channel_health?: ChannelProjectionHealth
 }
 
 export interface ConversationSendResult {

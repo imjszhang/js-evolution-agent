@@ -2,6 +2,7 @@ import { Button, cn, useLocale } from '@jea/app'
 import type { ConversationCard } from './cards'
 import { conversationText } from './copy'
 import type { ConversationWorkspaceModel, ConversationWorkspaceSnapshot } from './model'
+import { conversationCanCompose, deriveConversationRecovery } from './recovery'
 
 function formatTime(value: string): string {
   const date = new Date(value)
@@ -108,10 +109,21 @@ export function ConversationPane({
   const sending = snapshot.sendState === 'pending'
   const failed = snapshot.sendState === 'failed'
   const serviceStarting = snapshot.serviceStartState === 'pending'
-  const canSend = Boolean(snapshot.subject && snapshot.sessionId && snapshot.draft.trim() && !disabled && !sending)
+  const recovery = deriveConversationRecovery({
+    subjectReadiness: snapshot.subjectReadiness,
+    desktopChannelEnabled: snapshot.subject?.desktopChannelEnabled !== false,
+    serviceStartState: snapshot.serviceStartState,
+    channelReasons: snapshot.channelReasons
+  })
+  const canSend = conversationCanCompose(recovery, snapshot) && !disabled
 
   return (
-    <div className="flex h-full min-h-0 flex-col" data-slot="conversation" data-testid="conversation-workspace">
+    <div
+      className="flex h-full min-h-0 flex-col"
+      data-slot="conversation"
+      data-testid="conversation-workspace"
+      data-recovery={recovery.kind}
+    >
       <header className="border-b border-border px-4 py-3">
         <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
           {conversationText(locale, 'conversation')}
@@ -144,31 +156,101 @@ export function ConversationPane({
             </Button>
           </div>
         ) : null}
-        {snapshot.cards.some((card) => card.kind === 'offline' || card.kind === 'daemon_unhealthy') ? (
+        {recovery.kind === 'stopped' ? (
           <div
             className="rounded-md border border-border bg-surface-sunken p-3 text-sm"
-            data-testid="conversation-state-offline"
+            data-testid="conversation-state-stopped"
             role="status"
           >
             <p>{conversationText(locale, 'startServiceHint')}</p>
-            <Button
-              className="mt-2"
-              size="sm"
-              variant="outline"
-              data-testid="conversation-start-service"
-              disabled={serviceStarting}
-              onClick={() => void model.startChannelService()}
-            >
-              {serviceStarting
-                ? conversationText(locale, 'startingService')
-                : conversationText(locale, 'startService')}
-            </Button>
+            {recovery.showStartChannel ? (
+              <Button
+                className="mt-2"
+                size="sm"
+                variant="outline"
+                data-testid="conversation-start-channel"
+                disabled={serviceStarting}
+                onClick={() => void model.startChannelService()}
+              >
+                {serviceStarting
+                  ? conversationText(locale, 'startingService')
+                  : conversationText(locale, 'startService')}
+              </Button>
+            ) : null}
           </div>
+        ) : null}
+        {recovery.kind === 'blocked' ? (
+          <div
+            className="rounded-md border border-status-error/40 bg-status-error/10 p-3 text-sm"
+            data-testid="conversation-state-blocked"
+            role="status"
+          >
+            <p>{conversationText(locale, 'startChannelBlockedHint')}</p>
+            {recovery.blockedReasons.length > 0 ? (
+              <p className="mt-2 whitespace-pre-wrap" data-testid="conversation-blocked-reason">
+                {recovery.blockedReasons.join('\n')}
+              </p>
+            ) : null}
+            {recovery.showStartChannel ? (
+              <Button
+                className="mt-2"
+                size="sm"
+                variant="outline"
+                data-testid="conversation-start-channel"
+                disabled={serviceStarting}
+                onClick={() => void model.startChannelService()}
+              >
+                {serviceStarting
+                  ? conversationText(locale, 'startingService')
+                  : conversationText(locale, 'startService')}
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
+        {recovery.kind === 'starting' ? (
+          <p className="text-sm text-muted-foreground" data-testid="conversation-state-starting" role="status">
+            {conversationText(locale, 'startingService')}
+          </p>
+        ) : null}
+        {recovery.kind === 'ready' ? (
+          <p className="sr-only" data-testid="conversation-state-ready">
+            {conversationText(locale, 'conversationReady')}
+          </p>
+        ) : null}
+        {recovery.kind === 'attached' || snapshot.error?.kind === 'channel_attached' ? (
+          <p className="text-sm text-muted-foreground" data-testid="conversation-state-attached" role="status">
+            {snapshot.error?.kind === 'channel_attached'
+              ? snapshot.error.message
+              : conversationText(locale, 'startChannelAttached')}
+          </p>
+        ) : null}
+        {recovery.kind === 'stale' || snapshot.error?.kind === 'channel_stale' ? (
+          <p className="text-sm text-status-warn-foreground" data-testid="conversation-state-stale" role="status">
+            {snapshot.error?.kind === 'channel_stale'
+              ? snapshot.error.message
+              : conversationText(locale, 'startChannelStale')}
+          </p>
+        ) : null}
+        {recovery.kind === 'zombie' ? (
+          <p className="text-sm text-status-error-foreground" data-testid="conversation-state-zombie" role="status">
+            {conversationText(locale, 'startChannelZombie')}
+          </p>
+        ) : null}
+        {recovery.showNativeOnly || recovery.kind === 'web_native' ? (
+          <p className="text-sm text-muted-foreground" data-testid="conversation-state-native-only" role="status">
+            {conversationText(locale, 'startServiceUnavailable')}
+          </p>
         ) : null}
         {snapshot.serviceStartState === 'failed' ? (
           <p
             className="text-sm text-status-error-foreground"
-            data-testid="conversation-state-start-failed"
+            data-testid={
+              snapshot.error?.kind === 'early_exit'
+                ? 'conversation-state-early-exit'
+                : snapshot.error?.kind === 'startup_timeout'
+                  ? 'conversation-state-timeout'
+                  : 'conversation-state-start-failed'
+            }
             role="alert"
           >
             {snapshot.error?.message ?? conversationText(locale, 'serviceStartFailed')}
@@ -272,10 +354,18 @@ export function ServiceStatusPane({
   model: ConversationWorkspaceModel
 }) {
   const { locale } = useLocale()
-  const offline = snapshot.cards.some((card) => card.kind === 'offline')
-  const stale = snapshot.stale || snapshot.cards.some((card) => card.kind === 'stale')
-  const degraded = snapshot.cards.some((card) => card.kind === 'daemon_unhealthy' || card.kind === 'desktop_disabled')
-  const starting = snapshot.serviceStartState === 'pending'
+  const recovery = deriveConversationRecovery({
+    subjectReadiness: snapshot.subjectReadiness,
+    desktopChannelEnabled: snapshot.subject?.desktopChannelEnabled !== false,
+    serviceStartState: snapshot.serviceStartState,
+    channelReasons: snapshot.channelReasons
+  })
+  const stale = snapshot.stale || recovery.kind === 'stale'
+  const starting = recovery.kind === 'starting'
+  const offline = recovery.kind === 'stopped'
+  const degraded = recovery.kind === 'blocked'
+    || recovery.kind === 'zombie'
+    || recovery.kind === 'desktop_disabled'
   const label = starting
     ? conversationText(locale, 'serviceStarting')
     : offline
@@ -298,11 +388,12 @@ export function ServiceStatusPane({
       className="flex items-center gap-2 text-xs text-muted-foreground"
       data-slot="serviceStatus"
       data-testid="conversation-service-status"
+      data-recovery={recovery.kind}
       data-stale={stale ? 'true' : 'false'}
     >
       <span className={cn('size-2 rounded-full', tone)} aria-hidden="true" />
       <span>{label}</span>
-      {(offline || degraded) && snapshot.subject ? (
+      {recovery.showStartChannel && snapshot.subject ? (
         <Button
           size="sm"
           variant="ghost"

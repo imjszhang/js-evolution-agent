@@ -6,6 +6,7 @@ import type {
   JeaEventEnvelope,
   ServiceStatus,
   SetupReadiness,
+  SubjectReadiness,
   SubjectRecord,
   SubjectSummary
 } from '../../../client-api/types'
@@ -23,10 +24,11 @@ import {
   isSubjectEvent
 } from './events'
 import { hasAssistantAfter, mergeRecords, type WorkspaceMessage } from './history'
+import { type ChannelServiceStartState } from './recovery'
 import type { ProjectionWatchPort } from './watch'
 
 export type ConversationSendState = 'idle' | 'pending' | 'sent' | 'failed'
-export type ChannelServiceStartState = 'idle' | 'pending' | 'started' | 'failed'
+export type { ChannelServiceStartState }
 
 export interface ConversationWorkspaceSnapshot {
   subjects: SubjectSummary[]
@@ -42,6 +44,8 @@ export interface ConversationWorkspaceSnapshot {
   error: ConversationErrorView | null
   service: ServiceStatus | null
   readiness: SetupReadiness | null
+  subjectReadiness: SubjectReadiness | null
+  channelReasons: string[]
   observability: EvolutionObservability | null
   stale: boolean
   cards: ConversationCard[]
@@ -50,6 +54,14 @@ export interface ConversationWorkspaceSnapshot {
 }
 
 const DEFAULT_SESSION = 'main'
+
+function channelReasonsFromPayload(payload: Record<string, unknown> | undefined): string[] | null {
+  const channel = payload?.channel
+  if (!channel || typeof channel !== 'object' || Array.isArray(channel)) return null
+  const reasons = (channel as { reasons?: unknown }).reasons
+  if (!Array.isArray(reasons)) return null
+  return reasons.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+}
 
 function emptySnapshot(): ConversationWorkspaceSnapshot {
   return {
@@ -66,6 +78,8 @@ function emptySnapshot(): ConversationWorkspaceSnapshot {
     error: null,
     service: null,
     readiness: null,
+    subjectReadiness: null,
+    channelReasons: [],
     observability: null,
     stale: false,
     cards: [],
@@ -178,6 +192,8 @@ export class ConversationWorkspaceModel {
       stale: false,
       service: null,
       readiness: null,
+      subjectReadiness: null,
+      channelReasons: [],
       observability: null
     })
     try {
@@ -257,9 +273,9 @@ export class ConversationWorkspaceModel {
     try {
       await this.client.startService(subject, 'channel')
       if (!this.isCurrent(generation)) return
-      const service = await this.client.getServiceStatus(subject)
+      await this.refreshSupport(subject, generation)
       if (!this.isCurrent(generation) || this.snapshot.subject?.name !== subject) return
-      this.patch({ service, serviceStartState: 'started', error: null })
+      this.patch({ serviceStartState: 'started', error: null })
     } catch (error) {
       if (!this.isCurrent(generation)) return
       this.patch({
@@ -293,6 +309,12 @@ export class ConversationWorkspaceModel {
         return
       }
       if (subject) await this.selectSubject(subject, { generation })
+      return
+    }
+    if (event.type === 'projection.channel_updated') {
+      const reasons = channelReasonsFromPayload(event.payload)
+      if (reasons) this.patch({ channelReasons: reasons })
+      if (subject) await this.refreshSupport(subject, generation)
       return
     }
     if (isConversationEvent(event)) {
@@ -331,8 +353,12 @@ export class ConversationWorkspaceModel {
         return
       }
       this.offset = reset ? page.next_offset : Math.max(this.offset, page.next_offset)
+      const channelReasons = Array.isArray(page.channel_health?.reasons)
+        ? page.channel_health.reasons.filter((item) => typeof item === 'string' && item.trim())
+        : undefined
       this.patch({
-        records: reset ? page.records as WorkspaceMessage[] : mergeRecords(this.snapshot.records, page.records as WorkspaceMessage[])
+        records: reset ? page.records as WorkspaceMessage[] : mergeRecords(this.snapshot.records, page.records as WorkspaceMessage[]),
+        ...(channelReasons ? { channelReasons } : {})
       })
     } catch (error) {
       if (!this.isCurrent(generation)) return
@@ -342,15 +368,16 @@ export class ConversationWorkspaceModel {
 
   private async refreshSupport(subject: string, generation: number): Promise<void> {
     try {
-      const [service, readiness, observability] = await Promise.all([
+      const [service, readiness, subjectReadiness, observability] = await Promise.all([
         this.client.getServiceStatus(subject),
         this.client.getReadiness(subject),
+        this.client.getServiceReadiness(subject),
         this.client.getObservability(subject)
       ])
       if (!this.isCurrent(generation)) return
       if (this.selectedName && this.selectedName !== subject) return
       if (this.snapshot.subject && this.snapshot.subject.name !== subject) return
-      this.patch({ service, readiness, observability, stale: false })
+      this.patch({ service, readiness, subjectReadiness, observability, stale: false })
     } catch {
       // Support reads are best-effort and must not block conversation.
     }
@@ -385,10 +412,13 @@ export class ConversationWorkspaceModel {
       subject: next.subject,
       service: next.service,
       readiness: next.readiness,
+      subjectReadiness: next.subjectReadiness,
       observability: next.observability,
       records: next.records,
       error: next.error,
-      stale: next.stale
+      stale: next.stale,
+      channelReasons: next.channelReasons,
+      serviceStartState: next.serviceStartState
     })
     this.snapshot = next
     for (const listener of this.listeners) listener()

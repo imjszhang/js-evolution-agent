@@ -15,11 +15,13 @@ import {
 } from '../../../../src/intelligence/evolution-viewer/runtime-watch.mjs'
 import { listRegisteredSubjects } from '../../../../src/infra/subjects.mjs'
 import { redactSecrets } from '../../../../src/intelligence/redaction.mjs'
+import { channelProjectionHealth } from '../client-api/owners/conversation'
 import type {
   ChannelSnapshot,
   DesktopSessionPage,
   DesktopSessionSummary
 } from '../shared/contract'
+import type { ChannelProjectionHealth } from '../client-api/types'
 import { PublicCommandError } from './command-registry'
 import { createDesktopServiceRuntimeContext } from './runtime-context'
 
@@ -44,6 +46,11 @@ export class ChannelService {
         processed: this.listInbound(subject, 'processed', 50)
       }
     }) as ChannelSnapshot
+  }
+
+  getProjectionHealth(subject: string): ChannelProjectionHealth {
+    this.assertSubject(subject)
+    return channelProjectionHealth(this.runtimeContext, subject)
   }
 
   listSessions(subject: string): DesktopSessionSummary[] {
