@@ -11,6 +11,7 @@ import type {
   EvolutionRoundDetail,
   ProtocolInfo,
   ServiceStatus,
+  SubjectReadiness,
   SettingsView,
   SetupHomeResult,
   SetupReadiness,
@@ -34,6 +35,7 @@ export interface ProductSurfaceFixture {
   round: EvolutionRoundDetail
   observability: EvolutionObservability
   service: ServiceStatus
+  serviceReadiness: SubjectReadiness
   cycleRequest: CycleRequestResult
   readiness: SetupReadiness
   home: SetupHomeResult
@@ -164,6 +166,32 @@ export function createProductSurfaceFixture(): ProductSurfaceFixture {
       health: 'idle',
       detail: null
     },
+    serviceReadiness: {
+      subject: 'alpha',
+      generated_at: '2026-08-16T00:00:00.000Z',
+      web_host: { state: 'stopped', reasons: ['web_host_stopped'] },
+      cycle: { state: 'stopped', reasons: ['cycle_stopped'] },
+      channel: { state: 'stopped', reasons: ['channel_stopped'] },
+      model: { state: 'running', mode: 'mock', reasons: ['model_mock'] },
+      conversation: { state: 'blocked', reasons: ['conversation_blocked_channel'] },
+      reasons: [
+        'web_host_stopped',
+        'cycle_stopped',
+        'channel_stopped',
+        'model_mock',
+        'conversation_blocked_channel'
+      ],
+      allowed_actions: ['start_channel', 'start_cycle'],
+      actions: [
+        { id: 'start_channel', allowed: true, capability: 'local-only' },
+        { id: 'start_cycle', allowed: true, capability: 'local-only' },
+        { id: 'process_cycle_once', allowed: false, capability: 'write' },
+        { id: 'repair_worker_state', allowed: false, capability: 'local-only' },
+        { id: 'stop_managed', allowed: false, capability: 'local-only' },
+        { id: 'open_desktop', allowed: false, capability: 'readonly' },
+        { id: 'none', allowed: false, capability: 'readonly' }
+      ]
+    },
     cycleRequest: {
       subject: 'alpha',
       cycle_start_request: { request_id: 'req-fixture', reason: 'jea_client' }
@@ -232,6 +260,8 @@ export function fixtureCommandResult(fixtures: ProductSurfaceFixture, command: s
     case 'service.start':
     case 'service.stop':
       return fixtures.service
+    case 'service.getReadiness':
+      return fixtures.serviceReadiness
     case 'service.requestCycle':
       return fixtures.cycleRequest
     case 'setup.getReadiness':

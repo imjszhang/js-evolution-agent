@@ -481,6 +481,92 @@ function reconcileRoleWorker(worker, { now, staleMs }) {
   };
 }
 
+export function inspectChannelWorkerRepair(raw) {
+  if (!raw) {
+    return { needed: false, blocked: false, reason: 'not_found', live_roles: [], dead_roles: [] };
+  }
+  const state = migrateLegacyState(raw);
+  const live_roles = [];
+  const dead_roles = [];
+  for (const [role, worker] of Object.entries(state.workers ?? {})) {
+    if (!worker || !['running', 'stopping'].includes(worker.status)) continue;
+    if (isProcessAlive(worker.pid)) live_roles.push(role);
+    else dead_roles.push(role);
+  }
+  const coordinatorActive = ['running', 'stopping'].includes(state.status);
+  const coordinatorLive = coordinatorActive && state.pid != null && isProcessAlive(state.pid);
+  if (live_roles.length > 0 || coordinatorLive) {
+    return { needed: false, blocked: true, reason: 'pid_alive', live_roles, dead_roles };
+  }
+  const aggregateDead = coordinatorActive && !isProcessAlive(state.pid);
+  if (!dead_roles.length && !aggregateDead) {
+    return {
+      needed: false,
+      blocked: false,
+      reason: state.status === 'stopped' ? 'already_stopped' : 'not_found',
+      live_roles,
+      dead_roles,
+    };
+  }
+  return { needed: true, blocked: false, reason: 'pid_dead', live_roles, dead_roles };
+}
+
+export function repairChannelWorkerState(root, subject, { staleMs = 60_000 } = {}) {
+  return withChannelWorkerStateLock(root, subject, () => {
+    const raw = readChannelWorkerState(root, subject);
+    const inspection = inspectChannelWorkerRepair(raw);
+    if (inspection.blocked || !inspection.needed) {
+      return {
+        changed: false,
+        repaired: false,
+        roles: [],
+        ...inspection,
+        state: raw,
+      };
+    }
+    const state = migrateLegacyState(raw);
+    const now = nowIso();
+    const roles = [];
+    for (const [role, previous] of Object.entries(state.workers ?? {})) {
+      if (!previous || !['running', 'stopping'].includes(previous.status)) continue;
+      if (isProcessAlive(previous.pid)) continue;
+      state.workers[role] = {
+        ...previous,
+        status: 'stopped',
+        stopped_at: now,
+        stop_reason: 'reconcile_pid_dead',
+        stale_after_ms: previous.stale_after_ms ?? staleMs,
+      };
+      roles.push({
+        role,
+        from: previous.status,
+        to: 'stopped',
+        reason: 'pid_dead',
+      });
+    }
+    const anyActive = Object.values(state.workers ?? {}).some((worker) => (
+      worker.status === 'running' || worker.status === 'stopping'
+    ));
+    if (!anyActive && state.status !== 'stopped') {
+      state.status = 'stopped';
+      state.stopped_at = now;
+      state.stop_reason = state.stop_reason ?? 'reconcile_pid_dead';
+    }
+    writeChannelWorkerState(root, subject, state);
+    return {
+      changed: true,
+      repaired: true,
+      needed: true,
+      blocked: false,
+      reason: 'pid_dead',
+      live_roles: [],
+      dead_roles: roles.map((item) => item.role),
+      roles,
+      state,
+    };
+  });
+}
+
 export function reconcileChannelWorkerState(root, subject, { staleMs = 60_000 } = {}) {
   return withChannelWorkerStateLock(root, subject, () => {
     const raw = readChannelWorkerState(root, subject);

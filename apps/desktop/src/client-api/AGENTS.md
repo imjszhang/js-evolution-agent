@@ -1,6 +1,6 @@
 # Client API（JeaClient）
 
-本目录是 JEA 0.1.0 统一 Client API 与应用命令层的 owner，对应 issue #116。
+本目录是 JEA 0.1.0 统一 Client API 与应用命令层的 owner，对应 issue #116。日期：2026-08-17。
 
 ## 边界
 
@@ -17,6 +17,12 @@
 - 机器可读目录：`catalog.ts` / `catalog.json`
 - 能力级别：`readonly` | `write` | `local-only` | `destructive`
 - `local-only` 与 `destructive` 对 Web 不可用；0.1.0 产品目录不含 destructive 命令。
+
+### 协议版本决策（#138 加法契约）
+
+`service.getReadiness` 是 **1.0.0 的加法命令**：不改既有命令的请求/响应形状，也不改变 `service.getStatus` 或 `jea status` 的 Web-host-only 语义。因此协议版本保持 `1.0.0`，不升到 1.1.0。旧客户端忽略未知命令即可；`release-version-preflight` 也约定 Client API 产品版本与协议版本分离，协议停留在 1.0.0。
+
+Subject 运行时就绪响应只返回稳定的 state / reason / action 码，不含 UI 文案、API key、Web token、owner token、消息正文或完整环境值。Electron 与 Web 对同一 fixture 返回相同 state/reason；差异只体现在 `allowed_actions` / `actions[].allowed`（Web 不能执行 `local-only` 修复，改为 `open_desktop`）。
 
 ## 测试
 

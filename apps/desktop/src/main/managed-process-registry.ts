@@ -7,9 +7,15 @@ export interface ManagedProcessRegistration {
   cleanup(reason: string): Promise<void>
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 export class ManagedProcessRegistry {
   private readonly entries = new Map<string, ManagedProcessRegistration>()
   private shutdownPromise: Promise<void> | null = null
+
+  constructor(private readonly shutdownTimeoutMs = 20_000) {}
 
   private key(kind: ManagedProcessKind, id: string): string {
     return `${kind}:${id}`
@@ -35,7 +41,12 @@ export class ManagedProcessRegistry {
     if (this.shutdownPromise) return this.shutdownPromise
     this.shutdownPromise = (async () => {
       const entries = [...this.entries.values()]
-      await Promise.allSettled(entries.map((entry) => entry.cleanup(reason)))
+      const cleanup = Promise.allSettled(entries.map((entry) => entry.cleanup(reason)))
+      if (this.shutdownTimeoutMs > 0) {
+        await Promise.race([cleanup, delay(this.shutdownTimeoutMs)])
+      } else {
+        await cleanup
+      }
       this.entries.clear()
     })()
     return this.shutdownPromise
