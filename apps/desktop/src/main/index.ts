@@ -31,6 +31,7 @@ import {
   isTrustedRendererLocation,
   resolveDevRendererUrl
 } from './renderer-security'
+import { recordDesktopProcessFailure } from './process-failures'
 import { resolveDesktopRuntimeContext } from './runtime-context'
 import { TodoService } from './todo-service'
 import {
@@ -131,6 +132,17 @@ function createWindow(): BrowserWindow {
   window.removeMenu()
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   window.webContents.on('will-navigate', (event) => event.preventDefault())
+  window.webContents.on('render-process-gone', (_event, details) => {
+    try {
+      recordDesktopProcessFailure(runtimeContext, {
+        type: 'renderer',
+        reason: details?.reason,
+        exitCode: details?.exitCode
+      })
+    } catch {
+      // Diagnostics must not crash the main App.
+    }
+  })
   window.on('closed', () => {
     queueMicrotask(() => {
       if (BrowserWindow.getAllWindows().length === 0) projection.stop()
@@ -296,4 +308,17 @@ app.on('before-quit', (event) => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
+})
+
+app.on('child-process-gone', (_event, details) => {
+  try {
+    recordDesktopProcessFailure(runtimeContext, {
+      type: details?.type,
+      reason: details?.reason,
+      exitCode: details?.exitCode,
+      serviceName: details?.serviceName
+    })
+  } catch {
+    // Diagnostics must not crash the main App.
+  }
 })

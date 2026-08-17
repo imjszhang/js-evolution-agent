@@ -73,6 +73,7 @@ export {
 export type {
   CliStatus,
   ProductHostKind,
+  DiagnosticReport,
   SettingsPatch,
   SettingsView,
   SetupHomeResult,

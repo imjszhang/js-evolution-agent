@@ -13,6 +13,7 @@ import type {
   JeaEventEnvelope,
   ProtocolInfo,
   ServiceStatus,
+  DiagnosticReport,
   SubjectReadiness,
   SettingsPatch,
   SettingsView,
@@ -65,6 +66,7 @@ export interface JeaClient {
   enableDesktopChannel(subject: string): Promise<SetupSubjectResult>
   getSettings(): Promise<SettingsView>
   setSettings(patch: SettingsPatch): Promise<SettingsView>
+  exportDiagnostics(options?: { subject?: string; redactPaths?: boolean }): Promise<DiagnosticReport>
   getCliStatus(): Promise<CliStatus>
   installCli(): Promise<CliStatus>
   uninstallCli(): Promise<CliStatus>
@@ -106,6 +108,7 @@ export function createTypedJeaClient(
     enableDesktopChannel: (subject) => invoke<SetupSubjectResult>('setup.enableDesktopChannel', { subject }),
     getSettings: () => invoke<SettingsView>('settings.get'),
     setSettings: (patch) => invoke<SettingsView>('settings.set', { ...patch }),
+    exportDiagnostics: (options) => invoke<DiagnosticReport>('settings.exportDiagnostics', { ...options }),
     getCliStatus: () => invoke<CliStatus>('cli.getStatus'),
     installCli: () => invoke<CliStatus>('cli.install'),
     uninstallCli: () => invoke<CliStatus>('cli.uninstall')

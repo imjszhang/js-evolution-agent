@@ -13,6 +13,10 @@
 | 签名 | ad-hoc（未公证）；可用 `CSC_NAME` 覆盖 |
 | `jea start` | 只启动 localhost Web host |
 | 持久状态 | `<JEA_HOME>/web-host/` |
+| 构建溯源 | 打包写入不可变 `build-metadata.json`（版本、完整 SHA、时间、platform/arch、dirty） |
+| 诊断落盘 | `<JEA_HOME>/diagnostics/`（进程失败摘要与 daemon 启动失败；不含密钥或对话正文） |
+
+发布打包与 publish 门禁拒绝 dirty provenance。`settings.exportDiagnostics` 导出脱敏机器可读报告；就绪状态消费现有 `setup.getReadiness` / `service.getStatus` / 投影，不另建 readiness 命令目录（#138）。
 
 ## 边界
 

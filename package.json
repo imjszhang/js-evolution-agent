@@ -34,7 +34,7 @@
     "desktop:smoke": "node scripts/desktop-smoke.mjs",
     "desktop:stage": "node --preserve-symlinks scripts/stage-app-resources.mjs",
     "desktop:package": "node --preserve-symlinks scripts/package-macos.mjs",
-    "test:packaging": "node --preserve-symlinks ./node_modules/vitest/vitest.mjs run test/product-cli-launcher.test.mjs test/product-stage.test.mjs test/cli-version.test.mjs",
+    "test:packaging": "node --preserve-symlinks ./node_modules/vitest/vitest.mjs run test/product-cli-launcher.test.mjs test/product-stage.test.mjs test/cli-version.test.mjs test/product-build-metadata.test.mjs test/product-diagnostics.test.mjs",
     "test:ci": "node --preserve-symlinks ./node_modules/vitest/vitest.mjs run --reporter=default --reporter=junit --outputFile.junit=test-artifacts/junit.xml",
     "test:coverage": "node --preserve-symlinks ./node_modules/vitest/vitest.mjs run --coverage",
     "audit:ci": "node --preserve-symlinks scripts/ci-audit.mjs",

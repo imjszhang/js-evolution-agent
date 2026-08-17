@@ -11,6 +11,7 @@ import type {
   EvolutionRoundDetail,
   ProtocolInfo,
   ServiceStatus,
+  DiagnosticReport,
   SubjectReadiness,
   SettingsView,
   SetupHomeResult,
@@ -43,6 +44,7 @@ export interface ProductSurfaceFixture {
   initialized: { subject: string; initialized: boolean }
   enabledChannel: SetupSubjectResult
   settings: SettingsView
+  diagnostics: DiagnosticReport
   cli: CliStatus
 }
 
@@ -224,7 +226,49 @@ export function createProductSurfaceFixture(): ProductSurfaceFixture {
       theme: 'system',
       defaultSubject: 'alpha',
       appVersion: '0.1.0',
-      cliVersion: '0.1.0'
+      cliVersion: '0.1.0',
+      commitSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      commitShort: 'aaaaaaa',
+      buildTime: '2026-08-17T00:00:00.000Z',
+      platform: 'linux',
+      architecture: 'x64',
+      dirty: false
+    },
+    diagnostics: {
+      schema_version: 1,
+      generated_at: '2026-08-17T00:00:00.000Z',
+      product: {
+        version: '0.1.0',
+        commit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        commit_short: 'aaaaaaa',
+        built_at: '2026-08-17T00:00:00.000Z',
+        platform: 'linux',
+        architecture: 'x64',
+        dirty: false,
+        build_id: '0.1.0+aaaaaaa.20260817T000000'
+      },
+      host: {
+        jea_home: '<JEA_HOME>',
+        jea_home_source: 'fixture',
+        subject: 'alpha'
+      },
+      readiness: {
+        source: 'service.getReadiness',
+        reservedCommand: 'service.getReadiness',
+        web: { id: 'web', status: 'stopped', reasons: ['web_host_stopped'] },
+        cycle: { id: 'cycle', status: 'stopped', reasons: ['cycle_worker_stopped'] },
+        channel: { id: 'channel', status: 'ready', reasons: [] },
+        model: { id: 'model', status: 'ready', reasons: ['model_unconfigured', 'model_mode_mock'] },
+        conversation: { id: 'conversation', status: 'ready', reasons: ['conversation_ready'] }
+      },
+      daemon: {
+        log_paths: {
+          stdout: '<JEA_HOME>/logs/daemon-alpha.desktop.stdout.log',
+          stderr: '<JEA_HOME>/logs/daemon-alpha.desktop.stderr.log'
+        },
+        last_startup_failure: null
+      },
+      process_failures: []
     },
     cli
   }
@@ -277,6 +321,8 @@ export function fixtureCommandResult(fixtures: ProductSurfaceFixture, command: s
     case 'settings.get':
     case 'settings.set':
       return fixtures.settings
+    case 'settings.exportDiagnostics':
+      return fixtures.diagnostics
     case 'cli.getStatus':
     case 'cli.install':
     case 'cli.uninstall':

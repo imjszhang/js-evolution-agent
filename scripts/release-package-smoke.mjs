@@ -18,8 +18,25 @@ import {
   parseArgs,
   printReport,
 } from './release-lib.mjs';
+import { commitsMatch, readBuildMetadataFile } from '../src/product/build-metadata.mjs';
+import { spawnSync } from 'node:child_process';
 
-export function evaluatePackageSmoke({ dir, version = RELEASE_VERSION } = {}) {
+function currentHead(cwd) {
+  const result = spawnSync('git', ['rev-parse', 'HEAD'], {
+    cwd,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  if (result.status !== 0) return null;
+  return String(result.stdout || '').trim() || null;
+}
+
+export function evaluatePackageSmoke({
+  dir,
+  version = RELEASE_VERSION,
+  expectedCommit = null,
+  requireCommitMatch = false,
+} = {}) {
   const expected = expectedArtifactNames(version);
   const absDir = dir ? resolve(dir) : null;
   const present = {};
@@ -72,6 +89,34 @@ export function evaluatePackageSmoke({ dir, version = RELEASE_VERSION } = {}) {
     }
   }
 
+  const metadata = present.buildMetadata
+    ? readBuildMetadataFile(resolve(absDir, expected.buildMetadata))
+    : null;
+  let smokeCommit = metadata?.commit ?? null;
+  if (!smokeCommit && present.packageSmoke) {
+    try {
+      const smoke = JSON.parse(readFileSync(resolve(absDir, expected.packageSmoke), 'utf8'));
+      smokeCommit = typeof smoke.commit === 'string' ? smoke.commit : null;
+    } catch {
+      smokeCommit = null;
+    }
+  }
+  if (hasInstallers && !smokeCommit) {
+    failures.push({
+      code: 'missing_build_metadata',
+      message: 'Packaged artifacts must embed a full commit SHA',
+    });
+  }
+  const certified = expectedCommit || (requireCommitMatch ? currentHead(absDir) : null);
+  if (smokeCommit && certified && !commitsMatch(smokeCommit, certified)) {
+    failures.push({
+      code: 'commit_mismatch',
+      message: 'Embedded commit SHA does not match the commit being certified',
+      embedded: smokeCommit,
+      expected: certified,
+    });
+  }
+
   return {
     ok: failures.length === 0,
     status: failures.length === 0 ? 'smoked' : 'failed',
@@ -82,6 +127,8 @@ export function evaluatePackageSmoke({ dir, version = RELEASE_VERSION } = {}) {
     present,
     missing,
     failures,
+    commit: smokeCommit,
+    expectedCommit: certified,
   };
 }
 
@@ -90,6 +137,8 @@ export async function main(argv = process.argv.slice(2)) {
   const report = evaluatePackageSmoke({
     dir: args.dir || args._[0] || 'dist/release',
     version: args.version || RELEASE_VERSION,
+    expectedCommit: args.commit || args.expectedCommit || null,
+    requireCommitMatch: Boolean(args['require-commit-match']),
   });
   report.script = 'release-package-smoke';
   report.messages = [

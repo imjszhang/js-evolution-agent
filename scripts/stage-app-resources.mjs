@@ -17,6 +17,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, printReport, repoRootFrom } from './release-lib.mjs';
 import { PRODUCT_VERSION } from '../src/product/identity.mjs';
+import { collectBuildMetadata, writeBuildMetadata } from '../src/product/build-metadata.mjs';
 import { scanArtifactTree } from './release-artifact-scan.mjs';
 
 const SKIP_DIR_NAMES = new Set([
@@ -70,6 +71,7 @@ export function stageAppResources({
   repoRoot,
   outDir,
   withNodeModules = false,
+  metadata,
 } = {}) {
   if (!repoRoot) throw new Error('repoRoot is required');
   const dest = resolve(outDir);
@@ -132,12 +134,18 @@ export function stageAppResources({
     copyProductionNodeModules(join(repoRoot, 'node_modules'), join(dest, 'jea/node_modules'));
   }
 
+  const buildMetadata = metadata ?? collectBuildMetadata({ repoRoot });
+  writeBuildMetadata(join(dest, 'resources/host'), buildMetadata);
+  mkdirSync(join(dest, 'jea/src/product'), { recursive: true });
+  writeBuildMetadata(join(dest, 'jea/src/product'), buildMetadata);
+
   const scan = scanArtifactTree({ root: dest, manifestPath: join(dest, 'release-manifest.json') });
   return {
     ok: scan.ok,
     outDir: dest,
     scan,
     withNodeModules,
+    metadata: buildMetadata,
   };
 }
 

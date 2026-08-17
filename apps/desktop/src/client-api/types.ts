@@ -293,6 +293,63 @@ export interface SettingsView {
   defaultSubject: string | null
   appVersion: string
   cliVersion: string
+  commitSha: string | null
+  commitShort: string | null
+  buildTime: string | null
+  platform: string
+  architecture: string
+  dirty: boolean | null
+}
+
+export interface OperationalDomainReadiness {
+  id: 'web' | 'cycle' | 'channel' | 'model' | 'conversation'
+  status: string
+  reasons: string[]
+}
+
+export interface DiagnosticReport {
+  schema_version: 1
+  generated_at: string
+  product: {
+    version: string
+    commit: string | null
+    commit_short: string | null
+    built_at: string | null
+    platform: string
+    architecture: string
+    dirty: boolean | null
+    build_id: string | null
+  }
+  host: {
+    jea_home: string
+    jea_home_source: string
+    subject: string | null
+  }
+  readiness: {
+    source: 'service.getReadiness'
+    reservedCommand: 'service.getReadiness'
+    web: OperationalDomainReadiness
+    cycle: OperationalDomainReadiness
+    channel: OperationalDomainReadiness
+    model: OperationalDomainReadiness
+    conversation: OperationalDomainReadiness
+  }
+  daemon: {
+    log_paths: { stdout: string | null; stderr: string | null } | null
+    last_startup_failure: {
+      subject?: string
+      occurred_at: string
+      reason: string
+      log_paths: { stdout: string; stderr: string }
+    } | null
+  }
+  process_failures: Array<{
+    occurred_at: string
+    process_type: string
+    reason: string
+    version: string
+    build_id: string | null
+  }>
 }
 
 export interface SettingsPatch {

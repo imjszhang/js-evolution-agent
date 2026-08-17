@@ -42,6 +42,7 @@ export type {
   ConversationSendResult,
   ConversationSessionSummary,
   CycleRequestResult,
+  DiagnosticReport,
   EvolutionCycleDetail,
   EvolutionCycleList,
   EvolutionObservability,

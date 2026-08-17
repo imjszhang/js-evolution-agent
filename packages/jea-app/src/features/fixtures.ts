@@ -1,5 +1,6 @@
 import type {
   CliStatus,
+  DiagnosticReport,
   SettingsView,
   SetupReadiness,
   SetupSettingsClient,
@@ -116,7 +117,13 @@ export function createSetupFixtureState(options: {
       theme: 'system',
       defaultSubject: readiness.subjects.defaultSubject,
       appVersion: '0.1.0',
-      cliVersion: '0.1.0'
+      cliVersion: '0.1.0',
+      commitSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      commitShort: 'aaaaaaa',
+      buildTime: '2026-08-17T00:00:00.000Z',
+      platform: 'linux',
+      architecture: 'x64',
+      dirty: false
     },
     subjects: readiness.subjects.names.map((name) => ({
       name,
@@ -124,6 +131,62 @@ export function createSetupFixtureState(options: {
       isDefault: name === readiness.subjects.defaultSubject
     })),
     cli
+  }
+}
+
+export function createFixtureDiagnosticReport(state: SetupFixtureState = createSetupFixtureState()): DiagnosticReport {
+  const settings = state.settings
+  const ready = state.readiness.conversationReady
+  return {
+    schema_version: 1,
+    generated_at: '2026-08-17T00:00:00.000Z',
+    product: {
+      version: settings.appVersion,
+      commit: settings.commitSha ?? null,
+      commit_short: settings.commitShort ?? null,
+      built_at: settings.buildTime ?? null,
+      platform: settings.platform ?? 'linux',
+      architecture: settings.architecture ?? 'x64',
+      dirty: settings.dirty ?? false,
+      build_id: '0.1.0+aaaaaaa.20260817T000000'
+    },
+    host: {
+      jea_home: state.readiness.jeaHome.path,
+      jea_home_source: state.readiness.jeaHome.source,
+      subject: state.readiness.subjects.defaultSubject
+    },
+    readiness: {
+      source: 'service.getReadiness',
+      reservedCommand: 'service.getReadiness',
+      web: { id: 'web', status: 'stopped', reasons: ['web_host_stopped'] },
+      cycle: { id: 'cycle', status: 'stopped', reasons: ['cycle_worker_stopped'] },
+      channel: {
+        id: 'channel',
+        status: state.readiness.conversation.desktopChannelEnabled ? 'ready' : 'blocked',
+        reasons: state.readiness.conversation.desktopChannelEnabled ? [] : ['desktop_channel_disabled']
+      },
+      model: {
+        id: 'model',
+        status: state.readiness.model.mode === 'unset' ? 'blocked' : 'ready',
+        reasons: [
+          state.readiness.model.configured ? 'model_configured' : 'model_unconfigured',
+          `model_mode_${state.readiness.model.mode}`
+        ]
+      },
+      conversation: {
+        id: 'conversation',
+        status: ready ? 'ready' : 'blocked',
+        reasons: ready ? ['conversation_ready'] : ['conversation_blocked']
+      }
+    },
+    daemon: {
+      log_paths: {
+        stdout: '<JEA_HOME>/logs/daemon-alpha.desktop.stdout.log',
+        stderr: '<JEA_HOME>/logs/daemon-alpha.desktop.stderr.log'
+      },
+      last_startup_failure: null
+    },
+    process_failures: []
   }
 }
 
@@ -188,6 +251,9 @@ export function createFixtureSetupClient(state: SetupFixtureState = createSetupF
       current.readiness.conversation = { desktopChannelEnabled: true, subject }
       current.readiness.conversationReady = current.readiness.data.initialized
       return { name: subject, created: false, skipped: false, desktopChannelEnabled: true }
+    },
+    async exportDiagnostics() {
+      return createFixtureDiagnosticReport(current)
     },
     async getSettings() {
       return { ...current.settings }

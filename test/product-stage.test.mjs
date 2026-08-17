@@ -21,6 +21,16 @@ describe('stage-app-resources', () => {
     const report = stageAppResources({ repoRoot, outDir, withNodeModules: false });
     expect(report.ok).toBe(true);
     expect(report.scan.ok).toBe(true);
+    expect(existsSync(join(outDir, 'resources/host/build-metadata.json'))).toBe(true);
+    expect(existsSync(join(outDir, 'jea/src/product/build-metadata.json'))).toBe(true);
+    const metadata = JSON.parse(readFileSync(join(outDir, 'resources/host/build-metadata.json'), 'utf8'));
+    expect(metadata).toMatchObject({
+      schema_version: 1,
+      product: 'jea',
+      version: '0.1.0',
+    });
+    expect(metadata.commit).toMatch(/^[0-9a-f]{40}$/);
+    expect(typeof metadata.dirty).toBe('boolean');
     expect(existsSync(join(outDir, 'resources/host/package.json'))).toBe(true);
     expect(existsSync(join(outDir, 'resources/web/index.html'))).toBe(true);
     expect(existsSync(join(outDir, 'resources/cli/jea'))).toBe(true);

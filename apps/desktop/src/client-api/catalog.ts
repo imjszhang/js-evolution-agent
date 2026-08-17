@@ -180,6 +180,15 @@ export const CLIENT_API_COMMAND_CATALOG: CatalogCommandEntry[] = [
   ),
   command('settings.get', 'settings', 'readonly', both(), {}, { settings: 'SettingsView' }, COMMON_READ_ERRORS),
   command('settings.set', 'settings', 'write', both(), { language: 'string?', theme: 'string?', defaultSubject: 'string?' }, { settings: 'SettingsView' }, COMMON_WRITE_ERRORS),
+  command(
+    'settings.exportDiagnostics',
+    'settings',
+    'readonly',
+    both(),
+    { subject: 'string?', redactPaths: 'boolean?' },
+    { report: 'DiagnosticReport' },
+    COMMON_READ_ERRORS
+  ),
   command('cli.getStatus', 'cli', 'readonly', both(), {}, { status: 'CliStatus' }, COMMON_READ_ERRORS),
   command('cli.install', 'cli', 'local-only', electronOnly(), {}, { status: 'CliStatus' }, LOCAL_ERRORS),
   command('cli.uninstall', 'cli', 'local-only', electronOnly(), {}, { status: 'CliStatus' }, LOCAL_ERRORS)

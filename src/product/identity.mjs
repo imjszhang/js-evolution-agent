@@ -1,7 +1,7 @@
 /**
- * Frozen JEA 0.1.0 product identity (#120).
- * Change these only with a release decision; artifact names and launcher
- * discovery depend on them.
+ * Frozen JEA 0.1.0 product identity (#120) plus package-time provenance (#142).
+ * Change version/bundle fields only with a release decision; artifact names
+ * and launcher discovery depend on them.
  */
 export const PRODUCT_NAME = 'JEA';
 export const PRODUCT_ID = 'jea';
@@ -17,6 +17,7 @@ export const LAUNCHER_MARKER = 'jea-managed-launcher';
 export const LAUNCHER_MARKER_VERSION = 1;
 export const SIGNING_POLICY = 'ad-hoc';
 export const START_SERVICES = ['localhost-web-host'];
+export { BUILD_METADATA_FILENAME } from './build-metadata.mjs';
 
 export function artifactNames(version = PRODUCT_VERSION) {
   return {
@@ -25,8 +26,17 @@ export function artifactNames(version = PRODUCT_VERSION) {
     checksums: 'SHA256SUMS',
     packageSmoke: 'package-smoke.json',
     releaseNotes: 'RELEASE_NOTES.md',
+    buildMetadata: 'build-metadata.json',
   };
 }
+
+export {
+  abbreviateCommit,
+  assertCleanProvenance,
+  collectBuildMetadata,
+  loadBuildMetadata,
+  writeBuildMetadata,
+} from './build-metadata.mjs';
 
 export function defaultAppCandidates(homeDir) {
   return [

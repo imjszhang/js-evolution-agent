@@ -9,7 +9,7 @@ import {
   rmSync,
   writeFileSync
 } from 'node:fs'
-import { dirname, join, relative, resolve, sep } from 'node:path'
+import { dirname, join } from 'node:path'
 import {
   inspectWorkerRepair,
   markWorkerStopped,
@@ -29,6 +29,8 @@ import {
 import { listRegisteredSubjects } from '../../../../src/infra/subjects.mjs'
 import { runtimeForSubject } from '../../../../src/infra/runtime-paths.mjs'
 import { jeaLogsDir } from '../../../../src/infra/jea-home.mjs'
+import { recordDaemonStartupFailure } from '../../../../src/product/diagnostics-store.mjs'
+import { redactJeaOwnedPath } from '../../../../src/product/path-redact.mjs'
 import { buildJeaRuntimeEnv } from '../../../../src/actions/execution-env.mjs'
 import type {
   DaemonSupervisorView,
@@ -336,7 +338,8 @@ export class DaemonSupervisor {
       })
     } catch (error) {
       await this.terminateChild(child, processGroup, ownedPid)
-      throw error
+      this.recordStartupFailure(subject, error, logPaths)
+      throw this.withLogPaths(error, logPaths)
     }
     const entry: ManagedDaemon = {
       subject,
@@ -383,7 +386,8 @@ export class DaemonSupervisor {
       unregister()
       this.removeDiagnostic(subject, domain, ownerToken)
       if (!processExited(child)) await this.terminateChild(child, processGroup, ownedPid)
-      throw error
+      this.recordStartupFailure(subject, error, logPaths)
+      throw this.withLogPaths(error, logPaths)
     }
     this.events.publish({
       type: 'daemon_managed_started',
@@ -524,13 +528,31 @@ export class DaemonSupervisor {
     }
   }
 
-  private redactLogPath(absPath: string): string {
-    const home = resolve(String(this.runtimeContext.jeaHome))
-    const resolved = resolve(absPath)
-    if (resolved === home || resolved.startsWith(`${home}${sep}`)) {
-      return `<JEA_HOME>/${relative(home, resolved).split(sep).join('/')}`
+  private recordStartupFailure(subject: string, error: unknown, logPaths: { stdout: string; stderr: string }): void {
+    const message = error instanceof Error ? error.message : String(error)
+    const reason = message.includes('startup deadline') || message.includes('startup timeout')
+      ? 'startup_deadline'
+      : (message.includes('exited before becoming ready') ? 'exited_before_ready' : 'startup_failed')
+    try {
+      recordDaemonStartupFailure(this.runtimeContext, { subject, reason, logPaths })
+    } catch {
+      // Diagnostic persistence must not change start/stop/repair outcomes.
     }
-    return '<JEA_HOME>/logs/daemon.log'
+  }
+
+  private withLogPaths(error: unknown, logPaths: { stdout: string; stderr: string }): unknown {
+    if (!(error instanceof PublicCommandError)) return error
+    const stdout = this.redactLogPath(logPaths.stdout)
+    const stderr = this.redactLogPath(logPaths.stderr)
+    if (error.message.includes(stdout) || error.message.includes(stderr)) return error
+    return new PublicCommandError(
+      error.code,
+      `${error.message} Logs: ${stdout}, ${stderr}`
+    )
+  }
+
+  private redactLogPath(absPath: string): string {
+    return redactJeaOwnedPath(absPath, this.runtimeContext.jeaHome) || '<JEA_HOME>/logs/daemon.log'
   }
 
   private managedEntriesFor(subject: string): ManagedDaemon[] {

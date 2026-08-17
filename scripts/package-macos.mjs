@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { expectedArtifactNames, parseArgs, printReport, repoRootFrom } from './release-lib.mjs';
 import { PRODUCT_VERSION, SIGNING_POLICY } from '../src/product/identity.mjs';
+import { assertCleanProvenance, collectBuildMetadata, writeBuildMetadata } from '../src/product/build-metadata.mjs';
 import { stageAppResources } from './stage-app-resources.mjs';
 
 function builderEnv() {
@@ -62,13 +63,27 @@ export async function packageMacos({
   repoRoot,
   dirOnly = false,
   withNodeModules = true,
+  allowDirty = false,
+  metadata,
 } = {}) {
+  const provenance = metadata ?? collectBuildMetadata({ repoRoot });
   if (process.platform !== 'darwin' || process.arch !== 'arm64') {
     return {
       ok: true,
       status: 'skipped',
       reason: 'not_darwin_arm64',
       platform: `${process.platform}-${process.arch}`,
+      metadata: provenance,
+    };
+  }
+
+  const gate = assertCleanProvenance(provenance, { allowDirty });
+  if (!gate.ok) {
+    return {
+      ok: false,
+      status: gate.status,
+      reason: gate.reason,
+      metadata: gate.metadata,
     };
   }
 
@@ -76,6 +91,7 @@ export async function packageMacos({
     repoRoot,
     outDir: join(repoRoot, 'dist/release/stage'),
     withNodeModules,
+    metadata: provenance,
   });
   if (!stage.ok) {
     return { ok: false, status: 'stage_failed', stage };
@@ -87,6 +103,7 @@ export async function packageMacos({
     repoRoot,
     outDir: join(repoRoot, 'dist/release/stage'),
     withNodeModules,
+    metadata: provenance,
   });
 
   const builderArgs = ['exec', '--workspace', '@jea/desktop', '--', 'electron-builder', '--mac'];
@@ -132,6 +149,7 @@ export async function packageMacos({
     }
   }
 
+  writeBuildMetadata(outDir, provenance);
   const smoke = {
     ok: true,
     status: dirOnly ? 'dir_signed' : 'packaged',
@@ -139,9 +157,22 @@ export async function packageMacos({
     signing: SIGNING_POLICY,
     app: resolvedApp,
     artifacts: present,
+    commit: provenance.commit,
+    dirty: provenance.dirty,
+    built_at: provenance.built_at,
+    platform: provenance.platform,
+    arch: provenance.arch,
+    build_id: provenance.build_id,
   };
   writeFileSync(join(outDir, names.packageSmoke), `${JSON.stringify(smoke, null, 2)}\n`);
-  return { ok: true, status: smoke.status, outDir, app: resolvedApp, signing: SIGNING_POLICY };
+  return {
+    ok: true,
+    status: smoke.status,
+    outDir,
+    app: resolvedApp,
+    signing: SIGNING_POLICY,
+    metadata: provenance,
+  };
 }
 
 export async function main(argv = process.argv.slice(2)) {
@@ -152,6 +183,7 @@ export async function main(argv = process.argv.slice(2)) {
       repoRoot,
       dirOnly: Boolean(args['dir-only']),
       withNodeModules: args['with-node-modules'] !== 'false',
+      allowDirty: Boolean(args['allow-dirty']),
     });
     report.script = 'package-macos';
     report.messages = [

@@ -12,10 +12,11 @@ import {
   localeToLanguage,
   publicErrorMessage,
   type CliStatus,
+  type DiagnosticReport,
   type SettingsView,
   type SetupReadiness
 } from '../client-types'
-import { createReadyReadiness } from '../fixtures'
+import { createFixtureDiagnosticReport, createReadyReadiness, createSetupFixtureState } from '../fixtures'
 
 function Row({ label, value, testId }: { label: string; value: string; testId?: string }) {
   return (
@@ -38,11 +39,13 @@ function modelLabel(
 export function SettingsPanel({
   settings: settingsProp,
   readiness: readinessProp,
-  cli: cliProp
+  cli: cliProp,
+  diagnostics: diagnosticsProp
 }: {
   settings?: SettingsView
   readiness?: SetupReadiness
   cli?: CliStatus
+  diagnostics?: DiagnosticReport
 } = {}) {
   const { t, locale, setLocale } = useLocale()
   const { preference, setPreference } = useTheme()
@@ -50,18 +53,26 @@ export function SettingsPanel({
   const [settings, setSettings] = useState<SettingsView | null>(settingsProp ?? null)
   const [readiness, setReadiness] = useState<SetupReadiness | null>(readinessProp ?? null)
   const [cli, setCli] = useState<CliStatus | null>(cliProp ?? null)
+  const [diagnostics, setDiagnostics] = useState<DiagnosticReport | null>(diagnosticsProp ?? null)
+  const [exported, setExported] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
 
   useEffect(() => {
     if (!client) return
     let cancelled = false
-    void Promise.all([client.getSettings(), client.getReadiness(), client.getCliStatus()])
-      .then(([nextSettings, nextReadiness, nextCli]) => {
+    void Promise.all([
+      client.getSettings(),
+      client.getReadiness(),
+      client.getCliStatus(),
+      client.exportDiagnostics ? client.exportDiagnostics({ redactPaths: true }) : Promise.resolve(null)
+    ])
+      .then(([nextSettings, nextReadiness, nextCli, nextDiagnostics]) => {
         if (cancelled) return
         setSettings(nextSettings)
         setReadiness(nextReadiness)
         setCli(nextCli)
+        if (nextDiagnostics) setDiagnostics(nextDiagnostics)
         if (languageToLocale(nextSettings.language) !== locale) {
           setLocale(languageToLocale(nextSettings.language))
         }
@@ -77,12 +88,33 @@ export function SettingsPanel({
     }
   }, [client])
 
+  const report = diagnostics ?? diagnosticsProp ?? createFixtureDiagnosticReport({
+    readiness: readiness ?? readinessProp ?? createReadyReadiness(cli ?? undefined),
+    settings: settings ?? settingsProp ?? {
+      language: localeToLanguage(locale),
+      theme: preference,
+      defaultSubject: readinessProp?.subjects.defaultSubject ?? 'alpha',
+      appVersion: '0.1.0',
+      cliVersion: '0.1.0'
+    },
+    subjects: (readiness ?? readinessProp)?.subjects.names.map((name) => ({
+      name,
+      namespace: `${name}-data`,
+      isDefault: name === (readiness ?? readinessProp)?.subjects.defaultSubject
+    })) ?? [],
+    cli: cli ?? cliProp ?? createReadyReadiness(cli ?? undefined).cli
+  })
+
   const view = settings ?? settingsProp ?? {
     language: localeToLanguage(locale),
     theme: preference,
     defaultSubject: readinessProp?.subjects.defaultSubject ?? 'alpha',
     appVersion: '0.1.0',
-    cliVersion: '0.1.0'
+    cliVersion: '0.1.0',
+    commitShort: null,
+    buildTime: null,
+    platform: undefined,
+    architecture: undefined
   }
   const runtime = readiness ?? readinessProp ?? createReadyReadiness(cli ?? undefined)
   const cliView = cli ?? cliProp ?? runtime.cli
@@ -103,6 +135,25 @@ export function SettingsPanel({
       setSettings(next)
       setLocale(languageToLocale(next.language))
       setPreference(next.theme)
+    } catch (caught) {
+      setError(publicErrorMessage(caught, t('errorBody')))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function exportReport() {
+    if (!client?.exportDiagnostics) {
+      setDiagnostics(diagnostics ?? createFixtureDiagnosticReport(createSetupFixtureState({ kind: 'ready' })))
+      setExported(true)
+      return
+    }
+    setBusy('diagnostics')
+    setError(null)
+    try {
+      const report = await client.exportDiagnostics({ redactPaths: true })
+      setDiagnostics(report)
+      setExported(true)
     } catch (caught) {
       setError(publicErrorMessage(caught, t('errorBody')))
     } finally {
@@ -270,6 +321,19 @@ export function SettingsPanel({
         <div className="space-y-2 rounded-md border border-border bg-surface-sunken p-3">
           <Row label={t('aboutAppVersion')} value={view.appVersion} testId="settings-app-version" />
           <Row label={t('aboutCliVersion')} value={view.cliVersion} testId="settings-cli-version" />
+          <Row label={t('aboutCommit')} value={view.commitShort || view.commitSha || '—'} testId="settings-commit" />
+          <Row label={t('aboutBuildTime')} value={view.buildTime || '—'} testId="settings-build-time" />
+          <Row
+            label={t('aboutPlatform')}
+            value={view.platform && view.architecture ? `${view.platform}/${view.architecture}` : (view.platform || '—')}
+            testId="settings-platform"
+          />
+          <Row label={t('runtimeHome')} value={runtime.jeaHome.path} testId="settings-about-home" />
+          <Row
+            label={t('aboutSubject')}
+            value={view.defaultSubject || runtime.subjects.defaultSubject || '—'}
+            testId="settings-about-subject"
+          />
           <Row label={t('aboutDataLocation')} value={runtime.jeaHome.path} testId="settings-data-location" />
         </div>
         <div className="flex flex-wrap gap-3 text-sm">
@@ -277,6 +341,71 @@ export function SettingsPanel({
           <a className="underline" href={DOCS_HOME_URL} target="_blank" rel="noreferrer">{t('aboutDocumentation')}</a>
           <a className="underline" href={FIRST_RUN_DOCS_URL} target="_blank" rel="noreferrer">{t('aboutFirstRun')}</a>
         </div>
+      </section>
+
+      <section aria-labelledby="jea-settings-diagnostics" data-testid="settings-diagnostics" className="space-y-3">
+        <h3 id="jea-settings-diagnostics" className="text-sm font-semibold">{t('settingsDiagnostics')}</h3>
+        <p className="text-sm text-muted-foreground">{t('settingsDiagnosticsBody')}</p>
+        <div className="space-y-2 rounded-md border border-border bg-surface-sunken p-3">
+          {(['web', 'cycle', 'channel', 'model', 'conversation'] as const).map((id) => {
+            const domain = report.readiness[id]
+            const label = id === 'web'
+              ? t('diagnosticsWeb')
+              : id === 'cycle'
+                ? t('diagnosticsCycle')
+                : id === 'channel'
+                  ? t('diagnosticsChannel')
+                  : id === 'model'
+                    ? t('diagnosticsModel')
+                    : t('diagnosticsConversation')
+            return (
+              <div key={id} data-testid={`settings-diagnostics-${id}`} className="space-y-1">
+                <Row label={label} value={domain?.status ?? 'unavailable'} />
+                {domain?.reasons?.length ? (
+                  <p className="text-xs text-muted-foreground" data-testid={`settings-diagnostics-${id}-reasons`}>
+                    {t('diagnosticsReasons')}: {domain.reasons.join('; ')}
+                  </p>
+                ) : null}
+              </div>
+            )
+          })}
+          {report.daemon.last_startup_failure ? (
+            <div data-testid="settings-diagnostics-startup-failure" className="space-y-1">
+              <Row label={t('diagnosticsStartupFailure')} value={report.daemon.last_startup_failure.reason} />
+              <p className="text-xs text-muted-foreground">
+                {t('diagnosticsDaemonLogs')}: {report.daemon.last_startup_failure.log_paths.stdout}; {report.daemon.last_startup_failure.log_paths.stderr}
+              </p>
+            </div>
+          ) : report.daemon.log_paths ? (
+            <p className="text-xs text-muted-foreground" data-testid="settings-diagnostics-log-paths">
+              {t('diagnosticsDaemonLogs')}: {report.daemon.log_paths.stdout}; {report.daemon.log_paths.stderr}
+            </p>
+          ) : null}
+          <div data-testid="settings-diagnostics-process-failures">
+            {report.process_failures?.length ? (
+              report.process_failures.map((item, index) => (
+                <Row
+                  key={`${item.occurred_at}-${index}`}
+                  label={t('diagnosticsProcessFailures')}
+                  value={`${item.process_type} ${item.reason} ${item.version}`}
+                />
+              ))
+            ) : (
+              <p className="text-sm text-muted-foreground">{t('diagnosticsNoFailures')}</p>
+            )}
+          </div>
+        </div>
+        <Button
+          size="sm"
+          data-testid="settings-export-diagnostics"
+          disabled={busy === 'diagnostics'}
+          onClick={() => void exportReport()}
+        >
+          {t('diagnosticsExport')}
+        </Button>
+        {exported ? (
+          <p className="text-sm text-muted-foreground" data-testid="settings-diagnostics-exported">{t('diagnosticsExported')}</p>
+        ) : null}
       </section>
     </div>
   )

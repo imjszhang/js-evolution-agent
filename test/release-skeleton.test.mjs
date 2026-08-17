@@ -158,6 +158,7 @@ describe('release-package-smoke', () => {
       checksums: 'SHA256SUMS',
       packageSmoke: 'package-smoke.json',
       releaseNotes: 'RELEASE_NOTES.md',
+      buildMetadata: 'build-metadata.json',
     });
     const local = evaluatePackageSmoke({ dir: join(repoRoot, 'dist/release') });
     expect(local.ok).toBe(true);
@@ -181,7 +182,17 @@ describe('release-package-smoke', () => {
       'aaaa  JEA-0.1.0-macos-arm64.dmg',
       'bbbb  JEA-0.1.0-macos-arm64.zip',
     ].join('\n'));
-    writeFileSync(join(dir, 'package-smoke.json'), '{"ok":true}\n');
+    writeFileSync(join(dir, 'package-smoke.json'), '{"ok":true,"commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}\n');
+    writeFileSync(join(dir, 'build-metadata.json'), JSON.stringify({
+      schema_version: 1,
+      product: 'jea',
+      version: '0.1.0',
+      commit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      dirty: false,
+      built_at: '2026-08-17T00:00:00.000Z',
+      platform: 'darwin',
+      arch: 'arm64',
+    }));
     writeFileSync(join(dir, 'RELEASE_NOTES.md'), 'draft\n');
     const report = evaluatePackageSmoke({ dir });
     expect(report.ok).toBe(true);

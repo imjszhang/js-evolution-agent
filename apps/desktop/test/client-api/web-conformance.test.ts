@@ -42,6 +42,7 @@ const FIXTURE_PAYLOADS: Record<string, Record<string, unknown>> = {
   'setup.enableDesktopChannel': { subject: 'alpha' },
   'settings.get': {},
   'settings.set': { language: 'zh-CN' },
+  'settings.exportDiagnostics': { redactPaths: true },
   'cli.getStatus': {},
   'cli.install': {},
   'cli.uninstall': {}
@@ -60,6 +61,7 @@ const TYPED_CALLS: Array<{ name: string; run(client: ReturnType<typeof createMem
   { name: 'service.requestCycle', run: (client) => client.requestCycle('alpha', 'fixture') },
   { name: 'setup.getReadiness', run: (client) => client.getReadiness('alpha') },
   { name: 'settings.get', run: (client) => client.getSettings() },
+  { name: 'settings.exportDiagnostics', run: (client) => client.exportDiagnostics() },
   { name: 'cli.getStatus', run: (client) => client.getCliStatus() }
 ]
 

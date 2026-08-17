@@ -226,8 +226,14 @@ describe('setup/settings JEA_HOME matrix', () => {
       theme: 'dark',
       defaultSubject: 'beta',
       appVersion: '0.1.0',
-      cliVersion: '0.1.0'
+      cliVersion: '0.1.0',
+      platform: expect.any(String),
+      architecture: expect.any(String)
     })
+    expect(next).toHaveProperty('commitSha')
+    expect(next).toHaveProperty('commitShort')
+    expect(next).toHaveProperty('buildTime')
+    expect(next).toHaveProperty('dirty')
     expect(readRegistry(jeaHome).default_subject).toBe('beta')
   })
 
