@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { isProcessAlive } from '../../../src/infra/process-alive.mjs'
+import { isProcessAlive } from '../../../../src/infra/process-alive.mjs'
 import type {
   ClientHostKind,
   ConversationReadinessView,

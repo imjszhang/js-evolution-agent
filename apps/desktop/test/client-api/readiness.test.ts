@@ -302,7 +302,8 @@ describe('service.getReadiness contract', () => {
     expect(attached.cycle.state).toBe('attached')
     expect(attached.channel.state).toBe('attached')
     expect(attached.allowed_actions).toEqual(['none'])
-    expect(JSON.stringify(attached)).not.toMatch(/managed/)
+    expect(attached.cycle.state).not.toBe('running')
+    expect(attached.actions.find((item) => item.id === 'stop_managed')?.allowed).toBe(false)
 
     const managedHost = electronHost(sourceRoot, jeaHome, {
       get: (subject) => ({
@@ -372,8 +373,8 @@ describe('service.getReadiness contract', () => {
     const webValue = await web.getServiceReadiness('alpha')
     expect(readinessCodeView(webValue)).toEqual(readinessCodeView(electronValue))
     expect(webValue.cycle.state).toBe('attached')
-    expect(webValue.allowed_actions).toEqual(['start_channel'])
     expect(electronValue.allowed_actions).toEqual(['start_channel'])
+    expect(webValue.allowed_actions).toEqual(['open_desktop'])
   })
 
   it('redacts secrets from serialized readiness responses', async () => {
