@@ -32,11 +32,50 @@ export function writeWorkerState(root, subject, state) {
   return state;
 }
 
-export function isWorkerZombie(state, { nowMs = Date.now(), staleMs = 60_000 } = {}) {
+export function isWorkerZombie(state, { nowMs: _nowMs = Date.now(), staleMs: _staleMs = 60_000 } = {}) {
   if (!state || !['running', 'stopping'].includes(state.status)) return false;
-  const effectiveStaleMs = state.stale_after_ms ?? staleMs;
-  if (!isWorkerFresh(state, { nowMs, staleMs: effectiveStaleMs })) return false;
   return !isProcessAlive(state.pid);
+}
+
+export function inspectWorkerRepair(state) {
+  if (!state || !['running', 'stopping'].includes(state.status)) {
+    return {
+      needed: false,
+      blocked: false,
+      reason: state ? 'already_stopped' : 'not_found',
+    };
+  }
+  if (isProcessAlive(state.pid)) {
+    return { needed: false, blocked: true, reason: 'pid_alive' };
+  }
+  return { needed: true, blocked: false, reason: 'pid_dead' };
+}
+
+export function reconcileWorkerState(root, subject, { staleMs = 60_000 } = {}) {
+  const previous = readWorkerState(root, subject);
+  const inspection = inspectWorkerRepair(previous);
+  if (inspection.blocked || !inspection.needed) {
+    return {
+      changed: false,
+      repaired: false,
+      ...inspection,
+      state: previous,
+    };
+  }
+  const state = markWorkerStopped(root, subject, {
+    worker_id: previous.worker_id,
+    pid: previous.pid,
+    stale_after_ms: previous.stale_after_ms ?? staleMs,
+    stop_reason: 'reconcile_pid_dead',
+  });
+  return {
+    changed: true,
+    repaired: true,
+    needed: true,
+    blocked: false,
+    reason: 'pid_dead',
+    state,
+  };
 }
 
 export function createWorkerState(root, subject, {
@@ -161,9 +200,10 @@ export function summarizeWorkerState(state, { nowMs = Date.now(), staleMs = 60_0
   }
   const effectiveStaleMs = state.stale_after_ms ?? staleMs;
   const fresh = isWorkerFresh(state, { nowMs, staleMs: effectiveStaleMs });
-  const stale = ['running', 'stopping'].includes(state.status) && !fresh;
   const pid_alive = isProcessAlive(state.pid);
-  const zombie = ['running', 'stopping'].includes(state.status) && fresh && !pid_alive;
+  const active = ['running', 'stopping'].includes(state.status);
+  const stale = active && !fresh && pid_alive;
+  const zombie = active && !pid_alive;
   const aliveAndFresh = fresh && pid_alive;
   return {
     status: zombie ? 'zombie' : (stale ? 'stale' : state.status),
