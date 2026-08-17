@@ -28,6 +28,18 @@ function readJson(path, fallback) {
   }
 }
 
+/**
+ * @param {Record<string, unknown>} [input]
+ * @param {{ version?: string, buildId?: string | null }} [identity]
+ * @returns {{
+ *   schema_version: number,
+ *   occurred_at: string,
+ *   process_type: string,
+ *   reason: string,
+ *   version: string,
+ *   build_id: string | null,
+ * }}
+ */
 export function sanitizeProcessFailure(input = {}, {
   version = PRODUCT_VERSION,
   buildId = null,
@@ -52,6 +64,11 @@ export function sanitizeProcessFailure(input = {}, {
   };
 }
 
+/**
+ * @param {{ sourceRoot?: string, jeaHome?: string }} runtime
+ * @param {Record<string, unknown>} input
+ * @param {{ version?: string, build_id?: string | null }} [identity]
+ */
 export function recordProcessFailure(runtime, input, identity = {}) {
   const dir = diagnosticsDir(runtime);
   mkdirSync(dir, { recursive: true });
@@ -66,6 +83,18 @@ export function recordProcessFailure(runtime, input, identity = {}) {
   return record;
 }
 
+/**
+ * @param {{ sourceRoot?: string, jeaHome?: string }} runtime
+ * @param {{ limit?: number }} [options]
+ * @returns {Array<{
+ *   schema_version: number,
+ *   occurred_at: string,
+ *   process_type: string,
+ *   reason: string,
+ *   version: string,
+ *   build_id: string | null,
+ * }>}
+ */
 export function readProcessFailures(runtime, { limit = MAX_PROCESS_FAILURES } = {}) {
   const path = join(diagnosticsDir(runtime), PROCESS_FAILURES_FILENAME);
   if (!existsSync(path)) return [];
@@ -79,6 +108,15 @@ export function readProcessFailures(runtime, { limit = MAX_PROCESS_FAILURES } = 
   }).filter(Boolean);
 }
 
+/**
+ * @param {{ sourceRoot?: string, jeaHome?: string }} runtime
+ * @param {{
+ *   subject?: string,
+ *   reason?: string,
+ *   logPaths?: { stdout?: string, stderr?: string },
+ *   occurredAt?: string,
+ * }} [failure]
+ */
 export function recordDaemonStartupFailure(runtime, {
   subject,
   reason,

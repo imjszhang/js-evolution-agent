@@ -54,6 +54,11 @@ export function redactMachinePaths(value, options = {}, seen = new WeakSet()) {
   );
 }
 
+/**
+ * @param {string | null | undefined} path
+ * @param {string | null | undefined} jeaHome
+ * @returns {string | null | undefined}
+ */
 export function redactJeaOwnedPath(path, jeaHome) {
   return redactAbsolutePath(path, { jeaHome, home: osHomedir() });
 }

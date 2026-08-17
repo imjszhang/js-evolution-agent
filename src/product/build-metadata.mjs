@@ -96,6 +96,25 @@ export function readBuildMetadataFile(path) {
   }
 }
 
+/**
+ * @param {{
+ *   sourceRoot?: string,
+ *   metadata?: Record<string, unknown>,
+ *   collect?: boolean,
+ * }} [options]
+ * @returns {{
+ *   schema_version: number,
+ *   product: string,
+ *   version: string,
+ *   commit: string | null,
+ *   commit_short: string | null,
+ *   dirty: boolean | null,
+ *   built_at: string | null,
+ *   platform: string | null,
+ *   arch: string | null,
+ *   build_id: string,
+ * }}
+ */
 export function loadBuildMetadata({
   sourceRoot,
   metadata,
