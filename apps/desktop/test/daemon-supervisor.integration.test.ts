@@ -12,6 +12,8 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { discoverDevElectronBinary } from '../../../src/product/app-paths.mjs'
+import { createRuntimeContext } from '../../../src/infra/jea-home.mjs'
+import { writeWorkerState } from '../../../src/daemon/daemon-worker-state.mjs'
 import { DaemonSupervisor } from '../src/main/daemon-supervisor'
 import { DesktopEventBus } from '../src/main/event-bus'
 import { ManagedProcessRegistry } from '../src/main/managed-process-registry'
@@ -191,9 +193,46 @@ describe.skipIf(process.platform === 'win32')('DaemonSupervisor real process smo
       throw new Error(`external daemon exited with ${child.exitCode ?? child.signalCode} before attach`)
     }
 
+    await expect(supervisor.stop('alpha')).rejects.toMatchObject({
+      code: 'CONFLICT',
+      message: 'The daemon is not managed by this client.'
+    })
     await registry.shutdownAll('app_quit')
     expect(supervisor.get('alpha').mode).toBe('attached')
     expect(() => process.kill(child.pid!, 0)).not.toThrow()
     expect(existsSync(join(root, 'runtime'))).toBe(false)
+  })
+
+  it('repairs a dead-PID record then starts a managed worker to ready', async () => {
+    const { root, jeaHome } = projectFixture()
+    const context = createRuntimeContext({ sourceRoot: root, jeaHome })
+    writeWorkerState(context, 'alpha', {
+      subject: 'alpha',
+      worker_id: 'ghost',
+      pid: 999_999_888,
+      status: 'running',
+      started_at: new Date().toISOString(),
+      heartbeat_at: new Date().toISOString(),
+      stale_after_ms: 60_000
+    })
+    const registry = new ManagedProcessRegistry()
+    const supervisor = new DaemonSupervisor(
+      root,
+      registry,
+      new DesktopEventBus(),
+      undefined,
+      1_000,
+      jeaHome
+    )
+
+    expect(supervisor.get('alpha').mode).toBe('zombie')
+    await expect(supervisor.repair('alpha', { domain: 'cycle' })).resolves.toMatchObject({
+      mode: 'none'
+    })
+    const started = await supervisor.start('alpha', { domain: 'channel' })
+    expect(started).toMatchObject({ mode: 'managed', domain: 'channel' })
+    await waitFor(() => supervisor.get('alpha').heartbeat_at != null)
+    const stopped = await supervisor.stop('alpha', 'repair_start_integration')
+    expect(stopped.mode).toBe('none')
   })
 })

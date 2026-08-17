@@ -15,6 +15,7 @@ import {
   invokeForIpc,
   PublicCommandError
 } from './command-registry'
+import { createDaemonServiceProcessPort } from './daemon-service-port'
 import { DaemonSupervisor } from './daemon-supervisor'
 import { createDesktopCommandDefinitions } from './desktop-command-definitions'
 import { DesktopEventBus } from './event-bus'
@@ -73,47 +74,7 @@ const clientApi = createApplicationCommandHost({
   sourceRoot: projectRoot,
   jeaHome: runtimeContext.jeaHome,
   cliLauncher: createManagedCliLauncher({ sourceRoot: projectRoot }),
-  serviceProcess: {
-    get: (subject) => {
-      const view = daemon.get(subject)
-      return {
-        subject: view.subject,
-        mode: view.mode,
-        pid: view.pid,
-        domain: view.domain,
-        heartbeat_at: view.heartbeat_at,
-        started_at: view.started_at,
-        health: null,
-        detail: view.detail ?? null
-      }
-    },
-    start: async (subject, options) => {
-      const view = await daemon.start(subject, options)
-      return {
-        subject: view.subject,
-        mode: view.mode,
-        pid: view.pid,
-        domain: view.domain,
-        heartbeat_at: view.heartbeat_at,
-        started_at: view.started_at,
-        health: null,
-        detail: view.detail ?? null
-      }
-    },
-    stop: async (subject) => {
-      const view = await daemon.stop(subject)
-      return {
-        subject: view.subject,
-        mode: view.mode,
-        pid: view.pid,
-        domain: view.domain,
-        heartbeat_at: view.heartbeat_at,
-        started_at: view.started_at,
-        health: null,
-        detail: view.detail ?? null
-      }
-    }
-  }
+  serviceProcess: createDaemonServiceProcessPort(daemon)
 })
 const invoke = createCommandRegistry(
   ops,
