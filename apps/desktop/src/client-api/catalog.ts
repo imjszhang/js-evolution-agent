@@ -122,6 +122,15 @@ export const CLIENT_API_COMMAND_CATALOG: CatalogCommandEntry[] = [
   ),
   command('service.getStatus', 'service', 'readonly', both(), { subject: 'string' }, { status: 'ServiceStatus' }, COMMON_READ_ERRORS),
   command(
+    'service.getReadiness',
+    'service',
+    'readonly',
+    both(),
+    { subject: 'string' },
+    { readiness: 'SubjectReadiness' },
+    COMMON_READ_ERRORS
+  ),
+  command(
     'service.start',
     'service',
     'local-only',

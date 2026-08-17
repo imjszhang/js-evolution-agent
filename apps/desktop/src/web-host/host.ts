@@ -120,7 +120,8 @@ export async function createWebHost(options: WebHostOptions): Promise<JeaWebHost
   const token = options.token ?? generateWebHostToken()
   const commandHost = options.commandHost ?? createApplicationCommandHost({
     sourceRoot: options.sourceRoot,
-    jeaHome: options.jeaHome
+    jeaHome: options.jeaHome,
+    hostKind: 'web'
   })
   const invoke = options.invoke ?? ((request: InvokeRequest) => commandHost.invoke(request))
   const events = new WebHostEventLog({ limit: options.eventLimit })

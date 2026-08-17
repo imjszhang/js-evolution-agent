@@ -13,6 +13,7 @@ import type {
   JeaEventEnvelope,
   ProtocolInfo,
   ServiceStatus,
+  SubjectReadiness,
   SettingsPatch,
   SettingsView,
   SetupHomeResult,
@@ -53,6 +54,7 @@ export interface JeaClient {
   getRound(subject: string, cycleId: string): Promise<EvolutionRoundDetail>
   getObservability(subject: string): Promise<EvolutionObservability>
   getServiceStatus(subject: string): Promise<ServiceStatus>
+  getServiceReadiness(subject: string): Promise<SubjectReadiness>
   startService(subject: string, domain?: 'all' | 'cycle' | 'channel'): Promise<ServiceStatus>
   stopService(subject: string): Promise<ServiceStatus>
   requestCycle(subject: string, note?: string): Promise<CycleRequestResult>
@@ -93,6 +95,7 @@ export function createTypedJeaClient(
     getRound: (subject, cycleId) => invoke<EvolutionRoundDetail>('evolution.getRound', { subject, cycleId }),
     getObservability: (subject) => invoke<EvolutionObservability>('evolution.getObservability', { subject }),
     getServiceStatus: (subject) => invoke<ServiceStatus>('service.getStatus', { subject }),
+    getServiceReadiness: (subject) => invoke<SubjectReadiness>('service.getReadiness', { subject }),
     startService: (subject, domain) => invoke<ServiceStatus>('service.start', { subject, domain }),
     stopService: (subject) => invoke<ServiceStatus>('service.stop', { subject }),
     requestCycle: (subject, note) => invoke<CycleRequestResult>('service.requestCycle', { subject, note }),
