@@ -173,9 +173,13 @@ export class EvolutionCommandOwner {
       runtimeRoot: runtime.runtimeRoot,
       daemon
     })
+    const attention = {
+      ...(observability.attention ?? {}),
+      backlog_count: daemon.reactor?.evidence?.pending_count ?? 0
+    }
     return redactPublicValue({
       subject: name,
-      attention: observability.attention ?? {},
+      attention,
       open_cycles: daemon.cycles?.open_count ?? 0
     })
   }

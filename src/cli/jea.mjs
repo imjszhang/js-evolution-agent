@@ -49,6 +49,7 @@ Commands:
   daemon cycle request   Queue a cycle start request (on_demand mode)
   daemon evolution-mode  Show or set evolution mode (continuous / on_demand)
   daemon work --once     Execute one daemon task
+  daemon process-once    Scan Cycle backlog and process one cognitive task
   daemon start           Run the daemon worker loop in the foreground
                          Supports --evolution-mode continuous|on_demand
   daemon stop            Request the daemon worker to stop gracefully
@@ -171,6 +172,7 @@ Examples:
   jea evolve status
   jea daemon enqueue --type run_cycle
   jea daemon work --once --mock
+  jea daemon process-once --mock --json
   jea daemon start --mock
   jea daemon stop
   jea daemon status --all

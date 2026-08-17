@@ -38,6 +38,7 @@ export const CLIENT_API_COMMANDS = [
   'service.start',
   'service.stop',
   'service.requestCycle',
+  'service.processCycleOnce',
   'setup.getReadiness',
   'setup.confirmHome',
   'setup.createSubject',

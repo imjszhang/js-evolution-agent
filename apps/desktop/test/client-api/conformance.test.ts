@@ -28,6 +28,7 @@ const FIXTURE_PAYLOADS: Record<string, Record<string, unknown>> = {
   'service.start': { subject: 'alpha', domain: 'all' },
   'service.stop': { subject: 'alpha' },
   'service.requestCycle': { subject: 'alpha', note: 'fixture' },
+  'service.processCycleOnce': { subject: 'alpha' },
   'setup.getReadiness': { subject: 'alpha' },
   'setup.confirmHome': { path: '/tmp/jea-fixture-home' },
   'setup.createSubject': { name: 'gamma' },

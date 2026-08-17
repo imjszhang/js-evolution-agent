@@ -1,20 +1,31 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { runChannelClassifierTask } from '../../../../src/channel/classifier.mjs'
 import { runChannelPresenceTask } from '../../../../src/channel/presence.mjs'
 import { runChannelNotifyTask } from '../../../../src/channel/tasks.mjs'
+import { writeChannelWorkerState, summarizeChannelWorkersState, readChannelWorkerState } from '../../../../src/channel/worker-state.mjs'
+import { readWorkerState } from '../../../../src/daemon/daemon-worker-state.mjs'
 import {
   createApplicationCommandHost,
   createTypedJeaClient,
-  JEA_CLIENT_PROTOCOL_VERSION
+  createWebJeaClient,
+  JEA_CLIENT_PROTOCOL_VERSION,
+  PublicClientError
 } from '../../src/client-api'
+import type { ServiceProcessPort } from '../../src/client-api/owners/service'
 import { ConversationWorkspaceModel } from '../../src/renderer/src/conversation/model'
+import { createWebHost } from '../../src/web-host'
 
 const homes: string[] = []
+const hosts: Array<{ close(): Promise<void> }> = []
 
-afterEach(() => {
+afterEach(async () => {
+  while (hosts.length > 0) {
+    await hosts.pop()?.close().catch(() => {})
+  }
   delete process.env.DEEPSEEK_API_KEY
   delete process.env.JEA_HOME
 })
@@ -58,6 +69,82 @@ function writeTestSubjectHome(): { sourceRoot: string; jeaHome: string } {
   return { sourceRoot, jeaHome }
 }
 
+function fileFingerprint(path: string): string | null {
+  if (!existsSync(path)) return null
+  return createHash('sha256').update(readFileSync(path)).digest('hex')
+}
+
+function governedPaths(jeaHome: string) {
+  const root = join(jeaHome, 'subjects', 'alpha-data')
+  return {
+    registry: join(jeaHome, 'subjects', 'registry.json'),
+    pendingDecisions: join(root, 'data', 'evolution', 'pending_decisions.json'),
+    standingMemory: join(root, 'data', 'intelligence', 'standing_memory.json')
+  }
+}
+
+function createChannelOnlyPort(runtime: { sourceRoot: string; jeaHome: string }): {
+  port: ServiceProcessPort
+  startedDomains: Array<'all' | 'cycle' | 'channel'>
+} {
+  const startedDomains: Array<'all' | 'cycle' | 'channel'> = []
+  const port: ServiceProcessPort = {
+    get(subject) {
+      const channel = summarizeChannelWorkersState(readChannelWorkerState(runtime, subject))
+      const running = channel.running_count > 0
+      return {
+        subject,
+        mode: running ? 'managed' : 'none',
+        pid: running ? Number(channel.coordinator?.pid ?? process.pid) : null,
+        domain: running ? 'channel' : null,
+        heartbeat_at: channel.roles[0]?.heartbeat_at ?? null,
+        started_at: channel.roles[0]?.started_at ?? null,
+        health: running ? 'ok' : 'idle',
+        detail: null
+      }
+    },
+    async start(subject, options) {
+      const domain = options?.domain ?? 'all'
+      startedDomains.push(domain)
+      if (domain !== 'channel') {
+        throw new PublicClientError('INVALID_REQUEST', 'This fixture starts only the Channel domain.')
+      }
+      const now = new Date().toISOString()
+      writeChannelWorkerState(runtime, subject, {
+        subject,
+        domain: 'channel',
+        schema_version: 2,
+        workers: {
+          classifier: {
+            role: 'classifier',
+            worker_id: 'channel-recovery-classifier',
+            pid: process.pid,
+            status: 'running',
+            started_at: now,
+            heartbeat_at: now,
+            stale_after_ms: 60_000
+          }
+        },
+        coordinator: { pid: process.pid, started_at: now },
+        worker_id: null,
+        pid: process.pid,
+        status: 'running',
+        started_at: now,
+        heartbeat_at: now,
+        stale_after_ms: 60_000
+      })
+      return this.get(subject)
+    },
+    stop() {
+      throw new PublicClientError('UNAVAILABLE', 'Stop is not part of this recovery fixture.')
+    },
+    repair() {
+      throw new PublicClientError('UNAVAILABLE', 'Repair is not part of this recovery fixture.')
+    }
+  }
+  return { port, startedDomains }
+}
+
 describe('governed local Channel conversation E2E', () => {
   it('sends through JeaClient and persists an assistant record after classifier/presence/speech', async () => {
     const { sourceRoot, jeaHome } = writeTestSubjectHome()
@@ -97,5 +184,118 @@ describe('governed local Channel conversation E2E', () => {
     expect(page.records.filter((record) => record.role === 'assistant')
       .every((record) => record.content.trim().length > 0)).toBe(true)
     expect(JSON.stringify(page)).not.toMatch(/approval_granted/)
+  })
+
+  it('recovers from Channel stopped without starting Cycle or mutating governed files', async () => {
+    const { sourceRoot, jeaHome } = writeTestSubjectHome()
+    process.env.JEA_HOME = jeaHome
+    const { port, startedDomains } = createChannelOnlyPort({ sourceRoot, jeaHome })
+    const host = createApplicationCommandHost({
+      sourceRoot,
+      jeaHome,
+      hostKind: 'electron',
+      serviceProcess: port
+    })
+    const client = createTypedJeaClient(JEA_CLIENT_PROTOCOL_VERSION, {
+      invoke: (request) => host.invoke(request),
+      subscribe: () => () => {}
+    })
+
+    await client.initData('alpha')
+    const paths = governedPaths(jeaHome)
+    const before = {
+      registry: fileFingerprint(paths.registry),
+      standingMemory: fileFingerprint(paths.standingMemory)
+    }
+
+    const beforeReadiness = await client.getServiceReadiness('alpha')
+    expect(beforeReadiness.channel).toEqual({ state: 'stopped', reasons: ['channel_stopped'] })
+    expect(beforeReadiness.cycle.state).toBe('stopped')
+    expect(beforeReadiness.conversation).toEqual({
+      state: 'blocked',
+      reasons: ['conversation_blocked_channel']
+    })
+    expect(beforeReadiness.allowed_actions).toContain('start_channel')
+
+    const model = new ConversationWorkspaceModel(client)
+    await model.bootstrap('alpha')
+    expect(model.getSnapshot().subjectReadiness?.allowed_actions).toContain('start_channel')
+    expect(model.getSnapshot().cards.some((card) => card.kind === 'offline')).toBe(true)
+
+    const startedAt = Date.now()
+    await model.startChannelService()
+    expect(Date.now() - startedAt).toBeLessThan(10_000)
+    expect(startedDomains).toEqual(['channel'])
+    expect(model.getSnapshot().service?.domain).toBe('channel')
+
+    const workers = summarizeChannelWorkersState(readChannelWorkerState(host.runtime, 'alpha'))
+    expect(workers.fresh_count).toBeGreaterThanOrEqual(1)
+    expect(workers.roles.some((role: { role: string; fresh: boolean }) => (
+      role.role === 'classifier' && role.fresh
+    ))).toBe(true)
+    expect(readWorkerState(host.runtime, 'alpha')?.status ?? 'stopped').not.toBe('running')
+
+    const afterStart = await client.getServiceReadiness('alpha')
+    expect(afterStart.channel.state).toBe('running')
+    expect(afterStart.cycle.state).toBe('stopped')
+    expect(afterStart.conversation.state).toBe('running')
+    expect(afterStart.allowed_actions).not.toContain('start_channel')
+
+    model.setDraft('同意发布候选')
+    const sendStarted = Date.now()
+    await model.send()
+    expect(model.getSnapshot().records.every((record) => record.role === 'user')).toBe(true)
+
+    const classified = await runChannelClassifierTask(host.runtime, 'alpha')
+    expect(classified.classified).toBeGreaterThan(0)
+    const presence = await runChannelPresenceTask(host.runtime, 'alpha')
+    expect(presence.plan?.kind ?? presence.skipped).toBeTruthy()
+    await runChannelNotifyTask(host.runtime, 'alpha')
+    expect(Date.now() - sendStarted).toBeLessThan(30_000)
+
+    await model.bootstrap('alpha')
+    const snapshot = model.getSnapshot()
+    expect(snapshot.records.some((record) => record.role === 'assistant')).toBe(true)
+    expect(snapshot.records.filter((record) => record.role === 'assistant')
+      .every((record) => record.content.trim().length > 0)).toBe(true)
+    expect(snapshot.records.every((record) => record.session_id === 'main')).toBe(true)
+    expect(JSON.stringify(snapshot.records)).not.toMatch(/approval_granted/)
+
+    const page = await client.readMessages('alpha', 'main', { tail: 20 })
+    expect(page.subject).toBe('alpha')
+    expect(page.session_id).toBe('main')
+    expect(page.records.some((record) => record.role === 'assistant')).toBe(true)
+
+    expect(fileFingerprint(paths.registry)).toBe(before.registry)
+    expect(fileFingerprint(paths.standingMemory)).toBe(before.standingMemory)
+    if (existsSync(paths.pendingDecisions)) {
+      const decisions = readFileSync(paths.pendingDecisions, 'utf8')
+      expect(decisions).not.toMatch(/approval_granted/)
+    }
+    expect(JSON.stringify(page)).not.toMatch(/approval_granted/)
+  })
+
+  it('rejects Channel lifecycle mutation on Web with COMMAND_NOT_ALLOWED', async () => {
+    const { sourceRoot, jeaHome } = writeTestSubjectHome()
+    process.env.JEA_HOME = jeaHome
+    const commandHost = createApplicationCommandHost({ sourceRoot, jeaHome, hostKind: 'web' })
+    const token = `${'a'.repeat(32)}conversation-web-token`
+    const host = await createWebHost({
+      sourceRoot,
+      jeaHome,
+      token,
+      port: 0,
+      commandHost
+    })
+    hosts.push(host)
+    const client = createWebJeaClient({ baseUrl: host.origin, token })
+    const readiness = await client.getServiceReadiness('alpha')
+    expect(readiness.channel.state).toBe('stopped')
+    expect(readiness.allowed_actions).toEqual(['open_desktop'])
+    await expect(client.startService('alpha', 'channel')).rejects.toMatchObject({
+      name: 'PublicCommandError',
+      code: 'COMMAND_NOT_ALLOWED',
+      message: 'Command is not available on the Web host.'
+    })
   })
 })

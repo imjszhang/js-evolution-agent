@@ -6,8 +6,11 @@ import type {
   ConversationSessionSummary,
   EvolutionObservability,
   JeaEventEnvelope,
+  RemediationAction,
   ServiceStatus,
   SetupReadiness,
+  SubjectReadiness,
+  SubjectReadinessActionId,
   SubjectRecord,
   SubjectSummary
 } from '../../../client-api/types'
@@ -27,7 +30,90 @@ export interface ConversationHarnessOptions {
   readDelayMs?: number
   service?: Partial<ServiceStatus>
   readiness?: Partial<SetupReadiness>
+  subjectReadiness?: Partial<SubjectReadiness>
   observability?: Partial<EvolutionObservability>
+  hostKind?: 'electron' | 'web'
+  channelReasons?: string[]
+}
+
+function remediationActions(
+  allowed: SubjectReadinessActionId[],
+  hostKind: 'electron' | 'web'
+): { allowed_actions: SubjectReadinessActionId[]; actions: RemediationAction[] } {
+  const ids: SubjectReadinessActionId[] = [
+    'start_channel',
+    'start_cycle',
+    'process_cycle_once',
+    'repair_worker_state',
+    'stop_managed',
+    'open_desktop',
+    'none'
+  ]
+  const capability: Record<SubjectReadinessActionId, RemediationAction['capability']> = {
+    start_channel: 'local-only',
+    start_cycle: 'local-only',
+    process_cycle_once: 'write',
+    repair_worker_state: 'local-only',
+    stop_managed: 'local-only',
+    open_desktop: 'readonly',
+    none: 'readonly'
+  }
+  const needed = new Set(allowed)
+  if (hostKind === 'web' && [...needed].some((id) => capability[id] === 'local-only')) {
+    needed.add('open_desktop')
+  }
+  const actions = ids.map((id) => {
+    const local = capability[id] === 'local-only'
+    const allowedNow = needed.has(id) && (hostKind === 'electron' || !local || id === 'open_desktop')
+    return {
+      id,
+      allowed: id === 'open_desktop' ? hostKind === 'web' && [...needed].some((item) => capability[item] === 'local-only') : allowedNow,
+      capability: capability[id]
+    }
+  })
+  let allowed_actions = actions.filter((entry) => entry.allowed).map((entry) => entry.id)
+  if (allowed_actions.length === 0) {
+    const none = actions.find((entry) => entry.id === 'none')
+    if (none) none.allowed = true
+    allowed_actions = ['none']
+  }
+  return { allowed_actions, actions }
+}
+
+export function fixtureSubjectReadiness(
+  subject: string,
+  patch: Partial<SubjectReadiness> = {},
+  hostKind: 'electron' | 'web' = 'electron'
+): SubjectReadiness {
+  const channel = patch.channel ?? { state: 'attached', reasons: ['channel_attached'] }
+  const cycle = patch.cycle ?? { state: 'stopped', reasons: ['cycle_stopped'] }
+  const conversation = patch.conversation ?? { state: 'running', reasons: ['conversation_ready'] }
+  const model = patch.model ?? { state: 'running', mode: 'mock', reasons: ['model_mock'] }
+  const needed: SubjectReadinessActionId[] = []
+  if (channel.state === 'stopped' || channel.state === 'blocked') needed.push('start_channel')
+  if (channel.state === 'stale' || channel.state === 'zombie' || cycle.state === 'stale' || cycle.state === 'zombie') {
+    needed.push('repair_worker_state')
+  }
+  if (cycle.state === 'stalled' || cycle.reasons.includes('reactor_backlog_stalled')) needed.push('process_cycle_once')
+  else if (cycle.state === 'stopped' || cycle.state === 'blocked') needed.push('start_cycle')
+  const { allowed_actions, actions } = remediationActions(patch.allowed_actions ?? needed, hostKind)
+  return {
+    subject,
+    generated_at: nowIso(),
+    web_host: patch.web_host ?? { state: 'stopped', reasons: ['web_host_stopped'] },
+    cycle,
+    channel,
+    model,
+    conversation,
+    reasons: patch.reasons ?? [
+      ...cycle.reasons,
+      ...channel.reasons,
+      ...model.reasons,
+      ...conversation.reasons
+    ],
+    allowed_actions,
+    actions
+  }
 }
 
 function nowIso(): string {
@@ -84,7 +170,9 @@ export function createConversationHarness(options: ConversationHarnessOptions = 
   const sent: Array<{ subject: string; text: string; sessionId?: string; messageId?: string }> = []
   const enabled: string[] = []
   const started: string[] = []
+  const startedDomains: Array<'all' | 'cycle' | 'channel'> = []
   const watched: string[] = []
+  const hostKind = options.hostKind ?? 'electron'
   let watchStops = 0
   let rejectSend = options.rejectSend ?? null
   let readDelayMs = options.readDelayMs ?? 0
@@ -92,16 +180,17 @@ export function createConversationHarness(options: ConversationHarnessOptions = 
   let selected = subjects.find((item) => item.isDefault)?.name ?? subjects[0]?.name ?? null
   const serviceBySubject = new Map<string, ServiceStatus>()
   const readinessBySubject = new Map<string, SetupReadiness>()
+  const subjectReadinessBySubject = new Map<string, SubjectReadiness>()
   const observabilityBySubject = new Map<string, EvolutionObservability>()
 
   const service: ServiceStatus = {
     subject: TEST_CONVERSATION_SUBJECT,
-    mode: 'none',
-    pid: null,
-    domain: null,
-    heartbeat_at: null,
-    started_at: null,
-    health: 'idle',
+    mode: 'attached',
+    pid: 4242,
+    domain: 'channel',
+    heartbeat_at: nowIso(),
+    started_at: nowIso(),
+    health: 'ok',
     detail: null,
     ...options.service
   }
@@ -143,6 +232,21 @@ export function createConversationHarness(options: ConversationHarnessOptions = 
     open_cycles: 0,
     ...options.observability
   }
+
+  const stoppedService = !service.pid && (service.mode === 'none' || service.mode === 'stopped')
+  const defaultSubjectReadiness = fixtureSubjectReadiness(
+    TEST_CONVERSATION_SUBJECT,
+    options.subjectReadiness ?? (stoppedService
+      ? {
+        channel: { state: 'stopped', reasons: ['channel_stopped'] },
+        conversation: { state: 'blocked', reasons: ['conversation_blocked_channel'] }
+      }
+      : {
+        channel: { state: service.mode === 'managed' ? 'running' : 'attached', reasons: [service.mode === 'managed' ? 'channel_running' : 'channel_attached'] },
+        conversation: { state: 'running', reasons: ['conversation_ready'] }
+      }),
+    hostKind
+  )
 
   function key(subject: string, sessionId: string): string {
     return `${subject}:${sessionId}`
@@ -210,7 +314,12 @@ export function createConversationHarness(options: ConversationHarnessOptions = 
           records: page,
           offset: 0,
           next_offset: page.length,
-          total: page.length
+          total: page.length,
+          channel_health: {
+            status: defaultSubjectReadiness.channel.state === 'blocked' ? 'blocked' : (service.mode === 'none' ? 'idle' : 'healthy'),
+            ok: defaultSubjectReadiness.channel.state !== 'blocked',
+            reasons: options.channelReasons ?? []
+          }
         }
       }
       if (command === 'conversation.sendMessage') {
@@ -247,6 +356,23 @@ export function createConversationHarness(options: ConversationHarnessOptions = 
           duplicate
         }
       }
+      if (command === 'service.processCycleOnce') {
+        requireSubject(subject)
+        emit('evolution.updated', subject, undefined, { subject })
+        return {
+          subject,
+          status: 'idle',
+          reason: 'no_pending_evidence',
+          scanned: { scanned: true, enqueued_count: 0 },
+          backlog: { before: 0, after: 0 },
+          health: { before: { health: 'idle' }, after: { health: 'idle' } },
+          claim: null,
+          checkpoint: null,
+          events: [],
+          channel: { before: { pid: null }, after: { pid: null }, unchanged: true },
+          work: null
+        }
+      }
       if (command === 'service.getStatus') {
         if (supportDelayMs > 0) {
           await new Promise((resolve) => setTimeout(resolve, supportDelayMs))
@@ -258,14 +384,40 @@ export function createConversationHarness(options: ConversationHarnessOptions = 
           await new Promise((resolve) => setTimeout(resolve, options.startDelayMs))
         }
         if (options.rejectStart) throw options.rejectStart
+        const domain = payload.domain === 'cycle' || payload.domain === 'channel' || payload.domain === 'all'
+          ? payload.domain
+          : 'all'
         started.push(subject)
-        service.mode = 'attached'
+        startedDomains.push(domain)
+        service.mode = domain === 'cycle' ? 'attached' : 'managed'
         service.pid = 4242
-        service.domain = 'channel'
+        service.domain = domain
         service.health = 'ok'
         service.detail = null
-        emit('service.status', subject, undefined, { subject, mode: service.mode })
+        const next = fixtureSubjectReadiness(subject, {
+          channel: domain === 'cycle'
+            ? defaultSubjectReadiness.channel
+            : { state: 'running', reasons: ['channel_running'] },
+          conversation: domain === 'cycle'
+            ? defaultSubjectReadiness.conversation
+            : { state: 'running', reasons: ['conversation_ready'] },
+          cycle: domain === 'channel'
+            ? defaultSubjectReadiness.cycle
+            : { state: 'running', reasons: ['cycle_running'] }
+        }, hostKind)
+        subjectReadinessBySubject.set(subject, next)
+        Object.assign(defaultSubjectReadiness, next)
+        emit('service.status', subject, undefined, { subject, mode: service.mode, domain: service.domain })
         return { ...service, subject }
+      }
+      if (command === 'service.getReadiness') {
+        if (supportDelayMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, supportDelayMs))
+        }
+        return {
+          ...(subjectReadinessBySubject.get(subject) ?? defaultSubjectReadiness),
+          subject
+        }
       }
       if (command === 'setup.getReadiness') {
         if (supportDelayMs > 0) {
@@ -330,6 +482,7 @@ export function createConversationHarness(options: ConversationHarnessOptions = 
     sent,
     enabled,
     started,
+    startedDomains,
     watched,
     get watchStops() { return watchStops },
     projectionWatch,
@@ -346,6 +499,7 @@ export function createConversationHarness(options: ConversationHarnessOptions = 
     setSupport(subject: string, next: {
       service?: Partial<ServiceStatus>
       readiness?: Partial<SetupReadiness>
+      subjectReadiness?: Partial<SubjectReadiness>
       observability?: Partial<EvolutionObservability>
     }) {
       if (next.service) {
@@ -353,6 +507,9 @@ export function createConversationHarness(options: ConversationHarnessOptions = 
       }
       if (next.readiness) {
         readinessBySubject.set(subject, { ...readiness, ...next.readiness })
+      }
+      if (next.subjectReadiness) {
+        subjectReadinessBySubject.set(subject, fixtureSubjectReadiness(subject, next.subjectReadiness, hostKind))
       }
       if (next.observability) {
         observabilityBySubject.set(subject, { ...observability, ...next.observability, subject })

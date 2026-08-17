@@ -4,6 +4,7 @@ import type {
   ConversationPage,
   ConversationSendResult,
   ConversationSessionSummary,
+  CycleProcessOnceResult,
   CycleRequestResult,
   EvolutionCycleDetail,
   EvolutionCycleList,
@@ -38,6 +39,7 @@ export interface ProductSurfaceFixture {
   service: ServiceStatus
   serviceReadiness: SubjectReadiness
   cycleRequest: CycleRequestResult
+  cycleProcessOnce: CycleProcessOnceResult
   readiness: SetupReadiness
   home: SetupHomeResult
   createdSubject: SetupSubjectResult
@@ -155,7 +157,7 @@ export function createProductSurfaceFixture(): ProductSurfaceFixture {
     },
     observability: {
       subject: 'alpha',
-      attention: { count: 0, highest_severity: null },
+      attention: { count: 0, highest_severity: null, backlog_count: 0 },
       open_cycles: 0
     },
     service: {
@@ -197,6 +199,26 @@ export function createProductSurfaceFixture(): ProductSurfaceFixture {
     cycleRequest: {
       subject: 'alpha',
       cycle_start_request: { request_id: 'req-fixture', reason: 'jea_client' }
+    },
+    cycleProcessOnce: {
+      subject: 'alpha',
+      status: 'idle',
+      reason: 'no_pending_evidence',
+      scanned: { scanned: true, enqueued_count: 0 },
+      backlog: { before: 0, after: 0 },
+      health: {
+        before: { health: 'idle', pending_count: 0 },
+        after: { health: 'idle', pending_count: 0 }
+      },
+      claim: null,
+      checkpoint: null,
+      events: [],
+      channel: {
+        before: { pid: null, status: null },
+        after: { pid: null, status: null },
+        unchanged: true
+      },
+      work: { worked: false, ok: null, retryable: null, task_id: null, task_type: null, result: null }
     },
     readiness: {
       jeaHome: { path: '/tmp/jea-fixture-home', source: 'fixture', writable: true },
@@ -308,6 +330,8 @@ export function fixtureCommandResult(fixtures: ProductSurfaceFixture, command: s
       return fixtures.serviceReadiness
     case 'service.requestCycle':
       return fixtures.cycleRequest
+    case 'service.processCycleOnce':
+      return fixtures.cycleProcessOnce
     case 'setup.getReadiness':
       return fixtures.readiness
     case 'setup.confirmHome':

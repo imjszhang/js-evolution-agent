@@ -70,6 +70,7 @@ export function summarizePendingEvidence(dataRoot, ledger, {
   }
   return {
     pending_count: pending.length,
+    eligible_unclaimed_count: pending.length,
     oldest_unclaimed_age_ms: oldestAgeMs,
     oldest_unclaimed_id: oldestId,
     stream_total: pending.length,
@@ -153,17 +154,31 @@ export function buildReactorHealthProjection(root, subject, {
     status = 'stalled';
     ok = false;
     reasons.push(`${claims.expired_claimed} claimed batch(es) past deadline`);
-    suggestions.push('Run `jea daemon work --once` or restart the worker so expired claims can be reclaimed.');
+    suggestions.push('Use process_cycle_once so expired Cycle claims can be reclaimed.');
+    if (worker && !worker.running && !worker.zombie && !worker.stale) {
+      suggestions.push('Use start_cycle when a fresh Cycle worker should stay running.');
+    }
   } else if (evidence.pending_count > 0 && (evidence.oldest_unclaimed_age_ms ?? 0) >= staleMs) {
     status = 'stalled';
     ok = false;
     const workerMissing = Boolean(worker && !worker.running);
-    reasons.push(`${evidence.pending_count} unclaimed evidence envelope(s); oldest age ${evidence.oldest_unclaimed_age_ms}ms`);
-    if (workerMissing) {
-      reasons.push('No fresh worker is running to drain the backlog');
-      suggestions.push('Run `jea daemon start` or `jea daemon work --once` so the stale backlog can drain.');
+    const workerZombie = Boolean(worker?.zombie);
+    const workerStale = Boolean(worker?.stale);
+    const workerRunning = Boolean(worker?.running);
+    reasons.push(`${evidence.pending_count} eligible unclaimed evidence envelope(s); oldest age ${evidence.oldest_unclaimed_age_ms}ms`);
+    if (workerZombie) {
+      reasons.push('Cycle worker PID is dead (zombie); do not start another worker');
+      suggestions.push('Use process_cycle_once. Repair the worker state; do not start a new Cycle worker.');
+    } else if (workerStale) {
+      reasons.push('Cycle worker heartbeat is stale; a live PID is not a fresh worker');
+      suggestions.push('Use process_cycle_once. Repair the worker state; do not start a new Cycle worker.');
+    } else if (workerMissing) {
+      reasons.push('No fresh worker is running to drain the Cycle backlog');
+      suggestions.push('Use process_cycle_once or start_cycle to drain the Cycle backlog.');
+    } else if (workerRunning) {
+      suggestions.push('Use process_cycle_once. A Cycle worker is already running.');
     } else {
-      suggestions.push('Use `jea intel brief put` or ensure the cycle worker is running to consume evidence.');
+      suggestions.push('Use process_cycle_once to drain the Cycle backlog.');
     }
   } else if (
     evidence.pending_count > 0

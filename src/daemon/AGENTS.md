@@ -24,6 +24,7 @@ Daemon 用于 **事件驱动的 reactor 演化**。推荐用 `jea daemon start` 
 - `jea daemon evolution-mode set continuous|on_demand [--json]`：写入 `<JEA_HOME>/subjects/registry.json` 并 emit `evolution_mode_changed`（viewer SSE / worker 热加载）。
 - `jea daemon cycle request [--reason TEXT] [--note TEXT]`：入队 cycle 启动请求（写入 `data/evolution/cycle-start-requests.json`），由 worker 在前提满足时开轮。
 - `jea daemon work --once [--mock]`：领取并执行一个 reactor task 后退出。
+- `jea daemon process-once [--mock] [--json]`：扫描 Cycle wake backlog 并执行一次有界 cognitive 恢复；不启动持续演化，不改写 Channel worker。
 - reactor task 类型：`cognitive_reaction`、`exec_queue`、`verify_batch`、`rule_reaction`、`memory_compaction`。这些任务进程内执行，恢复真相是 batch checkpoint / exec intent / exec result，不是 cycle-state。
 - `jea daemon enqueue --type cognitive_reaction|exec_queue|verify_batch|rule_reaction|memory_compaction`：手动入队 reactor 任务。`run_cycle` / 列车 step 会报错。
 - `jea daemon stop` / `jea daemon stop --all`：请求 worker 优雅停止。
