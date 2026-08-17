@@ -32,9 +32,15 @@ function processAlive(pid) {
   }
 }
 
-function currentStatus(jeaHome) {
+export const WEB_HOST_STATUS_STOPPED = Object.freeze({
+  running: false,
+  bind: null,
+  pid: null,
+});
+
+export function currentStatus(jeaHome) {
   const state = readJson(join(stateDir(jeaHome), 'state.json'));
-  if (!state) return { running: false, bind: null, pid: null };
+  if (!state) return { ...WEB_HOST_STATUS_STOPPED };
   return {
     running: processAlive(state.pid),
     pid: state.pid ?? null,

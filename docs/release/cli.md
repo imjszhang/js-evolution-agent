@@ -1,6 +1,6 @@
 # CLI（0.1.0）
 
-状态：**implemented / #120**。日期：2026-08-16。
+状态：**implemented / #120**；0.1.1 聚合状态见 [#141](https://github.com/imjszhang/js-evolution-agent/issues/141)。日期：2026-08-17。
 
 ## 启动器
 
@@ -25,7 +25,8 @@ jea stop
 ```
 
 - `start --no-open` 不打开浏览器、不创建窗口、不操作 Dock。已在跑的健康实例会被检测，不会再起一份。Web host 入口是 `apps/desktop/out/web-host/server-main.mjs`（`npm run web-host:build` / `desktop:build`），不再走 Node `--experimental-strip-types`。
-- `status --json` 不含 Web token。
+- `status --json` 只描述 localhost Web host 的 bind/pid，不含 Web token，也不是 Subject/Cycle/Channel 就绪状态。
+- `jea product status --json --subject NAME`（别名 `jea readiness`）输出与 `service.getReadiness` 相同的 state/reason 码：Web host、Cycle、Channel、model、conversation。Subject 解析规则与其它域命令相同。
 - 只有 `jea url` 可以打印带 `access_token` 的 URL。
 - `stop` 先 SIGTERM，超时后再对**自己拥有的 pid** 做有界 SIGKILL。
 

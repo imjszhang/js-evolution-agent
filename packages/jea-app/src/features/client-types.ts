@@ -127,6 +127,36 @@ export interface SubjectSummary {
   isDefault: boolean
 }
 
+export interface DomainReadinessView {
+  state: string
+  reasons: string[]
+}
+
+export interface ModelReadinessView {
+  state: string
+  mode: 'deepseek' | 'mock' | 'unset'
+  reasons: string[]
+}
+
+export interface RemediationActionView {
+  id: string
+  allowed: boolean
+  capability: 'readonly' | 'write' | 'local-only'
+}
+
+export interface SubjectReadiness {
+  subject: string
+  generated_at: string
+  web_host: DomainReadinessView
+  cycle: DomainReadinessView
+  channel: DomainReadinessView
+  model: ModelReadinessView
+  conversation: DomainReadinessView
+  reasons: string[]
+  allowed_actions: string[]
+  actions: RemediationActionView[]
+}
+
 export interface PublicCommandErrorShape {
   name: 'PublicCommandError'
   code: string
@@ -147,6 +177,7 @@ export interface SetupSettingsClient {
   uninstallCli(): Promise<CliStatus>
   listSubjects(): Promise<SubjectSummary[]>
   setDefaultSubject?(subject: string): Promise<unknown>
+  getServiceReadiness?(subject: string): Promise<SubjectReadiness>
 }
 
 export type ProductHostKind = 'electron' | 'web'

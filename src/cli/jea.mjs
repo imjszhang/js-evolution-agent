@@ -27,6 +27,7 @@ import { channelCommand } from './commands/channel.mjs';
 import { bridgeCommand } from './commands/bridge.mjs';
 import { reactorCommand } from './commands/reactor.mjs';
 import { webStartCommand, webStatusCommand, webStopCommand, webUrlCommand } from './commands/web.mjs';
+import { productCommand, productStatusCommand } from './commands/product.mjs';
 
 export function helpText() {
   return `Usage: jea <command> [options]
@@ -149,6 +150,13 @@ Commands:
   start [--port N] [--no-open]
                          Start the localhost Web host (loopback only; never opens a browser)
   status [--json]        Show localhost Web host bind/pid without the token
+                         (Web-host-only; not Subject/Cycle/Channel readiness)
+  product status [--json] [--subject NAME]
+                         Aggregate product/Subject readiness (Web host, Cycle,
+                         Channel, model, conversation). Same codes as
+                         service.getReadiness. Distinct from `jea status`.
+  readiness [--json] [--subject NAME]
+                         Alias for `jea product status`
   url                    Print the authenticated localhost Web URL (only command that may)
   stop                   Stop the localhost Web host and close listeners
   --version              Print the product version
@@ -190,6 +198,7 @@ Examples:
   jea --version
   jea start --no-open
   jea status --json
+  jea product status --json --subject NAME
   jea url
   jea stop
   jea actions check
@@ -252,6 +261,8 @@ export async function main(argv = process.argv.slice(2)) {
   if (command === 'actions') return actionsCommand({ subcommand, flags });
   if (command === 'start') return webStartCommand({ flags, context });
   if (command === 'status') return webStatusCommand({ flags, context });
+  if (command === 'product') return productCommand({ subcommand, flags, args, context });
+  if (command === 'readiness') return productStatusCommand({ flags, context });
   if (command === 'url') return webUrlCommand({ context });
   if (command === 'stop') return webStopCommand({ context });
 

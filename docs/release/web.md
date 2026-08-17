@@ -1,6 +1,6 @@
 # Web（0.1.0）
 
-状态：**implemented / #118**。日期：2026-08-16。localhost Web host 见 [#118](https://github.com/imjszhang/js-evolution-agent/issues/118)。
+状态：**implemented / #118**。日期：2026-08-17。localhost Web host 见 [#118](https://github.com/imjszhang/js-evolution-agent/issues/118)。0.1.1 聚合状态见 [#141](https://github.com/imjszhang/js-evolution-agent/issues/141)。
 
 ## 产品边界
 
@@ -21,9 +21,12 @@
 ```text
 jea start --no-open [--port 8788]
 jea status --json
+jea product status --json --subject NAME
 jea url
 jea stop
 ```
+
+`jea status --json` 仍只报告 Web host。Subject / Cycle / Channel 就绪请用 `jea product status` 或 Client API `service.getReadiness`。Web 可读取就绪状态，但不能执行 start / stop / repair；这些动作返回 `COMMAND_NOT_ALLOWED`，UI 会指向 Desktop / CLI。
 
 - `GET /jea/bootstrap`：协议版本、允许/拒绝的命令能力、事件传输元数据（不含 token）。
 - `POST /jea/rpc`：已认证 same-origin 应用命令。

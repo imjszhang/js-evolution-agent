@@ -24,6 +24,8 @@
 
 Subject 运行时就绪响应只返回稳定的 state / reason / action 码，不含 UI 文案、API key、Web token、owner token、消息正文或完整环境值。Electron 与 Web 对同一 fixture 返回相同 state/reason；差异只体现在 `allowed_actions` / `actions[].allowed`（Web 不能执行 `local-only` 修复，改为 `open_desktop`）。
 
+CLI 聚合入口是 `jea product status --json --subject NAME`（别名 `jea readiness`）。它调用同一套 `readSubjectReadiness` / `service.getReadiness` 投影，不另建码表。`jea status --json` 仍只描述 localhost Web host。
+
 ## 测试
 
 ```bash

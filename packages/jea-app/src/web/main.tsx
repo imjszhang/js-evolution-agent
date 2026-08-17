@@ -5,6 +5,7 @@ import { JeaProductApp } from '../features/JeaProductApp'
 import { JeaClientProvider } from '../features/client-context'
 import { createFixtureSetupClient, createSetupFixtureState, type CliFixtureKind } from '../features/fixtures'
 import { settingsFeature } from '../features/settings/module'
+import { serviceStatusFeature } from '../features/service-status/module'
 import { createWave1Adapters } from '../fixtures/wave1'
 import { createEvolutionFixtureClient, createEvolutionInspectorFeature } from '../features/evolution'
 import type { Locale } from '../i18n/messages'
@@ -68,6 +69,7 @@ function WebHostRoot() {
         client: evolutionClient,
         navFixtureCycleId: 'cycle-20260815-closed'
       }),
+      serviceStatusFeature,
       settingsFeature
     ]
   }, [inspectorMode])
@@ -113,6 +115,7 @@ function WebHostRoot() {
           sessions: []
         } : viewState === 'offline' || connected === false ? {
           serviceStatus: 'offline',
+          hostKind: 'web',
           onRetry: () => { void refresh() }
         } : subject ? {
           selectedSubjectId: subject

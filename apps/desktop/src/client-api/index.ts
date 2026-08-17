@@ -31,6 +31,7 @@ export { redactPublicValue } from './redact'
 export {
   observeWebHost,
   projectSubjectReadiness,
+  readSubjectReadiness,
   readinessCodeView,
   READINESS_ACTION_CAPABILITY
 } from './readiness'
