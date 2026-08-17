@@ -154,9 +154,9 @@ Commands:
   product status [--json] [--subject NAME]
                          Aggregate product/Subject readiness (Web host, Cycle,
                          Channel, model, conversation). Same codes as
-                         service.getReadiness. Distinct from `jea status`.
+                         service.getReadiness. Distinct from jea status.
   readiness [--json] [--subject NAME]
-                         Alias for `jea product status`
+                         Alias for jea product status
   url                    Print the authenticated localhost Web URL (only command that may)
   stop                   Stop the localhost Web host and close listeners
   --version              Print the product version

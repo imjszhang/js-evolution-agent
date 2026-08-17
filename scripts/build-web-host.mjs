@@ -6,7 +6,7 @@
  * Usage:
  *   node scripts/build-web-host.mjs [--repo DIR]
  */
-import { mkdirSync } from 'node:fs';
+import { cpSync, mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
@@ -31,6 +31,8 @@ export async function buildWebHost({ repoRoot } = {}) {
     packages: 'external',
     logLevel: 'silent',
   });
+  // Bundled `build-metadata.mjs` still reads `./version.json` next to import.meta.url.
+  cpSync(join(root, 'src/product/version.json'), join(dirname(outfile), 'version.json'));
   return { ok: true, entry, outfile };
 }
 

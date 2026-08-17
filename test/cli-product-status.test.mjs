@@ -94,7 +94,7 @@ describe('jea status --json compatibility', () => {
     expect(help).toContain('product status [--json] [--subject NAME]');
     expect(help).toContain('service.getReadiness');
     expect(help).toContain('readiness [--json] [--subject NAME]');
-    expect(help).toContain('Distinct from `jea status`');
+    expect(help).toContain('Distinct from jea status');
   });
 });
 
