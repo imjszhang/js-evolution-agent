@@ -72,10 +72,12 @@ function stripUnsafeFields(value: unknown, seen = new WeakSet<object>()): unknow
 }
 
 function publicServiceView(subject: string, snapshot: SubjectSnapshot | undefined): Record<string, unknown> {
-  const supervisor = isRecord(snapshot?.supervisor) ? snapshot.supervisor : {}
-  const daemon = isRecord(snapshot?.daemon) ? snapshot.daemon : {}
-  const worker = isRecord(daemon.worker) ? daemon.worker : {}
-  const health = isRecord(daemon.health) ? daemon.health : {}
+  const supervisor: Record<string, unknown> = isRecord(snapshot?.supervisor)
+    ? snapshot.supervisor as Record<string, unknown>
+    : {}
+  const daemon: Record<string, unknown> = isRecord(snapshot?.daemon) ? snapshot.daemon : {}
+  const worker: Record<string, unknown> = isRecord(daemon.worker) ? daemon.worker : {}
+  const health: Record<string, unknown> = isRecord(daemon.health) ? daemon.health : {}
   return {
     subject,
     mode: asString(supervisor.mode) ?? (asBoolean(worker.running) ? 'attached' : 'none'),
