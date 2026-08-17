@@ -6,6 +6,10 @@ export type ConversationErrorKind =
   | 'unavailable'
   | 'daemon_unhealthy'
   | 'model_unavailable'
+  | 'channel_attached'
+  | 'channel_stale'
+  | 'early_exit'
+  | 'startup_timeout'
   | 'conflict'
   | 'failed'
 
@@ -24,6 +28,18 @@ export function classifyClientError(
 
   if (code === 'COMMAND_NOT_ALLOWED') {
     return { kind: 'web_rejected', code, message }
+  }
+  if (/external daemon is already running/i.test(message)) {
+    return { kind: 'channel_attached', code, message }
+  }
+  if (/live worker is still present|cannot be replaced safely|heartbeat is stale/i.test(message)) {
+    return { kind: 'channel_stale', code, message }
+  }
+  if (/exited before becoming ready/i.test(message)) {
+    return { kind: 'early_exit', code, message }
+  }
+  if (/startup timeout|did not become ready before the startup timeout/i.test(message)) {
+    return { kind: 'startup_timeout', code, message }
   }
   if (code === 'UNAVAILABLE') {
     return { kind: 'unavailable', code, message }

@@ -123,12 +123,16 @@ function publicChannelView(subject: string, channel: unknown): Record<string, un
     || asBoolean(projection.blocked)
     || status === 'blocked'
     || asString(health.status) === 'blocked'
+  const reasons = Array.isArray(health.reasons)
+    ? health.reasons.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    : []
   return {
     subject,
     running,
     blocked,
     stopped: !running && !blocked,
     health: blocked ? 'blocked' : running ? 'running' : (status ?? 'stopped'),
+    reasons,
     session_count: sessions.length
   }
 }

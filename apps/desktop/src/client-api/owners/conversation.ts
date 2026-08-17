@@ -7,10 +7,33 @@ import {
   sendDesktopInboundMessage
 } from '../../../../../src/channel/adapters/desktop/index.mjs'
 import { channelDesktopSessionPath } from '../../../../../src/channel/paths.mjs'
+import { buildChannelProjection } from '../../../../../src/channel/projection.mjs'
 import { PublicClientError } from '../errors'
 import { redactPublicValue } from '../redact'
-import type { ConversationPage, ConversationSendResult, ConversationSessionSummary } from '../types'
+import type {
+  ChannelProjectionHealth,
+  ConversationPage,
+  ConversationSendResult,
+  ConversationSessionSummary
+} from '../types'
 import { requireSubject, type ClientRuntimeContext } from './runtime'
+
+export function channelProjectionHealth(
+  runtime: ClientRuntimeContext,
+  subject: string
+): ChannelProjectionHealth {
+  const projection = buildChannelProjection(runtime, subject, { eventLimit: 0 }) as {
+    health?: { status?: string; ok?: boolean; reasons?: unknown }
+  }
+  const reasons = Array.isArray(projection.health?.reasons)
+    ? projection.health.reasons.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    : []
+  return {
+    status: String(projection.health?.status ?? 'idle'),
+    ok: projection.health?.ok !== false,
+    reasons
+  }
+}
 
 export class ConversationCommandOwner {
   constructor(private readonly runtime: ClientRuntimeContext) {}
@@ -49,12 +72,16 @@ export class ConversationCommandOwner {
     if (!sessionId?.trim()) {
       throw new PublicClientError('INVALID_REQUEST', 'A valid sessionId is required.')
     }
-    return redactPublicValue((readDesktopSession as (...args: unknown[]) => ConversationPage)(
+    const page = redactPublicValue((readDesktopSession as (...args: unknown[]) => ConversationPage)(
       this.runtime,
       name,
       sessionId,
       options
     ))
+    return {
+      ...page,
+      channel_health: channelProjectionHealth(this.runtime, name)
+    }
   }
 
   sendMessage(

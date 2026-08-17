@@ -38,6 +38,7 @@ export type {
   CatalogCommandEntry,
   ClientApiCatalog,
   CliStatus,
+  ChannelProjectionHealth,
   ConversationPage,
   ConversationSendResult,
   ConversationSessionSummary,
