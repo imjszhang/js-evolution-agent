@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { enqueueChannelTask } from '../../../src/channel/task-queue.mjs'
 import { channelInboundProcessedDir } from '../../../src/channel/paths.mjs'
 import { ChannelService } from '../src/main/channel-service'
 
@@ -87,5 +88,19 @@ describe('ChannelService', () => {
     expect(() => service.sendMessage('alpha', 'main', 'hello')).toThrow(
       'Desktop Channel is disabled for this subject.'
     )
+  })
+
+  it('exposes concrete buildChannelProjection reasons when Channel is blocked', () => {
+    const root = fixture()
+    const runtime = { sourceRoot: root, jeaHome: join(root, 'runtime') }
+    enqueueChannelTask(runtime, 'alpha', {
+      type: 'channel_notify',
+      idempotencyKey: 'blocked-without-worker',
+      priority: 10
+    })
+    const health = new ChannelService(root).getProjectionHealth('alpha')
+    expect(health.ok).toBe(false)
+    expect(health.status).toBe('blocked')
+    expect(health.reasons.join('\n')).toMatch(/pending without a fresh worker/i)
   })
 })

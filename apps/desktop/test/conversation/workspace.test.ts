@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { PublicClientError } from '../../src/client-api/errors'
 import { ConversationWorkspaceModel } from '../../src/renderer/src/conversation/model'
-import { createConversationHarness } from '../../src/renderer/src/conversation/harness'
+import { createConversationHarness, fixtureSubjectReadiness } from '../../src/renderer/src/conversation/harness'
+import { deriveConversationRecovery } from '../../src/renderer/src/conversation/recovery'
 import { deriveInlineCards } from '../../src/renderer/src/conversation/cards'
 import { classifyClientError } from '../../src/renderer/src/conversation/errors'
 import { resolveDraftAttempt } from '../../src/renderer/src/conversation/draft'
@@ -148,12 +149,42 @@ describe('conversation workspace helpers', () => {
     expect(cards.map((card) => card.kind)).toEqual(expect.arrayContaining([
       'desktop_disabled',
       'web_rejected',
-      'offline',
       'model_unavailable',
-      'blocked',
       'cycle_failed',
       'operator_question'
     ]))
+    expect(cards.some((card) => card.kind === 'offline')).toBe(false)
+
+    const blocked = deriveInlineCards({
+      subject: {
+        name: 'alpha',
+        namespace: 'alpha-data',
+        isDefault: true,
+        selected: true,
+        desktopChannelEnabled: true
+      },
+      service: {
+        subject: 'alpha',
+        mode: 'none',
+        pid: null,
+        domain: null,
+        heartbeat_at: null,
+        started_at: null,
+        health: 'reactor_backlog_stalled',
+        detail: 'Service is unhealthy.'
+      },
+      readiness: null,
+      subjectReadiness: fixtureSubjectReadiness('alpha', {
+        channel: { state: 'blocked', reasons: ['channel_blocked'] },
+        conversation: { state: 'blocked', reasons: ['conversation_blocked_channel'] }
+      }),
+      channelReasons: ['Channel tasks are pending without a fresh worker'],
+      observability: { subject: 'alpha', attention: {}, open_cycles: 0 },
+      records: [],
+      error: null
+    })
+    expect(blocked.find((card) => card.id === 'status:channel_blocked')?.body)
+      .toBe('Channel tasks are pending without a fresh worker')
   })
 })
 
@@ -286,18 +317,91 @@ describe('conversation workspace model', () => {
 
   it('exposes a recoverable start path for a stopped channel daemon', async () => {
     const harness = createConversationHarness({
-      service: { mode: 'none', pid: null, health: 'idle', detail: 'Channel worker is not running.' }
+      service: { mode: 'none', pid: null, domain: null, health: 'idle', detail: 'Channel worker is not running.' }
     })
     const model = new ConversationWorkspaceModel(harness.client)
     await model.bootstrap()
+    expect(model.getSnapshot().subjectReadiness?.channel.state).toBe('stopped')
+    expect(model.getSnapshot().subjectReadiness?.allowed_actions).toContain('start_channel')
     expect(model.getSnapshot().cards.some((card) => card.kind === 'offline')).toBe(true)
     const start = model.startChannelService()
     expect(model.getSnapshot().serviceStartState).toBe('pending')
     await start
     expect(harness.started).toEqual(['alpha'])
-    expect(model.getSnapshot().service?.mode).toBe('attached')
+    expect(harness.startedDomains).toEqual(['channel'])
+    expect(model.getSnapshot().service?.domain).toBe('channel')
     expect(model.getSnapshot().serviceStartState).toBe('started')
+    expect(model.getSnapshot().subjectReadiness?.channel.state).toBe('running')
     expect(model.getSnapshot().cards.some((card) => card.kind === 'offline')).toBe(false)
+  })
+
+  it('does not disable sending or suggest Channel restart when only Cycle is stalled', async () => {
+    const harness = createConversationHarness({
+      subjectReadiness: {
+        channel: { state: 'attached', reasons: ['channel_attached'] },
+        cycle: { state: 'stalled', reasons: ['reactor_backlog_stalled', 'cycle_running'] },
+        conversation: { state: 'running', reasons: ['conversation_ready'] }
+      }
+    })
+    const model = new ConversationWorkspaceModel(harness.client)
+    await model.bootstrap()
+    const snapshot = model.getSnapshot()
+    const recovery = deriveConversationRecovery({
+      subjectReadiness: snapshot.subjectReadiness,
+      desktopChannelEnabled: true,
+      serviceStartState: snapshot.serviceStartState,
+      channelReasons: snapshot.channelReasons
+    })
+    expect(snapshot.subjectReadiness?.cycle.reasons).toContain('reactor_backlog_stalled')
+    expect(snapshot.subjectReadiness?.conversation.state).toBe('running')
+    expect(recovery.canSend).toBe(true)
+    expect(recovery.showStartChannel).toBe(false)
+    expect(snapshot.cards.some((card) => card.kind === 'offline')).toBe(false)
+    model.setDraft('hello while cycle is stalled')
+    await model.send()
+    expect(harness.sent).toHaveLength(1)
+    expect(harness.startedDomains).toEqual([])
+  })
+
+  it('surfaces Web COMMAND_NOT_ALLOWED for Channel lifecycle mutation', async () => {
+    const harness = createConversationHarness({
+      hostKind: 'web',
+      service: { mode: 'none', pid: null, domain: null, health: 'idle' },
+      rejectStart: new PublicClientError('COMMAND_NOT_ALLOWED', 'Command is not available on the Web host.')
+    })
+    const model = new ConversationWorkspaceModel(harness.client)
+    await model.bootstrap()
+    expect(model.getSnapshot().subjectReadiness?.allowed_actions).toEqual(['open_desktop'])
+    expect(model.getSnapshot().subjectReadiness?.allowed_actions).not.toContain('start_channel')
+    await model.startChannelService()
+    expect(harness.started).toEqual([])
+    expect(model.getSnapshot().serviceStartState).toBe('failed')
+    expect(model.getSnapshot().error?.kind).toBe('web_rejected')
+    expect(model.getSnapshot().error?.code).toBe('COMMAND_NOT_ALLOWED')
+  })
+
+  it('distinguishes attached, stale, early-exit, and startup-timeout lifecycle failures', async () => {
+    const cases = [
+      {
+        message: 'An external daemon is already running.',
+        kind: 'channel_attached' as const
+      },
+      {
+        message: 'A live worker is still present and cannot be replaced safely.',
+        kind: 'channel_stale' as const
+      },
+      {
+        message: 'The JEA daemon exited before becoming ready. See <JEA_HOME>/logs/daemon.log.',
+        kind: 'early_exit' as const
+      },
+      {
+        message: 'The JEA daemon did not become ready before the startup timeout. See <JEA_HOME>/logs/daemon.log.',
+        kind: 'startup_timeout' as const
+      }
+    ]
+    for (const item of cases) {
+      expect(classifyClientError(new PublicClientError('OPERATION_FAILED', item.message)).kind).toBe(item.kind)
+    }
   })
 
   it('starts a product projection watch for the selected Subject and releases it on dispose', async () => {

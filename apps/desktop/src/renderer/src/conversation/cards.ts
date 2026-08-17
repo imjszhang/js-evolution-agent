@@ -1,6 +1,13 @@
-import type { EvolutionObservability, ServiceStatus, SetupReadiness, SubjectRecord } from '../../../client-api/types'
+import type {
+  EvolutionObservability,
+  ServiceStatus,
+  SetupReadiness,
+  SubjectReadiness,
+  SubjectRecord
+} from '../../../client-api/types'
 import type { ConversationErrorView } from './errors'
 import type { WorkspaceMessage } from './history'
+import { deriveConversationRecovery, type ChannelServiceStartState } from './recovery'
 
 export type ConversationCardKind =
   | 'operator_question'
@@ -15,6 +22,9 @@ export type ConversationCardKind =
   | 'web_rejected'
   | 'permission'
   | 'status'
+  | 'starting'
+  | 'attached'
+  | 'ready'
 
 export interface ConversationCard {
   id: string
@@ -31,6 +41,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function text(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
+}
+
+function isCycleOnlyBlocker(value: string): boolean {
+  return /reactor|backlog|cycle|lane locked/i.test(value)
 }
 
 export function cardKindFromMessage(record: WorkspaceMessage): ConversationCardKind | null {
@@ -68,10 +82,13 @@ export function deriveInlineCards(input: {
   subject: SubjectRecord | null
   service: ServiceStatus | null
   readiness: SetupReadiness | null
+  subjectReadiness?: SubjectReadiness | null
   observability: EvolutionObservability | null
   records: WorkspaceMessage[]
   error: ConversationErrorView | null
   stale?: boolean
+  channelReasons?: readonly string[]
+  serviceStartState?: ChannelServiceStartState
 }): ConversationCard[] {
   const cards: ConversationCard[] = []
   const seen = new Set<string>()
@@ -80,6 +97,12 @@ export function deriveInlineCards(input: {
     seen.add(card.id)
     cards.push(card)
   }
+  const recovery = deriveConversationRecovery({
+    subjectReadiness: input.subjectReadiness ?? null,
+    desktopChannelEnabled: input.subject?.desktopChannelEnabled !== false,
+    serviceStartState: input.serviceStartState ?? 'idle',
+    channelReasons: input.channelReasons
+  })
 
   if (input.subject && !input.subject.desktopChannelEnabled) {
     push({
@@ -125,21 +148,106 @@ export function deriveInlineCards(input: {
     })
   }
 
-  const health = input.service?.health ?? ''
-  const stopped = !input.service?.pid && (input.service?.mode === 'none' || input.service?.mode === 'stopped')
-  const unhealthy = /unhealthy|error|failed|offline|stale/i.test(health) || Boolean(input.service?.detail)
-  if (input.service && (stopped || unhealthy || input.error?.kind === 'daemon_unhealthy' || input.error?.kind === 'unavailable')) {
+  if (recovery.kind === 'stopped') {
     push({
-      id: 'status:daemon',
-      kind: stopped ? 'offline' : 'daemon_unhealthy',
-      title: stopped ? 'Channel daemon is stopped' : 'Channel daemon is unhealthy',
-      body: input.service.detail || input.error?.message || 'The local channel service is not ready.',
-      tone: stopped ? 'warn' : 'error',
-      source: 'service'
+      id: 'status:channel_stopped',
+      kind: 'offline',
+      title: 'Channel is stopped',
+      body: 'Start Channel to recover the governed local conversation. Cycle health is not required.',
+      tone: 'warn',
+      source: 'readiness'
     })
   }
 
-  if (input.readiness?.model.mode === 'unset' || input.error?.kind === 'model_unavailable') {
+  if (recovery.kind === 'blocked') {
+    push({
+      id: 'status:channel_blocked',
+      kind: 'blocked',
+      title: 'Channel is blocked',
+      body: recovery.blockedReasons.join('\n') || 'Channel projection reported a blocked state.',
+      tone: 'error',
+      source: 'readiness'
+    })
+  }
+
+  if (recovery.kind === 'starting') {
+    push({
+      id: 'status:channel_starting',
+      kind: 'starting',
+      title: 'Channel is starting',
+      body: 'Waiting for a fresh Channel role. Cycle is not started by this action.',
+      tone: 'info',
+      source: 'readiness'
+    })
+  }
+
+  if (recovery.kind === 'attached') {
+    push({
+      id: 'status:channel_attached',
+      kind: 'attached',
+      title: 'Channel is attached',
+      body: 'An external Channel process is already running. The product will observe it and will not start or stop it.',
+      tone: 'info',
+      source: 'readiness'
+    })
+  }
+
+  if (recovery.kind === 'stale' || input.error?.kind === 'channel_stale') {
+    push({
+      id: 'status:channel_stale',
+      kind: 'stale',
+      title: 'Channel is stale',
+      body: input.error?.kind === 'channel_stale'
+        ? input.error.message
+        : 'Channel heartbeat is stale. Do not start a second Channel process.',
+      tone: 'warn',
+      source: input.error?.kind === 'channel_stale' ? 'error' : 'readiness'
+    })
+  }
+
+  if (recovery.kind === 'zombie') {
+    push({
+      id: 'status:channel_zombie',
+      kind: 'daemon_unhealthy',
+      title: 'Channel process is dead',
+      body: 'Repair worker state instead of starting a new Channel.',
+      tone: 'error',
+      source: 'readiness'
+    })
+  }
+
+  if (recovery.kind === 'web_native') {
+    push({
+      id: 'status:web_native',
+      kind: 'web_rejected',
+      title: 'Start Channel is Desktop-only',
+      body: 'This host cannot start Channel. Open the Desktop app to recover the local conversation.',
+      tone: 'warn',
+      source: 'readiness'
+    })
+  }
+
+  if (input.error?.kind === 'early_exit' || input.error?.kind === 'startup_timeout' || input.error?.kind === 'channel_attached') {
+    push({
+      id: `status:${input.error.kind}`,
+      kind: input.error.kind === 'channel_attached' ? 'attached' : 'daemon_unhealthy',
+      title: input.error.kind === 'early_exit'
+        ? 'Channel exited before ready'
+        : input.error.kind === 'startup_timeout'
+          ? 'Channel startup timed out'
+          : 'Channel is attached',
+      body: input.error.message,
+      tone: input.error.kind === 'channel_attached' ? 'info' : 'error',
+      source: 'error'
+    })
+  }
+
+  if (
+    input.readiness?.model.mode === 'unset'
+    || input.subjectReadiness?.model.mode === 'unset'
+    || input.error?.kind === 'model_unavailable'
+    || recovery.kind === 'model_blocked'
+  ) {
     push({
       id: 'status:model',
       kind: 'model_unavailable',
@@ -155,6 +263,7 @@ export function deriveInlineCards(input: {
     : []
   for (const [index, blocker] of blockers.entries()) {
     if (typeof blocker !== 'string' || !blocker.trim()) continue
+    if (isCycleOnlyBlocker(blocker)) continue
     push({
       id: `blocker:${index}:${blocker}`,
       kind: 'blocked',

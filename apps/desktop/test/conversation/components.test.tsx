@@ -5,6 +5,7 @@ import { JeaApp, LocaleProvider } from '@jea/app'
 import { PublicClientError } from '../../src/client-api/errors'
 import { createConversationFeature } from '../../src/renderer/src/conversation/feature'
 import { createConversationHarness } from '../../src/renderer/src/conversation/harness'
+import { fixtureSubjectReadiness } from '../../src/renderer/src/conversation/harness'
 import { ConversationWorkspaceModel } from '../../src/renderer/src/conversation/model'
 import { ConversationPane, SubjectListPane } from '../../src/renderer/src/conversation/panes'
 import { DesktopRoot } from '../../src/renderer/src/DesktopRoot'
@@ -107,33 +108,31 @@ describe('conversation workspace components', () => {
     expect(failed).toContain('data-testid="conversation-state-failed"')
     expect(failed).toContain('data-testid="conversation-retry"')
 
+    const enabledSubject = {
+      name: 'alpha',
+      namespace: 'alpha-data',
+      isDefault: true,
+      selected: true,
+      desktopChannelEnabled: true
+    }
     const offline = renderPane(
       <ConversationPane
         model={model}
         snapshot={{
           ...base,
           loading: false,
-          subject: {
-            name: 'alpha',
-            namespace: 'alpha-data',
-            isDefault: true,
-            selected: true,
-            desktopChannelEnabled: true
-          },
+          subject: enabledSubject,
           sessionId: 'main',
-          cards: [{
-            id: 'status:daemon',
-            kind: 'offline',
-            title: 'Channel daemon is stopped',
-            body: 'Start the service.',
-            tone: 'warn',
-            source: 'service'
-          }]
+          subjectReadiness: fixtureSubjectReadiness('alpha', {
+            channel: { state: 'stopped', reasons: ['channel_stopped'] },
+            conversation: { state: 'blocked', reasons: ['conversation_blocked_channel'] }
+          })
         }}
       />
     )
-    expect(offline).toContain('data-testid="conversation-state-offline"')
-    expect(offline).toContain('data-testid="conversation-start-service"')
+    expect(offline).toContain('data-testid="conversation-state-stopped"')
+    expect(offline).toContain('data-testid="conversation-start-channel"')
+    expect(offline).toContain('Start Channel')
 
     const startFailed = renderPane(
       <ConversationPane
@@ -218,6 +217,155 @@ describe('conversation workspace components', () => {
       />
     )
     expect(web).toContain('data-testid="conversation-state-web-rejected"')
+  })
+
+  it('renders stopped, blocked, starting, ready, failed, attached, and Web-rejected recovery states', () => {
+    const { client } = createConversationHarness()
+    const model = new ConversationWorkspaceModel(client)
+    const base = model.getSnapshot()
+    const subject = {
+      name: 'alpha',
+      namespace: 'alpha-data',
+      isDefault: true,
+      selected: true,
+      desktopChannelEnabled: true
+    }
+
+    const stopped = renderPane(
+      <ConversationPane
+        model={model}
+        snapshot={{
+          ...base,
+          loading: false,
+          subject,
+          sessionId: 'main',
+          subjectReadiness: fixtureSubjectReadiness('alpha', {
+            channel: { state: 'stopped', reasons: ['channel_stopped'] },
+            conversation: { state: 'blocked', reasons: ['conversation_blocked_channel'] }
+          })
+        }}
+      />
+    )
+    expect(stopped).toContain('data-recovery="stopped"')
+    expect(stopped).toContain('data-testid="conversation-start-channel"')
+
+    const blocked = renderPane(
+      <ConversationPane
+        model={model}
+        snapshot={{
+          ...base,
+          loading: false,
+          subject,
+          sessionId: 'main',
+          channelReasons: ['Channel tasks are pending without a fresh worker'],
+          subjectReadiness: fixtureSubjectReadiness('alpha', {
+            channel: { state: 'blocked', reasons: ['channel_blocked'] },
+            conversation: { state: 'blocked', reasons: ['conversation_blocked_channel'] }
+          })
+        }}
+      />
+    )
+    expect(blocked).toContain('data-testid="conversation-state-blocked"')
+    expect(blocked).toContain('Channel tasks are pending without a fresh worker')
+    expect(blocked).not.toContain('Channel service offline')
+
+    const starting = renderPane(
+      <ConversationPane
+        model={model}
+        snapshot={{
+          ...base,
+          loading: false,
+          subject,
+          sessionId: 'main',
+          serviceStartState: 'pending',
+          subjectReadiness: fixtureSubjectReadiness('alpha', {
+            channel: { state: 'starting', reasons: ['channel_starting'] },
+            conversation: { state: 'running', reasons: ['conversation_ready'] }
+          })
+        }}
+      />
+    )
+    expect(starting).toContain('data-testid="conversation-state-starting"')
+
+    const ready = renderPane(
+      <ConversationPane
+        model={model}
+        snapshot={{
+          ...base,
+          loading: false,
+          subject,
+          sessionId: 'main',
+          subjectReadiness: fixtureSubjectReadiness('alpha', {
+            channel: { state: 'running', reasons: ['channel_running'] },
+            cycle: { state: 'stalled', reasons: ['reactor_backlog_stalled', 'cycle_running'] },
+            conversation: { state: 'running', reasons: ['conversation_ready'] }
+          })
+        }}
+      />
+    )
+    expect(ready).toContain('data-testid="conversation-state-ready"')
+    expect(ready).toContain('data-recovery="ready"')
+    expect(ready).not.toContain('data-testid="conversation-start-channel"')
+
+    const failed = renderPane(
+      <ConversationPane
+        model={model}
+        snapshot={{
+          ...base,
+          loading: false,
+          subject,
+          sessionId: 'main',
+          serviceStartState: 'failed',
+          error: {
+            kind: 'startup_timeout',
+            code: 'OPERATION_FAILED',
+            message: 'The JEA daemon did not become ready before the startup timeout.'
+          },
+          subjectReadiness: fixtureSubjectReadiness('alpha', {
+            channel: { state: 'stopped', reasons: ['channel_stopped'] },
+            conversation: { state: 'blocked', reasons: ['conversation_blocked_channel'] }
+          })
+        }}
+      />
+    )
+    expect(failed).toContain('data-testid="conversation-state-timeout"')
+
+    const attached = renderPane(
+      <ConversationPane
+        model={model}
+        snapshot={{
+          ...base,
+          loading: false,
+          subject,
+          sessionId: 'main',
+          subjectReadiness: fixtureSubjectReadiness('alpha', {
+            channel: { state: 'attached', reasons: ['channel_attached'] },
+            conversation: { state: 'running', reasons: ['conversation_ready'] }
+          })
+        }}
+      />
+    )
+    expect(attached).toContain('data-testid="conversation-state-attached"')
+    expect(attached).not.toContain('data-testid="conversation-start-channel"')
+
+    const webRejected = renderPane(
+      <ConversationPane
+        model={model}
+        snapshot={{
+          ...base,
+          loading: false,
+          subject,
+          sessionId: 'main',
+          subjectReadiness: fixtureSubjectReadiness('alpha', {
+            channel: { state: 'stopped', reasons: ['channel_stopped'] },
+            conversation: { state: 'blocked', reasons: ['conversation_blocked_channel'] }
+          }, 'web')
+        }}
+      />
+    )
+    expect(webRejected).toContain('data-testid="conversation-state-native-only"')
+    expect(webRejected).not.toContain('data-testid="conversation-start-channel"')
+    expect(webRejected).toContain('Start Channel is available only in the Desktop app.')
   })
 
   it('lists subjects in the left column without a session picker', () => {
