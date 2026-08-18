@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -52,12 +52,29 @@ describe('stage-app-resources', () => {
   it('resolves electronDist from repo-root hoist or the desktop workspace install', () => {
     const fake = mkdtempSync(join(tmpdir(), 'jea-electron-dist-'));
     temps.push(fake);
-    expect(resolveElectronDist(fake)).toBeNull();
+    expect(resolveElectronDist(fake, { install: () => {} })).toBeNull();
     const desktopDist = join(fake, 'apps', 'desktop', 'node_modules', 'electron', 'dist');
     mkdirSync(desktopDist, { recursive: true });
-    expect(resolveElectronDist(fake)).toBe(desktopDist);
+    expect(resolveElectronDist(fake, { install: () => {} })).toBe(desktopDist);
     const rootDist = join(fake, 'node_modules', 'electron', 'dist');
     mkdirSync(rootDist, { recursive: true });
-    expect(resolveElectronDist(fake)).toBe(rootDist);
+    expect(resolveElectronDist(fake, { install: () => {} })).toBe(rootDist);
+  });
+
+  it('runs electron install.js when the package exists without dist', () => {
+    const fake = mkdtempSync(join(tmpdir(), 'jea-electron-install-'));
+    temps.push(fake);
+    const pkg = join(fake, 'node_modules', 'electron');
+    mkdirSync(pkg, { recursive: true });
+    writeFileSync(join(pkg, 'package.json'), '{"name":"electron"}\n');
+    let installed = false;
+    const resolved = resolveElectronDist(fake, {
+      install: (dir) => {
+        installed = dir === pkg;
+        mkdirSync(join(pkg, 'dist'));
+      },
+    });
+    expect(installed).toBe(true);
+    expect(resolved).toBe(join(pkg, 'dist'));
   });
 });
