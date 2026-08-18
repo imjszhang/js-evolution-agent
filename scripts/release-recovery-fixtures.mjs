@@ -330,14 +330,18 @@ export function assertNoCheckoutDiscovery({ sourceRoot, repoRoot }) {
     if (previous == null) delete process.env.JEA_PROJECT_ROOT;
     else process.env.JEA_PROJECT_ROOT = previous;
   }
-  const insideRepo = absSource === absRepo
-    || absSource.startsWith(`${absRepo}${sep}`);
+  const isCheckoutRoot = absSource === absRepo;
+  const insideRepo = isCheckoutRoot || absSource.startsWith(`${absRepo}${sep}`);
   return {
-    ok: resolved === absSource && isJeaSourceRoot(absSource) && !insideRepo,
+    // Dir-only / CI artifacts live under <repo>/dist/.../JEA.app. That is not
+    // checkout discovery: fail only when the packaged source *is* the repo root,
+    // or when getProjectRoot() walks away from the embedded tree.
+    ok: resolved === absSource && isJeaSourceRoot(absSource) && !isCheckoutRoot,
     resolved,
     sourceRoot: absSource,
     repoRoot: absRepo,
     insideRepo,
+    isCheckoutRoot,
     isJeaSourceRoot: isJeaSourceRoot(absSource),
   };
 }

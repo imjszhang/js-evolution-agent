@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -47,6 +47,12 @@ function tempDir(prefix) {
   return dir;
 }
 
+function writeMinimalSourceRoot(dir) {
+  mkdirSync(join(dir, 'src', 'cli'), { recursive: true });
+  writeFileSync(join(dir, 'oada.config.mjs'), 'export default {};\n');
+  writeFileSync(join(dir, 'src', 'cli', 'jea.mjs'), 'export async function main() { return 0; }\n');
+}
+
 function cleanMetadata(commit = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa') {
   return normalizeBuildMetadata({
     version: '0.1.0',
@@ -92,6 +98,24 @@ describe('recovery fixtures', () => {
     const discovery = assertNoCheckoutDiscovery({ sourceRoot: fixture.sourceRoot, repoRoot });
     expect(discovery.ok).toBe(true);
     expect(discovery.insideRepo).toBe(false);
+    expect(discovery.isCheckoutRoot).toBe(false);
+  });
+
+  it('accepts an in-repo dir-only JEA.app tree and rejects the checkout root', () => {
+    const fakeRepo = tempDir('jea-fake-checkout-');
+    writeMinimalSourceRoot(fakeRepo);
+    const nestedApp = join(
+      fakeRepo,
+      'dist/release/build/mac-arm64/JEA.app/Contents/Resources/app',
+    );
+    writeMinimalSourceRoot(nestedApp);
+    const nested = assertNoCheckoutDiscovery({ sourceRoot: nestedApp, repoRoot: fakeRepo });
+    expect(nested.ok).toBe(true);
+    expect(nested.insideRepo).toBe(true);
+    expect(nested.isCheckoutRoot).toBe(false);
+    const checkout = assertNoCheckoutDiscovery({ sourceRoot: fakeRepo, repoRoot: fakeRepo });
+    expect(checkout.ok).toBe(false);
+    expect(checkout.isCheckoutRoot).toBe(true);
   });
 });
 
