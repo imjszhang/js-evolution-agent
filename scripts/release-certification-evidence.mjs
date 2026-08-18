@@ -4,11 +4,11 @@
  * Does not bump PRODUCT_VERSION. `release` is parameterized to the current
  * shipped identity (today 0.1.0). `certification` records the 0.1.1 wave.
  */
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseArgs, printReport, RELEASE_PLATFORM, RELEASE_VERSION, repoRootFrom } from './release-lib.mjs';
-import { commitsMatch, writeBuildMetadata } from '../src/product/build-metadata.mjs';
+import { parseArgs, printReport, readJson, RELEASE_PLATFORM, RELEASE_VERSION, repoRootFrom } from './release-lib.mjs';
+import { commitsMatch, readBuildMetadataFile, writeBuildMetadata } from '../src/product/build-metadata.mjs';
 
 export const EVIDENCE_FILE = 'certification-evidence.json';
 export const CERTIFICATION_WAVE = '0.1.1';
@@ -19,6 +19,55 @@ function stepOk(step) {
   if (step.ok === false) return false;
   if (step.status === 'failed') return false;
   return step.ok === true || step.status === 'passed';
+}
+
+function readOptionalJson(path) {
+  if (!existsSync(path)) return null;
+  try {
+    return readJson(path);
+  } catch {
+    return { ok: false, status: 'failed', detail: 'invalid_json' };
+  }
+}
+
+export function artifactStepFromReport(id, report, evidencePath, extra = {}) {
+  if (!report) return null;
+  const failed = report.ok === false
+    || report.status === 'failed'
+    || report.status === 'journey_failed';
+  const status = failed
+    ? 'failed'
+    : (report.status === 'journey_passed' ? 'passed' : (report.status || 'passed'));
+  return {
+    id,
+    ok: !failed,
+    status,
+    evidence: evidencePath,
+    detail: extra.detail || report.detail || report.reason || report.runner || null,
+    build_id: report.build_id || null,
+    duration_ms: Number.isFinite(Number(report.duration_ms)) ? Number(report.duration_ms) : null,
+  };
+}
+
+export function collectCertificationInputs(outDir) {
+  const dest = resolve(outDir);
+  const recoveryPath = join(dest, 'recovery-matrix.json');
+  const soakPath = join(dest, 'soak-report.json');
+  const journeyPath = join(dest, 'product-journey.json');
+  const metadataPath = join(dest, 'build-metadata.json');
+  const recovery = readOptionalJson(recoveryPath);
+  const soak = readOptionalJson(soakPath);
+  const journey = readOptionalJson(journeyPath);
+  return {
+    metadata: readBuildMetadataFile(metadataPath),
+    recoveryMatrix: artifactStepFromReport('recovery_matrix', recovery, recoveryPath),
+    soak: artifactStepFromReport('soak', soak, soakPath),
+    steps: [
+      artifactStepFromReport('product_journey', journey, journeyPath, {
+        detail: journey?.runner || journey?.detail || null,
+      }),
+    ].filter(Boolean),
+  };
 }
 
 export function normalizeEvidenceStep(input, fallbackId) {
@@ -132,6 +181,7 @@ export function writeCertificationEvidence({
       evidence: join(dest, EVIDENCE_FILE),
       recovery_matrix: recovery?.evidence ?? null,
       soak: soakStep?.evidence ?? null,
+      product_journey: allSteps.find((item) => item.id === 'product_journey')?.evidence ?? null,
       build_metadata: metadata ? join(dest, 'build-metadata.json') : null,
     },
     ...Object.fromEntries(
@@ -148,11 +198,16 @@ export async function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
   const repoRoot = resolve(args.repo || repoRootFrom(import.meta.url));
   const outDir = resolve(args.out || args.dir || join(repoRoot, 'dist/release'));
+  const inputs = collectCertificationInputs(outDir);
   const report = writeCertificationEvidence({
     outDir,
     release: args.release || RELEASE_VERSION,
-    status: args.status || 'pending',
+    status: args.status || null,
     issue77: args.issue77 || 'ok',
+    metadata: inputs.metadata,
+    recoveryMatrix: inputs.recoveryMatrix,
+    soak: inputs.soak,
+    steps: inputs.steps,
   });
   report.script = 'release-certification-evidence';
   report.ok = true;
