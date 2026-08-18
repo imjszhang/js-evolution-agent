@@ -307,11 +307,12 @@ export class ProjectionWatcher {
         todo: fingerprintValue(todoView),
         channel: fingerprintValue(channelHealth)
       }
-      const first = this.lastFingerprints == null
-      const serviceChanged = first || fingerprints.service !== this.lastFingerprints.service
-      const evolutionChanged = first || fingerprints.evolution !== this.lastFingerprints.evolution
-      const todoChanged = first || fingerprints.todo !== this.lastFingerprints.todo
-      const channelChanged = first || fingerprints.channel !== this.lastFingerprints.channel
+      const previous = this.lastFingerprints
+      const first = previous == null
+      const serviceChanged = first || fingerprints.service !== previous.service
+      const evolutionChanged = first || fingerprints.evolution !== previous.evolution
+      const todoChanged = first || fingerprints.todo !== previous.todo
+      const channelChanged = first || fingerprints.channel !== previous.channel
       this.lastFingerprints = fingerprints
       if (!first && !serviceChanged && !evolutionChanged && !todoChanged && !channelChanged) {
         this.revision -= 1
