@@ -98,6 +98,10 @@ jobs:
         env:
           ARTIFACT_DIR: ${{ inputs.artifact_dir }}
         run: npm run release:journey -- --app dist/release/build/mac-arm64/JEA.app --json --out "${ARTIFACT_DIR:-dist/release}/product-journey.json"
+      - name: Packaged launch smoke (not the 30-minute soak)
+        env:
+          ARTIFACT_DIR: ${{ inputs.artifact_dir }}
+        run: npm run release:recovery-soak -- --packaged --app dist/release/build/mac-arm64/JEA.app --duration-ms 15000 --sample-ms 3000 --out "${ARTIFACT_DIR:-dist/release}/launch-smoke.json" --json
       - name: Write certification evidence from artifacts
         env:
           ARTIFACT_DIR: ${{ inputs.artifact_dir }}
@@ -117,6 +121,7 @@ jobs:
             dist/release/RELEASE_NOTES.md
             dist/release/recovery-matrix.json
             dist/release/product-journey.json
+            dist/release/launch-smoke.json
             dist/release/certification-evidence.json
             dist/release/build-metadata.json
           retention-days: 14

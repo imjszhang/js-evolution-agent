@@ -173,7 +173,11 @@ export async function runRecoverySoak({
   applyRecoveryFixture(home.runtime, 'all-stopped');
   const userHome = mkdtempSync(join(tmpdir(), 'jea-soak-user-'));
   let appChild = null;
-  const launchedApp = Boolean(fullDuration && appPath && looksLikePackagedApp(appPath));
+  const launchedApp = Boolean(
+    appPath
+    && looksLikePackagedApp(appPath)
+    && (fullDuration || requirePackagedApp)
+  );
   if (launchedApp) {
     appChild = launchPackagedProduct({
       appPath,
