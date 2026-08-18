@@ -1,5 +1,6 @@
 # #122 certification workflow — still not the final GitHub Release publisher.
 # Do not create a v0.1.0 tag or GitHub Release from this workflow.
+# To attach an already-built artifact to an existing Release, use release-attach-assets.yml.
 name: macOS Release
 
 on:
