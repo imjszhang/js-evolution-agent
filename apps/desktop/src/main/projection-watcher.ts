@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { onDaemonProjectionRebuild } from '../../../../src/daemon/daemon-projection.mjs'
 import { runtimeForSubject } from '../../../../src/infra/runtime-paths.mjs'
 import { createRuntimeWatcher } from '../../../../src/intelligence/evolution-viewer/runtime-watch.mjs'
 import { redactPublicValue } from '../client-api/redact'
@@ -167,6 +168,7 @@ export class ProjectionWatcher {
   private lastFingerprints: PartitionFingerprints | null = null
   private readonly runtimeContext: any
   private readonly debounceMs: number
+  private readonly unsubscribeRebuild: () => void
 
   constructor(
     private readonly projectRoot: string,
@@ -176,10 +178,18 @@ export class ProjectionWatcher {
     private readonly events: DesktopEventBus,
     private readonly watcherFactory: WatcherFactory = createRuntimeWatcher as unknown as WatcherFactory,
     jeaHome: string | undefined = process.env.JEA_HOME,
-    options: { debounceMs?: number } = {}
+    options: {
+      debounceMs?: number
+      onRebuild?: (listener: (event: { subject: string }) => void) => () => void
+    } = {}
   ) {
     this.runtimeContext = createDesktopServiceRuntimeContext(projectRoot, jeaHome)
     this.debounceMs = options.debounceMs ?? 1000
+    const subscribe = options.onRebuild ?? onDaemonProjectionRebuild
+    this.unsubscribeRebuild = subscribe(({ subject }) => {
+      if (!this.activeSubject || this.activeSubject !== subject || !this.watcher) return
+      this.publish(this.activeSubject, 'deferred_rebuild', this.watchGeneration, ['all'])
+    })
   }
 
   status(): ProjectionWatchStatus {

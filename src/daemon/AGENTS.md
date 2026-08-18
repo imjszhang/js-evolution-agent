@@ -71,6 +71,10 @@ S9 后上述行为已固化，不再有 gate 回退。隔离验收：`npm run re
 - Worker 崩溃会尽力写入 `worker_crashed` 事件并将 `worker-state` 标为 `stopped`。
 - `daemon start` 若检测到 zombie（fresh 心跳 + 死 PID），会先清理旧状态再启动新 worker。
 
+### Subject 投影缓存
+
+`readDaemonProjection` 按 subject 复用同一 revision。Desktop / Web 热路径可设 `deferRebuild: true`：Evidence/Reactor 输入变化且已有上一份成功快照时，主进程立即返回该快照，并在 `daemon-projection-worker.mjs` 线程里重算；心跳与 Channel 轻量字段仍同步刷新。CLI、Vitest 与带 `store` 的读取保持同步，避免写后读到陈旧投影。worker 文件缺失时回退同步重建。
+
 ### 观测与诊断
 
 - `jea daemon status [--all | --subjects a,b] [--json]`：查看 worker、队列、健康状态、锁和最近事件。

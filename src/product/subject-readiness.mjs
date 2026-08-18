@@ -304,8 +304,11 @@ function desktopChannelEnabled(runtime, subject) {
   }
 }
 
-function defaultProcessView(runtime, subject) {
-  const daemon = readDaemonProjection(runtime, subject, { eventLimit: 10 });
+function defaultProcessView(runtime, subject, options = {}) {
+  const daemon = readDaemonProjection(runtime, subject, {
+    eventLimit: 10,
+    deferRebuild: options.deferRebuild === true,
+  });
   return {
     subject,
     mode: daemon.worker?.running ? 'attached' : 'none',
@@ -337,8 +340,9 @@ export function readSubjectReadiness(runtime, subject, options = {}) {
   const name = requireRegisteredSubject(runtime, subject);
   const hostKind = options.hostKind ?? 'electron';
   const processPort = options.processPort;
-  const daemon = readDaemonProjection(runtime, name, { eventLimit: 10 });
-  const view = processPort?.get ? processPort.get(name) : defaultProcessView(runtime, name);
+  const deferRebuild = options.deferRebuild === true;
+  const daemon = readDaemonProjection(runtime, name, { eventLimit: 10, deferRebuild });
+  const view = processPort?.get ? processPort.get(name) : defaultProcessView(runtime, name, { deferRebuild });
   const model = resolveModelReadiness({
     jeaHome: runtime.jeaHome,
     subjectRoot: runtimeForSubject(runtime, name).runtimeRoot,

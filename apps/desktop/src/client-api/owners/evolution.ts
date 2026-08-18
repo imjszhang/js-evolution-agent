@@ -167,7 +167,7 @@ export class EvolutionCommandOwner {
   getObservability(subject: string): EvolutionObservability {
     const name = requireSubject(this.runtime, subject)
     const runtime = subjectRuntime(this.runtime, name)
-    const daemon = readDaemonProjection(this.runtime, name, { eventLimit: 30 })
+    const daemon = readDaemonProjection(this.runtime, name, { eventLimit: 30, deferRebuild: true })
     const observability = buildSubjectObservability({
       subject: name,
       runtimeRoot: runtime.runtimeRoot,

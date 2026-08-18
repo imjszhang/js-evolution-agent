@@ -1,7 +1,10 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { Worker } from 'node:worker_threads';
 import { writeJson } from '../infra/json-store.mjs';
+import { createRuntimeContext } from '../infra/jea-home.mjs';
 import { runtimeForSubject } from './evolve-runs.mjs';
 import { pendingTasksPath, readTaskQueue, summarizeTaskQueue } from './daemon-tasks.mjs';
 import { readWorkerState, summarizeWorkerState, workerStatePath } from './daemon-worker-state.mjs';
@@ -23,6 +26,7 @@ import {
 } from '../intelligence/evidence-stream.mjs';
 
 export const DAEMON_PROJECTION_CACHE_LIMIT = 8;
+export const DAEMON_PROJECTION_WORKER_TIMEOUT_MS = 30_000;
 
 export function daemonViewsDir(root, subject) {
   return join(runtimeForSubject(root, subject).evolutionDir, 'views');
@@ -384,6 +388,10 @@ function projectionCacheKey(root, subject) {
 }
 
 const projectionCache = new Map();
+const pendingRebuilds = new Map();
+const liveWorkers = new Set();
+const rebuildListeners = new Set();
+let cacheGeneration = 0;
 
 function evictProjectionCache() {
   while (projectionCache.size > DAEMON_PROJECTION_CACHE_LIMIT) {
@@ -401,7 +409,17 @@ function evictProjectionCache() {
 }
 
 export function resetDaemonProjectionCache() {
+  cacheGeneration += 1;
   projectionCache.clear();
+  pendingRebuilds.clear();
+  for (const worker of liveWorkers) {
+    try {
+      worker.terminate();
+    } catch {
+      // Reset must stay idempotent when a worker is already exiting.
+    }
+  }
+  liveWorkers.clear();
 }
 
 function attachProjectionMeta(projection, fingerprint, revision) {
@@ -412,44 +430,258 @@ function attachProjectionMeta(projection, fingerprint, revision) {
   };
 }
 
+function projectionIdentity(root, subject, eventLimit, heartbeatStaleMs) {
+  const heavy = daemonProjectionHeavySignature(root, subject);
+  const light = daemonProjectionLightSignature(root, subject);
+  return {
+    heavy,
+    light,
+    fingerprint: hashSignature([
+      heavy,
+      light,
+      String(eventLimit),
+      String(heartbeatStaleMs),
+    ]),
+  };
+}
+
+function serializeProjectionRoot(root) {
+  const context = createRuntimeContext(root);
+  return {
+    sourceRoot: context.sourceRoot,
+    jeaHome: context.jeaHome,
+  };
+}
+
+export function resolveDaemonProjectionWorkerPath() {
+  try {
+    const candidate = join(dirname(fileURLToPath(import.meta.url)), 'daemon-projection-worker.mjs');
+    return existsSync(candidate) ? candidate : null;
+  } catch {
+    return null;
+  }
+}
+
+function workerPathFromOptions(options) {
+  if (options.workerPath === null || options.workerPath === false) return null;
+  if (typeof options.workerPath === 'string') {
+    return existsSync(options.workerPath) ? options.workerPath : null;
+  }
+  return resolveDaemonProjectionWorkerPath();
+}
+
+export function onDaemonProjectionRebuild(listener) {
+  if (typeof listener !== 'function') return () => {};
+  rebuildListeners.add(listener);
+  return () => rebuildListeners.delete(listener);
+}
+
+function emitDaemonProjectionRebuild(subject) {
+  for (const listener of rebuildListeners) {
+    try {
+      listener({ subject });
+    } catch {
+      // A UI listener must not poison the shared projection cache.
+    }
+  }
+}
+
+function runProjectionWorker({
+  workerPath,
+  root,
+  subject,
+  eventLimit,
+  heartbeatStaleMs,
+  flags,
+}) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const worker = new Worker(workerPath, {
+      workerData: {
+        root: serializeProjectionRoot(root),
+        subject,
+        eventLimit,
+        heartbeatStaleMs,
+        flags: flags && typeof flags === 'object' ? { ...flags } : {},
+      },
+    });
+    liveWorkers.add(worker);
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      liveWorkers.delete(worker);
+      if (error) reject(error);
+      else resolve(value);
+    };
+    const timer = setTimeout(() => {
+      try {
+        worker.terminate();
+      } catch {
+        // Timeout terminate is best-effort.
+      }
+      finish(new Error('daemon projection worker timed out'));
+    }, DAEMON_PROJECTION_WORKER_TIMEOUT_MS);
+    worker.once('message', (message) => {
+      if (message?.ok) finish(null, message.projection);
+      else finish(new Error(message?.error || 'daemon projection worker failed'));
+    });
+    worker.once('error', (error) => finish(error));
+    worker.once('exit', (code) => {
+      if (!settled && code !== 0) {
+        finish(new Error(`daemon projection worker exited ${code}`));
+      }
+    });
+  });
+}
+
+function storeBuiltProjection(root, subject, { eventLimit, heartbeatStaleMs, flags }, cached) {
+  const built = buildDaemonProjectionUncached(root, subject, {
+    eventLimit,
+    heartbeatStaleMs,
+    flags,
+  });
+  return rememberBuiltProjection(root, subject, { eventLimit, heartbeatStaleMs }, built, cached);
+}
+
+function rememberBuiltProjection(root, subject, { eventLimit, heartbeatStaleMs }, built, cached) {
+  const identity = projectionIdentity(root, subject, eventLimit, heartbeatStaleMs);
+  const revision = cached ? cached.revision + 1 : 1;
+  const projection = attachProjectionMeta(built, identity.fingerprint, revision);
+  const key = projectionCacheKey(root, subject);
+  if (!cached) evictProjectionCache();
+  projectionCache.set(key, {
+    fingerprint: identity.fingerprint,
+    heavy: identity.heavy,
+    projection,
+    revision,
+    at: Date.now(),
+  });
+  evictProjectionCache();
+  return { projection, identity };
+}
+
+function scheduleDeferredRebuild({
+  root,
+  subject,
+  eventLimit,
+  heartbeatStaleMs,
+  flags,
+  key,
+  generation,
+  workerPath,
+}) {
+  const existing = pendingRebuilds.get(key);
+  if (existing) {
+    existing.dirty = true;
+    return existing.promise;
+  }
+  const job = { dirty: false, promise: null };
+  job.promise = (async () => {
+    try {
+      const built = await runProjectionWorker({
+        workerPath,
+        root,
+        subject,
+        eventLimit,
+        heartbeatStaleMs,
+        flags,
+      });
+      if (generation !== cacheGeneration) return;
+      const cached = projectionCache.get(key);
+      const stored = rememberBuiltProjection(
+        root,
+        subject,
+        { eventLimit, heartbeatStaleMs },
+        built,
+        cached,
+      );
+      const current = projectionIdentity(root, subject, eventLimit, heartbeatStaleMs);
+      if (current.fingerprint !== stored.identity.fingerprint) job.dirty = true;
+      emitDaemonProjectionRebuild(subject);
+    } catch {
+      // Keep the last successful snapshot. The next watch burst retries.
+    } finally {
+      pendingRebuilds.delete(key);
+      if (job.dirty && generation === cacheGeneration) {
+        const latest = projectionCache.get(key);
+        const current = projectionIdentity(root, subject, eventLimit, heartbeatStaleMs);
+        if (!latest || latest.fingerprint !== current.fingerprint) {
+          scheduleDeferredRebuild({
+            root,
+            subject,
+            eventLimit,
+            heartbeatStaleMs,
+            flags,
+            key,
+            generation: cacheGeneration,
+            workerPath,
+          });
+        }
+      }
+    }
+  })();
+  pendingRebuilds.set(key, job);
+  return job.promise;
+}
+
+export function pendingDaemonProjectionRebuildCount() {
+  return pendingRebuilds.size;
+}
+
+export async function waitForPendingDaemonProjectionRebuilds() {
+  const seen = new Set();
+  while (pendingRebuilds.size > 0) {
+    const jobs = [...pendingRebuilds.values()].filter((job) => !seen.has(job));
+    if (jobs.length === 0) break;
+    for (const job of jobs) seen.add(job);
+    await Promise.all(jobs.map((job) => job.promise.catch(() => {})));
+  }
+}
+
 /**
  * Subject-scoped projection reader. Same input revision is built once and
  * reused by Main, Client API, and readiness.
+ *
+ * `deferRebuild: true` (Desktop/Web hot path): when Evidence/Reactor inputs
+ * changed and a last successful snapshot exists, return that snapshot and
+ * rebuild on a worker thread. Heartbeat / Channel light fields still rebuild
+ * synchronously. CLI, Vitest, and `store` reads stay synchronous.
  */
 export function readDaemonProjection(root, subject, options = {}) {
   const eventLimit = options.eventLimit ?? 20;
   const heartbeatStaleMs = options.heartbeatStaleMs ?? 60_000;
   const flags = options.flags ?? {};
   const key = projectionCacheKey(root, subject);
-  const fingerprint = hashSignature([
-    daemonProjectionHeavySignature(root, subject),
-    daemonProjectionLightSignature(root, subject),
-    String(eventLimit),
-    String(heartbeatStaleMs),
-  ]);
+  const identity = projectionIdentity(root, subject, eventLimit, heartbeatStaleMs);
   const cached = projectionCache.get(key);
-  if (cached && cached.fingerprint === fingerprint) {
+  if (cached && cached.fingerprint === identity.fingerprint) {
     cached.at = Date.now();
     return cached.projection;
   }
-  const built = buildDaemonProjectionUncached(root, subject, {
+  const workerPath = workerPathFromOptions(options);
+  const canDeferHeavy = options.deferRebuild === true
+    && Boolean(cached?.projection)
+    && cached.heavy !== identity.heavy
+    && Boolean(workerPath);
+  if (canDeferHeavy) {
+    scheduleDeferredRebuild({
+      root,
+      subject,
+      eventLimit,
+      heartbeatStaleMs,
+      flags,
+      key,
+      generation: cacheGeneration,
+      workerPath,
+    });
+    return cached.projection;
+  }
+  return storeBuiltProjection(root, subject, {
     eventLimit,
     heartbeatStaleMs,
     flags,
-  });
-  // Reads may mkdir or write empty placeholders; store the post-build identity.
-  const nextFingerprint = hashSignature([
-    daemonProjectionHeavySignature(root, subject),
-    daemonProjectionLightSignature(root, subject),
-    String(eventLimit),
-    String(heartbeatStaleMs),
-  ]);
-  const revision = cached ? cached.revision + 1 : 1;
-  const projection = attachProjectionMeta(built, nextFingerprint, revision);
-  if (!cached) evictProjectionCache();
-  projectionCache.set(key, { fingerprint: nextFingerprint, projection, revision, at: Date.now() });
-  evictProjectionCache();
-  return projection;
+  }, cached).projection;
 }
 
 export function buildDaemonProjection(root, subject, options = {}) {

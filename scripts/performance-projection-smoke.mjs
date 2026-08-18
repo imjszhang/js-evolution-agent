@@ -14,7 +14,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs, printReport } from './release-lib.mjs';
 import { writeJsonFile } from '../src/infra/files.mjs';
-import { buildDaemonProjection, resetDaemonProjectionCache } from '../src/daemon/daemon-projection.mjs';
+import {
+  buildDaemonProjection,
+  readDaemonProjection,
+  resetDaemonProjectionCache,
+  waitForPendingDaemonProjectionRebuilds,
+} from '../src/daemon/daemon-projection.mjs';
 import { resetEvidenceHealthSnapshotCache } from '../src/intelligence/evidence-stream.mjs';
 import { readSubjectReadiness } from '../src/product/subject-readiness.mjs';
 import { writePendingOperatorBrief } from '../src/intelligence/operator-briefs.mjs';
@@ -111,7 +116,7 @@ function measureMs(fn) {
   return Number(process.hrtime.bigint() - start) / 1e6;
 }
 
-function main() {
+async function main() {
   const args = parseArgs();
   const previousHome = process.env.JEA_HOME;
   const isolated = makeIsolatedRoot();
@@ -147,8 +152,22 @@ function main() {
       status = 'failed';
       notes.push(`readiness RSS growth ${rssGrowth.toFixed(1)}MB exceeds ${RSS_GROWTH_MB}MB`);
     }
+    appendFileSync(join(runtime.dataRoot, 'intelligence', 'evolution_events', 'evolution-events.jsonl'), `${JSON.stringify({
+      id: 'evt-defer-probe',
+      type: 'exec_pipeline',
+      recorded_at: new Date().toISOString(),
+    })}\n`);
+    const deferMs = measureMs(() => readDaemonProjection(ctx, 'alpha', {
+      eventLimit: 10,
+      deferRebuild: true,
+    }));
+    await waitForPendingDaemonProjectionRebuilds();
+    if (deferMs > WARM_P95_MS) {
+      status = 'failed';
+      notes.push(`deferred rebuild return ${deferMs.toFixed(1)}ms exceeds ${WARM_P95_MS}ms`);
+    }
     if (coldMs > COLD_WORKER_HINT_MS) {
-      notes.push(`cold scan ${coldMs.toFixed(1)}ms exceeds ${COLD_WORKER_HINT_MS}ms; consider a worker-thread recompute`);
+      notes.push(`cold scan ${coldMs.toFixed(1)}ms exceeds ${COLD_WORKER_HINT_MS}ms; Desktop defers later heavy rebuilds to a worker thread`);
     }
     const report = {
       script: 'performance-projection-smoke',
@@ -159,11 +178,13 @@ function main() {
         warm_p95_ms: WARM_P95_MS,
         rss_growth_mb: RSS_GROWTH_MB,
         cold_worker_hint_ms: COLD_WORKER_HINT_MS,
+        defer_return_ms: WARM_P95_MS,
       },
       metrics: {
         cold_ms: Number(coldMs.toFixed(2)),
         warm_p50_ms: Number(percentile(warmSamples, 50).toFixed(2)),
         warm_p95_ms: Number(warmP95.toFixed(2)),
+        defer_return_ms: Number(deferMs.toFixed(2)),
         readiness_rss_before_mb: Number(beforeRss.toFixed(2)),
         readiness_rss_after_mb: Number(afterRss.toFixed(2)),
         readiness_rss_growth_mb: Number(rssGrowth.toFixed(2)),
@@ -183,4 +204,7 @@ function main() {
   }
 }
 
-main();
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

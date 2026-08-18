@@ -27,7 +27,7 @@ export interface ProjectionBuilders {
 }
 
 const directBuilders: ProjectionBuilders = {
-  daemon: (root, subject) => readDaemonProjection(root, subject, { eventLimit: 30 }),
+  daemon: (root, subject) => readDaemonProjection(root, subject, { eventLimit: 30, deferRebuild: true }),
   observability: (input) => buildSubjectObservability(input)
 }
 

@@ -362,4 +362,48 @@ describe('ProjectionWatcher', () => {
     expect(refreshCount).toBe(3)
     expect(published.filter((type) => type === 'service.status').length).toBe(2)
   })
+
+  it('publishes a follow-up after a deferred projection rebuild', () => {
+    const root = projectRoot()
+    const events = new DesktopEventBus()
+    const published: string[] = []
+    events.subscribe((event) => published.push(event.type))
+    let rebuildListener: ((event: { subject: string }) => void) | null = null
+    let pid = 11
+    const projection = new ProjectionWatcher(
+      root,
+      {
+        refresh: vi.fn(() => [{
+          subject: { name: 'alpha' },
+          daemon: {
+            worker: { running: true, pid },
+            health: { status: 'healthy', ok: true },
+            tasks: { counts: { pending: 0 } }
+          },
+          observability: { attention: { cycle_status: 'completed', cycle_id: 'c1', count: 1 }, open_cycles: 0 }
+        }])
+      } as any,
+      { get: vi.fn(() => ({ subject: 'alpha', questions: [], briefs: [], facts: [], goals: null, pending_cycle_request: null, attention: {} })) } as any,
+      { get: vi.fn(() => ({ subject: 'alpha', projection: { worker: { running: true } }, sessions: [], inbound: {} })) } as any,
+      events,
+      ((options: any) => {
+        return { start: vi.fn(), stop: vi.fn(), notify: vi.fn() }
+      }) as any,
+      undefined,
+      {
+        onRebuild: (listener) => {
+          rebuildListener = listener
+          return () => {
+            if (rebuildListener === listener) rebuildListener = null
+          }
+        }
+      }
+    )
+    projection.watch('alpha')
+    published.length = 0
+    pid = 12
+    rebuildListener?.({ subject: 'alpha' })
+    expect(published).toContain('service.status')
+    expect(published).toContain('evolution.updated')
+  })
 })
