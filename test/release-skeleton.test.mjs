@@ -7,7 +7,8 @@ import { evaluateVersions, runVersionPreflight } from '../scripts/release-versio
 import { evaluateAuditWiring } from '../scripts/release-audit-gate.mjs';
 import { evaluatePackageSmoke } from '../scripts/release-package-smoke.mjs';
 import { evaluatePublishGuard } from '../scripts/release-publish-guard.mjs';
-import { expectedArtifactNames, repoRootFrom } from '../scripts/release-lib.mjs';
+import { evaluateAttachAssets } from '../scripts/release-attach-assets.mjs';
+import { expectedArtifactNames, releaseAttachAssetNames, repoRootFrom } from '../scripts/release-lib.mjs';
 import { runReleaseSkeleton } from '../scripts/release-skeleton.mjs';
 
 const repoRoot = repoRootFrom(new URL('../scripts/release-lib.mjs', import.meta.url));
@@ -197,6 +198,46 @@ describe('release-package-smoke', () => {
     const report = evaluatePackageSmoke({ dir });
     expect(report.ok).toBe(true);
     expect(report.status).toBe('smoked');
+  });
+});
+
+describe('release-attach-assets', () => {
+  it('lists the official 0.1.0 upload allowlist', () => {
+    expect(releaseAttachAssetNames('0.1.0')).toEqual([
+      'JEA-0.1.0-macos-arm64.dmg',
+      'JEA-0.1.0-macos-arm64.zip',
+      'SHA256SUMS',
+      'package-smoke.json',
+      'RELEASE_NOTES.md',
+      'build-metadata.json',
+      'recovery-matrix.json',
+      'product-journey.json',
+      'launch-smoke.json',
+      'certification-evidence.json',
+    ]);
+  });
+
+  it('accepts a complete allowlisted directory and ignores extras', () => {
+    const dir = tempDir('jea-attach-complete-');
+    for (const name of releaseAttachAssetNames('0.1.0')) {
+      writeFileSync(join(dir, name), `${name}\n`);
+    }
+    writeFileSync(join(dir, 'README.txt'), 'ignored extra\n');
+    const report = evaluateAttachAssets({ dir, tag: 'v0.1.0' });
+    expect(report.ok).toBe(true);
+    expect(report.status).toBe('ready');
+    expect(report.files.map((file) => file.name)).toEqual(releaseAttachAssetNames('0.1.0'));
+  });
+
+  it('fail-closes a missing installer, a bad tag, or a secret file', () => {
+    const dir = tempDir('jea-attach-bad-');
+    writeFileSync(join(dir, 'SHA256SUMS'), 'checksums\n');
+    expect(evaluateAttachAssets({ dir, tag: 'v0.1.0' }).reason).toBe('incomplete_artifact_set');
+    expect(evaluateAttachAssets({ dir, tag: 'v0.1.1' }).reason).toBe('tag_version_mismatch');
+    writeFileSync(join(dir, '.env'), 'DEEPSEEK_API_KEY=secret\n');
+    const rejected = evaluateAttachAssets({ dir, tag: 'v0.1.0' });
+    expect(rejected.ok).toBe(false);
+    expect(rejected.rejected.map((item) => item.reason)).toContain('forbidden_file');
   });
 });
 

@@ -43,6 +43,7 @@
     "release:audit-gate": "node --preserve-symlinks scripts/release-audit-gate.mjs",
     "release:package-smoke": "node --preserve-symlinks scripts/release-package-smoke.mjs",
     "release:publish-guard": "node --preserve-symlinks scripts/release-publish-guard.mjs",
+    "release:attach-assets": "node --preserve-symlinks scripts/release-attach-assets.mjs",
     "release:skeleton": "node --preserve-symlinks scripts/release-skeleton.mjs",
     "web-host:build": "node --preserve-symlinks scripts/build-web-host.mjs",
     "release:journey": "node --preserve-symlinks scripts/release-product-journey.mjs",

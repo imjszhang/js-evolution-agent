@@ -27,6 +27,22 @@ export function expectedArtifactNames(version = RELEASE_VERSION) {
   };
 }
 
+export function releaseAttachAssetNames(version = RELEASE_VERSION) {
+  const expected = expectedArtifactNames(version);
+  return [
+    expected.dmg,
+    expected.zip,
+    expected.checksums,
+    expected.packageSmoke,
+    expected.releaseNotes,
+    expected.buildMetadata,
+    'recovery-matrix.json',
+    'product-journey.json',
+    'launch-smoke.json',
+    'certification-evidence.json',
+  ];
+}
+
 export function parseArgs(argv = process.argv.slice(2)) {
   const out = { _: [] };
   for (let i = 0; i < argv.length; i += 1) {

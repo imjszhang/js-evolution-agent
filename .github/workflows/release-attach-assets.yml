@@ -1,0 +1,102 @@
+# Attach an already-built official artifact to an existing GitHub Release.
+# This is not a publisher: it does not create a tag or Release.
+# Use this instead of downloading the artifact to a local machine.
+name: Attach Release Assets
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing GitHub Release tag (must already exist)'
+        type: string
+        default: 'v0.1.0'
+      run_id:
+        description: 'Successful macOS Release run that produced the artifact'
+        type: string
+        default: '32117407472'
+      artifact_name:
+        description: 'Artifact name to attach'
+        type: string
+        default: 'macos-release-0.1.0'
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: attach-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  attach:
+    name: attach-existing-release-assets
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Validate dispatch inputs
+        env:
+          TAG: ${{ inputs.tag }}
+          RUN_ID: ${{ inputs.run_id }}
+          ARTIFACT_NAME: ${{ inputs.artifact_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "tag must look like v0.1.0"
+            exit 1
+          fi
+          if [[ ! "$RUN_ID" =~ ^[0-9]+$ ]]; then
+            echo "run_id must be digits"
+            exit 1
+          fi
+          if [[ ! "$ARTIFACT_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+            echo "artifact_name is not a safe identifier"
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - name: Require an existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY"
+
+      - name: Download the official artifact from the source run
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: ${{ runner.temp }}/jea-release-attach
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.run_id }}
+
+      - name: Validate allowlisted assets
+        env:
+          TAG: ${{ inputs.tag }}
+          ARTIFACT_DIR: ${{ runner.temp }}/jea-release-attach
+        run: |
+          set -euo pipefail
+          node scripts/release-attach-assets.mjs --dir "$ARTIFACT_DIR" --tag "$TAG" --json
+
+      - name: Upload allowlisted files to the existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          ARTIFACT_DIR: ${{ runner.temp }}/jea-release-attach
+        run: |
+          set -euo pipefail
+          mapfile -t FILES < <(node scripts/release-attach-assets.mjs --dir "$ARTIFACT_DIR" --tag "$TAG" --print-paths)
+          if [ "${#FILES[@]}" -eq 0 ]; then
+            echo "No allowlisted files to upload."
+            exit 1
+          fi
+          gh release upload "$TAG" "${FILES[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url,assets --jq '{url,assets:[.assets[].name]}'
