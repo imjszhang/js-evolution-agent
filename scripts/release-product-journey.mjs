@@ -2,15 +2,17 @@
 /**
  * Isolated 0.1.0 product-journey checks for #122.
  *
- * Uses a temporary JEA_HOME and never writes ~/.jea. Optional packaged-app
- * checks run only when JEA.app already exists locally.
+ * Uses a temporary JEA_HOME and never writes ~/.jea. When JEA.app exists,
+ * every CLI step goes through the packaged launcher (Electron-as-Node),
+ * not checkout `src/cli/jea.mjs`. Without an app, Linux CI still uses the
+ * checkout runner.
  *
  * Usage:
  *   node scripts/release-product-journey.mjs [--repo DIR] [--app PATH] [--json]
  */
 import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { delimiter, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, printReport, repoRootFrom } from './release-lib.mjs';
@@ -24,9 +26,37 @@ export function statusHasSecrets(value) {
   return SECRET_RE.test(typeof value === 'string' ? value : JSON.stringify(value));
 }
 
-function runJea(repoRoot, args, env) {
-  const result = spawnSync(process.execPath, ['--preserve-symlinks', join(repoRoot, 'src/cli/jea.mjs'), ...args], {
-    cwd: repoRoot,
+export function resolveJourneyRunner({ repoRoot, appPath = null }) {
+  if (appPath && looksLikePackagedApp(appPath)) {
+    return {
+      kind: 'packaged',
+      appPath,
+      sourceRoot: packagedSourceRootFromApp(appPath),
+      electron: electronBinaryFromApp(appPath),
+    };
+  }
+  return {
+    kind: 'checkout',
+    repoRoot,
+    sourceRoot: repoRoot,
+  };
+}
+
+function runJea(runner, args, env) {
+  if (runner.kind === 'packaged') {
+    const result = spawnSync(join(env.JEA_CLI_BIN_DIR, 'jea'), args, {
+      encoding: 'utf8',
+      env,
+    });
+    return {
+      ok: result.status === 0,
+      status: result.status,
+      stdout: result.stdout || '',
+      stderr: result.stderr || '',
+    };
+  }
+  const result = spawnSync(process.execPath, ['--preserve-symlinks', join(runner.repoRoot, 'src/cli/jea.mjs'), ...args], {
+    cwd: runner.repoRoot,
     encoding: 'utf8',
     env,
   });
@@ -45,50 +75,74 @@ export function runProductJourney({
 } = {}) {
   const jeaHome = mkdtempSync(join(tmpdir(), 'jea-cert-home-'));
   const binDir = mkdtempSync(join(tmpdir(), 'jea-cert-bin-'));
-  const projectRoot = appPath && looksLikePackagedApp(appPath)
-    ? packagedSourceRootFromApp(appPath)
-    : repoRoot;
+  const runner = resolveJourneyRunner({ repoRoot, appPath });
   const env = {
     ...process.env,
     JEA_HOME: jeaHome,
-    JEA_PROJECT_ROOT: projectRoot,
+    JEA_PROJECT_ROOT: runner.sourceRoot,
     JEA_CLI_BIN_DIR: binDir,
     JEA_FORCE_MOCK: '1',
+    PATH: `${binDir}${delimiter}${process.env.PATH || ''}`,
   };
   delete env.DEEPSEEK_API_KEY;
+  if (runner.kind === 'packaged') {
+    env.JEA_APP_PATH = runner.appPath;
+  }
 
   const steps = [];
   const subject = 'cert-122';
 
-  const version = runJea(repoRoot, ['--version'], env);
+  if (runner.kind === 'packaged') {
+    try {
+      const installed = installCliLauncher({
+        env,
+        sourceRoot: runner.sourceRoot,
+        execPath: runner.electron,
+        binDir,
+      });
+      steps.push({
+        id: 'packaged_cli_install',
+        ok: Boolean(installed.installed),
+        detail: installed.detail || 'installed',
+      });
+    } catch (error) {
+      steps.push({
+        id: 'packaged_cli_install',
+        ok: false,
+        detail: error?.message || String(error),
+      });
+    }
+  }
+
+  const version = runJea(runner, ['--version'], env);
   steps.push({
     id: 'cli_version',
     ok: version.ok && version.stdout.trim() === PRODUCT_VERSION,
     detail: version.stdout.trim() || version.stderr.trim(),
   });
 
-  const init = runJea(repoRoot, ['subject', 'init', subject, '--use'], env);
+  const init = runJea(runner, ['subject', 'init', subject, '--use'], env);
   steps.push({
     id: 'subject_init',
     ok: init.ok,
     detail: init.stderr.trim() || init.stdout.trim().slice(0, 200),
   });
 
-  const data = runJea(repoRoot, ['data', 'init', '--all', '--subject', subject], env);
+  const data = runJea(runner, ['data', 'init', '--all', '--subject', subject], env);
   steps.push({
     id: 'data_init',
     ok: data.ok,
     detail: data.stderr.trim() || 'initialized',
   });
 
-  const start = runJea(repoRoot, ['start', '--no-open', '--port', '18788'], env);
+  const start = runJea(runner, ['start', '--no-open', '--port', '18788'], env);
   steps.push({
     id: 'start_no_open',
     ok: start.ok,
     detail: (start.stderr || start.stdout).trim().split('\n').slice(-12).join(' | '),
   });
 
-  const status = runJea(repoRoot, ['status', '--json'], env);
+  const status = runJea(runner, ['status', '--json'], env);
   let statusJson = null;
   try {
     statusJson = JSON.parse(status.stdout);
@@ -101,32 +155,25 @@ export function runProductJourney({
     detail: statusJson ? 'redacted' : (status.stderr.trim() || 'invalid_json'),
   });
 
-  const url = runJea(repoRoot, ['url'], env);
+  const url = runJea(runner, ['url'], env);
   steps.push({
     id: 'url_prints_token',
     ok: url.ok && /access_token=/.test(url.stdout) && !statusHasSecrets(statusJson),
     detail: url.ok ? 'token_only_in_url' : (url.stderr.trim() || 'url_failed'),
   });
 
-  const stop = runJea(repoRoot, ['stop'], env);
+  const stop = runJea(runner, ['stop'], env);
   steps.push({
     id: 'stop',
     ok: stop.ok,
     detail: stop.stderr.trim() || stop.stdout.trim().slice(0, 200),
   });
 
-  if (appPath && looksLikePackagedApp(appPath)) {
-    const installed = installCliLauncher({
-      env,
-      sourceRoot: packagedSourceRootFromApp(appPath),
-      execPath: electronBinaryFromApp(appPath),
-      binDir,
-    });
-    const launched = spawnSync(join(binDir, 'jea'), ['--version'], { encoding: 'utf8', env });
+  if (runner.kind === 'packaged') {
     steps.push({
       id: 'packaged_cli_version',
-      ok: installed.installed && launched.status === 0 && launched.stdout.trim() === PRODUCT_VERSION,
-      detail: launched.stdout.trim() || launched.stderr.trim(),
+      ok: version.ok && version.stdout.trim() === PRODUCT_VERSION,
+      detail: version.stdout.trim() || 'packaged_cli_missing',
     });
   } else {
     steps.push({
@@ -142,6 +189,7 @@ export function runProductJourney({
     status: ok ? 'journey_passed' : 'journey_failed',
     release: PRODUCT_VERSION,
     platform: 'macos-arm64',
+    runner: runner.kind,
     jeaHome,
     wroteUserHome: false,
     steps,
@@ -165,6 +213,7 @@ export async function main(argv = process.argv.slice(2)) {
   report.script = 'release-product-journey';
   report.messages = [
     `status ${report.status}`,
+    `runner ${report.runner}`,
     ...report.steps.map((item) => `${item.ok ? 'ok' : 'fail'} ${item.id}: ${item.detail}`),
   ];
   if (args.out) {

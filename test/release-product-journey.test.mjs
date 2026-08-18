@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { statusHasSecrets } from '../scripts/release-product-journey.mjs';
+import { resolveJourneyRunner, statusHasSecrets } from '../scripts/release-product-journey.mjs';
 import { runVersionPreflight } from '../scripts/release-version-preflight.mjs';
 import { repoRootFrom } from '../scripts/release-lib.mjs';
 import { existsSync, readFileSync } from 'node:fs';
@@ -12,6 +12,15 @@ describe('release product journey helpers', () => {
     expect(statusHasSecrets({ running: true, bind: { address: '127.0.0.1', port: 18788 } })).toBe(false);
     expect(statusHasSecrets('http://127.0.0.1:18788/?access_token=abc')).toBe(true);
     expect(statusHasSecrets('DEEPSEEK_API_KEY=sk-not-real')).toBe(true);
+  });
+
+  it('uses the checkout runner unless a real JEA.app is supplied', () => {
+    expect(resolveJourneyRunner({ repoRoot, appPath: null }).kind).toBe('checkout');
+    expect(resolveJourneyRunner({ repoRoot, appPath: join(repoRoot, 'not-an-app.app') }).kind).toBe('checkout');
+    const localApp = join(repoRoot, 'dist/release/build/mac-arm64/JEA.app');
+    if (existsSync(localApp)) {
+      expect(resolveJourneyRunner({ repoRoot, appPath: localApp }).kind).toBe('packaged');
+    }
   });
 
   it('keeps committed release notes and version files aligned at 0.1.0', () => {
