@@ -7,7 +7,8 @@
  */
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, cpSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { createRequire } from 'node:module';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { expectedArtifactNames, parseArgs, printReport, repoRootFrom } from './release-lib.mjs';
@@ -15,12 +16,52 @@ import { PRODUCT_VERSION, SIGNING_POLICY } from '../src/product/identity.mjs';
 import { assertCleanProvenance, collectBuildMetadata, writeBuildMetadata } from '../src/product/build-metadata.mjs';
 import { stageAppResources } from './stage-app-resources.mjs';
 
-export function resolveElectronDist(repoRoot) {
+export function resolveElectronPackageDir(repoRoot) {
   const candidates = [
+    join(repoRoot, 'node_modules', 'electron'),
+    join(repoRoot, 'apps', 'desktop', 'node_modules', 'electron'),
+  ];
+  const found = candidates.find((dir) => existsSync(join(dir, 'package.json')));
+  if (found) return found;
+  try {
+    const require = createRequire(join(repoRoot, 'apps', 'desktop', 'package.json'));
+    return dirname(require.resolve('electron/package.json'));
+  } catch {
+    return null;
+  }
+}
+
+export function ensureElectronBinary(pkgDir) {
+  const installJs = join(pkgDir, 'install.js');
+  if (!existsSync(installJs)) {
+    throw new Error(`electron install.js missing: ${pkgDir}`);
+  }
+  const env = { ...process.env };
+  delete env.ELECTRON_SKIP_BINARY_DOWNLOAD;
+  delete env.ELECTRON_BUILDER_OFFLINE;
+  const result = spawnSync(process.execPath, [installJs], {
+    cwd: pkgDir,
+    encoding: 'utf8',
+    env,
+  });
+  if (result.status !== 0) {
+    const detail = (result.stderr || result.stdout || '').trim();
+    throw new Error(`electron install failed: ${detail.split('\n').slice(-12).join('\n')}`);
+  }
+}
+
+export function resolveElectronDist(repoRoot, { install = ensureElectronBinary } = {}) {
+  const existing = [
     join(repoRoot, 'node_modules', 'electron', 'dist'),
     join(repoRoot, 'apps', 'desktop', 'node_modules', 'electron', 'dist'),
-  ];
-  return candidates.find((dir) => existsSync(dir)) || null;
+  ].find((dir) => existsSync(dir));
+  if (existing) return existing;
+  const pkgDir = resolveElectronPackageDir(repoRoot);
+  if (!pkgDir) return null;
+  const dist = join(pkgDir, 'dist');
+  if (existsSync(dist)) return dist;
+  if (typeof install === 'function') install(pkgDir);
+  return existsSync(dist) ? dist : null;
 }
 
 function builderEnv() {
@@ -116,7 +157,11 @@ export async function packageMacos({
 
   const electronDist = resolveElectronDist(repoRoot);
   if (!electronDist) {
-    return { ok: false, status: 'electron_dist_missing', repoRoot };
+    return {
+      ok: false,
+      status: resolveElectronPackageDir(repoRoot) ? 'electron_dist_missing' : 'electron_package_missing',
+      repoRoot,
+    };
   }
 
   const builderArgs = ['exec', '--workspace', '@jea/desktop', '--', 'electron-builder', '--mac'];
