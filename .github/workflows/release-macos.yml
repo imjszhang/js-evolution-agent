@@ -98,6 +98,10 @@ jobs:
         env:
           ARTIFACT_DIR: ${{ inputs.artifact_dir }}
         run: npm run release:journey -- --app dist/release/build/mac-arm64/JEA.app --json --out "${ARTIFACT_DIR:-dist/release}/product-journey.json"
+      - name: Write certification evidence from artifacts
+        env:
+          ARTIFACT_DIR: ${{ inputs.artifact_dir }}
+        run: npm run release:certification-evidence -- --dir "${ARTIFACT_DIR:-dist/release}" --json
       - name: Scan staged resources
         run: npm run release:scan -- --root dist/release/stage --json
       - name: Upload macOS artifacts (never .env, JEA Home, or runtime)
