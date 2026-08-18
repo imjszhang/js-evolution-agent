@@ -148,11 +148,6 @@ function mergePartitions(current: string[] | undefined, incoming: string[] | und
   return [...next]
 }
 
-function partitionsInclude(partitions: string[] | undefined, name: string): boolean {
-  if (!partitions || partitions.length === 0 || partitions.includes('all')) return true
-  return partitions.includes(name)
-}
-
 type PartitionFingerprints = {
   service: string
   evolution: string

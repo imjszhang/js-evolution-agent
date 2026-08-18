@@ -315,8 +315,7 @@ describe('ProjectionWatcher', () => {
     callbackRef.current?.({ reason: 'watch', partitions: ['service'] })
     expect(published.map((item) => item.type)).toEqual([
       'projection.ops_updated',
-      'service.status',
-      'projection.channel_updated'
+      'service.status'
     ])
     expect(new Set(published.map((item) => item.revision)).size).toBe(1)
   })

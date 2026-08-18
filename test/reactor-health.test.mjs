@@ -154,6 +154,8 @@ describe('reactor health projection', () => {
 
   it('reuses a cached daemon projection for the same input revision', () => {
     const root = makeRoot();
+    buildDaemonProjection(root, 'alpha');
+    resetDaemonProjectionCache();
     const first = buildDaemonProjection(root, 'alpha');
     const second = buildDaemonProjection(root, 'alpha');
     expect(second).toBe(first);

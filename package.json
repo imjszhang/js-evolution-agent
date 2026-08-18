@@ -49,6 +49,7 @@
     "release:journey": "node --preserve-symlinks scripts/release-product-journey.mjs",
     "release:recovery-matrix": "node --preserve-symlinks scripts/release-recovery-matrix.mjs",
     "release:recovery-soak": "node --preserve-symlinks scripts/release-recovery-soak.mjs",
+    "perf:projection-smoke": "node --preserve-symlinks scripts/performance-projection-smoke.mjs",
     "release:certification-evidence": "node --preserve-symlinks scripts/release-certification-evidence.mjs",
     "viewer:build": "node --preserve-symlinks src/cli/jea.mjs intel viewer build",
     "viewer:serve": "node --preserve-symlinks src/cli/jea.mjs intel viewer serve --open",

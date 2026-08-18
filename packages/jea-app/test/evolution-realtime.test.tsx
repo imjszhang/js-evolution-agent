@@ -88,4 +88,30 @@ describe('Evolution Inspector realtime refresh', () => {
     expect(stale?.selectedCycleId).toBe('cycle-20260816-open')
     expect(stale?.subject).toBe('alpha')
   })
+
+  it('loads once for the same projection revision across ops/todo/evolution events', async () => {
+    const client = createEvolutionFixtureClient()
+    const controller = createInspectorController(client)
+    await controller.load('alpha')
+    const afterLoad = client.calls.listCycles.length
+    await controller.handleEvent({
+      type: 'projection.ops_updated',
+      ts: '2026-08-18T04:00:00.000Z',
+      subject: 'alpha',
+      payload: { subject: 'alpha', revision: 9 }
+    })
+    await controller.handleEvent({
+      type: 'projection.todo_updated',
+      ts: '2026-08-18T04:00:00.000Z',
+      subject: 'alpha',
+      payload: { subject: 'alpha', revision: 9 }
+    })
+    await controller.handleEvent({
+      type: 'evolution.updated',
+      ts: '2026-08-18T04:00:00.000Z',
+      subject: 'alpha',
+      payload: { subject: 'alpha', revision: 9 }
+    })
+    expect(client.calls.listCycles.length - afterLoad).toBeLessThanOrEqual(1)
+  })
 })

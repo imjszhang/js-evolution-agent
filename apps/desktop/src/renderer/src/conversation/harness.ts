@@ -269,9 +269,12 @@ export function createConversationHarness(options: ConversationHarnessOptions = 
     return record
   }
 
+  const commandCounts = new Map<string, number>()
+
   const client: JeaClient = createTypedJeaClient(JEA_CLIENT_PROTOCOL_VERSION, {
     async invoke(request) {
       const command = request.command
+      commandCounts.set(command, (commandCounts.get(command) ?? 0) + 1)
       const payload = (request.payload ?? {}) as Record<string, unknown>
       const subject = typeof payload.subject === 'string' ? payload.subject : selected ?? TEST_CONVERSATION_SUBJECT
 
@@ -487,6 +490,9 @@ export function createConversationHarness(options: ConversationHarnessOptions = 
     get watchStops() { return watchStops },
     projectionWatch,
     emit,
+    commandCount(command: string): number {
+      return commandCounts.get(command) ?? 0
+    },
     setRejectSend(error: PublicClientError | null) {
       rejectSend = error
     },

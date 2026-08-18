@@ -275,7 +275,7 @@ export function classifyRuntimeWatchPath(path) {
   if (normalized.includes('/channel/desktop/sessions') || normalized.includes('/conversation')) {
     return 'conversation';
   }
-  if (normalized.includes('/channel/')) return 'channel';
+  if (normalized.includes('/channel/') || normalized.endsWith('/channel')) return 'channel';
   if (
     normalized.endsWith('worker-state.json')
     || normalized.endsWith('pending_tasks.json')
