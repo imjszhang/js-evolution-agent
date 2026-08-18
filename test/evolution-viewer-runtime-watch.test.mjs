@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  classifyRuntimeWatchName,
   createJsonlTailer,
   createRuntimeWatcher,
   summarizeInboundFile,
@@ -74,6 +75,7 @@ describe('shared runtime watch primitives', () => {
     expect(changes).toHaveLength(0);
     vi.advanceTimersByTime(1);
     expect(changes).toHaveLength(1);
+    expect(Array.isArray(changes[0].partitions)).toBe(true);
     watcher.stop();
     expect(closed.length).toBeGreaterThan(0);
     vi.useRealTimers();
@@ -276,5 +278,14 @@ describe('shared runtime watch primitives', () => {
     expect(seen).toBe(count + 1);
     expect(Date.now() - started).toBeLessThan(5_000);
     tailer.stop();
+  });
+
+  it('classifies watch filenames into service/channel/evolution/conversation partitions', () => {
+    expect(classifyRuntimeWatchName('worker-state.json', '/tmp/data/evolution/daemon')).toBe('service');
+    expect(classifyRuntimeWatchName('events.jsonl', '/tmp/data/channel')).toBe('channel');
+    expect(classifyRuntimeWatchName('pending.json', '/tmp/data/evolution/operator_briefs/pending')).toBe('evolution');
+    expect(classifyRuntimeWatchName('main.json', '/tmp/data/channel/desktop/sessions')).toBe('conversation');
+    expect(classifyRuntimeWatchName(undefined, '/tmp/data/channel')).toBe('channel');
+    expect(classifyRuntimeWatchName(undefined, '/unknown')).toBe('all');
   });
 });

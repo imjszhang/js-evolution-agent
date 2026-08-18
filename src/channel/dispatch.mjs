@@ -2,6 +2,38 @@ import { recordChannelEvent } from './audit.mjs';
 import { resolveClassifierConfig } from './classifier-config.mjs';
 import { requestExpressionRecompute, enqueueNotifyIfOutboxPending, enqueueClassifierIfPendingInbound } from './wake.mjs';
 
+export const CLASSIFIER_TICK_SAMPLE_MS = 10 * 60 * 1000;
+
+const lastClassifierTickAudit = new Map();
+
+export function resetClassifierTickAuditForTests() {
+  lastClassifierTickAudit.clear();
+}
+
+function classifierTickAuditKey(root, subject) {
+  return `${String(root)}::${String(subject)}`;
+}
+
+function shouldRecordClassifierTick(root, subject, result) {
+  const created = result.created === true;
+  const reason = result.reason ?? null;
+  const failed = Boolean(reason)
+    && !created
+    && reason !== 'no_pending_inbound'
+    && reason !== 'active_task_exists'
+    && reason !== 'idempotent_task_exists';
+  const key = classifierTickAuditKey(root, subject);
+  const prev = lastClassifierTickAudit.get(key);
+  const now = Date.now();
+  const statusChanged = !prev || prev.created !== created || prev.reason !== reason;
+  const sampled = !prev || (now - prev.at) >= CLASSIFIER_TICK_SAMPLE_MS;
+  const record = created || failed || statusChanged || sampled;
+  if (record) {
+    lastClassifierTickAudit.set(key, { at: now, created, reason });
+  }
+  return record;
+}
+
 export function runChannelPresenceTick(root, subject, input = {}) {
   const tickId = input.tick_id ?? new Date().toISOString().slice(0, 16);
   const enqueued = [];
@@ -31,12 +63,14 @@ export function runChannelClassifierTick(root, subject, input = {}) {
     return { skipped: true, reason: 'classifier_disabled' };
   }
   const result = enqueueClassifierIfPendingInbound(root, subject);
-  recordChannelEvent(root, subject, {
-    type: 'channel_classifier_tick',
-    status: 'ok',
-    created: result.created ?? false,
-    reason: result.reason ?? null,
-  });
+  if (shouldRecordClassifierTick(root, subject, result)) {
+    recordChannelEvent(root, subject, {
+      type: 'channel_classifier_tick',
+      status: 'ok',
+      created: result.created ?? false,
+      reason: result.reason ?? null,
+    });
+  }
   return { enqueued: result, tick_id: input.tick_id ?? null };
 }
 

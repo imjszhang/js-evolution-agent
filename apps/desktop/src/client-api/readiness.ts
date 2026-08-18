@@ -119,6 +119,7 @@ export function readSubjectReadiness(
     hostKind?: ClientHostKind
     processPort?: { get(subject: string): { mode?: string | null; domain?: 'all' | 'cycle' | 'channel' | null } }
     generatedAt?: string
+    deferRebuild?: boolean
   } = {}
 ): SubjectReadiness {
   return readSubjectReadinessImpl(runtime, subject, options) as SubjectReadiness

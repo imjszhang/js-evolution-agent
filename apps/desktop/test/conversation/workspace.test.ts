@@ -513,4 +513,46 @@ describe('conversation workspace model', () => {
     })
     expect(model.getSnapshot().cards.some((card) => card.kind === 'offline')).toBe(true)
   })
+
+  it('coalesces one revision of support events into a single readiness/status/observability read', async () => {
+    const harness = createConversationHarness()
+    const model = new ConversationWorkspaceModel(harness.client, harness.projectionWatch)
+    await model.bootstrap()
+    const before = {
+      status: harness.commandCount('service.getStatus'),
+      readiness: harness.commandCount('service.getReadiness'),
+      setup: harness.commandCount('setup.getReadiness'),
+      observability: harness.commandCount('evolution.getObservability'),
+      messages: harness.commandCount('conversation.readMessages'),
+      select: harness.commandCount('subject.select')
+    }
+    harness.emit('projection.ops_updated', 'alpha', undefined, { revision: 7 })
+    harness.emit('service.status', 'alpha', undefined, { revision: 7 })
+    harness.emit('projection.todo_updated', 'alpha', undefined, { revision: 7 })
+    harness.emit('evolution.updated', 'alpha', undefined, { revision: 7 })
+    harness.emit('projection.channel_updated', 'alpha', undefined, {
+      revision: 7,
+      channel: { reasons: ['channel_running'] }
+    })
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    expect(harness.commandCount('service.getStatus') - before.status).toBeLessThanOrEqual(1)
+    expect(harness.commandCount('service.getReadiness') - before.readiness).toBeLessThanOrEqual(1)
+    expect(harness.commandCount('setup.getReadiness') - before.setup).toBeLessThanOrEqual(1)
+    expect(harness.commandCount('evolution.getObservability') - before.observability).toBeLessThanOrEqual(1)
+    expect(harness.commandCount('conversation.readMessages')).toBe(before.messages)
+    expect(harness.commandCount('subject.select')).toBe(before.select)
+    expect(model.getSnapshot().channelReasons).toEqual(['channel_running'])
+  })
+
+  it('does not treat same-subject.changed as a full selectSubject', async () => {
+    const harness = createConversationHarness()
+    const model = new ConversationWorkspaceModel(harness.client, harness.projectionWatch)
+    await model.bootstrap()
+    const selects = harness.commandCount('subject.select')
+    const messages = harness.commandCount('conversation.readMessages')
+    harness.emit('subject.changed', 'alpha', undefined, { subject: 'alpha', reason: 'same' })
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    expect(harness.commandCount('subject.select')).toBe(selects)
+    expect(harness.commandCount('conversation.readMessages')).toBe(messages)
+  })
 })

@@ -122,6 +122,42 @@ describe('projection live latency and cleanup', () => {
     expect(projection.status().watcherCount).toBe(0)
     delete process.env.JEA_HOME
   })
+
+  it('single-flights a notify burst into one refresh plus at most one follow-up', () => {
+    const { root, jeaHome } = liveRoot()
+    process.env.JEA_HOME = jeaHome
+    const events = new DesktopEventBus()
+    let refreshCount = 0
+    const projection = new ProjectionWatcher(
+      root,
+      {
+        refresh: (subject: string) => {
+          refreshCount += 1
+          if (refreshCount === 2) {
+            projection.refresh()
+            projection.refresh()
+          }
+          return viRefresh()(subject)
+        }
+      } as any,
+      { get: viTodo } as any,
+      { get: viChannel } as any,
+      events,
+      (options) => ({
+        start() {},
+        stop() {},
+        notify(reason?: string) { options.onRuntimeChange({ reason: reason ?? 'manual' }) }
+      }),
+      jeaHome,
+      { debounceMs: 0 }
+    )
+    projection.watch('alpha')
+    expect(refreshCount).toBe(1)
+    projection.refresh()
+    expect(refreshCount).toBeLessThanOrEqual(3)
+    projection.stop()
+    delete process.env.JEA_HOME
+  })
 })
 
 function viRefresh(forced?: string) {

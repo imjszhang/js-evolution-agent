@@ -26,49 +26,86 @@ async function settled<T>(promise: Promise<T>): Promise<T | null> {
 
 export function createInspectorController(client: EvolutionInspectorClient): InspectorController {
   let generation = 0
+  let lastRevision: number | null = null
+  let loadInFlight: Promise<EvolutionInspectorSnapshot> | null = null
+  let loadQueued: { subject: string | null; preferredCycleId?: string | null; revision: number | null } | null = null
+
+  async function loadNow(subject: string | null, preferredCycleId?: string | null): Promise<EvolutionInspectorSnapshot> {
+    const gen = ++generation
+    const name = subject?.trim() || null
+    if (!name) {
+      state.snapshot = emptySnapshot(null)
+      state.loading = false
+      lastRevision = null
+      return state.snapshot
+    }
+    state.loading = true
+    state.snapshot = {
+      ...emptySnapshot(name),
+      selectedCycleId: preferredCycleId ?? state.snapshot.selectedCycleId
+    }
+    const [listRaw, observabilityRaw] = await Promise.all([
+      settled(client.listCycles(name)),
+      settled(client.getObservability(name))
+    ])
+    if (gen !== generation) return state.snapshot
+    const list = sanitizeCycleList(listRaw)
+    const observability = sanitizeObservability(observabilityRaw)
+    const cycleIds = list?.cycles.map((item) => item.cycle_id) ?? []
+    const details = await loadDetails(client, name, cycleIds)
+    if (gen !== generation) return state.snapshot
+    const next: EvolutionInspectorSnapshot = {
+      subject: name,
+      list,
+      observability,
+      cycles: details.cycles,
+      rounds: details.rounds,
+      selectedCycleId: null,
+      error: list ? null : 'unavailable',
+      stale: false
+    }
+    const preferred = preferredCycleId && cycleIds.includes(preferredCycleId)
+      ? preferredCycleId
+      : pickDefaultCycleId(next)
+    next.selectedCycleId = preferred
+    state.snapshot = next
+    state.loading = false
+    return next
+  }
+
+  async function loadCoalesced(
+    subject: string | null,
+    preferredCycleId: string | null | undefined,
+    revision: number | null
+  ): Promise<EvolutionInspectorSnapshot> {
+    if (revision != null && revision === lastRevision && subject === state.snapshot.subject) {
+      return state.snapshot
+    }
+    if (loadInFlight) {
+      loadQueued = { subject, preferredCycleId, revision }
+      return loadInFlight
+    }
+    loadInFlight = loadNow(subject, preferredCycleId)
+    try {
+      await loadInFlight
+      if (revision != null) lastRevision = revision
+    } finally {
+      loadInFlight = null
+    }
+    const queued = loadQueued
+    loadQueued = null
+    if (queued && !(queued.revision != null && queued.revision === lastRevision && queued.subject === state.snapshot.subject)) {
+      return loadCoalesced(queued.subject, queued.preferredCycleId, queued.revision)
+    }
+    return state.snapshot
+  }
+
   const state: InspectorController = {
     snapshot: emptySnapshot(null),
     loading: false,
     async load(subject, preferredCycleId) {
-      const gen = ++generation
-      const name = subject?.trim() || null
-      if (!name) {
-        state.snapshot = emptySnapshot(null)
-        state.loading = false
-        return state.snapshot
-      }
-      state.loading = true
-      state.snapshot = {
-        ...emptySnapshot(name),
-        selectedCycleId: preferredCycleId ?? state.snapshot.selectedCycleId
-      }
-      const [listRaw, observabilityRaw] = await Promise.all([
-        settled(client.listCycles(name)),
-        settled(client.getObservability(name))
-      ])
-      if (gen !== generation) return state.snapshot
-      const list = sanitizeCycleList(listRaw)
-      const observability = sanitizeObservability(observabilityRaw)
-      const cycleIds = list?.cycles.map((item) => item.cycle_id) ?? []
-      const details = await loadDetails(client, name, cycleIds)
-      if (gen !== generation) return state.snapshot
-      const next: EvolutionInspectorSnapshot = {
-        subject: name,
-        list,
-        observability,
-        cycles: details.cycles,
-        rounds: details.rounds,
-        selectedCycleId: null,
-        error: list ? null : 'unavailable',
-        stale: false
-      }
-      const preferred = preferredCycleId && cycleIds.includes(preferredCycleId)
-        ? preferredCycleId
-        : pickDefaultCycleId(next)
-      next.selectedCycleId = preferred
-      state.snapshot = next
-      state.loading = false
-      return next
+      lastRevision = null
+      return loadCoalesced(subject, preferredCycleId, null)
     },
     async selectCycle(cycleId) {
       const id = cycleId.trim()
@@ -101,7 +138,11 @@ export function createInspectorController(client: EvolutionInspectorClient): Ins
       }
       const cycleId = eventCycleId(event)
       const selected = state.snapshot.selectedCycleId
-      return state.load(subject, cycleId ?? selected)
+      const revision = typeof event.payload?.revision === 'number' ? event.payload.revision : null
+      if (revision != null && revision === lastRevision && (cycleId == null || cycleId === selected)) {
+        return state.snapshot
+      }
+      return loadCoalesced(subject, cycleId ?? selected, revision)
     },
     subscribe(onChange) {
       return client.subscribe((event) => {

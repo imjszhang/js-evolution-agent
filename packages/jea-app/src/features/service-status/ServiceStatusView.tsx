@@ -2,7 +2,6 @@ import { useLocale } from '../../i18n/LocaleProvider'
 import type { FeatureSlotProps } from '../../slots/types'
 import { cn } from '../../lib/cn'
 import { useJeaClientContext } from '../client-context'
-import { useLiveSubjectReadiness } from '../useLiveSubjectReadiness'
 import { deriveServiceStatusKind, needsOpenDesktop, webHostStoppedIsNotOutage } from './derive'
 
 function toneClass(kind: 'online' | 'offline' | 'degraded'): string {
@@ -35,9 +34,8 @@ function DomainRow({
 
 export function ServiceStatusView({ adapters }: FeatureSlotProps) {
   const { t } = useLocale()
-  const { client, host } = useJeaClientContext()
-  const selected = adapters.selectedSubjectId
-  const readiness = useLiveSubjectReadiness(client, selected, adapters.subjectReadiness)
+  const { host } = useJeaClientContext()
+  const readiness = adapters.subjectReadiness ?? null
   const kind = deriveServiceStatusKind(readiness, {
     host: adapters.hostKind ?? host,
     connection: adapters.serviceStatus === 'offline' ? 'offline' : undefined

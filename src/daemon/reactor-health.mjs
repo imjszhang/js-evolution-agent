@@ -1,7 +1,12 @@
 import { join } from 'node:path';
 import { DecisionQueue } from '../engine/decide/decision-queue.mjs';
-import { readClaimLedger, listEligibleEvidence } from '../evolution/reactor/claim-ledger.mjs';
-import { reconcileEvidenceStream } from '../intelligence/evidence-stream.mjs';
+import { coveredEventIds, readClaimLedger } from '../evolution/reactor/claim-ledger.mjs';
+import {
+  defaultKindsForReactor,
+  envelopeEvidenceKey,
+  isEligibleForReactor,
+} from '../evolution/reactor/eligibility.mjs';
+import { readEvidenceHealthSnapshot } from '../intelligence/evidence-stream.mjs';
 import { runtimeForSubject } from '../infra/runtime-paths.mjs';
 import { listOpenExecIntents, listUncertainExecIntents } from '../evolution/reactor/exec-intent-store.mjs';
 import { listPendingVerifyResults } from '../evolution/reactor/exec-result-store.mjs';
@@ -51,15 +56,20 @@ export function summarizeClaimLedgerHealth(ledger, { nowMs = Date.now() } = {}) 
   };
 }
 
-export function summarizePendingEvidence(dataRoot, ledger, {
+export function summarizePendingEvidenceFromSnapshot(snapshot, ledger, {
   nowMs = Date.now(),
   reactor = 'cognitive',
 } = {}) {
-  void ledger;
-  const pending = listEligibleEvidence(dataRoot, { reactor, now: nowMs });
+  const allowedKinds = defaultKindsForReactor(reactor);
+  const covered = coveredEventIds(ledger, { now: nowMs, reactor });
+  let pendingCount = 0;
   let oldestAgeMs = null;
   let oldestId = null;
-  for (const envelope of pending) {
+  for (const envelope of snapshot?.envelopes || []) {
+    if (!isEligibleForReactor(envelope, reactor, { kinds: allowedKinds })) continue;
+    const key = envelopeEvidenceKey(envelope);
+    if (covered.has(key) || covered.has(envelope.id)) continue;
+    pendingCount += 1;
     const occurred = parseIsoMs(envelope.occurred_at);
     if (occurred == null) continue;
     const age = nowMs - occurred;
@@ -69,12 +79,20 @@ export function summarizePendingEvidence(dataRoot, ledger, {
     }
   }
   return {
-    pending_count: pending.length,
-    eligible_unclaimed_count: pending.length,
+    pending_count: pendingCount,
+    eligible_unclaimed_count: pendingCount,
     oldest_unclaimed_age_ms: oldestAgeMs,
     oldest_unclaimed_id: oldestId,
-    stream_total: pending.length,
+    stream_total: pendingCount,
   };
+}
+
+export function summarizePendingEvidence(dataRoot, ledger, {
+  nowMs = Date.now(),
+  reactor = 'cognitive',
+} = {}) {
+  const snapshot = readEvidenceHealthSnapshot(dataRoot);
+  return summarizePendingEvidenceFromSnapshot(snapshot, ledger, { nowMs, reactor });
 }
 
 export function buildReactorHealthProjection(root, subject, {
@@ -86,22 +104,24 @@ export function buildReactorHealthProjection(root, subject, {
   const dataRoot = runtime.dataRoot;
   const ledger = readClaimLedger(dataRoot);
   const claims = summarizeClaimLedgerHealth(ledger, { nowMs });
-  const evidence = summarizePendingEvidence(dataRoot, ledger, { nowMs, reactor: 'cognitive' });
-  const evidenceByReactor = {
-    cognitive: evidence,
-    rule: summarizePendingEvidence(dataRoot, ledger, { nowMs, reactor: 'rule' }),
-    memory: summarizePendingEvidence(dataRoot, ledger, { nowMs, reactor: 'memory' }),
-  };
+  let snapshot;
   let reconcile = { ok: true, contract_error_count: 0 };
   try {
-    const result = reconcileEvidenceStream(dataRoot);
+    snapshot = readEvidenceHealthSnapshot(dataRoot);
     reconcile = {
-      ok: result.ok,
-      contract_error_count: result.contract_error_count ?? 0,
+      ok: Boolean(snapshot.reconcile?.ok),
+      contract_error_count: snapshot.reconcile?.contract_error_count ?? 0,
     };
   } catch {
+    snapshot = { envelopes: [] };
     reconcile = { ok: false, contract_error_count: -1 };
   }
+  const evidence = summarizePendingEvidenceFromSnapshot(snapshot, ledger, { nowMs, reactor: 'cognitive' });
+  const evidenceByReactor = {
+    cognitive: evidence,
+    rule: summarizePendingEvidenceFromSnapshot(snapshot, ledger, { nowMs, reactor: 'rule' }),
+    memory: summarizePendingEvidenceFromSnapshot(snapshot, ledger, { nowMs, reactor: 'memory' }),
+  };
 
   let decisions = {
     pending: 0,

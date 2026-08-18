@@ -1,16 +1,19 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, mkdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { validateEvidenceEnvelope } from '../src/contracts/evidence-envelope.mjs';
 import {
+  readEvidenceHealthSnapshot,
   readEvidenceStream,
   reconcileEvidenceStream,
+  resetEvidenceHealthSnapshotCache,
 } from '../src/intelligence/evidence-stream.mjs';
 
 let tempDir = null;
 
 afterEach(() => {
+  resetEvidenceHealthSnapshotCache();
   if (tempDir) rmSync(tempDir, { recursive: true, force: true });
   tempDir = null;
 });
@@ -243,6 +246,83 @@ describe('evidence stream', () => {
     const evo = report.sources.find((s) => s.kind === 'evolution_events');
     expect(evo.disk).toBe(2);
     expect(evo.stream).toBe(2);
+  });
+});
+
+describe('evidence health snapshot', () => {
+  it('compacts envelopes without payloads and matches full reconcile', () => {
+    const dataRoot = makeDataRoot();
+    seedAllSources(dataRoot);
+    const snapshot = readEvidenceHealthSnapshot(dataRoot);
+    expect(snapshot.schema_version).toBe('evidence-health-snapshot.v1');
+    expect(snapshot.envelopes).toHaveLength(12);
+    expect(snapshot.envelopes.every((item) => item.payload == null && item.id && item.kind)).toBe(true);
+    const full = reconcileEvidenceStream(dataRoot);
+    expect(snapshot.reconcile.ok).toBe(full.ok);
+    expect(snapshot.reconcile.total).toBe(full.total);
+    expect(snapshot.reconcile.contract_error_count).toBe(full.contract_error_count);
+  });
+
+  it('reuses the cached snapshot until a source identity changes', () => {
+    const dataRoot = makeDataRoot();
+    seedAllSources(dataRoot);
+    const first = readEvidenceHealthSnapshot(dataRoot);
+    const second = readEvidenceHealthSnapshot(dataRoot);
+    expect(second).toBe(first);
+
+    appendFileSync(
+      join(dataRoot, 'intelligence', 'evolution_events', 'evolution-events.jsonl'),
+      `${JSON.stringify({
+        id: 'evt-appended',
+        type: 'exec_pipeline',
+        recorded_at: '2026-08-09T05:00:00.000Z',
+      })}\n`,
+    );
+    const appended = readEvidenceHealthSnapshot(dataRoot);
+    expect(appended).not.toBe(first);
+    expect(appended.envelopes.some((item) => item.id === 'evt-appended')).toBe(true);
+
+    writeFileSync(
+      join(dataRoot, 'intelligence', 'evolution_events', 'evolution-events.jsonl'),
+      `${JSON.stringify({
+        id: 'evt-rotated',
+        type: 'intel_pipeline',
+        recorded_at: '2026-08-09T06:00:00.000Z',
+      })}\n`,
+      'utf8',
+    );
+    const rotated = readEvidenceHealthSnapshot(dataRoot);
+    expect(rotated.envelopes.filter((item) => item.kind === 'evolution_events').map((item) => item.id))
+      .toEqual(['evt-rotated']);
+
+    const pending = join(dataRoot, 'evolution', 'operator_briefs', 'pending', 'brief-extra.json');
+    writeFileSync(pending, JSON.stringify({
+      id: 'brief-extra',
+      type: 'operator_brief',
+      created_at: '2026-08-09T07:00:00.000Z',
+      summary: 'extra',
+    }), 'utf8');
+    const added = readEvidenceHealthSnapshot(dataRoot);
+    expect(added.envelopes.some((item) => item.id === 'brief-extra')).toBe(true);
+    unlinkSync(pending);
+    const removed = readEvidenceHealthSnapshot(dataRoot);
+    expect(removed.envelopes.some((item) => item.id === 'brief-extra')).toBe(false);
+  });
+
+  it('surfaces contract errors instead of treating them as healthy', () => {
+    const dataRoot = makeDataRoot();
+    writeJsonl(join(dataRoot, 'intelligence', 'evolution_events', 'evolution-events.jsonl'), [
+      {
+        id: 'evt-bad-producer',
+        type: 'exec_pipeline',
+        recorded_at: '2026-08-09T01:00:00.000Z',
+        producer: 'not-a-real-producer',
+      },
+    ]);
+    const snapshot = readEvidenceHealthSnapshot(dataRoot);
+    expect(snapshot.reconcile.ok).toBe(false);
+    expect(snapshot.reconcile.contract_error_count).toBeGreaterThan(0);
+    expect(snapshot.reconcile.contract_errors[0].id).toBe('evt-bad-producer');
   });
 });
 
