@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.1.0 — 2026-08-16
+## 0.1.0 — 2026-08-18
 
-JEA 的第一个产品版本。认证与 GitHub Release 仍由 [#122](https://github.com/imjszhang/js-evolution-agent/issues/122) 关闭。
+JEA 的第一个产品版本。[GitHub Release v0.1.0](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.1.0) 已发布（[#122](https://github.com/imjszhang/js-evolution-agent/issues/122) 已关闭）。
 
 ### 产品
 

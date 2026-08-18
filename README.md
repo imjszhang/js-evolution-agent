@@ -38,7 +38,7 @@ JEA 0.1.0 is a **macOS Apple Silicon** app with a bundled `jea` CLI. The operato
 
 Settings covers JEA Home, default Subject, CLI install, appearance, and About. Electron and localhost Web load the same React app. Install and Gatekeeper notes: [docs/release/installation.md](docs/release/installation.md). Headless lifecycle: `jea start --no-open`, `jea status --json`, `jea url`, `jea stop`.
 
-The GitHub Release is not published until [#122](https://github.com/imjszhang/js-evolution-agent/issues/122) certification is complete. Checkout commands below remain the developer source-host path.
+The product Release is **[v0.1.0](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.1.0)** ([#122](https://github.com/imjszhang/js-evolution-agent/issues/122) closed). Checkout commands below remain the developer source-host path.
 
 ---
 
