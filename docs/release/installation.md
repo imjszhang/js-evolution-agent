@@ -1,7 +1,7 @@
 # 安装（0.1.0）
 
-状态：**implemented / #120, #122**。日期：2026-08-16。  
-这不是已发布 GitHub Release 说明；描述的是 macOS arm64 包装路径。本地构建：`npm run desktop:package`。
+状态：**published / #120, #122**。日期：2026-08-18。  
+安装包在 [v0.1.0](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.1.0)。开发者本地构建仍用 `npm run desktop:package`。
 
 ## 适用范围
 

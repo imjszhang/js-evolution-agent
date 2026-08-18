@@ -38,7 +38,7 @@ JEA 0.1.0 是 **macOS Apple Silicon** 应用，并附带托管 `jea` CLI。操�
 
 Settings 覆盖 JEA Home、默认 Subject、CLI 安装、外观和 About。Electron 与 localhost Web 加载同一套 React 应用。安装与 Gatekeeper 见 [docs/release/installation.md](docs/release/installation.md)。无头生命周期：`jea start --no-open`、`jea status --json`、`jea url`、`jea stop`。
 
-在 [#122](https://github.com/imjszhang/js-evolution-agent/issues/122) 认证完成前，不会发布 GitHub Release。下文仍是开发者从源码运行的路径。
+产品 Release 是 **[v0.1.0](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.1.0)**（[#122](https://github.com/imjszhang/js-evolution-agent/issues/122) 已关闭）。下文仍是开发者从源码运行的路径。
 
 ---
 
