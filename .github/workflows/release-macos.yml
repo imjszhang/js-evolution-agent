@@ -94,6 +94,10 @@ jobs:
         env:
           ARTIFACT_DIR: ${{ inputs.artifact_dir }}
         run: npm run release:recovery-matrix -- --packaged --app dist/release/build/mac-arm64/JEA.app --with-web --out "${ARTIFACT_DIR:-dist/release}" --json
+      - name: Isolated product journey (packaged CLI)
+        env:
+          ARTIFACT_DIR: ${{ inputs.artifact_dir }}
+        run: npm run release:journey -- --app dist/release/build/mac-arm64/JEA.app --json --out "${ARTIFACT_DIR:-dist/release}/product-journey.json"
       - name: Scan staged resources
         run: npm run release:scan -- --root dist/release/stage --json
       - name: Upload macOS artifacts (never .env, JEA Home, or runtime)
@@ -108,6 +112,7 @@ jobs:
             dist/release/package-smoke.json
             dist/release/RELEASE_NOTES.md
             dist/release/recovery-matrix.json
+            dist/release/product-journey.json
             dist/release/certification-evidence.json
             dist/release/build-metadata.json
           retention-days: 14
