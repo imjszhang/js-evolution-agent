@@ -5,6 +5,7 @@ import { basename, dirname, join } from 'node:path';
 import { listJsonFiles, readJsonFile } from '../../channel/state.mjs';
 
 export const RUNTIME_WATCH_DEBOUNCE_MS = 1000;
+export const RUNTIME_WATCH_PARTITIONS = Object.freeze(['service', 'channel', 'evolution', 'conversation']);
 export const TAIL_READ_CHUNK_BYTES = 256 * 1024;
 const HEAD_ANCHOR_BYTES = 64;
 
@@ -268,6 +269,41 @@ export function resolveWatchPath(target) {
   return existing;
 }
 
+export function classifyRuntimeWatchPath(path) {
+  const normalized = String(path || '').replace(/\\/g, '/').toLowerCase();
+  if (!normalized) return null;
+  if (normalized.includes('/channel/desktop/sessions') || normalized.includes('/conversation')) {
+    return 'conversation';
+  }
+  if (normalized.includes('/channel/')) return 'channel';
+  if (
+    normalized.endsWith('worker-state.json')
+    || normalized.endsWith('pending_tasks.json')
+    || normalized.includes('/daemon/')
+  ) {
+    return 'service';
+  }
+  if (
+    normalized.includes('/evolution/')
+    || normalized.includes('cycle-state')
+    || normalized.includes('operator_')
+    || normalized.includes('current-state.json')
+    || normalized.includes('subjects.json')
+    || normalized.includes('registry.json')
+  ) {
+    return 'evolution';
+  }
+  return null;
+}
+
+export function classifyRuntimeWatchName(filename, watchedPath = '') {
+  const fromName = filename ? classifyRuntimeWatchPath(String(filename)) : null;
+  if (fromName) return fromName;
+  const fromPath = classifyRuntimeWatchPath(watchedPath);
+  if (fromPath) return fromPath;
+  return 'all';
+}
+
 /**
  * Watch runtime projections and coalesce bursts into one invalidation.
  */
@@ -294,14 +330,19 @@ export function createRuntimeWatcher({
   let debounceTimer = null;
   let reconcileTimer = null;
   let started = false;
+  let pendingPartitions = new Set();
 
-  function notify(reason = 'watch') {
+  function notify(reason = 'watch', partition = 'all') {
     if (!started) return;
+    pendingPartitions.add(partition || 'all');
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
       debounceTimer = null;
-      onRuntimeChange?.({ reason, subjectMeta });
-      onNotify?.({ reason, subjectMeta });
+      const partitions = [...pendingPartitions];
+      pendingPartitions = new Set();
+      const event = { reason, subjectMeta, partitions };
+      onRuntimeChange?.(event);
+      onNotify?.(event);
     }, debounceMs);
     debounceTimer.unref?.();
   }
@@ -344,9 +385,9 @@ export function createRuntimeWatcher({
         watchersByPath.set(path, {
           identity: next.identity,
           targets: next.targets,
-          watcher: watchFactory(path, () => {
+          watcher: watchFactory(path, (_eventType, filename) => {
             reconcileWatchers();
-            notify('watch');
+            notify('watch', classifyRuntimeWatchName(filename, path));
           }),
         });
       } catch {

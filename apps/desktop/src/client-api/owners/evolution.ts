@@ -5,7 +5,7 @@ import { buildManifest, manifestForApi } from '../../../../../src/intelligence/e
 import { buildCycleDetail } from '../../../../../src/intelligence/evolution-viewer/cycle-detail.mjs'
 import { buildRoundDetail } from '../../../../../src/intelligence/evolution-viewer/round-detail.mjs'
 import { buildSubjectObservability } from '../../../../../src/intelligence/evolution-viewer/observability-projection.mjs'
-import { buildDaemonProjection } from '../../../../../src/daemon/daemon-projection.mjs'
+import { readDaemonProjection } from '../../../../../src/daemon/daemon-projection.mjs'
 import { readJsonSafe } from '../../../../../src/infra/files.mjs'
 import { PublicClientError } from '../errors'
 import { redactPublicValue } from '../redact'
@@ -167,7 +167,7 @@ export class EvolutionCommandOwner {
   getObservability(subject: string): EvolutionObservability {
     const name = requireSubject(this.runtime, subject)
     const runtime = subjectRuntime(this.runtime, name)
-    const daemon = buildDaemonProjection(this.runtime, name, { eventLimit: 30 })
+    const daemon = readDaemonProjection(this.runtime, name, { eventLimit: 30 })
     const observability = buildSubjectObservability({
       subject: name,
       runtimeRoot: runtime.runtimeRoot,

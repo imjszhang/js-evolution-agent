@@ -1,9 +1,10 @@
 import type { JeaEventEnvelope } from '../../../client-api/types'
 
 const CONVERSATION_EVENTS = new Set([
-  'conversation.updated',
-  'projection.channel_updated'
+  'conversation.updated'
 ])
+
+/** Channel health is not a message event; do not treat it as a session read trigger. */
 
 const SUBJECT_EVENTS = new Set([
   'subject.changed'

@@ -14,6 +14,7 @@ import { errorMessage, formatTime, isRecord, text } from '../utils'
 
 export { MAX_CHANNEL_RECORDS, mergeRecords, resolveDraftAttempt, type DraftAttempt }
 
+/** Retired seven-page Channel UI. Prefer ConversationWorkspace; keep single-flight fallback. */
 export function ChannelChatView({ subject }: { subject: string | null }) {
   const [snapshot, setSnapshot] = useState<ChannelSnapshot | null>(null)
   const [sessionId, setSessionId] = useState('main')
@@ -25,6 +26,8 @@ export function ChannelChatView({ subject }: { subject: string | null }) {
   const offsetRef = useRef(0)
   const requestGeneration = useRef(0)
   const pendingAttempt = useRef<DraftAttempt | null>(null)
+  const loadInFlight = useRef<Promise<void> | null>(null)
+  const loadQueued = useRef(false)
 
   useEffect(() => {
     sessionRef.current = sessionId
@@ -60,26 +63,40 @@ export function ChannelChatView({ subject }: { subject: string | null }) {
       setSnapshot(null)
       return
     }
-    const generation = ++requestGeneration.current
-    setError(null)
-    try {
-      const next = await window.jea.invoke<ChannelSnapshot>('channel.get', { subject })
-      if (generation !== requestGeneration.current || next.subject !== subject) return
-      setSnapshot(next)
-      const config = isRecord(next.projection.desktop)
-        && isRecord(next.projection.desktop.config)
-        ? next.projection.desktop.config
-        : {}
-      const preferred = next.sessions.some((item) => item.session_id === sessionRef.current)
-        ? sessionRef.current
-        : text(config.default_session, next.sessions[0]?.session_id ?? 'main')
-      sessionRef.current = preferred
-      setSessionId(preferred)
-      offsetRef.current = 0
-      await readSession(true)
-    } catch (cause) {
-      setError(errorMessage(cause, 'Unable to read Channel state.'))
+    if (loadInFlight.current) {
+      loadQueued.current = true
+      return loadInFlight.current
     }
+    const run = async () => {
+      const generation = ++requestGeneration.current
+      setError(null)
+      try {
+        const next = await window.jea.invoke<ChannelSnapshot>('channel.get', { subject })
+        if (generation !== requestGeneration.current || next.subject !== subject) return
+        setSnapshot(next)
+        const config = isRecord(next.projection.desktop)
+          && isRecord(next.projection.desktop.config)
+          ? next.projection.desktop.config
+          : {}
+        const preferred = next.sessions.some((item) => item.session_id === sessionRef.current)
+          ? sessionRef.current
+          : text(config.default_session, next.sessions[0]?.session_id ?? 'main')
+        sessionRef.current = preferred
+        setSessionId(preferred)
+        offsetRef.current = 0
+        await readSession(true)
+      } catch (cause) {
+        setError(errorMessage(cause, 'Unable to read Channel state.'))
+      }
+    }
+    loadInFlight.current = run().finally(() => {
+      loadInFlight.current = null
+      if (loadQueued.current) {
+        loadQueued.current = false
+        void load()
+      }
+    })
+    return loadInFlight.current
   }, [readSession, subject])
 
   useEffect(() => {
@@ -95,6 +112,23 @@ export function ChannelChatView({ subject }: { subject: string | null }) {
       return
     }
     if (event.type === 'projection.channel_updated') {
+      const channel = isRecord(event.payload?.channel) ? event.payload.channel : null
+      if (channel) {
+        setSnapshot((current) => current
+          ? {
+            ...current,
+            projection: {
+              ...current.projection,
+              worker: {
+                ...(isRecord(current.projection.worker) ? current.projection.worker : {}),
+                running: channel.running === true,
+                blocked: channel.blocked === true,
+                status: typeof channel.health === 'string' ? channel.health : undefined
+              }
+            }
+          }
+          : current)
+      }
       void load()
     }
   }), [load, subject])

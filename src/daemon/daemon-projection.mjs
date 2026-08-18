@@ -1,9 +1,10 @@
+import { createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { writeJson } from '../infra/json-store.mjs';
 import { runtimeForSubject } from './evolve-runs.mjs';
-import { readTaskQueue, summarizeTaskQueue } from './daemon-tasks.mjs';
-import { readWorkerState, summarizeWorkerState } from './daemon-worker-state.mjs';
+import { pendingTasksPath, readTaskQueue, summarizeTaskQueue } from './daemon-tasks.mjs';
+import { readWorkerState, summarizeWorkerState, workerStatePath } from './daemon-worker-state.mjs';
 import { buildCycleProjection } from './cycle-dispatch.mjs';
 import { findStuckSteps, findStepStateDrift, getLastClosedCycle, isCycleProgressStalled, listOpenCycles, summarizeCycleState } from './cycle-state.mjs';
 import { readPendingCycleStartRequest } from './cycle-start-requests.mjs';
@@ -13,6 +14,15 @@ import { isReactorPipeline } from './cycle-pipeline-mode.mjs';
 import { buildReactorHealthProjection } from './reactor-health.mjs';
 import { isTickOpenCycleEnabled } from './cycle-dispatch.mjs';
 import { buildChannelProjection } from '../channel/projection.mjs';
+import { channelEventsPath, channelTasksDir, channelWorkerStatePath } from '../channel/paths.mjs';
+import { claimsPath } from '../evolution/reactor/paths.mjs';
+import {
+  dirIdentitySignature,
+  evidenceSourceSignature,
+  fileIdentitySignature,
+} from '../intelligence/evidence-stream.mjs';
+
+export const DAEMON_PROJECTION_CACHE_LIMIT = 8;
 
 export function daemonViewsDir(root, subject) {
   return join(runtimeForSubject(root, subject).evolutionDir, 'views');
@@ -180,7 +190,7 @@ function buildDaemonHealth({
   };
 }
 
-export function buildDaemonProjection(root, subject, { store = null, eventLimit = 20, heartbeatStaleMs = 60_000, flags = {} } = {}) {
+export function buildDaemonProjectionUncached(root, subject, { store = null, eventLimit = 20, heartbeatStaleMs = 60_000, flags = {} } = {}) {
   const queue = readTaskQueue(root, subject);
   const summary = summarizeTaskQueue(queue);
   const queueTasks = Array.isArray(queue?.tasks) ? queue.tasks : [];
@@ -326,4 +336,116 @@ export function writeDaemonProjection(root, subject, projection) {
   mkdirSync(daemonViewsDir(root, subject), { recursive: true });
   writeJson(currentStatePath(root, subject), projection);
   return projection;
+}
+
+function hashSignature(parts) {
+  return createHash('sha1').update(parts.filter(Boolean).join('\n')).digest('hex');
+}
+
+export function daemonProjectionHeavySignature(root, subject) {
+  const runtime = runtimeForSubject(root, subject);
+  return hashSignature([
+    evidenceSourceSignature(runtime.dataRoot),
+    fileIdentitySignature(claimsPath(runtime.dataRoot)),
+    fileIdentitySignature(join(runtime.evolutionDir, 'pending_decisions.json')),
+    fileIdentitySignature(join(runtime.dataRoot, 'evolution', 'reactor', 'exec-intents.json')),
+    dirIdentitySignature(join(runtime.dataRoot, 'evolution', 'reactor', 'exec-results'), { suffix: '.json' }),
+    dirIdentitySignature(join(runtime.evolutionDir, 'cycle-state'), { suffix: '.json' }),
+    dirIdentitySignature(join(runtime.evolutionDir, 'operator_briefs', 'pending'), { suffix: '.json' }),
+    dirIdentitySignature(join(runtime.evolutionDir, 'operator_facts', 'pending'), { suffix: '.json' }),
+    dirIdentitySignature(join(runtime.evolutionDir, 'operator_questions', 'pending'), { suffix: '.json' }),
+  ]);
+}
+
+export function daemonProjectionLightSignature(root, subject) {
+  const runtime = runtimeForSubject(root, subject);
+  return hashSignature([
+    fileIdentitySignature(workerStatePath(root, subject)),
+    fileIdentitySignature(pendingTasksPath(root, subject)),
+    fileIdentitySignature(channelWorkerStatePath(root, subject)),
+    fileIdentitySignature(join(channelTasksDir(root, subject), 'pending_tasks.json')),
+    fileIdentitySignature(channelEventsPath(root, subject)),
+    dirIdentitySignature(join(runtime.dataRoot, 'channel', 'inbound'), { recursive: true, suffix: '.json' }),
+    dirIdentitySignature(join(runtime.dataRoot, 'channel', 'outbox'), { recursive: true, suffix: '.json' }),
+    dirIdentitySignature(join(runtime.dataRoot, 'channel', 'desktop', 'sessions'), { suffix: '.json' }),
+  ]);
+}
+
+export function daemonProjectionInputSignature(root, subject) {
+  return hashSignature([
+    daemonProjectionHeavySignature(root, subject),
+    daemonProjectionLightSignature(root, subject),
+  ]);
+}
+
+function projectionCacheKey(root, subject) {
+  const runtime = runtimeForSubject(root, subject);
+  return `${runtime.jeaHome}::${runtime.dataNamespace}::${subject}`;
+}
+
+const projectionCache = new Map();
+
+function evictProjectionCache() {
+  while (projectionCache.size > DAEMON_PROJECTION_CACHE_LIMIT) {
+    let oldestKey = null;
+    let oldestAt = Infinity;
+    for (const [key, value] of projectionCache) {
+      if (value.at < oldestAt) {
+        oldestAt = value.at;
+        oldestKey = key;
+      }
+    }
+    if (oldestKey == null) break;
+    projectionCache.delete(oldestKey);
+  }
+}
+
+export function resetDaemonProjectionCache() {
+  projectionCache.clear();
+}
+
+function attachProjectionMeta(projection, fingerprint, revision) {
+  return {
+    ...projection,
+    fingerprint,
+    revision,
+  };
+}
+
+/**
+ * Subject-scoped projection reader. Same input revision is built once and
+ * reused by Main, Client API, and readiness.
+ */
+export function readDaemonProjection(root, subject, options = {}) {
+  const eventLimit = options.eventLimit ?? 20;
+  const heartbeatStaleMs = options.heartbeatStaleMs ?? 60_000;
+  const flags = options.flags ?? {};
+  const heavy = daemonProjectionHeavySignature(root, subject);
+  const light = daemonProjectionLightSignature(root, subject);
+  const fingerprint = hashSignature([heavy, light, String(eventLimit), String(heartbeatStaleMs)]);
+  const key = projectionCacheKey(root, subject);
+  const cached = projectionCache.get(key);
+  if (cached && cached.fingerprint === fingerprint) {
+    cached.at = Date.now();
+    return cached.projection;
+  }
+  const built = buildDaemonProjectionUncached(root, subject, {
+    eventLimit,
+    heartbeatStaleMs,
+    flags,
+  });
+  const revision = cached ? cached.revision + 1 : 1;
+  const projection = attachProjectionMeta(built, fingerprint, revision);
+  if (!cached) evictProjectionCache();
+  projectionCache.set(key, { fingerprint, projection, revision, at: Date.now() });
+  evictProjectionCache();
+  return projection;
+}
+
+export function buildDaemonProjection(root, subject, options = {}) {
+  if (options.cache === false || options.store) {
+    const built = buildDaemonProjectionUncached(root, subject, options);
+    return attachProjectionMeta(built, daemonProjectionInputSignature(root, subject), 0);
+  }
+  return readDaemonProjection(root, subject, options);
 }

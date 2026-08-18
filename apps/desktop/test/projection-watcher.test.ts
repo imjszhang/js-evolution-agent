@@ -245,4 +245,122 @@ describe('ProjectionWatcher', () => {
     expect(published.some((event: any) => event.type === 'evolution.updated' && event.payload.cycle_status === 'completed')).toBe(true)
     expect(published.some((event: any) => event.type === 'projection.channel_updated' && event.payload.channel.blocked === true)).toBe(true)
   })
+
+  it('does not republish when public snapshots are unchanged', () => {
+    const root = projectRoot()
+    const events = new DesktopEventBus()
+    const published: string[] = []
+    events.subscribe((event) => published.push(event.type))
+    const callbackRef: { current?: (event: { reason: string }) => void } = {}
+    const projection = new ProjectionWatcher(
+      root,
+      {
+        refresh: vi.fn(() => [{
+          subject: { name: 'alpha' },
+          daemon: { worker: { running: true, pid: 11 }, health: { status: 'healthy', ok: true }, tasks: { counts: { pending: 0 } } },
+          observability: { attention: { cycle_status: 'completed', cycle_id: 'c1', count: 1 }, open_cycles: 0 }
+        }])
+      } as any,
+      { get: vi.fn(() => ({ subject: 'alpha', questions: [], briefs: [], facts: [], goals: null, pending_cycle_request: null, attention: {} })) } as any,
+      { get: vi.fn(() => ({ subject: 'alpha', projection: { worker: { running: true } }, sessions: [], inbound: {} })) } as any,
+      events,
+      ((options: any) => {
+        callbackRef.current = options.onRuntimeChange
+        return { start: vi.fn(), stop: vi.fn(), notify: vi.fn() }
+      }) as any
+    )
+    projection.watch('alpha')
+    callbackRef.current?.({ reason: 'watch' })
+    const afterFirst = published.length
+    expect(afterFirst).toBe(5)
+    callbackRef.current?.({ reason: 'watch' })
+    expect(published.length).toBe(afterFirst)
+  })
+
+  it('publishes only service/channel events when those snapshots change', () => {
+    const root = projectRoot()
+    const events = new DesktopEventBus()
+    const published: Array<{ type: string; revision?: number }> = []
+    events.subscribe((event) => published.push({
+      type: event.type,
+      revision: typeof event.payload?.revision === 'number' ? event.payload.revision : undefined
+    }))
+    const callbackRef: { current?: (event: { reason: string; partitions?: string[] }) => void } = {}
+    let heartbeat = 't1'
+    const projection = new ProjectionWatcher(
+      root,
+      {
+        refresh: vi.fn(() => [{
+          subject: { name: 'alpha' },
+          daemon: {
+            worker: { running: true, pid: 11, heartbeat_at: heartbeat },
+            health: { status: 'healthy', ok: true },
+            tasks: { counts: { pending: 2 } }
+          },
+          observability: { attention: { cycle_status: 'completed', cycle_id: 'c1', count: 1 }, open_cycles: 0 }
+        }])
+      } as any,
+      { get: vi.fn(() => ({ subject: 'alpha', questions: [], briefs: [], facts: [], goals: null, pending_cycle_request: null, attention: {} })) } as any,
+      { get: vi.fn(() => ({ subject: 'alpha', projection: { worker: { running: true, heartbeat_at: heartbeat } }, sessions: [], inbound: {} })) } as any,
+      events,
+      ((options: any) => {
+        callbackRef.current = options.onRuntimeChange
+        return { start: vi.fn(), stop: vi.fn(), notify: vi.fn() }
+      }) as any
+    )
+    projection.watch('alpha')
+    callbackRef.current?.({ reason: 'watch', partitions: ['service'] })
+    published.length = 0
+    heartbeat = 't2'
+    callbackRef.current?.({ reason: 'watch', partitions: ['service'] })
+    expect(published.map((item) => item.type)).toEqual([
+      'projection.ops_updated',
+      'service.status',
+      'projection.channel_updated'
+    ])
+    expect(new Set(published.map((item) => item.revision)).size).toBe(1)
+  })
+
+  it('single-flights a burst and follows up once when refresh dirties itself', () => {
+    const root = projectRoot()
+    const events = new DesktopEventBus()
+    const published: string[] = []
+    events.subscribe((event) => published.push(event.type))
+    const callbackRef: { current?: (event: { reason: string }) => void } = {}
+    let refreshCount = 0
+    const ops = {
+      refresh: vi.fn(() => {
+        refreshCount += 1
+        if (refreshCount === 2) {
+          callbackRef.current?.({ reason: 'nested' })
+          callbackRef.current?.({ reason: 'nested' })
+        }
+        return [{
+          subject: { name: 'alpha' },
+          daemon: {
+            worker: { running: true, pid: refreshCount },
+            health: { status: 'healthy', ok: true },
+            tasks: { counts: { pending: 0 } }
+          },
+          observability: { attention: { cycle_status: 'completed', cycle_id: 'c1', count: 1 }, open_cycles: 0 }
+        }]
+      })
+    }
+    const projection = new ProjectionWatcher(
+      root,
+      ops as any,
+      { get: vi.fn(() => ({ subject: 'alpha', questions: [], briefs: [], facts: [], goals: null, pending_cycle_request: null, attention: {} })) } as any,
+      { get: vi.fn(() => ({ subject: 'alpha', projection: { worker: { running: true } }, sessions: [], inbound: {} })) } as any,
+      events,
+      ((options: any) => {
+        callbackRef.current = options.onRuntimeChange
+        return { start: vi.fn(), stop: vi.fn(), notify: vi.fn() }
+      }) as any
+    )
+    projection.watch('alpha')
+    expect(refreshCount).toBe(1)
+    callbackRef.current?.({ reason: 'watch' })
+    expect(refreshCount).toBe(3)
+    expect(published.filter((type) => type === 'service.status').length).toBe(2)
+  })
 })

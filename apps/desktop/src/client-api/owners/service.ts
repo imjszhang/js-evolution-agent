@@ -1,6 +1,6 @@
 import { resolveModelReadiness } from '../../../../../src/actions/execution-env.mjs'
 import { enqueueCycleStartRequestWithEvent, processCycleOnce } from '../../../../../src/daemon/cycle-dispatch.mjs'
-import { buildDaemonProjection } from '../../../../../src/daemon/daemon-projection.mjs'
+import { readDaemonProjection } from '../../../../../src/daemon/daemon-projection.mjs'
 import { PublicClientError } from '../errors'
 import { readSubjectReadiness } from '../readiness'
 import { redactPublicValue } from '../redact'
@@ -20,7 +20,7 @@ export interface ServiceProcessPort {
 export function createProjectionServicePort(runtime: ClientRuntimeContext): ServiceProcessPort {
   return {
     get(subject: string): ServiceStatus {
-      const daemon = buildDaemonProjection(runtime, subject, { eventLimit: 10 })
+      const daemon = readDaemonProjection(runtime, subject, { eventLimit: 10 })
       return {
         subject,
         mode: daemon.worker?.running ? 'attached' : 'none',
@@ -61,7 +61,7 @@ export class ServiceCommandOwner {
 
   getStatus(subject: string): ServiceStatus {
     const name = requireSubject(this.runtime, subject)
-    const daemon = buildDaemonProjection(this.runtime, name, { eventLimit: 10 })
+    const daemon = readDaemonProjection(this.runtime, name, { eventLimit: 10 })
     const view = this.processPort.get(name)
     return redactPublicValue({
       subject: name,

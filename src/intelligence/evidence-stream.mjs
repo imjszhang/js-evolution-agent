@@ -3,16 +3,19 @@
  * Pure fs reads — projects scattered stores into EvidenceEnvelope[] without writing.
  */
 import { createHash } from 'node:crypto';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import {
   EVIDENCE_SOURCE_KINDS,
   evidenceKey,
   validateEvidenceEnvelope,
 } from '../contracts/evidence-envelope.mjs';
+import { inferEvidenceProducer } from '../evolution/reactor/eligibility.mjs';
 import { STORE_FILES, readJsonlSafe } from './evidence-audit.mjs';
 
 export const EVIDENCE_STREAM_SCHEMA = 'evidence-stream.v1';
+export const EVIDENCE_HEALTH_SNAPSHOT_SCHEMA = 'evidence-health-snapshot.v1';
+export const EVIDENCE_HEALTH_CACHE_LIMIT = 8;
 
 /** Paths relative to dataRoot (= <JEA_HOME>/subjects/<ns>/data). */
 const STREAM_PATHS = Object.freeze({
@@ -279,6 +282,45 @@ function projectJsonlStore(kind, dataRoot) {
   return projectJsonlRows(kind, relPath, rows);
 }
 
+function projectKind(kind, dataRoot) {
+  switch (kind) {
+    case 'intel_observations':
+      return projectIntelObservations(dataRoot);
+    case 'verify_reports':
+      return projectVerifyReports(dataRoot);
+    case 'operator_briefs':
+      return projectOperatorKind(
+        'operator_briefs',
+        dataRoot,
+        STREAM_PATHS.operator_briefs,
+        ['pending', 'processed'],
+        'operator_brief',
+      );
+    case 'operator_facts':
+      return projectOperatorKind(
+        'operator_facts',
+        dataRoot,
+        STREAM_PATHS.operator_facts,
+        ['pending', 'digested'],
+        'operator_fact',
+      );
+    case 'operator_questions':
+      return projectOperatorKind(
+        'operator_questions',
+        dataRoot,
+        STREAM_PATHS.operator_questions,
+        ['pending', 'resolved'],
+        'operator_question',
+      );
+    case 'channel_events':
+      return projectChannelEvents(dataRoot);
+    default:
+      return STREAM_PATHS[kind]
+        ? projectJsonlStore(kind, dataRoot)
+        : { envelopes: [], disk: 0 };
+  }
+}
+
 /**
  * Load all projected envelopes for a dataRoot (unsorted).
  * @param {string} dataRoot
@@ -287,43 +329,10 @@ function projectJsonlStore(kind, dataRoot) {
 export function loadEvidenceStreamRaw(dataRoot) {
   if (!dataRoot) throw new Error('loadEvidenceStreamRaw requires dataRoot');
 
-  const byKind = {
-    action_receipts: projectJsonlStore('action_receipts', dataRoot),
-    evolution_events: projectJsonlStore('evolution_events', dataRoot),
-    probe_results: projectJsonlStore('probe_results', dataRoot),
-    goal_events: projectJsonlStore('goal_events', dataRoot),
-    belief_events: projectJsonlStore('belief_events', dataRoot),
-    intel_observations: projectIntelObservations(dataRoot),
-    reports: projectJsonlStore('reports', dataRoot),
-    verify_reports: projectVerifyReports(dataRoot),
-    operator_briefs: projectOperatorKind(
-      'operator_briefs',
-      dataRoot,
-      STREAM_PATHS.operator_briefs,
-      ['pending', 'processed'],
-      'operator_brief',
-    ),
-    operator_facts: projectOperatorKind(
-      'operator_facts',
-      dataRoot,
-      STREAM_PATHS.operator_facts,
-      ['pending', 'digested'],
-      'operator_fact',
-    ),
-    operator_questions: projectOperatorKind(
-      'operator_questions',
-      dataRoot,
-      STREAM_PATHS.operator_questions,
-      ['pending', 'resolved'],
-      'operator_question',
-    ),
-    channel_events: projectChannelEvents(dataRoot),
-  };
-
   const envelopes = [];
   const diskCounts = {};
   for (const kind of EVIDENCE_SOURCE_KINDS) {
-    const projected = byKind[kind] ?? { envelopes: [], disk: 0 };
+    const projected = projectKind(kind, dataRoot);
     diskCounts[kind] = projected.disk;
     envelopes.push(...projected.envelopes);
   }
@@ -441,4 +450,211 @@ export function reconcileEvidenceStream(dataRoot) {
     contract_errors: contractErrors.slice(0, 50),
     contract_error_count: contractErrors.length,
   };
+}
+
+export function fileIdentitySignature(absPath) {
+  try {
+    const st = statSync(absPath);
+    return `${st.dev}:${st.ino}:${st.size}:${Math.trunc(st.mtimeMs)}`;
+  } catch {
+    return 'missing';
+  }
+}
+
+export function dirIdentitySignature(absDir, { suffix = null, recursive = false } = {}) {
+  if (!existsSync(absDir)) return 'empty';
+  try {
+    const entries = readdirSync(absDir, { withFileTypes: true });
+    const parts = [];
+    for (const entry of entries) {
+      if (entry.name.startsWith('.')) continue;
+      if (suffix && !entry.name.endsWith(suffix)) continue;
+      const child = join(absDir, entry.name);
+      if (entry.isDirectory()) {
+        if (recursive) {
+          parts.push(`${entry.name}/[${dirIdentitySignature(child, { suffix, recursive })}]`);
+        }
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      parts.push(`${entry.name}:${fileIdentitySignature(child)}`);
+    }
+    parts.sort();
+    return parts.join('|') || 'empty';
+  } catch {
+    return 'unreadable';
+  }
+}
+
+function operatorDirSignature(dataRoot, relBase, subdirs) {
+  return subdirs
+    .map((sub) => `${sub}:${dirIdentitySignature(join(dataRoot, relBase, sub), { suffix: '.json' })}`)
+    .join(';');
+}
+
+export function evidenceSourceKindSignature(dataRoot, kind) {
+  switch (kind) {
+    case 'intel_observations':
+      return dirIdentitySignature(join(dataRoot, STREAM_PATHS.intel_observations), { suffix: '.jsonl' });
+    case 'verify_reports':
+      return dirIdentitySignature(join(dataRoot, STREAM_PATHS.verify_reports), { suffix: '.json' });
+    case 'operator_briefs':
+      return operatorDirSignature(dataRoot, STREAM_PATHS.operator_briefs, ['pending', 'processed']);
+    case 'operator_facts':
+      return operatorDirSignature(dataRoot, STREAM_PATHS.operator_facts, ['pending', 'digested']);
+    case 'operator_questions':
+      return operatorDirSignature(dataRoot, STREAM_PATHS.operator_questions, ['pending', 'resolved']);
+    default:
+      return STREAM_PATHS[kind]
+        ? fileIdentitySignature(join(dataRoot, STREAM_PATHS[kind]))
+        : 'unknown';
+  }
+}
+
+export function evidenceSourceSignature(dataRoot) {
+  return EVIDENCE_SOURCE_KINDS
+    .map((kind) => `${kind}=${evidenceSourceKindSignature(dataRoot, kind)}`)
+    .join('\n');
+}
+
+function compactEnvelope(envelope) {
+  return {
+    id: envelope.id,
+    kind: envelope.kind,
+    type: envelope.type,
+    occurred_at: envelope.occurred_at,
+    evidence_key: envelope.evidence_key,
+    producer: inferEvidenceProducer(envelope),
+    producer_batch_id: envelope.producer_batch_id ?? null,
+    activation_targets: Array.isArray(envelope.activation_targets) ? envelope.activation_targets : null,
+    provenance: envelope.provenance,
+    cycle_id: envelope.cycle_id ?? null,
+    subject: envelope.subject ?? null,
+  };
+}
+
+function loadKindHealth(dataRoot, kind) {
+  const projected = projectKind(kind, dataRoot);
+  const envelopes = [];
+  const contractErrors = [];
+  for (const envelope of projected.envelopes) {
+    const validation = validateEvidenceEnvelope(envelope);
+    if (!validation.ok) {
+      contractErrors.push({
+        id: envelope.id,
+        kind: envelope.kind,
+        errors: validation.errors,
+      });
+    }
+    envelopes.push(compactEnvelope(envelope));
+  }
+  return {
+    envelopes,
+    disk: projected.disk,
+    contractErrors,
+  };
+}
+
+function assembleHealthReconcile(envelopes, diskCounts, contractErrors) {
+  const streamCounts = {};
+  for (const kind of EVIDENCE_SOURCE_KINDS) streamCounts[kind] = 0;
+  const idCounts = new Map();
+  for (const envelope of envelopes) {
+    streamCounts[envelope.kind] = (streamCounts[envelope.kind] ?? 0) + 1;
+    const key = `${envelope.kind}:${envelope.id}`;
+    idCounts.set(key, (idCounts.get(key) ?? 0) + 1);
+  }
+  const duplicateIds = [...idCounts.entries()]
+    .filter(([, count]) => count > 1)
+    .map(([key, count]) => ({ key, count }));
+  const sources = EVIDENCE_SOURCE_KINDS.map((kind) => {
+    const disk = diskCounts[kind] ?? 0;
+    const stream = streamCounts[kind] ?? 0;
+    return { kind, disk, stream, ok: disk === stream };
+  });
+  const mismatched = sources.filter((item) => !item.ok);
+  return {
+    schema_version: EVIDENCE_STREAM_SCHEMA,
+    ok: mismatched.length === 0 && contractErrors.length === 0,
+    total: envelopes.length,
+    sources,
+    mismatched,
+    duplicate_ids: duplicateIds,
+    contract_errors: contractErrors.slice(0, 50),
+    contract_error_count: contractErrors.length,
+  };
+}
+
+const healthSnapshotCache = new Map();
+
+function evictHealthSnapshotCache() {
+  while (healthSnapshotCache.size > EVIDENCE_HEALTH_CACHE_LIMIT) {
+    let oldestKey = null;
+    let oldestAt = Infinity;
+    for (const [key, value] of healthSnapshotCache) {
+      if (value.at < oldestAt) {
+        oldestAt = value.at;
+        oldestKey = key;
+      }
+    }
+    if (oldestKey == null) break;
+    healthSnapshotCache.delete(oldestKey);
+  }
+}
+
+export function resetEvidenceHealthSnapshotCache() {
+  healthSnapshotCache.clear();
+}
+
+/**
+ * Compact, cacheable snapshot for reactor health. Each source is scanned at
+ * most once per identity change; payloads are not retained.
+ */
+export function readEvidenceHealthSnapshot(dataRoot) {
+  if (!dataRoot) throw new Error('readEvidenceHealthSnapshot requires dataRoot');
+  const signature = evidenceSourceSignature(dataRoot);
+  let entry = healthSnapshotCache.get(dataRoot);
+  if (entry?.signature === signature && entry.snapshot) {
+    entry.at = Date.now();
+    return entry.snapshot;
+  }
+  if (!entry) {
+    evictHealthSnapshotCache();
+    entry = { at: Date.now(), signature: null, snapshot: null, sources: new Map() };
+    healthSnapshotCache.set(dataRoot, entry);
+    evictHealthSnapshotCache();
+  }
+
+  const envelopes = [];
+  const diskCounts = {};
+  const contractErrors = [];
+  for (const kind of EVIDENCE_SOURCE_KINDS) {
+    const kindSig = evidenceSourceKindSignature(dataRoot, kind);
+    let source = entry.sources.get(kind);
+    if (!source || source.sig !== kindSig) {
+      const loaded = loadKindHealth(dataRoot, kind);
+      source = { sig: kindSig, ...loaded };
+      entry.sources.set(kind, source);
+    }
+    diskCounts[kind] = source.disk;
+    envelopes.push(...source.envelopes);
+    contractErrors.push(...source.contractErrors);
+  }
+  for (const kind of [...entry.sources.keys()]) {
+    if (!EVIDENCE_SOURCE_KINDS.includes(kind)) entry.sources.delete(kind);
+  }
+
+  const snapshot = {
+    schema_version: EVIDENCE_HEALTH_SNAPSHOT_SCHEMA,
+    dataRoot,
+    signature,
+    generated_at: new Date().toISOString(),
+    envelopes,
+    diskCounts,
+    reconcile: assembleHealthReconcile(envelopes, diskCounts, contractErrors),
+  };
+  entry.signature = signature;
+  entry.snapshot = snapshot;
+  entry.at = Date.now();
+  return snapshot;
 }

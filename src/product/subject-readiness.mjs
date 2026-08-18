@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveDesktopConfig } from '../channel/adapters/desktop/config.mjs';
-import { buildDaemonProjection } from '../daemon/daemon-projection.mjs';
+import { readDaemonProjection } from '../daemon/daemon-projection.mjs';
 import { resolveModelReadiness } from '../actions/execution-env.mjs';
 import { getSubjectEntry, listRegisteredSubjects } from '../infra/subjects.mjs';
 import { runtimeForSubject } from '../infra/runtime-paths.mjs';
@@ -305,7 +305,7 @@ function desktopChannelEnabled(runtime, subject) {
 }
 
 function defaultProcessView(runtime, subject) {
-  const daemon = buildDaemonProjection(runtime, subject, { eventLimit: 10 });
+  const daemon = readDaemonProjection(runtime, subject, { eventLimit: 10 });
   return {
     subject,
     mode: daemon.worker?.running ? 'attached' : 'none',
@@ -337,7 +337,7 @@ export function readSubjectReadiness(runtime, subject, options = {}) {
   const name = requireRegisteredSubject(runtime, subject);
   const hostKind = options.hostKind ?? 'electron';
   const processPort = options.processPort;
-  const daemon = buildDaemonProjection(runtime, name, { eventLimit: 10 });
+  const daemon = readDaemonProjection(runtime, name, { eventLimit: 10 });
   const view = processPort?.get ? processPort.get(name) : defaultProcessView(runtime, name);
   const model = resolveModelReadiness({
     jeaHome: runtime.jeaHome,

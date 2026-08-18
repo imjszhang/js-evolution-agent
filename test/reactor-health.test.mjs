@@ -4,7 +4,9 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { writeJsonFile } from '../src/infra/files.mjs';
 import { buildReactorHealthProjection } from '../src/daemon/reactor-health.mjs';
-import { buildDaemonProjection } from '../src/daemon/daemon-projection.mjs';
+import { buildDaemonProjection, resetDaemonProjectionCache } from '../src/daemon/daemon-projection.mjs';
+import { listEligibleEvidence } from '../src/evolution/reactor/claim-ledger.mjs';
+import { resetEvidenceHealthSnapshotCache } from '../src/intelligence/evidence-stream.mjs';
 import { writePendingOperatorBrief } from '../src/intelligence/operator-briefs.mjs';
 import { claimsPath } from '../src/evolution/reactor/paths.mjs';
 import { runtimeForSubject } from '../src/infra/runtime-paths.mjs';
@@ -25,6 +27,8 @@ function makeRoot() {
 }
 
 afterEach(() => {
+  resetEvidenceHealthSnapshotCache();
+  resetDaemonProjectionCache();
   if (tempDir) {
     rmSync(tempDir, { recursive: true, force: true });
     tempDir = null;
@@ -123,5 +127,37 @@ describe('reactor health projection', () => {
     expect(projection.cycles.progress_stalled).toBe(false);
     expect(projection.health.ok).toBe(projection.reactor.ok);
     expect(['idle', 'healthy', 'reactor_backlog_stalled', 'blocked']).toContain(projection.health.status);
+  });
+
+  it('keeps cognitive/rule/memory eligibility consistent with the claim ledger', () => {
+    const root = makeRoot();
+    const runtime = runtimeForSubject(root, 'alpha');
+    writePendingOperatorBrief(runtime.runtimeRoot, {
+      id: 'brief-eligible-1',
+      summary: 'eligible brief',
+      created_at: new Date().toISOString(),
+    });
+    mkdirSync(join(runtime.dataRoot, 'intelligence', 'reports'), { recursive: true });
+    writeFileSync(join(runtime.dataRoot, 'intelligence', 'reports', 'index.jsonl'), `${JSON.stringify({
+      id: 'report-1',
+      type: 'intel_report',
+      recorded_at: new Date().toISOString(),
+    })}\n`, 'utf8');
+
+    const health = buildReactorHealthProjection(root, 'alpha');
+    for (const reactor of ['cognitive', 'rule', 'memory']) {
+      const pending = listEligibleEvidence(runtime.dataRoot, { reactor });
+      expect(health.evidence_by_reactor[reactor].pending_count).toBe(pending.length);
+    }
+    expect(health.reconcile.ok).toBe(true);
+  });
+
+  it('reuses a cached daemon projection for the same input revision', () => {
+    const root = makeRoot();
+    const first = buildDaemonProjection(root, 'alpha');
+    const second = buildDaemonProjection(root, 'alpha');
+    expect(second).toBe(first);
+    expect(first.revision).toBe(1);
+    expect(first.fingerprint).toEqual(expect.any(String));
   });
 });

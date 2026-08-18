@@ -1,5 +1,5 @@
 // JEA is authored as native ESM JavaScript and is consumed directly by Electron.
-import { buildDaemonProjection } from '../../../../src/daemon/daemon-projection.mjs'
+import { readDaemonProjection } from '../../../../src/daemon/daemon-projection.mjs'
 import { buildSubjectObservability } from '../../../../src/intelligence/evolution-viewer/observability-projection.mjs'
 import {
   listRegisteredSubjects,
@@ -27,7 +27,7 @@ export interface ProjectionBuilders {
 }
 
 const directBuilders: ProjectionBuilders = {
-  daemon: (root, subject) => buildDaemonProjection(root, subject, { eventLimit: 30 }),
+  daemon: (root, subject) => readDaemonProjection(root, subject, { eventLimit: 30 }),
   observability: (input) => buildSubjectObservability(input)
 }
 

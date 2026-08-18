@@ -59,6 +59,11 @@ export interface ConversationWorkspaceSnapshot {
 
 const DEFAULT_SESSION = 'main'
 
+function eventRevision(event: JeaEventEnvelope): number | null {
+  const value = event.payload?.revision
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
 function channelReasonsFromPayload(payload: Record<string, unknown> | undefined): string[] | null {
   const channel = payload?.channel
   if (!channel || typeof channel !== 'object' || Array.isArray(channel)) return null
@@ -105,6 +110,9 @@ export class ConversationWorkspaceModel {
   private waitStartedAt: string | null = null
   private selectedName: string | null = null
   private disposed = false
+  private lastSupportRevision: number | null = null
+  private supportInFlight: Promise<void> | null = null
+  private supportQueued: { subject: string; generation: number; revision: number | null } | null = null
 
   constructor(
     private readonly client: JeaClient,
@@ -184,6 +192,8 @@ export class ConversationWorkspaceModel {
     this.offset = 0
     this.draftAttempt = null
     this.waitStartedAt = null
+    this.lastSupportRevision = null
+    this.supportQueued = null
     await this.retargetWatch(name, generation)
     if (!this.isCurrent(generation)) return
     this.patch({
@@ -359,13 +369,13 @@ export class ConversationWorkspaceModel {
         await this.selectSubject(next)
         return
       }
-      if (subject) await this.selectSubject(subject, { generation })
+      if (subject) await this.refreshSupportCoalesced(subject, generation, eventRevision(event))
       return
     }
     if (event.type === 'projection.channel_updated') {
       const reasons = channelReasonsFromPayload(event.payload)
       if (reasons) this.patch({ channelReasons: reasons })
-      if (subject) await this.refreshSupport(subject, generation)
+      if (subject) await this.refreshSupportCoalesced(subject, generation, eventRevision(event))
       return
     }
     if (isConversationEvent(event)) {
@@ -382,7 +392,7 @@ export class ConversationWorkspaceModel {
       return
     }
     if ((isServiceEvent(event) || isEvolutionEvent(event)) && subject) {
-      await this.refreshSupport(subject, generation)
+      await this.refreshSupportCoalesced(subject, generation, eventRevision(event))
     }
   }
 
@@ -432,6 +442,30 @@ export class ConversationWorkspaceModel {
     } catch {
       // Support reads are best-effort and must not block conversation.
     }
+  }
+
+  private async refreshSupportCoalesced(
+    subject: string,
+    generation: number,
+    revision: number | null
+  ): Promise<void> {
+    if (revision != null && revision === this.lastSupportRevision) return
+    if (this.supportInFlight) {
+      this.supportQueued = { subject, generation, revision }
+      return
+    }
+    this.supportInFlight = this.refreshSupport(subject, generation)
+    try {
+      await this.supportInFlight
+      if (revision != null) this.lastSupportRevision = revision
+    } finally {
+      this.supportInFlight = null
+    }
+    const queued = this.supportQueued
+    this.supportQueued = null
+    if (!queued) return
+    if (queued.revision != null && queued.revision === this.lastSupportRevision) return
+    await this.refreshSupportCoalesced(queued.subject, queued.generation, queued.revision)
   }
 
   private async retargetWatch(subject: string, generation: number): Promise<void> {
