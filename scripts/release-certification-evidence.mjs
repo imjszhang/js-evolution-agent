@@ -9,6 +9,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, printReport, readJson, RELEASE_PLATFORM, RELEASE_VERSION, repoRootFrom } from './release-lib.mjs';
 import { commitsMatch, readBuildMetadataFile, writeBuildMetadata } from '../src/product/build-metadata.mjs';
+import { SOAK_DEFAULT_MS } from './release-recovery-soak.mjs';
 
 export const EVIDENCE_FILE = 'certification-evidence.json';
 export const CERTIFICATION_WAVE = '0.1.1';
@@ -54,10 +55,12 @@ export function collectCertificationInputs(outDir) {
   const recoveryPath = join(dest, 'recovery-matrix.json');
   const soakPath = join(dest, 'soak-report.json');
   const journeyPath = join(dest, 'product-journey.json');
+  const launchPath = join(dest, 'launch-smoke.json');
   const metadataPath = join(dest, 'build-metadata.json');
   const recovery = readOptionalJson(recoveryPath);
   const soak = readOptionalJson(soakPath);
   const journey = readOptionalJson(journeyPath);
+  const launch = readOptionalJson(launchPath);
   return {
     metadata: readBuildMetadataFile(metadataPath),
     recoveryMatrix: artifactStepFromReport('recovery_matrix', recovery, recoveryPath),
@@ -65,6 +68,9 @@ export function collectCertificationInputs(outDir) {
     steps: [
       artifactStepFromReport('product_journey', journey, journeyPath, {
         detail: journey?.runner || journey?.detail || null,
+      }),
+      artifactStepFromReport('packaged_launch_smoke', launch, launchPath, {
+        detail: launch?.reason || launch?.detail || null,
       }),
     ].filter(Boolean),
   };
@@ -114,6 +120,10 @@ export function evaluateRecoverySoakEvidence(evidence, fileMetadata, {
   if (!stepOk(soak)) {
     return { ok: false, reason: 'soak_evidence_missing' };
   }
+  const soakDuration = Number(soak.duration_ms);
+  if (Number.isFinite(soakDuration) && soakDuration > 0 && soakDuration < SOAK_DEFAULT_MS) {
+    return { ok: false, reason: 'soak_too_short' };
+  }
 
   const generatedAt = Date.parse(evidence.generated_at);
   if (!Number.isFinite(generatedAt) || now - generatedAt > maxAgeMs) {
@@ -158,7 +168,10 @@ export function writeCertificationEvidence({
   if (soakStep && !allSteps.some((item) => item.id === 'soak')) allSteps.push(soakStep);
 
   const failed = allSteps.some((item) => item.ok === false || item.status === 'failed');
-  const complete = stepOk(recovery) && stepOk(soakStep) && metadata && metadata.dirty !== true;
+  const soakDuration = Number(soakStep?.duration_ms);
+  const soakLongEnough = stepOk(soakStep)
+    && (!Number.isFinite(soakDuration) || soakDuration <= 0 || soakDuration >= SOAK_DEFAULT_MS);
+  const complete = stepOk(recovery) && soakLongEnough && metadata && metadata.dirty !== true;
   const resolvedStatus = status ?? (failed ? 'failed' : (complete ? 'certified' : 'pending'));
 
   if (metadata) writeBuildMetadata(dest, metadata);
@@ -182,6 +195,7 @@ export function writeCertificationEvidence({
       recovery_matrix: recovery?.evidence ?? null,
       soak: soakStep?.evidence ?? null,
       product_journey: allSteps.find((item) => item.id === 'product_journey')?.evidence ?? null,
+      packaged_launch_smoke: allSteps.find((item) => item.id === 'packaged_launch_smoke')?.evidence ?? null,
       build_metadata: metadata ? join(dest, 'build-metadata.json') : null,
     },
     ...Object.fromEntries(
