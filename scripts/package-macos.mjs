@@ -15,6 +15,14 @@ import { PRODUCT_VERSION, SIGNING_POLICY } from '../src/product/identity.mjs';
 import { assertCleanProvenance, collectBuildMetadata, writeBuildMetadata } from '../src/product/build-metadata.mjs';
 import { stageAppResources } from './stage-app-resources.mjs';
 
+export function resolveElectronDist(repoRoot) {
+  const candidates = [
+    join(repoRoot, 'node_modules', 'electron', 'dist'),
+    join(repoRoot, 'apps', 'desktop', 'node_modules', 'electron', 'dist'),
+  ];
+  return candidates.find((dir) => existsSync(dir)) || null;
+}
+
 function builderEnv() {
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
@@ -106,8 +114,14 @@ export async function packageMacos({
     metadata: provenance,
   });
 
+  const electronDist = resolveElectronDist(repoRoot);
+  if (!electronDist) {
+    return { ok: false, status: 'electron_dist_missing', repoRoot };
+  }
+
   const builderArgs = ['exec', '--workspace', '@jea/desktop', '--', 'electron-builder', '--mac'];
   builderArgs.push(dirOnly ? '--dir' : 'zip');
+  builderArgs.push(`--config.electronDist=${electronDist}`);
   run('npm', builderArgs, repoRoot);
 
   const buildDir = join(repoRoot, 'dist/release/build');

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { repoRootFrom } from '../scripts/release-lib.mjs';
 import { stageAppResources } from '../scripts/stage-app-resources.mjs';
+import { resolveElectronDist } from '../scripts/package-macos.mjs';
 
 const repoRoot = repoRootFrom(new URL('../scripts/release-lib.mjs', import.meta.url));
 const temps = [];
@@ -46,5 +47,6 @@ describe('stage-app-resources', () => {
     const yml = readFileSync(join(repoRoot, 'apps/desktop/electron-builder.yml'), 'utf8');
     expect(yml).toMatch(/^electronVersion:\s*43\.4\.0\s*$/m);
     expect(yml).toMatch(/^electronDist:\s*\.\.\/\.\.\/node_modules\/electron\/dist\s*$/m);
+    expect(resolveElectronDist(repoRoot)).toMatch(/node_modules\/electron\/dist$/);
   });
 });
