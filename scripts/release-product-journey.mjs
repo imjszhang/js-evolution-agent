@@ -4,13 +4,13 @@
  *
  * Uses a temporary JEA_HOME and never writes ~/.jea. When JEA.app exists,
  * every CLI step goes through the packaged launcher (Electron-as-Node),
- * not checkout `src/cli/jea.mjs`. Without an app, Linux CI still uses the
- * checkout runner.
+ * not checkout `src/cli/jea.mjs`. Packaged runs use a PATH without standalone
+ * Node. Without an app, Linux CI still uses the checkout runner.
  *
  * Usage:
  *   node scripts/release-product-journey.mjs [--repo DIR] [--app PATH] [--json]
  */
-import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -39,6 +39,33 @@ export function resolveJourneyRunner({ repoRoot, appPath = null }) {
     kind: 'checkout',
     repoRoot,
     sourceRoot: repoRoot,
+  };
+}
+
+export function packagedJourneyPath(binDir) {
+  return [binDir, '/usr/bin', '/bin'].join(delimiter);
+}
+
+export function pathHasNodeBinary(pathEnv) {
+  return String(pathEnv || '')
+    .split(delimiter)
+    .filter(Boolean)
+    .some((dir) => existsSync(join(dir, 'node')));
+}
+
+export function evaluatePackagedLauncher(contents, { electron, sourceRoot } = {}) {
+  const text = String(contents || '');
+  return {
+    ok: Boolean(
+      electron
+      && sourceRoot
+      && text.includes('ELECTRON_RUN_AS_NODE=1')
+      && text.includes(`exec "${electron}"`)
+      && text.includes(`JEA_PROJECT_ROOT="${sourceRoot}"`)
+      && existsSync(electron)
+    ),
+    usesElectron: text.includes(`exec "${electron}"`),
+    electronExists: Boolean(electron && existsSync(electron)),
   };
 }
 
@@ -82,7 +109,9 @@ export function runProductJourney({
     JEA_PROJECT_ROOT: runner.sourceRoot,
     JEA_CLI_BIN_DIR: binDir,
     JEA_FORCE_MOCK: '1',
-    PATH: `${binDir}${delimiter}${process.env.PATH || ''}`,
+    PATH: runner.kind === 'packaged'
+      ? packagedJourneyPath(binDir)
+      : `${binDir}${delimiter}${process.env.PATH || ''}`,
   };
   delete env.DEEPSEEK_API_KEY;
   if (runner.kind === 'packaged') {
@@ -105,13 +134,35 @@ export function runProductJourney({
         ok: Boolean(installed.installed),
         detail: installed.detail || 'installed',
       });
+      const launcherPath = join(binDir, 'jea');
+      const launcher = existsSync(launcherPath) ? readFileSync(launcherPath, 'utf8') : '';
+      const launcherCheck = evaluatePackagedLauncher(launcher, {
+        electron: runner.electron,
+        sourceRoot: runner.sourceRoot,
+      });
+      steps.push({
+        id: 'packaged_cli_no_system_node',
+        ok: launcherCheck.ok && !pathHasNodeBinary(env.PATH),
+        detail: pathHasNodeBinary(env.PATH) ? 'node_on_path' : runner.electron,
+      });
     } catch (error) {
       steps.push({
         id: 'packaged_cli_install',
         ok: false,
         detail: error?.message || String(error),
       });
+      steps.push({
+        id: 'packaged_cli_no_system_node',
+        ok: false,
+        detail: error?.message || String(error),
+      });
     }
+  } else {
+    steps.push({
+      id: 'packaged_cli_no_system_node',
+      ok: true,
+      detail: 'skipped_no_app',
+    });
   }
 
   const version = runJea(runner, ['--version'], env);
