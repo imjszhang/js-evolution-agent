@@ -420,10 +420,13 @@ export function readDaemonProjection(root, subject, options = {}) {
   const eventLimit = options.eventLimit ?? 20;
   const heartbeatStaleMs = options.heartbeatStaleMs ?? 60_000;
   const flags = options.flags ?? {};
-  const heavy = daemonProjectionHeavySignature(root, subject);
-  const light = daemonProjectionLightSignature(root, subject);
-  const fingerprint = hashSignature([heavy, light, String(eventLimit), String(heartbeatStaleMs)]);
   const key = projectionCacheKey(root, subject);
+  const fingerprint = hashSignature([
+    daemonProjectionHeavySignature(root, subject),
+    daemonProjectionLightSignature(root, subject),
+    String(eventLimit),
+    String(heartbeatStaleMs),
+  ]);
   const cached = projectionCache.get(key);
   if (cached && cached.fingerprint === fingerprint) {
     cached.at = Date.now();
@@ -434,10 +437,17 @@ export function readDaemonProjection(root, subject, options = {}) {
     heartbeatStaleMs,
     flags,
   });
+  // Reads may mkdir or write empty placeholders; store the post-build identity.
+  const nextFingerprint = hashSignature([
+    daemonProjectionHeavySignature(root, subject),
+    daemonProjectionLightSignature(root, subject),
+    String(eventLimit),
+    String(heartbeatStaleMs),
+  ]);
   const revision = cached ? cached.revision + 1 : 1;
-  const projection = attachProjectionMeta(built, fingerprint, revision);
+  const projection = attachProjectionMeta(built, nextFingerprint, revision);
   if (!cached) evictProjectionCache();
-  projectionCache.set(key, { fingerprint, projection, revision, at: Date.now() });
+  projectionCache.set(key, { fingerprint: nextFingerprint, projection, revision, at: Date.now() });
   evictProjectionCache();
   return projection;
 }
