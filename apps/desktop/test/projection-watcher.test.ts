@@ -368,7 +368,7 @@ describe('ProjectionWatcher', () => {
     const events = new DesktopEventBus()
     const published: string[] = []
     events.subscribe((event) => published.push(event.type))
-    let rebuildListener: ((event: { subject: string }) => void) | null = null
+    const rebuild = { current: null as null | ((event: { subject: string }) => void) }
     let pid = 11
     const projection = new ProjectionWatcher(
       root,
@@ -392,9 +392,9 @@ describe('ProjectionWatcher', () => {
       undefined,
       {
         onRebuild: (listener) => {
-          rebuildListener = listener
+          rebuild.current = listener
           return () => {
-            if (rebuildListener === listener) rebuildListener = null
+            if (rebuild.current === listener) rebuild.current = null
           }
         }
       }
@@ -402,7 +402,7 @@ describe('ProjectionWatcher', () => {
     projection.watch('alpha')
     published.length = 0
     pid = 12
-    rebuildListener?.({ subject: 'alpha' })
+    rebuild.current?.({ subject: 'alpha' })
     expect(published).toContain('service.status')
     expect(published).toContain('evolution.updated')
   })
