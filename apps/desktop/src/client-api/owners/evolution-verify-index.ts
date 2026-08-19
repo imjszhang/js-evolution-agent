@@ -8,6 +8,11 @@ import {
 
 export const EVOLUTION_REPORT_INDEX_LIMIT = 8
 
+const directoryIdentitySignature = dirIdentitySignature as unknown as (
+  dir: string,
+  options?: { suffix?: string | null; recursive?: boolean }
+) => string
+
 interface VerifyView {
   available: boolean
   semantic_status: string | null
@@ -112,7 +117,7 @@ export function buildVerifyReportIndex(dir: string): { byCycleId: Map<string, Ve
 export function lookupVerifyReport(dir: string, cycleId: unknown): VerifyView {
   const id = String(cycleId ?? '').trim()
   if (!id || !dir) return emptyVerifyView()
-  const signature = dirIdentitySignature(dir, { suffix: '.json' })
+  const signature = directoryIdentitySignature(dir, { suffix: '.json' })
   let entry = verifyCaches.get(dir)
   if (!entry || entry.signature !== signature) {
     entry = remember(verifyCaches, dir, {
