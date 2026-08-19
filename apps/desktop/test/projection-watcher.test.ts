@@ -326,7 +326,7 @@ describe('ProjectionWatcher', () => {
     const published: string[] = []
     events.subscribe((event) => published.push(event.type))
     const callbackRef: { current?: (event: { reason: string; partitions?: string[] }) => void } = {}
-    let channelHeartbeat = 't1'
+    let channelSessionCount = 0
     const projection = new ProjectionWatcher(
       root,
       {
@@ -344,8 +344,8 @@ describe('ProjectionWatcher', () => {
       {
         get: vi.fn(() => ({
           subject: 'alpha',
-          projection: { worker: { running: true, heartbeat_at: channelHeartbeat } },
-          sessions: [],
+          projection: { worker: { running: true } },
+          sessions: Array.from({ length: channelSessionCount }, (_, index) => ({ session_id: `session-${index}` })),
           inbound: {}
         }))
       } as any,
@@ -359,7 +359,7 @@ describe('ProjectionWatcher', () => {
     callbackRef.current?.({ reason: 'watch', partitions: ['channel'] })
     published.length = 0
 
-    channelHeartbeat = 't2'
+    channelSessionCount = 1
     callbackRef.current?.({ reason: 'watch', partitions: ['channel'] })
 
     expect(published).toEqual(['projection.channel_updated'])
