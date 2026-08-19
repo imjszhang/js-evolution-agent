@@ -51,6 +51,11 @@ export function pickDefaultCycleId(snapshot: Pick<EvolutionInspectorSnapshot, 'l
     return cycleKind(detail ?? null, cycle.status) === 'open'
   })
   if (open) return open.cycle_id
+  const listed = new Set(cycles.map((cycle) => cycle.cycle_id))
+  const diagnosticOpen = (snapshot.observability?.cycle_diagnostics?.recent ?? []).find((item) => (
+    listed.has(item.cycle_id) && isOpenCycleStatus(item.status)
+  ))
+  if (diagnosticOpen) return diagnosticOpen.cycle_id
   if ((snapshot.observability?.open_cycles ?? 0) > 0) {
     const firstWithDetail = cycles.find((cycle) => snapshot.cycles[cycle.cycle_id])
     if (firstWithDetail && !snapshot.cycles[firstWithDetail.cycle_id]?.closed_at) {

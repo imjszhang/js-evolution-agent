@@ -75,6 +75,17 @@ describe('Evolution Inspector legacy projection parity', () => {
       tldr: 'Parity fixture report',
       subject: 'alpha'
     })
+    const openId = 'cycle-20260816-110000'
+    createCycle(runtime, 'alpha', {
+      cycleId: openId as never,
+      meta: { driver: 'daemon', pipeline: 'reactor' }
+    })
+    store.recordIntelReport({
+      cycle_id: openId,
+      generated_at: '2026-08-16T11:00:00.000Z',
+      tldr: 'Open cycle still running',
+      subject: 'alpha'
+    })
 
     const owner = new EvolutionCommandOwner(runtime)
     const list = owner.listCycles('alpha')
@@ -109,6 +120,9 @@ describe('Evolution Inspector legacy projection parity', () => {
 
     expect(list.round_count).toBe(manifest.round_count)
     expect(list.cycles.map((item) => item.cycle_id)).toEqual(manifest.rounds.map((item: { cycle_id: string }) => item.cycle_id))
+    expect(list.cycles.find((item) => item.cycle_id === cycleId)?.status).toBe('closed')
+    expect(list.cycles.find((item) => item.cycle_id === openId)?.status).toBe('open')
+    expect(observability.cycle_diagnostics?.recent?.some((item) => item.cycle_id === openId && item.status === 'open')).toBe(true)
     expect(cycle.cycle_status).toBe(legacyCycle?.cycle_status ?? null)
     expect(cycle.has_report).toBe(Boolean(legacyCycle?.has_report))
     expect(Object.keys(cycle.steps)).toEqual(Object.keys(legacyCycle?.steps ?? {}))

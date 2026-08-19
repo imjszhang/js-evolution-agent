@@ -80,6 +80,17 @@ describe('Evolution Inspector component', () => {
     expect(projectTimeline(snapshot)[0]?.steps.some((step) => step.name === 'reactor')).toBe(true)
   })
 
+  it('renders unloaded timeline items without step chips', () => {
+    const snapshot = snapshotFromFixture('alpha')
+    const html = renderInspector({
+      ...snapshot,
+      cycles: {},
+      rounds: snapshot.rounds
+    })
+    expect(html).toContain('data-summary-only="true"')
+    expect(html).toContain('cycle-20260816-open')
+  })
+
   it('renders report, diary, verify, and evidence summaries for a historical cycle', () => {
     const snapshot = snapshotFromFixture('alpha', 'cycle-20260815-closed')
     const html = renderInspector(snapshot)

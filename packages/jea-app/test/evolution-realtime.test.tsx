@@ -114,4 +114,34 @@ describe('Evolution Inspector realtime refresh', () => {
     })
     expect(client.calls.listCycles.length - afterLoad).toBeLessThanOrEqual(1)
   })
+
+  it('loads details for at most the selected cycle and reuses later selections', async () => {
+    const client = createEvolutionFixtureClient()
+    const controller = createInspectorController(client)
+    const loaded = await controller.load('alpha')
+    expect(loaded.selectedCycleId).toBe('cycle-20260816-open')
+    expect(new Set(client.calls.getCycle.map((item) => item.cycleId))).toEqual(new Set(['cycle-20260816-open']))
+    expect(new Set(client.calls.getRound.map((item) => item.cycleId))).toEqual(new Set(['cycle-20260816-open']))
+    expect(loaded.cycles['cycle-20260815-closed']).toBeUndefined()
+
+    const selected = await controller.selectCycle('cycle-20260815-closed')
+    expect(selected.selectedCycleId).toBe('cycle-20260815-closed')
+    expect(selected.cycles['cycle-20260815-closed']?.cycle_id).toBe('cycle-20260815-closed')
+    expect(client.calls.getCycle.filter((item) => item.cycleId === 'cycle-20260815-closed')).toHaveLength(1)
+    const afterSelect = client.calls.getCycle.length
+    await controller.selectCycle('cycle-20260815-closed')
+    expect(client.calls.getCycle.length).toBe(afterSelect)
+
+    const historicalFetches = client.calls.getCycle.filter((item) => item.cycleId === 'cycle-20260815-closed').length
+    const next = await controller.handleEvent({
+      type: 'evolution.updated',
+      ts: '2026-08-18T05:00:00.000Z',
+      subject: 'alpha',
+      payload: { subject: 'alpha', cycle_id: 'cycle-20260816-open', revision: 12 }
+    })
+    expect(next?.cycles['cycle-20260815-closed']?.cycle_id).toBe('cycle-20260815-closed')
+    expect(client.calls.getCycle.filter((item) => item.cycleId === 'cycle-20260815-closed')).toHaveLength(historicalFetches)
+    expect(client.calls.getCycle.filter((item) => item.cycleId === 'cycle-20260816-open').length).toBeGreaterThan(1)
+    expect(new Set(client.calls.getCycle.map((item) => item.cycleId)).size).toBe(2)
+  })
 })

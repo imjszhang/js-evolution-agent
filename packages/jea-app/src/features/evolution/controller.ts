@@ -39,10 +39,18 @@ export function createInspectorController(client: EvolutionInspectorClient): Ins
       lastRevision = null
       return state.snapshot
     }
+
+    // Copy before any snapshot reset. emptySnapshot() would wipe these maps.
+    const sameSubject = state.snapshot.subject === name
+    const previousCycles = sameSubject ? { ...state.snapshot.cycles } : {}
+    const previousRounds = sameSubject ? { ...state.snapshot.rounds } : {}
+
     state.loading = true
     state.snapshot = {
-      ...emptySnapshot(name),
-      selectedCycleId: preferredCycleId ?? state.snapshot.selectedCycleId
+      ...state.snapshot,
+      subject: name,
+      selectedCycleId: preferredCycleId ?? state.snapshot.selectedCycleId,
+      stale: false
     }
     const [listRaw, observabilityRaw] = await Promise.all([
       settled(client.listCycles(name)),
@@ -52,14 +60,15 @@ export function createInspectorController(client: EvolutionInspectorClient): Ins
     const list = sanitizeCycleList(listRaw)
     const observability = sanitizeObservability(observabilityRaw)
     const cycleIds = list?.cycles.map((item) => item.cycle_id) ?? []
-    const details = await loadDetails(client, name, cycleIds)
-    if (gen !== generation) return state.snapshot
+    const listed = new Set(cycleIds)
+    const cycles = keepListedDetails(previousCycles, listed)
+    const rounds = keepListedDetails(previousRounds, listed)
     const next: EvolutionInspectorSnapshot = {
       subject: name,
       list,
       observability,
-      cycles: details.cycles,
-      rounds: details.rounds,
+      cycles,
+      rounds,
       selectedCycleId: null,
       error: list ? null : 'unavailable',
       stale: false
@@ -68,6 +77,12 @@ export function createInspectorController(client: EvolutionInspectorClient): Ins
       ? preferredCycleId
       : pickDefaultCycleId(next)
     next.selectedCycleId = preferred
+    if (preferred) {
+      const details = await loadDetails(client, name, [preferred])
+      if (gen !== generation) return state.snapshot
+      next.cycles = { ...next.cycles, ...details.cycles }
+      next.rounds = { ...next.rounds, ...details.rounds }
+    }
     state.snapshot = next
     state.loading = false
     return next
@@ -166,6 +181,17 @@ function emptySnapshot(subject: string | null): EvolutionInspectorSnapshot {
     error: null,
     stale: false
   }
+}
+
+function keepListedDetails<T>(
+  previous: Record<string, T>,
+  listed: Set<string>
+): Record<string, T> {
+  const next: Record<string, T> = {}
+  for (const [cycleId, value] of Object.entries(previous)) {
+    if (listed.has(cycleId)) next[cycleId] = value
+  }
+  return next
 }
 
 async function loadDetails(

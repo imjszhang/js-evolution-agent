@@ -355,7 +355,11 @@ function TimelineItem({
         <span className="truncate text-[11px] text-muted-foreground">
           {item.status ?? '—'} · {formatTime(item.time)}
         </span>
-        <span className="flex flex-wrap gap-1" aria-label={t('evolutionSteps')}>
+        <span
+          className="flex flex-wrap gap-1"
+          aria-label={t('evolutionSteps')}
+          data-summary-only={item.steps.length === 0}
+        >
           {item.steps.map((step) => (
             <span
               key={step.name}
