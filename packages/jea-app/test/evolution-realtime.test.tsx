@@ -55,7 +55,8 @@ describe('Evolution Inspector realtime refresh', () => {
     expect(shouldRefreshForEvent({ type: 'conversation.updated', subject: 'alpha' }, 'alpha')).toBe(false)
     expect(shouldRefreshForEvent({ type: 'evolution.updated', subject: 'alpha' }, 'beta')).toBe(false)
     expect(shouldRefreshForEvent({ type: 'evolution.updated', payload: { subject: 'alpha' } }, 'alpha')).toBe(true)
-    expect(shouldRefreshForEvent({ type: 'projection.todo_updated', subject: 'alpha' }, 'alpha')).toBe(true)
+    expect(shouldRefreshForEvent({ type: 'projection.todo_updated', subject: 'alpha' }, 'alpha')).toBe(false)
+    expect(shouldRefreshForEvent({ type: 'projection.ops_updated', subject: 'alpha' }, 'alpha')).toBe(false)
     expect(shouldRefreshForEvent({ type: 'evolution.updated', subject: 'alpha', payload: { stale: true } }, 'alpha')).toBe(false)
     expect(mergeCycleRecords(
       [{ cycle_id: 'a' }, { cycle_id: 'b' }],
@@ -89,11 +90,14 @@ describe('Evolution Inspector realtime refresh', () => {
     expect(stale?.subject).toBe('alpha')
   })
 
-  it('loads once for the same projection revision across ops/todo/evolution events', async () => {
+  it('ignores ops/todo projections and refreshes list/observability without reloading details', async () => {
     const client = createEvolutionFixtureClient()
     const controller = createInspectorController(client)
     await controller.load('alpha')
-    const afterLoad = client.calls.listCycles.length
+    const listCalls = client.calls.listCycles.length
+    const observabilityCalls = client.calls.getObservability.length
+    const cycleCalls = client.calls.getCycle.length
+    const roundCalls = client.calls.getRound.length
     await controller.handleEvent({
       type: 'projection.ops_updated',
       ts: '2026-08-18T04:00:00.000Z',
@@ -106,13 +110,19 @@ describe('Evolution Inspector realtime refresh', () => {
       subject: 'alpha',
       payload: { subject: 'alpha', revision: 9 }
     })
+    expect(client.calls.listCycles).toHaveLength(listCalls)
+    expect(client.calls.getObservability).toHaveLength(observabilityCalls)
+
     await controller.handleEvent({
       type: 'evolution.updated',
       ts: '2026-08-18T04:00:00.000Z',
       subject: 'alpha',
       payload: { subject: 'alpha', revision: 9 }
     })
-    expect(client.calls.listCycles.length - afterLoad).toBeLessThanOrEqual(1)
+    expect(client.calls.listCycles).toHaveLength(listCalls + 1)
+    expect(client.calls.getObservability).toHaveLength(observabilityCalls + 1)
+    expect(client.calls.getCycle).toHaveLength(cycleCalls)
+    expect(client.calls.getRound).toHaveLength(roundCalls)
   })
 
   it('loads details for at most the selected cycle and reuses later selections', async () => {
@@ -133,6 +143,9 @@ describe('Evolution Inspector realtime refresh', () => {
     expect(client.calls.getCycle.length).toBe(afterSelect)
 
     const historicalFetches = client.calls.getCycle.filter((item) => item.cycleId === 'cycle-20260815-closed').length
+    const historicalRoundFetches = client.calls.getRound.filter((item) => item.cycleId === 'cycle-20260815-closed').length
+    const targetedFetches = client.calls.getCycle.filter((item) => item.cycleId === 'cycle-20260816-open').length
+    const targetedRoundFetches = client.calls.getRound.filter((item) => item.cycleId === 'cycle-20260816-open').length
     const next = await controller.handleEvent({
       type: 'evolution.updated',
       ts: '2026-08-18T05:00:00.000Z',
@@ -140,8 +153,43 @@ describe('Evolution Inspector realtime refresh', () => {
       payload: { subject: 'alpha', cycle_id: 'cycle-20260816-open', revision: 12 }
     })
     expect(next?.cycles['cycle-20260815-closed']?.cycle_id).toBe('cycle-20260815-closed')
+    expect(next?.selectedCycleId).toBe('cycle-20260816-open')
     expect(client.calls.getCycle.filter((item) => item.cycleId === 'cycle-20260815-closed')).toHaveLength(historicalFetches)
-    expect(client.calls.getCycle.filter((item) => item.cycleId === 'cycle-20260816-open').length).toBeGreaterThan(1)
+    expect(client.calls.getRound.filter((item) => item.cycleId === 'cycle-20260815-closed')).toHaveLength(historicalRoundFetches)
+    expect(client.calls.getCycle.filter((item) => item.cycleId === 'cycle-20260816-open')).toHaveLength(targetedFetches + 1)
+    expect(client.calls.getRound.filter((item) => item.cycleId === 'cycle-20260816-open')).toHaveLength(targetedRoundFetches + 1)
     expect(new Set(client.calls.getCycle.map((item) => item.cycleId)).size).toBe(2)
+  })
+
+  it('drops cached details when a cycle disappears without refetching the remaining cycle', async () => {
+    const store = createEvolutionFixtureData()
+    const client = createEvolutionFixtureClient(store)
+    const controller = createInspectorController(client)
+    await controller.load('alpha')
+    await controller.selectCycle('cycle-20260815-closed')
+    const cycleCalls = client.calls.getCycle.length
+    const roundCalls = client.calls.getRound.length
+    client.replace({
+      lists: {
+        alpha: {
+          ...store.lists.alpha,
+          round_count: 1,
+          cycles: store.lists.alpha.cycles.slice(0, 1)
+        }
+      }
+    })
+
+    const next = await controller.handleEvent({
+      type: 'evolution.updated',
+      ts: '2026-08-18T06:00:00.000Z',
+      subject: 'alpha',
+      payload: { subject: 'alpha', revision: 13 }
+    })
+
+    expect(next?.selectedCycleId).toBe('cycle-20260816-open')
+    expect(next?.cycles).not.toHaveProperty('cycle-20260815-closed')
+    expect(next?.rounds).not.toHaveProperty('cycle-20260815-closed')
+    expect(client.calls.getCycle).toHaveLength(cycleCalls)
+    expect(client.calls.getRound).toHaveLength(roundCalls)
   })
 })

@@ -144,9 +144,7 @@ export function resolveSafeState(snapshot: EvolutionInspectorSnapshot, loading: 
 }
 
 const LIVE_REFRESH_EVENTS = new Set([
-  'evolution.updated',
-  'projection.todo_updated',
-  'projection.ops_updated'
+  'evolution.updated'
 ])
 
 const STALE_EVENTS = new Set([
