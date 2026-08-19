@@ -8,7 +8,7 @@ import {
   lookupVerifyReport,
   matchesVerifyCycle,
   resetEvolutionReportIndexes
-} from '../src/client-api/owners/evolution-verify-index.mjs'
+} from '../src/client-api/owners/evolution-verify-index'
 
 afterEach(() => {
   resetEvolutionReportIndexes()

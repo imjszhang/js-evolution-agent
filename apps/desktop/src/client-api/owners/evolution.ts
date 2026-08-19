@@ -15,7 +15,7 @@ import type {
   EvolutionObservability,
   EvolutionRoundDetail
 } from '../types'
-import { lookupIntelReport, lookupVerifyReport } from './evolution-verify-index.mjs'
+import { lookupIntelReport, lookupVerifyReport } from './evolution-verify-index'
 import { requireSubject, subjectRuntime, type ClientRuntimeContext } from './runtime'
 
 function storeFor(runtime: ReturnType<typeof subjectRuntime>) {
