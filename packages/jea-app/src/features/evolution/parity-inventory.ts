@@ -12,10 +12,10 @@ export interface ParityInventoryItem {
  * Deferred items are not removed; they remain in the standalone Viewer.
  */
 export const EVOLUTION_PARITY_INVENTORY: ParityInventoryItem[] = [
-  { id: 'current-open-cycle', feature: 'Show current/open cycle when one exists', mark: 'included', notes: 'Prefers cycle_status=open from getCycle.' },
+  { id: 'current-open-cycle', feature: 'Show current/open cycle when one exists', mark: 'included', notes: 'Prefers list/cycle-state status or cycle_diagnostics.recent; never attention.cycle_id.' },
   { id: 'recent-historical', feature: 'Recent historical cycles when no open cycle', mark: 'included', notes: 'Falls back to listCycles order.' },
-  { id: 'timeline-id-status-time', feature: 'Compact timeline: cycle id, status, time', mark: 'included', notes: '' },
-  { id: 'timeline-steps', feature: 'Step/checkpoint progression badges', mark: 'included', notes: 'Statuses from getCycle.steps.' },
+  { id: 'timeline-id-status-time', feature: 'Compact timeline: cycle id, status, time', mark: 'included', notes: 'Unloaded cycles stay summary-only.' },
+  { id: 'timeline-steps', feature: 'Step/checkpoint progression badges', mark: 'included', notes: 'Shown only after getCycle.steps is loaded for that cycle; unloaded items have no step chips.' },
   { id: 'report-read', feature: 'Report TLDR / availability', mark: 'included', notes: 'Full Markdown HTML stays in Viewer.' },
   { id: 'diary-read', feature: 'Diary items and TLDR', mark: 'included', notes: 'No raw diary HTML.' },
   { id: 'verify-status', feature: 'Verify status and semantic conclusion', mark: 'included', notes: 'available / semantic_status / counts.' },

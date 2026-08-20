@@ -361,17 +361,29 @@ export function daemonProjectionHeavySignature(root, subject) {
   ]);
 }
 
-export function daemonProjectionLightSignature(root, subject) {
-  const runtime = runtimeForSubject(root, subject);
+export function daemonProjectionCoreLightSignature(root, subject) {
   return hashSignature([
     fileIdentitySignature(workerStatePath(root, subject)),
     fileIdentitySignature(pendingTasksPath(root, subject)),
+  ]);
+}
+
+export function daemonProjectionChannelLightSignature(root, subject) {
+  const runtime = runtimeForSubject(root, subject);
+  return hashSignature([
     fileIdentitySignature(channelWorkerStatePath(root, subject)),
     fileIdentitySignature(join(channelTasksDir(root, subject), 'pending_tasks.json')),
     fileIdentitySignature(channelEventsPath(root, subject)),
     dirIdentitySignature(join(runtime.dataRoot, 'channel', 'inbound'), { recursive: true, suffix: '.json' }),
     dirIdentitySignature(join(runtime.dataRoot, 'channel', 'outbox'), { recursive: true, suffix: '.json' }),
     dirIdentitySignature(join(runtime.dataRoot, 'channel', 'desktop', 'sessions'), { suffix: '.json' }),
+  ]);
+}
+
+export function daemonProjectionLightSignature(root, subject) {
+  return hashSignature([
+    daemonProjectionCoreLightSignature(root, subject),
+    daemonProjectionChannelLightSignature(root, subject),
   ]);
 }
 
@@ -382,9 +394,15 @@ export function daemonProjectionInputSignature(root, subject) {
   ]);
 }
 
-function projectionCacheKey(root, subject) {
+function projectionCacheKey(root, subject, eventLimit, heartbeatStaleMs) {
   const runtime = runtimeForSubject(root, subject);
-  return `${runtime.jeaHome}::${runtime.dataNamespace}::${subject}`;
+  return [
+    runtime.jeaHome,
+    runtime.dataNamespace,
+    subject,
+    `eventLimit=${eventLimit}`,
+    `heartbeatStaleMs=${heartbeatStaleMs}`,
+  ].join('::');
 }
 
 const projectionCache = new Map();
@@ -432,15 +450,23 @@ function attachProjectionMeta(projection, fingerprint, revision) {
 
 function projectionIdentity(root, subject, eventLimit, heartbeatStaleMs) {
   const heavy = daemonProjectionHeavySignature(root, subject);
-  const light = daemonProjectionLightSignature(root, subject);
+  const coreLight = daemonProjectionCoreLightSignature(root, subject);
+  const channelLight = daemonProjectionChannelLightSignature(root, subject);
+  const light = hashSignature([coreLight, channelLight]);
+  const settings = hashSignature([
+    `eventLimit=${eventLimit}`,
+    `heartbeatStaleMs=${heartbeatStaleMs}`,
+  ]);
   return {
     heavy,
+    coreLight,
+    channelLight,
     light,
+    settings,
     fingerprint: hashSignature([
       heavy,
       light,
-      String(eventLimit),
-      String(heartbeatStaleMs),
+      settings,
     ]),
   };
 }
@@ -535,8 +561,18 @@ function runProjectionWorker({
   });
 }
 
-function storeBuiltProjection(root, subject, { eventLimit, heartbeatStaleMs, flags }, cached) {
-  const built = buildDaemonProjectionUncached(root, subject, {
+function storeBuiltProjection(
+  root,
+  subject,
+  {
+    eventLimit,
+    heartbeatStaleMs,
+    flags,
+    fullBuilder = buildDaemonProjectionUncached,
+  },
+  cached,
+) {
+  const built = fullBuilder(root, subject, {
     eventLimit,
     heartbeatStaleMs,
     flags,
@@ -548,11 +584,60 @@ function rememberBuiltProjection(root, subject, { eventLimit, heartbeatStaleMs }
   const identity = projectionIdentity(root, subject, eventLimit, heartbeatStaleMs);
   const revision = cached ? cached.revision + 1 : 1;
   const projection = attachProjectionMeta(built, identity.fingerprint, revision);
-  const key = projectionCacheKey(root, subject);
+  const key = projectionCacheKey(root, subject, eventLimit, heartbeatStaleMs);
   if (!cached) evictProjectionCache();
   projectionCache.set(key, {
     fingerprint: identity.fingerprint,
     heavy: identity.heavy,
+    coreLight: identity.coreLight,
+    channelLight: identity.channelLight,
+    light: identity.light,
+    settings: identity.settings,
+    projection,
+    revision,
+    at: Date.now(),
+  });
+  evictProjectionCache();
+  return { projection, identity };
+}
+
+function refreshCachedChannelProjection(
+  root,
+  subject,
+  { eventLimit, heartbeatStaleMs },
+  cached,
+) {
+  const channel = buildChannelProjection(root, subject, { heartbeatStaleMs, eventLimit });
+  const identity = projectionIdentity(root, subject, eventLimit, heartbeatStaleMs);
+
+  // A concurrent cycle/evidence update invalidates the sections we intended to
+  // reuse. Let the caller choose the normal full/deferred path in that case.
+  if (
+    cached.heavy !== identity.heavy
+    || cached.coreLight !== identity.coreLight
+    || cached.settings !== identity.settings
+  ) {
+    return { projection: null, identity };
+  }
+  if (cached.fingerprint === identity.fingerprint) {
+    cached.at = Date.now();
+    return { projection: cached.projection, identity };
+  }
+
+  const revision = cached.revision + 1;
+  const projection = attachProjectionMeta({
+    ...cached.projection,
+    generated_at: new Date().toISOString(),
+    channel,
+  }, identity.fingerprint, revision);
+  const key = projectionCacheKey(root, subject, eventLimit, heartbeatStaleMs);
+  projectionCache.set(key, {
+    fingerprint: identity.fingerprint,
+    heavy: identity.heavy,
+    coreLight: identity.coreLight,
+    channelLight: identity.channelLight,
+    light: identity.light,
+    settings: identity.settings,
     projection,
     revision,
     at: Date.now(),
@@ -652,12 +737,27 @@ export function readDaemonProjection(root, subject, options = {}) {
   const eventLimit = options.eventLimit ?? 20;
   const heartbeatStaleMs = options.heartbeatStaleMs ?? 60_000;
   const flags = options.flags ?? {};
-  const key = projectionCacheKey(root, subject);
-  const identity = projectionIdentity(root, subject, eventLimit, heartbeatStaleMs);
+  const key = projectionCacheKey(root, subject, eventLimit, heartbeatStaleMs);
+  let identity = projectionIdentity(root, subject, eventLimit, heartbeatStaleMs);
   const cached = projectionCache.get(key);
   if (cached && cached.fingerprint === identity.fingerprint) {
     cached.at = Date.now();
     return cached.projection;
+  }
+  const canRefreshChannelOnly = Boolean(cached?.projection)
+    && cached.heavy === identity.heavy
+    && cached.coreLight === identity.coreLight
+    && cached.channelLight !== identity.channelLight
+    && cached.settings === identity.settings;
+  if (canRefreshChannelOnly) {
+    const refreshed = refreshCachedChannelProjection(
+      root,
+      subject,
+      { eventLimit, heartbeatStaleMs },
+      cached,
+    );
+    if (refreshed.projection) return refreshed.projection;
+    identity = refreshed.identity;
   }
   const workerPath = workerPathFromOptions(options);
   const canDeferHeavy = options.deferRebuild === true
@@ -681,6 +781,7 @@ export function readDaemonProjection(root, subject, options = {}) {
     eventLimit,
     heartbeatStaleMs,
     flags,
+    fullBuilder: options.fullBuilder,
   }, cached).projection;
 }
 

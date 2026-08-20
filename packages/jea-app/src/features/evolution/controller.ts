@@ -27,10 +27,20 @@ async function settled<T>(promise: Promise<T>): Promise<T | null> {
 export function createInspectorController(client: EvolutionInspectorClient): InspectorController {
   let generation = 0
   let lastRevision: number | null = null
+  let lastRevisionCycleId: string | null = null
   let loadInFlight: Promise<EvolutionInspectorSnapshot> | null = null
-  let loadQueued: { subject: string | null; preferredCycleId?: string | null; revision: number | null } | null = null
+  let loadQueued: {
+    subject: string | null
+    preferredCycleId?: string | null
+    revision: number | null
+    detailCycleId?: string | null
+  } | null = null
 
-  async function loadNow(subject: string | null, preferredCycleId?: string | null): Promise<EvolutionInspectorSnapshot> {
+  async function loadNow(
+    subject: string | null,
+    preferredCycleId?: string | null,
+    detailCycleId?: string | null
+  ): Promise<EvolutionInspectorSnapshot> {
     const gen = ++generation
     const name = subject?.trim() || null
     if (!name) {
@@ -39,10 +49,18 @@ export function createInspectorController(client: EvolutionInspectorClient): Ins
       lastRevision = null
       return state.snapshot
     }
+
+    // Copy before any snapshot reset. emptySnapshot() would wipe these maps.
+    const sameSubject = state.snapshot.subject === name
+    const previousCycles = sameSubject ? { ...state.snapshot.cycles } : {}
+    const previousRounds = sameSubject ? { ...state.snapshot.rounds } : {}
+
     state.loading = true
     state.snapshot = {
-      ...emptySnapshot(name),
-      selectedCycleId: preferredCycleId ?? state.snapshot.selectedCycleId
+      ...state.snapshot,
+      subject: name,
+      selectedCycleId: preferredCycleId ?? state.snapshot.selectedCycleId,
+      stale: false
     }
     const [listRaw, observabilityRaw] = await Promise.all([
       settled(client.listCycles(name)),
@@ -52,14 +70,15 @@ export function createInspectorController(client: EvolutionInspectorClient): Ins
     const list = sanitizeCycleList(listRaw)
     const observability = sanitizeObservability(observabilityRaw)
     const cycleIds = list?.cycles.map((item) => item.cycle_id) ?? []
-    const details = await loadDetails(client, name, cycleIds)
-    if (gen !== generation) return state.snapshot
+    const listed = new Set(cycleIds)
+    const cycles = keepListedDetails(previousCycles, listed)
+    const rounds = keepListedDetails(previousRounds, listed)
     const next: EvolutionInspectorSnapshot = {
       subject: name,
       list,
       observability,
-      cycles: details.cycles,
-      rounds: details.rounds,
+      cycles,
+      rounds,
       selectedCycleId: null,
       error: list ? null : 'unavailable',
       stale: false
@@ -68,6 +87,15 @@ export function createInspectorController(client: EvolutionInspectorClient): Ins
       ? preferredCycleId
       : pickDefaultCycleId(next)
     next.selectedCycleId = preferred
+    const cycleToLoad = detailCycleId === undefined
+      ? preferred
+      : detailCycleId && listed.has(detailCycleId) ? detailCycleId : null
+    if (cycleToLoad) {
+      const details = await loadDetails(client, name, [cycleToLoad])
+      if (gen !== generation) return state.snapshot
+      next.cycles = { ...next.cycles, ...details.cycles }
+      next.rounds = { ...next.rounds, ...details.rounds }
+    }
     state.snapshot = next
     state.loading = false
     return next
@@ -76,26 +104,40 @@ export function createInspectorController(client: EvolutionInspectorClient): Ins
   async function loadCoalesced(
     subject: string | null,
     preferredCycleId: string | null | undefined,
-    revision: number | null
+    revision: number | null,
+    detailCycleId?: string | null
   ): Promise<EvolutionInspectorSnapshot> {
-    if (revision != null && revision === lastRevision && subject === state.snapshot.subject) {
+    if (
+      revision != null
+      && revision === lastRevision
+      && detailCycleId === lastRevisionCycleId
+      && subject === state.snapshot.subject
+    ) {
       return state.snapshot
     }
     if (loadInFlight) {
-      loadQueued = { subject, preferredCycleId, revision }
+      loadQueued = { subject, preferredCycleId, revision, detailCycleId }
       return loadInFlight
     }
-    loadInFlight = loadNow(subject, preferredCycleId)
+    loadInFlight = loadNow(subject, preferredCycleId, detailCycleId)
     try {
       await loadInFlight
-      if (revision != null) lastRevision = revision
+      if (revision != null) {
+        lastRevision = revision
+        lastRevisionCycleId = detailCycleId ?? null
+      }
     } finally {
       loadInFlight = null
     }
     const queued = loadQueued
     loadQueued = null
-    if (queued && !(queued.revision != null && queued.revision === lastRevision && queued.subject === state.snapshot.subject)) {
-      return loadCoalesced(queued.subject, queued.preferredCycleId, queued.revision)
+    if (queued && !(
+      queued.revision != null
+      && queued.revision === lastRevision
+      && (queued.detailCycleId ?? null) === lastRevisionCycleId
+      && queued.subject === state.snapshot.subject
+    )) {
+      return loadCoalesced(queued.subject, queued.preferredCycleId, queued.revision, queued.detailCycleId)
     }
     return state.snapshot
   }
@@ -105,7 +147,8 @@ export function createInspectorController(client: EvolutionInspectorClient): Ins
     loading: false,
     async load(subject, preferredCycleId) {
       lastRevision = null
-      return loadCoalesced(subject, preferredCycleId, null)
+      lastRevisionCycleId = null
+      return loadCoalesced(subject, preferredCycleId, null, undefined)
     },
     async selectCycle(cycleId) {
       const id = cycleId.trim()
@@ -139,10 +182,7 @@ export function createInspectorController(client: EvolutionInspectorClient): Ins
       const cycleId = eventCycleId(event)
       const selected = state.snapshot.selectedCycleId
       const revision = typeof event.payload?.revision === 'number' ? event.payload.revision : null
-      if (revision != null && revision === lastRevision && (cycleId == null || cycleId === selected)) {
-        return state.snapshot
-      }
-      return loadCoalesced(subject, cycleId ?? selected, revision)
+      return loadCoalesced(subject, cycleId ?? selected, revision, cycleId)
     },
     subscribe(onChange) {
       return client.subscribe((event) => {
@@ -166,6 +206,17 @@ function emptySnapshot(subject: string | null): EvolutionInspectorSnapshot {
     error: null,
     stale: false
   }
+}
+
+function keepListedDetails<T>(
+  previous: Record<string, T>,
+  listed: Set<string>
+): Record<string, T> {
+  const next: Record<string, T> = {}
+  for (const [cycleId, value] of Object.entries(previous)) {
+    if (listed.has(cycleId)) next[cycleId] = value
+  }
+  return next
 }
 
 async function loadDetails(

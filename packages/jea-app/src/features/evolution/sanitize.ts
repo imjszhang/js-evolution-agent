@@ -159,14 +159,34 @@ export function sanitizeRoundDetail(value: unknown): EvolutionRoundDetail | null
   }
 }
 
+function sanitizeCycleDiagnostics(value: unknown): EvolutionObservability['cycle_diagnostics'] | undefined {
+  if (!isRecord(value)) return undefined
+  const raw = Array.isArray(value.recent) ? value.recent : []
+  const recent: NonNullable<NonNullable<EvolutionObservability['cycle_diagnostics']>['recent']> = []
+  const seen = new Set<string>()
+  for (const item of raw) {
+    if (!isRecord(item)) continue
+    const cycle_id = asString(item.cycle_id)
+    if (!cycle_id || seen.has(cycle_id)) continue
+    seen.add(cycle_id)
+    recent.push({
+      cycle_id,
+      status: asString(item.status)
+    })
+  }
+  return { recent }
+}
+
 export function sanitizeObservability(value: unknown): EvolutionObservability | null {
   if (!isRecord(value)) return null
   const subject = asString(value.subject)
   if (!subject) return null
+  const cycle_diagnostics = sanitizeCycleDiagnostics(value.cycle_diagnostics)
   return {
     subject,
     attention: isRecord(value.attention) ? value.attention : {},
-    open_cycles: asFiniteNumber(value.open_cycles) ?? 0
+    open_cycles: asFiniteNumber(value.open_cycles) ?? 0,
+    ...(cycle_diagnostics ? { cycle_diagnostics } : {})
   }
 }
 

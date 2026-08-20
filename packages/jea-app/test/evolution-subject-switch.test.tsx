@@ -23,6 +23,8 @@ describe('Evolution Inspector subject switch', () => {
     expect(beta.list?.cycles.map((item) => item.cycle_id)).toEqual(['cycle-20260814-beta'])
     expect(beta.selectedCycleId).toBe('cycle-20260814-beta')
     expect(beta.list?.cycles.some((item) => item.cycle_id.includes('alpha') || item.cycle_id.includes('20260816'))).toBe(false)
+    expect(Object.keys(beta.cycles)).toEqual(['cycle-20260814-beta'])
+    expect(client.calls.getCycle.filter((item) => item.subject === 'beta').map((item) => item.cycleId)).toEqual(['cycle-20260814-beta'])
     expect(client.calls.listCycles).toEqual(['alpha', 'beta'])
 
     const empty = await controller.load('empty')

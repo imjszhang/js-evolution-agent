@@ -15,6 +15,7 @@ import type {
   EvolutionObservability,
   EvolutionRoundDetail
 } from '../types'
+import { lookupIntelReport, lookupVerifyReport } from './evolution-verify-index'
 import { requireSubject, subjectRuntime, type ClientRuntimeContext } from './runtime'
 
 function storeFor(runtime: ReturnType<typeof subjectRuntime>) {
@@ -24,31 +25,9 @@ function storeFor(runtime: ReturnType<typeof subjectRuntime>) {
   })
 }
 
-function publicVerify(runtimeRoot: string, cycleId: string) {
-  const dir = join(runtimeRoot, 'data', 'evolution', 'verify_reports')
-  try {
-    const files = readdirSync(dir).filter((name) => name.endsWith('.json'))
-    for (const file of files) {
-      const data = readJsonSafe(join(dir, file), null) as Record<string, unknown> | null
-      if (!data) continue
-      const id = String(data.cycle_id ?? data.exec_cycle_id ?? file.replace(/\.json$/, ''))
-      if (id !== cycleId && !file.startsWith(cycleId)) continue
-      return {
-        available: true,
-        semantic_status: (data.semantic as { status?: string } | undefined)?.status ?? null,
-        verified_count: Array.isArray(data.verified) ? data.verified.length : null,
-        pending_count: Array.isArray(data.pending) ? data.pending.length : null
-      }
-    }
-  } catch {
-    // Missing verify directory is a valid empty state.
-  }
-  return {
-    available: false,
-    semantic_status: null,
-    verified_count: null,
-    pending_count: null
-  }
+function listedCycleStatus(runtime: ReturnType<typeof subjectRuntime>, cycleId: string): string | null {
+  const state = readJsonSafe(join(runtime.evolutionDir, 'cycle-state', `${cycleId}.json`), null) as { status?: unknown } | null
+  return typeof state?.status === 'string' && state.status.trim() ? state.status : null
 }
 
 function receiptCount(runtimeRoot: string): number {
@@ -58,6 +37,21 @@ function receiptCount(runtimeRoot: string): number {
   } catch {
     return 0
   }
+}
+
+function recentCycleDiagnostics(daemon: { cycles?: { recent?: Array<{ cycle_id?: unknown; status?: unknown }> } } | null) {
+  const recent = []
+  const seen = new Set<string>()
+  for (const item of daemon?.cycles?.recent ?? []) {
+    const cycleId = typeof item?.cycle_id === 'string' ? item.cycle_id.trim() : ''
+    if (!cycleId || seen.has(cycleId)) continue
+    seen.add(cycleId)
+    recent.push({
+      cycle_id: cycleId,
+      status: typeof item.status === 'string' && item.status.trim() ? item.status : null
+    })
+  }
+  return { recent }
 }
 
 export class EvolutionCommandOwner {
@@ -80,7 +74,7 @@ export class EvolutionCommandOwner {
         generated_at: (round.generated_at as string | null) ?? null,
         tldr: (round.tldr as string | null) ?? null,
         has_diary: Boolean(round.has_diary),
-        status: null
+        status: listedCycleStatus(runtime, String(round.cycle_id))
       }))
     })
   }
@@ -132,19 +126,19 @@ export class EvolutionCommandOwner {
     }
     const runtime = subjectRuntime(this.runtime, name)
     const store = storeFor(runtime)
+    const id = cycleId.trim()
     const round = buildRoundDetail({
       runtime,
       store,
-      cycleId: cycleId.trim()
+      cycleId: id
     })
-    const reports = store.readIntelReports({ limit: 200 }) as Array<Record<string, unknown>>
-    const record = reports.find((item) => item.cycle_id === cycleId.trim())
+    const record = lookupIntelReport(runtime.intelligenceDir, store, id) as Record<string, unknown> | null
     if (!round && !record) {
       throw new PublicClientError('NOT_FOUND', 'Requested round is unavailable.')
     }
     return redactPublicValue({
       subject: name,
-      cycle_id: cycleId.trim(),
+      cycle_id: id,
       report: {
         available: Boolean(record),
         tldr: (record?.tldr as string | null) ?? null
@@ -156,7 +150,7 @@ export class EvolutionCommandOwner {
           tldr: item.tldr ?? null
         }))
       },
-      verify: publicVerify(runtime.runtimeRoot, cycleId.trim()),
+      verify: lookupVerifyReport(join(runtime.runtimeRoot, 'data', 'evolution', 'verify_reports'), id),
       receipts: { count: receiptCount(runtime.runtimeRoot) },
       blockers: Object.values((round?.steps ?? {}) as Record<string, { error?: string | null }>)
         .map((step) => step.error)
@@ -180,7 +174,8 @@ export class EvolutionCommandOwner {
     return redactPublicValue({
       subject: name,
       attention,
-      open_cycles: daemon.cycles?.open_count ?? 0
+      open_cycles: daemon.cycles?.open_count ?? 0,
+      cycle_diagnostics: recentCycleDiagnostics(daemon)
     })
   }
 }

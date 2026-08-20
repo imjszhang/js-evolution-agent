@@ -58,10 +58,18 @@ export interface EvolutionRoundDetail {
   blockers: string[]
 }
 
+export interface EvolutionCycleDiagnosticSummary {
+  cycle_id: string
+  status: string | null
+}
+
 export interface EvolutionObservability {
   subject: string
   attention: Record<string, unknown>
   open_cycles: number
+  cycle_diagnostics?: {
+    recent?: EvolutionCycleDiagnosticSummary[]
+  }
 }
 
 export interface EvolutionEventEnvelope {

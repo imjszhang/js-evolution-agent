@@ -295,6 +295,31 @@ export class ProjectionWatcher {
   ): void {
     const revision = ++this.revision
     try {
+      const previous = this.lastFingerprints
+      const channelOnly = previous != null
+        && partitions.length > 0
+        && partitions.every((partition) => partition === 'channel' || partition === 'conversation')
+      if (channelOnly) {
+        const channel = this.channel.get(subject)
+        if (!this.isCurrent(subject, generation)) return
+        const channelHealth = publicChannelView(subject, channel)
+        const channelFingerprint = fingerprintValue(channelHealth)
+        if (channelFingerprint === previous.channel) {
+          this.revision -= 1
+          return
+        }
+        this.lastFingerprints = {
+          ...previous,
+          channel: channelFingerprint
+        }
+        this.events.publish({
+          type: 'projection.channel_updated',
+          subject,
+          payload: publicPayload({ reason, revision, channel: channelHealth })
+        })
+        return
+      }
+
       const snapshot = this.ops.refresh(subject)[0] as SubjectSnapshot | undefined
       const todo = this.todo.get(subject) as TodoSnapshot
       const channel = this.channel.get(subject)
@@ -317,7 +342,6 @@ export class ProjectionWatcher {
         todo: fingerprintValue(todoView),
         channel: fingerprintValue(channelHealth)
       }
-      const previous = this.lastFingerprints
       const first = previous == null
       const serviceChanged = first || fingerprints.service !== previous.service
       const evolutionChanged = first || fingerprints.evolution !== previous.evolution
@@ -328,7 +352,6 @@ export class ProjectionWatcher {
         this.revision -= 1
         return
       }
-      void partitions
       const publishService = serviceChanged
       const publishEvolution = evolutionChanged
       const publishTodo = todoChanged
