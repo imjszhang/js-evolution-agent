@@ -124,13 +124,16 @@ export function listEligibleEvidence(dataRoot, {
   reactor = 'cognitive',
   kinds = null,
   now = Date.now(),
+  stream = null,
 } = {}) {
   const ledger = readClaimLedger(dataRoot);
   expireClaimsInLedger(ledger, now);
   const allowedKinds = kinds || defaultKindsForReactor(reactor);
-  const stream = readEvidenceStream(dataRoot, { kinds: allowedKinds });
+  const evidence = Array.isArray(stream)
+    ? stream
+    : readEvidenceStream(dataRoot, { kinds: allowedKinds });
   const covered = coveredEventIds(ledger, { now, reactor });
-  return filterEligibleEvidence(stream, reactor, { kinds: allowedKinds })
+  return filterEligibleEvidence(evidence, reactor, { kinds: allowedKinds })
     .filter((envelope) => {
       const key = envelopeEvidenceKey(envelope);
       return !covered.has(key) && !covered.has(envelope.id);

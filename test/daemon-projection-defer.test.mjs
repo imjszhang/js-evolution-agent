@@ -175,6 +175,18 @@ describe('daemon projection deferred rebuild', () => {
     expect(pendingDaemonProjectionRebuildCount()).toBe(0);
   });
 
+  it('keeps projection caches isolated by event limit', () => {
+    const ctx = makeCtx();
+    const fullBuilder = vi.fn(buildDaemonProjectionUncached);
+    const ten = readDaemonProjection(ctx, 'alpha', { eventLimit: 10, fullBuilder });
+    const thirty = readDaemonProjection(ctx, 'alpha', { eventLimit: 30, fullBuilder });
+    const tenAgain = readDaemonProjection(ctx, 'alpha', { eventLimit: 10, fullBuilder });
+
+    expect(thirty).not.toBe(ten);
+    expect(tenAgain).toBe(ten);
+    expect(fullBuilder).toHaveBeenCalledTimes(2);
+  });
+
   it('falls back to a synchronous rebuild when the worker file is unavailable', () => {
     const ctx = makeCtx();
     const first = readDaemonProjection(ctx, 'alpha', { eventLimit: 10 });

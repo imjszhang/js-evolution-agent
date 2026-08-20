@@ -20,7 +20,7 @@ export interface ServiceProcessPort {
 export function createProjectionServicePort(runtime: ClientRuntimeContext): ServiceProcessPort {
   return {
     get(subject: string): ServiceStatus {
-      const daemon = readDaemonProjection(runtime, subject, { eventLimit: 10, deferRebuild: true })
+      const daemon = readDaemonProjection(runtime, subject, { eventLimit: 30, deferRebuild: true })
       return {
         subject,
         mode: daemon.worker?.running ? 'attached' : 'none',
@@ -63,7 +63,7 @@ export class ServiceCommandOwner {
   getStatus(subject: string): ServiceStatus {
     const name = requireSubject(this.runtime, subject)
     const daemon = readDaemonProjection(this.runtime, name, {
-      eventLimit: 10,
+      eventLimit: 30,
       deferRebuild: this.hostKind === 'electron' || this.hostKind === 'web'
     })
     const view = this.processPort.get(name)

@@ -297,9 +297,10 @@ export function classifyRuntimeWatchPath(path) {
 }
 
 export function classifyRuntimeWatchName(filename, watchedPath = '') {
+  const fromPath = classifyRuntimeWatchPath(watchedPath);
+  if (fromPath === 'channel' || fromPath === 'conversation') return fromPath;
   const fromName = filename ? classifyRuntimeWatchPath(String(filename)) : null;
   if (fromName) return fromName;
-  const fromPath = classifyRuntimeWatchPath(watchedPath);
   if (fromPath) return fromPath;
   return 'all';
 }

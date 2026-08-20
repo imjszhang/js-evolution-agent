@@ -282,6 +282,7 @@ describe('shared runtime watch primitives', () => {
 
   it('classifies watch filenames into service/channel/evolution/conversation partitions', () => {
     expect(classifyRuntimeWatchName('worker-state.json', '/tmp/data/evolution/daemon')).toBe('service');
+    expect(classifyRuntimeWatchName('worker-state.json', '/tmp/data/channel')).toBe('channel');
     expect(classifyRuntimeWatchName('events.jsonl', '/tmp/data/channel')).toBe('channel');
     expect(classifyRuntimeWatchName('pending.json', '/tmp/data/evolution/operator_briefs/pending')).toBe('evolution');
     expect(classifyRuntimeWatchName('main.json', '/tmp/data/channel/desktop/sessions')).toBe('conversation');

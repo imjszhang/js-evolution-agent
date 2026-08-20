@@ -50,6 +50,7 @@ function seedAllSources(dataRoot) {
       action_type: 'record_observation',
       recorded_at: '2026-08-09T01:00:00.000Z',
       cycle_id: 'cycle-1',
+      serves_goal: 'goal-1',
     },
   ]);
   writeJsonl(join(dataRoot, 'intelligence', 'evolution_events', 'evolution-events.jsonl'), [
@@ -257,6 +258,7 @@ describe('evidence health snapshot', () => {
     expect(snapshot.schema_version).toBe('evidence-health-snapshot.v1');
     expect(snapshot.envelopes).toHaveLength(12);
     expect(snapshot.envelopes.every((item) => item.payload == null && item.id && item.kind)).toBe(true);
+    expect(snapshot.envelopes.find((item) => item.id === 'receipt-1')?.serves_goal).toBe('goal-1');
     const full = reconcileEvidenceStream(dataRoot);
     expect(snapshot.reconcile.ok).toBe(full.ok);
     expect(snapshot.reconcile.total).toBe(full.total);

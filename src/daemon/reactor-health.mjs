@@ -147,7 +147,10 @@ export function buildReactorHealthProjection(root, subject, {
   const pendingVerify = listPendingVerifyResults(dataRoot);
   const openIntents = listOpenExecIntents(dataRoot);
   const uncertainIntents = listUncertainExecIntents(dataRoot);
-  const ruleDue = peekRuleDueWindow(dataRoot, { nowMs });
+  const ruleDue = peekRuleDueWindow(dataRoot, {
+    nowMs,
+    stream: snapshot.envelopes,
+  });
   const committed = readLastCommittedMemoryCheckpoint(dataRoot);
   const projection = readMemoryCompactionProjection(runtime.runtimeRoot);
   const memoryGate = shouldCompactMemory(ledger, {

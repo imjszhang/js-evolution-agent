@@ -6,6 +6,7 @@ import { writeJsonFile } from '../src/infra/files.mjs';
 import { buildReactorHealthProjection } from '../src/daemon/reactor-health.mjs';
 import { buildDaemonProjection, resetDaemonProjectionCache } from '../src/daemon/daemon-projection.mjs';
 import { listEligibleEvidence } from '../src/evolution/reactor/claim-ledger.mjs';
+import { peekRuleDueWindow } from '../src/evolution/reactor/rule-reactor.mjs';
 import { resetEvidenceHealthSnapshotCache } from '../src/intelligence/evidence-stream.mjs';
 import { writePendingOperatorBrief } from '../src/intelligence/operator-briefs.mjs';
 import { claimsPath } from '../src/evolution/reactor/paths.mjs';
@@ -116,6 +117,26 @@ describe('reactor health projection', () => {
     expect(health.exec_intents.open).toBe(0);
     expect(health.rule.due_windows).toBe(0);
     expect(health.memory.due).toBe(false);
+  });
+
+  it('reuses compact evidence when peeking rule due windows', () => {
+    const root = makeRoot();
+    const runtime = runtimeForSubject(root, 'alpha');
+    const peeked = peekRuleDueWindow(runtime.dataRoot, {
+      minEvents: 1,
+      stream: [{
+        id: 'receipt-compact-1',
+        kind: 'action_receipts',
+        occurred_at: new Date().toISOString(),
+        producer: 'exec',
+        serves_goal: 'goal-1',
+      }],
+    });
+
+    expect(peeked.eligible.map((item) => item.id)).toEqual(['receipt-compact-1']);
+    expect(peeked.due).toEqual([
+      expect.objectContaining({ goalId: 'goal-1', reason: 'evidence_count' }),
+    ]);
   });
 
   it('uses reactor projection as production health and ignores train stuck fields', () => {

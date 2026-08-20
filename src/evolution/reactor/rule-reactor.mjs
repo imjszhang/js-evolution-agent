@@ -60,8 +60,14 @@ export function peekRuleDueWindow(dataRoot, {
   minEvents = DEFAULT_MIN_EVENTS,
   maxIdleMs = DEFAULT_MAX_IDLE_MS,
   kinds = RULE_EVIDENCE_KINDS,
+  stream = null,
 } = {}) {
-  const eligible = listEligibleEvidence(dataRoot, { reactor: 'rule', kinds, now: nowMs });
+  const eligible = listEligibleEvidence(dataRoot, {
+    reactor: 'rule',
+    kinds,
+    now: nowMs,
+    stream,
+  });
   const cursors = readRuleCursors(dataRoot);
   const byGoal = new Map();
   for (const envelope of eligible) {

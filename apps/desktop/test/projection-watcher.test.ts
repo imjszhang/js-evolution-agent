@@ -327,20 +327,28 @@ describe('ProjectionWatcher', () => {
     events.subscribe((event) => published.push(event.type))
     const callbackRef: { current?: (event: { reason: string; partitions?: string[] }) => void } = {}
     let channelSessionCount = 0
+    const opsRefresh = vi.fn(() => [{
+      subject: { name: 'alpha' },
+      daemon: {
+        worker: { running: true, pid: 11, heartbeat_at: 'cycle-t1' },
+        health: { status: 'healthy', ok: true },
+        tasks: { counts: { pending: 0 } }
+      },
+      observability: { attention: { cycle_status: 'completed', cycle_id: 'c1', count: 1 }, open_cycles: 0 }
+    }])
+    const todoGet = vi.fn(() => ({
+      subject: 'alpha',
+      questions: [],
+      briefs: [],
+      facts: [],
+      goals: null,
+      pending_cycle_request: null,
+      attention: {}
+    }))
     const projection = new ProjectionWatcher(
       root,
-      {
-        refresh: vi.fn(() => [{
-          subject: { name: 'alpha' },
-          daemon: {
-            worker: { running: true, pid: 11, heartbeat_at: 'cycle-t1' },
-            health: { status: 'healthy', ok: true },
-            tasks: { counts: { pending: 0 } }
-          },
-          observability: { attention: { cycle_status: 'completed', cycle_id: 'c1', count: 1 }, open_cycles: 0 }
-        }])
-      } as any,
-      { get: vi.fn(() => ({ subject: 'alpha', questions: [], briefs: [], facts: [], goals: null, pending_cycle_request: null, attention: {} })) } as any,
+      { refresh: opsRefresh } as any,
+      { get: todoGet } as any,
       {
         get: vi.fn(() => ({
           subject: 'alpha',
@@ -358,11 +366,15 @@ describe('ProjectionWatcher', () => {
     projection.watch('alpha')
     callbackRef.current?.({ reason: 'watch', partitions: ['channel'] })
     published.length = 0
+    const opsCalls = opsRefresh.mock.calls.length
+    const todoCalls = todoGet.mock.calls.length
 
     channelSessionCount = 1
     callbackRef.current?.({ reason: 'watch', partitions: ['channel'] })
 
     expect(published).toEqual(['projection.channel_updated'])
+    expect(opsRefresh).toHaveBeenCalledTimes(opsCalls)
+    expect(todoGet).toHaveBeenCalledTimes(todoCalls)
   })
 
   it('single-flights a burst and follows up once when refresh dirties itself', () => {

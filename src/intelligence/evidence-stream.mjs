@@ -518,6 +518,7 @@ export function evidenceSourceSignature(dataRoot) {
 }
 
 function compactEnvelope(envelope) {
+  const payload = envelope.payload || {};
   return {
     id: envelope.id,
     kind: envelope.kind,
@@ -530,6 +531,11 @@ function compactEnvelope(envelope) {
     provenance: envelope.provenance,
     cycle_id: envelope.cycle_id ?? null,
     subject: envelope.subject ?? null,
+    serves_goal: payload.serves_goal
+      ?? payload.goal_id
+      ?? payload.action?.serves_goal
+      ?? envelope.serves_goal
+      ?? null,
   };
 }
 

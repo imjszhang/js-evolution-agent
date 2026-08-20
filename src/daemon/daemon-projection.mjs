@@ -394,9 +394,15 @@ export function daemonProjectionInputSignature(root, subject) {
   ]);
 }
 
-function projectionCacheKey(root, subject) {
+function projectionCacheKey(root, subject, eventLimit, heartbeatStaleMs) {
   const runtime = runtimeForSubject(root, subject);
-  return `${runtime.jeaHome}::${runtime.dataNamespace}::${subject}`;
+  return [
+    runtime.jeaHome,
+    runtime.dataNamespace,
+    subject,
+    `eventLimit=${eventLimit}`,
+    `heartbeatStaleMs=${heartbeatStaleMs}`,
+  ].join('::');
 }
 
 const projectionCache = new Map();
@@ -578,7 +584,7 @@ function rememberBuiltProjection(root, subject, { eventLimit, heartbeatStaleMs }
   const identity = projectionIdentity(root, subject, eventLimit, heartbeatStaleMs);
   const revision = cached ? cached.revision + 1 : 1;
   const projection = attachProjectionMeta(built, identity.fingerprint, revision);
-  const key = projectionCacheKey(root, subject);
+  const key = projectionCacheKey(root, subject, eventLimit, heartbeatStaleMs);
   if (!cached) evictProjectionCache();
   projectionCache.set(key, {
     fingerprint: identity.fingerprint,
@@ -624,7 +630,7 @@ function refreshCachedChannelProjection(
     generated_at: new Date().toISOString(),
     channel,
   }, identity.fingerprint, revision);
-  const key = projectionCacheKey(root, subject);
+  const key = projectionCacheKey(root, subject, eventLimit, heartbeatStaleMs);
   projectionCache.set(key, {
     fingerprint: identity.fingerprint,
     heavy: identity.heavy,
@@ -731,7 +737,7 @@ export function readDaemonProjection(root, subject, options = {}) {
   const eventLimit = options.eventLimit ?? 20;
   const heartbeatStaleMs = options.heartbeatStaleMs ?? 60_000;
   const flags = options.flags ?? {};
-  const key = projectionCacheKey(root, subject);
+  const key = projectionCacheKey(root, subject, eventLimit, heartbeatStaleMs);
   let identity = projectionIdentity(root, subject, eventLimit, heartbeatStaleMs);
   const cached = projectionCache.get(key);
   if (cached && cached.fingerprint === identity.fingerprint) {
