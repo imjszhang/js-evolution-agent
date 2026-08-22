@@ -544,6 +544,46 @@ describe('conversation workspace model', () => {
     expect(model.getSnapshot().channelReasons).toEqual(['channel_running'])
   })
 
+  it('reads an asynchronously delivered assistant reply and clears waiting', async () => {
+    const harness = createConversationHarness()
+    const model = new ConversationWorkspaceModel(harness.client, harness.projectionWatch)
+    await model.bootstrap()
+    model.setDraft('hello from desktop')
+    await model.send()
+    const readsAfterSend = harness.commandCount('conversation.readMessages')
+    expect(model.getSnapshot().waiting).toBe(true)
+    expect(model.getSnapshot().records.some((record) => record.role === 'assistant')).toBe(false)
+
+    harness.appendAssistant('alpha', 'main', 'async assistant reply')
+    await waitFor(model, () => (
+      model.getSnapshot().records.some((record) => record.content === 'async assistant reply')
+      && model.getSnapshot().waiting === false
+    ))
+    expect(harness.commandCount('conversation.readMessages')).toBe(readsAfterSend + 1)
+    expect(model.getSnapshot().records.at(-1)).toMatchObject({
+      role: 'assistant',
+      content: 'async assistant reply',
+      session_id: 'main'
+    })
+  })
+
+  it('ignores conversation.updated from another session while waiting', async () => {
+    const harness = createConversationHarness()
+    const model = new ConversationWorkspaceModel(harness.client, harness.projectionWatch)
+    await model.bootstrap()
+    model.setDraft('hello from desktop')
+    await model.send()
+    const readsAfterSend = harness.commandCount('conversation.readMessages')
+    const contents = model.getSnapshot().records.map((record) => record.content)
+
+    harness.appendAssistant('alpha', 'other', 'reply for another session')
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    expect(harness.commandCount('conversation.readMessages')).toBe(readsAfterSend)
+    expect(model.getSnapshot().records.map((record) => record.content)).toEqual(contents)
+    expect(model.getSnapshot().waiting).toBe(true)
+    expect(model.getSnapshot().records.some((record) => record.content === 'reply for another session')).toBe(false)
+  })
+
   it('does not treat same-subject.changed as a full selectSubject', async () => {
     const harness = createConversationHarness()
     const model = new ConversationWorkspaceModel(harness.client, harness.projectionWatch)

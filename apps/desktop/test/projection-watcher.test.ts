@@ -326,7 +326,68 @@ describe('ProjectionWatcher', () => {
     const published: string[] = []
     events.subscribe((event) => published.push(event.type))
     const callbackRef: { current?: (event: { reason: string; partitions?: string[] }) => void } = {}
-    let channelSessionCount = 0
+    let blocked = false
+    const opsRefresh = vi.fn(() => [{
+      subject: { name: 'alpha' },
+      daemon: {
+        worker: { running: true, pid: 11, heartbeat_at: 'cycle-t1' },
+        health: { status: 'healthy', ok: true },
+        tasks: { counts: { pending: 0 } }
+      },
+      observability: { attention: { cycle_status: 'completed', cycle_id: 'c1', count: 1 }, open_cycles: 0 }
+    }])
+    const todoGet = vi.fn(() => ({
+      subject: 'alpha',
+      questions: [],
+      briefs: [],
+      facts: [],
+      goals: null,
+      pending_cycle_request: null,
+      attention: {}
+    }))
+    const projection = new ProjectionWatcher(
+      root,
+      { refresh: opsRefresh } as any,
+      { get: todoGet } as any,
+      {
+        get: vi.fn(() => ({
+          subject: 'alpha',
+          projection: { worker: { running: true, blocked } },
+          sessions: [{ session_id: 'main', message_count: 1, last_message_at: '2026-08-22T00:00:00.000Z' }],
+          inbound: {}
+        }))
+      } as any,
+      events,
+      ((options: any) => {
+        callbackRef.current = options.onRuntimeChange
+        return { start: vi.fn(), stop: vi.fn(), notify: vi.fn() }
+      }) as any
+    )
+    projection.watch('alpha')
+    callbackRef.current?.({ reason: 'watch', partitions: ['channel'] })
+    published.length = 0
+    const opsCalls = opsRefresh.mock.calls.length
+    const todoCalls = todoGet.mock.calls.length
+
+    blocked = true
+    callbackRef.current?.({ reason: 'watch', partitions: ['channel'] })
+
+    expect(published).toEqual(['projection.channel_updated'])
+    expect(opsRefresh).toHaveBeenCalledTimes(opsCalls)
+    expect(todoGet).toHaveBeenCalledTimes(todoCalls)
+  })
+
+  it('publishes scoped conversation.updated when session message state changes', () => {
+    const root = projectRoot()
+    const events = new DesktopEventBus()
+    const published: Array<{ type: string; session_id?: string; payload: Record<string, unknown> }> = []
+    events.subscribe((event) => published.push({
+      type: event.type,
+      session_id: event.session_id,
+      payload: event.payload
+    }))
+    const callbackRef: { current?: (event: { reason: string; partitions?: string[] }) => void } = {}
+    let messageCount = 1
     const opsRefresh = vi.fn(() => [{
       subject: { name: 'alpha' },
       daemon: {
@@ -353,7 +414,64 @@ describe('ProjectionWatcher', () => {
         get: vi.fn(() => ({
           subject: 'alpha',
           projection: { worker: { running: true } },
-          sessions: Array.from({ length: channelSessionCount }, (_, index) => ({ session_id: `session-${index}` })),
+          sessions: [{
+            session_id: 'main',
+            message_count: messageCount,
+            last_message_at: `2026-08-22T00:00:0${messageCount}.000Z`
+          }],
+          inbound: {}
+        }))
+      } as any,
+      events,
+      ((options: any) => {
+        callbackRef.current = options.onRuntimeChange
+        return { start: vi.fn(), stop: vi.fn(), notify: vi.fn() }
+      }) as any
+    )
+    projection.watch('alpha')
+    callbackRef.current?.({ reason: 'watch', partitions: ['conversation'] })
+    published.length = 0
+    const opsCalls = opsRefresh.mock.calls.length
+    const todoCalls = todoGet.mock.calls.length
+
+    messageCount = 2
+    callbackRef.current?.({ reason: 'watch', partitions: ['conversation'] })
+
+    expect(published.map((item) => item.type)).toEqual(['conversation.updated'])
+    expect(published[0]).toMatchObject({
+      session_id: 'main',
+      payload: { subject: 'alpha', session_id: 'main' }
+    })
+    expect(opsRefresh).toHaveBeenCalledTimes(opsCalls)
+    expect(todoGet).toHaveBeenCalledTimes(todoCalls)
+  })
+
+  it('does not publish conversation.updated for a generic Channel health change', () => {
+    const root = projectRoot()
+    const events = new DesktopEventBus()
+    const published: string[] = []
+    events.subscribe((event) => published.push(event.type))
+    const callbackRef: { current?: (event: { reason: string; partitions?: string[] }) => void } = {}
+    let health = 'running'
+    const projection = new ProjectionWatcher(
+      root,
+      {
+        refresh: vi.fn(() => [{
+          subject: { name: 'alpha' },
+          daemon: {
+            worker: { running: true, pid: 11 },
+            health: { status: 'healthy', ok: true },
+            tasks: { counts: { pending: 0 } }
+          },
+          observability: { attention: { cycle_status: 'completed', cycle_id: 'c1', count: 1 }, open_cycles: 0 }
+        }])
+      } as any,
+      { get: vi.fn(() => ({ subject: 'alpha', questions: [], briefs: [], facts: [], goals: null, pending_cycle_request: null, attention: {} })) } as any,
+      {
+        get: vi.fn(() => ({
+          subject: 'alpha',
+          projection: { worker: { running: true, status: health } },
+          sessions: [{ session_id: 'main', message_count: 1, last_message_at: '2026-08-22T00:00:00.000Z' }],
           inbound: {}
         }))
       } as any,
@@ -366,15 +484,10 @@ describe('ProjectionWatcher', () => {
     projection.watch('alpha')
     callbackRef.current?.({ reason: 'watch', partitions: ['channel'] })
     published.length = 0
-    const opsCalls = opsRefresh.mock.calls.length
-    const todoCalls = todoGet.mock.calls.length
-
-    channelSessionCount = 1
+    health = 'blocked'
     callbackRef.current?.({ reason: 'watch', partitions: ['channel'] })
-
     expect(published).toEqual(['projection.channel_updated'])
-    expect(opsRefresh).toHaveBeenCalledTimes(opsCalls)
-    expect(todoGet).toHaveBeenCalledTimes(todoCalls)
+    expect(published).not.toContain('conversation.updated')
   })
 
   it('single-flights a burst and follows up once when refresh dirties itself', () => {

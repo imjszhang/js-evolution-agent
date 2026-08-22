@@ -2,7 +2,8 @@ import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { appendDesktopSessionRecord } from '../../../../src/channel/adapters/desktop/index.mjs'
 import { runChannelClassifierTask } from '../../../../src/channel/classifier.mjs'
 import { runChannelPresenceTask } from '../../../../src/channel/presence.mjs'
 import { runChannelNotifyTask } from '../../../../src/channel/tasks.mjs'
@@ -15,7 +16,11 @@ import {
   JEA_CLIENT_PROTOCOL_VERSION,
   PublicClientError
 } from '../../src/client-api'
+import type { JeaEventEnvelope } from '../../src/client-api/types'
 import type { ServiceProcessPort } from '../../src/client-api/owners/service'
+import { ChannelService } from '../../src/main/channel-service'
+import { DesktopEventBus } from '../../src/main/event-bus'
+import { ProjectionWatcher } from '../../src/main/projection-watcher'
 import { ConversationWorkspaceModel } from '../../src/renderer/src/conversation/model'
 import { createWebHost } from '../../src/web-host'
 
@@ -67,6 +72,29 @@ function writeTestSubjectHome(): { sourceRoot: string; jeaHome: string } {
     }
   }, null, 2))
   return { sourceRoot, jeaHome }
+}
+
+function waitForModel(
+  model: ConversationWorkspaceModel,
+  predicate: () => boolean,
+  timeoutMs = 2000
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (predicate()) {
+      resolve()
+      return
+    }
+    const timer = setTimeout(() => {
+      unsubscribe()
+      reject(new Error('Timed out waiting for conversation model state.'))
+    }, timeoutMs)
+    const unsubscribe = model.subscribe(() => {
+      if (!predicate()) return
+      clearTimeout(timer)
+      unsubscribe()
+      resolve()
+    })
+  })
 }
 
 function fileFingerprint(path: string): string | null {
@@ -184,6 +212,102 @@ describe('governed local Channel conversation E2E', () => {
     expect(page.records.filter((record) => record.role === 'assistant')
       .every((record) => record.content.trim().length > 0)).toBe(true)
     expect(JSON.stringify(page)).not.toMatch(/approval_granted/)
+  })
+
+  it('refreshes the active conversation after async assistant delivery', async () => {
+    const { sourceRoot, jeaHome } = writeTestSubjectHome()
+    process.env.JEA_HOME = jeaHome
+    const events = new DesktopEventBus()
+    const listeners = new Set<(event: JeaEventEnvelope) => void>()
+    events.subscribe((event) => {
+      for (const listener of listeners) listener(event)
+    })
+    const host = createApplicationCommandHost({ sourceRoot, jeaHome })
+    const client = createTypedJeaClient(JEA_CLIENT_PROTOCOL_VERSION, {
+      invoke: (request) => host.invoke(request),
+      subscribe(listener) {
+        listeners.add(listener)
+        return () => listeners.delete(listener)
+      }
+    })
+    const published: Array<{ type: string; session_id?: string }> = []
+    events.subscribe((event) => published.push({ type: event.type, session_id: event.session_id }))
+    const callbackRef: { current?: (event: { reason: string; partitions?: string[] }) => void } = {}
+    const opsRefresh = vi.fn(() => [{
+      subject: { name: 'alpha' },
+      daemon: { worker: { running: true, pid: 11 }, health: { status: 'healthy', ok: true }, tasks: { counts: { pending: 0 } } },
+      observability: { attention: { cycle_status: 'completed', cycle_id: 'c1', count: 0 }, open_cycles: 0 }
+    }])
+    const todoGet = vi.fn(() => ({
+      subject: 'alpha',
+      questions: [],
+      briefs: [],
+      facts: [],
+      goals: null,
+      pending_cycle_request: null,
+      attention: {}
+    }))
+    const channel = new ChannelService(sourceRoot, jeaHome)
+    const projection = new ProjectionWatcher(
+      sourceRoot,
+      { refresh: opsRefresh } as any,
+      { get: todoGet } as any,
+      channel,
+      events,
+      ((options: any) => {
+        callbackRef.current = options.onRuntimeChange
+        return { start: vi.fn(), stop: vi.fn(), notify: vi.fn() }
+      }) as any,
+      jeaHome
+    )
+
+    await client.initData('alpha')
+    const model = new ConversationWorkspaceModel(client)
+    await model.bootstrap('alpha')
+    model.setDraft('hello from desktop')
+    await model.send()
+    expect(model.getSnapshot().waiting).toBe(true)
+    expect(model.getSnapshot().records.every((record) => record.role === 'user')).toBe(true)
+    await client.createSession('alpha', 'other')
+
+    projection.watch('alpha')
+    callbackRef.current?.({ reason: 'watch', partitions: ['all'] })
+    published.length = 0
+    const opsAfterSeed = opsRefresh.mock.calls.length
+    const todoAfterSeed = todoGet.mock.calls.length
+    const readsAfterSeed = model.getSnapshot().records.length
+
+    appendDesktopSessionRecord(host.runtime, 'alpha', 'main', {
+      role: 'assistant',
+      direction: 'outbound',
+      content: 'async delivered reply'
+    })
+    appendDesktopSessionRecord(host.runtime, 'alpha', 'other', {
+      role: 'assistant',
+      direction: 'outbound',
+      content: 'reply for another session'
+    })
+    callbackRef.current?.({ reason: 'watch', partitions: ['conversation'] })
+
+    expect(opsRefresh).toHaveBeenCalledTimes(opsAfterSeed)
+    expect(todoGet).toHaveBeenCalledTimes(todoAfterSeed)
+    expect(published.map((item) => item.type)).toEqual(['conversation.updated', 'conversation.updated'])
+    expect(published.map((item) => item.session_id).sort()).toEqual(['main', 'other'])
+    expect(published.some((item) => item.type === 'projection.ops_updated')).toBe(false)
+    expect(published.some((item) => item.type === 'evolution.updated')).toBe(false)
+
+    await waitForModel(model, () => (
+      model.getSnapshot().records.some((record) => record.content === 'async delivered reply')
+      && model.getSnapshot().waiting === false
+    ))
+    const snapshot = model.getSnapshot()
+    expect(snapshot.records.some((record) => record.role === 'assistant')).toBe(true)
+    expect(snapshot.records.some((record) => record.content === 'async delivered reply')).toBe(true)
+    expect(snapshot.records.some((record) => record.content === 'reply for another session')).toBe(false)
+    expect(snapshot.records.every((record) => record.session_id === 'main')).toBe(true)
+    expect(snapshot.records.length).toBeGreaterThan(readsAfterSeed)
+    expect(JSON.stringify(snapshot.records)).not.toMatch(/approval_granted/)
+    projection.stop()
   })
 
   it('recovers from Channel stopped without starting Cycle or mutating governed files', async () => {

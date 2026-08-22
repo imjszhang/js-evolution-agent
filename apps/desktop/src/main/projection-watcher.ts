@@ -139,6 +139,54 @@ function publicChannelView(subject: string, channel: unknown): Record<string, un
   }
 }
 
+type ConversationSessionView = {
+  session_id: string | null
+  message_count: number
+  last_message_at: string | null
+}
+
+type ConversationView = {
+  subject: string
+  sessions: ConversationSessionView[]
+}
+
+function publicConversationView(subject: string, channel: unknown): ConversationView {
+  const snapshot = isRecord(channel) ? channel : {}
+  const sessions = Array.isArray(snapshot.sessions) ? snapshot.sessions : []
+  return {
+    subject,
+    sessions: sessions.map((session) => {
+      const item = isRecord(session) ? session : {}
+      return {
+        session_id: asString(item.session_id),
+        message_count: asNumber(item.message_count) ?? 0,
+        last_message_at: asString(item.last_message_at)
+      }
+    })
+  }
+}
+
+function changedConversationSessionIds(
+  previous: ConversationView | null,
+  current: ConversationView
+): string[] {
+  if (!previous) return []
+  const previousById = new Map(previous.sessions.map((session) => [session.session_id, session]))
+  const changed: string[] = []
+  for (const session of current.sessions) {
+    if (!session.session_id) continue
+    const before = previousById.get(session.session_id)
+    if (
+      !before
+      || before.message_count !== session.message_count
+      || before.last_message_at !== session.last_message_at
+    ) {
+      changed.push(session.session_id)
+    }
+  }
+  return changed
+}
+
 function fingerprintValue(value: unknown): string {
   return createHash('sha1').update(JSON.stringify(value ?? null)).digest('hex')
 }
@@ -154,6 +202,7 @@ type PartitionFingerprints = {
   evolution: string
   todo: string
   channel: string
+  conversation: string
 }
 
 export class ProjectionWatcher {
@@ -166,6 +215,7 @@ export class ProjectionWatcher {
   private pendingReason = 'watch'
   private pendingPartitions: string[] = []
   private lastFingerprints: PartitionFingerprints | null = null
+  private lastConversationView: ConversationView | null = null
   private readonly runtimeContext: any
   private readonly debounceMs: number
   private readonly unsubscribeRebuild: () => void
@@ -250,6 +300,7 @@ export class ProjectionWatcher {
     this.refreshDirty = false
     this.pendingPartitions = []
     this.lastFingerprints = null
+    this.lastConversationView = null
     this.watchGeneration += 1
     this.revision += 1
     return { stopped }
@@ -303,20 +354,33 @@ export class ProjectionWatcher {
         const channel = this.channel.get(subject)
         if (!this.isCurrent(subject, generation)) return
         const channelHealth = publicChannelView(subject, channel)
+        const conversationView = publicConversationView(subject, channel)
         const channelFingerprint = fingerprintValue(channelHealth)
-        if (channelFingerprint === previous.channel) {
+        const conversationFingerprint = fingerprintValue(conversationView)
+        const channelChanged = channelFingerprint !== previous.channel
+        const conversationChanged = previous.conversation != null
+          && conversationFingerprint !== previous.conversation
+        if (!channelChanged && !conversationChanged) {
           this.revision -= 1
           return
         }
+        const previousConversation = this.lastConversationView
         this.lastFingerprints = {
           ...previous,
-          channel: channelFingerprint
+          channel: channelFingerprint,
+          conversation: conversationFingerprint
         }
-        this.events.publish({
-          type: 'projection.channel_updated',
-          subject,
-          payload: publicPayload({ reason, revision, channel: channelHealth })
-        })
+        this.lastConversationView = conversationView
+        if (channelChanged) {
+          this.events.publish({
+            type: 'projection.channel_updated',
+            subject,
+            payload: publicPayload({ reason, revision, channel: channelHealth })
+          })
+        }
+        if (conversationChanged) {
+          this.publishConversationUpdated(subject, reason, revision, previousConversation, conversationView)
+        }
         return
       }
 
@@ -327,6 +391,7 @@ export class ProjectionWatcher {
       const service = publicServiceView(subject, snapshot)
       const evolution = publicEvolutionView(subject, snapshot, todo)
       const channelHealth = publicChannelView(subject, channel)
+      const conversationView = publicConversationView(subject, channel)
       const todoView = {
         subject: todo.subject,
         questions: todo.questions,
@@ -340,23 +405,30 @@ export class ProjectionWatcher {
         service: fingerprintValue(service),
         evolution: fingerprintValue(evolution),
         todo: fingerprintValue(todoView),
-        channel: fingerprintValue(channelHealth)
+        channel: fingerprintValue(channelHealth),
+        conversation: fingerprintValue(conversationView)
       }
       const first = previous == null
       const serviceChanged = first || fingerprints.service !== previous.service
       const evolutionChanged = first || fingerprints.evolution !== previous.evolution
       const todoChanged = first || fingerprints.todo !== previous.todo
       const channelChanged = first || fingerprints.channel !== previous.channel
+      const conversationChanged = !first && fingerprints.conversation !== previous.conversation
+      const previousConversation = this.lastConversationView
       this.lastFingerprints = fingerprints
-      if (!first && !serviceChanged && !evolutionChanged && !todoChanged && !channelChanged) {
+      this.lastConversationView = conversationView
+      if (
+        !first
+        && !serviceChanged
+        && !evolutionChanged
+        && !todoChanged
+        && !channelChanged
+        && !conversationChanged
+      ) {
         this.revision -= 1
         return
       }
-      const publishService = serviceChanged
-      const publishEvolution = evolutionChanged
-      const publishTodo = todoChanged
-      const publishChannel = channelChanged
-      if (publishService) {
+      if (serviceChanged) {
         this.events.publish({
           type: 'projection.ops_updated',
           subject,
@@ -368,7 +440,7 @@ export class ProjectionWatcher {
           payload: publicPayload({ ...service, reason, revision })
         })
       }
-      if (publishTodo) {
+      if (todoChanged) {
         this.events.publish({
           type: 'projection.todo_updated',
           subject,
@@ -380,7 +452,7 @@ export class ProjectionWatcher {
           })
         })
       }
-      if (publishEvolution) {
+      if (evolutionChanged) {
         this.events.publish({
           type: 'evolution.updated',
           subject,
@@ -395,15 +467,42 @@ export class ProjectionWatcher {
           })
         })
       }
-      if (publishChannel) {
+      if (channelChanged) {
         this.events.publish({
           type: 'projection.channel_updated',
           subject,
           payload: publicPayload({ reason, revision, channel: channelHealth })
         })
       }
+      if (conversationChanged) {
+        this.publishConversationUpdated(subject, reason, revision, previousConversation, conversationView)
+      }
     } catch {
       this.publishFailure(subject, reason, generation, revision)
+    }
+  }
+
+  private publishConversationUpdated(
+    subject: string,
+    reason: string,
+    revision: number,
+    previous: ConversationView | null,
+    current: ConversationView
+  ): void {
+    const sessionIds = changedConversationSessionIds(previous, current)
+    const targets = sessionIds.length > 0 ? sessionIds : [null]
+    for (const sessionId of targets) {
+      this.events.publish({
+        type: 'conversation.updated',
+        subject,
+        ...(sessionId ? { session_id: sessionId } : {}),
+        payload: publicPayload({
+          subject,
+          ...(sessionId ? { session_id: sessionId } : {}),
+          reason,
+          revision
+        })
+      })
     }
   }
 
