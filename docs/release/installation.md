@@ -1,7 +1,7 @@
 # 安装（0.2.0）
 
-状态：**release candidate / #178**。日期：2026-08-22。
-认证完成后安装包将挂到 `v0.2.0` GitHub Release。开发者本地构建仍用 `npm run desktop:package`。
+状态：**已发布**。日期：2026-08-22。
+安装包与 `SHA256SUMS` 已挂到 [v0.2.0 GitHub Release](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.2.0)。开发者本地构建仍用 `npm run desktop:package`。
 
 ## 适用范围
 

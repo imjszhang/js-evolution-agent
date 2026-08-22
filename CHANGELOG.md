@@ -2,7 +2,7 @@
 
 ## 0.2.0 — 2026-08-22
 
-版本与发布接线升级到 0.2.0（[#178](https://github.com/imjszhang/js-evolution-agent/issues/178)）。
+JEA 0.2.0 已作为 [GitHub Release v0.2.0](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.2.0) 发布（[#178](https://github.com/imjszhang/js-evolution-agent/issues/178) 已关闭）。
 
 ### 发布
 

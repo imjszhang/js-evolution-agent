@@ -1,6 +1,6 @@
 # JEA 0.2.0
 
-日期：2026-08-22。候选版本：`v0.2.0`；在认证完成和操作者放行前不得创建 tag 或 GitHub Release。
+日期：2026-08-22。[GitHub Release v0.2.0](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.2.0) 已发布，tag 指向已认证提交 `1536ca1`。
 
 ## 已交付
 
@@ -21,6 +21,7 @@
 - 30 分钟 soak 是 release-only 门禁，不进入 PR required checks。
 - `publish-guard` 不自动发版；认证证据完整后仍需操作者明确放行。
 - 放行后由 `Attach Release Assets` workflow 从官方 artifact 挂到既有 Release，不经本机中转。
+- 本次认证见 [run 32547147234](https://github.com/imjszhang/js-evolution-agent/actions/runs/32547147234)，资产挂载见 [run 32550598473](https://github.com/imjszhang/js-evolution-agent/actions/runs/32550598473)。
 
 ## 已知限制 / 明确延期
 
