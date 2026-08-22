@@ -85,6 +85,23 @@ function planSubject(info, actions) {
   });
 }
 
+/**
+ * @param {{
+ *   activeSubject?: string | null,
+ *   previousSubject?: string | null,
+ *   reason?: string,
+ *   subjects?: Array<{
+ *     name: string,
+ *     automation?: string,
+ *     background?: boolean,
+ *     desktopChannelEnabled?: boolean,
+ *     ownedCycle?: boolean,
+ *     ownedChannel?: boolean,
+ *     cycleLive?: boolean,
+ *     channelLive?: boolean,
+ *   }>
+ * }} [input]
+ */
 export function planClientLifecycle({
   activeSubject = null,
   previousSubject = null,

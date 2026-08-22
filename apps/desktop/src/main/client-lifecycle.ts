@@ -47,7 +47,10 @@ function desktopEnabled(runtime: { sourceRoot: string; jeaHome: string }, subjec
   try {
     return resolveDesktopConfig(runtime, subject).enabled === true
   } catch {
-    return Boolean(getSubjectEntry(runtime, subject)?.channels?.desktop?.enabled)
+    return Boolean(
+      (getSubjectEntry(runtime, subject) as { channels?: { desktop?: { enabled?: boolean } } } | null)
+        ?.channels?.desktop?.enabled
+    )
   }
 }
 

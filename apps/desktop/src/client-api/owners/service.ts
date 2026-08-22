@@ -157,9 +157,9 @@ export class ServiceCommandOwner {
     const readiness = this.getReadiness(name)
     return redactPublicValue({
       subject: name,
-      mode: written.mode,
-      previous: written.previous,
-      changed: written.changed,
+      mode: written.mode as AutomationMode,
+      previous: written.previous as AutomationMode,
+      changed: Boolean(written.changed),
       mapped_from: readiness.automation?.mapped_from ?? 'automation',
       diagnostic: readiness.automation?.diagnostic ?? null,
       background: readiness.automation?.background ?? false
