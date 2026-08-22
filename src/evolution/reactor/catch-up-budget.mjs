@@ -72,11 +72,18 @@ export function writeCatchUpRecord(dataRoot, record) {
   return record;
 }
 
+function wallClockExceeded(record) {
+  if (!record?.started_at) return false;
+  const elapsed = Date.parse(record.started_at);
+  return Number.isFinite(elapsed) && (Date.now() - elapsed) >= record.max_wall_ms;
+}
+
 export function readCatchUpProjection(dataRoot, env = process.env) {
   const record = readCatchUpRecord(dataRoot, env);
+  const paused = record.paused === true || wallClockExceeded(record);
   return {
-    paused: record.paused === true,
-    reason: record.paused ? (record.pause_reason || CATCH_UP_BUDGET_REASON) : null,
+    paused,
+    reason: paused ? (record.pause_reason || CATCH_UP_BUDGET_REASON) : null,
     batches: Number.isInteger(record.batches) ? record.batches : 0,
     remaining_at_pause: record.remaining_at_pause ?? null,
     max_batches: record.max_batches,
@@ -85,8 +92,13 @@ export function readCatchUpProjection(dataRoot, env = process.env) {
 }
 
 export function clearCatchUpIfIdle(dataRoot, pendingCount, env = process.env) {
-  if ((pendingCount ?? 0) > 0) return readCatchUpRecord(dataRoot, env);
   const limits = resolveCatchUpLimits(env);
+  if ((pendingCount ?? 0) > 0) return readCatchUpRecord(dataRoot, env);
+  if (!existsSync(catchUpPath(dataRoot))) return emptyRecord(limits);
+  const previous = readCatchUpRecord(dataRoot, env);
+  if (!previous.started_at && !previous.paused && !(previous.batches > 0)) {
+    return previous;
+  }
   return writeCatchUpRecord(dataRoot, emptyRecord(limits));
 }
 
@@ -115,18 +127,15 @@ export function catchUpAllowsEvidenceBacklog(dataRoot, { ignoreBudget = false } 
   if (ignoreBudget) return { allowed: true, record: readCatchUpRecord(dataRoot, env) };
   const record = readCatchUpRecord(dataRoot, env);
   if (record.paused) return { allowed: false, record };
-  if (record.started_at) {
-    const elapsed = Date.parse(record.started_at);
-    if (Number.isFinite(elapsed) && (Date.now() - elapsed) >= record.max_wall_ms) {
-      return {
-        allowed: false,
-        record: writeCatchUpRecord(dataRoot, {
-          ...record,
-          paused: true,
-          pause_reason: CATCH_UP_BUDGET_REASON,
-        }),
-      };
-    }
+  if (wallClockExceeded(record)) {
+    return {
+      allowed: false,
+      record: writeCatchUpRecord(dataRoot, {
+        ...record,
+        paused: true,
+        pause_reason: CATCH_UP_BUDGET_REASON,
+      }),
+    };
   }
   return { allowed: true, record };
 }
