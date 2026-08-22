@@ -71,7 +71,11 @@ export type {
   SetupReadiness,
   SetupSubjectResult,
   SubjectRecord,
-  SubjectSummary
+  SubjectSummary,
+  AutomationMode,
+  AutomationPolicyView,
+  AutomationView,
+  ProductEvolutionIntent
 } from './types'
 export {
   SUBJECT_READINESS_ACTION_IDS,

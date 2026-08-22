@@ -188,6 +188,15 @@
       "errors": ["INVALID_REQUEST", "NOT_FOUND", "CONFLICT", "OPERATION_FAILED"]
     },
     {
+      "name": "service.setAutomation",
+      "group": "service",
+      "capability": "write",
+      "availability": { "electron": true, "web": true },
+      "request": { "subject": "string", "mode": "automatic|paused" },
+      "response": { "automation": "AutomationPolicyView" },
+      "errors": ["INVALID_REQUEST", "NOT_FOUND", "CONFLICT", "OPERATION_FAILED"]
+    },
+    {
       "name": "setup.getReadiness",
       "group": "setup",
       "capability": "readonly",

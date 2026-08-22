@@ -127,7 +127,27 @@ export function createSubjectReadinessFixture(options: {
       { id: 'repair_worker_state', allowed: false, capability: 'local-only' },
       { id: 'stop_managed', allowed: false, capability: 'local-only' },
       { id: 'open_desktop', allowed: openDesktop, capability: 'readonly' },
+      { id: 'pause_automatic_evolution', allowed: cycleState !== 'stopped', capability: 'write' },
+      { id: 'resume_automatic_evolution', allowed: false, capability: 'write' },
+      { id: 'check_now', allowed: true, capability: 'write' },
+      { id: 'view_blocker', allowed: cycleState === 'stopped' || cycleState === 'blocked', capability: 'readonly' },
       { id: 'none', allowed: !localNeeded && !openDesktop, capability: 'readonly' }
+    ],
+    automation: {
+      mode: 'automatic',
+      intent: cycleState === 'stopped' || cycleState === 'blocked'
+        ? 'blocked'
+        : cycleState === 'stalled' ? 'catching_up' : 'listening',
+      mapped_from: 'default',
+      diagnostic: null,
+      background: false,
+      remaining_evidence: 0,
+      blocker: cycleState === 'stopped' ? 'cycle_stopped' : null
+    },
+    product_actions: [
+      { id: 'pause_automatic_evolution', allowed: cycleState !== 'stopped', capability: 'write' },
+      { id: 'check_now', allowed: true, capability: 'write' },
+      { id: 'view_blocker', allowed: cycleState === 'stopped' || cycleState === 'blocked', capability: 'readonly' }
     ]
   }
 }

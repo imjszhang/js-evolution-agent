@@ -113,6 +113,7 @@ export async function runDesktopSmokeStages({
     }
   }
 
+  // Caller must pass ACP sessions only. Lifecycle-managed Cycle/Channel daemons are expected.
   const leftover = listProcesses().length
   stages.acp = {
     ok: Boolean(startedOk && promptOk && closeOk && leftover === 0),

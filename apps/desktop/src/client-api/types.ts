@@ -205,6 +205,10 @@ export const SUBJECT_READINESS_ACTION_IDS = [
   'repair_worker_state',
   'stop_managed',
   'open_desktop',
+  'pause_automatic_evolution',
+  'resume_automatic_evolution',
+  'check_now',
+  'view_blocker',
   'none'
 ] as const
 
@@ -213,6 +217,42 @@ export type SubjectReadinessActionId = (typeof SUBJECT_READINESS_ACTION_IDS)[num
 export type SubjectReadinessReasonCode = (typeof SUBJECT_READINESS_REASON_CODES)[number]
 
 export type ClientHostKind = 'electron' | 'web'
+
+export const PRODUCT_AUTOMATION_MODES = ['automatic', 'paused'] as const
+
+export type AutomationMode = (typeof PRODUCT_AUTOMATION_MODES)[number]
+
+export const PRODUCT_EVOLUTION_INTENTS = [
+  'running',
+  'paused',
+  'listening',
+  'catching_up',
+  'waiting_approval',
+  'blocked',
+  'starting'
+] as const
+
+export type ProductEvolutionIntent = (typeof PRODUCT_EVOLUTION_INTENTS)[number]
+
+export interface AutomationView {
+  mode: AutomationMode
+  intent: ProductEvolutionIntent
+  mapped_from: string
+  diagnostic: string | null
+  background: boolean
+  remaining_evidence: number
+  blocker: string | null
+}
+
+export interface AutomationPolicyView {
+  subject: string
+  mode: AutomationMode
+  previous: AutomationMode
+  changed: boolean
+  mapped_from: string
+  diagnostic: string | null
+  background: boolean
+}
 
 export interface DomainReadiness {
   state: SubjectReadinessDomainState
@@ -247,6 +287,8 @@ export interface SubjectReadiness {
   reasons: SubjectReadinessReasonCode[]
   allowed_actions: SubjectReadinessActionId[]
   actions: RemediationAction[]
+  automation?: AutomationView
+  product_actions?: RemediationAction[]
 }
 
 export interface CycleRequestResult {

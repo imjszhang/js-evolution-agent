@@ -159,6 +159,27 @@ export class DaemonSupervisor {
     return this.withStartLock(subject, () => this.startLocked(subject, domain))
   }
 
+  managedDomains(subject: string): DaemonDomain[] {
+    this.assertSubject(subject)
+    return this.managedEntriesFor(subject).map((entry) => entry.domain)
+  }
+
+  owns(subject: string, domain: Exclude<DaemonDomain, 'all'>): boolean {
+    return this.coveringManaged(subject, domain) != null
+  }
+
+  /**
+   * Attach to a live worker or start exactly one managed process for the
+   * missing domain. Never replaces an external or already-managed worker.
+   */
+  async ensure(subject: string, {
+    domain = 'cycle'
+  }: { domain?: DaemonDomain } = {}): Promise<DaemonSupervisorView> {
+    this.assertSubject(subject)
+    this.assertDomain(domain)
+    return this.withStartLock(subject, () => this.ensureLocked(subject, domain))
+  }
+
   async repair(subject: string, {
     domain = 'all'
   }: { domain?: DaemonDomain } = {}): Promise<DaemonSupervisorView> {
@@ -220,6 +241,39 @@ export class DaemonSupervisor {
       await this.stopEntry(entry, reason)
     }
     return this.get(subject)
+  }
+
+  private domainLive(subject: string, domain: Exclude<DaemonDomain, 'all'>): boolean {
+    if (domain === 'cycle') {
+      const cycle = summarizeWorkerState(readWorkerState(this.runtimeContext, subject))
+      return Boolean(cycle.running || cycle.stale)
+    }
+    const channel = summarizeChannelWorkersState(
+      readChannelWorkerState(this.runtimeContext, subject)
+    )
+    return channel.running_count > 0 || channel.stale_count > 0
+  }
+
+  private async ensureLocked(subject: string, domain: DaemonDomain): Promise<DaemonSupervisorView> {
+    if (this.coveringManaged(subject, domain)) return this.get(subject)
+
+    const cycleNeeded = domain !== 'channel'
+    const channelNeeded = domain !== 'cycle'
+    const cycleLive = this.domainLive(subject, 'cycle')
+    const channelLive = this.domainLive(subject, 'channel')
+
+    if (cycleNeeded && channelNeeded) {
+      if (!cycleLive && !this.coveringManaged(subject, 'cycle')) {
+        await this.startLocked(subject, 'cycle')
+      }
+      if (!channelLive && !this.coveringManaged(subject, 'channel')) {
+        await this.startLocked(subject, 'channel')
+      }
+      return this.get(subject)
+    }
+    if (cycleNeeded && cycleLive) return this.get(subject)
+    if (channelNeeded && channelLive) return this.get(subject)
+    return this.startLocked(subject, domain)
   }
 
   private async startLocked(subject: string, domain: DaemonDomain): Promise<DaemonSupervisorView> {

@@ -1,0 +1,167 @@
+import type { ChildProcess } from 'node:child_process'
+import { EventEmitter } from 'node:events'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createRuntimeContext } from '../../../src/infra/jea-home.mjs'
+import { workerStatePath, writeWorkerState } from '../../../src/daemon/daemon-worker-state.mjs'
+import { ClientLifecycleController } from '../src/main/client-lifecycle'
+import { DaemonSupervisor } from '../src/main/daemon-supervisor'
+import { DesktopEventBus } from '../src/main/event-bus'
+import { ManagedProcessRegistry } from '../src/main/managed-process-registry'
+
+class FakeChild extends EventEmitter {
+  exitCode: number | null = null
+  signalCode: NodeJS.Signals | null = null
+  readonly kills: Array<NodeJS.Signals | number> = []
+  private closed = false
+  pid: number
+
+  constructor(pid: number, private readonly closeOnKill = false) {
+    super()
+    this.pid = pid
+  }
+
+  kill(signal: NodeJS.Signals | number = 'SIGTERM'): boolean {
+    this.kills.push(signal)
+    if (this.closeOnKill) {
+      queueMicrotask(() => this.close(null, typeof signal === 'string' ? signal : null))
+    }
+    return true
+  }
+
+  close(exitCode: number | null = 0, signalCode: NodeJS.Signals | null = null): void {
+    if (this.closed) return
+    this.closed = true
+    this.exitCode = exitCode
+    this.signalCode = signalCode
+    this.emit('close', exitCode, signalCode)
+  }
+}
+
+const roots: string[] = []
+const children: FakeChild[] = []
+
+afterEach(async () => {
+  for (const child of children.splice(0)) child.close()
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+})
+
+function createProject() {
+  const root = mkdtempSync(join(tmpdir(), 'jea-lifecycle-'))
+  roots.push(root)
+  const jeaHome = join(root, 'runtime')
+  mkdirSync(join(jeaHome, 'subjects'), { recursive: true })
+  writeFileSync(join(jeaHome, 'subjects', 'registry.json'), JSON.stringify({
+    default_subject: 'alpha',
+    subjects: {
+      alpha: {
+        policy: 'SUBJECT.md',
+        data_namespace: 'alpha-data',
+        evolution: { mode: 'continuous' },
+        channels: { desktop: { enabled: true, default_session: 'main' } }
+      },
+      beta: {
+        policy: 'SUBJECT.md',
+        data_namespace: 'beta-data',
+        evolution: { automation: 'automatic', background: true },
+        channels: { desktop: { enabled: true, default_session: 'main' } }
+      },
+      gamma: {
+        policy: 'SUBJECT.md',
+        data_namespace: 'gamma-data',
+        evolution: { automation: 'paused' },
+        channels: { desktop: { enabled: false } }
+      }
+    }
+  }))
+  const runtime = createRuntimeContext({ sourceRoot: root, jeaHome })
+  const events = new DesktopEventBus()
+  const processRegistry = new ManagedProcessRegistry()
+  const spawnMock = vi.fn((_command: string, args: readonly string[]) => {
+    const child = new FakeChild(50_000 + children.length, true)
+    children.push(child)
+    queueMicrotask(() => child.emit('spawn'))
+    const domain = String(args[args.indexOf('--domain') + 1] ?? 'all')
+    if (domain === 'cycle' || domain === 'all') {
+      writeWorkerState(runtime, String(args[args.indexOf('--subject') + 1]), {
+        subject: String(args[args.indexOf('--subject') + 1]),
+        worker_id: `cycle-${child.pid}`,
+        pid: child.pid,
+        status: 'running',
+        started_at: new Date().toISOString(),
+        heartbeat_at: new Date().toISOString(),
+        stale_after_ms: 60_000
+      })
+    }
+    return child as unknown as ChildProcess
+  })
+  const supervisor = new DaemonSupervisor(
+    root,
+    processRegistry,
+    events,
+    spawnMock as unknown as typeof import('node:child_process').spawn,
+    10,
+    jeaHome,
+    0
+  )
+  const lifecycle = new ClientLifecycleController(supervisor, runtime)
+  return { root, runtime, supervisor, lifecycle, spawnMock }
+}
+
+describe('ClientLifecycleController', () => {
+  it('startup starts managed Cycle and Channel for the default automatic subject', async () => {
+    const { lifecycle, spawnMock } = createProject()
+    const result = await lifecycle.reconcileStartup()
+    expect(result.subject).toBe('alpha')
+    expect(result.actions.some((item) => item.subject === 'alpha' && item.domain === 'cycle' && item.outcome === 'started')).toBe(true)
+    expect(result.actions.some((item) => item.subject === 'beta' && item.domain === 'cycle')).toBe(true)
+    expect(result.actions.some((item) => item.subject === 'gamma')).toBe(false)
+    const cycleStarts = spawnMock.mock.calls.filter(([, args]) => (
+      Array.isArray(args) && args.includes('--domain') && args[args.indexOf('--domain') + 1] === 'cycle'
+    ))
+    expect(cycleStarts.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('attaches an external Cycle without spawning another worker', async () => {
+    const { runtime, lifecycle, spawnMock } = createProject()
+    const path = workerStatePath(runtime, 'alpha')
+    mkdirSync(dirname(path), { recursive: true })
+    writeWorkerState(runtime, 'alpha', {
+      subject: 'alpha',
+      worker_id: 'external',
+      pid: process.pid,
+      status: 'running',
+      started_at: new Date().toISOString(),
+      heartbeat_at: new Date().toISOString(),
+      stale_after_ms: 60_000
+    })
+    const result = await lifecycle.reconcile({ subject: 'alpha', reason: 'startup' })
+    expect(result.actions.find((item) => item.domain === 'cycle')).toMatchObject({
+      action: 'attach',
+      outcome: 'attached'
+    })
+    expect(spawnMock.mock.calls.some(([, args]) => (
+      Array.isArray(args) && args.includes('cycle') && args.includes('alpha')
+    ))).toBe(false)
+  })
+
+  it('does not stop an external worker when switching subjects', async () => {
+    const { runtime, lifecycle, supervisor } = createProject()
+    writeWorkerState(runtime, 'alpha', {
+      subject: 'alpha',
+      worker_id: 'external',
+      pid: process.pid,
+      status: 'running',
+      started_at: new Date().toISOString(),
+      heartbeat_at: new Date().toISOString(),
+      stale_after_ms: 60_000
+    })
+    await lifecycle.reconcile({ subject: 'alpha', reason: 'startup' })
+    await lifecycle.reconcile({ subject: 'gamma', previous: 'alpha', reason: 'subject_select' })
+    expect(supervisor.get('alpha').mode).toBe('attached')
+    expect(supervisor.owns('alpha', 'cycle')).toBe(false)
+  })
+})

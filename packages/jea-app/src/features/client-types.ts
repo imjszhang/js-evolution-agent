@@ -144,6 +144,16 @@ export interface RemediationActionView {
   capability: 'readonly' | 'write' | 'local-only'
 }
 
+export interface AutomationView {
+  mode: 'automatic' | 'paused'
+  intent: 'running' | 'paused' | 'listening' | 'catching_up' | 'waiting_approval' | 'blocked' | 'starting'
+  mapped_from?: string
+  diagnostic?: string | null
+  background?: boolean
+  remaining_evidence?: number
+  blocker?: string | null
+}
+
 export interface SubjectReadiness {
   subject: string
   generated_at: string
@@ -155,6 +165,8 @@ export interface SubjectReadiness {
   reasons: string[]
   allowed_actions: string[]
   actions: RemediationActionView[]
+  automation?: AutomationView
+  product_actions?: RemediationActionView[]
 }
 
 export interface PublicCommandErrorShape {
@@ -190,6 +202,7 @@ export interface SetupSettingsClient {
   getObservability?(subject: string): Promise<import('./evolution/types').EvolutionObservability>
   processCycleOnce?(subject: string): Promise<{ status?: string; reason?: string }>
   startService?(subject: string, domain?: 'all' | 'cycle' | 'channel'): Promise<unknown>
+  setAutomation?(subject: string, mode: 'automatic' | 'paused'): Promise<unknown>
   subscribe?(listener: (event: ProductEventEnvelope) => void): () => void
 }
 

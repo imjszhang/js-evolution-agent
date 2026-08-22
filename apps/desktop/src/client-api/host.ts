@@ -12,7 +12,7 @@ import { createClientRuntimeContext, type ClientRuntimeContext } from './owners/
 import { SubjectCommandOwner } from './owners/subject'
 import { ConversationCommandOwner } from './owners/conversation'
 import { EvolutionCommandOwner } from './owners/evolution'
-import { ServiceCommandOwner, createProjectionServicePort, type ServiceProcessPort } from './owners/service'
+import { ServiceCommandOwner, createProjectionServicePort, type ClientLifecycleHook, type ServiceProcessPort } from './owners/service'
 import { SetupCommandOwner, createInjectedHomePort, type HomePort } from './owners/setup'
 import { SettingsCommandOwner } from './owners/settings'
 import { DiagnosticsCommandOwner } from './owners/diagnostics'
@@ -39,6 +39,7 @@ export interface ApplicationCommandHostOptions {
   cliLauncher?: CliLauncherPort
   versions?: { appVersion: string; cliVersion: string }
   hostKind?: ClientHostKind
+  lifecycle?: ClientLifecycleHook | null
 }
 
 function packageVersion(): string {
@@ -64,10 +65,13 @@ export function createApplicationCommandHandlers(options: ApplicationCommandHost
   const conversation = new ConversationCommandOwner(runtime)
   const evolution = new EvolutionCommandOwner(runtime)
   const cli = new CliCommandOwner(options.cliLauncher ?? createUnsupportedCliLauncher())
+  const hostKind = options.hostKind ?? 'electron'
+  const lifecycle = hostKind === 'electron' ? (options.lifecycle ?? null) : null
   const service = new ServiceCommandOwner(
     runtime,
     options.serviceProcess ?? createProjectionServicePort(runtime),
-    options.hostKind ?? 'electron'
+    hostKind,
+    lifecycle
   )
   const setup = new SetupCommandOwner(
     runtime,
@@ -99,8 +103,44 @@ export function createApplicationCommandHandlers(options: ApplicationCommandHost
     },
     'subject.list': { capability: 'readonly', handle: () => subjects.list() },
     'subject.get': { capability: 'readonly', handle: (payload) => subjects.get(stringField(payload, 'subject')!) },
-    'subject.select': { capability: 'write', handle: (payload) => subjects.select(stringField(payload, 'subject')!) },
-    'subject.setDefault': { capability: 'write', handle: (payload) => subjects.setDefault(stringField(payload, 'subject')!) },
+    'subject.select': {
+      capability: 'write',
+      handle: async (payload) => {
+        const previous = subjects.selected
+        const record = subjects.select(stringField(payload, 'subject')!)
+        if (lifecycle) {
+          try {
+            await lifecycle.reconcile({
+              subject: record.name,
+              previous,
+              reason: 'subject_select'
+            })
+          } catch {
+            // Selection must succeed; readiness projects attach/start failure.
+          }
+        }
+        return record
+      }
+    },
+    'subject.setDefault': {
+      capability: 'write',
+      handle: async (payload) => {
+        const previous = subjects.selected
+        const record = subjects.setDefault(stringField(payload, 'subject')!)
+        if (lifecycle) {
+          try {
+            await lifecycle.reconcile({
+              subject: record.name,
+              previous,
+              reason: 'subject_default'
+            })
+          } catch {
+            // Default change must succeed; readiness projects attach/start failure.
+          }
+        }
+        return record
+      }
+    },
     'conversation.listSessions': {
       capability: 'readonly',
       handle: (payload) => conversation.listSessions(stringField(payload, 'subject')!)
@@ -183,6 +223,13 @@ export function createApplicationCommandHandlers(options: ApplicationCommandHost
     'service.processCycleOnce': {
       capability: 'write',
       handle: (payload) => service.processCycleOnce(stringField(payload, 'subject')!)
+    },
+    'service.setAutomation': {
+      capability: 'write',
+      handle: (payload) => service.setAutomation(
+        stringField(payload, 'subject')!,
+        stringField(payload, 'mode')! as 'automatic' | 'paused'
+      )
     },
     'setup.getReadiness': {
       capability: 'readonly',

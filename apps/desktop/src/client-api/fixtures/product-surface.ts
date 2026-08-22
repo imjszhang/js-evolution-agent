@@ -4,6 +4,7 @@ import type {
   ConversationPage,
   ConversationSendResult,
   ConversationSessionSummary,
+  AutomationPolicyView,
   CycleProcessOnceResult,
   CycleRequestResult,
   EvolutionCycleDetail,
@@ -40,6 +41,7 @@ export interface ProductSurfaceFixture {
   serviceReadiness: SubjectReadiness
   cycleRequest: CycleRequestResult
   cycleProcessOnce: CycleProcessOnceResult
+  automation: AutomationPolicyView
   readiness: SetupReadiness
   home: SetupHomeResult
   createdSubject: SetupSubjectResult
@@ -195,8 +197,35 @@ export function createProductSurfaceFixture(): ProductSurfaceFixture {
         { id: 'repair_worker_state', allowed: false, capability: 'local-only' },
         { id: 'stop_managed', allowed: false, capability: 'local-only' },
         { id: 'open_desktop', allowed: false, capability: 'readonly' },
+        { id: 'pause_automatic_evolution', allowed: false, capability: 'write' },
+        { id: 'resume_automatic_evolution', allowed: false, capability: 'write' },
+        { id: 'check_now', allowed: false, capability: 'write' },
+        { id: 'view_blocker', allowed: false, capability: 'readonly' },
         { id: 'none', allowed: false, capability: 'readonly' }
+      ],
+      automation: {
+        mode: 'automatic',
+        intent: 'blocked',
+        mapped_from: 'default',
+        diagnostic: null,
+        background: false,
+        remaining_evidence: 0,
+        blocker: 'cycle_stopped'
+      },
+      product_actions: [
+        { id: 'pause_automatic_evolution', allowed: true, capability: 'write' },
+        { id: 'check_now', allowed: true, capability: 'write' },
+        { id: 'view_blocker', allowed: true, capability: 'readonly' }
       ]
+    },
+    automation: {
+      subject: 'alpha',
+      mode: 'automatic',
+      previous: 'automatic',
+      changed: false,
+      mapped_from: 'default',
+      diagnostic: null,
+      background: false
     },
     cycleRequest: {
       subject: 'alpha',
@@ -334,6 +363,8 @@ export function fixtureCommandResult(fixtures: ProductSurfaceFixture, command: s
       return fixtures.cycleRequest
     case 'service.processCycleOnce':
       return fixtures.cycleProcessOnce
+    case 'service.setAutomation':
+      return fixtures.automation
     case 'setup.getReadiness':
       return fixtures.readiness
     case 'setup.confirmHome':

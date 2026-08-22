@@ -1,5 +1,9 @@
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { runDesktopSmokeStages } from '../src/main/desktop-smoke'
+
+const main = fileURLToPath(new URL('../src/main/index.ts', import.meta.url))
 
 function invokeMap(handlers: Record<string, (payload?: Record<string, unknown>) => any>) {
   const commands: Array<{ command: string, payload?: Record<string, unknown> }> = []
@@ -87,5 +91,11 @@ describe('desktop smoke stages', () => {
       closed: true,
       leftover: 0
     })
+  })
+
+  it('counts only ACP leftovers so lifecycle daemons do not fail smoke', () => {
+    const mainSource = readFileSync(main, 'utf8')
+    expect(mainSource).toContain("processRegistry.list('acp')")
+    expect(mainSource).toMatch(/JEA_DESKTOP_SMOKE[\s\S]*reconcileStartup[\s\S]*runDesktopSmoke/)
   })
 })

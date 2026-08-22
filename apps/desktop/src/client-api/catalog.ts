@@ -158,6 +158,15 @@ export const CLIENT_API_COMMAND_CATALOG: CatalogCommandEntry[] = [
     { result: 'CycleProcessOnceResult' },
     COMMON_WRITE_ERRORS
   ),
+  command(
+    'service.setAutomation',
+    'service',
+    'write',
+    both(),
+    { subject: 'string', mode: 'automatic|paused' },
+    { automation: 'AutomationPolicyView' },
+    COMMON_WRITE_ERRORS
+  ),
   command('setup.getReadiness', 'setup', 'readonly', both(), { subject: 'string?' }, { readiness: 'SetupReadiness' }, COMMON_READ_ERRORS),
   command(
     'setup.confirmHome',

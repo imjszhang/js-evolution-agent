@@ -2,7 +2,14 @@ import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { JeaApp } from '../src/JeaApp'
-import { canShowProcessOnce, canShowStartCycle, processOnceResultFailed } from '../src/features/evolution/cycle-remediation'
+import {
+  canShowCheckNow,
+  canShowPauseEvolution,
+  canShowProcessOnce,
+  canShowResumeEvolution,
+  canShowStartCycle,
+  processOnceResultFailed
+} from '../src/features/evolution/cycle-remediation'
 import { EvolutionInspector } from '../src/features/evolution/EvolutionInspector'
 import { createEvolutionFixtureClient, createEvolutionFixtureData } from '../src/features/evolution/fixture-client'
 import { createEvolutionInspectorFeature } from '../src/features/evolution/feature'
@@ -139,6 +146,9 @@ describe('Evolution Inspector component', () => {
     expect(canShowProcessOnce(['process_cycle_once'], { hasClient: true, subject: 'alpha' })).toBe(true)
     expect(canShowProcessOnce([], { hasClient: true, subject: 'alpha' })).toBe(false)
     expect(canShowStartCycle(['start_cycle'], { hasClient: true, subject: 'alpha' })).toBe(true)
+    expect(canShowPauseEvolution(['pause_automatic_evolution'])).toBe(true)
+    expect(canShowResumeEvolution(['resume_automatic_evolution'])).toBe(true)
+    expect(canShowCheckNow(['check_now'])).toBe(true)
     expect(processOnceResultFailed({ status: 'retryable' })).toBe(true)
     expect(processOnceResultFailed({ status: 'ok' })).toBe(false)
   })

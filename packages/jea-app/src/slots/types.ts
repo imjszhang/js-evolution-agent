@@ -48,6 +48,16 @@ export interface ShellSubjectReadiness {
   reasons: string[]
   allowed_actions: string[]
   actions: ShellRemediationAction[]
+  automation?: {
+    mode: 'automatic' | 'paused'
+    intent: 'running' | 'paused' | 'listening' | 'catching_up' | 'waiting_approval' | 'blocked' | 'starting'
+    mapped_from?: string
+    diagnostic?: string | null
+    background?: boolean
+    remaining_evidence?: number
+    blocker?: string | null
+  }
+  product_actions?: ShellRemediationAction[]
 }
 
 /**

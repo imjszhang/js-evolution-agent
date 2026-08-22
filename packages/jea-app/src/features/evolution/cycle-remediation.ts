@@ -12,6 +12,22 @@ export function canShowStartCycle(
   return input.hasClient && Boolean(input.subject) && allowedActions.includes('start_cycle')
 }
 
+export function canShowPauseEvolution(actions: readonly string[]): boolean {
+  return actions.includes('pause_automatic_evolution')
+}
+
+export function canShowResumeEvolution(actions: readonly string[]): boolean {
+  return actions.includes('resume_automatic_evolution')
+}
+
+export function canShowCheckNow(actions: readonly string[]): boolean {
+  return actions.includes('check_now') || actions.includes('process_cycle_once')
+}
+
+export function canShowViewBlocker(actions: readonly string[]): boolean {
+  return actions.includes('view_blocker')
+}
+
 export function processOnceResultFailed(result: { status?: string } | null | undefined): boolean {
   const status = result?.status
   return status === 'retryable' || status === 'blocked'

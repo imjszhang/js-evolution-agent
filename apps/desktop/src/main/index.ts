@@ -16,6 +16,7 @@ import {
   PublicCommandError
 } from './command-registry'
 import { createDaemonServiceProcessPort } from './daemon-service-port'
+import { ClientLifecycleController } from './client-lifecycle'
 import { DaemonSupervisor } from './daemon-supervisor'
 import { createDesktopCommandDefinitions } from './desktop-command-definitions'
 import { DesktopEventBus } from './event-bus'
@@ -50,6 +51,7 @@ const devRendererUrl = resolveDevRendererUrl(process.env.ELECTRON_RENDERER_URL)
 const processRegistry = new ManagedProcessRegistry()
 const events = new DesktopEventBus()
 const daemon = new DaemonSupervisor(projectRoot, processRegistry, events, undefined, undefined, runtimeContext.jeaHome)
+const lifecycle = new ClientLifecycleController(daemon, runtimeContext)
 const ops = new OpsService(projectRoot, undefined, undefined, daemon, runtimeContext.jeaHome)
 const todo = new TodoService(projectRoot, ops, runtimeContext.jeaHome)
 const channel = new ChannelService(projectRoot, runtimeContext.jeaHome)
@@ -76,7 +78,8 @@ const clientApi = createApplicationCommandHost({
   jeaHome: runtimeContext.jeaHome,
   hostKind: 'electron',
   cliLauncher: createManagedCliLauncher({ sourceRoot: projectRoot }),
-  serviceProcess: createDaemonServiceProcessPort(daemon)
+  serviceProcess: createDaemonServiceProcessPort(daemon),
+  lifecycle
 })
 const invoke = createCommandRegistry(
   ops,
@@ -198,7 +201,14 @@ if (!gotSingleInstanceLock) {
     })
 
     if (process.env.JEA_DESKTOP_SMOKE) {
+      await lifecycle.reconcileStartup().catch(() => {
+        // Startup attach/start failure is projected as blocked/retrying.
+      })
       await runDesktopSmoke(process.env.JEA_DESKTOP_SMOKE)
+    } else {
+      void lifecycle.reconcileStartup().catch(() => {
+        // Startup attach/start failure is projected as blocked/retrying.
+      })
     }
   })
 }
@@ -230,7 +240,7 @@ async function runDesktopSmoke(outputPath: string): Promise<void> {
         invoke: smokeInvoke,
         subjects,
         fixtureSubject: String(report.fixtureSubject),
-        listProcesses: () => processRegistry.list(),
+        listProcesses: () => processRegistry.list('acp'),
         createExecutionRoot: process.env.JEA_DESKTOP_SMOKE_ACP_ROOT
           ? () => String(process.env.JEA_DESKTOP_SMOKE_ACP_ROOT)
           : undefined
