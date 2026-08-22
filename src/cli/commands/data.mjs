@@ -169,11 +169,13 @@ export function initData(root, flags = {}) {
   const withSeed = !!(flags.seed || flags.all);
   const policies = flags.all ? ensureSubjectsRegistry(root, { language }) : null;
   const runtime = runtimeForFlags(root, flags);
+  const initializedAt = nowIso();
   const result = {
     runtime,
     policies,
     directories: DATA_DIRS.map((dir) => ({ dir, ...ensureProjectDir(runtime.runtimeRoot, dir) })),
     goals: null,
+    requiredSources: null,
     seed: null,
   };
 
@@ -186,12 +188,47 @@ export function initData(root, flags = {}) {
     );
   }
 
+  if (flags.all) {
+    result.requiredSources = {
+      standingMemory: writeJsonIfMissing(
+        runtime.runtimeRoot,
+        join('data', 'intelligence', 'memory', 'standing_memory.json'),
+        {
+          schema_version: 1,
+          source: 'jea data init',
+          source_cycle_id: null,
+          generated_at: initializedAt,
+          updated_at: initializedAt,
+          char_limit: 12_000,
+          text: '',
+          evidence_refs: [],
+          typed_evidence_refs: [],
+          last_settled_cursor: null,
+          freshness: {
+            status: 'empty',
+            settled_through: null,
+            consolidated_at: initializedAt,
+            pending_settled_count: 0,
+          },
+        },
+      ),
+      daemonTasks: writeJsonIfMissing(
+        runtime.runtimeRoot,
+        join('data', 'evolution', 'tasks', 'pending_tasks.json'),
+        {
+          schema_version: 1,
+          tasks: [],
+          updated_at: initializedAt,
+        },
+      ),
+    };
+  }
+
   if (withSeed) {
     const store = createIntelligenceStore({
       baseDir: runtime.intelligenceDir,
       timezone: 'Asia/Shanghai',
     });
-    const initializedAt = nowIso();
     const subject = getSubject(root, flags);
     const observationCount = store.ingestObservation({
       source: 'jea data init',

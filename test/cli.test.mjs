@@ -2332,13 +2332,49 @@ describe('data initialization', () => {
   it('returns JSON-serializable init output', () => {
     const root = makeProjectRoot();
     const result = initData(root, { all: true });
+    const runtime = runtimeInfoForDefaultSubject(root);
+    const memoryPath = join(runtime.intelligenceDir, 'memory', 'standing_memory.json');
+    const tasksPath = join(runtime.evolutionDir, 'tasks', 'pending_tasks.json');
+
     expect(() => JSON.stringify(result)).not.toThrow();
     expect(result.goals.written).toBe(true);
     expect(result.seed.observationCount).toBe(1);
     expect(result.policies).not.toBeNull();
+    expect(result.requiredSources.standingMemory.written).toBe(true);
+    expect(result.requiredSources.daemonTasks.written).toBe(true);
+    expect(readJsonSafe(memoryPath)).toMatchObject({
+      schema_version: 1,
+      source: 'jea data init',
+      text: '',
+      last_settled_cursor: null,
+      freshness: { status: 'empty', pending_settled_count: 0 },
+    });
+    expect(readJsonSafe(tasksPath)).toMatchObject({
+      schema_version: 1,
+      tasks: [],
+    });
     expect(existsSync(subjectsRegistryFile(root))).toBe(true);
     expect(existsSync(subjectGovernanceFile(root, 'js-evolution-agent'))).toBe(true);
     expect(existsSync(subjectSoulFile(root, 'js-evolution-agent'))).toBe(true);
+  });
+
+  it('does not overwrite initialized audit sources on repeated --all', () => {
+    const root = makeProjectRoot();
+    initData(root, { all: true });
+    const runtime = runtimeInfoForDefaultSubject(root);
+    const memoryPath = join(runtime.intelligenceDir, 'memory', 'standing_memory.json');
+    const tasksPath = join(runtime.evolutionDir, 'tasks', 'pending_tasks.json');
+    const memory = { updated_at: '2026-08-22T00:00:00.000Z', text: 'preserve memory' };
+    const tasks = { tasks: [{ task_id: 'preserve-task', status: 'pending' }] };
+    writeJsonFile(memoryPath, memory);
+    writeJsonFile(tasksPath, tasks);
+
+    const repeated = initData(root, { all: true, force: true });
+
+    expect(repeated.requiredSources.standingMemory.skipped).toBe(true);
+    expect(repeated.requiredSources.daemonTasks.skipped).toBe(true);
+    expect(readJsonSafe(memoryPath)).toEqual(memory);
+    expect(readJsonSafe(tasksPath)).toEqual(tasks);
   });
 
   it('reads SOUL.md for channel persona and legacy ## Persona fallback', () => {
