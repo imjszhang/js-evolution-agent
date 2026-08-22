@@ -72,6 +72,8 @@ jobs:
         with:
           node-version: 22
 
+      - run: npm ci
+
       - name: Require an existing release
         env:
           GH_TOKEN: ${{ github.token }}
