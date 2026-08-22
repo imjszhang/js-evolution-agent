@@ -148,7 +148,7 @@ export class ClientLifecycleController implements ClientLifecyclePort {
       if (afterOwned) {
         return { ...step, outcome: beforeOwned ? 'managed' : 'started', reason }
       }
-      if (step.action === 'attach') {
+      if (step.action === 'attach' || this.domainPresent(step.subject, step.domain)) {
         return { ...step, outcome: 'attached', reason }
       }
       return { ...step, outcome: 'blocked', reason }
@@ -158,6 +158,15 @@ export class ClientLifecycleController implements ClientLifecyclePort {
       }
       return { ...step, outcome: 'blocked', reason }
     }
+  }
+
+  private domainPresent(subject: string, domain: 'cycle' | 'channel'): boolean {
+    if (domain === 'cycle') {
+      const cycle = summarizeWorkerState(readWorkerState(this.runtime, subject))
+      return Boolean(cycle.running || cycle.stale)
+    }
+    const channel = summarizeChannelWorkersState(readChannelWorkerState(this.runtime, subject))
+    return channel.running_count > 0 || channel.stale_count > 0
   }
 
   private isOwnershipError(error: unknown): boolean {

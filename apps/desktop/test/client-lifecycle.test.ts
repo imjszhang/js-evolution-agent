@@ -148,6 +148,27 @@ describe('ClientLifecycleController', () => {
     ))).toBe(false)
   })
 
+  it('attaches an external stale Cycle without reporting blocked or spawning', async () => {
+    const { runtime, lifecycle, spawnMock, supervisor } = createProject()
+    writeWorkerState(runtime, 'alpha', {
+      subject: 'alpha',
+      worker_id: 'external-stale',
+      pid: process.pid,
+      status: 'running',
+      started_at: new Date(Date.now() - 180_000).toISOString(),
+      heartbeat_at: new Date(Date.now() - 120_000).toISOString(),
+      stale_after_ms: 60_000
+    })
+    const result = await lifecycle.reconcile({ subject: 'alpha', reason: 'startup' })
+    expect(result.actions.find((item) => item.domain === 'cycle')).toMatchObject({
+      outcome: 'attached'
+    })
+    expect(supervisor.owns('alpha', 'cycle')).toBe(false)
+    expect(spawnMock.mock.calls.some(([, args]) => (
+      Array.isArray(args) && args.includes('cycle') && args.includes('alpha')
+    ))).toBe(false)
+  })
+
   it('does not stop an external worker when switching subjects', async () => {
     const { runtime, lifecycle, supervisor } = createProject()
     writeWorkerState(runtime, 'alpha', {

@@ -427,6 +427,35 @@ describe('service.getReadiness contract', () => {
 })
 
 describe('readiness projector invariants', () => {
+  it('surfaces catch_up_budget while remaining evidence exists', () => {
+    const value = projectSubjectReadiness({
+      subject: 'alpha',
+      generatedAt: '2026-08-17T00:00:00.000Z',
+      hostKind: 'electron',
+      webHost: { running: false, pid: null },
+      cycleWorker: { status: 'running', running: true, fresh: true, pid_alive: true, pid: process.pid },
+      cycleHealth: { status: 'ok', ok: true },
+      channelWorker: { status: 'stopped', running: false },
+      channelHealth: { status: 'idle', ok: true },
+      model: { configured: false, mode: 'mock' },
+      desktopChannelEnabled: true,
+      ownership: { mode: 'none', domain: null },
+      pendingEvidence: 12,
+      catchUp: { paused: true }
+    })
+    expect(value.automation).toMatchObject({
+      intent: 'catching_up',
+      remaining_evidence: 12,
+      blocker: 'catch_up_budget'
+    })
+    expect(value.reasons).toContain('catch_up_budget')
+    expect(value.product_actions?.find((action) => action.id === 'view_blocker')?.allowed).toBe(true)
+    expect(value.product_actions?.find((action) => action.id === 'check_now')?.allowed).toBe(true)
+    for (const reason of value.reasons) {
+      expect(SUBJECT_READINESS_REASON_CODES).toContain(reason)
+    }
+  })
+
   it('uses only the documented domain states and action ids', () => {
     const value = projectSubjectReadiness({
       subject: 'alpha',

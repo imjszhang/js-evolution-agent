@@ -125,7 +125,7 @@ export function setSubjectAutomation(root, subject, mode) {
     changed,
     previous,
     mode: normalized,
-    source: 'runtime-registry.json',
+    source: 'subjects/registry.json',
     path: written.path,
     subject: subjectName,
   };
