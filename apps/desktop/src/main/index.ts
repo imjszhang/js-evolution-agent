@@ -16,6 +16,7 @@ import {
   PublicCommandError
 } from './command-registry'
 import { createDaemonServiceProcessPort } from './daemon-service-port'
+import { ClientLifecycleController } from './client-lifecycle'
 import { DaemonSupervisor } from './daemon-supervisor'
 import { createDesktopCommandDefinitions } from './desktop-command-definitions'
 import { DesktopEventBus } from './event-bus'
@@ -50,6 +51,7 @@ const devRendererUrl = resolveDevRendererUrl(process.env.ELECTRON_RENDERER_URL)
 const processRegistry = new ManagedProcessRegistry()
 const events = new DesktopEventBus()
 const daemon = new DaemonSupervisor(projectRoot, processRegistry, events, undefined, undefined, runtimeContext.jeaHome)
+const lifecycle = new ClientLifecycleController(daemon, runtimeContext)
 const ops = new OpsService(projectRoot, undefined, undefined, daemon, runtimeContext.jeaHome)
 const todo = new TodoService(projectRoot, ops, runtimeContext.jeaHome)
 const channel = new ChannelService(projectRoot, runtimeContext.jeaHome)
@@ -76,7 +78,8 @@ const clientApi = createApplicationCommandHost({
   jeaHome: runtimeContext.jeaHome,
   hostKind: 'electron',
   cliLauncher: createManagedCliLauncher({ sourceRoot: projectRoot }),
-  serviceProcess: createDaemonServiceProcessPort(daemon)
+  serviceProcess: createDaemonServiceProcessPort(daemon),
+  lifecycle
 })
 const invoke = createCommandRegistry(
   ops,
@@ -192,6 +195,9 @@ if (!gotSingleInstanceLock) {
       }
     )
     createWindow()
+    void lifecycle.reconcileStartup().catch(() => {
+      // Startup attach/start failure is projected as blocked/retrying.
+    })
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()

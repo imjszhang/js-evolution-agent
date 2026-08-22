@@ -732,3 +732,29 @@ describe('ManagedProcessRegistry', () => {
     expect(registry.list()).toEqual([])
   })
 })
+
+describe('DaemonSupervisor.ensure', () => {
+  it('starts exactly one managed Cycle when none is running', async () => {
+    const { root } = createProjectRoot()
+    const { supervisor, spawnMock } = createSupervisor(root)
+    const first = await supervisor.ensure('alpha', { domain: 'cycle' })
+    const second = await supervisor.ensure('alpha', { domain: 'cycle' })
+    expect(first).toMatchObject({ mode: 'managed', domain: 'cycle', pid: 40_000 })
+    expect(second).toMatchObject({ mode: 'managed', domain: 'cycle', pid: 40_000 })
+    expect(spawnMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('attaches an external Cycle without starting or stopping a duplicate', async () => {
+    const { root, context } = createProjectRoot()
+    const { supervisor, spawnMock } = createSupervisor(root)
+    writeCycleState(context, 'alpha', { pid: process.pid })
+    const view = await supervisor.ensure('alpha', { domain: 'cycle' })
+    expect(view).toMatchObject({ mode: 'attached', pid: process.pid })
+    expect(spawnMock).not.toHaveBeenCalled()
+    expect(readWorkerState(context, 'alpha')).toMatchObject({
+      status: 'running',
+      stop_requested_at: null,
+      pid: process.pid
+    })
+  })
+})

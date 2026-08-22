@@ -47,6 +47,10 @@ function remediationActions(
     'repair_worker_state',
     'stop_managed',
     'open_desktop',
+    'pause_automatic_evolution',
+    'resume_automatic_evolution',
+    'check_now',
+    'view_blocker',
     'none'
   ]
   const capability: Record<SubjectReadinessActionId, RemediationAction['capability']> = {
@@ -56,6 +60,10 @@ function remediationActions(
     repair_worker_state: 'local-only',
     stop_managed: 'local-only',
     open_desktop: 'readonly',
+    pause_automatic_evolution: 'write',
+    resume_automatic_evolution: 'write',
+    check_now: 'write',
+    view_blocker: 'readonly',
     none: 'readonly'
   }
   const needed = new Set(allowed)

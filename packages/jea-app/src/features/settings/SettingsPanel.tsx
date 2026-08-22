@@ -30,6 +30,24 @@ function Row({ label, value, testId }: { label: string; value: string; testId?: 
   )
 }
 
+function evolutionRuntimeLabel(
+  t: (key: 'evolutionAutomaticPaused' | 'evolutionListening' | 'evolutionCatchingUp' | 'evolutionWaitingApproval' | 'evolutionBlocked' | 'evolutionAutomaticRunning') => string,
+  runtime: { mode?: string; intent?: string; remaining_evidence?: number; blocker?: string | null } | null
+): string {
+  if (!runtime) return '—'
+  if (runtime.mode === 'paused' || runtime.intent === 'paused') return t('evolutionAutomaticPaused')
+  if (runtime.intent === 'catching_up') {
+    const remaining = runtime.remaining_evidence ?? 0
+    return remaining > 0 ? `${t('evolutionCatchingUp')}: ${remaining}` : t('evolutionCatchingUp')
+  }
+  if (runtime.intent === 'waiting_approval') return t('evolutionWaitingApproval')
+  if (runtime.intent === 'blocked') {
+    return runtime.blocker ? `${t('evolutionBlocked')}: ${runtime.blocker}` : t('evolutionBlocked')
+  }
+  if (runtime.intent === 'listening') return t('evolutionListening')
+  return t('evolutionAutomaticRunning')
+}
+
 function modelLabel(
   t: (key: 'runtimeModelMock' | 'runtimeModelDeepseek' | 'runtimeModelUnset') => string,
   mode: SetupReadiness['model']['mode']
@@ -169,6 +187,9 @@ export function SettingsPanel({
       })
     : null
   const allowed = new Set(operatorProjection?.allowed_remediation_actions.map((action) => action.id) ?? [])
+  const productAllowed = new Set((
+    operatorProjection?.product_actions ?? subjectReadiness?.product_actions ?? []
+  ).filter((action) => action.allowed).map((action) => action.id))
 
   async function persist(patch: { language?: SettingsView['language']; theme?: ThemePreference; defaultSubject?: string }) {
     if (!client) {
@@ -217,6 +238,31 @@ export function SettingsPanel({
     try {
       const next = action === 'install' ? await client.installCli() : await client.uninstallCli()
       setCli(next)
+    } catch (caught) {
+      setError(publicErrorMessage(caught, t('errorBody')))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function runProduct(action: 'pause' | 'resume' | 'check') {
+    if (!client || !selectedSubject) return
+    setBusy(action)
+    setError(null)
+    try {
+      if (action === 'pause' && client.setAutomation) {
+        await client.setAutomation(selectedSubject, 'paused')
+      } else if (action === 'resume' && client.setAutomation) {
+        await client.setAutomation(selectedSubject, 'automatic')
+      } else if (action === 'check' && client.processCycleOnce) {
+        const result = await client.processCycleOnce(selectedSubject)
+        if (result.status === 'retryable' || result.status === 'blocked') {
+          throw new Error(result.reason || t('evolutionCheckNowFailed'))
+        }
+      }
+      if (client.getServiceReadiness) setSubjectReadiness(await client.getServiceReadiness(selectedSubject))
+      if (client.getObservability) setObservability(await client.getObservability(selectedSubject))
+      if (client.listCycles) setCycleList(await client.listCycles(selectedSubject, 50))
     } catch (caught) {
       setError(publicErrorMessage(caught, t('errorBody')))
     } finally {
@@ -340,6 +386,49 @@ export function SettingsPanel({
             value={runtime.conversation.desktopChannelEnabled ? t('runtimeConversationReady') : t('runtimeConversationBlocked')}
             testId="settings-conversation-ready"
           />
+          <Row
+            label={t('evolutionAutomaticRunning').split(':')[0]}
+            value={evolutionRuntimeLabel(t, operatorProjection?.evolution_runtime ?? subjectReadiness?.automation ?? null)}
+            testId="settings-evolution-runtime"
+          />
+        </div>
+        <div className="flex flex-wrap gap-2" data-testid="settings-evolution-actions">
+          {productAllowed.has('pause_automatic_evolution') && client?.setAutomation && selectedSubject ? (
+            <Button
+              size="sm"
+              data-testid="settings-pause-evolution"
+              disabled={Boolean(busy)}
+              onClick={() => void runProduct('pause')}
+            >
+              {t('evolutionPause')}
+            </Button>
+          ) : null}
+          {productAllowed.has('resume_automatic_evolution') && client?.setAutomation && selectedSubject ? (
+            <Button
+              size="sm"
+              data-testid="settings-resume-evolution"
+              disabled={Boolean(busy)}
+              onClick={() => void runProduct('resume')}
+            >
+              {t('evolutionResume')}
+            </Button>
+          ) : null}
+          {productAllowed.has('check_now') && client?.processCycleOnce && selectedSubject ? (
+            <Button
+              size="sm"
+              variant="outline"
+              data-testid="settings-check-now"
+              disabled={Boolean(busy)}
+              onClick={() => void runProduct('check')}
+            >
+              {t('evolutionCheckNow')}
+            </Button>
+          ) : null}
+          {productAllowed.has('view_blocker') && (operatorProjection?.evolution_runtime.blocker || subjectReadiness?.automation?.blocker) ? (
+            <p className="text-sm text-foreground" data-testid="settings-view-blocker">
+              {t('evolutionBlocked')}: {operatorProjection?.evolution_runtime.blocker ?? subjectReadiness?.automation?.blocker}
+            </p>
+          ) : null}
         </div>
       </section>
 

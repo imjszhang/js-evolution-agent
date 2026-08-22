@@ -24,6 +24,9 @@ export function createDaemonServiceProcessPort(daemon: DaemonSupervisor): Servic
     async start(subject, options) {
       return toServiceStatus(await daemon.start(subject, options))
     },
+    async ensure(subject, options) {
+      return toServiceStatus(await daemon.ensure(subject, options))
+    },
     async stop(subject) {
       return toServiceStatus(await daemon.stop(subject))
     },

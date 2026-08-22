@@ -4,6 +4,23 @@ import { cn } from '../../lib/cn'
 import { useJeaClientContext } from '../client-context'
 import { deriveServiceStatusKind, needsOpenDesktop, webHostStoppedIsNotOutage } from './derive'
 
+function evolutionIntentLabel(
+  t: (key: 'evolutionAutomaticPaused' | 'evolutionListening' | 'evolutionCatchingUp' | 'evolutionWaitingApproval' | 'evolutionBlocked' | 'evolutionAutomaticRunning') => string,
+  automation: NonNullable<NonNullable<FeatureSlotProps['adapters']['subjectReadiness']>['automation']>
+): string {
+  if (automation.mode === 'paused' || automation.intent === 'paused') return t('evolutionAutomaticPaused')
+  if (automation.intent === 'catching_up') {
+    const remaining = automation.remaining_evidence ?? 0
+    return remaining > 0 ? `${t('evolutionCatchingUp')}: ${remaining}` : t('evolutionCatchingUp')
+  }
+  if (automation.intent === 'waiting_approval') return t('evolutionWaitingApproval')
+  if (automation.intent === 'blocked') {
+    return automation.blocker ? `${t('evolutionBlocked')}: ${automation.blocker}` : t('evolutionBlocked')
+  }
+  if (automation.intent === 'listening') return t('evolutionListening')
+  return t('evolutionAutomaticRunning')
+}
+
 function toneClass(kind: 'online' | 'offline' | 'degraded'): string {
   if (kind === 'offline') return 'bg-status-offline'
   if (kind === 'degraded') return 'bg-status-warn'
@@ -66,8 +83,12 @@ export function ServiceStatusView({ adapters }: FeatureSlotProps) {
             />
             <DomainRow
               label={t('diagnosticsCycle')}
-              state={readiness.cycle.state}
-              reasons={readiness.cycle.reasons}
+              state={readiness.automation
+                ? evolutionIntentLabel(t, readiness.automation)
+                : readiness.cycle.state}
+              reasons={readiness.automation?.blocker
+                ? [readiness.automation.blocker]
+                : readiness.cycle.reasons}
               testId="service-status-cycle"
             />
             <DomainRow

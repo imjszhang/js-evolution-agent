@@ -1,20 +1,38 @@
 import { resolveModelReadiness } from '../../../../../src/actions/execution-env.mjs'
 import { enqueueCycleStartRequestWithEvent, processCycleOnce } from '../../../../../src/daemon/cycle-dispatch.mjs'
 import { readDaemonProjection } from '../../../../../src/daemon/daemon-projection.mjs'
+import { setSubjectAutomation } from '../../../../../src/product/automation-policy.mjs'
 import { PublicClientError } from '../errors'
 import { readSubjectReadiness } from '../readiness'
 import { redactPublicValue } from '../redact'
-import type { ClientHostKind, CycleProcessOnceResult, CycleRequestResult, ServiceStatus, SubjectReadiness } from '../types'
+import type {
+  AutomationMode,
+  AutomationPolicyView,
+  ClientHostKind,
+  CycleProcessOnceResult,
+  CycleRequestResult,
+  ServiceStatus,
+  SubjectReadiness
+} from '../types'
 import { requireSubject, subjectRuntime, type ClientRuntimeContext } from './runtime'
 
 export interface ServiceProcessPort {
   get(subject: string): ServiceStatus
   start(subject: string, options?: { domain?: 'all' | 'cycle' | 'channel' }): Promise<ServiceStatus> | ServiceStatus
+  ensure?(subject: string, options?: { domain?: 'all' | 'cycle' | 'channel' }): Promise<ServiceStatus> | ServiceStatus
   stop(subject: string): Promise<ServiceStatus> | ServiceStatus
   repair?(
     subject: string,
     options?: { domain?: 'all' | 'cycle' | 'channel' }
   ): Promise<ServiceStatus> | ServiceStatus
+}
+
+export interface ClientLifecycleHook {
+  reconcile(input: {
+    subject: string
+    previous?: string | null
+    reason?: string
+  }): Promise<unknown>
 }
 
 export function createProjectionServicePort(runtime: ClientRuntimeContext): ServiceProcessPort {
@@ -35,6 +53,9 @@ export function createProjectionServicePort(runtime: ClientRuntimeContext): Serv
     start() {
       throw new PublicClientError('UNAVAILABLE', 'Service process control is not available in this host.')
     },
+    ensure() {
+      throw new PublicClientError('UNAVAILABLE', 'Service process control is not available in this host.')
+    },
     stop() {
       throw new PublicClientError('UNAVAILABLE', 'Service process control is not available in this host.')
     },
@@ -48,7 +69,8 @@ export class ServiceCommandOwner {
   constructor(
     private readonly runtime: ClientRuntimeContext,
     private readonly processPort: ServiceProcessPort,
-    private readonly hostKind: ClientHostKind = 'electron'
+    private readonly hostKind: ClientHostKind = 'electron',
+    private readonly lifecycle: ClientLifecycleHook | null = null
   ) {}
 
   getReadiness(subject: string): SubjectReadiness {
@@ -117,5 +139,30 @@ export class ServiceCommandOwner {
       'skip-investigate': process.env.JEA_REACTOR_SKIP_INVESTIGATE === '1' || model.mode === 'mock'
     })
     return redactPublicValue(result as CycleProcessOnceResult)
+  }
+
+  async setAutomation(subject: string, mode: AutomationMode): Promise<AutomationPolicyView> {
+    const name = requireSubject(this.runtime, subject)
+    if (mode !== 'automatic' && mode !== 'paused') {
+      throw new PublicClientError('INVALID_REQUEST', 'Automation mode must be automatic or paused.')
+    }
+    const written = setSubjectAutomation(this.runtime, name, mode)
+    if (this.hostKind === 'electron' && this.lifecycle) {
+      try {
+        await this.lifecycle.reconcile({ subject: name, reason: 'set_automation' })
+      } catch {
+        // Readiness projects blocked/retrying; persistence already succeeded.
+      }
+    }
+    const readiness = this.getReadiness(name)
+    return redactPublicValue({
+      subject: name,
+      mode: written.mode,
+      previous: written.previous,
+      changed: written.changed,
+      mapped_from: readiness.automation?.mapped_from ?? 'automation',
+      diagnostic: readiness.automation?.diagnostic ?? null,
+      background: readiness.automation?.background ?? false
+    })
   }
 }

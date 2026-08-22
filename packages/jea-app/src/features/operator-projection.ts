@@ -29,15 +29,24 @@ export interface OperatorCountProjection {
   unit: string
 }
 
+export interface OperatorEvolutionRuntime {
+  mode: 'automatic' | 'paused'
+  intent: 'running' | 'paused' | 'listening' | 'catching_up' | 'waiting_approval' | 'blocked' | 'starting'
+  remaining_evidence: number
+  blocker: string | null
+}
+
 export interface OperatorSurfaceProjection {
   conversation_readiness: SubjectReadiness['conversation']
   evolution_summary: OperatorEvolutionSummaryInput
+  evolution_runtime: OperatorEvolutionRuntime
   observability_attention: OperatorCountProjection & {
     items: NonNullable<EvolutionObservability['attention']['items']>
   }
   evidence_pending: OperatorCountProjection
   daemon_task_pending: OperatorCountProjection
   allowed_remediation_actions: RemediationActionView[]
+  product_actions: RemediationActionView[]
 }
 
 function count(value: unknown): number {
@@ -70,6 +79,43 @@ export function projectEvolutionSummary(
   }
 }
 
+const PRODUCT_ACTION_IDS = new Set([
+  'pause_automatic_evolution',
+  'resume_automatic_evolution',
+  'check_now',
+  'view_blocker',
+  'open_desktop'
+])
+
+export function projectEvolutionRuntime(
+  readiness: SubjectReadiness,
+  observability: EvolutionObservability
+): OperatorEvolutionRuntime {
+  const pending = count(observability.evidence_pending_count)
+  const automation = readiness.automation
+  if (automation) {
+    return {
+      mode: automation.mode === 'paused' ? 'paused' : 'automatic',
+      intent: automation.intent,
+      remaining_evidence: count(automation.remaining_evidence ?? pending),
+      blocker: automation.blocker ?? null
+    }
+  }
+  const cycleState = readiness.cycle.state
+  if (pending > 0 || cycleState === 'stalled') {
+    return { mode: 'automatic', intent: 'catching_up', remaining_evidence: pending, blocker: null }
+  }
+  if (['blocked', 'stale', 'zombie', 'unavailable', 'stopped'].includes(cycleState)) {
+    return {
+      mode: 'automatic',
+      intent: 'blocked',
+      remaining_evidence: pending,
+      blocker: readiness.cycle.reasons[0] ?? cycleState
+    }
+  }
+  return { mode: 'automatic', intent: 'listening', remaining_evidence: 0, blocker: null }
+}
+
 export function projectOperatorSurface(input: {
   readiness: SubjectReadiness
   evolution: OperatorEvolutionSummaryInput
@@ -79,6 +125,17 @@ export function projectOperatorSurface(input: {
   const items = Array.isArray(input.observability.attention.items)
     ? input.observability.attention.items
     : []
+  const diagnosticActions = input.readiness.actions.filter((action) => (
+    action.allowed
+    && action.id !== 'none'
+    && (input.host === 'electron' || action.capability !== 'local-only')
+  ))
+  const productSource = input.readiness.product_actions ?? input.readiness.actions
+  const product_actions = productSource.filter((action) => (
+    action.allowed
+    && PRODUCT_ACTION_IDS.has(action.id)
+    && (input.host === 'electron' || action.capability !== 'local-only')
+  ))
   return {
     conversation_readiness: input.readiness.conversation,
     evolution_summary: {
@@ -87,6 +144,7 @@ export function projectOperatorSurface(input: {
       latestStatus: input.evolution.latestStatus,
       latestTldr: input.evolution.latestTldr
     },
+    evolution_runtime: projectEvolutionRuntime(input.readiness, input.observability),
     observability_attention: {
       count: items.length,
       items,
@@ -100,10 +158,7 @@ export function projectOperatorSurface(input: {
       count: count(input.observability.daemon_task_pending_count),
       ...OPERATOR_COUNT_SOURCES.daemonTaskPending
     },
-    allowed_remediation_actions: input.readiness.actions.filter((action) => (
-      action.allowed
-      && action.id !== 'none'
-      && (input.host === 'electron' || action.capability !== 'local-only')
-    ))
+    allowed_remediation_actions: diagnosticActions,
+    product_actions
   }
 }

@@ -115,10 +115,13 @@ export function EvolutionInspector({
             <Orbit className="size-4 text-muted-foreground" aria-hidden="true" />
             {t('evolutionInspector')}
           </h2>
-          <p className="truncate text-xs text-muted-foreground">
-            {core.open_cycles > 0 ? t('evolutionOpenCycle') : t('evolutionRecentCycles')}
+          <p className="truncate text-xs text-muted-foreground" data-testid="evolution-runtime">
+            {evolutionRuntimeCopy(t, adapters.subjectReadiness?.automation, pendingEvidence)
+              ?? (core.open_cycles > 0 ? t('evolutionOpenCycle') : t('evolutionRecentCycles'))}
             {core.round_count ? ` · ${core.round_count}` : ''}
-            {pendingEvidence != null ? ` · ${t('evolutionPendingEvidence')} ${pendingEvidence}` : ''}
+            {pendingEvidence != null && !adapters.subjectReadiness?.automation
+              ? ` · ${t('evolutionPendingEvidence')} ${pendingEvidence}`
+              : ''}
           </p>
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-1">
@@ -190,6 +193,24 @@ export function EvolutionInspector({
       </div>
     </div>
   )
+}
+
+function evolutionRuntimeCopy(
+  t: (key: 'evolutionAutomaticPaused' | 'evolutionListening' | 'evolutionCatchingUp' | 'evolutionWaitingApproval' | 'evolutionBlocked') => string,
+  automation: { mode?: string; intent?: string; remaining_evidence?: number; blocker?: string | null } | null | undefined,
+  pendingEvidence: number | null
+): string | null {
+  if (!automation) return null
+  if (automation.mode === 'paused' || automation.intent === 'paused') return t('evolutionAutomaticPaused')
+  if (automation.intent === 'catching_up') {
+    const remaining = automation.remaining_evidence ?? pendingEvidence ?? 0
+    return remaining > 0 ? `${t('evolutionCatchingUp')}: ${remaining}` : t('evolutionCatchingUp')
+  }
+  if (automation.intent === 'waiting_approval') return t('evolutionWaitingApproval')
+  if (automation.intent === 'blocked') {
+    return automation.blocker ? `${t('evolutionBlocked')}: ${automation.blocker}` : t('evolutionBlocked')
+  }
+  return t('evolutionListening')
 }
 
 function SafeBanner({ state }: { state: InspectorSafeState }) {

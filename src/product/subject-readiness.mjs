@@ -7,6 +7,7 @@ import { getSubjectEntry, listRegisteredSubjects } from '../infra/subjects.mjs';
 import { runtimeForSubject } from '../infra/runtime-paths.mjs';
 import { isProcessAlive } from '../infra/process-alive.mjs';
 import { redactSecrets } from '../intelligence/redaction.mjs';
+import { resolveAutomationPolicyFromEntry } from './automation-policy.mjs';
 
 export const PRODUCT_READINESS_SOURCE = 'service.getReadiness';
 
@@ -17,6 +18,10 @@ export const READINESS_ACTION_CAPABILITY = {
   repair_worker_state: 'local-only',
   stop_managed: 'local-only',
   open_desktop: 'readonly',
+  pause_automatic_evolution: 'write',
+  resume_automatic_evolution: 'write',
+  check_now: 'write',
+  view_blocker: 'readonly',
   none: 'readonly',
 };
 
@@ -59,6 +64,14 @@ export const SUBJECT_READINESS_REASON_CODES = Object.freeze(
     'home_unwritable',
     'subject_missing',
     'data_uninitialized',
+    'evolution_automatic',
+    'evolution_paused',
+    'evolution_listening',
+    'evolution_catching_up',
+    'evolution_waiting_approval',
+    'legacy_continuous',
+    'legacy_on_demand',
+    'ambiguous_evolution_mode',
   ]),
 );
 
@@ -294,12 +307,57 @@ export function resolveRemediationActions(needed, hostKind) {
   return { allowed_actions, actions };
 }
 
+function mapAutomation(input, cycle) {
+  const policy = input.automation ?? { mode: 'automatic', mapped_from: 'default', diagnostic: null, background: false };
+  const pending = Number.isFinite(input.pendingEvidence) ? Math.max(0, Math.floor(input.pendingEvidence)) : 0;
+  const approvalWait = input.waitingApproval === true;
+  let intent = 'listening';
+  let blocker = null;
+  if (policy.mode === 'paused') {
+    intent = 'paused';
+  } else if (cycle.state === 'starting') {
+    intent = 'starting';
+  } else if (['blocked', 'stale', 'zombie', 'unavailable'].includes(cycle.state)) {
+    intent = 'blocked';
+    blocker = cycle.reasons[0] ?? `${cycle.state}`;
+  } else if (approvalWait) {
+    intent = 'waiting_approval';
+  } else if (pending > 0 || cycle.state === 'stalled') {
+    intent = 'catching_up';
+  } else if (['running', 'attached'].includes(cycle.state)) {
+    intent = 'listening';
+  } else if (cycle.state === 'stopped') {
+    intent = 'blocked';
+    blocker = 'cycle_stopped';
+  }
+  return {
+    automation: {
+      mode: policy.mode === 'paused' ? 'paused' : 'automatic',
+      intent,
+      mapped_from: policy.mapped_from ?? 'default',
+      diagnostic: policy.diagnostic ?? null,
+      background: policy.background === true,
+      remaining_evidence: pending,
+      blocker,
+    },
+  };
+}
+
+function productActionIds(automation) {
+  const needed = [];
+  if (automation.mode === 'paused') needed.push('resume_automatic_evolution');
+  else needed.push('pause_automatic_evolution', 'check_now');
+  if (automation.intent === 'blocked' && automation.blocker) needed.push('view_blocker');
+  return needed;
+}
+
 export function projectSubjectReadiness(input) {
   const web_host = mapWebHost(input.webHost);
   const cycle = mapProcessDomain('cycle', input.cycleWorker, input.cycleHealth, input.ownership);
   const channel = mapProcessDomain('channel', input.channelWorker, input.channelHealth, input.ownership);
   const model = mapModel(input.model);
   const conversation = mapConversation(channel, model, input.desktopChannelEnabled);
+  const { automation } = mapAutomation(input, cycle);
   const reasons = uniqueCodes([
     ...web_host.reasons,
     ...cycle.reasons,
@@ -311,6 +369,7 @@ export function projectSubjectReadiness(input) {
     neededActionIds({ cycle, channel, ownership: input.ownership }),
     input.hostKind,
   );
+  const product = resolveRemediationActions(productActionIds(automation), input.hostKind);
 
   return {
     subject: input.subject,
@@ -323,6 +382,14 @@ export function projectSubjectReadiness(input) {
     reasons,
     allowed_actions,
     actions,
+    automation,
+    product_actions: product.actions.filter((action) => (
+      action.id === 'pause_automatic_evolution'
+      || action.id === 'resume_automatic_evolution'
+      || action.id === 'check_now'
+      || action.id === 'view_blocker'
+      || (action.id === 'open_desktop' && action.allowed)
+    )),
   };
 }
 
@@ -389,6 +456,14 @@ export function readSubjectReadiness(runtime, subject, options = {}) {
     jeaHome: runtime.jeaHome,
     subjectRoot: runtimeForSubject(runtime, name).runtimeRoot,
   });
+  const policy = resolveAutomationPolicyFromEntry(getSubjectEntry(runtime, name));
+  const pending = Number(daemon.reactor?.evidence?.pending_count ?? 0);
+  const waitingApproval = Boolean(
+    daemon.reactor?.intents?.uncertain_count > 0
+    || (Array.isArray(daemon.health?.reasons) && daemon.health.reasons.some((reason) => (
+      /approval|human_review|requires_human/i.test(String(reason))
+    )))
+  );
   return redactSecrets(projectSubjectReadiness({
     subject: name,
     generatedAt: options.generatedAt ?? new Date().toISOString(),
@@ -404,5 +479,8 @@ export function readSubjectReadiness(runtime, subject, options = {}) {
       mode: view.mode ?? null,
       domain: view.domain ?? null,
     },
+    automation: policy,
+    pendingEvidence: Number.isFinite(pending) ? pending : 0,
+    waitingApproval,
   }));
 }
