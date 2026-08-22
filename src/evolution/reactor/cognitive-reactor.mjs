@@ -15,6 +15,7 @@ import {
   markPromptCacheInvariant,
   summarizeLlmUsage,
 } from '../../ai/prompt-cache-metadata.mjs';
+import { extractBeliefContext } from '../../contracts/belief-context.mjs';
 import { isoBeijing } from '../../engine/index.mjs';
 import { createHostDecisionQueue } from '../../intelligence/decision-queue.mjs';
 import { parseAnalyzeDecisionWithRepair } from '../../intelligence/decide-json.mjs';
@@ -27,7 +28,11 @@ import {
   readPendingOperatorBriefs,
   summarizeOperatorBriefsForContext,
 } from '../../intelligence/operator-briefs.mjs';
-import { queueAnalyzeDecideActions } from '../../intelligence/phase1-shared.mjs';
+import { buildTemporalDecisionBrief } from '../../intelligence/decision-brief.mjs';
+import {
+  queueAnalyzeDecideActions,
+  validateQueuedAction,
+} from '../../intelligence/phase1-shared.mjs';
 import {
   buildSeenSection,
   persistIntelReport,
@@ -152,6 +157,7 @@ export function buildDecidePrompt({
   actionRegistry = null,
   ruleFeedbackText = '',
   decisionBacklogText = '',
+  decisionConstraints = null,
 } = {}) {
   const registry = actionRegistry && typeof actionRegistry.toPromptSection === 'function'
     ? actionRegistry
@@ -164,6 +170,10 @@ export function buildDecidePrompt({
     'Return JSON only with fields: decision, actions[], goal_coverage, deferred, risk_mitigation, confidence_score.',
     'actions MUST be an array of objects, never strings. Each action needs type, description, serves_goal, and params.',
     'params MUST include the Required params for the chosen type (see Available Action Types). Empty params objects are invalid.',
+    'Belief-bound action types (agent_run, agent_execute, run_probe, propose_probe) MUST declare belief_id, belief_relation, and expected_belief_update in params.run_spec.context (agent_run) or params.context (other types).',
+    'belief_id MUST name an active or validated belief from Decision Constraints. A refuted belief may only use belief_relation="recover_blocker"; unknown ids are invalid except a fresh-subject agent_run bootstrap.',
+    'When no active/validated/refuted belief exists, one agent_run may bootstrap belief_relation="create_belief" with a new belief_id, expected_belief_claim, expected_belief_update, and a non-empty run_spec.expected_output. Later actions in the same actions array may reference that id. Bootstrap never grants or bypasses approval.',
+    'Every other mechanical/housekeeping action MUST either carry the same valid belief binding or params.context.no_belief_reason as a machine-readable snake_case code.',
     'Prefer record_observation / propose_probe / write_retrospective when uncertain.',
     'Example shape:',
     '{',
@@ -172,7 +182,7 @@ export function buildDecidePrompt({
     '    "type": "record_observation",',
     '    "description": "...",',
     '    "serves_goal": "<goal_id>",',
-    '    "params": { "content": "..." }',
+    '    "params": { "content": "...", "context": { "no_belief_reason": "record_only" } }',
     '  }],',
     '  "goal_coverage": { "covered": [], "not_covered": {} },',
     '  "deferred": [],',
@@ -188,6 +198,7 @@ export function buildDecidePrompt({
     '',
     '## Report',
     String(reportMarkdown || '').slice(0, 12000),
+    decisionConstraints ? `\n## Decision Constraints\n\n${JSON.stringify(decisionConstraints, null, 2)}` : '',
     ruleFeedbackText ? `\n${ruleFeedbackText}` : '',
     decisionBacklogText ? `\n## Decision Backlog\n\n${decisionBacklogText}` : '',
   ].filter(Boolean).join('\n');
@@ -285,7 +296,7 @@ export async function runCognitiveReaction(ctx, {
   });
   const deadlineAt = claimed.claim.deadline_at;
   const startedAt = Date.now();
-  const reactionCycleId = isLive ? cycleId : batchId;
+  const reactionCycleId = isLive ? (existingCheckpoint?.cycle_id || cycleId) : batchId;
 
   const emitReaction = (event) => {
     if (isLive) {
@@ -297,6 +308,7 @@ export async function runCognitiveReaction(ctx, {
         producer: 'cognitive',
         activation_targets: [],
         producer_batch_id: batchId,
+        reaction_id: reactionCycleId,
       });
       return;
     }
@@ -322,10 +334,13 @@ export async function runCognitiveReaction(ctx, {
       logFn: (msg) => logger?.info?.(`[${logLabel}] ${msg}`),
     });
     let queueSummary = null;
+    let decisionBacklog = null;
     try {
       queueSummary = decisionQueue.summarize();
+      decisionBacklog = safeBacklogSummary(decisionQueue, { limit: 15 });
     } catch {
       queueSummary = null;
+      decisionBacklog = null;
     }
 
     const prepared = prepareIntelReport({
@@ -341,6 +356,17 @@ export async function runCognitiveReaction(ctx, {
       queueSummary,
       operatorBriefs: operatorBriefsSummary,
     });
+    let humanGuidance = null;
+    try {
+      humanGuidance = ctx.engine?.guidanceReader?.readGuidance?.() ?? null;
+    } catch {
+      humanGuidance = null;
+    }
+    prepared.reportContext.human_guidance = humanGuidance;
+    prepared.reportContext.decision_backlog = decisionBacklog;
+    prepared.temporalDecisionBrief = buildTemporalDecisionBrief(prepared.reportContext);
+    prepared.reportContext.temporal_decision_brief = prepared.temporalDecisionBrief;
+    const beliefDecisionContext = prepared.temporalDecisionBrief.decision_constraints;
     const language = prepared.language || 'zh';
     const mechanicalSeenFromStore = buildSeenSection(prepared.reportContext) || '(none)';
     const batchSeen = formatBatchAsMechanicalSeen(events);
@@ -542,6 +568,7 @@ export async function runCognitiveReaction(ctx, {
           producer: 'cognitive',
           activation_targets: [],
           producer_batch_id: batchId,
+          reaction_id: reactionCycleId,
         });
         reportPath = persistedReport.mdPath;
         reportMarkdown = persistedReport.markdown;
@@ -610,7 +637,7 @@ export async function runCognitiveReaction(ctx, {
     let decisionBacklogText = '';
     try {
       decisionBacklogText = formatDecisionBacklogForPrompt(
-        safeBacklogSummary(decisionQueue, { limit: 15 }),
+        decisionBacklog,
       );
       const goalsPath = join(runtime.runtimeRoot, 'data', 'goals', 'active_goals.json');
       const activeGoals = existsSync(goalsPath)
@@ -635,6 +662,7 @@ export async function runCognitiveReaction(ctx, {
       actionRegistry: cfg.actionRegistry,
       ruleFeedbackText,
       decisionBacklogText,
+      decisionConstraints: beliefDecisionContext,
     });
     const decideSystem = 'Return JSON decisions only.';
     const decideMessages = [
@@ -693,20 +721,44 @@ export async function runCognitiveReaction(ctx, {
           operatorBriefs,
           pipeline: 'reactor',
           batchId,
+          beliefDecisionContext,
         });
         queuedActions = queuedResult.actions;
         queuedIds = queuedResult.decisions_queued;
         skippedCount = queuedResult.decisions_skipped?.length ?? 0;
         logger?.info?.(`[${logLabel}] queued=${queuedIds.length} skipped=${skippedCount}`);
       } else {
+        const validActions = [];
+        let beliefSkipped = 0;
+        const bootstrapBeliefIds = new Set();
+        for (const action of actions) {
+          const validation = validateQueuedAction(action, {
+            beliefDecisionContext: {
+              ...beliefDecisionContext,
+              bootstrap_belief_ids: bootstrapBeliefIds,
+            },
+          });
+          if (validation.valid) {
+            validActions.push(action);
+            const beliefContext = extractBeliefContext(action);
+            if (
+              beliefContext.belief_relation === 'create_belief'
+              && beliefContext.belief_id
+            ) {
+              bootstrapBeliefIds.add(beliefContext.belief_id);
+            }
+          } else {
+            beliefSkipped += 1;
+          }
+        }
         const shadowResult = appendShadowDecisions(dataRoot, {
           batchId,
           subject,
-          actions,
+          actions: validActions,
           analysis: parsed.analysis,
         });
         queuedActions = shadowResult.decisions;
-        skippedCount = shadowResult.skipped?.length ?? 0;
+        skippedCount = beliefSkipped + (shadowResult.skipped?.length ?? 0);
         logger?.info?.(`[${logLabel}] shadow queued=${queuedActions.length} skipped=${skippedCount}`);
       }
       patchBatchCheckpoint(dataRoot, batchId, {
@@ -743,6 +795,7 @@ export async function runCognitiveReaction(ctx, {
         producer: 'cognitive',
         activation_targets: [],
         producer_batch_id: batchId,
+        reaction_id: reactionCycleId,
         claimed_events: events.length,
         decisions_queued: queuedIds.length,
         decisions_skipped: skippedCount,
@@ -769,6 +822,7 @@ export async function runCognitiveReaction(ctx, {
       mode,
       batch_id: batchId,
       cycle_id: reactionCycleId,
+      reaction_id: reactionCycleId,
       event_ids: events.map((item) => item.id),
       evidence_keys: events.map((item) => envelopeEvidenceKey(item)),
       claimed_events: events.length,

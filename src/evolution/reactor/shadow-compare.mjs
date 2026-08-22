@@ -4,6 +4,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { decisionFingerprint } from '../../intelligence/decision-queue.mjs';
+import { extractBeliefContext } from '../../contracts/belief-context.mjs';
 import { readJson } from '../../infra/json-store.mjs';
 import { readShadowDecisions } from './shadow-store.mjs';
 
@@ -34,11 +35,44 @@ function actionKey(action = {}) {
   return decisionFingerprint(action);
 }
 
+function actionSemantics(action = {}) {
+  const runSpec = action?.params?.run_spec ?? action?.run_spec ?? {};
+  const context = extractBeliefContext(action);
+  const beliefId = context.belief_id ?? null;
+  const beliefRelation = context.belief_relation ?? null;
+  const noBeliefReason = context.no_belief_reason
+    ?? context.mechanical_reason
+    ?? context.belief_exemption_reason
+    ?? (action.origin === 'mechanical_guard' ? 'mechanical_guard' : null);
+  const expectedOutput = runSpec.expected_output
+    ?? runSpec.expectedOutput
+    ?? action?.params?.expected_output
+    ?? action?.params?.expectedOutput
+    ?? null;
+  return {
+    belief_binding: beliefId || beliefRelation === 'create_belief'
+      ? {
+        status: 'bound',
+        belief_id: beliefId,
+        relation: beliefRelation,
+      }
+      : noBeliefReason
+        ? { status: 'exempt', reason: noBeliefReason }
+        : { status: 'legacy_unknown' },
+    expected_output: {
+      present: Array.isArray(expectedOutput)
+        ? expectedOutput.length > 0
+        : Boolean(expectedOutput && Object.keys(expectedOutput).length),
+    },
+  };
+}
+
 function summarizeAction(action = {}) {
   return {
     type: action.type ?? null,
     serves_goal: action.serves_goal ?? null,
     description: action.description ?? action.params?.description ?? null,
+    ...actionSemantics(action),
   };
 }
 
@@ -82,6 +116,23 @@ export function compareShadowAgainstCycle(dataRoot, { cycleId, batchId = null } 
         action: summarizeAction(shadowRows[i].action),
         shadow_id: shadowRows[i].id,
         train_id: trainRows[i].id,
+        shadow_identity: {
+          producer_batch_id: shadowRows[i].producer_batch_id
+            ?? shadowRows[i].metadata?.producer_batch_id
+            ?? shadowRows[i].batch_id
+            ?? null,
+          reaction_id: shadowRows[i].reaction_id
+            ?? shadowRows[i].metadata?.reaction_id
+            ?? null,
+        },
+        train_identity: {
+          producer_batch_id: trainRows[i].producer_batch_id
+            ?? trainRows[i].metadata?.producer_batch_id
+            ?? null,
+          reaction_id: trainRows[i].reaction_id
+            ?? trainRows[i].metadata?.reaction_id
+            ?? null,
+        },
       });
     }
     for (let i = pairCount; i < shadowRows.length; i += 1) {
@@ -107,6 +158,13 @@ export function compareShadowAgainstCycle(dataRoot, { cycleId, batchId = null } 
 
   const denom = Math.max(train.length, 1);
   const coverage = matched.length / denom;
+  const allActions = [...train, ...shadow].map((row) => row.action ?? row);
+  const boundOrExempt = allActions.filter((action) => (
+    actionSemantics(action).belief_binding.status !== 'legacy_unknown'
+  )).length;
+  const expectedOutput = allActions.filter((action) => (
+    actionSemantics(action).expected_output.present
+  )).length;
 
   return {
     cycle_id: cycleId,
@@ -122,6 +180,11 @@ export function compareShadowAgainstCycle(dataRoot, { cycleId, batchId = null } 
       shadow_only: shadowOnly.length,
       train_only: trainOnly.length,
       coverage,
+      semantics: {
+        actions_total: allActions.length,
+        belief_binding_known: boundOrExempt,
+        expected_output_present: expectedOutput,
+      },
     },
   };
 }

@@ -1,5 +1,6 @@
 import {
   READINESS_ACTION_CAPABILITY as READINESS_ACTION_CAPABILITY_IMPL,
+  SUBJECT_READINESS_REASON_CODES as SUBJECT_READINESS_REASON_CODES_IMPL,
   isSubjectReadinessActionId as isSubjectReadinessActionIdImpl,
   isSubjectReadinessDomainState as isSubjectReadinessDomainStateImpl,
   isSubjectReadinessReasonCode as isSubjectReadinessReasonCodeImpl,
@@ -19,9 +20,10 @@ import type {
 } from './types'
 import {
   SUBJECT_READINESS_ACTION_IDS,
-  SUBJECT_READINESS_DOMAIN_STATES,
-  SUBJECT_READINESS_REASON_CODES
+  SUBJECT_READINESS_DOMAIN_STATES
 } from './types'
+
+export const SUBJECT_READINESS_REASON_CODES = SUBJECT_READINESS_REASON_CODES_IMPL
 
 export const READINESS_ACTION_CAPABILITY = READINESS_ACTION_CAPABILITY_IMPL as Record<
   SubjectReadinessActionId,
@@ -80,7 +82,6 @@ export function isSubjectReadinessActionId(value: string): value is SubjectReadi
 
 export function isSubjectReadinessReasonCode(value: string): value is SubjectReadinessReasonCode {
   return isSubjectReadinessReasonCodeImpl(value)
-    && (SUBJECT_READINESS_REASON_CODES as readonly string[]).includes(value)
 }
 
 export function observeWebHost(jeaHome: string): WebHostObservation {

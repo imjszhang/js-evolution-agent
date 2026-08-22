@@ -6,7 +6,7 @@ test('Cmd/Ctrl+, opens Settings, Esc closes it, and focus is restored', async ({
     localStorage.setItem('jea.theme', 'light')
     localStorage.setItem('jea.locale', 'en')
   })
-  await page.goto('/?locale=en')
+  await page.goto('/?locale=en&fixture=1')
   const trigger = page.getByTestId('open-settings')
   await trigger.focus()
   await page.evaluate(() => {
@@ -28,7 +28,7 @@ test('Cmd/Ctrl+, opens Settings, Esc closes it, and focus is restored', async ({
 
 test('inspector collapse keeps the conversation draft mounted', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
-  await page.goto('/?locale=en')
+  await page.goto('/?locale=en&fixture=1')
   const draft = page.getByTestId('conversation-draft')
   await draft.fill('keep-center-state')
   await page.getByTestId('inspector-toggle').click()

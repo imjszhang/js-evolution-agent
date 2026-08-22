@@ -3,7 +3,7 @@ import { onDaemonProjectionRebuild } from '../../../../src/daemon/daemon-project
 import { runtimeForSubject } from '../../../../src/infra/runtime-paths.mjs'
 import { createRuntimeWatcher } from '../../../../src/intelligence/evolution-viewer/runtime-watch.mjs'
 import { redactPublicValue } from '../client-api/redact'
-import type { SubjectSnapshot, TodoSnapshot } from '../shared/contract'
+import type { ChannelSnapshot, DesktopSessionSummary, SubjectSnapshot, TodoSnapshot } from '../shared/contract'
 import type { DesktopEventBus } from './event-bus'
 import type { ChannelService } from './channel-service'
 import type { OpsService } from './operations'
@@ -156,6 +156,21 @@ type PartitionFingerprints = {
   channel: string
 }
 
+function conversationFingerprints(channel: ChannelSnapshot): Map<string, string> {
+  return new Map(channel.sessions.map((session: DesktopSessionSummary) => [
+    session.session_id,
+    fingerprintValue({
+      message_count: session.message_count,
+      last_message_at: session.last_message_at
+    })
+  ]))
+}
+
+interface ConversationFingerprintChange {
+  sessionId: string
+  removed: boolean
+}
+
 export class ProjectionWatcher {
   private activeSubject: string | null = null
   private watcher: RuntimeWatcher | null = null
@@ -166,6 +181,7 @@ export class ProjectionWatcher {
   private pendingReason = 'watch'
   private pendingPartitions: string[] = []
   private lastFingerprints: PartitionFingerprints | null = null
+  private lastConversationFingerprints: Map<string, string> | null = null
   private readonly runtimeContext: any
   private readonly debounceMs: number
   private readonly unsubscribeRebuild: () => void
@@ -250,6 +266,7 @@ export class ProjectionWatcher {
     this.refreshDirty = false
     this.pendingPartitions = []
     this.lastFingerprints = null
+    this.lastConversationFingerprints = null
     this.watchGeneration += 1
     this.revision += 1
     return { stopped }
@@ -296,34 +313,50 @@ export class ProjectionWatcher {
     const revision = ++this.revision
     try {
       const previous = this.lastFingerprints
-      const channelOnly = previous != null
+      const conversationOnly = partitions.length > 0
+        && partitions.every((partition) => partition === 'conversation')
+      const channelOnly = conversationOnly || (
+        previous != null
         && partitions.length > 0
         && partitions.every((partition) => partition === 'channel' || partition === 'conversation')
+      )
       if (channelOnly) {
-        const channel = this.channel.get(subject)
+        const channel = this.channel.get(subject) as ChannelSnapshot
         if (!this.isCurrent(subject, generation)) return
+        const changedSessions = partitions.includes('conversation')
+          ? this.changedConversationSessions(channel)
+          : []
         const channelHealth = publicChannelView(subject, channel)
         const channelFingerprint = fingerprintValue(channelHealth)
-        if (channelFingerprint === previous.channel) {
+        const channelChanged = previous != null && channelFingerprint !== previous.channel
+        if (!channelChanged && changedSessions.length === 0) {
           this.revision -= 1
           return
         }
-        this.lastFingerprints = {
-          ...previous,
-          channel: channelFingerprint
+        if (channelChanged && previous) {
+          this.lastFingerprints = {
+            ...previous,
+            channel: channelFingerprint
+          }
         }
-        this.events.publish({
-          type: 'projection.channel_updated',
-          subject,
-          payload: publicPayload({ reason, revision, channel: channelHealth })
-        })
+        this.publishConversationUpdates(subject, changedSessions, reason, revision)
+        if (channelChanged) {
+          this.events.publish({
+            type: 'projection.channel_updated',
+            subject,
+            payload: publicPayload({ reason, revision, channel: channelHealth })
+          })
+        }
         return
       }
 
       const snapshot = this.ops.refresh(subject)[0] as SubjectSnapshot | undefined
       const todo = this.todo.get(subject) as TodoSnapshot
-      const channel = this.channel.get(subject)
+      const channel = this.channel.get(subject) as ChannelSnapshot
       if (!this.isCurrent(subject, generation)) return
+      const changedSessions = partitions.some((partition) => partition === 'all' || partition === 'conversation')
+        ? this.changedConversationSessions(channel)
+        : []
       const service = publicServiceView(subject, snapshot)
       const evolution = publicEvolutionView(subject, snapshot, todo)
       const channelHealth = publicChannelView(subject, channel)
@@ -348,7 +381,7 @@ export class ProjectionWatcher {
       const todoChanged = first || fingerprints.todo !== previous.todo
       const channelChanged = first || fingerprints.channel !== previous.channel
       this.lastFingerprints = fingerprints
-      if (!first && !serviceChanged && !evolutionChanged && !todoChanged && !channelChanged) {
+      if (!first && !serviceChanged && !evolutionChanged && !todoChanged && !channelChanged && changedSessions.length === 0) {
         this.revision -= 1
         return
       }
@@ -395,6 +428,7 @@ export class ProjectionWatcher {
           })
         })
       }
+      this.publishConversationUpdates(subject, changedSessions, reason, revision)
       if (publishChannel) {
         this.events.publish({
           type: 'projection.channel_updated',
@@ -404,6 +438,44 @@ export class ProjectionWatcher {
       }
     } catch {
       this.publishFailure(subject, reason, generation, revision)
+    }
+  }
+
+  private changedConversationSessions(channel: ChannelSnapshot): ConversationFingerprintChange[] {
+    const next = conversationFingerprints(channel)
+    const previous = this.lastConversationFingerprints
+    this.lastConversationFingerprints = next
+    if (!previous) {
+      return [...next.keys()].map((sessionId) => ({ sessionId, removed: false }))
+    }
+    const changed = [...next].flatMap(([sessionId, fingerprint]) => (
+      previous.get(sessionId) === fingerprint ? [] : [{ sessionId, removed: false }]
+    ))
+    const removed = [...previous.keys()].flatMap((sessionId) => (
+      next.has(sessionId) ? [] : [{ sessionId, removed: true }]
+    ))
+    return [...changed, ...removed]
+  }
+
+  private publishConversationUpdates(
+    subject: string,
+    changes: ConversationFingerprintChange[],
+    reason: string,
+    revision: number
+  ): void {
+    for (const { sessionId, removed } of changes) {
+      this.events.publish({
+        type: 'conversation.updated',
+        subject,
+        session_id: sessionId,
+        payload: publicPayload({
+          subject,
+          session_id: sessionId,
+          reason,
+          revision,
+          ...(removed ? { removed: true } : {})
+        })
+      })
     }
   }
 

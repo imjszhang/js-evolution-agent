@@ -1,11 +1,31 @@
 import { MockAIClient } from '../../engine/index.mjs';
 import { getProjectRoot, loadProjectEnv } from '../../infra/project.mjs';
+import { runtimeInfoForSubject, runtimeInfoForDefaultSubject } from '../../infra/subjects.mjs';
+import { createIntelligenceStore } from '../../intelligence/store.mjs';
 import { DeepSeekOpenAIClient } from '../../ai/deepseek-client.mjs';
+import { llmBudgetLedgerPath } from '../../ai/token-budget.mjs';
 
-export async function pingLlm({ mock = false, timeout = 30 } = {}) {
+export async function pingLlm({
+  mock = false,
+  timeout = 30,
+  root = getProjectRoot(),
+  subject = null,
+} = {}) {
+  const runtime = subject
+    ? runtimeInfoForSubject(root, subject)
+    : runtimeInfoForDefaultSubject(root);
+  const store = createIntelligenceStore({
+    baseDir: runtime.intelligenceDir,
+    timezone: 'Asia/Shanghai',
+  });
   const client = mock
     ? new MockAIClient({ defaultResponse: 'pong' })
-    : new DeepSeekOpenAIClient({ timeout });
+    : new DeepSeekOpenAIClient({
+      timeout,
+      subjectKey: runtime.subject,
+      budgetLedgerPath: llmBudgetLedgerPath(runtime.runtimeRoot),
+      onBudgetEvent: (event) => store.recordEvolutionEvent(event),
+    });
   const started = Date.now();
   const text = typeof client.chatMessages === 'function'
     ? await client.chatMessages(
@@ -33,7 +53,12 @@ export async function llmCommand({ subcommand, flags = {} } = {}) {
     return 1;
   }
   try {
-    const result = await pingLlm({ mock, timeout: Number(flags.timeout) || 30 });
+    const result = await pingLlm({
+      mock,
+      timeout: Number(flags.timeout) || 30,
+      root: getProjectRoot(),
+      subject: flags.subject ?? null,
+    });
     if (flags.json) console.log(JSON.stringify(result, null, 2));
     else {
       console.log(`mode: ${result.mode}`);

@@ -121,16 +121,41 @@ export function explicitApprovalFromAction(action) {
   );
 }
 
-export function allowsExternalForceAutoApproval(env = process.env) {
-  return getApprovalMode(env) === 'auto_all';
+function autoAllSubjectPolicy(ctx = {}, env = process.env) {
+  const approval = asObject(ctx?.host?.subjectApproval);
+  const sandbox = approval.sandbox === true
+    || approval.is_sandbox === true
+    || ctx?.host?.sandbox === true
+    || ['1', 'true', 'yes', 'on'].includes(String(env.JEA_SANDBOX ?? '').trim().toLowerCase())
+    || String(env.NODE_ENV ?? '').trim().toLowerCase() === 'test';
+  if (approval.allow_auto_all === true) {
+    return { allowed: true, reason: 'subject_allow_auto_all' };
+  }
+  if (sandbox) {
+    return { allowed: true, reason: 'sandbox_subject' };
+  }
+  return { allowed: false, reason: 'auto_all_not_allowed_for_subject' };
 }
 
-function evaluateAutoAll(action) {
+export function allowsExternalForceAutoApproval(ctx = {}, env = process.env) {
+  return getApprovalMode(env) === 'auto_all' && autoAllSubjectPolicy(ctx, env).allowed;
+}
+
+function evaluateAutoAll(action, ctx = {}, env = process.env) {
+  const policy = autoAllSubjectPolicy(ctx, env);
+  if (!policy.allowed) {
+    return {
+      approved: false,
+      mode: 'auto_all',
+      reason: policy.reason,
+      guardrails: ['registry_approval.allow_auto_all_or_sandbox_required'],
+    };
+  }
   return {
     approved: true,
     mode: 'auto_all',
-    reason: 'auto_all_mode',
-    guardrails: ['no_manual_approval_required'],
+    reason: policy.reason,
+    guardrails: ['subject_auto_all_policy', 'no_manual_approval_required'],
   };
 }
 
@@ -216,21 +241,24 @@ function evaluateAutoGuarded(action, runSpec = null, ctx = {}) {
     };
   }
 
-  if (hasGuardedSafetyClass(action)) {
-    return {
-      approved: true,
-      mode: 'auto_guarded',
-      reason: 'explicit_guarded_safety_class',
-      guardrails: [`safety_class=${getField(action, 'safety_class')}`],
-    };
-  }
-
   if (!isReadOnly) {
     return {
       approved: false,
       mode: 'auto_guarded',
       reason: 'permission_profile_not_read_only',
       guardrails: [`permission_profile=${permissionProfile || 'unknown'}`],
+    };
+  }
+
+  if (hasGuardedSafetyClass(action)) {
+    return {
+      approved: true,
+      mode: 'auto_guarded',
+      reason: 'explicit_guarded_safety_class',
+      guardrails: [
+        'read_only_profile',
+        `safety_class=${getField(action, 'safety_class')}`,
+      ],
     };
   }
 
@@ -243,7 +271,8 @@ function evaluateAutoGuarded(action, runSpec = null, ctx = {}) {
 }
 
 export function resolveApprovalDecision(action, ctx = {}, options = {}) {
-  const mode = getApprovalMode();
+  const env = options.env ?? process.env;
+  const mode = getApprovalMode(env);
   const runSpec = options.runSpec ?? asObject(asObject(action?.params).run_spec);
 
   if (explicitApprovalFromAction(action)) {
@@ -271,7 +300,7 @@ export function resolveApprovalDecision(action, ctx = {}, options = {}) {
   }
 
   if (mode === 'auto_all') {
-    return wrapPolicyDecision(evaluateAutoAll(action));
+    return wrapPolicyDecision(evaluateAutoAll(action, ctx, env));
   }
 
   return {

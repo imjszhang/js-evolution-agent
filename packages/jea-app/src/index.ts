@@ -132,7 +132,16 @@ export type {
   InspectorSafeState
 } from './features/evolution'
 export {
+  OPERATOR_COUNT_SOURCES,
+  projectEvolutionSummary,
+  projectOperatorSurface,
+  type OperatorCountProjection,
+  type OperatorEvolutionSummaryInput,
+  type OperatorSurfaceProjection
+} from './features/operator-projection'
+export {
   fetchWebBootstrap,
+  isExplicitWebFixtureMode,
   isJeaWebHosted,
   resolveHostedViewState,
   BOOTSTRAP_PATH,

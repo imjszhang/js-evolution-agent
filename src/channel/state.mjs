@@ -4,6 +4,7 @@ import {
   readdirSync,
   readFileSync,
   renameSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
@@ -19,6 +20,7 @@ import {
   handleContractValidation,
   validateChannelEnvelope,
 } from '../contracts/index.mjs';
+import { redactSecrets } from '../intelligence/redaction.mjs';
 
 const ACTIVE_SPEECH_EVENT_STATUSES = new Set(['pending', 'claimed']);
 import {
@@ -30,7 +32,10 @@ import {
   channelOutboxFailedDir,
   channelOutboxPendingDir,
   channelOutboxSentDir,
+  channelPresenceHandledIndexPath,
   channelPresenceStatePath,
+  channelProcessedIndexPath,
+  channelEventsPath,
   channelReloadRequestPath,
   channelReloadStatePath,
 } from './paths.mjs';
@@ -126,11 +131,169 @@ export function listRecentInboundProcessed(root, subject, { limit = 10 } = {}) {
   return files.slice(-Math.max(0, limit)).reverse();
 }
 
+export function listInboundProcessed(root, subject) {
+  return listJsonFiles(channelInboundProcessedDir(root, subject));
+}
+
+function compactProcessedPayload(file, payload) {
+  if (!payload?.envelope) return null;
+  return {
+    processed_file: file,
+    message_id: payload.envelope.message_id ?? null,
+    channel: payload.envelope.channel ?? null,
+    chat_id: payload.envelope.chat_id ?? null,
+    content: String(payload.envelope.content ?? '').slice(0, 500),
+    ingest_kind: payload.ingest_result?.kind ?? null,
+    brief_kind: payload.ingest_result?.brief?.kind ?? null,
+    brief_id: payload.ingest_result?.brief?.id ?? null,
+    understanding: payload.classifier?.understanding
+      ?? payload.ingest_result?.brief?.metadata?.understanding
+      ?? payload.ingest_result?.record?.metadata?.understanding
+      ?? null,
+  };
+}
+
+export function readInboundProcessedIndex(root, subject) {
+  const raw = readJson(channelProcessedIndexPath(root, subject), { entries: [] });
+  return {
+    schema_version: raw?.schema_version ?? null,
+    entries: Array.isArray(raw?.entries) ? raw.entries : [],
+    invalid_tombstones: Array.isArray(raw?.invalid_tombstones) ? raw.invalid_tombstones : [],
+    scan: {
+      directory_mtime_ms: raw?.scan?.directory_mtime_ms ?? null,
+      pending_files: Array.isArray(raw?.scan?.pending_files) ? raw.scan.pending_files : [],
+    },
+    updated_at: raw?.updated_at ?? null,
+  };
+}
+
+function processedDirectoryMtime(root, subject) {
+  try {
+    return statSync(channelInboundProcessedDir(root, subject)).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
+function processedIndexDocument(current, patch = {}) {
+  return {
+    schema_version: 2,
+    entries: patch.entries ?? current.entries,
+    invalid_tombstones: patch.invalid_tombstones ?? current.invalid_tombstones,
+    scan: patch.scan ?? current.scan,
+    updated_at: nowIso(),
+  };
+}
+
+function insertProcessedEntry(entries, entry) {
+  const next = [...entries];
+  let low = 0;
+  let high = next.length;
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    if (String(next[mid].processed_file).localeCompare(String(entry.processed_file)) < 0) low = mid + 1;
+    else high = mid;
+  }
+  if (next[low]?.processed_file === entry.processed_file) next[low] = entry;
+  else next.splice(low, 0, entry);
+  return next;
+}
+
+export function reconcileInboundProcessedIndex(root, subject, { maxFiles = 128 } = {}) {
+  let current = readInboundProcessedIndex(root, subject);
+  const legacyDetected = current.schema_version != null && current.schema_version < 2;
+  const directoryMtime = processedDirectoryMtime(root, subject);
+  let directoryListed = false;
+  if (
+    current.scan.directory_mtime_ms !== directoryMtime
+    || (current.scan.directory_mtime_ms == null && directoryMtime != null)
+  ) {
+    const files = listInboundProcessed(root, subject);
+    const known = new Set([
+      ...current.entries.map((entry) => entry.processed_file),
+      ...current.invalid_tombstones.map((entry) => entry.processed_file),
+    ]);
+    const pendingFiles = files.filter((file) => !known.has(file));
+    current = {
+      ...current,
+      scan: {
+        directory_mtime_ms: directoryMtime,
+        pending_files: pendingFiles,
+      },
+    };
+    writeJsonFile(channelProcessedIndexPath(root, subject), processedIndexDocument(current));
+    directoryListed = true;
+  }
+
+  const pending = [...current.scan.pending_files];
+  let entries = current.entries;
+  const tombstones = [...current.invalid_tombstones];
+  const additions = [];
+  let filesExamined = 0;
+  const validBudget = Math.max(0, maxFiles);
+  while (pending.length && additions.length < validBudget) {
+    const file = pending.shift();
+    filesExamined += 1;
+    const entry = compactProcessedPayload(file, readJsonFile(file));
+    if (entry) {
+      additions.push(entry);
+      entries = insertProcessedEntry(entries, entry);
+    } else {
+      tombstones.push({
+        processed_file: file,
+        reason: 'invalid_or_missing_envelope',
+        tombstoned_at: nowIso(),
+      });
+    }
+  }
+
+  if (filesExamined > 0) {
+    current = {
+      ...current,
+      entries,
+      invalid_tombstones: tombstones,
+      scan: { ...current.scan, pending_files: pending },
+    };
+    writeJsonFile(channelProcessedIndexPath(root, subject), processedIndexDocument(current));
+  }
+  const totalFiles = entries.length + tombstones.length + pending.length;
+  return {
+    entries,
+    total_files: totalFiles,
+    indexed_total: entries.length,
+    files_parsed: additions.length,
+    files_examined: filesExamined,
+    invalid_tombstones: tombstones.length,
+    directory_listed: directoryListed,
+    legacy_index_detected: legacyDetected,
+    scan_complete: pending.length === 0,
+  };
+}
+
 export function markInboundProcessed(root, subject, file, payload = null) {
   const dir = ensureDir(channelInboundProcessedDir(root, subject));
   const target = join(dir, `${timestampForFilename()}-${basename(file)}`);
   if (payload) writeFileSync(file, JSON.stringify(payload, null, 2), 'utf-8');
   renameSync(file, target);
+  const stored = payload ?? readJsonFile(target);
+  const entry = compactProcessedPayload(target, stored);
+  if (entry) {
+    updateJson(channelProcessedIndexPath(root, subject), (raw) => {
+      const current = {
+        entries: Array.isArray(raw?.entries) ? raw.entries : [],
+        invalid_tombstones: Array.isArray(raw?.invalid_tombstones) ? raw.invalid_tombstones : [],
+        scan: {
+          directory_mtime_ms: processedDirectoryMtime(root, subject),
+          pending_files: Array.isArray(raw?.scan?.pending_files)
+            ? raw.scan.pending_files.filter((item) => item !== target)
+            : [],
+        },
+      };
+      return processedIndexDocument(current, {
+        entries: insertProcessedEntry(current.entries, entry),
+      });
+    }, { fallback: { schema_version: 2, entries: [], invalid_tombstones: [], scan: {} } });
+  }
   return target;
 }
 
@@ -203,16 +366,17 @@ export function setCooldown(root, subject, key, ttlMs, meta = {}) {
 }
 
 export function writeOutboxMessage(root, subject, message) {
+  const safeMessage = redactSecrets(message);
   handleContractValidation('channel_envelope', validateChannelEnvelope({
-    id: message.id ?? message.idempotency_key ?? 'outbox-unknown',
+    id: safeMessage.id ?? safeMessage.idempotency_key ?? 'outbox-unknown',
     subject,
-    text: message.text ?? message.outbound?.text ?? null,
-    target: message.target ?? message.outbound?.target ?? null,
-    meta: message.metadata ?? message.meta ?? null,
+    text: safeMessage.text ?? safeMessage.outbound?.text ?? null,
+    target: safeMessage.target ?? safeMessage.outbound?.target ?? null,
+    meta: safeMessage.metadata ?? safeMessage.meta ?? null,
   }));
   const dir = ensureDir(channelOutboxPendingDir(root, subject));
-  const key = safeFilenamePart(message.idempotency_key ?? message.id ?? randomUUID());
-  const existing = findOutboxByIdempotencyKey(root, subject, message.idempotency_key);
+  const key = safeFilenamePart(safeMessage.idempotency_key ?? safeMessage.id ?? randomUUID());
+  const existing = findOutboxByIdempotencyKey(root, subject, safeMessage.idempotency_key);
   if (existing) {
     return {
       file: existing.file,
@@ -223,8 +387,8 @@ export function writeOutboxMessage(root, subject, message) {
     };
   }
   const file = join(dir, `${timestampForFilename()}-${key}.json`);
-  writeFileSync(file, JSON.stringify(message, null, 2), 'utf-8');
-  return { file, message, created: true, duplicate: false };
+  writeFileSync(file, JSON.stringify(safeMessage, null, 2), 'utf-8');
+  return { file, message: safeMessage, created: true, duplicate: false };
 }
 
 export function listOutboxPending(root, subject, { limit = 20 } = {}) {
@@ -238,10 +402,11 @@ function outboxPayloadIdempotencyKey(payload) {
 export function findOutboxByIdempotencyKey(root, subject, idempotencyKey) {
   if (!idempotencyKey) return null;
   for (const [status, dir] of [
-    ['pending', channelOutboxPendingDir(root, subject)],
     ['sent', channelOutboxSentDir(root, subject)],
+    ['pending', channelOutboxPendingDir(root, subject)],
+    ['failed', channelOutboxFailedDir(root, subject)],
   ]) {
-    for (const file of listJsonFiles(dir)) {
+    for (const file of listJsonFiles(dir).reverse()) {
       const payload = readJsonFile(file);
       if (outboxPayloadIdempotencyKey(payload) === idempotencyKey) {
         return { status, file, payload };
@@ -268,10 +433,60 @@ export function markOutboxFailed(root, subject, file, reason, payload = {}) {
   writeFileSync(file, JSON.stringify({
     ...payload,
     failed_at: nowIso(),
+    outbound_reason: payload.reason ?? payload.outbound_reason ?? null,
     reason,
   }, null, 2), 'utf-8');
   renameSync(file, target);
   return target;
+}
+
+export function requeueOutboxFailed(root, subject, file, {
+  retryAttempt = 1,
+} = {}) {
+  const payload = readJsonFile(file);
+  if (!payload) return { requeued: false, reason: 'failed_record_missing', file: null };
+  const idempotencyKey = outboxPayloadIdempotencyKey(payload);
+  if (!idempotencyKey) return { requeued: false, reason: 'idempotency_key_missing', file: null };
+
+  const existing = findOutboxByIdempotencyKey(root, subject, idempotencyKey);
+  if (existing?.status === 'sent') {
+    return { requeued: false, reason: 'already_sent', file: existing.file, status: 'sent' };
+  }
+  if (existing?.status === 'pending') {
+    return { requeued: false, reason: 'already_pending', file: existing.file, status: 'pending' };
+  }
+
+  const pendingDir = ensureDir(channelOutboxPendingDir(root, subject));
+  const pendingFile = join(
+    pendingDir,
+    `${timestampForFilename()}-retry-${safeFilenamePart(idempotencyKey)}.json`,
+  );
+  const {
+    failed_at: _failedAt,
+    reason: _failureReason,
+    outbound_reason: outboundReason,
+    retry_scheduled_at: _retryScheduledAt,
+    retry_attempt: _retryAttempt,
+    retry_pending_file: _retryPendingFile,
+    ...outbound
+  } = payload;
+  writeFileSync(pendingFile, JSON.stringify({
+    ...outbound,
+    ...(outboundReason ? { reason: outboundReason } : {}),
+  }, null, 2), 'utf-8');
+  writeFileSync(file, JSON.stringify({
+    ...payload,
+    retry_scheduled_at: nowIso(),
+    retry_attempt: Math.max(1, Number(retryAttempt) || 1),
+    retry_pending_file: pendingFile,
+  }, null, 2), 'utf-8');
+  return {
+    requeued: true,
+    reason: 'requeued',
+    file: pendingFile,
+    failed_file: file,
+    status: 'pending',
+  };
 }
 
 export function ensureParent(filePath) {
@@ -419,7 +634,11 @@ export function failPresenceRun(root, subject, { runId = null, error = null } = 
 
 export function trackPendingSpeechGeneration(root, subject, entry) {
   const current = readPresenceState(root, subject);
-  const pending = [...(current.pending_speech_generation ?? []), entry].slice(-50);
+  const pending = [
+    ...(current.pending_speech_generation ?? []).filter((row) =>
+      row.intent_id !== entry.intent_id && row.event_id !== entry.event_id),
+    entry,
+  ].slice(-50);
   return writePresenceState(root, subject, { pending_speech_generation: pending });
 }
 
@@ -466,7 +685,134 @@ export function buildPresenceSignalKey(signal) {
 
 export function isExpressionCandidateHandled(root, subject, candidateId) {
   if (!candidateId) return false;
-  return Boolean(readPresenceState(root, subject).handled_candidates?.[candidateId]);
+  return Boolean(readPresenceHandledIndex(root, subject)[candidateId]);
+}
+
+function handledCandidatesFromAudit(root, subject) {
+  let text = '';
+  try {
+    text = readFileSync(channelEventsPath(root, subject), 'utf-8');
+  } catch {
+    return {};
+  }
+  const handled = {};
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const ids = [
+      event.type === 'channel_speech_generated' ? event.candidate_id : null,
+      ...(['channel_expression_silenced', 'channel_deliverable_candidates_handled'].includes(event.type)
+        ? (Array.isArray(event.candidate_ids) ? event.candidate_ids : [])
+        : []),
+    ].filter(Boolean);
+    for (const candidateId of ids) {
+      handled[candidateId] = {
+        handled_at: event.recorded_at ?? null,
+        outcome: event.type === 'channel_expression_silenced' ? 'silenced' : 'sent',
+        migrated_from: 'channel_audit',
+      };
+    }
+  }
+  return handled;
+}
+
+function migratePresenceHandledIndex(
+  root,
+  subject,
+  processedEntries = [],
+  { allowConservativeMarker = false } = {},
+) {
+  const file = channelPresenceHandledIndexPath(root, subject);
+  const existing = existsSync(file) ? readJson(file, { handled_candidates: {} }) : null;
+  if (existing?.schema_version >= 2 && existing?.migration) return existing;
+  const legacy = readJson(channelPresenceStatePath(root, subject), {});
+  const legacyHandled = legacy?.handled_candidates ?? {};
+  const auditHandled = handledCandidatesFromAudit(root, subject);
+  const recovered = {
+    ...(existing?.handled_candidates ?? {}),
+    ...legacyHandled,
+    ...auditHandled,
+  };
+  const upgradingLegacyIndex = Boolean(existing && (existing.schema_version ?? 1) < 2);
+  const hasLegacyPresenceState = Object.keys(legacyHandled).length > 0
+    || Boolean(legacy?.last_presence_tick_at || legacy?.last_spoken_at || legacy?.last_plan);
+  const processedThrough = Object.keys(auditHandled).length === 0
+    && (allowConservativeMarker || hasLegacyPresenceState || upgradingLegacyIndex)
+    && processedEntries.length > 0
+    ? processedEntries[processedEntries.length - 1]?.processed_file ?? null
+    : null;
+  const migration = {
+    completed_at: nowIso(),
+    source: Object.keys(auditHandled).length > 0
+      ? 'channel_audit_and_legacy_state'
+      : processedThrough
+        ? 'conservative_processed_cursor'
+        : 'legacy_state',
+    recovered_count: Object.keys(recovered).length,
+    conservative_processed_through: processedThrough,
+  };
+  const document = {
+    schema_version: 2,
+    subject,
+    handled_candidates: recovered,
+    migration,
+    updated_at: nowIso(),
+  };
+  if (
+    processedEntries.length === 0
+    && Object.keys(recovered).length === 0
+    && !hasLegacyPresenceState
+    && !allowConservativeMarker
+  ) {
+    return document;
+  }
+  writeJsonFile(file, document);
+  return document;
+}
+
+export function readPresenceHandledIndex(root, subject, {
+  processedEntries = [],
+  allowConservativeMarker = false,
+} = {}) {
+  const raw = migratePresenceHandledIndex(root, subject, processedEntries, {
+    allowConservativeMarker,
+  });
+  const legacy = readJson(channelPresenceStatePath(root, subject), {});
+  return {
+    ...(legacy?.handled_candidates ?? {}),
+    ...(raw?.handled_candidates ?? {}),
+    ...(raw?.migration?.conservative_processed_through
+      ? {
+        __migration__: {
+          processed_through: raw.migration.conservative_processed_through,
+          completed_at: raw.migration.completed_at,
+        },
+      }
+      : {}),
+  };
+}
+
+function writePresenceHandledIndex(root, subject, patch) {
+  return updateJson(channelPresenceHandledIndexPath(root, subject), (raw) => ({
+    schema_version: 2,
+    subject,
+    handled_candidates: {
+      ...(raw?.handled_candidates ?? {}),
+      ...patch,
+    },
+    migration: raw?.migration ?? {
+      completed_at: nowIso(),
+      source: 'native_index',
+      recovered_count: 0,
+      conservative_processed_through: null,
+    },
+    updated_at: nowIso(),
+  }), { fallback: { schema_version: 2, handled_candidates: {}, updated_at: null } });
 }
 
 export function writePresenceState(root, subject, patch = {}) {
@@ -500,9 +846,11 @@ export function writePresenceState(root, subject, patch = {}) {
 
 export function markExpressionCandidateHandled(root, subject, candidateId, meta = {}) {
   if (!candidateId) return readPresenceState(root, subject);
+  const handled = { handled_at: nowIso(), ...meta };
+  writePresenceHandledIndex(root, subject, { [candidateId]: handled });
   return writePresenceState(root, subject, {
     handled_candidates: {
-      [candidateId]: { handled_at: nowIso(), ...meta },
+      [candidateId]: handled,
     },
   });
 }
@@ -513,5 +861,6 @@ export function markExpressionCandidatesHandled(root, subject, candidateIds, met
   for (const id of candidateIds) {
     if (id) patch[id] = { handled_at: nowIso(), ...meta };
   }
+  writePresenceHandledIndex(root, subject, patch);
   return writePresenceState(root, subject, { handled_candidates: patch });
 }

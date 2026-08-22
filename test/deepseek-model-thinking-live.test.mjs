@@ -7,6 +7,9 @@
  *   $env:JEA_LIVE_DEEPSEEK='1'; npm run test:live-deepseek
  */
 import { describe, expect, it } from 'vitest';
+import { randomUUID } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadProjectEnv } from '../src/infra/project.mjs';
 import { DeepSeekOpenAIClient } from '../src/ai/deepseek-client.mjs';
@@ -32,6 +35,8 @@ const DEEP_CELLS = [
 async function smokeCell({ model, thinkingMode, label }) {
   const client = new DeepSeekOpenAIClient({
     apiKey: process.env.DEEPSEEK_API_KEY,
+    subjectKey: `live-model-thinking-${label}`,
+    budgetLedgerPath: join(tmpdir(), 'jea-live-llm-budget', `${randomUUID()}.json`),
     baseURL: process.env.DEEPSEEK_BASE_URL,
     model,
     thinkingMode,

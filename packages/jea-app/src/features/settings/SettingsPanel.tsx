@@ -14,8 +14,11 @@ import {
   type CliStatus,
   type DiagnosticReport,
   type SettingsView,
-  type SetupReadiness
+  type SetupReadiness,
+  type SubjectReadiness
 } from '../client-types'
+import type { EvolutionCycleList, EvolutionObservability } from '../evolution/types'
+import { projectEvolutionSummary, projectOperatorSurface } from '../operator-projection'
 import { createFixtureDiagnosticReport, createReadyReadiness, createSetupFixtureState } from '../fixtures'
 
 function Row({ label, value, testId }: { label: string; value: string; testId?: string }) {
@@ -40,12 +43,18 @@ export function SettingsPanel({
   settings: settingsProp,
   readiness: readinessProp,
   cli: cliProp,
-  diagnostics: diagnosticsProp
+  diagnostics: diagnosticsProp,
+  subjectReadiness: subjectReadinessProp,
+  observability: observabilityProp,
+  cycleList: cycleListProp
 }: {
   settings?: SettingsView
   readiness?: SetupReadiness
   cli?: CliStatus
   diagnostics?: DiagnosticReport
+  subjectReadiness?: SubjectReadiness
+  observability?: EvolutionObservability
+  cycleList?: EvolutionCycleList
 } = {}) {
   const { t, locale, setLocale } = useLocale()
   const { preference, setPreference } = useTheme()
@@ -54,6 +63,9 @@ export function SettingsPanel({
   const [readiness, setReadiness] = useState<SetupReadiness | null>(readinessProp ?? null)
   const [cli, setCli] = useState<CliStatus | null>(cliProp ?? null)
   const [diagnostics, setDiagnostics] = useState<DiagnosticReport | null>(diagnosticsProp ?? null)
+  const [subjectReadiness, setSubjectReadiness] = useState<SubjectReadiness | null>(subjectReadinessProp ?? null)
+  const [observability, setObservability] = useState<EvolutionObservability | null>(observabilityProp ?? null)
+  const [cycleList, setCycleList] = useState<EvolutionCycleList | null>(cycleListProp ?? null)
   const [exported, setExported] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
@@ -88,14 +100,41 @@ export function SettingsPanel({
     }
   }, [client])
 
+  const projectionSubject = settings?.defaultSubject
+    ?? settingsProp?.defaultSubject
+    ?? readiness?.subjects.defaultSubject
+    ?? readinessProp?.subjects.defaultSubject
+    ?? null
+
+  useEffect(() => {
+    if (!client || !projectionSubject) return
+    let cancelled = false
+    setSubjectReadiness(null)
+    setObservability(null)
+    setCycleList(null)
+    void Promise.all([
+      client.getServiceReadiness?.(projectionSubject) ?? Promise.resolve(null),
+      client.getObservability?.(projectionSubject) ?? Promise.resolve(null),
+      client.listCycles?.(projectionSubject, 50) ?? Promise.resolve(null)
+    ]).then(([nextSubjectReadiness, nextObservability, nextCycleList]) => {
+      if (cancelled) return
+      if (nextSubjectReadiness) setSubjectReadiness(nextSubjectReadiness)
+      if (nextObservability) setObservability(nextObservability)
+      if (nextCycleList) setCycleList(nextCycleList)
+    }).catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [client, projectionSubject])
+
   const report = diagnostics ?? diagnosticsProp ?? createFixtureDiagnosticReport({
     readiness: readiness ?? readinessProp ?? createReadyReadiness(cli ?? undefined),
     settings: settings ?? settingsProp ?? {
       language: localeToLanguage(locale),
       theme: preference,
       defaultSubject: readinessProp?.subjects.defaultSubject ?? 'alpha',
-      appVersion: '0.1.0',
-      cliVersion: '0.1.0'
+      appVersion: '0.2.0',
+      cliVersion: '0.2.0'
     },
     subjects: (readiness ?? readinessProp)?.subjects.names.map((name) => ({
       name,
@@ -109,8 +148,8 @@ export function SettingsPanel({
     language: localeToLanguage(locale),
     theme: preference,
     defaultSubject: readinessProp?.subjects.defaultSubject ?? 'alpha',
-    appVersion: '0.1.0',
-    cliVersion: '0.1.0',
+    appVersion: '0.2.0',
+    cliVersion: '0.2.0',
     commitShort: null,
     buildTime: null,
     platform: undefined,
@@ -120,6 +159,16 @@ export function SettingsPanel({
   const cliView = cli ?? cliProp ?? runtime.cli
   const webNativeOnly = host === 'web'
   const canManageCli = !webNativeOnly && cliView.supported
+  const selectedSubject = projectionSubject
+  const operatorProjection = subjectReadiness && observability && cycleList
+    ? projectOperatorSurface({
+        readiness: subjectReadiness,
+        observability,
+        host,
+        evolution: projectEvolutionSummary(cycleList, observability)
+      })
+    : null
+  const allowed = new Set(operatorProjection?.allowed_remediation_actions.map((action) => action.id) ?? [])
 
   async function persist(patch: { language?: SettingsView['language']; theme?: ThemePreference; defaultSubject?: string }) {
     if (!client) {
@@ -168,6 +217,29 @@ export function SettingsPanel({
     try {
       const next = action === 'install' ? await client.installCli() : await client.uninstallCli()
       setCli(next)
+    } catch (caught) {
+      setError(publicErrorMessage(caught, t('errorBody')))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function runAdvanced(action: 'process' | 'start') {
+    if (!client || !selectedSubject) return
+    setBusy(action)
+    setError(null)
+    try {
+      if (action === 'process' && client.processCycleOnce) {
+        const result = await client.processCycleOnce(selectedSubject)
+        if (result.status === 'retryable' || result.status === 'blocked') {
+          throw new Error(result.reason || t('evolutionProcessOnceFailed'))
+        }
+      } else if (action === 'start' && client.startService && !webNativeOnly) {
+        await client.startService(selectedSubject, 'cycle')
+      }
+      if (client.getServiceReadiness) setSubjectReadiness(await client.getServiceReadiness(selectedSubject))
+      if (client.getObservability) setObservability(await client.getObservability(selectedSubject))
+      if (client.listCycles) setCycleList(await client.listCycles(selectedSubject, 50))
     } catch (caught) {
       setError(publicErrorMessage(caught, t('errorBody')))
     } finally {
@@ -406,6 +478,71 @@ export function SettingsPanel({
         {exported ? (
           <p className="text-sm text-muted-foreground" data-testid="settings-diagnostics-exported">{t('diagnosticsExported')}</p>
         ) : null}
+        <details data-testid="settings-advanced-diagnostics" className="rounded-md border border-border bg-surface-sunken p-3">
+          <summary className="cursor-pointer text-sm font-medium">{t('settingsAdvancedDiagnostics')}</summary>
+          <div className="mt-3 space-y-3">
+            <p className="text-sm text-muted-foreground">{t('settingsAdvancedDiagnosticsBody')}</p>
+            <Row
+              label={t('evolutionPendingEvidence')}
+              value={String(operatorProjection?.evidence_pending.count ?? 0)}
+              testId="settings-pending-evidence"
+            />
+            <Row
+              label={t('evolutionRounds')}
+              value={String(operatorProjection?.evolution_summary.roundCount ?? 0)}
+              testId="settings-evolution-rounds"
+            />
+            <Row
+              label={t('evolutionOpenCycles')}
+              value={String(operatorProjection?.evolution_summary.openCycles ?? 0)}
+              testId="settings-evolution-open-cycles"
+            />
+            <Row
+              label={t('evolutionLatestStatus')}
+              value={operatorProjection?.evolution_summary.latestStatus ?? '—'}
+              testId="settings-evolution-latest-status"
+            />
+            <Row
+              label={t('evolutionLatestSummary')}
+              value={operatorProjection?.evolution_summary.latestTldr ?? '—'}
+              testId="settings-evolution-latest-summary"
+            />
+            <Row
+              label={t('diagnosticsDaemonTasks')}
+              value={String(operatorProjection?.daemon_task_pending.count ?? 0)}
+              testId="settings-daemon-queue-pending"
+            />
+            <div className="flex flex-wrap gap-2">
+              {allowed.has('process_cycle_once') && client?.processCycleOnce ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  data-testid="settings-process-cycle-once"
+                  disabled={Boolean(busy)}
+                  onClick={() => void runAdvanced('process')}
+                >
+                  {busy === 'process' ? t('evolutionProcessingOnce') : t('evolutionProcessOnce')}
+                </Button>
+              ) : null}
+              {!webNativeOnly && allowed.has('start_cycle') && client?.startService ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  data-testid="settings-start-cycle"
+                  disabled={Boolean(busy)}
+                  onClick={() => void runAdvanced('start')}
+                >
+                  {busy === 'start' ? t('evolutionStartingCycle') : t('evolutionStartCycle')}
+                </Button>
+              ) : null}
+            </div>
+            {webNativeOnly && subjectReadiness?.allowed_actions.includes('open_desktop') ? (
+              <p className="text-sm text-muted-foreground" data-testid="settings-advanced-open-desktop">
+                {t('openDesktopRecovery')}
+              </p>
+            ) : null}
+          </div>
+        </details>
       </section>
     </div>
   )

@@ -157,8 +157,10 @@ export function createProductSurfaceFixture(): ProductSurfaceFixture {
     },
     observability: {
       subject: 'alpha',
-      attention: { count: 0, highest_severity: null, backlog_count: 0 },
-      open_cycles: 0
+      attention: { items: [], summary: { count: 0, highest_severity: null } },
+      open_cycles: 0,
+      evidence_pending_count: 0,
+      daemon_task_pending_count: 0
     },
     service: {
       subject: 'alpha',
@@ -247,8 +249,8 @@ export function createProductSurfaceFixture(): ProductSurfaceFixture {
       language: 'zh-CN',
       theme: 'system',
       defaultSubject: 'alpha',
-      appVersion: '0.1.0',
-      cliVersion: '0.1.0',
+      appVersion: '0.2.0',
+      cliVersion: '0.2.0',
       commitSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       commitShort: 'aaaaaaa',
       buildTime: '2026-08-17T00:00:00.000Z',
@@ -260,14 +262,14 @@ export function createProductSurfaceFixture(): ProductSurfaceFixture {
       schema_version: 1,
       generated_at: '2026-08-17T00:00:00.000Z',
       product: {
-        version: '0.1.0',
+        version: '0.2.0',
         commit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         commit_short: 'aaaaaaa',
         built_at: '2026-08-17T00:00:00.000Z',
         platform: 'linux',
         architecture: 'x64',
         dirty: false,
-        build_id: '0.1.0+aaaaaaa.20260817T000000'
+        build_id: '0.2.0+aaaaaaa.20260817T000000'
       },
       host: {
         jea_home: '<JEA_HOME>',
@@ -278,9 +280,9 @@ export function createProductSurfaceFixture(): ProductSurfaceFixture {
         source: 'service.getReadiness',
         reservedCommand: 'service.getReadiness',
         web: { id: 'web', status: 'stopped', reasons: ['web_host_stopped'] },
-        cycle: { id: 'cycle', status: 'stopped', reasons: ['cycle_worker_stopped'] },
+        cycle: { id: 'cycle', status: 'stopped', reasons: ['cycle_stopped'] },
         channel: { id: 'channel', status: 'ready', reasons: [] },
-        model: { id: 'model', status: 'ready', reasons: ['model_unconfigured', 'model_mode_mock'] },
+        model: { id: 'model', status: 'ready', reasons: ['model_mock'] },
         conversation: { id: 'conversation', status: 'ready', reasons: ['conversation_ready'] }
       },
       daemon: {

@@ -262,7 +262,16 @@ describe('shadow compare', () => {
           id: 'cycle-train-1:0',
           cycle_id: 'cycle-train-1',
           status: 'pending',
-          action: { type: 'record_observation', description: 'a', serves_goal: 'bootstrap' },
+          metadata: {
+            producer_batch_id: 'batch-train',
+            reaction_id: 'reaction-train',
+          },
+          action: {
+            type: 'record_observation',
+            description: 'a',
+            serves_goal: 'bootstrap',
+            params: { context: { no_belief_reason: 'record_only' } },
+          },
         },
         {
           id: 'cycle-train-1:1',
@@ -278,7 +287,13 @@ describe('shadow compare', () => {
         {
           id: 'batch-x:0',
           batch_id: 'batch-x',
-          action: { type: 'record_observation', description: 'a', serves_goal: 'bootstrap' },
+          reaction_id: 'reaction-shadow',
+          action: {
+            type: 'record_observation',
+            description: 'a',
+            serves_goal: 'bootstrap',
+            params: { context: { no_belief_reason: 'record_only' } },
+          },
         },
         {
           id: 'batch-x:1',
@@ -292,6 +307,25 @@ describe('shadow compare', () => {
     expect(report.summary.matched).toBe(1);
     expect(report.summary.shadow_only).toBe(1);
     expect(report.summary.train_only).toBe(1);
+    expect(report.summary.semantics).toEqual({
+      actions_total: 4,
+      belief_binding_known: 2,
+      expected_output_present: 0,
+    });
+    expect(report.matched[0]).toMatchObject({
+      action: {
+        belief_binding: { status: 'exempt', reason: 'record_only' },
+        expected_output: { present: false },
+      },
+      shadow_identity: {
+        producer_batch_id: 'batch-x',
+        reaction_id: 'reaction-shadow',
+      },
+      train_identity: {
+        producer_batch_id: 'batch-train',
+        reaction_id: 'reaction-train',
+      },
+    });
   });
 });
 
@@ -301,13 +335,31 @@ describe('cognitive shadow reactor e2e', () => {
       batchId: 'batch-prompt',
       reportMarkdown: '# Report\n- seen',
       live: true,
+      decisionConstraints: {
+        current_beliefs: {
+          active: [{ id: 'belief-active', status: 'active' }],
+          validated: [],
+          recently_refuted: [{ id: 'belief-refuted', status: 'refuted' }],
+        },
+        human_guidance: 'keep tests bounded',
+        pending_operator_questions: [{ id: 'question-1', question: 'Which baseline?' }],
+        decision_backlog: { pending_count: 1, blocked_count: 0, pending: [{ id: 'old:0' }] },
+      },
     });
     expect(prompt.content).toContain('## Available Action Types');
     expect(prompt.content).toContain('Required params: content');
     expect(prompt.content).toContain('Required params: hypothesis, success_signal, failure_signal, death_boundary');
-    expect(prompt.content).toContain('"params": { "content": "..." }');
+    expect(prompt.content).toContain('"params": { "content": "...", "context": { "no_belief_reason": "record_only" } }');
     expect(prompt.content).not.toContain('"params": {}');
+    expect(prompt.content).toContain('## Decision Constraints');
+    expect(prompt.content).toContain('belief-active');
+    expect(prompt.content).toContain('belief-refuted');
+    expect(prompt.content).toContain('keep tests bounded');
+    expect(prompt.content).toContain('question-1');
+    expect(prompt.content).toContain('old:0');
     expect(prompt.stablePrefix).not.toContain('batch-prompt');
+    expect(prompt.stablePrefix).not.toContain('belief-active');
+    expect(prompt.stablePrefix).not.toContain('question-1');
     expect(prompt.dynamicPayload).toContain('batch_id: batch-prompt');
   });
 
@@ -388,7 +440,10 @@ describe('cognitive shadow reactor e2e', () => {
               type: 'record_observation',
               description: `shadow note ${randomUUID().slice(0, 8)}`,
               serves_goal: 'bootstrap',
-              params: { content: 'shadow observation' },
+              params: {
+                content: 'shadow observation',
+                context: { no_belief_reason: 'record_only' },
+              },
             }],
             goal_coverage: { covered: ['bootstrap'], not_covered: {} },
             deferred: [],
@@ -403,6 +458,7 @@ describe('cognitive shadow reactor e2e', () => {
           type: 'record_observation',
           description: 'default shadow action',
           serves_goal: 'bootstrap',
+          params: { content: 'default', context: { no_belief_reason: 'record_only' } },
         }],
         goal_coverage: { covered: [], not_covered: {} },
         deferred: [],
@@ -507,7 +563,7 @@ describe('cognitive shadow reactor e2e', () => {
             type: 'record_observation',
             description: 'resume note',
             serves_goal: 'bootstrap',
-            params: { content: 'resume' },
+            params: { content: 'resume', context: { no_belief_reason: 'record_only' } },
           }],
           goal_coverage: { covered: ['bootstrap'], not_covered: {} },
           deferred: [],

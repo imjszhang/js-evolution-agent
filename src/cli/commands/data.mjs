@@ -21,12 +21,22 @@ import {
   runtimeInfoForSubject,
 } from '../../infra/subjects.mjs';
 import { getLanguage, t, tObject } from '../../infra/i18n.mjs';
+import { readJson } from '../../infra/json-store.mjs';
+import { runtimeMaintenanceStatePath } from '../../daemon/runtime-maintenance.mjs';
+import {
+  claimsArchivePath,
+  claimsCoveredIndexPath,
+} from '../../evolution/reactor/claim-ledger.mjs';
+import { evidenceIndexPath } from '../../evolution/reactor/evidence-index.mjs';
+import { channelEventArchivePath } from '../../channel/event-queue.mjs';
+import { channelEventQueuePath } from '../../channel/paths.mjs';
 
 const DATA_DIRS = [
   join('data', 'evolution'),
   join('data', 'intelligence'),
   join('data', 'goals'),
 ];
+const RESET_DIRS = ['data'];
 
 function nowIso() {
   return new Date().toISOString();
@@ -73,6 +83,84 @@ function printDirStatus(root, relativeDir) {
 export function dataStatus(root, flags = {}) {
   const runtime = runtimeForFlags(root, flags);
   return DATA_DIRS.map((dir) => statusObject(runtime.runtimeRoot, dir));
+}
+
+function collectionState(path, collection) {
+  const value = readJson(path, null);
+  const rows = Array.isArray(value?.[collection]) ? value[collection] : [];
+  return {
+    path,
+    exists: existsSync(path),
+    count: rows.length,
+    updated_at: value?.updated_at ?? null,
+  };
+}
+
+function maintenanceNextDueAt(state) {
+  const completed = Date.parse(state?.completed_at ?? '');
+  const interval = Number(state?.interval_ms);
+  if (!Number.isFinite(completed) || !Number.isFinite(interval)) return null;
+  return new Date(completed + interval).toISOString();
+}
+
+export function runtimeMaintenanceStatus(root, flags = {}) {
+  const runtime = runtimeForFlags(root, flags);
+  const dataRoot = runtime.dataRoot;
+  const maintenancePath = runtimeMaintenanceStatePath(dataRoot);
+  const maintenance = readJson(maintenancePath, null);
+  const evidenceIndex = readJson(evidenceIndexPath(dataRoot), null);
+  const evidenceSources = Object.values(evidenceIndex?.sources ?? {});
+  const evidenceFiles = evidenceSources.flatMap((source) => Object.values(source?.files ?? {}));
+  const daemonTasks = join(dataRoot, 'evolution', 'tasks');
+  const channelTasks = join(dataRoot, 'channel', 'tasks');
+  return {
+    schema_version: 'runtime-maintenance-status.v1',
+    maintenance: {
+      path: maintenancePath,
+      exists: existsSync(maintenancePath),
+      status: maintenance?.status ?? 'never_run',
+      completed_at: maintenance?.completed_at ?? null,
+      interval_ms: maintenance?.interval_ms ?? null,
+      next_due_at: maintenanceNextDueAt(maintenance),
+      errors: maintenance?.errors ?? {},
+    },
+    reactor: {
+      claims: {
+        hot: collectionState(join(dataRoot, 'evolution', 'reactor', 'claims.json'), 'claims'),
+        archive: collectionState(claimsArchivePath(dataRoot), 'claims'),
+        covered_index: {
+          path: claimsCoveredIndexPath(dataRoot),
+          exists: existsSync(claimsCoveredIndexPath(dataRoot)),
+        },
+      },
+      evidence_index: {
+        path: evidenceIndexPath(dataRoot),
+        exists: existsSync(evidenceIndexPath(dataRoot)),
+        schema_version: evidenceIndex?.schema_version ?? null,
+        updated_at: evidenceIndex?.updated_at ?? null,
+        sources: evidenceSources.length,
+        files: evidenceFiles.length,
+        indexed_entries: evidenceFiles.reduce(
+          (sum, file) => sum + (Array.isArray(file?.entries) ? file.entries.length : 0),
+          0,
+        ),
+      },
+      tasks: {
+        hot: collectionState(join(daemonTasks, 'pending_tasks.json'), 'tasks'),
+        archive: collectionState(join(daemonTasks, 'archive', 'terminal_tasks.json'), 'tasks'),
+      },
+    },
+    channel: {
+      tasks: {
+        hot: collectionState(join(channelTasks, 'pending_tasks.json'), 'tasks'),
+        archive: collectionState(join(channelTasks, 'archive', 'terminal_tasks.json'), 'tasks'),
+      },
+      events: {
+        hot: collectionState(channelEventQueuePath(root, runtime.subject), 'events'),
+        archive: collectionState(channelEventArchivePath(root, runtime.subject), 'events'),
+      },
+    },
+  };
 }
 
 export function initData(root, flags = {}) {
@@ -145,6 +233,21 @@ export function backupData(root, flags = {}) {
     runtime,
     name,
     files: existsSync(result.destination) ? countFiles(result.destination) : 0,
+  };
+}
+
+export function resetData(root, flags = {}) {
+  const runtime = runtimeForFlags(root, flags);
+  const removed = [];
+  for (const target of RESET_DIRS) {
+    if (removeProjectDir(runtime.runtimeRoot, target)) {
+      removed.push(join(runtime.runtimeRoot, target));
+    }
+  }
+  return {
+    runtime,
+    targets: RESET_DIRS.map((target) => join(runtime.runtimeRoot, target)),
+    removed,
   };
 }
 
@@ -230,6 +333,7 @@ export async function dataCommand({ subcommand, flags = {}, context = null } = {
   const runtime = runtimeForFlags(root, flags);
   if (subcommand === 'status') {
     const status = dataStatus(root, flags);
+    const maintenance = runtimeMaintenanceStatus(root, flags);
     const policy = readSubjectPolicy(root, runtime.config);
     const repoLane = resolveSubjectRepoLane(policy.text, {
       root: runtime.sourceRoot,
@@ -243,7 +347,7 @@ export async function dataCommand({ subcommand, flags = {}, context = null } = {
       subject_runtime_root: runtime.runtimeRoot,
       execution_root: repoLane.repoRoot ?? null,
     };
-    if (flags.json) console.log(JSON.stringify({ runtime, paths, status }, null, 2));
+    if (flags.json) console.log(JSON.stringify({ runtime, paths, status, maintenance }, null, 2));
     else {
       console.log(`subject: ${runtime.subject}`);
       console.log(`data namespace: ${runtime.dataNamespace}`);
@@ -252,6 +356,11 @@ export async function dataCommand({ subcommand, flags = {}, context = null } = {
       console.log(`runtime root: ${runtime.runtimeRoot}`);
       console.log(`execution root: ${paths.execution_root ?? 'not configured'}`);
       for (const item of status) printDirStatus(runtime.runtimeRoot, item.dir);
+      console.log(`maintenance: ${maintenance.maintenance.status}`);
+      console.log(`reactor claims hot/archive: ${maintenance.reactor.claims.hot.count}/${maintenance.reactor.claims.archive.count}`);
+      console.log(`reactor evidence index: ${maintenance.reactor.evidence_index.indexed_entries} entries`);
+      console.log(`channel tasks hot/archive: ${maintenance.channel.tasks.hot.count}/${maintenance.channel.tasks.archive.count}`);
+      console.log(`channel events hot/archive: ${maintenance.channel.events.hot.count}/${maintenance.channel.events.archive.count}`);
     }
     return 0;
   }
@@ -278,8 +387,9 @@ export async function dataCommand({ subcommand, flags = {}, context = null } = {
   }
 
   if (subcommand === 'reset') {
-    console.log('Will remove local runtime data:');
-    for (const target of DATA_DIRS) console.log(`  - ${join(runtime.runtimeRoot, target)}`);
+    console.log('Will remove all local runtime data for this subject (including reactor, daemon, and channel sidecars):');
+    for (const target of RESET_DIRS) console.log(`  - ${join(runtime.runtimeRoot, target)}`);
+    console.log(`Will preserve subject policy and configuration under: ${runtime.runtimeRoot}`);
     if (!flags.yes) {
       const ok = await confirm('This cannot be undone.');
       if (!ok) {
@@ -287,13 +397,9 @@ export async function dataCommand({ subcommand, flags = {}, context = null } = {
         return 1;
       }
     }
-    let removed = 0;
-    for (const target of DATA_DIRS) {
-      if (removeProjectDir(runtime.runtimeRoot, target)) {
-        removed++;
-        console.log(`removed: ${join(runtime.runtimeRoot, target)}`);
-      }
-    }
+    const result = resetData(root, flags);
+    for (const target of result.removed) console.log(`removed: ${target}`);
+    const removed = result.removed.length;
     console.log(`Reset complete. Removed ${removed} director${removed === 1 ? 'y' : 'ies'}.`);
     return 0;
   }

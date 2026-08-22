@@ -5,6 +5,10 @@ export const BOOTSTRAP_PATH = '/jea/bootstrap'
 
 export type WebHostConnectionState = 'online' | 'offline'
 
+export function isExplicitWebFixtureMode(hosted: boolean, search = defaultSearch()): boolean {
+  return !hosted && new URLSearchParams(search).get('fixture') === '1'
+}
+
 export function isJeaWebHosted(doc: Pick<Document, 'querySelector'> | null | undefined = defaultDocument()): boolean {
   return Boolean(doc?.querySelector(`meta[name="${JEA_HOST_META}"]`))
 }
@@ -38,4 +42,8 @@ export async function fetchWebBootstrap(
 
 function defaultDocument(): Document | null {
   return typeof document === 'undefined' ? null : document
+}
+
+function defaultSearch(): string {
+  return typeof window === 'undefined' ? '' : window.location.search
 }

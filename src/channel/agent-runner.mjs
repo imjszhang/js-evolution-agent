@@ -1,5 +1,5 @@
 import { createIntelligenceStore } from '../intelligence/channel-api.mjs';
-import { createLlmClient } from '../ai/gateway.mjs';
+import { createSubjectLlmClient } from './llm-client.mjs';
 import { runtimeForSubject } from '../infra/runtime-paths.mjs';
 import { resolveEffectiveEnv } from '../actions/execution-env.mjs';
 import { actionHandlers } from '../actions/handlers.mjs';
@@ -103,9 +103,9 @@ const MOCK_DELIVERABLE_RESPONSE = JSON.stringify({
   outputs: {},
 });
 
-function createAiFromEnv(env = {}) {
+function createAiFromEnv(root, env = {}, subject = null) {
   try {
-    return createLlmClient({
+    return createSubjectLlmClient(root, subject, {
       profile: 'channel_agent',
       env,
       mockResponse: MOCK_DELIVERABLE_RESPONSE,
@@ -179,7 +179,7 @@ function buildContext(root, subject, runtime, store, request, effectiveEnv = {},
   return {
     projectRoot: root,
     env: effectiveEnv,
-    ai: request.ai ?? createAiFromEnv(effectiveEnv),
+    ai: request.ai ?? createAiFromEnv(root, effectiveEnv, subject),
     host: {
       sourceRoot: root,
       runtimeRoot: runtime.runtimeRoot,

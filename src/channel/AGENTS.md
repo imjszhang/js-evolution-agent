@@ -2,7 +2,7 @@
 
 本文件是 `src/channel` 模块的操作指引，由根 AGENTS.md 拆分而来。全局内容（基础用法、环境与诊断、运行时数据、Subject 管理、操作建议）见根 [AGENTS.md](../../AGENTS.md)；模块 ownership 与契约规则见 [OWNERSHIP.md](../contracts/OWNERSHIP.md)。
 
-Channel 是 daemon 下与 cycle 平级的通信闭环，负责接收外部消息、写入合适的情报入口，并观察运行态决定是否向外部通道通知。当前飞书适配器位于 `src/channel/adapters/feishu/`（基于 `@larksuiteoapi/node-sdk`，参考 Deepseek-Cowork `feishu-module` 的传输层实现，**不**依赖 OpenClaw 或 Cowork AI/ChannelBridge）。
+Channel 是 daemon 下与 evolution reactors 平级的通信闭环，负责接收外部消息、写入合适的情报入口，并观察 operator projection 决定是否向外部通道通知。当前飞书适配器位于 `src/channel/adapters/feishu/`（基于 `@larksuiteoapi/node-sdk`，参考 Deepseek-Cowork `feishu-module` 的传输层实现，**不**依赖 OpenClaw 或 Cowork AI/ChannelBridge）。
 
 运行时数据位于：
 
@@ -129,7 +129,7 @@ Listener supervisor 对 **SDK 尚未连上** 的 start/reload 失败做指数退
 
 ### Desktop 本地会话
 
-`channels.desktop` 提供不依赖 UI 或外部 API 的 inbound/outbound adapter。入站仍写 `inbound/pending`，完整复用 classifier → ingest → presence → speech → outbox → notify；出站目标使用 `desktop:<session>`，notify 将 assistant 消息追加到对应 JSONL 会话。desktop 与 Feishu 可同时启用，transport 由每条 outbound 的 target/channel 决定。
+`channels.desktop` 提供不依赖宿主 UI 或外部 API 的 inbound/outbound adapter。入站仍写 `inbound/pending`，完整复用 classifier → ingest → presence → speech → outbox → notify；出站目标使用 `desktop:<session>`，notify 将 assistant 消息追加到对应 JSONL 会话。desktop 与 Feishu 可同时启用，transport 由每条 outbound 的 target/channel 决定。
 
 ```json
 "channels": {
@@ -146,7 +146,7 @@ Listener supervisor 对 **SDK 尚未连上** 的 start/reload 失败做指数退
 
 会话记录带 `schema_version`、稳定 `id` 和 append offset；存储只追加，读取 API/CLI 支持 offset、tail，并按稳定 id 去重。session id 仅允许字母、数字、点、下划线和连字符。
 
-Electron 客户端的 Channel 页复用同一 adapter：renderer 只通过受控 IPC 调用 send/read/list，消息回复仍必须经过 classifier → presence → speech → outbox → notify。主进程按逻辑 offset 增量读取 desktop session，并实时投影 processed inbound 的 `classifier.understanding`；飞书消息显示在统一 inbound feed，但不会伪装成 desktop session。`fs.watch` 只负责低延迟唤醒，30 秒 reconcile 负责补偿漏事件。
+共享三栏工作区的 Conversation surface 复用同一 adapter：renderer 只通过受控 Client API 调用 send/read/list，消息回复仍必须经过 classifier → presence → speech → outbox → notify。主进程按逻辑 offset 增量读取 desktop session，并实时投影 processed inbound 的 `classifier.understanding`；飞书消息显示在统一 inbound feed，但不会伪装成 desktop session。`fs.watch` 只负责低延迟唤醒，30 秒 reconcile 负责补偿漏事件。
 
 ### Channel Classifier（`channels.classifier`，固定频率批量）
 
@@ -203,12 +203,21 @@ Classifier 识别 `control_request` 后**不直接执行**配置变更，而是�
 **Bounded reactor**（`channel_presence` 任务 → `runPresenceReactor`）：
 
 1. claim 一批 channel events（合并多 wake）
-2. `buildPresenceContext`（读**已分类** processed、pending unclassified 计数、daemon signals、ignored/background context 等）
+2. `buildPresenceContext`（扫描全部**已分类** processed，按最老未 handled 项构建有界 candidate page；recent/background prompt context 仍有界；另读 pending unclassified 计数、daemon signals 等）
 3. 构建 `expression.candidates`：把可表达对象统一成 `reply.*` / `notify.*` candidates；`ignore` 只作背景，不生成 candidate
 4. `planPresence` → `no_op` / `speak` / `silence` / `act`；`speak` 只产出 `speech_intent`（**不写 outbox**）
 5. 对 `speech_intent` append `speech_generation_requested` 事件，入队 `channel_speech_generation`
 
-**内容生成**（`channel_speech_generation` → `runChannelSpeechGenerationTask`，speech role worker）：按 subject persona + `content_requirements` 生成最终文本，成功后 `writeOutboxMessage`；失败/超时记 `channel_speech_generation_failed` / `channel_presence_timeout`，不写 outbox。
+**内容生成**（`channel_speech_generation` → `runChannelSpeechGenerationTask`，speech role worker）：按 subject persona + `content_requirements` 生成最终文本，成功后 `writeOutboxMessage` 并推进 handled；失败/超时记 `channel_speech_generation_failed` / `channel_presence_timeout`，不写 outbox、不推进 handled，并按 `speech_generation_max_attempts` 有界 requeue。rate-limit / cooldown 跳过同样不推进 handled。
+
+所有 speech 文本、agent deliverable 与 outbox payload 在持久化前统一经过 `redactSecrets`；`writeOutboxMessage` 是所有 transport 的最终兜底边界，防止生成或渲染分支把凭据写盘或送出。
+
+Delivery 的幂等/恢复边界：
+
+- candidate 只有在 speech 正文成功持久化到 outbox 后才进入 `handled_candidates`；
+- 生成失败、timeout、rate-limit 或 cooldown 都不推进 handled，并按 `speech_generation_max_attempts` 有界重试；
+- notify 只消费 durable outbox；desktop session 以稳定 message id 去重，Feishu timeout 结果不确定时标 failed 而不盲重放；
+- operator projection 分开呈现 Conversation readiness、pending evidence、pending channel/daemon tasks 与 attention，Channel 不把这些计数合并成单一 backlog。
 
 `runChannelTick`：presence tick（`reason: timer_tick` 的表达重算 + notify）；classifier tick 单独按 `interval_ms` 入队 classifier。默认多 role 下 notify / control / agent / presence / speech / classifier **并行领取**，互不阻塞。
 
@@ -236,7 +245,7 @@ Classifier 识别 `control_request` 后**不直接执行**配置变更，而是�
 - `planner`: `deterministic`（规则决定 `speech_intent` + 模板生成）或 `llm`（决策与生成均可调 DeepSeek）。
 - `timeout_ms` / `decision_timeout_ms` / `speech_generation_timeout_ms`: reactor 与两阶段 deadline；超时记 audit，worker 不永久卡死。
 - `cooldown_ms` / `max_messages_per_hour`: 出站节流（按 `channel_speech_generated` 计数）。
-- 游标 + reactor：`presence-state.json`（`handled_candidates`、`reactor.status|deadline_at|event_ids`、`pending_speech_generation`）。
+- 游标 + reactor：`presence-state.json` 只保留近期 `handled_candidates` 投影及 `reactor.status|deadline_at|event_ids`、`pending_speech_generation`；完整 handled 真相在 `presence-handled-index.json`。`inbound/processed-index.json` 保存已分类消息的紧凑索引，Presence 每轮不再解析全部历史消息文件。
 - 交互记忆：`intel_observations`（`source: channel_presence`）。
 - 审计：`channel_expression_recompute_requested` / `channel_expression_planned` / `channel_expression_noop` / `channel_expression_silenced` / `channel_speech_generated` / `channel_presence_completed` / `channel_presence_timeout` 等。
 - 决策动作：`speech_intent`（仅意图）、`start_agent_async`（只入队只读 `channel_agent_run`）、`write_operator_brief`、`record_observation`；表达计划可为 `no_op` / `speak` / `silence` / `act`，**不能**直接 `approval_granted` 或改 decision queue。

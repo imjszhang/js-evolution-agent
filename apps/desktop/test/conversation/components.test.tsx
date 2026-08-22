@@ -306,6 +306,8 @@ describe('conversation workspace components', () => {
     expect(ready).toContain('data-testid="conversation-state-ready"')
     expect(ready).toContain('data-recovery="ready"')
     expect(ready).not.toContain('data-testid="conversation-start-channel"')
+    expect(ready).not.toContain('data-testid="conversation-process-cycle-once"')
+    expect(ready).not.toContain('data-testid="conversation-start-cycle"')
 
     const failed = renderPane(
       <ConversationPane

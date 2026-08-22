@@ -116,16 +116,6 @@ export async function packageMacos({
   metadata,
 } = {}) {
   const provenance = metadata ?? collectBuildMetadata({ repoRoot });
-  if (process.platform !== 'darwin' || process.arch !== 'arm64') {
-    return {
-      ok: true,
-      status: 'skipped',
-      reason: 'not_darwin_arm64',
-      platform: `${process.platform}-${process.arch}`,
-      metadata: provenance,
-    };
-  }
-
   const gate = assertCleanProvenance(provenance, { allowDirty });
   if (!gate.ok) {
     return {
@@ -133,6 +123,15 @@ export async function packageMacos({
       status: gate.status,
       reason: gate.reason,
       metadata: gate.metadata,
+    };
+  }
+  if (process.platform !== 'darwin' || process.arch !== 'arm64') {
+    return {
+      ok: true,
+      status: 'skipped',
+      reason: 'not_darwin_arm64',
+      platform: `${process.platform}-${process.arch}`,
+      metadata: provenance,
     };
   }
 
@@ -222,6 +221,7 @@ export async function packageMacos({
     platform: provenance.platform,
     arch: provenance.arch,
     build_id: provenance.build_id,
+    generated_at: new Date().toISOString(),
   };
   writeFileSync(join(outDir, names.packageSmoke), `${JSON.stringify(smoke, null, 2)}\n`);
   return {

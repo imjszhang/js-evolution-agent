@@ -221,12 +221,16 @@ export function buildGoalAssessmentContext({
   goalEventsLimit = 10,
   ruleFeedbackStats = null,
   goalIds = null,
+  evidence: suppliedEvidence = null,
+  recentGoalEvents: suppliedGoalEvents = null,
 } = {}) {
   const scopedActiveGoals = filterGoalTree(activeGoals, goalIds);
   const goals = flattenGoals(scopedActiveGoals);
-  const evidence = gatherEvidence(store);
+  const evidence = suppliedEvidence ?? gatherEvidence(store);
   const machineAssessment = assessGoals(goals, evidence);
-  const recentGoalEvents = store?.readGoalEvents?.({ limit: goalEventsLimit }) ?? [];
+  const recentGoalEvents = Array.isArray(suppliedGoalEvents)
+    ? suppliedGoalEvents
+    : (store?.readGoalEvents?.({ limit: goalEventsLimit }) ?? []);
   const currentBeliefs = normalizeCurrentBeliefs(store?.readCurrentBeliefs?.() ?? null);
   const beliefPartitions = partitionBeliefs(currentBeliefs.beliefs ?? []);
   const markdown = reportMarkdown ?? readReportMarkdown(reportRecord);
@@ -512,6 +516,8 @@ export async function assessGoalsWithAi({
   logger = null,
   ruleFeedbackStats = null,
   goalIds = null,
+  evidence = null,
+  recentGoalEvents = null,
 } = {}) {
   const context = buildGoalAssessmentContext({
     activeGoals,
@@ -521,6 +527,8 @@ export async function assessGoalsWithAi({
     store,
     ruleFeedbackStats,
     goalIds,
+    evidence,
+    recentGoalEvents,
   });
   const prompt = buildGoalAssessmentPrompt({ context, agentContextDocs });
   const stablePrompt = buildGoalAssessmentPrompt({ context: {}, agentContextDocs });

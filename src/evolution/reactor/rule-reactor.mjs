@@ -3,7 +3,11 @@
  * Peek due window → claim only when threshold/wall-clock is met.
  */
 import { runtimeForSubject } from '../../infra/runtime-paths.mjs';
-import { buildCycleContext, runBeliefUpdateStep, runGoalsAssessStep, runGoalsCalibrateStep } from '../cycle-steps.mjs';
+import { buildCycleContext } from '../cycle-steps.mjs';
+import {
+  settleEvidenceWindow,
+  settlementWindowsFromEvents,
+} from '../settlement-service.mjs';
 import {
   ackBatchHandled,
   claimEvidenceBatch,
@@ -26,6 +30,23 @@ import {
 const DEFAULT_MIN_EVENTS = 8;
 const DEFAULT_MAX_IDLE_MS = 48 * 60 * 60 * 1000;
 
+function originIdentity(events = []) {
+  const values = (field) => [...new Set(events
+    .map((event) => event?.payload?.[field] ?? event?.[field] ?? null)
+    .filter(Boolean))];
+  const single = (field) => {
+    const found = values(field);
+    return found.length === 1 ? found[0] : null;
+  };
+  return {
+    producer_batch_id: single('producer_batch_id'),
+    reaction_id: single('reaction_id'),
+    decision_id: single('decision_id'),
+    execution_id: single('execution_id'),
+    belief_id: single('belief_id'),
+  };
+}
+
 export const RULE_EVIDENCE_KINDS = Object.freeze([
   'action_receipts',
   'verify_reports',
@@ -44,6 +65,15 @@ export function shouldRunRuleReaction(events = [], {
   maxIdleMs = DEFAULT_MAX_IDLE_MS,
 } = {}) {
   if (!events.length) return { due: false, reason: 'no_events' };
+  if (events.some((event) => (
+    event?.kind === 'verify_reports'
+    && (
+      event?.payload?.comparison?.status === 'contradicted'
+      || event?.payload?.settlement_signal?.reason === 'expected_output_contradicted'
+    )
+  ))) {
+    return { due: true, reason: 'expected_output_contradicted' };
+  }
   if (events.length >= minEvents) return { due: true, reason: 'evidence_count' };
   const oldest = events
     .map((item) => parseIsoMs(item.occurred_at))
@@ -142,33 +172,28 @@ export async function runRuleReaction({
   try {
     const ctx = await buildCycleContext(root, runtime);
     ctx.pipeline = 'reactor';
-    const intelResult = { cycle_id: batchId, batch_id: batchId, goal_ids: dueGoalIds };
-    const execResult = { cycle_id: batchId };
-    const belief = await runBeliefUpdateStep(ctx, {
-      intelResult,
-      execResult,
-      canCommit,
-      producer: 'rule',
-      activationTargets: ['cognitive'],
-    });
-    const goals = await runGoalsAssessStep(ctx, {
-      intelResult,
-      intelReportReady: true,
-      canCommit,
-      producer: 'rule',
-      activationTargets: ['cognitive'],
-      useLatestReport: true,
-    });
-    let calibrate = null;
-    if (goals?.goalsAssessResult) {
-      calibrate = await runGoalsCalibrateStep(ctx, {
+    const windows = settlementWindowsFromEvents(dataRoot, events);
+    const settlements = [];
+    for (const window of windows) {
+      const identity = originIdentity(window.events);
+      const intelResult = {
+        cycle_id: batchId,
+        batch_id: batchId,
+        goal_ids: dueGoalIds,
+        ...identity,
+      };
+      settlements.push(await settleEvidenceWindow(ctx, {
         intelResult,
-        goalsAssessResult: goals.goalsAssessResult,
-        store: ctx.store,
+        execResult: { ...identity, ...window.execResult },
+        verification: window.verification,
+        reportPath: window.reportPath,
+        receipts: window.receipts,
+        intelReportReady: true,
         canCommit,
         producer: 'rule',
         activationTargets: ['cognitive'],
-      });
+        useLatestReport: true,
+      }));
     }
     if (typeof canCommit === 'function' && !canCommit()) {
       const error = new Error('reactor_task_lease_lost');
@@ -202,9 +227,10 @@ export async function runRuleReaction({
       claimed_events: events.length,
       trigger,
       goal_ids: dueGoalIds,
-      belief,
-      goals,
-      calibrate,
+      settlements,
+      belief: settlements[0]?.belief ?? null,
+      goals: settlements[0]?.goals ?? null,
+      calibrate: settlements[0]?.calibrate ?? null,
     };
   } catch (err) {
     nackBatchFailed(dataRoot, batchId, { error: err?.message || String(err) });

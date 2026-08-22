@@ -79,16 +79,18 @@ afterEach(() => {
 });
 
 describe('beliefs and decision brief', () => {
-  it('partitions beliefs into active, validated, and refuted constraints', () => {
+  it('partitions every belief status into decision constraints', () => {
     const beliefs = [
       { id: 'a', status: 'active', claim: 'active claim' },
       { id: 'v', status: 'validated', claim: 'validated claim' },
       { id: 'r', status: 'refuted', claim: 'refuted claim' },
+      { id: 'x', status: 'retired', claim: 'retired claim' },
     ];
     const parts = partitionBeliefs(beliefs);
     expect(parts.active).toHaveLength(1);
     expect(parts.validated).toHaveLength(1);
     expect(parts.recentlyRefuted).toHaveLength(1);
+    expect(parts.retired).toHaveLength(1);
 
     const brief = buildTemporalDecisionBrief({
       generated_at: '2026-05-28T00:00:00.000Z',
@@ -108,8 +110,47 @@ describe('beliefs and decision brief', () => {
 
     expect(brief.decision_constraints.current_beliefs.active).toHaveLength(1);
     expect(brief.decision_constraints.current_beliefs.validated).toHaveLength(1);
+    expect(brief.decision_constraints.current_beliefs.refuted).toHaveLength(1);
     expect(brief.decision_constraints.current_beliefs.recently_refuted).toHaveLength(1);
+    expect(brief.decision_constraints.current_beliefs.retired).toHaveLength(1);
     expect(JSON.stringify(brief.do_not_treat_as_seen)).toContain('refuted claim');
+  });
+
+  it('bounds guidance, operator questions, and backlog in decision constraints', () => {
+    const brief = buildTemporalDecisionBrief({
+      human_guidance: 'g'.repeat(3000),
+      pending_operator_questions: Array.from({ length: 5 }, (_, index) => ({
+        id: `question-${index}`,
+        question: `question ${index}`,
+      })),
+      decision_backlog: {
+        pending_count: 5,
+        blocked_count: 0,
+        pending: Array.from({ length: 5 }, (_, index) => ({
+          id: `decision-${index}`,
+          type: 'agent_run',
+          belief_id: `belief-${index}`,
+        })),
+        blocked: [],
+        truncated: false,
+      },
+      current_beliefs: normalizeCurrentBeliefs({
+        beliefs: Array.from({ length: 5 }, (_, index) => ({
+          id: `belief-${index}`,
+          status: 'active',
+          claim: `claim ${index}`,
+        })),
+      }),
+    }, { itemLimit: 2 });
+
+    const constraints = brief.decision_constraints;
+    expect(constraints.current_beliefs.active).toHaveLength(2);
+    expect(constraints.human_guidance.length).toBeLessThanOrEqual(1800);
+    expect(constraints.pending_operator_questions.map((item) => item.id))
+      .toEqual(['question-0', 'question-1']);
+    expect(constraints.decision_backlog.pending.map((item) => item.id))
+      .toEqual(['decision-0', 'decision-1']);
+    expect(constraints.decision_backlog.pending[0].belief_id).toBe('belief-0');
   });
 
   it('promotes high-confidence operator facts into seen evidence', () => {

@@ -37,6 +37,7 @@ import {
 import { normalizeBuildMetadata, writeBuildMetadata } from '../src/product/build-metadata.mjs';
 import { isProcessAlive } from '../src/infra/process-alive.mjs';
 import { repoRootFrom } from '../scripts/release-lib.mjs';
+import { CLOSURE_TARGET_ID } from '../src/intelligence/closure-target.mjs';
 
 const repoRoot = repoRootFrom(new URL('../scripts/release-lib.mjs', import.meta.url));
 const temps = [];
@@ -56,7 +57,7 @@ function writeMinimalSourceRoot(dir) {
 
 function cleanMetadata(commit = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa') {
   return normalizeBuildMetadata({
-    version: '0.1.0',
+    version: '0.2.0',
     commit,
     dirty: false,
     built_at: '2026-08-17T00:00:00.000Z',
@@ -65,8 +66,74 @@ function cleanMetadata(commit = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa') {
   });
 }
 
-function passedStep(id, extra = {}) {
-  return { id, ok: true, status: 'passed', duration_ms: 12, evidence: `${id}.json`, ...extra };
+function reportIdentity(metadata = cleanMetadata()) {
+  return {
+    build_id: metadata.build_id,
+    commit: metadata.commit,
+    dirty: metadata.dirty,
+    generated_at: new Date().toISOString(),
+  };
+}
+
+function passedStep(id, { metadata = cleanMetadata(), ...extra } = {}) {
+  return {
+    id,
+    ok: true,
+    status: 'passed',
+    duration_ms: 12,
+    evidence: `${id}.json`,
+    ...reportIdentity(metadata),
+    ...extra,
+  };
+}
+
+function writeArtifactReports(dir, metadata, overrides = {}) {
+  const identity = reportIdentity(metadata);
+  const reports = {
+    recovery: {
+      ok: true,
+      status: 'passed',
+      mode: 'packaged',
+      ...identity,
+      ...(overrides.recovery || {}),
+    },
+    journey: {
+      ok: true,
+      status: 'journey_passed',
+      runner: 'packaged',
+      ...identity,
+      ...(overrides.journey || {}),
+    },
+    launch: {
+      ok: true,
+      status: 'passed',
+      launched_app: true,
+      duration_ms: 15_000,
+      ...identity,
+      ...(overrides.launch || {}),
+    },
+    soak: {
+      ok: true,
+      status: 'passed',
+      launched_app: true,
+      duration_ms: 1_800_000,
+      ...identity,
+      ...(overrides.soak || {}),
+    },
+    closure: {
+      ok: true,
+      status: 'passed',
+      gate: { target_id: CLOSURE_TARGET_ID },
+      ...identity,
+      ...(overrides.closure || {}),
+    },
+  };
+  writeFileSync(join(dir, 'recovery-matrix.json'), `${JSON.stringify(reports.recovery)}\n`);
+  writeFileSync(join(dir, 'product-journey.json'), `${JSON.stringify(reports.journey)}\n`);
+  writeFileSync(join(dir, 'launch-smoke.json'), `${JSON.stringify(reports.launch)}\n`);
+  writeFileSync(join(dir, 'soak-report.json'), `${JSON.stringify(reports.soak)}\n`);
+  writeFileSync(join(dir, 'closure-audit.json'), `${JSON.stringify(reports.closure)}\n`);
+  return reports;
 }
 
 afterEach(() => {
@@ -236,66 +303,71 @@ describe('release recovery soak detectors', () => {
 });
 
 describe('certification evidence and publish guard', () => {
-  it('collects recovery, journey, and soak artifacts from an evidence directory', () => {
+  it('collects recovery, journey, soak, and closure artifacts from an evidence directory', () => {
     const dir = tempDir('jea-evidence-collect-');
     const metadata = cleanMetadata();
     writeBuildMetadata(dir, metadata);
-    writeFileSync(join(dir, 'recovery-matrix.json'), `${JSON.stringify({
-      ok: true,
-      status: 'passed',
-      build_id: metadata.build_id,
-    })}\n`);
-    writeFileSync(join(dir, 'product-journey.json'), `${JSON.stringify({
-      ok: true,
-      status: 'journey_passed',
-      runner: 'packaged',
-    })}\n`);
-    writeFileSync(join(dir, 'soak-report.json'), `${JSON.stringify({
-      ok: true,
-      status: 'passed',
-      duration_ms: 1_800_000,
-    })}\n`);
-    writeFileSync(join(dir, 'launch-smoke.json'), `${JSON.stringify({
-      ok: true,
-      status: 'passed',
-      launched_app: true,
-      duration_ms: 15_000,
-    })}\n`);
+    writeArtifactReports(dir, metadata);
     const inputs = collectCertificationInputs(dir);
     expect(inputs.recoveryMatrix.ok).toBe(true);
     expect(inputs.soak.ok).toBe(true);
+    expect(inputs.closureAudit).toMatchObject({ ok: true, detail: CLOSURE_TARGET_ID });
     expect(inputs.steps.map((item) => item.id)).toEqual(['product_journey', 'packaged_launch_smoke']);
     const written = writeCertificationEvidence({
       outDir: dir,
       metadata: inputs.metadata,
       recoveryMatrix: inputs.recoveryMatrix,
       soak: inputs.soak,
+      closureAudit: inputs.closureAudit,
       steps: inputs.steps,
     });
     expect(written.evidence.status).toBe('certified');
     expect(written.evidence.evidence_paths.product_journey).toContain('product-journey.json');
     expect(written.evidence.evidence_paths.packaged_launch_smoke).toContain('launch-smoke.json');
+    expect(written.evidence.evidence_paths.closure_audit).toContain('closure-audit.json');
   });
 
   it('rejects a short soak report as certification soak evidence', () => {
     const dir = tempDir('jea-evidence-short-soak-');
     const metadata = cleanMetadata();
     writeBuildMetadata(dir, metadata);
-    writeFileSync(join(dir, 'recovery-matrix.json'), `${JSON.stringify({
-      ok: true,
-      status: 'passed',
-    })}\n`);
-    writeFileSync(join(dir, 'soak-report.json'), `${JSON.stringify({
-      ok: true,
-      status: 'passed',
-      duration_ms: 15_000,
-      launched_app: true,
-    })}\n`);
+    writeArtifactReports(dir, metadata, {
+      soak: { duration_ms: 15_000 },
+    });
     const written = writeCertificationEvidence({
       outDir: dir,
       ...collectCertificationInputs(dir),
     });
-    expect(evaluateRecoverySoakEvidence(written.evidence, metadata).reason).toBe('soak_too_short');
+    expect(evaluateRecoverySoakEvidence(written.evidence, metadata).reason).toBe('soak_failed');
+  });
+
+  it('propagates a failed closure audit into certification failure', () => {
+    const dir = tempDir('jea-evidence-closure-failed-');
+    const metadata = cleanMetadata();
+    writeBuildMetadata(dir, metadata);
+    writeArtifactReports(dir, metadata, {
+      closure: {
+        ok: false,
+        status: 'failed',
+        gate: { target_id: CLOSURE_TARGET_ID, ok: false },
+      },
+    });
+
+    const written = writeCertificationEvidence({
+      outDir: dir,
+      ...collectCertificationInputs(dir),
+    });
+
+    expect(written.evidence.status).toBe('failed');
+    expect(evaluateRecoverySoakEvidence(written.evidence, metadata)).toMatchObject({
+      ok: false,
+      reason: 'closure_audit_failed',
+      step: 'closure_audit',
+    });
+    expect(evaluatePublishGuard({ publish: true, evidenceDir: dir })).toMatchObject({
+      ok: false,
+      reason: 'certification_not_complete',
+    });
   });
 
   it('stays pending without soak and fails closed when the packaged journey failed', () => {
@@ -305,11 +377,14 @@ describe('certification evidence and publish guard', () => {
     writeFileSync(join(pendingDir, 'recovery-matrix.json'), `${JSON.stringify({
       ok: true,
       status: 'passed',
+      mode: 'packaged',
+      ...reportIdentity(metadata),
     })}\n`);
     writeFileSync(join(pendingDir, 'product-journey.json'), `${JSON.stringify({
       ok: true,
       status: 'journey_passed',
       runner: 'packaged',
+      ...reportIdentity(metadata),
     })}\n`);
     const pending = writeCertificationEvidence({
       outDir: pendingDir,
@@ -323,11 +398,14 @@ describe('certification evidence and publish guard', () => {
     writeFileSync(join(failedDir, 'recovery-matrix.json'), `${JSON.stringify({
       ok: true,
       status: 'passed',
+      mode: 'packaged',
+      ...reportIdentity(metadata),
     })}\n`);
     writeFileSync(join(failedDir, 'product-journey.json'), `${JSON.stringify({
       ok: false,
       status: 'journey_failed',
       runner: 'packaged',
+      ...reportIdentity(metadata),
     })}\n`);
     const failed = writeCertificationEvidence({
       outDir: failedDir,
@@ -343,14 +421,29 @@ describe('certification evidence and publish guard', () => {
     const written = writeCertificationEvidence({
       outDir: dir,
       metadata,
+      steps: [
+        passedStep('product_journey', { metadata }),
+        passedStep('packaged_launch_smoke', { metadata }),
+      ],
       recoveryMatrix: passedStep('recovery_matrix', { evidence: join(dir, 'recovery-matrix.json') }),
       soak: passedStep('soak', { duration_ms: 1_800_000, evidence: join(dir, 'soak.json') }),
+      closureAudit: passedStep('closure_audit', {
+        metadata,
+        detail: CLOSURE_TARGET_ID,
+        evidence: join(dir, 'closure-audit.json'),
+      }),
     });
     expect(written.evidence.status).toBe('certified');
-    expect(written.evidence.release).toBe('0.1.0');
-    expect(written.evidence.certification).toBe('0.1.1');
+    expect(written.evidence.release).toBe('0.2.0');
+    expect(written.evidence.certification).toBe('0.2.0');
     expect(written.evidence.build_id).toBe(metadata.build_id);
-    expect(written.evidence.steps.map((item) => item.id)).toEqual(['recovery_matrix', 'soak']);
+    expect(written.evidence.steps.map((item) => item.id)).toEqual([
+      'product_journey',
+      'packaged_launch_smoke',
+      'recovery_matrix',
+      'soak',
+      'closure_audit',
+    ]);
     expect(written.evidence.evidence_paths.build_metadata).toContain('build-metadata.json');
   });
 
@@ -359,40 +452,41 @@ describe('certification evidence and publish guard', () => {
     const missing = tempDir('jea-guard-missing-');
     writeFileSync(join(missing, 'certification-evidence.json'), JSON.stringify({
       status: 'certified',
-      release: '0.1.0',
+      release: '0.2.0',
       platform: 'macos-arm64',
       issue77: 'ok',
     }));
     writeFileSync(join(missing, 'build-metadata.json'), JSON.stringify(metadata));
-    expect(evaluatePublishGuard({ publish: true, evidenceDir: missing }).reason).toBe('recovery_evidence_missing');
+    expect(evaluatePublishGuard({ publish: true, evidenceDir: missing }).reason).toBe('product_journey_missing');
 
     const failed = tempDir('jea-guard-failed-');
+    writeBuildMetadata(failed, metadata);
+    writeArtifactReports(failed, metadata, {
+      recovery: { ok: false, status: 'failed' },
+    });
     writeCertificationEvidence({
       outDir: failed,
-      metadata,
-      status: 'certified',
-      recoveryMatrix: { id: 'recovery_matrix', ok: false, status: 'failed' },
-      soak: passedStep('soak'),
+      ...collectCertificationInputs(failed),
     });
-    expect(evaluatePublishGuard({ publish: true, evidenceDir: failed }).reason).toBe('recovery_failed');
+    expect(evaluatePublishGuard({ publish: true, evidenceDir: failed }).reason).toBe('certification_not_complete');
 
     const soakFailed = tempDir('jea-guard-soak-');
+    writeBuildMetadata(soakFailed, metadata);
+    writeArtifactReports(soakFailed, metadata, {
+      soak: { ok: false, status: 'failed' },
+    });
     writeCertificationEvidence({
       outDir: soakFailed,
-      metadata,
-      status: 'certified',
-      recoveryMatrix: passedStep('recovery_matrix'),
-      soak: { id: 'soak', ok: false, status: 'failed' },
+      ...collectCertificationInputs(soakFailed),
     });
-    expect(evaluatePublishGuard({ publish: true, evidenceDir: soakFailed }).reason).toBe('soak_failed');
+    expect(evaluatePublishGuard({ publish: true, evidenceDir: soakFailed }).reason).toBe('certification_not_complete');
 
     const stale = tempDir('jea-guard-stale-');
+    writeBuildMetadata(stale, metadata);
+    writeArtifactReports(stale, metadata);
     writeCertificationEvidence({
       outDir: stale,
-      metadata,
-      status: 'certified',
-      recoveryMatrix: passedStep('recovery_matrix'),
-      soak: passedStep('soak', { duration_ms: 1_800_000 }),
+      ...collectCertificationInputs(stale),
       extra: { generated_at: '2026-01-01T00:00:00.000Z' },
     });
     expect(evaluatePublishGuard({
@@ -402,12 +496,11 @@ describe('certification evidence and publish guard', () => {
     }).reason).toBe('evidence_stale');
 
     const mismatch = tempDir('jea-guard-mismatch-');
+    writeBuildMetadata(mismatch, metadata);
+    writeArtifactReports(mismatch, metadata);
     writeCertificationEvidence({
       outDir: mismatch,
-      metadata,
-      status: 'certified',
-      recoveryMatrix: passedStep('recovery_matrix'),
-      soak: passedStep('soak', { duration_ms: 1_800_000 }),
+      ...collectCertificationInputs(mismatch),
     });
     writeFileSync(join(mismatch, 'build-metadata.json'), JSON.stringify(cleanMetadata('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')));
     expect(evaluatePublishGuard({ publish: true, evidenceDir: mismatch }).reason).toBe('build_mismatch');
@@ -416,14 +509,13 @@ describe('certification evidence and publish guard', () => {
   it('accepts parameterized current-release evidence with matching recovery and soak', () => {
     const dir = tempDir('jea-guard-ok-');
     const metadata = cleanMetadata();
+    writeBuildMetadata(dir, metadata);
+    writeArtifactReports(dir, metadata);
     writeCertificationEvidence({
       outDir: dir,
-      metadata,
-      status: 'certified',
-      recoveryMatrix: passedStep('recovery_matrix'),
-      soak: passedStep('soak', { duration_ms: 1_800_000 }),
+      ...collectCertificationInputs(dir),
     });
-    const report = evaluatePublishGuard({ publish: true, evidenceDir: dir, expectedRelease: '0.1.0' });
+    const report = evaluatePublishGuard({ publish: true, evidenceDir: dir, expectedRelease: '0.2.0' });
     expect(report.ok).toBe(true);
     expect(report.reason).toBe('certification_present');
     expect(evaluateRecoverySoakEvidence(
@@ -432,18 +524,17 @@ describe('certification evidence and publish guard', () => {
     ).ok).toBe(true);
   });
 
-  it('still parameterizes the expected release and rejects a drive-by 0.1.1 identity', () => {
+  it('still parameterizes the expected release and rejects a drive-by version identity', () => {
     const dir = tempDir('jea-guard-version-');
     const metadata = cleanMetadata();
+    writeBuildMetadata(dir, metadata);
+    writeArtifactReports(dir, metadata);
     writeCertificationEvidence({
       outDir: dir,
-      release: '0.1.1',
-      metadata,
-      status: 'certified',
-      recoveryMatrix: passedStep('recovery_matrix'),
-      soak: passedStep('soak', { duration_ms: 1_800_000 }),
+      release: '0.3.0',
+      ...collectCertificationInputs(dir),
     });
-    const report = evaluatePublishGuard({ publish: true, evidenceDir: dir, expectedRelease: '0.1.0' });
+    const report = evaluatePublishGuard({ publish: true, evidenceDir: dir, expectedRelease: '0.2.0' });
     expect(report.ok).toBe(false);
     expect(report.reason).toBe('certification_not_complete');
   });

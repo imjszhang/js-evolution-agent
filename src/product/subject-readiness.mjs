@@ -22,6 +22,48 @@ export const READINESS_ACTION_CAPABILITY = {
 
 export const SUBJECT_READINESS_ACTION_IDS = Object.keys(READINESS_ACTION_CAPABILITY);
 
+export const SUBJECT_READINESS_REASON_CODES = Object.freeze(
+  /** @type {const} */ ([
+    'web_host_running',
+    'web_host_stopped',
+    'web_host_zombie',
+    'web_host_unavailable',
+    'cycle_running',
+    'cycle_attached',
+    'cycle_stopped',
+    'cycle_blocked',
+    'cycle_stalled',
+    'cycle_stale',
+    'cycle_zombie',
+    'cycle_starting',
+    'cycle_stopping',
+    'cycle_unavailable',
+    'channel_running',
+    'channel_attached',
+    'channel_stopped',
+    'channel_blocked',
+    'channel_stale',
+    'channel_zombie',
+    'channel_starting',
+    'channel_stopping',
+    'channel_unavailable',
+    'reactor_backlog_stalled',
+    'model_ready',
+    'model_mock',
+    'model_unset',
+    'conversation_ready',
+    'conversation_blocked_channel',
+    'conversation_blocked_model',
+    'conversation_blocked_setup',
+    'desktop_channel_disabled',
+    'home_unwritable',
+    'subject_missing',
+    'data_uninitialized',
+  ]),
+);
+
+const SUBJECT_READINESS_REASON_CODE_SET = new Set(SUBJECT_READINESS_REASON_CODES);
+
 const LIVE_STATES = new Set(['running', 'attached', 'starting']);
 
 export const WEB_HOST_STATUS_STOPPED = Object.freeze({
@@ -50,7 +92,7 @@ export function isSubjectReadinessActionId(value) {
 }
 
 export function isSubjectReadinessReasonCode(value) {
-  return typeof value === 'string' && value.length > 0;
+  return SUBJECT_READINESS_REASON_CODE_SET.has(value);
 }
 
 export function observeWebHost(jeaHome) {

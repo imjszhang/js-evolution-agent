@@ -363,6 +363,41 @@ function beliefConstraintItems(beliefs = [], status, limit) {
   }));
 }
 
+function operatorQuestionItems(questions = [], limit) {
+  return asArray(questions).slice(0, limit).map((question) => ({
+    id: question?.id ?? null,
+    question: shortText(question?.question ?? question?.summary ?? '', DEFAULT_TEXT_LIMIT),
+    trigger: question?.trigger ?? null,
+    goal_id: question?.goal_id ?? null,
+    belief_id: question?.belief_id ?? null,
+    origin_fact_id: question?.origin_fact_id ?? null,
+    created_at: question?.created_at ?? null,
+  }));
+}
+
+function decisionBacklogItems(backlog = null, limit) {
+  if (!backlog || typeof backlog !== 'object') return null;
+  const compact = (items) => asArray(items).slice(0, limit).map((item) => ({
+    id: item?.id ?? null,
+    type: item?.type ?? null,
+    status: item?.status ?? null,
+    serves_goal: item?.serves_goal ?? null,
+    belief_id: item?.belief_id ?? null,
+    belief_relation: item?.belief_relation ?? null,
+    attempts: item?.attempts ?? 0,
+    max_attempts: item?.max_attempts ?? null,
+    last_error: shortText(item?.last_error ?? '', 200) || null,
+    description: shortText(item?.description ?? '', 200) || null,
+  }));
+  return {
+    pending_count: backlog.pending_count ?? 0,
+    blocked_count: backlog.blocked_count ?? 0,
+    pending: compact(backlog.pending),
+    blocked: compact(backlog.blocked),
+    truncated: Boolean(backlog.truncated),
+  };
+}
+
 function validatedBeliefClaims(beliefs, limit) {
   return beliefs.slice(0, limit).map((belief) => historicalClaim({
     sourceType: 'current_beliefs',
@@ -552,6 +587,14 @@ export function buildTemporalDecisionBrief(reportContext = {}, {
     ...split.unverified_claims.map(toRememberedItem),
   ];
   const doNotTreatAsSeen = split.refuted_or_weakened_claims.map(toDoNotTreatAsSeenItem);
+  const refutedBeliefConstraints = beliefConstraintItems(
+    beliefPartitions.recentlyRefuted,
+    'refuted',
+    itemLimit,
+  ).map((item) => ({
+    ...item,
+    use_as: 'avoid_repeat',
+  }));
 
   return {
     schema_version: 1,
@@ -604,13 +647,20 @@ export function buildTemporalDecisionBrief(reportContext = {}, {
           ...item,
           use_as: 'operating_assumption',
         })),
-        recently_refuted: beliefConstraintItems(beliefPartitions.recentlyRefuted, 'refuted', itemLimit).map((item) => ({
-          ...item,
-          use_as: 'avoid_repeat',
-        })),
+        refuted: refutedBeliefConstraints,
+        recently_refuted: refutedBeliefConstraints,
+        retired: beliefConstraintItems(beliefPartitions.retired, 'retired', itemLimit),
       },
-      decision_queue: reportContext.decision_queue ?? null,
-      operator_intent_briefs: reportContext.operator_intent_briefs ?? [],
+      human_guidance: shortText(reportContext.human_guidance ?? '', DEFAULT_TEXT_LIMIT * 3) || null,
+      pending_operator_questions: operatorQuestionItems(
+        reportContext.pending_operator_questions,
+        itemLimit,
+      ),
+      decision_backlog: decisionBacklogItems(
+        reportContext.decision_backlog ?? reportContext.decision_queue,
+        itemLimit,
+      ),
+      operator_intent_briefs: asArray(reportContext.operator_intent_briefs).slice(0, itemLimit),
     },
     source_ordering: sourceOrdering(reportContext),
     future_claim_ledger: {

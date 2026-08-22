@@ -153,6 +153,42 @@ describe('approval-policy', () => {
     expect(decision.reason).toBe('sensitive_signal_detected');
   });
 
+  it('auto_guarded blocks guarded safety_class for a custom non-read_only profile', () => {
+    process.env.JEA_APPROVAL_MODE = 'auto_guarded';
+    const decision = resolveApprovalDecision({
+      type: 'agent_run',
+      safety_class: 'guarded_probe',
+      params: {
+        requires_approval: true,
+        run_spec: {
+          permission_profile: 'diagnostic',
+          intent: 'Inspect local runtime health.',
+        },
+      },
+    });
+    expect(decision.approved).toBe(false);
+    expect(decision.reason).toBe('permission_profile_not_read_only');
+    expect(decision.guardrails).toContain('permission_profile=diagnostic');
+  });
+
+  it('auto_guarded allows guarded safety_class only with explicit read_only profile', () => {
+    process.env.JEA_APPROVAL_MODE = 'auto_guarded';
+    const decision = resolveApprovalDecision({
+      type: 'agent_run',
+      safety_class: 'guarded_probe',
+      params: {
+        requires_approval: true,
+        run_spec: {
+          permission_profile: 'read_only',
+          intent: 'Inspect local runtime health.',
+        },
+      },
+    });
+    expect(decision.approved).toBe(true);
+    expect(decision.reason).toBe('explicit_guarded_safety_class');
+    expect(decision.guardrails).toContain('read_only_profile');
+  });
+
   it('auto_guarded approves record_observation actions', () => {
     process.env.JEA_APPROVAL_MODE = 'auto_guarded';
     const decision = resolveApprovalDecision({
@@ -297,12 +333,57 @@ describe('approval-policy', () => {
     });
     expect(decision.approved).toBe(true);
     expect(decision.mode).toBe('auto_all');
-    expect(decision.auto_approval).toMatchObject({ mode: 'auto_all', reason: 'auto_all_mode' });
+    expect(decision.auto_approval).toMatchObject({ mode: 'auto_all', reason: 'sandbox_subject' });
+  });
+
+  it('auto_all fails closed for a production subject without registry opt-in', () => {
+    const action = {
+      type: 'agent_run',
+      params: {
+        requires_approval: true,
+        run_spec: { permission_profile: 'remote_write_review' },
+      },
+    };
+    const decision = resolveApprovalDecision(action, {
+      host: { subjectApproval: {} },
+    }, {
+      env: { JEA_APPROVAL_MODE: 'auto_all', NODE_ENV: 'production' },
+    });
+    expect(decision).toMatchObject({
+      approved: false,
+      mode: 'auto_all',
+      reason: 'auto_all_not_allowed_for_subject',
+    });
+  });
+
+  it('auto_all allows explicit registry opt-in and sandbox subjects', () => {
+    const action = {
+      type: 'agent_run',
+      params: {
+        requires_approval: true,
+        run_spec: { permission_profile: 'remote_write_review' },
+      },
+    };
+    const env = { JEA_APPROVAL_MODE: 'auto_all', NODE_ENV: 'production' };
+    expect(resolveApprovalDecision(action, {
+      host: { subjectApproval: { allow_auto_all: true } },
+    }, { env })).toMatchObject({ approved: true, reason: 'subject_allow_auto_all' });
+    expect(resolveApprovalDecision(action, {
+      host: { subjectApproval: { sandbox: true } },
+    }, { env })).toMatchObject({ approved: true, reason: 'sandbox_subject' });
   });
 
   it('auto_all enables external force auto approval', () => {
     process.env.JEA_APPROVAL_MODE = 'auto_all';
     expect(allowsExternalForceAutoApproval()).toBe(true);
+    expect(allowsExternalForceAutoApproval(
+      { host: { subjectApproval: {} } },
+      { JEA_APPROVAL_MODE: 'auto_all', NODE_ENV: 'production' },
+    )).toBe(false);
+    expect(allowsExternalForceAutoApproval(
+      { host: { subjectApproval: { allow_auto_all: true } } },
+      { JEA_APPROVAL_MODE: 'auto_all', NODE_ENV: 'production' },
+    )).toBe(true);
     delete process.env.JEA_APPROVAL_MODE;
     expect(allowsExternalForceAutoApproval()).toBe(false);
   });

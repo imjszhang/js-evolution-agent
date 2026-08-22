@@ -251,6 +251,7 @@ export function buildEvolutionDiaryContext({
       suggestion_coverage: intelResult?.suggestion_coverage ?? null,
       standing_memory_update: intelResult?.standing_memory_update ?? null,
     },
+    memory_consolidation: intelResult?.memory_consolidation ?? null,
     phase2: {
       success: execResult?.success ?? null,
       executed_count: asArray(execResult?.executed).length,
@@ -377,6 +378,7 @@ export function buildEvolutionDiaryPrompt({
       '- When phase1.suggestion_coverage is present, use it when writing "What did not move": adopted/deferred/rejected/unaddressed counts and items are host-reconciled facts about which report suggestions were queued.',
       '- When interpreting metrics such as rank or score, follow interpretation_anchors.operator_established_facts. When judging progress vs no progress, use interpretation_anchors.active_goals or active_goals_flat good_signal / bad_signal. Do not infer metric direction from raw numeric delta alone (for example, a lower rank may be improvement). Execution and verification conclusions in phase2/phase3 still override anchors; anchors only interpret them.',
       '- Be readable and candid: say what moved, what did not move, and what the next cycle should remember.',
+      '- When memory_consolidation is present, this diary is a low-frequency consolidation record: cite its reopenable refs, distinguish validated from refuted outcomes, and never describe refuted or retired claims as current truth.',
       '- Start with a short ## TL;DR (1–2 sentences, about ≤200 characters) covering this cycle\'s outcome and the main open gap. Do not write the TL;DR as a numbered or bullet list; put details in later sections.',
       '- The section "What the next cycle should remember" must be a short bullet list (one item per line, starting with `- `, at most 10 items) of narrative memory only. Do not restate mechanical step statuses. Leftover agent_loop_carryover is read-only (M4); do not emit a Carryover retirements section or ask the host to rewrite that file.',
       '',
@@ -419,6 +421,7 @@ export function buildEvolutionDiaryPrompt({
     '- 若存在 phase1.suggestion_coverage，写「没有推进的地方」时对照它：adopted/deferred/rejected/unaddressed 计数与明细是宿主对账后的机器事实，说明哪些报告建议未入队。',
     '- 解读 rank、score 等指标时，遵循 interpretation_anchors.operator_established_facts；判断「是否推进」时对照 interpretation_anchors.active_goals 或 active_goals_flat 的 good_signal / bad_signal，不要仅凭裸数值 delta 推断方向（例如 rank 数值更低可能是改善）。phase2/phase3 的执行与验证结论仍优先于 anchors；anchors 只用于解释它们。',
     '- 文风要像认真复盘的人写给操作者看：清楚、坦诚、可读，说清楚推进了什么、没推进什么、下一轮该记住什么。',
+    '- 若存在 memory_consolidation，本日记是低频 consolidation 记录：引用其中可重开的 refs，明确区分 validated 与 refuted，绝不能把 refuted/retired claim 写成当前事实。',
     '- 使用现代汉语书面语，避免文言、玄学散文、典故标题和过度模板化表格。',
     '- 文首必须有短 ## TL;DR（1–2 句，约不超过 200 字），概括本轮结果与最关键未闭环项；TL;DR 不要用编号或 bullet 列表，细节放到后续章节。',
     '- 「下轮应该注意什么」必须用短 bullet 列表（每条一行，以 `- ` 开头，最多 10 条），只写叙事项。不要复述机械 step 状态。遗留的 agent_loop_carryover 只读（M4 已删写侧）；不要输出 Carryover 销账章节，也不要要求宿主改写该文件。',

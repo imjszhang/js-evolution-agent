@@ -11,6 +11,8 @@ import {
 import { EVIDENCE_BATCH_REACTORS } from './evidence-batch-claim.mjs';
 
 export const BATCH_CHECKPOINT_STAGES = Object.freeze([
+  'prepare',
+  'writing',
   'claimed',
   'investigate',
   'report',

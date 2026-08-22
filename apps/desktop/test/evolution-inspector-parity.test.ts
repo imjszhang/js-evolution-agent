@@ -61,8 +61,13 @@ describe('Evolution Inspector legacy projection parity', () => {
       verified: [{ id: 'v1' }, { id: 'v2' }],
       pending: []
     })
-    writeJson(join(subjectRt.runtimeRoot, 'data', 'evolution', 'action_receipts', 'r1.json'), { id: 'r1' })
-    writeJson(join(subjectRt.runtimeRoot, 'data', 'evolution', 'action_receipts', 'r2.json'), { id: 'r2' })
+    const receiptPath = join(subjectRt.intelligenceDir, 'action_receipts', 'action-receipts.jsonl')
+    mkdirSync(dirname(receiptPath), { recursive: true })
+    writeFileSync(receiptPath, [
+      JSON.stringify({ id: 'r1', cycle_id: cycleId }),
+      JSON.stringify({ id: 'r2', exec_cycle_id: cycleId }),
+      JSON.stringify({ id: 'other', cycle_id: 'cycle-other' })
+    ].join('\n'))
 
     const store = createIntelligenceStore({
       baseDir: subjectRt.intelligenceDir,

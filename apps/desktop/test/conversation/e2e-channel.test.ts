@@ -1,8 +1,12 @@
+import React from 'react'
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it } from 'vitest'
+import { LocaleProvider } from '@jea/app'
+import { appendDesktopSessionRecord } from '../../../../src/channel/adapters/desktop/index.mjs'
 import { runChannelClassifierTask } from '../../../../src/channel/classifier.mjs'
 import { runChannelPresenceTask } from '../../../../src/channel/presence.mjs'
 import { runChannelNotifyTask } from '../../../../src/channel/tasks.mjs'
@@ -15,8 +19,15 @@ import {
   JEA_CLIENT_PROTOCOL_VERSION,
   PublicClientError
 } from '../../src/client-api'
+import type { InvokeRequest, JeaEventEnvelope } from '../../src/client-api/types'
 import type { ServiceProcessPort } from '../../src/client-api/owners/service'
+import { ChannelService } from '../../src/main/channel-service'
+import { DesktopEventBus } from '../../src/main/event-bus'
+import { OpsService } from '../../src/main/operations'
+import { ProjectionWatcher } from '../../src/main/projection-watcher'
+import { TodoService } from '../../src/main/todo-service'
 import { ConversationWorkspaceModel } from '../../src/renderer/src/conversation/model'
+import { ConversationPane } from '../../src/renderer/src/conversation/panes'
 import { createWebHost } from '../../src/web-host'
 
 const homes: string[] = []
@@ -72,6 +83,51 @@ function writeTestSubjectHome(): { sourceRoot: string; jeaHome: string } {
 function fileFingerprint(path: string): string | null {
   if (!existsSync(path)) return null
   return createHash('sha256').update(readFileSync(path)).digest('hex')
+}
+
+function waitForEvent(
+  events: DesktopEventBus,
+  predicate: (event: JeaEventEnvelope) => boolean,
+  timeoutMs = 15_000,
+  detail?: () => unknown
+): Promise<JeaEventEnvelope> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      unsubscribe()
+      const suffix = detail ? ` ${JSON.stringify(detail())}` : ''
+      reject(new Error(`Timed out waiting for conversation event.${suffix}`))
+    }, timeoutMs)
+    const unsubscribe = events.subscribe((event) => {
+      if (!predicate(event)) return
+      clearTimeout(timeout)
+      unsubscribe()
+      resolve(event)
+    })
+  })
+}
+
+function waitForModelState(
+  model: ConversationWorkspaceModel,
+  predicate: (snapshot: ReturnType<ConversationWorkspaceModel['getSnapshot']>) => boolean,
+  timeoutMs = 15_000,
+  detail?: () => unknown
+): Promise<ReturnType<ConversationWorkspaceModel['getSnapshot']>> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      unsubscribe()
+      const suffix = detail ? ` ${JSON.stringify(detail())}` : ''
+      reject(new Error(`Timed out waiting for conversation model state.${suffix}`))
+    }, timeoutMs)
+    const inspect = () => {
+      const snapshot = model.getSnapshot()
+      if (!predicate(snapshot)) return
+      clearTimeout(timeout)
+      unsubscribe()
+      resolve(snapshot)
+    }
+    const unsubscribe = model.subscribe(inspect)
+    inspect()
+  })
 }
 
 function governedPaths(jeaHome: string) {
@@ -146,6 +202,171 @@ function createChannelOnlyPort(runtime: { sourceRoot: string; jeaHome: string })
 }
 
 describe('governed local Channel conversation E2E', () => {
+  it('renders an asynchronously delivered reply through the production watcher without another send', async () => {
+    const { sourceRoot, jeaHome } = writeTestSubjectHome()
+    process.env.JEA_HOME = jeaHome
+    const host = createApplicationCommandHost({ sourceRoot, jeaHome })
+    const events = new DesktopEventBus()
+    const published: JeaEventEnvelope[] = []
+    const unsubscribePublished = events.subscribe((event) => published.push(event))
+    const readCalls: Record<string, unknown>[] = []
+    let sendCount = 0
+
+    const ops = new OpsService(sourceRoot, undefined, undefined, undefined, jeaHome)
+    const todo = new TodoService(sourceRoot, ops, jeaHome)
+    const channel = new ChannelService(sourceRoot, jeaHome)
+    const projection = new ProjectionWatcher(
+      sourceRoot,
+      ops,
+      todo,
+      channel,
+      events,
+      undefined,
+      jeaHome,
+      {
+        debounceMs: 10,
+        onRebuild: () => () => {}
+      }
+    )
+    const client = createTypedJeaClient(JEA_CLIENT_PROTOCOL_VERSION, {
+      async invoke(request: InvokeRequest) {
+        if (request.command === 'conversation.readMessages') {
+          readCalls.push({ ...(request.payload ?? {}) })
+        }
+        if (request.command === 'conversation.sendMessage') sendCount += 1
+        return host.invoke(request)
+      },
+      subscribe: (listener) => events.subscribe(listener)
+    })
+    const model = new ConversationWorkspaceModel(client, {
+      watch: (subject) => projection.watch(subject),
+      stop: () => projection.stop()
+    })
+
+    try {
+      await client.initData('alpha')
+      await client.createSession('alpha', 'main')
+      await client.createSession('alpha', 'other')
+      await model.bootstrap('alpha')
+
+      const inboundEventPromise = waitForEvent(
+        events,
+        (event) => (
+          event.type === 'conversation.updated'
+          && event.subject === 'alpha'
+          && event.session_id === 'main'
+        ),
+        15_000,
+        () => ({ published, snapshot: model.getSnapshot() })
+      )
+      model.setDraft('同意发布候选')
+      await Promise.all([model.send(), inboundEventPromise])
+      expect(model.getSnapshot().waiting).toBe(true)
+      expect(sendCount).toBe(1)
+      published.length = 0
+      const readsAfterSend = readCalls.length
+
+      const inactiveEventPromise = waitForEvent(
+        events,
+        (event) => (
+          event.type === 'conversation.updated'
+          && event.subject === 'alpha'
+          && event.session_id === 'other'
+        ),
+        15_000,
+        () => ({ published, snapshot: model.getSnapshot() })
+      )
+      appendDesktopSessionRecord(host.runtime, 'alpha', 'other', {
+        id: 'other-session-assistant',
+        role: 'assistant',
+        direction: 'outbound',
+        content: 'inactive session reply'
+      })
+      await inactiveEventPromise
+      expect(model.getSnapshot().records.some((record) => record.content === 'inactive session reply')).toBe(false)
+      expect(readCalls.every((payload) => payload.sessionId === 'main')).toBe(true)
+
+      const classified = await runChannelClassifierTask(host.runtime, 'alpha')
+      expect(classified.classified).toBeGreaterThan(0)
+      const presence = await runChannelPresenceTask(host.runtime, 'alpha')
+      expect(presence.plan?.kind ?? presence.skipped).toBeTruthy()
+
+      const deliveryEventPromise = waitForEvent(
+        events,
+        (event) => (
+          event.type === 'conversation.updated'
+          && event.subject === 'alpha'
+          && event.session_id === 'main'
+        ),
+        15_000,
+        () => ({
+          published,
+          reads: readCalls.slice(readsAfterSend),
+          snapshot: model.getSnapshot()
+        })
+      )
+      const deliveryStatePromise = waitForModelState(
+        model,
+        (snapshot) => (
+          snapshot.records.some((record) => record.role === 'assistant')
+          && snapshot.pipelineState?.status === 'delivered'
+          && snapshot.waiting === false
+        ),
+        15_000,
+        () => ({
+          published,
+          reads: readCalls.slice(readsAfterSend),
+          snapshot: model.getSnapshot()
+        })
+      )
+      const [, deliveryEvent, snapshot] = await Promise.all([
+        runChannelNotifyTask(host.runtime, 'alpha'),
+        deliveryEventPromise,
+        deliveryStatePromise
+      ])
+
+      expect(deliveryEvent).toMatchObject({
+        type: 'conversation.updated',
+        subject: 'alpha',
+        session_id: 'main',
+        payload: expect.objectContaining({
+          subject: 'alpha',
+          session_id: 'main'
+        })
+      })
+      expect(snapshot.records.map((record) => record.role)).toEqual(['user', 'assistant'])
+      expect(snapshot.records.map((record) => record.offset)).toEqual([0, 1])
+      expect(snapshot.records.every((record) => record.session_id === 'main')).toBe(true)
+      expect(snapshot.pipelineState?.status).toBe('delivered')
+      expect(snapshot.waiting).toBe(false)
+      expect(sendCount).toBe(1)
+
+      const incrementalReads = readCalls.slice(readsAfterSend)
+      expect(incrementalReads.length).toBeGreaterThan(0)
+      expect(incrementalReads.some((payload) => payload.offset === 1)).toBe(true)
+      expect(incrementalReads.every((payload) => payload.tail == null)).toBe(true)
+
+      const assistantReply = snapshot.records.find((record) => record.role === 'assistant')?.content
+      expect(assistantReply).toBeTruthy()
+      const html = renderToStaticMarkup(
+        React.createElement(
+          LocaleProvider,
+          {
+            initialLocale: 'zh',
+            children: React.createElement(ConversationPane, { snapshot, model })
+          }
+        )
+      )
+      expect(html).toContain(assistantReply)
+      expect(html).toContain('data-testid="conversation-message-assistant"')
+      expect(html).not.toContain('data-testid="conversation-state-waiting"')
+    } finally {
+      model.dispose()
+      projection.stop()
+      unsubscribePublished()
+    }
+  })
+
   it('sends through JeaClient and persists an assistant record after classifier/presence/speech', async () => {
     const { sourceRoot, jeaHome } = writeTestSubjectHome()
     process.env.JEA_HOME = jeaHome
@@ -176,6 +397,12 @@ describe('governed local Channel conversation E2E', () => {
     expect(classified.classified).toBeGreaterThan(0)
     const presence = await runChannelPresenceTask(host.runtime, 'alpha')
     expect(presence.plan?.kind ?? presence.skipped).toBeTruthy()
+    const queuedPage = await client.readMessages('alpha', 'main', { tail: 20 })
+    expect(queuedPage.pipeline_state).toMatchObject({
+      status: 'pending',
+      pending_count: 1,
+      failed_count: 0
+    })
     await runChannelNotifyTask(host.runtime, 'alpha')
 
     const page = await client.readMessages('alpha', 'main', { tail: 20 })
@@ -183,6 +410,11 @@ describe('governed local Channel conversation E2E', () => {
     expect(page.records.some((record) => record.role === 'assistant')).toBe(true)
     expect(page.records.filter((record) => record.role === 'assistant')
       .every((record) => record.content.trim().length > 0)).toBe(true)
+    expect(page.pipeline_state).toMatchObject({
+      status: 'delivered',
+      pending_count: 0,
+      failed_count: 0
+    })
     expect(JSON.stringify(page)).not.toMatch(/approval_granted/)
   })
 

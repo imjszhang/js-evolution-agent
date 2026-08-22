@@ -31,7 +31,7 @@ export function readActiveGoalState(runtime) {
 /**
  * @param {any} runtime
  * @param {any} nextGoal
- * @param {{ type?: string, reason: string, evidenceRefs?: any[], cycle?: string | null, store?: any }} [opts]
+ * @param {{ type?: string, reason: string, evidenceRefs?: any[], cycle?: string | null, store?: any, causalIdentity?: object }} [opts]
  */
 export function applyActiveGoalState(runtime, nextGoal, {
   type = 'updated',
@@ -39,6 +39,7 @@ export function applyActiveGoalState(runtime, nextGoal, {
   evidenceRefs = [],
   cycle = null,
   store = null,
+  causalIdentity = null,
 } = {}) {
   if (!reason || !String(reason).trim()) throw new Error('Missing required reason.');
   const validation = validateGoalShape(nextGoal);
@@ -54,6 +55,7 @@ export function applyActiveGoalState(runtime, nextGoal, {
     reason: String(reason).trim(),
     evidence_refs: Array.isArray(evidenceRefs) ? evidenceRefs : [],
     cycle_id: cycle,
+    ...(causalIdentity ?? {}),
   };
   writeJsonFile(path, nextGoal);
   let written;

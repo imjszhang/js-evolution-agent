@@ -3,19 +3,33 @@
  * Atomic JSON store: claimed / handled / failed / released + busy / expiry reconcile.
  */
 import { randomUUID } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { existsSync, mkdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import {
   handleContractValidation,
   validateEvidenceBatchClaim,
 } from '../../contracts/index.mjs';
 import { readJson, updateJson } from '../../infra/json-store.mjs';
-import { readEvidenceStream } from '../../intelligence/evidence-stream.mjs';
+import {
+  archiveJsonRecords,
+  readArchive,
+  retentionPolicy,
+  terminalArchiveCandidates,
+} from '../../infra/sidecar-retention.mjs';
 import {
   defaultKindsForReactor,
   envelopeEvidenceKey,
   filterEligibleEvidence,
 } from './eligibility.mjs';
+import {
+  commitEvidenceCursor,
+  hydrateIndexedEnvelope,
+  readEvidenceCursor,
+  readEvidenceIndex,
+  requeueIndexedEntries,
+  refreshEvidenceIndex,
+  scanPendingEvidence,
+} from './evidence-index.mjs';
 import { claimsPath, reactorDir } from './paths.mjs';
 
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
@@ -32,12 +46,77 @@ function ensureReactorDir(dataRoot) {
   mkdirSync(reactorDir(dataRoot), { recursive: true });
 }
 
-export function readClaimLedger(dataRoot) {
+export function readClaimLedger(dataRoot, { includeCoveredIndex = false } = {}) {
   const raw = readJson(claimsPath(dataRoot), emptyLedger());
   return {
     claims: Array.isArray(raw?.claims) ? raw.claims : [],
     updated_at: raw?.updated_at ?? null,
+    ...(includeCoveredIndex
+      ? { covered_index: readClaimsCoveredIndexReadonly(dataRoot) }
+      : {}),
   };
+}
+
+/** Explicit alias for callers whose contract must remain filesystem read-only. */
+export function readClaimLedgerReadonly(dataRoot) {
+  return readClaimLedger(dataRoot, { includeCoveredIndex: true });
+}
+
+export function claimsArchivePath(dataRoot) {
+  return join(reactorDir(dataRoot), 'archive', 'claims.json');
+}
+
+export function claimsCoveredIndexPath(dataRoot) {
+  return join(reactorDir(dataRoot), 'archive', 'claims-covered-index.json');
+}
+
+function emptyCoveredIndex() {
+  return { schema_version: 1, reactors: {}, updated_at: null };
+}
+
+export function readClaimsCoveredIndexReadonly(dataRoot) {
+  const indexPath = claimsCoveredIndexPath(dataRoot);
+  const raw = existsSync(indexPath)
+    ? readJson(indexPath, emptyCoveredIndex())
+    : coveredIndexFromClaims(readArchive(claimsArchivePath(dataRoot), 'claims'));
+  const reactors = {};
+  for (const [reactor, values] of Object.entries(raw?.reactors ?? {})) {
+    reactors[reactor] = Array.isArray(values) ? values : [];
+  }
+  return { schema_version: 1, reactors, updated_at: raw?.updated_at ?? null };
+}
+
+export const readClaimsCoveredIndex = readClaimsCoveredIndexReadonly;
+
+function coveredIndexFromClaims(claims) {
+  const next = emptyCoveredIndex();
+  for (const claim of claims) {
+    if (claim.status !== 'handled') continue;
+    const reactor = claim.reactor || 'cognitive';
+    const keys = new Set(next.reactors[reactor] ?? []);
+    for (const key of claimKeys(claim)) keys.add(key);
+    next.reactors[reactor] = [...keys].sort();
+  }
+  return next;
+}
+
+function addHandledClaimsToCoveredIndex(dataRoot, claims) {
+  const handled = claims.filter((claim) => claim.status === 'handled');
+  if (!handled.length) return;
+  updateJson(claimsCoveredIndexPath(dataRoot), (raw) => {
+    const next = {
+      schema_version: 1,
+      reactors: { ...(raw?.reactors ?? {}) },
+      updated_at: nowIso(),
+    };
+    for (const claim of handled) {
+      const reactor = claim.reactor || 'cognitive';
+      const keys = new Set(Array.isArray(next.reactors[reactor]) ? next.reactors[reactor] : []);
+      for (const key of claimKeys(claim)) keys.add(key);
+      next.reactors[reactor] = [...keys].sort();
+    }
+    return next;
+  }, { fallback: emptyCoveredIndex() });
 }
 
 function writeLedger(dataRoot, updater) {
@@ -91,6 +170,10 @@ function reactorIsBusy(ledger, reactor, now = Date.now()) {
 /** Keys covered by claimed (non-expired) or handled batches. Released/failed do not cover. */
 export function coveredEventIds(ledger, { now = Date.now(), reactor = null } = {}) {
   const covered = new Set();
+  for (const [indexedReactor, keys] of Object.entries(ledger?.covered_index?.reactors ?? {})) {
+    if (reactor && indexedReactor !== reactor) continue;
+    for (const key of keys) covered.add(key);
+  }
   for (const claim of ledger.claims || []) {
     if (reactor && claim.reactor !== reactor) continue;
     if (claim.status === 'released' || claim.status === 'failed') continue;
@@ -117,6 +200,11 @@ export function reconcileExpiredClaims(dataRoot, { now = Date.now() } = {}) {
     expired.push(...expireClaimsInLedger(ledger, now));
     return ledger;
   });
+  for (const claim of expired) {
+    if (claim?.indexed_entries?.length) {
+      requeueIndexedEntries(dataRoot, claim.reactor, claim.indexed_entries);
+    }
+  }
   return expired;
 }
 
@@ -125,19 +213,48 @@ export function listEligibleEvidence(dataRoot, {
   kinds = null,
   now = Date.now(),
   stream = null,
+  stats = null,
+  limit = 256,
 } = {}) {
-  const ledger = readClaimLedger(dataRoot);
-  expireClaimsInLedger(ledger, now);
   const allowedKinds = kinds || defaultKindsForReactor(reactor);
-  const evidence = Array.isArray(stream)
-    ? stream
-    : readEvidenceStream(dataRoot, { kinds: allowedKinds });
+  if (Array.isArray(stream)) {
+    const ledger = readClaimLedgerReadonly(dataRoot);
+    expireClaimsInLedger(ledger, now);
+    const covered = coveredEventIds(ledger, { now, reactor });
+    return filterEligibleEvidence(stream, reactor, { kinds: allowedKinds })
+      .filter((envelope) => {
+        const key = envelopeEvidenceKey(envelope);
+        return !covered.has(key) && !covered.has(envelope.id);
+      });
+  }
+
+  const index = refreshEvidenceIndex(dataRoot, { kinds: allowedKinds, stats });
+  const cursor = readEvidenceCursor(dataRoot, reactor, {
+    stats,
+    generation: index.generation,
+  });
+  // A missing cursor means first use or a source-reset rebuild. Pay the archive
+  // bootstrap cost once, then persist exact consumed markers and a byte cursor.
+  const ledger = cursor.initialized
+    ? readClaimLedger(dataRoot)
+    : readClaimLedgerReadonly(dataRoot);
+  expireClaimsInLedger(ledger, now);
   const covered = coveredEventIds(ledger, { now, reactor });
-  return filterEligibleEvidence(evidence, reactor, { kinds: allowedKinds })
-    .filter((envelope) => {
-      const key = envelopeEvidenceKey(envelope);
-      return !covered.has(key) && !covered.has(envelope.id);
-    });
+  const scan = scanPendingEvidence(dataRoot, {
+    reactor,
+    kinds: allowedKinds,
+    limit,
+    covered,
+    stats,
+  });
+  commitEvidenceCursor(dataRoot, reactor, scan.safe_cursor, {
+    consumedKeys: scan.consumed_keys,
+    stats,
+    expectedGeneration: scan.generation,
+  });
+  return scan.entries
+    .map((envelope) => hydrateIndexedEnvelope(dataRoot, envelope, { stats }))
+    .filter(Boolean);
 }
 
 /**
@@ -153,11 +270,42 @@ export function claimEvidenceBatch(dataRoot, {
   now = Date.now(),
   eventIds = null,
   evidenceKeys = null,
+  stats = null,
 } = {}) {
   if (!dataRoot) throw new Error('claimEvidenceBatch requires dataRoot');
+  reconcileExpiredClaims(dataRoot, { now });
   const allowedKinds = kinds || defaultKindsForReactor(reactor);
-  const stream = readEvidenceStream(dataRoot, { kinds: allowedKinds });
+  const index = refreshEvidenceIndex(dataRoot, { kinds: allowedKinds, stats });
+  const cursor = readEvidenceCursor(dataRoot, reactor, {
+    stats,
+    generation: index.generation,
+  });
+  const bootstrapLedger = cursor.initialized
+    ? readClaimLedger(dataRoot)
+    : readClaimLedgerReadonly(dataRoot);
+  const bootstrapCovered = coveredEventIds(bootstrapLedger, { now, reactor });
+  const targeted = (Array.isArray(eventIds) && eventIds.length)
+    || (Array.isArray(evidenceKeys) && evidenceKeys.length);
+  // Rule reactions may request a non-contiguous due set. Keep that exceptional
+  // lookup compatible without advancing past earlier not-yet-due evidence.
+  const scan = targeted
+    ? {
+      entries: readEvidenceIndex(dataRoot, { kinds: allowedKinds, stats }),
+      safe_cursor: cursor.offset,
+      claim_cursor: cursor.offset,
+      consumed_keys: [],
+      generation: index.generation,
+    }
+    : scanPendingEvidence(dataRoot, {
+      reactor,
+      kinds: allowedKinds,
+      limit,
+      covered: bootstrapCovered,
+      stats,
+    });
+  const stream = scan.entries;
   let result = { skipped: 'no_pending_evidence' };
+  let claimedCompact = [];
 
   writeLedger(dataRoot, (ledger) => {
     expireClaimsInLedger(ledger, now);
@@ -180,7 +328,16 @@ export function claimEvidenceBatch(dataRoot, {
       result = { skipped: 'no_pending_evidence' };
       return ledger;
     }
-    const events = pending.slice(0, Math.max(1, Math.floor(Number(limit) || 16)));
+    const events = pending
+      .slice(0, Math.max(1, Math.floor(Number(limit) || 16)))
+      .map((envelope) => hydrateIndexedEnvelope(dataRoot, envelope, { stats }))
+      .filter(Boolean);
+    if (!events.length) {
+      result = { skipped: 'no_pending_evidence' };
+      return ledger;
+    }
+    const eventKeys = new Set(events.map((event) => envelopeEvidenceKey(event)));
+    claimedCompact = pending.filter((entry) => eventKeys.has(envelopeEvidenceKey(entry)));
     const batchId = `batch-${randomUUID().slice(0, 12)}`;
     const claim = {
       batch_id: batchId,
@@ -195,6 +352,7 @@ export function claimEvidenceBatch(dataRoot, {
       handled_at: null,
       attempt: 1,
       stream_cursor: events[events.length - 1]?.id ?? null,
+      indexed_entries: claimedCompact,
     };
     handleContractValidation('evidence_batch_claim', validateEvidenceBatchClaim(claim));
     ledger.claims.push(claim);
@@ -202,6 +360,22 @@ export function claimEvidenceBatch(dataRoot, {
     return ledger;
   });
 
+  if (result.batch_id) {
+    commitEvidenceCursor(dataRoot, reactor, scan.claim_cursor, {
+      consumedKeys: [
+        ...scan.consumed_keys,
+        ...result.claim.evidence_keys,
+      ],
+      stats,
+      expectedGeneration: scan.generation,
+    });
+  } else if (result.skipped === 'no_pending_evidence') {
+    commitEvidenceCursor(dataRoot, reactor, scan.safe_cursor, {
+      consumedKeys: scan.consumed_keys,
+      stats,
+      expectedGeneration: scan.generation,
+    });
+  }
   return result;
 }
 
@@ -231,6 +405,9 @@ export function nackBatchFailed(dataRoot, batchId, { error = 'failed' } = {}) {
     updated = claim;
     return ledger;
   });
+  if (updated?.indexed_entries?.length) {
+    requeueIndexedEntries(dataRoot, updated.reactor, updated.indexed_entries);
+  }
   return updated;
 }
 
@@ -245,6 +422,9 @@ export function releaseBatchClaim(dataRoot, batchId, { reason = 'released' } = {
     updated = claim;
     return ledger;
   });
+  if (updated?.indexed_entries?.length) {
+    requeueIndexedEntries(dataRoot, updated.reactor, updated.indexed_entries);
+  }
   return updated;
 }
 
@@ -304,13 +484,65 @@ export function reattachBatchClaim(dataRoot, batchId, {
 
 export function loadClaimedEvents(dataRoot, claim, { reactor = 'cognitive' } = {}) {
   if (!claim) return [];
-  const stream = readEvidenceStream(dataRoot, { kinds: defaultKindsForReactor(reactor) });
+  const stream = Array.isArray(claim.indexed_entries) && claim.indexed_entries.length
+    ? claim.indexed_entries
+    : readEvidenceIndex(dataRoot, { kinds: defaultKindsForReactor(reactor) });
   const wantedKeys = new Set(claim.evidence_keys || []);
   const wantedIds = new Set(claim.event_ids || []);
-  return stream.filter((envelope) => (
-    wantedKeys.has(envelopeEvidenceKey(envelope))
-    || wantedIds.has(envelope.id)
-  ));
+  return stream
+    .filter((envelope) => (
+      wantedKeys.has(envelopeEvidenceKey(envelope))
+      || wantedIds.has(envelope.id)
+    ))
+    .map((envelope) => hydrateIndexedEnvelope(dataRoot, envelope))
+    .filter(Boolean);
+}
+
+/**
+ * Archive old terminal claims without touching an active claim. Failed claim
+ * audit remains in the archive; resumable checkpoints remain recovery truth.
+ */
+export function cleanupClaimLedger(dataRoot, {
+  now = Date.now(),
+  ...options
+} = {}) {
+  const policy = retentionPolicy('claim', options);
+  let result = { archived: 0, retained: 0, candidates: 0 };
+  writeLedger(dataRoot, (ledger) => {
+    const candidates = terminalArchiveCandidates(ledger.claims, {
+      now,
+      ...policy,
+      isTerminal: (claim) => (
+        claim.status === 'handled'
+        || claim.status === 'released'
+        || claim.status === 'failed'
+      ),
+      timestamp: (claim) => claim.handled_at || claim.deadline_at || claim.claimed_at,
+    });
+    if (!candidates.length) {
+      result = { archived: 0, retained: ledger.claims.length, candidates: 0 };
+      return ledger;
+    }
+    archiveJsonRecords(claimsArchivePath(dataRoot), candidates, {
+      collection: 'claims',
+      idOf: (claim) => claim.batch_id,
+    });
+    // Backfill the compact exact index from legacy archives once maintenance
+    // runs, so hot-path eligibility never needs to parse a growing archive.
+    addHandledClaimsToCoveredIndex(
+      dataRoot,
+      readArchive(claimsArchivePath(dataRoot), 'claims'),
+    );
+    const ids = new Set(candidates.map((claim) => claim.batch_id));
+    ledger.claims = ledger.claims.filter((claim) => !ids.has(claim.batch_id));
+    result = {
+      archived: candidates.length,
+      retained: ledger.claims.length,
+      candidates: candidates.length,
+    };
+    return ledger;
+  });
+  return result;
 }
 
 export function summarizeClaimLedger(dataRoot) {

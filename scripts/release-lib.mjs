@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
- * Shared helpers for JEA 0.1.0 release-skeleton scripts (Wave 1).
+ * Shared helpers for JEA 0.2.0 release-skeleton scripts (Wave 1).
  * These helpers do not publish artifacts or create tags.
  */
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const RELEASE_VERSION = '0.1.0';
+export const RELEASE_VERSION = '0.2.0';
 export const RELEASE_PLATFORM = 'macos-arm64';
 export const ISSUE_77 = 'https://github.com/imjszhang/js-evolution-agent/issues/77';
 export const ISSUE_122 = 'https://github.com/imjszhang/js-evolution-agent/issues/122';
@@ -39,6 +39,8 @@ export function releaseAttachAssetNames(version = RELEASE_VERSION) {
     'recovery-matrix.json',
     'product-journey.json',
     'launch-smoke.json',
+    'soak-report.json',
+    'closure-audit.json',
     'certification-evidence.json',
   ];
 }

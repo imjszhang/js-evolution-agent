@@ -1,5 +1,7 @@
 import { StrictMode, useCallback, useEffect, useMemo, useState } from 'react'
 import { createRoot } from 'react-dom/client'
+import { createWebJeaClient } from '../../../../apps/desktop/src/client-api/adapters/web'
+import { createClientProductFeatures } from '../../../../apps/desktop/src/renderer/src/product-features'
 import { JeaApp } from '../JeaApp'
 import { JeaProductApp } from '../features/JeaProductApp'
 import { JeaClientProvider } from '../features/client-context'
@@ -9,7 +11,7 @@ import { serviceStatusFeature } from '../features/service-status/module'
 import { createWave1Adapters } from '../fixtures/wave1'
 import { createEvolutionFixtureClient, createEvolutionInspectorFeature } from '../features/evolution'
 import type { Locale } from '../i18n/messages'
-import { fetchWebBootstrap, isJeaWebHosted, resolveHostedViewState } from './host-connection'
+import { fetchWebBootstrap, isExplicitWebFixtureMode, isJeaWebHosted, resolveHostedViewState } from './host-connection'
 import '../styles/index.css'
 
 function readParam(name: string): string | null {
@@ -17,17 +19,18 @@ function readParam(name: string): string | null {
   return new URLSearchParams(window.location.search).get(name)
 }
 
-function WebHostRoot() {
-  const queryState = readParam('state')
-  const locale = (readParam('locale') === 'en' ? 'en' : 'zh') as Locale
-  const settingsOpen = readParam('settings') === '1' ? true : undefined
+export function WebHostRoot() {
   const hosted = isJeaWebHosted()
-  const empty = queryState === 'empty' || readParam('empty') === '1'
-  const inspectorMode = readParam('inspector')
-  const subject = readParam('subject')
-  const setupKind = readParam('setup')
+  const fixtureMode = isExplicitWebFixtureMode(hosted)
+  const queryState = fixtureMode ? readParam('state') : null
+  const locale = (readParam('locale') === 'en' ? 'en' : 'zh') as Locale
+  const settingsOpen = fixtureMode && readParam('settings') === '1' ? true : undefined
+  const empty = fixtureMode && (queryState === 'empty' || readParam('empty') === '1')
+  const inspectorMode = fixtureMode ? readParam('inspector') : null
+  const subject = fixtureMode ? readParam('subject') : null
+  const setupKind = fixtureMode ? readParam('setup') : null
   const cliKind = (readParam('cli') ?? (setupKind ? 'unsupported' : 'native')) as CliFixtureKind
-  const [connected, setConnected] = useState<boolean | null>(hosted && !queryState ? null : true)
+  const [connected, setConnected] = useState<boolean | null>(hosted ? null : fixtureMode)
   const viewState = resolveHostedViewState({
     queryState,
     hosted,
@@ -43,10 +46,17 @@ function WebHostRoot() {
     cli: cliKind,
     model: readParam('model') === 'deepseek' ? 'deepseek' : 'mock'
   }), [cliKind, setupKind])
-  const client = useMemo(() => createFixtureSetupClient(fixture), [fixture])
+  const fixtureClient = useMemo(() => createFixtureSetupClient(fixture), [fixture])
   const host = cliKind === 'native' || !readParam('cli') ? 'web' : 'electron'
+  const hostedClient = useMemo(() => hosted
+    ? createWebJeaClient({
+        baseUrl: window.location.origin,
+        onConnectionChange: (state) => setConnected(state === 'online')
+      })
+    : null, [hosted])
 
   const features = useMemo(() => {
+    if (hostedClient) return createClientProductFeatures(hostedClient)
     const evolutionClient = createEvolutionFixtureClient(
       inspectorMode === 'malformed'
         ? {
@@ -60,7 +70,15 @@ function WebHostRoot() {
             },
             cycles: { alpha: {} },
             rounds: { alpha: {} },
-            observability: { alpha: { subject: 'alpha', attention: {}, open_cycles: 0 } }
+            observability: {
+              alpha: {
+                subject: 'alpha',
+                attention: { items: [], summary: { count: 0 } },
+                open_cycles: 0,
+                evidence_pending_count: 0,
+                daemon_task_pending_count: 0
+              }
+            }
           }
         : undefined
     )
@@ -72,7 +90,7 @@ function WebHostRoot() {
       serviceStatusFeature,
       settingsFeature
     ]
-  }, [inspectorMode])
+  }, [hostedClient, inspectorMode])
 
   const refresh = useCallback(async () => {
     if (!hosted || queryState) return
@@ -85,19 +103,61 @@ function WebHostRoot() {
     void refresh()
   }, [refresh])
 
+  if (hosted && hostedClient) {
+    return (
+      <JeaProductApp
+        locale={locale}
+        host="web"
+        client={hostedClient}
+        viewState={viewState}
+        settingsOpen={settingsOpen}
+        features={features}
+        adapters={{
+          subjects: [],
+          sessions: [],
+          selectedSubjectId: null,
+          selectedSessionId: null,
+          serviceStatus: connected === false ? 'offline' : undefined,
+          hostKind: 'web',
+          onRetry: () => { void refresh() }
+        }}
+      />
+    )
+  }
+
+  if (!fixtureMode) {
+    return (
+      <JeaClientProvider client={null} host="web">
+        <JeaApp
+          locale={locale}
+          viewState="offline"
+          features={[serviceStatusFeature, settingsFeature]}
+          adapters={{
+            subjects: [],
+            sessions: [],
+            selectedSubjectId: null,
+            selectedSessionId: null,
+            serviceStatus: 'offline',
+            hostKind: 'web'
+          }}
+        />
+      </JeaClientProvider>
+    )
+  }
+
   if (setupKind) {
     return (
       <JeaProductApp
         locale={locale}
         host={host}
-        client={client}
+        client={fixtureClient}
         initialReadiness={fixture.readiness}
       />
     )
   }
 
   return (
-    <JeaClientProvider client={client} host={host}>
+    <JeaClientProvider client={fixtureClient} host={host}>
       <JeaApp
         locale={locale}
         viewState={viewState === 'empty' ? 'empty' : viewState}

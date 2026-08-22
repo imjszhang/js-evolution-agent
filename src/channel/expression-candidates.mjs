@@ -185,7 +185,7 @@ function candidateFromMessage(item, handled) {
 
 function candidateFromSignal(signal, handled) {
   const id = candidateIdForSignal(signal);
-  if (!id || handled[id]) return null;
+  if (!id || handled[id] || signal.presence_handled) return null;
   const key = signal.presence_signal_key ?? buildPresenceSignalKey(signal);
   return {
     id,
@@ -215,17 +215,27 @@ function cooldownActive(context, candidate) {
 
 export function buildExpressionCandidates(context = {}) {
   const handled = context.channel?.presence_cursors?.handled_candidates ?? {};
+  const pendingSpeechCandidateIds = new Set(
+    (context.channel?.presence_cursors?.pending_speech_generation ?? [])
+      .map((entry) => entry.candidate_id)
+      .filter(Boolean),
+  );
   const candidates = [];
 
-  for (const item of context.channel?.recent_ingested ?? []) {
+  for (const item of context.channel?.new_messages ?? []) {
     if (item.ingest_kind === 'ignore') continue;
     const candidate = candidateFromMessage(item, handled);
-    if (candidate && !cooldownActive(context, candidate)) candidates.push(candidate);
+    if (candidate && !pendingSpeechCandidateIds.has(candidate.id) && !cooldownActive(context, candidate)) {
+      candidates.push(candidate);
+    }
   }
 
   for (const signal of context.attention_signals ?? []) {
+    if (signal.suppressed_by_candidate_id) continue;
     const candidate = candidateFromSignal(signal, handled);
-    if (candidate && !cooldownActive(context, candidate)) candidates.push(candidate);
+    if (candidate && !pendingSpeechCandidateIds.has(candidate.id) && !cooldownActive(context, candidate)) {
+      candidates.push(candidate);
+    }
   }
 
   for (const event of context.channel?.recent_events ?? []) {

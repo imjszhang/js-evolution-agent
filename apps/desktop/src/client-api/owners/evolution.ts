@@ -1,4 +1,4 @@
-import { readdirSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createIntelligenceStore } from '../../../../../src/intelligence/store.mjs'
 import { buildManifest, manifestForApi } from '../../../../../src/intelligence/evolution-viewer/round-catalog.mjs'
@@ -30,10 +30,28 @@ function listedCycleStatus(runtime: ReturnType<typeof subjectRuntime>, cycleId: 
   return typeof state?.status === 'string' && state.status.trim() ? state.status : null
 }
 
-function receiptCount(runtimeRoot: string): number {
-  const dir = join(runtimeRoot, 'data', 'evolution', 'action_receipts')
+function receiptCount(runtime: ReturnType<typeof subjectRuntime>, cycleId: string): number {
+  const file = join(runtime.intelligenceDir, 'action_receipts', 'action-receipts.jsonl')
+  const id = cycleId.trim()
   try {
-    return readdirSync(dir).filter((name) => name.endsWith('.json')).length
+    return readFileSync(file, 'utf8')
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .reduce((count, line) => {
+        try {
+          const receipt = JSON.parse(line) as Record<string, unknown>
+          const keys = [
+            receipt.cycle_id,
+            receipt.exec_cycle_id,
+            receipt.intel_cycle_id
+          ]
+          return keys.some((value) => typeof value === 'string' && value.trim() === id)
+            ? count + 1
+            : count
+        } catch {
+          return count
+        }
+      }, 0)
   } catch {
     return 0
   }
@@ -151,7 +169,7 @@ export class EvolutionCommandOwner {
         }))
       },
       verify: lookupVerifyReport(join(runtime.runtimeRoot, 'data', 'evolution', 'verify_reports'), id),
-      receipts: { count: receiptCount(runtime.runtimeRoot) },
+      receipts: { count: receiptCount(runtime, id) },
       blockers: Object.values((round?.steps ?? {}) as Record<string, { error?: string | null }>)
         .map((step) => step.error)
         .filter((error): error is string => Boolean(error))
@@ -167,14 +185,12 @@ export class EvolutionCommandOwner {
       runtimeRoot: runtime.runtimeRoot,
       daemon
     })
-    const attention = {
-      ...(observability.attention ?? {}),
-      backlog_count: daemon.reactor?.evidence?.pending_count ?? 0
-    }
     return redactPublicValue({
       subject: name,
-      attention,
+      attention: observability.attention ?? { items: [], summary: {} },
       open_cycles: daemon.cycles?.open_count ?? 0,
+      evidence_pending_count: daemon.reactor?.evidence?.pending_count ?? 0,
+      daemon_task_pending_count: daemon.tasks?.counts?.pending ?? 0,
       cycle_diagnostics: recentCycleDiagnostics(daemon)
     })
   }

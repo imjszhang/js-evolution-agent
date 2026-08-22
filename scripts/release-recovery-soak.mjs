@@ -1,5 +1,5 @@
 /**
- * Release-only 0.1.1 recovery soak (#143).
+ * Release-only recovery soak for the current release.
  *
  * Default duration is 30 minutes. Do not put this on PR required checks.
  * Linux/unit tests use --duration-ms for a short detector pass.
@@ -17,6 +17,7 @@ import {
   launchPackagedProduct,
   waitForExit,
 } from './release-recovery-process.mjs';
+import { loadBuildMetadata } from '../src/product/build-metadata.mjs';
 
 export const SOAK_DEFAULT_MS = 30 * 60 * 1000;
 export const CPU_ABNORMAL_RATIO = 0.8;
@@ -150,6 +151,16 @@ export async function runRecoverySoak({
   keepHome = false,
 } = {}) {
   const fullDuration = requireFullDuration ?? durationMs >= SOAK_DEFAULT_MS;
+  const packaged = Boolean(appPath && looksLikePackagedApp(appPath));
+  const metadata = packaged
+    ? loadBuildMetadata({ sourceRoot: packagedSourceRootFromApp(appPath), collect: false })
+    : null;
+  const identity = {
+    generated_at: new Date().toISOString(),
+    build_id: metadata?.build_id ?? null,
+    commit: metadata?.commit ?? null,
+    dirty: metadata?.dirty ?? null,
+  };
   if (fullDuration && (process.platform !== 'darwin' || !appPath || !looksLikePackagedApp(appPath))) {
     return {
       ok: false,
@@ -157,6 +168,7 @@ export async function runRecoverySoak({
       reason: 'soak_requires_macos_packaged_app',
       duration_ms: 0,
       samples: [],
+      ...identity,
     };
   }
   if (requirePackagedApp && (!appPath || !looksLikePackagedApp(appPath))) {
@@ -166,6 +178,7 @@ export async function runRecoverySoak({
       reason: 'packaged_app_missing',
       duration_ms: 0,
       samples: [],
+      ...identity,
     };
   }
 
@@ -224,6 +237,8 @@ export async function runRecoverySoak({
   });
   const report = {
     ...evaluated,
+    ...identity,
+    generated_at: new Date().toISOString(),
     reason: evaluated.ok ? 'soak_passed' : evaluated.failures[0],
     platform: `${process.platform}-${process.arch}`,
     appPath: appPath && looksLikePackagedApp(appPath) ? appPath : null,

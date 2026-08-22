@@ -151,18 +151,35 @@ export function createEvolutionFixtureData(): EvolutionFixtureStore {
     observability: {
       alpha: {
         subject: 'alpha',
-        attention: { count: 1, highest_severity: 'info', backlog_count: 1 },
-        open_cycles: 1
+        attention: {
+          items: [{
+            severity: 'info',
+            kind: 'pending_evidence',
+            status: 'active',
+            category: 'current',
+            blocking: false,
+            title: 'Evidence is waiting',
+            summary: 'One evidence item is pending.'
+          }],
+          summary: { count: 1, highest_severity: 'info' }
+        },
+        open_cycles: 1,
+        evidence_pending_count: 1,
+        daemon_task_pending_count: 2
       },
       beta: {
         subject: 'beta',
-        attention: { count: 0, highest_severity: null, backlog_count: 0 },
-        open_cycles: 0
+        attention: { items: [], summary: { count: 0, highest_severity: null } },
+        open_cycles: 0,
+        evidence_pending_count: 0,
+        daemon_task_pending_count: 0
       },
       empty: {
         subject: 'empty',
-        attention: { count: 0, highest_severity: null, backlog_count: 0 },
-        open_cycles: 0
+        attention: { items: [], summary: { count: 0, highest_severity: null } },
+        open_cycles: 0,
+        evidence_pending_count: 0,
+        daemon_task_pending_count: 0
       }
     }
   }

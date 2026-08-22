@@ -12,6 +12,7 @@ export {
   DECISION_STATUSES,
   validateActionShape,
   validateDecision,
+  validateDecisionTransition,
 } from './decision.mjs';
 
 export {
@@ -19,6 +20,11 @@ export {
 } from './action-receipt.mjs';
 
 export {
+  extractBeliefContext,
+} from './belief-context.mjs';
+
+export {
+  AGENT_RUN_EXECUTION_SCOPES,
   PERMISSION_PROFILES,
   validateAgentRunSpec,
 } from './agent-run-spec.mjs';
@@ -35,6 +41,9 @@ export {
 } from './daemon-task.mjs';
 
 export {
+  EXPECTATION_COMPARISON_STATUSES,
+  buildExpectedOutputComparison,
+  normalizeExpectedOutput,
   validateVerifyReport,
 } from './verify-report.mjs';
 
@@ -89,4 +98,6 @@ export {
 
 export {
   validateChannelEnvelope,
+  validateChannelInboundEnvelope,
+  validateChannelOutboundEnvelope,
 } from './channel-envelope.mjs';

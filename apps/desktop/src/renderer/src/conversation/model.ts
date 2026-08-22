@@ -1,8 +1,8 @@
-import { PublicClientError } from '../../../client-api/errors'
 import type { JeaClient } from '../../../client-api/jea-client'
 import type {
   ConversationSendResult,
   ConversationSessionSummary,
+  ConversationPipelineState,
   EvolutionObservability,
   JeaEventEnvelope,
   ServiceStatus,
@@ -30,7 +30,6 @@ import type { ProjectionWatchPort } from './watch'
 
 export type ConversationSendState = 'idle' | 'pending' | 'sent' | 'failed'
 export type { ChannelServiceStartState }
-export type CycleRemediationState = 'idle' | 'pending' | 'done' | 'failed'
 
 export interface ConversationWorkspaceSnapshot {
   subjects: SubjectSummary[]
@@ -41,9 +40,8 @@ export interface ConversationWorkspaceSnapshot {
   draft: string
   sendState: ConversationSendState
   serviceStartState: ChannelServiceStartState
-  cycleProcessState: CycleRemediationState
-  cycleStartState: CycleRemediationState
   waiting: boolean
+  pipelineState: ConversationPipelineState | null
   lastSend: ConversationSendResult | null
   error: ConversationErrorView | null
   service: ServiceStatus | null
@@ -82,9 +80,8 @@ function emptySnapshot(): ConversationWorkspaceSnapshot {
     draft: '',
     sendState: 'idle',
     serviceStartState: 'idle',
-    cycleProcessState: 'idle',
-    cycleStartState: 'idle',
     waiting: false,
+    pipelineState: null,
     lastSend: null,
     error: null,
     service: null,
@@ -113,6 +110,8 @@ export class ConversationWorkspaceModel {
   private lastSupportRevision: number | null = null
   private supportInFlight: Promise<void> | null = null
   private supportQueued: { subject: string; generation: number; revision: number | null } | null = null
+  private waitingPoll: ReturnType<typeof setTimeout> | null = null
+  private conversationRefreshSequence = 0
 
   constructor(
     private readonly client: JeaClient,
@@ -149,6 +148,7 @@ export class ConversationWorkspaceModel {
     this.generation += 1
     this.unsubscribeEvents?.()
     this.unsubscribeEvents = null
+    this.clearWaitingPoll()
     void this.releaseWatch()
   }
 
@@ -158,6 +158,7 @@ export class ConversationWorkspaceModel {
 
   stopWaiting(): void {
     this.waitStartedAt = null
+    this.clearWaitingPoll()
     this.patch({ waiting: false })
   }
 
@@ -192,8 +193,10 @@ export class ConversationWorkspaceModel {
     this.offset = 0
     this.draftAttempt = null
     this.waitStartedAt = null
+    this.clearWaitingPoll()
     this.lastSupportRevision = null
     this.supportQueued = null
+    this.conversationRefreshSequence += 1
     await this.retargetWatch(name, generation)
     if (!this.isCurrent(generation)) return
     this.patch({
@@ -201,10 +204,9 @@ export class ConversationWorkspaceModel {
       sessions: [],
       records: [],
       waiting: false,
+      pipelineState: null,
       sendState: 'idle',
       serviceStartState: 'idle',
-      cycleProcessState: 'idle',
-      cycleStartState: 'idle',
       lastSend: null,
       error: null,
       stale: false,
@@ -220,7 +222,7 @@ export class ConversationWorkspaceModel {
       this.patch({ subject, sessionId: DEFAULT_SESSION, sessions: [] })
       await this.refreshSupport(name, generation)
       if (!this.isCurrent(generation)) return
-      await this.readMessages(true, generation)
+      await this.refreshConversationSessions(name, generation)
     } catch (error) {
       if (!this.isCurrent(generation)) return
       this.patch({ error: classifyClientError(error, 'Unable to load conversation state.') })
@@ -230,6 +232,7 @@ export class ConversationWorkspaceModel {
   async send(): Promise<void> {
     const subject = this.snapshot.subject?.name
     const sessionId = this.snapshot.sessionId
+    const generation = this.generation
     const content = this.snapshot.draft.trim()
     if (!subject || !sessionId || !content || this.snapshot.sendState === 'pending') return
     const attempt = resolveDraftAttempt(this.draftAttempt, { subject, sessionId, content })
@@ -253,12 +256,15 @@ export class ConversationWorkspaceModel {
       await this.readMessages(false)
       if (hasAssistantAfter(this.snapshot.records, this.waitStartedAt)) {
         this.stopWaiting()
+      } else {
+        this.scheduleWaitingPoll(subject, sessionId, generation)
       }
     } catch (error) {
       if (this.snapshot.subject?.name !== subject || this.snapshot.sessionId !== sessionId) return
       this.patch({
         sendState: 'failed',
         waiting: false,
+        pipelineState: null,
         error: classifyClientError(error, 'Unable to send the desktop message.')
       })
     }
@@ -280,49 +286,6 @@ export class ConversationWorkspaceModel {
     } catch (error) {
       if (!this.isCurrent(generation)) return
       this.patch({ error: classifyClientError(error, 'Unable to enable desktop Channel.') })
-    }
-  }
-
-  async processCycleOnce(): Promise<void> {
-    const subject = this.snapshot.subject?.name
-    if (!subject || this.snapshot.cycleProcessState === 'pending') return
-    const generation = this.generation
-    this.patch({ cycleProcessState: 'pending', error: null })
-    try {
-      const result = await this.client.processCycleOnce(subject)
-      if (result.status === 'retryable' || result.status === 'blocked') {
-        throw new PublicClientError('OPERATION_FAILED', result.reason || 'Unable to process the Cycle backlog.')
-      }
-      if (!this.isCurrent(generation) || this.snapshot.subject?.name !== subject) return
-      await this.refreshSupport(subject, generation)
-      if (!this.isCurrent(generation)) return
-      this.patch({ cycleProcessState: 'done' })
-    } catch (error) {
-      if (!this.isCurrent(generation)) return
-      this.patch({
-        cycleProcessState: 'failed',
-        error: classifyClientError(error, 'Unable to process the Cycle backlog.')
-      })
-    }
-  }
-
-  async startCycleService(): Promise<void> {
-    const subject = this.snapshot.subject?.name
-    if (!subject || this.snapshot.cycleStartState === 'pending') return
-    const generation = this.generation
-    this.patch({ cycleStartState: 'pending', error: null })
-    try {
-      await this.client.startService(subject, 'cycle')
-      if (!this.isCurrent(generation)) return
-      await this.refreshSupport(subject, generation)
-      if (!this.isCurrent(generation) || this.snapshot.subject?.name !== subject) return
-      this.patch({ cycleStartState: 'done' })
-    } catch (error) {
-      if (!this.isCurrent(generation)) return
-      this.patch({
-        cycleStartState: 'failed',
-        error: classifyClientError(error, 'Unable to start the Cycle service.')
-      })
     }
   }
 
@@ -356,8 +319,7 @@ export class ConversationWorkspaceModel {
   private async onEvent(event: JeaEventEnvelope): Promise<void> {
     const generation = this.generation
     const subject = this.selectedName ?? this.snapshot.subject?.name ?? null
-    const sessionId = this.snapshot.sessionId
-    if (!isEventForContext(event, subject, sessionId)) return
+    if (!isEventForContext(event, subject, null)) return
     if (isStaleProjectionEvent(event)) {
       if (!this.isCurrent(generation) || this.snapshot.subject?.name !== subject) return
       this.patch({ stale: true })
@@ -380,8 +342,10 @@ export class ConversationWorkspaceModel {
     }
     if (isConversationEvent(event)) {
       const eventSession = eventSessionId(event)
-      if (eventSession && eventSession !== sessionId) return
-      await this.readMessages(false, generation)
+      await this.refreshConversationSessions(subject, generation, {
+        eventSession,
+        removed: event.payload?.removed === true
+      })
       if (
         this.isCurrent(generation)
         && this.snapshot.waiting
@@ -393,6 +357,67 @@ export class ConversationWorkspaceModel {
     }
     if ((isServiceEvent(event) || isEvolutionEvent(event)) && subject) {
       await this.refreshSupportCoalesced(subject, generation, eventRevision(event))
+    }
+  }
+
+  private async refreshConversationSessions(
+    subject: string | null,
+    generation: number,
+    event: { eventSession: string | null; removed: boolean } | null = null
+  ): Promise<void> {
+    if (!subject) return
+    const sequence = ++this.conversationRefreshSequence
+    try {
+      const listed = await this.client.listSessions(subject)
+      if (
+        !this.isCurrent(generation)
+        || sequence !== this.conversationRefreshSequence
+        || this.snapshot.subject?.name !== subject
+      ) return
+      const sessions = event?.removed && event.eventSession
+        ? listed.filter((item) => item.session_id !== event.eventSession)
+        : listed
+      const currentSession = this.snapshot.sessionId
+      if (currentSession && sessions.some((item) => item.session_id === currentSession)) {
+        this.patch({ sessions })
+        if (!event) {
+          await this.readMessages(true, generation)
+        } else if (event.eventSession === currentSession && !event.removed) {
+          await this.readMessages(false, generation)
+        }
+        return
+      }
+      const nextSession = sessions.find((item) => item.session_id === DEFAULT_SESSION)?.session_id
+        ?? sessions[0]?.session_id
+        ?? (event ? null : DEFAULT_SESSION)
+      this.offset = 0
+      this.waitStartedAt = null
+      this.clearWaitingPoll()
+      this.patch({
+        sessions,
+        sessionId: nextSession,
+        records: [],
+        waiting: false,
+        pipelineState: null,
+        lastSend: null
+      })
+      if (nextSession) await this.readMessages(true, generation)
+    } catch (error) {
+      if (!this.isCurrent(generation) || sequence !== this.conversationRefreshSequence) return
+      if (event?.removed && event.eventSession === this.snapshot.sessionId) {
+        this.offset = 0
+        this.waitStartedAt = null
+        this.clearWaitingPoll()
+        this.patch({
+          sessions: this.snapshot.sessions.filter((item) => item.session_id !== event.eventSession),
+          sessionId: null,
+          records: [],
+          waiting: false,
+          pipelineState: null,
+          lastSend: null,
+          error: classifyClientError(error, 'Unable to refresh conversation sessions.')
+        })
+      }
     }
   }
 
@@ -417,10 +442,23 @@ export class ConversationWorkspaceModel {
       const channelReasons = Array.isArray(page.channel_health?.reasons)
         ? page.channel_health.reasons.filter((item) => typeof item === 'string' && item.trim())
         : undefined
+      const records = reset
+        ? page.records as WorkspaceMessage[]
+        : mergeRecords(this.snapshot.records, page.records as WorkspaceMessage[])
+      const pipelineState = page.pipeline_state ?? this.snapshot.pipelineState
+      const scopedPipeline = !this.snapshot.lastSend
+        || !pipelineState?.message_id
+        || pipelineState.message_id === this.snapshot.lastSend.message_id
+      const waiting = this.snapshot.waiting && scopedPipeline && pipelineState?.status === 'failed'
+        ? false
+        : this.snapshot.waiting
       this.patch({
-        records: reset ? page.records as WorkspaceMessage[] : mergeRecords(this.snapshot.records, page.records as WorkspaceMessage[]),
+        records,
+        waiting,
+        pipelineState,
         ...(channelReasons ? { channelReasons } : {})
       })
+      if (!waiting || hasAssistantAfter(records, this.waitStartedAt)) this.stopWaiting()
     } catch (error) {
       if (!this.isCurrent(generation)) return
       this.patch({ error: classifyClientError(error, 'Unable to load conversation state.') })
@@ -485,6 +523,29 @@ export class ConversationWorkspaceModel {
     } catch {
       // Workspace disposal must still complete if the host watch is already gone.
     }
+  }
+
+  private scheduleWaitingPoll(subject: string, sessionId: string, generation: number): void {
+    this.clearWaitingPoll()
+    const started = Date.parse(this.waitStartedAt ?? '')
+    if (!Number.isFinite(started) || Date.now() - started >= 30_000) return
+    this.waitingPoll = setTimeout(() => {
+      this.waitingPoll = null
+      if (
+        !this.isCurrent(generation)
+        || !this.snapshot.waiting
+        || this.snapshot.subject?.name !== subject
+        || this.snapshot.sessionId !== sessionId
+      ) return
+      void this.readMessages(false, generation).then(() => {
+        if (this.snapshot.waiting) this.scheduleWaitingPoll(subject, sessionId, generation)
+      })
+    }, 250)
+  }
+
+  private clearWaitingPoll(): void {
+    if (this.waitingPoll) clearTimeout(this.waitingPoll)
+    this.waitingPoll = null
   }
 
   private isCurrent(generation: number): boolean {

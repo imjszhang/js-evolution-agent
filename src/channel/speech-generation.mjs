@@ -1,5 +1,5 @@
 import { chatMessagesJson } from '../ai/messages.mjs';
-import { createLlmClient } from '../ai/gateway.mjs';
+import { createSubjectLlmClient } from './llm-client.mjs';
 import { runWithTimeout } from './async-utils.mjs';
 import { recordChannelEvent } from './audit.mjs';
 import { resolveSubjectReplyIdentity } from './subject-identity.mjs';
@@ -15,6 +15,7 @@ import {
 } from './state.mjs';
 import { recordPresenceInteraction, formatPresenceInteractionContent } from './presence-memory.mjs';
 import { createIntelligenceStoreForSubject } from './presence-decision-executor.mjs';
+import { redactSecrets } from '../intelligence/redaction.mjs';
 
 function ackText(subject, kind, summary) {
   if (kind === 'approval_ack' || kind === 'approval_request') {
@@ -134,7 +135,7 @@ function agentStateClaimAllowed(text, intent = {}) {
 }
 
 function sanitizeGeneratedText(value, intent = null) {
-  const text = String(value ?? '').trim();
+  const text = String(redactSecrets(String(value ?? ''))).trim();
   if (!text) return null;
   if (/approval_granted|已授权发布|已经发布|已完成发布/i.test(text)) return null;
   if (/直接发布|直接授权/.test(text) && !/不会|不得|不能|无需|不会/i.test(text)) return null;
@@ -152,7 +153,7 @@ function renderDeterministicSpeech(intent, subject) {
 
 async function renderLlmSpeech(root, subject, intent, context, { aiClient = null, presenceConfig = null } = {}) {
   const cfg = presenceConfig ?? context?.presence ?? {};
-  const client = aiClient ?? createLlmClient({
+  const client = aiClient ?? createSubjectLlmClient(root, subject, {
     profile: 'channel_speech',
     timeout: cfg.llm?.timeout ?? 25,
   });
@@ -292,7 +293,7 @@ export async function generateSpeechAndWriteOutbox(root, subject, intent, {
 
   if (intent.candidate_id) {
     markExpressionCandidateHandled(root, subject, intent.candidate_id, {
-      outcome: 'sent',
+      outcome: 'queued',
       reason: intent.reason,
       intent_id: intent.intent_id,
     });

@@ -1,9 +1,19 @@
 import { redactSecrets } from '../../../../src/intelligence/redaction.mjs'
 
-const SENSITIVE_KEY = /(?:api[_-]?key|auth[_-]?token|access[_-]?token|secret|password|authorization)/i
+const SENSITIVE_KEY = /(?:api[_-]?key|auth[_-]?token|access[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|app[_-]?secret|private[_-]?key|secret|password|authorization|cookie)/i
 
 export function redactPublicValue<T>(value: T): T {
-  return redactSecrets(stripSensitiveFields(value)) as T
+  return redactStringLeaves(stripSensitiveFields(value)) as T
+}
+
+function redactStringLeaves(value: unknown): unknown {
+  if (typeof value === 'string') return redactSecrets(value)
+  if (value == null || typeof value !== 'object') return value
+  if (Array.isArray(value)) return value.map((item) => redactStringLeaves(item))
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .map(([key, child]) => [key, redactStringLeaves(child)])
+  )
 }
 
 function stripSensitiveFields(value: unknown, seen = new WeakSet<object>()): unknown {

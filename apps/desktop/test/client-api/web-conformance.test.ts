@@ -159,6 +159,11 @@ describe('Electron vs Web characterization', () => {
     expect(electronRoot).toMatch(/from ['"]@jea\/app['"]/)
     expect(webEntry).toContain('JeaApp')
     expect(electronRoot).toContain('JeaApp')
+    expect(webEntry).toContain('createWebJeaClient')
+    expect(webEntry).toContain('createClientProductFeatures(hostedClient)')
+    expect(webEntry).toContain('isExplicitWebFixtureMode')
+    expect(webEntry).toContain('client={hostedClient}')
+    expect(webEntry).toContain("host=\"web\"")
   })
 })
 

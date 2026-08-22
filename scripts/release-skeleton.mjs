@@ -35,6 +35,7 @@ function runNode(repoRoot, script, args) {
 export function runReleaseSkeleton({ repoRoot } = {}) {
   const cleanRoot = resolve(repoRoot, 'test/fixtures/release/clean');
   const missingRoot = resolve(repoRoot, 'test/fixtures/release/missing-assets');
+  const noArtifactsRoot = resolve(repoRoot, 'test/fixtures/release/no-artifacts');
   const steps = [];
 
   const clean = scanArtifactTree({ root: cleanRoot });
@@ -71,7 +72,7 @@ export function runReleaseSkeleton({ repoRoot } = {}) {
   });
 
   const smoke = evaluatePackageSmoke({
-    dir: resolve(repoRoot, 'dist/release'),
+    dir: noArtifactsRoot,
   });
   steps.push({
     id: 'package_smoke',
@@ -88,7 +89,7 @@ export function runReleaseSkeleton({ repoRoot } = {}) {
     detail: idleGuard.reason,
   });
 
-  const blocked = evaluatePublishGuard({ publish: true, evidenceDir: resolve(repoRoot, 'dist/release') });
+  const blocked = evaluatePublishGuard({ publish: true, evidenceDir: noArtifactsRoot });
   steps.push({
     id: 'publish_guard_fail_closed',
     ok: !blocked.ok && blocked.reason === 'certification_evidence_missing',
@@ -125,7 +126,7 @@ export async function main(argv = process.argv.slice(2)) {
   report.script = 'release-skeleton';
   report.messages = [
     `status ${report.status}`,
-    'Release skeleton — not a v0.1.0 publisher',
+    'Release skeleton — not a v0.2.0 publisher',
     ...report.steps.map((item) => `${item.ok ? 'ok' : 'fail'} ${item.id}: ${item.status} (${item.detail})`),
   ];
   printReport(report, { json: Boolean(args.json) });

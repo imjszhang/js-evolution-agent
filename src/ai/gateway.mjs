@@ -12,6 +12,9 @@ export function createLlmClient({
   timeout = null,
   mockResponse = null,
   allowMissing = true,
+  subjectKey = null,
+  budgetLedgerPath = null,
+  onBudgetEvent = null,
 } = {}) {
   if (envBool(env.JEA_FORCE_MOCK) || profile === 'mock') {
     return new MockAIClient(mockResponse ? { defaultResponse: mockResponse } : {});
@@ -25,5 +28,8 @@ export function createLlmClient({
     baseURL: env.DEEPSEEK_BASE_URL,
     env,
     timeout,
+    subjectKey,
+    budgetLedgerPath,
+    onBudgetEvent,
   });
 }

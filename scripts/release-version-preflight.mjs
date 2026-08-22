@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * Version-agreement preflight for JEA 0.1.0.
+ * Version-agreement preflight for JEA 0.2.0.
  *
- * Compares root package, Desktop package, bundled CLI, Client API, and About
- * versions. Pending slots fail when --strict is passed.
+ * Compares every shipped/package-time version surface. Pending slots fail when
+ * --strict is passed.
  *
  * Usage:
  *   node scripts/release-version-preflight.mjs [--repo DIR] [--json] [--strict]
@@ -19,13 +19,43 @@ import {
   repoRootFrom,
 } from './release-lib.mjs';
 
-function firstExisting(paths) {
-  return paths.find((item) => existsSync(item)) || null;
-}
-
 function readVersionFile(path) {
   const payload = JSON.parse(readFileSync(path, 'utf8'));
   return payload.version || null;
+}
+
+function packageSource(repoRoot, relativePath) {
+  const path = resolve(repoRoot, relativePath);
+  if (!existsSync(path)) return { status: 'missing', path };
+  const pkg = readPackageVersion(path);
+  return { status: 'ok', path, name: pkg.name, version: pkg.version };
+}
+
+function jsonVersionSource(repoRoot, relativePath) {
+  const path = resolve(repoRoot, relativePath);
+  if (!existsSync(path)) return { status: 'missing', path };
+  return { status: 'ok', path, version: readVersionFile(path) };
+}
+
+function lockVersionSource(repoRoot, packageKey = null) {
+  const path = resolve(repoRoot, 'package-lock.json');
+  if (!existsSync(path)) return { status: 'missing', path };
+  const payload = JSON.parse(readFileSync(path, 'utf8'));
+  const version = packageKey === null
+    ? payload.version
+    : payload.packages?.[packageKey]?.version;
+  return version
+    ? { status: 'ok', path, version }
+    : { status: 'missing', path };
+}
+
+function textVersionSource(repoRoot, relativePath, pattern) {
+  const path = resolve(repoRoot, relativePath);
+  if (!existsSync(path)) return { status: 'missing', path };
+  const match = readFileSync(path, 'utf8').match(pattern);
+  return match?.[1]
+    ? { status: 'ok', path, version: match[1] }
+    : { status: 'missing', path };
 }
 
 export const VERSION_SOURCES = [
@@ -35,10 +65,7 @@ export const VERSION_SOURCES = [
     issue: null,
     note: null,
     resolve(repoRoot) {
-      const path = resolve(repoRoot, 'package.json');
-      if (!existsSync(path)) return { status: 'missing', path };
-      const pkg = readPackageVersion(path);
-      return { status: 'ok', path, name: pkg.name, version: pkg.version };
+      return packageSource(repoRoot, 'package.json');
     },
   },
   {
@@ -47,25 +74,57 @@ export const VERSION_SOURCES = [
     issue: null,
     note: null,
     resolve(repoRoot) {
-      const path = resolve(repoRoot, 'apps/desktop/package.json');
-      if (!existsSync(path)) return { status: 'missing', path };
-      const pkg = readPackageVersion(path);
-      return { status: 'ok', path, name: pkg.name, version: pkg.version };
+      return packageSource(repoRoot, 'apps/desktop/package.json');
     },
   },
+  {
+    id: 'jea_app_package',
+    required: true,
+    issue: null,
+    note: null,
+    resolve(repoRoot) {
+      return packageSource(repoRoot, 'packages/jea-app/package.json');
+    },
+  },
+  {
+    id: 'host_package',
+    required: true,
+    issue: null,
+    note: 'Package metadata copied into the packaged Electron host.',
+    resolve(repoRoot) {
+      return packageSource(repoRoot, 'apps/desktop/resources/host/package.json');
+    },
+  },
+  ...[
+    ['lockfile_root', null],
+    ['lockfile_root_package', ''],
+    ['lockfile_desktop_package', 'apps/desktop'],
+    ['lockfile_jea_app_package', 'packages/jea-app'],
+  ].map(([id, packageKey]) => ({
+    id,
+    required: true,
+    issue: null,
+    note: 'npm lockfile package identity.',
+    resolve(repoRoot) {
+      return lockVersionSource(repoRoot, packageKey);
+    },
+  })),
   {
     id: 'bundled_cli',
     required: true,
     issue: 120,
     note: 'Bundled CLI version file used by jea --version and the macOS package.',
     resolve(repoRoot) {
-      const path = firstExisting([
-        resolve(repoRoot, 'src/product/version.json'),
-        resolve(repoRoot, 'apps/desktop/resources/cli/version.json'),
-        resolve(repoRoot, 'dist/release/cli-version.json'),
-      ]);
-      if (!path) return { status: 'skipped/pending', path: null };
-      return { status: 'ok', path, version: readVersionFile(path) };
+      return jsonVersionSource(repoRoot, 'src/product/version.json');
+    },
+  },
+  {
+    id: 'resource_cli',
+    required: true,
+    issue: 120,
+    note: 'CLI version copied into packaged resources.',
+    resolve(repoRoot) {
+      return jsonVersionSource(repoRoot, 'apps/desktop/resources/cli/version.json');
     },
   },
   {
@@ -74,13 +133,7 @@ export const VERSION_SOURCES = [
     issue: 116,
     note: 'Client API product version (protocol version stays 1.0.0).',
     resolve(repoRoot) {
-      const path = firstExisting([
-        resolve(repoRoot, 'src/client-api/package.json'),
-        resolve(repoRoot, 'apps/desktop/src/client-api/version.json'),
-        resolve(repoRoot, 'apps/desktop/src/api/version.json'),
-      ]);
-      if (!path) return { status: 'skipped/pending', path: null };
-      return { status: 'ok', path, version: readVersionFile(path) };
+      return jsonVersionSource(repoRoot, 'apps/desktop/src/client-api/version.json');
     },
   },
   {
@@ -89,14 +142,24 @@ export const VERSION_SOURCES = [
     issue: 121,
     note: 'About / Settings product version shown in the Settings overlay.',
     resolve(repoRoot) {
-      const path = firstExisting([
-        resolve(repoRoot, 'dist/release/about-version.json'),
-        resolve(repoRoot, 'apps/desktop/src/about/version.json'),
-      ]);
-      if (!path) return { status: 'skipped/pending', path: null };
-      return { status: 'ok', path, version: readVersionFile(path) };
+      return jsonVersionSource(repoRoot, 'apps/desktop/src/about/version.json');
     },
   },
+  ...[
+    ['client_api_fallback', 'apps/desktop/src/client-api/host.ts', /return\s+['"](\d+\.\d+\.\d+)['"]/],
+    ['electron_builder', 'apps/desktop/electron-builder.yml', /extraMetadata:[\s\S]*?\n\s+version:\s*['"]?(\d+\.\d+\.\d+)/],
+    ['release_lib', 'scripts/release-lib.mjs', /RELEASE_VERSION\s*=\s*['"](\d+\.\d+\.\d+)['"]/],
+    ['product_identity', 'src/product/identity.mjs', /PRODUCT_VERSION\s*=\s*['"](\d+\.\d+\.\d+)['"]/],
+    ['acp_runtime', 'src/actions/agent-adapter/acp/runtime.mjs', /clientInfo:\s*\{[^}]*version:\s*['"](\d+\.\d+\.\d+)['"]/],
+  ].map(([id, relativePath, pattern]) => ({
+    id,
+    required: true,
+    issue: 178,
+    note: 'Compiled/runtime product version surface.',
+    resolve(repoRoot) {
+      return textVersionSource(repoRoot, relativePath, pattern);
+    },
+  })),
 ];
 
 export function collectVersionSources(repoRoot) {

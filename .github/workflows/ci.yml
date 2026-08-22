@@ -12,6 +12,9 @@ on:
 permissions:
   contents: read
 
+env:
+  JEA_CONTRACT_MODE: strict
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true

@@ -1,5 +1,6 @@
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { redactSecrets } from '../intelligence/redaction.mjs';
 
 function agentRunLogGloballyEnabled() {
   const raw = process.env.JEA_AGENT_RUN_LOG;
@@ -43,7 +44,7 @@ export function appendAgentRunLogRecord(ctx, record) {
   if (!filePath) return null;
   try {
     mkdirSync(join(filePath, '..'), { recursive: true });
-    appendFileSync(filePath, `${JSON.stringify(record)}\n`, 'utf-8');
+    appendFileSync(filePath, `${JSON.stringify(redactSecrets(record))}\n`, 'utf-8');
     return filePath;
   } catch {
     return null;

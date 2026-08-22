@@ -4,6 +4,7 @@ import {
   accumulateLlmUsage,
   summarizeLlmUsage,
 } from '../../ai/prompt-cache-metadata.mjs';
+import { redactSecrets } from '../../intelligence/redaction.mjs';
 
 function nowIso() {
   return new Date().toISOString();
@@ -15,6 +16,10 @@ function truncateText(value, maxChars) {
     return { text, truncated: false };
   }
   return { text: `${text.slice(0, maxChars)}\n...(truncated)`, truncated: true };
+}
+
+function truncateToolResult(value, maxChars) {
+  return truncateText(redactSecrets(value), maxChars);
 }
 
 function buildForcedInvestigation({ reason, queryLog = [], turns = 0, durationMs = 0 } = {}) {
@@ -247,7 +252,7 @@ export async function runInvestigationLoop({
 
     if (tools._loopCtx) tools._loopCtx.closing = true;
     const outcome = await tools.dispatch('finish_investigation', finishCall.arguments ?? {}, { turn: closingTurn });
-    const clipped = truncateText(outcome, toolResultMaxChars);
+    const clipped = truncateToolResult(outcome, toolResultMaxChars);
     messages.push({
       role: 'tool',
       tool_call_id: finishCall.id,
@@ -353,7 +358,7 @@ export async function runInvestigationLoop({
     for (const call of toolCalls) {
       if (!call.name) {
         const errPayload = { ok: false, error: 'missing_tool_name' };
-        const clipped = truncateText(errPayload, toolResultMaxChars);
+        const clipped = truncateToolResult(errPayload, toolResultMaxChars);
         messages.push({
           role: 'tool',
           tool_call_id: call.id,
@@ -365,7 +370,7 @@ export async function runInvestigationLoop({
 
       if (call.arguments == null && call.argumentsRaw) {
         const errPayload = { ok: false, error: 'invalid_tool_arguments_json', argumentsRaw: call.argumentsRaw };
-        const clipped = truncateText(errPayload, toolResultMaxChars);
+        const clipped = truncateToolResult(errPayload, toolResultMaxChars);
         messages.push({
           role: 'tool',
           tool_call_id: call.id,
@@ -381,7 +386,7 @@ export async function runInvestigationLoop({
       }
 
       const outcome = await tools.dispatch(call.name, call.arguments ?? {}, { turn });
-      const clipped = truncateText(outcome, toolResultMaxChars);
+      const clipped = truncateToolResult(outcome, toolResultMaxChars);
       messages.push({
         role: 'tool',
         tool_call_id: call.id,
@@ -405,7 +410,7 @@ export async function runInvestigationLoop({
       assistant_content: resp.content,
       tool_calls: toolCalls.map((c) => ({
         name: c.name,
-        arguments_digest: truncateText(c.arguments ?? c.argumentsRaw ?? null, 200).text,
+        arguments_digest: truncateText(redactSecrets(c.arguments ?? c.argumentsRaw ?? null), 200).text,
       })),
       tool_results: toolResultsMeta,
       finish_reason: resp.finishReason,

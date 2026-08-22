@@ -133,6 +133,23 @@ describe('beliefs store', () => {
     expect(beliefs.beliefs).toHaveLength(1);
     expect(store.readBeliefEvents({ limit: 5 })).toHaveLength(1);
   });
+
+  it('rejects illegal producers before persistence in default production mode', () => {
+    const store = makeStore();
+    const previous = process.env.JEA_CONTRACT_MODE;
+    delete process.env.JEA_CONTRACT_MODE;
+    try {
+      expect(() => store.recordBeliefEvent({ type: 'updated', producer: 'invalid' }))
+        .toThrow(/belief_event contract invalid/);
+      expect(() => store.recordGoalEvent({ type: 'assessment', producer: 'invalid' }))
+        .toThrow(/goal_event contract invalid/);
+      expect(store.readBeliefEvents({ limit: 5 })).toEqual([]);
+      expect(store.readGoalEvents({ limit: 5 })).toEqual([]);
+    } finally {
+      if (previous === undefined) delete process.env.JEA_CONTRACT_MODE;
+      else process.env.JEA_CONTRACT_MODE = previous;
+    }
+  });
 });
 
 describe('IntelligenceStore', () => {

@@ -1,17 +1,18 @@
 #!/usr/bin/env node
 /**
- * Package-smoke placeholder for JEA 0.1.0 macOS artifacts.
+ * Package-smoke placeholder for JEA 0.2.0 macOS artifacts.
  *
  * Wave 1 does not require #120 outputs. When the artifact directory is empty
  * or missing, this script prints the expected names and exits 0 as pending.
  * When any real artifact appears, it fail-closes on incomplete sets.
  *
  * Usage:
- *   node scripts/release-package-smoke.mjs [--dir DIR] [--version 0.1.0] [--json]
+ *   node scripts/release-package-smoke.mjs [--dir DIR] [--version 0.2.0] [--json]
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 import {
   RELEASE_VERSION,
   expectedArtifactNames,
@@ -29,6 +30,35 @@ function currentHead(cwd) {
   });
   if (result.status !== 0) return null;
   return String(result.stdout || '').trim() || null;
+}
+
+function sha256File(path) {
+  return createHash('sha256').update(readFileSync(path)).digest('hex');
+}
+
+export function parseSha256Sums(contents) {
+  const entries = new Map();
+  const failures = [];
+  for (const line of String(contents || '').split(/\r?\n/).filter((item) => item.length > 0)) {
+    const match = /^([0-9a-fA-F]{64}) {2}([^/\s][^/]*)$/.exec(line);
+    if (!match) {
+      failures.push({
+        code: 'checksum_invalid_line',
+        message: `Invalid SHA256SUMS line: ${line}`,
+      });
+      continue;
+    }
+    const [, digest, name] = match;
+    if (entries.has(name)) {
+      failures.push({
+        code: 'checksum_duplicate_name',
+        message: `SHA256SUMS lists ${name} more than once`,
+      });
+      continue;
+    }
+    entries.set(name, digest.toLowerCase());
+  }
+  return { entries, failures };
 }
 
 export function evaluatePackageSmoke({
@@ -69,6 +99,7 @@ export function evaluatePackageSmoke({
   }
 
   const failures = [];
+  let checksumEntries = {};
   if (!present.dmg || !present.zip || !present.checksums) {
     failures.push({
       code: 'incomplete_artifact_set',
@@ -79,14 +110,39 @@ export function evaluatePackageSmoke({
 
   if (present.checksums) {
     const sums = readFileSync(resolve(absDir, expected.checksums), 'utf8');
-    for (const name of [expected.dmg, expected.zip]) {
-      if (!sums.includes(name)) {
+    const parsed = parseSha256Sums(sums);
+    failures.push(...parsed.failures);
+    const expectedNames = [expected.dmg, expected.zip];
+    for (const name of parsed.entries.keys()) {
+      if (!expectedNames.includes(name)) {
         failures.push({
-          code: 'checksum_missing_name',
-          message: `SHA256SUMS does not mention ${name}`,
+          code: 'checksum_unexpected_name',
+          message: `SHA256SUMS contains unexpected entry ${name}`,
         });
       }
     }
+    for (const name of expectedNames) {
+      const declared = parsed.entries.get(name);
+      if (!declared) {
+        failures.push({
+          code: 'checksum_missing_name',
+          message: `SHA256SUMS does not contain an exact entry for ${name}`,
+        });
+        continue;
+      }
+      if (!existsSync(resolve(absDir, name))) continue;
+      const actual = sha256File(resolve(absDir, name));
+      if (declared !== actual) {
+        failures.push({
+          code: 'checksum_mismatch',
+          message: `SHA256 mismatch for ${name}`,
+          name,
+          declared,
+          actual,
+        });
+      }
+    }
+    checksumEntries = Object.fromEntries(parsed.entries);
   }
 
   const metadata = present.buildMetadata
@@ -127,7 +183,10 @@ export function evaluatePackageSmoke({
     present,
     missing,
     failures,
+    checksums: checksumEntries,
     commit: smokeCommit,
+    build_id: metadata?.build_id ?? null,
+    dirty: metadata?.dirty ?? null,
     expectedCommit: certified,
   };
 }

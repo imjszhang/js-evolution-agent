@@ -2,6 +2,7 @@ import {
   acknowledgeTask,
   cancelTask,
   claimNextTask,
+  cleanupTaskQueue,
   completeTask,
   enqueueTask,
   failTask,
@@ -75,6 +76,10 @@ export function renewChannelTaskLease(root, subject, taskId, options = {}) {
 
 export function reclaimExpiredChannelLeases(root, subject, options = {}) {
   return reclaimExpiredLeases(root, subject, { ...options, domain });
+}
+
+export function cleanupChannelTaskQueue(root, subject, options = {}) {
+  return cleanupTaskQueue(root, subject, { ...options, domain });
 }
 
 export function summarizeChannelTaskQueue(queue) {

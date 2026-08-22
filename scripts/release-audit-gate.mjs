@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * #77 / audit:ci wiring check for the 0.1.0 release path.
+ * #77 / audit:ci wiring check for the 0.2.0 release path.
  *
  * This script does not reimplement scripts/ci-audit.mjs. It only verifies
  * that the production audit gate remains on the certification path, and
@@ -9,6 +9,7 @@
  *
  * Usage:
  *   node scripts/release-audit-gate.mjs [--repo DIR] [--json] [--run-audit]
+ *     [--closure-audit FILE]
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -21,21 +22,65 @@ import {
   readJson,
   repoRootFrom,
 } from './release-lib.mjs';
+import {
+  evaluateClosureTarget,
+  readFrozenClosureTarget,
+} from '../src/intelligence/closure-target.mjs';
 
 export const AUDIT_SCRIPT = 'scripts/ci-audit.mjs';
 export const AUDIT_NPM_SCRIPT = 'audit:ci';
 export const BASELINE_PATH = '.github/security/audit-baseline.json';
 export const RELEASE_WORKFLOW = '.github/workflows/release-macos.yml';
-export const CERT_DOC = 'docs/release/0.1.0-certification.md';
+export const CERT_DOC = 'docs/release/0.2.0-certification.md';
 export const ISSUE_77_DOC = 'docs/release/0.1.0-security-debt.md';
 
 function readText(path) {
   return existsSync(path) ? readFileSync(path, 'utf8') : '';
 }
 
-export function evaluateAuditWiring({ repoRoot } = {}) {
+export function evaluateAuditWiring({ repoRoot, closureAuditPath = null } = {}) {
   const failures = [];
   const checks = [];
+
+  const closureTarget = readFrozenClosureTarget(repoRoot);
+  checks.push({
+    id: 'frozen_closure_target',
+    ok: closureTarget.ok,
+    detail: closureTarget.path,
+  });
+  if (!closureTarget.ok) {
+    failures.push({
+      code: closureTarget.reason,
+      message: '0.2.0 closure target is missing, invalid, or changed',
+    });
+  }
+  if (closureAuditPath != null) {
+    const auditPath = resolve(repoRoot, closureAuditPath);
+    let audit = null;
+    let auditGate = null;
+    try {
+      audit = readJson(auditPath);
+      auditGate = closureTarget.ok
+        ? evaluateClosureTarget(audit, closureTarget.target)
+        : null;
+    } catch {
+      // Canonical failure is reported below.
+    }
+    const closureOk = auditGate?.ok === true
+      && audit?.ok === true
+      && audit?.status === 'passed';
+    checks.push({
+      id: 'closure_audit_result',
+      ok: closureOk,
+      detail: auditPath,
+    });
+    if (!closureOk) {
+      failures.push({
+        code: 'closure_audit_failed',
+        message: 'closure audit evidence is missing, invalid, or below the frozen target',
+      });
+    }
+  }
 
   const packageJsonPath = resolve(repoRoot, 'package.json');
   const pkg = existsSync(packageJsonPath) ? readJson(packageJsonPath) : {};
@@ -130,8 +175,8 @@ export function runAuditCi(repoRoot) {
   };
 }
 
-export function runAuditGate({ repoRoot, runAudit = false } = {}) {
-  const wiring = evaluateAuditWiring({ repoRoot });
+export function runAuditGate({ repoRoot, runAudit = false, closureAuditPath = null } = {}) {
+  const wiring = evaluateAuditWiring({ repoRoot, closureAuditPath });
   const report = {
     script: 'release-audit-gate',
     ...wiring,
@@ -157,6 +202,7 @@ export async function main(argv = process.argv.slice(2)) {
   const report = runAuditGate({
     repoRoot,
     runAudit: Boolean(args['run-audit']),
+    closureAuditPath: args['closure-audit'] || null,
   });
   report.messages = [
     `status ${report.status}`,

@@ -1,4 +1,5 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -13,6 +14,7 @@ import { repoRootFrom } from '../scripts/release-lib.mjs';
 import { stageAppResources } from '../scripts/stage-app-resources.mjs';
 import { evaluatePackageSmoke } from '../scripts/release-package-smoke.mjs';
 import { evaluatePublishGuard } from '../scripts/release-publish-guard.mjs';
+import { packageMacos } from '../scripts/package-macos.mjs';
 
 const repoRoot = repoRootFrom(new URL('../scripts/release-lib.mjs', import.meta.url));
 const temps = [];
@@ -30,6 +32,28 @@ afterEach(() => {
 });
 
 describe('build metadata provenance', () => {
+  it('packageMacos rejects dirty metadata by default and workflow never bypasses it', async () => {
+    const dirty = await packageMacos({
+      repoRoot,
+      metadata: {
+        version: '0.2.0',
+        commit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        dirty: true,
+        built_at: '2026-08-22T00:00:00.000Z',
+        platform: 'darwin',
+        arch: 'arm64',
+      },
+    });
+    expect(dirty).toMatchObject({
+      ok: false,
+      status: 'dirty_provenance',
+      reason: 'dirty_source_tree',
+    });
+    const workflow = readFileSync(join(repoRoot, '.github/workflows/release-macos.yml'), 'utf8');
+    expect(workflow).toContain('run: npm run desktop:package');
+    expect(workflow).not.toContain('--allow-dirty');
+  });
+
   it('collects version, full SHA, timestamp, platform, arch, and dirty', () => {
     const metadata = collectBuildMetadata({
       repoRoot,
@@ -40,7 +64,7 @@ describe('build metadata provenance', () => {
     expect(metadata).toMatchObject({
       schema_version: 1,
       product: 'jea',
-      version: '0.1.0',
+      version: '0.2.0',
       dirty: expect.any(Boolean),
       built_at: '2026-08-17T04:32:54.000Z',
       platform: 'linux',
@@ -54,7 +78,7 @@ describe('build metadata provenance', () => {
   it('writes and loads immutable metadata from the packaged tree', () => {
     const dir = tempDir('jea-build-meta-');
     const written = writeBuildMetadata(dir, {
-      version: '0.1.0',
+      version: '0.2.0',
       commit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       dirty: false,
       built_at: '2026-08-17T04:32:54.000Z',
@@ -92,7 +116,7 @@ describe('build metadata provenance', () => {
   it('embeds collected metadata when staging app resources', () => {
     const outDir = tempDir('jea-stage-meta-');
     const metadata = {
-      version: '0.1.0',
+      version: '0.2.0',
       commit: 'cccccccccccccccccccccccccccccccccccccccc',
       dirty: false,
       built_at: '2026-08-17T04:32:54.000Z',
@@ -117,11 +141,11 @@ describe('build metadata provenance', () => {
 describe('package smoke commit certification', () => {
   it('fail-closes when installers exist without an embedded commit SHA', () => {
     const dir = tempDir('jea-smoke-missing-sha-');
-    writeFileSync(join(dir, 'JEA-0.1.0-macos-arm64.dmg'), 'dmg');
-    writeFileSync(join(dir, 'JEA-0.1.0-macos-arm64.zip'), 'zip');
+    writeFileSync(join(dir, 'JEA-0.2.0-macos-arm64.dmg'), 'dmg');
+    writeFileSync(join(dir, 'JEA-0.2.0-macos-arm64.zip'), 'zip');
     writeFileSync(join(dir, 'SHA256SUMS'), [
-      'aaaa  JEA-0.1.0-macos-arm64.dmg',
-      'bbbb  JEA-0.1.0-macos-arm64.zip',
+      `${createHash('sha256').update('dmg').digest('hex')}  JEA-0.2.0-macos-arm64.dmg`,
+      `${createHash('sha256').update('zip').digest('hex')}  JEA-0.2.0-macos-arm64.zip`,
     ].join('\n'));
     writeFileSync(join(dir, 'package-smoke.json'), '{"ok":true}\n');
     writeFileSync(join(dir, 'RELEASE_NOTES.md'), 'draft\n');
@@ -133,17 +157,17 @@ describe('package smoke commit certification', () => {
   it('proves the embedded commit SHA matches the commit being certified', () => {
     const dir = tempDir('jea-smoke-match-');
     const commit = 'dddddddddddddddddddddddddddddddddddddddd';
-    writeFileSync(join(dir, 'JEA-0.1.0-macos-arm64.dmg'), 'dmg');
-    writeFileSync(join(dir, 'JEA-0.1.0-macos-arm64.zip'), 'zip');
+    writeFileSync(join(dir, 'JEA-0.2.0-macos-arm64.dmg'), 'dmg');
+    writeFileSync(join(dir, 'JEA-0.2.0-macos-arm64.zip'), 'zip');
     writeFileSync(join(dir, 'SHA256SUMS'), [
-      'aaaa  JEA-0.1.0-macos-arm64.dmg',
-      'bbbb  JEA-0.1.0-macos-arm64.zip',
+      `${createHash('sha256').update('dmg').digest('hex')}  JEA-0.2.0-macos-arm64.dmg`,
+      `${createHash('sha256').update('zip').digest('hex')}  JEA-0.2.0-macos-arm64.zip`,
     ].join('\n'));
     writeFileSync(join(dir, 'package-smoke.json'), JSON.stringify({ ok: true, commit }));
     writeFileSync(join(dir, 'build-metadata.json'), JSON.stringify({
       schema_version: 1,
       product: 'jea',
-      version: '0.1.0',
+      version: '0.2.0',
       commit,
       dirty: false,
       built_at: '2026-08-17T04:32:54.000Z',
@@ -169,7 +193,7 @@ describe('release publish dirty provenance', () => {
     const dir = tempDir('jea-publish-meta-missing-');
     writeFileSync(join(dir, 'certification-evidence.json'), JSON.stringify({
       status: 'certified',
-      release: '0.1.0',
+      release: '0.2.0',
       platform: 'macos-arm64',
       issue77: 'ok',
     }));
@@ -182,7 +206,7 @@ describe('release publish dirty provenance', () => {
     const dir = tempDir('jea-publish-dirty-');
     writeFileSync(join(dir, 'certification-evidence.json'), JSON.stringify({
       status: 'certified',
-      release: '0.1.0',
+      release: '0.2.0',
       platform: 'macos-arm64',
       issue77: 'ok',
       dirty: true,
@@ -196,12 +220,12 @@ describe('release publish dirty provenance', () => {
     const dir = tempDir('jea-publish-meta-dirty-');
     writeFileSync(join(dir, 'certification-evidence.json'), JSON.stringify({
       status: 'certified',
-      release: '0.1.0',
+      release: '0.2.0',
       platform: 'macos-arm64',
       issue77: 'ok',
     }));
     writeFileSync(join(dir, 'build-metadata.json'), JSON.stringify({
-      version: '0.1.0',
+      version: '0.2.0',
       commit: 'ffffffffffffffffffffffffffffffffffffffff',
       dirty: true,
     }));

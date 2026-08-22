@@ -73,14 +73,14 @@ describe('diagnostic store privacy', () => {
       message: MESSAGE_BODY_CANARY,
       env: { DEEPSEEK_API_KEY: API_KEY_CANARY },
       token: WEB_TOKEN_CANARY,
-    }, { version: '0.1.0', buildId: '0.1.0+aaaaaaa.dev' });
+    }, { version: '0.2.0', buildId: '0.2.0+aaaaaaa.dev' });
     expect(record).toEqual({
       schema_version: 1,
       occurred_at: '2026-08-17T04:32:54.000Z',
       process_type: 'renderer',
       reason: 'crashed_DEEPSEEK_API_KEY_sk-should-not-survive-in-reason-field'.slice(0, 64),
-      version: '0.1.0',
-      build_id: '0.1.0+aaaaaaa.dev',
+      version: '0.2.0',
+      build_id: '0.2.0+aaaaaaa.dev',
     });
     expect(JSON.stringify(record)).not.toContain(MESSAGE_BODY_CANARY);
     expect(JSON.stringify(record)).not.toContain(API_KEY_CANARY);
@@ -126,7 +126,7 @@ describe('diagnostic store privacy', () => {
       process_type: 'utility',
       reason: 'abnormal-exit',
       occurred_at: '2026-08-17T04:32:54.000Z',
-    }, { version: '0.1.0', build_id: '0.1.0+test' });
+    }, { version: '0.2.0', build_id: '0.2.0+test' });
     const text = JSON.stringify(failure);
     expect(text).not.toContain(API_KEY_CANARY);
     expect(text).not.toContain(WEB_TOKEN_CANARY);

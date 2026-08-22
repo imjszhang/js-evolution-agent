@@ -1,6 +1,5 @@
 import { useMemo } from 'react'
 import {
-  createEvolutionInspectorFeature,
   JeaApp,
   JeaProductApp,
   withDefaultProductFeatures,
@@ -8,8 +7,8 @@ import {
   type SetupSettingsClient
 } from '@jea/app'
 import type { JeaClient } from '../../client-api/jea-client'
-import { createConversationFeature } from './conversation/feature'
 import { createDesktopProjectionWatchPort, createRendererJeaClient } from './conversation/host-client'
+import { createClientProductFeatures } from './product-features'
 
 export function DesktopRoot({
   client,
@@ -18,10 +17,9 @@ export function DesktopRoot({
   const resolved = client ?? createRendererJeaClient()
   const features = useMemo(
     () => [
-      createConversationFeature(resolved, {
+      ...createClientProductFeatures(resolved, {
         projectionWatch: createDesktopProjectionWatchPort()
       }),
-      createEvolutionInspectorFeature({ client: resolved }),
       ...(props.features ?? [])
     ],
     [props.features, resolved]

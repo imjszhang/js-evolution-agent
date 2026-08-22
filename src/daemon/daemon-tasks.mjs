@@ -3,6 +3,11 @@ import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import lockfile from 'proper-lockfile';
 import { writeJsonAtomic } from '../infra/atomic-json-write.mjs';
+import {
+  archiveJsonRecords,
+  retentionPolicy,
+  terminalArchiveCandidates,
+} from '../infra/sidecar-retention.mjs';
 import { runtimeForSubject, nowIso, parsePositiveInt } from './evolve-runs.mjs';
 import { ALL_CYCLE_STEP_TYPES, CYCLE_STEP_TYPES, stepIdempotencyKey } from './cycle-reducer.mjs';
 import {
@@ -38,6 +43,10 @@ export function pendingTasksPath(root, subject, options = {}) {
 
 export function taskQueueLockPath(root, subject, options = {}) {
   return join(tasksDirForSubject(root, subject, options), 'pending_tasks.lock');
+}
+
+export function taskArchivePath(root, subject, options = {}) {
+  return join(tasksDirForSubject(root, subject, options), 'archive', 'terminal_tasks.json');
 }
 
 function emptyQueue() {
@@ -440,6 +449,45 @@ export function updateTask(root, subject, taskIdValue, updater, options = {}) {
     const task = updater(queue.tasks[idx], queue);
     queue.tasks[idx] = task;
     return { task, queue: writeTaskQueue(root, subject, queue, options) };
+  }, options);
+}
+
+/**
+ * Bound terminal task history while retaining every pending/running lease and
+ * every unacknowledged failure needed for operator recovery.
+ */
+export function cleanupTaskQueue(root, subject, {
+  now = Date.now(),
+  domain = null,
+  ...retention
+} = {}) {
+  const options = { domain };
+  const policy = retentionPolicy(domain ? 'channel_task' : 'daemon_task', retention);
+  return withTaskQueueLock(root, subject, () => {
+    const queue = readTaskQueue(root, subject, options);
+    const candidates = terminalArchiveCandidates(queue.tasks, {
+      now,
+      ...policy,
+      isTerminal: (task) => ['completed', 'cancelled', 'acknowledged'].includes(task.status),
+      timestamp: (task) => (
+        task.completed_at
+        || task.cancelled_at
+        || task.acknowledged_at
+        || task.updated_at
+        || task.created_at
+      ),
+    });
+    if (!candidates.length) {
+      return { archived: 0, retained: queue.tasks.length };
+    }
+    archiveJsonRecords(taskArchivePath(root, subject, options), candidates, {
+      collection: 'tasks',
+      idOf: (task) => task.task_id,
+    });
+    const ids = new Set(candidates.map((task) => task.task_id));
+    queue.tasks = queue.tasks.filter((task) => !ids.has(task.task_id));
+    writeTaskQueue(root, subject, queue, options);
+    return { archived: candidates.length, retained: queue.tasks.length };
   }, options);
 }
 

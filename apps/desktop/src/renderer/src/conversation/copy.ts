@@ -14,6 +14,7 @@ const copy = {
     retry: 'Retry',
     stopWaiting: 'Stop waiting',
     waiting: 'Waiting for the Channel pipeline to persist an assistant reply…',
+    waitingPipeline: 'Channel accepted the message and reply delivery is pending…',
     pending: 'Message is queued on the governed Channel path.',
     failed: 'Send failed',
     enableDesktop: 'Enable desktop Channel',
@@ -43,12 +44,7 @@ const copy = {
     serviceOffline: 'Channel service offline',
     serviceDegraded: 'Channel service degraded',
     serviceStarting: 'Channel service starting',
-    serviceStale: 'Live status is stale',
-    cycleBacklog: 'Cycle backlog',
-    processCycleOnce: 'Process once',
-    processingCycleOnce: 'Processing Cycle…',
-    startCycle: 'Start Cycle',
-    startingCycle: 'Starting Cycle…'
+    serviceStale: 'Live status is stale'
   },
   zh: {
     subjects: '主体',
@@ -63,6 +59,7 @@ const copy = {
     retry: '重试',
     stopWaiting: '停止等待',
     waiting: '正在等待 Channel 管线写入助手回复…',
+    waitingPipeline: 'Channel 已接收消息，回复仍在投递中…',
     pending: '消息已进入受治理的 Channel 路径。',
     failed: '发送失败',
     enableDesktop: '启用桌面 Channel',
@@ -92,12 +89,7 @@ const copy = {
     serviceOffline: 'Channel 服务离线',
     serviceDegraded: 'Channel 服务降级',
     serviceStarting: 'Channel 服务启动中',
-    serviceStale: '实时状态已过期',
-    cycleBacklog: 'Cycle 积压',
-    processCycleOnce: '处理一次',
-    processingCycleOnce: '正在处理 Cycle…',
-    startCycle: '启动 Cycle',
-    startingCycle: '正在启动 Cycle…'
+    serviceStale: '实时状态已过期'
   }
 } as const
 

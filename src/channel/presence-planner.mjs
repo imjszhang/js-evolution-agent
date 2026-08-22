@@ -1,5 +1,5 @@
 import { chatMessagesJson } from '../ai/messages.mjs';
-import { createLlmClient } from '../ai/gateway.mjs';
+import { createSubjectLlmClient } from './llm-client.mjs';
 import { normalizeSpeechIntent, speechIntentFromDeterministic } from './speech-intent.mjs';
 import {
   candidateEligibleForDeterministicAgent,
@@ -105,6 +105,7 @@ function normalizeAction(raw, subject) {
       scope: raw.scope ?? 'next_cycle',
       summary,
       priority: raw.priority ?? 'medium',
+      candidate_id: raw.candidate_id ?? null,
       reply_to_message_id: raw.reply_to_message_id ?? null,
     };
   }
@@ -311,12 +312,12 @@ export function planPresenceDeterministic(context) {
 /**
  * LLM presence deliberation; falls back to deterministic on failure.
  */
-export async function planPresenceWithLlm(context, { aiClient = null } = {}) {
+export async function planPresenceWithLlm(context, { aiClient = null, root = null } = {}) {
   const fallback = planPresenceDeterministic(context);
   const available = candidates(context);
   if (!available.length) return fallback;
   const config = context.presence ?? {};
-  const client = aiClient ?? createLlmClient({
+  const client = aiClient ?? createSubjectLlmClient(root, context.subject, {
     profile: 'channel_presence',
     timeout: config.llm?.timeout ?? 25,
   });
@@ -497,7 +498,11 @@ export async function planPresenceWithLlm(context, { aiClient = null } = {}) {
   }
 }
 
-export async function planPresence(context, { aiClient = null, skipFastAck = false } = {}) {
+export async function planPresence(context, {
+  aiClient = null,
+  skipFastAck = false,
+  root = null,
+} = {}) {
   if (context.presence?.planner === 'llm') {
     if (!skipFastAck) {
       const controlAck = planPresenceControlActionFastAck(context);
@@ -505,7 +510,7 @@ export async function planPresence(context, { aiClient = null, skipFastAck = fal
       const fastAck = planPresenceOperatorBriefFastAck(context);
       if (fastAck) return fastAck;
     }
-    return planPresenceWithLlm(context, { aiClient });
+    return planPresenceWithLlm(context, { aiClient, root });
   }
   const controlAck = planPresenceControlActionFastAck(context);
   if (controlAck) return controlAck;

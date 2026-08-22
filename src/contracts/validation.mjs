@@ -4,8 +4,8 @@ export const CONTRACT_MODES = Object.freeze({
 });
 
 export function contractModeFromEnv(env = process.env) {
-  const raw = String(env.JEA_CONTRACT_MODE || CONTRACT_MODES.WARN).trim().toLowerCase();
-  return raw === CONTRACT_MODES.STRICT ? CONTRACT_MODES.STRICT : CONTRACT_MODES.WARN;
+  const raw = String(env.JEA_CONTRACT_MODE || CONTRACT_MODES.STRICT).trim().toLowerCase();
+  return raw === CONTRACT_MODES.WARN ? CONTRACT_MODES.WARN : CONTRACT_MODES.STRICT;
 }
 
 export function ok() {

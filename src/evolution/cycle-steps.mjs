@@ -42,6 +42,12 @@ import {
   persistIntelReport,
   updateStandingMemoryWithAi,
 } from '../intelligence/report-builder.mjs';
+import { redactSecrets } from '../intelligence/redaction.mjs';
+import {
+  buildExpectedOutputComparison,
+  handleContractValidation,
+  validateVerifyReport,
+} from '../contracts/index.mjs';
 import {
   queueAnalyzeDecideActions,
   toPreDecisionReportContext,
@@ -687,7 +693,7 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
   if (reportUsageLog) logger?.info?.(reportUsageLog);
 
   if (rawReportMarkdown) {
-    writeFileSync(rawReportPath, rawReportMarkdown, 'utf-8');
+    writeFileSync(rawReportPath, redactSecrets(rawReportMarkdown), 'utf-8');
   } else if (existsSync(rawReportPath) === false) {
     // No model raw; still leave an empty marker only when AI never produced output.
     writeFileSync(rawReportPath, '', 'utf-8');
@@ -720,7 +726,7 @@ export async function runAgentLoopStep(ctx, { cycleId = null, recordState = null
     reportRepairUsageSummaries = repaired.usageSummaries || [];
     if (reportRepair.rounds > 0 && persistReportMarkdown) {
       repairedReportPath = join(recordsDir, 'agent_loop_report_repaired.md');
-      writeFileSync(repairedReportPath, persistReportMarkdown, 'utf-8');
+      writeFileSync(repairedReportPath, redactSecrets(persistReportMarkdown), 'utf-8');
     }
     if (reportRepair.findings_initial?.length) {
       store.recordEvolutionEvent({
@@ -1479,6 +1485,11 @@ export async function runExecStep(ctx, { recordState = null, intelResult = null,
         attempt: (decision.attempts || 0) + 1,
         action: decision.action,
         source: 'exec_pipeline',
+        causalIdentity: {
+          producer_batch_id: decision.metadata?.producer_batch_id ?? null,
+          reaction_id: decision.metadata?.reaction_id ?? null,
+          belief_id: decision.metadata?.belief_id ?? null,
+        },
       });
       if (intent?.blocked || intent?.status === 'uncertain') {
         return { intent, skip: true, status: 'blocked' };
@@ -1521,6 +1532,19 @@ export async function runExecStep(ctx, { recordState = null, intelResult = null,
     agentRateLedger,
     cycleId: resolvedCycleId || undefined,
   });
+  const decisionIds = [...new Set((execResult.executed || []).map((item) => item?.id).filter(Boolean))];
+  const singleExecutedIdentity = (snakeField, camelField) => {
+    const values = [...new Set((execResult.executed || [])
+      .map((item) => item?.[snakeField] ?? item?.[camelField] ?? null)
+      .filter(Boolean))];
+    return values.length === 1 ? values[0] : null;
+  };
+  execResult.execution_id = resolvedCycleId;
+  execResult.decision_ids = decisionIds;
+  execResult.decision_id = decisionIds.length === 1 ? decisionIds[0] : null;
+  execResult.producer_batch_id = singleExecutedIdentity('producer_batch_id', 'producerBatchId');
+  execResult.reaction_id = singleExecutedIdentity('reaction_id', 'reactionId');
+  execResult.belief_id = singleExecutedIdentity('belief_id', 'beliefId');
   execResult.intent_recovery = {
     recovered: recovery.recovered.length,
     uncertain: recovery.uncertain.length,
@@ -1576,6 +1600,23 @@ export async function runExecStep(ctx, { recordState = null, intelResult = null,
   return { execResult };
 }
 
+function causalIdentityFor({ intelResult = null, execResult = null, verification = null } = {}) {
+  return {
+    producer_batch_id: verification?.producer_batch_id
+      ?? execResult?.producer_batch_id
+      ?? intelResult?.producer_batch_id
+      ?? intelResult?.batch_id
+      ?? null,
+    reaction_id: verification?.reaction_id
+      ?? execResult?.reaction_id
+      ?? intelResult?.reaction_id
+      ?? null,
+    decision_id: verification?.decision_id ?? execResult?.decision_id ?? null,
+    execution_id: verification?.execution_id ?? execResult?.execution_id ?? null,
+    belief_id: verification?.belief_id ?? execResult?.belief_id ?? null,
+  };
+}
+
 export async function runVerifyStep(ctx, { intelResult, execResult, recordState = null } = {}) {
   const { cfg, runtime, store } = ctx;
   const verification = verifyActions(
@@ -1593,6 +1634,12 @@ export async function runVerifyStep(ctx, { intelResult, execResult, recordState 
     logger: cfg.host.logger,
   });
   verification.semantic = semanticVerification;
+  const comparison = buildExpectedOutputComparison({
+    execResult,
+    mechanicalVerification: verification,
+    semanticVerification,
+  });
+  if (comparison) verification.comparison = comparison;
   try {
     verification.evidence_audit = runEvidenceAuditQuick({ dataRoot: runtime.dataRoot });
   } catch (e) {
@@ -1602,21 +1649,48 @@ export async function runVerifyStep(ctx, { intelResult, execResult, recordState 
   mkdirSync(reportDir, { recursive: true });
   const executionId = execResult.execution_id || execResult.cycle_id;
   const reportPath = join(reportDir, `${executionId}.json`);
-  writeFileSync(reportPath, JSON.stringify({
+  const report = {
     ...verification,
+    verify_id: executionId,
     execution_id: executionId,
     cycle_id: execResult.cycle_id,
+    decision_ids: execResult.decision_ids
+      ?? (execResult.decision_id ? [execResult.decision_id] : []),
+    decision_id: execResult.decision_id ?? null,
+    producer_batch_id: execResult.producer_batch_id ?? null,
+    reaction_id: execResult.reaction_id ?? null,
+    belief_id: execResult.belief_id ?? null,
     producer: 'verify',
     activation_targets: ['cognitive', 'rule'],
-  }, null, 2), 'utf-8');
+  };
+  handleContractValidation('verify_report', validateVerifyReport(report), {
+    logger: cfg.host?.logger ?? null,
+  });
+  Object.assign(verification, {
+    verify_id: report.verify_id,
+    execution_id: report.execution_id,
+    decision_ids: report.decision_ids,
+    decision_id: report.decision_id,
+    producer_batch_id: report.producer_batch_id,
+    reaction_id: report.reaction_id,
+    belief_id: report.belief_id,
+  });
+  writeFileSync(reportPath, JSON.stringify(report, null, 2), 'utf-8');
   store.recordEvolutionEvent({
     type: 'verify_pipeline',
     status: 'ok',
     cycle_id: execResult.cycle_id,
     execution_id: executionId,
+    decision_ids: report.decision_ids,
+    decision_id: report.decision_id,
+    producer_batch_id: report.producer_batch_id,
+    reaction_id: report.reaction_id,
+    belief_id: report.belief_id,
     verified_count: verification.verified.length,
     pending_count: verification.pending.length,
     semantic_status: semanticVerification.status,
+    comparison_status: comparison?.status ?? null,
+    settlement_signal: comparison?.settlement_signal ?? null,
     report_path: reportPath,
     producer: 'verify',
     activation_targets: ['cognitive', 'rule'],
@@ -1628,6 +1702,8 @@ export async function runVerifyStep(ctx, { intelResult, execResult, recordState 
       report_path: reportPath,
       verified_count: verification.verified?.length ?? 0,
       semantic_status: semanticVerification.status,
+      comparison_status: comparison?.status ?? null,
+      settlement_signal: comparison?.settlement_signal ?? null,
     });
     await recordStepSidecar(recordState.root, recordState.subject, artifactCycleId, 'verify', 'done');
   }
@@ -1643,8 +1719,12 @@ export async function runBeliefUpdateStep(ctx, {
   canCommit = null,
   producer = null,
   activationTargets = null,
+  receipts = null,
+  evidenceRefs = null,
+  settlement = null,
 } = {}) {
   const { cfg, store } = ctx;
+  const causalIdentity = causalIdentityFor({ intelResult, execResult, verification });
   if (skipBeliefUpdateFromEnv()) {
     if (recordState) {
       const artifactCycleId = stateCycleId(intelResult, null, execResult);
@@ -1673,6 +1753,10 @@ export async function runBeliefUpdateStep(ctx, {
       canCommit,
       producer,
       activationTargets,
+      causalIdentity,
+      receipts,
+      evidenceRefs,
+      settlement,
     });
     if (recordState) {
       const artifactCycleId = stateCycleId(intelResult, null, execResult);
@@ -1721,6 +1805,9 @@ export async function runGoalsAssessStep(ctx, {
   producer = null,
   activationTargets = null,
   useLatestReport = false,
+  evidenceRefs = null,
+  settlement = null,
+  receipts = null,
 } = {}) {
   const { store } = ctx;
   if (skipGoalsAssessFromEnv() || !intelReportReady) {
@@ -1743,12 +1830,40 @@ export async function runGoalsAssessStep(ctx, {
       producer,
       activation_targets: activationTargets,
       eventCycleId: intelResult.cycle_id,
+      causalIdentity: {
+        ...causalIdentityFor({ intelResult }),
+        ...(settlement ?? {}),
+      },
+      evidenceRefs,
+      ...(settlement ? {
+        reportRecord: {
+          id: settlement.execution_id,
+          cycle_id: settlement.execution_id,
+          md_path: null,
+          source: 'settlement',
+        },
+        reportMarkdown: '',
+        ruleFeedbackStats: null,
+        evidence: {
+          observations: [],
+          probes: [],
+          retrospectives: [],
+          events: (receipts || []).map((receipt) => ({
+            id: receipt.id,
+            type: 'action_receipt',
+            status: receipt.result?.status ?? null,
+            cycle_id: receipt.execution_id ?? receipt.cycle_id ?? null,
+          })),
+        },
+        recentGoalEvents: [],
+      } : {}),
     });
     store.recordEvolutionEvent({
       type: 'goals_assess',
       status: 'ok',
       cycle_id: intelResult.cycle_id,
       assessment_status: assessResult.assessment.status,
+      ...causalIdentityFor({ intelResult }),
       ...(producer ? { producer } : {}),
       ...(Array.isArray(activationTargets) ? { activation_targets: activationTargets } : {}),
     });
@@ -1768,6 +1883,7 @@ export async function runGoalsAssessStep(ctx, {
       status: 'failed',
       cycle_id: intelResult.cycle_id,
       error: msg,
+      ...causalIdentityFor({ intelResult }),
       ...(producer ? { producer } : {}),
       ...(Array.isArray(activationTargets) ? { activation_targets: activationTargets } : {}),
     });
@@ -1786,6 +1902,8 @@ export async function runGoalsCalibrateStep(ctx, {
   canCommit = null,
   producer = null,
   activationTargets = null,
+  evidenceRefs = null,
+  settlement = null,
 } = {}) {
   if (!goalsAssessResult) {
     if (recordState) {
@@ -1803,7 +1921,18 @@ export async function runGoalsCalibrateStep(ctx, {
     error.code = 'lease_lost';
     throw error;
   }
-  const goalsCalibrateResult = autoCalibrateGoals(ctx.projectRoot, goalsAssessResult, { store });
+  const causalIdentity = causalIdentityFor({
+    intelResult: goalsAssessResult?.event ?? intelResult,
+  });
+  const settlementIdentity = {
+    ...causalIdentity,
+    ...(settlement ?? {}),
+  };
+  const goalsCalibrateResult = autoCalibrateGoals(ctx.projectRoot, goalsAssessResult, {
+    store,
+    causalIdentity: settlementIdentity,
+    evidenceRefs,
+  });
   store.recordEvolutionEvent({
     type: 'goals_calibrate',
     status: goalsCalibrateResult.status,
@@ -1820,6 +1949,7 @@ export async function runGoalsCalibrateStep(ctx, {
     applied_patches: goalsCalibrateResult.applied_patches ?? [],
     skipped_patches: goalsCalibrateResult.skipped_patches ?? [],
     belief_retirements: goalsCalibrateResult.belief_retirements ?? [],
+    ...settlementIdentity,
     ...(producer ? { producer } : {}),
     ...(Array.isArray(activationTargets) ? { activation_targets: activationTargets } : {}),
   });

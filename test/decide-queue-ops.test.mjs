@@ -265,6 +265,172 @@ describe('validateQueuedAction + mixed enqueue', () => {
     expect(malformedRun.valid).toBe(false);
     expect(malformedRun.errors.join('\n')).toMatch(/some is not a function|expected_output/);
   });
+
+  it('enforces reactor belief bindings and explicit mechanical exemptions', () => {
+    const beliefDecisionContext = {
+      current_beliefs: {
+        active: [{ id: 'belief-active' }],
+        validated: [{ id: 'belief-validated' }],
+        recently_refuted: [{ id: 'belief-refuted' }],
+      },
+    };
+    const probe = (context) => ({
+      type: 'propose_probe',
+      params: {
+        hypothesis: 'bounded hypothesis',
+        success_signal: 'supported',
+        failure_signal: 'contradicted',
+        death_boundary: 'one attempt',
+        context,
+      },
+    });
+    const validate = (action) => validateQueuedAction(action, { beliefDecisionContext });
+
+    expect(validate(probe({})).errors[0]).toContain('belief_binding_required');
+    expect(validate(probe({
+      belief_id: 'belief-missing',
+      belief_relation: 'test_belief',
+      expected_belief_update: 'strengthen if supported',
+    })).errors).toContain('belief_id_unknown: belief-missing');
+    expect(validate(probe({
+      belief_id: 'belief-refuted',
+      belief_relation: 'test_belief',
+      expected_belief_update: 'reopen if supported',
+    })).errors[0]).toContain('belief_refuted_requires_recovery');
+    expect(validate(probe({
+      belief_id: 'belief-refuted',
+      belief_relation: 'recover_blocker',
+      expected_belief_update: 'reopen only with new evidence',
+    })).valid).toBe(true);
+    expect(validate(probe({
+      belief_id: 'belief-active',
+      belief_relation: 'test_belief',
+      expected_belief_update: 'validate or refute',
+    })).valid).toBe(true);
+
+    expect(validate({
+      type: 'record_observation',
+      params: { content: 'already known', context: { no_belief_reason: 'record_only' } },
+    }).valid).toBe(true);
+    expect(validate({
+      type: 'record_observation',
+      params: { content: 'already known' },
+    }).errors[0]).toContain('belief_exemption_required');
+    expect(validate({
+      type: 'record_observation',
+      params: { content: 'already known', context: { no_belief_reason: 'free form reason' } },
+    }).valid).toBe(false);
+  });
+
+  it('bootstraps a fresh belief with a bounded claim/output then permits references', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'jea-belief-bootstrap-'));
+    const runtimeRoot = join(tempDir, 'runtime');
+    mkdirSync(join(runtimeRoot, 'data', 'evolution'), { recursive: true });
+    const decisionQueue = createHostDecisionQueue({
+      dataDir: join(runtimeRoot, 'data', 'evolution'),
+    });
+    const bootstrap = {
+      type: 'agent_run',
+      description: 'bootstrap a testable belief',
+      serves_goal: 'goal-fresh',
+      requires_approval: true,
+      approval_granted: false,
+      params: {
+        run_spec: {
+          primary_cwd: runtimeRoot,
+          primary_cwd_kind: 'subject_runtime',
+          permission_profile: 'read_only',
+          intent: 'collect initial evidence',
+          context: {
+            belief_id: 'belief-bootstrap',
+            belief_relation: 'create_belief',
+            expected_belief_claim: 'the fresh subject exposes a measurable signal',
+            expected_belief_update: 'create only from the declared evidence outcome',
+          },
+          expected_output: ['evidence showing whether the measurable signal exists'],
+        },
+      },
+    };
+    const followup = {
+      type: 'propose_probe',
+      description: 'propose the next bounded probe',
+      serves_goal: 'goal-fresh',
+      params: {
+        hypothesis: 'the measurable signal is repeatable',
+        success_signal: 'repeatable evidence',
+        failure_signal: 'contradictory evidence',
+        death_boundary: 'one probe',
+        context: {
+          belief_id: 'belief-bootstrap',
+          belief_relation: 'test_belief',
+          expected_belief_update: 'validate or refute from the probe',
+        },
+      },
+    };
+    const duplicateBootstrap = {
+      ...bootstrap,
+      description: 'duplicate bootstrap for the same belief id',
+    };
+    const beliefDecisionContext = {
+      current_beliefs: { active: [], validated: [], recently_refuted: [] },
+    };
+
+    expect(validateQueuedAction({
+      ...bootstrap,
+      params: {
+        run_spec: {
+          ...bootstrap.params.run_spec,
+          expected_output: [],
+        },
+      },
+    }, { beliefDecisionContext }).errors.join('\n')).toContain('expected_output');
+    expect(validateQueuedAction(bootstrap, {
+      beliefDecisionContext: {
+        current_beliefs: {
+          active: [{ id: 'belief-bootstrap' }],
+          validated: [],
+          recently_refuted: [],
+        },
+      },
+    }).errors).toContain('belief_id_already_exists: belief-bootstrap');
+    expect(validateQueuedAction(bootstrap, {
+      beliefDecisionContext: {
+        current_beliefs: {
+          active: [],
+          validated: [],
+          recently_refuted: [],
+          retired: [{ id: 'belief-bootstrap' }],
+        },
+      },
+    }).errors).toContain('belief_id_already_exists: belief-bootstrap');
+
+    const result = await queueAnalyzeDecideActions({
+      projectRoot: runtimeRoot,
+      runtime: { runtimeRoot, subject: 'demo' },
+      decisionQueue,
+      cycleId: 'cycle-bootstrap',
+      timestamp: new Date().toISOString(),
+      analysis: { decision: 'execute', actions: [bootstrap, duplicateBootstrap, followup] },
+      actions: [bootstrap, duplicateBootstrap, followup],
+      pipeline: 'reactor',
+      beliefDecisionContext,
+    });
+
+    expect(result.decisions_queued, JSON.stringify(result.decisions_skipped)).toHaveLength(2);
+    expect(result.decisions_skipped).toHaveLength(1);
+    expect(result.decisions_skipped[0]).toMatchObject({
+      index: 1,
+      reason: 'invalid_action',
+      validation: {
+        errors: ['create_belief_duplicate_in_batch: belief-bootstrap'],
+      },
+    });
+    expect(decisionQueue.getAll()[0].action).toMatchObject({
+      requires_approval: true,
+      approval_granted: false,
+    });
+    expect(decisionQueue.getAll()[1].metadata.belief_id).toBe('belief-bootstrap');
+  });
 });
 
 describe('required params table matches handlers', () => {

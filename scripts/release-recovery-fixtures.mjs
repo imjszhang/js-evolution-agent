@@ -1,5 +1,5 @@
 /**
- * Shared 0.1.1 recovery fixtures (#143).
+ * Shared recovery fixtures for the current release.
  *
  * Writers only. Readiness projection stays in service.getReadiness /
  * readSubjectReadiness — do not duplicate that logic here.
@@ -61,7 +61,7 @@ export function createIsolatedRecoveryHome({
   writeFileSync(join(sourceRoot, 'oada.config.mjs'), 'export default { version: 1 };\n');
   writeFileSync(join(sourceRoot, 'package.json'), `${JSON.stringify({
     name: 'jea',
-    version: '0.1.0',
+    version: '0.2.0',
     type: 'module',
   }, null, 2)}\n`);
   mkdirSync(join(sourceRoot, 'src', 'cli'), { recursive: true });
@@ -304,7 +304,7 @@ export function writePackagedDirFixture({
   writeFileSync(join(dest, 'oada.config.mjs'), 'export default { version: 1 };\n');
   writeFileSync(join(dest, 'package.json'), `${JSON.stringify({
     name: 'jea',
-    version: '0.1.0',
+    version: '0.2.0',
     type: 'module',
   }, null, 2)}\n`);
   writeFileSync(join(dest, 'src', 'cli', 'jea.mjs'), 'export async function main() { return 0; }\n');

@@ -8,6 +8,7 @@ import { randomUUID } from 'node:crypto';
 import {
   EXEC_INTENT_STATUSES,
   execIntentKey,
+  extractBeliefContext,
   handleContractValidation,
   validateExecIntent,
 } from '../../contracts/index.mjs';
@@ -64,6 +65,7 @@ export function beginExecIntent(dataRoot, {
   attempt = 1,
   action = {},
   source = 'exec_queue',
+  causalIdentity = {},
 } = {}) {
   if (!dataRoot) throw new Error('beginExecIntent requires dataRoot');
   const resolvedDecisionId = decisionId || action?.decision_id || action?.id || null;
@@ -78,8 +80,16 @@ export function beginExecIntent(dataRoot, {
     const existing = store.intents.find((item) => item.key === key && isOpenStatus(item.status));
     if (existing) {
       if (existing.status === 'prepared' || existing.status === 'intended') {
-        existing.execution_id = executionId || existing.execution_id;
+        existing.execution_id = existing.execution_id || executionId;
         existing.source = source;
+        existing.producer_batch_id = existing.producer_batch_id
+          || causalIdentity.producer_batch_id
+          || null;
+        existing.reaction_id = existing.reaction_id || causalIdentity.reaction_id || null;
+        existing.belief_id = existing.belief_id
+          || causalIdentity.belief_id
+          || extractBeliefContext(action).belief_id
+          || null;
       }
       intent = existing;
       return store;
@@ -94,6 +104,12 @@ export function beginExecIntent(dataRoot, {
       attempt: Math.max(1, Math.floor(Number(attempt) || 1)),
       status: 'prepared',
       source,
+      producer: 'exec',
+      producer_batch_id: causalIdentity.producer_batch_id ?? null,
+      reaction_id: causalIdentity.reaction_id ?? null,
+      belief_id: causalIdentity.belief_id
+        ?? extractBeliefContext(action).belief_id
+        ?? null,
       created_at: nowIso(),
       completed_at: null,
       last_error: null,

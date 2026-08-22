@@ -279,6 +279,8 @@ export async function runExecQueueTask(root, subject, input = {}) {
 
 export async function runVerifyBatchTask(root, subject, input = {}, flags = {}) {
   const runtime = runtimeForSubject(root, subject);
+  const buildContext = flags.buildCycleContext ?? buildCycleContext;
+  const verifyStep = flags.runVerifyStep ?? runVerifyStep;
   consumeWakeIntent(root, subject, { kind: 'verify' });
   const verified = [];
   let claimed = claimPendingVerifyResult(runtime.dataRoot);
@@ -303,9 +305,9 @@ export async function runVerifyBatchTask(root, subject, input = {}, flags = {}) 
     const execResult = claimed.result;
     const cycleId = execResult.cycle_id || execResult.execution_id;
     try {
-      const ctx = await buildCycleContext(root, runtime);
+      const ctx = await buildContext(root, runtime);
       ctx.pipeline = 'reactor';
-      const verify = await runVerifyStep(ctx, {
+      const verify = await verifyStep(ctx, {
         intelResult: { cycle_id: cycleId },
         execResult: {
           ...execResult,
@@ -321,6 +323,8 @@ export async function runVerifyBatchTask(root, subject, input = {}, flags = {}) 
       verified.push({
         execution_id: execResult.execution_id,
         report_path: verify.reportPath,
+        comparison_status: verify.verification?.comparison?.status ?? null,
+        settlement_signal: verify.verification?.comparison?.settlement_signal ?? null,
       });
     } catch (err) {
       completeVerifyResult(runtime.dataRoot, execResult.execution_id, {
@@ -341,7 +345,9 @@ export async function runVerifyBatchTask(root, subject, input = {}, flags = {}) 
     });
     enqueueWakeIntent(root, subject, {
       kind: 'rule',
-      reason: 'verify_report',
+      reason: verified.some((item) => item.comparison_status === 'contradicted')
+        ? 'expected_output_contradicted'
+        : 'verify_report',
       source: 'verify_batch',
     });
   }

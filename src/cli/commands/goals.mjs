@@ -171,6 +171,7 @@ export function buildGoalObjectUpdate(root = getProjectRoot(), nextGoal, opts = 
     reason: String(opts.reason).trim(),
     evidence_refs: evidenceRefs,
     cycle_id: opts.cycle ?? null,
+    ...(opts.causalIdentity ?? {}),
   };
 
   return {
@@ -199,6 +200,7 @@ export function applyGoalObject(root = getProjectRoot(), nextGoal, opts = {}) {
     evidenceRefs,
     cycle: opts.cycle ?? null,
     store: opts.store,
+    causalIdentity: opts.causalIdentity,
   });
 }
 
@@ -321,6 +323,7 @@ export function buildGoalPatchUpdate(root = getProjectRoot(), patches, opts = {}
     cycle_id: opts.cycle ?? null,
     belief_retirements: [],
     rule_status: opts.ruleStatus ?? null,
+    ...(opts.causalIdentity ?? {}),
   };
 
   return { runtime, path, previousGoal, patches: normalized, event, opts };
@@ -441,6 +444,7 @@ function tryApplyProposedGoal(root, {
       evidenceRefs: goalsAssessResult?.event?.evidence_refs ?? assessment.evidence_refs ?? [],
       cycle: cycleId,
       store: opts.store,
+      causalIdentity: opts.causalIdentity,
     });
     return {
       ...base,
@@ -547,6 +551,7 @@ export function autoCalibrateGoals(root = getProjectRoot(), goalsAssessResult = 
         cycle: cycleId,
         flags: opts.flags,
         ruleStatus,
+        causalIdentity: opts.causalIdentity,
       });
       const result = commitGoalPatch(build, { store: opts.store, policy });
       const mode = allSkipped.length > 0 ? 'patch_partial' : 'patch';
@@ -632,27 +637,30 @@ export async function assessActiveGoals(root = getProjectRoot(), flags = {}, opt
     throw new Error('No active goals found. Run `jea data init --goals` first.');
   }
 
-  const { record: reportRecord } = findReportRecord(root, flags);
+  const reportRecord = opts.reportRecord ?? findReportRecord(root, flags).record;
   if (!reportRecord) {
     throw new Error(flags.cycle
       ? `No intel report found for cycle: ${flags.cycle}`
       : 'No intel reports found yet. Run `jea run` first.');
   }
-  const reportPath = resolveIntelReportRecordPath(active.runtime.runtimeRoot, reportRecord);
-  if (!reportPath || !existsSync(reportPath)) {
+  const reportPath = opts.reportRecord
+    ? (reportRecord.md_path ?? null)
+    : resolveIntelReportRecordPath(active.runtime.runtimeRoot, reportRecord);
+  if (!opts.reportRecord && (!reportPath || !existsSync(reportPath))) {
     throw new Error(`Report file missing on disk: ${reportRecord.md_path}`);
   }
 
   const cfg = opts.aiClient || opts.agentContextDocs ? opts : await loadAssessmentConfig(root);
   const store = opts.store ?? makeStore(active.runtime);
   const resolvedReportRecord = { ...reportRecord, md_path: reportPath };
-  const reportMarkdown = readFileSync(reportPath, 'utf-8');
+  const reportMarkdown = opts.reportMarkdown ?? (reportPath ? readFileSync(reportPath, 'utf-8') : '');
   const carryoverDoc = opts.carryoverDoc
     ?? readCarryoverDocument(active.runtime.runtimeRoot);
   const mechanicalGuards = opts.mechanicalGuards
     ?? loadEnabledGuards(root, active.runtime.subject);
-  const ruleFeedbackStats = opts.ruleFeedbackStats
-    ?? computeRuleFeedbackStats({
+  const ruleFeedbackStats = opts.ruleFeedbackStats !== undefined
+    ? opts.ruleFeedbackStats
+    : computeRuleFeedbackStats({
       store,
       activeGoals: active.goals,
       carryoverDoc,
@@ -670,7 +678,15 @@ export async function assessActiveGoals(root = getProjectRoot(), flags = {}, opt
     logger: cfg.host?.logger,
     ruleFeedbackStats,
     goalIds: opts.goalIds ?? null,
+    evidence: opts.evidence ?? null,
+    recentGoalEvents: opts.recentGoalEvents ?? null,
   });
+  if (Array.isArray(opts.evidenceRefs)) {
+    assessed.assessment = {
+      ...assessed.assessment,
+      evidence_refs: opts.evidenceRefs,
+    };
+  }
   const reportRef = reportEvidenceRef(resolvedReportRecord);
   const event = {
     type: 'assessment',
@@ -679,11 +695,14 @@ export async function assessActiveGoals(root = getProjectRoot(), flags = {}, opt
     ...(Array.isArray(opts.activation_targets)
       ? { activation_targets: opts.activation_targets }
       : {}),
+    ...(opts.causalIdentity ?? {}),
     reason: assessed.assessment.reason,
     rule_status: assessed.assessment.rule_status ?? null,
-    evidence_refs: assessed.assessment.evidence_refs?.length
-      ? assessed.assessment.evidence_refs
-      : (reportRef ? [reportRef] : []),
+    evidence_refs: Array.isArray(opts.evidenceRefs)
+      ? opts.evidenceRefs
+      : (assessed.assessment.evidence_refs?.length
+        ? assessed.assessment.evidence_refs
+        : (reportRef ? [reportRef] : [])),
     assessment: assessed.assessment,
     proposed_goal: assessed.assessment.proposed_goal ?? null,
     goal_patches: assessed.assessment.goal_patches ?? null,

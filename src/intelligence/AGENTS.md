@@ -7,88 +7,62 @@
 
 - `jea run [--mock] [--deepseek] [--skip-goals-assess] [--skip-belief-update] [--subject NAME]`：运行一次完整演化循环并写入情报回执。
 - `jea run --mock`：不调用真实模型，适合本地冒烟验证。
-- `jea run --loop` / `jea run --pipeline agent_loop|phases`：S9 已删除，命令会明确失败。
 - `jea run --deepseek`：要求 DeepSeek API 配置存在。
-- `jea run --skip-goals-assess`：跳过本轮目标评估（Phase 4 / 4.5）。
-- `jea run --skip-belief-update`：跳过 post-verify 信念更新（Phase 3.5）。
+- `jea run --skip-goals-assess`：诊断用，仅跳过 goal assess/calibrate。
+- `jea run --skip-belief-update`：诊断用，仅跳过 post-verify belief settlement effect。
 
 ### Reactor 同步链
 
-`jea run` 只走 reactor：claim → cognitive_reaction → exec/verify/rule/memory 收尾。查证实现在 `src/evolution/investigation/`。**Phase 2 exec 仍独立执行** pending_decisions；verify / belief / goals / diary **保持固定收尾**。
-
-内部阶段：
+`jea run` 与 daemon 共用同一组 reactors 和 settlement coordinator；同步命令只是等待链路收敛，不是另一套 driver：
 
 ```text
-机械 Seen 底板 → 只读查证（tool loop，可交 verified_facts）
-→ 宿主组装最终 Seen（machine_context + 机械底板 + verified_facts）
-→ 模型定稿判断章节（Inferred / Cyber-Taoist / 下一轮建议）
-→ 机械契约检查（必需标题 / 编造 ref）→ 有界重问修复（默认最多 1 轮）
-→ 宿主 splice Seen + 引用字形净化 → 经典 Analyze+Decide JSON 批入队
+EvidenceEnvelope → claim → cognitive reaction（investigate → report → Decide）
+→ durable exec intent → exec result / action receipt
+→ expected-output verify → idempotent belief/goal settlement
+→ Memory Reactor consolidation
 ```
 
-完整单轮 step 图：
+信念（Belief）是 Decide 的行动约束：`run_spec.context.belief_id` / `belief_relation` 将行动绑定到可验证假设。验证后只能通过共享 settlement service 依据精确 action receipt / verify report refs 更新。查证实现在 `src/evolution/investigation/`，只读且不直接调度副作用。
 
-```text
-reactor → exec → verify → belief_update → goals_assess → goals_calibrate → diary
-```
-
-信念（Belief）在 Phase 1 被 Decide 读取约束行动，在 Phase 3.5 依据 receipt 与 verify_report 正式更新。详见下文「信念管理」与 [src/actions/AGENTS.md](../actions/AGENTS.md) 的「人工审批与操作者意图」。
-
-模式解析优先级（仿 evolution.mode）：
-
-1. `<JEA_HOME>/subjects/registry.json` → `subjects.<name>.evolution.pipeline`
-2. CLI `--pipeline reactor`（`--loop` / `agent_loop` / `phases` 会失败）
-3. env `JEA_CYCLE_PIPELINE`（非 reactor 会失败）
-4. 默认 `reactor`
-
-cycle-state 缺 `meta.pipeline` 时按 `reactor` 步图只读 reconcile；历史 `phases` / `agent_loop` JSON 仍可读，不再作为 live driver。
-
-**deprecated `phases` Phase 1**（仅显式启用时）：
-
-```text
-Phase 1   intel pipeline（observe -> report -> analyze+decide）
-Phase 1.5 intel report 持久化
-→ 其后与 agent_loop 相同：exec → verify → belief → goals → diary
-```
+兼容边界：0.1.0 cycle-state、报告和缺少可选 causal/comparison 字段的记录继续可读，并显示为 legacy/unknown；不会生成虚构链路。旧 driver 配置不再是 live 选择项。
 
 相关 env：
 
 | 变量 | 默认 | 含义 |
 | --- | --- | --- |
-| `JEA_CYCLE_PIPELINE` | `reactor` | 仅 `reactor`；其它值会失败 |
 | `JEA_LOOP_MAX_READONLY_TURNS` | `6` | 只读查证最大 LLM 轮数（主配置） |
 | `JEA_LOOP_MAX_TURNS` | （可选） | 与 `MAX_READONLY` 取较小值；兼容旧配置 |
 | `JEA_LOOP_MAX_WALLCLOCK_MS` | `1200000` | 整步墙钟（查证+报告+Decide） |
 | `JEA_LOOP_FINISH_RESERVE_MS` | `120000` | 留给报告+Decide 的墙钟预留（查证软截止 = 总墙钟 − 预留） |
 | `JEA_LOOP_CLOSING_TIMEOUT_SEC` | `240` | 查证强制收尾轮 LLM 超时（秒） |
 | `JEA_LOOP_TOOL_RESULT_MAX_CHARS` | `6000` | 回填模型的工具结果截断 |
-| `JEA_REPORT_REPAIR_MAX_ROUNDS` | `1` | 报告机械契约修复最大重问轮数（0 关闭，上限 2）；phases 与 agent_loop 共用 |
+| `JEA_REPORT_REPAIR_MAX_ROUNDS` | `1` | 报告机械契约修复最大重问轮数（0 关闭，上限 2） |
 
-Phase 2 执行预算 / 队列 TTL（`JEA_EXEC_*`、`JEA_AGENT_*`、`JEA_PENDING_TTL_*`、`JEA_QUEUE_*`）见 [src/actions/AGENTS.md](../actions/AGENTS.md)。
+执行预算 / 队列 TTL（`JEA_EXEC_*`、`JEA_AGENT_*`、`JEA_PENDING_TTL_*`、`JEA_QUEUE_*`）见 [src/actions/AGENTS.md](../actions/AGENTS.md)。
 
 查证工具（仅 investigation 阶段）：
 
 - **readonly**：`get_current_time`、`intel_query`、`get_current_beliefs`、`get_active_goals`、`get_decision_queue_summary`、`read_intel_report`（后四者工具结果附 `ref` / `cite_as` 句柄）。宿主另在动态载荷 `## Cycle` 之后注入固定字段 `## Current Time`（本步快照；勿写入 system stablePrefix，以免打穿 DeepSeek KV 前缀缓存）
 - **control**：`finish_investigation`（必填 `findings_summary`、`enough_for_report`；可选 `gaps_closed` / `open_gaps` / `verified_facts[{ref,statement}]`）。若 `verified_facts` 被拒且非 closing 收尾，宿主给一次重交机会（`ok: false` + `verified_facts_rejected_retry`；已接受 facts 累积保留；`fact_retry_used` 记入 investigation）。
 
-查证阶段**不**注册 action 入队工具，也**不**在 loop 内写完整 Intel 报告。**phases 与 agent_loop 的最终 Seen 均由宿主组装**：机械底板 + `machine_context` bullets（agent_loop 另可并入已校验 `verified_facts`；phases 无查证阶段故 `verifiedFacts=[]`）。模型只写判断章节。落盘次序：首稿写入 `*_report_raw.md` → 机械契约检查（缺必需标题 / 判断章节编造 ref）→ 有界重问修复（最多 `JEA_REPORT_REPAIR_MAX_ROUNDS` 轮，默认 1；修复稿另存 `*_report_repaired.md`；事件 `intel_report_repair`）→ `transformMd` 在 `persistIntelReport` 内、`redactSecrets` 之前做字形净化与 `## Seen` splice（只写盘一次）→ persist 后发单次诚实事件（`phases_report_honesty` / `agent_loop_report_honesty`）。agent_loop 查证若最终仍有 `rejected_facts`，另发 `agent_loop_rejected_facts`（不进 carryover）。诚实矩阵 raw 列始终审修复前首稿；最终产物硬闸看 splice+脱敏后报告。有意不对称：phases 报告 prompt 仍含 intelligenceContext + observe + Machine Context JSON；agent_loop 报告 prompt 更瘦。verify 复放的是宿主最终报告（raw 仅存档）。
+查证不注册 action 入队工具，也不在调查 turn 内直接写完整报告。最终 Seen 由宿主以机械底板、`machine_context` 和已校验 `verified_facts` 组装；模型只写判断章节。报告先过必需标题/编造 ref 检查和有界修复，再 splice Seen、净化引用、`redactSecrets` 后只持久化一次。verify 使用最终报告，raw/repaired 文件只作查证存档。
 
-## 证据流与反应器影子（Phase 1–2，#33 / PR #35）
+## 证据流与反应器影子
 
 反应器化迁移的读侧、影子与 live 路径。S9 后 evidence wake 已固化：真实 `pending_decisions` / reports index / evolution-events 由 `cognitive_reaction` 写入。列车回退已删除。
 
-### 证据流读侧（Phase 1）
+### 证据流读侧
 
 - `jea intel stream [--limit N] [--since ISO] [--kind KIND] [--cycle ID] [--json]`：虚拟只读投影，把 receipts / verify / briefs / channel events 等散落源统一为 `EvidenceEnvelope[]`（不写盘）。
 - `jea intel stream --reconcile [--json]`：逐源对账（disk 行数 vs stream 条目；`contract_errors=0` 为通过）。duplicate id 记 data-quality 警告，不阻断 ok。
 
 实现：`src/intelligence/evidence-stream.mjs`；契约：`src/contracts/evidence-envelope.mjs`。
 
-### 认知反应器影子（Phase 2）
+### 认知反应器影子
 
 - `jea reactor shadow run [--subject NAME] [--mock] [--limit N] [--skip-investigate] [--json]`：claim 一批未覆盖证据 → investigate（可选）→ 宿主组装 Seen → 报告 → Decide → **仅写 shadow 产物**。
 - `jea reactor shadow status [--subject NAME] [--json]`：claim ledger、近期 shadow runs、honesty 计数。
-- `jea reactor shadow compare --cycle ID [--batch BATCH] [--subject NAME] [--json]`：shadow Decide 与同期列车 `pending_decisions` 指纹对照（matched / shadow_only / train_only / coverage）。
+- `jea reactor shadow compare --cycle ID [--batch BATCH] [--subject NAME] [--json]`：shadow Decide 与同期 live `pending_decisions` 指纹对照（matched / shadow_only / live_only / coverage）。
 
 **绝不写入**（影子模式硬边界）：
 
@@ -118,20 +92,7 @@ npm run jea -- intel stream --reconcile --subject js-evolution-agent
 npm run jea -- reactor shadow compare --cycle <上一步 cycle_id> --subject js-evolution-agent
 ```
 
-S9 已固化 evidence wake / 墙钟 TTL / rate-only。隔离 mock canary：`npm run reactor:canary`。隔离晋升闸：`node scripts/reactor-s8-promote-check.mjs --subject NAME`。生产操作见 `docs/reactor-s8-gray-runbook.md`。列车回退已删除。
-
-- 默认 `resolveCyclePipeline` 只接受 `reactor`；`--pipeline agent_loop|phases` / registry 旧值会失败
-- `jea run` / daemon 走 `reactor` step → claim 证据批 → 真实 `pending_decisions` + reports index + `reactor_report_honesty` / `reactor_pipeline` 事件
-- 沙盒 smoke：`npm run jea -- run --mock --subject js-evolution-agent`（当前 registry 已灰度该 subject）
-- **M4 carryover 写侧已删**：不再写入 `agent_loop_carryover.json`（读侧保留 leftover）；`isCarryoverWriteEnabled()` 恒为 false
-- **M5 tick / 产物对账**：reactor 默认不因 heartbeat tick 自动开轮，也不按 step 产物假完成 running task；`JEA_TICK_OPEN_CYCLE=1` / `JEA_STEP_ARTIFACT_RECONCILE=1` 可恢复列车补偿。显式开轮与缺步入队保留
-- **M6 KV 前缀**：reactor report/decide/investigate 拆 stablePrefix（不含 `batch_id`）与 dynamicPayload；`prompt_cache` 写入 `reactor.json` 与 `reactor_pipeline` 事件；日志 `[prompt-cache reactor_*]`
-- **M6 验收**：live `reactor_report_honesty` 每 cycle 恰好一条（`test/cycle-e2e.test.mjs`）；kill-9 演练见 `scripts/reactor-kill9-drill.mjs`
-- **M2 evidence 观察**：`docs/reactor-migration-observation.md`；沙盒入口 `bash scripts/jea-sandbox-observe.sh run --mock`（`STREAK_UNIT=evidence` + `STARVED_STRATEGY=wall_clock` + `JEA_GOAL_AUTO_APPLY=0`，不污染列车 `.env`）
-- 观察快照：`node scripts/reactor-observe-check.mjs --subject js-evolution-agent --days 14`
-- kill -9 / claim 演练：`node scripts/reactor-kill9-drill.mjs simulate|live --subject NAME`
-
-设计文档：`docs/reactor-target-mechanism.md`、`docs/reactor-migration-rule-inventory.md`、`docs/evidence-batch-primitive-review.md`、`docs/reactor-migration-observation.md`。
+Live 写入 `pending_decisions`、reports index 与 evolution events；shadow 永不写这些权威产物。隔离 mock canary：`npm run reactor:canary`。完整一致性审计：`jea intel stream --reconcile` 后运行 `jea audit closure --json`。
 
 ## 情报与报告
 
@@ -143,7 +104,7 @@ S9 已固化 evidence wake / 墙钟 TTL / rate-only。隔离 mock canary：`npm 
 - `jea intel report --cycle <id>`：输出指定 cycle 的报告。
 - `jea intel report --open`：用系统默认程序打开最新报告。
 - `jea intel report --json`：输出报告索引记录 JSON，而不是 Markdown 正文。
-- `jea intel viewer serve [--port N] [--open] [--limit N] [--subject NAME] [--subjects a,b]`：托管 `tools/evolution-viewer/public/` 并直读 subject runtime；**默认追踪所有已注册 subject**（等同 `--all`），用 `--subject` / `--subjects` 缩小范围。Live API：`GET /api/subjects`（daemon 摘要 + `attention` 计数/最高严重度）、`GET /api/subjects/:subject/manifest|daemon|observability|events/recent|rounds/:id|cycles/:id`（`cycles/:id` 含 `diagnostics` / `observability_attention`）；兼容默认 subject 的旧路径 `GET /api/manifest`、`GET /api/rounds/:cycleId`、`GET /api/daemon`、`GET /api/observability`、`GET /api/cycles/:cycleId`、`GET /api/events/recent`。UI：**默认运维总览（Ops Home）**（KPI、待关注、open cycles、Channel、briefs、事件流）；选中轮次或 `#cycle-…` 进入 **阅读视图**（报告/日记主区，诊断与任务在右侧折叠栏）。不再自动打开最新 round。`/events` SSE tail 各 subject 的 `evolution-events.jsonl`，payload 含 `subject` / `namespace`，连接后立即推送最小 `hello`，再推送 `runtime_snapshot`（subjects / round_count），随后推送 `round_added` / `round_updated` / `daemon_event` / `runtime_updated`，**无需先 build dist**。多 subject 时浏览器用 `?subject=NAME#cycle-…` 定位。
+- `jea intel viewer serve [--port N] [--open] [--limit N] [--subject NAME] [--subjects a,b]`：开发/兼容 Viewer，直读 subject runtime，默认追踪所有 registry subjects。它展示 canonical evidence/task/attention 计数、事件流、当前 verify/Memory 产物和历史 report/diary；旧 `/api/rounds/:id`、`/api/cycles/:id` 与 hash 路由只为 0.1.0 读取兼容。`/events` SSE 继续推送 subject-scoped runtime updates，**无需先 build dist**。正式 Electron/Web 产品使用共享三栏工作区与 canonical operator projection。
 - `jea intel viewer build [--subject NAME] [--limit N] [--out PATH]`：可选离线快照（marked 预渲染到 `tools/evolution-viewer/dist/`）；用 `npx serve tools/evolution-viewer/dist` 等任意静态服务器打开。**离线 build 不含 daemon 控制台**（无 `/api/daemon`）；daemon 运行态仅 live serve 可用。
 - `npm run viewer:build` / `npm run viewer:serve`：同上（`viewer:serve` 默认 `--open`）。
 
@@ -160,11 +121,11 @@ S9 已固化 evidence wake / 墙钟 TTL / rate-only。隔离 mock canary：`npm 
 | 类型 | 含义 | 典型入口 |
 | --- | --- | --- |
 | **Constraint（约束）** | 长期必须遵守的边界或偏好 | `human_guidance.md`、subject policy、OADA 规则 |
-| **Intent（意图）** | 下一轮关注什么，**不是事实** | `jea intel brief put` |
+| **Intent（意图）** | 下一次 reaction 关注什么，**不是事实** | `jea intel brief put` |
 | **Fact（确立事实种子）** | 操作者断言：注入后恰好一轮默认为真，轮末消化进信念 | `jea intel fact put`（或 `intel ingest` 带 `kind: operator_fact`） |
 | **Evidence（证据）** | 世界发生了什么，可被推翻 | `intel ingest` / `inbox`、probe、receipt |
 
-另有 **Action（硬开关）**：如 `approval_granted`，由 Decide 产出、Phase 2 执行；操作者不应直接写 `pending_decisions.json` 绕过 Decide。
+另有 **Action（硬开关）**：如 `approval_granted`，由 Decide 产出、exec preflight 强制检查；操作者不应直接写 `pending_decisions.json` 绕过 Decide。
 
 ### Operator Intent Brief
 
@@ -172,7 +133,7 @@ S9 已固化 evidence wake / 墙钟 TTL / rate-only。隔离 mock canary：`npm 
 - `jea intel brief list`：列出待处理 brief。
 - `jea intel brief processed`：列出已消费 brief。
 
-Brief 是**单轮人工意图**，不是已验证证据；Phase 1 的 report/decide prompt 会读取它，Analyze+Decide 成功入队后归档到 `processed/`。存储路径：
+Brief 是**单次 reaction 的人工意图**，不是已验证证据；cognitive reactor 的 report/decide 会读取它，Decide 成功入队后归档到 `processed/`。存储路径：
 
 ```text
 <JEA_HOME>/subjects/<data_namespace>/data/evolution/operator_briefs/pending/
@@ -198,8 +159,8 @@ Brief 是**单轮人工意图**，不是已验证证据；Phase 1 的 report/dec
 
 operator_fact **不再是永久权威事实**。它是操作者注入的一次性种子：
 
-1. **注入**：进入 `operator_facts/pending/`，下一轮 Phase 1 升格为 Seen（`operator_established_fact`），恰好默认为真一轮。
-2. **消化**（Phase 3.5 belief_update）：对照本轮 receipts / verify_report：
+1. **注入**：进入 `operator_facts/pending/`，下一次 cognitive reaction 升格为 Seen（`operator_established_fact`），恰好默认为真一次。
+2. **消化**（belief settlement effect）：对照该 execution window 的 receipts / verify_report：
    - `supported` → 写入信念 `validated`，`origin: operator`
    - `untested` → 写入信念 `active` + `high`，标记未验证
    - `contradicted` → **不**入库为真，打开 operator question 向人求证
@@ -242,7 +203,7 @@ operator_fact **不再是永久权威事实**。它是操作者注入的一次�
 当消化发现矛盾（或后续 stuck-detection）时，系统打开 operator question，露出在：
 
 - `jea daemon inbox`（attention 汇总）
-- Phase 1 上下文 `pending_operator_questions`
+- cognitive context 的 `pending_operator_questions`
 - `jea intel question list` / `jea intel question resolve <id> [--note TEXT]`
 
 ```text
@@ -255,15 +216,15 @@ operator_fact **不再是永久权威事实**。它是操作者注入的一次�
 ### Operator Guidance（长期约束）
 
 - 路径：`<JEA_HOME>/subjects/<data_namespace>/data/evolution/human_guidance.md` 的 `## Current` 段。
-- 注入：Phase 1 report/decide 的 **Operator Guidance** 区块；**每轮**都会读，当前 pipeline 不会在 cycle 结束后自动清空。
+- 注入：report/decide 的 **Operator Guidance** 区块；每次 reaction 都会读，不会自动清空。
 - 适合：稳定规则（如「ENOENT 必须带 execution_root 解释」）。
-- 不适合：「下一轮请核实 X」——应改用 `jea intel brief put`。
+- 不适合：「下一次请核实 X」——应改用 `jea intel brief put`。
 
 ### 主体策略与权威文档
 
 - `<JEA_HOME>/subjects/<data_namespace>/SUBJECT.md`：`Off-Limits Without Human Approval` 等审批与安全边界；`SOUL.md` 为 channel persona（不参与治理权威文献）；用 `jea subject check` 校验结构。
 - `<JEA_HOME>/subjects/registry.json`：lane、resource root 等机器可读配置。
-- `policies/authority/CONSTITUTION.md`、`policies/authority/GUIDE.md`、`oada.config.mjs`：Phase 1 权威文档，优先级高于情报材料。
+- `policies/authority/CONSTITUTION.md`、`policies/authority/GUIDE.md`、`oada.config.mjs`：认知权威文档，优先级高于情报材料。
 
 ### 通用情报写入（Evidence，非 operator_fact）
 
@@ -274,11 +235,11 @@ operator_fact **不再是永久权威事实**。它是操作者注入的一次�
 ### 目标与信念
 
 - `jea goals update`：替换 active goals，写 `goal-events.jsonl`（演化方向的人工写入点）。
-- `jea beliefs update`：手动触发 Phase 3.5；信念的正式创建/调整通常由 verify 自动完成，依据 receipt 与 verify_report，而非 report 叙事。详见下文「目标管理」。
+- `jea beliefs update`：兼容的手动 settlement 入口；正式创建/调整通常由 verify 唤醒 rule reactor 完成，依据精确 receipt 与 verify_report refs，而非 report 叙事。
 
 ### 记录型 action（经 Decide 间接落盘）
 
-Decide 可调度、`Phase 2` 执行的记录型动作，用于落已有结论而非调查：`record_observation`、`run_evidence_audit`、`propose_probe`、`write_retrospective`、`request_core_review`。操作者通常通过 brief 引导 Decide，而不是直接写决策队列。
+Decide 可调度执行层的记录型动作，用于落已有结论而非调查：`record_observation`、`run_evidence_audit`、`propose_probe`、`write_retrospective`、`request_core_review`。操作者通常通过 brief 引导 Decide，而不是直接写决策队列。
 
 ### 不建议的操作者入口
 
@@ -293,7 +254,7 @@ Decide 可调度、`Phase 2` 执行的记录型动作，用于落已有结论而
 | 场景 | 用哪个 |
 | --- | --- |
 | 长期约束、稳定偏好 | `human_guidance.md` 或 subject policy |
-| 下一轮核实 / 审批意图 / 排优先级 | `jea intel brief put` |
+| 下一次 reaction 核实 / 审批意图 / 排优先级 | `jea intel brief put` |
 | 已确认领域口径或术语（种子） | `jea intel fact put` |
 | 可推翻的外部观测 | `intel ingest` / `inbox`（普通 observation） |
 | 系统提问待答复 | `jea intel question list` → 再 `fact put` / `brief put`，然后 `question resolve` |
@@ -302,8 +263,8 @@ Decide 可调度、`Phase 2` 执行的记录型动作，用于落已有结论而
 
 | 机制 | 入口 | 生命周期 | 证据地位 |
 | --- | --- | --- | --- |
-| Operator Intent Brief | `jea intel brief put` | 单轮；入队后归档 | 软意图，不可当事实 |
-| Operator Fact | `jea intel fact put` | 一轮默认真 → Phase 3.5 消化进信念 | 种子；消化后走信念生命周期 |
+| Operator Intent Brief | `jea intel brief put` | 单次 reaction；入队后归档 | 软意图，不可当事实 |
+| Operator Fact | `jea intel fact put` | 一次 reaction 默认真 → settlement 消化进信念 | 种子；消化后走信念生命周期 |
 | Operator Question | 系统打开；`jea intel question resolve` 销账 | 待人答复 | 注意力信号，非事实 |
 | Operator Guidance | `human_guidance.md` ## Current | 持续，直至手动清空 | 约束，非证据 |
 | 普通 observation | `jea intel ingest --source intel_observations` | 持久（90 天 retention） | 证据，非自动 Seen |
@@ -316,7 +277,7 @@ Decide 可调度、`Phase 2` 执行的记录型动作，用于落已有结论而
 - `jea goals patch --file PATH --reason TEXT [--evidence REF] [--cycle ID]`：应用 `goal_patches` JSON 数组（子目标增删改）；记录 `patched` 事件。`remove_child` 会自动 retire 绑定该 `goal_id` 的 active/validated 信念。
 - `jea goals assess [--cycle ID]`：让 AI 评估目标校准并记录 `assessment` 事件（可含 `goal_patches` 或 `proposed_goal`）。
 
-**Phase 4.5 自动校准**（`goals_calibrate`）：
+**Goal settlement 自动校准**（`goals_calibrate` effect）：
 
 默认策略 **`liberal`**（`JEA_GOAL_CALIBRATE_MODE`，可设 `strict` 恢复保守行为）：
 
@@ -329,17 +290,17 @@ Decide 可调度、`Phase 2` 执行的记录型动作，用于落已有结论而
 
 - `JEA_GOAL_CALIBRATE_MODE=liberal|strict`（默认 `liberal`）
 - `JEA_GOAL_MAX_OUTCOME_CHILDREN=N`（`0` = 无上限；liberal 默认不限制）
-- `JEA_GOAL_AUTO_APPLY=0`：只写 Phase 4 assessment，Phase 4.5 不落盘
+- `JEA_GOAL_AUTO_APPLY=0`：只写 assessment，不应用 calibrate effect
 - `JEA_GOAL_INTENT_SOFT_MAX`：update_child 后 intent 长度软上限（默认 `1500`）；超限发 `goal_intent_bloat` 警告事件，不硬拦
 
 Assessor prompt 仍建议 `goal_patches` 与 `proposed_goal` 互斥；执行器先尝试 patches，失败可在 liberal 下 fallback `proposed_goal`。`add_child` 的 child 建议带 `role: outcome|guard`（供审计）。`rule_status=mutate` 时机械拒绝 `remove_child` 守护子目标（`role=guard` 或 id 前缀 `guard-` / `monitor-`），只允许 `update_child` 修订观测点（守功能、破形态）。**continue/learn + refine 轮允许**对已被机械维持的守护目标 `remove_child`（mechanized retirement）。`patched` goal_event 会附带 `rule_status`。
 
 **法则反馈健康度**（`rule_feedback_stats`）：
 
-宿主按 `action.serves_goal` 聚合近期 receipts 的结果签名（`key=value` 归一化 hash），并对照 carryover 跨轮计数与 `evolution.guards` 配置，为每个子目标计算 `feedback_state`。默认仍按 cycle 分桶；Phase 4 可用只读命令 `jea goals feedback-compare --subject NAME [--json] [--at TIMESTAMP|--rolling N] [--starved-strategy both] [--include-fp]` 对比 cycle 与逐 receipt evidence，并做历史截点回放（不写运行时数据）。注入点：
+宿主按 `action.serves_goal` 聚合近期 receipts 的结果签名（`key=value` 归一化 hash），并对照 `evolution.guards` 配置，为每个子目标计算 `feedback_state`。只读命令 `jea goals feedback-compare --subject NAME [--json] [--at TIMESTAMP|--rolling N] [--starved-strategy both] [--include-fp]` 可对比历史 cycle 分桶与逐 receipt evidence，并做截点回放（不写运行时数据）。注入点：
 
-- **Phase 4 goals assess**（完整 JSON，含 `mechanical_guards` 段，驱动 `rule_status` 与退役/重生）
-- **Phase 1 Decide**（agent_loop 仅）：压缩段 `## Rule Feedback Health`（dead / degraded / starved / mechanized），信息用法——签名恒定或 starved 的 goal 不应原样重复同一探针；`mechanically_maintained` 目标勿再入队相同探针；不行动须在 `deferred` / `goal_coverage.not_covered` 说明。phases 路径不注入。
+- **goal assess effect**：完整 JSON，含 `mechanical_guards` 段，驱动 `rule_status` 与退役/重生。
+- **Decide context**：压缩的 `## Rule Feedback Health`（dead / degraded / starved / mechanized），避免原样重复无信息探针。
 
 | 状态 | 含义 | assess 期望 |
 | --- | --- | --- |
@@ -379,14 +340,28 @@ Assessor prompt 仍建议 `goal_patches` 与 `proposed_goal` 互斥；执行器�
 
 **死亡边界报警**：若某子目标 `escalate_eligible`（`feedback_state=dead` 且 sig streak ≥ escalate，或未被机械维持的子目标 `starved_streak` ≥ escalate），而本轮 assess 未 mutate 或 calibrate 未对该子目标 applied patch（含 `mode: full_replace` 整树替换），**且**该 goal 的 `mutate_effective !== false`（化妆式 mutate 不豁免），则打开 operator question（`trigger: rule_feedback_dead`），并发 `rule_feedback_escalated` 事件；同 goal 已有 pending question 时去重。这是校准回路失灵的最后防线，不是常规人工审批出口。
 
-Carryover mechanical 项带跨轮字段 `fingerprint` / `first_seen_cycle` / `seen_count`（同 cycle 重写不重复计数；跨 cycle 精确或 Jaccard≥0.6 匹配继承）。agent_loop 查证 prompt 渲染时，`seen_count≥2` 的条目会标注「已连续 N 轮」。
-
 ### 信念管理
 
 - `jea beliefs show`：显示当前 active/validated/refuted 信念状态。
 - `jea beliefs events [--limit N]`：查看近期信念变更事件。
-- `jea beliefs update [--cycle ID]`：手动触发 post-verify 信念更新（通常由 `jea run` Phase 3.5 自动执行）。
+- `jea beliefs update [--cycle ID]`：兼容的手动 post-verify 更新入口；live 路径通常由 rule reactor settlement 自动执行。
 
-信念是绑在 goal 上的可验证行动假设（`claim`、`next_test`、`evidence_refs`）。Decide 阶段通过 `params.run_spec.context.belief_id` / `belief_relation` 绑定 `agent_run`；**创建或调整信念的正式写入点在 Phase 3.5**，依据 action receipt 与 verify_report，而非 report 叙事。存储：`data/intelligence/beliefs/current_beliefs.json`、`belief-events.jsonl`。
+信念是绑在 goal 上的可验证行动假设（`claim`、`next_test`、`evidence_refs`）。Decide 通过 `params.run_spec.context.belief_id` / `belief_relation` 绑定 `agent_run`；**创建或调整信念的正式写入点是 settlement effect**，依据 action receipt 与 verify_report，而非 report 叙事。存储：`data/intelligence/beliefs/current_beliefs.json`、`belief-events.jsonl`。
+
+同步 `jea run` 与异步 rule reactor 共用 evidence-window settlement。幂等协调 sidecar 位于 `data/evolution/reactor/settlements.json`，只记录 claim、effect checkpoint 与结果摘要，可由携带 `settlement_id` / `settlement_effect` 的 belief/goal events 重建；**权威事实仍是 append-only belief/goal events，不是 settlement sidecar**。`validate` / `refute` / `reopen` 与 goal assess/calibrate 只引用该 execution window 的精确 `action_receipt:*` / `verify_report:*` refs。
+
+### Memory Reactor 与 closure audit
+
+Memory Reactor 只消费已完成 settlement 后的新 belief/goal events，低频更新 standing memory 与 evolution diary；它不是第二套信念存储，也不在同步 `jea run` 末尾伪造 diary。checkpoint/cursor 保证 crash 后从首个未处理 settlement 恢复。
+
+`jea audit closure [--subject NAME] [--json]` 是 0.2.0 闭环验收入口，报告：
+
+- belief binding / `run_spec.expected_output` 声明覆盖与 `legacy_unknown`；
+- decision / receipt / verify / settlement 的 causal correlation 与 batch-scoped refs；
+- duplicate settlement candidates；
+- Memory Reactor 相对最新 settlement 的 freshness/lag；
+- standing memory freshness，以及 evidence/task backlog 的分离统计。
+
+审计严格只读，不修复、迁移或懒重建 sidecar/index；缺失 claim covered index 时只在内存中从 archive 兼容计算。0.2.0 冻结门槛见 `policies/release/closure-target-0.2.0.json`：新记录缺 causal/expected/belief binding、重复 settlement、Memory 不新鲜均明确失败，`legacy_unknown` 单列且不冒充通过。升级前先停 daemon 并 `jea data backup`；迁移后运行 `jea intel stream --reconcile` 与 `jea audit closure --json`。0.1.0 optional fields 缺失属于兼容 unknown，不应批量回填虚构 ID。
 
 目标 JSON 需要包含 `id`、`name`、`intent`、`good_signal`、`bad_signal` 和 `children`。

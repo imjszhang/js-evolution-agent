@@ -160,8 +160,8 @@ export function createSetupFixtureState(options: {
       language: 'en',
       theme: 'system',
       defaultSubject: readiness.subjects.defaultSubject,
-      appVersion: '0.1.0',
-      cliVersion: '0.1.0',
+      appVersion: '0.2.0',
+      cliVersion: '0.2.0',
       commitSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       commitShort: 'aaaaaaa',
       buildTime: '2026-08-17T00:00:00.000Z',
@@ -192,7 +192,7 @@ export function createFixtureDiagnosticReport(state: SetupFixtureState = createS
       platform: settings.platform ?? 'linux',
       architecture: settings.architecture ?? 'x64',
       dirty: settings.dirty ?? false,
-      build_id: '0.1.0+aaaaaaa.20260817T000000'
+      build_id: '0.2.0+aaaaaaa.20260817T000000'
     },
     host: {
       jea_home: state.readiness.jeaHome.path,
@@ -332,6 +332,35 @@ export function createFixtureSetupClient(state: SetupFixtureState = createSetupF
         channel: current.readiness.conversation.desktopChannelEnabled ? 'attached' : 'stopped',
         conversation: current.readiness.conversationReady ? 'running' : 'blocked'
       })
+    },
+    async listCycles(subject) {
+      return {
+        subject,
+        namespace: `${subject}-data`,
+        round_count: 1,
+        cycles: [{
+          cycle_id: 'fixture-cycle',
+          generated_at: '2026-08-17T00:00:00.000Z',
+          tldr: 'Fixture evolution summary.',
+          has_diary: true,
+          status: 'closed'
+        }]
+      }
+    },
+    async getObservability(subject) {
+      return {
+        subject,
+        attention: { items: [], summary: { count: 0 } },
+        open_cycles: 0,
+        evidence_pending_count: 0,
+        daemon_task_pending_count: 0
+      }
+    },
+    async processCycleOnce(subject) {
+      return { subject, status: 'idle', reason: 'fixture' }
+    },
+    async startService(subject, domain) {
+      return { subject, domain: domain ?? 'all', mode: 'fixture' }
     },
     async listSubjects() {
       return current.subjects.map((item) => ({ ...item }))

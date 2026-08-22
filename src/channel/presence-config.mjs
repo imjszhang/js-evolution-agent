@@ -40,6 +40,14 @@ export function resolvePresenceConfig(root, subject, overrides = {}) {
     fast_ack_operator_brief,
     speech_generation_timeout_ms: Number(block.speech_generation_timeout_ms ?? block.speechGenerationTimeoutMs)
       || llmTimeoutMs,
+    speech_generation_max_attempts: Math.max(
+      1,
+      Number(block.speech_generation_max_attempts ?? block.speechGenerationMaxAttempts) || 3,
+    ),
+    speech_generation_retry_delay_ms: Math.max(
+      0,
+      Number(block.speech_generation_retry_delay_ms ?? block.speechGenerationRetryDelayMs) || 0,
+    ),
     llm: {
       timeout: llmTimeoutSec,
       thinking: block.llm?.thinking ?? block.llm_thinking ?? 'low',
@@ -65,6 +73,8 @@ export function presenceConfigForApi(config) {
     decision_timeout_ms: config.decision_timeout_ms,
     fast_ack_operator_brief: config.fast_ack_operator_brief,
     speech_generation_timeout_ms: config.speech_generation_timeout_ms,
+    speech_generation_max_attempts: config.speech_generation_max_attempts,
+    speech_generation_retry_delay_ms: config.speech_generation_retry_delay_ms,
     default_transport: config.default_transport,
   };
 }

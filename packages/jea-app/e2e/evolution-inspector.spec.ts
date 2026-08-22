@@ -6,7 +6,7 @@ test('keyboard reaches timeline, sections, and inspector toggle', async ({ page 
     localStorage.setItem('jea.theme', 'light')
     localStorage.setItem('jea.locale', 'en')
   })
-  await page.goto('/?locale=en')
+  await page.goto('/?locale=en&fixture=1')
   await page.locator('[data-testid="evolution-inspector"][data-ready="true"]').waitFor()
   const draft = page.getByTestId('conversation-draft')
   await draft.fill('keep-center-state')

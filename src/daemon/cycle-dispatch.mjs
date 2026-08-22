@@ -32,6 +32,7 @@ import {
 import { isContinuousEvolutionMode } from './evolution-mode.mjs';
 import { isReactorPipeline, resolveCyclePipeline } from './cycle-pipeline-mode.mjs';
 import { enqueueWakeIntent } from '../evolution/reactor/wake-store.mjs';
+import { runRuntimeMaintenance } from './runtime-maintenance.mjs';
 
 /**
  * @param {string} root
@@ -532,6 +533,15 @@ export function reconcileOpenCycles(root, subject, input = {}) {
 export function runHeartbeatTick(root, subject, input = {}) {
   recordDaemonEvent(root, subject, { type: 'daemon_tick', status: 'ok' });
   const env = input.env ?? process.env;
+  const maintenance = runRuntimeMaintenance(root, subject, { env });
+  if (maintenance.ran) {
+    recordDaemonEvent(root, subject, {
+      type: 'runtime_maintenance',
+      status: maintenance.status,
+      results: maintenance.results,
+      errors: maintenance.errors,
+    });
+  }
   const pipeline = resolveInputPipeline(root, subject, input);
   const gatedInput = { ...input, pipeline, env };
   const reconcileResult = reconcileOpenCycles(root, subject, gatedInput);
@@ -547,6 +557,7 @@ export function runHeartbeatTick(root, subject, input = {}) {
     request_enqueue: requestEnqueue,
     request_process: requestProcess,
     start: requestProcess,
+    maintenance,
     pipeline,
     tick_open_enabled: tickOpenEnabled,
   };

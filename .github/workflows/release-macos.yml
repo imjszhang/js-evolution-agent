@@ -1,5 +1,5 @@
 # #122 certification workflow — still not the final GitHub Release publisher.
-# Do not create a v0.1.0 tag or GitHub Release from this workflow.
+# Do not create a tag or GitHub Release from this workflow.
 # To attach an already-built artifact to an existing Release, use release-attach-assets.yml.
 name: macOS Release
 
@@ -10,28 +10,31 @@ on:
         description: 'Request GitHub Release publication (always fail-closes without certified evidence)'
         type: boolean
         default: false
-      soak:
-        description: 'Run the release-only 30-minute packaged recovery soak (not a PR required check)'
-        type: boolean
-        default: false
       artifact_dir:
         description: 'Directory to smoke-check after packaging'
         type: string
         default: dist/release
+      release_version:
+        description: 'Product version used for artifact names'
+        type: string
+        default: '0.2.0'
   workflow_call:
     inputs:
       publish:
         type: boolean
         default: false
-      soak:
-        type: boolean
-        default: false
       artifact_dir:
         type: string
         default: dist/release
+      release_version:
+        type: string
+        default: '0.2.0'
 
 permissions:
   contents: read
+
+env:
+  JEA_CONTRACT_MODE: strict
 
 concurrency:
   group: release-macos-${{ github.workflow }}-${{ github.ref }}
@@ -65,7 +68,7 @@ jobs:
   macos-package:
     name: macos-package
     runs-on: macos-14
-    timeout-minutes: 60
+    timeout-minutes: 90
     needs: certify-preflight
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
@@ -103,6 +106,37 @@ jobs:
         env:
           ARTIFACT_DIR: ${{ inputs.artifact_dir }}
         run: npm run release:recovery-soak -- --packaged --app dist/release/build/mac-arm64/JEA.app --duration-ms 15000 --sample-ms 3000 --out "${ARTIFACT_DIR:-dist/release}/launch-smoke.json" --json
+      - name: Complete-loop closure audit against frozen target
+        env:
+          ARTIFACT_DIR: ${{ inputs.artifact_dir }}
+        run: |
+          set -euo pipefail
+          RELEASE_DIR="${ARTIFACT_DIR:-dist/release}"
+          CLOSURE_HOME="$(mktemp -d)"
+          RAW_REPORT="$RUNNER_TEMP/closure-audit-raw.json"
+          trap 'rm -rf "$CLOSURE_HOME"' EXIT
+          export JEA_HOME="$CLOSURE_HOME"
+          npm run --silent jea -- subject init release-certification --use
+          npm run --silent jea -- data init --all --subject release-certification
+          npm run --silent jea -- run --mock --subject release-certification
+          npm run --silent jea -- audit closure --subject release-certification --json > "$RAW_REPORT"
+          node --input-type=module - "$RAW_REPORT" "$RELEASE_DIR/build-metadata.json" "$RELEASE_DIR/closure-audit.json" <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const [rawPath, metadataPath, outPath] = process.argv.slice(2);
+          const report = JSON.parse(readFileSync(rawPath, 'utf8'));
+          const metadata = JSON.parse(readFileSync(metadataPath, 'utf8'));
+          Object.assign(report, {
+            generated_at: new Date().toISOString(),
+            build_id: metadata.build_id,
+            commit: metadata.commit,
+            dirty: metadata.dirty,
+          });
+          writeFileSync(outPath, `${JSON.stringify(report, null, 2)}\n`);
+          NODE
+      - name: 30-minute packaged soak (release-only)
+        env:
+          ARTIFACT_DIR: ${{ inputs.artifact_dir }}
+        run: npm run release:recovery-soak -- --packaged --app dist/release/build/mac-arm64/JEA.app --duration-ms 1800000 --out "${ARTIFACT_DIR:-dist/release}/soak-report.json" --json
       - name: Write certification evidence from artifacts
         env:
           ARTIFACT_DIR: ${{ inputs.artifact_dir }}
@@ -113,60 +147,22 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: macos-release-0.1.0
+          name: macos-release-${{ inputs.release_version }}
           path: |
-            dist/release/JEA-0.1.0-macos-arm64.dmg
-            dist/release/JEA-0.1.0-macos-arm64.zip
+            dist/release/JEA-${{ inputs.release_version }}-macos-arm64.dmg
+            dist/release/JEA-${{ inputs.release_version }}-macos-arm64.zip
             dist/release/SHA256SUMS
             dist/release/package-smoke.json
             dist/release/RELEASE_NOTES.md
             dist/release/recovery-matrix.json
             dist/release/product-journey.json
             dist/release/launch-smoke.json
+            dist/release/soak-report.json
+            dist/release/closure-audit.json
             dist/release/certification-evidence.json
             dist/release/build-metadata.json
           retention-days: 14
-          if-no-files-found: warn
-
-  recovery-soak:
-    name: recovery-soak (release-only, 30 min)
-    runs-on: macos-14
-    timeout-minutes: 90
-    needs: macos-package
-    if: ${{ inputs.soak }}
-    env:
-      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - name: Build dir-only JEA.app for soak
-        run: node --preserve-symlinks scripts/package-macos.mjs --dir-only --json
-      - name: 30-minute packaged soak
-        env:
-          ARTIFACT_DIR: ${{ inputs.artifact_dir }}
-        run: |
-          set -euo pipefail
-          APP="dist/release/build/mac-arm64/JEA.app"
-          if [ ! -d "$APP" ]; then
-            echo "JEA.app is required for the release soak."
-            exit 1
-          fi
-          npm run release:recovery-soak -- --packaged --app "$APP" --duration-ms 1800000 --out "${ARTIFACT_DIR:-dist/release}/soak-report.json" --json
-      - name: Upload soak evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: macos-recovery-soak-0.1.1
-          path: |
-            dist/release/soak-report.json
-          retention-days: 14
-          if-no-files-found: warn
+          if-no-files-found: error
 
   publish-guard:
     name: publish-guard (not a publisher)
@@ -183,12 +179,13 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Download final certification artifact
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: macos-release-${{ inputs.release_version }}
+          path: ${{ runner.temp }}/jea-release-certification
       - name: Fail closed without certification evidence
-        env:
-          ARTIFACT_DIR: ${{ inputs.artifact_dir }}
         run: |
           set -euo pipefail
-          echo "This job is not allowed to tag v0.1.0 or create a GitHub Release."
-          npm run release:publish-guard -- --publish --evidence "${ARTIFACT_DIR:-dist/release}" --json
-          echo "Unreachable if the guard is working: publish must fail closed without certified evidence."
-          exit 1
+          echo "This job is not allowed to tag v${{ inputs.release_version }} or create a GitHub Release."
+          npm run release:publish-guard -- --publish --evidence "${{ runner.temp }}/jea-release-certification" --json

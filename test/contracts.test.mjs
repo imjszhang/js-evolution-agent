@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import {
   assertValidContract,
   contractModeFromEnv,
@@ -7,10 +8,13 @@ import {
   validateAgentRunSpec,
   validateDaemonTask,
   validateDecision,
+  validateDecisionTransition,
   validateStepCheckpoint,
   validateStepCheckpointPayload,
   validateBeliefEvent,
   validateChannelEnvelope,
+  validateChannelInboundEnvelope,
+  validateChannelOutboundEnvelope,
   validateAgentRateLedger,
   validateBatchCheckpoint,
   validateEvidenceBatchClaim,
@@ -23,6 +27,10 @@ import {
   validateGoalEvent,
   validateVerifyReport,
 } from '../src/contracts/index.mjs';
+import {
+  normalizeChannelEnvelope,
+  normalizeOutboundMessage,
+} from '../src/channel/types.mjs';
 
 describe('contracts', () => {
   it('validates core runtime shapes', () => {
@@ -42,6 +50,7 @@ describe('contracts', () => {
 
     expect(validateAgentRunSpec({
       primary_cwd_kind: 'target_repo',
+      primary_cwd: '/tmp/target-repo',
       permission_profile: 'read_only',
       intent: 'Inspect state',
       expected_output: ['summary'],
@@ -221,6 +230,119 @@ describe('contracts', () => {
     expect(evidenceKey('action_receipts', 'shared')).not.toBe(evidenceKey('verify_reports', 'shared'));
   });
 
+  it('validates real normalized channel envelopes and rejects cross-direction shapes', () => {
+    const inbound = normalizeChannelEnvelope({
+      channel: 'desktop',
+      message_id: 'message-1',
+      chat_id: 'desktop:main',
+      content: 'hello',
+      received_at: '2026-08-22T00:00:00.000Z',
+    });
+    const outbound = normalizeOutboundMessage({
+      id: 'outbound-1',
+      channel: 'desktop',
+      target: 'desktop:main',
+      text: 'world',
+      created_at: '2026-08-22T00:00:01.000Z',
+    });
+    expect(validateChannelInboundEnvelope(inbound).ok).toBe(true);
+    expect(validateChannelOutboundEnvelope(outbound).ok).toBe(true);
+    expect(validateChannelEnvelope(inbound).ok).toBe(true);
+    expect(validateChannelEnvelope(outbound).ok).toBe(true);
+    expect(validateChannelInboundEnvelope({ ...inbound, direction: 'outbound' }).ok).toBe(false);
+    expect(validateChannelOutboundEnvelope({ ...outbound, target: '', text: '' }).ok).toBe(false);
+    expect(validateChannelEnvelope({ id: 'legacy-message', text: 'still readable' }).ok).toBe(true);
+  });
+
+  it('rejects illegal decision states, transitions, and run-spec scope/profile pairs', () => {
+    expect(validateDecision({
+      id: 'decision-bad-state',
+      status: 'invented',
+      action: { type: 'record_observation' },
+    }).ok).toBe(false);
+    expect(validateDecisionTransition('pending', 'in_progress').ok).toBe(true);
+    expect(validateDecisionTransition('completed', 'pending').ok).toBe(false);
+    expect(validateDecisionTransition('blocked', 'retired').ok).toBe(true);
+    expect(validateAgentRunSpec({
+      primary_cwd_kind: 'source_root',
+      primary_cwd: '/tmp/source',
+      permission_profile: 'remote_write_review',
+      intent: 'Publish remotely',
+      expected_output: ['review'],
+    }).ok).toBe(false);
+    expect(validateAgentRunSpec({
+      primary_cwd_kind: 'lane_worktree',
+      primary_cwd: '/tmp/lane',
+      permission_profile: 'remote_write_review',
+      intent: 'Prepare reviewed remote write',
+      expected_output: ['review'],
+    }).ok).toBe(true);
+  });
+
+  it('round-trips causal identity while accepting legacy contract fixtures', () => {
+    const identity = {
+      producer_batch_id: 'batch-origin',
+      reaction_id: 'reaction-origin',
+      decision_id: 'decision-origin',
+      execution_id: 'execution-origin',
+      belief_id: 'belief-origin',
+    };
+    const fixtures = [
+      [validateDecision, {
+        id: 'decision-origin',
+        status: 'pending',
+        action: { type: 'record_observation' },
+        metadata: { ...identity, producer: 'cognitive' },
+      }],
+      [validateExecIntent, {
+        id: 'intent-origin',
+        key: 'decision-origin#1',
+        status: 'prepared',
+        created_at: '2026-08-22T00:00:00.000Z',
+        producer: 'exec',
+        ...identity,
+      }],
+      [validateExecResult, {
+        written_at: '2026-08-22T00:00:00.000Z',
+        verify_status: 'pending_verify',
+        executed: [],
+        decision_ids: ['decision-origin'],
+        producer: 'exec',
+        ...identity,
+      }],
+      [validateActionReceipt, {
+        id: 'receipt-origin',
+        recorded_at: '2026-08-22T00:00:00.000Z',
+        action_type: 'record_observation',
+        action: { type: 'record_observation' },
+        result: { success: true },
+        producer: 'exec',
+        ...identity,
+      }],
+      [validateVerifyReport, {
+        producer: 'verify',
+        decision_ids: ['decision-origin'],
+        ...identity,
+      }],
+      [validateBeliefEvent, { type: 'validated', producer: 'rule', ...identity }],
+      [validateGoalEvent, { type: 'assessment', producer: 'rule', ...identity }],
+    ];
+    for (const [validate, fixture] of fixtures) {
+      expect(validate(JSON.parse(JSON.stringify(fixture))).ok).toBe(true);
+    }
+
+    expect(validateActionReceipt({
+      id: 'receipt-legacy',
+      action_type: 'record_observation',
+      action: { type: 'record_observation' },
+      result: {},
+    }).ok).toBe(true);
+    expect(validateVerifyReport({ cycle_id: 'legacy-cycle' }).ok).toBe(true);
+    expect(validateBeliefEvent({ type: 'updated' }).ok).toBe(true);
+    expect(validateGoalEvent({ type: 'assessment' }).ok).toBe(true);
+    expect(validateVerifyReport({ producer: 'invalid-producer' }).ok).toBe(false);
+  });
+
   it('validates evolution_event required fields and evt- prefix', () => {
     expect(validateEvolutionEvent({
       type: 'intel_pipeline',
@@ -277,9 +399,13 @@ describe('contracts', () => {
     expect(() => assertValidContract('decision', result)).toThrow(/decision contract invalid/);
   });
 
-  it('defaults unknown modes to warn and honors strict mode', () => {
+  it('defaults production and the required CI entry to strict mode', () => {
+    expect(contractModeFromEnv({})).toBe('strict');
     expect(contractModeFromEnv({ JEA_CONTRACT_MODE: 'strict' })).toBe('strict');
     expect(contractModeFromEnv({ JEA_CONTRACT_MODE: 'warn' })).toBe('warn');
-    expect(contractModeFromEnv({ JEA_CONTRACT_MODE: 'unexpected' })).toBe('warn');
+    expect(contractModeFromEnv({ JEA_CONTRACT_MODE: 'unexpected' })).toBe('strict');
+
+    const ciWorkflow = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+    expect(ciWorkflow).toMatch(/\nenv:\n  JEA_CONTRACT_MODE: strict\n/);
   });
 });

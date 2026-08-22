@@ -273,22 +273,24 @@ export function persistChannelDeliverable(root, subject, request = {}, result = 
   store = null,
   createdAt = null,
 } = {}) {
+  const safeRequest = redactSecrets(request);
+  const safeResult = redactSecrets(result);
   const runtime = runtimeForSubject(root, subject);
   const created = createdAt ?? new Date().toISOString();
   const deliverableId = makeDeliverableId(created);
 
-  const spec = resolveDeliverableSpec(result);
+  const spec = resolveDeliverableSpec(safeResult);
   const type = resolveDeliverableType(spec);
-  const body = resolveBody(result, spec);
-  const status = resolveStatus(result);
-  const provider = result?.provider ?? result?.agent?.provider ?? null;
-  const objective = String(request?.objective ?? '').trim();
-  const title = resolveTitle(request, spec);
-  const channelAgentRunId = request?.channel_agent_run_id ?? null;
-  const requestMessageId = request?.reply_to_message_id ?? null;
+  const body = resolveBody(safeResult, spec);
+  const status = resolveStatus(safeResult);
+  const provider = safeResult?.provider ?? safeResult?.agent?.provider ?? null;
+  const objective = String(safeRequest?.objective ?? '').trim();
+  const title = resolveTitle(safeRequest, spec);
+  const channelAgentRunId = safeRequest?.channel_agent_run_id ?? null;
+  const requestMessageId = safeRequest?.reply_to_message_id ?? null;
   const summary = String(spec?.deliverable?.summary ?? '').trim();
   const tldr = summary || extractDeliverableTldr(body);
-  const confidence = resolveConfidence(spec, result);
+  const confidence = resolveConfidence(spec, safeResult);
   const sources = resolveSources(spec);
   const followUpHint = resolveFollowUpHint(spec);
   const url = spec?.deliverable?.url ?? null;
@@ -351,7 +353,7 @@ export function persistChannelDeliverable(root, subject, request = {}, result = 
       source: 'channel_agent_run',
       subject,
       content: observationContent,
-      confidence: result?.success ? 'medium' : 'low',
+      confidence: safeResult?.success ? 'medium' : 'low',
       tags: ['channel', 'deliverable'],
       status,
       provider,

@@ -87,7 +87,9 @@ export function projectEvolutionCore(snapshot: EvolutionInspectorSnapshot): Evol
   const detail = selected ? snapshot.cycles[selected] ?? null : null
   const round = selected ? snapshot.rounds[selected] ?? null : null
   const blockers = uniqueBlockers(detail, round)
-  const attentionCount = asFiniteNumber(snapshot.observability?.attention?.count)
+  const attentionCount = snapshot.observability
+    ? snapshot.observability.attention.items?.length ?? 0
+    : null
   const kind = selected ? cycleKind(detail, snapshot.list?.cycles.find((item) => item.cycle_id === selected)?.status) : null
   return {
     subject: snapshot.list?.subject ?? snapshot.observability?.subject ?? snapshot.subject ?? '',

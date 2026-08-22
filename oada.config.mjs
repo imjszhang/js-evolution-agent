@@ -6,6 +6,7 @@ import {
   ACTION_REGISTRY,
 } from './src/engine/index.mjs';
 import { DeepSeekOpenAIClient } from './src/ai/deepseek-client.mjs';
+import { llmBudgetLedgerPath } from './src/ai/token-budget.mjs';
 import { MockToolsAIClient } from './src/ai/mock-tools-client.mjs';
 import { actionRegistry } from './src/actions/registry.mjs';
 import {
@@ -110,6 +111,7 @@ const cannedAnalyzeDecide = {
         content: 'Initial controlled loop uses vendored src/engine/, project authority docs, and js-intel-store.',
         confidence: 'high',
         tags: ['bootstrap', 'controlled-loop'],
+        context: { no_belief_reason: 'fresh_subject_bootstrap_record' },
       },
       expected_impact: 'The next cycle can see the bootstrap state in intelligence context.',
       risk: 'low',
@@ -141,6 +143,7 @@ const cannedAnalyzeDecide = {
         outcome: 'pending verification',
         lessons: ['Keep core mutations behind human review', 'Persist receipts in js-intel-store'],
         next_actions: ['Review generated receipts', 'Decide whether to enable real AI client'],
+        context: { no_belief_reason: 'fresh_subject_bootstrap_review' },
       },
       expected_impact: 'Latest review becomes available to the next analyze/decide prompt.',
       risk: 'low',
@@ -155,7 +158,7 @@ const cannedAnalyzeDecide = {
   confidence_score: 0.5,
 };
 
-function createAiClient() {
+function createAiClient({ subjectKey, runtimeRoot, intelligenceStore }) {
   if (process.env.JEA_FORCE_MOCK === '1') {
     consoleLogger.warning('AI: JEA_FORCE_MOCK=1; using MockAIClient');
     return createMockAiClient();
@@ -163,7 +166,12 @@ function createAiClient() {
   const key = process.env.DEEPSEEK_API_KEY?.trim();
   if (key) {
     consoleLogger.info('AI: using DeepSeek (OpenAI-compatible API)');
-    return new DeepSeekOpenAIClient({ logger: consoleLogger });
+    return new DeepSeekOpenAIClient({
+      logger: consoleLogger,
+      subjectKey,
+      budgetLedgerPath: llmBudgetLedgerPath(runtimeRoot),
+      onBudgetEvent: (event) => intelligenceStore.recordEvolutionEvent(event),
+    });
   }
   consoleLogger.warning('AI: DEEPSEEK_API_KEY not set; using MockAIClient');
   return createMockAiClient();
@@ -273,7 +281,11 @@ export default async function ({ cwd }) {
     logger: consoleLogger,
   });
 
-  const aiClient = createAiClient();
+  const aiClient = createAiClient({
+    subjectKey: runtime.subject,
+    runtimeRoot: runtime.runtimeRoot,
+    intelligenceStore,
+  });
   const agentContextDocs = buildAgentContextDocs(cwd);
 
   return {

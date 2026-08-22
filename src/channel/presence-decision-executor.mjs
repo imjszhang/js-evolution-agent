@@ -9,6 +9,7 @@ import {
   cooldownActive,
   writePresenceState,
   markExpressionCandidatesHandled,
+  trackPendingSpeechGeneration,
 } from './state.mjs';
 import { CHANNEL_TASK_DEFAULT_PRIORITY, nowIso } from './types.mjs';
 import { PRESENCE_ACTION_TYPES } from './presence-planner.mjs';
@@ -99,8 +100,8 @@ function interactionContentForAction(action, plan) {
   return null;
 }
 
-function applyExpressionCursors(root, subject, plan, outcome, extra = {}) {
-  const candidateIds = [...new Set(plan?.candidate_ids ?? [])].filter(Boolean);
+function applyExpressionCursors(root, subject, plan, outcome, extra = {}, handledCandidateIds = plan?.candidate_ids ?? []) {
+  const candidateIds = [...new Set(handledCandidateIds)].filter(Boolean);
   const meta = { outcome, reason: plan.reason, planner: plan.planner };
   if (candidateIds.length) markExpressionCandidatesHandled(root, subject, candidateIds, { ...meta, ...extra });
   const patch = { last_presence_tick_at: nowIso() };
@@ -117,7 +118,11 @@ function applyExpressionCursors(root, subject, plan, outcome, extra = {}) {
   return writePresenceState(root, subject, patch);
 }
 
-function queueSpeechIntent(root, subject, store, plan, action, { dryRun = false, rateLimited = false } = {}) {
+function queueSpeechIntent(root, subject, store, plan, action, {
+  dryRun = false,
+  rateLimited = false,
+  retryMaxAttempts = 3,
+} = {}) {
   const idempotencyKey = action.idempotency_key ?? `presence:speech:${action.intent_id}`;
   if (rateLimited) {
     return { queued: false, result: { action, skipped: true, reason: 'rate_limited' } };
@@ -135,7 +140,7 @@ function queueSpeechIntent(root, subject, store, plan, action, { dryRun = false,
     },
     planReason: plan.reason,
   });
-  appendChannelEvent(root, subject, {
+  const event = appendChannelEvent(root, subject, {
     type: 'speech_generation_requested',
     reason: action.reason,
     event_ref: action.intent_id,
@@ -146,6 +151,14 @@ function queueSpeechIntent(root, subject, store, plan, action, { dryRun = false,
       reason: action.reason,
       target: action.target,
     },
+    max_attempts: retryMaxAttempts ?? 3,
+  });
+  trackPendingSpeechGeneration(root, subject, {
+    intent_id: action.intent_id,
+    candidate_id: action.candidate_id ?? null,
+    event_id: event.id,
+    requested_at: event.created_at,
+    status: 'pending',
   });
   recordPresenceInteraction(store, {
     interaction_kind: 'speech_intent',
@@ -473,7 +486,11 @@ export async function executePresenceDecisionPlan(root, subject, plan, {
       });
       if (!action.candidate_id || !speechCandidateIds.has(action.candidate_id)) {
         const ack = agentStartedAckIntent(subject, action, startRecord);
-        const ackQueued = queueSpeechIntent(root, subject, store, plan, ack, { dryRun, rateLimited: speechRateLimited });
+        const ackQueued = queueSpeechIntent(root, subject, store, plan, ack, {
+          dryRun,
+          rateLimited: speechRateLimited,
+          retryMaxAttempts: cfg.speech_generation_max_attempts,
+        });
         if (ackQueued.queued) speechQueued += 1;
         results.push({
           ...ackQueued.result,
@@ -488,27 +505,32 @@ export async function executePresenceDecisionPlan(root, subject, plan, {
         results.push({ action, applied: false, dry_run: true });
         continue;
       }
-      const { brief } = writePendingOperatorBrief(runtime.runtimeRoot, {
+      const briefIdentity = action.candidate_id ?? action.reply_to_message_id ?? null;
+      const { brief, created = true, duplicate = false } = writePendingOperatorBrief(runtime.runtimeRoot, {
         kind: action.kind,
         scope: action.scope ?? 'next_cycle',
         summary: action.summary,
         priority: action.priority ?? 'medium',
         created_by: `channel:presence:${subject}`,
+        idempotency_key: briefIdentity ? `channel:presence:operator_brief:${briefIdentity}` : null,
       });
-      const cycleRequest = enqueueCycleStartRequestWithEvent(root, subject, {
+      const cycleRequest = created ? enqueueCycleStartRequestWithEvent(root, subject, {
         reason: 'channel_presence_operator_brief',
         meta: { brief_ids: [brief.id] },
-      });
-      enqueueCognitiveWake(root, subject, {
-        reason: 'channel_presence_operator_brief',
-        source: 'channel_presence',
-      });
+      }) : null;
+      if (created) {
+        enqueueCognitiveWake(root, subject, {
+          reason: 'channel_presence_operator_brief',
+          source: 'channel_presence',
+        });
+      }
       recordChannelEvent(root, subject, {
         type: 'channel_presence_action_applied',
         status: 'ok',
         action_type: 'write_operator_brief',
         brief_id: brief.id,
-        cycle_request_id: cycleRequest.request?.request_id ?? null,
+        cycle_request_id: cycleRequest?.request?.request_id ?? null,
+        duplicate,
       });
       recordPresenceInteraction(store, {
         interaction_kind: 'write_operator_brief',
@@ -516,7 +538,13 @@ export async function executePresenceDecisionPlan(root, subject, plan, {
         confidence: 'medium',
         evidence_refs: [`brief:${brief.id}`],
       });
-      results.push({ action, applied: true, brief_id: brief.id, cycle_start_request: cycleRequest.request });
+      results.push({
+        action,
+        applied: true,
+        duplicate,
+        brief_id: brief.id,
+        cycle_start_request: cycleRequest?.request ?? null,
+      });
       continue;
     }
 
@@ -542,7 +570,11 @@ export async function executePresenceDecisionPlan(root, subject, plan, {
 
   for (const action of pendingSpeechActions) {
     const guardedAction = bindSpeechToAgentStart(subject, action, successfulAgentStarts);
-    const queued = queueSpeechIntent(root, subject, store, plan, guardedAction, { dryRun, rateLimited: speechRateLimited });
+    const queued = queueSpeechIntent(root, subject, store, plan, guardedAction, {
+      dryRun,
+      rateLimited: speechRateLimited,
+      retryMaxAttempts: cfg.speech_generation_max_attempts,
+    });
     if (queued.queued) speechQueued += 1;
     results.push({
       ...queued.result,
@@ -552,8 +584,17 @@ export async function executePresenceDecisionPlan(root, subject, plan, {
   }
 
   if (!dryRun) {
-    const hadSpeech = results.some((r) => r.applied && r.action?.type === 'speech_intent');
-    applyExpressionCursors(root, subject, plan, hadSpeech ? 'speech_queued' : 'acted');
+    const hadSpeechAction = plannedActions.some((action) => action?.type === 'speech_intent');
+    const sideActionApplied = results.some((r) => r.applied && r.action?.type !== 'speech_intent');
+    const handledIds = !hadSpeechAction && sideActionApplied ? plan.candidate_ids ?? [] : [];
+    applyExpressionCursors(
+      root,
+      subject,
+      plan,
+      speechQueued ? 'speech_queued' : sideActionApplied ? 'acted' : 'retryable',
+      {},
+      handledIds,
+    );
     if (speechQueued) {
       enqueueSpeechGenerationIfPending(root, subject);
     }

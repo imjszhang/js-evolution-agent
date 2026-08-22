@@ -19,8 +19,6 @@ import {
   withSubjectLock,
 } from '../../daemon/evolve-runs.mjs';
 import { isStepArtifactComplete } from '../../daemon/cycle-state.mjs';
-import { enqueueTask } from '../../daemon/daemon-tasks.mjs';
-import { recordDaemonEvent } from '../../daemon/daemon-events.mjs';
 import { ALL_CYCLE_STEP_TYPES, CYCLE_STEP_TYPES } from '../../daemon/cycle-reducer.mjs';
 import {
   checkSubjectLaneReady,
@@ -430,6 +428,22 @@ export async function evolveCommand({ subcommand, flags = {}, args = [] } = {}) 
     return 2;
   }
 
+  if (flags['enqueue-only']) {
+    const message = 'evolve --enqueue-only was removed with run_cycle in S9; '
+      + 'use "jea evolve --rounds N" for managed multi-round runs, '
+      + 'or "jea daemon cycle request" to request one reactor cycle.';
+    if (flags.json) {
+      console.log(JSON.stringify({
+        ok: false,
+        code: 'evolve_enqueue_only_removed',
+        error: message,
+      }, null, 2));
+    } else {
+      console.error(message);
+    }
+    return 2;
+  }
+
   let subjects;
   let rounds;
   try {
@@ -451,50 +465,6 @@ export async function evolveCommand({ subcommand, flags = {}, args = [] } = {}) 
   }
 
   const runId = flags.run || createRunId();
-  if (flags['enqueue-only']) {
-    const tasks = [];
-    for (const subject of subjects) {
-      for (let idx = 1; idx <= rounds; idx++) {
-        const result = enqueueTask(root, subject, {
-          type: 'run_cycle',
-          idempotencyKey: `${runId}:${subject}:run_cycle:${idx}`,
-          input: {
-            run_id: runId,
-            round_index: idx,
-            rounds,
-            mock: Boolean(flags.mock),
-            deepseek: Boolean(flags.deepseek),
-            skip_goals_assess: Boolean(flags['skip-goals-assess']),
-            skip_belief_update: Boolean(flags['skip-belief-update']),
-            exec_limit: flags['exec-limit'] == null || flags['exec-limit'] === true
-              ? null
-              : parsePositiveInt(flags['exec-limit'], { name: 'exec-limit', min: 1 }),
-            retries: parsePositiveInt(flags.retries, { name: 'retries', defaultValue: 3, min: 0 }),
-          },
-        });
-        if (result.created) {
-          recordDaemonEvent(root, subject, {
-            type: 'task_enqueued',
-            status: 'ok',
-            task_id: result.task.task_id,
-            task_type: result.task.type,
-            idempotency_key: result.task.idempotency_key,
-            run_id: runId,
-            round_index: idx,
-            source: 'evolve_enqueue_only',
-          });
-        }
-        tasks.push({ subject, task_id: result.task.task_id, created: result.created, idempotency_key: result.task.idempotency_key });
-      }
-    }
-    if (flags.json) console.log(JSON.stringify({ run_id: runId, subjects, rounds, tasks }, null, 2));
-    else {
-      console.log(`Enqueued evolve run: ${runId}`);
-      console.log(`subjects: ${subjects.join(', ')}`);
-      console.log(`tasks: ${tasks.length}`);
-    }
-    return 0;
-  }
   const manifests = subjects.map((subject) => ({
     subject,
     manifest: createRunManifest({

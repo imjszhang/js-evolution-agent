@@ -10,14 +10,20 @@ import {
   projectSubjectReadiness,
   readinessCodeView,
   SUBJECT_READINESS_ACTION_IDS,
-  SUBJECT_READINESS_DOMAIN_STATES
+  SUBJECT_READINESS_DOMAIN_STATES,
+  SUBJECT_READINESS_REASON_CODES
 } from '../../src/client-api'
 import { createWebHost } from '../../src/web-host'
 import { writeWorkerState } from '../../../../src/daemon/daemon-worker-state.mjs'
 import { writeChannelWorkerState } from '../../../../src/channel/worker-state.mjs'
 import { writePendingOperatorBrief } from '../../../../src/intelligence/operator-briefs.mjs'
 import { subjectRuntime } from '../../src/client-api/owners/runtime'
-import type { SubjectReadiness } from '../../src/client-api/types'
+import type { SubjectReadiness, SubjectReadinessReasonCode } from '../../src/client-api/types'
+
+type Assert<T extends true> = T
+type CanonicalReadinessReasonsStayNarrow = Assert<
+  string extends SubjectReadinessReasonCode ? false : true
+>
 
 const DEAD_PID = 999_999_999
 const SECRET = 'sk-secret-value-should-not-leak'
@@ -440,6 +446,9 @@ describe('readiness projector invariants', () => {
     }
     for (const id of value.allowed_actions) {
       expect(SUBJECT_READINESS_ACTION_IDS).toContain(id)
+    }
+    for (const reason of value.reasons) {
+      expect(SUBJECT_READINESS_REASON_CODES).toContain(reason)
     }
   })
 })
