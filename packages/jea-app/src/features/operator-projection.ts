@@ -94,10 +94,13 @@ export function projectEvolutionRuntime(
   const pending = count(observability.evidence_pending_count)
   const automation = readiness.automation
   if (automation) {
+    const intent = automation.mode === 'paused'
+      ? 'paused'
+      : (pending > 0 && automation.intent === 'listening' ? 'catching_up' : automation.intent)
     return {
       mode: automation.mode === 'paused' ? 'paused' : 'automatic',
-      intent: automation.intent,
-      remaining_evidence: count(automation.remaining_evidence ?? pending),
+      intent,
+      remaining_evidence: pending,
       blocker: automation.blocker ?? null
     }
   }

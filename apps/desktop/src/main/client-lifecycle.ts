@@ -140,13 +140,19 @@ export class ClientLifecycleController implements ClientLifecyclePort {
     }
     try {
       const beforeOwned = this.supervisor.owns(step.subject, step.domain)
-      const view = await this.supervisor.ensure(step.subject, { domain: step.domain as DaemonDomain })
+      await this.supervisor.ensure(step.subject, { domain: step.domain as DaemonDomain })
       const afterOwned = this.supervisor.owns(step.subject, step.domain)
-      const outcome = afterOwned
-        ? (beforeOwned ? 'managed' : 'started')
-        : (view.mode === 'attached' ? 'attached' : 'blocked')
-      return { ...step, outcome, reason }
-    } catch {
+      if (afterOwned) {
+        return { ...step, outcome: beforeOwned ? 'managed' : 'started', reason }
+      }
+      if (step.action === 'attach') {
+        return { ...step, outcome: 'attached', reason }
+      }
+      return { ...step, outcome: 'blocked', reason }
+    } catch (error) {
+      if (this.isAttachedError(error)) {
+        return { ...step, outcome: 'attached', reason: 'already_running' }
+      }
       return { ...step, outcome: 'blocked', reason }
     }
   }
@@ -157,6 +163,15 @@ export class ClientLifecycleController implements ClientLifecyclePort {
       && typeof error === 'object'
       && 'message' in error
       && String((error as { message?: unknown }).message).includes('not managed by this client')
+    )
+  }
+
+  private isAttachedError(error: unknown): boolean {
+    return Boolean(
+      error
+      && typeof error === 'object'
+      && 'message' in error
+      && String((error as { message?: unknown }).message).includes('already running')
     )
   }
 }

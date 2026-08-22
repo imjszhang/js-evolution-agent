@@ -2,7 +2,14 @@ import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { JeaApp } from '../src/JeaApp'
-import { canShowProcessOnce, canShowStartCycle, processOnceResultFailed } from '../src/features/evolution/cycle-remediation'
+import {
+  canShowCheckNow,
+  canShowPauseEvolution,
+  canShowProcessOnce,
+  canShowResumeEvolution,
+  canShowStartCycle,
+  processOnceResultFailed
+} from '../src/features/evolution/cycle-remediation'
 import { EvolutionInspector } from '../src/features/evolution/EvolutionInspector'
 import { createEvolutionFixtureClient, createEvolutionFixtureData } from '../src/features/evolution/fixture-client'
 import { createEvolutionInspectorFeature } from '../src/features/evolution/feature'

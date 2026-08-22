@@ -245,11 +245,13 @@ export class DaemonSupervisor {
 
   private domainLive(subject: string, domain: Exclude<DaemonDomain, 'all'>): boolean {
     if (domain === 'cycle') {
-      return summarizeWorkerState(readWorkerState(this.runtimeContext, subject)).running
+      const cycle = summarizeWorkerState(readWorkerState(this.runtimeContext, subject))
+      return Boolean(cycle.running || cycle.stale)
     }
-    return summarizeChannelWorkersState(
+    const channel = summarizeChannelWorkersState(
       readChannelWorkerState(this.runtimeContext, subject)
-    ).running_count > 0
+    )
+    return channel.running_count > 0 || channel.stale_count > 0
   }
 
   private async ensureLocked(subject: string, domain: DaemonDomain): Promise<DaemonSupervisorView> {
