@@ -757,4 +757,46 @@ describe('DaemonSupervisor.ensure', () => {
       pid: process.pid
     })
   })
+
+  it('attaches an external stale Cycle without spawning a second worker', async () => {
+    const { root, context } = createProjectRoot()
+    const { supervisor, spawnMock } = createSupervisor(root)
+    writeCycleState(context, 'alpha', {
+      pid: process.pid,
+      heartbeat_at: new Date(Date.now() - 10_000).toISOString(),
+      stale_after_ms: 1
+    })
+    const view = await supervisor.ensure('alpha', { domain: 'cycle' })
+    expect(view).toMatchObject({ mode: 'stale', pid: process.pid })
+    expect(spawnMock).not.toHaveBeenCalled()
+    expect(readWorkerState(context, 'alpha')).toMatchObject({
+      status: 'running',
+      pid: process.pid
+    })
+  })
+
+  it('repairs an unowned zombie Cycle then starts a managed worker', async () => {
+    const { root, context } = createProjectRoot()
+    const { supervisor, spawnMock } = createSupervisor(root)
+    writeCycleState(context, 'alpha', { pid: 999_999_995 })
+    const view = await supervisor.ensure('alpha', { domain: 'cycle' })
+    expect(view).toMatchObject({ mode: 'managed', domain: 'cycle' })
+    expect(spawnMock).toHaveBeenCalledTimes(1)
+    expect(readWorkerState(context, 'alpha')?.status).not.toBe('running')
+  })
+
+  it('stops an owned stale Cycle then starts a replacement', async () => {
+    const { root, context } = createProjectRoot()
+    const { supervisor, spawnMock } = createSupervisor(root, { closeOnKill: true })
+    const first = await supervisor.ensure('alpha', { domain: 'cycle' })
+    expect(first).toMatchObject({ mode: 'managed', pid: 40_000 })
+    writeCycleState(context, 'alpha', {
+      pid: process.pid,
+      heartbeat_at: new Date(Date.now() - 10_000).toISOString(),
+      stale_after_ms: 1
+    })
+    const second = await supervisor.ensure('alpha', { domain: 'cycle' })
+    expect(second).toMatchObject({ mode: 'managed', domain: 'cycle', pid: 40_001 })
+    expect(spawnMock).toHaveBeenCalledTimes(2)
+  })
 })

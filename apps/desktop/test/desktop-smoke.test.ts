@@ -96,6 +96,7 @@ describe('desktop smoke stages', () => {
   it('counts only ACP leftovers so lifecycle daemons do not fail smoke', () => {
     const mainSource = readFileSync(main, 'utf8')
     expect(mainSource).toContain("processRegistry.list('acp')")
-    expect(mainSource).toMatch(/JEA_DESKTOP_SMOKE[\s\S]*reconcileStartup[\s\S]*runDesktopSmoke/)
+    expect(mainSource).toMatch(/reconcileStartup[\s\S]*createWindow/)
+    expect(mainSource).toMatch(/JEA_DESKTOP_SMOKE[\s\S]*runDesktopSmoke/)
   })
 })

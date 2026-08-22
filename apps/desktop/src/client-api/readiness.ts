@@ -68,6 +68,18 @@ export interface ReadinessProjectionInput {
   model: { configured: boolean; mode: 'deepseek' | 'mock' | 'unset' }
   desktopChannelEnabled: boolean
   ownership: OwnershipObservation
+  automation?: {
+    mode?: string
+    mapped_from?: string
+    diagnostic?: string | null
+    background?: boolean
+  }
+  pendingEvidence?: number
+  waitingApproval?: boolean
+  catchUp?: {
+    paused?: boolean
+    reason?: string | null
+  }
 }
 
 export function isSubjectReadinessDomainState(value: string): value is SubjectReadinessDomainState {

@@ -169,8 +169,8 @@ export class DaemonSupervisor {
   }
 
   /**
-   * Attach to a live worker or start exactly one managed process for the
-   * missing domain. Never replaces an external or already-managed worker.
+   * Attach to a fresh worker, restart an owned stale/zombie worker, repair an
+   * unowned zombie then start, or attach an external stale worker without spawn.
    */
   async ensure(subject: string, {
     domain = 'cycle'
@@ -243,37 +243,64 @@ export class DaemonSupervisor {
     return this.get(subject)
   }
 
-  private domainLive(subject: string, domain: Exclude<DaemonDomain, 'all'>): boolean {
+  private domainHealth(
+    subject: string,
+    domain: Exclude<DaemonDomain, 'all'>
+  ): 'fresh' | 'stale' | 'zombie' | 'missing' {
     if (domain === 'cycle') {
       const cycle = summarizeWorkerState(readWorkerState(this.runtimeContext, subject))
-      return Boolean(cycle.running || cycle.stale)
+      if (cycle.running) return 'fresh'
+      if (cycle.zombie) return 'zombie'
+      if (cycle.stale) return 'stale'
+      return 'missing'
     }
     const channel = summarizeChannelWorkersState(
       readChannelWorkerState(this.runtimeContext, subject)
     )
-    return channel.running_count > 0 || channel.stale_count > 0
+    if (channel.running_count > 0 && channel.stale_count === 0 && channel.zombie_count === 0) {
+      return 'fresh'
+    }
+    if (channel.zombie_count > 0 && channel.running_count === 0) return 'zombie'
+    if (channel.stale_count > 0) return 'stale'
+    if (channel.running_count > 0) return 'fresh'
+    return 'missing'
+  }
+
+  private repairDiskState(subject: string, domain: DaemonDomain): void {
+    if (domain !== 'channel') reconcileWorkerState(this.runtimeContext, subject)
+    if (domain !== 'cycle') repairChannelWorkerState(this.runtimeContext, subject)
+  }
+
+  private async ensureOne(
+    subject: string,
+    domain: Exclude<DaemonDomain, 'all'>
+  ): Promise<DaemonSupervisorView> {
+    const health = this.domainHealth(subject, domain)
+    const owned = this.coveringManaged(subject, domain)
+
+    if (health === 'fresh') return this.get(subject)
+
+    if (owned && (health === 'stale' || health === 'zombie')) {
+      await this.stopEntry(owned, health === 'zombie' ? 'zombie_restart' : 'stale_restart')
+      this.repairDiskState(subject, domain)
+      return this.startLocked(subject, domain)
+    }
+
+    if (health === 'stale') return this.get(subject)
+
+    if (health === 'zombie') {
+      this.repairDiskState(subject, domain)
+    }
+    return this.startLocked(subject, domain)
   }
 
   private async ensureLocked(subject: string, domain: DaemonDomain): Promise<DaemonSupervisorView> {
-    if (this.coveringManaged(subject, domain)) return this.get(subject)
-
-    const cycleNeeded = domain !== 'channel'
-    const channelNeeded = domain !== 'cycle'
-    const cycleLive = this.domainLive(subject, 'cycle')
-    const channelLive = this.domainLive(subject, 'channel')
-
-    if (cycleNeeded && channelNeeded) {
-      if (!cycleLive && !this.coveringManaged(subject, 'cycle')) {
-        await this.startLocked(subject, 'cycle')
-      }
-      if (!channelLive && !this.coveringManaged(subject, 'channel')) {
-        await this.startLocked(subject, 'channel')
-      }
+    if (domain === 'all') {
+      await this.ensureOne(subject, 'cycle')
+      await this.ensureOne(subject, 'channel')
       return this.get(subject)
     }
-    if (cycleNeeded && cycleLive) return this.get(subject)
-    if (channelNeeded && channelLive) return this.get(subject)
-    return this.startLocked(subject, domain)
+    return this.ensureOne(subject, domain)
   }
 
   private async startLocked(subject: string, domain: DaemonDomain): Promise<DaemonSupervisorView> {

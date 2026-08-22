@@ -194,6 +194,9 @@ if (!gotSingleInstanceLock) {
         return invokeForIpc(invoke, request)
       }
     )
+    await lifecycle.reconcileStartup().catch(() => {
+      // Startup attach/start failure is projected as blocked/retrying.
+    })
     createWindow()
 
     app.on('activate', () => {
@@ -201,14 +204,7 @@ if (!gotSingleInstanceLock) {
     })
 
     if (process.env.JEA_DESKTOP_SMOKE) {
-      await lifecycle.reconcileStartup().catch(() => {
-        // Startup attach/start failure is projected as blocked/retrying.
-      })
       await runDesktopSmoke(process.env.JEA_DESKTOP_SMOKE)
-    } else {
-      void lifecycle.reconcileStartup().catch(() => {
-        // Startup attach/start failure is projected as blocked/retrying.
-      })
     }
   })
 }

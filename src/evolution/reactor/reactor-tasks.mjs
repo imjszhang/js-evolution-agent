@@ -9,6 +9,12 @@ import { buildCycleContext, runExecStep, runVerifyStep } from '../cycle-steps.mj
 import { runCognitiveLiveReaction } from './cognitive-reactor.mjs';
 import { peekRuleDueWindow, runRuleReaction } from './rule-reactor.mjs';
 import { compactMemory, readMemoryCompactionProjection, shouldCompactMemory } from './memory-compactor.mjs';
+import {
+  catchUpAllowsEvidenceBacklog,
+  clearCatchUpIfIdle,
+  noteCatchUpBatch,
+  readCatchUpProjection,
+} from './catch-up-budget.mjs';
 import { consumeWakeIntent, enqueueWakeIntent, listPendingWakes } from './wake-store.mjs';
 import { patchBatchCheckpoint, readBatchCheckpoint } from './batch-checkpoint-store.mjs';
 import { listEligibleEvidence, readClaimLedger } from './claim-ledger.mjs';
@@ -67,10 +73,23 @@ export function enqueueReactorTask(root, subject, kind, {
   return { ...wake, task: queued.task, task_created: queued.created };
 }
 
-export function scanWakeBacklog(root, subject, { enqueueTask } = {}) {
+export function scanWakeBacklog(root, subject, {
+  enqueueTask,
+  ignoreBudget = false,
+  env = process.env,
+} = {}) {
   const runtime = runtimeForSubject(root, subject);
   const enqueued = [];
+  const cognitivePending = listEligibleEvidence(runtime.dataRoot, { reactor: 'cognitive' });
+  if (cognitivePending.length === 0) {
+    clearCatchUpIfIdle(runtime.dataRoot, 0, env);
+  }
+  const gate = catchUpAllowsEvidenceBacklog(runtime.dataRoot, { ignoreBudget }, env);
+
   for (const intent of listPendingWakes(root, subject)) {
+    if (!gate.allowed && intent.kind === 'cognitive' && intent.reason === 'evidence_backlog') {
+      continue;
+    }
     const result = enqueueReactorTask(root, subject, intent.kind, {
       reason: intent.reason || 'backlog_scan',
       source: 'backlog_scan',
@@ -89,14 +108,16 @@ export function scanWakeBacklog(root, subject, { enqueueTask } = {}) {
     if (result.task_created) enqueued.push(result);
   }
 
-  const cognitivePending = listEligibleEvidence(runtime.dataRoot, { reactor: 'cognitive' });
-  if (cognitivePending.length > 0) {
+  if (cognitivePending.length > 0 && gate.allowed) {
     const result = enqueueReactorTask(root, subject, 'cognitive', {
       reason: 'evidence_backlog',
       source: 'backlog_scan',
       enqueueTask,
     });
-    if (result.task_created) enqueued.push(result);
+    if (result.task_created) {
+      noteCatchUpBatch(runtime.dataRoot, { pendingCount: cognitivePending.length }, env);
+      enqueued.push(result);
+    }
   }
 
   const ruleDue = peekRuleDueWindow(runtime.dataRoot);
@@ -144,7 +165,11 @@ export function scanWakeBacklog(root, subject, { enqueueTask } = {}) {
     if (result.task_created) enqueued.push(result);
   }
 
-  return { scanned: true, enqueued };
+  return {
+    scanned: true,
+    enqueued,
+    catch_up: readCatchUpProjection(runtime.dataRoot, env),
+  };
 }
 
 function countPendingDecisions(runtimeRoot) {

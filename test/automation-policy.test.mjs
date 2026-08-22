@@ -67,7 +67,12 @@ describe('product automation policy', () => {
       background: true,
     });
     const written = setSubjectAutomation(runtime, 'alpha', 'paused');
-    expect(written).toMatchObject({ changed: true, previous: 'automatic', mode: 'paused' });
+    expect(written).toMatchObject({
+      changed: true,
+      previous: 'automatic',
+      mode: 'paused',
+      source: 'subjects/registry.json',
+    });
     expect(resolveAutomationPolicy(runtime, 'alpha')).toMatchObject({
       mode: 'paused',
       mapped_from: 'automation',

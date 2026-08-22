@@ -198,7 +198,7 @@ export async function processCycleOnce(root, subject, flags = {}) {
   let scanned = { scanned: false, enqueued: [] };
   let work = null;
   try {
-    scanned = scanWakeBacklog(root, subject, { enqueueTask });
+    scanned = scanWakeBacklog(root, subject, { enqueueTask, ignoreBudget: true });
     const queued = pendingCycleTask(root, subject);
 
     if (pendingBefore === 0 && !queued) {
