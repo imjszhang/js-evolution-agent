@@ -18,8 +18,10 @@ export function DesktopOrWebRoot() {
 `apps/desktop/src/renderer` mounts `JeaApp`. `packages/jea-app` also has a Vite
 web entry (`src/web/main.tsx`) used for the dedicated renderer build, visual
 baselines, and the localhost Web host. When the host injects
-`<meta name="jea-host">`, the entry fetches `/jea/bootstrap` and surfaces
-`viewState: 'offline'` if the authenticated connection fails.
+`<meta name="jea-host">`, the entry creates the real Web `JeaClient`, uses
+`/jea/rpc` plus `/jea/events`, and surfaces `viewState: 'offline'` if the
+authenticated connection fails. Fixture data is available only in explicit
+non-hosted development/test URLs with `?fixture=1`.
 
 ## Feature slots (Wave 2)
 
@@ -45,11 +47,8 @@ Slot ids: `subjectList`, `conversation`, `evolutionInspector`, `serviceStatus`,
 `settingsFeature` fills the Settings overlay slot (General / Runtime / Command
 Line / About). First-run uses `JeaProductApp` and existing `viewState` loading
 or error chrome; an empty JEA Home renders `SetupFlow` instead of the empty
-workspace. Inject a Wave 1 `JeaClient` (or the in-package fixture client). Do
-not invent a second command catalog.
-
-Wave 1 injects fixture adapters only. Do not invent a JeaClient here; #116 owns
-the command catalog. Feature teams inject that client through a feature factory.
+workspace. Hosts inject the Client API owned by #116 through a feature factory;
+the shared package does not define a second command catalog.
 
 ### Evolution Inspector (#117)
 
@@ -85,6 +84,20 @@ Deferred Viewer features are not removed.
 - Theme preference is `system | light | dark`, stored in `localStorage` key
   `jea.theme`. Host HTML should run the no-flash boot script before paint.
 - Shell copy is English / 简体中文 (`jea.locale`).
+
+## Operator projection
+
+`projectOperatorSurface` is the UI boundary for mixed operational state. It
+keeps Conversation readiness, Evolution summary, observability attention,
+pending evidence, pending daemon tasks, and host-filtered remediation actions
+as separate fields. Displayed counts use these canonical sources:
+
+- pending evidence: `daemon.reactor.evidence.pending_count` (evidence items)
+- pending daemon tasks: `daemon.tasks.counts.pending` (tasks)
+- attention: `observability.attention.items` (attention items)
+
+The projector never reads legacy fixture-only fields such as
+`attention.backlog_count`.
 
 ## Commands
 

@@ -20,6 +20,12 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { dirname, join } from 'node:path';
 import lockfile from 'proper-lockfile';
 import { isoBeijing } from '../core/time.mjs';
+import {
+  handleContractValidation,
+  validateDecision,
+  validateDecisionTransition,
+} from '../../contracts/index.mjs';
+import { extractBeliefContext } from '../../contracts/belief-context.mjs';
 
 const STATUS_PENDING = 'pending';
 const STATUS_IN_PROGRESS = 'in_progress';
@@ -69,11 +75,41 @@ function stableForJson(value) {
   );
 }
 
+const VOLATILE_DECISION_CONTEXT_FIELDS = new Set([
+  'phase1_report_path',
+  'phase1_conversation_context_path',
+  'phase1_report_markdown',
+  'analysis_context',
+]);
+
+function stableDecisionContext(action) {
+  return Object.fromEntries(
+    Object.entries(extractBeliefContext(action))
+      .filter(([key]) => !VOLATILE_DECISION_CONTEXT_FIELDS.has(key)),
+  );
+}
+
+function fingerprintParams(action) {
+  const params = action?.params;
+  if (!params || typeof params !== 'object' || Array.isArray(params)) return params ?? null;
+  const next = { ...params };
+  delete next.context;
+  const runSpec = next.run_spec ?? next.runSpec;
+  const context = stableDecisionContext(action);
+  if (runSpec && typeof runSpec === 'object' && !Array.isArray(runSpec)) {
+    const key = next.run_spec ? 'run_spec' : 'runSpec';
+    next[key] = { ...runSpec, context };
+  } else if (Object.keys(context).length) {
+    next.context = context;
+  }
+  return next;
+}
+
 export function decisionFingerprint(action = {}) {
   return JSON.stringify(stableForJson({
     type: action.type ?? null,
     serves_goal: action.serves_goal ?? null,
-    params: action.params ?? null,
+    params: fingerprintParams(action),
     target: action.target ?? null,
     layer: action.layer ?? null,
     description: action.params ? null : action.description ?? null,
@@ -136,7 +172,8 @@ export function parseAgentMaxAttemptsFromEnv() {
 }
 
 function isCycleTtlDisabled(_env = process.env) {
-  return true;
+  const raw = String(_env?.JEA_QUEUE_DISABLE_CYCLE_TTL ?? '').trim().toLowerCase();
+  return ['1', 'true', 'yes', 'on'].includes(raw);
 }
 
 function parsePositiveIntEnv(name, fallback, { min = 1, max = MAX_TTL_CYCLES } = {}) {
@@ -212,6 +249,7 @@ export class DecisionQueue {
     this.dataDir = dataDir || join(process.cwd(), 'data', 'evolution');
     mkdirSync(this.dataDir, { recursive: true });
     this._filePath = join(this.dataDir, 'pending_decisions.json');
+    this._lockPath = join(this.dataDir, 'pending_decisions.lock');
     this._archivePath = join(this.dataDir, 'archived_decisions.json');
     this._logFn = logFn || (() => {});
     this._onDecisionAdded = typeof onDecisionAdded === 'function' ? onDecisionAdded : null;
@@ -225,18 +263,48 @@ export class DecisionQueue {
     }
   }
 
+  _validateDecision(decision) {
+    return handleContractValidation('decision', validateDecision(decision), {
+      logger: { warn: (message) => this._log(`[contract] ${message}`, 'warn') },
+    });
+  }
+
+  _validateTransition(fromStatus, toStatus) {
+    return handleContractValidation(
+      'decision_transition',
+      validateDecisionTransition(fromStatus, toStatus),
+      { logger: { warn: (message) => this._log(`[contract] ${message}`, 'warn') } },
+    );
+  }
+
   _withLock(fn) {
     mkdirSync(dirname(this._filePath), { recursive: true });
-    if (!existsSync(this._filePath)) {
-      writeFileSync(this._filePath, JSON.stringify({ decisions: [] }), 'utf-8');
-    }
+    if (!existsSync(this._lockPath)) writeFileSync(this._lockPath, '', { flag: 'a' });
     let release;
-    try {
-      release = lockfile.lockSync(this._filePath, { retries: { retries: 5, minTimeout: 100 } });
-    } catch {
-      return fn();
+    let lastError;
+    const retryDelaysMs = [0, 20, 40, 80, 120, 160];
+    for (const delayMs of retryDelaysMs) {
+      if (delayMs > 0) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delayMs);
+      }
+      try {
+        release = lockfile.lockSync(this._lockPath);
+        lastError = null;
+        break;
+      } catch (cause) {
+        lastError = cause;
+      }
+    }
+    if (lastError) {
+      const error = new Error(`Decision queue lock acquisition failed: ${lastError?.message || lastError}`);
+      error.code = 'decision_queue_lock_failed';
+      error.cause = lastError;
+      throw error;
     }
     try {
+      if (!existsSync(this._filePath)) {
+        writeFileSync(this._filePath, JSON.stringify({ decisions: [] }), 'utf-8');
+      }
       return fn();
     } finally {
       try { release(); } catch {}
@@ -247,15 +315,21 @@ export class DecisionQueue {
     if (!existsSync(this._filePath)) return { decisions: [] };
     try {
       const data = JSON.parse(readFileSync(this._filePath, 'utf-8'));
-      if (!data || !Array.isArray(data.decisions)) return { decisions: [] };
+      if (!data || !Array.isArray(data.decisions)) {
+        throw new Error('expected an object with a decisions array');
+      }
       for (const d of data.decisions) ensureDecisionDefaults(d);
       return data;
-    } catch {
-      return { decisions: [] };
+    } catch (cause) {
+      const error = new Error(`Decision queue JSON is invalid at ${this._filePath}: ${cause?.message || cause}`);
+      error.code = 'decision_queue_json_invalid';
+      error.cause = cause;
+      throw error;
     }
   }
 
   _writeAll(data) {
+    for (const decision of data.decisions ?? []) this._validateDecision(decision);
     data.updated_at = isoBeijing();
     const tmp = `${this._filePath}.tmp`;
     writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf-8');
@@ -266,10 +340,15 @@ export class DecisionQueue {
     if (!existsSync(this._archivePath)) return { decisions: [] };
     try {
       const data = JSON.parse(readFileSync(this._archivePath, 'utf-8'));
-      if (!data || !Array.isArray(data.decisions)) return { decisions: [] };
+      if (!data || !Array.isArray(data.decisions)) {
+        throw new Error('expected an object with a decisions array');
+      }
       return data;
-    } catch {
-      return { decisions: [] };
+    } catch (cause) {
+      const error = new Error(`Decision archive JSON is invalid at ${this._archivePath}: ${cause?.message || cause}`);
+      error.code = 'decision_archive_json_invalid';
+      error.cause = cause;
+      throw error;
     }
   }
 
@@ -382,6 +461,7 @@ export class DecisionQueue {
         }
         const decisionId = `${cycleId}:${nextSeq}`;
         nextSeq += 1;
+        const beliefId = extractBeliefContext(action).belief_id ?? null;
         const decision = {
           id: decisionId,
           cycle_id: cycleId,
@@ -390,7 +470,10 @@ export class DecisionQueue {
           fingerprint,
           action,
           analysis_context: (analysisContext || '').slice(0, 3000),
-          metadata,
+          metadata: {
+            ...metadata,
+            ...(beliefId ? { belief_id: beliefId } : {}),
+          },
           validation: validation ?? null,
           attempts: 0,
           max_attempts: resolveMaxAttempts(action),
@@ -401,6 +484,7 @@ export class DecisionQueue {
         if (this._onDecisionAdded) {
           try { this._onDecisionAdded(decision); } catch {}
         }
+        this._validateDecision(decision);
         data.decisions.push(decision);
         newIds.push(decisionId);
         hotFingerprints.add(fingerprint);
@@ -506,6 +590,7 @@ export class DecisionQueue {
         const createdMs = decisionTime(d);
         const ageMs = createdMs != null ? Math.max(0, now - createdMs) : null;
         const runSpec = d.action?.params?.run_spec ?? d.action?.run_spec ?? {};
+        const beliefContext = extractBeliefContext(d.action);
         ensureDecisionDefaults(d);
         const item = {
           id: d.id,
@@ -526,6 +611,8 @@ export class DecisionQueue {
           primary_cwd_kind: runSpec.primary_cwd_kind
             ?? runSpec.primaryCwdKind
             ?? null,
+          belief_id: beliefContext.belief_id ?? null,
+          belief_relation: beliefContext.belief_relation ?? null,
           description: (d.action?.description || d.action?.params?.intent || '').slice(0, 160) || null,
         };
         if (status === STATUS_PENDING) {
@@ -558,6 +645,7 @@ export class DecisionQueue {
       const now = isoBeijing();
       for (const d of data.decisions) {
         if (d.id === decisionId) {
+          this._validateTransition(d.status, status);
           d.status = status;
           d.status_updated_at = now;
           if (error) d.error = error;
@@ -590,6 +678,7 @@ export class DecisionQueue {
 
       const claimed = [];
       for (const d of pending.slice(0, cap)) {
+        this._validateTransition(STATUS_PENDING, STATUS_IN_PROGRESS);
         d.status = STATUS_IN_PROGRESS;
         d.status_updated_at = now;
         d.claimed_at = now;
@@ -617,6 +706,7 @@ export class DecisionQueue {
       const now = isoBeijing();
       for (const d of data.decisions) {
         if (d.id === decisionId) {
+          this._validateTransition(d.status, STATUS_COMPLETED);
           d.status = STATUS_COMPLETED;
           d.status_updated_at = now;
           if (resultSummary) d.result_summary = resultSummary.slice(0, 2000);
@@ -640,6 +730,7 @@ export class DecisionQueue {
       for (const d of data.decisions) {
         if (d.id === decisionId) {
           ensureDecisionDefaults(d);
+          this._validateTransition(d.status, STATUS_FAILED);
           d.status = STATUS_FAILED;
           d.status_updated_at = now;
           if (error) {
@@ -675,9 +766,11 @@ export class DecisionQueue {
           d.last_error = { at: now, message: errMsg };
         }
         if (d.attempts < d.max_attempts) {
+          this._validateTransition(d.status, STATUS_PENDING);
           d.status = STATUS_PENDING;
           outcome = { status: STATUS_PENDING, attempts: d.attempts, max_attempts: d.max_attempts };
         } else {
+          this._validateTransition(d.status, STATUS_BLOCKED);
           d.status = STATUS_BLOCKED;
           outcome = { status: STATUS_BLOCKED, attempts: d.attempts, max_attempts: d.max_attempts };
         }
@@ -707,6 +800,7 @@ export class DecisionQueue {
           return { ok: false, reason: 'not_blocked', status: d.status };
         }
         ensureDecisionDefaults(d);
+        this._validateTransition(d.status, STATUS_PENDING);
         d.status = STATUS_PENDING;
         d.attempts = 0;
         d.cycles_seen = 0;
@@ -735,6 +829,7 @@ export class DecisionQueue {
         if (d.status !== STATUS_PENDING && d.status !== STATUS_BLOCKED) {
           return { ok: false, reason: 'not_retirable', status: d.status };
         }
+        this._validateTransition(d.status, STATUS_RETIRED);
         d.status = STATUS_RETIRED;
         d.status_updated_at = now;
         d.retired_at = now;
@@ -850,7 +945,9 @@ export class DecisionQueue {
       ensureDecisionDefaults(d);
 
       const disableCycleTtl = isCycleTtlDisabled();
-      if (increment && !disableCycleTtl && (status === STATUS_PENDING || status === STATUS_BLOCKED)) {
+      const alreadyMaintained = cycleId && d.last_maintenance_cycle === cycleId;
+      if (increment && !disableCycleTtl && !alreadyMaintained
+        && (status === STATUS_PENDING || status === STATUS_BLOCKED)) {
         d.cycles_seen = (d.cycles_seen || 0) + 1;
         incremented += 1;
         if (cycleId) d.last_maintenance_cycle = cycleId;
@@ -873,6 +970,7 @@ export class DecisionQueue {
           expireReason = 'wallclock';
         }
         if (expireReason) {
+          this._validateTransition(d.status, STATUS_EXPIRED);
           d.status = STATUS_EXPIRED;
           d.status_updated_at = isoBeijing();
           d.expire_reason = expireReason;

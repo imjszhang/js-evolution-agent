@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Stage the JEA 0.1.0 macOS resource tree (#120).
+ * Stage the JEA 0.2.0 macOS resource tree (#120).
  *
  * Usage:
  *   node scripts/stage-app-resources.mjs [--repo DIR] [--out DIR] [--with-node-modules] [--json]

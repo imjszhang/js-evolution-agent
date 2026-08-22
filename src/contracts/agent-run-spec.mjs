@@ -15,12 +15,20 @@ export const PERMISSION_PROFILES = Object.freeze([
   'remote_write_review',
 ]);
 
+export const AGENT_RUN_EXECUTION_SCOPES = Object.freeze([
+  'subject_runtime',
+  'source_root',
+  'target_repo',
+  'lane_worktree',
+]);
+
 export function validateAgentRunSpec(runSpec, path = 'run_spec') {
   const base = requirePlainObject(runSpec, path);
   if (!base.ok) return base;
   const errors = [];
   const required = mergeValidationResults([
     requireString(runSpec.primary_cwd_kind, `${path}.primary_cwd_kind`),
+    requireString(runSpec.primary_cwd, `${path}.primary_cwd`),
     requireString(runSpec.permission_profile, `${path}.permission_profile`),
     requireString(runSpec.intent, `${path}.intent`),
     requireArray(runSpec.expected_output, `${path}.expected_output`),
@@ -28,6 +36,12 @@ export function validateAgentRunSpec(runSpec, path = 'run_spec') {
   if (!required.ok) errors.push(...required.errors);
   if (runSpec.permission_profile && !PERMISSION_PROFILES.includes(runSpec.permission_profile)) {
     errors.push(`${path}.permission_profile is not a known profile: ${runSpec.permission_profile}`);
+  }
+  if (
+    runSpec.permission_profile === 'remote_write_review'
+    && ['subject_runtime', 'source_root'].includes(runSpec.primary_cwd_kind)
+  ) {
+    errors.push(`${path}.remote_write_review requires a target, lane, or registered resource scope`);
   }
   if (runSpec.context != null && !isPlainObject(runSpec.context)) {
     errors.push(`${path}.context must be an object when present`);
@@ -37,6 +51,14 @@ export function validateAgentRunSpec(runSpec, path = 'run_spec') {
   }
   if (runSpec.expected_output?.some((item) => typeof item !== 'string')) {
     errors.push(`${path}.expected_output must contain only strings`);
+  }
+  if (runSpec.additional_directories != null) {
+    const additional = requireArray(runSpec.additional_directories, `${path}.additional_directories`);
+    if (!additional.ok) errors.push(...additional.errors);
+    if (Array.isArray(runSpec.additional_directories)
+      && runSpec.additional_directories.some((item) => typeof item !== 'string' || !item.trim())) {
+      errors.push(`${path}.additional_directories must contain only non-empty strings`);
+    }
   }
   const optionalStringResult = mergeValidationResults([
     requireOptionalString(runSpec.cwd, `${path}.cwd`),

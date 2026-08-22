@@ -1,8 +1,10 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { readFileSync, writeFileSync } from 'node:fs';
+import lockfile from 'proper-lockfile';
 import {
   DecisionQueue,
   decisionFingerprint,
@@ -10,6 +12,68 @@ import {
 
 describe('unified DecisionQueue', () => {
   let tempDir;
+  const originalDisableCycleTtl = process.env.JEA_QUEUE_DISABLE_CYCLE_TTL;
+
+  it('fails closed when the sidecar lock cannot be acquired', () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'jea-queue-'));
+    const queue = new DecisionQueue({ dataDir: tempDir });
+    const lockSpy = vi.spyOn(lockfile, 'lockSync').mockImplementation(() => {
+      throw new Error('busy');
+    });
+    let called = false;
+
+    expect(() => queue._withLock(() => {
+      called = true;
+    })).toThrow(/Decision queue lock acquisition failed/);
+    expect(called).toBe(false);
+    lockSpy.mockRestore();
+  });
+
+  it('retries through brief sidecar lock contention', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'jea-queue-'));
+    const queue = new DecisionQueue({ dataDir: tempDir });
+    const lockPath = join(tempDir, 'pending_decisions.lock');
+    writeFileSync(lockPath, '', 'utf-8');
+    const child = spawn(process.execPath, [
+      '--input-type=module',
+      '-e',
+      [
+        "import lockfile from 'proper-lockfile';",
+        "const path = process.argv[1];",
+        'const release = lockfile.lockSync(path);',
+        "process.stdout.write('locked\\n');",
+        'setTimeout(() => { release(); process.exit(0); }, 80);',
+      ].join(' '),
+      lockPath,
+    ], {
+      cwd: process.cwd(),
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const childExited = new Promise((resolve, reject) => {
+      child.once('error', reject);
+      child.once('exit', (code) => (code === 0 ? resolve() : reject(new Error(`child exited ${code}`))));
+    });
+    await new Promise((resolve, reject) => {
+      child.once('error', reject);
+      child.stdout.once('data', resolve);
+    });
+
+    expect(queue.getAll()).toEqual([]);
+    await childExited;
+  });
+
+  it('does not replace a corrupt active queue with an empty queue', () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'jea-queue-'));
+    const queuePath = join(tempDir, 'pending_decisions.json');
+    writeFileSync(queuePath, '{"decisions":', 'utf-8');
+    const queue = new DecisionQueue({ dataDir: tempDir });
+
+    expect(() => queue.addDecisions({
+      cycleId: 'cycle-corrupt',
+      actions: [{ type: 'record_observation', params: { summary: 'must not write' } }],
+    })).toThrow(/Decision queue JSON is invalid/);
+    expect(readFileSync(queuePath, 'utf-8')).toBe('{"decisions":');
+  });
 
   it('adds, deduplicates hot decisions, claims, and completes', () => {
     tempDir = mkdtempSync(join(tmpdir(), 'jea-queue-'));
@@ -41,6 +105,76 @@ describe('unified DecisionQueue', () => {
 
     queue.completeDecision(claimed[0].id, 'ok');
     expect(queue.getById(claimed[0].id)?.status).toBe('completed');
+  });
+
+  it('gates every construction path and illegal transitions in strict mode', () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'jea-queue-'));
+    const previous = process.env.JEA_CONTRACT_MODE;
+    process.env.JEA_CONTRACT_MODE = 'strict';
+    try {
+      const queue = new DecisionQueue({ dataDir: tempDir });
+      expect(() => queue.addDecisions({
+        cycleId: 'cycle-invalid',
+        actions: [{}],
+      })).toThrow(/decision contract invalid/);
+
+      const [id] = queue.addDecisions({
+        cycleId: 'cycle-valid',
+        actions: [{ type: 'record_observation' }],
+      });
+      queue.claimNext(1);
+      queue.completeDecision(id, 'done');
+      expect(() => queue.updateStatus(id, 'pending'))
+        .toThrow(/decision_transition contract invalid/);
+    } finally {
+      if (previous === undefined) delete process.env.JEA_CONTRACT_MODE;
+      else process.env.JEA_CONTRACT_MODE = previous;
+    }
+  });
+
+  it('deduplicates volatile report context while preserving belief intent', () => {
+    const actionFor = (beliefId, reportPath) => ({
+      type: 'agent_run',
+      serves_goal: 'goal-belief',
+      params: {
+        run_spec: {
+          intent: 'test bounded signal',
+          context: {
+            belief_id: beliefId,
+            belief_relation: 'test_belief',
+            expected_belief_update: 'validate or refute',
+            phase1_report_path: reportPath,
+            phase1_report_markdown: `report at ${reportPath}`,
+            analysis_context: `analysis at ${reportPath}`,
+          },
+        },
+      },
+    });
+
+    expect(decisionFingerprint(actionFor('belief-a', '/cycle/one.md')))
+      .toBe(decisionFingerprint(actionFor('belief-a', '/cycle/two.md')));
+    expect(decisionFingerprint(actionFor('belief-a', '/cycle/one.md')))
+      .not.toBe(decisionFingerprint(actionFor('belief-b', '/cycle/one.md')));
+    const paramsContextAction = actionFor('belief-a', '/cycle/one.md');
+    paramsContextAction.params.context = paramsContextAction.params.run_spec.context;
+    delete paramsContextAction.params.run_spec.context;
+    expect(decisionFingerprint(paramsContextAction))
+      .toBe(decisionFingerprint(actionFor('belief-a', '/cycle/one.md')));
+
+    tempDir = mkdtempSync(join(tmpdir(), 'jea-queue-'));
+    const queue = new DecisionQueue({ dataDir: tempDir });
+    expect(queue.addDecisionsDetailed({
+      cycleId: 'cycle-one',
+      actions: [actionFor('belief-a', '/cycle/one.md')],
+    }).ids).toHaveLength(1);
+    expect(queue.addDecisionsDetailed({
+      cycleId: 'cycle-two',
+      actions: [actionFor('belief-a', '/cycle/two.md')],
+    }).skipped[0]?.reason).toBe('duplicate_hot_decision');
+    expect(queue.addDecisionsDetailed({
+      cycleId: 'cycle-two',
+      actions: [actionFor('belief-b', '/cycle/two.md')],
+    }).ids).toHaveLength(1);
   });
 
   it('archives completed and retired decisions by default', () => {
@@ -182,8 +316,8 @@ describe('unified DecisionQueue', () => {
     expect(badRequeue.ok).toBe(false);
 
     const beforeRequeue = queue.runQueueMaintenance({ pendingTtlCycles: 100, blockedTtlCycles: 100 });
-    expect(beforeRequeue.incremented).toBe(0);
-    expect(queue.getById(id)?.cycles_seen).toBe(0);
+    expect(beforeRequeue.incremented).toBe(1);
+    expect(queue.getById(id)?.cycles_seen).toBe(1);
 
     const requeued = queue.requeueDecision(id);
     expect(requeued).toEqual({ ok: true, status: 'pending' });
@@ -310,7 +444,7 @@ describe('unified DecisionQueue', () => {
     expect(queue.getById('c:2')?.status).toBe('pending');
   });
 
-  it('runQueueMaintenance does not increment cycles_seen or expire by cycle TTL', () => {
+  it('runQueueMaintenance increments cycles_seen and expires by cycle TTL', () => {
     tempDir = mkdtempSync(join(tmpdir(), 'jea-queue-'));
     const queue = new DecisionQueue({ dataDir: tempDir });
     const ids = queue.addDecisions({
@@ -327,14 +461,14 @@ describe('unified DecisionQueue', () => {
         blockedTtlCycles: 10,
         wallclockTtlDays: 30,
       });
-      expect(mid.expired).toHaveLength(0);
-      expect(mid.incremented).toBe(0);
-      expect(queue.getById(id)?.status).toBe('pending');
-      expect(queue.getById(id)?.cycles_seen).toBe(0);
+      expect(mid.incremented).toBe(i < 6 ? 1 : 0);
+      expect(mid.expired).toHaveLength(i === 5 ? 1 : 0);
+      expect(queue.getById(id)?.status).toBe(i === 5 ? 'expired' : 'pending');
+      expect(queue.getById(id)?.cycles_seen).toBe(i + 1);
     }
   });
 
-  it('runQueueMaintenance does not expire blocked items by cycle TTL', () => {
+  it('runQueueMaintenance expires blocked items by cycle TTL', () => {
     tempDir = mkdtempSync(join(tmpdir(), 'jea-queue-'));
     const queue = new DecisionQueue({ dataDir: tempDir });
     writeFileSync(join(tempDir, 'pending_decisions.json'), JSON.stringify({
@@ -352,14 +486,49 @@ describe('unified DecisionQueue', () => {
 
     for (let i = 0; i < 11; i += 1) {
       const mid = queue.runQueueMaintenance({
+        cycleId: `blocked-cycle-${i}`,
         pendingTtlCycles: 5,
         blockedTtlCycles: 10,
         wallclockTtlDays: 30,
       });
-      expect(mid.expired).toHaveLength(0);
-      expect(queue.getById('b:0')?.status).toBe('blocked');
-      expect(queue.getById('b:0')?.cycles_seen).toBe(0);
+      expect(mid.expired).toHaveLength(i === 10 ? 1 : 0);
+      expect(queue.getById('b:0')?.status).toBe(i === 10 ? 'expired' : 'blocked');
+      expect(queue.getById('b:0')?.cycles_seen).toBe(i + 1);
     }
+  });
+
+  it('supports explicitly disabling cycle TTL', () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'jea-queue-'));
+    process.env.JEA_QUEUE_DISABLE_CYCLE_TTL = '1';
+    const queue = new DecisionQueue({ dataDir: tempDir });
+    const [id] = queue.addDecisions({
+      cycleId: 'cycle-ttl-disabled',
+      actions: [{ type: 'record_observation', params: { summary: 'linger' } }],
+    });
+
+    for (let i = 0; i < 3; i += 1) {
+      const result = queue.runQueueMaintenance({
+        cycleId: `disabled-${i}`,
+        pendingTtlCycles: 1,
+        wallclockTtlDays: 30,
+      });
+      expect(result.incremented).toBe(0);
+      expect(result.expired).toHaveLength(0);
+    }
+    expect(queue.getById(id)).toMatchObject({ status: 'pending', cycles_seen: 0 });
+  });
+
+  it('counts a maintenance cycle only once', () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'jea-queue-'));
+    const queue = new DecisionQueue({ dataDir: tempDir });
+    const [id] = queue.addDecisions({
+      cycleId: 'cycle-distinct',
+      actions: [{ type: 'record_observation', params: { summary: 'x' } }],
+    });
+
+    expect(queue.runQueueMaintenance({ cycleId: 'exec-1' }).incremented).toBe(1);
+    expect(queue.runQueueMaintenance({ cycleId: 'exec-1' }).incremented).toBe(0);
+    expect(queue.getById(id)?.cycles_seen).toBe(1);
   });
 
   it('cleanupExpired wallclock fallback expires ancient decisions', () => {
@@ -401,10 +570,13 @@ describe('unified DecisionQueue', () => {
       wallclockTtlDays: 30,
     });
     const backlog = queue.getBacklogSummary({ limit: 10 });
-    expect(backlog.pending[0].cycles_seen).toBe(0);
+    expect(backlog.pending[0].cycles_seen).toBe(1);
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
+    if (originalDisableCycleTtl === undefined) delete process.env.JEA_QUEUE_DISABLE_CYCLE_TTL;
+    else process.env.JEA_QUEUE_DISABLE_CYCLE_TTL = originalDisableCycleTtl;
     if (tempDir) {
       try { rmSync(tempDir, { recursive: true, force: true }); } catch {}
       tempDir = null;

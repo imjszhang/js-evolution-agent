@@ -3,8 +3,8 @@
  * Fail-closed publish guard for the current shipped release identity.
  *
  * This is not a publisher. It never creates a tag or GitHub Release.
- * `expectedRelease` is parameterized (do not hard-code a 0.1.1 bump here).
- * 0.1.1 certification additionally requires recovery-matrix and soak evidence.
+ * `expectedRelease` is parameterized from the current release identity.
+ * Certification additionally requires recovery-matrix and soak evidence.
  *
  * Usage:
  *   node scripts/release-publish-guard.mjs [--publish] [--evidence DIR] [--json]
@@ -19,7 +19,10 @@ import {
   RELEASE_VERSION,
 } from './release-lib.mjs';
 import { assertCleanProvenance, readBuildMetadataFile } from '../src/product/build-metadata.mjs';
-import { evaluateRecoverySoakEvidence } from './release-certification-evidence.mjs';
+import {
+  evaluateCertificationArtifacts,
+  evaluateRecoverySoakEvidence,
+} from './release-certification-evidence.mjs';
 
 export const EVIDENCE_FILE = 'certification-evidence.json';
 
@@ -158,6 +161,27 @@ export function evaluatePublishGuard({
     };
   }
 
+  const artifacts = evaluateCertificationArtifacts({
+    dir: absDir,
+    metadata: fileMetadata,
+    maxAgeMs: maxEvidenceAgeMs,
+    now,
+  });
+  if (!artifacts.ok) {
+    return {
+      ok: false,
+      status: 'blocked',
+      publish: true,
+      reason: artifacts.reason,
+      evidencePath,
+      evidence,
+      artifactReports: artifacts.reports,
+      notes: [
+        'Fail closed: publish requires parsed, passed, fresh, same-build journey, launch, recovery, and soak JSON.',
+      ],
+    };
+  }
+
   return {
     ok: true,
     status: 'certified',
@@ -165,6 +189,7 @@ export function evaluatePublishGuard({
     reason: 'certification_present',
     evidencePath,
     evidence,
+    artifactReports: artifacts.reports,
     notes: [
       'Evidence is present. This guard still does not upload a GitHub Release.',
     ],

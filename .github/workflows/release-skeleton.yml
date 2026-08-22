@@ -15,6 +15,9 @@ on:
 permissions:
   contents: read
 
+env:
+  JEA_CONTRACT_MODE: strict
+
 concurrency:
   group: release-skeleton-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -37,5 +40,5 @@ jobs:
         run: npm run release:skeleton -- --json
       - name: Bounded recovery matrix (no JEA.app)
         run: npm run release:recovery-matrix -- --bounded --json
-      - name: Unit tests for release-skeleton and 0.1.1 recovery certification
+      - name: Unit tests for release-skeleton and current recovery certification
         run: npm test -- --run test/release-skeleton.test.mjs test/release-product-journey.test.mjs test/release-recovery-matrix.test.mjs

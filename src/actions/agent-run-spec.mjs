@@ -7,7 +7,6 @@ import {
   resolveActionExecutionRoots,
 } from './execution-root.mjs';
 import {
-  handleContractValidation,
   validateAgentRunSpec as validateAgentRunSpecContract,
 } from '../contracts/index.mjs';
 
@@ -263,9 +262,8 @@ export function validateAgentRunSpec(action = {}, ctx = {}) {
 
   if (!spec.present) return { valid: true, errors, warnings, spec };
 
-  handleContractValidation('agent_run_spec', validateAgentRunSpecContract(spec), {
-    logger: ctx?.host?.logger ?? ctx?.logger ?? null,
-  });
+  const contractValidation = validateAgentRunSpecContract(spec);
+  if (!contractValidation.ok) errors.push(...contractValidation.errors);
 
   if (!spec.primary_cwd_kind) errors.push('run_spec.primary_cwd_kind is required');
   if (!spec.primary_cwd) errors.push('run_spec.primary_cwd could not be resolved');

@@ -206,7 +206,7 @@ export const CLIENT_API_COMMAND_CATALOG: CatalogCommandEntry[] = [
 export const CLIENT_API_EVENT_CATALOG: CatalogEventEntry[] = [
   { name: 'client.hello', payload: { version: 'string' } },
   { name: 'subject.changed', payload: { subject: 'string', reason: 'string' } },
-  { name: 'conversation.updated', payload: { subject: 'string', session_id: 'string' } },
+  { name: 'conversation.updated', payload: { subject: 'string', session_id: 'string', removed: 'boolean?' } },
   { name: 'evolution.updated', payload: { subject: 'string', cycle_id: 'string?' } },
   { name: 'service.status', payload: { subject: 'string', mode: 'string' } },
   { name: 'setup.readiness', payload: { ready: 'boolean' } },

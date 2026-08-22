@@ -8,6 +8,12 @@ import {
   resolveLlmCallOptions,
   toDeepSeekRequestFields,
 } from './llm-profile.mjs';
+import {
+  reserveTokenBudget,
+  settleTokenBudget,
+  tokenBudgetSnapshot,
+} from './token-budget.mjs';
+import { redactSecrets } from '../infra/redaction.mjs';
 
 export class DeepSeekOpenAIClient extends BaseAIClient {
   /**
@@ -31,6 +37,15 @@ export class DeepSeekOpenAIClient extends BaseAIClient {
       ?? 'https://api.deepseek.com';
 
     this._env = opts.env ?? process.env;
+    this.subjectKey = String(opts.subjectKey ?? '').trim();
+    if (!this.subjectKey) {
+      throw new AIError('DeepSeekOpenAIClient: pass an explicit subjectKey');
+    }
+    this.budgetLedgerPath = String(opts.budgetLedgerPath ?? '').trim();
+    if (!this.budgetLedgerPath) {
+      throw new AIError('DeepSeekOpenAIClient: pass the subject runtime budgetLedgerPath');
+    }
+    this._onBudgetEvent = typeof opts.onBudgetEvent === 'function' ? opts.onBudgetEvent : null;
     this.defaultPhase = opts.defaultPhase ?? null;
     this._defaultOverrides = {};
     if (opts.model) this._defaultOverrides.model = opts.model;
@@ -57,6 +72,23 @@ export class DeepSeekOpenAIClient extends BaseAIClient {
       apiKey: apiKey.trim(),
       baseURL: baseURL.replace(/\/$/, ''),
       timeout: Math.max(1, Number(timeoutSec) || 120) * 1000,
+    });
+  }
+
+  _emitBudgetEvent(event) {
+    this._onBudgetEvent?.(event);
+    this._log(
+      `[token-budget] ${event.type} subject=${event.subject}`
+      + ` used=${event.used}/${event.budget} remaining=${event.remaining}`,
+      event.type === 'llm_token_budget_exhausted' ? 'error' : 'info',
+    );
+  }
+
+  tokenBudgetSnapshot() {
+    return tokenBudgetSnapshot({
+      subjectKey: this.subjectKey,
+      ledgerPath: this.budgetLedgerPath,
+      env: this._env,
     });
   }
 
@@ -120,11 +152,22 @@ export class DeepSeekOpenAIClient extends BaseAIClient {
     const timeoutSec = opts.timeout ?? this.timeout;
     const callOpts = this.resolveCallOptions(opts);
     const fields = toDeepSeekRequestFields(callOpts);
+    const safeMessages = redactSecrets(messages);
     const body = {
       ...fields,
-      messages,
+      messages: safeMessages,
       stream: false,
     };
+    const budgetReservation = reserveTokenBudget({
+      subjectKey: this.subjectKey,
+      ledgerPath: this.budgetLedgerPath,
+      messages: safeMessages,
+      requestedMaxTokens: opts.maxTokens ?? opts.max_tokens,
+      model: fields.model,
+      env: this._env,
+      emit: (event) => this._emitBudgetEvent(event),
+    });
+    body.max_tokens = budgetReservation.maxTokens;
     this._log(
       `DeepSeek chat model=${fields.model} thinking=${callOpts.thinkingMode}`
       + (fields.reasoning_effort ? ` effort=${fields.reasoning_effort}` : ''),
@@ -134,10 +177,17 @@ export class DeepSeekOpenAIClient extends BaseAIClient {
     try {
       completion = await this._createWithRetry(body, timeoutSec);
     } catch (e) {
+      settleTokenBudget(budgetReservation, null, {
+        emit: (event) => this._emitBudgetEvent(event),
+        failed: true,
+      });
       const msg = e?.message || String(e);
       this._log(`DeepSeek API error: ${msg}`, 'error');
       throw new AIError(`DeepSeek request failed: ${msg}`);
     }
+    settleTokenBudget(budgetReservation, completion?.usage, {
+      emit: (event) => this._emitBudgetEvent(event),
+    });
 
     const text = completion?.choices?.[0]?.message?.content;
     if (text == null || String(text).trim() === '') {
@@ -183,13 +233,26 @@ export class DeepSeekOpenAIClient extends BaseAIClient {
     const timeoutSec = opts.timeout ?? this.timeout;
     const callOpts = this.resolveCallOptions(opts);
     const fields = toDeepSeekRequestFields(callOpts);
+    const safeMessages = redactSecrets(messages);
+    const safeTools = redactSecrets(opts.tools);
     const body = {
       ...fields,
-      messages,
+      messages: safeMessages,
       stream: false,
-      tools: opts.tools,
+      tools: safeTools,
       tool_choice: opts.toolChoice ?? 'auto',
     };
+    const budgetReservation = reserveTokenBudget({
+      subjectKey: this.subjectKey,
+      ledgerPath: this.budgetLedgerPath,
+      messages: safeMessages,
+      tools: safeTools,
+      requestedMaxTokens: opts.maxTokens ?? opts.max_tokens,
+      model: fields.model,
+      env: this._env,
+      emit: (event) => this._emitBudgetEvent(event),
+    });
+    body.max_tokens = budgetReservation.maxTokens;
     this._log(
       `DeepSeek tools model=${fields.model} thinking=${callOpts.thinkingMode}`
       + (fields.reasoning_effort ? ` effort=${fields.reasoning_effort}` : ''),
@@ -199,10 +262,17 @@ export class DeepSeekOpenAIClient extends BaseAIClient {
     try {
       completion = await this._createWithRetry(body, timeoutSec);
     } catch (e) {
+      settleTokenBudget(budgetReservation, null, {
+        emit: (event) => this._emitBudgetEvent(event),
+        failed: true,
+      });
       const msg = e?.message || String(e);
       this._log(`DeepSeek API error: ${msg}`, 'error');
       throw new AIError(`DeepSeek request failed: ${msg}`);
     }
+    settleTokenBudget(budgetReservation, completion?.usage, {
+      emit: (event) => this._emitBudgetEvent(event),
+    });
 
     const choice = completion?.choices?.[0];
     const message = choice?.message ?? {};

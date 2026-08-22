@@ -1,4 +1,5 @@
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import {
   createIntelligenceStore,
   writePendingOperatorBrief,
@@ -36,6 +37,21 @@ const CLASSIFIER_OUTPUT_TYPES = new Set([
   'observation',
   'ignore',
 ]);
+
+function channelOperatorInputIdentity(envelope, kind, content) {
+  const messageIdentity = envelope.message_id
+    ? `${envelope.channel}:${envelope.message_id}`
+    : createHash('sha256').update(String(content ?? '')).digest('hex');
+  const fingerprint = createHash('sha256')
+    .update(`${kind}:${messageIdentity}`)
+    .digest('hex')
+    .slice(0, 24);
+  return {
+    id: `channel-${kind}-${fingerprint}`,
+    idempotency_key: `channel:${kind}:${messageIdentity}`,
+    fingerprint,
+  };
+}
 
 function isIgnorableClassifierIgnore(envelope, text) {
   const content = String(envelope.content ?? text ?? '').trim();
@@ -321,24 +337,34 @@ export function ingestChannelEnvelope(root, subject, envelopeInput, { classifica
     return { kind: 'ignore', written: 0, skipped: true };
   }
   if (resolved.kind === 'operator_brief') {
-    const { file, brief } = writePendingOperatorBrief(runtime.runtimeRoot, {
+    const identity = channelOperatorInputIdentity(envelope, 'operator_brief', resolved.brief?.summary);
+    const { file, brief, created = true, duplicate = false } = writePendingOperatorBrief(runtime.runtimeRoot, {
       ...resolved.brief,
+      id: resolved.brief?.id ?? identity.id,
+      idempotency_key: identity.idempotency_key,
       created_by: resolved.brief?.created_by ?? `channel:${envelope.channel}`,
+      metadata: {
+        ...(resolved.brief?.metadata ?? {}),
+        channel_message_id: envelope.message_id,
+        channel_fingerprint: identity.fingerprint,
+        idempotency_key: identity.idempotency_key,
+      },
     });
-    const cycleRequest = enqueueCycleStartRequestWithEvent(root, subject, {
+    const cycleRequest = created ? enqueueCycleStartRequestWithEvent(root, subject, {
       reason: 'channel_operator_brief',
       meta: { brief_ids: [brief.id], message_id: envelope.message_id, channel: envelope.channel },
-    });
-    const wake = enqueueCognitiveWake(root, subject, {
+    }) : null;
+    const wake = created ? enqueueCognitiveWake(root, subject, {
       reason: 'channel_operator_brief',
       source: 'channel_ingest',
-    });
+    }) : null;
     return {
       kind: resolved.kind,
-      written: 1,
+      written: created ? 1 : 0,
+      duplicate,
       file,
       brief,
-      cycle_start_request: cycleRequest.request,
+      cycle_start_request: cycleRequest?.request ?? null,
       wake: wake?.intent ?? null,
     };
   }
@@ -359,22 +385,34 @@ export function ingestChannelEnvelope(root, subject, envelopeInput, { classifica
     };
   }
   if (resolved.kind === 'operator_fact') {
-    const { file, fact } = writePendingOperatorFact(runtime.runtimeRoot, resolved.record);
-    const cycleRequest = enqueueCycleStartRequestWithEvent(root, subject, {
+    const identity = channelOperatorInputIdentity(envelope, 'operator_fact', resolved.record?.content);
+    const { file, fact, created = true, duplicate = false } = writePendingOperatorFact(runtime.runtimeRoot, {
+      ...resolved.record,
+      id: resolved.record?.id ?? identity.id,
+      idempotency_key: identity.idempotency_key,
+      metadata: {
+        ...(resolved.record?.metadata ?? {}),
+        channel_message_id: envelope.message_id,
+        channel_fingerprint: identity.fingerprint,
+        idempotency_key: identity.idempotency_key,
+      },
+    });
+    const cycleRequest = created ? enqueueCycleStartRequestWithEvent(root, subject, {
       reason: 'channel_operator_fact',
       meta: { fact_ids: [fact.id], message_id: envelope.message_id, channel: envelope.channel },
-    });
-    const wake = enqueueCognitiveWake(root, subject, {
+    }) : null;
+    const wake = created ? enqueueCognitiveWake(root, subject, {
       reason: 'channel_operator_fact',
       source: 'channel_ingest',
-    });
+    }) : null;
     return {
       kind: resolved.kind,
       source: 'operator_facts/pending',
-      written: 1,
+      written: created ? 1 : 0,
+      duplicate,
       file,
       record: fact,
-      cycle_start_request: cycleRequest.request,
+      cycle_start_request: cycleRequest?.request ?? null,
       wake: wake?.intent ?? null,
     };
   }

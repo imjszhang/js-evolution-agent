@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Artifact inventory + secret / developer-path scan for JEA 0.1.0.
+ * Artifact inventory + secret / developer-path scan for JEA 0.2.0.
  *
  * Wave 1: runnable against a fixture directory on Linux CI.
  * Does not require #120 packaging to exist.

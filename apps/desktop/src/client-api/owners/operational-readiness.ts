@@ -3,6 +3,7 @@
  * readiness source. The leftover projector is only a no-subject fallback.
  */
 import type { ServiceStatus, SetupReadiness, SubjectReadiness } from '../types'
+import { SUBJECT_READINESS_REASON_CODES } from '../readiness'
 
 export const OPERATIONAL_READINESS_SEAM = {
   issue: 138,
@@ -64,7 +65,11 @@ function reasonsOf(...groups: Array<string[] | undefined | null>): string[] {
   for (const group of groups) {
     for (const item of group ?? []) {
       const reason = String(item || '').trim()
-      if (reason && !out.includes(reason)) out.push(reason)
+      if (
+        reason
+        && SUBJECT_READINESS_REASON_CODES.includes(reason as SubjectReadiness['reasons'][number])
+        && !out.includes(reason)
+      ) out.push(reason)
       if (out.length >= TOP_REASON_LIMIT) return out
     }
   }
@@ -76,7 +81,26 @@ function domain(
   status: OperationalDomainStatus,
   ...reasonGroups: Array<string[] | undefined | null>
 ): OperationalDomainReadiness {
-  return { id, status, reasons: reasonsOf(...reasonGroups) }
+  const reasons = reasonsOf(...reasonGroups)
+  if (reasons.length === 0) reasons.push(fallbackDomainReason(id, status))
+  return { id, status, reasons }
+}
+
+function fallbackDomainReason(
+  id: OperationalDomainId,
+  status: OperationalDomainStatus
+): SubjectReadiness['reasons'][number] {
+  if (id === 'web') {
+    if (status === 'ready' || status === 'attached') return 'web_host_running'
+    if (status === 'stopped') return 'web_host_stopped'
+    if (status === 'zombie') return 'web_host_zombie'
+    return 'web_host_unavailable'
+  }
+  if (id === 'cycle' || id === 'channel') {
+    return fallbackProcessReason(id, status) as SubjectReadiness['reasons'][number]
+  }
+  if (id === 'model') return status === 'ready' ? 'model_ready' : 'model_unset'
+  return status === 'ready' ? 'conversation_ready' : 'conversation_blocked_setup'
 }
 
 function mapDomainState(state: string): OperationalDomainStatus {
@@ -102,6 +126,15 @@ function mapDomainState(state: string): OperationalDomainStatus {
     default:
       return 'unavailable'
   }
+}
+
+function fallbackProcessReason(
+  domainId: 'cycle' | 'channel',
+  status: OperationalDomainStatus
+): string {
+  if (status === 'ready') return `${domainId}_running`
+  if (status === 'degraded') return domainId === 'cycle' ? 'cycle_stalled' : 'channel_blocked'
+  return `${domainId}_${status}`
 }
 
 export function fromSubjectReadiness(readiness: SubjectReadiness): OperationalReadinessProjection {
@@ -146,16 +179,23 @@ export function projectOperationalReadiness(input: OperationalReadinessInput): O
   else if (!setup.conversation.desktopChannelEnabled) channelStatus = 'blocked'
 
   const conversationReasons: string[] = []
-  if (!setup.jeaHome.writable) conversationReasons.push('jea_home_not_writable')
-  if (setup.subjects.count === 0) conversationReasons.push('no_subject')
-  if (!setup.data.initialized) conversationReasons.push('data_not_initialized')
-  if (!setup.conversation.desktopChannelEnabled) conversationReasons.push('desktop_channel_disabled')
+  if (!setup.conversation.desktopChannelEnabled) {
+    conversationReasons.push('conversation_blocked_channel', 'desktop_channel_disabled')
+  }
+  if (setup.model.mode === 'unset') conversationReasons.push('conversation_blocked_model')
   if (setup.conversationReady) conversationReasons.push('conversation_ready')
+  if (!setup.conversationReady) {
+    if (!setup.jeaHome.writable) conversationReasons.push('home_unwritable')
+    if (!setup.subjects.defaultSubject) conversationReasons.push('subject_missing')
+    if (!setup.data.initialized) conversationReasons.push('data_uninitialized')
+    if (conversationReasons.length === 0) conversationReasons.push('conversation_blocked_setup')
+  }
 
-  const modelReasons = [
-    setup.model.configured ? 'model_configured' : 'model_unconfigured',
-    `model_mode_${setup.model.mode}`,
-  ]
+  const modelReasons = [setup.model.mode === 'deepseek' && setup.model.configured
+    ? 'model_ready'
+    : setup.model.mode === 'unset'
+      ? 'model_unset'
+      : 'model_mock']
 
   return {
     source: OPERATIONAL_READINESS_SEAM.source,
@@ -165,12 +205,17 @@ export function projectOperationalReadiness(input: OperationalReadinessInput): O
       webRunning ? 'ready' : 'stopped',
       [webRunning ? 'web_host_running' : 'web_host_stopped']
     ),
-    cycle: domain('cycle', cycleStatus, cycle?.reasons, cycleStatus === 'stopped' ? ['cycle_worker_stopped'] : []),
+    cycle: domain(
+      'cycle',
+      cycleStatus,
+      cycle?.reasons,
+      [fallbackProcessReason('cycle', cycleStatus)]
+    ),
     channel: domain(
       'channel',
       channelStatus,
       channel?.reasons,
-      channelStatus === 'stopped' ? ['channel_worker_stopped'] : []
+      [fallbackProcessReason('channel', channelStatus)]
     ),
     model: domain(
       'model',

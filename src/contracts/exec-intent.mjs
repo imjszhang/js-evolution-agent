@@ -7,6 +7,7 @@ import {
   requirePlainObject,
   requireString,
 } from './validation.mjs';
+import { EVIDENCE_PRODUCERS } from './evidence-envelope.mjs';
 
 export const EXEC_INTENT_STATUSES = Object.freeze([
   'prepared',
@@ -40,6 +41,9 @@ export function validateExecIntent(intent, path = 'exec_intent') {
     requireOptionalString(intent.last_error, `${path}.last_error`, { allowEmpty: true }),
     requireOptionalString(intent.action_type, `${path}.action_type`, { allowEmpty: true }),
     requireOptionalString(intent.source, `${path}.source`, { allowEmpty: true }),
+    requireOptionalString(intent.producer_batch_id, `${path}.producer_batch_id`, { allowEmpty: true }),
+    requireOptionalString(intent.reaction_id, `${path}.reaction_id`, { allowEmpty: true }),
+    requireOptionalString(intent.belief_id, `${path}.belief_id`, { allowEmpty: true }),
   ]);
   if (!required.ok) return required;
 
@@ -48,6 +52,9 @@ export function validateExecIntent(intent, path = 'exec_intent') {
   }
   if (!String(intent.key).includes('#')) {
     return fail(`${path}.key must use decision_id#attempt`);
+  }
+  if (intent.producer != null && !EVIDENCE_PRODUCERS.includes(intent.producer)) {
+    return fail(`${path}.producer must be one of: ${EVIDENCE_PRODUCERS.join(', ')}`);
   }
   return ok();
 }

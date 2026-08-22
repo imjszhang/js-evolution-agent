@@ -149,7 +149,10 @@ describe('reactor shadow honesty e2e', () => {
               type: 'record_observation',
               description: `shadow honesty ${randomUUID().slice(0, 8)}`,
               serves_goal: 'bootstrap',
-              params: { content: 'shadow honesty note' },
+              params: {
+                content: 'shadow honesty note',
+                context: { no_belief_reason: 'record_only' },
+              },
             }],
             goal_coverage: { covered: ['bootstrap'], not_covered: {} },
             deferred: [],

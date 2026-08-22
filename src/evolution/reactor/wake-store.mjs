@@ -7,6 +7,11 @@ import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { handleContractValidation, validateWakeIntent } from '../../contracts/index.mjs';
 import { readJson, updateJson } from '../../infra/json-store.mjs';
+import {
+  archiveJsonRecords,
+  retentionPolicy,
+  terminalArchiveCandidates,
+} from '../../infra/sidecar-retention.mjs';
 import { nowIso, runtimeForSubject } from '../../infra/runtime-paths.mjs';
 import { reactorDir } from './paths.mjs';
 import { WAKE_INTENT_KINDS } from '../../contracts/wake-intent.mjs';
@@ -21,6 +26,10 @@ export const REACTOR_TASK_TYPES = Object.freeze({
 
 export function wakesPath(dataRoot) {
   return join(reactorDir(dataRoot), 'wakes.json');
+}
+
+export function wakesArchivePath(dataRoot) {
+  return join(reactorDir(dataRoot), 'archive', 'wakes.json');
 }
 
 function emptyStore() {
@@ -142,4 +151,33 @@ export function supersedeWakeIntent(root, subject, { kind } = {}) {
     return store;
   });
   return { superseded: count };
+}
+
+export function cleanupWakeStore(dataRoot, {
+  now = Date.now(),
+  ...options
+} = {}) {
+  const policy = retentionPolicy('wake', options);
+  let result = { archived: 0, retained: 0 };
+  mutateWakeStore(dataRoot, (store) => {
+    const candidates = terminalArchiveCandidates(store.wakes, {
+      now,
+      ...policy,
+      isTerminal: (wake) => wake.status === 'consumed' || wake.status === 'superseded',
+      timestamp: (wake) => wake.updated_at || wake.created_at,
+    });
+    if (!candidates.length) {
+      result.retained = store.wakes.length;
+      return store;
+    }
+    archiveJsonRecords(wakesArchivePath(dataRoot), candidates, {
+      collection: 'wakes',
+      idOf: (wake) => wake.id,
+    });
+    const ids = new Set(candidates.map((wake) => wake.id));
+    store.wakes = store.wakes.filter((wake) => !ids.has(wake.id));
+    result = { archived: candidates.length, retained: store.wakes.length };
+    return store;
+  });
+  return result;
 }

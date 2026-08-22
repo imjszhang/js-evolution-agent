@@ -1,4 +1,7 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { existsSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import lockfile from 'proper-lockfile';
 import {
   DataSourceRegistry,
   StorageEngine,
@@ -11,8 +14,11 @@ import {
 } from './operator-facts.mjs';
 import {
   handleContractValidation,
+  extractBeliefContext,
   validateActionReceipt,
+  validateBeliefEvent,
   validateEvolutionEvent,
+  validateGoalEvent,
 } from '../contracts/index.mjs';
 
 export const DEFAULT_TIMEZONE = 'Asia/Shanghai';
@@ -31,6 +37,25 @@ function withId(record, prefix) {
     id: record?.id ?? id(prefix),
     ...record,
   };
+}
+
+function digest(value) {
+  return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+}
+
+function acquireSyncLock(target) {
+  const wait = new Int32Array(new SharedArrayBuffer(4));
+  let lastError;
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    try {
+      return lockfile.lockSync(target, { stale: 5 * 60 * 1000 });
+    } catch (error) {
+      lastError = error;
+      if (error?.code !== 'ELOCKED') throw error;
+      Atomics.wait(wait, 0, 0, 10);
+    }
+  }
+  throw lastError;
 }
 
 function formatList(title, records, render) {
@@ -159,12 +184,23 @@ export class IntelligenceStore {
   }
 
   recordActionReceipt(action, result, ctx = {}) {
+    const beliefContext = extractBeliefContext(action);
     const record = withId({
       recorded_at: new Date().toISOString(),
       cycle_id: ctx.cycleId ?? ctx.executionId ?? null,
       exec_cycle_id: ctx.execCycleId ?? ctx.executionId ?? ctx.cycleId ?? null,
       intel_cycle_id: ctx.intelCycleId ?? action?.intel_cycle_id ?? action?.cycle_id ?? action?.cycleId ?? null,
       decision_id: ctx.decisionId ?? action?.decision_id ?? action?.id ?? null,
+      execution_id: ctx.executionId ?? ctx.execCycleId ?? ctx.cycleId ?? null,
+      producer_batch_id: ctx.producer_batch_id ?? ctx.producerBatchId ?? null,
+      reaction_id: ctx.reaction_id ?? ctx.reactionId ?? null,
+      belief_id: ctx.belief_id
+        ?? ctx.beliefId
+        ?? beliefContext.belief_id
+        ?? null,
+      belief_relation: beliefContext.belief_relation ?? null,
+      expected_belief_claim: beliefContext.expected_belief_claim ?? null,
+      expected_belief_update: beliefContext.expected_belief_update ?? null,
       action_id: action?.id ?? ctx.actionId ?? null,
       action_type: action?.type ?? 'unknown',
       intent_id: ctx.intentId ?? null,
@@ -247,18 +283,26 @@ export class IntelligenceStore {
   }
 
   recordGoalEvent(event) {
-    return this.engine.ingest('goal_events', redactSecrets(withId({
+    const record = withId({
       recorded_at: new Date().toISOString(),
       ...event,
-    }, 'goal-event')));
+    }, 'goal-event');
+    handleContractValidation('goal_event', validateGoalEvent(record), {
+      logger: this.engine?.logger ?? null,
+    });
+    return this.engine.ingest('goal_events', redactSecrets(record));
   }
 
   readGoalEvents({ limit = 20 } = {}) {
-    return this.engine.readSource('goal_events', { limit });
+    return limit == null
+      ? this.engine.readSource('goal_events')
+      : this.engine.readSource('goal_events', { limit });
   }
 
   readActionReceipts({ limit = 20 } = {}) {
-    return this.engine.readSource('action_receipts', { limit });
+    return limit == null
+      ? this.engine.readSource('action_receipts')
+      : this.engine.readSource('action_receipts', { limit });
   }
 
   readProbeThreads({ entity_id = null } = {}) {
@@ -303,14 +347,127 @@ export class IntelligenceStore {
   }
 
   readBeliefEvents({ limit = 50 } = {}) {
-    return this.engine.readSource('belief_events', { limit });
+    return limit == null
+      ? this.engine.readSource('belief_events')
+      : this.engine.readSource('belief_events', { limit });
   }
 
   recordBeliefEvent(event) {
-    return this.engine.ingest('belief_events', redactSecrets(withId({
+    const record = withId({
       recorded_at: new Date().toISOString(),
       ...event,
-    }, 'belief-event')));
+      type: event?.type ?? event?.change ?? 'updated',
+    }, 'belief-event');
+    handleContractValidation('belief_event', validateBeliefEvent(record), {
+      logger: this.engine?.logger ?? null,
+    });
+    return this.engine.ingest('belief_events', redactSecrets(record));
+  }
+
+  /**
+   * Subject-scoped belief transaction. Append-only events are authoritative;
+   * current_beliefs is rebuilt from the prepared snapshot while the same lock
+   * excludes other projection writers.
+   */
+  commitBeliefEffect({
+    settlement,
+    prepare = null,
+    faultInjector = null,
+  } = {}) {
+    const settlementId = settlement?.settlement_id;
+    if (!settlementId) throw new Error('belief effect requires settlement_id');
+    const lockTarget = join(this.engine.baseDir, '.subject-belief.lock');
+    if (!existsSync(lockTarget)) writeFileSync(lockTarget, '', 'utf8');
+    const release = acquireSyncLock(lockTarget);
+    const inject = (boundary, details = {}) => faultInjector?.(boundary, details);
+    try {
+      let all = this.readBeliefEvents({ limit: null });
+      let prepared = all.find((event) => (
+        event?.type === 'settlement_prepare'
+        && event?.settlement_id === settlementId
+        && event?.settlement_effect === 'belief'
+      ));
+      let newlyPrepared = false;
+      if (!prepared) {
+        if (typeof prepare !== 'function') return null;
+        const plan = prepare(this.readCurrentBeliefs());
+        const effectId = `belief-effect-${digest(settlementId).slice(0, 24)}`;
+        const plannedEvents = (plan?.events ?? []).map((event, index) => ({
+          ...JSON.parse(JSON.stringify(event)),
+          id: `belief-effect-${digest([settlementId, index]).slice(0, 24)}`,
+          effect_id: effectId,
+          settlement_id: settlementId,
+          settlement_effect: 'belief',
+        }));
+        const expectedIds = plannedEvents.map((event) => event.id);
+        prepared = {
+          id: `belief-prepare-${digest(settlementId).slice(0, 24)}`,
+          type: 'settlement_prepare',
+          change: 'settlement_prepare',
+          settlement_id: settlementId,
+          settlement_effect: 'belief',
+          effect_id: effectId,
+          execution_id: settlement.execution_id ?? null,
+          expected_event_ids: expectedIds,
+          expected_event_digest: digest(expectedIds),
+          planned_events: plannedEvents,
+          projected_current_beliefs: JSON.parse(JSON.stringify(plan.currentBeliefs)),
+          effect_result: plan.effectResult == null
+            ? null
+            : JSON.parse(JSON.stringify(plan.effectResult)),
+        };
+        this.recordBeliefEvent(prepared);
+        all = [...all, prepared];
+        newlyPrepared = true;
+        inject('belief_after_prepare', { settlement_id: settlementId });
+      }
+
+      const byId = new Map(all.filter((event) => event?.id).map((event) => [event.id, event]));
+      const expectedIds = Array.isArray(prepared.expected_event_ids) ? prepared.expected_event_ids : [];
+      if (prepared.expected_event_digest !== digest(expectedIds)) {
+        throw new Error('belief_effect_prepare_digest_mismatch');
+      }
+      for (const event of prepared.planned_events ?? []) {
+        if (byId.has(event.id)) continue;
+        this.recordBeliefEvent(event);
+        byId.set(event.id, event);
+        inject('belief_after_event', { event_id: event.id });
+      }
+      if (expectedIds.some((id) => !byId.has(id))) {
+        throw new Error('belief_effect_events_incomplete');
+      }
+
+      this.recordCurrentBeliefs(prepared.projected_current_beliefs);
+      inject('belief_after_projection', { settlement_id: settlementId });
+
+      const commitId = `belief-commit-${digest(settlementId).slice(0, 24)}`;
+      let commit = byId.get(commitId);
+      if (!commit) {
+        commit = {
+          id: commitId,
+          type: 'settlement_commit',
+          change: 'settlement_commit',
+          settlement_id: settlementId,
+          settlement_effect: 'belief',
+          effect_id: prepared.effect_id,
+          execution_id: settlement.execution_id ?? null,
+          expected_event_ids: expectedIds,
+          expected_event_digest: prepared.expected_event_digest,
+          effect_result: prepared.effect_result ?? null,
+        };
+        this.recordBeliefEvent(commit);
+        inject('belief_after_commit', { settlement_id: settlementId });
+      }
+      return {
+        currentBeliefs: prepared.projected_current_beliefs,
+        eventsWritten: newlyPrepared ? expectedIds.length : 0,
+        result: prepared.effect_result,
+        authoritativeEventIds: expectedIds,
+        reused: !newlyPrepared,
+      };
+    } finally {
+      release();
+    }
   }
 
   readRecentIntel({ days = 7, limit = 20 } = {}) {

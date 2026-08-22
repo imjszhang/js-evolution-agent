@@ -7,19 +7,17 @@ import {
   createRuntimeContext,
 } from './src/infra/jea-home.mjs';
 import { withSubjectLock } from './src/daemon/evolve-runs.mjs';
-import { createCycle } from './src/daemon/cycle-state.mjs';
+import { createCycle, markStepStatus } from './src/daemon/cycle-state.mjs';
 import {
   buildCycleContext,
-  runBeliefUpdateStep,
-  runDiaryStep,
   runExecStep,
-  runGoalsAssessStep,
-  runGoalsCalibrateStep,
   runReactorStep,
   runVerifyStep,
   skipBeliefUpdateFromEnv,
   skipGoalsAssessFromEnv,
 } from './src/evolution/cycle-steps.mjs';
+import { settleEvidenceWindow } from './src/evolution/settlement-service.mjs';
+import { compactMemory } from './src/evolution/reactor/memory-compactor.mjs';
 import { resolveCyclePipeline } from './src/daemon/cycle-pipeline-mode.mjs';
 
 const sourceRoot = getProjectRoot();
@@ -56,7 +54,6 @@ function cycleDriverFromEnv() {
 async function runCycle(runtime) {
   const ctx = await buildCycleContext(sourceRoot, runtime);
   const recordState = recordStateBag(runtime);
-  const { store } = ctx;
   const pipelineResolved = resolveCyclePipeline(runtime, {
     subject: runtime.subject,
     env: process.env,
@@ -100,51 +97,44 @@ async function runCycle(runtime) {
   console.log('  verified:', verification.verified.length);
   console.log('  semantic:', semanticVerification.status);
 
-  let beliefUpdateResult = null;
-  if (skipBeliefUpdateFromEnv()) {
-    console.log('\n=== Phase 3.5: belief update (skipped) ===');
-  } else {
-    console.log('\n=== Phase 3.5: belief update ===');
-    const beliefOutcome = await runBeliefUpdateStep(ctx, {
-      intelResult, execResult, verification, reportPath, recordState,
-    });
-    beliefUpdateResult = beliefOutcome.beliefUpdateResult;
-  }
-
-  let goalsAssessResult = null;
-  let goalsCalibrateResult = null;
-  if (skipGoalsAssessFromEnv()) {
-    console.log('\n=== Phase 4: goals assess (skipped) ===');
-  } else if (!intelReportReady) {
-    console.log('\n=== Phase 4: goals assess (skipped) ===');
-    console.log('  reason: intel report was not generated for this cycle');
-  } else {
-    console.log('\n=== Phase 4: goals assess ===');
-    const goalsOutcome = await runGoalsAssessStep(ctx, {
-      intelResult, reportPath, intelReportReady, recordState,
-    });
-    goalsAssessResult = goalsOutcome.goalsAssessResult;
-  }
-
-  if (goalsAssessResult) {
-    console.log('\n=== Phase 4.5: goals calibrate ===');
-    const calOutcome = await runGoalsCalibrateStep(ctx, {
-      intelResult, goalsAssessResult, store, recordState,
-    });
-    goalsCalibrateResult = calOutcome.goalsCalibrateResult;
-    console.log('  status:', goalsCalibrateResult.status);
-  }
-
-  console.log('\n=== Phase 5: evolution diary ===');
-  await runDiaryStep(ctx, {
+  console.log(`\n=== Phase 3.5-4.5: evidence settlement${
+    skipBeliefUpdateFromEnv() && skipGoalsAssessFromEnv() ? ' (skipped)' : ''
+  } ===`);
+  const settlement = await settleEvidenceWindow(ctx, {
     intelResult,
     execResult,
     verification,
-    beliefUpdateResult,
-    goalsAssessResult,
-    goalsCalibrateResult,
     reportPath,
+    intelReportReady,
     recordState,
+    producer: 'rule',
+    activationTargets: ['cognitive'],
+  });
+  const goalsCalibrateResult = settlement.calibrate?.goalsCalibrateResult ?? null;
+  console.log('  settlement:', settlement.settlement_id);
+  console.log('  reused:', settlement.reused);
+  if (!intelReportReady) console.log('  goals: skipped (intel report unavailable)');
+  if (goalsCalibrateResult) console.log('  calibrate status:', goalsCalibrateResult.status);
+
+  console.log('\n=== Memory reactor ===');
+  const memory = await compactMemory({
+    root: sourceRoot,
+    subject: runtime.subject,
+    input: { force: true, reason: 'explicit_sync_cycle' },
+  });
+  console.log('  skipped:', memory.skipped ?? false);
+  console.log('  reason:', memory.reason ?? memory.trigger ?? null);
+  console.log('  settled cursor:', memory.last_settled_cursor ?? null);
+  // cycle-state is a compatibility sidecar, not the reactor live driver.
+  // Closing it here does not fabricate a diary artifact; only Memory Reactor
+  // may persist an Evolution Diary.
+  markStepStatus(recordState.root, runtime.subject, cycleState.cycle_id, 'diary', {
+    status: 'done',
+    metaPatch: {
+      diary_writer: 'memory',
+      diary_generated: memory.skipped !== true,
+      memory_batch_id: memory.batch_id ?? null,
+    },
   });
 
   console.log('\n=== Done ===');

@@ -6,7 +6,10 @@ export async function prepareVisualPage(page: Page, path: string): Promise<void>
     localStorage.setItem('jea.theme', 'light')
     localStorage.setItem('jea.locale', 'en')
   })
-  await page.goto(path)
+  const fixturePath = path.includes('?')
+    ? `${path}&fixture=1`
+    : `${path}?fixture=1`
+  await page.goto(fixturePath)
   await page.locator('#root').waitFor({ state: 'visible' })
   await page.evaluate(async () => {
     await document.fonts.ready

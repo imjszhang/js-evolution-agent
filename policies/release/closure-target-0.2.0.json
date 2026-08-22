@@ -1,0 +1,66 @@
+{
+  "schema_version": "closure-target.v1",
+  "target_id": "0.2.0-belief-loop",
+  "release": "0.2.0",
+  "audit_schema_version": "closure-audit.v1",
+  "legacy_policy": "report_separately_non_blocking",
+  "record_classification": {
+    "new_if": "schema_version_or_any_correlation_metadata_present",
+    "legacy_unknown_if": "all_required_metadata_absent_and_no_schema_version"
+  },
+  "required_sources": [
+    "decision_queue",
+    "claim_ledger",
+    "current_beliefs",
+    "standing_memory",
+    "daemon_tasks",
+    "action_receipts",
+    "belief_events",
+    "goal_events",
+    "verify_reports"
+  ],
+  "required_metrics": {
+    "numeric": [
+      "decision_coverage.belief_binding.failed",
+      "decision_coverage.belief_binding.legacy_unknown",
+      "decision_coverage.expected_output.failed",
+      "decision_coverage.expected_output.legacy_unknown",
+      "causal_correlation.decisions.partial",
+      "causal_correlation.decisions.legacy_unknown",
+      "causal_correlation.receipts.partial",
+      "causal_correlation.receipts.legacy_unknown",
+      "causal_correlation.verify_reports.partial",
+      "causal_correlation.verify_reports.legacy_unknown",
+      "causal_correlation.settlement_events.partial",
+      "causal_correlation.settlement_events.legacy_unknown",
+      "duplicate_settlement_candidates.candidate_groups",
+      "duplicate_settlement_candidates.legacy_unknown"
+    ],
+    "status": "standing_memory_freshness.status"
+  },
+  "checks": {
+    "new_record_belief_binding": {
+      "metric": "decision_coverage.belief_binding.failed",
+      "equals": 0
+    },
+    "new_record_expected_output": {
+      "metric": "decision_coverage.expected_output.failed",
+      "equals": 0
+    },
+    "causal_correlation": {
+      "metric": "causal_correlation.*.partial",
+      "equals": 0
+    },
+    "duplicate_settlement": {
+      "metric": "duplicate_settlement_candidates.candidate_groups",
+      "equals": 0
+    },
+    "memory_freshness": {
+      "allowed_statuses": [
+        "fresh",
+        "empty",
+        "not_applicable"
+      ]
+    }
+  }
+}

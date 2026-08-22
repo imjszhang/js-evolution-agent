@@ -97,6 +97,7 @@ export function normalizeOperatorBrief(input = {}) {
     evidence_boundary: input.evidence_boundary ?? 'operator intent only; verify before treating as fact',
     priority: input.priority ?? 'medium',
     metadata: input.metadata ?? {},
+    idempotency_key: input.idempotency_key ?? input.metadata?.idempotency_key ?? null,
     producer: input.producer ?? 'operator',
     activation_targets: Array.isArray(input.activation_targets)
       ? input.activation_targets
@@ -110,11 +111,27 @@ export function normalizeOperatorBrief(input = {}) {
 
 export function writePendingOperatorBrief(runtimeRoot, briefInput) {
   const brief = normalizeOperatorBrief(briefInput);
+  if (brief.idempotency_key) {
+    for (const dir of [pendingOperatorBriefsDir(runtimeRoot), processedOperatorBriefsDir(runtimeRoot)]) {
+      if (!existsSync(dir)) continue;
+      for (const name of readdirSync(dir).filter((entry) => entry.endsWith('.json'))) {
+        const record = readBriefFile(join(dir, name));
+        if (record.brief?.idempotency_key === brief.idempotency_key) {
+          return {
+            file: record.file,
+            brief: record.brief,
+            created: false,
+            duplicate: true,
+          };
+        }
+      }
+    }
+  }
   const dir = pendingOperatorBriefsDir(runtimeRoot);
   mkdirSync(dir, { recursive: true });
   const file = join(dir, briefFilename(brief));
   writeFileSync(file, JSON.stringify(brief, null, 2), 'utf-8');
-  return { file, brief };
+  return { file, brief, created: true, duplicate: false };
 }
 
 function readBriefFile(file) {

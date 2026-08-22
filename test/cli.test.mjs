@@ -18,7 +18,13 @@ import {
   readActiveDecisionQueue,
 } from '../src/cli/commands/actions.mjs';
 import { archiveQueue, auditCommand, auditQueue } from '../src/cli/commands/audit.mjs';
-import { buildDefaultGoals, backupData, dataStatus, initData } from '../src/cli/commands/data.mjs';
+import {
+  buildDefaultGoals,
+  backupData,
+  dataStatus,
+  initData,
+  resetData,
+} from '../src/cli/commands/data.mjs';
 import {
   applyGoalObject,
   assessActiveGoals,
@@ -62,6 +68,7 @@ import { checkPolicy } from '../src/cli/commands/policy.mjs';
 import {
   buildCycleEnv,
   classifyCycleFailure,
+  evolveCommand,
   parseExitRecord,
   runSingleCycle,
 } from '../src/cli/commands/evolve.mjs';
@@ -1019,6 +1026,25 @@ describe('evolve run manifests', () => {
     });
     return tempDir;
   }
+
+  it('rejects retired enqueue-only mode without creating run_cycle tasks', async () => {
+    const root = makeEvolveProjectRoot();
+    process.env.JEA_PROJECT_ROOT = root;
+    const result = await captureConsole(() => evolveCommand({
+      flags: {
+        'enqueue-only': true,
+        json: true,
+      },
+    }));
+
+    expect(result.code).toBe(2);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: false,
+      code: 'evolve_enqueue_only_removed',
+    });
+    expect(existsSync(join(root, 'runtime', 'subjects', 'alpha', 'data', 'evolution', 'tasks', 'pending_tasks.json')))
+      .toBe(false);
+  });
 
   it('creates, saves, finds, and summarizes evolve manifests', () => {
     const root = makeEvolveProjectRoot();
@@ -2173,6 +2199,40 @@ describe('data reset safety', () => {
     expect(removeProjectDir(tempDir, join('data', 'evolution'))).toBe(true);
     expect(existsSync(target)).toBe(false);
     expect(() => removeProjectDir(tempDir, '..')).toThrow(/outside project root/);
+  });
+
+  it('removes all subject data sidecars while preserving policy and config', () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'jea-reset-runtime-'));
+    mkdirSync(join(tempDir, 'policies'), { recursive: true });
+    writeFileSync(join(tempDir, 'policies', 'project-guidance.md'), [
+      '# Guidance',
+      '',
+      '## Subject',
+      'The subject is test-agent.',
+    ].join('\n'));
+    const initialized = initData(tempDir, { all: true });
+    const runtime = initialized.runtime.runtimeRoot;
+    const sidecars = [
+      join(runtime, 'data', 'evolution', 'reactor', 'claims.json'),
+      join(runtime, 'data', 'evolution', 'tasks', 'pending_tasks.json'),
+      join(runtime, 'data', 'channel', 'worker-state.json'),
+      join(runtime, 'data', 'channel', 'event-queue', 'pending_events.json'),
+    ];
+    for (const file of sidecars) {
+      mkdirSync(join(file, '..'), { recursive: true });
+      writeFileSync(file, '{}');
+    }
+    const policy = subjectGovernanceFile(tempDir, initialized.runtime.subject);
+    const soul = subjectSoulFile(tempDir, initialized.runtime.subject);
+    const registry = subjectsRegistryFile(tempDir);
+
+    const result = resetData(tempDir);
+
+    expect(result.removed).toEqual([join(runtime, 'data')]);
+    expect(existsSync(join(runtime, 'data'))).toBe(false);
+    expect(existsSync(policy)).toBe(true);
+    expect(existsSync(soul)).toBe(true);
+    expect(existsSync(registry)).toBe(true);
   });
 });
 

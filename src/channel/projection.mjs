@@ -4,6 +4,7 @@ import { readChannelWorkerState, summarizeChannelWorkersState } from './worker-s
 import { classifierConfigForApi, resolveClassifierConfig } from './classifier-config.mjs';
 import { readChannelEvents } from './audit.mjs';
 import {
+  findOutboxByIdempotencyKey,
   listOutboxPending,
   listPendingInbound,
   readChannelReloadRequest,
@@ -24,7 +25,7 @@ import {
 } from './adapters/desktop/index.mjs';
 import { readJsonSafe } from '../infra/files.mjs';
 import { DEPRECATED_CHANNEL_TASK_TYPES } from './types.mjs';
-import { summarizeChannelEventQueue } from './event-queue.mjs';
+import { listChannelEvents, summarizeChannelEventQueue } from './event-queue.mjs';
 
 function listDeprecatedQueueTasks(queue) {
   return (queue.tasks ?? [])
@@ -54,6 +55,59 @@ function summarizeAgentRunTasks(queue) {
       channel_agent_run_id: task.input?.request?.channel_agent_run_id ?? null,
       last_error: task.last_error,
     })),
+  };
+}
+
+function summarizeDeliveryPipeline(root, subject, { limit = 50 } = {}) {
+  const rows = listChannelEvents(root, subject, { type: 'speech_generation_requested' })
+    .slice(-Math.max(0, limit))
+    .reverse()
+    .map((event) => {
+      const requestedTarget = event.payload?.target ?? event.payload_summary?.target ?? null;
+      const requestedTransport = String(requestedTarget ?? '').startsWith('desktop:')
+        ? 'desktop'
+        : null;
+      const idempotencyKey = event.outbox_idempotency_key
+        ?? event.payload?.idempotency_key
+        ?? event.payload_summary?.idempotency_key
+        ?? null;
+      const delivery = findOutboxByIdempotencyKey(root, subject, idempotencyKey);
+      const outbound = delivery?.payload?.outbound ?? delivery?.payload ?? {};
+      const transport = outbound.channel ?? event.transport ?? requestedTransport;
+      const target = outbound.target ?? event.target ?? requestedTarget;
+      const status = event.status === 'failed'
+        ? 'failed'
+        : delivery?.status === 'sent'
+          ? 'delivered'
+          : delivery?.status === 'failed'
+            ? 'failed'
+            : delivery?.status === 'pending'
+              ? 'queued'
+              : event.status === 'handled'
+                ? (event.delivery_status ?? 'queued')
+                : event.status;
+      return {
+        event_id: event.id,
+        intent_id: event.payload?.intent_id ?? event.event_ref ?? null,
+        candidate_id: event.payload?.candidate_id ?? null,
+        message_id: event.payload?.reply_to_message_id ?? null,
+        status,
+        attempts: event.attempts ?? 0,
+        max_attempts: event.max_attempts ?? 1,
+        next_attempt_at: event.next_attempt_at ?? null,
+        last_error: delivery?.status === 'failed'
+          ? (delivery.payload?.reason ?? event.last_error ?? null)
+          : event.last_error ?? null,
+        transport,
+        target,
+        created_at: event.created_at,
+        handled_at: event.handled_at ?? null,
+      };
+    });
+  return {
+    pending: rows.filter((row) => ['pending', 'claimed', 'queued'].includes(row.status)),
+    failed: rows.filter((row) => row.status === 'failed'),
+    delivered: rows.filter((row) => row.status === 'delivered'),
   };
 }
 
@@ -184,6 +238,7 @@ export function buildChannelProjection(root, subject, { heartbeatStaleMs = 60_00
         event_queue: summarizeChannelEventQueue(root, subject),
         reactor: presenceState.reactor ?? null,
         pending_speech_generation: presenceState.pending_speech_generation ?? [],
+        delivery_pipeline: summarizeDeliveryPipeline(root, subject),
       };
     })(),
     feishu: {

@@ -1,19 +1,90 @@
 /**
- * Structured certification-evidence.json writer for 0.1.1 recovery/soak (#143).
+ * Structured certification-evidence.json writer for the current release.
  *
- * Does not bump PRODUCT_VERSION. `release` is parameterized to the current
- * shipped identity (today 0.1.0). `certification` records the 0.1.1 wave.
+ * Does not bump PRODUCT_VERSION. `release` and `certification` follow the
+ * current shipped identity.
  */
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, printReport, readJson, RELEASE_PLATFORM, RELEASE_VERSION, repoRootFrom } from './release-lib.mjs';
-import { commitsMatch, readBuildMetadataFile, writeBuildMetadata } from '../src/product/build-metadata.mjs';
+import { readBuildMetadataFile, writeBuildMetadata } from '../src/product/build-metadata.mjs';
 import { SOAK_DEFAULT_MS } from './release-recovery-soak.mjs';
+import { CLOSURE_TARGET_ID } from '../src/intelligence/closure-target.mjs';
 
 export const EVIDENCE_FILE = 'certification-evidence.json';
-export const CERTIFICATION_WAVE = '0.1.1';
+export const CERTIFICATION_WAVE = RELEASE_VERSION;
 export const DEFAULT_EVIDENCE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+export const REQUIRED_CERTIFICATION_STEPS = Object.freeze([
+  'product_journey',
+  'packaged_launch_smoke',
+  'recovery_matrix',
+  'soak',
+  'closure_audit',
+]);
+
+const STEP_FAILURE_REASONS = Object.freeze({
+  product_journey: {
+    missing: 'product_journey_missing',
+    failed: 'product_journey_failed',
+  },
+  packaged_launch_smoke: {
+    missing: 'packaged_launch_smoke_missing',
+    failed: 'packaged_launch_smoke_failed',
+  },
+  recovery_matrix: {
+    missing: 'recovery_evidence_missing',
+    failed: 'recovery_failed',
+  },
+  soak: {
+    missing: 'soak_evidence_missing',
+    failed: 'soak_failed',
+  },
+  closure_audit: {
+    missing: 'closure_audit_missing',
+    failed: 'closure_audit_failed',
+  },
+});
+
+const ARTIFACT_REPORTS = Object.freeze([
+  {
+    id: 'product_journey',
+    file: 'product-journey.json',
+    passed: (report) => report?.ok === true
+      && report.status === 'journey_passed'
+      && report.runner === 'packaged',
+  },
+  {
+    id: 'packaged_launch_smoke',
+    file: 'launch-smoke.json',
+    passed: (report) => report?.ok === true
+      && report.status === 'passed'
+      && report.launched_app === true,
+  },
+  {
+    id: 'recovery_matrix',
+    file: 'recovery-matrix.json',
+    passed: (report) => report?.ok === true
+      && report.status === 'passed'
+      && report.mode === 'packaged',
+  },
+  {
+    id: 'soak',
+    file: 'soak-report.json',
+    passed: (report) => report?.ok === true
+      && report.status === 'passed'
+      && report.launched_app === true
+      && Number.isFinite(Number(report.duration_ms))
+      && Number(report.duration_ms) >= SOAK_DEFAULT_MS,
+  },
+  {
+    id: 'closure_audit',
+    file: 'closure-audit.json',
+    passed: (report) => report?.ok === true
+      && report.status === 'passed'
+      && report.gate?.target_id === CLOSURE_TARGET_ID,
+  },
+]);
 
 function stepOk(step) {
   if (!step || typeof step !== 'object') return false;
@@ -33,9 +104,11 @@ function readOptionalJson(path) {
 
 export function artifactStepFromReport(id, report, evidencePath, extra = {}) {
   if (!report) return null;
+  const reportSpec = ARTIFACT_REPORTS.find((item) => item.id === id);
   const failed = report.ok === false
     || report.status === 'failed'
-    || report.status === 'journey_failed';
+    || report.status === 'journey_failed'
+    || (reportSpec ? !reportSpec.passed(report) : false);
   const status = failed
     ? 'failed'
     : (report.status === 'journey_passed' ? 'passed' : (report.status || 'passed'));
@@ -46,6 +119,9 @@ export function artifactStepFromReport(id, report, evidencePath, extra = {}) {
     evidence: evidencePath,
     detail: extra.detail || report.detail || report.reason || report.runner || null,
     build_id: report.build_id || null,
+    commit: report.commit || null,
+    dirty: report.dirty == null ? null : Boolean(report.dirty),
+    generated_at: report.generated_at || null,
     duration_ms: Number.isFinite(Number(report.duration_ms)) ? Number(report.duration_ms) : null,
   };
 }
@@ -56,15 +132,20 @@ export function collectCertificationInputs(outDir) {
   const soakPath = join(dest, 'soak-report.json');
   const journeyPath = join(dest, 'product-journey.json');
   const launchPath = join(dest, 'launch-smoke.json');
+  const closurePath = join(dest, 'closure-audit.json');
   const metadataPath = join(dest, 'build-metadata.json');
   const recovery = readOptionalJson(recoveryPath);
   const soak = readOptionalJson(soakPath);
   const journey = readOptionalJson(journeyPath);
   const launch = readOptionalJson(launchPath);
+  const closure = readOptionalJson(closurePath);
   return {
     metadata: readBuildMetadataFile(metadataPath),
     recoveryMatrix: artifactStepFromReport('recovery_matrix', recovery, recoveryPath),
     soak: artifactStepFromReport('soak', soak, soakPath),
+    closureAudit: artifactStepFromReport('closure_audit', closure, closurePath, {
+      detail: closure?.gate?.target_id || closure?.reason || null,
+    }),
     steps: [
       artifactStepFromReport('product_journey', journey, journeyPath, {
         detail: journey?.runner || journey?.detail || null,
@@ -74,6 +155,17 @@ export function collectCertificationInputs(outDir) {
       }),
     ].filter(Boolean),
   };
+}
+
+export function evaluateClosureAuditEvidence(evidence) {
+  const closure = evidence?.closure_audit
+    || (Array.isArray(evidence?.steps) ? evidence.steps.find((item) => item.id === 'closure_audit') : null);
+  if (!closure) return { ok: false, reason: 'closure_audit_missing' };
+  if (!stepOk(closure)) return { ok: false, reason: 'closure_audit_failed' };
+  if (closure.detail !== CLOSURE_TARGET_ID) {
+    return { ok: false, reason: 'closure_target_mismatch' };
+  }
+  return { ok: true, reason: 'closure_audit_passed' };
 }
 
 export function normalizeEvidenceStep(input, fallbackId) {
@@ -89,44 +181,70 @@ export function normalizeEvidenceStep(input, fallbackId) {
     evidence: input.evidence || input.path || input.evidence_path || null,
     detail: input.detail || input.reason || null,
     build_id: input.build_id || null,
+    commit: input.commit || null,
+    dirty: input.dirty == null ? null : Boolean(input.dirty),
+    generated_at: input.generated_at || null,
   };
 }
 
-export function evaluateRecoverySoakEvidence(evidence, fileMetadata, {
+function evidenceStep(evidence, id) {
+  if (id === 'recovery_matrix' && evidence?.recovery_matrix) return evidence.recovery_matrix;
+  if (id === 'soak' && evidence?.soak) return evidence.soak;
+  if (id === 'closure_audit' && evidence?.closure_audit) return evidence.closure_audit;
+  return Array.isArray(evidence?.steps)
+    ? evidence.steps.find((item) => item?.id === id)
+    : null;
+}
+
+function freshnessOk(generatedAt, { maxAgeMs, now }) {
+  const generated = Date.parse(generatedAt);
+  if (!Number.isFinite(generated)) return false;
+  const age = now - generated;
+  return age >= -5 * 60 * 1000 && age <= maxAgeMs;
+}
+
+function stepIdentityOk(step, fileMetadata) {
+  return Boolean(
+    step?.build_id
+    && fileMetadata?.build_id
+    && step.build_id === fileMetadata.build_id
+    && step.commit
+    && fileMetadata?.commit
+    && String(step.commit).toLowerCase() === String(fileMetadata.commit).toLowerCase()
+    && step.dirty === false
+  );
+}
+
+export function evaluateCertificationEvidence(evidence, fileMetadata, {
   maxAgeMs = DEFAULT_EVIDENCE_MAX_AGE_MS,
   now = Date.now(),
 } = {}) {
-  const recovery = evidence?.recovery_matrix
-    || (Array.isArray(evidence?.steps) ? evidence.steps.find((item) => item.id === 'recovery_matrix') : null);
-  const soak = evidence?.soak
-    || (Array.isArray(evidence?.steps) ? evidence.steps.find((item) => item.id === 'soak') : null);
+  for (const id of REQUIRED_CERTIFICATION_STEPS) {
+    const step = evidenceStep(evidence, id);
+    const reasons = STEP_FAILURE_REASONS[id];
+    if (!step) return { ok: false, reason: reasons.missing, step: id };
+    if (step.ok === false || step.status === 'failed') {
+      return { ok: false, reason: reasons.failed, step: id };
+    }
+    if (!stepOk(step)) return { ok: false, reason: reasons.missing, step: id };
+    if (!stepIdentityOk(step, fileMetadata)) {
+      return { ok: false, reason: 'build_mismatch', step: id };
+    }
+    if (!freshnessOk(step.generated_at, { maxAgeMs, now })) {
+      return { ok: false, reason: 'evidence_stale', step: id };
+    }
+  }
 
-  if (!recovery) {
-    return { ok: false, reason: 'recovery_evidence_missing' };
-  }
-  if (recovery.ok === false || recovery.status === 'failed') {
-    return { ok: false, reason: 'recovery_failed' };
-  }
-  if (!stepOk(recovery)) {
-    return { ok: false, reason: 'recovery_evidence_missing' };
-  }
+  const closure = evaluateClosureAuditEvidence(evidence);
+  if (!closure.ok) return closure;
 
-  if (!soak) {
-    return { ok: false, reason: 'soak_evidence_missing' };
-  }
-  if (soak.ok === false || soak.status === 'failed') {
-    return { ok: false, reason: 'soak_failed' };
-  }
-  if (!stepOk(soak)) {
-    return { ok: false, reason: 'soak_evidence_missing' };
-  }
+  const soak = evidenceStep(evidence, 'soak');
   const soakDuration = Number(soak.duration_ms);
-  if (Number.isFinite(soakDuration) && soakDuration > 0 && soakDuration < SOAK_DEFAULT_MS) {
+  if (!Number.isFinite(soakDuration) || soakDuration < SOAK_DEFAULT_MS) {
     return { ok: false, reason: 'soak_too_short' };
   }
 
-  const generatedAt = Date.parse(evidence.generated_at);
-  if (!Number.isFinite(generatedAt) || now - generatedAt > maxAgeMs) {
+  if (!freshnessOk(evidence.generated_at, { maxAgeMs, now })) {
     return { ok: false, reason: 'evidence_stale' };
   }
 
@@ -135,11 +253,47 @@ export function evaluateRecoverySoakEvidence(evidence, fileMetadata, {
   if (!evidenceBuild || !metaBuild || evidenceBuild !== metaBuild) {
     return { ok: false, reason: 'build_mismatch' };
   }
-  if (evidence.commit && fileMetadata?.commit && !commitsMatch(evidence.commit, fileMetadata.commit)) {
+  if (!evidence.commit
+    || !fileMetadata?.commit
+    || String(evidence.commit).toLowerCase() !== String(fileMetadata.commit).toLowerCase()) {
     return { ok: false, reason: 'build_mismatch' };
   }
 
-  return { ok: true, reason: 'recovery_soak_present' };
+  if (evidence.dirty !== false || fileMetadata?.dirty !== false) {
+    return { ok: false, reason: 'dirty_source_tree' };
+  }
+
+  return { ok: true, reason: 'complete_release_evidence_present' };
+}
+
+export const evaluateRecoverySoakEvidence = evaluateCertificationEvidence;
+
+export function evaluateCertificationArtifacts({
+  dir,
+  metadata,
+  maxAgeMs = DEFAULT_EVIDENCE_MAX_AGE_MS,
+  now = Date.now(),
+} = {}) {
+  const reports = {};
+  for (const spec of ARTIFACT_REPORTS) {
+    const path = join(resolve(dir), spec.file);
+    const report = readOptionalJson(path);
+    reports[spec.id] = report;
+    const reasons = STEP_FAILURE_REASONS[spec.id];
+    if (!report) {
+      return { ok: false, reason: reasons.missing, step: spec.id, reports };
+    }
+    if (!spec.passed(report)) {
+      return { ok: false, reason: reasons.failed, step: spec.id, reports };
+    }
+    if (!stepIdentityOk(report, metadata)) {
+      return { ok: false, reason: 'build_mismatch', step: spec.id, reports };
+    }
+    if (!freshnessOk(report.generated_at, { maxAgeMs, now })) {
+      return { ok: false, reason: 'evidence_stale', step: spec.id, reports };
+    }
+  }
+  return { ok: true, reason: 'artifact_reports_verified', reports };
 }
 
 export function writeCertificationEvidence({
@@ -153,6 +307,7 @@ export function writeCertificationEvidence({
   steps = [],
   recoveryMatrix = null,
   soak = null,
+  closureAudit = null,
   extra = {},
 } = {}) {
   if (!outDir) throw new Error('outDir is required');
@@ -161,18 +316,44 @@ export function writeCertificationEvidence({
 
   const recovery = normalizeEvidenceStep(recoveryMatrix, 'recovery_matrix');
   const soakStep = normalizeEvidenceStep(soak, 'soak');
+  const closureStep = normalizeEvidenceStep(closureAudit, 'closure_audit');
   const allSteps = [
     ...steps.map((item) => normalizeEvidenceStep(item, item.id)),
   ].filter(Boolean);
   if (recovery && !allSteps.some((item) => item.id === 'recovery_matrix')) allSteps.push(recovery);
   if (soakStep && !allSteps.some((item) => item.id === 'soak')) allSteps.push(soakStep);
+  if (closureStep && !allSteps.some((item) => item.id === 'closure_audit')) allSteps.push(closureStep);
 
   const failed = allSteps.some((item) => item.ok === false || item.status === 'failed');
+  const required = REQUIRED_CERTIFICATION_STEPS.map((id) => allSteps.find((item) => item.id === id) || null);
   const soakDuration = Number(soakStep?.duration_ms);
   const soakLongEnough = stepOk(soakStep)
-    && (!Number.isFinite(soakDuration) || soakDuration <= 0 || soakDuration >= SOAK_DEFAULT_MS);
-  const complete = stepOk(recovery) && soakLongEnough && metadata && metadata.dirty !== true;
-  const resolvedStatus = status ?? (failed ? 'failed' : (complete ? 'certified' : 'pending'));
+    && Number.isFinite(soakDuration)
+    && soakDuration >= SOAK_DEFAULT_MS;
+  const metadataComplete = Boolean(
+    metadata
+    && metadata.dirty === false
+    && metadata.build_id
+    && metadata.commit
+  );
+  const identityFailed = required
+    .filter(Boolean)
+    .some((item) => !stepIdentityOk(item, metadata));
+  const stale = required
+    .filter(Boolean)
+    .some((item) => !freshnessOk(item.generated_at, {
+      maxAgeMs: DEFAULT_EVIDENCE_MAX_AGE_MS,
+      now: Date.now(),
+    }));
+  const complete = required.every((item) => stepOk(item))
+    && soakLongEnough
+    && metadataComplete
+    && !identityFailed
+    && !stale;
+  const invalid = failed || identityFailed || stale || (metadata && !metadataComplete);
+  const resolvedStatus = complete
+    ? (status ?? 'certified')
+    : (invalid ? 'failed' : 'pending');
 
   if (metadata) writeBuildMetadata(dest, metadata);
 
@@ -190,10 +371,12 @@ export function writeCertificationEvidence({
     steps: allSteps,
     recovery_matrix: recovery,
     soak: soakStep,
+    closure_audit: closureStep,
     evidence_paths: {
       evidence: join(dest, EVIDENCE_FILE),
       recovery_matrix: recovery?.evidence ?? null,
       soak: soakStep?.evidence ?? null,
+      closure_audit: closureStep?.evidence ?? null,
       product_journey: allSteps.find((item) => item.id === 'product_journey')?.evidence ?? null,
       packaged_launch_smoke: allSteps.find((item) => item.id === 'packaged_launch_smoke')?.evidence ?? null,
       build_metadata: metadata ? join(dest, 'build-metadata.json') : null,
@@ -221,10 +404,11 @@ export async function main(argv = process.argv.slice(2)) {
     metadata: inputs.metadata,
     recoveryMatrix: inputs.recoveryMatrix,
     soak: inputs.soak,
+    closureAudit: inputs.closureAudit,
     steps: inputs.steps,
   });
   report.script = 'release-certification-evidence';
-  report.ok = true;
+  report.ok = report.evidence.status === 'certified';
   report.status = report.evidence.status;
   report.messages = [
     `wrote ${report.path}`,
@@ -232,7 +416,7 @@ export async function main(argv = process.argv.slice(2)) {
     'This writer does not publish. Feed the file to release-publish-guard.',
   ];
   printReport(report, { json: Boolean(args.json) });
-  return 0;
+  return report.ok ? 0 : 1;
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {

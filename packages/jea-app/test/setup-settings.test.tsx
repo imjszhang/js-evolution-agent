@@ -2,7 +2,7 @@ import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { JeaClientProvider } from '../src/features/client-context'
-import { createDisabledChannelReadiness, createEmptyReadiness, createFixtureSetupClient, createReadyReadiness, createSetupFixtureState, cliFixture } from '../src/features/fixtures'
+import { createDisabledChannelReadiness, createEmptyReadiness, createFixtureSetupClient, createReadyReadiness, createSetupFixtureState, createSubjectReadinessFixture, cliFixture } from '../src/features/fixtures'
 import { JeaProductApp } from '../src/features/JeaProductApp'
 import { isConversationReady, resolveSetupStep } from '../src/features/readiness'
 import { SettingsPanel } from '../src/features/settings/SettingsPanel'
@@ -25,13 +25,22 @@ function renderSetup(readiness = createEmptyReadiness()) {
   )
 }
 
-function renderSettings(options?: Parameters<typeof createSetupFixtureState>[0], host: 'web' | 'electron' = 'web') {
+function renderSettings(
+  options?: Parameters<typeof createSetupFixtureState>[0],
+  host: 'web' | 'electron' = 'web',
+  projection?: Pick<React.ComponentProps<typeof SettingsPanel>, 'subjectReadiness' | 'observability' | 'cycleList'>
+) {
   const state = createSetupFixtureState(options)
   return renderToStaticMarkup(
     <ThemeProvider initialPreference="light">
       <LocaleProvider initialLocale="en">
         <JeaClientProvider client={createFixtureSetupClient(state)} host={host}>
-          <SettingsPanel settings={state.settings} readiness={state.readiness} cli={state.cli} />
+          <SettingsPanel
+            settings={state.settings}
+            readiness={state.readiness}
+            cli={state.cli}
+            {...projection}
+          />
         </JeaClientProvider>
       </LocaleProvider>
     </ThemeProvider>
@@ -115,7 +124,7 @@ describe('settings feature slot', () => {
     expect(html).toContain('data-testid="settings-diagnostics-channel"')
     expect(html).toContain('data-testid="settings-diagnostics-model"')
     expect(html).toContain('data-testid="settings-diagnostics-conversation"')
-    expect(html).toContain('0.1.0')
+    expect(html).toContain('0.2.0')
     expect(html).toContain('License')
     expect(html).not.toContain('data-testid="settings-cli-install"')
     expect(html).not.toMatch(/reset|migrate|DEEPSEEK_API_KEY|sk-|approval bypass/i)
@@ -140,5 +149,56 @@ describe('settings feature slot', () => {
     expect(html).toContain('DeepSeek configured')
     expect(html).not.toMatch(/sk-[a-zA-Z0-9]+/)
     expect(html).not.toContain('DEEPSEEK_API_KEY')
+  })
+
+  it('renders equivalent read-only mixed-domain state while filtering Web local-only controls', () => {
+    const subjectReadiness = createSubjectReadinessFixture({
+      host: 'electron',
+      webHost: 'running',
+      channel: 'running',
+      conversation: 'running',
+      cycle: 'stalled'
+    })
+    subjectReadiness.actions = subjectReadiness.actions.map((action) => ({
+      ...action,
+      allowed: action.id === 'start_cycle' || action.id === 'process_cycle_once'
+    }))
+    subjectReadiness.allowed_actions = ['start_cycle', 'process_cycle_once']
+    const projection = {
+      subjectReadiness,
+      observability: {
+        subject: 'alpha',
+        attention: { items: [], summary: { count: 0 } },
+        open_cycles: 2,
+        evidence_pending_count: 7,
+        daemon_task_pending_count: 3
+      },
+      cycleList: {
+        subject: 'alpha',
+        namespace: 'alpha-data',
+        round_count: 9,
+        cycles: [{
+          cycle_id: 'cycle-real',
+          generated_at: '2026-08-21T00:00:00.000Z',
+          tldr: 'Latest real summary.',
+          has_diary: true,
+          status: 'open'
+        }]
+      }
+    }
+    const electron = renderSettings({ kind: 'ready', cli: 'native' }, 'electron', projection)
+    const web = renderSettings({ kind: 'ready', cli: 'native' }, 'web', projection)
+
+    for (const html of [electron, web]) {
+      expect(html).toContain('data-testid="settings-evolution-rounds">9')
+      expect(html).toContain('data-testid="settings-evolution-open-cycles">2')
+      expect(html).toContain('data-testid="settings-evolution-latest-status">open')
+      expect(html).toContain('data-testid="settings-evolution-latest-summary">Latest real summary.')
+      expect(html).toContain('data-testid="settings-pending-evidence">7')
+      expect(html).toContain('data-testid="settings-daemon-queue-pending">3')
+    }
+    expect(electron).toContain('data-testid="settings-start-cycle"')
+    expect(web).not.toContain('data-testid="settings-start-cycle"')
+    expect(web).toContain('data-testid="settings-process-cycle-once"')
   })
 })

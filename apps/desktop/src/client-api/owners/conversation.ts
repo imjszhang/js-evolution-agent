@@ -13,6 +13,7 @@ import { redactPublicValue } from '../redact'
 import type {
   ChannelProjectionHealth,
   ConversationPage,
+  ConversationPipelineState,
   ConversationSendResult,
   ConversationSessionSummary
 } from '../types'
@@ -32,6 +33,36 @@ export function channelProjectionHealth(
     status: String(projection.health?.status ?? 'idle'),
     ok: projection.health?.ok !== false,
     reasons
+  }
+}
+
+function conversationPipelineState(
+  projection: Record<string, any>,
+  sessionId: string
+): ConversationPipelineState {
+  const pipeline = projection.presence?.delivery_pipeline ?? {}
+  const target = `desktop:${sessionId}`
+  const scoped = [
+    ...(Array.isArray(pipeline.pending) ? pipeline.pending : []),
+    ...(Array.isArray(pipeline.failed) ? pipeline.failed : []),
+    ...(Array.isArray(pipeline.delivered) ? pipeline.delivered : [])
+  ].filter((item) => item?.transport === 'desktop' && item?.target === target)
+    .sort((left, right) => String(right.created_at ?? '').localeCompare(String(left.created_at ?? '')))
+  const latest = scoped[0] ?? null
+  return {
+    status: latest?.status === 'pending' || latest?.status === 'claimed' || latest?.status === 'queued'
+      ? 'pending'
+      : latest?.status === 'failed'
+        ? 'failed'
+        : latest?.status === 'delivered'
+          ? 'delivered'
+          : 'idle',
+    message_id: typeof latest?.message_id === 'string' ? latest.message_id : null,
+    pending_count: scoped.filter((item) => (
+      item.status === 'pending' || item.status === 'claimed' || item.status === 'queued'
+    )).length,
+    failed_count: scoped.filter((item) => item.status === 'failed').length,
+    last_error: typeof latest?.last_error === 'string' ? latest.last_error : null
   }
 }
 
@@ -78,9 +109,18 @@ export class ConversationCommandOwner {
       sessionId,
       options
     ))
+    const projection = buildChannelProjection(this.runtime, name, { eventLimit: 0 }) as Record<string, any>
+    const health = projection.health ?? {}
     return {
       ...page,
-      channel_health: channelProjectionHealth(this.runtime, name)
+      channel_health: {
+        status: String(health.status ?? 'idle'),
+        ok: health.ok !== false,
+        reasons: Array.isArray(health.reasons)
+          ? health.reasons.filter((item: unknown): item is string => typeof item === 'string' && item.trim().length > 0)
+          : []
+      },
+      pipeline_state: conversationPipelineState(projection, sessionId)
     }
   }
 

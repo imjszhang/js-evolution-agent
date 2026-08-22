@@ -11,7 +11,9 @@ import {
   listOutboxPending,
   markOutboxSent,
   cooldownActive,
+  setCooldown,
   readPresenceState,
+  markExpressionCandidatesHandled,
   readJsonFile,
   reconcilePendingSpeechGeneration,
   trackPendingSpeechGeneration,
@@ -53,6 +55,7 @@ import { cancelDeprecatedChannelTasks } from '../src/channel/queue-cleanup.mjs';
 import {
   appendChannelEvent,
   listPendingChannelEvents,
+  markChannelEventsHandled,
   markChannelEventsFailed,
   summarizeChannelEventQueue,
 } from '../src/channel/event-queue.mjs';
@@ -70,7 +73,7 @@ import { resolvePresenceConfig } from '../src/channel/presence-config.mjs';
 import { resolveSubjectReplyIdentity } from '../src/channel/subject-identity.mjs';
 import { CHANNEL_TASK_DEFAULT_PRIORITY } from '../src/channel/types.mjs';
 import { parseControlRequestFromText } from '../src/channel/control-actions.mjs';
-import { classifyChannelEnvelope, decisionFromClassifierItem } from '../src/channel/ingest.mjs';
+import { classifyChannelEnvelope, decisionFromClassifierItem, ingestChannelEnvelope } from '../src/channel/ingest.mjs';
 import { buildSpeechGenerationEventPayload, speechIntentFromDeterministic } from '../src/channel/speech-intent.mjs';
 import { resolveEvolutionMode } from '../src/daemon/evolution-mode.mjs';
 import { channelCommand } from '../src/cli/commands/channel.mjs';
@@ -430,6 +433,31 @@ describe('channel domain', () => {
       expect(observations.some((obs) =>
         obs.kind === 'channel_deliverable'
         && obs.metadata?.deliverable_id === deliverable.deliverable_id)).toBe(true);
+    });
+
+    it('redacts channel deliverables and outbox payloads before persistence', () => {
+      const root = makeRoot();
+      const secret = 'ghp_0123456789abcdefghijklmnop';
+      const deliverable = persistChannelDeliverable(root, 'alpha', {
+        channel_agent_run_id: 'channel-agent-secret',
+        objective: '检查输出',
+      }, {
+        success: true,
+        agent: { raw_response: `# 结果\n\n泄漏值 ${secret}` },
+      });
+      expect(deliverable.body).not.toContain(secret);
+      expect(deliverable.body).toContain('[REDACTED_SECRET]');
+      expect(readFileSync(deliverable.md_path, 'utf-8')).not.toContain(secret);
+
+      const written = writeOutboxMessage(root, 'alpha', {
+        id: 'secret-outbound',
+        idempotency_key: 'secret-outbound',
+        channel: 'feishu',
+        target: 'oc_test',
+        text: `发送 ${secret}`,
+      });
+      expect(written.message.text).toContain('[REDACTED_SECRET]');
+      expect(readFileSync(written.file, 'utf-8')).not.toContain(secret);
     });
 
     it('persistChannelDeliverable parses a structured deliverable contract from the agent receipt', () => {
@@ -1057,6 +1085,33 @@ describe('channel domain', () => {
       expect(result.classified).toBe(0);
     });
 
+    it('keeps channel-origin briefs and facts idempotent across ingest retries', () => {
+      const root = makeRoot();
+      const briefEnvelope = {
+        message_id: 'm-idempotent-brief',
+        chat_id: 'oc_test',
+        channel: 'feishu',
+        content: '请下一轮核实 A',
+      };
+      const briefDecision = classifyChannelEnvelope(briefEnvelope);
+      const firstBrief = ingestChannelEnvelope(root, 'alpha', briefEnvelope, { decision: briefDecision });
+      const secondBrief = ingestChannelEnvelope(root, 'alpha', briefEnvelope, { decision: briefDecision });
+      expect(firstBrief.written).toBe(1);
+      expect(secondBrief).toMatchObject({ written: 0, duplicate: true });
+
+      const factEnvelope = {
+        message_id: 'm-idempotent-fact',
+        chat_id: 'oc_test',
+        channel: 'desktop',
+        content: '确认口径并记住：lower rank is better',
+      };
+      const factDecision = classifyChannelEnvelope(factEnvelope);
+      const firstFact = ingestChannelEnvelope(root, 'alpha', factEnvelope, { decision: factDecision });
+      const secondFact = ingestChannelEnvelope(root, 'alpha', factEnvelope, { decision: factDecision });
+      expect(firstFact.written).toBe(1);
+      expect(secondFact).toMatchObject({ written: 0, duplicate: true });
+    });
+
     it('respects batch_size and leaves overflow for next batch', async () => {
       const root = makeRoot({
         presence: { enabled: true, planner: 'deterministic' },
@@ -1386,6 +1441,231 @@ describe('channel domain', () => {
       expect(second.plan.kind).toBe('no_op');
       expect(second.plan.reason).toBe('no_expression_candidates');
       expect(listOutboxPending(root, 'alpha', { limit: 10 }).length).toBe(outboxAfterFirst);
+    });
+
+    it('scans beyond the recent-eight prompt window for oldest unhandled classified messages', async () => {
+      const root = makeRoot({
+        classifier: { enabled: true, mode: 'deterministic', interval_ms: 30_000, batch_size: 20 },
+        presence: { enabled: true, planner: 'deterministic', default_target: 'oc_operator' },
+      });
+      for (let i = 0; i < 12; i += 1) {
+        writePendingInbound(root, 'alpha', {
+          messageId: `om-overflow-${String(i).padStart(2, '0')}`,
+          chatId: 'oc_operator',
+          content: `同意发布候选 ${i}`,
+        });
+      }
+      await runChannelClassifierTask(root, 'alpha');
+      const ctx = buildPresenceContext(root, 'alpha');
+      expect(ctx.channel.recent_ingested).toHaveLength(8);
+      expect(ctx.channel.classified_scan).toMatchObject({
+        total: 12,
+        unhandled_total: 12,
+      });
+      expect(ctx.expression.candidates.map((candidate) => candidate.id))
+        .toContain('reply:approval_request:om-overflow-00');
+    });
+
+    it('does not resurrect messages after more than 200 handled candidates', async () => {
+      const root = makeRoot({
+        classifier: { enabled: true, mode: 'deterministic', interval_ms: 30_000, batch_size: 250 },
+        presence: { enabled: true, planner: 'deterministic', default_target: 'oc_operator' },
+      });
+      const ids = [];
+      for (let i = 0; i < 205; i += 1) {
+        const messageId = `om-handled-${String(i).padStart(3, '0')}`;
+        ids.push(`reply:approval_request:${messageId}`);
+        writePendingInbound(root, 'alpha', {
+          messageId,
+          chatId: 'oc_operator',
+          content: `同意发布候选 ${i}`,
+        });
+      }
+      await runChannelClassifierTask(root, 'alpha');
+      markExpressionCandidatesHandled(root, 'alpha', ids, { outcome: 'silence' });
+
+      const ctx = buildPresenceContext(root, 'alpha');
+      expect(Object.keys(readPresenceState(root, 'alpha').handled_candidates)).toHaveLength(200);
+      expect(ctx.channel.new_messages).toEqual([]);
+      expect(ctx.expression.candidates.some((candidate) => candidate.id === ids[0])).toBe(false);
+    });
+
+    it('backfills more than 200 handled candidates from presence audit on upgrade', async () => {
+      const root = makeRoot({
+        classifier: { enabled: true, mode: 'deterministic', interval_ms: 30_000, batch_size: 250 },
+        presence: { enabled: true, planner: 'deterministic', default_target: 'oc_operator' },
+      });
+      const ids = [];
+      for (let i = 0; i < 205; i += 1) {
+        const messageId = `om-upgrade-${String(i).padStart(3, '0')}`;
+        const candidateId = `reply:message:${messageId}`;
+        ids.push(candidateId);
+        writePendingInbound(root, 'alpha', {
+          messageId,
+          chatId: 'oc_operator',
+          content: `历史消息 ${i}`,
+        });
+        recordChannelEvent(root, 'alpha', {
+          type: 'channel_speech_generated',
+          status: 'ok',
+          candidate_id: candidateId,
+        });
+      }
+      await runChannelClassifierTask(root, 'alpha');
+      const { runtimeRoot } = runtimeForSubject(root, 'alpha');
+      const channelDir = join(runtimeRoot, 'data', 'channel');
+      writeJsonFile(join(channelDir, 'presence-state.json'), {
+        handled_candidates: Object.fromEntries(ids.slice(-200).map((id) => [id, {
+          handled_at: new Date().toISOString(),
+        }])),
+      });
+
+      const ctx = buildPresenceContext(root, 'alpha');
+      const migrated = JSON.parse(readFileSync(join(channelDir, 'presence-handled-index.json'), 'utf-8'));
+      expect(Object.keys(migrated.handled_candidates)).toHaveLength(205);
+      expect(migrated.migration).toMatchObject({
+        source: 'channel_audit_and_legacy_state',
+        recovered_count: 205,
+        conservative_processed_through: null,
+      });
+      expect(ctx.channel.new_messages).toEqual([]);
+    });
+
+    it('writes a conservative processed cursor when legacy handled history is unknowable', () => {
+      const root = makeRoot({
+        presence: { enabled: true, planner: 'deterministic', default_target: 'oc_operator' },
+      });
+      const { runtimeRoot } = runtimeForSubject(root, 'alpha');
+      const channelDir = join(runtimeRoot, 'data', 'channel');
+      const processedDir = join(channelDir, 'inbound', 'processed');
+      const processedFile = join(processedDir, '000-legacy.json');
+      mkdirSync(processedDir, { recursive: true });
+      writeJsonFile(processedFile, {
+        envelope: {
+          message_id: 'om-legacy-unknown',
+          channel: 'desktop',
+          chat_id: 'main',
+          content: '无法判定是否表达过的旧消息',
+        },
+        ingest_result: { kind: 'observation' },
+      });
+      writeJsonFile(join(channelDir, 'inbound', 'processed-index.json'), {
+        schema_version: 1,
+        entries: [],
+      });
+
+      const ctx = buildPresenceContext(root, 'alpha');
+      const migrated = JSON.parse(readFileSync(join(channelDir, 'presence-handled-index.json'), 'utf-8'));
+      expect(migrated.migration.conservative_processed_through).toBe(processedFile);
+      expect(ctx.channel.new_messages).toEqual([]);
+      expect(ctx.channel.background_messages[0]).toMatchObject({
+        message_id: 'om-legacy-unknown',
+        presence_handled: true,
+        migration_suppressed: true,
+      });
+    });
+
+    it('tombstones 128 invalid processed files and continues to the valid message', () => {
+      const root = makeRoot({
+        presence: { enabled: true, planner: 'deterministic', default_target: 'oc_operator' },
+      });
+      const { runtimeRoot } = runtimeForSubject(root, 'alpha');
+      const channelDir = join(runtimeRoot, 'data', 'channel');
+      const processedDir = join(channelDir, 'inbound', 'processed');
+      mkdirSync(processedDir, { recursive: true });
+      writeJsonFile(join(channelDir, 'presence-handled-index.json'), {
+        schema_version: 2,
+        handled_candidates: {},
+        migration: { completed_at: new Date().toISOString(), source: 'native_index' },
+      });
+      for (let i = 0; i < 128; i += 1) {
+        writeFileSync(
+          join(processedDir, `${String(i).padStart(3, '0')}-invalid.json`),
+          i % 2 === 0 ? '{broken' : JSON.stringify({ ingest_result: { kind: 'observation' } }),
+          'utf-8',
+        );
+      }
+      writeJsonFile(join(processedDir, '128-valid.json'), {
+        envelope: {
+          message_id: 'om-after-invalid-page',
+          channel: 'desktop',
+          chat_id: 'main',
+          content: '坏文件之后的有效消息',
+        },
+        ingest_result: { kind: 'observation' },
+      });
+
+      const first = buildPresenceContext(root, 'alpha', {
+        limits: { processed_scan_files: 1 },
+      });
+      expect(first.channel.new_messages.map((item) => item.message_id))
+        .toEqual(['om-after-invalid-page']);
+      expect(first.channel.classified_scan).toMatchObject({
+        files_parsed: 1,
+        files_examined: 129,
+        invalid_tombstones: 128,
+        directory_listed: true,
+        scan_complete: true,
+      });
+
+      const second = buildPresenceContext(root, 'alpha', {
+        limits: { processed_scan_files: 1 },
+      });
+      expect(second.channel.classified_scan).toMatchObject({
+        files_parsed: 0,
+        files_examined: 0,
+        invalid_tombstones: 128,
+        directory_listed: false,
+        scan_complete: true,
+      });
+    });
+
+    it('uses the compact processed index for a bounded large-history scan', async () => {
+      const root = makeRoot({
+        classifier: { enabled: true, mode: 'deterministic', interval_ms: 30_000, batch_size: 220 },
+        presence: { enabled: true, planner: 'deterministic', default_target: 'oc_operator' },
+      });
+      const handledIds = [];
+      for (let i = 0; i < 220; i += 1) {
+        const messageId = `om-indexed-${String(i).padStart(3, '0')}`;
+        if (i < 219) handledIds.push(`reply:message:${messageId}`);
+        writePendingInbound(root, 'alpha', {
+          messageId,
+          chatId: 'oc_operator',
+          content: `普通消息 ${i}`,
+        });
+      }
+      await runChannelClassifierTask(root, 'alpha');
+      markExpressionCandidatesHandled(root, 'alpha', handledIds, { outcome: 'sent' });
+
+      const ctx = buildPresenceContext(root, 'alpha', {
+        limits: { processed_scan_files: 16 },
+      });
+      expect(ctx.channel.classified_scan).toMatchObject({
+        total: 220,
+        indexed_total: 220,
+        files_parsed: 0,
+        scan_complete: true,
+      });
+      expect(ctx.channel.new_messages.map((message) => message.message_id))
+        .toEqual(['om-indexed-219']);
+    });
+
+    it('merges an inbound brief reply with its pending-brief notify candidate', async () => {
+      const root = makeRoot({
+        presence: { enabled: true, planner: 'deterministic', default_target: 'oc_operator' },
+      });
+      writePendingInbound(root, 'alpha', {
+        messageId: 'om-brief-single-ack',
+        chatId: 'oc_operator',
+        content: '同意发布候选',
+      });
+      await runChannelClassifierTask(root, 'alpha');
+      const ctx = buildPresenceContext(root, 'alpha');
+      expect(ctx.expression.candidates.filter((candidate) =>
+        candidate.id.includes('om-brief-single-ack'))).toHaveLength(1);
+      expect(ctx.expression.candidates.some((candidate) =>
+        candidate.kind === 'notify.operator_brief_pending')).toBe(false);
     });
 
     it('records silence when there is nothing to express', async () => {
@@ -1803,6 +2083,134 @@ describe('channel domain', () => {
         .toBe(true);
       expect(readChannelTaskQueue(root, 'alpha').tasks.some((task) => task.type === 'channel_agent_run')).toBe(true);
       expect(summarizeChannelEventQueue(root, 'alpha').pending_speech_generation).toBe(0);
+      expect(readPresenceState(root, 'alpha').handled_candidates['reply:message:om_agent_rate_limited'])
+        .toBeUndefined();
+    });
+
+    it('does not handle a speech candidate when its cooldown skips queueing', async () => {
+      const root = makeRoot({
+        presence: { enabled: true, planner: 'deterministic', default_target: 'oc_operator' },
+      });
+      const candidateId = 'reply:message:om-cooldown-retry';
+      setCooldown(root, 'alpha', `expression:${candidateId}`, 60_000);
+      const plan = {
+        kind: 'speak',
+        reason: 'cooldown_retry_test',
+        candidate_ids: [candidateId],
+        planner: 'test',
+        actions: [speechIntentFromDeterministic({
+          subject: 'alpha',
+          candidate_id: candidateId,
+          target: 'channel_default',
+          reason: 'custom',
+          idempotency_key: `expression:${candidateId}`,
+          kind: 'custom',
+          summary: 'retry me',
+        })],
+      };
+      const execution = await executePresenceDecisionPlan(root, 'alpha', plan, {
+        context: buildPresenceContext(root, 'alpha'),
+      });
+      expect(execution.results[0]).toMatchObject({ skipped: true, reason: 'cooldown' });
+      expect(readPresenceState(root, 'alpha').handled_candidates[candidateId]).toBeUndefined();
+    });
+
+    it('requeues failed speech generation up to the configured attempt bound', async () => {
+      const root = makeRoot({
+        presence: {
+          enabled: true,
+          planner: 'llm',
+          default_target: 'oc_operator',
+          speech_generation_max_attempts: 2,
+          speech_generation_retry_delay_ms: 0,
+        },
+      });
+      const candidateId = 'reply:message:om-speech-retry';
+      const plan = {
+        kind: 'speak',
+        reason: 'speech_retry_test',
+        candidate_ids: [candidateId],
+        planner: 'test',
+        actions: [speechIntentFromDeterministic({
+          subject: 'alpha',
+          candidate_id: candidateId,
+          target: 'channel_default',
+          reason: 'custom',
+          idempotency_key: `expression:${candidateId}`,
+          kind: 'custom',
+          summary: 'retry generation',
+        })],
+      };
+      await executePresenceDecisionPlan(root, 'alpha', plan, {
+        presenceConfig: resolvePresenceConfig(root, 'alpha'),
+        context: buildPresenceContext(root, 'alpha'),
+      });
+      const failingClient = { chatMessages: async () => { throw new Error('speech provider down'); } };
+      const first = await runChannelSpeechGenerationTask(root, 'alpha', { aiClient: failingClient });
+      expect(first.results.failed[0].retryable).toBe(true);
+      expect(listPendingChannelEvents(root, 'alpha', { type: 'speech_generation_requested' })[0])
+        .toMatchObject({ attempts: 1, max_attempts: 2 });
+      expect(readPresenceState(root, 'alpha').handled_candidates[candidateId]).toBeUndefined();
+
+      const second = await runChannelSpeechGenerationTask(root, 'alpha', { aiClient: failingClient });
+      expect(second.results.failed[0].retryable).toBe(false);
+      expect(summarizeChannelEventQueue(root, 'alpha').counts.failed).toBe(1);
+      expect(readPresenceState(root, 'alpha').handled_candidates[candidateId]).toBeUndefined();
+      expect(buildChannelProjection(root, 'alpha').presence.delivery_pipeline.failed[0])
+        .toMatchObject({ message_id: null, attempts: 2, max_attempts: 2 });
+    });
+
+    it('keeps generated desktop speech queued until transport delivery succeeds', async () => {
+      const root = makeRoot({
+        presence: {
+          enabled: true,
+          planner: 'deterministic',
+          default_transport: 'desktop',
+          default_target: 'desktop:main',
+        },
+        additionalChannels: {
+          desktop: { enabled: true, default_session: 'main' },
+        },
+      });
+      const candidateId = 'reply:message:om-desktop-pipeline';
+      const plan = {
+        kind: 'speak',
+        reason: 'desktop_pipeline_test',
+        candidate_ids: [candidateId],
+        planner: 'test',
+        actions: [speechIntentFromDeterministic({
+          subject: 'alpha',
+          candidate_id: candidateId,
+          target: 'desktop:main',
+          reply_to_message_id: 'om-desktop-pipeline',
+          reason: 'custom',
+          idempotency_key: `expression:${candidateId}`,
+          kind: 'custom',
+          summary: 'desktop delivery',
+        })],
+      };
+      await executePresenceDecisionPlan(root, 'alpha', plan, {
+        presenceConfig: resolvePresenceConfig(root, 'alpha'),
+        context: buildPresenceContext(root, 'alpha'),
+      });
+      await runChannelSpeechGenerationTask(root, 'alpha');
+      expect(buildChannelProjection(root, 'alpha').presence.delivery_pipeline.pending[0])
+        .toMatchObject({
+          message_id: 'om-desktop-pipeline',
+          status: 'queued',
+          transport: 'desktop',
+          target: 'desktop:main',
+        });
+      expect(buildChannelProjection(root, 'alpha').presence.delivery_pipeline.delivered).toHaveLength(0);
+
+      await runChannelNotifyTask(root, 'alpha', { limit: 5 });
+      expect(buildChannelProjection(root, 'alpha').presence.delivery_pipeline.delivered[0])
+        .toMatchObject({
+          message_id: 'om-desktop-pipeline',
+          status: 'delivered',
+          transport: 'desktop',
+          target: 'desktop:main',
+        });
     });
 
     it('presence executor binds agent started speech to a real queued agent task', async () => {
@@ -3006,6 +3414,154 @@ describe('channel domain', () => {
       const result = await runChannelNotifyTask(root, 'alpha', { limit: 5 });
       expect(result.sent.length + result.failed.length).toBeGreaterThan(0);
       expect(result.sent.length).toBeGreaterThan(0);
+    });
+
+    it('retries a failed desktop delivery once and duplicate retry notifications do not double-send', async () => {
+      const root = makeRoot({
+        presence: {
+          enabled: true,
+          planner: 'deterministic',
+          default_transport: 'desktop',
+          default_target: 'desktop:main',
+        },
+        additionalChannels: {
+          desktop: { enabled: true, default_session: 'main' },
+        },
+      });
+      writeOutboxMessage(root, 'alpha', {
+        channel: 'desktop',
+        target: 'desktop:main',
+        text: 'desktop retry delivery',
+        subject: 'alpha',
+        idempotency_key: 'desktop-retry-1',
+      });
+
+      const failed = await runChannelNotifyTask(root, 'alpha', { limit: 5 }, {
+        adapterOptions: { config: { enabled: false } },
+      });
+      expect(failed.failed).toHaveLength(1);
+      expect(listOutboxPending(root, 'alpha')).toHaveLength(0);
+      const retryTask = readChannelTaskQueue(root, 'alpha').tasks
+        .find((task) => task.type === 'channel_retry');
+      expect(retryTask?.input.failed_outbox).toHaveLength(1);
+
+      const delivered = await runChannelTask(root, 'alpha', retryTask, {
+        adapterOptions: { config: { enabled: true } },
+      });
+      expect(delivered.sent).toHaveLength(1);
+      const duplicate = await runChannelTask(root, 'alpha', retryTask, {
+        adapterOptions: { config: { enabled: true } },
+      });
+      expect(duplicate.sent).toHaveLength(0);
+      expect(duplicate.retry_recovery[0]).toMatchObject({ reason: 'already_sent' });
+
+      const { readDesktopSession } = await import('../src/channel/adapters/desktop/index.mjs');
+      const session = readDesktopSession(root, 'alpha', 'main', { limit: 20 });
+      expect(session.records.filter((record) => record.content === 'desktop retry delivery')).toHaveLength(1);
+    });
+
+    it('stops scheduling transport retries at the configured bound', async () => {
+      const root = makeRoot({
+        additionalChannels: {
+          desktop: { enabled: true, default_session: 'main' },
+        },
+      });
+      writeOutboxMessage(root, 'alpha', {
+        channel: 'desktop',
+        target: 'desktop:main',
+        text: 'bounded retry delivery',
+        subject: 'alpha',
+        idempotency_key: 'desktop-retry-bound',
+      });
+
+      const exhausted = await runChannelNotifyTask(root, 'alpha', {
+        limit: 5,
+        retry_attempt: 2,
+      }, {
+        adapterOptions: { config: { enabled: false } },
+      });
+      expect(exhausted.failed).toHaveLength(1);
+      expect(readChannelTaskQueue(root, 'alpha').tasks
+        .filter((task) => task.type === 'channel_retry')).toHaveLength(0);
+    });
+
+    it('retries a failed Feishu delivery and preserves transport target projection', async () => {
+      const root = makeRoot({ feishu: { mock: false } });
+      const generationEvent = appendChannelEvent(root, 'alpha', {
+        type: 'speech_generation_requested',
+        payload: {
+          intent_id: 'feishu-retry-intent',
+          candidate_id: 'reply:message:feishu-retry',
+          reply_to_message_id: 'om-feishu-retry',
+          idempotency_key: 'feishu-retry-1',
+          target: 'oc_retry_target',
+        },
+      });
+      const written = writeOutboxMessage(root, 'alpha', {
+        channel: 'feishu',
+        target: 'oc_retry_target',
+        text: 'feishu retry delivery',
+        subject: 'alpha',
+        idempotency_key: 'feishu-retry-1',
+      });
+      markChannelEventsHandled(root, 'alpha', [generationEvent.id], {
+        handled_meta: {
+          delivery_status: 'queued',
+          transport: 'feishu',
+          target: 'oc_retry_target',
+          outbox_file: written.file,
+          outbox_idempotency_key: 'feishu-retry-1',
+        },
+      });
+      expect(buildChannelProjection(root, 'alpha').presence.delivery_pipeline.pending[0])
+        .toMatchObject({ status: 'queued', transport: 'feishu', target: 'oc_retry_target' });
+
+      let sendAttempts = 0;
+      const failingSender = {
+        sendText: async () => {
+          sendAttempts += 1;
+          throw new Error('temporary Feishu transport failure');
+        },
+      };
+      const adapterOptions = {
+        cfg: {
+          subject: 'alpha',
+          mock: false,
+          appId: 'cli_test',
+          appSecret: 'secret_test',
+          sendTimeoutMs: 1_000,
+        },
+        sender: failingSender,
+      };
+      const failed = await runChannelNotifyTask(root, 'alpha', { limit: 5 }, { adapterOptions });
+      expect(failed.failed).toHaveLength(1);
+      expect(buildChannelProjection(root, 'alpha').presence.delivery_pipeline.failed[0])
+        .toMatchObject({ transport: 'feishu', target: 'oc_retry_target' });
+
+      const retryTask = readChannelTaskQueue(root, 'alpha').tasks
+        .find((task) => task.type === 'channel_retry');
+      const successfulSender = {
+        sendText: async () => {
+          sendAttempts += 1;
+          return { messageIds: ['om-delivered'], chunks: 1 };
+        },
+      };
+      const delivered = await runChannelTask(root, 'alpha', retryTask, {
+        adapterOptions: { ...adapterOptions, sender: successfulSender },
+      });
+      expect(delivered.sent).toHaveLength(1);
+      expect(sendAttempts).toBe(2);
+      expect(buildChannelProjection(root, 'alpha').presence.delivery_pipeline.delivered[0])
+        .toMatchObject({
+          status: 'delivered',
+          transport: 'feishu',
+          target: 'oc_retry_target',
+        });
+
+      await runChannelTask(root, 'alpha', retryTask, {
+        adapterOptions: { ...adapterOptions, sender: successfulSender },
+      });
+      expect(sendAttempts).toBe(2);
     });
   });
 });

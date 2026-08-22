@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { extractBeliefContext } from '../contracts/belief-context.mjs';
 import { chatMessages, extractJsonFromText } from '../ai/messages.mjs';
 import {
   buildPromptCacheMetadata,
@@ -47,14 +48,19 @@ function flattenGoals(goals) {
 }
 
 function summarizeAction(action = {}) {
-  const runSpec = action?.params?.run_spec ?? {};
-  const context = runSpec.context ?? {};
+  const runSpec = action?.params?.run_spec
+    ?? action?.params?.runSpec
+    ?? action?.run_spec
+    ?? action?.runSpec
+    ?? {};
+  const context = extractBeliefContext(action);
   return {
     type: action.type ?? null,
     description: clip(action.description ?? '', 240),
     serves_goal: action.serves_goal ?? null,
     belief_id: context.belief_id ?? null,
     belief_relation: context.belief_relation ?? null,
+    expected_belief_claim: clip(context.expected_belief_claim ?? '', 240),
     expected_belief_update: clip(context.expected_belief_update ?? '', 240),
     intent: clip(runSpec.intent ?? '', 240),
   };
@@ -69,6 +75,14 @@ function summarizeReceipt(receipt = {}) {
     success: result.success ?? null,
     message: clip(result.message ?? result.error ?? '', 240),
     decision_id: receipt.decision_id ?? null,
+    belief_id: receipt.belief_id ?? null,
+    belief_relation: receipt.belief_relation ?? extractBeliefContext(receipt.action).belief_relation ?? null,
+    expected_belief_claim: clip(
+      receipt.expected_belief_claim
+        ?? extractBeliefContext(receipt.action).expected_belief_claim
+        ?? '',
+      240,
+    ),
   };
 }
 
@@ -126,9 +140,13 @@ export function buildBeliefUpdateContext({
   verificationReportPath = null,
   store = null,
   operatorAssertions = [],
+  receipts: suppliedReceipts = null,
+  evidenceRefs = null,
 } = {}) {
   const beliefsDoc = normalizeCurrentBeliefs(currentBeliefs ?? store?.readCurrentBeliefs?.() ?? null);
-  const receipts = store?.readActionReceipts
+  const receipts = Array.isArray(suppliedReceipts)
+    ? suppliedReceipts
+    : store?.readActionReceipts
     ? store.readActionReceipts({ limit: 20 }).filter((r) => {
       const cycleId = execResult?.cycle_id ?? intelResult?.cycle_id ?? null;
       if (!cycleId) return true;
@@ -157,6 +175,7 @@ export function buildBeliefUpdateContext({
     active_goals: activeGoals,
     active_goals_flat: flattenGoals(activeGoals),
     current_beliefs: beliefsDoc,
+    settlement_evidence_refs: Array.isArray(evidenceRefs) ? evidenceRefs : null,
     operator_assertions: asArray(operatorAssertions).map((fact) => ({
       fact_id: fact.id ?? fact.fact_id ?? null,
       content: fact.content ?? fact.summary ?? fact.claim ?? '',
@@ -337,6 +356,7 @@ export function applyBeliefUpdates(currentBeliefsDoc, updates = [], {
   source = 'post_verify_belief_update',
   producer = null,
   activationTargets = null,
+  causalIdentity = {},
 } = {}) {
   const base = normalizeCurrentBeliefs(currentBeliefsDoc);
   const beliefsById = new Map((base.beliefs || []).map((b) => [b.id, cloneBelief(b)]));
@@ -368,6 +388,7 @@ export function applyBeliefUpdates(currentBeliefsDoc, updates = [], {
       };
       beliefsById.set(id, after);
       events.push({
+        ...causalIdentity,
         cycle_id: cycleId,
         belief_id: id,
         change,
@@ -410,6 +431,7 @@ export function applyBeliefUpdates(currentBeliefsDoc, updates = [], {
     };
     beliefsById.set(beliefId, after);
     events.push({
+      ...causalIdentity,
       cycle_id: cycleId,
       belief_id: beliefId,
       change,
@@ -449,7 +471,23 @@ export async function updateBeliefsWithAi({
   canCommit = null,
   producer = null,
   activationTargets = null,
+  causalIdentity = null,
+  receipts = null,
+  evidenceRefs = null,
+  settlement = null,
+  faultInjector = null,
 } = {}) {
+  if (settlement?.settlement_id && typeof store?.commitBeliefEffect === 'function') {
+    const resumed = store.commitBeliefEffect({ settlement, faultInjector });
+    if (resumed) {
+      return {
+        ...(resumed.result ?? {}),
+        currentBeliefs: resumed.currentBeliefs,
+        eventsWritten: 0,
+        reused: true,
+      };
+    }
+  }
   const context = buildBeliefUpdateContext({
     activeGoals,
     intelResult,
@@ -458,6 +496,8 @@ export async function updateBeliefsWithAi({
     verificationReportPath,
     store,
     operatorAssertions,
+    receipts,
+    evidenceRefs,
   });
   const prompt = buildBeliefUpdatePrompt({ context, language });
   const stablePrompt = buildBeliefUpdatePrompt({ context: {}, language });
@@ -498,24 +538,75 @@ export async function updateBeliefsWithAi({
     const allowedGoals = Array.isArray(goalIds) && goalIds.length
       ? new Set(goalIds)
       : null;
-    const filteredUpdates = allowedGoals
+    let filteredUpdates = allowedGoals
       ? (parsed.updates || []).filter((update) => !update.goal_id || allowedGoals.has(update.goal_id))
       : parsed.updates;
-    const applied = applyBeliefUpdates(context.current_beliefs, filteredUpdates, {
-      cycleId,
-      producer,
-      activationTargets,
-    });
+    if (Array.isArray(evidenceRefs)) {
+      const exactRefs = [...new Set(evidenceRefs.map(String))];
+      filteredUpdates = filteredUpdates.map((update) => {
+        const next = { ...update, evidence_refs: exactRefs };
+        if (
+          ['validate', 'refute', 'reopen'].includes(next.change)
+          && exactRefs.length === 0
+        ) {
+          return {
+            ...next,
+            change: 'unchanged',
+            status: null,
+            reason: `${next.reason} (settlement rejected: exact evidence refs missing)`,
+          };
+        }
+        return next;
+      });
+    }
+    const applyTo = (currentBeliefs) => applyBeliefUpdates(currentBeliefs, filteredUpdates, {
+        cycleId,
+        producer,
+        activationTargets,
+        causalIdentity: {
+          ...(causalIdentity ?? {
+            producer_batch_id: verification?.producer_batch_id ?? execResult?.producer_batch_id ?? null,
+            reaction_id: verification?.reaction_id ?? execResult?.reaction_id ?? null,
+            decision_id: verification?.decision_id ?? execResult?.decision_id ?? null,
+            execution_id: verification?.execution_id ?? execResult?.execution_id ?? null,
+          }),
+          ...(settlement ?? {}),
+        },
+      });
+    let applied = applyTo(context.current_beliefs);
     let eventsWritten = 0;
-    if (store && parsed.status !== 'failed' && parsed.updates.length) {
+    if (store && parsed.status !== 'failed') {
       if (typeof canCommit === 'function' && !canCommit()) {
         const error = new Error('reactor_task_lease_lost');
         error.code = 'lease_lost';
         throw error;
       }
-      store.recordCurrentBeliefs(applied.currentBeliefs);
-      for (const event of applied.events) {
-        eventsWritten += store.recordBeliefEvent(event);
+      if (settlement?.settlement_id && typeof store.commitBeliefEffect === 'function') {
+        const effectResult = {
+          source: 'ai',
+          result: parsed,
+        };
+        const committed = store.commitBeliefEffect({
+          settlement,
+          faultInjector,
+          prepare: (latestCurrentBeliefs) => {
+            applied = applyTo(latestCurrentBeliefs);
+            return {
+              ...applied,
+              effectResult,
+            };
+          },
+        });
+        applied = {
+          currentBeliefs: committed.currentBeliefs,
+          events: [],
+        };
+        eventsWritten = committed.eventsWritten;
+      } else if (parsed.updates.length) {
+        store.recordCurrentBeliefs(applied.currentBeliefs);
+        for (const event of applied.events) {
+          eventsWritten += store.recordBeliefEvent(event);
+        }
       }
     }
     return {
@@ -531,6 +622,7 @@ export async function updateBeliefsWithAi({
       eventsWritten,
     };
   } catch (e) {
+    if (settlement?.settlement_id) throw e;
     const msg = e?.message || String(e);
     logger?.warn?.(`[beliefs] AI update failed: ${msg}; keeping previous beliefs`);
     return {
@@ -615,6 +707,10 @@ export async function updateActiveBeliefs(root, {
   canCommit = null,
   producer = null,
   activationTargets = null,
+  causalIdentity = null,
+  receipts = null,
+  evidenceRefs = null,
+  settlement = null,
 } = {}) {
   const { getActiveGoals } = await import('../cli/commands/goals.mjs');
   const { getProjectRoot } = await import('../infra/project.mjs');
@@ -667,6 +763,10 @@ export async function updateActiveBeliefs(root, {
     canCommit,
     producer,
     activationTargets,
+    causalIdentity,
+    receipts,
+    evidenceRefs,
+    settlement,
   });
 
   let digestion = null;

@@ -1520,7 +1520,7 @@ describe('controlled action handlers', () => {
     expect(ctx.ai.agentCalls.length).toBeGreaterThan(0);
     expect(result.auto_approval).toMatchObject({
       mode: 'auto_all',
-      reason: 'auto_all_mode',
+      reason: 'sandbox_subject',
     });
   });
 
@@ -1554,7 +1554,7 @@ describe('controlled action handlers', () => {
     expect(result.goal_progress_status).toBe('progressed');
     expect(result.auto_approval).toMatchObject({
       mode: 'auto_all',
-      reason: 'auto_all_mode',
+      reason: 'sandbox_subject',
     });
   });
 

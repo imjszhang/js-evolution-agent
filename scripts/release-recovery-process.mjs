@@ -1,5 +1,5 @@
 /**
- * Live stand-in / packaged-app process helpers for 0.1.1 recovery certification.
+ * Live stand-in / packaged-app process helpers for release recovery certification.
  * Bounded CI uses detached Node stand-ins. Packaged soak launches JEA.app.
  */
 import { spawn } from 'node:child_process';

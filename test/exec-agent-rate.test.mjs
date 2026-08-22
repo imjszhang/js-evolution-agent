@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import lockfile from 'proper-lockfile';
 import {
   AgentRateLedger,
   DecisionQueue,
@@ -59,6 +60,22 @@ describe('parseExecAgentRateFromEnv', () => {
     process.env.JEA_EXEC_AGENT_RATE_WINDOW_MS = '60000';
     expect(parseExecAgentRateFromEnv()).toEqual({ limit: 12, windowMs: 60_000 });
   });
+
+  it.each([
+    [{ JEA_EXEC_AGENT_RATE: 'nope' }, 'JEA_EXEC_AGENT_RATE'],
+    [{ JEA_EXEC_AGENT_RATE: '0' }, 'JEA_EXEC_AGENT_RATE'],
+    [{
+      JEA_EXEC_AGENT_RATE: '2',
+      JEA_EXEC_AGENT_RATE_WINDOW_MS: 'invalid',
+    }, 'JEA_EXEC_AGENT_RATE_WINDOW_MS'],
+  ])('fails closed for invalid rate configuration', (env, variable) => {
+    expect(() => parseExecAgentRateFromEnv(env)).toThrow();
+    try {
+      parseExecAgentRateFromEnv(env);
+    } catch (error) {
+      expect(error).toMatchObject({ code: 'agent_rate_config_invalid', variable });
+    }
+  });
 });
 
 describe('AgentRateLedger', () => {
@@ -71,7 +88,7 @@ describe('AgentRateLedger', () => {
     }
   });
 
-  it('prunes expired entries and recovers from corrupt files', () => {
+  it('prunes expired entries and fails closed on corrupt files', () => {
     tempDir = mkdtempSync(join(tmpdir(), 'jea-rate-ledger-'));
     const filePath = join(tempDir, 'agent-rate-ledger.json');
     let now = 1_000_000;
@@ -88,17 +105,63 @@ describe('AgentRateLedger', () => {
     expect(ledger.remaining()).toBe(3);
 
     writeFileSync(filePath, '{not-json', 'utf-8');
-    const warnings = [];
     const recovered = new AgentRateLedger({
       filePath,
       limit: 2,
       windowMs: 1000,
       now: () => now,
-      logFn: (m) => warnings.push(m),
     });
-    expect(recovered.remaining()).toBe(2);
-    expect(warnings.some((m) => /resetting|failed to read/.test(m))).toBe(true);
-    expect(validateAgentRateLedger(recovered.toJSON()).ok).toBe(true);
+    expect(() => recovered.remaining()).toThrow(/Agent rate ledger read failed/);
+  });
+
+  it('validates the persisted ledger in strict contract mode', () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'jea-rate-ledger-'));
+    const previous = process.env.JEA_CONTRACT_MODE;
+    process.env.JEA_CONTRACT_MODE = 'strict';
+    try {
+      const ledger = new AgentRateLedger({
+        filePath: join(tempDir, 'agent-rate-ledger.json'),
+        limit: 3,
+        windowMs: 1000,
+        now: () => 1000,
+      });
+      ledger._entries = [{ ts: 1000, cycle_id: 42 }];
+      expect(() => ledger._persist()).toThrow(/agent_rate_ledger contract invalid/);
+    } finally {
+      if (previous === undefined) delete process.env.JEA_CONTRACT_MODE;
+      else process.env.JEA_CONTRACT_MODE = previous;
+    }
+  });
+
+  it('fails closed when the ledger lock cannot be acquired', () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'jea-rate-ledger-lock-'));
+    const filePath = join(tempDir, 'agent-rate-ledger.json');
+    const lockPath = `${filePath}.lock`;
+    writeFileSync(lockPath, '', 'utf-8');
+    const release = lockfile.lockSync(lockPath);
+    try {
+      const ledger = new AgentRateLedger({ filePath, limit: 2 });
+      expect(() => ledger.record([{ id: 'blocked' }])).toThrow(/lock acquisition failed/);
+      try {
+        ledger.record([{ id: 'blocked' }]);
+      } catch (error) {
+        expect(error.code).toBe('agent_rate_ledger_lock_failed');
+      }
+      expect(() => readFileSync(filePath, 'utf-8')).toThrow();
+    } finally {
+      release();
+    }
+  });
+
+  it('does not silently ignore ledger write failures', () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'jea-rate-ledger-write-'));
+    const nonDirectory = join(tempDir, 'not-a-directory');
+    writeFileSync(nonDirectory, 'block parent creation', 'utf-8');
+    const ledger = new AgentRateLedger({
+      filePath: join(nonDirectory, 'agent-rate-ledger.json'),
+      limit: 2,
+    });
+    expect(() => ledger.record([{ id: 'must-not-run' }])).toThrow();
   });
 });
 
@@ -125,7 +188,7 @@ describe('ExecutionPipeline agent rate gate', () => {
     }
   });
 
-  it('leaves agent_rate null when no ledger (zero behavior change)', async () => {
+  it('enforces the per-cycle budget when no rate ledger is configured', async () => {
     tempDir = mkdtempSync(join(tmpdir(), 'jea-rate-off-'));
     const queue = new DecisionQueue({ dataDir: tempDir });
     queue.addDecisionsDetailed({
@@ -148,8 +211,9 @@ describe('ExecutionPipeline agent rate gate', () => {
     const result = await pipeline.run();
     expect(result.success).toBe(true);
     expect(result.agent_rate).toBeNull();
-    expect(result.remaining_agent_pending).toBe(0);
-    expect(order.filter((x) => x.startsWith('agent:'))).toHaveLength(3);
+    expect(result.agent_budget).toBe(2);
+    expect(result.remaining_agent_pending).toBe(1);
+    expect(order.filter((x) => x.startsWith('agent:'))).toHaveLength(2);
   });
 
   it('rate=2 with 5 pending agents and budget=8 executes only 2', async () => {

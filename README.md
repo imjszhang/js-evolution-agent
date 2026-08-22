@@ -28,23 +28,23 @@
 
 > Not a fixed `/goal` coding loop that runs until tests pass — an **evolution loop** with theoretical constraints, governance boundaries, and auditable receipts. When an old goal (law) is falsified by consequences, the system enters a rule-update phase instead of spinning or grinding.
 
-## Product (0.1.0)
+## Product (0.2.0)
 
-JEA 0.1.0 is a **macOS Apple Silicon** app with a bundled `jea` CLI. The operator surface is one three-column workspace — not the retired seven-page Desktop (Operations / Todo / Channel / ACP):
+JEA 0.2.0 is a **macOS Apple Silicon** app with a bundled `jea` CLI. Its shared Electron/Web workspace has three operator surfaces:
 
 1. **Subject and local sessions**
 2. **Governed conversation** through the Channel classifier / presence / speech pipeline (chat text is not hard approval)
-3. **Evolution Inspector** for cycle status, report / diary / verify, and receipt / evidence summaries
+3. **Evolution Inspector** for the causal execution chain, expectation comparison, settlement, Memory Reactor freshness, and runtime health
 
 Settings covers JEA Home, default Subject, CLI install, appearance, and About. Electron and localhost Web load the same React app. Install and Gatekeeper notes: [docs/release/installation.md](docs/release/installation.md). Headless lifecycle: `jea start --no-open`, `jea status --json`, `jea url`, `jea stop`.
 
-The product Release is **[v0.1.0](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.1.0)** ([#122](https://github.com/imjszhang/js-evolution-agent/issues/122) closed). Checkout commands below remain the developer source-host path.
+The source-host commands below are also the development and recovery path.
 
 ---
 
 ## Table of contents
 
-- [Product (0.1.0)](#product-010)
+- [Product (0.2.0)](#product-020)
 - [Core innovation: goal self-correction](#core-innovation-goal-self-correction)
 - [Alignment with Loop Engineering](#alignment-with-loop-engineering)
 - [What this is](#what-this-is)
@@ -52,7 +52,7 @@ The product Release is **[v0.1.0](https://github.com/imjszhang/js-evolution-agen
 - [Architecture](#architecture)
 - [Requirements](#requirements)
 - [Quick start](#quick-start)
-- [Evolution cycle](#evolution-cycle)
+- [Evolution loop](#evolution-loop)
 - [Subjects and multi-subject](#subjects-and-multi-subject)
 - [Daemon (long-running)](#daemon-long-running)
 - [Channel](#channel)
@@ -79,17 +79,17 @@ JEA’s core innovation is to **materialize the [cyber-taoist.ai](https://cyber-
 | **Law (R)** — rules firewall built by the subject; always lagging | `active_goals.json`, SUBJECT.md constraints, beliefs | Current hypotheses about what to optimize and how to act |
 | **Transaction (T)** — probe for sensing Nature | `agent_run`, probes, record-type actions | Interactions within law, or breakthroughs after approval |
 | **Niche (NI)** — compatibility with current law | `good_signal` / `bad_signal` matching, outcome metrics | Whether strategy still works inside current law |
-| **Rule-update phase** — old law falsified; new law sedimented | Phase 4 `goals assess` + Phase 4.5 `goals_calibrate` | **Rewrite the goal tree** and enter the next evolution round |
+| **Rule-update phase** — old law falsified; new law sedimented | idempotent belief/goal settlement | **Rewrite the goal tree** from an exact verified execution window |
 
 ### Evolution stage → goal calibration
 
-Following the constitution’s path — perception lag → probe → success/failure screening → **rule update** — Phase 4 emits `rule_status`:
+Following the constitution’s path — perception lag → probe → success/failure screening → **rule update** — rule settlement emits `rule_status`:
 
 | `rule_status` | Cyber-Taoist meaning | System behavior |
 | --- | --- | --- |
 | `continue` | Regular phase: transaction feedback inside law is still clear | Keep current goals |
 | `learn` | Perception lag: insufficient feedback or evidence gaps | Next round biased toward read-only learning, diagnostics, feedback-loop calibration |
-| `mutate` | Rule-update phase: old law falsified by consequences | Phase 4.5 **auto-applies `goal_patches`**, rewrites outcome sub-goals |
+| `mutate` | Rule-update phase: old law falsified by consequences | settlement **auto-applies `goal_patches`**, rewrites outcome sub-goals |
 | `stop` | Core guard failure | Pause outcome exploration; restore continuity first |
 | `insufficient_evidence` | Cannot infer from consequences | Do not change goals lightly; wait for more transaction feedback |
 
@@ -108,24 +108,24 @@ In short: **the loop changes not only code but, under theory, where evolution sh
 JEA is best read as a **governed orchestration loop** — humans design loop structure and guardrails; the system finds work, delegates to agents, verifies independently, persists state, and decides the next round (including whether goals mutate).
 
 ```text
-Loop Engineering five steps     JEA mapping
+Loop Engineering five steps     JEA 0.2.0 mapping
 ─────────────────────────────────────────────────────────
-find work                     →  Phase 1 observe + analyze/decide (pending_decisions)
-delegate to agent             →  Phase 2 exec (agent_run / probe / record actions)
-gate (pass/fail)              →  Phase 3 verify (mechanical + semantic; maker ≠ verifier)
-record state                  →  intel store, cycle-state, receipts, evolution diary
-decide next                   →  Phase 3.5 beliefs + Phase 4/4.5 goals + next intel round
+find work                     →  claim evidence → report → belief-bound decision
+delegate to agent             →  durable exec intent → agent_run / action receipt
+gate (pass/fail)              →  expected-output comparison; maker ≠ verifier
+record state                  →  causal IDs, append-only events, checkpoints, receipts
+decide next                   →  idempotent belief/goal settlement → Memory Reactor
 
 JEA-specific layer            →  goal/law self-correction + SUBJECT approval + operator brief/fact
 ```
 
 | Loop Engineering element | JEA implementation |
 | --- | --- |
-| **Scheduling** | `jea daemon start` (`continuous` / `on_demand`), channel classifier tick |
+| **Scheduling** | evidence/operator wakes and bounded async reactors under `jea daemon start` |
 | **Worktrees** | Subject `lane` — isolated worktrees for external target repos |
-| **Persistent memory** | `js-intel-store`, standing memory, goal/belief events |
-| **Maker–Verifier split** | Exec agent writes/runs; Verify and Goals assess are **separate phases**, not self-graded |
-| **Verifiable stopping** | Per-action verify; per-cycle diary + `requires_human_review` |
+| **Persistent memory** | append-only belief/goal events plus low-frequency Memory Reactor consolidation |
+| **Maker–Verifier split** | Exec writes/runs; Verify independently compares structured observations with `run_spec.expected_output` |
+| **Verifiable stopping** | Per-execution verify, exact settlement refs, and closure audit |
 | **Guardrails** | SUBJECT.md Off-Limits, `approval_granted`, brief/fact layering |
 | **Dynamic goals** (JEA extension) | Fixed `/goal` → **mutable goals + Cyber-Taoist `rule_status`** |
 
@@ -135,9 +135,9 @@ JEA-specific layer            →  goal/law self-correction + SUBJECT approval +
                     └─────────────────┬────────────────────┘
                                       │ guardrails
 ┌─────────────── Evolution Loop ──────▼──────────────────────────────┐
-│  Intel → Exec → Verify → Belief → Goals Assess → Goals Calibrate   │
-│     ↑                                      │                       │
-│     └──────── next round (goals may mutate) ─┘                       │
+│ Evidence → Report → Decision → Exec → Verify → Settlement → Memory │
+│    ↑                                      │                         │
+│    └────────── wakes from durable evidence ─┘                         │
 └────────────────────────────────────────────────────────────────────┘
          Daemon / Channel scheduling · multi-subject · Evolution Viewer
 ```
@@ -152,27 +152,31 @@ If you know Claude Code’s `/loop` + `/goal`: JEA adds an evolution layer on to
 
 | Component | Role |
 | --- | --- |
-| **OADA engine** (`src/engine/`, vendored) | Decision queue, ExecutionPipeline, and Phase 1 helpers (rules / goals / guidance / logger) |
+| **OADA engine** (`src/engine/`, vendored) | Decision queue, execution handlers, verification helpers, rules / goals / guidance |
 | **Cyber-Taoist authority docs** (`policies/authority/`) | Cross-subject governance context (constitution, guide) |
 | **Subject policy** (`<JEA_HOME>/subjects/<ns>/SUBJECT.md`) | Per-subject semantic boundaries and approval rules |
 | **js-intel-store** | File-backed intelligence memory (observations, receipts, reports, beliefs, …) |
-| **CLI `jea`** | Operator entry: single runs, daemon, channel, data, audit |
+| **CLI `jea`** | Operator entry: synchronous reactor chains, daemon, channel, data, audit |
 
-Typical use: let an AI subject investigate, edit code, simulate, and prepare releases in a **lane worktree** or external resources, while persisting reports, verification, and evolution diaries each cycle for human review or channel interaction (e.g. Feishu).
+Typical use: let an AI subject investigate, edit code, simulate, and prepare releases in a **lane worktree** or external resources, while every durable record carries enough causal identity to reopen evidence → decision → execution → verification → settlement.
 
 ---
 
 ## Features
 
-- **Cyber-Taoist goal self-correction** — Phase 4/4.5 detects law lag from transaction feedback and mechanically applies `goal_patches` ([Core innovation](#core-innovation-goal-self-correction))
-- **Full evolution pipeline** — Intel → Exec → Verify → Belief Update → Goals Assess/Calibrate → Evolution Diary
+- **Belief-driven asynchronous loop** — evidence batches wake cognitive, exec, verify, rule, and memory reactors without relying on a monolithic cycle driver
+- **Causal identity** — `producer_batch_id`, `reaction_id`, `decision_id`, `execution_id`, and `belief_id` correlate the complete chain
+- **Expected verification** — `run_spec.expected_output` is compared with structured result/verifier observations; execution success does not imply expectation match
+- **Idempotent settlement** — sync and async paths share one evidence-window coordinator and exact receipt/verify refs
+- **Memory Reactor** — low-frequency consolidation consumes settled belief/goal events instead of treating narrative as authority
+- **Cyber-Taoist goal self-correction** — verified consequences can mutate goal hypotheses ([Core innovation](#core-innovation-goal-self-correction))
 - **Subject isolation** — parallel subjects with separate namespaces, policies, lanes, and runtime data
-- **Daemon step mode** — event-driven step-level evolution; `continuous` / `on_demand`
+- **Runtime maintenance** — bounded hot sidecars are archived/compacted conservatively; active leases, uncertain intents, and primary evidence are retained
 - **Human approval and soft intent** — Brief (next-cycle intent) + `approval_granted` (hard gate)
 - **Beliefs and goals** — formal update paths for testable hypotheses and goal trees
 - **Multiple agent backends** — DeepSeek, Claude Agent SDK, Cursor SDK, Reasonix CLI, …
-- **Channel (Feishu)** — inbound classification, presence expression, control actions (evolution mode, cycle request, …)
-- **Evolution Inspector** — essential cycle / report / diary / verify reading in the product workspace; the legacy Evolution Viewer remains a developer/advanced path
+- **Channel delivery** — classifier → presence → speech → redacted outbox → notify, with handled cursors advanced only after durable speech generation
+- **Operator projection** — Conversation readiness, evolution, attention, pending evidence, pending tasks, and allowed remediation remain separate canonical fields
 
 ---
 
@@ -182,9 +186,9 @@ Typical use: let an AI subject investigate, edit code, simulate, and prepare rel
 ┌─────────────────────────────────────────────────────────────────┐
 │                         jea CLI / Daemon                         │
 ├──────────────┬──────────────────────┬───────────────────────────┤
-│  Cycle Domain │    Channel Domain     │   Evolution Viewer (web)  │
-│  intel→exec→  │  classifier→presence  │   rounds / reports / SSE  │
-│  verify→…     │  →speech→outbox       │                           │
+│ Reactor Domain│    Channel Domain     │   Shared operator app     │
+│ evidence→rule │  classifier→presence  │   projection / Inspector  │
+│ →memory       │  →speech→outbox       │                           │
 ├──────────────┴──────────────────────┴───────────────────────────┤
 │  src/engine/ (OADA)  │  src/actions/  │  src/intelligence/       │
 │  queue · exec ·       │  agent_run ·   │  store · reports ·       │
@@ -195,19 +199,16 @@ Typical use: let an AI subject investigate, edit code, simulate, and prepare rel
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-Per-cycle pipeline (default **`reactor`**):
+Live 0.2.0 chain:
 
 ```text
-Phase 1   reactor (claim evidence batch → investigate → host Seen → report → Decide)
-Phase 2   exec (consume pending_decisions; Cycle Journal shares sibling action notes; carryover v2 + suggestion coverage survive into diary)
-Phase 3   verify (mechanical + semantic)
-Phase 3.5 belief_update
-Phase 4   goals assess
-Phase 4.5 goals calibrate
-Phase 5   evolution diary
+EvidenceEnvelope → claimed batch → report → belief-bound decision
+→ exec intent (before side effects) → exec result / action receipt
+→ expected-output verify → idempotent belief/goal settlement
+→ Memory Reactor consolidation → operator projection / Channel delivery
 ```
 
-`--pipeline agent_loop|phases` / `--loop` were removed in S9. Only `reactor` remains.
+Legacy 0.1.0 records remain readable. Missing optional causal or comparison fields are reported as legacy/unknown; they are never fabricated. Removed driver flags and task types fail explicitly rather than selecting another live path.
 
 ---
 
@@ -258,14 +259,12 @@ jea run --deepseek --subject my-bot
 
 ---
 
-## Evolution cycle
+## Evolution loop
 
-**Single-round debugging** — local validation and troubleshooting:
+**Synchronous entry** — useful for local validation and troubleshooting; it uses the same reactors and settlement coordinator as daemon execution:
 
 ```bash
 jea run [--mock | --deepseek] [--subject NAME]
-jea run --skip-goals-assess      # skip Phase 4/4.5
-jea run --skip-belief-update     # skip Phase 3.5
 ```
 
 **Batch evolution**:
@@ -283,6 +282,7 @@ jea intel summary [--days 7]
 jea intel report [--cycle <id>] [--open]
 jea daemon inbox [--json]
 jea audit queue   # evolution evidence / decision queue; not npm audit
+jea audit closure [--subject NAME] [--json]
 jea beliefs show
 jea goals show
 ```
@@ -316,7 +316,7 @@ jea data migrate-home --yes
 jea doctor
 ```
 
-Migration verifies every file, activates the new tree atomically, and preserves the legacy `runtime/subjects/` directory for manual rollback. See [JEA Home migration](./docs/jea-home-migration.md).
+Migration verifies every file, activates the new tree atomically, and preserves the legacy `runtime/subjects/` directory for manual rollback. 0.1.0 records remain readable: optional causal IDs, expected-output comparisons, and settlement markers may be absent and are surfaced as unknown. Rebuildable sidecars such as settlement coordination state may be reconstructed from append-only authority events; do not invent links while migrating. See [JEA Home migration](./docs/jea-home-migration.md).
 
 ```bash
 jea subject list
@@ -340,7 +340,7 @@ jea daemon status --all
 
 ## Daemon (long-running)
 
-The daemon drives evolution at **step granularity** — recommended for unattended long runs.
+The daemon runs bounded **event-driven reactors** — recommended for unattended long runs.
 
 ```bash
 # Foreground worker (cycle + channel in one process)
@@ -356,8 +356,8 @@ npm run daemon:start:detached
 
 | Mode | Behavior |
 | --- | --- |
-| `continuous` (default) | Heartbeat tick reconciles; opens new cycles when none are open |
-| `on_demand` | Only explicit requests (`jea daemon cycle request`, operator brief, …) |
+| `continuous` (default) | Heartbeat consumes requests and eligible wake backlog; quiet is healthy and does not create work |
+| `on_demand` | Only explicit requests (`jea daemon cycle request`, operator brief, …) wake cognition |
 
 ```bash
 jea daemon evolution-mode show
@@ -381,7 +381,7 @@ jea daemon start --subject my-bot --domain channel
 # Feishu DM to bot: JEA BIND <token>
 ```
 
-Inbound messages are batch-classified (**classifier**): approval intent, verification requests, operator facts, control commands, observations, … **Presence** produces speech in two stages and enqueues outbox.
+Inbound messages are batch-classified (**classifier**): approval intent, verification requests, operator facts, control commands, observations, … **Presence** plans expression, speech generation persists redacted content, and notify delivers the outbox. Failed/limited generation does not advance the handled cursor, so eligible input is retried without silent loss.
 
 Channel cannot bypass approval for publish or credentials; remote publish still follows brief → Decide → `approval_granted`.
 
@@ -397,8 +397,8 @@ npm run viewer:serve
 jea intel viewer serve [--port 8787] [--open]
 ```
 
-- **Ops Home** — KPIs, attention items, open cycles, event stream
-- **Reading view** — reports, diary, diagnostics, observability per cycle
+- **Developer compatibility view** — canonical evidence/task/attention counts and event stream
+- **Reading view** — historical reports/diaries plus current verify and Memory artifacts
 - Live API + SSE — no dist build required
 
 Offline snapshot:
@@ -416,11 +416,11 @@ Four kinds of human input — **do not mix them**:
 | Type | Meaning | Typical entry |
 | --- | --- | --- |
 | **Constraint** | Long-term boundaries | `human_guidance.md`, SUBJECT.md |
-| **Intent** | What to focus on next cycle (not fact) | `jea intel brief put` |
+| **Intent** | What to focus on next reaction (not fact) | `jea intel brief put` |
 | **Fact** | Operator-confirmed, promotable to Seen | `operator_fact` via `jea intel ingest` |
 | **Evidence** | External observations that can be overturned | `jea intel ingest` / inbox, probes |
 
-**Actions (hard gates)** like `approval_granted` are produced by Decide and executed in Phase 2; operators should not edit `pending_decisions.json` directly.
+**Actions (hard gates)** like `approval_granted` are produced by Decide and enforced during execution; operators should not edit `pending_decisions.json` directly.
 
 Approval policy: `JEA_APPROVAL_MODE` = `manual` (default) | `auto_guarded` | `auto_all`. See [AGENTS.md § Human approval](./AGENTS.md#人工审批与操作者意图).
 
@@ -444,10 +444,16 @@ cp .env.example .env   # Windows: copy .env.example .env
 | `JEA_APPROVAL_MODE` | `manual` \| `auto_guarded` \| `auto_all` |
 | `JEA_EVOLUTION_MODE` | Default daemon evolution mode |
 | `JEA_AGENT_PROVIDER` | Default agent backend |
-| `JEA_EXEC_AGENT_BUDGET` | Max `agent_run` decisions consumed per exec phase (default 8); mechanical actions uncapped |
+| `JEA_EXEC_AGENT_BUDGET` | Max `agent_run` decisions consumed per exec batch (default 8); mechanical actions uncapped |
 | `JEA_AGENT_MAX_CONCURRENCY` | Max parallel `agent_run` width per wave (default 2) |
 | `JEA_AGENT_MAX_ATTEMPTS` | Failures before `blocked` (default 2) |
 | `JEA_EXEC_LIMIT` | Deprecated alias for `JEA_EXEC_AGENT_BUDGET` |
+| `JEA_QUEUE_DISABLE_CYCLE_TTL` | Explicit compatibility switch to disable cycle-count TTL; wall-clock fallback remains |
+| `JEA_LLM_PROCESS_TOKEN_BUDGET` | Hard per-subject/process real-LLM token budget (default 1,000,000) |
+| `JEA_LLM_REQUEST_MAX_TOKENS` | Per-request completion cap (default/max 8,192) |
+| `JEA_RUNTIME_MAINTENANCE` | Enable daemon heartbeat sidecar maintenance (default on) |
+| `JEA_RUNTIME_MAINTENANCE_INTERVAL_MS` | Maintenance interval (default 24h) |
+| `JEA_SIDECAR_RETENTION_DAYS` / `JEA_SIDECAR_HOT_MAX` | Default archive age / hot-record bound (30 days / 1,000) |
 
 Feishu per-subject credentials live in `<JEA_HOME>/subjects/<ns>/.env` as `JEA_CHANNEL_FEISHU_APP_ID` / `_APP_SECRET` — see `.env.example` and `policies/subjects.example.json`.
 
@@ -461,7 +467,10 @@ CYBER_TAOIST_DOCS_DIR=/path/to/custom-authority jea run
 
 ## Safety boundaries
 
-- Phase 1 by default **records** observations, probe proposals, retrospectives, and receipts — it does not modify engine source, authority docs, or intel-store itself.
+- Investigation is read-only; only governed decisions can schedule effects.
+- Exec intent is durable before a side effect. An intent left uncertain after a crash is blocked for operator reconciliation, never blindly replayed.
+- Verification compares structured observations with declared expectations; agent narrative alone is not observation.
+- Settlement is idempotent and append-only belief/goal events remain authoritative over rebuildable sidecars.
 - **Core-layer changes** (`core_apply`) require human review by default; `JEA_CORE_APPLY_POLICY=review|disabled` tightens further.
 - **Remote publish, credentials, out-of-bounds writes** are constrained by SUBJECT.md Off-Limits and `approval_granted`; Channel cannot auto-approve.
 - `jea data reset --yes` deletes current subject runtime data — **destructive**; confirm subject before automation runs it.
@@ -494,7 +503,7 @@ Pull requests, pushes to `main`, and merge-group checks run:
 
 `main` is protected by a ruleset: changes go through a pull request based on latest `main`. Required checks are the jobs above. Nightly `reactor:canary` is mock-only, not a PR required check, and never injects `DEEPSEEK_API_KEY`. Live DeepSeek tests stay opt-in via `JEA_LIVE_DEEPSEEK=1`. `jea doctor` is a local diagnostic, not a CI gate.
 
-`jea audit queue` inspects evolution evidence / the decision queue. It is **not** the npm supply-chain audit (`npm run audit:ci`).
+`jea audit queue` inspects evolution evidence / the decision queue. `jea audit closure` reports belief-binding and expected-output declaration coverage, causal correlation, batch-scoped refs, duplicate-settlement candidates, Memory freshness, and separate evidence/task backlogs. Neither is the npm supply-chain audit (`npm run audit:ci`).
 
 - Engine vendoring: [`src/engine/VENDORED.md`](./src/engine/VENDORED.md)
 - Full operator / automation guide: [AGENTS.md](./AGENTS.md)

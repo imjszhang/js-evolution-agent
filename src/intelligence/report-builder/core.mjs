@@ -1935,6 +1935,22 @@ function buildStandingMemoryUpdatePrompt({
     active_goals: reportContext.active_goals,
     extra_context: extraContext,
   }, null, 2), 500000);
+  const consolidationRules = extraContext?.memory_consolidation
+    ? `
+- This is a low-frequency Memory Reactor consolidation, not a tactical belief update.
+- Preserve only durable cross-cycle summaries and reopenable source references.
+- Do not copy active hypotheses, next_test, or tactical claim text into Current State.
+- Refuted or retired beliefs are negative history only and must never be stated as current truth.
+- A validated belief may support a durable summary, but the Beliefs store remains authoritative for its tactical wording.`
+    : '';
+  const consolidationRulesZh = extraContext?.memory_consolidation
+    ? `
+- 这是 Memory Reactor 的低频 consolidation，不是战术信念更新。
+- Current State 只保留跨周期 durable summary 与可重开的来源引用。
+- 不要把 active hypothesis、next_test 或战术 claim 原文复制进 Current State。
+- refuted/retired belief 只能作为负面历史，绝不能写成当前事实。
+- validated belief 可支持 durable summary，但其战术表述仍以 Beliefs store 为准。`
+    : '';
 
   if (language === 'en') {
     return `You maintain the short Markdown standing memory index for js-evolution-agent.
@@ -1950,6 +1966,7 @@ Rules:
 - Do not copy old Standing Memory bullets unless still supported by current admission.
 - Carry forward long-lived constraints and metric directions from old Current State when they remain true and are still supported by current admission; do not keep judgements overturned by this cycle's facts.
 - State what would overturn each judgement.
+${consolidationRules}
 
 === Previous Standing Memory ===
 ${oldMemory?.text || '(none)'}
@@ -1974,6 +1991,7 @@ ${contextJson}`;
 - 不要复制旧 Standing Memory 中未被当前 admission 支持的 bullet。
 - 旧 Current State 中仍成立、且被当前 admission 支持的长期约束/指标方向应带入新版本；被本轮事实推翻的旧判断不得保留。
 - 每条判断应写明什么证据会推翻它。
+${consolidationRulesZh}
 
 === 旧 Standing Memory ===
 ${oldMemory?.text || '(none)'}
@@ -1997,6 +2015,7 @@ export async function updateStandingMemoryWithAi({
   maxChars = DEFAULT_REPORT_CONTEXT_LIMITS.standingMemoryCharLimit,
   extraContext = null,
   runtimeRoot = null,
+  memoryMetadata = null,
 } = {}) {
   if (!store || typeof store.recordStandingMemory !== 'function') {
     return { status: 'skipped', reason: 'store-unavailable' };
@@ -2163,13 +2182,16 @@ export async function updateStandingMemoryWithAi({
     const lockedRefsCount = typedEvidenceRefs.filter((ref) => ref._locked === true).length;
     const backfillRefsCount = typedEvidenceRefs.filter((ref) => ref._backfill === true).length;
     const written = store.recordStandingMemory({
+      source: memoryMetadata?.producer ?? 'report_builder',
       source_cycle_id: cycleId,
       generated_at: generatedAt,
+      updated_at: generatedAt,
       char_limit: maxChars,
       token_budget_hint: `short working-memory index, max ${maxChars} characters`,
       text,
       evidence_refs: typedEvidenceRefs.map((ref) => ref.source_id),
       typed_evidence_refs: typedEvidenceRefs,
+      ...(memoryMetadata && typeof memoryMetadata === 'object' ? memoryMetadata : {}),
       memory_policy: {
         standing_memory_role: 'working_memory_index',
         evidence_precedence: reportContext.temporal_decision_brief?.evidence_policy?.precedence ?? [],
@@ -2188,6 +2210,9 @@ export async function updateStandingMemoryWithAi({
         final_candidate: finalCandidate,
         primary_issues: primaryIssues,
         preserved_issues: preservedIssues,
+        ...(memoryMetadata?.memory_policy && typeof memoryMetadata.memory_policy === 'object'
+          ? memoryMetadata.memory_policy
+          : {}),
       },
     });
     const result = {
@@ -2203,6 +2228,8 @@ export async function updateStandingMemoryWithAi({
       evidence_depth: typedEvidenceRefs.length,
       locked_refs_count: lockedRefsCount,
       backfill_refs_count: backfillRefsCount,
+      last_settled_cursor: memoryMetadata?.last_settled_cursor ?? null,
+      freshness: memoryMetadata?.freshness ?? null,
     };
     emitStandingMemoryUpdateEvent(store, { cycleId, result });
     return result;
@@ -2230,6 +2257,8 @@ function emitStandingMemoryUpdateEvent(store, { cycleId = null, result = null } 
       preserved_issues: Array.isArray(result.preserved_issues) ? result.preserved_issues.slice(0, 20) : [],
       fallback_issues: Array.isArray(result.fallback_issues) ? result.fallback_issues.slice(0, 20) : [],
       evidence_depth: result.evidence_depth ?? null,
+      last_settled_cursor: result.last_settled_cursor ?? null,
+      freshness: result.freshness ?? null,
     });
   } catch {
     // best-effort; do not fail the update path on event write

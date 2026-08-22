@@ -43,8 +43,8 @@ function text(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
 }
 
-function isCycleOnlyBlocker(value: string): boolean {
-  return /reactor|backlog|cycle|lane locked/i.test(value)
+function isCycleOnlyAttention(kind: string): boolean {
+  return /reactor|evidence|cycle|daemon_task/i.test(kind)
 }
 
 export function cardKindFromMessage(record: WorkspaceMessage): ConversationCardKind | null {
@@ -258,40 +258,14 @@ export function deriveInlineCards(input: {
     })
   }
 
-  const blockers = Array.isArray(input.observability?.attention?.blockers)
-    ? input.observability.attention.blockers
-    : []
-  for (const [index, blocker] of blockers.entries()) {
-    if (typeof blocker !== 'string' || !blocker.trim()) continue
-    if (isCycleOnlyBlocker(blocker)) continue
+  for (const [index, item] of (input.observability?.attention.items ?? []).entries()) {
+    if (!item.title || isCycleOnlyAttention(item.kind)) continue
     push({
-      id: `blocker:${index}:${blocker}`,
+      id: `attention:${index}:${item.kind}`,
       kind: 'blocked',
-      title: 'Blocked',
-      body: blocker,
-      tone: 'warn',
-      source: 'observability'
-    })
-  }
-
-  const cycleStatus = text(input.observability?.attention?.cycle_status)
-  if (cycleStatus === 'completed' || cycleStatus === 'closed') {
-    push({
-      id: 'status:cycle_completed',
-      kind: 'cycle_completed',
-      title: 'Cycle completed',
-      body: text(input.observability?.attention?.tldr) || 'The latest evolution cycle finished.',
-      tone: 'success',
-      source: 'observability'
-    })
-  }
-  if (cycleStatus === 'failed' || cycleStatus === 'error') {
-    push({
-      id: 'status:cycle_failed',
-      kind: 'cycle_failed',
-      title: 'Cycle failed',
-      body: text(input.observability?.attention?.tldr) || 'The latest evolution cycle failed.',
-      tone: 'error',
+      title: item.title,
+      body: item.summary,
+      tone: item.severity === 'critical' ? 'error' : 'warn',
       source: 'observability'
     })
   }

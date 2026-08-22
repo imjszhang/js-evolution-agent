@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isJeaWebHosted, resolveHostedViewState } from '../src/web/host-connection'
+import { isExplicitWebFixtureMode, isJeaWebHosted, resolveHostedViewState } from '../src/web/host-connection'
 
 describe('web host connection state', () => {
   it('keeps visual-query states and surfaces offline when the hosted bootstrap fails', () => {
@@ -19,5 +19,11 @@ describe('web host connection state', () => {
     }
     expect(isJeaWebHosted(doc)).toBe(true)
     expect(isJeaWebHosted({ querySelector: () => null })).toBe(false)
+  })
+
+  it('enables fixtures only through an explicit non-hosted mode', () => {
+    expect(isExplicitWebFixtureMode(false, '?fixture=1')).toBe(true)
+    expect(isExplicitWebFixtureMode(false, '?locale=en')).toBe(false)
+    expect(isExplicitWebFixtureMode(true, '?fixture=1')).toBe(false)
   })
 })

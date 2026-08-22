@@ -1,0 +1,119 @@
+{
+  "release": "0.1.0",
+  "decision_queue": {
+    "decisions": [
+      {
+        "id": "cycle-legacy:0",
+        "cycle_id": "cycle-legacy",
+        "created_at": "2026-01-10T00:00:00.000Z",
+        "status": "completed",
+        "action": {
+          "type": "agent_run",
+          "description": "legacy action",
+          "serves_goal": "goal-legacy",
+          "params": {
+            "run_spec": {
+              "permission_profile": "read_only",
+              "intent": "inspect legacy runtime"
+            }
+          }
+        }
+      }
+    ]
+  },
+  "action_receipts": [
+    {
+      "id": "receipt-legacy",
+      "recorded_at": "2026-01-10T00:00:00.000Z",
+      "cycle_id": "cycle-legacy",
+      "exec_cycle_id": "cycle-legacy",
+      "intel_cycle_id": "cycle-legacy",
+      "decision_id": "cycle-legacy:0",
+      "action_id": null,
+      "action_type": "agent_run",
+      "intent_id": null,
+      "idempotency_key": null,
+      "producer": "exec",
+      "activation_targets": [
+        "cognitive",
+        "rule"
+      ],
+      "action": {
+        "type": "agent_run",
+        "description": "legacy action",
+        "serves_goal": "goal-legacy",
+        "goal_rationale": "Inspect the legacy runtime before changing it.",
+        "priority": "medium",
+        "update_issue": null,
+        "params": {
+          "run_spec": {
+            "primary_cwd_kind": "subject_runtime",
+            "permission_profile": "read_only",
+            "provider": "llm_only",
+            "intent": "inspect legacy runtime",
+            "context": {
+              "why_now": "verify the persisted 0.1.0 runtime shape"
+            },
+            "expected_output": [
+              "summary",
+              "evidence"
+            ]
+          }
+        }
+      },
+      "result": {
+        "success": true,
+        "status": "completed",
+        "requires_approval": false,
+        "provider": "llm_only",
+        "message": "legacy inspection completed",
+        "action": "inspect legacy runtime",
+        "outcome": "runtime shape observed",
+        "refs": [
+          "intel_report:cycle-legacy"
+        ]
+      }
+    }
+  ],
+  "verify_reports": [
+    {
+      "file": "cycle-legacy.json",
+      "value": {
+        "cycle_id": "cycle-legacy",
+        "execution_id": "cycle-legacy",
+        "producer": "verify",
+        "activation_targets": [
+          "cognitive",
+          "rule"
+        ],
+        "timestamp": "2026-01-10T00:01:00.000Z",
+        "verified": [],
+        "pending": []
+      }
+    }
+  ],
+  "belief_events": [
+    {
+      "id": "belief-event-legacy",
+      "recorded_at": "2026-01-10T00:02:00.000Z",
+      "belief_id": "belief-legacy",
+      "change": "validate"
+    }
+  ],
+  "standing_memory": {
+    "updated_at": "2026-01-10T00:03:00.000Z",
+    "meta": {
+      "version": "0.1.0",
+      "source_cycle_id": "cycle-legacy",
+      "generated_at": "2026-01-10T00:03:00.000Z"
+    },
+    "current": {
+      "state": [
+        "Legacy memory without settlement cursor"
+      ],
+      "evidence_refs": [
+        "intel_report:cycle-legacy"
+      ]
+    }
+  }
+}

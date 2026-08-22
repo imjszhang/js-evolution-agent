@@ -8,7 +8,7 @@ test('shell and Settings overlay have no critical accessibility violations', asy
     localStorage.setItem('jea.theme', 'light')
     localStorage.setItem('jea.locale', 'en')
   })
-  await page.goto('/?locale=en')
+  await page.goto('/?locale=en&fixture=1')
   const workspace = await new AxeBuilder({ page }).analyze()
   expect(workspace.violations.filter((item) => item.impact === 'critical'), JSON.stringify(workspace.violations, null, 2)).toEqual([])
 

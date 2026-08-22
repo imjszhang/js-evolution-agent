@@ -7,14 +7,14 @@
 
 | 模块 | 目录 | Owner | 说明 |
 | --- | --- | --- | --- |
-| 共享内核 | `src/contracts`、`src/infra`、`src/domain` | agent-kernel | schema、原子写、subject registry/路径、`runtime-paths`、`worker-state-read`、`subject-lock` |
+| 共享内核 | `src/contracts`、`src/infra`、`src/domain` | agent-kernel | causal/verify schema、原子写、subject registry/路径、runtime maintenance primitives、`subject-lock` |
 | AI 网关 | `src/ai` | agent-ai | DeepSeek client、LLM 档案、KV 缓存元数据、mock |
-| 认知管线 | `src/intelligence`、`src/evolution`、`src/prompts`、`src/engine` | agent-cognition | Phase 1 reactor（默认）/ 报告 / Decide、信念、目标、carryover（reactor 下默认停写）、诚实闸；`src/evolution/investigation` 为中性调查模块；agent_loop/phases 仅显式回退；`src/engine` 为 vendored，冻结维护 |
-| 执行层 | `src/actions` | agent-exec | Phase 2 exec、agent adapter、lane/worktree、审批策略 |
-| Daemon 编排 | `src/daemon` | agent-daemon | task queue、worker、step runner、cycle-state、evolve runs、`subject-artifacts` 概览 |
+| 认知管线 | `src/intelligence`、`src/evolution`、`src/prompts`、`src/engine` | agent-cognition | cognitive/rule/memory reactors、报告 / belief-bound Decide、幂等 settlement、信念/目标、诚实闸；`src/evolution/investigation` 为只读调查模块；`src/engine` 为 vendored，冻结维护 |
+| 执行层 | `src/actions` | agent-exec | causal exec/verify、agent adapter、lane/worktree、expected output、审批策略 |
+| Daemon 编排 | `src/daemon` | agent-daemon | reactor task queue、worker、wake/claim/checkpoint 恢复、runtime maintenance、evolve runs |
 | Channel | `src/channel` | agent-channel | classifier / presence / speech / notify / control、飞书适配器 |
 | 观测与门面 | `tools/evolution-viewer`、`src/cli`（含仅剩的 `cli/utils` 纯 CLI 文件）、`src/bridge` | agent-facade | 只读 viewer、CLI 命令薄壳、openclaw bridge |
-| Client API | `apps/desktop/src/client-api` | agent-desktop | 统一 `JeaClient`、命令目录、应用命令层；Web adapter 不得做领域决策 |
+| Client API | `apps/desktop/src/client-api` | agent-desktop | 统一 `JeaClient`、命令目录、应用命令层与 canonical operator projection；Web adapter 不得做领域决策 |
 | localhost Web host | `apps/desktop/src/web-host` | agent-web | loopback HTTP/RPC/事件；只通过 application commands 复用 Viewer 读模型 |
 | 产品打包 | `src/product`、`apps/desktop/electron-builder.yml`、`scripts/stage-app-resources.mjs`、`scripts/package-macos.mjs` | agent-desktop | macOS arm64 安装包、托管 CLI 启动器、打包路径解析 |
 
@@ -37,27 +37,29 @@ Owner 名为角色占位（agent-*），实际分配时替换为具体维护者/
 | `src/intelligence/channel-api.mjs` | `src/channel` | channel 唯一允许使用的 intelligence 入口 |
 | `src/infra/runtime-paths.mjs` | 所有模块 | subject runtime 路径助手（无 daemon/lock 依赖） |
 | `src/infra/worker-state-read.mjs` | `subject-lock`、`daemon-worker-state` | worker-state.json 只读探测（切断 infra↔daemon 环） |
+| `packages/jea-app/src/features/operator-projection.ts` | Electron / Web renderer | Conversation readiness、evolution、attention、pending evidence/tasks 与 remediation 的唯一 UI 混合投影边界 |
 
 ## 3. 运行时数据契约对照
 
 | 运行时文件 | 生产者 → 消费者 | schema |
 | --- | --- | --- |
 | `pending_decisions.json` | 认知管线（Decide）→ 执行层（exec） | `src/contracts/decision.mjs` |
-| `cycle-state/<id>/<step>.json` | 各 step 间 checkpoint 接力 | `src/contracts/step-checkpoint.mjs` |
-| action receipts | 执行层 → verify / belief / diary | `src/contracts/action-receipt.mjs` |
+| legacy `cycle-state/<id>/<step>.json` | 0.1.0 历史只读投影 | `src/contracts/step-checkpoint.mjs` |
+| action receipts | 执行层 → verify / settlement | `src/contracts/action-receipt.mjs` |
 | channel inbound/outbox envelope | channel 内部 + listener | `src/contracts/channel-envelope.mjs` |
 | daemon task queue | daemon 内部 | `src/contracts/daemon-task.mjs` |
-| verify report | verify → belief / goals | `src/contracts/verify-report.mjs` |
+| verify report + expected comparison | verify → settlement / operator projection | `src/contracts/verify-report.mjs` |
 | agent run spec | Decide → 执行层 | `src/contracts/agent-run-spec.mjs` |
 | belief / goal events | 认知管线内部 + CLI | `src/contracts/belief-goal-events.mjs` |
 | `evolution-events.jsonl` | 全模块（经 `recordEvolutionEvent`）→ viewer / report / evidence-audit | `src/contracts/evolution-event.mjs` |
-| evidence stream envelope（虚拟读视图） | 散落证据源 → `jea intel stream` / Phase 2 影子反应器 | `src/contracts/evidence-envelope.mjs` |
+| evidence stream envelope（虚拟读视图） | 散落证据源 → `jea intel stream` / cognitive shadow reactor | `src/contracts/evidence-envelope.mjs` |
 | evidence batch claim（claim ledger） | 认知/法则/记忆反应器 claim-ack | `src/contracts/evidence-batch-claim.mjs` |
 | batch checkpoint | 认知/法则/记忆反应器恢复真相 | `src/contracts/batch-checkpoint.mjs` |
 | wake intent | 证据/operator 生产者 → daemon 幂等唤醒 | `src/contracts/wake-intent.mjs` |
 | exec intent | exec 副作用前写入 → crash 恢复 / verify | `src/contracts/exec-intent.mjs` |
 | exec result | exec → verify 独立认领队列 | `src/contracts/exec-result.mjs` |
 | `agent-rate-ledger.json` | exec agent_run 墙钟速率账本（subject 持久化） | `src/contracts/agent-rate-ledger.mjs` |
+| `reactor/settlements.json` | sync/async settlement 协调 sidecar；可由 authority events 重建 | `src/contracts/belief-goal-events.mjs` |
 
 ## 4. 跨模块依赖规则
 

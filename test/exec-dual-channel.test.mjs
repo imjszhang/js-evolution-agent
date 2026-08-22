@@ -130,11 +130,11 @@ describe('ExecutionPipeline dual-channel', () => {
     const result = await pipeline.run();
     expect(result.success).toBe(true);
     expect(result.mechanical.claimed).toBe(2);
-    expect(result.agent_waves.length).toBe(3);
-    expect(result.remaining_agent_pending).toBe(0);
+    expect(result.agent_waves.length).toBe(2);
+    expect(result.remaining_agent_pending).toBe(1);
     expect(order.slice(0, 2)).toEqual(['mech:m1', 'mech:m2']);
-    expect(order.filter((x) => x.startsWith('agent:'))).toHaveLength(3);
-    expect(queue.getPending().filter((d) => d.action?.type === 'agent_run')).toHaveLength(0);
+    expect(order.filter((x) => x.startsWith('agent:'))).toHaveLength(2);
+    expect(queue.getPending().filter((d) => d.action?.type === 'agent_run')).toHaveLength(1);
   });
 
   it('failOrBlock retries agent_run then blocks', async () => {

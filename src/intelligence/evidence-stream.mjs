@@ -18,7 +18,7 @@ export const EVIDENCE_HEALTH_SNAPSHOT_SCHEMA = 'evidence-health-snapshot.v1';
 export const EVIDENCE_HEALTH_CACHE_LIMIT = 8;
 
 /** Paths relative to dataRoot (= <JEA_HOME>/subjects/<ns>/data). */
-const STREAM_PATHS = Object.freeze({
+export const STREAM_PATHS = Object.freeze({
   action_receipts: STORE_FILES.action_receipts,
   evolution_events: STORE_FILES.evolution_events,
   probe_results: STORE_FILES.probe_results,
@@ -146,6 +146,42 @@ function makeEnvelope({
     subject: subject == null || subject === '' ? null : String(subject),
     payload,
   };
+}
+
+/**
+ * Project one authoritative source record. Incremental indexes use this helper
+ * so their compact metadata is identical to the full read projection.
+ */
+export function projectEvidenceRecord(kind, record, {
+  file,
+  index = 0,
+  id = null,
+  defaultType = null,
+} = {}) {
+  const rawId = id
+    ?? record?.id
+    ?? record?.receipt_id
+    ?? null;
+  const projectedId = rawId != null && String(rawId).trim()
+    ? String(rawId).trim()
+    : syntheticId(kind, file, record, index);
+  const type = kind === 'intel_observations'
+    ? (record?.kind || record?.type || defaultType || 'observation')
+    : (record?.type || record?.action_type || record?.kind || defaultType || kind);
+  const cycleId = record?.cycle_id
+    ?? record?.exec_cycle_id
+    ?? record?.intel_cycle_id
+    ?? (kind === 'verify_reports' && String(projectedId).startsWith('cycle-') ? projectedId : null);
+  return makeEnvelope({
+    id: projectedId,
+    kind,
+    type,
+    occurred_at: pickOccurredAt(record, kind === 'verify_reports' ? [record?.semantic?.timestamp] : []),
+    provenance: { store: kind, file, id: projectedId },
+    cycle_id: cycleId,
+    subject: record?.subject ?? null,
+    payload: record,
+  });
 }
 
 function projectJsonlRows(kind, relPath, rows, {

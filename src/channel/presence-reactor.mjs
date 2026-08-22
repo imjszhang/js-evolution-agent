@@ -5,6 +5,7 @@ import {
   claimChannelEvents,
   markChannelEventsFailed,
   markChannelEventsHandled,
+  requeueChannelEvents,
   supersedePendingChannelEvents,
 } from './event-queue.mjs';
 import { buildPresenceContext } from './presence-context.mjs';
@@ -18,6 +19,7 @@ import {
   isPresenceRunExpired,
   readPresenceState,
   reconcilePendingSpeechGeneration,
+  trackPendingSpeechGeneration,
 } from './state.mjs';
 import {
   enqueueNotifyIfOutboxPending,
@@ -97,7 +99,7 @@ export async function runPresenceReactor(root, subject, input = {}) {
     let decisionTimedOut = false;
     try {
       plan = await runWithTimeout(
-        () => planPresence(context, { aiClient: input.aiClient ?? null }),
+        () => planPresence(context, { aiClient: input.aiClient ?? null, root }),
         presenceConfig.decision_timeout_ms,
         'presence_decision',
       );
@@ -210,15 +212,62 @@ export async function runChannelSpeechGenerationTask(root, subject, input = {}) 
         planner: presenceConfig.planner,
       });
       if (result.ok) {
-        markChannelEventsHandled(root, subject, [event.id]);
+        markChannelEventsHandled(root, subject, [event.id], {
+          handled_meta: {
+            delivery_status: result.file ? 'queued' : 'pending',
+            transport: result.outbound?.channel ?? null,
+            target: result.outbound?.target ?? null,
+            outbox_file: result.file ?? null,
+            outbox_idempotency_key: result.outbound?.idempotency_key ?? null,
+          },
+        });
         generated.push({ event_id: event.id, result });
       } else {
-        markChannelEventsFailed(root, subject, [event.id], { error: result.reason ?? 'generation_failed' });
-        failed.push({ event_id: event.id, reason: result.reason });
+        const retryable = event.attempts < event.max_attempts;
+        if (retryable) {
+          const [requeued] = requeueChannelEvents(root, subject, [event.id], {
+            error: result.reason ?? 'generation_failed',
+            delayMs: presenceConfig.speech_generation_retry_delay_ms,
+          });
+          trackPendingSpeechGeneration(root, subject, {
+            intent_id: event.payload?.intent_id ?? event.id,
+            candidate_id: event.payload?.candidate_id ?? null,
+            event_id: event.id,
+            requested_at: event.created_at,
+            status: 'retrying',
+            attempts: event.attempts,
+            max_attempts: event.max_attempts,
+            next_attempt_at: requeued?.next_attempt_at ?? null,
+            last_error: result.reason ?? 'generation_failed',
+          });
+        } else {
+          markChannelEventsFailed(root, subject, [event.id], { error: result.reason ?? 'generation_failed' });
+        }
+        failed.push({ event_id: event.id, reason: result.reason, retryable });
       }
     } catch (err) {
-      markChannelEventsFailed(root, subject, [event.id], { error: err?.message || String(err) });
-      failed.push({ event_id: event.id, reason: err?.message || String(err) });
+      const error = err?.message || String(err);
+      const retryable = event.attempts < event.max_attempts;
+      if (retryable) {
+        const [requeued] = requeueChannelEvents(root, subject, [event.id], {
+          error,
+          delayMs: presenceConfig.speech_generation_retry_delay_ms,
+        });
+        trackPendingSpeechGeneration(root, subject, {
+          intent_id: event.payload?.intent_id ?? event.id,
+          candidate_id: event.payload?.candidate_id ?? null,
+          event_id: event.id,
+          requested_at: event.created_at,
+          status: 'retrying',
+          attempts: event.attempts,
+          max_attempts: event.max_attempts,
+          next_attempt_at: requeued?.next_attempt_at ?? null,
+          last_error: error,
+        });
+      } else {
+        markChannelEventsFailed(root, subject, [event.id], { error });
+      }
+      failed.push({ event_id: event.id, reason: error, retryable });
       if (err instanceof ChannelTimeoutError) {
         recordChannelEvent(root, subject, {
           type: 'channel_presence_timeout',
@@ -232,6 +281,7 @@ export async function runChannelSpeechGenerationTask(root, subject, input = {}) 
   }
 
   const notifyTask = enqueueNotifyIfOutboxPending(root, subject);
+  const speechTask = enqueueSpeechGenerationIfPending(root, subject);
 
   return {
     run_id: runId,
@@ -239,5 +289,6 @@ export async function runChannelSpeechGenerationTask(root, subject, input = {}) 
     failed: failed.length,
     results: { generated, failed },
     notify_task: notifyTask.task ?? null,
+    speech_task: speechTask.task ?? null,
   };
 }

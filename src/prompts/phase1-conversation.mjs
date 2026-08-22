@@ -541,6 +541,7 @@ export function buildDecideUserPromptParts({
 - Belief constraints（Phase 2 信念绑定）：
   - 每个 \`agent_run\` 必须在 \`params.run_spec.context\` 中声明 \`belief_id\` 或 \`belief_relation: "create_belief"\`。
   - \`belief_relation\` 只能是 \`test_belief\`、\`strengthen_belief\`、\`refute_belief\`、\`create_belief\`、\`recover_blocker\` 之一。
+  - fresh subject 没有任何 active / validated / refuted belief 时，只允许用一个 \`agent_run\` bootstrap：声明新的 \`belief_id\`、\`belief_relation: "create_belief"\`、完整 \`expected_belief_claim\`、\`expected_belief_update\` 和非空 \`run_spec.expected_output\`；同一 actions 数组中的后续 action 可引用该 id。bootstrap 不授予也不绕过审批。
   - 行动前提优先来自 Temporal Decision Brief 的 Seen 与 decision_constraints.current_beliefs（active / validated）。
   - \`recently_refuted\` 信念不得无新证据复活；若要 reopen，必须明确 \`belief_relation\` 与 \`expected_belief_update\`。
   - 不要只因为 report 建议而行动；必须说明 action 如何验证/改变 belief 或推进 goal。

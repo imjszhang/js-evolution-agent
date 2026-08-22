@@ -14,6 +14,14 @@ import {
   runEvidenceAudit,
   summarizeEvidenceAuditForIngest,
 } from '../../intelligence/evidence-audit.mjs';
+import {
+  renderClosureAuditText,
+  runClosureAudit,
+} from '../../intelligence/closure-audit.mjs';
+import {
+  evaluateClosureTarget,
+  readFrozenClosureTarget,
+} from '../../intelligence/closure-target.mjs';
 
 const KNOWN_STATUSES = [
   'pending',
@@ -212,6 +220,45 @@ async function auditEvidenceCommand(flags = {}) {
   return 0;
 }
 
+async function auditClosureCommand(flags = {}) {
+  const root = getProjectRoot();
+  const config = resolveSubjectFromFlags(root, flags);
+  const runtime = runtimeInfoForSubject(root, config);
+  const audit = runClosureAudit({
+    subject: runtime.subject,
+    namespace: runtime.dataNamespace,
+    runtimeRoot: runtime.runtimeRoot,
+    dataRoot: runtime.dataRoot,
+  });
+  const target = readFrozenClosureTarget(root);
+  audit.target = {
+    path: target.path,
+    valid: target.ok,
+    reason: target.reason,
+    target_id: target.target_id ?? null,
+  };
+  if (target.ok) {
+    audit.gate = evaluateClosureTarget(audit, target.target);
+    audit.ok = audit.gate.ok;
+    audit.status = audit.gate.status;
+  } else {
+    audit.ok = false;
+    audit.status = 'failed';
+    audit.gate = {
+      ...audit.gate,
+      ok: false,
+      status: 'failed',
+      failures: [
+        ...(audit.gate?.failures ?? []),
+        { id: 'frozen_target', actual: target.reason, expected: 'closure_target_valid' },
+      ],
+    };
+  }
+  if (flags.json) console.log(JSON.stringify(audit, null, 2));
+  else process.stdout.write(renderClosureAuditText(audit));
+  return audit.ok ? 0 : 1;
+}
+
 async function auditQueueCommand(flags = {}) {
   const root = getProjectRoot();
   if (flags.archive) {
@@ -243,14 +290,18 @@ async function auditQueueCommand(flags = {}) {
 }
 
 export async function auditCommand({ subcommand, flags = {} } = {}) {
+  if (subcommand === 'closure') {
+    return auditClosureCommand(flags);
+  }
   if (subcommand === 'evidence') {
     return auditEvidenceCommand(flags);
   }
   if (subcommand === 'queue') {
     return auditQueueCommand(flags);
   }
-  console.error('Usage: jea audit <queue|evidence> [options]');
+  console.error('Usage: jea audit <queue|evidence|closure> [options]');
   console.error('  jea audit queue [--stale-minutes N] [--json] [--archive] [--yes] [--statuses completed,expired]');
   console.error('  jea audit evidence [--subject NAME] [--json] [--strict] [--ingest] [--no-narrative] [--reports N] [--diaries N] [--events N]');
+  console.error('  jea audit closure [--subject NAME] [--json]');
   return 2;
 }

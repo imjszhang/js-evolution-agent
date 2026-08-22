@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DecisionQueue, ExecutionPipeline } from '../src/engine/index.mjs';
@@ -8,6 +8,8 @@ import {
   claimPendingVerifyResult,
   completeVerifyResult,
   execResultFromReceipts,
+  execResultQueuePath,
+  latestExecResultPointerPath,
   listPendingVerifyResults,
   readExecResult,
   writeExecResult,
@@ -37,8 +39,8 @@ function agentAction(summary) {
   };
 }
 
-describe('rate-only gate', () => {
-  it('ignores cycle budget passed to run()', async () => {
+describe('per-cycle agent budget gate', () => {
+  it('keeps the cycle budget even when legacy rate-only env is set', async () => {
     process.env.JEA_EXEC_RATE_ONLY = '1';
     tempDir = mkdtempSync(join(tmpdir(), 'jea-rate-only-'));
     const queue = new DecisionQueue({ dataDir: tempDir });
@@ -63,9 +65,10 @@ describe('rate-only gate', () => {
       },
     });
     const result = await pipeline.run({ agentBudget: 1 });
-    expect(result.rate_only).toBe(true);
-    expect(result.agent_budget).toBeNull();
-    expect(executed.length).toBe(3);
+    expect(result).not.toHaveProperty('rate_only');
+    expect(result.agent_budget).toBe(1);
+    expect(result.remaining_agent_pending).toBe(2);
+    expect(executed.length).toBe(1);
   });
 });
 
@@ -203,6 +206,11 @@ describe('durable intent lifecycle in ExecutionPipeline', () => {
       decisionId: 'd-i',
       attempt: 2,
       action: { type: 'safe_action' },
+      causalIdentity: {
+        producer_batch_id: 'batch-origin',
+        reaction_id: 'reaction-origin',
+        belief_id: 'belief-origin',
+      },
     });
     markExecIntent(dataRoot, intent.id, { status: 'executing' });
     const statuses = [];
@@ -216,11 +224,69 @@ describe('durable intent lifecycle in ExecutionPipeline', () => {
       },
     });
     expect(recovery.retryable[0].key).toBe('d-i#2');
+    expect(recovery.retryable[0]).toMatchObject({
+      decision_id: 'd-i',
+      execution_id: 'exec-i',
+      producer_batch_id: 'batch-origin',
+      reaction_id: 'reaction-origin',
+      belief_id: 'belief-origin',
+    });
+    const resumed = beginExecIntent(dataRoot, {
+      executionId: 'exec-next-worker',
+      decisionId: 'd-i',
+      attempt: 2,
+      action: { type: 'safe_action' },
+      causalIdentity: {
+        producer_batch_id: 'batch-other',
+        reaction_id: 'reaction-other',
+      },
+    });
+    expect(resumed).toMatchObject({
+      id: intent.id,
+      execution_id: 'exec-i',
+      producer_batch_id: 'batch-origin',
+      reaction_id: 'reaction-origin',
+      belief_id: 'belief-origin',
+    });
     expect(statuses).toEqual([{ id: 'd-i', status: 'pending' }]);
   });
 });
 
 describe('durable verify crash recovery', () => {
+  it.each([
+    ['exec_result_after_result', false, false],
+    ['exec_result_after_latest', true, false],
+    ['exec_result_after_queue', true, true],
+  ])('recovers result/latest/queue persistence after %s', (boundary, hasLatest, hasQueueEntry) => {
+    tempDir = mkdtempSync(join(tmpdir(), 'jea-result-three-write-'));
+    const dataRoot = join(tempDir, 'data');
+    expect(() => writeExecResult(dataRoot, `exec-${boundary}`, {
+      executed: [{
+        id: 'd1',
+        action: { type: 'record_observation' },
+        result: { success: true },
+      }],
+    }, {
+      faultInjector: (point) => {
+        if (point === boundary) throw new Error(`injected:${boundary}`);
+      },
+    })).toThrow(`injected:${boundary}`);
+
+    expect(readExecResult(dataRoot, `exec-${boundary}`)).not.toBeNull();
+    expect(existsSync(latestExecResultPointerPath(dataRoot))).toBe(hasLatest);
+    const queueBeforeRecovery = existsSync(execResultQueuePath(dataRoot))
+      ? JSON.parse(readFileSync(execResultQueuePath(dataRoot), 'utf8'))
+      : { items: [] };
+    expect(queueBeforeRecovery.items.some((item) => item.execution_id === `exec-${boundary}`))
+      .toBe(hasQueueEntry);
+    expect(listPendingVerifyResults(dataRoot).map((item) => item.execution_id))
+      .toContain(`exec-${boundary}`);
+    const queueAfterRecovery = JSON.parse(readFileSync(execResultQueuePath(dataRoot), 'utf8'));
+    expect(queueAfterRecovery.items.filter((item) => (
+      item.execution_id === `exec-${boundary}`
+    ))).toHaveLength(1);
+  });
+
   it('keeps a written exec result pending until verify claims it', () => {
     tempDir = mkdtempSync(join(tmpdir(), 'jea-result-pending-'));
     const dataRoot = join(tempDir, 'data');

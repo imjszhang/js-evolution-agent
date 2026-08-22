@@ -81,6 +81,14 @@ export function channelPresenceStatePath(root, subject) {
   return join(channelDirForSubject(root, subject), 'presence-state.json');
 }
 
+export function channelPresenceHandledIndexPath(root, subject) {
+  return join(channelDirForSubject(root, subject), 'presence-handled-index.json');
+}
+
+export function channelProcessedIndexPath(root, subject) {
+  return join(channelInboundDir(root, subject), 'processed-index.json');
+}
+
 export function channelEventQueuePath(root, subject) {
   return join(channelDirForSubject(root, subject), 'event-queue', 'pending_events.json');
 }

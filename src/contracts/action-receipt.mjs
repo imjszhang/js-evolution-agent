@@ -8,6 +8,7 @@ import {
   requireString,
 } from './validation.mjs';
 import { validateActionShape } from './decision.mjs';
+import { EVIDENCE_PRODUCERS } from './evidence-envelope.mjs';
 
 export function validateActionReceipt(receipt, path = 'receipt') {
   const base = requirePlainObject(receipt, path);
@@ -20,6 +21,10 @@ export function validateActionReceipt(receipt, path = 'receipt') {
     requireOptionalString(receipt.exec_cycle_id, `${path}.exec_cycle_id`, { allowEmpty: true }),
     requireOptionalString(receipt.intel_cycle_id, `${path}.intel_cycle_id`, { allowEmpty: true }),
     requireOptionalString(receipt.decision_id, `${path}.decision_id`, { allowEmpty: true }),
+    requireOptionalString(receipt.execution_id, `${path}.execution_id`, { allowEmpty: true }),
+    requireOptionalString(receipt.producer_batch_id, `${path}.producer_batch_id`, { allowEmpty: true }),
+    requireOptionalString(receipt.reaction_id, `${path}.reaction_id`, { allowEmpty: true }),
+    requireOptionalString(receipt.belief_id, `${path}.belief_id`, { allowEmpty: true }),
     requireString(receipt.action_type, `${path}.action_type`),
     validateActionShape(receipt.action, `${path}.action`),
     requirePlainObject(receipt.result, `${path}.result`),
@@ -33,6 +38,9 @@ export function validateActionReceipt(receipt, path = 'receipt') {
   }
   if (receipt.result != null && !isPlainObject(receipt.result)) {
     errors.push(`${path}.result must be an object`);
+  }
+  if (receipt.producer != null && !EVIDENCE_PRODUCERS.includes(receipt.producer)) {
+    errors.push(`${path}.producer must be one of: ${EVIDENCE_PRODUCERS.join(', ')}`);
   }
   return errors.length ? fail(errors) : ok();
 }

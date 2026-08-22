@@ -22,10 +22,7 @@ import {
 import { AgentRateLedger } from '../act/agent-rate-ledger.mjs';
 import { EvolutionLogger } from '../adapters/evolution-logger.mjs';
 import { compareDecisionsForClaim } from '../decide/decision-queue.mjs';
-
-function isExecRateOnlyFromEnv(_env = process.env) {
-  return true;
-}
+import { extractBeliefContext } from '../../contracts/belief-context.mjs';
 
 export function parseExecAgentBudgetFromEnv() {
   const agentBudgetRaw = process.env.JEA_EXEC_AGENT_BUDGET;
@@ -89,12 +86,9 @@ export class ExecutionPipeline {
     this.source = 'queue';
     this.executionJournal = executionJournal;
     this.emitEvent = typeof emitEvent === 'function' ? emitEvent : null;
-    this.rateOnly = isExecRateOnlyFromEnv();
-    this.agentBudget = this.rateOnly
-      ? Number.POSITIVE_INFINITY
-      : (agentBudget != null
-        ? Math.max(1, Math.floor(Number(agentBudget)) || 1)
-        : parseExecAgentBudgetFromEnv());
+    this.agentBudget = agentBudget != null
+      ? Math.max(1, Math.floor(Number(agentBudget)) || 1)
+      : parseExecAgentBudgetFromEnv();
     this.agentConcurrency = agentConcurrency != null
       ? Math.max(1, Math.floor(Number(agentConcurrency)) || 1)
       : Math.max(1, Math.floor(Number(process.env.JEA_AGENT_MAX_CONCURRENCY) || 2));
@@ -152,10 +146,8 @@ export class ExecutionPipeline {
     agentRateLedger = null,
   } = {}) {
     if (cycleId) this.setCycleId(cycleId);
-    if (!this.rateOnly) {
-      if (agentBudget != null) this.agentBudget = Math.max(1, Math.floor(Number(agentBudget)) || 1);
-      else if (limit != null) this.agentBudget = Math.max(1, Math.floor(Number(limit)) || 1);
-    }
+    if (agentBudget != null) this.agentBudget = Math.max(1, Math.floor(Number(agentBudget)) || 1);
+    else if (limit != null) this.agentBudget = Math.max(1, Math.floor(Number(limit)) || 1);
     if (agentConcurrency != null) {
       this.agentConcurrency = Math.max(1, Math.floor(Number(agentConcurrency)) || 1);
     }
@@ -175,9 +167,7 @@ export class ExecutionPipeline {
       journal: null,
       mechanical: { claimed: 0, executed: 0 },
       agent_waves: [],
-      agent_budget: Number.isFinite(this.agentBudget) ? this.agentBudget : null,
-      agent_budget_shadow: parseExecAgentBudgetFromEnv(),
-      rate_only: this.rateOnly,
+      agent_budget: this.agentBudget,
       agent_concurrency: this.agentConcurrency,
       agent_rate: this.agentRateLedger
         ? this.agentRateLedger.snapshot({ rateLimited: false })
@@ -222,9 +212,6 @@ export class ExecutionPipeline {
     let lastWaveHadFailure = false;
     let blockedThisCycle = 0;
     const touchedThisCycle = new Set();
-    const pendingAgentsAll = this.decisionQueue.getPending().filter((d) => isAgentRunDecision(d));
-    result.would_execute_without_cycle_budget = pendingAgentsAll.length;
-
     while (consumed < this.agentBudget) {
       const cycleRemaining = this.agentBudget - consumed;
       const rateRemaining = this.agentRateLedger
@@ -391,7 +378,14 @@ export class ExecutionPipeline {
         continue;
       }
       if (dryRun) {
-        const execItem = { id: decision.id, action: decision.action, result: r, wave: waveIndex, width };
+        const execItem = {
+          id: decision.id,
+          action: decision.action,
+          result: r,
+          wave: waveIndex,
+          width,
+          ...this._decisionIdentity(decision),
+        };
         result.executed.push(execItem);
         this.executionJournal?.recordExecuted?.(execItem, { source: 'queue' });
         await this._releaseDecision(decision, 'pending');
@@ -405,6 +399,7 @@ export class ExecutionPipeline {
           result: { success: false, error: error.message },
           wave: waveIndex,
           width,
+          ...this._decisionIdentity(decision),
         };
         result.executed.push(execItem);
         this.executionJournal?.recordExecuted?.(execItem, { source: 'queue' });
@@ -412,7 +407,14 @@ export class ExecutionPipeline {
         outcomes.push({ id: decision.id, status: fb?.status || 'failed', attempts: fb?.attempts });
         continue;
       }
-      const execItem = { id: decision.id, action: decision.action, result: r, wave: waveIndex, width };
+      const execItem = {
+        id: decision.id,
+        action: decision.action,
+        result: r,
+        wave: waveIndex,
+        width,
+        ...this._decisionIdentity(decision),
+      };
       result.executed.push(execItem);
       this.executionJournal?.recordExecuted?.(execItem, { source: 'queue' });
       if (r?.success) {
@@ -440,11 +442,25 @@ export class ExecutionPipeline {
   }
 
   _execContext(decision, lifecycle) {
+    const identity = this._decisionIdentity(decision);
     return {
       decisionId: decision.id,
       executionId: this._cycleId,
       intentId: lifecycle?.intent?.id ?? null,
       idempotencyKey: lifecycle?.intent?.key ?? null,
+      ...identity,
+    };
+  }
+
+  _decisionIdentity(decision) {
+    const metadata = decision?.metadata ?? {};
+    const beliefId = metadata.belief_id
+      ?? extractBeliefContext(decision?.action).belief_id
+      ?? null;
+    return {
+      producerBatchId: metadata.producer_batch_id ?? null,
+      reactionId: metadata.reaction_id ?? null,
+      beliefId,
     };
   }
 
@@ -462,6 +478,7 @@ export class ExecutionPipeline {
         id: decision.id,
         action,
         result: { success: true, dry_run: true },
+        ...this._decisionIdentity(decision),
         channel,
         ...(wave != null ? { wave, width } : {}),
       };
@@ -487,6 +504,7 @@ export class ExecutionPipeline {
         id: decision.id,
         action,
         result: r,
+        ...this._decisionIdentity(decision),
         channel,
         ...(wave != null ? { wave, width } : {}),
       };
@@ -512,6 +530,7 @@ export class ExecutionPipeline {
         id: decision.id,
         action,
         result: { success: false, error: e.message },
+        ...this._decisionIdentity(decision),
         channel,
         ...(wave != null ? { wave, width } : {}),
       };

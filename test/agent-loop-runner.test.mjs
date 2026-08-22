@@ -115,6 +115,46 @@ describe('runInvestigationLoop', () => {
     expect(result.investigation.enough_for_report).toBe(true);
   });
 
+  it('redacts investigation tool results before the next LLM turn', async () => {
+    const { tools, loopCtx } = makeTools();
+    const secret = 'ghp_0123456789abcdefghijklmnop';
+    const originalDispatch = tools.dispatch.bind(tools);
+    tools.dispatch = async (name, args, meta) => {
+      if (name === 'get_current_time') return { ok: true, token: secret };
+      return originalDispatch(name, args, meta);
+    };
+    const seen = [];
+    const client = new MockToolsAIClient({
+      script: [
+        { toolCalls: [{ name: 'get_current_time', arguments: {} }] },
+        {
+          toolCalls: [{
+            name: 'finish_investigation',
+            arguments: {
+              findings_summary: 'time checked',
+              enough_for_report: true,
+            },
+          }],
+        },
+      ],
+    });
+    const originalChat = client.chatMessagesWithTools.bind(client);
+    client.chatMessagesWithTools = async (messages, opts) => {
+      seen.push(structuredClone(messages));
+      return originalChat(messages, opts);
+    };
+    await runInvestigationLoop({
+      aiClient: client,
+      systemPrompt: 'system',
+      initialUserPrompt: 'user',
+      tools,
+      budget: loopCtx.budget,
+    });
+    const secondPrompt = JSON.stringify(seen[1]);
+    expect(secondPrompt).not.toContain(secret);
+    expect(secondPrompt).toContain('[REDACTED_SECRET]');
+  });
+
   it('retries finish_investigation after rejected verified_facts then completes', async () => {
     const { tools, loopCtx } = makeTools();
     loopCtx.store.ingest('intel_observations', {

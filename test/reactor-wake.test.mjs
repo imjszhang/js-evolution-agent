@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import { writeJsonFile } from '../src/infra/files.mjs';
 import { enqueueWakeIntent, listPendingWakes } from '../src/evolution/reactor/wake-store.mjs';
@@ -8,12 +9,19 @@ import { enqueueReactorTask, runVerifyBatchTask, scanWakeBacklog } from '../src/
 import { enqueueTask, readTaskQueue } from '../src/daemon/daemon-tasks.mjs';
 import { RULE_EVIDENCE_KINDS, shouldRunRuleReaction } from '../src/evolution/reactor/rule-reactor.mjs';
 import {
+  buildMemoryConsolidationInput,
   compactMemory,
   readLastCommittedMemoryCheckpoint,
   readMemoryCompactionProjection,
+  runMemoryCompactionWork,
   shouldCompactMemory,
 } from '../src/evolution/reactor/memory-compactor.mjs';
-import { patchBatchCheckpoint, writeBatchCheckpoint, readBatchCheckpoint } from '../src/evolution/reactor/batch-checkpoint-store.mjs';
+import {
+  listBatchCheckpoints,
+  patchBatchCheckpoint,
+  writeBatchCheckpoint,
+  readBatchCheckpoint,
+} from '../src/evolution/reactor/batch-checkpoint-store.mjs';
 import {
   claimPendingVerifyResult,
   completeVerifyResult,
@@ -29,6 +37,19 @@ import { runtimeForSubject } from '../src/infra/runtime-paths.mjs';
 
 let tempDir = null;
 
+function beliefCommit(events, settlementId) {
+  const ids = events.map((event) => event.id);
+  return {
+    id: `belief-commit-${settlementId}`,
+    type: 'settlement_commit',
+    change: 'settlement_commit',
+    settlement_id: settlementId,
+    settlement_effect: 'belief',
+    expected_event_ids: ids,
+    expected_event_digest: createHash('sha256').update(JSON.stringify(ids)).digest('hex'),
+  };
+}
+
 function makeRoot() {
   tempDir = mkdtempSync(join(tmpdir(), 'jea-reactor-wake-'));
   mkdirSync(join(tempDir, 'policies', 'subjects'), { recursive: true });
@@ -43,6 +64,35 @@ function makeRoot() {
   });
   mkdirSync(join(tempDir, 'runtime', 'subjects', 'alpha', 'data', 'evolution'), { recursive: true });
   return tempDir;
+}
+
+function seedMemoryWork(root, suffix = 'seed') {
+  const runtime = runtimeForSubject(root, 'alpha');
+  mkdirSync(join(runtime.dataRoot, 'evolution', 'reactor'), { recursive: true });
+  writeJsonFile(join(runtime.dataRoot, 'evolution', 'reactor', 'claims.json'), {
+    claims: [{
+      batch_id: `batch-source-${suffix}`,
+      reactor: 'cognitive',
+      status: 'handled',
+      handled_at: new Date().toISOString(),
+      event_ids: [`evt-${suffix}`],
+    }],
+  });
+  const event = {
+    id: `belief-event-${suffix}`,
+    belief_id: `belief-${suffix}`,
+    change: 'validate',
+    settlement_id: `settlement-${suffix}`,
+    settlement_effect: 'belief',
+    recorded_at: new Date().toISOString(),
+    after: { id: `belief-${suffix}`, status: 'validated', claim: `claim ${suffix}` },
+  };
+  mkdirSync(join(runtime.dataRoot, 'intelligence', 'beliefs'), { recursive: true });
+  writeFileSync(join(runtime.dataRoot, 'intelligence', 'beliefs', 'belief-events.jsonl'), [
+    event,
+    beliefCommit([event], event.settlement_id),
+  ].map((row) => JSON.stringify(row)).join('\n') + '\n');
+  return runtime;
 }
 
 afterEach(() => {
@@ -279,23 +329,78 @@ describe('rule and memory gates', () => {
       }],
       updated_at: new Date().toISOString(),
     });
+    writeJsonFile(join(runtime.dataRoot, 'evolution', 'reactor', 'settlements.json'), {
+      settlements: {
+        'settlement-memory-1': {
+          settlement_id: 'settlement-memory-1',
+          status: 'completed',
+          evidence_refs: ['verify_report:exec-memory-1'],
+        },
+      },
+    });
+    mkdirSync(join(runtime.dataRoot, 'intelligence', 'beliefs'), { recursive: true });
+    writeJsonFile(join(runtime.dataRoot, 'intelligence', 'beliefs', 'current_beliefs.json'), {
+      schema_version: 1,
+      beliefs: [{ id: 'belief-memory-1', status: 'validated', claim: 'durable outcome' }],
+    });
+    const memoryEvent = {
+        id: 'belief-event-memory-1',
+        belief_id: 'belief-memory-1',
+        change: 'validate',
+        settlement_id: 'settlement-memory-1',
+        settlement_effect: 'belief',
+        recorded_at: new Date().toISOString(),
+        after: { id: 'belief-memory-1', status: 'validated', claim: 'durable outcome' },
+      };
+    writeFileSync(
+      join(runtime.dataRoot, 'intelligence', 'beliefs', 'belief-events.jsonl'),
+      `${[memoryEvent, beliefCommit([memoryEvent], 'settlement-memory-1')]
+        .map((row) => JSON.stringify(row)).join('\n')}\n`,
+    );
     await expect(compactMemory({
       root,
       subject: 'alpha',
       input: { force: true },
-      runCompaction: async () => { throw new Error('compaction-crash'); },
+      runCompaction: async (_ctx, { onEffect }) => {
+        await onEffect('memory', { status: 'updated' });
+        throw new Error('compaction-crash');
+      },
     })).rejects.toThrow('compaction-crash');
     expect(readLastCommittedMemoryCheckpoint(runtime.dataRoot)).toBeNull();
     expect(readMemoryCompactionProjection(runtime.runtimeRoot).last_compacted_at).toBeNull();
 
+    let resumedMemory = false;
     const retried = await compactMemory({
       root,
       subject: 'alpha',
       input: { force: true },
-      runCompaction: async () => ({ ok: true }),
+      runCompaction: async (_ctx, { completedEffects, onEffect }) => {
+        resumedMemory = completedEffects.memory?.status === 'done';
+        await onEffect('diary', { source: 'fallback' });
+        return { memory: completedEffects.memory?.result, diary: { source: 'fallback' } };
+      },
     });
+    expect(resumedMemory).toBe(true);
     expect(retried.covered_batches).toBe(1);
-    expect(readLastCommittedMemoryCheckpoint(runtime.dataRoot)?.stage).toBe('committed');
+    const committed = readLastCommittedMemoryCheckpoint(runtime.dataRoot);
+    expect(committed?.stage).toBe('committed');
+    writeBatchCheckpoint(runtime.dataRoot, {
+      ...committed,
+      last_settled_cursor: null,
+    });
+    rmSync(join(runtime.runtimeRoot, 'data', 'evolution', 'memory_compaction.json'), { force: true });
+    let duplicateRan = false;
+    const duplicate = await compactMemory({
+      root,
+      subject: 'alpha',
+      input: { force: true },
+      runCompaction: async () => {
+        duplicateRan = true;
+        return { ok: true };
+      },
+    });
+    expect(duplicate).toMatchObject({ skipped: true, reason: 'duplicate_batch', reused: true });
+    expect(duplicateRan).toBe(false);
     const idle = await compactMemory({
       root,
       subject: 'alpha',
@@ -303,6 +408,307 @@ describe('rule and memory gates', () => {
     });
     expect(idle.skipped).toBe(true);
     expect(idle.since_compact).toBe(0);
+  });
+
+  it('consolidates settled validated/refuted outcomes without active tactical claims', () => {
+    const root = makeRoot();
+    const runtime = runtimeForSubject(root, 'alpha');
+    writeJsonFile(join(runtime.dataRoot, 'evolution', 'reactor', 'settlements.json'), {
+      settlements: {
+        'settlement-v': {
+          settlement_id: 'settlement-v',
+          status: 'completed',
+          evidence_refs: ['verify_report:exec-v'],
+        },
+        'settlement-r': {
+          settlement_id: 'settlement-r',
+          status: 'completed',
+          evidence_refs: ['verify_report:exec-r'],
+        },
+      },
+    });
+    const events = [
+      {
+        id: 'belief-event-v',
+        belief_id: 'belief-v',
+        change: 'validate',
+        settlement_id: 'settlement-v',
+        recorded_at: '2026-08-22T00:00:00.000Z',
+        after: { id: 'belief-v', status: 'validated', claim: 'validated tactical wording' },
+      },
+      {
+        id: 'belief-event-r',
+        belief_id: 'belief-r',
+        change: 'refute',
+        settlement_id: 'settlement-r',
+        recorded_at: '2026-08-22T00:01:00.000Z',
+        after: { id: 'belief-r', status: 'refuted', claim: 'disproved tactical wording' },
+      },
+    ];
+    const input = buildMemoryConsolidationInput({
+      dataRoot: runtime.dataRoot,
+      batchId: 'batch-memory-input',
+      events,
+      store: {
+        readCurrentBeliefs: () => ({
+          beliefs: [
+            { id: 'belief-active', status: 'active', claim: 'tactical next probe', next_test: 'run now' },
+            { id: 'belief-v', status: 'validated', claim: 'validated tactical wording' },
+            { id: 'belief-r', status: 'refuted', claim: 'disproved tactical wording' },
+          ],
+        }),
+        readIntelReports: () => [],
+        readStandingMemory: () => null,
+      },
+    });
+    expect(input.validated.map((item) => item.id)).toEqual(['belief-v']);
+    expect(input.refuted.map((item) => item.id)).toEqual(['belief-r']);
+    expect(input.report_context.current_beliefs.beliefs.some((item) => item.id === 'belief-active')).toBe(false);
+    expect(input.report_context.temporal_decision_brief.do_not_treat_as_seen[0].summary)
+      .toContain('negative history only');
+    expect(input.verify_refs).toEqual(['verify_reports:exec-v', 'verify_reports:exec-r']);
+  });
+
+  it('recovers stale memory from the first settlement after its durable cursor', async () => {
+    const root = makeRoot();
+    const runtime = runtimeForSubject(root, 'alpha');
+    mkdirSync(join(runtime.dataRoot, 'evolution', 'reactor'), { recursive: true });
+    writeJsonFile(join(runtime.dataRoot, 'evolution', 'reactor', 'claims.json'), {
+      claims: [{
+        batch_id: 'batch-stale-source',
+        reactor: 'cognitive',
+        status: 'handled',
+        handled_at: new Date().toISOString(),
+      }],
+    });
+    writeJsonFile(join(runtime.dataRoot, 'evolution', 'reactor', 'settlements.json'), {
+      settlements: Object.fromEntries(['old', 'new'].map((name) => [
+        `settlement-${name}`,
+        {
+          settlement_id: `settlement-${name}`,
+          status: 'completed',
+          evidence_refs: [`verify_report:exec-${name}`],
+        },
+      ])),
+    });
+    mkdirSync(join(runtime.dataRoot, 'intelligence', 'beliefs'), { recursive: true });
+    writeJsonFile(join(runtime.dataRoot, 'intelligence', 'beliefs', 'current_beliefs.json'), {
+      beliefs: [
+        { id: 'belief-old', status: 'validated', claim: 'already consolidated' },
+        { id: 'belief-new', status: 'validated', claim: 'new durable outcome' },
+      ],
+    });
+    const staleEvents = [
+      {
+        id: 'belief-event-old',
+        belief_id: 'belief-old',
+        change: 'validate',
+        settlement_id: 'settlement-old',
+        recorded_at: '2026-08-22T00:00:00.000Z',
+        after: { id: 'belief-old', status: 'validated', claim: 'already consolidated' },
+      },
+      {
+        id: 'belief-event-new',
+        belief_id: 'belief-new',
+        change: 'validate',
+        settlement_id: 'settlement-new',
+        recorded_at: '2026-08-22T00:01:00.000Z',
+        after: { id: 'belief-new', status: 'validated', claim: 'new durable outcome' },
+      },
+    ];
+    writeFileSync(join(runtime.dataRoot, 'intelligence', 'beliefs', 'belief-events.jsonl'), [
+      staleEvents[0],
+      beliefCommit([staleEvents[0]], 'settlement-old'),
+      staleEvents[1],
+      beliefCommit([staleEvents[1]], 'settlement-new'),
+    ].map((row) => JSON.stringify(row)).join('\n') + '\n');
+    writeJsonFile(join(runtime.runtimeRoot, 'data', 'evolution', 'memory_compaction.json'), {
+      last_compacted_at: '2026-08-22T00:00:00.000Z',
+      last_batch_id: 'batch-memory-old',
+      last_settled_cursor: 'belief_events:belief-event-old',
+    });
+
+    let captured = null;
+    const result = await compactMemory({
+      root,
+      subject: 'alpha',
+      input: { force: true },
+      runCompaction: async (_ctx, { consolidation }) => {
+        captured = consolidation;
+        return { memory: { status: 'updated' }, diary: { source: 'fallback' } };
+      },
+    });
+    expect(captured.validated.map((item) => item.id)).toEqual(['belief-new']);
+    expect(result.last_settled_cursor).toBe('belief_events:belief-event-new');
+    expect(readMemoryCompactionProjection(runtime.runtimeRoot).last_settled_cursor)
+      .toBe('belief_events:belief-event-new');
+  });
+
+  it.each([
+    'memory_after_prepare',
+    'memory_after_writing',
+    'memory_after_commit',
+  ])('recovers the memory checkpoint boundary %s', async (boundary) => {
+    const root = makeRoot();
+    const runtime = seedMemoryWork(root, boundary);
+    let compactions = 0;
+    let injected = false;
+    await expect(compactMemory({
+      root,
+      subject: 'alpha',
+      input: { force: true },
+      faultInjector: (point) => {
+        if (!injected && point === boundary) {
+          injected = true;
+          throw new Error(`injected:${boundary}`);
+        }
+      },
+      runCompaction: async () => {
+        compactions += 1;
+        return { memory: { status: 'updated' }, diary: { source: 'fallback' } };
+      },
+    })).rejects.toThrow(`injected:${boundary}`);
+
+    const resumed = await compactMemory({
+      root,
+      subject: 'alpha',
+      input: { force: true },
+      runCompaction: async () => {
+        compactions += 1;
+        return { memory: { status: 'updated' }, diary: { source: 'fallback' } };
+      },
+    });
+    const committed = readLastCommittedMemoryCheckpoint(runtime.dataRoot);
+    expect(committed?.stage).toBe('committed');
+    expect(readMemoryCompactionProjection(runtime.runtimeRoot)).toMatchObject({
+      last_batch_id: committed.batch_id,
+      last_settled_cursor: committed.last_settled_cursor,
+    });
+    if (boundary === 'memory_after_commit') {
+      expect(resumed).toMatchObject({
+        skipped: true,
+        reason: 'no_unconsolidated_settled_beliefs',
+      });
+      expect(compactions).toBe(1);
+    } else {
+      expect(resumed.skipped).toBe(false);
+      expect(compactions).toBe(1);
+    }
+  });
+
+  it('reuses the standing-memory artifact after an artifact/checkpoint crash', async () => {
+    let artifact = null;
+    let writes = 0;
+    let effects = 0;
+    const store = {
+      readStandingMemory: () => artifact,
+      recordStandingMemory: (memory) => {
+        artifact = memory;
+        return 1;
+      },
+    };
+    const ctx = {
+      cfg: { aiClient: { chat: async () => { throw new Error('model_must_not_replay'); } } },
+      runtime: { runtimeRoot: tempDir },
+      store,
+    };
+    const consolidation = {
+      batch_id: 'batch-memory-artifact',
+      last_settled_cursor: 'belief_events:event-artifact',
+      freshness: { status: 'fresh' },
+      validated: [],
+      refuted: [],
+      verify_refs: [],
+      recent_reports: [],
+      report_context: { standing_memory: null },
+    };
+    await expect(runMemoryCompactionWork(ctx, {
+      intelResult: { cycle_id: consolidation.batch_id },
+      consolidation,
+      completedEffects: { diary: { status: 'done', result: {} } },
+      standingMemoryWriter: async () => {
+        writes += 1;
+        store.recordStandingMemory({
+          memory_batch_id: consolidation.batch_id,
+          last_settled_cursor: consolidation.last_settled_cursor,
+          freshness: consolidation.freshness,
+        });
+        return { status: 'updated' };
+      },
+      faultInjector: (point) => {
+        if (point === 'memory_after_artifact') throw new Error('artifact-checkpoint-crash');
+      },
+      onEffect: async () => { effects += 1; },
+    })).rejects.toThrow('artifact-checkpoint-crash');
+
+    const resumed = await runMemoryCompactionWork(ctx, {
+      intelResult: { cycle_id: consolidation.batch_id },
+      consolidation,
+      completedEffects: { diary: { status: 'done', result: {} } },
+      onEffect: async () => { effects += 1; },
+    });
+    expect(resumed.memory).toMatchObject({
+      status: 'updated',
+      reused: true,
+      memory_batch_id: consolidation.batch_id,
+    });
+    expect(writes).toBe(1);
+    expect(effects).toBe(1);
+  });
+
+  it('does not steal an active cross-process memory claim', async () => {
+    const root = makeRoot();
+    const runtime = seedMemoryWork(root, 'active-claim');
+    await expect(compactMemory({
+      root,
+      subject: 'alpha',
+      input: { force: true },
+      faultInjector: (point) => {
+        if (point === 'memory_after_writing') throw new Error('seed-claim');
+      },
+      runCompaction: async () => ({ memory: {}, diary: {} }),
+    })).rejects.toThrow('seed-claim');
+    const [checkpoint] = listBatchCheckpoints(runtime.dataRoot, { reactor: 'memory' });
+    writeBatchCheckpoint(runtime.dataRoot, {
+      ...checkpoint,
+      stage: 'writing',
+      owner: 'other-process-owner',
+      owner_pid: process.pid,
+    });
+    let ran = false;
+    const result = await compactMemory({
+      root,
+      subject: 'alpha',
+      input: { force: true },
+      runCompaction: async () => {
+        ran = true;
+        return { memory: {}, diary: {} };
+      },
+    });
+    expect(result).toMatchObject({ skipped: true, reason: 'batch_claimed' });
+    expect(ran).toBe(false);
+  });
+
+  it('skips settled events that lack an authoritative after snapshot', () => {
+    const input = buildMemoryConsolidationInput({
+      batchId: 'batch-memory-no-snapshot',
+      events: [{
+        id: 'belief-event-no-snapshot',
+        belief_id: 'belief-no-snapshot',
+        change: 'validate',
+        settlement_id: 'settlement-no-snapshot',
+      }],
+      store: {
+        readCurrentBeliefs: () => ({
+          beliefs: [{ id: 'belief-no-snapshot', status: 'validated', claim: 'must not leak in' }],
+        }),
+        readIntelReports: () => [],
+        readStandingMemory: () => null,
+      },
+    });
+    expect(input.validated).toEqual([]);
+    expect(input.refuted).toEqual([]);
+    expect(input.skipped_event_ids).toEqual(['belief-event-no-snapshot']);
   });
 });
 

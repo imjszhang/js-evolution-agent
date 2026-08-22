@@ -28,23 +28,23 @@
 
 > 不是「固定 `/goal` 直到测试通过」的 coding loop，而是带理论约束、治理边界与可审计回执的 **演化 loop** — 当旧目标（法则）被后果证伪时，系统进入规则更新期，而非空转或硬撑。
 
-## 产品（0.1.0）
+## 产品（0.2.0）
 
-JEA 0.1.0 是 **macOS Apple Silicon** 应用，并附带托管 `jea` CLI。操作面是单一三栏工作区，而不是已退役的七页 Desktop（Operations / Todo / Channel / ACP）：
+JEA 0.2.0 是 **macOS Apple Silicon** 应用，并附带托管 `jea` CLI。Electron 与 Web 共用三栏操作者工作区：
 
 1. **Subject 与本地会话**
 2. **受治理对话**，走 Channel classifier / presence / speech 管道（聊天文本不是 hard approval）
-3. **Evolution Inspector**，查看 cycle 状态、report / diary / verify 与 receipt / evidence 摘要
+3. **Evolution Inspector**，查看因果执行链、期望对照、settlement、Memory Reactor 新鲜度与运行时健康
 
 Settings 覆盖 JEA Home、默认 Subject、CLI 安装、外观和 About。Electron 与 localhost Web 加载同一套 React 应用。安装与 Gatekeeper 见 [docs/release/installation.md](docs/release/installation.md)。无头生命周期：`jea start --no-open`、`jea status --json`、`jea url`、`jea stop`。
 
-产品 Release 是 **[v0.1.0](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.1.0)**（[#122](https://github.com/imjszhang/js-evolution-agent/issues/122) 已关闭）。下文仍是开发者从源码运行的路径。
+下文的源码命令同时也是开发、诊断和恢复路径。
 
 ---
 
 ## 目录
 
-- [产品（0.1.0）](#产品010)
+- [产品（0.2.0）](#产品020)
 - [核心创新：目标自修正](#核心创新目标自修正)
 - [与 Loop Engineering 的对齐](#与-loop-engineering-的对齐)
 - [这是什么](#这是什么)
@@ -52,7 +52,7 @@ Settings 覆盖 JEA Home、默认 Subject、CLI 安装、外观和 About。Elect
 - [架构概览](#架构概览)
 - [环境要求](#环境要求)
 - [快速开始](#快速开始)
-- [演化循环](#演化循环)
+- [演化 loop](#演化-loop)
 - [Subject 与多主体](#subject-与多主体)
 - [Daemon 长期运行](#daemon-长期运行)
 - [Channel 通道](#channel-通道)
@@ -79,17 +79,17 @@ JEA 的核心创新，是把 [cyber-taoist.ai](https://cyber-taoist.ai) 的进�
 | **法则（R）** — 主体构建的规则防火墙，永远滞后 | `active_goals.json`、SUBJECT.md 约束、信念（beliefs） | 当前演化「认为对的」目标与行动假设 |
 | **交易（T）** — 感知天道的探头 | `agent_run`、probe、record 型 action | 在法则内或经审批突破法则的交互 |
 | **生态位（NI）** — 与现行法则的相容程度 | `good_signal` / `bad_signal` 匹配、成果指标 | 衡量当前策略是否仍在法则内有效 |
-| **规则更新期** — 旧法则被证伪后沉淀新法则 | Phase 4 `goals assess` + Phase 4.5 `goals_calibrate` | **自动改写目标树**，进入下一轮演化 |
+| **规则更新期** — 旧法则被证伪后沉淀新法则 | 幂等 belief/goal settlement | 从精确验证过的 execution window **自动改写目标树** |
 
 ### 进化阶段 → 目标校准
 
-依据宪章「感知滞后 → 试探 → 成败筛选 → **规则更新**」五阶段，Phase 4 评估器输出 `rule_status`：
+依据宪章「感知滞后 → 试探 → 成败筛选 → **规则更新**」五阶段，rule settlement 输出 `rule_status`：
 
 | `rule_status` | 含义（Cyber-Taoist） | 系统行为 |
 | --- | --- | --- |
 | `continue` | 常规阶段：法则内交易反馈仍清晰 | 保持当前目标 |
 | `learn` | 感知滞后：反馈不足或证据缺口 | 下一轮偏向只读学习、诊断、反馈回路校准 |
-| `mutate` | 规则更新期：旧法则已被后果证伪 | Phase 4.5 **自动应用 `goal_patches`**，改写成果子目标 |
+| `mutate` | 规则更新期：旧法则已被后果证伪 | settlement **自动应用 `goal_patches`**，改写成果子目标 |
 | `stop` | 核心守护失败 | 暂停成果探索，先恢复连续性 |
 | `insufficient_evidence` | 无法从后果反推 | 不轻改目标，等待更多交易反馈 |
 
@@ -108,24 +108,24 @@ JEA 的核心创新，是把 [cyber-taoist.ai](https://cyber-taoist.ai) 的进�
 JEA 可被理解为 **带治理层的 Orchestration Loop** — 人类设计 loop 结构与 guardrails，系统负责发现工作、委派 agent、独立验证、持久化状态、决定下一轮（含目标是否 mutate）。
 
 ```text
-Loop Engineering 五步          JEA 对应
+Loop Engineering 五步          JEA 0.2.0 对应
 ─────────────────────────────────────────────────────────
-find work                  →  Phase 1 observe + analyze/decide（pending_decisions）
-delegate to agent          →  Phase 2 exec（agent_run / probe / record actions）
-gate (pass/fail)           →  Phase 3 verify（机械 + 语义；maker ≠ verifier）
-record state               →  intel store、cycle-state、receipts、evolution diary
-decide next                →  Phase 3.5 beliefs + Phase 4/4.5 goals + 下一轮 intel
+find work                  →  claim evidence → report → belief-bound decision
+delegate to agent          →  durable exec intent → agent_run / action receipt
+gate (pass/fail)           →  expected-output comparison；maker ≠ verifier
+record state               →  causal IDs、append-only events、checkpoint、receipts
+decide next                →  幂等 belief/goal settlement → Memory Reactor
 
 额外一层（JEA 特有）       →  目标/法则自修正 + SUBJECT 审批 + operator brief/fact
 ```
 
 | Loop Engineering 要素 | JEA 实现 |
 | --- | --- |
-| **Scheduling** | `jea daemon start`（`continuous` / `on_demand`）、channel classifier tick |
+| **Scheduling** | `jea daemon start` 下由 evidence/operator wake 驱动的有界异步 reactors |
 | **Worktrees** | Subject `lane` — 外部目标仓库隔离 worktree |
-| **Persistent memory** | `js-intel-store`、standing memory、goal/belief events |
-| **Maker–Verifier split** | Exec agent 写代码 / 执行；Verify 与 Goals assess **独立阶段**，不依赖执行者自评 |
-| **Verifiable stopping** | 单 action 级 verify；轮次级 diary + `requires_human_review` |
+| **Persistent memory** | append-only belief/goal events + 低频 Memory Reactor consolidation |
+| **Maker–Verifier split** | Exec 写代码 / 执行；Verify 独立对照结构化观测与 `run_spec.expected_output` |
+| **Verifiable stopping** | execution 级 verify、精确 settlement refs 与 closure audit |
 | **Guardrails** | SUBJECT.md Off-Limits、`approval_granted`、brief/fact 分层 |
 | **动态目标**（JEA 扩展） | 固定 `/goal` → **可变 goals + Cyber-Taoist rule_status** |
 
@@ -135,9 +135,9 @@ decide next                →  Phase 3.5 beliefs + Phase 4/4.5 goals + 下一�
                     └─────────────────┬────────────────────┘
                                       │ guardrails
 ┌─────────────── Evolution Loop ──────▼──────────────────────────────┐
-│  Intel → Exec → Verify → Belief → Goals Assess → Goals Calibrate   │
-│     ↑                                      │                       │
-│     └──────── 下一轮（目标可能已 mutate）─────┘                       │
+│ Evidence → Report → Decision → Exec → Verify → Settlement → Memory │
+│    ↑                                      │                         │
+│    └──────────── 持久证据触发 wake ─────────┘                         │
 └────────────────────────────────────────────────────────────────────┘
          Daemon / Channel 调度 · 多 Subject 并行 · Evolution Viewer 观测
 ```
@@ -152,27 +152,31 @@ decide next                →  Phase 3.5 beliefs + Phase 4/4.5 goals + 下一�
 
 | 组件 | 作用 |
 | --- | --- |
-| **OADA 引擎**（`src/engine/`，vendored） | 决策队列、ExecutionPipeline，以及 Phase 1 辅助（规则 / 目标 / guidance / logger） |
+| **OADA 引擎**（`src/engine/`，vendored） | 决策队列、执行/验证辅助，以及规则 / 目标 / guidance |
 | **Cyber-Taoist 权威文献**（`policies/authority/`） | 跨 subject 共享的治理上下文（宪章、指南） |
 | **Subject 策略**（`<JEA_HOME>/subjects/<ns>/SUBJECT.md`） | 每个演化主体的语义边界与审批规则 |
 | **js-intel-store** | 文件型情报记忆（观测、回执、报告、信念等） |
-| **CLI `jea`** | 操作者入口：单轮运行、daemon、channel、数据与审计 |
+| **CLI `jea`** | 操作者入口：同步 reactor chain、daemon、channel、数据与审计 |
 
-典型用途：让 AI 主体在 **lane worktree** 或外部资源上调查、改代码、模拟与发布准备，同时把每一轮的报告、验证结果与演化日记落盘，供人工审阅或通过飞书等通道交互。
+典型用途：让 AI 主体在 **lane worktree** 或外部资源上调查、改代码、模拟与发布准备，同时让每条持久记录都可沿 evidence → decision → execution → verification → settlement 重新打开。
 
 ---
 
 ## 核心能力
 
-- **Cyber-Taoist 目标自修正** — Phase 4/4.5 依据交易反馈判断法则是否滞后，并机械落地 `goal_patches`（见 [核心创新](#核心创新目标自修正)）
-- **完整演化流水线** — Intel → Exec → Verify → Belief Update → Goals Assess/Calibrate → Evolution Diary
+- **Belief-driven async loop** — evidence batch 唤醒 cognitive、exec、verify、rule 与 memory reactors，不依赖单体 cycle driver
+- **Causal IDs** — `producer_batch_id`、`reaction_id`、`decision_id`、`execution_id`、`belief_id` 串起完整链路
+- **Expected verification** — 将 `run_spec.expected_output` 与结构化 result/verifier 观测对照；执行成功不等于期望匹配
+- **Idempotent settlement** — 同步与异步路径共用 evidence-window 协调器和精确 receipt/verify refs
+- **Memory Reactor** — 低频合并已 settlement 的 belief/goal events，不把叙事当权威事实
+- **Cyber-Taoist 目标自修正** — 已验证后果可改变目标假设（见 [核心创新](#核心创新目标自修正)）
 - **Subject 隔离** — 多主体并行，各自 namespace、策略、lane 与运行时数据
-- **Daemon step 模式** — 事件驱动的 step 级演化，支持 `continuous` / `on_demand` 两种模式
+- **Runtime maintenance** — 保守归档/压缩有界 hot sidecars，保留 active lease、uncertain intent 与主证据
 - **人工审批与软意图** — Brief（下一轮意图）+ `approval_granted`（硬开关）双层机制
 - **信念与目标管理** — 可验证假设（beliefs）与目标树（goals）的 formal 更新路径
 - **多 Agent 后端** — DeepSeek、Claude Agent SDK、Cursor SDK、Reasonix CLI 等
-- **Channel（飞书）** — 入站分类、Presence 表达、控制命令（切换演化模式、请求开轮等）
-- **Evolution Inspector** — 产品工作区里的 cycle / report / diary / verify 必要读取；遗留 Evolution Viewer 仍是开发 / 高级路径
+- **Channel delivery** — classifier → presence → speech → 脱敏 outbox → notify，只有持久化话术成功后才推进 handled
+- **Operator projection** — Conversation readiness、evolution、attention、pending evidence/tasks 与允许的 remediation 分字段投影
 
 ---
 
@@ -182,9 +186,9 @@ decide next                →  Phase 3.5 beliefs + Phase 4/4.5 goals + 下一�
 ┌─────────────────────────────────────────────────────────────────┐
 │                         jea CLI / Daemon                         │
 ├──────────────┬──────────────────────┬───────────────────────────┤
-│  Cycle Domain │    Channel Domain     │   Evolution Viewer (web)  │
-│  intel→exec→  │  classifier→presence  │   rounds / reports / SSE  │
-│  verify→…     │  →speech→outbox       │                           │
+│ Reactor Domain│    Channel Domain     │   Shared operator app     │
+│ evidence→rule │  classifier→presence  │   projection / Inspector  │
+│ →memory       │  →speech→outbox       │                           │
 ├──────────────┴──────────────────────┴───────────────────────────┤
 │  src/engine/ (OADA)  │  src/actions/  │  src/intelligence/       │
 │  queue · exec ·       │  agent_run ·   │  store · reports ·       │
@@ -195,18 +199,16 @@ decide next                →  Phase 3.5 beliefs + Phase 4/4.5 goals + 下一�
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-单轮主流水线：
+0.2.0 live 主链：
 
 ```text
-Phase 1   intel pipeline（observe → report → analyze+decide）
-Phase 1.5 intel report 持久化
-Phase 2   exec（消费 pending_decisions 队列）
-Phase 3   verify（机械 + 语义验证）
-Phase 3.5 belief_update
-Phase 4   goals assess
-Phase 4.5 goals calibrate
-Phase 5   evolution diary
+EvidenceEnvelope → claimed batch → report → belief-bound decision
+→ exec intent（副作用前持久化）→ exec result / action receipt
+→ expected-output verify → 幂等 belief/goal settlement
+→ Memory Reactor consolidation → operator projection / Channel delivery
 ```
+
+0.1.0 历史记录继续可读。缺失的可选 causal/comparison 字段显示为 legacy/unknown，不伪造链路；已移除的 driver 参数和任务类型明确失败，不会偷偷选择另一条 live 路径。
 
 ---
 
@@ -257,14 +259,12 @@ jea run --deepseek --subject my-bot
 
 ---
 
-## 演化循环
+## 演化 loop
 
-**单轮调试** — 适合本地验证与排错：
+**同步入口** — 适合本地验证与排错，与 daemon 共用同一组 reactors 和 settlement 协调器：
 
 ```bash
 jea run [--mock | --deepseek] [--subject NAME]
-jea run --skip-goals-assess      # 跳过 Phase 4/4.5
-jea run --skip-belief-update     # 跳过 Phase 3.5
 ```
 
 **批量演化**：
@@ -282,6 +282,7 @@ jea intel summary [--days 7]
 jea intel report [--cycle <id>] [--open]
 jea daemon inbox [--json]
 jea audit queue   # 演化证据 / 决策队列，不是 npm 供应链审计
+jea audit closure [--subject NAME] [--json]
 jea beliefs show
 jea goals show
 ```
@@ -315,7 +316,7 @@ jea data migrate-home --yes
 jea doctor
 ```
 
-迁移会逐文件校验并原子启用新目录，同时保留旧 `runtime/subjects/` 作为人工回退来源。详见 [JEA Home 迁移指南](./docs/jea-home-migration.md)。
+迁移会逐文件校验并原子启用新目录，同时保留旧 `runtime/subjects/` 作为人工回退来源。0.1.0 记录仍可读取：可选 causal IDs、expected-output comparison 和 settlement marker 缺失时显示 unknown；`settlements.json` 等可重建 sidecar 可由 append-only 权威事件恢复，迁移时不得虚构链路。详见 [JEA Home 迁移指南](./docs/jea-home-migration.md)。
 
 ```bash
 jea subject list
@@ -339,7 +340,7 @@ jea daemon status --all
 
 ## Daemon 长期运行
 
-Daemon 以 **step 粒度** 驱动演化，推荐用于长期无人值守运行。
+Daemon 运行有界的 **事件驱动 reactors**，推荐用于长期无人值守运行。
 
 ```bash
 # 前台 worker（cycle + channel 同进程）
@@ -355,8 +356,8 @@ npm run daemon:start:detached
 
 | 模式 | 行为 |
 | --- | --- |
-| `continuous`（默认） | 心跳 tick 自动 reconcile、无 open cycle 时尝试开新轮 |
-| `on_demand` | 仅响应显式请求（`jea daemon cycle request`、operator brief 等） |
+| `continuous`（默认） | 心跳消费请求与 eligible wake backlog；安静是健康状态，不凭空造工作 |
+| `on_demand` | 仅显式请求（`jea daemon cycle request`、operator brief 等）唤醒 cognition |
 
 ```bash
 jea daemon evolution-mode show
@@ -380,7 +381,7 @@ jea daemon start --subject my-bot --domain channel
 # 飞书私聊机器人：JEA BIND <口令>
 ```
 
-入站消息经 **classifier** 批量分类（审批意图、核实请求、operator fact、控制命令、普通观测等），**presence** 两阶段产出话术并入 outbox。
+入站消息经 **classifier** 批量分类（审批意图、核实请求、operator fact、控制命令、普通观测等），**presence** 规划表达，speech generation 持久化脱敏正文，notify 投递 outbox。生成失败或受限时不推进 handled 游标，eligible 输入会重试而不是静默丢失。
 
 Channel 不能绕过审批直接发布或修改凭据；远端发布仍需 brief → Decide → `approval_granted` 路径。
 
@@ -396,8 +397,8 @@ npm run viewer:serve
 jea intel viewer serve [--port 8787] [--open]
 ```
 
-- **Ops Home** — KPI、待关注项、open cycles、事件流
-- **阅读视图** — 选中轮次查看报告、日记、诊断与 observability
+- **开发兼容视图** — canonical evidence/task/attention 计数与事件流
+- **阅读视图** — 历史报告/日记，以及当前 verify / Memory 产物
 - Live API + SSE，无需先 build dist
 
 离线快照：
@@ -415,11 +416,11 @@ npm run viewer:build
 | 类型 | 含义 | 典型入口 |
 | --- | --- | --- |
 | **Constraint** | 长期必须遵守的边界 | `human_guidance.md`、SUBJECT.md |
-| **Intent** | 下一轮关注什么（非事实） | `jea intel brief put` |
+| **Intent** | 下一次 reaction 关注什么（非事实） | `jea intel brief put` |
 | **Fact** | 操作者已确认、可当 Seen 引用 | `operator_fact` via `jea intel ingest` |
 | **Evidence** | 可被推翻的外部观测 | `jea intel ingest` / inbox、probe |
 
-**Action（硬开关）** 如 `approval_granted` 由 Decide 产出、Phase 2 执行；操作者不应直接编辑 `pending_decisions.json`。
+**Action（硬开关）** 如 `approval_granted` 由 Decide 产出、执行层强制检查；操作者不应直接编辑 `pending_decisions.json`。
 
 审批策略可通过 `JEA_APPROVAL_MODE` 配置：`manual`（默认）| `auto_guarded` | `auto_all`。详见 [AGENTS.md § 人工审批](./AGENTS.md#人工审批与操作者意图)。
 
@@ -443,10 +444,16 @@ cp .env.example .env   # Windows: copy .env.example .env
 | `JEA_APPROVAL_MODE` | `manual` \| `auto_guarded` \| `auto_all` |
 | `JEA_EVOLUTION_MODE` | Daemon 默认演化模式 |
 | `JEA_AGENT_PROVIDER` | 默认 agent 后端 |
-| `JEA_EXEC_AGENT_BUDGET` | 单轮最多消费的 `agent_run` 数（默认 8）；机械动作无上限 |
+| `JEA_EXEC_AGENT_BUDGET` | 单次 exec batch 最多消费的 `agent_run` 数（默认 8）；机械动作无上限 |
 | `JEA_AGENT_MAX_CONCURRENCY` | agent_run 波内并行宽度上限（默认 2） |
 | `JEA_AGENT_MAX_ATTEMPTS` | 失败后转 `blocked` 前的重试次数（默认 2） |
 | `JEA_EXEC_LIMIT` | deprecated，映射为 `JEA_EXEC_AGENT_BUDGET` |
+| `JEA_QUEUE_DISABLE_CYCLE_TTL` | 显式关闭 cycle-count TTL 的兼容开关；墙钟后备仍保留 |
+| `JEA_LLM_PROCESS_TOKEN_BUDGET` | 真实 LLM 每 subject/进程硬 token 预算（默认 1,000,000） |
+| `JEA_LLM_REQUEST_MAX_TOKENS` | 单请求 completion 上限（默认/最大 8,192） |
+| `JEA_RUNTIME_MAINTENANCE` | 启用 daemon heartbeat sidecar maintenance（默认开） |
+| `JEA_RUNTIME_MAINTENANCE_INTERVAL_MS` | maintenance 周期（默认 24h） |
+| `JEA_SIDECAR_RETENTION_DAYS` / `JEA_SIDECAR_HOT_MAX` | 默认归档天数 / hot 记录上限（30 天 / 1,000） |
 
 飞书 per-subject 凭证写在 `<JEA_HOME>/subjects/<ns>/.env`，变量名为 `JEA_CHANNEL_FEISHU_APP_ID` / `_APP_SECRET`，见 `.env.example` 与 `policies/subjects.example.json`。
 
@@ -460,7 +467,10 @@ CYBER_TAOIST_DOCS_DIR=/path/to/custom-authority jea run
 
 ## 安全边界
 
-- Phase 1 默认只 **记录** 观测、探针提案、回顾与回执，不修改引擎源码、权威文献或 intel-store 本身。
+- investigation 只读；只有受治理的 decision 才能调度副作用。
+- exec intent 在副作用前持久化；崩溃后留下的 uncertain intent 必须由操作者核对，禁止盲目重放。
+- verify 对照结构化观测与声明期望；agent narrative 本身不是 observation。
+- settlement 幂等，append-only belief/goal events 的权威性高于可重建 sidecar。
 - **核心层变更**（`core_apply`）默认需人工 review；`JEA_CORE_APPLY_POLICY=review|disabled` 可进一步约束。
 - **远端发布、凭据、越界写入** 由 SUBJECT.md 的 Off-Limits 与 `approval_granted` 双重约束；Channel 不能自动放行。
 - `jea data reset --yes` 会删除当前 subject 运行时数据，**有破坏性**；自动化脚本执行前需确认 subject。
@@ -493,7 +503,7 @@ PR、向 `main` 的 push，以及 merge group 会跑：
 
 `main` 由 Ruleset 保护：改动必须走基于最新 `main` 的 PR。上表检查为 required checks。Nightly `reactor:canary` 只跑 mock，不是 PR required check，也绝不注入 `DEEPSEEK_API_KEY`。真实 DeepSeek 测试仍需 `JEA_LIVE_DEEPSEEK=1`。`jea doctor` 是本地诊断，不是 CI 门禁。
 
-`jea audit queue` 检查的是演化证据 / 决策队列，**不是** npm 供应链审计（`npm run audit:ci`）。
+`jea audit queue` 检查演化证据 / 决策队列。`jea audit closure` 汇总 belief binding 与 expected-output 声明覆盖、causal correlation、batch-scoped refs、重复 settlement 候选、Memory 新鲜度，以及分离的 evidence/task backlog。两者都**不是** npm 供应链审计（`npm run audit:ci`）。
 
 - 引擎 vendoring 说明：[`src/engine/VENDORED.md`](./src/engine/VENDORED.md)
 - 自动化代理与本地操作完整指引：[AGENTS.md](./AGENTS.md)

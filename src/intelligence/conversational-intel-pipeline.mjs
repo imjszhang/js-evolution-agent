@@ -30,6 +30,7 @@ import {
   prepareIntelReport,
   updateStandingMemoryWithAi,
 } from './report-builder.mjs';
+import { redactSecrets } from './redaction.mjs';
 import {
   buildConversationSystemPromptParts,
   buildDecideUserPromptParts,
@@ -297,7 +298,7 @@ export class ConversationalIntelligencePipeline {
       if (reportUsageLog) this._log(reportUsageLog);
 
       if (rawReportMarkdown) {
-        writeFileSync(rawReportPath, rawReportMarkdown, 'utf-8');
+        writeFileSync(rawReportPath, redactSecrets(rawReportMarkdown), 'utf-8');
       } else if (!existsSync(rawReportPath)) {
         writeFileSync(rawReportPath, '', 'utf-8');
       }
@@ -330,7 +331,7 @@ export class ConversationalIntelligencePipeline {
         reportRepairUsageSummaries = repaired.usageSummaries || [];
         if (reportRepair.rounds > 0 && persistReportMarkdown) {
           repairedReportPath = join(recordsDir, 'phases_report_repaired.md');
-          writeFileSync(repairedReportPath, persistReportMarkdown, 'utf-8');
+          writeFileSync(repairedReportPath, redactSecrets(persistReportMarkdown), 'utf-8');
         }
         if (reportRepair.findings_initial?.length) {
           store?.recordEvolutionEvent?.({

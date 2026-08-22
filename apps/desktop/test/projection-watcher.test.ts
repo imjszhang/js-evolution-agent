@@ -377,6 +377,147 @@ describe('ProjectionWatcher', () => {
     expect(todoGet).toHaveBeenCalledTimes(todoCalls)
   })
 
+  it('publishes a scoped conversation event for an appended session record without projection fan-out', () => {
+    const root = projectRoot()
+    const events = new DesktopEventBus()
+    const published: any[] = []
+    events.subscribe((event) => published.push(event))
+    const callbackRef: { current?: (event: { reason: string; partitions?: string[] }) => void } = {}
+    let messageCount = 1
+    let lastMessageAt = '2026-08-21T00:00:00.000Z'
+    const opsRefresh = vi.fn(() => [{
+      subject: { name: 'alpha' },
+      daemon: { worker: { running: true }, health: { status: 'healthy' }, tasks: { counts: { pending: 0 } } },
+      observability: { attention: {}, open_cycles: 0 }
+    }])
+    const todoGet = vi.fn(() => ({
+      subject: 'alpha',
+      questions: [],
+      briefs: [],
+      facts: [],
+      goals: null,
+      pending_cycle_request: null,
+      attention: {}
+    }))
+    const projection = new ProjectionWatcher(
+      root,
+      { refresh: opsRefresh } as any,
+      { get: todoGet } as any,
+      {
+        get: vi.fn(() => ({
+          subject: 'alpha',
+          projection: { worker: { running: true } },
+          sessions: [{
+            session_id: 'main',
+            target: 'desktop:main',
+            message_count: messageCount,
+            last_message_at: lastMessageAt
+          }],
+          inbound: {}
+        }))
+      } as any,
+      events,
+      ((options: any) => {
+        callbackRef.current = options.onRuntimeChange
+        return { start: vi.fn(), stop: vi.fn(), notify: vi.fn() }
+      }) as any
+    )
+    projection.watch('alpha')
+    const opsCalls = opsRefresh.mock.calls.length
+    const todoCalls = todoGet.mock.calls.length
+
+    messageCount = 2
+    lastMessageAt = '2026-08-21T00:00:01.000Z'
+    callbackRef.current?.({ reason: 'watch', partitions: ['conversation'] })
+    expect(published).toEqual([expect.objectContaining({
+      type: 'conversation.updated',
+      subject: 'alpha',
+      session_id: 'main',
+      payload: expect.objectContaining({
+        subject: 'alpha',
+        session_id: 'main',
+        reason: 'watch'
+      })
+    })])
+    expect(opsRefresh).toHaveBeenCalledTimes(opsCalls)
+    expect(todoGet).toHaveBeenCalledTimes(todoCalls)
+  })
+
+  it('publishes removed session fingerprints, including rename-like delete and add', () => {
+    const root = projectRoot()
+    const events = new DesktopEventBus()
+    const published: any[] = []
+    events.subscribe((event) => published.push(event))
+    const callbackRef: { current?: (event: { reason: string; partitions?: string[] }) => void } = {}
+    let sessions = [
+      { session_id: 'main', target: 'desktop:main', message_count: 1, last_message_at: '2026-08-21T00:00:00.000Z' },
+      { session_id: 'inactive', target: 'desktop:inactive', message_count: 1, last_message_at: '2026-08-21T00:00:00.000Z' }
+    ]
+    const opsRefresh = vi.fn(() => [{
+      subject: { name: 'alpha' },
+      daemon: { worker: { running: true }, health: { status: 'healthy' }, tasks: { counts: { pending: 0 } } },
+      observability: { attention: {}, open_cycles: 0 }
+    }])
+    const todoGet = vi.fn(() => ({
+      subject: 'alpha',
+      questions: [],
+      briefs: [],
+      facts: [],
+      goals: null,
+      pending_cycle_request: null,
+      attention: {}
+    }))
+    const projection = new ProjectionWatcher(
+      root,
+      { refresh: opsRefresh } as any,
+      { get: todoGet } as any,
+      {
+        get: vi.fn(() => ({
+          subject: 'alpha',
+          projection: { worker: { running: true } },
+          sessions,
+          inbound: {}
+        }))
+      } as any,
+      events,
+      ((options: any) => {
+        callbackRef.current = options.onRuntimeChange
+        return { start: vi.fn(), stop: vi.fn(), notify: vi.fn() }
+      }) as any
+    )
+    projection.watch('alpha')
+    callbackRef.current?.({ reason: 'watch', partitions: ['conversation'] })
+    published.length = 0
+    const opsCalls = opsRefresh.mock.calls.length
+    const todoCalls = todoGet.mock.calls.length
+
+    sessions = [{ session_id: 'renamed', target: 'desktop:renamed', message_count: 1, last_message_at: '2026-08-21T00:00:00.000Z' }]
+    callbackRef.current?.({ reason: 'watch', partitions: ['conversation'] })
+
+    expect(published).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'conversation.updated',
+        subject: 'alpha',
+        session_id: 'renamed',
+        payload: expect.objectContaining({ session_id: 'renamed' })
+      }),
+      expect.objectContaining({
+        type: 'conversation.updated',
+        subject: 'alpha',
+        session_id: 'main',
+        payload: expect.objectContaining({ session_id: 'main', removed: true })
+      }),
+      expect.objectContaining({
+        type: 'conversation.updated',
+        subject: 'alpha',
+        session_id: 'inactive',
+        payload: expect.objectContaining({ session_id: 'inactive', removed: true })
+      })
+    ]))
+    expect(opsRefresh).toHaveBeenCalledTimes(opsCalls)
+    expect(todoGet).toHaveBeenCalledTimes(todoCalls)
+  })
+
   it('single-flights a burst and follows up once when refresh dirties itself', () => {
     const root = projectRoot()
     const events = new DesktopEventBus()

@@ -186,6 +186,10 @@ export interface SetupSettingsClient {
   listSubjects(): Promise<SubjectSummary[]>
   setDefaultSubject?(subject: string): Promise<unknown>
   getServiceReadiness?(subject: string): Promise<SubjectReadiness>
+  listCycles?(subject: string, limit?: number): Promise<import('./evolution/types').EvolutionCycleList>
+  getObservability?(subject: string): Promise<import('./evolution/types').EvolutionObservability>
+  processCycleOnce?(subject: string): Promise<{ status?: string; reason?: string }>
+  startService?(subject: string, domain?: 'all' | 'cycle' | 'channel'): Promise<unknown>
   subscribe?(listener: (event: ProductEventEnvelope) => void): () => void
 }
 

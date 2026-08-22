@@ -48,7 +48,11 @@ describe('agent-run-log', () => {
       level: 'info',
       cycle_id: 'cycle-20260531-test',
       name: 'Read',
-      input: '{"path":"src/index.mjs"}',
+      input: '{"path":"src/index.mjs","token":"ghp_0123456789abcdefghijklmnop"}',
+      metadata: {
+        client_secret: 'must-not-persist',
+        safe: 'kept',
+      },
     });
 
     expect(filePath).toBe(resolveAgentRunLogPath(ctx, 'cycle-20260531-test'));
@@ -56,6 +60,12 @@ describe('agent-run-log', () => {
     const row = JSON.parse(readFileSync(filePath, 'utf-8').trim());
     expect(row.event).toBe('tool_call');
     expect(row.name).toBe('Read');
+    expect(row.input).toContain('[REDACTED_SECRET]');
+    expect(row.input).not.toContain('ghp_');
+    expect(row.metadata).toEqual({
+      client_secret: '[REDACTED_SECRET]',
+      safe: 'kept',
+    });
   });
 
   it('disables JSONL when JEA_AGENT_RUN_JSONL=0', () => {

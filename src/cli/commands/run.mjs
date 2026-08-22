@@ -8,8 +8,12 @@ import {
 } from '../../infra/subject-lane-guard.mjs';
 import { resolveSubjectFromFlags } from '../../infra/subjects.mjs';
 
-export async function runCommand({ flags = {} } = {}) {
-  const root = getProjectRoot();
+export async function runCommand({
+  flags = {},
+  root: suppliedRoot = null,
+  run = runNode,
+} = {}) {
+  const root = suppliedRoot ?? getProjectRoot();
   loadProjectEnv(root);
   const env = { ...process.env };
 
@@ -54,6 +58,6 @@ export async function runCommand({ flags = {} } = {}) {
     return 1;
   }
 
-  return runNode(['--preserve-symlinks', runner], { cwd: root, env });
+  return run(['--preserve-symlinks', runner], { cwd: root, env });
 }
 

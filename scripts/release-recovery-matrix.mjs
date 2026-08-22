@@ -1,5 +1,5 @@
 /**
- * Bounded / packaged 0.1.1 recovery matrix (#143).
+ * Bounded / packaged recovery matrix for the current release.
  *
  * Linux CI runs --bounded (isolated Home + dir fixture, no JEA.app).
  * macOS release can pass --app / --packaged against a dir-only or JEA.app tree.
@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseArgs, printReport, repoRootFrom } from './release-lib.mjs';
+import { parseArgs, printReport, RELEASE_VERSION, repoRootFrom } from './release-lib.mjs';
 import {
   applyRecoveryFixture,
   assertNoCheckoutDiscovery,
@@ -446,7 +446,7 @@ function resolvePackagedRoot({ repoRoot, appPath, metadata }) {
   const fixture = writePackagedDirFixture({
     outDir: dir,
     metadata: metadata || {
-      version: '0.1.0',
+      version: '0.2.0',
       commit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       dirty: false,
       built_at: '2026-08-17T00:00:00.000Z',
@@ -581,11 +581,13 @@ export async function runRecoveryMatrix({
       ok,
       status: ok ? 'passed' : 'failed',
       mode,
-      release: '0.1.0',
-      certification: '0.1.1',
+      release: RELEASE_VERSION,
+      certification: RELEASE_VERSION,
       platform: `${process.platform}-${process.arch}`,
       build_id: packaged.metadata?.build_id ?? loadBuildMetadata({ sourceRoot: packaged.sourceRoot, collect: false }).build_id,
       commit: packaged.metadata?.commit ?? null,
+      dirty: packaged.metadata?.dirty ?? null,
+      generated_at: new Date().toISOString(),
       jeaHome: keepHome ? home.jeaHome : '(removed)',
       wroteUserHome: false,
       steps,

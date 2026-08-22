@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Isolated 0.1.0 product-journey checks for #122.
+ * Isolated 0.2.0 product-journey checks for #122.
  *
  * Uses a temporary JEA_HOME and never writes ~/.jea. When JEA.app exists,
  * every CLI step goes through the packaged launcher (Electron-as-Node),
@@ -19,6 +19,7 @@ import { parseArgs, printReport, repoRootFrom } from './release-lib.mjs';
 import { PRODUCT_VERSION } from '../src/product/identity.mjs';
 import { installCliLauncher } from '../src/product/cli-launcher.mjs';
 import { electronBinaryFromApp, looksLikePackagedApp, packagedSourceRootFromApp } from '../src/product/app-paths.mjs';
+import { loadBuildMetadata } from '../src/product/build-metadata.mjs';
 
 const SECRET_RE = /DEEPSEEK_API_KEY|access_token=|sk-[A-Za-z0-9]/;
 
@@ -103,6 +104,10 @@ export function runProductJourney({
   const jeaHome = mkdtempSync(join(tmpdir(), 'jea-cert-home-'));
   const binDir = mkdtempSync(join(tmpdir(), 'jea-cert-bin-'));
   const runner = resolveJourneyRunner({ repoRoot, appPath });
+  const metadata = loadBuildMetadata({
+    sourceRoot: runner.sourceRoot,
+    collect: runner.kind !== 'packaged',
+  });
   const env = {
     ...process.env,
     JEA_HOME: jeaHome,
@@ -241,6 +246,10 @@ export function runProductJourney({
     release: PRODUCT_VERSION,
     platform: 'macos-arm64',
     runner: runner.kind,
+    generated_at: new Date().toISOString(),
+    build_id: metadata.build_id,
+    commit: metadata.commit,
+    dirty: metadata.dirty,
     jeaHome,
     wroteUserHome: false,
     steps,

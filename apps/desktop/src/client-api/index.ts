@@ -33,7 +33,8 @@ export {
   projectSubjectReadiness,
   readSubjectReadiness,
   readinessCodeView,
-  READINESS_ACTION_CAPABILITY
+  READINESS_ACTION_CAPABILITY,
+  SUBJECT_READINESS_REASON_CODES
 } from './readiness'
 export type {
   CatalogCommandEntry,
@@ -74,6 +75,5 @@ export type {
 } from './types'
 export {
   SUBJECT_READINESS_ACTION_IDS,
-  SUBJECT_READINESS_DOMAIN_STATES,
-  SUBJECT_READINESS_REASON_CODES
+  SUBJECT_READINESS_DOMAIN_STATES
 } from './types'

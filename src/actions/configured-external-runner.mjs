@@ -22,7 +22,7 @@ function defaultToolRoot(ctx, configured) {
   return resolve(sourceRoot, '..', configured.tool || 'external-tool');
 }
 
-function flagArgs(configured, action) {
+function flagArgs(configured, action, ctx = {}) {
   const args = [];
   for (const key of configured.params.allowed ?? []) {
     const value = getField(action, key);
@@ -32,7 +32,7 @@ function flagArgs(configured, action) {
   }
   const approvalFlag = configured.params.approvalFlag;
   const explicitForce = Boolean(getField(action, approvalFlag) || getField(action, 'approved'));
-  const policyForce = Boolean(approvalFlag && allowsExternalForceAutoApproval());
+  const policyForce = Boolean(approvalFlag && allowsExternalForceAutoApproval(ctx));
   if (approvalFlag && (explicitForce || policyForce)) {
     args.push(configured.params.forceFlag || '--force');
   }
@@ -130,7 +130,7 @@ export async function runConfiguredExternalAction(action, ctx, opts = {}) {
   const config = loadSubjectActionConfig(root);
   const execution = await resolveToolExecution(config, configured, ctx, action, root);
   const { toolRoot, cli, linkId, resolution } = execution;
-  const args = flagArgs(configured, action);
+  const args = flagArgs(configured, action, ctx);
   const { env: childEnv } = buildExecutionEnv(toolRoot, { overrides: opts.env ?? {} });
 
   if (ctx?.host?.configuredExternalRunner) {

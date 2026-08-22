@@ -1,5 +1,5 @@
 import { chatMessagesJson } from '../ai/messages.mjs';
-import { createLlmClient } from '../ai/gateway.mjs';
+import { createSubjectLlmClient } from './llm-client.mjs';
 import { resolveInboundAdapterForPayload } from './inbound-adapters/registry.mjs';
 import { recordChannelEvent } from './audit.mjs';
 import { runWithTimeout, ChannelTimeoutError } from './async-utils.mjs';
@@ -47,8 +47,13 @@ function normalizeClassifierItems(parsed, expectedIds, entriesById = new Map()) 
   return byId;
 }
 
-async function classifyBatchWithLlm(entries, { aiClient = null, config } = {}) {
-  const client = aiClient ?? createLlmClient({
+async function classifyBatchWithLlm(entries, {
+  aiClient = null,
+  config,
+  root,
+  subject,
+} = {}) {
+  const client = aiClient ?? createSubjectLlmClient(root, subject, {
     profile: 'channel_classifier',
     timeout: config.llm?.timeout ?? 25,
   });
@@ -135,11 +140,20 @@ function classifyBatchDeterministic(entries) {
   return { status: 'deterministic', items: byId };
 }
 
-async function resolveBatchClassifications(entries, config, { aiClient = null } = {}) {
+async function resolveBatchClassifications(entries, config, {
+  aiClient = null,
+  root,
+  subject,
+} = {}) {
   if (config.mode === 'mock' || config.mode === 'deterministic') {
     return classifyBatchDeterministic(entries);
   }
-  const llm = await classifyBatchWithLlm(entries, { aiClient, config });
+  const llm = await classifyBatchWithLlm(entries, {
+    aiClient,
+    config,
+    root,
+    subject,
+  });
   if (llm.status === 'used' && llm.items) return llm;
   if (config.mode === 'llm' && config.fallback === 'retry') {
     return llm;
@@ -235,7 +249,11 @@ export async function runChannelClassifierTask(root, subject, input = {}) {
 
   let classificationResult = { status: 'empty', items: new Map() };
   if (forLlm.length) {
-    const runClassify = () => resolveBatchClassifications(forLlm, config, { aiClient: input.aiClient ?? null });
+    const runClassify = () => resolveBatchClassifications(forLlm, config, {
+      aiClient: input.aiClient ?? null,
+      root,
+      subject,
+    });
     try {
       classificationResult = await runWithTimeout(runClassify, config.timeout_ms, 'channel_classifier');
     } catch (err) {

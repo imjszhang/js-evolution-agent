@@ -41,7 +41,7 @@ npm run audit:ci
 npm run reactor:canary
 ```
 
-`npm run audit:ci` 是生产依赖供应链门禁（高危/严重项须精确匹配未到期且仍无修复的 baseline）。`jea audit queue` 是演化证据 / 决策队列检查，二者不是同一概念。Coverage 阈值是首次实测向下取整的不回退基线；不要在 CI 里自动改 `vitest.config.mjs`。
+`npm run audit:ci` 是生产依赖供应链门禁（高危/严重项须精确匹配未到期且仍无修复的 baseline）。`jea audit queue` 检查演化证据 / 决策队列；`jea audit closure [--subject NAME] [--json]` 检查 belief binding / expected-output 声明覆盖、因果关联、batch refs、重复 settlement 候选、Memory 新鲜度和分离的 evidence/task backlog。三者不是同一概念。Coverage 阈值是首次实测向下取整的不回退基线；不要在 CI 里自动改 `vitest.config.mjs`。
 
 CI jobs：`check`、`test (22)`、`client-api`、`web-host`、`desktop-build`、`dependency-audit`，外加 CodeQL JS/TS。`main` 禁止直接 push，须基于最新 main 开 PR。Nightly 只跑 `npm run reactor:canary`（mock-only，不注入 `DEEPSEEK_API_KEY`，不是 PR required check）。真实 DeepSeek 测试保持 opt-in。
 
@@ -70,7 +70,7 @@ npx repolink list             # 若全局安装 js-repolink，可独立查看链
 npx repolink check --link agentank-evolver
 ```
 
-`external_tools.<tool>.link` 指向 repolink link id 时，Phase 2 exec 会在运行 configured external action 前做 link preflight；失败返回 `blocked` receipt（`blocked_reason: repo_link_unavailable`），而不是 ENOENT 裸报错。
+`external_tools.<tool>.link` 指向 repolink link id 时，执行层会在运行 configured external action 前做 link preflight；失败返回 `blocked` receipt（`blocked_reason: repo_link_unavailable`），而不是 ENOENT 裸报错。
 
 自动化代理在未确认操作者路径前，不要替其写入 `.env` 中的链接路径；`link:` 引用未配置时 `jea subject check` 会报 `lane.repo_link_unresolved` / `resources.link_unresolved` 诊断。
 
@@ -80,13 +80,13 @@ npx repolink check --link agentank-evolver
 
 | 模块 | 文档 | 内容 |
 | --- | --- | --- |
-| 认知管线 | [src/intelligence/AGENTS.md](src/intelligence/AGENTS.md) | 运行演化循环、Agent Loop 管道、情报与报告、操作者输入、目标管理 |
-| 执行层 | [src/actions/AGENTS.md](src/actions/AGENTS.md) | Phase 2 exec、人工审批与操作者意图、审计与动作 |
+| 认知管线 | [src/intelligence/AGENTS.md](src/intelligence/AGENTS.md) | belief-driven async loop、settlement、Memory Reactor、情报与操作者输入 |
+| 执行层 | [src/actions/AGENTS.md](src/actions/AGENTS.md) | causal exec/verify、expected output、人工审批、审计与动作 |
 | AI 网关 | [src/ai/AGENTS.md](src/ai/AGENTS.md) | LLM 档案（DeepSeek V4）、KV 缓存约定 |
 | Daemon 编排 | [src/daemon/AGENTS.md](src/daemon/AGENTS.md) | Daemon 工作流、step 状态与 checkpoint、批量演化 |
 | Channel | [src/channel/AGENTS.md](src/channel/AGENTS.md) | Channel 通道、飞书部署、classifier / presence |
 | Client API | [apps/desktop/src/client-api/AGENTS.md](apps/desktop/src/client-api/AGENTS.md) | 统一 `JeaClient` 契约、命令/事件目录、应用命令层 |
-| 共享 App Shell | [packages/jea-app/README.md](packages/jea-app/README.md) | Open Science 风格工作区壳层、主题、i18n、feature slots；Electron/Web 共用同一 React 源 |
+| 共享 App Shell | [packages/jea-app/README.md](packages/jea-app/README.md) | 三栏工作区、operator projection、主题、i18n；Electron/Web 共用同一 React 源 |
 | localhost Web host | [apps/desktop/src/web-host/AGENTS.md](apps/desktop/src/web-host/AGENTS.md) | loopback HTTP/RPC、认证、可续传事件、共享 renderer 静态资源 |
 | 产品打包 / CLI 启动器 | [src/product/AGENTS.md](src/product/AGENTS.md) | macOS arm64 包装、托管 `jea` 启动器、`start/status/url/stop` |
 
@@ -100,12 +100,12 @@ npx repolink check --link agentank-evolver
 
 常用命令：
 
-- `jea data status`：查看当前主体运行时数据概况。
+- `jea data status`：查看当前主体运行时数据概况，并暴露 reactor/Channel hot/archive 数量、evidence index 与 runtime maintenance 状态。
 - `jea data status --json`：输出机器可读 JSON。
 - `jea data init`：创建运行时数据目录，不删除历史。
 - `jea data init --all`：创建目标模板并写入初始化情报。
 - `jea data backup [--name NAME]`：备份当前主体运行时数据到 `<JEA_HOME>/backups/subjects/<data_namespace>/`。
-- `jea data migrate-home [--dry-run] [--json] [--yes]`：停机校验后把旧 `<sourceRoot>/runtime/subjects/` 无损复制到 JEA Home；不删除旧目录。
+- `jea data migrate-home [--dry-run] [--json] [--yes]`：停机校验后把旧 `<sourceRoot>/runtime/subjects/` 无损复制到 JEA Home；不删除旧目录。0.1.0 缺失的可选 causal/comparison 字段保持 unknown，不得伪造。
 - `jea data reset [--yes]`：删除当前主体本地运行时数据。此命令有破坏性，自动化代理不要在未确认的情况下执行。
 
 ## Subject 管理
@@ -118,7 +118,7 @@ Subject 决定策略、命名空间和运行时路径。
 - `jea subject use <name>` / `jea subject default <name>`：更新 `<JEA_HOME>/subjects/registry.json` 中的 default subject。
 - `jea subject check [--subject NAME]`：校验 subject policy。
 - `jea subject lane status|init [--subject NAME]`：检查或初始化目标仓库 lane。
-- `jea run --subject NAME`：显式指定单轮演化主体；`jea evolve` / `jea daemon` 已支持 `--subject` / `--subjects` / `--all`。
+- `jea run --subject NAME`：显式指定同步 reactor chain 的主体；`jea evolve` / `jea daemon` 已支持 `--subject` / `--subjects` / `--all`。
 
 `<JEA_HOME>/subjects/registry.json` 是设备级 registry，可承载机器可读的 `lane` 与 `resources` 字段；字段形态参考 `policies/subjects.example.json`。主体 Markdown policy 只保留主体语义、安全边界和人工审批规则，不维护 repo、branch、resource root、resource mapping 等机器字段。
 
@@ -134,11 +134,30 @@ jea data init --all --subject <name>
 
 | 旧命令 | 替代 |
 | --- | --- |
-| `npm run intel` | `npm run jea -- run --mock`（或 daemon step `intel`） |
-| `npm run exec` | Phase 2 由 `jea run` / daemon `exec` step 执行 |
+| `npm run intel` | `npm run jea -- run --mock` |
+| `npm run exec` | 由 `jea run` 或 daemon reactor tasks 执行 |
 | `npm run decisons` | `jea audit queue` |
 
-底层 engine 源码位于 `src/engine/`（已 vendor；旧 `node_modules/js-evolution-engine` 路径不再使用）。经典 `IntelligencePipeline` / `VerifyPipeline` / GitHub Issues 模式与 PromptBuilder 模板已删除；Phase 1 由宿主 reactor / investigation 编排，Phase 2 仍走 `ExecutionPipeline` + `verifyActions`。详见 [`src/engine/VENDORED.md`](src/engine/VENDORED.md)。
+底层 engine 源码位于 `src/engine/`（已 vendor；旧 `node_modules/js-evolution-engine` 路径不再使用）。经典 `IntelligencePipeline` / `VerifyPipeline` / GitHub Issues 模式与 PromptBuilder 模板已删除；live 路径由 cognitive / exec / verify / rule / memory reactors 编排。详见 [`src/engine/VENDORED.md`](src/engine/VENDORED.md)。
+
+## 0.2.0 运行机制与兼容性
+
+Live 因果链是：
+
+```text
+EvidenceEnvelope → claimed batch → report → belief-bound decision
+→ durable exec intent → exec result / action receipt
+→ expected-output verify → idempotent belief/goal settlement
+→ Memory Reactor consolidation → operator projection / Channel delivery
+```
+
+- `producer_batch_id`、`reaction_id`、`decision_id`、`execution_id`、`belief_id` 是链路关联字段；0.1.0 记录缺字段时标为 legacy/unknown，不回填虚构值。
+- `run_spec.expected_output` 必须与结构化 receipt/result/verifier observation 对照；`execution_success=true` 不代表期望已匹配。
+- 同步 `jea run` 与 daemon 异步 rule reactor 共用 settlement 协调器。`data/evolution/reactor/settlements.json` 可由带 `settlement_id` / `settlement_effect` 的 append-only belief/goal events 重建。
+- Memory Reactor 低频合并已 settlement 的 belief/goal events；不要手改 `standing_memory.json`。
+- claim 正常路径使用可重建的 `reactor/evidence-index.json`（紧凑元数据 + JSONL 字节游标）；主 evidence 仍是权威，索引不保存 payload。`jea audit closure` 不创建或修复任何索引。
+- daemon heartbeat 默认每 24 小时运行 runtime maintenance。`JEA_RUNTIME_MAINTENANCE=0` 可关闭；`JEA_RUNTIME_MAINTENANCE_INTERVAL_MS`、`JEA_SIDECAR_RETENTION_DAYS`、`JEA_SIDECAR_HOT_MAX` 及各 store override 控制节奏和 hot bound。active claims/leases、uncertain exec intents、主 append-only evidence 不清理。
+- 升级后先停 daemon、备份并迁移 JEA Home，再运行 `jea audit closure --json`。历史 cycle-state 与旧报告保留只读兼容；已移除的 driver 参数和任务类型明确失败。
 
 ## 操作建议
 
@@ -148,9 +167,9 @@ jea data init --all --subject <name>
 - 多主体并行时，用 `jea daemon status --all`、`jea daemon doctor --all` 和 `jea daemon inbox --all` 做总览。
 - 新 subject 接飞书机器人：先 `jea subject init` + `jea data init --all`，再 `jea channel feishu setup --subject NAME --write-env --init-subject-config`，然后 `jea daemon start --domain channel`，最后在飞书私聊 `JEA BIND <口令>`；用 `jea channel events` 验收收消息与 ingest。
 - 自动化脚本需要结构化输出时，优先使用带 `--json` 的命令。
-- 反应器化迁移（Phase 1–2）：证据流读侧 `jea intel stream --reconcile`；认知影子双跑 `jea reactor shadow run|compare`（不写真实决策队列）。隔离 mock canary：`npm run reactor:canary`。详见 [src/intelligence/AGENTS.md](src/intelligence/AGENTS.md)「证据流与反应器影子」。
-- 发布/基线校准等人工作业：先读最新 evolution diary 与 verify report，再用 `jea intel brief put` 提交意图，然后 `jea daemon enqueue --type cognitive_reaction` 或 `jea run`；用 `jea intel brief list` / `processed` 确认 brief 是否已被消费。
-- 已确认的领域口径或术语定义（非待验证命题）：用 `jea intel fact put` 写入一次性种子；待核实或单轮优先级调整仍用 `jea intel brief put`。系统打开的 operator question 用 `jea intel question list` 查看，答复后 `question resolve`。
+- 一致性检查：证据流读侧 `jea intel stream --reconcile`；认知影子 `jea reactor shadow run|compare`（不写真实决策队列）；完整闭环 `jea audit closure --json`；隔离 mock canary `npm run reactor:canary`。
+- 发布/基线校准等人工作业：先读最新 Memory/verify/operator projection，再用 `jea intel brief put` 提交意图，然后 `jea daemon enqueue --type cognitive_reaction` 或 `jea run`；用 `jea intel brief list` / `processed` 确认 brief 是否已被消费。
+- 已确认的领域口径或术语定义（非待验证命题）：用 `jea intel fact put` 写入一次性种子；待核实或单次 reaction 优先级调整仍用 `jea intel brief put`。系统打开的 operator question 用 `jea intel question list` 查看，答复后 `question resolve`。
 - 长期稳定约束写 `human_guidance.md` 的 `## Current`；一次性核实请求不要写进 guidance，改用 brief。
 - 调整演化方向用 `jea goals update`；不要手改 `standing_memory.json` 或直接写 `pending_decisions.json`。
 

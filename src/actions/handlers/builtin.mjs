@@ -35,7 +35,6 @@ import {
 import { validateAuthorityScope } from '../authority-contract.mjs';
 import {
   explicitApprovalFromAction,
-  getApprovalMode,
   resolveApprovalDecision,
 } from '../approval-policy.mjs';
 import { buildEvidenceContract } from '../resource-registry.mjs';
@@ -1983,7 +1982,7 @@ const builtInActionHandlers = {
     const store = storeFrom(ctx);
     const policy = coreApplyPolicy();
     const approved = explicitApproval(action)
-      || (getApprovalMode() === 'auto_all' && policy !== 'disabled');
+      || (policy !== 'disabled' && resolveApprovalDecision(action, ctx).approved);
     const hasSandbox = sandboxConfigured(action);
 
     if (policy === 'disabled') {

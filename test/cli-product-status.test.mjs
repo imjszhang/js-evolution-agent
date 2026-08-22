@@ -96,6 +96,15 @@ describe('jea status --json compatibility', () => {
     expect(help).toContain('readiness [--json] [--subject NAME]');
     expect(help).toContain('Distinct from jea status');
   });
+
+  it('omits retired train pipeline and task examples', () => {
+    const help = helpText();
+    expect(help).not.toContain('run --loop');
+    expect(help).not.toContain('agent_loop');
+    expect(help).not.toContain('|phases');
+    expect(help).not.toContain('run_cycle');
+    expect(help).toContain('daemon enqueue --type cognitive_reaction');
+  });
 });
 
 describe('jea product status aggregate', () => {

@@ -182,10 +182,30 @@ export function sanitizeObservability(value: unknown): EvolutionObservability | 
   const subject = asString(value.subject)
   if (!subject) return null
   const cycle_diagnostics = sanitizeCycleDiagnostics(value.cycle_diagnostics)
+  const rawAttention = isRecord(value.attention) ? value.attention : {}
+  const items = (Array.isArray(rawAttention.items) ? rawAttention.items : []).flatMap((item) => {
+    if (!isRecord(item)) return []
+    const title = asString(item.title)
+    if (!title) return []
+    return [{
+      severity: asString(item.severity) ?? 'info',
+      kind: asString(item.kind) ?? 'general',
+      status: asString(item.status) ?? 'active',
+      category: asString(item.category) ?? 'current',
+      blocking: asBoolean(item.blocking),
+      title,
+      summary: asString(item.summary) ?? ''
+    }]
+  })
   return {
     subject,
-    attention: isRecord(value.attention) ? value.attention : {},
+    attention: {
+      items,
+      summary: isRecord(rawAttention.summary) ? rawAttention.summary : {}
+    },
     open_cycles: asFiniteNumber(value.open_cycles) ?? 0,
+    evidence_pending_count: asFiniteNumber(value.evidence_pending_count) ?? 0,
+    daemon_task_pending_count: asFiniteNumber(value.daemon_task_pending_count) ?? 0,
     ...(cycle_diagnostics ? { cycle_diagnostics } : {})
   }
 }

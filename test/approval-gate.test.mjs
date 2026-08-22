@@ -26,7 +26,7 @@ describe('ApprovalGate', () => {
     expect(autoApprovalDecision(action, { mode: 'manual' }).approved).toBe(false);
     expect(autoApprovalDecision(action, { mode: 'auto_guarded' })).toMatchObject({
       approved: true,
-      reason: 'auto_guarded_low_risk',
+      reason: 'read_only_agent_run',
     });
   });
 

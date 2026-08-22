@@ -63,10 +63,25 @@ export interface EvolutionCycleDiagnosticSummary {
   status: string | null
 }
 
+export interface EvolutionAttentionItem {
+  severity: string
+  kind: string
+  status: string
+  category: string
+  blocking: boolean
+  title: string
+  summary: string
+}
+
 export interface EvolutionObservability {
   subject: string
-  attention: Record<string, unknown>
+  attention: {
+    items?: EvolutionAttentionItem[]
+    summary?: Record<string, unknown>
+  } & Record<string, unknown>
   open_cycles: number
+  evidence_pending_count?: number
+  daemon_task_pending_count?: number
   cycle_diagnostics?: {
     recent?: EvolutionCycleDiagnosticSummary[]
   }

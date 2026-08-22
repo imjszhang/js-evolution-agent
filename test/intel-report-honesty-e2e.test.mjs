@@ -9,6 +9,7 @@ import {
   existsSync,
   mkdtempSync,
   mkdirSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -39,6 +40,7 @@ const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const SUBJECT = 'alpha';
 const FACT_ID = 'fact-e2e-honesty-1';
 const OBS_ID = 'obs-e2e-honesty-1';
+const MODEL_SECRET = 'ghp_0123456789abcdefghijklmnop';
 
 const HONEST_REPORT = [
   '# 情报报告（honesty e2e）',
@@ -72,6 +74,7 @@ const DIRTY_HOST_SEEN_REPORT = [
   '',
   '## Inferred',
   `- Operator brief mentioned ${POISON_INTENT_CLAIM_E2E}; treat as intent only, not Seen.`,
+  `- Model echoed ${MODEL_SECRET} with invented ref [intel_observations:not-real].`,
   '',
   '## Cyber-Taoist analysis',
   '- Bootstrap honesty fixture only; host owns Seen splice.',
@@ -80,6 +83,9 @@ const DIRTY_HOST_SEEN_REPORT = [
   '- Keep Seen citations reopenable; do not promote brief claims.',
   '',
 ].join('\n');
+
+const REPAIRED_HOST_SEEN_REPORT = DIRTY_HOST_SEEN_REPORT
+  .replace(' with invented ref [intel_observations:not-real].', '.');
 
 const HONEST_DECIDE = JSON.stringify({
   decision: 'execute',
@@ -217,6 +223,7 @@ function makeHonestyAiClient() {
     ],
     canned: [
       { match: /Strategic Analysis & Decision/i, response: HONEST_DECIDE },
+      { match: /报告修复|Report repair/i, response: REPAIRED_HOST_SEEN_REPORT },
       // phases + agent_loop prompts carry Final Seen; dirty Seen asserts host splice.
       { match: /Final Seen/i, response: DIRTY_HOST_SEEN_REPORT },
       { match: /情报报告任务|Intelligence Report Task/i, response: HONEST_REPORT },
@@ -295,6 +302,11 @@ async function runHonestyMatrix() {
     expect(seenBody).toContain('[machine_context:decision_queue]');
     expect(intelResult.report?.raw_md_path).toBeTruthy();
     expect(existsSync(intelResult.report.raw_md_path)).toBe(true);
+    expect(readFileSync(intelResult.report.raw_md_path, 'utf-8')).not.toContain(MODEL_SECRET);
+    expect(readFileSync(intelResult.report.raw_md_path, 'utf-8')).toContain('[REDACTED_SECRET]');
+    expect(intelResult.report?.repaired_md_path).toBeTruthy();
+    expect(readFileSync(intelResult.report.repaired_md_path, 'utf-8')).not.toContain(MODEL_SECRET);
+    expect(readFileSync(intelResult.report.repaired_md_path, 'utf-8')).toContain('[REDACTED_SECRET]');
     // Host Seen splice runs before redactSecrets.
     expect(seenBody).not.toContain(SECRET_SHAPED);
     expect(seenBody).toContain('[REDACTED_SECRET]');

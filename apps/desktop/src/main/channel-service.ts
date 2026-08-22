@@ -14,8 +14,8 @@ import {
   summarizeInboundFile
 } from '../../../../src/intelligence/evolution-viewer/runtime-watch.mjs'
 import { listRegisteredSubjects } from '../../../../src/infra/subjects.mjs'
-import { redactSecrets } from '../../../../src/intelligence/redaction.mjs'
 import { channelProjectionHealth } from '../client-api/owners/conversation'
+import { redactPublicValue } from '../client-api/redact'
 import type {
   ChannelSnapshot,
   DesktopSessionPage,
@@ -37,7 +37,7 @@ export class ChannelService {
 
   get(subject: string): ChannelSnapshot {
     this.assertSubject(subject)
-    return redactSecrets({
+    return redactPublicValue({
       subject,
       projection: buildChannelProjection(this.runtimeContext, subject, { eventLimit: 30 }),
       sessions: listDesktopSessions(this.runtimeContext, subject),
@@ -64,7 +64,7 @@ export class ChannelService {
     options: { offset?: number; limit?: number; tail?: number | null } = {}
   ): DesktopSessionPage {
     this.assertSubject(subject)
-    return redactSecrets((readDesktopSession as any)(
+    return redactPublicValue((readDesktopSession as any)(
       this.runtimeContext,
       subject,
       sessionId,
@@ -80,7 +80,7 @@ export class ChannelService {
   ): Record<string, unknown> {
     this.assertSubject(subject)
     try {
-      return redactSecrets((sendDesktopInboundMessage as any)(this.runtimeContext, subject, {
+      return redactPublicValue((sendDesktopInboundMessage as any)(this.runtimeContext, subject, {
         session_id: sessionId,
         text,
         message_id: messageId,
@@ -112,7 +112,7 @@ export class ChannelService {
     const dir = status === 'processed'
       ? channelInboundProcessedDir(this.runtimeContext, subject)
       : channelInboundPendingDir(this.runtimeContext, subject)
-    return redactSecrets(
+    return redactPublicValue(
       summarizeChannelDir(dir, summarizeInboundFile, Math.max(0, Math.min(200, limit)))
     ) as Record<string, unknown>[]
   }
@@ -123,7 +123,7 @@ export class ChannelService {
     const match = listJsonFiles(channelInboundProcessedDir(this.runtimeContext, subject))
       .find((candidate) => candidate.endsWith(safeName))
     if (!match) return null
-    return redactSecrets(readJsonFile(match, null)) as Record<string, unknown> | null
+    return redactPublicValue(readJsonFile(match, null)) as Record<string, unknown> | null
   }
 
   private assertSubject(subject: string): void {

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolveOutboundAdapter } from './adapter-registry.mjs';
 import { recordChannelEvent } from './audit.mjs';
@@ -9,6 +10,7 @@ import {
   markOutboxFailed,
   markOutboxSent,
   readJsonFile,
+  requeueOutboxFailed,
   writePendingInbound,
 } from './state.mjs';
 import { normalizeOutboundMessage, isDeprecatedChannelTaskType } from './types.mjs';
@@ -28,6 +30,15 @@ function sanitizedErrorMessage(error) {
   return String(redactSecrets(error?.message || String(error)))
     .replace(/authorization\s*[:=]\s*(?:bearer\s+)?\S+/gi, 'Authorization: [REDACTED]')
     .replace(/(app[_-]?secret|bind[_-]?token)\s*[:=]\s*\S+/gi, '$1=[REDACTED]');
+}
+
+function retryBatchId(failed) {
+  const identity = failed
+    .map((item) => item.idempotency_key ?? item.target ?? item.file)
+    .filter(Boolean)
+    .sort()
+    .join('|');
+  return createHash('sha256').update(identity || 'unknown').digest('hex').slice(0, 16);
 }
 
 export async function runChannelInboundTask(root, subject, input = {}) {
@@ -51,7 +62,19 @@ export async function runChannelInboundTask(root, subject, input = {}) {
 }
 
 export async function runChannelNotifyTask(root, subject, input = {}, runtime = {}) {
-  const files = listOutboxPending(root, subject, { limit: input.limit ?? 10 });
+  const failedOutbox = Array.isArray(input.failed_outbox) ? input.failed_outbox : [];
+  const retryRecovery = failedOutbox.map((item) => requeueOutboxFailed(
+    root,
+    subject,
+    typeof item === 'string' ? item : item?.file,
+    { retryAttempt: input.retry_attempt ?? 1 },
+  ));
+  const retryFiles = retryRecovery
+    .filter((item) => item.status === 'pending' && item.file)
+    .map((item) => item.file);
+  const files = failedOutbox.length
+    ? [...new Set(retryFiles)].slice(0, Math.max(0, input.limit ?? 10))
+    : listOutboxPending(root, subject, { limit: input.limit ?? 10 });
   const sent = [];
   const failed = [];
   let deliverableStore = null;
@@ -87,6 +110,7 @@ export async function runChannelNotifyTask(root, subject, input = {}, runtime = 
         channel: outbound.channel,
         adapter: adapter.id,
         target: outbound.target,
+        transport: outbound.channel,
       });
       if (meta.deliverable_id) {
         // Record the *actual* medium used: a document that fell back to text
@@ -118,7 +142,12 @@ export async function runChannelNotifyTask(root, subject, input = {}, runtime = 
         throw err;
       }
       const target = markOutboxFailed(root, subject, file, reason, payload);
-      failed.push({ file, target, reason });
+      failed.push({
+        file,
+        target,
+        reason,
+        idempotency_key: payload.idempotency_key ?? payload.outbound?.idempotency_key ?? null,
+      });
       recordChannelEvent(root, subject, {
         type: 'channel_message_send_failed',
         status: 'error',
@@ -126,6 +155,9 @@ export async function runChannelNotifyTask(root, subject, input = {}, runtime = 
         error_code: err?.code ?? null,
         timeout_ms: err?.timeoutMs ?? null,
         outbound_id: payload.id ?? payload.outbound?.id ?? null,
+        idempotency_key: payload.idempotency_key ?? payload.outbound?.idempotency_key ?? null,
+        transport: payload.channel ?? payload.outbound?.channel ?? null,
+        target: payload.target ?? payload.outbound?.target ?? null,
       });
       if (meta.deliverable_id) {
         recordDeliveryOutcome(root, subject, {
@@ -147,12 +179,17 @@ export async function runChannelNotifyTask(root, subject, input = {}, runtime = 
   }
   if (failed.length) {
     const attempt = Number(input.retry_attempt ?? 0) + 1;
-    const maxAttempts = Number(process.env.JEA_CHANNEL_NOTIFY_MAX_RETRIES ?? 3);
+    const maxAttempts = Math.max(1, Number(process.env.JEA_CHANNEL_NOTIFY_MAX_RETRIES) || 3);
     if (attempt < maxAttempts) {
       enqueueChannelTask(root, subject, {
         type: 'channel_retry',
-        input: { ...input, retry_attempt: attempt, limit: input.limit ?? 10 },
-        idempotency_key: `${subject}:channel_notify_retry:${attempt}`,
+        input: {
+          ...input,
+          failed_outbox: failed.map((item) => ({ file: item.target })),
+          retry_attempt: attempt,
+          limit: input.limit ?? 10,
+        },
+        idempotencyKey: `${subject}:channel_notify_retry:${attempt}:${retryBatchId(failed)}`,
         priority: 10,
       });
       recordChannelEvent(root, subject, {
@@ -163,7 +200,7 @@ export async function runChannelNotifyTask(root, subject, input = {}, runtime = 
       });
     }
   }
-  return { sent, failed };
+  return { sent, failed, retry_recovery: retryRecovery };
 }
 
 export async function runChannelTask(root, subject, task, runtime = {}) {

@@ -76,8 +76,16 @@ function cellLabel(cell) {
 }
 
 function makeMatrixClient(cell) {
+  const subjectKey = `live-matrix-${cellLabel(cell)}`;
   return new DeepSeekOpenAIClient({
     apiKey: process.env.DEEPSEEK_API_KEY,
+    subjectKey,
+    budgetLedgerPath: join(
+      REPO_ROOT,
+      'test-artifacts',
+      'intel-honesty-matrix',
+      `${RUN_ID}-${subjectKey.replace(/[^a-z0-9-]+/gi, '-')}.budget.json`,
+    ),
     baseURL: process.env.DEEPSEEK_BASE_URL,
     model: cell.model,
     thinkingMode: cell.thinkingMode,
@@ -93,6 +101,13 @@ function makeMatrixClient(cell) {
 function makeJudgeClient() {
   return new DeepSeekOpenAIClient({
     apiKey: process.env.DEEPSEEK_API_KEY,
+    subjectKey: 'live-matrix-judge',
+    budgetLedgerPath: join(
+      REPO_ROOT,
+      'test-artifacts',
+      'intel-honesty-matrix',
+      `${RUN_ID}-judge.budget.json`,
+    ),
     baseURL: process.env.DEEPSEEK_BASE_URL,
     model: DEEPSEEK_MODELS.pro,
     thinkingMode: 'high',

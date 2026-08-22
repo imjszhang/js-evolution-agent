@@ -150,6 +150,13 @@ export function createConversationHarness(options: ConversationHarnessOptions = 
 
   const sessions = new Map<string, ConversationSessionSummary[]>()
   const records = new Map<string, ConversationMessage[]>()
+  const pipelines = new Map<string, {
+    status: 'idle' | 'pending' | 'failed' | 'delivered'
+    message_id: string | null
+    pending_count: number
+    failed_count: number
+    last_error: string | null
+  }>()
   for (const subject of options.subjects ?? []) {
     if (subject.sessions) sessions.set(subject.name, clone(subject.sessions))
     if (subject.records) {
@@ -228,8 +235,10 @@ export function createConversationHarness(options: ConversationHarnessOptions = 
 
   const observability: EvolutionObservability = {
     subject: TEST_CONVERSATION_SUBJECT,
-    attention: { count: 0, highest_severity: null },
+    attention: { items: [], summary: { count: 0, highest_severity: null } },
     open_cycles: 0,
+    evidence_pending_count: 0,
+    daemon_task_pending_count: 0,
     ...options.observability
   }
 
@@ -322,6 +331,13 @@ export function createConversationHarness(options: ConversationHarnessOptions = 
             status: defaultSubjectReadiness.channel.state === 'blocked' ? 'blocked' : (service.mode === 'none' ? 'idle' : 'healthy'),
             ok: defaultSubjectReadiness.channel.state !== 'blocked',
             reasons: options.channelReasons ?? []
+          },
+          pipeline_state: pipelines.get(key(subject, sessionId)) ?? {
+            status: 'idle',
+            message_id: null,
+            pending_count: 0,
+            failed_count: 0,
+            last_error: null
           }
         }
       }
@@ -335,6 +351,13 @@ export function createConversationHarness(options: ConversationHarnessOptions = 
         const sessionId = String(payload.sessionId ?? 'main')
         const messageId = String(payload.messageId ?? `harness-${Date.now()}`)
         sent.push({ subject, text, sessionId, messageId })
+        pipelines.set(key(subject, sessionId), {
+          status: 'pending',
+          message_id: messageId,
+          pending_count: 1,
+          failed_count: 0,
+          last_error: null
+        })
         const existing = records.get(key(subject, sessionId)) ?? []
         const duplicate = existing.some((item) => item.message_id === messageId)
         if (!duplicate) {
@@ -499,6 +522,9 @@ export function createConversationHarness(options: ConversationHarnessOptions = 
     setReadDelay(ms: number) {
       readDelayMs = ms
     },
+    setSessions(subject: string, next: ConversationSessionSummary[]) {
+      sessions.set(subject, clone(next))
+    },
     setSupportDelay(ms: number) {
       supportDelayMs = ms
     },
@@ -521,7 +547,13 @@ export function createConversationHarness(options: ConversationHarnessOptions = 
         observabilityBySubject.set(subject, { ...observability, ...next.observability, subject })
       }
     },
-    appendAssistant(subject: string, sessionId: string, content: string, extras: Partial<ConversationMessage> = {}) {
+    appendAssistant(
+      subject: string,
+      sessionId: string,
+      content: string,
+      extras: Partial<ConversationMessage> = {},
+      notify = true
+    ) {
       const existing = records.get(key(subject, sessionId)) ?? []
       existing.push({
         id: extras.id ?? `outbound:${existing.length}`,
@@ -535,7 +567,15 @@ export function createConversationHarness(options: ConversationHarnessOptions = 
         ...extras
       })
       records.set(key(subject, sessionId), existing)
-      emit('conversation.updated', subject, sessionId, { subject, session_id: sessionId })
+      const currentPipeline = pipelines.get(key(subject, sessionId))
+      pipelines.set(key(subject, sessionId), {
+        status: 'delivered',
+        message_id: extras.message_id ?? currentPipeline?.message_id ?? null,
+        pending_count: 0,
+        failed_count: 0,
+        last_error: null
+      })
+      if (notify) emit('conversation.updated', subject, sessionId, { subject, session_id: sessionId })
     },
     records
   }

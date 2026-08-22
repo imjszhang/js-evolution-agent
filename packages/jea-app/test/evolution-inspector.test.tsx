@@ -118,7 +118,7 @@ describe('Evolution Inspector component', () => {
     expect(html).not.toContain('data-state="open"')
   })
 
-  it('shows Cycle backlog but hides Process once until readiness allows it', () => {
+  it('shows pending evidence and keeps raw worker controls out of Inspector', () => {
     const client = createEvolutionFixtureClient()
     client.processCycleOnce = async () => ({ status: 'ok' })
     client.startService = async () => ({})
@@ -133,7 +133,7 @@ describe('Evolution Inspector component', () => {
         />
       </LocaleProvider>
     )
-    expect(html).toContain('Cycle backlog 1')
+    expect(html).toContain('Pending evidence 1')
     expect(html).not.toContain('data-testid="evolution-process-once"')
     expect(html).not.toContain('data-testid="evolution-start-cycle"')
     expect(canShowProcessOnce(['process_cycle_once'], { hasClient: true, subject: 'alpha' })).toBe(true)

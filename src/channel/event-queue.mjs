@@ -1,5 +1,11 @@
 import { randomUUID } from 'node:crypto';
+import { dirname, join } from 'node:path';
 import { readJson, updateJson } from '../infra/json-store.mjs';
+import {
+  archiveJsonRecords,
+  retentionPolicy,
+  terminalArchiveCandidates,
+} from '../infra/sidecar-retention.mjs';
 import { channelEventQueuePath } from './paths.mjs';
 import { nowIso } from './types.mjs';
 
@@ -35,6 +41,10 @@ function updateQueue(root, subject, updater) {
   }, { fallback: emptyQueue() });
 }
 
+export function channelEventArchivePath(root, subject) {
+  return join(dirname(channelEventQueuePath(root, subject)), 'archive', 'terminal_events.json');
+}
+
 function normalizeEvent(event = {}) {
   const type = String(event.type ?? 'unknown').trim() || 'unknown';
   return {
@@ -50,6 +60,9 @@ function normalizeEvent(event = {}) {
     claimed_at: event.claimed_at ?? null,
     handled_at: event.handled_at ?? null,
     last_error: event.last_error ?? null,
+    attempts: Math.max(0, Number(event.attempts) || 0),
+    max_attempts: Math.max(1, Number(event.max_attempts) || 1),
+    next_attempt_at: event.next_attempt_at ?? null,
   };
 }
 
@@ -79,9 +92,12 @@ export function claimChannelEvents(root, subject, { runId, limit = 20, types = n
     for (const event of queue.events) {
       if (event.status !== 'pending') continue;
       if (typeSet && !typeSet.has(event.type)) continue;
+      const nextAttempt = Date.parse(event.next_attempt_at ?? '');
+      if (Number.isFinite(nextAttempt) && nextAttempt > Date.now()) continue;
       event.status = 'claimed';
       event.claimed_by = runId ?? null;
       event.claimed_at = now;
+      event.attempts = Math.max(0, Number(event.attempts) || 0) + 1;
       claimed.push(event);
       if (claimed.length >= limit) break;
     }
@@ -124,6 +140,21 @@ export function markChannelEventsFailed(root, subject, eventIds, meta = {}) {
   });
 }
 
+export function requeueChannelEvents(root, subject, eventIds, {
+  error = 'retryable_failure',
+  delayMs = 0,
+} = {}) {
+  const nextAttemptAt = new Date(Date.now() + Math.max(0, Number(delayMs) || 0)).toISOString();
+  return updateEvents(root, subject, eventIds, (event) => {
+    event.status = 'pending';
+    event.claimed_by = null;
+    event.claimed_at = null;
+    event.handled_at = null;
+    event.last_error = error;
+    event.next_attempt_at = nextAttemptAt;
+  });
+}
+
 export function supersedePendingChannelEvents(root, subject, { type, keepLatest = true } = {}) {
   const now = nowIso();
   let toSupersede = [];
@@ -144,6 +175,40 @@ export function supersedePendingChannelEvents(root, subject, { type, keepLatest 
 export function getChannelEvent(root, subject, eventId) {
   if (!eventId) return null;
   return readQueue(root, subject).events.find((event) => event.id === eventId) ?? null;
+}
+
+export function listChannelEvents(root, subject, { type = null } = {}) {
+  const rows = readQueue(root, subject).events;
+  return type ? rows.filter((event) => event.type === type) : rows;
+}
+
+export function cleanupChannelEventQueue(root, subject, {
+  now = Date.now(),
+  ...options
+} = {}) {
+  const policy = retentionPolicy('channel_event', options);
+  let result = { archived: 0, retained: 0 };
+  updateQueue(root, subject, (queue) => {
+    const candidates = terminalArchiveCandidates(queue.events, {
+      now,
+      ...policy,
+      isTerminal: (event) => ['handled', 'failed', 'superseded'].includes(event.status),
+      timestamp: (event) => event.handled_at || event.created_at,
+    });
+    if (!candidates.length) {
+      result.retained = queue.events.length;
+      return queue;
+    }
+    archiveJsonRecords(channelEventArchivePath(root, subject), candidates, {
+      collection: 'events',
+      idOf: (event) => event.id,
+    });
+    const ids = new Set(candidates.map((event) => event.id));
+    queue.events = queue.events.filter((event) => !ids.has(event.id));
+    result = { archived: candidates.length, retained: queue.events.length };
+    return queue;
+  });
+  return result;
 }
 
 export function summarizeChannelEventQueue(root, subject) {

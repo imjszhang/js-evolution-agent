@@ -548,8 +548,8 @@ describe('ConversationalIntelligencePipeline', () => {
     expect(result.success).toBe(true);
     expect(result.decisions_queued).toEqual([]);
     expect(result.decisions_skipped[0].reason).toBe('invalid_action');
-    expect(result.decisions_skipped[0].validation.errors)
-      .toContain('resource root could not be resolved for scope: missing_external');
+    expect(result.decisions_skipped[0].validation.errors.join('\n'))
+      .toMatch(/missing_external/);
     expect(queue.decisions).toEqual([]);
   });
 

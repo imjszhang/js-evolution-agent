@@ -17,11 +17,12 @@ import { readChannelEvents } from './audit.mjs';
 import {
   listOutboxPending,
   countPendingInbound,
-  listRecentInboundProcessed,
+  reconcileInboundProcessedIndex,
   summarizeUnclassifiedInbound,
   readCooldown,
-  readJsonFile,
+  readPresenceHandledIndex,
   readPresenceState,
+  reconcilePendingSpeechGeneration,
   buildPresenceSignalKey,
 } from './state.mjs';
 import { buildExpressionCandidates, candidateIdForMessage, candidateIdForSignal } from './expression-candidates.mjs';
@@ -33,29 +34,6 @@ import { resolvePresenceAffordances } from './presence-affordances.mjs';
 import { readRecentPresenceInteractions, partitionPresenceInteractions } from './presence-memory.mjs';
 import { nowIso } from './types.mjs';
 
-function summarizeRecentIngested(root, subject, { limit = 8 } = {}) {
-  const items = [];
-  for (const file of listRecentInboundProcessed(root, subject, { limit })) {
-    const payload = readJsonFile(file);
-    if (!payload?.envelope) continue;
-    const understanding = payload.classifier?.understanding
-      ?? payload.ingest_result?.brief?.metadata?.understanding
-      ?? payload.ingest_result?.record?.metadata?.understanding
-      ?? null;
-    items.push({
-      message_id: payload.envelope.message_id,
-      channel: payload.envelope.channel,
-      chat_id: payload.envelope.chat_id,
-      content: String(payload.envelope.content ?? '').slice(0, 500),
-      ingest_kind: payload.ingest_result?.kind ?? null,
-      brief_kind: payload.ingest_result?.brief?.kind ?? null,
-      processed_file: file,
-      understanding,
-    });
-  }
-  return items;
-}
-
 /** Classifier ignore is visible to presence but must not drive reply / silence cursors. */
 export function isPresenceReplyEligible(item) {
   return item?.ingest_kind != null && item.ingest_kind !== 'ignore';
@@ -66,22 +44,27 @@ function annotatePresenceEligibility(item, extra = {}) {
   return { ...item, presence_eligible, ...extra };
 }
 
-function partitionIngestedByHandled(root, subject, ingested) {
-  const presenceState = readPresenceState(root, subject);
-  const handled = presenceState.handled_candidates ?? {};
+function partitionIngestedByHandled(ingested, handled) {
   const new_messages = [];
   const background_messages = [];
   const ignored_messages = [];
+  const migratedThrough = handled.__migration__?.processed_through ?? null;
   for (const item of ingested) {
     if (item.ingest_kind === 'ignore') {
       ignored_messages.push(annotatePresenceEligibility(item, { presence_handled: false }));
       continue;
     }
     const candidateId = candidateIdForMessage(item);
-    if (!candidateId || handled[candidateId]) {
+    const conservativelyMigrated = Boolean(
+      migratedThrough
+      && item.processed_file
+      && String(item.processed_file).localeCompare(String(migratedThrough)) <= 0,
+    );
+    if (!candidateId || handled[candidateId] || conservativelyMigrated) {
       background_messages.push(annotatePresenceEligibility(item, {
-        presence_handled: Boolean(candidateId && handled[candidateId]),
+        presence_handled: Boolean(candidateId && (handled[candidateId] || conservativelyMigrated)),
         candidate_id: candidateId,
+        migration_suppressed: conservativelyMigrated,
       }));
     } else {
       new_messages.push(annotatePresenceEligibility(item, {
@@ -93,16 +76,19 @@ function partitionIngestedByHandled(root, subject, ingested) {
   return { new_messages, background_messages, ignored_messages };
 }
 
-function annotateAttentionSignals(root, subject, signals) {
-  const handled = readPresenceState(root, subject).handled_candidates ?? {};
+function annotateAttentionSignals(signals, handled, messageCandidatesByBriefId = new Map()) {
   return signals.map((signal) => {
     const key = buildPresenceSignalKey(signal);
     const candidateId = candidateIdForSignal({ ...signal, presence_signal_key: key });
+    const replyCandidateId = signal.type === 'operator_brief_pending'
+      ? messageCandidatesByBriefId.get(signal.refs?.brief_id) ?? null
+      : null;
     return {
       ...signal,
       presence_signal_key: key,
       candidate_id: candidateId,
       presence_handled: Boolean(candidateId && handled[candidateId]),
+      suppressed_by_candidate_id: replyCandidateId,
     };
   });
 }
@@ -169,11 +155,41 @@ export function buildPresenceContext(root, subject, {
   const rawSignals = collectAttentionSignals(root, subject, { projection });
   const pendingBriefs = readPendingOperatorBriefs(runtime.runtimeRoot, { limit: limits.briefs ?? 10 });
   const identity = resolveSubjectReplyIdentity(root, subject);
+  reconcilePendingSpeechGeneration(root, subject);
   const presenceState = readPresenceState(root, subject);
-  const recentIngested = summarizeRecentIngested(root, subject, { limit: limits.ingested ?? 8 });
-  const { new_messages, background_messages, ignored_messages } = partitionIngestedByHandled(root, subject, recentIngested);
+  const processedIndex = reconcileInboundProcessedIndex(root, subject, {
+    maxFiles: limits.processed_scan_files ?? 128,
+  });
+  const handledIndex = readPresenceHandledIndex(root, subject, {
+    processedEntries: processedIndex.entries,
+    allowConservativeMarker: processedIndex.legacy_index_detected,
+  });
+  const allIngested = processedIndex.entries;
+  const recentIngested = allIngested
+    .slice(-Math.max(0, limits.ingested ?? 8))
+    .reverse();
+  const allPartitioned = partitionIngestedByHandled(allIngested, handledIndex);
+  const recentPartitioned = partitionIngestedByHandled(recentIngested, handledIndex);
+  const candidateLimit = Math.max(
+    presence.max_actions_per_tick,
+    Number(limits.candidates) || 20,
+  );
+  // Processed files are oldest-first. Scan the complete classified history,
+  // then expose only one bounded oldest-unhandled page to the planner.
+  const new_messages = allPartitioned.new_messages.slice(0, candidateLimit);
+  const background_messages = recentPartitioned.background_messages;
+  const ignored_messages = recentPartitioned.ignored_messages;
   const unclassified = summarizeUnclassifiedInbound(root, subject, { previewLimit: 0 });
-  const attentionSignals = annotateAttentionSignals(root, subject, rawSignals.slice(0, limits.signals ?? 12));
+  const messageCandidatesByBriefId = new Map(
+    allIngested
+      .filter((item) => item.brief_id && candidateIdForMessage(item))
+      .map((item) => [item.brief_id, candidateIdForMessage(item)]),
+  );
+  const attentionSignals = annotateAttentionSignals(
+    rawSignals.slice(0, limits.signals ?? 12),
+    handledIndex,
+    messageCandidatesByBriefId,
+  );
 
   let goals = null;
   let beliefs = null;
@@ -240,6 +256,19 @@ export function buildPresenceContext(root, subject, {
         last_spoken_at: presenceState.last_spoken_at,
         handled_candidate_count: Object.keys(presenceState.handled_candidates ?? {}).length,
         handled_candidates: presenceState.handled_candidates ?? {},
+        pending_speech_generation: presenceState.pending_speech_generation ?? [],
+      },
+      classified_scan: {
+        total: processedIndex.total_files,
+        indexed_total: processedIndex.indexed_total,
+        files_parsed: processedIndex.files_parsed,
+        files_examined: processedIndex.files_examined,
+        invalid_tombstones: processedIndex.invalid_tombstones,
+        directory_listed: processedIndex.directory_listed,
+        legacy_index_detected: processedIndex.legacy_index_detected,
+        scan_complete: processedIndex.scan_complete,
+        unhandled_total: allPartitioned.new_messages.length,
+        candidate_page_size: new_messages.length,
       },
     },
     daemon: {
@@ -302,6 +331,7 @@ export function buildPresenceContext(root, subject, {
         last_spoken_at: presenceState.last_spoken_at,
         handled_candidate_count: Object.keys(presenceState.handled_candidates ?? {}).length,
         handled_candidates: presenceState.handled_candidates ?? {},
+        pending_speech_generation: presenceState.pending_speech_generation ?? [],
       },
       pending_inbound_count: countPendingInbound(root, subject),
       pending_outbox_count: listOutboxPending(root, subject, { limit: 1 }).length,

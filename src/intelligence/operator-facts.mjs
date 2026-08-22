@@ -173,6 +173,7 @@ export function normalizeOperatorFact(input = {}) {
     created_by: input.created_by ?? 'operator',
     supersedes: normalizeSupersedes(input.supersedes),
     metadata: input.metadata ?? {},
+    idempotency_key: input.idempotency_key ?? input.metadata?.idempotency_key ?? null,
     channel_source: input.channel_source ?? null,
     producer: input.producer ?? 'operator',
     activation_targets: Array.isArray(input.activation_targets)
@@ -200,11 +201,27 @@ export function writePendingOperatorFact(runtimeRoot, factInput) {
   if (!isHighConfidenceOperatorFact(fact)) {
     throw new Error('Operator fact seed requires confidence=high (or omitted)');
   }
+  if (fact.idempotency_key) {
+    for (const dir of [pendingOperatorFactsDir(runtimeRoot), digestedOperatorFactsDir(runtimeRoot)]) {
+      if (!existsSync(dir)) continue;
+      for (const name of readdirSync(dir).filter((entry) => entry.endsWith('.json'))) {
+        const record = readFactFile(join(dir, name));
+        if (record.fact?.idempotency_key === fact.idempotency_key) {
+          return {
+            file: record.file,
+            fact: record.fact,
+            created: false,
+            duplicate: true,
+          };
+        }
+      }
+    }
+  }
   const dir = pendingOperatorFactsDir(runtimeRoot);
   mkdirSync(dir, { recursive: true });
   const file = join(dir, factFilename(fact));
   writeFileSync(file, JSON.stringify(fact, null, 2), 'utf-8');
-  return { file, fact };
+  return { file, fact, created: true, duplicate: false };
 }
 
 function readFactFile(file) {

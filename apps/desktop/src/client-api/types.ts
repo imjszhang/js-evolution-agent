@@ -1,4 +1,5 @@
 import type { ClientApiCommandName, ClientApiEventName, PublicErrorCode } from './protocol'
+import type { SUBJECT_READINESS_REASON_CODES } from '../../../../src/product/subject-readiness.mjs'
 
 export interface InvokeRequest {
   command: string
@@ -59,6 +60,14 @@ export interface ChannelProjectionHealth {
   reasons: string[]
 }
 
+export interface ConversationPipelineState {
+  status: 'idle' | 'pending' | 'failed' | 'delivered'
+  message_id: string | null
+  pending_count: number
+  failed_count: number
+  last_error: string | null
+}
+
 export interface ConversationPage {
   schema_version: number
   subject: string
@@ -68,6 +77,7 @@ export interface ConversationPage {
   next_offset: number
   total: number
   channel_health?: ChannelProjectionHealth
+  pipeline_state?: ConversationPipelineState
 }
 
 export interface ConversationSendResult {
@@ -138,10 +148,25 @@ export interface EvolutionCycleDiagnosticSummary {
   status: string | null
 }
 
+export interface EvolutionAttentionItem {
+  severity: string
+  kind: string
+  status: string
+  category: string
+  blocking: boolean
+  title: string
+  summary: string
+}
+
 export interface EvolutionObservability {
   subject: string
-  attention: Record<string, unknown>
+  attention: {
+    items?: EvolutionAttentionItem[]
+    summary?: Record<string, unknown>
+  } & Record<string, unknown>
   open_cycles: number
+  evidence_pending_count?: number
+  daemon_task_pending_count?: number
   cycle_diagnostics?: {
     recent?: EvolutionCycleDiagnosticSummary[]
   }
@@ -184,40 +209,6 @@ export const SUBJECT_READINESS_ACTION_IDS = [
 ] as const
 
 export type SubjectReadinessActionId = (typeof SUBJECT_READINESS_ACTION_IDS)[number]
-
-export const SUBJECT_READINESS_REASON_CODES = [
-  'web_host_running',
-  'web_host_stopped',
-  'web_host_zombie',
-  'web_host_unavailable',
-  'cycle_running',
-  'cycle_attached',
-  'cycle_stopped',
-  'cycle_blocked',
-  'cycle_stalled',
-  'cycle_stale',
-  'cycle_zombie',
-  'cycle_starting',
-  'cycle_stopping',
-  'cycle_unavailable',
-  'channel_running',
-  'channel_attached',
-  'channel_stopped',
-  'channel_blocked',
-  'channel_stale',
-  'channel_zombie',
-  'channel_starting',
-  'channel_stopping',
-  'channel_unavailable',
-  'reactor_backlog_stalled',
-  'model_ready',
-  'model_mock',
-  'model_unset',
-  'conversation_ready',
-  'conversation_blocked_channel',
-  'conversation_blocked_model',
-  'desktop_channel_disabled'
-] as const
 
 export type SubjectReadinessReasonCode = (typeof SUBJECT_READINESS_REASON_CODES)[number]
 

@@ -5,9 +5,133 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { validateAgentRunSpec } from '../actions/agent-run-spec.mjs';
 import { missingRequiredActionParams } from '../actions/registry.mjs';
+import { extractBeliefContext } from '../contracts/belief-context.mjs';
 import { validateActionShape } from '../contracts/decision.mjs';
 import { resolveHostExternalRoots } from '../infra/subjects.mjs';
 import { markOperatorBriefsProcessed } from './operator-briefs.mjs';
+
+export const BELIEF_BOUND_ACTION_TYPES = new Set([
+  'agent_run',
+  'agent_execute',
+  'run_probe',
+  'propose_probe',
+]);
+
+const BELIEF_RELATIONS = new Set([
+  'test_belief',
+  'strengthen_belief',
+  'refute_belief',
+  'create_belief',
+  'recover_blocker',
+]);
+
+function actionExpectedOutput(action) {
+  const runSpec = action?.params?.run_spec
+    ?? action?.params?.runSpec
+    ?? action?.run_spec
+    ?? action?.runSpec
+    ?? {};
+  return runSpec.expected_output ?? runSpec.expectedOutput ?? null;
+}
+
+function validateBeliefIntent(action, decisionContext) {
+  if (!decisionContext || typeof decisionContext !== 'object') return { valid: true };
+  const context = extractBeliefContext(action);
+  const beliefId = typeof context.belief_id === 'string' ? context.belief_id.trim() : '';
+  const relation = typeof context.belief_relation === 'string' ? context.belief_relation.trim() : '';
+  const expectedUpdate = typeof context.expected_belief_update === 'string'
+    ? context.expected_belief_update.trim()
+    : '';
+  const noBeliefReason = typeof context.no_belief_reason === 'string'
+    ? context.no_belief_reason.trim()
+    : '';
+  const requiresBinding = BELIEF_BOUND_ACTION_TYPES.has(action?.type);
+
+  if (!beliefId && !relation && !expectedUpdate) {
+    if (requiresBinding) {
+      return {
+        valid: false,
+        errors: [`belief_binding_required: ${action?.type || 'unknown'} requires belief_id, belief_relation, expected_belief_update`],
+      };
+    }
+    if (!/^[a-z][a-z0-9_]{2,63}$/.test(noBeliefReason)) {
+      return {
+        valid: false,
+        errors: ['belief_exemption_required: params.context.no_belief_reason must be a machine-readable snake_case code'],
+      };
+    }
+    return { valid: true };
+  }
+
+  const errors = [];
+  if (!beliefId) errors.push('belief_id is required');
+  if (!BELIEF_RELATIONS.has(relation)) {
+    errors.push(`belief_relation must be one of: ${[...BELIEF_RELATIONS].join(', ')}`);
+  }
+  if (!expectedUpdate) errors.push('expected_belief_update is required');
+  if (errors.length) return { valid: false, errors };
+
+  const beliefs = decisionContext.current_beliefs ?? {};
+  const active = Array.isArray(beliefs.active) ? beliefs.active : [];
+  const validated = Array.isArray(beliefs.validated) ? beliefs.validated : [];
+  const refuted = Array.isArray(beliefs.refuted)
+    ? beliefs.refuted
+    : (Array.isArray(beliefs.recently_refuted) ? beliefs.recently_refuted : []);
+  const retired = Array.isArray(beliefs.retired) ? beliefs.retired : [];
+  const canonical = Array.isArray(beliefs.beliefs) ? beliefs.beliefs : [];
+  const activeIds = new Set([...active, ...validated].map((belief) => belief?.id).filter(Boolean));
+  const refutedIds = new Set(refuted.map((belief) => belief?.id).filter(Boolean));
+  const existingIds = new Set(
+    [...active, ...validated, ...refuted, ...retired, ...canonical]
+      .map((belief) => belief?.id)
+      .filter(Boolean),
+  );
+  const bootstrapIds = decisionContext.bootstrap_belief_ids instanceof Set
+    ? decisionContext.bootstrap_belief_ids
+    : new Set(decisionContext.bootstrap_belief_ids ?? []);
+
+  if (relation === 'create_belief') {
+    const expectedClaim = typeof (
+      context.expected_belief_claim
+      ?? context.belief_claim
+      ?? context.claim
+    ) === 'string'
+      ? String(context.expected_belief_claim ?? context.belief_claim ?? context.claim).trim()
+      : '';
+    const expectedOutput = actionExpectedOutput(action);
+    if (action?.type !== 'agent_run') {
+      errors.push('create_belief is restricted to agent_run');
+    }
+    if (!expectedClaim) errors.push('expected_belief_claim is required for create_belief');
+    if (!Array.isArray(expectedOutput) || !expectedOutput.some((item) => (
+      typeof item === 'string' && item.trim()
+    ))) {
+      errors.push('run_spec.expected_output must contain at least one claim for create_belief');
+    }
+    if (existingIds.has(beliefId)) {
+      errors.push(`belief_id_already_exists: ${beliefId}`);
+    }
+    if (existingIds.size > 0) {
+      errors.push('create_belief_bootstrap_requires_fresh_subject');
+    }
+    if (bootstrapIds.has(beliefId)) {
+      errors.push(`create_belief_duplicate_in_batch: ${beliefId}`);
+    } else if (bootstrapIds.size > 0) {
+      errors.push('create_belief_bootstrap_allows_one_belief');
+    }
+    return errors.length ? { valid: false, errors } : { valid: true, bootstrap_belief_id: beliefId };
+  }
+
+  if (activeIds.has(beliefId) || bootstrapIds.has(beliefId)) return { valid: true };
+  if (refutedIds.has(beliefId)) {
+    if (relation === 'recover_blocker') return { valid: true };
+    return {
+      valid: false,
+      errors: [`belief_refuted_requires_recovery: ${beliefId} must use recover_blocker`],
+    };
+  }
+  return { valid: false, errors: [`belief_id_unknown: ${beliefId}`] };
+}
 
 export function summarizeAnalysis(analysis) {
   if (!analysis) return '';
@@ -82,12 +206,16 @@ export function validateQueuedAction(action, ctx) {
   if (missing.length) {
     return { valid: false, errors: [`missing required field(s): ${missing.join(', ')}`] };
   }
-  if (action.type !== 'agent_run') return { valid: true };
+  const beliefValidation = validateBeliefIntent(action, ctx?.beliefDecisionContext);
+  if (action.type !== 'agent_run') return beliefValidation;
   try {
     const validation = validateAgentRunSpec(action, ctx);
     return {
-      valid: validation.valid,
-      errors: validation.errors,
+      valid: validation.valid && beliefValidation.valid,
+      errors: [
+        ...(validation.errors ?? []),
+        ...(beliefValidation.errors ?? []),
+      ],
       warnings: validation.warnings,
       run_spec: {
         primary_cwd: validation.spec?.primary_cwd ?? null,
@@ -288,6 +416,7 @@ export async function queueAnalyzeDecideActions({
   maxActions = null,
   pipeline,
   batchId = null,
+  beliefDecisionContext = null,
 } = {}) {
   if (pipeline == null || pipeline === '') {
     throw new Error('queueAnalyzeDecideActions requires an explicit pipeline (phases | agent_loop | reactor)');
@@ -346,6 +475,7 @@ export async function queueAnalyzeDecideActions({
     }
   }
 
+  const bootstrapBeliefIds = new Set();
   const queued = decisionQueue.addDecisionsDetailed
     ? decisionQueue.addDecisionsDetailed({
       cycleId,
@@ -355,13 +485,27 @@ export async function queueAnalyzeDecideActions({
         report_path: reportPath,
         conversation_context_path: conversationContextPath,
         pipeline,
+        ...(batchId ? { producer_batch_id: batchId } : {}),
+        ...(pipeline === 'reactor' && cycleId ? { reaction_id: cycleId, producer: 'cognitive' } : {}),
       },
-      validateAction: (action) => validateQueuedAction(action, {
-        projectRoot: host?.sourceRoot ?? projectRoot,
-        host,
-        runtime,
-        cycleId,
-      }),
+      validateAction: (action) => {
+        const validation = validateQueuedAction(action, {
+          projectRoot: host?.sourceRoot ?? projectRoot,
+          host,
+          runtime,
+          cycleId,
+          beliefDecisionContext: beliefDecisionContext
+            ? { ...beliefDecisionContext, bootstrap_belief_ids: bootstrapBeliefIds }
+            : null,
+        });
+        if (validation.valid) {
+          const context = extractBeliefContext(action);
+          if (context.belief_relation === 'create_belief' && context.belief_id) {
+            bootstrapBeliefIds.add(context.belief_id);
+          }
+        }
+        return validation;
+      },
     })
     : {
       ids: decisionQueue.addDecisions({

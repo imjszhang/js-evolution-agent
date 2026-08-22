@@ -128,11 +128,20 @@ describe('conversation workspace helpers', () => {
       observability: {
         subject: 'beta',
         attention: {
-          cycle_status: 'failed',
-          tldr: 'cycle exploded',
-          blockers: ['lane locked']
+          items: [{
+            severity: 'critical',
+            kind: 'cycle_progress_stalled',
+            status: 'active',
+            category: 'current',
+            blocking: true,
+            title: 'Cycle failed',
+            summary: 'cycle exploded'
+          }],
+          summary: { count: 1 }
         },
-        open_cycles: 1
+        open_cycles: 1,
+        evidence_pending_count: 1,
+        daemon_task_pending_count: 0
       },
       records: [{
         id: 'q-1',
@@ -150,9 +159,9 @@ describe('conversation workspace helpers', () => {
       'desktop_disabled',
       'web_rejected',
       'model_unavailable',
-      'cycle_failed',
       'operator_question'
     ]))
+    expect(cards.some((card) => card.source === 'observability')).toBe(false)
     expect(cards.some((card) => card.kind === 'offline')).toBe(false)
 
     const blocked = deriveInlineCards({
@@ -206,6 +215,184 @@ describe('conversation workspace model', () => {
     model.stopWaiting()
     expect(model.getSnapshot().waiting).toBe(false)
     expect(model.getSnapshot().records.some((record) => record.role === 'assistant')).toBe(false)
+  })
+
+  it('incrementally reads an asynchronously appended assistant reply and clears waiting only for the active scope', async () => {
+    const harness = createConversationHarness()
+    const model = new ConversationWorkspaceModel(harness.client)
+    await model.bootstrap()
+    model.setDraft('start async work')
+    await model.send()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(model.getSnapshot().waiting).toBe(true)
+    const reads = harness.commandCount('conversation.readMessages')
+
+    harness.appendAssistant('beta', 'main', 'wrong subject')
+    harness.appendAssistant('alpha', 'other', 'wrong session')
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(harness.commandCount('conversation.readMessages')).toBe(reads)
+    expect(model.getSnapshot().waiting).toBe(true)
+
+    setTimeout(() => {
+      harness.appendAssistant('alpha', 'main', 'async reply')
+    }, 0)
+    await waitFor(model, () => (
+      model.getSnapshot().records.some((record) => record.content === 'async reply')
+      && model.getSnapshot().waiting === false
+    ))
+
+    expect(harness.commandCount('conversation.readMessages')).toBe(reads + 1)
+    expect(model.getSnapshot().records.at(-1)).toMatchObject({
+      role: 'assistant',
+      content: 'async reply'
+    })
+  })
+
+  it('refreshes inactive session deletion without reading or disturbing active messages', async () => {
+    const harness = createConversationHarness({
+      subjects: [{
+        name: 'alpha',
+        namespace: 'alpha-data',
+        isDefault: true,
+        selected: true,
+        desktopChannelEnabled: true,
+        sessions: [
+          { session_id: 'main', target: 'desktop:main', message_count: 1, last_message_at: '2026-08-16T00:00:00.000Z' },
+          { session_id: 'inactive', target: 'desktop:inactive', message_count: 0, last_message_at: null }
+        ],
+        records: [{
+          id: 'main-1',
+          session_id: 'main',
+          role: 'user',
+          direction: 'inbound',
+          content: 'keep active',
+          created_at: '2026-08-16T00:00:00.000Z',
+          offset: 0
+        }]
+      }]
+    })
+    const model = new ConversationWorkspaceModel(harness.client)
+    await model.bootstrap()
+    const reads = harness.commandCount('conversation.readMessages')
+
+    harness.setSessions('alpha', [
+      { session_id: 'main', target: 'desktop:main', message_count: 1, last_message_at: '2026-08-16T00:00:00.000Z' }
+    ])
+    harness.emit('conversation.updated', 'alpha', 'inactive', {
+      subject: 'alpha',
+      session_id: 'inactive',
+      removed: true
+    })
+    await waitFor(model, () => model.getSnapshot().sessions.length === 1)
+
+    expect(model.getSnapshot().sessionId).toBe('main')
+    expect(model.getSnapshot().records.map((record) => record.content)).toEqual(['keep active'])
+    expect(harness.commandCount('conversation.readMessages')).toBe(reads)
+  })
+
+  it('selects a rename-like replacement and clears deleted-session messages before reloading', async () => {
+    const harness = createConversationHarness({
+      subjects: [{
+        name: 'alpha',
+        namespace: 'alpha-data',
+        isDefault: true,
+        selected: true,
+        desktopChannelEnabled: true,
+        sessions: [
+          { session_id: 'main', target: 'desktop:main', message_count: 1, last_message_at: '2026-08-16T00:00:00.000Z' }
+        ],
+        records: [{
+          id: 'old-1',
+          session_id: 'main',
+          role: 'user',
+          direction: 'inbound',
+          content: 'stale main message',
+          created_at: '2026-08-16T00:00:00.000Z',
+          offset: 0
+        }]
+      }]
+    })
+    const model = new ConversationWorkspaceModel(harness.client)
+    await model.bootstrap()
+    harness.records.set('alpha:renamed', [{
+      id: 'new-1',
+      session_id: 'renamed',
+      role: 'user',
+      direction: 'inbound',
+      content: 'renamed session message',
+      created_at: '2026-08-16T00:00:01.000Z',
+      offset: 0
+    }])
+    harness.setSessions('alpha', [
+      { session_id: 'renamed', target: 'desktop:renamed', message_count: 1, last_message_at: '2026-08-16T00:00:01.000Z' }
+    ])
+
+    harness.emit('conversation.updated', 'alpha', 'main', {
+      subject: 'alpha',
+      session_id: 'main',
+      removed: true
+    })
+    await waitFor(model, () => model.getSnapshot().records.some((record) => record.content === 'renamed session message'))
+
+    expect(model.getSnapshot().sessionId).toBe('renamed')
+    expect(model.getSnapshot().sessions.map((session) => session.session_id)).toEqual(['renamed'])
+    expect(model.getSnapshot().records.map((record) => record.content)).toEqual(['renamed session message'])
+  })
+
+  it('clears selection and records when the active session is deleted without replacement', async () => {
+    const harness = createConversationHarness({
+      subjects: [{
+        name: 'alpha',
+        namespace: 'alpha-data',
+        isDefault: true,
+        selected: true,
+        desktopChannelEnabled: true,
+        sessions: [
+          { session_id: 'main', target: 'desktop:main', message_count: 1, last_message_at: '2026-08-16T00:00:00.000Z' }
+        ],
+        records: [{
+          id: 'old-1',
+          session_id: 'main',
+          role: 'user',
+          direction: 'inbound',
+          content: 'remove me',
+          created_at: '2026-08-16T00:00:00.000Z',
+          offset: 0
+        }]
+      }]
+    })
+    const model = new ConversationWorkspaceModel(harness.client)
+    await model.bootstrap()
+    harness.setSessions('alpha', [])
+
+    harness.emit('conversation.updated', 'alpha', 'main', {
+      subject: 'alpha',
+      session_id: 'main',
+      removed: true
+    })
+    await waitFor(model, () => model.getSnapshot().sessionId === null)
+
+    expect(model.getSnapshot().sessions).toEqual([])
+    expect(model.getSnapshot().records).toEqual([])
+  })
+
+  it('uses bounded polling only as a lost conversation-event fallback', async () => {
+    const harness = createConversationHarness()
+    const model = new ConversationWorkspaceModel(harness.client)
+    await model.bootstrap()
+    model.setDraft('fallback please')
+    await model.send()
+    expect(model.getSnapshot().pipelineState?.status).toBe('pending')
+    const reads = harness.commandCount('conversation.readMessages')
+
+    harness.appendAssistant('alpha', 'main', 'reply without event', {}, false)
+    await waitFor(model, () => (
+      model.getSnapshot().records.some((record) => record.content === 'reply without event')
+      && model.getSnapshot().waiting === false
+    ), 1_000)
+
+    expect(harness.commandCount('conversation.readMessages')).toBeGreaterThan(reads)
+    expect(model.getSnapshot().pipelineState?.status).toBe('delivered')
   })
 
   it('reuses the message id on retry and allocates a new id after edit or context switch', async () => {

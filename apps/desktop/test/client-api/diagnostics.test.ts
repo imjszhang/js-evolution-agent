@@ -2,7 +2,12 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { createApplicationCommandHost, createTypedJeaClient, JEA_CLIENT_PROTOCOL_VERSION } from '../../src/client-api'
+import {
+  createApplicationCommandHost,
+  createTypedJeaClient,
+  JEA_CLIENT_PROTOCOL_VERSION,
+  SUBJECT_READINESS_REASON_CODES
+} from '../../src/client-api'
 import { CLIENT_API_COMMANDS } from '../../src/client-api/protocol'
 import { OPERATIONAL_READINESS_SEAM } from '../../src/client-api/owners/operational-readiness'
 import { simulateProcessFailure } from '../../src/main/process-failures'
@@ -30,7 +35,7 @@ function tempRoots() {
   const jeaHome = mkdtempSync(join(tmpdir(), 'jea-diag-home-'))
   mkdirSync(join(sourceRoot, 'src', 'product'), { recursive: true })
   writeBuildMetadata(join(sourceRoot, 'src', 'product'), {
-    version: '0.1.0',
+    version: '0.2.0',
     commit: CERTIFIED_COMMIT,
     dirty: false,
     built_at: '2026-08-17T04:32:54.000Z',
@@ -91,7 +96,7 @@ describe('settings.exportDiagnostics', () => {
     const report = await client.exportDiagnostics({ redactPaths: true })
     expect(report.schema_version).toBe(1)
     expect(report.product).toMatchObject({
-      version: '0.1.0',
+      version: '0.2.0',
       commit: CERTIFIED_COMMIT,
       commit_short: 'bbbbbbb',
       platform: 'linux',
@@ -106,10 +111,31 @@ describe('settings.exportDiagnostics', () => {
       expect(report.readiness[id].id).toBe(id)
       expect(typeof report.readiness[id].status).toBe('string')
       expect(Array.isArray(report.readiness[id].reasons)).toBe(true)
+      if (report.readiness[id].status !== 'ready') {
+        expect(report.readiness[id].reasons.length).toBeGreaterThan(0)
+      }
       expect(report.readiness[id].reasons.length).toBeLessThanOrEqual(3)
+      for (const reason of report.readiness[id].reasons) {
+        expect(SUBJECT_READINESS_REASON_CODES).toContain(reason)
+      }
     }
     expect(report.daemon.log_paths?.stdout).toContain('<JEA_HOME>/logs/')
     expect(report.daemon.log_paths?.stderr).toContain('<JEA_HOME>/logs/')
+  })
+
+  it('keeps no-subject diagnostics fallback on the canonical reason vocabulary', async () => {
+    const { sourceRoot, jeaHome } = tempRoots()
+    const { client } = clientFor(sourceRoot, jeaHome)
+    const report = await client.exportDiagnostics({ redactPaths: true })
+    for (const id of ['web', 'cycle', 'channel', 'model', 'conversation'] as const) {
+      if (report.readiness[id].status !== 'ready') {
+        expect(report.readiness[id].reasons.length).toBeGreaterThan(0)
+      }
+      for (const reason of report.readiness[id].reasons) {
+        expect(SUBJECT_READINESS_REASON_CODES).toContain(reason)
+      }
+    }
+    expect(report.readiness.conversation.reasons).toContain('subject_missing')
   })
 
   it('redacts the JEA Home prefix and keeps the raw path only when asked', async () => {
@@ -148,14 +174,14 @@ describe('settings.exportDiagnostics', () => {
     expect(recorded).toMatchObject({
       process_type: 'renderer',
       reason: 'crashed',
-      version: '0.1.0'
+      version: '0.2.0'
     })
     const report = await client.exportDiagnostics()
     expect(report.process_failures).toEqual(expect.arrayContaining([
       expect.objectContaining({
         process_type: 'renderer',
         reason: 'crashed',
-        version: '0.1.0'
+        version: '0.2.0'
       })
     ]))
     assertNoCanaries(report)
