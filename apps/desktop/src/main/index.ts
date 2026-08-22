@@ -195,16 +195,20 @@ if (!gotSingleInstanceLock) {
       }
     )
     createWindow()
-    void lifecycle.reconcileStartup().catch(() => {
-      // Startup attach/start failure is projected as blocked/retrying.
-    })
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()
     })
 
     if (process.env.JEA_DESKTOP_SMOKE) {
+      await lifecycle.reconcileStartup().catch(() => {
+        // Startup attach/start failure is projected as blocked/retrying.
+      })
       await runDesktopSmoke(process.env.JEA_DESKTOP_SMOKE)
+    } else {
+      void lifecycle.reconcileStartup().catch(() => {
+        // Startup attach/start failure is projected as blocked/retrying.
+      })
     }
   })
 }
@@ -236,7 +240,7 @@ async function runDesktopSmoke(outputPath: string): Promise<void> {
         invoke: smokeInvoke,
         subjects,
         fixtureSubject: String(report.fixtureSubject),
-        listProcesses: () => processRegistry.list(),
+        listProcesses: () => processRegistry.list('acp'),
         createExecutionRoot: process.env.JEA_DESKTOP_SMOKE_ACP_ROOT
           ? () => String(process.env.JEA_DESKTOP_SMOKE_ACP_ROOT)
           : undefined
