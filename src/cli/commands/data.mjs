@@ -449,7 +449,7 @@ export async function dataCommand({
         const payload = await inspectEvidenceJournal(runtime.dataRoot);
         if (flags.json) console.log(JSON.stringify(payload, null, 2));
         else printEvidenceJournalResult(payload);
-        return payload.reconciliation.status === 'unknown' ? 1 : 0;
+        return payload.reconciliation.status === 'ok' ? 0 : 1;
       }
       if (action === 'backups') {
         const payload = {
@@ -486,6 +486,11 @@ export async function dataCommand({
         return payload.status === 'blocked' ? 1 : 0;
       }
       if (action === 'rollback') {
+        if (!flags.backup || flags.backup === true) {
+          const error = new Error('Rollback requires --backup ID; use evidence-journal backups to list IDs');
+          error.code = 'evidence_journal_backup_required';
+          throw error;
+        }
         const dryRun = !!flags['dry-run'];
         if (!dryRun && !flags.yes) {
           console.log('Will restore a timestamped evidence-index sidecar backup atomically.');
@@ -498,7 +503,7 @@ export async function dataCommand({
         const payload = await rollbackEvidenceJournal(runtime.dataRoot, {
           root,
           subject: runtime.subject,
-          backupId: flags.backup ?? null,
+          backupId: flags.backup,
           dryRun,
         });
         if (flags.json) console.log(JSON.stringify(payload, null, 2));

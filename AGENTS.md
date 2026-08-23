@@ -107,9 +107,9 @@ npx repolink check --link agentank-evolver
 - `jea data backup [--name NAME]`：备份当前主体运行时数据到 `<JEA_HOME>/backups/subjects/<data_namespace>/`。
 - `jea data migrate-home [--dry-run] [--json] [--yes]`：停机校验后把旧 `<sourceRoot>/runtime/subjects/` 无损复制到 JEA Home；不删除旧目录。0.1.0 缺失的可选 causal/comparison 字段保持 unknown，不得伪造。
 - `jea data migrate-claims [--subject NAME] [--dry-run] [--json] [--yes]`：停机后流式瘦身 hot claim，并把 legacy claim archive 复制到 terminal JSONL；原文件与备份保留，迁移前应先运行 `data backup`。
-- `jea data evidence-journal inspect [--subject NAME] [--json]`：只读、流式检查 evidence journal 的大小、行/重复/kind 分布、generation/cursors，并与全部权威 evidence sources 对账 missing/orphan/unknown；不改运行时数据。
-- `jea data evidence-journal rebuild [--subject NAME] [--dry-run] [--json] [--yes]`：停 Cycle/Channel 后从权威 evidence 流式重建并按 `evidence_key` 去重；新 generation 校验后原子切换，旧 sidecar 保留时间戳备份。`compact` / `rotate` 是同义动作。
-- `jea data evidence-journal rollback [--subject NAME] [--backup ID] [--dry-run] [--json] [--yes]`：先做 source reconciliation，再以新 generation、安全从 offset 0 重放的方式恢复备份。
+- `jea data evidence-journal inspect [--subject NAME] [--json]`：只读、流式检查 evidence journal 的大小、行/重复/kind 分布、generation/cursors，并与全部权威 evidence sources 对账 missing/orphan/unknown；不改运行时数据。对账为 mismatch 或 unknown 时均非零退出。
+- `jea data evidence-journal rebuild [--subject NAME] [--dry-run] [--json] [--yes]`：停 Cycle/Channel 后从权威 evidence 流式重建并按 `evidence_key` 去重；实际写操作在完整 inspect/build/validate/backup/switch 生命周期持有 subject `.evolve.lock`，新 generation 校验后原子切换，旧 sidecar 保留时间戳备份。`compact` / `rotate` 是同义动作。磁盘分片使用系统临时目录，应预留 journal 与 authority 输入合计数倍的可用空间；实际放大取决于 locator 大小与递归 shard 分布。
+- `jea data evidence-journal rollback [--subject NAME] --backup ID [--dry-run] [--json] [--yes]`：必须显式指定已审阅的 backup ID；先做 source reconciliation，再以新 generation、安全从 offset 0 重放的方式恢复备份，实际写操作同样持有 subject `.evolve.lock`。
 - `jea data reset [--yes]`：删除当前主体本地运行时数据。此命令有破坏性，自动化代理不要在未确认的情况下执行。
 
 ## Subject 管理

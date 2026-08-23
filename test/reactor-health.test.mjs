@@ -10,6 +10,7 @@ import { peekRuleDueWindow } from '../src/evolution/reactor/rule-reactor.mjs';
 import { resetEvidenceHealthSnapshotCache } from '../src/intelligence/evidence-stream.mjs';
 import { writePendingOperatorBrief } from '../src/intelligence/operator-briefs.mjs';
 import { claimsPath } from '../src/evolution/reactor/paths.mjs';
+import { updateEvidenceJournalState } from '../src/evolution/reactor/evidence-index.mjs';
 import { runtimeForSubject } from '../src/infra/runtime-paths.mjs';
 
 let tempDir = null;
@@ -50,6 +51,43 @@ describe('reactor health projection', () => {
     expect(projection.wake_policy).toBe('evidence_driven');
     expect(projection.reactor.ok).toBe(true);
     expect(projection.health.ok).toBe(true);
+  });
+
+  it('projects evidence journal due and blocked reasons independently from Rule health', () => {
+    const root = makeRoot();
+    const runtime = runtimeForSubject(root, 'alpha');
+    updateEvidenceJournalState(runtime.dataRoot, {
+      bytes: 10,
+      policy: { rotate_bytes: 1, block_bytes: 100 },
+    });
+    vi.stubEnv('JEA_EVIDENCE_JOURNAL_ROTATE_BYTES', '1');
+    vi.stubEnv('JEA_EVIDENCE_JOURNAL_BLOCK_BYTES', '100');
+
+    const due = buildReactorHealthProjection(root, 'alpha');
+    expect(due).toMatchObject({
+      ok: true,
+      status: 'idle',
+      evidence_journal: {
+        maintenance: { status: 'maintenance_due', due: true, blocked: false },
+      },
+      rule: { blocked: false, block_reason: null },
+    });
+    expect(due.reasons).toContain('evidence_journal_maintenance_due');
+
+    updateEvidenceJournalState(runtime.dataRoot, {
+      bytes: 100,
+      policy: { rotate_bytes: 1, block_bytes: 100 },
+    });
+    const blocked = buildReactorHealthProjection(root, 'alpha');
+    expect(blocked).toMatchObject({
+      ok: false,
+      status: 'blocked',
+      evidence_journal: {
+        maintenance: { status: 'blocked', due: true, blocked: true },
+      },
+      rule: { blocked: false, block_reason: null },
+    });
+    expect(blocked.reasons).toContain('evidence_journal_maintenance_blocked');
   });
 
   it('marks pending evidence older than threshold as stalled', () => {

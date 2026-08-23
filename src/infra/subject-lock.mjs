@@ -37,6 +37,13 @@ export function reclaimDeadOwnerLock(lockTarget, { root = null, subject = null }
   if (!Number.isInteger(pid) || pid <= 0) return { reclaimed: false, reason: 'no_pid' };
   if (isProcessAlive(pid)) return { reclaimed: false, reason: 'owner_alive', pid };
   try {
+    if (lockfile.checkSync(lockTarget, { stale: SUBJECT_LOCK_DAEMON_STALE_MS_DEFAULT })) {
+      return { reclaimed: false, reason: 'lock_fresh', pid };
+    }
+  } catch {
+    // Let the unlock attempt below report whether a stale artifact exists.
+  }
+  try {
     lockfile.unlockSync(lockTarget);
     return { reclaimed: true, reason: 'dead_owner_pid', pid };
   } catch {

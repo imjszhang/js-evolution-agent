@@ -9,12 +9,14 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   evidenceJournalBoundedProjection,
   inspectEvidenceJournal,
+  inspectEvidenceMaintenanceWorkers,
   rebuildEvidenceJournal,
   rollbackEvidenceJournal,
 } from '../src/evolution/reactor/evidence-journal-maintenance.mjs';
@@ -29,7 +31,14 @@ import {
   refreshEvidenceIndex,
   requeueEvidenceKeys,
 } from '../src/evolution/reactor/evidence-index.mjs';
-import { createWorkerState, markWorkerStopped } from '../src/daemon/daemon-worker-state.mjs';
+import { writeChannelWorkerState } from '../src/channel/worker-state.mjs';
+import { dataCommand } from '../src/cli/commands/data.mjs';
+import {
+  createWorkerState,
+  markWorkerStopped,
+  writeWorkerState,
+} from '../src/daemon/daemon-worker-state.mjs';
+import { acquireSubjectLock } from '../src/daemon/evolve-runs.mjs';
 import { runtimeForSubject } from '../src/infra/runtime-paths.mjs';
 
 let tempRoot = null;
@@ -38,6 +47,7 @@ let priorRotate;
 let priorBlock;
 
 afterEach(() => {
+  vi.restoreAllMocks();
   if (tempRoot) rmSync(tempRoot, { recursive: true, force: true });
   tempRoot = null;
   if (priorHome === undefined) delete process.env.JEA_HOME;
@@ -238,6 +248,37 @@ describe('evidence journal inspect', () => {
       (entry) => hydrateIndexedEnvelope(runtime.dataRoot, entry)?.id,
     ).sort()).toEqual(['cycle-bom', 'receipt-bom']);
   });
+
+  it('returns a nonzero CLI exit for mismatch and unknown reconciliation', async () => {
+    const { root, runtime } = fixture();
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const journal = evidenceIndexJournalPath(runtime.dataRoot);
+    const original = readFileSync(journal, 'utf8');
+    const [first] = original.trim().split('\n');
+
+    expect(await dataCommand({
+      subcommand: 'evidence-journal',
+      args: ['inspect'],
+      flags: { subject: 'alpha', json: true },
+      context: root,
+    })).toBe(0);
+
+    writeFileSync(journal, `${first}\n`);
+    expect(await dataCommand({
+      subcommand: 'evidence-journal',
+      args: ['inspect'],
+      flags: { subject: 'alpha', json: true },
+      context: root,
+    })).toBe(1);
+
+    writeFileSync(journal, `${original}{"broken":\n`);
+    expect(await dataCommand({
+      subcommand: 'evidence-journal',
+      args: ['inspect'],
+      flags: { subject: 'alpha', json: true },
+      context: root,
+    })).toBe(1);
+  });
 });
 
 describe('stopped atomic evidence journal rebuild', () => {
@@ -271,6 +312,96 @@ describe('stopped atomic evidence journal rebuild', () => {
     })).rejects.toMatchObject({ code: 'evidence_journal_workers_running' });
     expect(readFileSync(evidenceIndexPath(runtime.dataRoot), 'utf8')).toBe(manifest);
     markWorkerStopped(root, 'alpha');
+  });
+
+  it('rejects an active subject evolve lock before inspecting or writing', async () => {
+    const { root, runtime } = fixture();
+    const handle = await acquireSubjectLock(root, 'alpha', { mode: 'run' });
+    try {
+      writeWorkerState(root, 'alpha', {
+        subject: 'alpha',
+        worker_id: 'stale-prior-worker',
+        pid: 999999,
+        status: 'stopped',
+        heartbeat_at: '2020-01-01T00:00:00.000Z',
+        stale_after_ms: 1000,
+      });
+      await expect(rebuildEvidenceJournal(runtime.dataRoot, {
+        root,
+        subject: 'alpha',
+        dryRun: false,
+        force: true,
+      })).rejects.toMatchObject({ code: 'evidence_journal_subject_lock_held' });
+    } finally {
+      await handle.release();
+    }
+  });
+
+  it('serializes concurrent rebuild operations with the subject evolve lock', async () => {
+    const { root, runtime } = fixture();
+    let releaseFirst;
+    let enteredFirst;
+    const gate = new Promise((resolve) => { releaseFirst = resolve; });
+    const entered = new Promise((resolve) => { enteredFirst = resolve; });
+    let checks = 0;
+    const first = rebuildEvidenceJournal(runtime.dataRoot, {
+      root,
+      subject: 'alpha',
+      dryRun: false,
+      force: true,
+      assertStopped: async () => {
+        checks += 1;
+        if (checks === 1) {
+          enteredFirst();
+          await gate;
+        }
+        return { stopped: true };
+      },
+    });
+    await entered;
+
+    await expect(rebuildEvidenceJournal(runtime.dataRoot, {
+      root,
+      subject: 'alpha',
+      dryRun: false,
+      force: true,
+      assertStopped: () => ({ stopped: true }),
+    })).rejects.toMatchObject({ code: 'evidence_journal_subject_lock_held' });
+    releaseFirst();
+    await expect(first).resolves.toMatchObject({ status: 'completed' });
+  });
+
+  it('detects every live Channel role and a starting coordinator', async () => {
+    const { root, runtime } = fixture();
+    writeChannelWorkerState(root, 'alpha', {
+      subject: 'alpha',
+      schema_version: 2,
+      status: 'starting',
+      pid: process.pid,
+      worker_id: 'channel-coordinator-test',
+      coordinator: { pid: process.pid },
+      workers: {
+        ingest: { status: 'starting', pid: process.pid, worker_id: 'ingest-test' },
+        delivery: { status: 'running', pid: process.pid, worker_id: 'delivery-test' },
+      },
+    });
+
+    const workers = inspectEvidenceMaintenanceWorkers(root, 'alpha');
+    expect(workers.stopped).toBe(false);
+    expect(workers.live.map((worker) => worker.role).sort()).toEqual([
+      'coordinator',
+      'delivery',
+      'ingest',
+    ]);
+    await expect(rebuildEvidenceJournal(runtime.dataRoot, {
+      root,
+      subject: 'alpha',
+      dryRun: false,
+      force: true,
+    })).rejects.toMatchObject({
+      code: 'evidence_journal_workers_running',
+      details: { stopped: false },
+    });
   });
 
   it('leaves manifest, journal, and cursor unchanged on an injected atomic-switch failure', async () => {
@@ -362,6 +493,26 @@ describe('stopped atomic evidence journal rebuild', () => {
     ]).missing).toEqual([]);
   });
 
+  it('marks a corrupt-only journal as needing rebuild', async () => {
+    const { runtime } = fixture();
+    await rebuildEvidenceJournal(runtime.dataRoot, {
+      dryRun: false,
+      force: true,
+      assertStopped: () => ({ stopped: true }),
+    });
+    appendFileSync(evidenceIndexJournalPath(runtime.dataRoot), '{"broken":\n');
+
+    const preview = await rebuildEvidenceJournal(runtime.dataRoot, { dryRun: true });
+    expect(preview).toMatchObject({
+      status: 'would_rebuild',
+      needed: true,
+      before: {
+        journal: { invalid_lines: 1 },
+        authoritative_sources: { invalid_records: 0, unreadable: 0 },
+      },
+    });
+  });
+
   it('fails closed on a physical authority line containing two JSON objects', async () => {
     const { runtime } = fixture(['receipt-1']);
     const beliefPath = join(
@@ -412,6 +563,51 @@ describe('stopped atomic evidence journal rebuild', () => {
     expect(rebuilt.after.reconciliation.ok).toBe(true);
   });
 
+  it('runs dense multi-key disk-sharded dedupe, reconciliation, and rebuild', async () => {
+    const { runtime, source } = fixture(['dense-seed']);
+    const producerBatchId = 'b'.repeat(64 * 1024);
+    const records = [];
+    for (let candidate = 0; records.length < 96; candidate += 1) {
+      const id = `dense-${candidate}`;
+      const key = `action_receipts:${id}`;
+      if (createHash('sha256').update(key).digest()[0] !== 0) continue;
+      records.push(JSON.stringify({
+        id,
+        recorded_at: '2026-08-23T00:00:00.000Z',
+        action_type: 'record_observation',
+        producer: 'exec',
+        producer_batch_id: producerBatchId,
+      }));
+    }
+    appendFileSync(source, `${records.join('\n')}\n`);
+    refreshEvidenceIndex(runtime.dataRoot, { kinds: ['action_receipts'] });
+
+    const inspected = await inspectEvidenceJournal(runtime.dataRoot);
+    expect(inspected.authoritative_sources).toMatchObject({
+      valid_records: 97,
+      unique_keys: 97,
+      invalid_records: 0,
+    });
+    expect(inspected.reconciliation).toMatchObject({
+      status: 'ok',
+      matched_keys: 97,
+    });
+    expect(inspected.authoritative_sources.bytes).toBeGreaterThan(4 * 1024 * 1024);
+
+    const rebuilt = await rebuildEvidenceJournal(runtime.dataRoot, {
+      dryRun: false,
+      force: true,
+      assertStopped: () => ({ stopped: true }),
+    });
+    expect(rebuilt).toMatchObject({
+      status: 'completed',
+      after: {
+        journal: { valid_lines: 97, invalid_lines: 0, duplicate_count: 0 },
+        reconciliation: { status: 'ok', matched_keys: 97 },
+      },
+    });
+  });
+
   it('validates and restores a timestamped backup with a fresh replay generation', async () => {
     const { runtime } = fixture();
     const rebuilt = await rebuildEvidenceJournal(runtime.dataRoot, {
@@ -443,6 +639,94 @@ describe('stopped atomic evidence journal rebuild', () => {
         generation_matches: true,
       });
     }
+  });
+
+  it('requires an explicit backup ID for library and CLI rollback', async () => {
+    const { root, runtime } = fixture();
+    await expect(rollbackEvidenceJournal(runtime.dataRoot, {
+      dryRun: true,
+    })).rejects.toMatchObject({ code: 'evidence_journal_backup_required' });
+
+    const output = vi.spyOn(console, 'log').mockImplementation(() => {});
+    expect(await dataCommand({
+      subcommand: 'evidence-journal',
+      args: ['rollback'],
+      flags: { subject: 'alpha', 'dry-run': true, json: true },
+      context: root,
+    })).toBe(1);
+    expect(JSON.parse(output.mock.calls.at(-1)[0])).toMatchObject({
+      code: 'evidence_journal_backup_required',
+    });
+  });
+
+  it('serializes rebuild against rollback with the same subject lock', async () => {
+    const { root, runtime } = fixture();
+    const initial = await rebuildEvidenceJournal(runtime.dataRoot, {
+      root,
+      subject: 'alpha',
+      dryRun: false,
+      force: true,
+      assertStopped: () => ({ stopped: true }),
+    });
+    const backupId = basename(initial.backup_path);
+    let releaseFirst;
+    let enteredFirst;
+    const gate = new Promise((resolve) => { releaseFirst = resolve; });
+    const entered = new Promise((resolve) => { enteredFirst = resolve; });
+    let checks = 0;
+    const first = rebuildEvidenceJournal(runtime.dataRoot, {
+      root,
+      subject: 'alpha',
+      dryRun: false,
+      force: true,
+      assertStopped: async () => {
+        checks += 1;
+        if (checks === 1) {
+          enteredFirst();
+          await gate;
+        }
+        return { stopped: true };
+      },
+    });
+    await entered;
+
+    await expect(rollbackEvidenceJournal(runtime.dataRoot, {
+      root,
+      subject: 'alpha',
+      backupId,
+      dryRun: false,
+      assertStopped: () => ({ stopped: true }),
+    })).rejects.toMatchObject({ code: 'evidence_journal_subject_lock_held' });
+    releaseFirst();
+    await expect(first).resolves.toMatchObject({ status: 'completed' });
+  });
+
+  it('fails rollback closed when authority changes before pointer switch', async () => {
+    const { root, runtime, source } = fixture();
+    const rebuilt = await rebuildEvidenceJournal(runtime.dataRoot, {
+      root,
+      subject: 'alpha',
+      dryRun: false,
+      force: true,
+      assertStopped: () => ({ stopped: true }),
+    });
+    const backupId = basename(rebuilt.backup_path);
+    const manifestPath = evidenceIndexPath(runtime.dataRoot);
+    const manifestBefore = readFileSync(manifestPath, 'utf8');
+    let checks = 0;
+
+    await expect(rollbackEvidenceJournal(runtime.dataRoot, {
+      root,
+      subject: 'alpha',
+      backupId,
+      dryRun: false,
+      assertStopped: () => {
+        checks += 1;
+        if (checks === 2) appendFileSync(source, `${receipt('authority-growth')}\n`);
+        return { stopped: true };
+      },
+    })).rejects.toMatchObject({ code: 'evidence_authority_changed' });
+    expect(readFileSync(manifestPath, 'utf8')).toBe(manifestBefore);
   });
 });
 

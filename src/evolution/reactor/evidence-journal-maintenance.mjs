@@ -26,6 +26,7 @@ import { readChannelWorkerState } from '../../channel/worker-state.mjs';
 import { readWorkerState } from '../../daemon/daemon-worker-state.mjs';
 import { writeJson } from '../../infra/json-store.mjs';
 import { isProcessAlive } from '../../infra/process-alive.mjs';
+import { acquireSubjectLockAt } from '../../infra/subject-lock.mjs';
 import {
   STREAM_PATHS,
   evidenceSourceSignature,
@@ -858,9 +859,10 @@ export function inspectEvidenceMaintenanceWorkers(root, subject) {
   const cycle = readWorkerState(root, subject);
   const channel = readChannelWorkerState(root, subject);
   const live = [];
+  const activeStatuses = new Set(['starting', 'running', 'stopping']);
   if (
     cycle
-    && ['running', 'stopping'].includes(cycle.status)
+    && activeStatuses.has(cycle.status)
     && isProcessAlive(cycle.pid)
   ) {
     live.push({ domain: 'cycle', pid: cycle.pid, worker_id: cycle.worker_id ?? null });
@@ -868,19 +870,24 @@ export function inspectEvidenceMaintenanceWorkers(root, subject) {
   for (const [role, worker] of Object.entries(channel?.workers ?? {})) {
     if (
       worker
-      && ['running', 'stopping'].includes(worker.status)
+      && activeStatuses.has(worker.status)
       && isProcessAlive(worker.pid)
     ) {
       live.push({ domain: 'channel', role, pid: worker.pid, worker_id: worker.worker_id ?? null });
     }
   }
+  const coordinatorPid = channel?.coordinator?.pid ?? channel?.pid;
   if (
     channel
-    && ['running', 'stopping'].includes(channel.status)
-    && isProcessAlive(channel.pid)
-    && !live.some((item) => item.domain === 'channel' && item.pid === channel.pid)
+    && activeStatuses.has(channel.status)
+    && isProcessAlive(coordinatorPid)
   ) {
-    live.push({ domain: 'channel', role: 'coordinator', pid: channel.pid, worker_id: channel.worker_id ?? null });
+    live.push({
+      domain: 'channel',
+      role: 'coordinator',
+      pid: coordinatorPid,
+      worker_id: channel.worker_id ?? null,
+    });
   }
   return { stopped: live.length === 0, live };
 }
@@ -1041,6 +1048,7 @@ function rebuildNeeded(inspect, force) {
   return Boolean(
     force
     || inspect.manifest.schema_version !== EVIDENCE_INDEX_GENERATION_SCHEMA
+    || inspect.journal.invalid_lines > 0
     || inspect.journal.duplicate_count > 0
     || inspect.reconciliation.missing_keys > 0
     || inspect.reconciliation.orphan_keys > 0
@@ -1053,7 +1061,47 @@ function operationError(error, fallback) {
   return error;
 }
 
-export async function rebuildEvidenceJournal(dataRoot, {
+function evidenceMaintenanceLockPath(dataRoot) {
+  return join(dataRoot, 'evolution', '.evolve.lock');
+}
+
+async function withEvidenceMaintenanceLock(dataRoot, { root, subject }, operation) {
+  let handle;
+  try {
+    handle = await acquireSubjectLockAt(evidenceMaintenanceLockPath(dataRoot), {
+      root,
+      subject,
+      mode: 'run',
+      retries: 0,
+    });
+  } catch (cause) {
+    if (root && subject) {
+      const workers = inspectEvidenceMaintenanceWorkers(root, subject);
+      if (!workers.stopped) {
+        const error = new Error(
+          'Evidence journal writes require all Cycle and Channel workers to be stopped',
+        );
+        error.code = 'evidence_journal_workers_running';
+        error.details = workers;
+        error.cause = cause;
+        throw error;
+      }
+    }
+    const error = new Error(
+      `Evidence journal maintenance requires exclusive subject access: ${cause?.message || cause}`,
+    );
+    error.code = 'evidence_journal_subject_lock_held';
+    error.cause = cause;
+    throw error;
+  }
+  try {
+    return await operation();
+  } finally {
+    await handle.release();
+  }
+}
+
+async function rebuildEvidenceJournalOperation(dataRoot, {
   root = null,
   subject = null,
   dryRun = true,
@@ -1095,7 +1143,7 @@ export async function rebuildEvidenceJournal(dataRoot, {
 
   const stoppedCheck = assertStopped
     ?? (() => assertEvidenceMaintenanceStopped(root, subject));
-  stoppedCheck();
+  await stoppedCheck();
   const sourceSignature = evidenceSourceSignature(dataRoot);
   const generation = randomUUID();
   const generations = evidenceIndexGenerationsDir(dataRoot);
@@ -1166,12 +1214,12 @@ export async function rebuildEvidenceJournal(dataRoot, {
       error.details = { validation, cursor_invariant: cursorInvariant };
       throw error;
     }
+    await stoppedCheck();
     if (evidenceSourceSignature(dataRoot) !== sourceSignature) {
       const error = new Error('Authoritative evidence changed during rebuild; refusing pointer switch');
       error.code = 'evidence_authority_changed';
       throw error;
     }
-    stoppedCheck();
     if (failpoint === 'before_backup') throw operationError(new Error('Injected rebuild failure'), 'injected_failure');
     backup = createBackup(dataRoot, currentManifest, currentActive, { reason: 'pre-rebuild' });
     if (failpoint === 'before_switch') throw operationError(new Error('Injected rebuild failure'), 'injected_failure');
@@ -1200,6 +1248,15 @@ export async function rebuildEvidenceJournal(dataRoot, {
   }
 }
 
+export async function rebuildEvidenceJournal(dataRoot, options = {}) {
+  if (options.dryRun !== false) {
+    return rebuildEvidenceJournalOperation(dataRoot, options);
+  }
+  return withEvidenceMaintenanceLock(dataRoot, options, () => (
+    rebuildEvidenceJournalOperation(dataRoot, options)
+  ));
+}
+
 export function listEvidenceJournalBackups(dataRoot) {
   const root = evidenceIndexBackupsDir(dataRoot);
   if (!existsSync(root)) return [];
@@ -1213,17 +1270,20 @@ export function listEvidenceJournalBackups(dataRoot) {
     .sort((a, b) => b.id.localeCompare(a.id));
 }
 
-export async function rollbackEvidenceJournal(dataRoot, {
+async function rollbackEvidenceJournalOperation(dataRoot, {
   root = null,
   subject = null,
   backupId = null,
   dryRun = true,
   assertStopped = null,
 } = {}) {
+  if (!backupId) {
+    const error = new Error('Evidence journal rollback requires an explicit backup ID');
+    error.code = 'evidence_journal_backup_required';
+    throw error;
+  }
   const backups = listEvidenceJournalBackups(dataRoot);
-  const selected = backupId
-    ? backups.find((item) => item.id === backupId || item.path === backupId)
-    : backups[0];
+  const selected = backups.find((item) => item.id === backupId || item.path === backupId);
   if (!selected) {
     const error = new Error('No evidence journal backup matched the rollback request');
     error.code = 'evidence_journal_backup_not_found';
@@ -1256,9 +1316,10 @@ export async function rollbackEvidenceJournal(dataRoot, {
     return { ...base, status: 'blocked', block_reason: 'backup_source_reconciliation_failed' };
   }
   if (dryRun) return { ...base, status: 'would_rollback' };
+  const sourceSignature = evidenceSourceSignature(dataRoot);
   const stoppedCheck = assertStopped
     ?? (() => assertEvidenceMaintenanceStopped(root, subject));
-  stoppedCheck();
+  await stoppedCheck();
 
   const generation = randomUUID();
   const generations = evidenceIndexGenerationsDir(dataRoot);
@@ -1333,7 +1394,12 @@ export async function rollbackEvidenceJournal(dataRoot, {
       last_rebuild_at: at,
       rollback_from: selected.id,
     });
-    stoppedCheck();
+    await stoppedCheck();
+    if (evidenceSourceSignature(dataRoot) !== sourceSignature) {
+      const error = new Error('Authoritative evidence changed during rollback; refusing pointer switch');
+      error.code = 'evidence_authority_changed';
+      throw error;
+    }
     const currentBackup = createBackup(dataRoot, currentManifest, currentActive, {
       reason: `pre-rollback:${selected.id}`,
     });
@@ -1353,6 +1419,20 @@ export async function rollbackEvidenceJournal(dataRoot, {
       rmSync(finalDir, { recursive: true, force: true });
     }
   }
+}
+
+export async function rollbackEvidenceJournal(dataRoot, options = {}) {
+  if (!options.backupId) {
+    const error = new Error('Evidence journal rollback requires an explicit backup ID');
+    error.code = 'evidence_journal_backup_required';
+    throw error;
+  }
+  if (options.dryRun !== false) {
+    return rollbackEvidenceJournalOperation(dataRoot, options);
+  }
+  return withEvidenceMaintenanceLock(dataRoot, options, () => (
+    rollbackEvidenceJournalOperation(dataRoot, options)
+  ));
 }
 
 export function evidenceJournalBoundedProjection(dataRoot, options = {}) {
