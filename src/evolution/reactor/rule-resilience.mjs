@@ -13,7 +13,7 @@ import { envelopeEvidenceKey } from './eligibility.mjs';
 import { evidenceIndexJournalPath } from './evidence-index.mjs';
 import { reactorDir } from './paths.mjs';
 
-export const DEFAULT_RULE_MAX_EVENTS = 64;
+export const DEFAULT_RULE_MAX_EVENTS = 32;
 export const DEFAULT_RULE_MAX_PAYLOAD_BYTES = 4 * 1024 * 1024;
 export const DEFAULT_RULE_MAX_WALL_MS = 4 * 60 * 1000;
 export const DEFAULT_RULE_MAX_CONSECUTIVE_FAILURES = 3;
@@ -23,6 +23,7 @@ export const RULE_BLOCK_REASONS = Object.freeze({
   circuit: 'rule_poison_batch_circuit_open',
   catchUp: 'rule_catch_up_budget',
   journal: 'rule_journal_capacity_exceeded',
+  llmBudget: 'rule_llm_budget_exhausted',
 });
 
 function emptyState() {
@@ -128,7 +129,9 @@ export function planRuleBatch(dataRoot, events = [], limits = resolveRuleLimits(
     fingerprint,
     payload_bytes: payloadBytes,
     blocked: failure?.status === 'circuit_open',
-    block_reason: failure?.status === 'circuit_open' ? RULE_BLOCK_REASONS.circuit : null,
+    block_reason: failure?.status === 'circuit_open'
+      ? failure.block_reason || RULE_BLOCK_REASONS.circuit
+      : null,
     failure,
     limits,
   };
@@ -137,13 +140,23 @@ export function planRuleBatch(dataRoot, events = [], limits = resolveRuleLimits(
 export function classifyReactorError(error) {
   const message = String(error?.message || error || '');
   const code = String(error?.code || '');
+  const budgetExhausted = /(?:llm_)?(?:token|spend)[_ ]budget[_ ]exhausted/i.test(
+    `${code} ${message}`,
+  );
   const deterministic = error instanceof RangeError
     || error?.retryable === false
     || /invalid string length|string too long|ERR_STRING_TOO_LONG/i.test(message)
     || /payload.*(?:limit|large|exceed)|journal.*(?:limit|large|exceed)/i.test(message)
-    || /token[_ ]budget[_ ]exhausted|llm_token_budget_exhausted/i.test(`${code} ${message}`)
     || code.startsWith('rule_capacity_')
     || code === 'rule_payload_measure_failed';
+  if (budgetExhausted) {
+    return {
+      retryable: false,
+      category: 'operator_budget',
+      code: code || 'rule_llm_budget_exhausted',
+      reason: message || code,
+    };
+  }
   return {
     retryable: !deterministic,
     category: deterministic ? 'deterministic_capacity' : 'transient',
@@ -196,7 +209,12 @@ export function noteRuleFailure(dataRoot, {
     let status = 'retrying';
     let action = 'retry';
     let nextMaxEvents = null;
-    if (classification.category === 'deterministic_capacity' && eventCount > 1) {
+    let blockReason = null;
+    if (classification.category === 'operator_budget') {
+      status = 'circuit_open';
+      action = 'block';
+      blockReason = RULE_BLOCK_REASONS.llmBudget;
+    } else if (classification.category === 'deterministic_capacity' && eventCount > 1) {
       status = 'splitting';
       action = 'split';
       nextMaxEvents = Math.max(1, Math.floor(eventCount / 2));
@@ -217,6 +235,7 @@ export function noteRuleFailure(dataRoot, {
       error_reason: classification.reason,
       status,
       action,
+      block_reason: blockReason,
       next_max_events: nextMaxEvents,
       last_failed_at: nowIso(),
     };
@@ -289,9 +308,13 @@ export function readRuleResilienceProjection(dataRoot) {
   const failures = Object.values(state.failures);
   const blocked = failures.filter((item) => item?.status === 'circuit_open');
   const splitting = failures.filter((item) => item?.status === 'splitting');
+  const latestBlocked = blocked
+    .sort((a, b) => String(b?.last_failed_at ?? '').localeCompare(String(a?.last_failed_at ?? '')))[0]
+    ?? null;
   return {
     blocked: blocked.length > 0,
-    block_reason: blocked.length ? RULE_BLOCK_REASONS.circuit : null,
+    block_reason: latestBlocked?.block_reason
+      || (blocked.length ? RULE_BLOCK_REASONS.circuit : null),
     blocked_batches: blocked.length,
     splitting_batches: splitting.length,
     quarantined_evidence: Object.keys(state.quarantined).length,

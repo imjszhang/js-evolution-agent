@@ -81,6 +81,7 @@ export const SUBJECT_READINESS_REASON_CODES = Object.freeze(
     'catch_up_budget',
     'rule_catch_up_budget',
     'rule_poison_batch_circuit_open',
+    'rule_llm_budget_exhausted',
     'rule_journal_capacity_exceeded',
     'claims_projection_degraded',
   ]),
@@ -237,6 +238,7 @@ function mapProcessDomain(prefix, worker, health, ownership) {
   const stableRuleReason = (health?.reasons || []).find((reason) => (
     reason === 'rule_catch_up_budget'
     || reason === 'rule_poison_batch_circuit_open'
+    || reason === 'rule_llm_budget_exhausted'
     || reason === 'rule_journal_capacity_exceeded'
   ));
   if (prefix === 'cycle' && health?.status === 'blocked' && stableRuleReason) {
@@ -381,6 +383,7 @@ function mapAutomation(input, cycle) {
     blocker = cycle.reasons.find((reason) => (
       reason === 'rule_catch_up_budget'
       || reason === 'rule_poison_batch_circuit_open'
+      || reason === 'rule_llm_budget_exhausted'
       || reason === 'rule_journal_capacity_exceeded'
     )) ?? cycle.reasons[0] ?? `${cycle.state}`;
   } else if (approvalWait) {
@@ -434,6 +437,7 @@ export function projectSubjectReadiness(input) {
     ...([
       'rule_catch_up_budget',
       'rule_poison_batch_circuit_open',
+      'rule_llm_budget_exhausted',
       'rule_journal_capacity_exceeded',
     ].includes(automation.blocker) ? [automation.blocker] : []),
     ...(automation.blocker === 'claims_projection_degraded' ? ['claims_projection_degraded'] : []),

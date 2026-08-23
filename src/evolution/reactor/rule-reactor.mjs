@@ -427,7 +427,7 @@ export async function runRuleReaction({
       err.retryable = false;
       err.next_max_events = failure.next_max_events;
     } else if (failure.action === 'block') {
-      err.code = RULE_BLOCK_REASONS.circuit;
+      err.code = failure.block_reason || RULE_BLOCK_REASONS.circuit;
       err.retryable = false;
     } else {
       err.retryable = failure.retryable;

@@ -225,6 +225,7 @@ describe('Issue #197 Rule budgets and poison circuit', () => {
     tempRoot = mkdtempSync(join(tmpdir(), 'jea-rule-plan-'));
     const dataRoot = join(tempRoot, 'data');
     const events = Array.from({ length: 8 }, (_, index) => indexedEvent(index, 100));
+    expect(resolveRuleLimits({}, {}).maxEvents).toBe(32);
     const limits = resolveRuleLimits({
       max_events: 8,
       max_payload_bytes: 450,
@@ -273,6 +274,42 @@ describe('Issue #197 Rule budgets and poison circuit', () => {
     expect(classifyReactorError(new Error('ECONNRESET'))).toMatchObject({
       retryable: true,
       category: 'transient',
+    });
+  });
+
+  it('blocks exhausted operator budgets without splitting or quarantining evidence', () => {
+    tempRoot = mkdtempSync(join(tmpdir(), 'jea-rule-operator-budget-'));
+    const dataRoot = join(tempRoot, 'data');
+    const events = Array.from({ length: 8 }, (_, index) => indexedEvent(index));
+    const limits = resolveRuleLimits({ max_events: 8 }, {});
+    const initial = planRuleBatch(dataRoot, events, limits);
+    const failure = noteRuleFailure(dataRoot, {
+      fingerprint: initial.fingerprint,
+      evidenceKeys: initial.evidence_keys,
+      error: Object.assign(
+        new Error('llm_token_budget_exhausted for alpha'),
+        { code: 'llm_token_budget_exhausted', retryable: false },
+      ),
+      eventCount: initial.events.length,
+      limits,
+    });
+
+    expect(failure).toMatchObject({
+      classification: 'operator_budget',
+      status: 'circuit_open',
+      action: 'block',
+      block_reason: 'rule_llm_budget_exhausted',
+      retryable: false,
+    });
+    expect(planRuleBatch(dataRoot, events, limits)).toMatchObject({
+      blocked: true,
+      block_reason: 'rule_llm_budget_exhausted',
+      events: { length: 8 },
+    });
+    expect(readRuleResilienceProjection(dataRoot)).toMatchObject({
+      blocked: true,
+      block_reason: 'rule_llm_budget_exhausted',
+      quarantined_evidence: 0,
     });
   });
 
@@ -389,7 +426,7 @@ describe('Issue #197 readiness isolation', () => {
       cycleWorker: { running: true, pid: process.pid, status: 'running' },
       cycleHealth: {
         status: 'blocked',
-        reasons: ['rule_poison_batch_circuit_open'],
+        reasons: ['rule_llm_budget_exhausted'],
       },
       channelWorker: { running: true, pid: process.pid, status: 'running' },
       channelHealth: { status: 'healthy', ok: true },
@@ -402,10 +439,10 @@ describe('Issue #197 readiness isolation', () => {
     });
     expect(projected.cycle).toMatchObject({
       state: 'blocked',
-      reasons: expect.arrayContaining(['rule_poison_batch_circuit_open']),
+      reasons: expect.arrayContaining(['rule_llm_budget_exhausted']),
     });
     expect(projected.channel.state).toBe('running');
-    expect(projected.automation.blocker).toBe('rule_poison_batch_circuit_open');
-    expect(projected.reasons).toContain('rule_poison_batch_circuit_open');
+    expect(projected.automation.blocker).toBe('rule_llm_budget_exhausted');
+    expect(projected.reasons).toContain('rule_llm_budget_exhausted');
   });
 });
