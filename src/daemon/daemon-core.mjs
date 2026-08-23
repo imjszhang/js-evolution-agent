@@ -88,6 +88,7 @@ import {
   scanWakeBacklog,
 } from '../evolution/reactor/reactor-tasks.mjs';
 import { enqueueWakeIntent } from '../evolution/reactor/wake-store.mjs';
+import { classifyReactorError } from '../evolution/reactor/rule-resilience.mjs';
 import {
   createSupervisorLeaseGuard,
   supervisorLeaseConfigFromEnv,
@@ -511,9 +512,9 @@ function isRetiredTrainTaskType(type) {
   return type === 'run_cycle' || ALL_CYCLE_STEP_TYPES.includes(type);
 }
 
-function failReactorTask(root, subject, task, failure) {
+export function failReactorTask(root, subject, task, failure) {
   const maxAttempts = Math.max(1, (task.input?.retries ?? 3) + 1);
-  if (task.attempts < maxAttempts) {
+  if (failure.retryable !== false && task.attempts < maxAttempts) {
     const released = releaseTaskForRetry(root, subject, task.task_id, failure);
     recordDaemonEvent(root, subject, {
       type: 'task_failed',
@@ -611,7 +612,7 @@ async function workReactorTask(root, subject, task, flags) {
           code: outcome?.code ?? 'reactor_task_failed',
           reason: outcome?.reason || outcome?.result?.error || 'reactor task returned ok=false',
           message: outcome?.reason || outcome?.result?.error || 'reactor task returned ok=false',
-          retryable: true,
+          retryable: outcome?.retryable !== false,
         });
       }
       const completed = completeTask(root, subject, task.task_id, {
@@ -626,11 +627,12 @@ async function workReactorTask(root, subject, task, flags) {
       });
       return { ok: true, task: completed.task, result: outcome };
     } catch (err) {
+      const classification = classifyReactorError(err);
       return failReactorTask(root, subject, task, {
-        code: err?.code ?? 'reactor_task_failed',
+        code: err?.code ?? classification.code ?? 'reactor_task_failed',
         reason: err?.message || String(err),
         message: err?.message || String(err),
-        retryable: true,
+        retryable: err?.retryable ?? classification.retryable,
       });
     }
   });

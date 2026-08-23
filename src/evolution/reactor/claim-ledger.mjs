@@ -22,7 +22,7 @@ import {
   commitEvidenceCursor,
   hydrateIndexedEnvelope,
   readEvidenceCursor,
-  readEvidenceIndex,
+  readIndexedEntriesByKeys,
   requeueIndexedEntries,
   requeueEvidenceKeys,
   refreshEvidenceIndex,
@@ -283,8 +283,10 @@ function requeueClaimEvidence(dataRoot, claim) {
 
 export function archiveTerminalClaims(dataRoot, claims) {
   const terminal = claims.filter(terminalClaim).map(sanitizeClaimForPersist);
+  const appended = [];
   for (const claim of terminal) {
-    appendTerminalClaim(claimsTerminalArchivePath(dataRoot), claim);
+    const result = appendTerminalClaim(claimsTerminalArchivePath(dataRoot), claim);
+    if (result.appended) appended.push(claim);
   }
   if (terminal.length && !existsSync(claimsCoveredIndexPath(dataRoot))) {
     updateJson(claimsCoveredIndexPath(dataRoot), () => ({
@@ -293,15 +295,15 @@ export function archiveTerminalClaims(dataRoot, claims) {
     }), { fallback: emptyCoveredIndex() });
   }
   addHandledClaimsToCoveredIndex(dataRoot, terminal);
-  if (terminal.length) {
+  if (appended.length) {
     updateJson(claimsArchiveSummaryPath(dataRoot), (raw) => {
       const counts = { ...(raw?.counts ?? {}) };
-      for (const claim of terminal) counts[claim.status] = (counts[claim.status] ?? 0) + 1;
+      for (const claim of appended) counts[claim.status] = (counts[claim.status] ?? 0) + 1;
       const recentById = new Map(
         (Array.isArray(raw?.recent_handled) ? raw.recent_handled : [])
           .map((claim) => [claim.batch_id, claim]),
       );
-      for (const claim of terminal) {
+      for (const claim of appended) {
         if (claim.status === 'handled') {
           recentById.set(claim.batch_id, {
             batch_id: claim.batch_id,
@@ -345,13 +347,15 @@ function pruneTerminalClaims(dataRoot, batchIds) {
 export function reconcileTerminalClaimStorage(dataRoot, { requeue = true } = {}) {
   const terminal = readClaimLedger(dataRoot).claims.filter(terminalClaim);
   if (!terminal.length) return { archived: 0, requeued: 0 };
-  let requeued = 0;
-  if (requeue) {
-    for (const claim of terminal) requeued += requeueClaimEvidence(dataRoot, claim);
-  }
   const archived = archiveTerminalClaims(dataRoot, terminal);
-  pruneTerminalClaims(dataRoot, archived.map((claim) => claim.batch_id));
-  return { archived: archived.length, requeued };
+  let requeued = 0;
+  let pruned = 0;
+  for (const claim of archived) {
+    if (requeue) requeued += requeueClaimEvidence(dataRoot, claim);
+    pruneTerminalClaims(dataRoot, [claim.batch_id]);
+    pruned += 1;
+  }
+  return { archived: archived.length, requeued, pruned };
 }
 
 function transitionClaimToTerminal(dataRoot, batchId, mutate, { requeue = false } = {}) {
@@ -364,8 +368,8 @@ function transitionClaimToTerminal(dataRoot, batchId, mutate, { requeue = false 
     return ledger;
   });
   if (!updated || !terminalClaim(updated)) return updated;
-  if (requeue) requeueClaimEvidence(dataRoot, updated);
   archiveTerminalClaims(dataRoot, [updated]);
+  if (requeue) requeueClaimEvidence(dataRoot, updated);
   pruneTerminalClaims(dataRoot, [batchId]);
   return sanitizeClaimForPersist(updated);
 }
@@ -524,12 +528,12 @@ export function reconcileExpiredClaims(dataRoot, { now = Date.now() } = {}) {
     expired.push(...expireClaimsInLedger(ledger, now));
     return ledger;
   });
-  for (const claim of expired) {
-    requeueClaimEvidence(dataRoot, claim);
-  }
   if (expired.length) {
     archiveTerminalClaims(dataRoot, expired);
-    pruneTerminalClaims(dataRoot, expired.map((claim) => claim.batch_id));
+    for (const claim of expired) {
+      requeueClaimEvidence(dataRoot, claim);
+      pruneTerminalClaims(dataRoot, [claim.batch_id]);
+    }
   }
   return expired;
 }
@@ -541,6 +545,7 @@ export function listEligibleEvidence(dataRoot, {
   stream = null,
   stats = null,
   limit = 256,
+  maxHydratedBytes = Number.POSITIVE_INFINITY,
 } = {}) {
   const allowedKinds = kinds || defaultKindsForReactor(reactor);
   if (Array.isArray(stream)) {
@@ -551,7 +556,8 @@ export function listEligibleEvidence(dataRoot, {
       .filter((envelope) => {
         const key = envelopeEvidenceKey(envelope);
         return !covered.has(key) && !covered.has(envelope.id);
-      });
+      })
+      .slice(0, Math.max(1, Math.floor(Number(limit) || 256)));
   }
 
   const index = refreshEvidenceIndex(dataRoot, { kinds: allowedKinds, stats });
@@ -578,8 +584,39 @@ export function listEligibleEvidence(dataRoot, {
     stats,
     expectedGeneration: scan.generation,
   });
-  return scan.entries
-    .map((envelope) => hydrateIndexedEnvelope(dataRoot, envelope, { stats }))
+  const selected = [];
+  let selectedBytes = 0;
+  for (const compact of scan.entries) {
+    const bytes = Math.max(0, Number(compact?.locator?.length) || 0);
+    if (selected.length && selectedBytes + bytes > maxHydratedBytes) break;
+    selected.push(compact);
+    selectedBytes += bytes;
+    if (selectedBytes >= maxHydratedBytes) break;
+  }
+  return selected
+    .map((compact) => {
+      const bytes = Math.max(0, Number(compact?.locator?.length) || 0);
+      if (bytes > maxHydratedBytes) {
+        const envelope = {
+          id: compact.id,
+          kind: compact.kind,
+          type: compact.type,
+          occurred_at: compact.occurred_at,
+          evidence_key: compact.evidence_key,
+          producer: compact.producer,
+          payload: null,
+          hydration_blocked: 'payload_budget_exceeded',
+          hydrated_payload_bytes: bytes,
+        };
+        Object.defineProperty(envelope, 'indexed_entry', {
+          value: compact,
+          enumerable: false,
+          configurable: true,
+        });
+        return envelope;
+      }
+      return hydrateIndexedEnvelope(dataRoot, compact, { stats });
+    })
     .filter(Boolean);
 }
 
@@ -597,6 +634,7 @@ export function claimEvidenceBatch(dataRoot, {
   eventIds = null,
   evidenceKeys = null,
   stats = null,
+  maxHydratedBytes = Number.POSITIVE_INFINITY,
 } = {}) {
   if (!dataRoot) throw new Error('claimEvidenceBatch requires dataRoot');
   reconcileTerminalClaimStorage(dataRoot);
@@ -615,9 +653,12 @@ export function claimEvidenceBatch(dataRoot, {
     || (Array.isArray(evidenceKeys) && evidenceKeys.length);
   // Rule reactions may request a non-contiguous due set. Keep that exceptional
   // lookup compatible without advancing past earlier not-yet-due evidence.
+  const targetedEntries = targeted
+    ? readIndexedEntriesByKeys(dataRoot, evidenceKeys || [], { stats }).entries
+    : null;
   const scan = targeted
     ? {
-      entries: readEvidenceIndex(dataRoot, { kinds: allowedKinds, stats }),
+      entries: targetedEntries,
       safe_cursor: cursor.offset,
       claim_cursor: cursor.offset,
       consumed_keys: [],
@@ -656,7 +697,29 @@ export function claimEvidenceBatch(dataRoot, {
     }
     const events = pending
       .slice(0, Math.max(1, Math.floor(Number(limit) || 16)))
-      .map((envelope) => hydrateIndexedEnvelope(dataRoot, envelope, { stats }))
+      .map((compact) => {
+        const bytes = Math.max(0, Number(compact?.locator?.length) || 0);
+        if (bytes > maxHydratedBytes) {
+          const envelope = {
+            id: compact.id,
+            kind: compact.kind,
+            type: compact.type,
+            occurred_at: compact.occurred_at,
+            evidence_key: compact.evidence_key,
+            producer: compact.producer,
+            payload: null,
+            hydration_blocked: 'payload_budget_exceeded',
+            hydrated_payload_bytes: bytes,
+          };
+          Object.defineProperty(envelope, 'indexed_entry', {
+            value: compact,
+            enumerable: false,
+            configurable: true,
+          });
+          return envelope;
+        }
+        return hydrateIndexedEnvelope(dataRoot, compact, { stats });
+      })
       .filter(Boolean);
     if (!events.length) {
       result = { skipped: 'no_pending_evidence' };
@@ -794,7 +857,7 @@ export function loadClaimedEvents(dataRoot, claim, { reactor = 'cognitive' } = {
   if (!claim) return [];
   const stream = Array.isArray(claim.indexed_entries) && claim.indexed_entries.length
     ? claim.indexed_entries
-    : readEvidenceIndex(dataRoot, { kinds: defaultKindsForReactor(reactor) });
+    : readIndexedEntriesByKeys(dataRoot, claim.evidence_keys || []).entries;
   const wantedKeys = new Set(claim.evidence_keys || []);
   const wantedIds = new Set(claim.event_ids || []);
   return stream

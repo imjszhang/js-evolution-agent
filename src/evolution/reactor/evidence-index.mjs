@@ -37,6 +37,7 @@ import { reactorDir } from './paths.mjs';
 export const EVIDENCE_INDEX_SCHEMA = 'evidence-index.v2';
 export const EVIDENCE_CURSOR_SCHEMA = 'evidence-index-cursors.v1';
 const JOURNAL_CHUNK_BYTES = 256 * 1024;
+const TARGETED_ENTRY_MAX_BYTES = 1024 * 1024;
 
 function increment(stats, key, amount = 1) {
   if (!stats) return;
@@ -280,11 +281,19 @@ function hasMarker(dataRoot, category, key, reactor = null) {
   return existsSync(markerPath(dataRoot, category, key, reactor));
 }
 
-function writeMarker(dataRoot, category, key, reactor = null) {
+function writeMarker(dataRoot, category, key, reactor = null, value = null) {
   const path = markerPath(dataRoot, category, key, reactor);
-  if (existsSync(path)) return;
+  if (existsSync(path)) {
+    if (value != null && statSync(path).size === 0) {
+      writeFileSync(path, `${JSON.stringify(value)}\n`, 'utf8');
+    }
+    return;
+  }
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, '', { flag: 'wx' });
+  writeFileSync(path, value == null ? '' : `${JSON.stringify(value)}\n`, {
+    flag: 'wx',
+    encoding: 'utf8',
+  });
 }
 
 function removeMarker(dataRoot, category, key, reactor = null) {
@@ -358,7 +367,7 @@ function appendJournalEntries(dataRoot, entries, stats) {
   countIndexWrite(stats, bytes);
   increment(stats, 'index_journal_bytes_written', bytes);
   increment(stats, 'index_entries_appended', entries.length);
-  for (const entry of entries) writeMarker(dataRoot, 'keys', entry.evidence_key);
+  for (const entry of entries) writeMarker(dataRoot, 'keys', entry.evidence_key, null, entry);
 }
 
 /**
@@ -612,6 +621,7 @@ export function requeueIndexedEntries(dataRoot, reactor, entries, { stats = null
   const path = evidenceIndexPath(dataRoot);
   return withJsonLock(path, () => {
     for (const entry of pending) {
+      writeMarker(dataRoot, 'keys', entry.evidence_key, null, entry);
       removeMarker(dataRoot, 'consumed', entry.evidence_key, reactor);
     }
     appendJournalEntries(dataRoot, pending, stats);
@@ -619,12 +629,75 @@ export function requeueIndexedEntries(dataRoot, reactor, entries, { stats = null
   });
 }
 
+/**
+ * Resolve compact entries through the sharded per-key lookup populated while
+ * appending or scanning a bounded journal window. This is intentionally not a
+ * compatibility scan of entries.jsonl: callers may safely use it with a very
+ * large historical journal.
+ */
+export function readIndexedEntriesByKeys(dataRoot, evidenceKeys, { stats = null } = {}) {
+  const entries = [];
+  const missing = [];
+  for (const key of new Set((evidenceKeys || []).filter(Boolean))) {
+    const path = markerPath(dataRoot, 'keys', key);
+    if (!existsSync(path)) {
+      missing.push(key);
+      continue;
+    }
+    let size = 0;
+    try {
+      size = statSync(path).size;
+      if (size <= 0 || size > TARGETED_ENTRY_MAX_BYTES) {
+        missing.push(key);
+        increment(stats, size > TARGETED_ENTRY_MAX_BYTES
+          ? 'targeted_lookup_oversized'
+          : 'targeted_lookup_legacy_marker');
+        continue;
+      }
+      const text = readFileSync(path, 'utf8');
+      countIndexRead(stats, Buffer.byteLength(text));
+      increment(stats, 'targeted_lookup_files_read');
+      const entry = JSON.parse(text);
+      if (entry?.evidence_key !== key) {
+        missing.push(key);
+        increment(stats, 'targeted_lookup_mismatch');
+        continue;
+      }
+      entries.push(entry);
+    } catch {
+      missing.push(key);
+      increment(stats, 'targeted_lookup_errors');
+    }
+  }
+  return { entries, missing };
+}
+
 export function requeueEvidenceKeys(dataRoot, reactor, evidenceKeys, { stats = null } = {}) {
   const wanted = new Set((evidenceKeys || []).filter(Boolean));
   if (!wanted.size) return 0;
-  const entries = readEvidenceIndex(dataRoot, { stats })
-    .filter((entry) => wanted.has(entry?.evidence_key));
-  return requeueIndexedEntries(dataRoot, reactor, entries, { stats });
+  const path = evidenceIndexPath(dataRoot);
+  return withJsonLock(path, () => {
+    const { entries, missing } = readIndexedEntriesByKeys(dataRoot, [...wanted], { stats });
+    if (missing.length && reactor !== 'rule') {
+      const error = new Error(
+        `Targeted evidence locators are missing for ${missing.length} requeue key(s)`,
+      );
+      error.code = 'evidence_requeue_locator_missing';
+      error.retryable = false;
+      error.missing_keys = missing;
+      throw error;
+    }
+    for (const key of wanted) removeMarker(dataRoot, 'consumed', key, reactor);
+    // Existing v2 installations have empty key markers. Removing consumed
+    // markers is sufficient when the reactor cursor still precedes the failed
+    // claim (notably targeted Rule claims). Newly scanned/claimed entries have
+    // locators and are appended for cursor-independent recovery.
+    appendJournalEntries(dataRoot, entries, stats);
+    increment(stats, 'requeue_keys', wanted.size);
+    increment(stats, 'requeue_entries_appended', entries.length);
+    increment(stats, 'requeue_keys_without_locator', missing.length);
+    return wanted.size;
+  });
 }
 
 function parseJournalWindow(dataRoot, {
@@ -655,6 +728,9 @@ function parseJournalWindow(dataRoot, {
         increment(stats, 'pending_scan_entries');
         try {
           const entry = JSON.parse(line.toString('utf8'));
+          if (entry?.evidence_key) {
+            writeMarker(dataRoot, 'keys', entry.evidence_key, null, entry);
+          }
           if (onEntry(entry, lineEndOffset) === false) {
             return { end: lineEndOffset, stopped: true };
           }
@@ -754,7 +830,13 @@ export function hydrateIndexedEnvelope(dataRoot, compact, { stats = null } = {})
       id: locator.id ?? null,
       defaultType: locator.default_type ?? null,
     });
-    return envelope.id === compact.id ? envelope : null;
+    if (envelope.id !== compact.id) return null;
+    Object.defineProperty(envelope, 'indexed_entry', {
+      value: compact,
+      enumerable: false,
+      configurable: true,
+    });
+    return envelope;
   } catch {
     increment(stats, 'hydrate_errors');
     return null;

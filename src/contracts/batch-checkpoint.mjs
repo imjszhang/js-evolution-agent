@@ -18,6 +18,7 @@ export const BATCH_CHECKPOINT_STAGES = Object.freeze([
   'report',
   'decide',
   'committed',
+  'quarantined',
   'failed',
   'deferred',
 ]);
