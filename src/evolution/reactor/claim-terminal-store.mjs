@@ -6,17 +6,77 @@ import {
   closeSync,
   readSync,
   statSync,
+  writeFileSync,
 } from 'node:fs';
-import { dirname } from 'node:path';
+import { createHash } from 'node:crypto';
+import { dirname, join } from 'node:path';
 import { withJsonLock } from '../../infra/json-store.mjs';
 
 const CHUNK_BYTES = 64 * 1024;
 
+function claimIndexPath(filePath, batchId) {
+  const digest = createHash('sha256').update(String(batchId)).digest('hex');
+  return join(`${filePath}.index`, digest.slice(0, 2), `${digest}.json`);
+}
+
+function fingerprintClaim(claim) {
+  return createHash('sha256').update(JSON.stringify(claim)).digest('hex');
+}
+
+function findArchivedClaim(filePath, batchId) {
+  let found = null;
+  scanTerminalClaims(filePath, (claim) => {
+    if (!found && claim?.batch_id === batchId) found = claim;
+  });
+  return found;
+}
+
+/**
+ * Crash replay is idempotent for an identical batch record. A conflicting
+ * duplicate remains append-only audit evidence and is reported to callers.
+ */
 export function appendTerminalClaim(filePath, claim) {
   mkdirSync(dirname(filePath), { recursive: true });
   return withJsonLock(filePath, () => {
+    const batchId = claim?.batch_id;
+    if (!batchId) throw new Error('Terminal claim requires batch_id');
+    const indexPath = claimIndexPath(filePath, batchId);
+    let index = null;
+    if (existsSync(indexPath)) {
+      try {
+        index = JSON.parse(readFileSync(indexPath, 'utf8'));
+      } catch {
+        index = null;
+      }
+    }
+    if (!index) {
+      const archived = findArchivedClaim(filePath, batchId);
+      index = {
+        batch_id: batchId,
+        canonical_fingerprint: archived ? fingerprintClaim(archived) : null,
+        conflict_fingerprints: [],
+      };
+    }
+    const fingerprint = fingerprintClaim(claim);
+    if (
+      fingerprint === index.canonical_fingerprint
+      || index.conflict_fingerprints?.includes(fingerprint)
+    ) {
+      return { claim, appended: false, conflict: fingerprint !== index.canonical_fingerprint };
+    }
+    const conflict = Boolean(index.canonical_fingerprint);
     appendFileSync(filePath, `${JSON.stringify(claim)}\n`, 'utf8');
-    return claim;
+    if (conflict) {
+      index.conflict_fingerprints = [...new Set([
+        ...(index.conflict_fingerprints || []),
+        fingerprint,
+      ])];
+    } else {
+      index.canonical_fingerprint = fingerprint;
+    }
+    mkdirSync(dirname(indexPath), { recursive: true });
+    writeFileSync(indexPath, `${JSON.stringify(index, null, 2)}\n`, 'utf8');
+    return { claim, appended: true, conflict };
   });
 }
 

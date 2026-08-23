@@ -79,6 +79,10 @@ export const SUBJECT_READINESS_REASON_CODES = Object.freeze(
     'legacy_on_demand',
     'ambiguous_evolution_mode',
     'catch_up_budget',
+    'rule_catch_up_budget',
+    'rule_poison_batch_circuit_open',
+    'rule_llm_budget_exhausted',
+    'rule_journal_capacity_exceeded',
     'claims_projection_degraded',
   ]),
 );
@@ -231,6 +235,22 @@ function mapProcessDomain(prefix, worker, health, ownership) {
     return { state: 'stalled', reasons };
   }
 
+  const stableRuleReason = (health?.reasons || []).find((reason) => (
+    reason === 'rule_catch_up_budget'
+    || reason === 'rule_poison_batch_circuit_open'
+    || reason === 'rule_llm_budget_exhausted'
+    || reason === 'rule_journal_capacity_exceeded'
+  ));
+  if (prefix === 'cycle' && health?.status === 'blocked' && stableRuleReason) {
+    return {
+      state: 'blocked',
+      reasons: [
+        ...(stableRuleReason ? [stableRuleReason] : []),
+        `${prefix}_blocked`,
+        ...(running ? [owned ? 'cycle_running' : 'cycle_attached'] : []),
+      ],
+    };
+  }
   if (health?.status === 'blocked' && !running) {
     return { state: 'blocked', reasons: [`${prefix}_blocked`] };
   }
@@ -276,7 +296,7 @@ function needsStart(domain) {
 function neededActionIds({ cycle, channel, ownership }) {
   const needed = [];
   const cycleStalledNow = cycle.state === 'stalled' || cycle.reasons.includes('reactor_backlog_stalled');
-  const cycleLive = LIVE_STATES.has(cycle.state) || (cycle.state === 'stalled' && (
+  const cycleLive = LIVE_STATES.has(cycle.state) || (['stalled', 'blocked'].includes(cycle.state) && (
     cycle.reasons.includes('cycle_running') || cycle.reasons.includes('cycle_attached')
   ));
 
@@ -294,7 +314,7 @@ function neededActionIds({ cycle, channel, ownership }) {
   if (cycleStalledNow) {
     needed.push('process_cycle_once');
     if (!cycleLive) needed.push('start_cycle');
-  } else if (needsStart(cycle)) {
+  } else if (needsStart(cycle) && !cycleLive) {
     needed.push('start_cycle');
   }
 
@@ -360,7 +380,12 @@ function mapAutomation(input, cycle) {
     intent = 'starting';
   } else if (['blocked', 'stale', 'zombie', 'unavailable'].includes(cycle.state)) {
     intent = 'blocked';
-    blocker = cycle.reasons[0] ?? `${cycle.state}`;
+    blocker = cycle.reasons.find((reason) => (
+      reason === 'rule_catch_up_budget'
+      || reason === 'rule_poison_batch_circuit_open'
+      || reason === 'rule_llm_budget_exhausted'
+      || reason === 'rule_journal_capacity_exceeded'
+    )) ?? cycle.reasons[0] ?? `${cycle.state}`;
   } else if (approvalWait) {
     intent = 'waiting_approval';
   } else if (pending > 0 || cycle.state === 'stalled') {
@@ -409,6 +434,12 @@ export function projectSubjectReadiness(input) {
     ...model.reasons,
     ...conversation.reasons,
     ...(automation.blocker === CATCH_UP_BUDGET_REASON ? [CATCH_UP_BUDGET_REASON] : []),
+    ...([
+      'rule_catch_up_budget',
+      'rule_poison_batch_circuit_open',
+      'rule_llm_budget_exhausted',
+      'rule_journal_capacity_exceeded',
+    ].includes(automation.blocker) ? [automation.blocker] : []),
     ...(automation.blocker === 'claims_projection_degraded' ? ['claims_projection_degraded'] : []),
   ]);
   const { allowed_actions, actions } = resolveRemediationActions(

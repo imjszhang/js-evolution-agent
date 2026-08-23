@@ -20,6 +20,11 @@ import {
   readMemoryCompactionProjection,
   shouldCompactMemory,
 } from '../evolution/reactor/memory-compactor.mjs';
+import { readRuleCatchUpProjection } from '../evolution/reactor/catch-up-budget.mjs';
+import {
+  readRuleResilienceProjection,
+  RULE_BLOCK_REASONS,
+} from '../evolution/reactor/rule-resilience.mjs';
 
 export const DEFAULT_EVIDENCE_STALE_MS = 30 * 60 * 1000;
 
@@ -191,6 +196,11 @@ export function buildReactorHealthProjection(root, subject, {
       nowMs,
       stream: snapshot.envelopes,
     });
+  const ruleCatchUp = readRuleCatchUpProjection(dataRoot);
+  const ruleResilience = readRuleResilienceProjection(dataRoot);
+  const ruleBlockedReason = ruleDue.block_reason
+    || ruleResilience.block_reason
+    || (ruleCatchUp.paused ? ruleCatchUp.reason : null);
   const committed = readLastCommittedMemoryCheckpoint(dataRoot);
   const projection = readMemoryCompactionProjection(runtime.runtimeRoot);
   const archiveSummary = readClaimArchiveSummary(dataRoot);
@@ -226,6 +236,17 @@ export function buildReactorHealthProjection(root, subject, {
     ok = false;
     reasons.push(`${uncertainIntents.length} exec intent(s) have uncertain side effects`);
     suggestions.push('Inspect exec-intents and receipts; do not replay uncertain decisions automatically.');
+  } else if (ruleBlockedReason) {
+    status = 'blocked';
+    ok = false;
+    reasons.push(ruleBlockedReason);
+    if (ruleBlockedReason === RULE_BLOCK_REASONS.circuit) {
+      suggestions.push('Inspect the Rule batch fingerprint and quarantined evidence before resetting the circuit.');
+    } else if (ruleBlockedReason === RULE_BLOCK_REASONS.journal) {
+      suggestions.push('Stop Cycle processing and inspect evidence journal capacity; do not delete authoritative evidence.');
+    } else {
+      suggestions.push('Rule catch-up reached its configured budget; use Check now only after reviewing backlog health.');
+    }
   } else if (claims.expired_claimed > 0) {
     status = 'stalled';
     ok = false;
@@ -295,6 +316,12 @@ export function buildReactorHealthProjection(root, subject, {
       eligible: ruleDue.eligible.length,
       due_windows: ruleDue.due.length,
       due_goals: ruleDue.due.map((item) => item.goalId),
+      blocked: Boolean(ruleBlockedReason),
+      block_reason: ruleBlockedReason,
+      batch_fingerprint: ruleDue.plan?.fingerprint ?? null,
+      payload_bytes: ruleDue.plan?.payload_bytes ?? null,
+      catch_up: ruleCatchUp,
+      resilience: ruleResilience,
     },
     memory: {
       due: memoryGate.due,

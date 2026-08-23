@@ -21,6 +21,7 @@ const STAGE_ORDER = Object.freeze({
   report: 2,
   decide: 3,
   committed: 4,
+  quarantined: 4,
   deferred: 0,
   failed: -1,
 });

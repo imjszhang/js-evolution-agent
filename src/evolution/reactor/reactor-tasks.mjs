@@ -14,6 +14,10 @@ import {
   clearCatchUpIfIdle,
   noteCatchUpBatch,
   readCatchUpProjection,
+  clearRuleCatchUpIfIdle,
+  noteRuleCatchUpBatch,
+  readRuleCatchUpProjection,
+  ruleCatchUpAllowsBacklog,
 } from './catch-up-budget.mjs';
 import { consumeWakeIntent, enqueueWakeIntent, listPendingWakes } from './wake-store.mjs';
 import { patchBatchCheckpoint, readBatchCheckpoint } from './batch-checkpoint-store.mjs';
@@ -27,6 +31,10 @@ import {
   writeExecResult,
 } from './exec-result-store.mjs';
 import { readLastCommittedMemoryCheckpoint } from './memory-compactor.mjs';
+import {
+  readRuleResilienceProjection,
+  resolveRuleLimits,
+} from './rule-resilience.mjs';
 
 export const REACTOR_DAEMON_TASK_TYPES = Object.freeze([
   'cognitive_reaction',
@@ -52,6 +60,8 @@ export function enqueueReactorTask(root, subject, kind, {
   reason = kind,
   source = null,
   enqueueTask,
+  input = {},
+  idempotencyKey = null,
 } = {}) {
   const wake = enqueueWakeIntent(root, subject, { kind, reason, source });
   if (typeof enqueueTask !== 'function') {
@@ -67,8 +77,8 @@ export function enqueueReactorTask(root, subject, kind, {
   const queued = enqueueTask(root, subject, {
     type,
     priority: kind === 'cognitive' ? 40 : kind === 'exec' ? 50 : 70,
-    idempotencyKey: `${subject}:${type}`,
-    input: { reason, source, wake_id: wake.intent.id },
+    idempotencyKey: idempotencyKey || `${subject}:${type}`,
+    input: { reason, source, wake_id: wake.intent.id, ...input },
   });
   return { ...wake, task: queued.task, task_created: queued.created };
 }
@@ -85,15 +95,36 @@ export function scanWakeBacklog(root, subject, {
     clearCatchUpIfIdle(runtime.dataRoot, 0, env);
   }
   const gate = catchUpAllowsEvidenceBacklog(runtime.dataRoot, { ignoreBudget }, env);
+  const ruleLimits = resolveRuleLimits({}, env);
+  const ruleDue = peekRuleDueWindow(runtime.dataRoot, { limits: ruleLimits });
+  const rulePending = ruleDue.due.flatMap((item) => item.events).length;
+  if (rulePending === 0) clearRuleCatchUpIfIdle(runtime.dataRoot, 0, env);
+  const ruleGate = ruleCatchUpAllowsBacklog(runtime.dataRoot, { ignoreBudget }, env);
+  const ruleResilience = readRuleResilienceProjection(runtime.dataRoot);
+  const ruleAllowed = ruleGate.allowed && !ruleDue.blocked && !ruleResilience.blocked;
+  const ruleTaskOptions = ruleDue.plan?.fingerprint ? {
+    input: {
+      evidence_keys: ruleDue.plan.evidence_keys,
+      batch_fingerprint: ruleDue.plan.fingerprint,
+      max_events: ruleLimits.maxEvents,
+      max_payload_bytes: ruleLimits.maxPayloadBytes,
+      max_wall_ms: ruleLimits.maxWallMs,
+      max_consecutive_failures: ruleLimits.maxConsecutiveFailures,
+      max_journal_bytes: ruleLimits.maxJournalBytes,
+    },
+    idempotencyKey: `${subject}:rule_reaction:${ruleDue.plan.fingerprint}`,
+  } : {};
 
   for (const intent of listPendingWakes(root, subject)) {
     if (!gate.allowed && intent.kind === 'cognitive' && intent.reason === 'evidence_backlog') {
       continue;
     }
+    if (intent.kind === 'rule' && (!ruleAllowed || ruleDue.due.length === 0)) continue;
     const result = enqueueReactorTask(root, subject, intent.kind, {
       reason: intent.reason || 'backlog_scan',
       source: 'backlog_scan',
       enqueueTask,
+      ...(intent.kind === 'rule' ? ruleTaskOptions : {}),
     });
     if (result.task_created) enqueued.push(result);
   }
@@ -120,14 +151,17 @@ export function scanWakeBacklog(root, subject, {
     }
   }
 
-  const ruleDue = peekRuleDueWindow(runtime.dataRoot);
-  if (ruleDue.due.length > 0) {
+  if (ruleDue.due.length > 0 && ruleAllowed) {
     const result = enqueueReactorTask(root, subject, 'rule', {
       reason: ruleDue.due[0].reason || 'rule_evidence_backlog',
       source: 'backlog_scan',
       enqueueTask,
+      ...ruleTaskOptions,
     });
-    if (result.task_created) enqueued.push(result);
+    if (result.task_created) {
+      noteRuleCatchUpBatch(runtime.dataRoot, { pendingCount: rulePending }, env);
+      enqueued.push(result);
+    }
   }
 
   const retryableIntents = listOpenExecIntents(runtime.dataRoot)
@@ -169,6 +203,14 @@ export function scanWakeBacklog(root, subject, {
     scanned: true,
     enqueued,
     catch_up: readCatchUpProjection(runtime.dataRoot, env),
+    rule_catch_up: readRuleCatchUpProjection(runtime.dataRoot, env),
+    rule: {
+      ...ruleResilience,
+      due_events: rulePending,
+      pause_reason: !ruleGate.allowed
+        ? readRuleCatchUpProjection(runtime.dataRoot, env).reason
+        : (ruleDue.block_reason || ruleResilience.block_reason),
+    },
   };
 }
 

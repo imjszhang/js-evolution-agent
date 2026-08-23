@@ -29,18 +29,22 @@ Daemon 用于 **belief-driven、事件驱动的 reactor 演化**。推荐用 `je
 - `jea daemon enqueue --type cognitive_reaction|exec_queue|verify_batch|rule_reaction|memory_compaction`：手动入队 reactor 任务。
 - `jea daemon stop` / `jea daemon stop --all`：请求 worker 优雅停止。
 
+Rule backlog 使用独立的安全预算：每批默认最多 32 个事件、4 MiB hydrated payload、4 分钟墙钟，连续瞬态失败最多 3 次；catch-up 默认 4 批或 10 分钟。对应 `JEA_RULE_MAX_EVENTS`、`JEA_RULE_MAX_PAYLOAD_BYTES`、`JEA_RULE_MAX_WALL_MS`、`JEA_RULE_MAX_CONSECUTIVE_FAILURES`、`JEA_RULE_CATCHUP_MAX_BATCHES`、`JEA_RULE_CATCHUP_MAX_WALL_MS`。确定性容量失败会有界拆分；不可拆分的单条 evidence 写入 `reactor/archive/rule-quarantine.jsonl` 后才推进 Rule cursor。主体 LLM token/spend 预算耗尽属于 operator budget block，不归因于 evidence，不拆分、不隔离且不推进 cursor。`rule_catch_up_budget`、`rule_poison_batch_circuit_open`、`rule_llm_budget_exhausted`、`rule_journal_capacity_exceeded` 会稳定暴露到 daemon projection/readiness，且不暂停 Channel worker。
+
 ### Reactor 恢复真相
 
 Live 恢复依赖：
 
 ```text
 <JEA_HOME>/subjects/<data_namespace>/data/evolution/reactor/
-├── claims.json                 # evidence batch claim/ack
+├── claims.json                 # evidence batch claim/ack；终态 archive → requeue → prune
 ├── checkpoints/               # batch effect checkpoint
 ├── exec-intents.json           # 副作用前 durable intent
 ├── exec-results.json           # verify 独立认领
 └── settlements.json            # 幂等协调 sidecar（可由 authority events 重建）
 ```
+
+failed/released/expired claim 的 requeue 使用按 `evidence_key` 分片的 locator lookup，不全量物化 evidence journal。若 archive 已成功而 requeue 失败，terminal hot record 保留；重启后幂等完成 requeue，再 prune。权威 evidence 与 Rule cursor 都不会被该恢复步骤回滚或删除。
 
 `daemon status --json` 的 `reactor` 字段显示 eligible evidence、pending verify、open/uncertain intents、rule/memory due 与 lease。`uncertain` exec intent 表示副作用已开始但无 receipt：决策会被 `blocked`，需人工对照目标仓库/外部效果后处置；**禁止**自动重放未知副作用。历史 `cycles` / step 字段仅供 0.1.0 记录投影。
 

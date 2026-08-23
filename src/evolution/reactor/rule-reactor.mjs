@@ -26,6 +26,17 @@ import {
   readRuleCursors,
   writeRuleCursors,
 } from './rule-cursors.mjs';
+import {
+  assertRuleJournalBudget,
+  assertRuleWallBudget,
+  clearRuleFailure,
+  noteRuleFailure,
+  planRuleBatch,
+  quarantineRuleEvidence,
+  resolveRuleLimits,
+  ruleBatchFingerprint,
+  RULE_BLOCK_REASONS,
+} from './rule-resilience.mjs';
 
 const DEFAULT_MIN_EVENTS = 8;
 const DEFAULT_MAX_IDLE_MS = 48 * 60 * 60 * 1000;
@@ -91,12 +102,27 @@ export function peekRuleDueWindow(dataRoot, {
   maxIdleMs = DEFAULT_MAX_IDLE_MS,
   kinds = RULE_EVIDENCE_KINDS,
   stream = null,
+  limits = resolveRuleLimits(),
 } = {}) {
+  try {
+    assertRuleJournalBudget(dataRoot, limits);
+  } catch (error) {
+    return {
+      eligible: [],
+      due: [],
+      cursors: readRuleCursors(dataRoot),
+      blocked: true,
+      block_reason: RULE_BLOCK_REASONS.journal,
+      error,
+    };
+  }
   const eligible = listEligibleEvidence(dataRoot, {
     reactor: 'rule',
     kinds,
     now: nowMs,
     stream,
+    limit: limits.maxEvents,
+    maxHydratedBytes: limits.maxPayloadBytes,
   });
   const cursors = readRuleCursors(dataRoot);
   const byGoal = new Map();
@@ -111,7 +137,53 @@ export function peekRuleDueWindow(dataRoot, {
     const gate = shouldRunRuleReaction(after, { nowMs, minEvents, maxIdleMs });
     if (gate.due) due.push({ goalId, events: after, reason: gate.reason });
   }
-  return { eligible, due, cursors };
+  const plan = planRuleBatch(dataRoot, due.flatMap((item) => item.events), limits);
+  return {
+    eligible,
+    due,
+    cursors,
+    plan,
+    blocked: plan.blocked,
+    block_reason: plan.block_reason,
+  };
+}
+
+function commitRuleEventCursors(dataRoot, events, batchId) {
+  const claimedByGoal = new Map();
+  for (const event of events) claimedByGoal.set(goalBucketForEnvelope(event), event);
+  const goalCursors = Object.fromEntries(
+    [...claimedByGoal.entries()]
+      .filter(([goalId]) => goalId !== 'global')
+      .map(([goalId, event]) => [goalId, {
+        evidenceKey: envelopeEvidenceKey(event),
+        eventId: event.id,
+      }]),
+  );
+  const globalEvent = claimedByGoal.get('global') ?? null;
+  writeRuleCursors(dataRoot, {
+    globalCursor: globalEvent ? envelopeEvidenceKey(globalEvent) : null,
+    batchId,
+    goalIds: Object.keys(goalCursors),
+    goalCursors,
+  });
+}
+
+function withRuleWallDeadline(work, startedAt, limits) {
+  const remaining = Math.max(0, limits.maxWallMs - (Date.now() - startedAt));
+  if (remaining <= 0) {
+    assertRuleWallBudget(startedAt, limits);
+  }
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const error = new RangeError(`Rule wall-clock budget exceeded (${limits.maxWallMs}ms)`);
+      error.code = 'rule_capacity_wall_clock_exceeded';
+      error.retryable = false;
+      reject(error);
+    }, remaining);
+    timer.unref?.();
+  });
+  return Promise.race([work, deadline]).finally(() => clearTimeout(timer));
 }
 
 export async function runRuleReaction({
@@ -122,6 +194,8 @@ export async function runRuleReaction({
 } = {}) {
   const runtime = runtimeForSubject(root, subject);
   const dataRoot = runtime.dataRoot;
+  const limits = resolveRuleLimits(input);
+  const startedAt = Date.now();
   consumeWakeIntent(root, subject, { kind: 'rule' });
   reconcileExpiredClaims(dataRoot);
   if (isReactorBusy(dataRoot, 'rule')) {
@@ -132,7 +206,17 @@ export async function runRuleReaction({
     minEvents: input.min_events ?? DEFAULT_MIN_EVENTS,
     maxIdleMs: input.max_idle_ms ?? DEFAULT_MAX_IDLE_MS,
     kinds: input.kinds ?? RULE_EVIDENCE_KINDS,
+    limits,
   });
+  if (peeked.blocked) {
+    return {
+      ok: false,
+      skipped: true,
+      reason: peeked.block_reason,
+      code: peeked.error?.code || peeked.block_reason,
+      retryable: false,
+    };
+  }
   if (!peeked.due.length && !input.force) {
     return {
       skipped: true,
@@ -141,25 +225,43 @@ export async function runRuleReaction({
     };
   }
 
-  const dueEvents = input.force
+  let dueEvents = input.force
     ? peeked.eligible
     : peeked.due.flatMap((item) => item.events);
-  const dueGoalIds = input.force
-    ? [...new Set(peeked.eligible.map((item) => goalBucketForEnvelope(item)))]
-    : peeked.due.map((item) => item.goalId);
+  if (Array.isArray(input.evidence_keys) && input.evidence_keys.length) {
+    const requested = new Set(input.evidence_keys);
+    dueEvents = dueEvents.filter((item) => requested.has(envelopeEvidenceKey(item)));
+  }
+  const plan = planRuleBatch(dataRoot, dueEvents, limits);
+  if (!plan.events.length) {
+    return { skipped: true, reason: 'no_pending_evidence', eligible_events: dueEvents.length };
+  }
+  if (plan.blocked) {
+    return {
+      ok: false,
+      skipped: true,
+      reason: plan.block_reason,
+      code: plan.block_reason,
+      retryable: false,
+      batch_fingerprint: plan.fingerprint,
+    };
+  }
+  const dueGoalIds = [...new Set(plan.events.map((item) => goalBucketForEnvelope(item)))];
   const claimed = claimEvidenceBatch(dataRoot, {
     reactor: 'rule',
     subject,
-    limit: input.limit ?? Math.max(dueEvents.length, 1),
+    limit: plan.events.length,
     kinds: input.kinds ?? RULE_EVIDENCE_KINDS,
-    timeoutMs: input.timeout_ms ?? 5 * 60 * 1000,
-    evidenceKeys: dueEvents.map((item) => envelopeEvidenceKey(item)),
+    timeoutMs: Math.min(input.timeout_ms ?? 5 * 60 * 1000, limits.maxWallMs),
+    evidenceKeys: plan.evidence_keys,
+    maxHydratedBytes: limits.maxPayloadBytes,
   });
   if (claimed.skipped) {
     return { skipped: true, reason: claimed.skipped };
   }
 
   const { batch_id: batchId, events } = claimed;
+  const fingerprint = ruleBatchFingerprintForClaim(plan, events);
   const trigger = peeked.due[0]?.reason || (input.force ? 'forced' : 'evidence_count');
   patchBatchCheckpoint(dataRoot, batchId, {
     reactor: 'rule',
@@ -167,14 +269,62 @@ export async function runRuleReaction({
     stage: 'claimed',
     event_ids: events.map((item) => item.id),
     evidence_keys: events.map((item) => envelopeEvidenceKey(item)),
+    batch_fingerprint: fingerprint,
+    payload_bytes: plan.payload_bytes,
+    budgets: {
+      max_events: limits.maxEvents,
+      max_payload_bytes: limits.maxPayloadBytes,
+      max_wall_ms: limits.maxWallMs,
+      max_consecutive_failures: limits.maxConsecutiveFailures,
+    },
   });
 
+  if (plan.failure?.status === 'quarantined') {
+    commitRuleEventCursors(dataRoot, events, batchId);
+    ackBatchHandled(dataRoot, batchId, {
+      handled_meta: {
+        quarantined: true,
+        quarantine_id: `rule-quarantine:${fingerprint}`,
+        batch_fingerprint: fingerprint,
+      },
+    });
+    patchBatchCheckpoint(dataRoot, batchId, {
+      stage: 'quarantined',
+      quarantine_id: `rule-quarantine:${fingerprint}`,
+    });
+    return {
+      ok: true,
+      skipped: false,
+      quarantined: true,
+      recovered: true,
+      batch_id: batchId,
+      batch_fingerprint: fingerprint,
+      claimed_events: events.length,
+    };
+  }
+
   try {
+    if (events.length > limits.maxEvents) {
+      const error = new RangeError(`Rule event budget exceeded (${events.length} > ${limits.maxEvents})`);
+      error.code = 'rule_capacity_event_count_exceeded';
+      error.retryable = false;
+      throw error;
+    }
+    if (plan.payload_bytes > limits.maxPayloadBytes) {
+      const error = new RangeError(
+        `Rule hydrated payload budget exceeded (${plan.payload_bytes} > ${limits.maxPayloadBytes})`,
+      );
+      error.code = 'rule_capacity_payload_exceeded';
+      error.retryable = false;
+      throw error;
+    }
+    assertRuleWallBudget(startedAt, limits);
     const ctx = await buildCycleContext(root, runtime);
     ctx.pipeline = 'reactor';
     const windows = settlementWindowsFromEvents(dataRoot, events);
     const settlements = [];
     for (const window of windows) {
+      assertRuleWallBudget(startedAt, limits);
       const identity = originIdentity(window.events);
       const intelResult = {
         cycle_id: batchId,
@@ -182,49 +332,38 @@ export async function runRuleReaction({
         goal_ids: dueGoalIds,
         ...identity,
       };
-      settlements.push(await settleEvidenceWindow(ctx, {
+      settlements.push(await withRuleWallDeadline(settleEvidenceWindow(ctx, {
         intelResult,
         execResult: { ...identity, ...window.execResult },
         verification: window.verification,
         reportPath: window.reportPath,
         receipts: window.receipts,
         intelReportReady: true,
-        canCommit,
+        canCommit: () => (
+          (typeof canCommit !== 'function' || canCommit())
+          && Date.now() - startedAt < limits.maxWallMs
+        ),
         producer: 'rule',
         activationTargets: ['cognitive'],
         useLatestReport: true,
-      }));
+      }), startedAt, limits));
+      assertRuleWallBudget(startedAt, limits);
     }
     if (typeof canCommit === 'function' && !canCommit()) {
       const error = new Error('reactor_task_lease_lost');
       error.code = 'lease_lost';
       throw error;
     }
-    const claimedByGoal = new Map();
-    for (const event of events) {
-      claimedByGoal.set(goalBucketForEnvelope(event), event);
-    }
-    const goalCursors = Object.fromEntries(
-      [...claimedByGoal.entries()]
-        .filter(([goalId]) => goalId !== 'global')
-        .map(([goalId, event]) => [goalId, {
-          evidenceKey: envelopeEvidenceKey(event),
-          eventId: event.id,
-        }]),
-    );
-    const globalEvent = claimedByGoal.get('global') ?? null;
-    writeRuleCursors(dataRoot, {
-      globalCursor: globalEvent ? envelopeEvidenceKey(globalEvent) : null,
-      batchId,
-      goalIds: Object.keys(goalCursors),
-      goalCursors,
-    });
+    commitRuleEventCursors(dataRoot, events, batchId);
     ackBatchHandled(dataRoot, batchId);
+    clearRuleFailure(dataRoot, fingerprint);
     patchBatchCheckpoint(dataRoot, batchId, { stage: 'committed' });
     return {
       skipped: false,
       batch_id: batchId,
       claimed_events: events.length,
+      batch_fingerprint: fingerprint,
+      payload_bytes: plan.payload_bytes,
       trigger,
       goal_ids: dueGoalIds,
       settlements,
@@ -233,11 +372,74 @@ export async function runRuleReaction({
       calibrate: settlements[0]?.calibrate ?? null,
     };
   } catch (err) {
-    nackBatchFailed(dataRoot, batchId, { error: err?.message || String(err) });
+    const failure = noteRuleFailure(dataRoot, {
+      fingerprint,
+      evidenceKeys: events.map((item) => envelopeEvidenceKey(item)),
+      error: err,
+      eventCount: events.length,
+      limits,
+    });
+    if (failure.action === 'quarantine') {
+      const quarantine = quarantineRuleEvidence(dataRoot, {
+        fingerprint,
+        event: events[0],
+        error: err,
+        batchId,
+      });
+      commitRuleEventCursors(dataRoot, events, batchId);
+      ackBatchHandled(dataRoot, batchId, {
+        handled_meta: {
+          quarantined: true,
+          quarantine_id: quarantine.quarantine_id,
+          batch_fingerprint: fingerprint,
+        },
+      });
+      patchBatchCheckpoint(dataRoot, batchId, {
+        stage: 'quarantined',
+        last_error: err?.message || String(err),
+        quarantine_id: quarantine.quarantine_id,
+      });
+      return {
+        ok: true,
+        skipped: false,
+        quarantined: true,
+        quarantine,
+        batch_id: batchId,
+        batch_fingerprint: fingerprint,
+        claimed_events: 1,
+      };
+    }
+    try {
+      nackBatchFailed(dataRoot, batchId, { error: err?.message || String(err) });
+    } catch (requeueError) {
+      requeueError.code = requeueError.code || 'terminal_claim_requeue_failed';
+      requeueError.stage = 'terminal_claim_requeue';
+      throw requeueError;
+    }
     patchBatchCheckpoint(dataRoot, batchId, {
       stage: 'failed',
       last_error: err?.message || String(err),
+      batch_fingerprint: fingerprint,
+      failure_action: failure.action,
     });
+    if (failure.action === 'split') {
+      err.code = 'rule_batch_split_required';
+      err.retryable = false;
+      err.next_max_events = failure.next_max_events;
+    } else if (failure.action === 'block') {
+      err.code = failure.block_reason || RULE_BLOCK_REASONS.circuit;
+      err.retryable = false;
+    } else {
+      err.retryable = failure.retryable;
+    }
     throw err;
   }
+}
+
+function ruleBatchFingerprintForClaim(plan, events) {
+  const keys = events.map((event) => envelopeEvidenceKey(event));
+  return keys.length === plan.evidence_keys.length
+    && keys.every((key, index) => key === plan.evidence_keys[index])
+    ? plan.fingerprint
+    : ruleBatchFingerprint(keys);
 }

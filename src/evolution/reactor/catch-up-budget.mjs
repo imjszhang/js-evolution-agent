@@ -11,6 +11,9 @@ import { reactorDir } from './paths.mjs';
 export const CATCH_UP_BUDGET_REASON = 'catch_up_budget';
 export const DEFAULT_CATCH_UP_MAX_BATCHES = 8;
 export const DEFAULT_CATCH_UP_MAX_WALL_MS = 15 * 60 * 1000;
+export const RULE_CATCH_UP_BUDGET_REASON = 'rule_catch_up_budget';
+export const DEFAULT_RULE_CATCH_UP_MAX_BATCHES = 4;
+export const DEFAULT_RULE_CATCH_UP_MAX_WALL_MS = 10 * 60 * 1000;
 
 export function catchUpPath(dataRoot) {
   return join(reactorDir(dataRoot), 'catch-up.json');
@@ -134,6 +137,105 @@ export function catchUpAllowsEvidenceBacklog(dataRoot, { ignoreBudget = false } 
         ...record,
         paused: true,
         pause_reason: CATCH_UP_BUDGET_REASON,
+      }),
+    };
+  }
+  return { allowed: true, record };
+}
+
+export function ruleCatchUpPath(dataRoot) {
+  return join(reactorDir(dataRoot), 'rule-catch-up.json');
+}
+
+export function resolveRuleCatchUpLimits(env = process.env) {
+  return {
+    maxBatches: parsePositiveInt(env.JEA_RULE_CATCHUP_MAX_BATCHES, {
+      name: 'JEA_RULE_CATCHUP_MAX_BATCHES',
+      defaultValue: DEFAULT_RULE_CATCH_UP_MAX_BATCHES,
+      min: 1,
+    }),
+    maxWallMs: parsePositiveInt(env.JEA_RULE_CATCHUP_MAX_WALL_MS, {
+      name: 'JEA_RULE_CATCHUP_MAX_WALL_MS',
+      defaultValue: DEFAULT_RULE_CATCH_UP_MAX_WALL_MS,
+      min: 1,
+    }),
+  };
+}
+
+export function readRuleCatchUpRecord(dataRoot, env = process.env) {
+  const limits = resolveRuleCatchUpLimits(env);
+  const path = ruleCatchUpPath(dataRoot);
+  if (!existsSync(path)) return emptyRecord(limits);
+  const raw = readJson(path, emptyRecord(limits));
+  return {
+    ...emptyRecord(limits),
+    ...(raw && typeof raw === 'object' ? raw : {}),
+    max_batches: limits.maxBatches,
+    max_wall_ms: limits.maxWallMs,
+  };
+}
+
+function writeRuleCatchUpRecord(dataRoot, record) {
+  writeJson(ruleCatchUpPath(dataRoot), {
+    ...record,
+    schema_version: 1,
+    updated_at: nowIso(),
+  });
+  return record;
+}
+
+export function readRuleCatchUpProjection(dataRoot, env = process.env) {
+  const record = readRuleCatchUpRecord(dataRoot, env);
+  const paused = record.paused === true || wallClockExceeded(record);
+  return {
+    paused,
+    reason: paused ? (record.pause_reason || RULE_CATCH_UP_BUDGET_REASON) : null,
+    batches: Number.isInteger(record.batches) ? record.batches : 0,
+    remaining_at_pause: record.remaining_at_pause ?? null,
+    max_batches: record.max_batches,
+    max_wall_ms: record.max_wall_ms,
+  };
+}
+
+export function clearRuleCatchUpIfIdle(dataRoot, pendingCount, env = process.env) {
+  const limits = resolveRuleCatchUpLimits(env);
+  if ((pendingCount ?? 0) > 0) return readRuleCatchUpRecord(dataRoot, env);
+  if (!existsSync(ruleCatchUpPath(dataRoot))) return emptyRecord(limits);
+  return writeRuleCatchUpRecord(dataRoot, emptyRecord(limits));
+}
+
+export function noteRuleCatchUpBatch(dataRoot, { pendingCount = 0 } = {}, env = process.env) {
+  const limits = resolveRuleCatchUpLimits(env);
+  const previous = readRuleCatchUpRecord(dataRoot, env);
+  const startedAt = previous.started_at || nowIso();
+  const batches = (Number.isInteger(previous.batches) ? previous.batches : 0) + 1;
+  const elapsed = Date.parse(startedAt);
+  const overBatches = batches >= limits.maxBatches;
+  const overWall = Number.isFinite(elapsed) && (Date.now() - elapsed) >= limits.maxWallMs;
+  const paused = overBatches || overWall;
+  return writeRuleCatchUpRecord(dataRoot, {
+    ...previous,
+    started_at: startedAt,
+    batches,
+    paused,
+    pause_reason: paused ? RULE_CATCH_UP_BUDGET_REASON : null,
+    remaining_at_pause: paused ? pendingCount : null,
+    max_batches: limits.maxBatches,
+    max_wall_ms: limits.maxWallMs,
+  });
+}
+
+export function ruleCatchUpAllowsBacklog(dataRoot, { ignoreBudget = false } = {}, env = process.env) {
+  if (ignoreBudget) return { allowed: true, record: readRuleCatchUpRecord(dataRoot, env) };
+  const record = readRuleCatchUpRecord(dataRoot, env);
+  if (record.paused) return { allowed: false, record };
+  if (wallClockExceeded(record)) {
+    return {
+      allowed: false,
+      record: writeRuleCatchUpRecord(dataRoot, {
+        ...record,
+        paused: true,
+        pause_reason: RULE_CATCH_UP_BUDGET_REASON,
       }),
     };
   }
