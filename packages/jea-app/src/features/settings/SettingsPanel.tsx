@@ -32,7 +32,7 @@ function Row({ label, value, testId }: { label: string; value: string; testId?: 
 
 function evolutionRuntimeLabel(
   t: (key: 'evolutionAutomaticPaused' | 'evolutionListening' | 'evolutionCatchingUp' | 'evolutionWaitingApproval' | 'evolutionBlocked' | 'evolutionAutomaticRunning') => string,
-  runtime: { mode?: string; intent?: string; remaining_evidence?: number; blocker?: string | null } | null
+  runtime: { mode?: string; intent?: string; remaining_evidence?: number | null; blocker?: string | null } | null
 ): string {
   if (!runtime) return '—'
   if (runtime.mode === 'paused' || runtime.intent === 'paused') return t('evolutionAutomaticPaused')

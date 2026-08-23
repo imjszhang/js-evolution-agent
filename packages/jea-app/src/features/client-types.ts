@@ -150,7 +150,7 @@ export interface AutomationView {
   mapped_from?: string
   diagnostic?: string | null
   background?: boolean
-  remaining_evidence?: number
+  remaining_evidence?: number | null
   blocker?: string | null
 }
 
