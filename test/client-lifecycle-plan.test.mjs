@@ -36,6 +36,28 @@ describe('client lifecycle plan', () => {
     ]);
   });
 
+  it('marks previous Desktop ownership without taking it over', () => {
+    const plan = planClientLifecycle({
+      activeSubject: 'alpha',
+      reason: 'startup',
+      subjects: [
+        subjectLifecycleInput('alpha', {
+          automation: 'automatic',
+          cycleLive: true,
+          previousSupervisorCycle: true,
+        }),
+      ],
+    });
+    expect(plan.actions).toEqual([
+      {
+        subject: 'alpha',
+        domain: 'cycle',
+        action: 'attach',
+        reason: 'previous_supervisor_owner',
+      },
+    ]);
+  });
+
   it('does not start Cycle when paused and never stops an external worker', () => {
     const plan = planClientLifecycle({
       activeSubject: 'alpha',

@@ -22,6 +22,7 @@ import {
   listEligibleEvidence,
   nackBatchFailed,
   readClaimLedger,
+  readTerminalClaimArchive,
   reconcileExpiredClaims,
 } from '../src/evolution/reactor/claim-ledger.mjs';
 import { compareShadowAgainstCycle } from '../src/evolution/reactor/shadow-compare.mjs';
@@ -109,13 +110,17 @@ describe('claim ledger', () => {
 
     ackBatchHandled(dataRoot, first.batch_id);
     expect(isReactorBusy(dataRoot, 'cognitive')).toBe(false);
+    expect(readTerminalClaimArchive(dataRoot).claims.find((c) => c.batch_id === first.batch_id))
+      .not.toHaveProperty('indexed_entries');
 
     const second = claimEvidenceBatch(dataRoot, { reactor: 'cognitive', limit: 10 });
     expect(second.events).toHaveLength(1);
     expect(second.events[0].id).toBe('evt-seed-2');
     nackBatchFailed(dataRoot, second.batch_id, { error: 'boom' });
-    const ledger = readClaimLedger(dataRoot);
+    const ledger = readTerminalClaimArchive(dataRoot);
     expect(ledger.claims.find((c) => c.batch_id === second.batch_id).status).toBe('failed');
+    expect(ledger.claims.find((c) => c.batch_id === second.batch_id))
+      .not.toHaveProperty('indexed_entries');
 
     // failed batch does not permanently cover ids → reclaimable
     const retry = claimEvidenceBatch(dataRoot, { reactor: 'cognitive', limit: 10 });
@@ -507,7 +512,7 @@ describe('cognitive shadow reactor e2e', () => {
     const honesty = runs.filter((r) => r.type === 'shadow_report_honesty');
     expect(honesty).toHaveLength(1);
 
-    const ledger = readClaimLedger(runtime.dataRoot);
+    const ledger = readTerminalClaimArchive(runtime.dataRoot);
     expect(ledger.claims.find((c) => c.batch_id === result.batch_id)?.status).toBe('handled');
 
     expect(fileHash(pendingPath)).toBe(beforePending);

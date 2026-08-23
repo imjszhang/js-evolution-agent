@@ -126,6 +126,13 @@ export type DaemonSupervisorMode =
   | 'zombie'
   | 'stopping'
 
+export interface SupervisorLeaseView {
+  required: boolean
+  status: 'active' | 'stopping' | 'expired' | 'missing' | 'owner_mismatch' | 'legacy' | 'lost'
+  expires_at: string | null
+  domain: 'all' | 'cycle' | 'channel' | null
+}
+
 export interface DaemonSupervisorView {
   subject: string
   mode: DaemonSupervisorMode
@@ -133,6 +140,8 @@ export interface DaemonSupervisorView {
   domain: 'all' | 'cycle' | 'channel' | null
   heartbeat_at: string | null
   started_at: string | null
+  supervisor_lease?: SupervisorLeaseView | null
+  supervisor_leases?: SupervisorLeaseView[]
   log_paths?: { stdout: string; stderr: string } | null
   detail?: string | null
 }

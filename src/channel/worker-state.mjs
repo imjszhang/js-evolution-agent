@@ -79,6 +79,7 @@ function emptyAggregateState(subject) {
     stopped_at: null,
     stale_after_ms: 60_000,
     tick_ms: null,
+    supervisor: null,
     last_work_result: null,
     last_error: null,
   };
@@ -141,6 +142,7 @@ export function summarizeChannelWorkersState(raw, { staleMs = 60_000 } = {}) {
   return {
     schema_version: 2,
     coordinator: state.coordinator,
+    supervisor: state.supervisor ?? state.coordinator?.supervisor ?? null,
     roles,
     running_count: running.length,
     fresh_count: fresh.length,
@@ -157,6 +159,7 @@ export function initChannelCoordinatorState(root, subject, {
   classifierIntervalMs = null,
   roles = [],
   staleMs = 60_000,
+  supervisor = null,
 } = {}) {
   return withChannelWorkerStateLock(root, subject, () => {
     const previous = readChannelWorkerState(root, subject) || emptyAggregateState(subject);
@@ -167,12 +170,14 @@ export function initChannelCoordinatorState(root, subject, {
       schema_version: 2,
       stale_after_ms: staleMs,
       tick_ms: tickMs,
+      supervisor,
       coordinator: {
         pid,
         started_at: nowIso(),
         roles,
         tick_ms: tickMs,
         classifier_interval_ms: classifierIntervalMs,
+        supervisor,
       },
       status: 'running',
       heartbeat_at: nowIso(),
@@ -203,6 +208,7 @@ export function createChannelRoleWorkerState(root, subject, {
   staleMs = 60_000,
   tickMs = null,
   allowedTaskTypes = null,
+  supervisor = null,
 } = {}) {
   return withChannelWorkerStateLock(root, subject, () => {
     const state = readChannelWorkerState(root, subject) || emptyAggregateState(subject);
@@ -234,6 +240,7 @@ export function createChannelRoleWorkerState(root, subject, {
         stale_after_ms: staleMs,
         tick_ms: tickMs ?? existing.tick_ms ?? null,
         allowed_task_types: allowedTaskTypes ?? existing.allowed_task_types ?? safeRoleTaskTypes(role, existing),
+        supervisor: supervisor ?? existing.supervisor ?? state.supervisor ?? null,
       };
       delete state.workers[role].stop_reason;
       state.status = 'running';
@@ -241,8 +248,10 @@ export function createChannelRoleWorkerState(root, subject, {
       state.stop_requested_at = null;
       state.stopped_at = null;
       state.pid = pid;
+      if (supervisor) state.supervisor = supervisor;
       if (state.coordinator) {
         state.coordinator.pid = pid;
+        if (supervisor) state.coordinator.supervisor = supervisor;
         state.worker_id = `channel-coordinator-${pid}`;
       } else {
         state.worker_id = workerId;
@@ -264,6 +273,7 @@ export function createChannelRoleWorkerState(root, subject, {
       stale_after_ms: staleMs,
       tick_ms: tickMs,
       allowed_task_types: allowedTaskTypes ?? safeRoleTaskTypes(role, null),
+      supervisor: supervisor ?? state.supervisor ?? null,
       last_work_result: null,
       last_error: null,
     };
@@ -272,8 +282,10 @@ export function createChannelRoleWorkerState(root, subject, {
     state.stop_requested_at = null;
     state.stopped_at = null;
     state.pid = pid;
+    if (supervisor) state.supervisor = supervisor;
     if (state.coordinator) {
       state.coordinator.pid = pid;
+      if (supervisor) state.coordinator.supervisor = supervisor;
       state.worker_id = `channel-coordinator-${state.coordinator.pid}`;
     } else {
       state.worker_id = workerId;
@@ -335,6 +347,37 @@ export function safeUpdateChannelRoleWorkerHeartbeat(root, subject, role, patch 
 export function safeUpdateChannelWorkerHeartbeat(root, subject, patch = {}) {
   const role = patch.role ?? 'all';
   return safeUpdateChannelRoleWorkerHeartbeat(root, subject, role, patch);
+}
+
+export function updateChannelSupervisorState(root, subject, supervisor) {
+  return withChannelWorkerStateLock(root, subject, () => {
+    const state = readChannelWorkerState(root, subject) || emptyAggregateState(subject);
+    state.supervisor = supervisor;
+    if (state.coordinator) state.coordinator.supervisor = supervisor;
+    for (const role of Object.keys(state.workers ?? {})) {
+      state.workers[role] = {
+        ...state.workers[role],
+        supervisor,
+      };
+    }
+    writeChannelWorkerState(root, subject, state);
+    return state;
+  });
+}
+
+export function safeUpdateChannelSupervisorState(root, subject, supervisor) {
+  try {
+    return updateChannelSupervisorState(root, subject, supervisor);
+  } catch (err) {
+    recordChannelEvent(root, subject, {
+      type: 'channel_worker_state_write_failed',
+      status: 'error',
+      operation: 'supervisor_lease',
+      error_code: err?.code ?? null,
+      error: err?.message || String(err),
+    });
+    return null;
+  }
 }
 
 export function updateChannelWorkerHeartbeat(root, subject, patch = {}) {

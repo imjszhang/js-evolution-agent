@@ -2,6 +2,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveDesktopConfig } from '../channel/adapters/desktop/config.mjs';
 import { readDaemonProjection } from '../daemon/daemon-projection.mjs';
+import { readWorkerState } from '../daemon/daemon-worker-state.mjs';
+import { readChannelWorkerState } from '../channel/worker-state.mjs';
 import { resolveModelReadiness } from '../actions/execution-env.mjs';
 import { getSubjectEntry, listRegisteredSubjects } from '../infra/subjects.mjs';
 import { runtimeForSubject } from '../infra/runtime-paths.mjs';
@@ -9,6 +11,7 @@ import { isProcessAlive } from '../infra/process-alive.mjs';
 import { redactSecrets } from '../intelligence/redaction.mjs';
 import { CATCH_UP_BUDGET_REASON, readCatchUpProjection } from '../evolution/reactor/catch-up-budget.mjs';
 import { resolveAutomationPolicyFromEntry } from './automation-policy.mjs';
+import { inspectSupervisorLease, readSupervisorLease } from './supervisor-lease.mjs';
 
 export const PRODUCT_READINESS_SOURCE = 'service.getReadiness';
 
@@ -53,6 +56,8 @@ export const SUBJECT_READINESS_REASON_CODES = Object.freeze(
     'channel_starting',
     'channel_stopping',
     'channel_unavailable',
+    'supervisor_lease_expired',
+    'supervisor_lease_missing',
     'reactor_backlog_stalled',
     'model_ready',
     'model_mock',
@@ -74,6 +79,7 @@ export const SUBJECT_READINESS_REASON_CODES = Object.freeze(
     'legacy_on_demand',
     'ambiguous_evolution_mode',
     'catch_up_budget',
+    'claims_projection_degraded',
   ]),
 );
 
@@ -167,6 +173,26 @@ function cycleStalled(health) {
 
 function mapProcessDomain(prefix, worker, health, ownership) {
   const owned = domainOwned(ownership, prefix);
+  const supervisorLeases = ownership?.supervisor_leases?.length
+    ? ownership.supervisor_leases
+    : [ownership?.supervisor_lease].filter(Boolean);
+  const supervisorLease = supervisorLeases.find((lease) => (
+    lease?.domain == null || lease.domain === 'all' || lease.domain === prefix
+  )) ?? null;
+  const leaseApplies = supervisorLease?.domain == null
+    || supervisorLease.domain === 'all'
+    || supervisorLease.domain === prefix;
+  const leaseReason = supervisorLease?.required === true && leaseApplies
+    ? (
+        supervisorLease.status === 'expired'
+          ? 'supervisor_lease_expired'
+          : (
+              ['missing', 'owner_mismatch', 'lost'].includes(supervisorLease.status)
+                ? 'supervisor_lease_missing'
+                : null
+            )
+      )
+    : null;
   const running = Boolean(worker?.running);
   const observedPid = Number(worker?.pid);
   const hasPid = Number.isInteger(observedPid) && observedPid > 0;
@@ -175,6 +201,10 @@ function mapProcessDomain(prefix, worker, health, ownership) {
   const claimedActive = ['running', 'stopping', 'starting', 'stale', 'zombie'].includes(status)
     || Boolean(worker?.stale)
     || Boolean(worker?.zombie);
+
+  if (leaseReason && running) {
+    return { state: 'stopping', reasons: [`${prefix}_stopping`, leaseReason] };
+  }
 
   if (worker?.zombie || (claimedActive && !pidAlive)) {
     return { state: 'zombie', reasons: [`${prefix}_zombie`] };
@@ -213,7 +243,10 @@ function mapProcessDomain(prefix, worker, health, ownership) {
   }
 
   if (!worker || worker.status === 'stopped' || worker.running === false) {
-    return { state: 'stopped', reasons: [`${prefix}_stopped`] };
+    return {
+      state: 'stopped',
+      reasons: [`${prefix}_stopped`, ...(leaseReason ? [leaseReason] : [])],
+    };
   }
 
   return { state: 'unavailable', reasons: [`${prefix}_unavailable`] };
@@ -311,13 +344,18 @@ export function resolveRemediationActions(needed, hostKind) {
 
 function mapAutomation(input, cycle) {
   const policy = input.automation ?? { mode: 'automatic', mapped_from: 'default', diagnostic: null, background: false };
-  const pending = Number.isFinite(input.pendingEvidence) ? Math.max(0, Math.floor(input.pendingEvidence)) : 0;
+  const pending = Number.isFinite(input.pendingEvidence)
+    ? Math.max(0, Math.floor(input.pendingEvidence))
+    : null;
   const approvalWait = input.waitingApproval === true;
   const catchUpPaused = input.catchUp?.paused === true;
   let intent = 'listening';
   let blocker = null;
   if (policy.mode === 'paused') {
     intent = 'paused';
+  } else if (input.projectionDegraded === true) {
+    intent = 'blocked';
+    blocker = 'claims_projection_degraded';
   } else if (cycle.state === 'starting') {
     intent = 'starting';
   } else if (['blocked', 'stale', 'zombie', 'unavailable'].includes(cycle.state)) {
@@ -371,6 +409,7 @@ export function projectSubjectReadiness(input) {
     ...model.reasons,
     ...conversation.reasons,
     ...(automation.blocker === CATCH_UP_BUDGET_REASON ? [CATCH_UP_BUDGET_REASON] : []),
+    ...(automation.blocker === 'claims_projection_degraded' ? ['claims_projection_degraded'] : []),
   ]);
   const { allowed_actions, actions } = resolveRemediationActions(
     neededActionIds({ cycle, channel, ownership: input.ownership }),
@@ -420,11 +459,48 @@ function desktopChannelEnabled(runtime, subject) {
   }
 }
 
+function observeSupervisorLease(runtime, subject) {
+  const runtimePaths = runtimeForSubject(runtime, subject);
+  const cycle = readWorkerState(runtime, subject);
+  const channel = readChannelWorkerState(runtime, subject);
+  const candidates = [
+    {
+      domain: cycle?.supervisor?.domain ?? 'cycle',
+      required: cycle?.supervisor?.required === true,
+    },
+    {
+      domain: channel?.supervisor?.domain ?? 'channel',
+      required: channel?.supervisor?.required === true,
+    },
+  ];
+  const observations = [];
+  for (const candidate of candidates) {
+    if (!candidate.required || !['all', 'cycle', 'channel'].includes(candidate.domain)) continue;
+    const suffix = candidate.domain === 'all' ? '' : `-${candidate.domain}`;
+    const record = readSupervisorLease(
+      join(runtimePaths.evolutionDir, 'daemon', `desktop-supervisor${suffix}.json`),
+    );
+    const observation = inspectSupervisorLease(record, {
+      subject,
+      domain: candidate.domain,
+    });
+    if (observations.some((item) => item.domain === candidate.domain)) continue;
+    observations.push({
+      required: true,
+      status: observation.status === 'legacy' ? 'missing' : observation.status,
+      expires_at: observation.expires_at,
+      domain: candidate.domain,
+    });
+  }
+  return observations;
+}
+
 function defaultProcessView(runtime, subject, options = {}) {
   const daemon = readDaemonProjection(runtime, subject, {
     eventLimit: 10,
     deferRebuild: options.deferRebuild === true,
   });
+  const supervisorLeases = observeSupervisorLease(runtime, subject);
   return {
     subject,
     mode: daemon.worker?.running ? 'attached' : 'none',
@@ -433,6 +509,8 @@ function defaultProcessView(runtime, subject, options = {}) {
     heartbeat_at: daemon.worker?.heartbeat_at ?? null,
     started_at: daemon.worker?.started_at ?? null,
     health: daemon.health?.status ?? null,
+    supervisor_lease: supervisorLeases[0] ?? null,
+    supervisor_leases: supervisorLeases,
     detail: daemon.health?.ok === false ? 'Service is unhealthy.' : null,
   };
 }
@@ -459,12 +537,21 @@ export function readSubjectReadiness(runtime, subject, options = {}) {
   const deferRebuild = options.deferRebuild === true;
   const daemon = readDaemonProjection(runtime, name, { eventLimit: 10, deferRebuild });
   const view = processPort?.get ? processPort.get(name) : defaultProcessView(runtime, name, { deferRebuild });
+  const diskSupervisorLeases = observeSupervisorLease(runtime, name);
+  const supervisorLeases = view.supervisor_leases?.length
+    ? view.supervisor_leases
+    : (
+        view.supervisor_lease
+          ? [view.supervisor_lease]
+          : diskSupervisorLeases
+      );
   const model = resolveModelReadiness({
     jeaHome: runtime.jeaHome,
     subjectRoot: runtimeForSubject(runtime, name).runtimeRoot,
   });
   const policy = resolveAutomationPolicyFromEntry(getSubjectEntry(runtime, name));
-  const pending = Number(daemon.reactor?.evidence?.pending_count ?? 0);
+  const pendingRaw = daemon.reactor?.evidence?.pending_count;
+  const pending = Number.isFinite(pendingRaw) ? Number(pendingRaw) : null;
   const waitingApproval = Boolean(
     daemon.reactor?.intents?.uncertain_count > 0
     || (Array.isArray(daemon.health?.reasons) && daemon.health.reasons.some((reason) => (
@@ -486,9 +573,13 @@ export function readSubjectReadiness(runtime, subject, options = {}) {
     ownership: {
       mode: view.mode ?? null,
       domain: view.domain ?? null,
+      supervisor_lease: supervisorLeases[0] ?? null,
+      supervisor_leases: supervisorLeases,
     },
     automation: policy,
-    pendingEvidence: Number.isFinite(pending) ? pending : 0,
+    pendingEvidence: pending,
+    projectionDegraded: daemon.reactor?.projection_degraded === true
+      || daemon.reactor?.claims?.projection_degraded === true,
     waitingApproval,
     catchUp: readCatchUpProjection(dataRoot),
   }));

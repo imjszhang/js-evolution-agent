@@ -619,6 +619,14 @@ export function requeueIndexedEntries(dataRoot, reactor, entries, { stats = null
   });
 }
 
+export function requeueEvidenceKeys(dataRoot, reactor, evidenceKeys, { stats = null } = {}) {
+  const wanted = new Set((evidenceKeys || []).filter(Boolean));
+  if (!wanted.size) return 0;
+  const entries = readEvidenceIndex(dataRoot, { stats })
+    .filter((entry) => wanted.has(entry?.evidence_key));
+  return requeueIndexedEntries(dataRoot, reactor, entries, { stats });
+}
+
 function parseJournalWindow(dataRoot, {
   start,
   onEntry,

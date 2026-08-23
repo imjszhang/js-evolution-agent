@@ -23,7 +23,9 @@ export const EVIDENCE_BATCH_REACTORS = Object.freeze([
 ]);
 
 /**
- * Claim ledger record for evidence batches (Phase 2).
+ * Claim ledger record for evidence batches. `indexed_entries` is intentionally
+ * non-contractual and must not be persisted; recovery hydrates stable
+ * event_ids/evidence_keys through the evidence index.
  * Required: batch_id, reactor, claimed_at, deadline_at, event_ids, status.
  */
 export function validateEvidenceBatchClaim(claim, path = 'evidence_batch_claim') {

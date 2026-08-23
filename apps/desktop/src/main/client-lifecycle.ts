@@ -57,7 +57,12 @@ function desktopEnabled(runtime: { sourceRoot: string; jeaHome: string }, subjec
 export class ClientLifecycleController implements ClientLifecyclePort {
   constructor(
     private readonly supervisor: DaemonSupervisor,
-    private readonly runtime: { sourceRoot: string; jeaHome: string }
+    private readonly runtime: { sourceRoot: string; jeaHome: string },
+    private readonly previousSupervisorOptions: {
+      maxWaitMs?: number
+      pollMs?: number
+      wait?: (ms: number) => Promise<void>
+    } = {}
   ) {}
 
   async reconcileStartup(): Promise<ClientLifecycleResult> {
@@ -107,6 +112,12 @@ export class ClientLifecycleController implements ClientLifecyclePort {
       ?? resolveAutomationPolicy(this.runtime, name)
     const cycle = summarizeWorkerState(readWorkerState(this.runtime, name))
     const channel = summarizeChannelWorkersState(readChannelWorkerState(this.runtime, name))
+    const supervisor = this.supervisor.get(name)
+    const previousOwnerDomains = new Set(
+      (supervisor.supervisor_leases ?? [supervisor.supervisor_lease])
+        .filter((lease) => lease?.required === true)
+        .map((lease) => lease?.domain)
+    )
     return {
       name,
       automation: policy.mode,
@@ -115,7 +126,15 @@ export class ClientLifecycleController implements ClientLifecyclePort {
       ownedCycle: this.supervisor.owns(name, 'cycle'),
       ownedChannel: this.supervisor.owns(name, 'channel'),
       cycleLive: Boolean(cycle.running),
-      channelLive: channel.running_count > 0
+      channelLive: channel.running_count > 0,
+      previousSupervisorCycle: (
+        !this.supervisor.owns(name, 'cycle')
+        && (previousOwnerDomains.has('all') || previousOwnerDomains.has('cycle'))
+      ),
+      previousSupervisorChannel: (
+        !this.supervisor.owns(name, 'channel')
+        && (previousOwnerDomains.has('all') || previousOwnerDomains.has('channel'))
+      )
     }
   }
 
@@ -142,6 +161,9 @@ export class ClientLifecycleController implements ClientLifecyclePort {
       }
     }
     try {
+      if (reason === 'previous_supervisor_owner' && this.domainPresent(step.subject, step.domain)) {
+        await this.waitForPreviousSupervisor(step.subject, step.domain)
+      }
       const beforeOwned = this.supervisor.owns(step.subject, step.domain)
       await this.supervisor.ensure(step.subject, { domain: step.domain as DaemonDomain })
       const afterOwned = this.supervisor.owns(step.subject, step.domain)
@@ -157,6 +179,27 @@ export class ClientLifecycleController implements ClientLifecyclePort {
         return { ...step, outcome: 'attached', reason: 'already_running' }
       }
       return { ...step, outcome: 'blocked', reason }
+    }
+  }
+
+  private async waitForPreviousSupervisor(
+    subject: string,
+    domain: 'cycle' | 'channel'
+  ): Promise<void> {
+    const view = this.supervisor.get(subject)
+    const lease = (view.supervisor_leases ?? [view.supervisor_lease])
+      .find((item) => item?.required && (item.domain === 'all' || item.domain === domain))
+    const expiresAt = Date.parse(lease?.expires_at ?? '')
+    const configuredMax = Math.max(0, this.previousSupervisorOptions.maxWaitMs ?? 35_000)
+    const leaseWait = Number.isFinite(expiresAt)
+      ? Math.max(0, expiresAt - Date.now()) + 5_000
+      : configuredMax
+    const deadline = Date.now() + Math.min(configuredMax, leaseWait)
+    const pollMs = Math.max(1, this.previousSupervisorOptions.pollMs ?? 250)
+    const wait = this.previousSupervisorOptions.wait
+      ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
+    while (this.domainPresent(subject, domain) && Date.now() < deadline) {
+      await wait(Math.min(pollMs, Math.max(1, deadline - Date.now())))
     }
   }
 

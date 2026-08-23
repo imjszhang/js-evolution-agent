@@ -100,14 +100,29 @@ Daemon status distinguishes:
   it running and the Stop control is unavailable;
 - **managed**: a tracked child started by this client (a dedicated process
   group on POSIX); it can be stopped from the UI and is cleaned up when the
-  client exits;
+  client exits. Desktop renews a private supervisor lease every 5 seconds
+  (30-second TTL); if the main process crashes or is killed, the child
+  gracefully self-stops after the lease expires;
 - **stale/zombie**: worker metadata whose heartbeat or PID is unhealthy.
 
 The in-memory child handle, owner token, and PID must all match before the
 client can stop a process. Diagnostic metadata never grants ownership after an
 application restart. A stale worker may still be alive and therefore blocks a
 replacement start; only absent or confirmed-dead state is startable. A
-single-instance lock prevents duplicate supervisors.
+single-instance lock prevents duplicate supervisors. A restarted Desktop may
+observe a still-live worker from the previous instance, but it never renews or
+adopts that owner's lease. Schema-v1 supervisor metadata remains
+diagnostic-only. Lease enforcement is enabled only through the private
+environment contract used by Desktop spawn, so `jea daemon start` workers
+remain externally managed and are not stopped by Desktop lease expiry.
+
+Lease checks include one TTL of wake grace when the worker event loop resumes
+after a suspension-sized gap. This avoids stopping healthy managed workers
+merely because the machine slept while both Desktop and the child were frozen.
+Supervisor owner tokens stay in the mode-0600 lease record and in-memory
+guards; they are not placed in child environment variables or command-line
+arguments. Renderer events, readiness, service status, diagnostics, and
+worker-state mirrors expose only token-free lease status and expiry.
 
 ## Agent work sessions
 

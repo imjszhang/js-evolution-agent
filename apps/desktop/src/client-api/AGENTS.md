@@ -24,6 +24,8 @@
 
 Subject 运行时就绪响应只返回稳定的 state / reason / action 码，不含 UI 文案、API key、Web token、owner token、消息正文或完整环境值。Electron 与 Web 对同一 fixture 返回相同 state/reason；差异只体现在 `allowed_actions` / `actions[].allowed`（Web 不能执行 `local-only` 修复，改为 `open_desktop`）。
 
+Desktop supervisor lease 只以加法状态进入 Electron process port / readiness：可返回 required、status、expiry、domain，但不得返回 `owner_token` 或 lease record 绝对路径。`supervisor_lease_expired` / `supervisor_lease_missing` 是稳定 reason code；Client API 协议仍保持 `1.0.0`。
+
 CLI 聚合入口是 `jea product status --json --subject NAME`（别名 `jea readiness`）。它调用同一套 `readSubjectReadiness` / `service.getReadiness` 投影，不另建码表。`jea status --json` 仍只描述 localhost Web host。
 
 ## 测试

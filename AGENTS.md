@@ -106,6 +106,7 @@ npx repolink check --link agentank-evolver
 - `jea data init --all`：创建目标模板并写入初始化情报。
 - `jea data backup [--name NAME]`：备份当前主体运行时数据到 `<JEA_HOME>/backups/subjects/<data_namespace>/`。
 - `jea data migrate-home [--dry-run] [--json] [--yes]`：停机校验后把旧 `<sourceRoot>/runtime/subjects/` 无损复制到 JEA Home；不删除旧目录。0.1.0 缺失的可选 causal/comparison 字段保持 unknown，不得伪造。
+- `jea data migrate-claims [--subject NAME] [--dry-run] [--json] [--yes]`：停机后流式瘦身 hot claim，并把 legacy claim archive 复制到 terminal JSONL；原文件与备份保留，迁移前应先运行 `data backup`。
 - `jea data reset [--yes]`：删除当前主体本地运行时数据。此命令有破坏性，自动化代理不要在未确认的情况下执行。
 
 ## Subject 管理

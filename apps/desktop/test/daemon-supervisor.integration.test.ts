@@ -14,6 +14,8 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { discoverDevElectronBinary } from '../../../src/product/app-paths.mjs'
 import { createRuntimeContext } from '../../../src/infra/jea-home.mjs'
 import { writeWorkerState } from '../../../src/daemon/daemon-worker-state.mjs'
+import { readChannelWorkerState } from '../../../src/channel/worker-state.mjs'
+import { createSupervisorLease } from '../../../src/product/supervisor-lease.mjs'
 import { DaemonSupervisor } from '../src/main/daemon-supervisor'
 import { DesktopEventBus } from '../src/main/event-bus'
 import { ManagedProcessRegistry } from '../src/main/managed-process-registry'
@@ -96,6 +98,56 @@ function externalDaemon(root: string, jeaHome: string): ChildProcess {
       JEA_PROJECT_ROOT: root,
       JEA_HOME: jeaHome,
       JEA_FORCE_MOCK: '1'
+    },
+    stdio: 'inherit'
+  })
+  children.push(child)
+  return child
+}
+
+function leasedChannelDaemon(root: string, jeaHome: string): ChildProcess {
+  const leasePath = join(
+    jeaHome,
+    'subjects',
+    'alpha-data',
+    'data',
+    'evolution',
+    'daemon',
+    'desktop-supervisor-channel.json'
+  )
+  createSupervisorLease(leasePath, {
+    ownerToken: 'integration-owner',
+    subject: 'alpha',
+    domain: 'channel',
+    ttlMs: 2_000,
+    renewMs: 200
+  })
+  const child = spawn(process.execPath, [
+    '--preserve-symlinks',
+    join(root, 'src', 'cli', 'jea.mjs'),
+    'daemon',
+    'start',
+    '--subject',
+    'alpha',
+    '--domain',
+    'channel',
+    '--tick-ms',
+    '1000',
+    '--heartbeat-ms',
+    '250'
+  ], {
+    cwd: root,
+    env: {
+      ...process.env,
+      JEA_PROJECT_ROOT: root,
+      JEA_HOME: jeaHome,
+      JEA_FORCE_MOCK: '1',
+      JEA_DESKTOP_SUPERVISOR_LEASE_REQUIRED: '1',
+      JEA_DESKTOP_SUPERVISOR_LEASE_RECORD: leasePath,
+      JEA_DESKTOP_SUPERVISOR_SUBJECT: 'alpha',
+      JEA_DESKTOP_SUPERVISOR_DOMAIN: 'channel',
+      JEA_DESKTOP_SUPERVISOR_LEASE_TTL_MS: '2000',
+      JEA_DESKTOP_SUPERVISOR_LEASE_RENEW_MS: '200'
     },
     stdio: 'inherit'
   })
@@ -200,7 +252,28 @@ describe.skipIf(process.platform === 'win32')('DaemonSupervisor real process smo
     await registry.shutdownAll('app_quit')
     expect(supervisor.get('alpha').mode).toBe('attached')
     expect(() => process.kill(child.pid!, 0)).not.toThrow()
+    const externalState = readChannelWorkerState(
+      createRuntimeContext({ sourceRoot: root, jeaHome }),
+      'alpha'
+    )
+    expect(externalState.supervisor).toBeNull()
     expect(existsSync(join(root, 'runtime'))).toBe(false)
+  })
+
+  it('self-stops a Desktop-managed channel worker after its supervisor lease expires', async () => {
+    const { root, jeaHome } = projectFixture()
+    const child = leasedChannelDaemon(root, jeaHome)
+    await waitFor(() => child.exitCode != null || child.signalCode != null, 10_000)
+
+    expect(child.exitCode).toBe(0)
+    const context = createRuntimeContext({ sourceRoot: root, jeaHome })
+    const state = readChannelWorkerState(context, 'alpha')
+    expect(state.status).toBe('stopped')
+    expect(Object.values(state.workers).length).toBeGreaterThan(0)
+    expect(Object.values(state.workers).every((worker: any) => (
+      worker.status === 'stopped' && worker.stop_reason === 'supervisor_lease_expired'
+    ))).toBe(true)
+    expect(JSON.stringify(state)).not.toContain('integration-owner')
   })
 
   it('repairs a dead-PID record then starts a managed worker to ready', async () => {

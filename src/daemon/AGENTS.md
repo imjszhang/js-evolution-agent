@@ -64,6 +64,8 @@ S9 后上述行为已固化，不再有 gate 回退。隔离验收：`npm run re
   - 历史 `evolution_stalled` / `cycle_progress_stalled` 仅是 0.1.0 cycle-state 兼容投影；live reactor 健康使用 eligible backlog、lease、pending verify、uncertain intents 与 rule/memory due。
 - Worker 崩溃会尽力写入 `worker_crashed` 事件并将 `worker-state` 标为 `stopped`。
 - `daemon start` 若检测到 zombie（fresh 心跳 + 死 PID），会先清理旧状态再启动新 worker。
+- Desktop spawn 的 Cycle/Channel 额外受 supervisor lease 约束：默认 TTL 30 秒、每 5 秒续租；Desktop crash/kill 后 worker 在租约过期时走现有 graceful stop。系统从休眠恢复时有一个 TTL 的续租宽限。仅私有 Desktop child env 启用该约束，外部 `jea daemon start` 无 supervisor lease，仍按 attached worker 处理。
+- `<data>/evolution/daemon/desktop-supervisor[-cycle|-channel].json` 的 schema v2 是租约记录；schema v1 继续只作兼容诊断。新 Desktop 实例不会续租或接管旧 `owner_token`。worker-state 只镜像 required/status/expiry，不保存 token；Client API、readiness、事件和诊断不得暴露 token。
 
 ### Subject 投影缓存
 

@@ -75,6 +75,28 @@ describe('channel worker-state', () => {
     expect(state.status).toBe('running');
   });
 
+  it('persists the supervisor lease mirror on aggregate and role state', () => {
+    const root = makeRoot();
+    const supervisor = {
+      kind: 'jea-desktop',
+      required: true,
+      domain: 'channel',
+      lease_status: 'active',
+      lease_expires_at: '2026-08-23T04:00:30.000Z',
+    };
+    createChannelRoleWorkerState(root, 'alpha', {
+      role: 'notify',
+      workerId: 'channel-worker-notify',
+      pid: process.pid,
+      supervisor,
+    });
+
+    const state = readChannelWorkerState(root, 'alpha');
+    expect(state.supervisor).toEqual(supervisor);
+    expect(state.workers.notify.supervisor).toEqual(supervisor);
+    expect(JSON.stringify(state)).not.toContain('owner_token');
+  });
+
   it('safeUpdateChannelWorkerHeartbeat records event and returns null on write failure', () => {
     const root = makeRoot();
     createChannelWorkerState(root, 'alpha', {

@@ -49,6 +49,13 @@ export interface HealthObservation {
 export interface OwnershipObservation {
   mode?: string | null
   domain?: 'all' | 'cycle' | 'channel' | null
+  supervisor_lease?: {
+    required?: boolean
+    status?: string | null
+    expires_at?: string | null
+    domain?: 'all' | 'cycle' | 'channel' | null
+  } | null
+  supervisor_leases?: Array<NonNullable<OwnershipObservation['supervisor_lease']>>
 }
 
 export interface WebHostObservation {
@@ -74,7 +81,8 @@ export interface ReadinessProjectionInput {
     diagnostic?: string | null
     background?: boolean
   }
-  pendingEvidence?: number
+  pendingEvidence?: number | null
+  projectionDegraded?: boolean
   waitingApproval?: boolean
   catchUp?: {
     paused?: boolean
@@ -130,7 +138,14 @@ export function readSubjectReadiness(
   subject: string,
   options: {
     hostKind?: ClientHostKind
-    processPort?: { get(subject: string): { mode?: string | null; domain?: 'all' | 'cycle' | 'channel' | null } }
+    processPort?: {
+      get(subject: string): {
+        mode?: string | null
+        domain?: 'all' | 'cycle' | 'channel' | null
+        supervisor_lease?: OwnershipObservation['supervisor_lease']
+        supervisor_leases?: OwnershipObservation['supervisor_leases']
+      }
+    }
     generatedAt?: string
     deferRebuild?: boolean
   } = {}

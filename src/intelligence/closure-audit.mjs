@@ -4,10 +4,15 @@
  * Historical records without correlation metadata are deliberately classified
  * as legacy_unknown. This module never infers causality from timestamps.
  */
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { extractBeliefContext } from '../contracts/belief-context.mjs';
-import { readClaimLedgerReadonly, coveredEventIds } from '../evolution/reactor/claim-ledger.mjs';
+import {
+  claimsTerminalArchivePath,
+  readClaimLedgerReadonly,
+  coveredEventIds,
+} from '../evolution/reactor/claim-ledger.mjs';
+import { scanTerminalClaims } from '../evolution/reactor/claim-terminal-store.mjs';
 import {
   defaultKindsForReactor,
   envelopeEvidenceKey,
@@ -58,6 +63,7 @@ function parseTime(value) {
 function readJsonDocument(path, fallback, {
   required = true,
   validate = () => true,
+  maxBytes = null,
 } = {}) {
   if (!existsSync(path)) {
     return {
@@ -68,6 +74,15 @@ function readJsonDocument(path, fallback, {
     };
   }
   try {
+    if (Number.isFinite(maxBytes) && statSync(path).size > maxBytes) {
+      return {
+        state: 'oversized',
+        value: fallback,
+        required,
+        reason: 'source_oversized',
+        bytes: statSync(path).size,
+      };
+    }
     const value = JSON.parse(readFileSync(path, 'utf8'));
     if (!validate(value)) {
       return {
@@ -640,6 +655,8 @@ export function runClosureAudit({
   const memoryPath = join(dataRoot, STORE_FILES.standing_memory);
   const tasksPath = join(evolutionDir, 'tasks', 'pending_tasks.json');
   const claimsArchiveFile = join(evolutionDir, 'reactor', 'archive', 'claims.json');
+  const claimsTerminalArchiveFile = claimsTerminalArchivePath(dataRoot);
+  const claimsArchiveMarkerFile = join(evolutionDir, 'reactor', 'archive', 'claims-archive-migration.json');
   const claimsIndexFile = join(evolutionDir, 'reactor', 'archive', 'claims-covered-index.json');
   const actionReceiptsPath = join(dataRoot, STORE_FILES.action_receipts);
   const beliefEventsPath = join(dataRoot, STORE_FILES.belief_events);
@@ -652,11 +669,62 @@ export function runClosureAudit({
   });
   const claimsDoc = readJsonDocument(claimsFile, { claims: [], updated_at: null }, {
     validate: (value) => objectValue(value) && Array.isArray(value.claims),
+    maxBytes: 16 * 1024 * 1024,
   });
-  const claimsArchiveDoc = readJsonDocument(claimsArchiveFile, { claims: [] }, {
+  const claimsArchiveMarkerDoc = readJsonDocument(claimsArchiveMarkerFile, null, {
+    required: false,
+    validate: (value) => objectValue(value) && value.status === 'copied',
+  });
+  const rawClaimsArchiveDoc = readJsonDocument(claimsArchiveFile, { claims: [] }, {
     required: false,
     validate: (value) => objectValue(value) && Array.isArray(value.claims),
+    maxBytes: 16 * 1024 * 1024,
   });
+  const claimsArchiveDoc = rawClaimsArchiveDoc.state === 'oversized'
+    && claimsArchiveMarkerDoc.state === 'ok'
+    ? {
+      state: 'ok',
+      value: { claims: [] },
+      required: false,
+      reason: 'legacy_archive_migrated',
+    }
+    : rawClaimsArchiveDoc;
+  const terminalFingerprints = new Map();
+  let terminalConflicts = 0;
+  let terminalConflictCheckTruncated = false;
+  const terminalArchiveStats = scanTerminalClaims(claimsTerminalArchiveFile, (claim) => {
+    if (!claim.batch_id) return;
+    const fingerprint = JSON.stringify(claim);
+    if (terminalFingerprints.has(claim.batch_id)) {
+      if (terminalFingerprints.get(claim.batch_id) !== fingerprint) terminalConflicts += 1;
+      return;
+    }
+    if (terminalFingerprints.size >= 100_000) {
+      terminalConflictCheckTruncated = true;
+      return;
+    }
+    terminalFingerprints.set(claim.batch_id, fingerprint);
+  });
+  const claimsTerminalArchiveDoc = !existsSync(claimsTerminalArchiveFile)
+    ? { state: 'missing', value: [], required: false, reason: 'optional_source_missing' }
+    : terminalArchiveStats.invalid > 0
+      ? {
+        state: 'corrupt',
+        value: [],
+        required: false,
+        reason: 'invalid_jsonl',
+        error: `${terminalArchiveStats.invalid} invalid terminal claim line(s)`,
+      }
+      : {
+        state: 'ok',
+        value: [],
+        required: false,
+        reason: terminalConflicts
+          ? 'duplicate_claim_conflicts'
+          : terminalConflictCheckTruncated
+            ? 'duplicate_claim_check_bounded'
+            : null,
+      };
   const claimsIndexDoc = readJsonDocument(claimsIndexFile, { reactors: {} }, {
     required: false,
     validate: (value) => objectValue(value) && objectValue(value.reactors),
@@ -682,6 +750,7 @@ export function runClosureAudit({
     : [];
   const claimReadSafe = (claimsDoc.state === 'ok' || claimsDoc.state === 'missing')
     && claimsArchiveDoc.state !== 'corrupt'
+    && claimsTerminalArchiveDoc.state !== 'corrupt'
     && claimsIndexDoc.state !== 'corrupt';
   const ledger = claimReadSafe
     ? readClaimLedgerReadonly(dataRoot)
@@ -841,6 +910,8 @@ export function runClosureAudit({
       sourceDiagnostic('decision_queue', queuePath, queueDoc),
       sourceDiagnostic('claim_ledger', claimsFile, claimsDoc),
       sourceDiagnostic('claim_archive', claimsArchiveFile, claimsArchiveDoc),
+      sourceDiagnostic('claim_archive_migration', claimsArchiveMarkerFile, claimsArchiveMarkerDoc),
+      sourceDiagnostic('claim_terminal_archive', claimsTerminalArchiveFile, claimsTerminalArchiveDoc),
       sourceDiagnostic('claim_covered_index', claimsIndexFile, claimsIndexDoc),
       sourceDiagnostic('current_beliefs', beliefsPath, beliefsDoc),
       sourceDiagnostic('standing_memory', memoryPath, memoryDoc),

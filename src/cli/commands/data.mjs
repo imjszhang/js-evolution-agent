@@ -26,8 +26,18 @@ import { runtimeMaintenanceStatePath } from '../../daemon/runtime-maintenance.mj
 import {
   claimsArchivePath,
   claimsCoveredIndexPath,
+  claimsTerminalArchivePath,
+  rebuildClaimArchiveSummary,
+  reconcileTerminalClaimStorage,
+  terminalClaimArchiveStats,
 } from '../../evolution/reactor/claim-ledger.mjs';
 import { evidenceIndexPath } from '../../evolution/reactor/evidence-index.mjs';
+import {
+  inspectClaimLedgerMigration,
+  inspectLegacyClaimArchiveMigration,
+  migrateClaimLedger,
+  migrateLegacyClaimArchive,
+} from '../../evolution/reactor/claim-ledger-migration.mjs';
 import { channelEventArchivePath } from '../../channel/event-queue.mjs';
 import { channelEventQueuePath } from '../../channel/paths.mjs';
 
@@ -96,6 +106,33 @@ function collectionState(path, collection) {
   };
 }
 
+function claimHotState(dataRoot) {
+  try {
+    const state = inspectClaimLedgerMigration(dataRoot);
+    return {
+      path: state.source_path,
+      exists: state.exists,
+      count: state.claims,
+      bytes: state.source_bytes,
+      migration_reduction_bytes: state.estimated_reduction_bytes ?? 0,
+      terminal_indexed_entries: state.terminal_indexed_entries_removed ?? 0,
+      status: 'ok',
+    };
+  } catch (error) {
+    const path = join(dataRoot, 'evolution', 'reactor', 'claims.json');
+    return {
+      path,
+      exists: existsSync(path),
+      count: null,
+      bytes: null,
+      migration_reduction_bytes: null,
+      terminal_indexed_entries: null,
+      status: 'corrupt',
+      error: error?.message || String(error),
+    };
+  }
+}
+
 function maintenanceNextDueAt(state) {
   const completed = Date.parse(state?.completed_at ?? '');
   const interval = Number(state?.interval_ms);
@@ -113,6 +150,7 @@ export function runtimeMaintenanceStatus(root, flags = {}) {
   const evidenceFiles = evidenceSources.flatMap((source) => Object.values(source?.files ?? {}));
   const daemonTasks = join(dataRoot, 'evolution', 'tasks');
   const channelTasks = join(dataRoot, 'channel', 'tasks');
+  const terminalClaimStats = terminalClaimArchiveStats(dataRoot);
   return {
     schema_version: 'runtime-maintenance-status.v1',
     maintenance: {
@@ -126,8 +164,15 @@ export function runtimeMaintenanceStatus(root, flags = {}) {
     },
     reactor: {
       claims: {
-        hot: collectionState(join(dataRoot, 'evolution', 'reactor', 'claims.json'), 'claims'),
-        archive: collectionState(claimsArchivePath(dataRoot), 'claims'),
+        hot: claimHotState(dataRoot),
+        archive: {
+          path: claimsTerminalArchivePath(dataRoot),
+          exists: existsSync(claimsTerminalArchivePath(dataRoot)),
+          count: terminalClaimStats.lines,
+          invalid: terminalClaimStats.invalid,
+          bytes: terminalClaimStats.bytes,
+          legacy: collectionState(claimsArchivePath(dataRoot), 'claims'),
+        },
         covered_index: {
           path: claimsCoveredIndexPath(dataRoot),
           exists: existsSync(claimsCoveredIndexPath(dataRoot)),
@@ -368,6 +413,58 @@ export async function dataCommand({ subcommand, flags = {}, context = null } = {
     }
   }
   const runtime = runtimeForFlags(root, flags);
+  if (subcommand === 'migrate-claims') {
+    const dryRun = !!flags['dry-run'];
+    if (!dryRun && !flags.yes) {
+      console.log('Will rewrite the claim ledger atomically and preserve a backup.');
+      const ok = await confirm('Cycle and Channel daemons must be stopped.');
+      if (!ok) {
+        console.log('Cancelled.');
+        return 1;
+      }
+    }
+    try {
+      const hot = dryRun
+        ? inspectClaimLedgerMigration(runtime.dataRoot)
+        : migrateClaimLedger(runtime.dataRoot, { dryRun: false });
+      const hotReconcile = dryRun
+        ? null
+        : reconcileTerminalClaimStorage(runtime.dataRoot, { requeue: false });
+      const archive = dryRun
+        ? inspectLegacyClaimArchiveMigration(runtime.dataRoot)
+        : migrateLegacyClaimArchive(runtime.dataRoot, { dryRun: false });
+      const archiveSummary = dryRun ? null : rebuildClaimArchiveSummary(runtime.dataRoot);
+      const payload = {
+        ...hot,
+        hot_reconcile: hotReconcile,
+        archive_migration: archive,
+        archive_summary: archiveSummary,
+        dry_run: dryRun,
+        subject: runtime.subject,
+      };
+      if (flags.json) console.log(JSON.stringify(payload, null, 2));
+      else {
+        console.log(`Claim ledger migration: ${dryRun ? 'dry-run' : (payload.migrated ? 'completed' : 'not-needed')}`);
+        console.log(`source: ${payload.source_path}`);
+        console.log(`claims: ${payload.claims}`);
+        console.log(`bytes before/after: ${payload.source_bytes}/${payload.projected_bytes}`);
+        console.log(`terminal indexed entries removed: ${payload.terminal_indexed_entries_removed}`);
+        console.log(`legacy archive claims: ${payload.archive_migration.claims ?? 0}`);
+        if (payload.backup_path) console.log(`backup: ${payload.backup_path}`);
+      }
+      return 0;
+    } catch (error) {
+      const payload = {
+        ok: false,
+        code: error?.code ?? 'claim_ledger_migration_failed',
+        error: error?.message || String(error),
+        details: error?.details ?? null,
+      };
+      if (flags.json) console.log(JSON.stringify(payload, null, 2));
+      else console.error(`${payload.code}: ${payload.error}`);
+      return 1;
+    }
+  }
   if (subcommand === 'status') {
     const status = dataStatus(root, flags);
     const maintenance = runtimeMaintenanceStatus(root, flags);
@@ -441,7 +538,7 @@ export async function dataCommand({ subcommand, flags = {}, context = null } = {
     return 0;
   }
 
-  console.error('Usage: jea data <status|init|backup|reset|migrate-home> [--subject NAME] [--goals] [--seed] [--all] [--force] [--dry-run] [--json] [--yes]');
+  console.error('Usage: jea data <status|init|backup|reset|migrate-home|migrate-claims> [--subject NAME] [--goals] [--seed] [--all] [--force] [--dry-run] [--json] [--yes]');
   return 2;
 }
 

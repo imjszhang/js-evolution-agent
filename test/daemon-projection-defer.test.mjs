@@ -216,4 +216,33 @@ describe('daemon projection deferred rebuild', () => {
     expect(next).not.toBe(first);
     expect(next.revision).toBeGreaterThan(first.revision);
   });
+
+  it('keeps the last snapshot and backs off after a projection worker failure', async () => {
+    const ctx = makeCtx();
+    const first = readDaemonProjection(ctx, 'alpha', { eventLimit: 10 });
+    const workerPath = join(ctx.sourceRoot, 'failing-projection-worker.mjs');
+    writeFileSync(workerPath, [
+      "import { parentPort } from 'node:worker_threads'",
+      "parentPort.postMessage({ ok: false, error: 'fixture failure' })",
+      '',
+    ].join('\n'));
+    appendEvidence(ctx);
+
+    const stale = readDaemonProjection(ctx, 'alpha', {
+      eventLimit: 10,
+      deferRebuild: true,
+      workerPath,
+    });
+    expect(stale).toBe(first);
+    expect(pendingDaemonProjectionRebuildCount()).toBe(1);
+    await waitForPendingDaemonProjectionRebuilds();
+
+    const backedOff = readDaemonProjection(ctx, 'alpha', {
+      eventLimit: 10,
+      deferRebuild: true,
+      workerPath,
+    });
+    expect(backedOff).toBe(first);
+    expect(pendingDaemonProjectionRebuildCount()).toBe(0);
+  });
 });

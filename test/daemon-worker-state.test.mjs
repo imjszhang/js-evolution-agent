@@ -10,6 +10,7 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { writeJsonFile } from '../src/infra/files.mjs';
 import {
+  createWorkerState,
   inspectWorkerRepair,
   readWorkerState,
   reconcileWorkerState,
@@ -73,6 +74,28 @@ function writeQueueAndHistory(root) {
 }
 
 describe('daemon worker-state repair', () => {
+  it('persists a token-free supervisor lease mirror', () => {
+    const root = makeRoot();
+    createWorkerState(root, 'alpha', {
+      workerId: 'managed-cycle',
+      pid: process.pid,
+      supervisor: {
+        kind: 'jea-desktop',
+        required: true,
+        domain: 'cycle',
+        lease_status: 'active',
+        lease_expires_at: '2026-08-23T04:00:30.000Z',
+      },
+    });
+    const summary = summarizeWorkerState(readWorkerState(root, 'alpha'));
+    expect(summary).toMatchObject({
+      supervisor_required: true,
+      supervisor_lease_status: 'active',
+      supervisor_lease_expires_at: '2026-08-23T04:00:30.000Z',
+    });
+    expect(JSON.stringify(summary)).not.toContain('owner_token');
+  });
+
   it('classifies a dead pid as zombie even when the heartbeat is stale', () => {
     const summary = summarizeWorkerState({
       status: 'running',
