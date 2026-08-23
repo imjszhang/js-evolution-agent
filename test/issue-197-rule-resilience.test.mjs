@@ -445,4 +445,34 @@ describe('Issue #197 readiness isolation', () => {
     expect(projected.automation.blocker).toBe('rule_llm_budget_exhausted');
     expect(projected.reasons).toContain('rule_llm_budget_exhausted');
   });
+
+  it('keeps Channel running for evidence journal due and blocked Cycle health', () => {
+    for (const [status, reason, expectedCycle] of [
+      ['idle', 'evidence_journal_maintenance_due', 'running'],
+      ['blocked', 'evidence_journal_maintenance_blocked', 'blocked'],
+    ]) {
+      const projected = projectSubjectReadiness({
+        subject: 'alpha',
+        generatedAt: '2026-08-23T00:00:00.000Z',
+        hostKind: 'electron',
+        webHost: { running: true, pid: process.pid },
+        cycleWorker: { running: true, pid: process.pid, status: 'running' },
+        cycleHealth: { status, reasons: [reason] },
+        channelWorker: { running: true, pid: process.pid, status: 'running' },
+        channelHealth: { status: 'healthy', ok: true, reasons: [] },
+        model: { mode: 'mock', configured: true },
+        desktopChannelEnabled: true,
+        ownership: { mode: 'managed', domain: 'all' },
+        automation: { mode: 'automatic', mapped_from: 'default' },
+        pendingEvidence: 0,
+        catchUp: { paused: false },
+      });
+      expect(projected.cycle.state).toBe(expectedCycle);
+      expect(projected.channel).toMatchObject({
+        state: 'running',
+        reasons: ['channel_running'],
+      });
+      expect(projected.channel.reasons).not.toContain(reason);
+    }
+  });
 });

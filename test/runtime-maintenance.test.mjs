@@ -24,6 +24,7 @@ import {
   execResultsArchiveDir,
   writeExecResult,
 } from '../src/evolution/reactor/exec-result-store.mjs';
+import { refreshEvidenceIndex } from '../src/evolution/reactor/evidence-index.mjs';
 import { runRuntimeMaintenance } from '../src/daemon/runtime-maintenance.mjs';
 import { withJsonLock } from '../src/infra/json-store.mjs';
 import { runtimeForSubject } from '../src/infra/runtime-paths.mjs';
@@ -54,6 +55,54 @@ afterEach(() => {
 });
 
 describe('runtime sidecar maintenance', () => {
+  it('records evidence journal due/blocked state without skipping Channel maintenance', () => {
+    const root = makeRoot();
+    const runtime = runtimeForSubject(root, 'alpha');
+    const source = join(
+      runtime.dataRoot,
+      'intelligence',
+      'action_receipts',
+      'action-receipts.jsonl',
+    );
+    mkdirSync(dirname(source), { recursive: true });
+    writeFileSync(source, `${JSON.stringify({
+      id: 'maintenance-receipt',
+      recorded_at: '2026-08-23T00:00:00.000Z',
+      action_type: 'record_observation',
+      producer: 'exec',
+    })}\n`);
+    refreshEvidenceIndex(runtime.dataRoot, { kinds: ['action_receipts'] });
+    appendChannelEvent(root, 'alpha', { type: 'maintenance-channel-event' });
+
+    const due = runRuntimeMaintenance(root, 'alpha', {
+      force: true,
+      now: Date.parse('2026-08-23T00:00:00.000Z'),
+      env: {
+        JEA_EVIDENCE_JOURNAL_ROTATE_BYTES: '1',
+        JEA_EVIDENCE_JOURNAL_BLOCK_BYTES: '1048576',
+      },
+    });
+    expect(due.results.evidence_journal).toMatchObject({
+      maintenance: { status: 'maintenance_due', due: true, blocked: false },
+    });
+    expect(due.results.channel_tasks).toBeDefined();
+    expect(due.results.channel_events).toBeDefined();
+
+    const blocked = runRuntimeMaintenance(root, 'alpha', {
+      force: true,
+      now: Date.parse('2026-08-23T00:00:01.000Z'),
+      env: {
+        JEA_EVIDENCE_JOURNAL_ROTATE_BYTES: '1',
+        JEA_EVIDENCE_JOURNAL_BLOCK_BYTES: '1',
+      },
+    });
+    expect(blocked.results.evidence_journal).toMatchObject({
+      maintenance: { status: 'blocked', due: true, blocked: true },
+    });
+    expect(blocked.results.channel_tasks).toBeDefined();
+    expect(blocked.results.channel_events).toBeDefined();
+  });
+
   it('archives terminal hot state while preserving active recovery truth', () => {
     const root = makeRoot();
     const runtime = runtimeForSubject(root, 'alpha');

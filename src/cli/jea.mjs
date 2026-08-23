@@ -76,6 +76,12 @@ Commands:
   data backup            Back up subject runtime data (--subject NAME)
   data reset [--yes]     Remove all subject data/ runtime, preserving policy/config
   data migrate-home      Verify and copy legacy runtime/subjects into JEA Home
+  data evidence-journal inspect [--json]
+                         Stream-inspect journal; mismatch/unknown reconciliation exits nonzero
+  data evidence-journal rebuild [--dry-run] [--yes] [--json]
+                         Stopped-only atomic rebuild/compact with generation backup
+  data evidence-journal rollback --backup ID [--dry-run] [--yes] [--json]
+                         Validate and atomically restore a timestamped sidecar backup
   intel summary          Show recent intelligence memory
   intel report           Print the latest intel report (Markdown)
   intel report list      List recent intel reports
@@ -249,7 +255,7 @@ export async function main(argv = process.argv.slice(2)) {
   if (command === 'daemon') return daemonCommand({ subcommand, flags, args });
   if (command === 'channel') return channelCommand({ subcommand, flags, args });
   if (command === 'bridge') return bridgeCommand({ subcommand, flags, args });
-  if (command === 'data') return dataCommand({ subcommand, flags, context });
+  if (command === 'data') return dataCommand({ subcommand, flags, args, context });
   if (command === 'intel') return intelCommand({ subcommand, flags, args });
   if (command === 'reactor') return reactorCommand({ subcommand, flags, args });
   if (command === 'goals') return goalsCommand({ subcommand, flags, args });

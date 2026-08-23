@@ -241,7 +241,26 @@ npm run jea -- run --mock --subject my-bot
 # Runtime overview
 npm run jea -- data status
 npm run jea -- intel report
+
+# Read-only evidence-index journal audit
+npm run jea -- data evidence-journal inspect --subject my-bot --json
+
+# Stopped-only compact/rotation (preview, then explicit confirmation)
+npm run jea -- data evidence-journal rebuild --subject my-bot --dry-run --json
+npm run jea -- data evidence-journal rebuild --subject my-bot --yes --json
+
+# Rollback always requires an explicitly reviewed backup ID
+npm run jea -- data evidence-journal backups --subject my-bot --json
+npm run jea -- data evidence-journal rollback --subject my-bot --backup <ID> --dry-run --json
 ```
+
+`inspect` exits nonzero for both `mismatch` and `unknown` reconciliation. Actual rebuild
+and rollback hold the subject `.evolve.lock` for their complete lifecycle, so they
+exclude foreground/daemon evolution and other maintenance writers. Dry-run and inspect
+remain read-only. Rebuild uses disk sharding under the system temporary directory;
+reserve free temporary space several times larger than the journal plus authority
+inputs. The exact amplification depends on compact locator size and recursive shard
+distribution, so the command does not claim a fixed dense-rebuild multiplier.
 
 After install, bin links work directly:
 
