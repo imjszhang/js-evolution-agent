@@ -16,6 +16,8 @@ export function subjectLifecycleInput(name, input = {}) {
     ownedChannel: input.ownedChannel === true,
     cycleLive: input.cycleLive === true,
     channelLive: input.channelLive === true,
+    previousSupervisorCycle: input.previousSupervisorCycle === true,
+    previousSupervisorChannel: input.previousSupervisorChannel === true,
   };
 }
 
@@ -56,7 +58,9 @@ function planSubject(info, actions) {
       subject: info.name,
       domain: 'channel',
       action: info.channelLive ? 'attach' : 'ensure',
-      reason: info.channelLive ? 'already_running' : 'conversation_enabled',
+      reason: info.channelLive
+        ? (info.previousSupervisorChannel ? 'previous_supervisor_owner' : 'already_running')
+        : 'conversation_enabled',
     });
   }
   if (info.automation === 'paused') {
@@ -81,7 +85,9 @@ function planSubject(info, actions) {
     subject: info.name,
     domain: 'cycle',
     action: info.cycleLive ? 'attach' : 'ensure',
-    reason: info.cycleLive ? 'already_running' : 'automatic',
+    reason: info.cycleLive
+      ? (info.previousSupervisorCycle ? 'previous_supervisor_owner' : 'already_running')
+      : 'automatic',
   });
 }
 
@@ -99,6 +105,8 @@ function planSubject(info, actions) {
  *     ownedChannel?: boolean,
  *     cycleLive?: boolean,
  *     channelLive?: boolean,
+ *     previousSupervisorCycle?: boolean,
+ *     previousSupervisorChannel?: boolean,
  *   }>
  * }} [input]
  */

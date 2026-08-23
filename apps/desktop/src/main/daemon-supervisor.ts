@@ -5,11 +5,8 @@ import {
   closeSync,
   mkdirSync,
   openSync,
-  readFileSync,
-  rmSync,
-  writeFileSync
 } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 import {
   inspectWorkerRepair,
   markWorkerStopped,
@@ -31,6 +28,15 @@ import { runtimeForSubject } from '../../../../src/infra/runtime-paths.mjs'
 import { jeaLogsDir } from '../../../../src/infra/jea-home.mjs'
 import { recordDaemonStartupFailure } from '../../../../src/product/diagnostics-store.mjs'
 import { redactJeaOwnedPath } from '../../../../src/product/path-redact.mjs'
+import {
+  createSupervisorLease,
+  DEFAULT_DESKTOP_SUPERVISOR_LEASE_RENEW_MS,
+  DEFAULT_DESKTOP_SUPERVISOR_LEASE_TTL_MS,
+  inspectSupervisorLease,
+  readSupervisorLease,
+  removeSupervisorLease,
+  renewSupervisorLease
+} from '../../../../src/product/supervisor-lease.mjs'
 import { buildJeaRuntimeEnv } from '../../../../src/actions/execution-env.mjs'
 import type {
   DaemonSupervisorView,
@@ -61,6 +67,10 @@ interface ManagedDaemon {
   stopping: boolean
   processGroup: boolean
   logPaths: { stdout: string; stderr: string }
+  leasePath: string
+  leaseTimer: NodeJS.Timeout | null
+  leaseStatus: 'active' | 'lost'
+  leaseExpiresAt: string | null
   unregister: () => void
 }
 
@@ -89,6 +99,8 @@ export class DaemonSupervisor {
   private readonly managed = new Map<string, ManagedDaemon>()
   private readonly startLocks = new Map<string, Promise<unknown>>()
   private readonly runtimeContext: any
+  private readonly supervisorLeaseTtlMs: number
+  private readonly supervisorLeaseRenewMs: number
 
   constructor(
     readonly projectRoot: string,
@@ -98,9 +110,21 @@ export class DaemonSupervisor {
     private readonly killGraceMs = 10_000,
     jeaHome: string | undefined = process.env.JEA_HOME,
     private readonly startupTimeoutMs = spawnImpl === spawn ? 10_000 : 0,
-    private readonly runtimeExecPath = process.execPath
+    private readonly runtimeExecPath = process.execPath,
+    leaseOptions: { ttlMs?: number; renewMs?: number } = {}
   ) {
     this.runtimeContext = createDesktopServiceRuntimeContext(projectRoot, jeaHome)
+    this.supervisorLeaseTtlMs = Math.max(
+      1,
+      Math.floor(leaseOptions.ttlMs ?? DEFAULT_DESKTOP_SUPERVISOR_LEASE_TTL_MS)
+    )
+    this.supervisorLeaseRenewMs = Math.max(
+      1,
+      Math.min(
+        this.supervisorLeaseTtlMs,
+        Math.floor(leaseOptions.renewMs ?? DEFAULT_DESKTOP_SUPERVISOR_LEASE_RENEW_MS)
+      )
+    )
   }
 
   get(subject: string): DaemonSupervisorView {
@@ -122,6 +146,12 @@ export class DaemonSupervisor {
       const hasCycle = entries.some((entry) => entry.domain === 'cycle' || entry.domain === 'all')
       const hasChannel = entries.some((entry) => entry.domain === 'channel' || entry.domain === 'all')
       const domain = primary.domain === 'all' || (hasCycle && hasChannel) ? 'all' : primary.domain
+      const supervisorLeases = entries.map((entry) => ({
+        required: true,
+        status: entry.leaseStatus,
+        expires_at: entry.leaseExpiresAt,
+        domain: entry.domain
+      } as const))
       return {
         subject,
         mode: entries.every((entry) => entry.stopping) ? 'stopping' : 'managed',
@@ -130,10 +160,14 @@ export class DaemonSupervisor {
         heartbeat_at: cycle.heartbeat_at ?? channelHeartbeat,
         started_at: primary.startedAt,
         log_paths: primary.logPaths,
+        supervisor_lease: supervisorLeases.find((lease) => lease.domain === primary.domain) ?? null,
+        supervisor_leases: supervisorLeases,
         detail: null
       }
     }
 
+    const supervisorLeases = this.observeLeases(subject, cycleRaw, channelRaw)
+    const supervisorLease = supervisorLeases[0] ?? null
     let mode: DaemonSupervisorMode = 'none'
     if (cycle.running || channel.running_count > 0) mode = 'attached'
     else if (cycle.stale || channel.stale_count > 0) mode = 'stale'
@@ -147,7 +181,15 @@ export class DaemonSupervisor {
       heartbeat_at: cycle.heartbeat_at ?? channelHeartbeat,
       started_at: cycleRaw?.started_at ?? channelRaw?.coordinator?.started_at ?? null,
       log_paths: null,
-      detail: mode === 'attached' ? 'Daemon is externally managed.' : null
+      supervisor_lease: supervisorLease,
+      supervisor_leases: supervisorLeases,
+      detail: mode === 'attached'
+        ? (
+            supervisorLease?.required
+              ? 'Desktop-managed daemon belongs to a previous supervisor instance.'
+              : 'Daemon is externally managed.'
+          )
+        : null
     }
   }
 
@@ -370,6 +412,24 @@ export class DaemonSupervisor {
       baseEnv: process.env,
       subjectRoot
     }).env
+    delete effectiveEnv.JEA_DESKTOP_SUPERVISOR_OWNER_TOKEN
+    const leasePath = this.diagnosticPath(subject, domain)
+    let initialLease
+    try {
+      initialLease = createSupervisorLease(leasePath, {
+        ownerToken,
+        subject,
+        domain,
+        managedWorkerPid: null,
+        startedAt,
+        ttlMs: this.supervisorLeaseTtlMs,
+        renewMs: this.supervisorLeaseRenewMs
+      })
+    } catch (error) {
+      closeSync(stdoutFd)
+      closeSync(stderrFd)
+      throw error
+    }
     let child: ChildProcess
     try {
       child = this.spawnImpl(this.runtimeExecPath, [
@@ -387,7 +447,13 @@ export class DaemonSupervisor {
           ...effectiveEnv,
           ELECTRON_RUN_AS_NODE: '1',
           JEA_PROJECT_ROOT: this.projectRoot,
-          JEA_HOME: this.runtimeContext.jeaHome
+          JEA_HOME: this.runtimeContext.jeaHome,
+          JEA_DESKTOP_SUPERVISOR_LEASE_REQUIRED: '1',
+          JEA_DESKTOP_SUPERVISOR_LEASE_RECORD: leasePath,
+          JEA_DESKTOP_SUPERVISOR_SUBJECT: subject,
+          JEA_DESKTOP_SUPERVISOR_DOMAIN: domain,
+          JEA_DESKTOP_SUPERVISOR_LEASE_TTL_MS: String(this.supervisorLeaseTtlMs),
+          JEA_DESKTOP_SUPERVISOR_LEASE_RENEW_MS: String(this.supervisorLeaseRenewMs)
         },
         windowsHide: true,
         detached: processGroup,
@@ -396,15 +462,21 @@ export class DaemonSupervisor {
     } catch (error) {
       closeSync(stdoutFd)
       closeSync(stderrFd)
+      removeSupervisorLease(leasePath, ownerToken)
       throw error
     }
     closeSync(stdoutFd)
     closeSync(stderrFd)
 
-    await new Promise<void>((resolvePromise, reject) => {
-      child.once('spawn', resolvePromise)
-      child.once('error', reject)
-    })
+    try {
+      await new Promise<void>((resolvePromise, reject) => {
+        child.once('spawn', resolvePromise)
+        child.once('error', reject)
+      })
+    } catch (error) {
+      removeSupervisorLease(leasePath, ownerToken)
+      throw error
+    }
 
     const ownedPid = child.pid ?? null
     let unregister: () => void
@@ -419,6 +491,7 @@ export class DaemonSupervisor {
       })
     } catch (error) {
       await this.terminateChild(child, processGroup, ownedPid)
+      removeSupervisorLease(leasePath, ownerToken)
       this.recordStartupFailure(subject, error, logPaths)
       throw this.withLogPaths(error, logPaths)
     }
@@ -432,11 +505,16 @@ export class DaemonSupervisor {
       stopping: false,
       processGroup,
       logPaths,
+      leasePath,
+      leaseTimer: null,
+      leaseStatus: 'active',
+      leaseExpiresAt: initialLease.lease_expires_at,
       unregister
     }
     this.managed.set(managedKey(subject, domain), entry)
     child.once('close', () => {
       if (this.managed.get(managedKey(subject, domain))?.ownerToken === ownerToken) {
+        this.stopLeaseRenewal(entry)
         this.managed.delete(managedKey(subject, domain))
         unregister()
         this.removeDiagnostic(subject, domain, ownerToken)
@@ -449,11 +527,13 @@ export class DaemonSupervisor {
     })
     try {
       this.writeDiagnostic(entry)
+      this.startLeaseRenewal(entry)
     } catch (error) {
       if (this.managed.get(managedKey(subject, domain))?.ownerToken === ownerToken) {
         this.managed.delete(managedKey(subject, domain))
       }
       unregister()
+      this.stopLeaseRenewal(entry)
       this.removeDiagnostic(subject, domain, ownerToken)
       await this.terminateChild(child, processGroup, ownedPid)
       throw error
@@ -465,6 +545,7 @@ export class DaemonSupervisor {
         this.managed.delete(managedKey(subject, domain))
       }
       unregister()
+      this.stopLeaseRenewal(entry)
       this.removeDiagnostic(subject, domain, ownerToken)
       if (!processExited(child)) await this.terminateChild(child, processGroup, ownedPid)
       this.recordStartupFailure(subject, error, logPaths)
@@ -511,7 +592,12 @@ export class DaemonSupervisor {
     }
     if (entry.stopping) return
     entry.stopping = true
-    this.writeDiagnostic(entry)
+    this.stopLeaseRenewal(entry)
+    try {
+      this.writeDiagnostic(entry)
+    } catch {
+      // The in-memory child handle remains authoritative for explicit stop.
+    }
 
     if (entry.domain !== 'channel') requestWorkerStop(this.runtimeContext, entry.subject)
     if (entry.domain !== 'cycle') requestChannelWorkerStop(this.runtimeContext, entry.subject)
@@ -544,6 +630,55 @@ export class DaemonSupervisor {
     const runtime = runtimeForSubject(this.runtimeContext, subject)
     const suffix = domain === 'all' ? '' : `-${domain}`
     return join(runtime.evolutionDir, 'daemon', `desktop-supervisor${suffix}.json`)
+  }
+
+  private observeLeases(
+    subject: string,
+    cycleState: Record<string, any> | null,
+    channelState: Record<string, any> | null
+  ): NonNullable<DaemonSupervisorView['supervisor_leases']> {
+    const cyclePid = Number(cycleState?.pid) || null
+    const channelPid = Number(channelState?.coordinator?.pid ?? channelState?.pid) || null
+    const candidates: Array<{ domain: DaemonDomain; stateRequired: boolean; pids: Array<number | null> }> = [
+      {
+        domain: 'all',
+        stateRequired: cycleState?.supervisor?.required === true || channelState?.supervisor?.required === true,
+        pids: [cyclePid, channelPid]
+      },
+      {
+        domain: 'cycle',
+        stateRequired: cycleState?.supervisor?.required === true,
+        pids: [cyclePid]
+      },
+      {
+        domain: 'channel',
+        stateRequired: channelState?.supervisor?.required === true,
+        pids: [channelPid]
+      }
+    ]
+    const observed = candidates.flatMap(({ domain, stateRequired, pids }) => {
+      const record = readSupervisorLease(this.diagnosticPath(subject, domain))
+      if (!record) return []
+      const recordPid = Number(record.managed_worker_pid ?? record.pid) || null
+      const pidMatches = recordPid != null && pids.includes(recordPid)
+      if (!stateRequired && !pidMatches) return []
+      const inspection = inspectSupervisorLease(record, {
+        subject,
+        domain,
+        nowMs: Date.now()
+      })
+      return [{
+        required: inspection.required,
+        status: inspection.status,
+        expires_at: inspection.expires_at,
+        domain
+      }]
+    })
+    return observed.sort((left, right) => {
+      const priority = { stopping: 0, active: 1, expired: 2, owner_mismatch: 3, legacy: 4, missing: 5 }
+      return (priority[left.status as keyof typeof priority] ?? 9)
+        - (priority[right.status as keyof typeof priority] ?? 9)
+    })
   }
 
   private async terminateChild(
@@ -585,28 +720,48 @@ export class DaemonSupervisor {
   }
 
   private writeDiagnostic(entry: ManagedDaemon): void {
-    const path = this.diagnosticPath(entry.subject, entry.domain)
-    mkdirSync(dirname(path), { recursive: true })
-    writeFileSync(path, JSON.stringify({
-      schema_version: 1,
-      supervisor: 'jea-desktop',
-      owner_token: entry.ownerToken,
-      pid: entry.ownedPid,
-      domain: entry.domain,
-      started_at: entry.startedAt,
-      stopping: entry.stopping,
-      updated_at: new Date().toISOString()
-    }, null, 2), 'utf8')
+    const result = renewSupervisorLease(entry.leasePath, {
+      ownerToken: entry.ownerToken,
+      managedWorkerPid: entry.ownedPid,
+      stopping: entry.stopping
+    })
+    if (!result.renewed) {
+      entry.leaseStatus = 'lost'
+      entry.leaseExpiresAt = result.record?.lease_expires_at ?? null
+      throw new Error('desktop_supervisor_lease_lost')
+    }
+    entry.leaseStatus = 'active'
+    entry.leaseExpiresAt = result.record.lease_expires_at
   }
 
   private removeDiagnostic(subject: string, domain: DaemonDomain, ownerToken: string): void {
-    const path = this.diagnosticPath(subject, domain)
-    try {
-      const record = JSON.parse(readFileSync(path, 'utf8'))
-      if (record?.owner_token === ownerToken) rmSync(path, { force: true })
-    } catch {
-      // Missing or invalid diagnostic metadata is non-authoritative.
-    }
+    removeSupervisorLease(this.diagnosticPath(subject, domain), ownerToken)
+  }
+
+  private startLeaseRenewal(entry: ManagedDaemon): void {
+    this.stopLeaseRenewal(entry)
+    entry.leaseTimer = setInterval(() => {
+      try {
+        this.writeDiagnostic(entry)
+      } catch {
+        this.stopLeaseRenewal(entry)
+        this.events.publish({
+          type: 'daemon_supervisor_lease_lost',
+          subject: entry.subject,
+          payload: {
+            pid: entry.ownedPid,
+            domain: entry.domain,
+            reason: 'lease_renew_failed'
+          }
+        })
+      }
+    }, this.supervisorLeaseRenewMs)
+    entry.leaseTimer.unref?.()
+  }
+
+  private stopLeaseRenewal(entry: ManagedDaemon): void {
+    if (entry.leaseTimer) clearInterval(entry.leaseTimer)
+    entry.leaseTimer = null
   }
 
   private recordStartupFailure(subject: string, error: unknown, logPaths: { stdout: string; stderr: string }): void {

@@ -77,6 +77,7 @@ import {
   readChannelWorkerState,
   reconcileChannelWorkerState,
   requestChannelWorkerStop,
+  safeUpdateChannelSupervisorState,
   safeUpdateChannelWorkerHeartbeat,
   updateChannelWorkerHeartbeat,
 } from '../channel/worker-state.mjs';
@@ -87,6 +88,11 @@ import {
   scanWakeBacklog,
 } from '../evolution/reactor/reactor-tasks.mjs';
 import { enqueueWakeIntent } from '../evolution/reactor/wake-store.mjs';
+import {
+  createSupervisorLeaseGuard,
+  supervisorLeaseConfigFromEnv,
+  supervisorStateMirror,
+} from '../product/supervisor-lease.mjs';
 
 function sleep(ms, signal = null) {
   if (!ms || signal?.aborted) return Promise.resolve();
@@ -109,6 +115,18 @@ function heartbeatDefaults(flags = {}) {
     Math.max(leaseMs * 2, heartbeatMs * 3, 60_000),
   );
   return { leaseMs, heartbeatMs, heartbeatStaleMs };
+}
+
+function supervisorLeaseRuntime(flags = {}) {
+  const config = flags.supervisorLeaseConfig ?? supervisorLeaseConfigFromEnv();
+  const guard = createSupervisorLeaseGuard(config, flags.supervisorLeaseGuardOptions);
+  const observation = guard.check();
+  return {
+    config,
+    guard,
+    observation,
+    checkIntervalMs: config ? Math.max(250, Math.min(config.renewMs, 1000)) : null,
+  };
 }
 
 export function enqueueDaemonTask(root, subject, {
@@ -856,6 +874,8 @@ function safeProcessCycleStartRequests(root, subject, taskInput) {
 export async function runDaemonWorker(root, subject, flags = {}) {
   const workerId = flags.worker && flags.worker !== true ? flags.worker : defaultWorkerId();
   const { leaseMs, heartbeatMs, heartbeatStaleMs } = heartbeatDefaults(flags);
+  const supervisorLease = supervisorLeaseRuntime(flags);
+  let supervisorObservation = supervisorLease.observation;
   const tickMs = parseTickMs(flags);
   const workIntervalMs = parsePositiveInt(flags['interval-ms'], { name: 'interval-ms', defaultValue: 1000, min: 0 });
   const idleIntervalMs = parsePositiveInt(flags['idle-interval-ms'], { name: 'idle-interval-ms', defaultValue: 5000, min: 0 });
@@ -869,9 +889,26 @@ export async function runDaemonWorker(root, subject, flags = {}) {
     tickMs,
     evolutionMode: evolution.mode,
     evolutionModeSource: evolution.source,
+    supervisor: supervisorStateMirror(supervisorLease.config, supervisorObservation),
   });
   if (!created.created) {
     return { started: false, reason: created.reason, state: created.state };
+  }
+  if (supervisorObservation.stop) {
+    const stopped = markWorkerStopped(root, subject, {
+      worker_id: workerId,
+      pid: process.pid,
+      stop_reason: supervisorObservation.reason,
+      supervisor: supervisorStateMirror(supervisorLease.config, supervisorObservation),
+    });
+    recordDaemonEvent(root, subject, {
+      type: 'worker_start_failed',
+      status: supervisorObservation.reason,
+      worker_id: workerId,
+      pid: process.pid,
+      reason: supervisorObservation.reason,
+    });
+    return { started: false, reason: supervisorObservation.reason, state: stopped };
   }
 
   let lockHandle = null;
@@ -940,6 +977,7 @@ export async function runDaemonWorker(root, subject, flags = {}) {
     tick_ms: tickMs,
     evolution_mode: evolution.mode,
     evolution_mode_source: evolution.source,
+    supervisor_required: supervisorLease.guard.required,
   });
   updateWorkerHeartbeat(root, subject, {
     worker_id: workerId,
@@ -947,22 +985,60 @@ export async function runDaemonWorker(root, subject, flags = {}) {
     tick_ms: tickMs,
     evolution_mode: evolution.mode,
     evolution_mode_source: evolution.source,
+    supervisor: supervisorStateMirror(supervisorLease.config, supervisorObservation),
   });
 
   let stopping = false;
+  let stopReason = 'stopped';
   const localStopController = new AbortController();
-  const requestLocalStop = () => {
+  const requestLocalStop = (reason = 'signal') => {
+    if (stopping) return;
     stopping = true;
+    stopReason = reason;
     localStopController.abort();
     requestWorkerStop(root, subject, { staleMs: heartbeatStaleMs });
   };
   process.once('SIGINT', requestLocalStop);
   process.once('SIGTERM', requestLocalStop);
   let iterations = 0;
-  let stopReason = 'stopped';
   const baseTaskInput = baseTaskInputFromFlags(flags);
   let lastEvolutionMode = evolution.mode;
   let tickTimer = null;
+  let supervisorTimer = null;
+  let supervisorFingerprint = JSON.stringify(supervisorStateMirror(
+    supervisorLease.config,
+    supervisorObservation,
+  ));
+  const checkSupervisorLease = () => {
+    if (!supervisorLease.guard.required || stopping) return supervisorObservation;
+    supervisorObservation = supervisorLease.guard.check();
+    const supervisor = supervisorStateMirror(supervisorLease.config, supervisorObservation);
+    const nextFingerprint = JSON.stringify(supervisor);
+    if (nextFingerprint !== supervisorFingerprint) {
+      supervisorFingerprint = nextFingerprint;
+      updateWorkerHeartbeat(root, subject, {
+        worker_id: workerId,
+        pid: process.pid,
+        status: supervisorObservation.stop ? 'stopping' : 'running',
+        supervisor,
+      });
+    }
+    if (supervisorObservation.stop) {
+      recordDaemonEvent(root, subject, {
+        type: 'supervisor_lease_lost',
+        status: 'stopping',
+        worker_id: workerId,
+        pid: process.pid,
+        reason: supervisorObservation.reason,
+      });
+      requestLocalStop(supervisorObservation.reason);
+    }
+    return supervisorObservation;
+  };
+  if (supervisorLease.checkIntervalMs) {
+    supervisorTimer = setInterval(checkSupervisorLease, supervisorLease.checkIntervalMs);
+    supervisorTimer.unref?.();
+  }
   const runScheduledTick = () => {
     if (stopping) return;
     try {
@@ -986,6 +1062,7 @@ export async function runDaemonWorker(root, subject, flags = {}) {
   try {
     await runDomainWorkerLoop({
       shouldStop: () => {
+        checkSupervisorLease();
         if (stopping) return true;
         if (maxIterations && iterations >= maxIterations) return true;
         const current = readWorkerState(root, subject);
@@ -1072,6 +1149,7 @@ export async function runDaemonWorker(root, subject, flags = {}) {
     }
   } finally {
     if (tickTimer) clearInterval(tickTimer);
+    if (supervisorTimer) clearInterval(supervisorTimer);
     process.removeListener('uncaughtException', onUncaughtException);
     process.removeListener('unhandledRejection', onUnhandledRejection);
     process.removeListener('SIGINT', requestLocalStop);
@@ -1084,6 +1162,7 @@ export async function runDaemonWorker(root, subject, flags = {}) {
     worker_id: workerId,
     pid: process.pid,
     stop_reason: stopReason,
+    supervisor: supervisorStateMirror(supervisorLease.config, supervisorObservation),
   });
   recordDaemonEvent(root, subject, {
     type: 'worker_stopped',
@@ -1097,6 +1176,8 @@ export async function runDaemonWorker(root, subject, flags = {}) {
 
 async function runChannelDomainWorkerSingle(root, subject, flags = {}) {
   const workerId = flags.worker && flags.worker !== true ? String(flags.worker).replace(/^worker-/, 'channel-worker-') : defaultChannelWorkerId().replace(/^worker-/, 'channel-worker-');
+  const supervisorLease = supervisorLeaseRuntime(flags);
+  let supervisorObservation = supervisorLease.observation;
   const leaseMs = parseLeaseMs(flags['lease-ms']);
   const heartbeatMs = parseChannelHeartbeatMs(flags['channel-heartbeat-ms'] ?? flags['heartbeat-ms']);
   const heartbeatStaleMs = parseChannelHeartbeatStaleMs(
@@ -1114,9 +1195,26 @@ async function runChannelDomainWorkerSingle(root, subject, flags = {}) {
     workerId,
     staleMs: heartbeatStaleMs,
     tickMs,
+    supervisor: supervisorStateMirror(supervisorLease.config, supervisorObservation),
   });
   if (!created.created) {
     return { started: false, reason: created.reason, state: created.state };
+  }
+  if (supervisorObservation.stop) {
+    const stopped = markChannelWorkerStopped(root, subject, {
+      worker_id: workerId,
+      pid: process.pid,
+      stop_reason: supervisorObservation.reason,
+      supervisor: supervisorStateMirror(supervisorLease.config, supervisorObservation),
+    });
+    recordChannelEvent(root, subject, {
+      type: 'channel_worker_start_failed',
+      status: supervisorObservation.reason,
+      worker_id: workerId,
+      pid: process.pid,
+      reason: supervisorObservation.reason,
+    });
+    return { started: false, reason: supervisorObservation.reason, state: stopped };
   }
   recordChannelEvent(root, subject, {
     type: 'channel_worker_started',
@@ -1126,18 +1224,22 @@ async function runChannelDomainWorkerSingle(root, subject, flags = {}) {
     heartbeat_ms: heartbeatMs,
     lease_ms: leaseMs,
     tick_ms: tickMs,
+    supervisor_required: supervisorLease.guard.required,
   });
   updateChannelWorkerHeartbeat(root, subject, {
     worker_id: workerId,
     pid: process.pid,
     tick_ms: tickMs,
+    supervisor: supervisorStateMirror(supervisorLease.config, supervisorObservation),
   });
 
   let stopping = false;
+  let stopReason = 'stopped';
   const stopController = new AbortController();
-  const requestLocalStop = () => {
+  const requestLocalStop = (reason = 'signal') => {
     if (stopping) return;
     stopping = true;
+    stopReason = reason;
     if (!stopController.signal.aborted) stopController.abort(new Error('channel worker stopping'));
     requestChannelWorkerStop(root, subject, { staleMs: heartbeatStaleMs });
   };
@@ -1145,9 +1247,38 @@ async function runChannelDomainWorkerSingle(root, subject, flags = {}) {
   process.once('SIGTERM', requestLocalStop);
 
   let iterations = 0;
-  let stopReason = 'stopped';
   let tickTimer = null;
   let stopPollTimer = null;
+  let supervisorTimer = null;
+  let supervisorFingerprint = JSON.stringify(supervisorStateMirror(
+    supervisorLease.config,
+    supervisorObservation,
+  ));
+  const checkSupervisorLease = () => {
+    if (!supervisorLease.guard.required || stopping) return supervisorObservation;
+    supervisorObservation = supervisorLease.guard.check();
+    const supervisor = supervisorStateMirror(supervisorLease.config, supervisorObservation);
+    const nextFingerprint = JSON.stringify(supervisor);
+    if (nextFingerprint !== supervisorFingerprint) {
+      supervisorFingerprint = nextFingerprint;
+      safeUpdateChannelSupervisorState(root, subject, supervisor);
+    }
+    if (supervisorObservation.stop) {
+      recordChannelEvent(root, subject, {
+        type: 'channel_supervisor_lease_lost',
+        status: 'stopping',
+        worker_id: workerId,
+        pid: process.pid,
+        reason: supervisorObservation.reason,
+      });
+      requestLocalStop(supervisorObservation.reason);
+    }
+    return supervisorObservation;
+  };
+  if (supervisorLease.checkIntervalMs) {
+    supervisorTimer = setInterval(checkSupervisorLease, supervisorLease.checkIntervalMs);
+    supervisorTimer.unref?.();
+  }
   const runScheduledTick = () => {
     if (stopping) return;
     try {
@@ -1174,6 +1305,7 @@ async function runChannelDomainWorkerSingle(root, subject, flags = {}) {
 
   try {
     for (;;) {
+      checkSupervisorLease();
       const current = readChannelWorkerState(root, subject);
       if (stopping || current?.stop_requested_at) {
         stopReason = current?.stop_requested_at ? 'stop_requested' : 'signal';
@@ -1228,6 +1360,7 @@ async function runChannelDomainWorkerSingle(root, subject, flags = {}) {
     if (!stopController.signal.aborted) stopController.abort(new Error('channel worker stopped'));
     if (tickTimer) clearInterval(tickTimer);
     if (stopPollTimer) clearInterval(stopPollTimer);
+    if (supervisorTimer) clearInterval(supervisorTimer);
     await listenerSupervisor;
     process.removeListener('SIGINT', requestLocalStop);
     process.removeListener('SIGTERM', requestLocalStop);
@@ -1237,6 +1370,7 @@ async function runChannelDomainWorkerSingle(root, subject, flags = {}) {
     worker_id: workerId,
     pid: process.pid,
     stop_reason: stopReason,
+    supervisor: supervisorStateMirror(supervisorLease.config, supervisorObservation),
   });
   recordChannelEvent(root, subject, {
     type: 'channel_worker_stopped',
@@ -1250,6 +1384,7 @@ async function runChannelDomainWorkerSingle(root, subject, flags = {}) {
 
 export async function runChannelDomainWorker(root, subject, flags = {}) {
   const roles = resolveChannelDomainRoles(flags);
+  const supervisorLease = supervisorLeaseRuntime(flags);
   const tickMs = parseTickMs(flags);
   const leaseMs = parseLeaseMs(flags['lease-ms']);
   const heartbeatStaleMs = parseChannelHeartbeatStaleMs(
@@ -1275,6 +1410,7 @@ export async function runChannelDomainWorker(root, subject, flags = {}) {
     idleIntervalMs,
     maxIterations,
     channelWorkOnce: channelWorkOnce,
+    supervisorLease,
   });
 }
 

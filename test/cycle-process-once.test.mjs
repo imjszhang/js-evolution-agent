@@ -9,7 +9,10 @@ import { processCycleOnce, processOnceCommandExitCode } from '../src/daemon/cycl
 import { buildDaemonProjection } from '../src/daemon/daemon-projection.mjs';
 import { buildReactorHealthProjection } from '../src/daemon/reactor-health.mjs';
 import { createChannelWorkerState, readChannelWorkerState } from '../src/channel/worker-state.mjs';
-import { listEligibleEvidence, readClaimLedger } from '../src/evolution/reactor/claim-ledger.mjs';
+import {
+  listEligibleEvidence,
+  readTerminalClaimArchive,
+} from '../src/evolution/reactor/claim-ledger.mjs';
 import { listBatchCheckpoints } from '../src/evolution/reactor/batch-checkpoint-store.mjs';
 import { runtimeForSubject } from '../src/infra/runtime-paths.mjs';
 import { projectSubjectReadiness } from '../apps/desktop/src/client-api/readiness.ts';
@@ -183,7 +186,8 @@ describe('Cycle process-once recovery', () => {
     const afterReadiness = readinessFromProjection(afterProjection);
     const channelAfter = readChannelWorkerState(root, SUBJECT);
     const pending = listEligibleEvidence(runtime.dataRoot, { reactor: 'cognitive' });
-    const claims = readClaimLedger(runtime.dataRoot).claims.filter((claim) => claim.reactor === 'cognitive');
+    const claims = readTerminalClaimArchive(runtime.dataRoot).claims
+      .filter((claim) => claim.reactor === 'cognitive');
     const checkpoints = listBatchCheckpoints(runtime.dataRoot, { reactor: 'cognitive' });
     const fixtureStillEligible = pending.some((envelope) => (
       envelope.id?.includes('brief-cycle-once-1')
@@ -219,7 +223,7 @@ describe('Cycle process-once recovery', () => {
       mock: true,
       'skip-investigate': true,
     });
-    const claimsAfterRepeat = readClaimLedger(runtime.dataRoot).claims
+    const claimsAfterRepeat = readTerminalClaimArchive(runtime.dataRoot).claims
       .filter((claim) => claim.reactor === 'cognitive' && claim.status === 'handled');
     const fixtureHandledAgain = claimsAfterRepeat.filter((claim) => (
       (claim.evidence_keys || []).some((key) => fixtureKeys.has(key))
@@ -259,7 +263,8 @@ describe('Cycle process-once recovery', () => {
     });
     const runtime = runtimeForSubject(root, SUBJECT);
     const pendingAfterFail = listEligibleEvidence(runtime.dataRoot, { reactor: 'cognitive' });
-    const failedClaims = readClaimLedger(runtime.dataRoot).claims.filter((claim) => claim.reactor === 'cognitive');
+    const failedClaims = readTerminalClaimArchive(runtime.dataRoot).claims
+      .filter((claim) => claim.reactor === 'cognitive');
 
     expect(failed.status).toBe('retryable');
     expect(failed.reason).toBe('lease_lost');
@@ -280,7 +285,8 @@ describe('Cycle process-once recovery', () => {
     expect(listEligibleEvidence(runtime.dataRoot, { reactor: 'cognitive' }).some((envelope) => (
       String(envelope.id ?? '').includes('brief-cycle-once-fail')
     ))).toBe(false);
-    expect(readClaimLedger(runtime.dataRoot).claims.some((claim) => claim.status === 'handled')).toBe(true);
+    expect(readTerminalClaimArchive(runtime.dataRoot).claims
+      .some((claim) => claim.status === 'handled')).toBe(true);
 
     if (previous.JEA_FORCE_MOCK == null) delete process.env.JEA_FORCE_MOCK;
     else process.env.JEA_FORCE_MOCK = previous.JEA_FORCE_MOCK;

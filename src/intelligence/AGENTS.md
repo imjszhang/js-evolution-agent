@@ -74,12 +74,20 @@ EvidenceEnvelope → claim → cognitive reaction（investigate → report → D
 
 ```text
 data/evolution/reactor/
-├── claims.json              # 证据批 claim ledger（claimed/handled/failed）
+├── claims.json              # 仅 active claim 的有界 hot ledger
+├── archive/
+│   ├── claims.jsonl         # append-only terminal claim 审计
+│   ├── claims-covered-index.json
+│   └── claims-summary.json  # 投影使用的有界摘要
 ├── shadow_decisions.json    # 影子 Decide 队列（不入真实 exec）
 ├── shadow-runs.jsonl        # 审计（含 shadow_report_honesty / shadow_reaction_*）
 └── shadow-reports/
     └── <batch_id>.md        # 宿主 splice 后的最终报告
 ```
+
+旧版 `claims.json` / `archive/claims.json` 升级前先停 daemon 并备份，再运行
+`jea data migrate-claims --subject NAME --dry-run --json`；确认摘要后加 `--yes`
+正式迁移。迁移保留原文件备份和 legacy archive，不得直接删除恢复数据。
 
 诚实闸：与列车相同，宿主组装 Seen + `auditHostSeenReport`；事件 type 为 `shadow_report_honesty`（每反应恰好一条）。硬断言见 `test/reactor-shadow-honesty-e2e.test.mjs`。
 

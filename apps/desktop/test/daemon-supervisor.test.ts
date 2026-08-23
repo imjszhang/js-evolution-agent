@@ -1,6 +1,7 @@
 import type { ChildProcess } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -17,6 +18,10 @@ import {
 } from '../../../src/daemon/daemon-worker-state.mjs'
 import { readChannelWorkerState, writeChannelWorkerState } from '../../../src/channel/worker-state.mjs'
 import { PublicCommandError } from '../src/main/command-registry'
+import {
+  createSupervisorLease,
+  readSupervisorLease
+} from '../../../src/product/supervisor-lease.mjs'
 import { DaemonSupervisor } from '../src/main/daemon-supervisor'
 import { DesktopEventBus } from '../src/main/event-bus'
 import { ManagedProcessRegistry } from '../src/main/managed-process-registry'
@@ -179,12 +184,16 @@ function createSupervisor(
     closeOnKill = false,
     startupTimeoutMs,
     killGraceMs = 10,
-    processRegistry = new ManagedProcessRegistry()
+    processRegistry = new ManagedProcessRegistry(),
+    leaseTtlMs,
+    leaseRenewMs
   }: {
     closeOnKill?: boolean
     startupTimeoutMs?: number
     killGraceMs?: number
     processRegistry?: ManagedProcessRegistry
+    leaseTtlMs?: number
+    leaseRenewMs?: number
   } = {}
 ) {
   const events = new DesktopEventBus()
@@ -198,12 +207,111 @@ function createSupervisor(
     spawn.spawnImpl,
     killGraceMs,
     join(root, 'runtime'),
-    startupTimeoutMs
+    startupTimeoutMs,
+    process.execPath,
+    { ttlMs: leaseTtlMs, renewMs: leaseRenewMs }
   )
   return { supervisor, processRegistry, published, ...spawn }
 }
 
 describe('DaemonSupervisor', () => {
+  it('renews a private v2 lease and never exposes its owner token', async () => {
+    const { root } = createProjectRoot()
+    const { supervisor, published, spawnMock } = createSupervisor(root, {
+      leaseTtlMs: 100,
+      leaseRenewMs: 10
+    })
+    const path = join(
+      root,
+      'runtime',
+      'subjects',
+      'alpha-data',
+      'data',
+      'evolution',
+      'daemon',
+      'desktop-supervisor-cycle.json'
+    )
+
+    const view = await supervisor.start('alpha', { domain: 'cycle' })
+    const initial = readSupervisorLease(path)
+    expect(initial).toMatchObject({
+      schema_version: 2,
+      supervisor: 'jea-desktop',
+      subject: 'alpha',
+      domain: 'cycle',
+      lease_ttl_ms: 100,
+      lease_renew_ms: 10,
+      managed_worker_pid: 40_000
+    })
+    expect(initial.owner_token).toEqual(expect.any(String))
+    expect(JSON.stringify(view)).not.toContain(initial.owner_token)
+    expect(JSON.stringify(published)).not.toContain(initial.owner_token)
+    const childEnv = (spawnMock.mock.calls[0]?.[2] as { env?: Record<string, string> })?.env
+    expect(childEnv).toMatchObject({
+      JEA_DESKTOP_SUPERVISOR_LEASE_REQUIRED: '1',
+      JEA_DESKTOP_SUPERVISOR_LEASE_RECORD: path
+    })
+    expect(JSON.stringify(childEnv)).not.toContain(initial.owner_token)
+    expect(childEnv).not.toHaveProperty('JEA_DESKTOP_SUPERVISOR_OWNER_TOKEN')
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 25))
+    expect(Date.parse(readSupervisorLease(path).lease_renewed_at))
+      .toBeGreaterThan(Date.parse(initial.lease_renewed_at))
+
+    children.at(-1)!.close()
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(existsSync(path)).toBe(false)
+  })
+
+  it('does not adopt or renew a live worker owned by a previous Desktop instance', async () => {
+    const { root, context } = createProjectRoot()
+    const path = join(
+      root,
+      'runtime',
+      'subjects',
+      'alpha-data',
+      'data',
+      'evolution',
+      'daemon',
+      'desktop-supervisor-cycle.json'
+    )
+    writeCycleState(context, 'alpha', {
+      pid: process.pid,
+      supervisor: {
+        kind: 'jea-desktop',
+        required: true,
+        domain: 'cycle',
+        lease_status: 'active'
+      }
+    })
+    createSupervisorLease(path, {
+      ownerToken: 'previous-owner',
+      subject: 'alpha',
+      domain: 'cycle',
+      managedWorkerPid: process.pid,
+      ttlMs: 30_000,
+      renewMs: 5_000
+    })
+    const before = readSupervisorLease(path)
+    const { supervisor, spawnMock } = createSupervisor(root)
+
+    expect(supervisor.get('alpha')).toMatchObject({
+      mode: 'attached',
+      supervisor_lease: {
+        required: true,
+        status: 'active',
+        domain: 'cycle'
+      },
+      detail: 'Desktop-managed daemon belongs to a previous supervisor instance.'
+    })
+    await expect(supervisor.ensure('alpha', { domain: 'cycle' })).resolves.toMatchObject({
+      mode: 'attached'
+    })
+    expect(spawnMock).not.toHaveBeenCalled()
+    expect(readSupervisorLease(path).owner_token).toBe('previous-owner')
+    expect(readSupervisorLease(path).lease_renewed_at).toBe(before.lease_renewed_at)
+  })
+
   it('moves a subject from none to a client-managed daemon using injected spawn', async () => {
     const { root } = createProjectRoot()
     writeFileSync(join(root, 'runtime', '.env'), [
@@ -294,7 +402,11 @@ describe('DaemonSupervisor', () => {
     expect(processRegistry.get('daemon', 'alpha:channel')?.pid).toBe(40_001)
     expect(supervisor.get('alpha')).toMatchObject({
       mode: 'managed',
-      domain: 'all'
+      domain: 'all',
+      supervisor_leases: expect.arrayContaining([
+        expect.objectContaining({ domain: 'cycle', status: 'active' }),
+        expect.objectContaining({ domain: 'channel', status: 'active' })
+      ])
     })
     await expect(supervisor.start('alpha', { domain: 'all' })).resolves.toMatchObject({
       mode: 'managed',

@@ -16,7 +16,10 @@ import {
   committedBeliefEffectEvents,
   settlementLedgerPath,
 } from '../settlement-service.mjs';
-import { readClaimLedger } from './claim-ledger.mjs';
+import {
+  readClaimLedger,
+  readHandledClaimsSince,
+} from './claim-ledger.mjs';
 import { consumeWakeIntent, enqueueWakeIntent } from './wake-store.mjs';
 import {
   compareAndSwapBatchCheckpoint,
@@ -477,6 +480,15 @@ export async function compactMemory({
   const committed = readLastCommittedMemoryCheckpoint(runtime.dataRoot);
   const projection = readMemoryCompactionProjection(runtime.runtimeRoot);
   const lastCompactedAt = committed?.written_at || projection.last_compacted_at;
+  const terminalHandled = readHandledClaimsSince(runtime.dataRoot);
+  const handledById = new Map();
+  for (const claim of [
+    ...terminalHandled,
+    ...(ledger.claims || []).filter((claim) => claim.status === 'handled'),
+  ]) {
+    if (claim?.batch_id) handledById.set(claim.batch_id, claim);
+  }
+  const compactionLedger = { claims: [...handledById.values()] };
   const ctx = await buildCycleContext(root, runtime);
   ctx.pipeline = 'reactor';
   const previousCursor = committed?.last_settled_cursor
@@ -486,7 +498,7 @@ export async function compactMemory({
     settledBeliefEvents(ctx.store, runtime.dataRoot),
     previousCursor,
   );
-  const gate = shouldCompactMemory(ledger, {
+  const gate = shouldCompactMemory(compactionLedger, {
     minHandled: input.min_handled ?? DEFAULT_MIN_HANDLED_BATCHES,
     maxIdleMs: input.max_idle_ms ?? DEFAULT_MAX_IDLE_MS,
     lastCompactedAt,
@@ -508,7 +520,7 @@ export async function compactMemory({
     };
   }
 
-  const handled = handledSinceCheckpoint(ledger, committed);
+  const handled = handledSinceCheckpoint(compactionLedger, committed);
   const eventIds = handled.flatMap((claim) => claim.event_ids || []);
   const evidenceKeys = handled.flatMap((claim) => (
     claim.evidence_keys?.length

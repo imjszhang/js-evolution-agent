@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createRuntimeContext } from '../../../src/infra/jea-home.mjs'
 import { workerStatePath, writeWorkerState } from '../../../src/daemon/daemon-worker-state.mjs'
+import { createSupervisorLease } from '../../../src/product/supervisor-lease.mjs'
 import { ClientLifecycleController } from '../src/main/client-lifecycle'
 import { DaemonSupervisor } from '../src/main/daemon-supervisor'
 import { DesktopEventBus } from '../src/main/event-bus'
@@ -49,7 +50,7 @@ afterEach(async () => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-function createProject() {
+function createProject(lifecycleOptions: ConstructorParameters<typeof ClientLifecycleController>[2] = {}) {
   const root = mkdtempSync(join(tmpdir(), 'jea-lifecycle-'))
   roots.push(root)
   const jeaHome = join(root, 'runtime')
@@ -107,7 +108,7 @@ function createProject() {
     jeaHome,
     0
   )
-  const lifecycle = new ClientLifecycleController(supervisor, runtime)
+  const lifecycle = new ClientLifecycleController(supervisor, runtime, lifecycleOptions)
   return { root, runtime, supervisor, lifecycle, spawnMock }
 }
 
@@ -167,6 +168,68 @@ describe('ClientLifecycleController', () => {
     expect(spawnMock.mock.calls.some(([, args]) => (
       Array.isArray(args) && args.includes('cycle') && args.includes('alpha')
     ))).toBe(false)
+  })
+
+  it('waits for a previous Desktop worker before starting a new managed worker', async () => {
+    let runtimeForWait: ReturnType<typeof createRuntimeContext> | null = null
+    const wait = vi.fn(async () => {
+      if (!runtimeForWait) return
+      writeWorkerState(runtimeForWait, 'alpha', {
+        subject: 'alpha',
+        worker_id: 'previous-desktop',
+        pid: null,
+        status: 'stopped',
+        stopped_at: new Date().toISOString(),
+        heartbeat_at: new Date().toISOString()
+      })
+    })
+    const { root, runtime, lifecycle, spawnMock } = createProject({
+      maxWaitMs: 100,
+      pollMs: 1,
+      wait
+    })
+    runtimeForWait = runtime
+    writeWorkerState(runtime, 'alpha', {
+      subject: 'alpha',
+      worker_id: 'previous-desktop',
+      pid: process.pid,
+      status: 'running',
+      started_at: new Date().toISOString(),
+      heartbeat_at: new Date().toISOString(),
+      stale_after_ms: 60_000,
+      supervisor: {
+        kind: 'jea-desktop',
+        required: true,
+        domain: 'cycle',
+        lease_status: 'active'
+      }
+    })
+    createSupervisorLease(join(
+      root,
+      'runtime',
+      'subjects',
+      'alpha-data',
+      'data',
+      'evolution',
+      'daemon',
+      'desktop-supervisor-cycle.json'
+    ), {
+      ownerToken: 'previous-owner',
+      subject: 'alpha',
+      domain: 'cycle',
+      managedWorkerPid: process.pid
+    })
+
+    const result = await lifecycle.reconcile({ subject: 'alpha', reason: 'startup' })
+    expect(result.actions.find((item) => item.domain === 'cycle')).toMatchObject({
+      action: 'attach',
+      outcome: 'started',
+      reason: 'previous_supervisor_owner'
+    })
+    expect(wait).toHaveBeenCalled()
+    expect(spawnMock.mock.calls.some(([, args]) => (
+      Array.isArray(args) && args.includes('cycle') && args.includes('alpha')
+    ))).toBe(true)
   })
 
   it('does not stop an external worker when switching subjects', async () => {

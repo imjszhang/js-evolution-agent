@@ -294,7 +294,40 @@ export function buildDaemonProjectionUncached(root, subject, { store = null, eve
   };
   const pendingCycleStartRequest = cycleProjection.pending_cycle_start_request
     ?? readPendingCycleStartRequest(root, subject);
-  const reactor = buildReactorHealthProjection(root, subject, { worker });
+  let reactor;
+  try {
+    reactor = buildReactorHealthProjection(root, subject, { worker });
+  } catch (error) {
+    reactor = {
+      status: 'blocked',
+      ok: false,
+      reasons: ['claims_projection_degraded'],
+      suggestions: ['Inspect `jea data status --json` and run the claim migration preflight.'],
+      projection_degraded: true,
+      projection_error: error instanceof Error ? error.message : String(error),
+      evidence: {
+        pending_count: null,
+        eligible_unclaimed_count: null,
+        projection_degraded: true,
+      },
+      evidence_by_reactor: {},
+      claims: {
+        total: null,
+        projection_degraded: true,
+      },
+      decisions: { pending: null, blocked: null, backpressure: false },
+      pending_verify: { count: null, execution_ids: [] },
+      exec_intents: { open: null, uncertain: null, retryable: null },
+      rule: { eligible: null, due_windows: null, due_goals: [] },
+      memory: { due: false, reason: 'projection_degraded', since_compact: 0 },
+      reconcile: { ok: false, contract_error_count: -1 },
+      worker: worker ? {
+        running: Boolean(worker.running),
+        stale: Boolean(worker.stale),
+        zombie: Boolean(worker.zombie),
+      } : null,
+    };
+  }
   const wakePolicy = isReactorPipeline(pipeline) ? 'evidence_driven' : evolution.mode;
 
   return {
@@ -351,6 +384,8 @@ export function daemonProjectionHeavySignature(root, subject) {
   return hashSignature([
     evidenceSourceSignature(runtime.dataRoot),
     fileIdentitySignature(claimsPath(runtime.dataRoot)),
+    fileIdentitySignature(join(runtime.dataRoot, 'evolution', 'reactor', 'archive', 'claims-summary.json')),
+    fileIdentitySignature(join(runtime.dataRoot, 'evolution', 'reactor', 'archive', 'claims-covered-index.json')),
     fileIdentitySignature(join(runtime.evolutionDir, 'pending_decisions.json')),
     fileIdentitySignature(join(runtime.dataRoot, 'evolution', 'reactor', 'exec-intents.json')),
     dirIdentitySignature(join(runtime.dataRoot, 'evolution', 'reactor', 'exec-results'), { suffix: '.json' }),
@@ -407,6 +442,7 @@ function projectionCacheKey(root, subject, eventLimit, heartbeatStaleMs) {
 
 const projectionCache = new Map();
 const pendingRebuilds = new Map();
+const rebuildFailures = new Map();
 const liveWorkers = new Set();
 const rebuildListeners = new Set();
 let cacheGeneration = 0;
@@ -430,6 +466,7 @@ export function resetDaemonProjectionCache() {
   cacheGeneration += 1;
   projectionCache.clear();
   pendingRebuilds.clear();
+  rebuildFailures.clear();
   for (const worker of liveWorkers) {
     try {
       worker.terminate();
@@ -656,6 +693,10 @@ function scheduleDeferredRebuild({
   generation,
   workerPath,
 }) {
+  const failure = rebuildFailures.get(key);
+  if (failure && failure.nextRetryAt > Date.now()) {
+    return Promise.resolve(null);
+  }
   const existing = pendingRebuilds.get(key);
   if (existing) {
     existing.dirty = true;
@@ -683,9 +724,17 @@ function scheduleDeferredRebuild({
       );
       const current = projectionIdentity(root, subject, eventLimit, heartbeatStaleMs);
       if (current.fingerprint !== stored.identity.fingerprint) job.dirty = true;
+      rebuildFailures.delete(key);
       emitDaemonProjectionRebuild(subject);
-    } catch {
-      // Keep the last successful snapshot. The next watch burst retries.
+    } catch (error) {
+      const previous = rebuildFailures.get(key);
+      const attempts = Math.min(8, (previous?.attempts ?? 0) + 1);
+      rebuildFailures.set(key, {
+        attempts,
+        error: error instanceof Error ? error.message : String(error),
+        nextRetryAt: Date.now() + Math.min(30_000, 250 * (2 ** (attempts - 1))),
+      });
+      // Keep the last successful snapshot and rate-limit repeated failures.
     } finally {
       pendingRebuilds.delete(key);
       if (job.dirty && generation === cacheGeneration) {

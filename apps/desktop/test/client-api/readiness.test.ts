@@ -17,6 +17,7 @@ import { createWebHost } from '../../src/web-host'
 import { writeWorkerState } from '../../../../src/daemon/daemon-worker-state.mjs'
 import { writeChannelWorkerState } from '../../../../src/channel/worker-state.mjs'
 import { writePendingOperatorBrief } from '../../../../src/intelligence/operator-briefs.mjs'
+import { createSupervisorLease } from '../../../../src/product/supervisor-lease.mjs'
 import { subjectRuntime } from '../../src/client-api/owners/runtime'
 import type { SubjectReadiness, SubjectReadinessReasonCode } from '../../src/client-api/types'
 
@@ -318,6 +319,80 @@ describe('service.getReadiness contract', () => {
     expect(value.allowed_actions).not.toContain('start_channel')
   })
 
+  it('projects an expired Desktop supervisor lease without exposing ownership secrets', () => {
+    const value = projectSubjectReadiness({
+      subject: 'alpha',
+      generatedAt: '2026-08-23T04:00:31.000Z',
+      hostKind: 'electron',
+      webHost: { running: false, pid: null },
+      cycleWorker: { status: 'running', running: true, fresh: true, pid_alive: true, pid: process.pid },
+      cycleHealth: { status: 'healthy', ok: true },
+      channelWorker: null,
+      channelHealth: null,
+      model: { configured: false, mode: 'mock' },
+      desktopChannelEnabled: true,
+      ownership: {
+        mode: 'attached',
+        domain: null,
+        supervisor_lease: {
+          required: true,
+          status: 'expired',
+          expires_at: '2026-08-23T04:00:30.000Z',
+          domain: 'cycle'
+        }
+      }
+    })
+    expect(value.cycle).toEqual({
+      state: 'stopping',
+      reasons: ['cycle_stopping', 'supervisor_lease_expired']
+    })
+    expect(SUBJECT_READINESS_REASON_CODES).toContain('supervisor_lease_expired')
+    expect(JSON.stringify(value)).not.toContain('owner_token')
+  })
+
+  it('keeps Electron and Web readiness aligned for an expired on-disk lease', async () => {
+    const { sourceRoot, jeaHome } = tempHome()
+    const electron = electronHost(sourceRoot, jeaHome)
+    const web = webCommandHost(sourceRoot, jeaHome)
+    writeCycle(electron.runtime, {
+      pid: process.pid,
+      status: 'running',
+      started_at: nowIso(),
+      heartbeat_at: nowIso(),
+      supervisor: {
+        kind: 'jea-desktop',
+        required: true,
+        domain: 'cycle',
+        lease_status: 'active'
+      }
+    })
+    const ownerToken = 'owner-token-must-not-leak'
+    createSupervisorLease(join(
+      jeaHome,
+      'subjects',
+      'alpha-data',
+      'data',
+      'evolution',
+      'daemon',
+      'desktop-supervisor-cycle.json'
+    ), {
+      ownerToken,
+      subject: 'alpha',
+      domain: 'cycle',
+      managedWorkerPid: process.pid,
+      ttlMs: 30_000,
+      renewMs: 5_000,
+      nowMs: Date.now() - 31_000
+    })
+
+    const electronValue = await readinessOf(electron)
+    const webValue = await readinessOf(web)
+    expect(electronValue.cycle).toEqual(webValue.cycle)
+    expect(electronValue.cycle.reasons).toContain('supervisor_lease_expired')
+    expect(JSON.stringify(electronValue)).not.toContain(ownerToken)
+    expect(JSON.stringify(webValue)).not.toContain(ownerToken)
+  })
+
   it('externally fresh daemon reports attached, not managed', async () => {
     const { sourceRoot, jeaHome } = tempHome()
     const host = electronHost(sourceRoot, jeaHome)
@@ -454,6 +529,31 @@ describe('readiness projector invariants', () => {
     for (const reason of value.reasons) {
       expect(SUBJECT_READINESS_REASON_CODES).toContain(reason)
     }
+  })
+
+  it('does not report zero evidence when the claim projection is degraded', () => {
+    const value = projectSubjectReadiness({
+      subject: 'alpha',
+      generatedAt: '2026-08-17T00:00:00.000Z',
+      hostKind: 'electron',
+      webHost: { running: false, pid: null },
+      cycleWorker: { status: 'running', running: true, fresh: true, pid_alive: true, pid: process.pid },
+      cycleHealth: { status: 'blocked', ok: false },
+      channelWorker: { status: 'stopped', running: false },
+      channelHealth: { status: 'idle', ok: true },
+      model: { configured: false, mode: 'mock' },
+      desktopChannelEnabled: true,
+      ownership: { mode: 'none', domain: null },
+      pendingEvidence: null,
+      projectionDegraded: true
+    })
+
+    expect(value.automation).toMatchObject({
+      intent: 'blocked',
+      remaining_evidence: null,
+      blocker: 'claims_projection_degraded'
+    })
+    expect(value.reasons).toContain('claims_projection_degraded')
   })
 
   it('uses only the documented domain states and action ids', () => {

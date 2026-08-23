@@ -12,7 +12,9 @@ function toServiceStatus(view: DaemonSupervisorView): ServiceStatus {
     heartbeat_at: view.heartbeat_at,
     started_at: view.started_at,
     health: null,
-    detail: view.detail ?? null
+    detail: view.detail ?? null,
+    supervisor_lease: view.supervisor_lease ?? null,
+    supervisor_leases: view.supervisor_leases ?? []
   }
 }
 

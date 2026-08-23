@@ -112,17 +112,21 @@ function attentionFromReactor(subject, reactor) {
       : null,
     reactor.lease?.stale ? 'lease stale' : null,
   ].filter(Boolean);
+  const projectionDegraded = reactor.projection_degraded === true
+    || reactor.claims?.projection_degraded === true;
   pushAttention(items, {
     severity: 'critical',
-    kind: 'reactor_backlog',
-    title: `Reactor: ${reactor.status}`,
+    kind: projectionDegraded ? 'claims_projection_degraded' : 'reactor_backlog',
+    title: projectionDegraded ? 'Claim projection unavailable' : `Reactor: ${reactor.status}`,
     summary: [
       (reactor.reasons ?? []).join(' · ') || 'Reactor backlog is stalled.',
       details.join(' · '),
     ].filter(Boolean).join(' — '),
     subject,
     refs: { reactor },
-    suggested_command: `npm run jea -- daemon doctor --subject ${subject} --json`,
+    suggested_command: projectionDegraded
+      ? `npm run jea -- data migrate-claims --subject ${subject} --dry-run --json`
+      : `npm run jea -- daemon doctor --subject ${subject} --json`,
   });
   return items;
 }

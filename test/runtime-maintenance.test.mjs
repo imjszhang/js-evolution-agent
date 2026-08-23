@@ -12,10 +12,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { markChannelEventsHandled, appendChannelEvent, claimChannelEvents } from '../src/channel/event-queue.mjs';
 import {
   cleanupClaimLedger,
-  claimsArchivePath,
   claimsCoveredIndexPath,
+  claimsTerminalArchivePath,
   listEligibleEvidence,
   readClaimLedger,
+  readTerminalClaimArchive,
 } from '../src/evolution/reactor/claim-ledger.mjs';
 import {
   completeVerifyResult,
@@ -122,7 +123,7 @@ describe('runtime sidecar maintenance', () => {
     expect(readClaimLedger(runtime.dataRoot).claims.map((claim) => claim.batch_id)).toEqual([
       'active',
     ]);
-    expect(JSON.parse(readFileSync(claimsArchivePath(runtime.dataRoot), 'utf-8')).claims.map((claim) => claim.batch_id))
+    expect(readTerminalClaimArchive(runtime.dataRoot).claims.map((claim) => claim.batch_id))
       .toEqual(['handled', 'failed-open', 'failed-terminal']);
     expect(JSON.parse(readFileSync(tasksPath, 'utf-8')).tasks.map((task) => task.task_id))
       .toEqual(['running', 'failed']);
@@ -166,7 +167,7 @@ describe('runtime sidecar maintenance', () => {
       claims: [{ batch_id: 'handled', status: 'handled', handled_at: '2020-01-01T00:00:00.000Z' }],
     });
     const before = readFileSync(claimsPath, 'utf-8');
-    const archivePath = claimsArchivePath(runtime.dataRoot);
+    const archivePath = claimsTerminalArchivePath(runtime.dataRoot);
 
     withJsonLock(archivePath, () => {
       expect(() => cleanupClaimLedger(runtime.dataRoot, {

@@ -181,6 +181,18 @@ export interface ServiceStatus {
   started_at: string | null
   health: string | null
   detail: string | null
+  supervisor_lease?: {
+    required: boolean
+    status: 'active' | 'stopping' | 'expired' | 'missing' | 'owner_mismatch' | 'legacy' | 'lost'
+    expires_at: string | null
+    domain: 'all' | 'cycle' | 'channel' | null
+  } | null
+  supervisor_leases?: Array<{
+    required: boolean
+    status: 'active' | 'stopping' | 'expired' | 'missing' | 'owner_mismatch' | 'legacy' | 'lost'
+    expires_at: string | null
+    domain: 'all' | 'cycle' | 'channel' | null
+  }>
 }
 
 export const SUBJECT_READINESS_DOMAIN_STATES = [
@@ -240,7 +252,7 @@ export interface AutomationView {
   mapped_from: string
   diagnostic: string | null
   background: boolean
-  remaining_evidence: number
+  remaining_evidence: number | null
   blocker: string | null
 }
 

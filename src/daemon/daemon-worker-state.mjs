@@ -85,6 +85,7 @@ export function createWorkerState(root, subject, {
   tickMs = null,
   evolutionMode = null,
   evolutionModeSource = null,
+  supervisor = null,
 } = {}) {
   const existing = readWorkerState(root, subject);
   if (existing && isWorkerZombie(existing, { staleMs })) {
@@ -110,6 +111,7 @@ export function createWorkerState(root, subject, {
     tick_ms: tickMs,
     evolution_mode: evolutionMode,
     evolution_mode_source: evolutionModeSource,
+    supervisor,
     last_work_result: null,
     last_error: null,
   };
@@ -194,6 +196,11 @@ export function summarizeWorkerState(state, { nowMs = Date.now(), staleMs = 60_0
       heartbeat_at: null,
       stop_requested_at: null,
       tick_ms: null,
+      supervisor: null,
+      supervisor_required: false,
+      supervisor_lease_status: null,
+      supervisor_lease_expires_at: null,
+      stop_reason: null,
       last_work_result: null,
       last_error: null,
     };
@@ -220,6 +227,11 @@ export function summarizeWorkerState(state, { nowMs = Date.now(), staleMs = 60_0
     stopped_at: state.stopped_at ?? null,
     stale_after_ms: effectiveStaleMs,
     tick_ms: state.tick_ms ?? null,
+    supervisor: state.supervisor ?? null,
+    supervisor_required: state.supervisor?.required === true,
+    supervisor_lease_status: state.supervisor?.lease_status ?? null,
+    supervisor_lease_expires_at: state.supervisor?.lease_expires_at ?? null,
+    stop_reason: state.stop_reason ?? null,
     last_work_result: state.last_work_result ?? null,
     last_error: state.last_error ?? null,
   };

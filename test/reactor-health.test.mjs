@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { writeJsonFile } from '../src/infra/files.mjs';
 import { buildReactorHealthProjection } from '../src/daemon/reactor-health.mjs';
 import { buildDaemonProjection, resetDaemonProjectionCache } from '../src/daemon/daemon-projection.mjs';
@@ -28,6 +28,7 @@ function makeRoot() {
 }
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   resetEvidenceHealthSnapshotCache();
   resetDaemonProjectionCache();
   if (tempDir) {
@@ -87,6 +88,36 @@ describe('reactor health projection', () => {
     expect(health.ok).toBe(false);
     expect(health.status).toBe('stalled');
     expect(health.claims.expired_claimed).toBeGreaterThan(0);
+  });
+
+  it('returns a visible degraded projection without parsing an oversized claim ledger', () => {
+    const root = makeRoot();
+    const runtime = runtimeForSubject(root, 'alpha');
+    mkdirSync(join(runtime.dataRoot, 'evolution', 'reactor'), { recursive: true });
+    writeFileSync(claimsPath(runtime.dataRoot), JSON.stringify({
+      claims: [{
+        batch_id: 'batch-large',
+        status: 'handled',
+        indexed_entries: [{ payload: 'x'.repeat(32 * 1024) }],
+      }],
+    }));
+    vi.stubEnv('JEA_CLAIM_PROJECTION_MAX_BYTES', '1024');
+
+    const health = buildReactorHealthProjection(root, 'alpha');
+    const daemon = buildDaemonProjection(root, 'alpha', { cache: false });
+
+    expect(health).toMatchObject({
+      ok: false,
+      status: 'blocked',
+      evidence: { pending_count: null, projection_degraded: true },
+      claims: {
+        total: null,
+        projection_degraded: true,
+        projection_reason: 'claims_ledger_oversized',
+      },
+    });
+    expect(health.reasons).toContain('claims_projection_degraded');
+    expect(daemon.reactor.claims.projection_degraded).toBe(true);
   });
 
   it('pairs stale evidence with a missing worker in the same diagnosis', () => {

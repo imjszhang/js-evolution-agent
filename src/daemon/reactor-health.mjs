@@ -1,6 +1,10 @@
 import { join } from 'node:path';
 import { DecisionQueue } from '../engine/decide/decision-queue.mjs';
-import { coveredEventIds, readClaimLedger } from '../evolution/reactor/claim-ledger.mjs';
+import {
+  coveredEventIds,
+  readClaimArchiveSummary,
+  readClaimLedgerForProjection,
+} from '../evolution/reactor/claim-ledger.mjs';
 import {
   defaultKindsForReactor,
   envelopeEvidenceKey,
@@ -25,6 +29,19 @@ function parseIsoMs(value) {
 }
 
 export function summarizeClaimLedgerHealth(ledger, { nowMs = Date.now() } = {}) {
+  if (ledger?.projection_degraded) {
+    return {
+      total: null,
+      counts: { claimed: null, handled: null, failed: null, released: null },
+      expired_claimed: null,
+      oldest_claimed_age_ms: null,
+      last_handled_at: null,
+      updated_at: null,
+      projection_degraded: true,
+      projection_reason: ledger.projection_reason,
+      file_bytes: ledger.file_bytes,
+    };
+  }
   const counts = { claimed: 0, handled: 0, failed: 0, released: 0 };
   let oldestClaimedAgeMs = null;
   let expiredClaimed = 0;
@@ -53,6 +70,18 @@ export function summarizeClaimLedgerHealth(ledger, { nowMs = Date.now() } = {}) 
     oldest_claimed_age_ms: oldestClaimedAgeMs,
     last_handled_at: lastHandledAt,
     updated_at: ledger.updated_at ?? null,
+  };
+}
+
+function unknownEvidenceProjection(reason) {
+  return {
+    pending_count: null,
+    eligible_unclaimed_count: null,
+    oldest_unclaimed_age_ms: null,
+    oldest_unclaimed_id: null,
+    stream_total: null,
+    projection_degraded: true,
+    projection_reason: reason,
   };
 }
 
@@ -102,7 +131,8 @@ export function buildReactorHealthProjection(root, subject, {
 } = {}) {
   const runtime = runtimeForSubject(root, subject);
   const dataRoot = runtime.dataRoot;
-  const ledger = readClaimLedger(dataRoot);
+  const ledger = readClaimLedgerForProjection(dataRoot);
+  const claimProjectionDegraded = Boolean(ledger.projection_degraded);
   const claims = summarizeClaimLedgerHealth(ledger, { nowMs });
   let snapshot;
   let reconcile = { ok: true, contract_error_count: 0 };
@@ -116,12 +146,20 @@ export function buildReactorHealthProjection(root, subject, {
     snapshot = { envelopes: [] };
     reconcile = { ok: false, contract_error_count: -1 };
   }
-  const evidence = summarizePendingEvidenceFromSnapshot(snapshot, ledger, { nowMs, reactor: 'cognitive' });
-  const evidenceByReactor = {
-    cognitive: evidence,
-    rule: summarizePendingEvidenceFromSnapshot(snapshot, ledger, { nowMs, reactor: 'rule' }),
-    memory: summarizePendingEvidenceFromSnapshot(snapshot, ledger, { nowMs, reactor: 'memory' }),
-  };
+  const evidence = claimProjectionDegraded
+    ? unknownEvidenceProjection(ledger.projection_reason)
+    : summarizePendingEvidenceFromSnapshot(snapshot, ledger, { nowMs, reactor: 'cognitive' });
+  const evidenceByReactor = claimProjectionDegraded
+    ? {
+      cognitive: evidence,
+      rule: unknownEvidenceProjection(ledger.projection_reason),
+      memory: unknownEvidenceProjection(ledger.projection_reason),
+    }
+    : {
+      cognitive: evidence,
+      rule: summarizePendingEvidenceFromSnapshot(snapshot, ledger, { nowMs, reactor: 'rule' }),
+      memory: summarizePendingEvidenceFromSnapshot(snapshot, ledger, { nowMs, reactor: 'memory' }),
+    };
 
   let decisions = {
     pending: 0,
@@ -147,13 +185,22 @@ export function buildReactorHealthProjection(root, subject, {
   const pendingVerify = listPendingVerifyResults(dataRoot);
   const openIntents = listOpenExecIntents(dataRoot);
   const uncertainIntents = listUncertainExecIntents(dataRoot);
-  const ruleDue = peekRuleDueWindow(dataRoot, {
-    nowMs,
-    stream: snapshot.envelopes,
-  });
+  const ruleDue = claimProjectionDegraded
+    ? { eligible: [], due: [] }
+    : peekRuleDueWindow(dataRoot, {
+      nowMs,
+      stream: snapshot.envelopes,
+    });
   const committed = readLastCommittedMemoryCheckpoint(dataRoot);
   const projection = readMemoryCompactionProjection(runtime.runtimeRoot);
-  const memoryGate = shouldCompactMemory(ledger, {
+  const archiveSummary = readClaimArchiveSummary(dataRoot);
+  const memoryLedger = {
+    claims: [
+      ...(ledger.claims || []).filter((claim) => claim.status === 'handled'),
+      ...archiveSummary.recent_handled.map((claim) => ({ ...claim, status: 'handled' })),
+    ],
+  };
+  const memoryGate = shouldCompactMemory(memoryLedger, {
     nowMs,
     lastCompactedAt: committed?.written_at || projection.last_compacted_at,
   });
@@ -163,7 +210,13 @@ export function buildReactorHealthProjection(root, subject, {
   let status = 'idle';
   let ok = true;
 
-  if (!reconcile.ok || reconcile.contract_error_count > 0) {
+  if (claimProjectionDegraded) {
+    status = 'blocked';
+    ok = false;
+    reasons.push('claims_projection_degraded');
+    reasons.push(`Claim projection unavailable: ${ledger.projection_reason}`);
+    suggestions.push('Stop daemons, back up the subject, then run `jea data migrate-claims --dry-run`.');
+  } else if (!reconcile.ok || reconcile.contract_error_count > 0) {
     status = 'blocked';
     ok = false;
     reasons.push(`Evidence stream contract errors: ${reconcile.contract_error_count}`);

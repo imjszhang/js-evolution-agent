@@ -7,7 +7,7 @@
  * as Electron evidence.
  *
  * Usage:
- *   node scripts/performance-projection-smoke.mjs [--json] [--size-mb 60] [--events 100000]
+ *   node scripts/performance-projection-smoke.mjs [--json] [--size-mb 60] [--claims-mb 80] [--events 100000]
  */
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -58,7 +58,7 @@ function makeIsolatedRoot() {
   return { root, jeaHome };
 }
 
-function seedLargeFixtures(runtime, { sizeMb, events }) {
+function seedLargeFixtures(runtime, { sizeMb, claimsMb, events }) {
   const dataRoot = runtime.dataRoot;
   mkdirSync(join(dataRoot, 'intelligence', 'evolution_events'), { recursive: true });
   mkdirSync(join(dataRoot, 'channel'), { recursive: true });
@@ -107,7 +107,36 @@ function seedLargeFixtures(runtime, { sizeMb, events }) {
     summary: 'perf fixture brief',
     created_at: new Date().toISOString(),
   });
-  return { evidence_rows: index, channel_events: channelCount, evidence_bytes: written };
+  const claimDir = join(dataRoot, 'evolution', 'reactor');
+  mkdirSync(claimDir, { recursive: true });
+  const claimPath = join(claimDir, 'claims.json');
+  const claimTargetBytes = Math.max(1, Number(claimsMb) || 80) * 1024 * 1024;
+  const indexedPayload = 'y'.repeat(16 * 1024);
+  writeFileSync(claimPath, '{"schema_version":1,"claims":[');
+  let claimBytes = 0;
+  let claimCount = 0;
+  while (claimBytes < claimTargetBytes) {
+    const row = JSON.stringify({
+      batch_id: `batch-perf-${claimCount}`,
+      reactor: 'cognitive',
+      status: 'handled',
+      handled_at: new Date(Date.now() - claimCount).toISOString(),
+      event_ids: [`evt-perf-${claimCount}`],
+      evidence_keys: [`evolution_events:evt-perf-${claimCount}`],
+      indexed_entries: [{ id: `evt-perf-${claimCount}`, payload: indexedPayload }],
+    });
+    appendFileSync(claimPath, `${claimCount ? ',' : ''}${row}`);
+    claimBytes += Buffer.byteLength(row) + 1;
+    claimCount += 1;
+  }
+  appendFileSync(claimPath, '],"updated_at":null}\n');
+  return {
+    evidence_rows: index,
+    channel_events: channelCount,
+    evidence_bytes: written,
+    claim_rows: claimCount,
+    claim_bytes: claimBytes,
+  };
 }
 
 function measureMs(fn) {
@@ -129,10 +158,18 @@ async function main() {
     resetDaemonProjectionCache();
     const seeded = seedLargeFixtures(runtime, {
       sizeMb: args['size-mb'] || 60,
+      claimsMb: args['claims-mb'] || 80,
       events: args.events || 100_000,
     });
     const ctx = { sourceRoot: isolated.root, jeaHome: isolated.jeaHome };
-    const coldMs = measureMs(() => buildDaemonProjection(ctx, 'alpha', { eventLimit: 10 }));
+    let coldProjection;
+    const coldMs = measureMs(() => {
+      coldProjection = buildDaemonProjection(ctx, 'alpha', { eventLimit: 10 });
+    });
+    if (coldProjection?.reactor?.claims?.projection_degraded !== true) {
+      status = 'failed';
+      notes.push('oversized claim fixture did not produce a bounded degraded projection');
+    }
     const warmSamples = [];
     for (let i = 0; i < 20; i += 1) {
       warmSamples.push(measureMs(() => buildDaemonProjection(ctx, 'alpha', { eventLimit: 10 })));

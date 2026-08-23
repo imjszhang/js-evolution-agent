@@ -16,6 +16,7 @@ import {
   reconcileChannelWorkerState,
   requestChannelWorkerStop,
   safeMarkChannelRoleWorkerStopped,
+  safeUpdateChannelSupervisorState,
   safeUpdateChannelRoleWorkerHeartbeat,
 } from './worker-state.mjs';
 import { reclaimExpiredChannelLeases } from './task-queue.mjs';
@@ -31,6 +32,7 @@ import {
   isFeishuListenerRetryableFailure,
   isFeishuListenerSuccess,
 } from './adapters/feishu/backoff.mjs';
+import { supervisorStateMirror } from '../product/supervisor-lease.mjs';
 
 function sleep(ms) {
   if (!ms) return Promise.resolve();
@@ -328,7 +330,8 @@ export async function runChannelRoleWorkerLoop(root, subject, role, flags, share
       idleMs: idleIntervalMs,
       signal: shared.signal,
     });
-    if (isChannelRoleStopRequested(root, subject, role)) stopReason = 'stop_requested';
+    if (shared.stopReason) stopReason = shared.stopReason;
+    else if (isChannelRoleStopRequested(root, subject, role)) stopReason = 'stop_requested';
   } finally {
     safeMarkChannelRoleWorkerStopped(root, subject, role, {
       worker_id: workerId,
@@ -357,9 +360,18 @@ export async function runChannelDomainWorkerMulti(root, subject, flags, {
   idleIntervalMs,
   maxIterations,
   channelWorkOnce,
+  supervisorLease = null,
   ensureListener = ensureChannelListener,
   stopListener = stopChannelListener,
 }) {
+  const leaseRuntime = supervisorLease ?? {
+    config: null,
+    guard: { required: false, check: () => ({ stop: false, status: 'not_required' }) },
+    observation: { stop: false, status: 'not_required', expires_at: null },
+    checkIntervalMs: null,
+  };
+  let supervisorObservation = leaseRuntime.observation;
+  const supervisor = supervisorStateMirror(leaseRuntime.config, supervisorObservation);
   const classifierConfig = resolveClassifierConfig(root, subject);
   reconcileChannelWorkerState(root, subject, { staleMs: heartbeatStaleMs });
   initChannelCoordinatorState(root, subject, {
@@ -368,6 +380,7 @@ export async function runChannelDomainWorkerMulti(root, subject, flags, {
     classifierIntervalMs: classifierConfig.interval_ms,
     roles,
     staleMs: heartbeatStaleMs,
+    supervisor,
   });
   for (const role of roles) {
     createChannelRoleWorkerState(root, subject, {
@@ -377,20 +390,45 @@ export async function runChannelDomainWorkerMulti(root, subject, flags, {
       staleMs: heartbeatStaleMs,
       tickMs,
       allowedTaskTypes: resolveChannelWorkerTaskTypes(flags, role) ?? taskTypesForChannelRole(role),
+      supervisor,
     });
+  }
+  if (supervisorObservation.stop) {
+    for (const role of roles) {
+      safeMarkChannelRoleWorkerStopped(root, subject, role, {
+        worker_id: roleWorkerId(role),
+        pid: process.pid,
+        stop_reason: supervisorObservation.reason,
+        supervisor,
+      });
+    }
+    recordChannelEvent(root, subject, {
+      type: 'channel_worker_start_failed',
+      status: supervisorObservation.reason,
+      pid: process.pid,
+      reason: supervisorObservation.reason,
+    });
+    return {
+      started: false,
+      reason: supervisorObservation.reason,
+      roles: [],
+      state: readChannelWorkerState(root, subject),
+    };
   }
 
   const shared = {
     stopping: false,
+    stopReason: null,
     tickMs,
     heartbeatStaleMs,
   };
   const stopController = new AbortController();
   shared.signal = stopController.signal;
 
-  const requestLocalStop = () => {
+  const requestLocalStop = (reason = 'signal') => {
     if (shared.stopping) return;
     shared.stopping = true;
+    shared.stopReason = reason;
     if (!stopController.signal.aborted) stopController.abort(new Error('channel domain stopping'));
     requestChannelWorkerStop(root, subject, { staleMs: heartbeatStaleMs });
   };
@@ -440,6 +478,32 @@ export async function runChannelDomainWorkerMulti(root, subject, flags, {
   let presenceTickTimer = null;
   let classifierTickTimer = null;
   let stopPollTimer = null;
+  let supervisorTimer = null;
+  let supervisorFingerprint = JSON.stringify(supervisor);
+  const checkSupervisorLease = () => {
+    if (!leaseRuntime.guard.required || shared.stopping) return supervisorObservation;
+    supervisorObservation = leaseRuntime.guard.check();
+    const nextSupervisor = supervisorStateMirror(leaseRuntime.config, supervisorObservation);
+    const nextFingerprint = JSON.stringify(nextSupervisor);
+    if (nextFingerprint !== supervisorFingerprint) {
+      supervisorFingerprint = nextFingerprint;
+      safeUpdateChannelSupervisorState(root, subject, nextSupervisor);
+    }
+    if (supervisorObservation.stop) {
+      recordChannelEvent(root, subject, {
+        type: 'channel_supervisor_lease_lost',
+        status: 'stopping',
+        pid: process.pid,
+        reason: supervisorObservation.reason,
+      });
+      requestLocalStop(supervisorObservation.reason);
+    }
+    return supervisorObservation;
+  };
+  if (leaseRuntime.checkIntervalMs) {
+    supervisorTimer = setInterval(checkSupervisorLease, leaseRuntime.checkIntervalMs);
+    supervisorTimer.unref?.();
+  }
 
   const runPresenceSchedule = () => {
     if (shared.stopping) return;
@@ -476,7 +540,8 @@ export async function runChannelDomainWorkerMulti(root, subject, flags, {
     classifierTickTimer = setInterval(runClassifierSchedule, classifierConfig.interval_ms);
   }
   stopPollTimer = setInterval(() => {
-    if (readChannelWorkerState(root, subject)?.stop_requested_at) requestLocalStop();
+    checkSupervisorLease();
+    if (readChannelWorkerState(root, subject)?.stop_requested_at) requestLocalStop('stop_requested');
   }, 250);
   stopPollTimer.unref?.();
 
@@ -509,6 +574,7 @@ export async function runChannelDomainWorkerMulti(root, subject, flags, {
     if (presenceTickTimer) clearInterval(presenceTickTimer);
     if (classifierTickTimer) clearInterval(classifierTickTimer);
     if (stopPollTimer) clearInterval(stopPollTimer);
+    if (supervisorTimer) clearInterval(supervisorTimer);
     await listenerSupervisor;
     const leftover = readChannelWorkerState(root, subject);
     for (const [role, worker] of Object.entries(leftover?.workers ?? {})) {
@@ -517,7 +583,7 @@ export async function runChannelDomainWorkerMulti(root, subject, flags, {
         safeMarkChannelRoleWorkerStopped(root, subject, role, {
           worker_id: worker.worker_id,
           pid: worker.pid,
-          stop_reason: 'shutdown_fallback',
+          stop_reason: shared.stopReason ?? 'shutdown_fallback',
         });
       }
     }

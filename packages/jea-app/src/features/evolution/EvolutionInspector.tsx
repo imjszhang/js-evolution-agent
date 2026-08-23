@@ -197,7 +197,7 @@ export function EvolutionInspector({
 
 function evolutionRuntimeCopy(
   t: (key: 'evolutionAutomaticPaused' | 'evolutionListening' | 'evolutionCatchingUp' | 'evolutionWaitingApproval' | 'evolutionBlocked') => string,
-  automation: { mode?: string; intent?: string; remaining_evidence?: number; blocker?: string | null } | null | undefined,
+  automation: { mode?: string; intent?: string; remaining_evidence?: number | null; blocker?: string | null } | null | undefined,
   pendingEvidence: number | null
 ): string | null {
   if (!automation) return null
