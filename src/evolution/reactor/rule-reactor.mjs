@@ -168,6 +168,24 @@ function commitRuleEventCursors(dataRoot, events, batchId) {
   });
 }
 
+function withRuleWallDeadline(work, startedAt, limits) {
+  const remaining = Math.max(0, limits.maxWallMs - (Date.now() - startedAt));
+  if (remaining <= 0) {
+    assertRuleWallBudget(startedAt, limits);
+  }
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const error = new RangeError(`Rule wall-clock budget exceeded (${limits.maxWallMs}ms)`);
+      error.code = 'rule_capacity_wall_clock_exceeded';
+      error.retryable = false;
+      reject(error);
+    }, remaining);
+    timer.unref?.();
+  });
+  return Promise.race([work, deadline]).finally(() => clearTimeout(timer));
+}
+
 export async function runRuleReaction({
   root,
   subject,
@@ -314,7 +332,7 @@ export async function runRuleReaction({
         goal_ids: dueGoalIds,
         ...identity,
       };
-      settlements.push(await settleEvidenceWindow(ctx, {
+      settlements.push(await withRuleWallDeadline(settleEvidenceWindow(ctx, {
         intelResult,
         execResult: { ...identity, ...window.execResult },
         verification: window.verification,
@@ -328,7 +346,7 @@ export async function runRuleReaction({
         producer: 'rule',
         activationTargets: ['cognitive'],
         useLatestReport: true,
-      }));
+      }), startedAt, limits));
       assertRuleWallBudget(startedAt, limits);
     }
     if (typeof canCommit === 'function' && !canCommit()) {

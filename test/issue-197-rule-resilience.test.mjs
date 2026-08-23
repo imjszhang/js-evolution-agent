@@ -36,6 +36,7 @@ import {
   ruleQuarantinePath,
 } from '../src/evolution/reactor/rule-resilience.mjs';
 import { projectSubjectReadiness } from '../src/product/subject-readiness.mjs';
+import { appendTerminalClaim } from '../src/evolution/reactor/claim-terminal-store.mjs';
 import { peekRuleDueWindow } from '../src/evolution/reactor/rule-reactor.mjs';
 import { scanWakeBacklog } from '../src/evolution/reactor/reactor-tasks.mjs';
 import {
@@ -192,6 +193,31 @@ describe('Issue #197 terminal claim recovery', () => {
     expect(stats.index_bytes_read).toBeLessThan(2 * 1024 * 1024);
     expect(rssGrowth).toBeLessThan(50 * 1024 * 1024);
   }, 30_000);
+
+  it('deduplicates exact terminal replay while retaining conflicting audit rows', () => {
+    tempRoot = mkdtempSync(join(tmpdir(), 'jea-terminal-idempotency-'));
+    const path = join(tempRoot, 'claims.jsonl');
+    const canonical = {
+      batch_id: 'batch-idempotent',
+      reactor: 'rule',
+      status: 'failed',
+      event_ids: ['event-1'],
+      evidence_keys: ['action_receipts:event-1'],
+    };
+    expect(appendTerminalClaim(path, canonical)).toMatchObject({
+      appended: true,
+      conflict: false,
+    });
+    expect(appendTerminalClaim(path, canonical)).toMatchObject({
+      appended: false,
+      conflict: false,
+    });
+    expect(appendTerminalClaim(path, { ...canonical, last_error: 'different' })).toMatchObject({
+      appended: true,
+      conflict: true,
+    });
+    expect(readFileSync(path, 'utf8').trim().split('\n')).toHaveLength(2);
+  });
 });
 
 describe('Issue #197 Rule budgets and poison circuit', () => {
