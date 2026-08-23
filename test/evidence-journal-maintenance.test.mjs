@@ -193,7 +193,7 @@ describe('evidence journal inspect', () => {
     const { runtime, source } = fixture(['receipt-bom'], { bom: true });
     const reportPath = join(
       runtime.dataRoot,
-      'intelligence',
+      'evolution',
       'verify_reports',
       'cycle-bom.json',
     );
