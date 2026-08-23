@@ -24,6 +24,9 @@ import {
 } from './evidence-stream.mjs';
 import { STORE_FILES } from './evidence-audit.mjs';
 import { evaluateClosureTarget } from './closure-target.mjs';
+import {
+  evidenceJournalBoundedProjection,
+} from '../evolution/reactor/evidence-journal-maintenance.mjs';
 
 export const CLOSURE_AUDIT_SCHEMA = 'closure-audit.v1';
 export const CLOSURE_AUDIT_METRICS = Object.freeze([
@@ -904,6 +907,8 @@ export function runClosureAudit({
         nowMs,
       ),
       evidence_backlog: evidenceBacklog(envelopes, ledger, nowMs),
+      // Journal maintenance never scans entries.jsonl on the closure path.
+      evidence_journal: evidenceJournalBoundedProjection(dataRoot),
       daemon_task_backlog: daemonBacklog(tasks),
     },
     diagnostics: [

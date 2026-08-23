@@ -8,7 +8,6 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 import {
-  appendFileSync,
   closeSync,
   existsSync,
   mkdirSync,
@@ -20,8 +19,9 @@ import {
   statSync,
   truncateSync,
   writeFileSync,
+  writeSync,
 } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, isAbsolute, join, normalize, relative } from 'node:path';
 import { withJsonLock, writeJson } from '../../infra/json-store.mjs';
 import {
   STREAM_PATHS,
@@ -35,7 +35,11 @@ import {
 import { reactorDir } from './paths.mjs';
 
 export const EVIDENCE_INDEX_SCHEMA = 'evidence-index.v2';
+export const EVIDENCE_INDEX_GENERATION_SCHEMA = 'evidence-index.v3';
 export const EVIDENCE_CURSOR_SCHEMA = 'evidence-index-cursors.v1';
+export const EVIDENCE_JOURNAL_STATE_SCHEMA = 'evidence-journal-state.v1';
+export const DEFAULT_EVIDENCE_JOURNAL_ROTATE_BYTES = 256 * 1024 * 1024;
+export const DEFAULT_EVIDENCE_JOURNAL_BLOCK_BYTES = 768 * 1024 * 1024;
 const JOURNAL_CHUNK_BYTES = 256 * 1024;
 const TARGETED_ENTRY_MAX_BYTES = 1024 * 1024;
 
@@ -82,7 +86,7 @@ function listFiles(absDir, suffix) {
   }
 }
 
-function sourceDescriptors(dataRoot, kind) {
+export function sourceDescriptors(dataRoot, kind) {
   const rel = STREAM_PATHS[kind];
   if (!rel) return [];
   if (kind === 'intel_observations') {
@@ -100,7 +104,7 @@ function sourceDescriptors(dataRoot, kind) {
   return [{ mode: 'jsonl', rel }];
 }
 
-function jsonDirectoryDescriptors(kind) {
+export function jsonDirectoryDescriptors(kind) {
   const rel = STREAM_PATHS[kind];
   if (!rel) return [];
   if (kind === 'verify_reports') {
@@ -122,7 +126,7 @@ function jsonDirectoryDescriptors(kind) {
     : [];
 }
 
-function fileState(absPath) {
+export function evidenceSourceFileState(absPath) {
   try {
     const stat = statSync(absPath);
     return {
@@ -136,7 +140,7 @@ function fileState(absPath) {
   }
 }
 
-function compactEnvelope(envelope, locator) {
+export function compactIndexedEnvelope(envelope, locator) {
   return {
     id: envelope.id,
     kind: envelope.kind,
@@ -201,7 +205,7 @@ function parseJsonlTail(dataRoot, descriptor, start, size, startIndex, stats) {
           file: descriptor.rel,
           index: rowIndex,
         });
-        entries.push(compactEnvelope(envelope, {
+        entries.push(compactIndexedEnvelope(envelope, {
           mode: 'jsonl',
           file: descriptor.rel,
           offset: start + lineStart,
@@ -234,7 +238,7 @@ function parseJsonFile(dataRoot, descriptor, stats) {
       id: descriptor.id ?? null,
       defaultType: descriptor.defaultType ?? null,
     });
-    return [compactEnvelope(envelope, {
+    return [compactIndexedEnvelope(envelope, {
       mode: 'json',
       file: descriptor.rel,
       id: descriptor.id ?? null,
@@ -250,8 +254,48 @@ export function evidenceIndexPath(dataRoot) {
   return join(reactorDir(dataRoot), 'evidence-index.json');
 }
 
-export function evidenceIndexDir(dataRoot) {
+export function legacyEvidenceIndexDir(dataRoot) {
   return join(reactorDir(dataRoot), 'evidence-index');
+}
+
+export function evidenceIndexGenerationsDir(dataRoot) {
+  return join(reactorDir(dataRoot), 'evidence-index-generations');
+}
+
+export function evidenceIndexBackupsDir(dataRoot) {
+  return join(reactorDir(dataRoot), 'evidence-index-backups');
+}
+
+function safeActiveDirectory(dataRoot, manifest) {
+  if (
+    manifest?.schema_version !== EVIDENCE_INDEX_GENERATION_SCHEMA
+    || typeof manifest.active_directory !== 'string'
+    || !manifest.active_directory.trim()
+  ) {
+    return null;
+  }
+  const base = reactorDir(dataRoot);
+  const candidate = normalize(join(base, manifest.active_directory));
+  const rel = relative(base, candidate);
+  if (isAbsolute(rel) || rel === '..' || rel.startsWith('../') || rel.startsWith('..\\')) {
+    return null;
+  }
+  return candidate;
+}
+
+export function evidenceIndexDir(dataRoot, manifest = null) {
+  const raw = manifest ?? readJsonMeasured(evidenceIndexPath(dataRoot), null, null);
+  if (raw?.schema_version === EVIDENCE_INDEX_GENERATION_SCHEMA) {
+    const active = safeActiveDirectory(dataRoot, raw);
+    if (!active) {
+      const error = new Error('Evidence index v3 active_directory is invalid');
+      error.code = 'evidence_index_active_directory_invalid';
+      error.retryable = false;
+      throw error;
+    }
+    return active;
+  }
+  return legacyEvidenceIndexDir(dataRoot);
 }
 
 export function evidenceIndexJournalPath(dataRoot) {
@@ -260,6 +304,99 @@ export function evidenceIndexJournalPath(dataRoot) {
 
 export function evidenceIndexCursorPath(dataRoot) {
   return join(evidenceIndexDir(dataRoot), 'cursors.json');
+}
+
+export function evidenceJournalStatePath(dataRoot) {
+  return join(evidenceIndexDir(dataRoot), 'journal-state.json');
+}
+
+function positiveThreshold(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+export function resolveEvidenceJournalPolicy(env = process.env) {
+  const rotateBytes = positiveThreshold(
+    env.JEA_EVIDENCE_JOURNAL_ROTATE_BYTES,
+    DEFAULT_EVIDENCE_JOURNAL_ROTATE_BYTES,
+  );
+  const blockBytes = Math.max(
+    rotateBytes,
+    positiveThreshold(
+      env.JEA_EVIDENCE_JOURNAL_BLOCK_BYTES,
+      DEFAULT_EVIDENCE_JOURNAL_BLOCK_BYTES,
+    ),
+  );
+  return { rotate_bytes: rotateBytes, block_bytes: blockBytes };
+}
+
+export function evidenceJournalMaintenanceStatus(bytes, policy = resolveEvidenceJournalPolicy()) {
+  if (bytes >= policy.block_bytes) return 'blocked';
+  if (bytes >= policy.rotate_bytes) return 'maintenance_due';
+  return 'ok';
+}
+
+export function updateEvidenceJournalState(dataRoot, {
+  bytes = null,
+  generation = null,
+  policy = resolveEvidenceJournalPolicy(),
+  reason = null,
+  patch = {},
+} = {}) {
+  const path = evidenceIndexJournalPath(dataRoot);
+  const measured = bytes == null && existsSync(path) ? statSync(path).size : Math.max(0, Number(bytes) || 0);
+  const manifest = readJsonMeasured(evidenceIndexPath(dataRoot), null, null);
+  const status = evidenceJournalMaintenanceStatus(measured, policy);
+  const next = {
+    schema_version: EVIDENCE_JOURNAL_STATE_SCHEMA,
+    generation: generation ?? manifest?.generation ?? null,
+    journal_bytes: measured,
+    rotate_bytes: policy.rotate_bytes,
+    block_bytes: policy.block_bytes,
+    status,
+    maintenance_due: status !== 'ok',
+    blocked: status === 'blocked',
+    reason: reason ?? (status === 'ok' ? null : 'evidence_journal_rotation_required'),
+    observed_at: new Date().toISOString(),
+    ...patch,
+  };
+  writeJson(evidenceJournalStatePath(dataRoot), next);
+  return next;
+}
+
+export function readEvidenceJournalState(dataRoot, {
+  env = process.env,
+  refreshBytes = false,
+} = {}) {
+  const manifest = readJsonMeasured(evidenceIndexPath(dataRoot), null, null);
+  const stored = readJsonMeasured(evidenceJournalStatePath(dataRoot), null, null, 'journal_state');
+  const journal = evidenceIndexJournalPath(dataRoot);
+  const bytes = refreshBytes
+    ? (existsSync(journal) ? statSync(journal).size : 0)
+    : Number(stored?.journal_bytes ?? manifest?.journal_size ?? manifest?.journal_summary?.bytes ?? 0);
+  const policy = resolveEvidenceJournalPolicy(env);
+  const status = evidenceJournalMaintenanceStatus(bytes, policy);
+  return {
+    schema_version: EVIDENCE_JOURNAL_STATE_SCHEMA,
+    generation: manifest?.generation ?? stored?.generation ?? null,
+    journal_bytes: bytes,
+    journal_lines: stored?.journal_lines ?? manifest?.journal_summary?.lines ?? null,
+    unique_evidence_keys: stored?.unique_evidence_keys
+      ?? manifest?.journal_summary?.unique_evidence_keys
+      ?? null,
+    duplicate_count: stored?.duplicate_count
+      ?? manifest?.journal_summary?.duplicate_count
+      ?? null,
+    rotate_bytes: policy.rotate_bytes,
+    block_bytes: policy.block_bytes,
+    status,
+    maintenance_due: status !== 'ok',
+    blocked: status === 'blocked',
+    reason: status === 'ok' ? null : (stored?.reason ?? 'evidence_journal_rotation_required'),
+    observed_at: stored?.observed_at ?? manifest?.updated_at ?? null,
+    last_rebuild_at: stored?.last_rebuild_at ?? manifest?.journal_summary?.rebuilt_at ?? null,
+    backup_path: stored?.backup_path ?? null,
+  };
 }
 
 function keyDigest(value) {
@@ -321,9 +458,17 @@ function writeJsonMeasured(path, value, stats, metric = 'index_manifest') {
 }
 
 function normalizedIndex(raw) {
-  if (raw?.schema_version !== EVIDENCE_INDEX_SCHEMA || !raw.sources || typeof raw.sources !== 'object') {
+  if (
+    ![EVIDENCE_INDEX_SCHEMA, EVIDENCE_INDEX_GENERATION_SCHEMA].includes(raw?.schema_version)
+    || !raw.sources
+    || typeof raw.sources !== 'object'
+  ) {
     return null;
   }
+  if (
+    raw.schema_version === EVIDENCE_INDEX_GENERATION_SCHEMA
+    && (typeof raw.active_directory !== 'string' || !raw.active_directory.trim())
+  ) return null;
   return raw;
 }
 
@@ -357,17 +502,70 @@ function repairJournalTail(dataRoot, stats) {
   return repaired;
 }
 
-function appendJournalEntries(dataRoot, entries, stats) {
-  if (!entries.length) return;
+function appendJournalEntries(dataRoot, entries, stats, {
+  allowExisting = false,
+  enforcePolicy = true,
+} = {}) {
+  if (!entries.length) return 0;
   const path = evidenceIndexJournalPath(dataRoot);
   mkdirSync(dirname(path), { recursive: true });
-  const body = `${entries.map((entry) => JSON.stringify(entry)).join('\n')}\n`;
-  appendFileSync(path, body, 'utf8');
-  const bytes = Buffer.byteLength(body);
-  countIndexWrite(stats, bytes);
-  increment(stats, 'index_journal_bytes_written', bytes);
-  increment(stats, 'index_entries_appended', entries.length);
-  for (const entry of entries) writeMarker(dataRoot, 'keys', entry.evidence_key, null, entry);
+  const policy = resolveEvidenceJournalPolicy();
+  const beforeState = readEvidenceJournalState(dataRoot);
+  let bytes = existsSync(path) ? statSync(path).size : 0;
+  let appended = 0;
+  const fd = openSync(path, 'a');
+  try {
+    for (const entry of entries) {
+      if (!entry?.evidence_key) continue;
+      if (!allowExisting && hasMarker(dataRoot, 'keys', entry.evidence_key)) continue;
+      const line = `${JSON.stringify(entry)}\n`;
+      const lineBytes = Buffer.byteLength(line);
+      if (enforcePolicy && bytes + lineBytes > policy.block_bytes) {
+        updateEvidenceJournalState(dataRoot, {
+          bytes,
+          policy,
+          reason: 'evidence_journal_append_blocked',
+        });
+        const error = new Error(
+          `Evidence journal maintenance is blocked at ${bytes} bytes; rebuild before indexing more evidence`,
+        );
+        error.code = 'evidence_journal_maintenance_blocked';
+        error.retryable = false;
+        error.journal_bytes = bytes;
+        throw error;
+      }
+      writeSync(fd, line, null, 'utf8');
+      bytes += lineBytes;
+      appended += 1;
+      countIndexWrite(stats, lineBytes);
+      increment(stats, 'index_journal_bytes_written', lineBytes);
+      increment(stats, 'index_entries_appended');
+      // Append precedes the locator marker. A crash may duplicate a row but
+      // cannot hide an authority record from a later refresh.
+      writeMarker(dataRoot, 'keys', entry.evidence_key, null, entry);
+    }
+  } finally {
+    closeSync(fd);
+  }
+  if (appended || bytes >= policy.rotate_bytes) {
+    const priorLines = Number(
+      beforeState.journal_lines
+      ?? beforeState.lines
+      ?? 0,
+    );
+    const priorUnique = Number(beforeState.unique_evidence_keys ?? 0);
+    const priorDuplicates = Number(beforeState.duplicate_count ?? 0);
+    updateEvidenceJournalState(dataRoot, {
+      bytes,
+      policy,
+      patch: {
+        journal_lines: priorLines + appended,
+        unique_evidence_keys: priorUnique + (allowExisting ? 0 : appended),
+        duplicate_count: priorDuplicates + (allowExisting ? appended : 0),
+      },
+    });
+  }
+  return appended;
 }
 
 /**
@@ -400,18 +598,26 @@ export function refreshEvidenceIndex(dataRoot, {
     if (!rebuild && current) {
       const resetFile = descriptors.some((descriptor) => {
         const prior = current.sources?.[descriptor.kind]?.files?.[descriptor.rel] ?? null;
-        return sourceWasReset(prior, fileState(join(dataRoot, descriptor.rel)));
+        return sourceWasReset(prior, evidenceSourceFileState(join(dataRoot, descriptor.rel)));
       });
       const resetDirectory = requested.some((kind) => (
         jsonDirectoryDescriptors(kind).some((directory) => {
           const prior = current.sources?.[kind]?.directories?.[directory.rel] ?? null;
-          const state = fileState(join(dataRoot, directory.rel));
+          const state = evidenceSourceFileState(join(dataRoot, directory.rel));
           return Boolean(prior && state && prior.identity !== state.identity);
         })
       ));
       rebuild = resetFile || resetDirectory;
     }
     if (rebuild) {
+      if (current?.schema_version === EVIDENCE_INDEX_GENERATION_SCHEMA) {
+        const error = new Error(
+          'Generation evidence index requires stopped, atomic rebuild via `jea data evidence-journal rebuild`',
+        );
+        error.code = 'evidence_index_rebuild_required';
+        error.retryable = false;
+        throw error;
+      }
       clearIndexArtifacts(dataRoot);
       current = emptyIndex();
       requested = Object.keys(STREAM_PATHS);
@@ -426,7 +632,8 @@ export function refreshEvidenceIndex(dataRoot, {
     const repairedJournalSize = repairJournalTail(dataRoot, stats);
     const needsGeneration = !current.generation;
     const next = {
-      schema_version: EVIDENCE_INDEX_SCHEMA,
+      ...current,
+      schema_version: current.schema_version ?? EVIDENCE_INDEX_SCHEMA,
       generation: rebuild || !current.generation ? randomUUID() : current.generation,
       sources: { ...current.sources },
       journal_size: repairedJournalSize,
@@ -446,7 +653,7 @@ export function refreshEvidenceIndex(dataRoot, {
       const files = {};
       const directories = {};
       for (const descriptor of kindDescriptors) {
-        const state = fileState(join(dataRoot, descriptor.rel));
+        const state = evidenceSourceFileState(join(dataRoot, descriptor.rel));
         if (!state) continue;
         const prior = previousFiles[descriptor.rel] ?? null;
         if (descriptor.mode === 'jsonl') {
@@ -493,7 +700,7 @@ export function refreshEvidenceIndex(dataRoot, {
         }
       }
       for (const directory of jsonDirectoryDescriptors(kind)) {
-        const state = fileState(join(dataRoot, directory.rel));
+        const state = evidenceSourceFileState(join(dataRoot, directory.rel));
         if (!state) continue;
         const prior = previousDirectories[directory.rel] ?? null;
         const unchanged = !rebuild
@@ -624,7 +831,10 @@ export function requeueIndexedEntries(dataRoot, reactor, entries, { stats = null
       writeMarker(dataRoot, 'keys', entry.evidence_key, null, entry);
       removeMarker(dataRoot, 'consumed', entry.evidence_key, reactor);
     }
-    appendJournalEntries(dataRoot, pending, stats);
+    appendJournalEntries(dataRoot, pending, stats, {
+      allowExisting: true,
+      enforcePolicy: false,
+    });
     return pending.length;
   });
 }
@@ -692,7 +902,10 @@ export function requeueEvidenceKeys(dataRoot, reactor, evidenceKeys, { stats = n
     // markers is sufficient when the reactor cursor still precedes the failed
     // claim (notably targeted Rule claims). Newly scanned/claimed entries have
     // locators and are appended for cursor-independent recovery.
-    appendJournalEntries(dataRoot, entries, stats);
+    appendJournalEntries(dataRoot, entries, stats, {
+      allowExisting: true,
+      enforcePolicy: false,
+    });
     increment(stats, 'requeue_keys', wanted.size);
     increment(stats, 'requeue_entries_appended', entries.length);
     increment(stats, 'requeue_keys_without_locator', missing.length);

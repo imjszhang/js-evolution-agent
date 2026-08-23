@@ -25,6 +25,9 @@ import {
   readRuleResilienceProjection,
   RULE_BLOCK_REASONS,
 } from '../evolution/reactor/rule-resilience.mjs';
+import {
+  evidenceJournalBoundedProjection,
+} from '../evolution/reactor/evidence-journal-maintenance.mjs';
 
 export const DEFAULT_EVIDENCE_STALE_MS = 30 * 60 * 1000;
 
@@ -198,6 +201,7 @@ export function buildReactorHealthProjection(root, subject, {
     });
   const ruleCatchUp = readRuleCatchUpProjection(dataRoot);
   const ruleResilience = readRuleResilienceProjection(dataRoot);
+  const evidenceJournal = evidenceJournalBoundedProjection(dataRoot);
   const ruleBlockedReason = ruleDue.block_reason
     || ruleResilience.block_reason
     || (ruleCatchUp.paused ? ruleCatchUp.reason : null);
@@ -236,6 +240,11 @@ export function buildReactorHealthProjection(root, subject, {
     ok = false;
     reasons.push(`${uncertainIntents.length} exec intent(s) have uncertain side effects`);
     suggestions.push('Inspect exec-intents and receipts; do not replay uncertain decisions automatically.');
+  } else if (evidenceJournal.maintenance.blocked) {
+    status = 'blocked';
+    ok = false;
+    reasons.push('evidence_journal_maintenance_blocked');
+    suggestions.push('Stop Cycle and Channel workers, back up the subject, then run `jea data evidence-journal rebuild --dry-run --json`.');
   } else if (ruleBlockedReason) {
     status = 'blocked';
     ok = false;
@@ -288,10 +297,18 @@ export function buildReactorHealthProjection(root, subject, {
     status = 'healthy';
     ok = true;
     reasons.push('Reactor has pending evidence or decisions and is progressing');
+    if (evidenceJournal.maintenance.due) {
+      reasons.push('evidence_journal_maintenance_due');
+      suggestions.push('Schedule a stopped evidence journal rebuild before the hard journal limit.');
+    }
   } else {
     status = 'idle';
     ok = true;
     reasons.push('Reactor idle: no pending evidence');
+    if (evidenceJournal.maintenance.due) {
+      reasons.push('evidence_journal_maintenance_due');
+      suggestions.push('Schedule a stopped evidence journal rebuild before the hard journal limit.');
+    }
   }
 
   return {
@@ -335,6 +352,7 @@ export function buildReactorHealthProjection(root, subject, {
       expires_at: worker.lease_expires_at ?? null,
     } : null,
     reconcile,
+    evidence_journal: evidenceJournal,
     worker: worker ? {
       running: Boolean(worker.running),
       stale: Boolean(worker.stale),

@@ -241,6 +241,13 @@ npm run jea -- run --mock --subject my-bot
 # Runtime overview
 npm run jea -- data status
 npm run jea -- intel report
+
+# Read-only evidence-index journal audit
+npm run jea -- data evidence-journal inspect --subject my-bot --json
+
+# Stopped-only compact/rotation (preview, then explicit confirmation)
+npm run jea -- data evidence-journal rebuild --subject my-bot --dry-run --json
+npm run jea -- data evidence-journal rebuild --subject my-bot --yes --json
 ```
 
 After install, bin links work directly:

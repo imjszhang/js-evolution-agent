@@ -33,6 +33,13 @@ import {
 } from '../../evolution/reactor/claim-ledger.mjs';
 import { evidenceIndexPath } from '../../evolution/reactor/evidence-index.mjs';
 import {
+  evidenceJournalBoundedProjection,
+  inspectEvidenceJournal,
+  listEvidenceJournalBackups,
+  rebuildEvidenceJournal,
+  rollbackEvidenceJournal,
+} from '../../evolution/reactor/evidence-journal-maintenance.mjs';
+import {
   inspectClaimLedgerMigration,
   inspectLegacyClaimArchiveMigration,
   migrateClaimLedger,
@@ -146,6 +153,7 @@ export function runtimeMaintenanceStatus(root, flags = {}) {
   const maintenancePath = runtimeMaintenanceStatePath(dataRoot);
   const maintenance = readJson(maintenancePath, null);
   const evidenceIndex = readJson(evidenceIndexPath(dataRoot), null);
+  const evidenceJournal = evidenceJournalBoundedProjection(dataRoot);
   const evidenceSources = Object.values(evidenceIndex?.sources ?? {});
   const evidenceFiles = evidenceSources.flatMap((source) => Object.values(source?.files ?? {}));
   const daemonTasks = join(dataRoot, 'evolution', 'tasks');
@@ -185,10 +193,10 @@ export function runtimeMaintenanceStatus(root, flags = {}) {
         updated_at: evidenceIndex?.updated_at ?? null,
         sources: evidenceSources.length,
         files: evidenceFiles.length,
-        indexed_entries: evidenceFiles.reduce(
-          (sum, file) => sum + (Array.isArray(file?.entries) ? file.entries.length : 0),
-          0,
-        ),
+        generation: evidenceJournal.generation,
+        journal: evidenceJournal.journal,
+        maintenance: evidenceJournal.maintenance,
+        indexed_entries: evidenceJournal.journal.unique_evidence_keys,
       },
       tasks: {
         hot: collectionState(join(daemonTasks, 'pending_tasks.json'), 'tasks'),
@@ -371,7 +379,28 @@ function printInitResult(result, root, language = getLanguage()) {
   }
 }
 
-export async function dataCommand({ subcommand, flags = {}, context = null } = {}) {
+function printEvidenceJournalResult(payload) {
+  console.log(`Evidence journal ${payload.operation ?? 'inspect'}: ${payload.status ?? 'completed'}`);
+  const inspect = payload.before ?? payload.inspect ?? payload;
+  if (inspect.journal) {
+    console.log(`journal bytes: ${inspect.journal.bytes}`);
+    console.log(`lines valid/invalid: ${inspect.journal.valid_lines}/${inspect.journal.invalid_lines}`);
+    console.log(`unique/duplicates: ${inspect.journal.unique_evidence_keys}/${inspect.journal.duplicate_count}`);
+  }
+  if (inspect.reconciliation) {
+    console.log(`reconciliation: ${inspect.reconciliation.status}`);
+    console.log(`missing/orphan/unknown: ${inspect.reconciliation.missing_keys}/${inspect.reconciliation.orphan_keys}/${inspect.reconciliation.unknown_records}`);
+  }
+  if (payload.generation) console.log(`generation: ${payload.generation}`);
+  if (payload.backup_path) console.log(`backup: ${payload.backup_path}`);
+}
+
+export async function dataCommand({
+  subcommand,
+  flags = {},
+  args = [],
+  context = null,
+} = {}) {
   const root = context ?? getProjectRoot();
   if (subcommand === 'migrate-home') {
     if (!flags['dry-run'] && !flags.yes) {
@@ -413,6 +442,83 @@ export async function dataCommand({ subcommand, flags = {}, context = null } = {
     }
   }
   const runtime = runtimeForFlags(root, flags);
+  if (subcommand === 'evidence-journal') {
+    const action = args[0] ?? 'inspect';
+    try {
+      if (action === 'inspect') {
+        const payload = await inspectEvidenceJournal(runtime.dataRoot);
+        if (flags.json) console.log(JSON.stringify(payload, null, 2));
+        else printEvidenceJournalResult(payload);
+        return payload.reconciliation.status === 'unknown' ? 1 : 0;
+      }
+      if (action === 'backups') {
+        const payload = {
+          schema_version: 'evidence-journal-backups.v1',
+          subject: runtime.subject,
+          backups: listEvidenceJournalBackups(runtime.dataRoot),
+        };
+        if (flags.json) console.log(JSON.stringify(payload, null, 2));
+        else {
+          console.log(`Evidence journal backups for ${runtime.subject}:`);
+          for (const backup of payload.backups) console.log(`  ${backup.id}: ${backup.path}`);
+        }
+        return 0;
+      }
+      if (['rebuild', 'compact', 'rotate'].includes(action)) {
+        const dryRun = !!flags['dry-run'];
+        if (!dryRun && !flags.yes) {
+          console.log('Will rebuild the evidence-index sidecar from authoritative evidence.');
+          console.log('The current sidecar will be preserved as a timestamped rollback backup.');
+          const ok = await confirm('All Cycle and Channel workers must be stopped.');
+          if (!ok) {
+            console.log('Cancelled.');
+            return 1;
+          }
+        }
+        const payload = await rebuildEvidenceJournal(runtime.dataRoot, {
+          root,
+          subject: runtime.subject,
+          dryRun,
+          force: !!flags.force,
+        });
+        if (flags.json) console.log(JSON.stringify(payload, null, 2));
+        else printEvidenceJournalResult(payload);
+        return payload.status === 'blocked' ? 1 : 0;
+      }
+      if (action === 'rollback') {
+        const dryRun = !!flags['dry-run'];
+        if (!dryRun && !flags.yes) {
+          console.log('Will restore a timestamped evidence-index sidecar backup atomically.');
+          const ok = await confirm('All Cycle and Channel workers must be stopped.');
+          if (!ok) {
+            console.log('Cancelled.');
+            return 1;
+          }
+        }
+        const payload = await rollbackEvidenceJournal(runtime.dataRoot, {
+          root,
+          subject: runtime.subject,
+          backupId: flags.backup ?? null,
+          dryRun,
+        });
+        if (flags.json) console.log(JSON.stringify(payload, null, 2));
+        else printEvidenceJournalResult(payload);
+        return payload.status === 'blocked' ? 1 : 0;
+      }
+      console.error('Usage: jea data evidence-journal <inspect|rebuild|compact|rotate|rollback|backups> [--subject NAME] [--dry-run] [--yes] [--backup ID] [--json]');
+      return 2;
+    } catch (error) {
+      const payload = {
+        ok: false,
+        code: error?.code ?? 'evidence_journal_operation_failed',
+        error: error?.message || String(error),
+        details: error?.details ?? null,
+      };
+      if (flags.json) console.log(JSON.stringify(payload, null, 2));
+      else console.error(`${payload.code}: ${payload.error}`);
+      return 1;
+    }
+  }
   if (subcommand === 'migrate-claims') {
     const dryRun = !!flags['dry-run'];
     if (!dryRun && !flags.yes) {
@@ -492,7 +598,8 @@ export async function dataCommand({ subcommand, flags = {}, context = null } = {
       for (const item of status) printDirStatus(runtime.runtimeRoot, item.dir);
       console.log(`maintenance: ${maintenance.maintenance.status}`);
       console.log(`reactor claims hot/archive: ${maintenance.reactor.claims.hot.count}/${maintenance.reactor.claims.archive.count}`);
-      console.log(`reactor evidence index: ${maintenance.reactor.evidence_index.indexed_entries} entries`);
+      console.log(`reactor evidence index: ${maintenance.reactor.evidence_index.indexed_entries ?? 'unknown'} entries`);
+      console.log(`reactor evidence journal maintenance: ${maintenance.reactor.evidence_index.maintenance.status}`);
       console.log(`channel tasks hot/archive: ${maintenance.channel.tasks.hot.count}/${maintenance.channel.tasks.archive.count}`);
       console.log(`channel events hot/archive: ${maintenance.channel.events.hot.count}/${maintenance.channel.events.archive.count}`);
     }
@@ -538,7 +645,7 @@ export async function dataCommand({ subcommand, flags = {}, context = null } = {
     return 0;
   }
 
-  console.error('Usage: jea data <status|init|backup|reset|migrate-home|migrate-claims> [--subject NAME] [--goals] [--seed] [--all] [--force] [--dry-run] [--json] [--yes]');
+  console.error('Usage: jea data <status|init|backup|reset|migrate-home|migrate-claims|evidence-journal> [--subject NAME] [--goals] [--seed] [--all] [--force] [--dry-run] [--json] [--yes]');
   return 2;
 }
 

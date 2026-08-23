@@ -8,6 +8,9 @@ import {
 import { cleanupClaimLedger } from '../evolution/reactor/claim-ledger.mjs';
 import { cleanupVerifiedExecResults } from '../evolution/reactor/exec-result-store.mjs';
 import { cleanupWakeStore } from '../evolution/reactor/wake-store.mjs';
+import {
+  assessEvidenceJournalMaintenance,
+} from '../evolution/reactor/evidence-journal-maintenance.mjs';
 import { readJson, updateJson } from '../infra/json-store.mjs';
 import { runtimeForSubject } from '../infra/runtime-paths.mjs';
 import { createIntelligenceStore } from '../intelligence/store.mjs';
@@ -82,6 +85,9 @@ export function runRuntimeMaintenance(root, subject, {
     now,
     ...(retention.wakes || {}),
   }));
+  // Projection-only: a live daemon never rewrites the journal. It records a
+  // bounded due/blocked state for an operator-run stopped rebuild.
+  run('evidence_journal', () => assessEvidenceJournalMaintenance(runtime.dataRoot, { env }));
   run('channel_tasks', () => cleanupChannelTaskQueue(root, subject, {
     now,
     ...(retention.channelTasks || {}),

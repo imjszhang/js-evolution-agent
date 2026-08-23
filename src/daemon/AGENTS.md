@@ -56,6 +56,7 @@ heartbeat 默认每 24 小时运行一次保守维护：
 - `JEA_SIDECAR_RETENTION_DAYS`（默认 30）和 `JEA_SIDECAR_HOT_MAX`（默认 1000）是通用边界；claim、daemon task、checkpoint、exec result、wake、channel task/event 可用 `.env.example` 所列变量单独覆盖。
 - terminal records 先归档再从 hot state 压缩。active claims/leases、uncertain intents 与主 append-only evidence 永不由这条维护路径删除。
 - 状态写入 `data/evolution/reactor/maintenance.json`；单个 store 失败记为 `partial`，其余 store 继续，下一轮重试失败项。
+- evidence journal 的 heartbeat 维护只读取 manifest/`journal-state.json` 与文件大小并投影 `ok|maintenance_due|blocked`，绝不在 live worker 下扫描或重写 journal。默认 rotate/block 阈值为 256/768 MiB；到期后停 Cycle 与 Channel，运行 `jea data evidence-journal rebuild --dry-run --json`，确认后加 `--yes`。
 
 S9 后上述行为已固化，不再有 gate 回退。隔离验收：`npm run reactor:canary`。生产 subject 操作前先 `jea data backup`。
 

@@ -83,6 +83,8 @@ export const SUBJECT_READINESS_REASON_CODES = Object.freeze(
     'rule_poison_batch_circuit_open',
     'rule_llm_budget_exhausted',
     'rule_journal_capacity_exceeded',
+    'evidence_journal_maintenance_due',
+    'evidence_journal_maintenance_blocked',
     'claims_projection_degraded',
   ]),
 );
@@ -240,6 +242,7 @@ function mapProcessDomain(prefix, worker, health, ownership) {
     || reason === 'rule_poison_batch_circuit_open'
     || reason === 'rule_llm_budget_exhausted'
     || reason === 'rule_journal_capacity_exceeded'
+    || reason === 'evidence_journal_maintenance_blocked'
   ));
   if (prefix === 'cycle' && health?.status === 'blocked' && stableRuleReason) {
     return {
@@ -256,9 +259,14 @@ function mapProcessDomain(prefix, worker, health, ownership) {
   }
 
   if (running) {
+    const maintenanceDue = prefix === 'cycle'
+      && health?.reasons?.includes('evidence_journal_maintenance_due');
     return {
       state: owned ? 'running' : 'attached',
-      reasons: [owned ? `${prefix}_running` : `${prefix}_attached`],
+      reasons: [
+        owned ? `${prefix}_running` : `${prefix}_attached`,
+        ...(maintenanceDue ? ['evidence_journal_maintenance_due'] : []),
+      ],
     };
   }
 
@@ -385,6 +393,7 @@ function mapAutomation(input, cycle) {
       || reason === 'rule_poison_batch_circuit_open'
       || reason === 'rule_llm_budget_exhausted'
       || reason === 'rule_journal_capacity_exceeded'
+      || reason === 'evidence_journal_maintenance_blocked'
     )) ?? cycle.reasons[0] ?? `${cycle.state}`;
   } else if (approvalWait) {
     intent = 'waiting_approval';
@@ -439,6 +448,8 @@ export function projectSubjectReadiness(input) {
       'rule_poison_batch_circuit_open',
       'rule_llm_budget_exhausted',
       'rule_journal_capacity_exceeded',
+      'evidence_journal_maintenance_blocked',
+      'evidence_journal_maintenance_due',
     ].includes(automation.blocker) ? [automation.blocker] : []),
     ...(automation.blocker === 'claims_projection_degraded' ? ['claims_projection_degraded'] : []),
   ]);
