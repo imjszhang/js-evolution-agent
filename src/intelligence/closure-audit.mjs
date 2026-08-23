@@ -36,6 +36,7 @@ export const CLOSURE_AUDIT_METRICS = Object.freeze([
   'duplicate_settlement_candidates',
   'standing_memory_freshness',
   'evidence_backlog',
+  'evidence_journal',
   'daemon_task_backlog',
 ]);
 
