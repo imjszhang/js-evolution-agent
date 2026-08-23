@@ -234,12 +234,12 @@ function mapProcessDomain(prefix, worker, health, ownership) {
     return { state: 'stalled', reasons };
   }
 
-  if (prefix === 'cycle' && health?.status === 'blocked') {
-    const stableRuleReason = (health?.reasons || []).find((reason) => (
-      reason === 'rule_catch_up_budget'
-      || reason === 'rule_poison_batch_circuit_open'
-      || reason === 'rule_journal_capacity_exceeded'
-    ));
+  const stableRuleReason = (health?.reasons || []).find((reason) => (
+    reason === 'rule_catch_up_budget'
+    || reason === 'rule_poison_batch_circuit_open'
+    || reason === 'rule_journal_capacity_exceeded'
+  ));
+  if (prefix === 'cycle' && health?.status === 'blocked' && stableRuleReason) {
     return {
       state: 'blocked',
       reasons: [
