@@ -310,6 +310,10 @@ function parseJournalEntry(raw) {
   return { valid: true, value };
 }
 
+function stripLeadingUtf8Bom(text, atFileStart = true) {
+  return atFileStart && text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+}
+
 async function scanJournal(path, workDir) {
   const candidateDir = join(workDir, 'journal-candidates');
   const uniqueDir = join(workDir, 'journal-unique');
@@ -510,7 +514,10 @@ async function scanAuthoritySources(dataRoot, workDir, { includeEntries = false 
               return;
             }
             try {
-              const record = JSON.parse(line.raw.toString('utf8').replace(/\r$/, ''));
+              const record = JSON.parse(stripLeadingUtf8Bom(
+                line.raw.toString('utf8').replace(/\r$/, ''),
+                line.start === 0,
+              ));
               const envelope = projectEvidenceRecord(kind, record, {
                 file: descriptor.rel,
                 index: currentIndex,
@@ -594,7 +601,7 @@ async function scanAuthoritySources(dataRoot, workDir, { includeEntries = false 
             continue;
           }
           try {
-            const record = JSON.parse(readFileSync(absolute, 'utf8'));
+            const record = JSON.parse(stripLeadingUtf8Bom(readFileSync(absolute, 'utf8')));
             const id = directory.idFromName ? basename(name, '.json') : null;
             const envelope = projectEvidenceRecord(kind, record, {
               file: rel,
@@ -790,6 +797,7 @@ async function inspectAt(dataRoot, {
   cursorPath = evidenceIndexCursorPath(dataRoot),
   manifest = safeJson(evidenceIndexPath(dataRoot), null),
   workDir,
+  env = process.env,
 } = {}) {
   const journalScan = await scanJournal(journalPath, workDir);
   const sourceScan = await scanAuthoritySources(dataRoot, workDir);
@@ -802,6 +810,9 @@ async function inspectAt(dataRoot, {
   );
   const generation = manifest?.generation ?? null;
   const cursors = safeJson(cursorPath, { reactors: {} });
+  const storedMaintenance = readEvidenceJournalState(dataRoot, { env });
+  const policy = resolveEvidenceJournalPolicy(env);
+  const maintenanceStatus = evidenceJournalMaintenanceStatus(journalScan.stats.bytes, policy);
   return {
     schema_version: EVIDENCE_JOURNAL_INSPECT_SCHEMA,
     generated_at: new Date().toISOString(),
@@ -819,7 +830,18 @@ async function inspectAt(dataRoot, {
     rule_cursors: readRuleCursors(dataRoot),
     authoritative_sources: sourceScan.summary,
     reconciliation,
-    maintenance: readEvidenceJournalState(dataRoot),
+    maintenance: {
+      ...storedMaintenance,
+      journal_bytes: journalScan.stats.bytes,
+      journal_bytes_source: 'inspect_scan',
+      stored_journal_bytes: storedMaintenance.journal_bytes,
+      rotate_bytes: policy.rotate_bytes,
+      block_bytes: policy.block_bytes,
+      status: maintenanceStatus,
+      maintenance_due: maintenanceStatus !== 'ok',
+      blocked: maintenanceStatus === 'blocked',
+      reason: maintenanceStatus === 'ok' ? null : 'evidence_journal_rotation_required',
+    },
   };
 }
 

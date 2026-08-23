@@ -176,6 +176,10 @@ function readRange(absPath, start, length, stats, { index = false } = {}) {
   }
 }
 
+function stripLeadingUtf8Bom(text, atFileStart = true) {
+  return atFileStart && text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+}
+
 /**
  * Parse only newline-terminated JSONL records. A torn final append remains
  * behind the source cursor and is retried after the writer completes it.
@@ -200,7 +204,10 @@ function parseJsonlTail(dataRoot, descriptor, start, size, startIndex, stats) {
     if (slice.length) {
       increment(stats, 'records_parsed');
       try {
-        const record = JSON.parse(slice.toString('utf8'));
+        const record = JSON.parse(stripLeadingUtf8Bom(
+          slice.toString('utf8'),
+          start + lineStart === 0,
+        ));
         const envelope = projectEvidenceRecord(descriptor.kind, record, {
           file: descriptor.rel,
           index: rowIndex,
@@ -232,7 +239,7 @@ function parseJsonFile(dataRoot, descriptor, stats) {
   increment(stats, 'source_bytes_read', Buffer.byteLength(text));
   increment(stats, 'records_parsed');
   try {
-    const record = JSON.parse(text);
+    const record = JSON.parse(stripLeadingUtf8Bom(text));
     const envelope = projectEvidenceRecord(descriptor.kind, record, {
       file: descriptor.rel,
       id: descriptor.id ?? null,
@@ -1029,13 +1036,16 @@ export function hydrateIndexedEnvelope(dataRoot, compact, { stats = null } = {})
     if (locator.mode === 'jsonl') {
       const buffer = readRange(join(dataRoot, locator.file), locator.offset, locator.length, stats);
       increment(stats, 'payload_records_hydrated');
-      record = JSON.parse(buffer.toString('utf8'));
+      record = JSON.parse(stripLeadingUtf8Bom(
+        buffer.toString('utf8'),
+        locator.offset === 0,
+      ));
     } else {
       increment(stats, 'source_files_read');
       const text = readFileSync(join(dataRoot, locator.file), 'utf8');
       increment(stats, 'source_bytes_read', Buffer.byteLength(text));
       increment(stats, 'payload_records_hydrated');
-      record = JSON.parse(text);
+      record = JSON.parse(stripLeadingUtf8Bom(text));
     }
     const envelope = projectEvidenceRecord(compact.kind, record, {
       file: locator.file,
