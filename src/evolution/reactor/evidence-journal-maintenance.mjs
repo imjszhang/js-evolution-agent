@@ -7,12 +7,12 @@ import {
   closeSync,
   constants,
   cpSync,
-  createReadStream,
   existsSync,
   mkdirSync,
   mkdtempSync,
   openSync,
   readFileSync,
+  readSync,
   readdirSync,
   renameSync,
   rmSync,
@@ -122,7 +122,7 @@ function allKindStats() {
  * Buffer at most maxLineBytes for one line. Oversized/torn sparse tails are
  * counted without concatenating their full contents.
  */
-async function scanLines(path, onLine, {
+export async function scanLines(path, onLine, {
   maxLineBytes = DEFAULT_MAX_LINE_BYTES,
   highWaterMark = IO_CHUNK_BYTES,
 } = {}) {
@@ -130,7 +130,8 @@ async function scanLines(path, onLine, {
     return { bytes: 0, physical_lines: 0, complete_end: 0, final_newline: true };
   }
   const bytes = statSync(path).size;
-  const stream = createReadStream(path, { highWaterMark });
+  const readBuffer = Buffer.allocUnsafe(Math.max(1, highWaterMark));
+  const fd = openSync(path, 'r');
   let pieces = [];
   let buffered = 0;
   let lineBytes = 0;
@@ -174,22 +175,30 @@ async function scanLines(path, onLine, {
     lineStart = absolute + (terminated ? 1 : 0);
   };
 
-  for await (const chunk of stream) {
-    let cursor = 0;
-    while (cursor < chunk.length) {
-      const newline = chunk.indexOf(0x0a, cursor);
-      if (newline < 0) {
-        add(chunk.subarray(cursor));
-        absolute += chunk.length - cursor;
-        cursor = chunk.length;
-      } else {
-        add(chunk.subarray(cursor, newline));
-        absolute += newline - cursor;
-        finish(true);
-        absolute += 1;
-        cursor = newline + 1;
+  try {
+    while (absolute < bytes) {
+      const requested = Math.min(readBuffer.length, bytes - absolute);
+      const read = readSync(fd, readBuffer, 0, requested, absolute);
+      if (read <= 0) break;
+      const chunk = readBuffer.subarray(0, read);
+      let cursor = 0;
+      while (cursor < read) {
+        const newline = chunk.indexOf(0x0a, cursor);
+        if (newline < 0) {
+          add(chunk.subarray(cursor, read));
+          absolute += read - cursor;
+          cursor = read;
+        } else {
+          add(chunk.subarray(cursor, newline));
+          absolute += newline - cursor;
+          finish(true);
+          absolute += 1;
+          cursor = newline + 1;
+        }
       }
     }
+  } finally {
+    closeSync(fd);
   }
   if (lineBytes > 0 || buffered > 0 || oversized) finish(false);
   return {

@@ -19,6 +19,7 @@ import {
   inspectEvidenceMaintenanceWorkers,
   rebuildEvidenceJournal,
   rollbackEvidenceJournal,
+  scanLines,
 } from '../src/evolution/reactor/evidence-journal-maintenance.mjs';
 import {
   commitEvidenceCursor,
@@ -113,6 +114,133 @@ function filesSnapshot(root) {
   walk(root);
   return result;
 }
+
+describe('fixed-buffer line scanner', () => {
+  it('preserves exact multi-chunk CRLF and unterminated-tail offsets', async () => {
+    tempRoot = mkdtempSync(join(tmpdir(), 'jea-scan-lines-'));
+    const path = join(tempRoot, 'mixed.jsonl');
+    writeFileSync(path, 'ab\r\ncdef\nz');
+    const lines = [];
+
+    const summary = await scanLines(path, (line) => lines.push({
+      ...line,
+      raw: line.raw?.toString('utf8') ?? null,
+    }), {
+      highWaterMark: 3,
+      maxLineBytes: 32,
+    });
+
+    expect(lines).toEqual([
+      {
+        raw: 'ab\r',
+        oversized: false,
+        line_bytes: 3,
+        record_bytes: 4,
+        start: 0,
+        end: 4,
+        terminated: true,
+        line_number: 1,
+      },
+      {
+        raw: 'cdef',
+        oversized: false,
+        line_bytes: 4,
+        record_bytes: 5,
+        start: 4,
+        end: 9,
+        terminated: true,
+        line_number: 2,
+      },
+      {
+        raw: 'z',
+        oversized: false,
+        line_bytes: 1,
+        record_bytes: 1,
+        start: 9,
+        end: 10,
+        terminated: false,
+        line_number: 3,
+      },
+    ]);
+    expect(summary).toEqual({
+      bytes: 10,
+      physical_lines: 3,
+      complete_end: 9,
+      final_newline: false,
+    });
+  });
+
+  it('drops an oversized middle line and resumes the following legal line', async () => {
+    tempRoot = mkdtempSync(join(tmpdir(), 'jea-scan-lines-'));
+    const path = join(tempRoot, 'oversized-middle.jsonl');
+    writeFileSync(path, 'ok\n123456789\nend\n');
+    const lines = [];
+
+    const summary = await scanLines(path, (line) => lines.push({
+      ...line,
+      raw: line.raw?.toString('utf8') ?? null,
+    }), {
+      highWaterMark: 2,
+      maxLineBytes: 5,
+    });
+
+    expect(lines).toEqual([
+      {
+        raw: 'ok',
+        oversized: false,
+        line_bytes: 2,
+        record_bytes: 3,
+        start: 0,
+        end: 3,
+        terminated: true,
+        line_number: 1,
+      },
+      {
+        raw: null,
+        oversized: true,
+        line_bytes: 9,
+        record_bytes: 10,
+        start: 3,
+        end: 13,
+        terminated: true,
+        line_number: 2,
+      },
+      {
+        raw: 'end',
+        oversized: false,
+        line_bytes: 3,
+        record_bytes: 4,
+        start: 13,
+        end: 17,
+        terminated: true,
+        line_number: 3,
+      },
+    ]);
+    expect(summary).toEqual({
+      bytes: 17,
+      physical_lines: 3,
+      complete_end: 17,
+      final_newline: true,
+    });
+  });
+
+  it('reports an empty file without emitting a physical line', async () => {
+    tempRoot = mkdtempSync(join(tmpdir(), 'jea-scan-lines-'));
+    const path = join(tempRoot, 'empty.jsonl');
+    writeFileSync(path, '');
+    const lines = [];
+
+    await expect(scanLines(path, (line) => lines.push(line), {
+      highWaterMark: 1,
+    })).resolves.toEqual({
+      bytes: 0,
+      physical_lines: 0,
+      complete_end: 0,
+      final_newline: true,
+    });
+    expect(lines).toEqual([]);
+  });
+});
 
 describe('evidence journal inspect', () => {
   it('streams duplicate/corrupt rows, kind bytes, cursors, and exact source reconciliation', async () => {
