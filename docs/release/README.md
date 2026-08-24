@@ -1,6 +1,6 @@
 # JEA 发布文档
 
-当前候选产品是 **0.2.1**（[#202](https://github.com/imjszhang/js-evolution-agent/issues/202)）。已发布版本见 [v0.2.0](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.2.0) 与 [v0.1.0](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.1.0)。
+当前产品是 **0.2.1**（[#202](https://github.com/imjszhang/js-evolution-agent/issues/202) 已关闭）。已发布版本见 [v0.2.1](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.2.1)、[v0.2.0](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.2.0) 与 [v0.1.0](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.1.0)。
 
 - [0.2.1-certification.md](./0.2.1-certification.md)
 - [RELEASE_NOTES.md](./RELEASE_NOTES.md)

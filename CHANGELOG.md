@@ -2,7 +2,7 @@
 
 ## 0.2.1 — 2026-08-24
 
-JEA 0.2.1 是 [v0.2.0](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.2.0) 之后的产品补丁（[#202](https://github.com/imjszhang/js-evolution-agent/issues/202)）。闭环门槛仍冻结在 `0.2.0-belief-loop`。
+JEA 0.2.1 已作为 [GitHub Release v0.2.1](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.2.1) 发布（[#202](https://github.com/imjszhang/js-evolution-agent/issues/202) 已关闭）。闭环门槛仍冻结在 `0.2.0-belief-loop`。
 
 ### 产品
 
@@ -18,6 +18,7 @@ JEA 0.2.1 是 [v0.2.0](https://github.com/imjszhang/js-evolution-agent/releases/
 ### 发布
 
 - Attach Release Assets 工作流先安装锁定依赖再校验资产（[#186](https://github.com/imjszhang/js-evolution-agent/pull/186)）。
+- 认证路径允许 Channel coordinator 在同一 PID 上托管全部默认 role（[#205](https://github.com/imjszhang/js-evolution-agent/pull/205)）。
 - 统一根、Desktop、共享 App、打包 host、CLI、Client API、About、ACP 与构建元数据版本为 `0.2.1`。
 
 ## 0.2.0 — 2026-08-22

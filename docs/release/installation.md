@@ -1,7 +1,7 @@
 # 安装（0.2.1）
 
-状态：**候选**。日期：2026-08-24。
-上一已发布安装包仍在 [v0.2.0 GitHub Release](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.2.0)。0.2.1 认证完成后才会挂新的 `SHA256SUMS`。开发者本地构建仍用 `npm run desktop:package`。
+状态：**已发布**。日期：2026-08-24。
+安装包与 `SHA256SUMS` 已挂到 [v0.2.1 GitHub Release](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.2.1)。开发者本地构建仍用 `npm run desktop:package`。
 
 ## 适用范围
 
