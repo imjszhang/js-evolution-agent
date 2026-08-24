@@ -10,6 +10,7 @@ import { readChannelWorkerState } from '../channel/worker-state.mjs';
 import { listEligibleEvidence, readClaimLedger } from '../evolution/reactor/claim-ledger.mjs';
 import { listBatchCheckpoints } from '../evolution/reactor/batch-checkpoint-store.mjs';
 import {
+  PAUSED_ALLOWED_REACTOR_TYPES,
   runCognitiveReactionTask,
   scanWakeBacklog,
 } from '../evolution/reactor/reactor-tasks.mjs';
@@ -114,10 +115,12 @@ function recentCycleEvents(root, subject, sinceMs) {
     }));
 }
 
-function pendingCycleTask(root, subject) {
+function pendingCycleTask(root, subject, { allowedTypes = null } = {}) {
   const queue = readTaskQueue(root, subject);
   return (queue.tasks || []).find((task) => (
-    task.status === 'pending' && CYCLE_TASK_TYPES.has(task.type)
+    task.status === 'pending'
+    && CYCLE_TASK_TYPES.has(task.type)
+    && (!allowedTypes || allowedTypes.has(task.type))
   )) ?? null;
 }
 
@@ -204,7 +207,9 @@ export async function processCycleOnce(root, subject, flags = {}) {
   let work = null;
   try {
     scanned = scanWakeBacklog(root, subject, { enqueueTask, ignoreBudget: true });
-    const queued = pendingCycleTask(root, subject);
+    const queued = pendingCycleTask(root, subject, {
+      allowedTypes: paused ? new Set(PAUSED_ALLOWED_REACTOR_TYPES) : null,
+    });
 
     if (pendingBefore === 0 && !queued) {
       work = { worked: false, task: null };

@@ -1202,13 +1202,14 @@ describe('channel domain', () => {
   });
 
   describe('attention signals', () => {
-    it('collects cycle completion and long-idle proactive signals', () => {
+    it('collects cycle completion and does not treat event-driven idle as a problem', () => {
       const root = makeRoot();
       const now = new Date('2026-06-02T01:00:00.000Z');
       const signals = collectAttentionSignals(root, 'alpha', {
         projection: {
           generated_at: now.toISOString(),
           evolution_mode: 'on_demand',
+          evolution_state: 'active',
           health: { status: 'idle', ok: true, reasons: [] },
           tasks: {},
           cycles: {
@@ -1220,7 +1221,7 @@ describe('channel domain', () => {
         },
       });
       expect(signals.some((signal) => signal.type === 'cycle_completed')).toBe(true);
-      expect(signals.some((signal) => signal.type === 'long_idle')).toBe(true);
+      expect(signals.some((signal) => signal.type === 'long_idle')).toBe(false);
     });
 
     it('plans proactive send for task_failed via presence', () => {

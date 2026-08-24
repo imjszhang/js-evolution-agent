@@ -42,7 +42,7 @@ import {
 } from '../infra/subject-lane-guard.mjs';
 import { ALL_CYCLE_STEP_TYPES } from './cycle-reducer.mjs';
 import {
-  enqueueCycleStartRequestWithEvent,
+  enqueueReactionRequest,
   processCycleOnce,
   processOnceCommandExitCode,
   processCycleStartRequests,
@@ -50,7 +50,7 @@ import {
 } from './cycle-dispatch.mjs';
 import { resolveEvolutionMode } from './evolution-mode.mjs';
 import { applyEvolutionModeChange } from './evolution-mode-apply.mjs';
-import { resolveEvolutionState } from '../product/evolution-state.mjs';
+import { isEvolutionPaused, resolveEvolutionState } from '../product/evolution-state.mjs';
 import { applyEvolutionStateChange } from './evolution-state-apply.mjs';
 import { runChannelTick } from '../channel/dispatch.mjs';
 import {
@@ -85,7 +85,9 @@ import {
 } from '../channel/worker-state.mjs';
 import { runDomainWorkerLoop } from '../infra/worker-loop.mjs';
 import {
+  isPausedBlockedReactorType,
   isReactorTaskType,
+  PAUSED_ALLOWED_REACTOR_TYPES,
   runReactorDaemonTask,
   scanWakeBacklog,
 } from '../evolution/reactor/reactor-tasks.mjs';
@@ -647,6 +649,7 @@ async function runWorkOnceBody(root, subject, flags = {}) {
     workerId,
     leaseMs,
     type: flags.type && flags.type !== true ? flags.type : null,
+    types: Array.isArray(flags.types) ? flags.types : null,
   });
   for (const task of claim.reclaimed || []) {
     recordDaemonEvent(root, subject, {
@@ -690,8 +693,26 @@ async function runWorkOnceBody(root, subject, flags = {}) {
   return { worked: true, ok: false, task: failed.task };
 }
 
+function applyPausedClaimFilter(root, subject, flags = {}) {
+  if (!isEvolutionPaused(root, subject)) return flags;
+  const explicitType = flags.type && flags.type !== true ? flags.type : null;
+  const explicitTypes = Array.isArray(flags.types) ? flags.types : null;
+  if (explicitTypes?.length) {
+    return {
+      ...flags,
+      types: explicitTypes.filter((type) => !isPausedBlockedReactorType(type)),
+    };
+  }
+  if (explicitType && !isPausedBlockedReactorType(explicitType)) return flags;
+  return {
+    ...flags,
+    type: null,
+    types: [...PAUSED_ALLOWED_REACTOR_TYPES],
+  };
+}
+
 export async function workOnce(root, subject, flags = {}) {
-  const execute = () => runWorkOnceBody(root, subject, flags);
+  const execute = () => runWorkOnceBody(root, subject, applyPausedClaimFilter(root, subject, flags));
   if (flags['subject-lock-held']) {
     return execute();
   }
@@ -1628,8 +1649,9 @@ export async function daemonCommand({ subcommand, flags = {}, args = [], root = 
     if (cycleCommand === 'request') {
       const reason = flags.reason && flags.reason !== true ? String(flags.reason) : 'manual';
       const note = flags.note && flags.note !== true ? String(flags.note) : null;
-      const result = enqueueCycleStartRequestWithEvent(root, subject, {
+      const result = enqueueReactionRequest(root, subject, {
         reason,
+        source: 'cli',
         meta: note ? { note } : {},
       });
       if (flags.json) {
@@ -1637,6 +1659,7 @@ export async function daemonCommand({ subcommand, flags = {}, args = [], root = 
       } else {
         console.log(`reaction request: ${result.request.request_id}`);
         console.log(`reasons: ${result.request.reasons.join(', ')}`);
+        if (result.wake?.id) console.log(`wake: ${result.wake.id}`);
         console.log(result.created ? 'status: created' : 'status: merged');
       }
       return 0;

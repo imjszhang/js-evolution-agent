@@ -196,7 +196,7 @@ Classifier 识别 `control_request` 后**不直接执行**配置变更，而是�
 约束：
 
 - Classifier 只能输出注册过的 `action_id` + 明确 `params`；高置信才允许写类 action；未知 action / 低置信 / 非法参数会进入 control executor 失败审计，而不是静默降级。
-- Presence planner **不能**直接改 evolution mode；只能基于 control executor 的审计事件回复结果。
+- Presence planner **不能**直接改 `evolution.state` / `evolution.mode`；只能基于 control executor 的审计事件回复结果。
 - 远端发布、`approval_granted`、凭据、subject policy 仍不可通过 channel 自动执行。
 
 默认 channel daemon roles：`notify` / `control` / `agent` / `presence` / `speech` / `classifier`。升级后需重启 channel daemon。

@@ -49,6 +49,22 @@ export function enqueueCognitiveWake(root, subject, {
     return null;
   }
 }
+
+/**
+ * Explicit operator "check now": durable cycle-start request plus a cognitive wake.
+ * Does not resume a paused subject; the wake stays queued until active.
+ */
+export function enqueueReactionRequest(root, subject, options = {}) {
+  const cycleRequest = enqueueCycleStartRequestWithEvent(root, subject, options);
+  const wake = enqueueCognitiveWake(root, subject, {
+    reason: options.reason ?? 'manual',
+    source: options.source ?? 'reaction_request',
+  });
+  return {
+    ...cycleRequest,
+    wake: wake?.intent ?? null,
+  };
+}
 function envFlagOn(env, key) {
   const raw = String(env?.[key] ?? '').trim().toLowerCase();
   return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';

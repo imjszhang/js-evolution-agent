@@ -1,5 +1,5 @@
 import { resolveModelReadiness } from '../../../../../src/actions/execution-env.mjs'
-import { enqueueCycleStartRequestWithEvent, processCycleOnce } from '../../../../../src/daemon/cycle-dispatch.mjs'
+import { enqueueReactionRequest, processCycleOnce } from '../../../../../src/daemon/cycle-dispatch.mjs'
 import { readDaemonProjection } from '../../../../../src/daemon/daemon-projection.mjs'
 import { applyEvolutionStateChange } from '../../../../../src/daemon/evolution-state-apply.mjs'
 import { automationModeFromState, stateFromAutomationMode } from '../../../../../src/product/evolution-state.mjs'
@@ -120,8 +120,9 @@ export class ServiceCommandOwner {
 
   requestCycle(subject: string, note?: string): CycleRequestResult {
     const name = requireSubject(this.runtime, subject)
-    const result = enqueueCycleStartRequestWithEvent(this.runtime, name, {
+    const result = enqueueReactionRequest(this.runtime, name, {
       reason: 'jea_client',
+      source: 'jea_client',
       meta: note?.trim() ? { note: note.trim() } : {}
     })
     return redactPublicValue({

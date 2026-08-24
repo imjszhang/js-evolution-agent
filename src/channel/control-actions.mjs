@@ -2,7 +2,7 @@ import { applyEvolutionModeChange } from '../daemon/evolution-mode-apply.mjs';
 import { resolveEvolutionMode } from '../daemon/evolution-mode.mjs';
 import { applyEvolutionStateChange } from '../daemon/evolution-state-apply.mjs';
 import { resolveEvolutionState } from '../product/evolution-state.mjs';
-import { enqueueCognitiveWake, enqueueCycleStartRequestWithEvent } from '../daemon/cycle-dispatch.mjs';
+import { enqueueReactionRequest } from '../daemon/cycle-dispatch.mjs';
 
 export const CHANNEL_CONTROL_ACTION_IDS = Object.freeze([
   'daemon_evolution_state_set',
@@ -13,25 +13,22 @@ export const CHANNEL_CONTROL_ACTION_IDS = Object.freeze([
   'daemon_cycle_request',
 ]);
 
-function enqueueReactionRequest(root, subject, request, actionId) {
-  const cycleRequest = enqueueCycleStartRequestWithEvent(root, subject, {
+function enqueueChannelReactionRequest(root, subject, request, actionId) {
+  const result = enqueueReactionRequest(root, subject, {
     reason: 'channel_control_request',
+    source: 'channel_control',
     meta: {
       message_id: request.message_id ?? null,
       action_id: actionId,
       channel: request.channel ?? null,
     },
   });
-  const wake = enqueueCognitiveWake(root, subject, {
-    reason: 'channel_control_request',
-    source: 'channel_control',
-  });
   return {
-    request_id: cycleRequest.request?.request_id ?? null,
-    created: cycleRequest.created ?? false,
-    merged: cycleRequest.merged ?? false,
-    wake: wake?.intent ?? null,
-    summary: cycleRequest.created || cycleRequest.merged
+    request_id: result.request?.request_id ?? null,
+    created: result.created ?? false,
+    merged: result.merged ?? false,
+    wake: result.wake ?? null,
+    summary: result.created || result.merged
       ? 'Reaction request queued.'
       : 'Reaction request already pending.',
   };
@@ -101,7 +98,7 @@ const ACTIONS = Object.freeze({
       return {
         ok: true,
         action_id: 'daemon_reaction_request',
-        ...enqueueReactionRequest(root, subject, request, 'daemon_reaction_request'),
+        ...enqueueChannelReactionRequest(root, subject, request, 'daemon_reaction_request'),
       };
     },
   },
@@ -174,7 +171,7 @@ const ACTIONS = Object.freeze({
       return {
         ok: true,
         action_id: 'daemon_cycle_request',
-        ...enqueueReactionRequest(root, subject, request, 'daemon_cycle_request'),
+        ...enqueueChannelReactionRequest(root, subject, request, 'daemon_cycle_request'),
       };
     },
   },

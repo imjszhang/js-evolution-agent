@@ -105,24 +105,6 @@ export function collectAttentionSignals(root, subject, { projection = null } = {
       refs: { event },
     });
   }
-  const generatedMs = Date.parse(view.generated_at ?? '');
-  const lastClosedMs = Date.parse(view.cycles?.last_closed_at ?? '');
-  const idleMs = Number.isFinite(generatedMs) && Number.isFinite(lastClosedMs)
-    ? generatedMs - lastClosedMs
-    : 0;
-  if (view.health?.status === 'idle'
-    && view.evolution_mode === 'on_demand'
-    && !view.cycles?.pending_cycle_start_request
-    && idleMs > 60 * 60 * 1000) {
-    signals.push({
-      type: 'long_idle',
-      severity: 'low',
-      title: 'On-demand daemon idle',
-      summary: `No cycle start request is pending; last closed cycle was about ${Math.round(idleMs / 60000)} minute(s) ago.`,
-      key: `long_idle:${view.cycles?.last_closed_cycle_id ?? 'none'}`,
-      refs: { idle_ms: idleMs, last_closed_cycle_id: view.cycles?.last_closed_cycle_id ?? null },
-    });
-  }
   const pendingBriefs = readPendingOperatorBriefs(runtimeForSubject(root, subject).runtimeRoot, { limit: 20 });
   for (const brief of pendingBriefs.briefs ?? []) {
     if (!['approval_request', 'verification_request'].includes(brief.kind)) continue;

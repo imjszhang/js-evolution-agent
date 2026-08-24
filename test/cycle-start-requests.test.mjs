@@ -11,6 +11,7 @@ import {
   summarizePendingCycleStartRequest,
 } from '../src/daemon/cycle-start-requests.mjs';
 import {
+  enqueueReactionRequest,
   processCycleStartRequests,
   runHeartbeatTick,
   startCycleFromTick,
@@ -166,6 +167,16 @@ describe('cycle-start-requests', () => {
     expect(processed.reason).toBe('on_demand_tick_request');
     expect(listOpenCycles(root, 'alpha')).toHaveLength(0);
     expect(readPendingCycleStartRequest(root, 'alpha')).toBeNull();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('queues a cognitive wake with an explicit reaction request', () => {
+    const root = makeRoot();
+    const result = enqueueReactionRequest(root, 'alpha', { reason: 'manual', source: 'cli' });
+    expect(result.created).toBe(true);
+    expect(result.wake?.kind).toBe('cognitive');
+    expect(result.wake?.reason).toBe('manual');
+    expect(readPendingCycleStartRequest(root, 'alpha')?.request_id).toBe(result.request.request_id);
     rmSync(root, { recursive: true, force: true });
   });
 

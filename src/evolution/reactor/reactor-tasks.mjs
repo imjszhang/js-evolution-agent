@@ -45,8 +45,23 @@ export const REACTOR_DAEMON_TASK_TYPES = Object.freeze([
   'memory_compaction',
 ]);
 
+export const PAUSED_ALLOWED_REACTOR_TYPES = Object.freeze([
+  'verify_batch',
+  'memory_compaction',
+]);
+
+export const PAUSED_BLOCKED_REACTOR_TYPES = Object.freeze([
+  'cognitive_reaction',
+  'exec_queue',
+  'rule_reaction',
+]);
+
 export function isReactorTaskType(type) {
   return REACTOR_DAEMON_TASK_TYPES.includes(type);
+}
+
+export function isPausedBlockedReactorType(type) {
+  return PAUSED_BLOCKED_REACTOR_TYPES.includes(type);
 }
 
 function assertCommitLease(canCommit) {
