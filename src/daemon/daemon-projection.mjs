@@ -12,6 +12,7 @@ import { buildCycleProjection } from './cycle-dispatch.mjs';
 import { findStuckSteps, findStepStateDrift, getLastClosedCycle, isCycleProgressStalled, listOpenCycles, summarizeCycleState } from './cycle-state.mjs';
 import { readPendingCycleStartRequest } from './cycle-start-requests.mjs';
 import { resolveEvolutionMode } from './evolution-mode.mjs';
+import { resolveEvolutionState } from '../product/evolution-state.mjs';
 import { resolveCyclePipeline } from './cycle-pipeline-mode.mjs';
 import { isReactorPipeline } from './cycle-pipeline-mode.mjs';
 import { buildReactorHealthProjection } from './reactor-health.mjs';
@@ -328,14 +329,17 @@ export function buildDaemonProjectionUncached(root, subject, { store = null, eve
       } : null,
     };
   }
+  const evolutionState = resolveEvolutionState(root, subject);
   const wakePolicy = isReactorPipeline(pipeline) ? 'evidence_driven' : evolution.mode;
 
   return {
     subject,
     generated_at: new Date().toISOString(),
+    evolution_state: evolutionState.state,
+    evolution_state_source: evolutionState.mapped_from,
     evolution_mode: evolution.mode,
     evolution_mode_source: evolution.source,
-    evolution_mode_deprecated: isReactorPipeline(pipeline),
+    evolution_mode_deprecated: true,
     wake_policy: wakePolicy,
     pipeline,
     reactor,

@@ -107,5 +107,29 @@ describe('event-driven reactor wake', () => {
     expect(scanned.enqueued.some((item) => item.task?.type === 'exec_queue')).toBe(true);
     expect(scanned.enqueued.some((item) => item.task?.type === 'cognitive_reaction')).toBe(false);
   });
+
+  it('does not start new cognitive or exec work when evolution.state is paused', () => {
+    const root = makeRoot();
+    writeJsonFile(join(tempDir, 'runtime', 'subjects', 'registry.json'), {
+      default_subject: 'alpha',
+      subjects: {
+        alpha: {
+          policy: 'subjects/alpha.md',
+          data_namespace: 'alpha',
+          evolution: { state: 'paused', automation: 'paused' },
+        },
+      },
+    });
+    const runtime = runtimeForSubject(root, 'alpha');
+    writePendingOperatorBrief(runtime.runtimeRoot, {
+      summary: 'should stay idle while paused',
+    });
+    enqueueWakeIntent(root, 'alpha', { kind: 'exec', reason: 'operator' });
+    const scanned = scanWakeBacklog(root, 'alpha', { enqueueTask });
+    expect(scanned.paused).toBe(true);
+    expect(scanned.enqueued.some((item) => item.task?.type === 'cognitive_reaction')).toBe(false);
+    expect(scanned.enqueued.some((item) => item.task?.type === 'exec_queue')).toBe(false);
+    expect(listOpenCycles(root, 'alpha')).toEqual([]);
+  });
 });
 

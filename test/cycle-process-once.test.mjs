@@ -6,6 +6,7 @@ import { writeJsonFile } from '../src/infra/files.mjs';
 import { initData } from '../src/cli/commands/data.mjs';
 import { writePendingOperatorBrief } from '../src/intelligence/operator-briefs.mjs';
 import { processCycleOnce, processOnceCommandExitCode } from '../src/daemon/cycle-process-once.mjs';
+import { workOnce } from '../src/daemon/daemon-core.mjs';
 import { buildDaemonProjection } from '../src/daemon/daemon-projection.mjs';
 import { buildReactorHealthProjection } from '../src/daemon/reactor-health.mjs';
 import { createChannelWorkerState, readChannelWorkerState } from '../src/channel/worker-state.mjs';
@@ -16,6 +17,8 @@ import {
 import { listBatchCheckpoints } from '../src/evolution/reactor/batch-checkpoint-store.mjs';
 import { runtimeForSubject } from '../src/infra/runtime-paths.mjs';
 import { projectSubjectReadiness } from '../apps/desktop/src/client-api/readiness.ts';
+import { enqueueTask, readTaskQueue } from '../src/daemon/daemon-tasks.mjs';
+import { setSubjectEvolutionState } from '../src/product/evolution-state.mjs';
 
 const SUBJECT = 'cycle-once';
 const homes = [];
@@ -293,4 +296,74 @@ describe('Cycle process-once recovery', () => {
     if (previous.JEA_REACTOR_SKIP_INVESTIGATE == null) delete process.env.JEA_REACTOR_SKIP_INVESTIGATE;
     else process.env.JEA_REACTOR_SKIP_INVESTIGATE = previous.JEA_REACTOR_SKIP_INVESTIGATE;
   }, 60_000);
+
+  it('does not start a new Cognitive reaction while evolution.state is paused', async () => {
+    const previous = {
+      JEA_FORCE_MOCK: process.env.JEA_FORCE_MOCK,
+      JEA_REACTOR_SKIP_INVESTIGATE: process.env.JEA_REACTOR_SKIP_INVESTIGATE,
+    };
+    process.env.JEA_FORCE_MOCK = '1';
+    process.env.JEA_REACTOR_SKIP_INVESTIGATE = '1';
+    const { root } = makeIsolatedRoot();
+    setSubjectEvolutionState(root, SUBJECT, 'paused');
+    writeStaleFixture(root, { id: 'brief-cycle-once-paused' });
+
+    const result = await processCycleOnce(root, SUBJECT, {
+      mock: true,
+      'skip-investigate': true,
+    });
+    const runtime = runtimeForSubject(root, SUBJECT);
+    expect(result.status).toBe('idle');
+    expect(result.reason).toBe('evolution_paused');
+    expect(listEligibleEvidence(runtime.dataRoot, { reactor: 'cognitive' }).length).toBeGreaterThan(0);
+    expect(readTerminalClaimArchive(runtime.dataRoot).claims
+      .some((claim) => claim.reactor === 'cognitive')).toBe(false);
+
+    if (previous.JEA_FORCE_MOCK == null) delete process.env.JEA_FORCE_MOCK;
+    else process.env.JEA_FORCE_MOCK = previous.JEA_FORCE_MOCK;
+    if (previous.JEA_REACTOR_SKIP_INVESTIGATE == null) delete process.env.JEA_REACTOR_SKIP_INVESTIGATE;
+    else process.env.JEA_REACTOR_SKIP_INVESTIGATE = previous.JEA_REACTOR_SKIP_INVESTIGATE;
+  });
+
+  it('does not claim leftover Cognitive / Exec / Rule tasks while paused', async () => {
+    const previous = {
+      JEA_FORCE_MOCK: process.env.JEA_FORCE_MOCK,
+      JEA_REACTOR_SKIP_INVESTIGATE: process.env.JEA_REACTOR_SKIP_INVESTIGATE,
+    };
+    process.env.JEA_FORCE_MOCK = '1';
+    process.env.JEA_REACTOR_SKIP_INVESTIGATE = '1';
+    const { root } = makeIsolatedRoot();
+    setSubjectEvolutionState(root, SUBJECT, 'paused');
+    writeStaleFixture(root, { id: 'brief-cycle-once-paused-leftover' });
+    enqueueTask(root, SUBJECT, {
+      type: 'cognitive_reaction',
+      priority: 40,
+      idempotencyKey: `${SUBJECT}:cognitive_reaction`,
+      input: { reason: 'leftover' },
+    });
+
+    const result = await processCycleOnce(root, SUBJECT, {
+      mock: true,
+      'skip-investigate': true,
+    });
+    const queue = readTaskQueue(root, SUBJECT);
+    const leftover = queue.tasks.find((task) => task.type === 'cognitive_reaction');
+    expect(result.status).toBe('idle');
+    expect(result.reason).toBe('evolution_paused');
+    expect(leftover?.status).toBe('pending');
+
+    const claimed = await workOnce(root, SUBJECT, {
+      mock: true,
+      'skip-investigate': true,
+      worker: 'paused-claim-filter',
+    });
+    expect(claimed.worked).toBe(false);
+    expect(readTaskQueue(root, SUBJECT).tasks.find((task) => task.type === 'cognitive_reaction')?.status)
+      .toBe('pending');
+
+    if (previous.JEA_FORCE_MOCK == null) delete process.env.JEA_FORCE_MOCK;
+    else process.env.JEA_FORCE_MOCK = previous.JEA_FORCE_MOCK;
+    if (previous.JEA_REACTOR_SKIP_INVESTIGATE == null) delete process.env.JEA_REACTOR_SKIP_INVESTIGATE;
+    else process.env.JEA_REACTOR_SKIP_INVESTIGATE = previous.JEA_REACTOR_SKIP_INVESTIGATE;
+  });
 });

@@ -58,10 +58,12 @@ export interface JeaClient {
   getObservability(subject: string): Promise<EvolutionObservability>
   getServiceStatus(subject: string): Promise<ServiceStatus>
   getServiceReadiness(subject: string): Promise<SubjectReadiness>
-  startService(subject: string, domain?: 'all' | 'cycle' | 'channel'): Promise<ServiceStatus>
+  startService(subject: string, domain?: 'all' | 'cycle' | 'channel' | 'evolution'): Promise<ServiceStatus>
   stopService(subject: string): Promise<ServiceStatus>
   requestCycle(subject: string, note?: string): Promise<CycleRequestResult>
+  requestReaction(subject: string, note?: string): Promise<CycleRequestResult>
   processCycleOnce(subject: string): Promise<CycleProcessOnceResult>
+  processEvolutionOnce(subject: string): Promise<CycleProcessOnceResult>
   setAutomation(subject: string, mode: 'automatic' | 'paused'): Promise<AutomationPolicyView>
   getReadiness(subject?: string): Promise<SetupReadiness>
   confirmHome(path?: string): Promise<SetupHomeResult>
@@ -105,7 +107,9 @@ export function createTypedJeaClient(
     startService: (subject, domain) => invoke<ServiceStatus>('service.start', { subject, domain }),
     stopService: (subject) => invoke<ServiceStatus>('service.stop', { subject }),
     requestCycle: (subject, note) => invoke<CycleRequestResult>('service.requestCycle', { subject, note }),
+    requestReaction: (subject, note) => invoke<CycleRequestResult>('service.requestCycle', { subject, note }),
     processCycleOnce: (subject) => invoke<CycleProcessOnceResult>('service.processCycleOnce', { subject }),
+    processEvolutionOnce: (subject) => invoke<CycleProcessOnceResult>('service.processCycleOnce', { subject }),
     setAutomation: (subject, mode) => invoke<AutomationPolicyView>('service.setAutomation', { subject, mode }),
     getReadiness: (subject) => invoke<SetupReadiness>('setup.getReadiness', subject ? { subject } : {}),
     confirmHome: (path) => invoke<SetupHomeResult>('setup.confirmHome', path ? { path } : {}),

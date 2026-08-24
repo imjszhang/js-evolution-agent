@@ -22,23 +22,43 @@ export function resolvePresenceAffordances(root, subject) {
     ],
     operator_commands: [
       {
+        id: 'daemon_evolution_state_active',
+        purpose: 'Resume automatic evidence-driven reactions.',
+        cmd: `npm run jea -- daemon evolution-state set active --subject ${subj}`,
+      },
+      {
+        id: 'daemon_evolution_state_paused',
+        purpose: 'Pause new Cognitive/Exec reactions; verify/settlement/memory may still finish.',
+        cmd: `npm run jea -- daemon evolution-state set paused --subject ${subj}`,
+      },
+      {
+        id: 'daemon_evolution_state_show',
+        purpose: 'Show current evolution state (active or paused).',
+        cmd: `npm run jea -- daemon evolution-state show --subject ${subj}`,
+      },
+      {
+        id: 'daemon_reaction_request',
+        purpose: 'Request one cognitive reaction / immediate check.',
+        cmd: `npm run jea -- daemon reaction request --subject ${subj}`,
+      },
+      {
         id: 'daemon_evolution_mode_continuous',
-        purpose: 'Deprecated under reactor. Set continuous mode (tick open is off by default).',
+        purpose: 'Deprecated. Writes evolution.mode only; does not change scheduling.',
         cmd: `npm run jea -- daemon evolution-mode set continuous --subject ${subj}`,
       },
       {
         id: 'daemon_evolution_mode_on_demand',
-        purpose: 'Set subject to on-demand evolution (no auto cycle start on tick).',
+        purpose: 'Deprecated. Writes evolution.mode only; does not change scheduling.',
         cmd: `npm run jea -- daemon evolution-mode set on_demand --subject ${subj}`,
       },
       {
         id: 'daemon_evolution_mode_show',
-        purpose: 'Show current evolution mode (deprecated under reactor; prefer wake_policy).',
+        purpose: 'Deprecated. Show legacy evolution.mode; prefer evolution-state.',
         cmd: `npm run jea -- daemon evolution-mode show --subject ${subj}`,
       },
       {
         id: 'daemon_cycle_request',
-        purpose: 'Request starting a new evolution cycle on next worker tick.',
+        purpose: 'Compat alias of reaction request.',
         cmd: `npm run jea -- daemon cycle request --subject ${subj}`,
       },
       {

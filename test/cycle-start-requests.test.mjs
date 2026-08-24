@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -11,6 +11,7 @@ import {
   summarizePendingCycleStartRequest,
 } from '../src/daemon/cycle-start-requests.mjs';
 import {
+  enqueueReactionRequest,
   processCycleStartRequests,
   runHeartbeatTick,
   startCycleFromTick,
@@ -20,7 +21,14 @@ import { enqueueTask, pendingTasksPath, readTaskQueue } from '../src/daemon/daem
 import { stepIdempotencyKey } from '../src/daemon/cycle-reducer.mjs';
 import { resolveEvolutionMode } from '../src/daemon/evolution-mode.mjs';
 
-function makeRoot() {
+const previousJeaHome = process.env.JEA_HOME;
+
+afterEach(() => {
+  if (previousJeaHome == null) delete process.env.JEA_HOME;
+  else process.env.JEA_HOME = previousJeaHome;
+});
+
+function makeRoot({ evolution = {} } = {}) {
   const tempDir = mkdtempSync(join(tmpdir(), 'jea-cycle-req-'));
   mkdirSync(join(tempDir, 'policies', 'subjects'), { recursive: true });
   writeFileSync(join(tempDir, 'policies', 'subjects', 'alpha.md'), '# alpha\n\n## Subject\nalpha', 'utf-8');
@@ -29,7 +37,19 @@ function makeRoot() {
     policy: 'subjects/alpha.md',
     data_namespace: 'alpha',
   });
-  mkdirSync(join(tempDir, 'runtime', 'subjects', 'alpha', 'data', 'evolution'), { recursive: true });
+  const jeaHome = join(tempDir, 'runtime');
+  mkdirSync(join(jeaHome, 'subjects', 'alpha', 'data', 'evolution'), { recursive: true });
+  writeJsonFile(join(jeaHome, 'subjects', 'registry.json'), {
+    default_subject: 'alpha',
+    subjects: {
+      alpha: {
+        policy: 'subjects/alpha.md',
+        data_namespace: 'alpha',
+        evolution,
+      },
+    },
+  });
+  process.env.JEA_HOME = jeaHome;
   return tempDir;
 }
 
@@ -105,27 +125,27 @@ describe('cycle-start-requests', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it('continuous runHeartbeatTick converts tick-open requests to cognitive wake', () => {
+  it('heartbeat never invents Cognitive work even if JEA_TICK_OPEN_CYCLE is set', () => {
     const root = makeRoot();
     const tick = runHeartbeatTick(root, 'alpha', {
       evolution_mode: 'continuous',
       env: { JEA_TICK_OPEN_CYCLE: '1' },
     });
-    expect(tick.tick_open_enabled).toBe(true);
-    expect(tick.request_process?.started).toBe(true);
-    expect(tick.request_process?.reason).toBe('evidence_wake');
+    expect(tick.tick_open_enabled).toBe(false);
+    expect(tick.request_enqueue).toBeNull();
+    expect(tick.request_process?.reason).toBe('no_request');
     expect(listOpenCycles(root, 'alpha')).toHaveLength(0);
-    expect(readTaskQueue(root, 'alpha').tasks.some((t) => t.type === 'cognitive_reaction')).toBe(true);
+    expect(readTaskQueue(root, 'alpha').tasks.some((t) => t.type === 'cognitive_reaction')).toBe(false);
     expect(readPendingCycleStartRequest(root, 'alpha')).toBeNull();
     rmSync(root, { recursive: true, force: true });
   });
 
-  it('ignores leftover tick-only request when tick open is disabled', () => {
+  it('ignores leftover tick-only request', () => {
     const root = makeRoot();
     enqueueCycleStartRequest(root, 'alpha', { reason: 'tick' });
     const processed = processCycleStartRequests(root, 'alpha', { evolution_mode: 'continuous' });
     expect(processed.started).toBe(false);
-    expect(processed.reason).toBe('tick_open_disabled');
+    expect(processed.reason).toBe('tick_request_ignored');
     expect(listOpenCycles(root, 'alpha')).toHaveLength(0);
     expect(readPendingCycleStartRequest(root, 'alpha')).toBeNull();
     rmSync(root, { recursive: true, force: true });
@@ -150,6 +170,30 @@ describe('cycle-start-requests', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  it('queues a cognitive wake with an explicit reaction request', () => {
+    const root = makeRoot();
+    const result = enqueueReactionRequest(root, 'alpha', { reason: 'manual', source: 'cli' });
+    expect(result.created).toBe(true);
+    expect(result.wake?.kind).toBe('cognitive');
+    expect(result.wake?.reason).toBe('manual');
+    expect(readPendingCycleStartRequest(root, 'alpha')?.request_id).toBe(result.request.request_id);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('defers an explicit request while evolution.state is paused', () => {
+    const root = makeRoot({ evolution: { state: 'paused', automation: 'paused' } });
+    enqueueCycleStartRequest(root, 'alpha', { reason: 'manual' });
+    const processed = processCycleStartRequests(root, 'alpha', {});
+    expect(processed.started).toBe(false);
+    expect(processed.reason).toBe('evolution_paused');
+    expect(readPendingCycleStartRequest(root, 'alpha')?.deferred_count ?? 0).toBe(0);
+    const again = processCycleStartRequests(root, 'alpha', {});
+    expect(again.reason).toBe('evolution_paused');
+    expect(readPendingCycleStartRequest(root, 'alpha')?.deferred_count ?? 0).toBe(0);
+    expect(readTaskQueue(root, 'alpha').tasks.some((t) => t.type === 'cognitive_reaction')).toBe(false);
+    rmSync(root, { recursive: true, force: true });
+  });
+
   it('on_demand converts a manual request to cognitive wake', () => {
     const root = makeRoot();
     enqueueCycleStartRequest(root, 'alpha', { reason: 'manual' });
@@ -171,29 +215,19 @@ describe('cycle-start-requests', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it('simulated hot reload: on_demand tick does not enqueue tick request', () => {
-    const root = makeRoot();
-    writeJsonFile(join(root, 'policies', 'subjects.json'), {
-      default_subject: 'alpha',
-      subjects: {
-        alpha: {
-          policy: 'subjects/alpha.md',
-          data_namespace: 'alpha',
-          evolution: { mode: 'continuous' },
-        },
-      },
-    });
+  it('simulated hot reload: changing deprecated mode still does not enqueue tick work', () => {
+    const root = makeRoot({ evolution: { mode: 'continuous' } });
     const continuous = resolveEvolutionMode(root, { subject: 'alpha' });
+    expect(continuous.mode).toBe('continuous');
     const first = runHeartbeatTick(root, 'alpha', {
       evolution_mode: continuous.mode,
       env: { JEA_TICK_OPEN_CYCLE: '1' },
     });
-    expect(first.request_enqueue).toBeTruthy();
-    expect(first.request_process?.started).toBe(true);
-    expect(first.request_process?.reason).toBe('evidence_wake');
+    expect(first.request_enqueue).toBeNull();
+    expect(first.request_process?.reason).toBe('no_request');
     expect(listOpenCycles(root, 'alpha')).toHaveLength(0);
 
-    writeJsonFile(join(root, 'policies', 'subjects.json'), {
+    writeJsonFile(join(root, 'runtime', 'subjects', 'registry.json'), {
       default_subject: 'alpha',
       subjects: {
         alpha: {

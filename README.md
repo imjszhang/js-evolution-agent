@@ -345,7 +345,7 @@ jea subject check
 jea data init --all --subject my-product
 ```
 
-Machine-readable registry fields (lane, resources, channels, `evolution.mode`): [`policies/subjects.example.json`](./policies/subjects.example.json). Setup details: [`policies/README.md`](./policies/README.md).
+Machine-readable registry fields (lane, resources, channels, `evolution.state`): [`policies/subjects.example.json`](./policies/subjects.example.json). Setup details: [`policies/README.md`](./policies/README.md).
 
 For parallel subjects, **one daemon process per subject**:
 
@@ -365,23 +365,27 @@ The daemon runs bounded **event-driven reactors** — recommended for unattended
 # Foreground worker (cycle + channel in one process)
 jea daemon start --subject my-bot
 
-# Production: split cycle and channel for fault isolation
-jea daemon start --subject my-bot --domain cycle
+# Production: split evolution and channel for fault isolation
+jea daemon start --subject my-bot --domain evolution
 jea daemon start --subject my-bot --domain channel
 
 # Windows detached background
 npm run daemon:start:detached
 ```
 
-| Mode | Behavior |
+Scheduling is **event-driven**. Heartbeat never invents Cognitive work. The live switch is `evolution.state`:
+
+| State | Behavior |
 | --- | --- |
-| `continuous` (default) | Heartbeat consumes requests and eligible wake backlog; quiet is healthy and does not create work |
-| `on_demand` | Only explicit requests (`jea daemon cycle request`, operator brief, …) wake cognition |
+| `active` (default) | Worker consumes eligible evidence / wakes automatically |
+| `paused` | No new Cognitive / Exec / Rule work; verify, settlement, and Memory may still finish |
+
+`evolution.mode` (`continuous` / `on_demand`) is deprecated and does not change scheduling.
 
 ```bash
-jea daemon evolution-mode show
-jea daemon evolution-mode set on_demand
-jea daemon cycle request --reason "manual kick"
+jea daemon evolution-state show
+jea daemon evolution-state set paused
+jea daemon reaction request --reason "manual kick"
 jea daemon status --json
 jea daemon doctor
 ```
@@ -461,7 +465,7 @@ cp .env.example .env   # Windows: copy .env.example .env
 | `JEA_PROJECT_ROOT` | Source checkout root; does not select Subject data |
 | `JEA_LANGUAGE` | UI/report language: `zh-CN` \| `en-US` |
 | `JEA_APPROVAL_MODE` | `manual` \| `auto_guarded` \| `auto_all` |
-| `JEA_EVOLUTION_MODE` | Default daemon evolution mode |
+| `JEA_EVOLUTION_MODE` | Deprecated; does not change scheduling. Use `evolution.state` |
 | `JEA_AGENT_PROVIDER` | Default agent backend |
 | `JEA_EXEC_AGENT_BUDGET` | Max `agent_run` decisions consumed per exec batch (default 8); mechanical actions uncapped |
 | `JEA_AGENT_MAX_CONCURRENCY` | Max parallel `agent_run` width per wave (default 2) |

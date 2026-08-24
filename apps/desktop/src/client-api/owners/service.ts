@@ -1,7 +1,8 @@
 import { resolveModelReadiness } from '../../../../../src/actions/execution-env.mjs'
-import { enqueueCycleStartRequestWithEvent, processCycleOnce } from '../../../../../src/daemon/cycle-dispatch.mjs'
+import { enqueueReactionRequest, processCycleOnce } from '../../../../../src/daemon/cycle-dispatch.mjs'
 import { readDaemonProjection } from '../../../../../src/daemon/daemon-projection.mjs'
-import { setSubjectAutomation } from '../../../../../src/product/automation-policy.mjs'
+import { applyEvolutionStateChange } from '../../../../../src/daemon/evolution-state-apply.mjs'
+import { automationModeFromState, stateFromAutomationMode } from '../../../../../src/product/evolution-state.mjs'
 import { PublicClientError } from '../errors'
 import { readSubjectReadiness } from '../readiness'
 import { redactPublicValue } from '../redact'
@@ -101,12 +102,13 @@ export class ServiceCommandOwner {
     })
   }
 
-  async start(subject: string, domain: 'all' | 'cycle' | 'channel' = 'all'): Promise<ServiceStatus> {
+  async start(subject: string, domain: 'all' | 'cycle' | 'channel' | 'evolution' = 'all'): Promise<ServiceStatus> {
     const name = requireSubject(this.runtime, subject)
-    if (!['all', 'cycle', 'channel'].includes(domain)) {
+    const normalized = domain === 'evolution' ? 'cycle' : domain
+    if (!['all', 'cycle', 'channel'].includes(normalized)) {
       throw new PublicClientError('INVALID_REQUEST', 'A valid domain is required.')
     }
-    await this.processPort.start(name, { domain })
+    await this.processPort.start(name, { domain: normalized })
     return this.getStatus(name)
   }
 
@@ -118,8 +120,9 @@ export class ServiceCommandOwner {
 
   requestCycle(subject: string, note?: string): CycleRequestResult {
     const name = requireSubject(this.runtime, subject)
-    const result = enqueueCycleStartRequestWithEvent(this.runtime, name, {
+    const result = enqueueReactionRequest(this.runtime, name, {
       reason: 'jea_client',
+      source: 'jea_client',
       meta: note?.trim() ? { note: note.trim() } : {}
     })
     return redactPublicValue({
@@ -146,7 +149,12 @@ export class ServiceCommandOwner {
     if (mode !== 'automatic' && mode !== 'paused') {
       throw new PublicClientError('INVALID_REQUEST', 'Automation mode must be automatic or paused.')
     }
-    const written = setSubjectAutomation(this.runtime, name, mode)
+    const written = applyEvolutionStateChange(
+      this.runtime,
+      name,
+      stateFromAutomationMode(mode),
+      { trigger: 'set_automation' }
+    )
     if (this.hostKind === 'electron' && this.lifecycle) {
       try {
         await this.lifecycle.reconcile({ subject: name, reason: 'set_automation' })
@@ -157,8 +165,8 @@ export class ServiceCommandOwner {
     const readiness = this.getReadiness(name)
     return redactPublicValue({
       subject: name,
-      mode: written.mode as AutomationMode,
-      previous: written.previous as AutomationMode,
+      mode: (written.automation ?? automationModeFromState(written.state)) as AutomationMode,
+      previous: automationModeFromState(written.previous) as AutomationMode,
       changed: Boolean(written.changed),
       mapped_from: readiness.automation?.mapped_from ?? 'automation',
       diagnostic: readiness.automation?.diagnostic ?? null,

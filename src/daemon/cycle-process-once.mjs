@@ -10,10 +10,12 @@ import { readChannelWorkerState } from '../channel/worker-state.mjs';
 import { listEligibleEvidence, readClaimLedger } from '../evolution/reactor/claim-ledger.mjs';
 import { listBatchCheckpoints } from '../evolution/reactor/batch-checkpoint-store.mjs';
 import {
+  PAUSED_ALLOWED_REACTOR_TYPES,
   runCognitiveReactionTask,
   scanWakeBacklog,
 } from '../evolution/reactor/reactor-tasks.mjs';
 import { runtimeForSubject } from '../infra/runtime-paths.mjs';
+import { isEvolutionPaused } from '../product/evolution-state.mjs';
 
 const CYCLE_TASK_TYPES = new Set([
   'cognitive_reaction',
@@ -113,10 +115,12 @@ function recentCycleEvents(root, subject, sinceMs) {
     }));
 }
 
-function pendingCycleTask(root, subject) {
+function pendingCycleTask(root, subject, { allowedTypes = null } = {}) {
   const queue = readTaskQueue(root, subject);
   return (queue.tasks || []).find((task) => (
-    task.status === 'pending' && CYCLE_TASK_TYPES.has(task.type)
+    task.status === 'pending'
+    && CYCLE_TASK_TYPES.has(task.type)
+    && (!allowedTypes || allowedTypes.has(task.type))
   )) ?? null;
 }
 
@@ -142,7 +146,7 @@ function applyMockEnv(flags = {}) {
   };
 }
 
-function classifyResult({ work, injectFailure, pendingBefore, pendingAfter }) {
+function classifyResult({ work, injectFailure, pendingBefore, pendingAfter, paused = false }) {
   if (injectFailure) {
     return {
       status: 'retryable',
@@ -153,6 +157,9 @@ function classifyResult({ work, injectFailure, pendingBefore, pendingAfter }) {
     return { status: 'blocked', reason: 'subject_lock_held' };
   }
   if (!work?.worked) {
+    if (paused && (pendingBefore ?? 0) > 0) {
+      return { status: 'idle', reason: 'evolution_paused' };
+    }
     if ((pendingBefore ?? 0) === 0) {
       return { status: 'idle', reason: 'no_pending_evidence' };
     }
@@ -194,14 +201,19 @@ export async function processCycleOnce(root, subject, flags = {}) {
   const healthBefore = snapshotCycleHealth(root, subject);
   const pendingBefore = pendingEvidenceCount(root, subject);
   const env = applyMockEnv(flags);
+  const paused = isEvolutionPaused(root, subject);
 
   let scanned = { scanned: false, enqueued: [] };
   let work = null;
   try {
     scanned = scanWakeBacklog(root, subject, { enqueueTask, ignoreBudget: true });
-    const queued = pendingCycleTask(root, subject);
+    const queued = pendingCycleTask(root, subject, {
+      allowedTypes: paused ? new Set(PAUSED_ALLOWED_REACTOR_TYPES) : null,
+    });
 
     if (pendingBefore === 0 && !queued) {
+      work = { worked: false, task: null };
+    } else if (paused && !queued) {
       work = { worked: false, task: null };
     } else if (flags.injectFailure) {
       try {
@@ -234,7 +246,7 @@ export async function processCycleOnce(root, subject, flags = {}) {
       }
     } else {
       const { workOnce } = await import('./daemon-core.mjs');
-      const type = pendingBefore > 0 ? 'cognitive_reaction' : (queued?.type ?? null);
+      const type = (!paused && pendingBefore > 0) ? 'cognitive_reaction' : (queued?.type ?? null);
       work = await workOnce(root, subject, {
         mock: env.mock,
         'skip-investigate': env.skipInvestigate,
@@ -256,6 +268,7 @@ export async function processCycleOnce(root, subject, flags = {}) {
     injectFailure: Boolean(flags.injectFailure),
     pendingBefore,
     pendingAfter,
+    paused,
   });
 
   recordDaemonEvent(root, subject, {

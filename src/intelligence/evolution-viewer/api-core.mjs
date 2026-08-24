@@ -173,6 +173,7 @@ export function daemonSummaryFromProjection(runtime, daemon, { runtimeRoot = nul
     health: daemon.health?.status ?? 'unknown',
     health_ok: daemon.health?.ok ?? null,
     evolution_mode: daemon.evolution_mode ?? null,
+    evolution_state: daemon.evolution_state ?? null,
     worker_running: Boolean(daemon.worker?.running),
     worker_stale: Boolean(daemon.worker?.stale),
     open_cycles: daemon.cycles?.open_count ?? 0,

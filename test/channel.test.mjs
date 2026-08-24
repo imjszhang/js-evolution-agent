@@ -76,6 +76,7 @@ import { parseControlRequestFromText } from '../src/channel/control-actions.mjs'
 import { classifyChannelEnvelope, decisionFromClassifierItem, ingestChannelEnvelope } from '../src/channel/ingest.mjs';
 import { buildSpeechGenerationEventPayload, speechIntentFromDeterministic } from '../src/channel/speech-intent.mjs';
 import { resolveEvolutionMode } from '../src/daemon/evolution-mode.mjs';
+import { resolveEvolutionState, setSubjectEvolutionState } from '../src/product/evolution-state.mjs';
 import { channelCommand } from '../src/cli/commands/channel.mjs';
 import { readPendingCycleStartRequest } from '../src/daemon/cycle-start-requests.mjs';
 import {
@@ -1201,13 +1202,14 @@ describe('channel domain', () => {
   });
 
   describe('attention signals', () => {
-    it('collects cycle completion and long-idle proactive signals', () => {
+    it('collects cycle completion and does not treat event-driven idle as a problem', () => {
       const root = makeRoot();
       const now = new Date('2026-06-02T01:00:00.000Z');
       const signals = collectAttentionSignals(root, 'alpha', {
         projection: {
           generated_at: now.toISOString(),
           evolution_mode: 'on_demand',
+          evolution_state: 'active',
           health: { status: 'idle', ok: true, reasons: [] },
           tasks: {},
           cycles: {
@@ -1219,7 +1221,7 @@ describe('channel domain', () => {
         },
       });
       expect(signals.some((signal) => signal.type === 'cycle_completed')).toBe(true);
-      expect(signals.some((signal) => signal.type === 'long_idle')).toBe(true);
+      expect(signals.some((signal) => signal.type === 'long_idle')).toBe(false);
     });
 
     it('plans proactive send for task_failed via presence', () => {
@@ -3002,6 +3004,10 @@ describe('channel domain', () => {
       expect(parseControlRequestFromText('切换为 continuous 模式')?.params?.mode).toBe('continuous');
       expect(parseControlRequestFromText('启动一轮进化')?.action_id).toBe('daemon_cycle_request');
       expect(parseControlRequestFromText('当前进化模式是什么')?.action_id).toBe('daemon_evolution_mode_show');
+      expect(parseControlRequestFromText('暂停进化')?.action_id).toBe('daemon_evolution_state_set');
+      expect(parseControlRequestFromText('暂停进化')?.params?.state).toBe('paused');
+      expect(parseControlRequestFromText('恢复进化')?.params?.state).toBe('active');
+      expect(parseControlRequestFromText('立即检查')?.action_id).toBe('daemon_reaction_request');
     });
 
     it('classifyChannelEnvelope maps explicit control phrases to control_request', () => {
@@ -3152,6 +3158,29 @@ describe('channel domain', () => {
       const result = await runChannelTask(root, 'alpha', claim.task);
       expect(result.ok).toBe(true);
       expect(resolveEvolutionMode(root, { subject: 'alpha' }).mode).toBe('on_demand');
+      expect(resolveEvolutionState(root, 'alpha').state).toBe('active');
+    });
+
+    it('deprecated evolution-mode set does not resume a paused subject', async () => {
+      const root = makeRoot();
+      writeOperatorBinding(root, 'alpha', 'ou_operator');
+      setSubjectEvolutionState(root, 'alpha', 'paused');
+      expect(resolveEvolutionState(root, 'alpha').state).toBe('paused');
+      writePendingInbound(root, 'alpha', {
+        messageId: 'om_ctrl_mode_paused',
+        chatId: 'oc_operator',
+        senderId: 'ou_operator',
+        content: '切换为按需进化',
+      });
+      await runChannelClassifierTask(root, 'alpha');
+      const claim = claimNextChannelTask(root, 'alpha', {
+        workerId: 'control-worker',
+        types: taskTypesForChannelRole('control'),
+      });
+      const result = await runChannelTask(root, 'alpha', claim.task);
+      expect(result.ok).toBe(true);
+      expect(resolveEvolutionMode(root, { subject: 'alpha' }).mode).toBe('on_demand');
+      expect(resolveEvolutionState(root, 'alpha').state).toBe('paused');
     });
 
     it('control executor rejects write actions without operator binding', async () => {

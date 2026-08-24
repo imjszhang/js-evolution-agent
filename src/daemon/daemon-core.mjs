@@ -42,7 +42,7 @@ import {
 } from '../infra/subject-lane-guard.mjs';
 import { ALL_CYCLE_STEP_TYPES } from './cycle-reducer.mjs';
 import {
-  enqueueCycleStartRequestWithEvent,
+  enqueueReactionRequest,
   processCycleOnce,
   processOnceCommandExitCode,
   processCycleStartRequests,
@@ -50,6 +50,8 @@ import {
 } from './cycle-dispatch.mjs';
 import { resolveEvolutionMode } from './evolution-mode.mjs';
 import { applyEvolutionModeChange } from './evolution-mode-apply.mjs';
+import { isEvolutionPaused, resolveEvolutionState } from '../product/evolution-state.mjs';
+import { applyEvolutionStateChange } from './evolution-state-apply.mjs';
 import { runChannelTick } from '../channel/dispatch.mjs';
 import {
   resolveChannelDomainRoles,
@@ -83,7 +85,9 @@ import {
 } from '../channel/worker-state.mjs';
 import { runDomainWorkerLoop } from '../infra/worker-loop.mjs';
 import {
+  isPausedBlockedReactorType,
   isReactorTaskType,
+  PAUSED_ALLOWED_REACTOR_TYPES,
   runReactorDaemonTask,
   scanWakeBacklog,
 } from '../evolution/reactor/reactor-tasks.mjs';
@@ -645,6 +649,7 @@ async function runWorkOnceBody(root, subject, flags = {}) {
     workerId,
     leaseMs,
     type: flags.type && flags.type !== true ? flags.type : null,
+    types: Array.isArray(flags.types) ? flags.types : null,
   });
   for (const task of claim.reclaimed || []) {
     recordDaemonEvent(root, subject, {
@@ -688,8 +693,26 @@ async function runWorkOnceBody(root, subject, flags = {}) {
   return { worked: true, ok: false, task: failed.task };
 }
 
+function applyPausedClaimFilter(root, subject, flags = {}) {
+  if (!isEvolutionPaused(root, subject)) return flags;
+  const explicitType = flags.type && flags.type !== true ? flags.type : null;
+  const explicitTypes = Array.isArray(flags.types) ? flags.types : null;
+  if (explicitTypes?.length) {
+    return {
+      ...flags,
+      types: explicitTypes.filter((type) => !isPausedBlockedReactorType(type)),
+    };
+  }
+  if (explicitType && !isPausedBlockedReactorType(explicitType)) return flags;
+  return {
+    ...flags,
+    type: null,
+    types: [...PAUSED_ALLOWED_REACTOR_TYPES],
+  };
+}
+
 export async function workOnce(root, subject, flags = {}) {
-  const execute = () => runWorkOnceBody(root, subject, flags);
+  const execute = () => runWorkOnceBody(root, subject, applyPausedClaimFilter(root, subject, flags));
   if (flags['subject-lock-held']) {
     return execute();
   }
@@ -1416,8 +1439,14 @@ export async function runChannelDomainWorker(root, subject, flags = {}) {
   });
 }
 
+export function normalizeDaemonDomain(raw, fallback = 'all') {
+  const domain = raw && raw !== true ? String(raw) : fallback;
+  if (domain === 'evolution') return 'cycle';
+  return domain;
+}
+
 export async function runDaemonDomains(root, subject, flags = {}) {
-  const domain = flags.domain && flags.domain !== true ? String(flags.domain) : 'all';
+  const domain = normalizeDaemonDomain(flags.domain, 'all');
   if (domain === 'cycle') return runDaemonWorker(root, subject, flags);
   if (domain === 'channel') return runChannelDomainWorker(root, subject, flags);
   const [cycle, channel] = await Promise.all([
@@ -1433,6 +1462,9 @@ export async function runDaemonDomains(root, subject, flags = {}) {
 
 function printProjection(projection) {
   console.log(`# Daemon Status: ${projection.subject}`);
+  if (projection.evolution_state) {
+    console.log(`evolution_state: ${projection.evolution_state} (${projection.evolution_state_source ?? 'unknown'})`);
+  }
   console.log(`health: ${projection.health.status} ok=${projection.health.ok}`);
   if (projection.channel?.health) {
     console.log(`channel: ${projection.channel.health.status} ok=${projection.channel.health.ok}`);
@@ -1512,6 +1544,53 @@ export async function daemonCommand({ subcommand, flags = {}, args = [], root = 
   const subject = subjects[0];
   const multiSubject = subjects.length > 1 || hasMultiSubjectSelection(flags);
 
+  if (subcommand === 'evolution-state') {
+    if (multiSubject) {
+      console.error('daemon evolution-state supports one subject at a time.');
+      return 2;
+    }
+    const [stateCommand, ...stateArgs] = args;
+    if (stateCommand === 'show') {
+      const resolved = resolveEvolutionState(root, subject);
+      if (flags.json) {
+        console.log(JSON.stringify({ subject, ...resolved }, null, 2));
+      } else {
+        console.log(`subject: ${subject}`);
+        console.log(`evolution_state: ${resolved.state}`);
+        console.log(`source: ${resolved.mapped_from}`);
+        if (resolved.diagnostic) console.log(`diagnostic: ${resolved.diagnostic}`);
+      }
+      return 0;
+    }
+    if (stateCommand === 'set') {
+      const rawState = stateArgs[0] || (flags.state && flags.state !== true ? String(flags.state) : null);
+      if (!rawState) {
+        console.error('Usage: jea daemon evolution-state set <active|paused> [--subject NAME] [--json]');
+        return 2;
+      }
+      try {
+        const result = applyEvolutionStateChange(root, subject, rawState);
+        if (flags.json) {
+          console.log(JSON.stringify({ subject, ...result }, null, 2));
+        } else if (!result.changed) {
+          console.log(`evolution_state already ${result.state} (${result.source})`);
+        } else {
+          console.log(`evolution_state: ${result.previous} -> ${result.state}`);
+          console.log(`source: ${result.source}`);
+          console.log(`path: ${result.path}`);
+        }
+        return 0;
+      } catch (err) {
+        console.error(err?.message || String(err));
+        return 2;
+      }
+    }
+    console.error('Usage: jea daemon evolution-state <show|set> ...');
+    console.error('       jea daemon evolution-state show [--subject NAME] [--json]');
+    console.error('       jea daemon evolution-state set <active|paused> [--subject NAME] [--json]');
+    return 2;
+  }
+
   if (subcommand === 'evolution-mode') {
     if (multiSubject) {
       console.error('daemon evolution-mode supports one subject at a time.');
@@ -1521,11 +1600,12 @@ export async function daemonCommand({ subcommand, flags = {}, args = [], root = 
     if (modeCommand === 'show') {
       const resolved = resolveEvolutionMode(root, { subject, flags });
       if (flags.json) {
-        console.log(JSON.stringify({ subject, ...resolved }, null, 2));
+        console.log(JSON.stringify({ subject, ...resolved, deprecated: true }, null, 2));
       } else {
         console.log(`subject: ${subject}`);
         console.log(`evolution_mode: ${resolved.mode}`);
         console.log(`source: ${resolved.source}`);
+        console.log('deprecated: use `jea daemon evolution-state` (active|paused); scheduling is evidence-driven');
       }
       return 0;
     }
@@ -1541,10 +1621,12 @@ export async function daemonCommand({ subcommand, flags = {}, args = [], root = 
           console.log(JSON.stringify({ subject, ...result }, null, 2));
         } else if (!result.changed) {
           console.log(`evolution_mode already ${result.mode} (${result.source})`);
+          console.log('deprecated: this no longer changes scheduling; use `jea daemon evolution-state set active|paused`');
         } else {
           console.log(`evolution_mode: ${result.previous} -> ${result.mode}`);
           console.log(`source: ${result.source}`);
           console.log(`path: ${result.path}`);
+          console.log('deprecated: this no longer changes scheduling; use `jea daemon evolution-state set active|paused`');
         }
         return 0;
       } catch (err) {
@@ -1558,29 +1640,31 @@ export async function daemonCommand({ subcommand, flags = {}, args = [], root = 
     return 2;
   }
 
-  if (subcommand === 'cycle') {
+  if (subcommand === 'cycle' || subcommand === 'reaction') {
     if (multiSubject) {
-      console.error('daemon cycle supports one subject at a time.');
+      console.error(`daemon ${subcommand} supports one subject at a time.`);
       return 2;
     }
     const [cycleCommand, ...cycleArgs] = args;
     if (cycleCommand === 'request') {
       const reason = flags.reason && flags.reason !== true ? String(flags.reason) : 'manual';
       const note = flags.note && flags.note !== true ? String(flags.note) : null;
-      const result = enqueueCycleStartRequestWithEvent(root, subject, {
+      const result = enqueueReactionRequest(root, subject, {
         reason,
+        source: 'cli',
         meta: note ? { note } : {},
       });
       if (flags.json) {
         console.log(JSON.stringify(result, null, 2));
       } else {
-        console.log(`cycle start request: ${result.request.request_id}`);
+        console.log(`reaction request: ${result.request.request_id}`);
         console.log(`reasons: ${result.request.reasons.join(', ')}`);
+        if (result.wake?.id) console.log(`wake: ${result.wake.id}`);
         console.log(result.created ? 'status: created' : 'status: merged');
       }
       return 0;
     }
-    console.error('Usage: jea daemon cycle request [--reason TEXT] [--note TEXT] [--subject NAME] [--json]');
+    console.error(`Usage: jea daemon ${subcommand} request [--reason TEXT] [--note TEXT] [--subject NAME] [--json]`);
     return 2;
   }
 
@@ -1635,7 +1719,7 @@ export async function daemonCommand({ subcommand, flags = {}, args = [], root = 
       console.error('Usage: jea daemon work --once [--subject NAME]');
       return 2;
     }
-    const domain = flags.domain && flags.domain !== true ? String(flags.domain) : 'cycle';
+    const domain = normalizeDaemonDomain(flags.domain, 'cycle');
     if (domain !== 'channel') {
       const laneGuard = checkSubjectLaneReady(root, { subject });
       if (!laneGuard.ok) {
@@ -1662,7 +1746,7 @@ export async function daemonCommand({ subcommand, flags = {}, args = [], root = 
       console.error('daemon start supports one subject at a time. External orchestrators should start one worker process per subject.');
       return 2;
     }
-    const domain = flags.domain && flags.domain !== true ? String(flags.domain) : 'all';
+    const domain = normalizeDaemonDomain(flags.domain, 'all');
     if (domain !== 'channel') {
       const laneGuard = checkSubjectLaneReady(root, { subject });
       if (!laneGuard.ok) {
@@ -1850,14 +1934,16 @@ export async function daemonCommand({ subcommand, flags = {}, args = [], root = 
   }
 
   {
-    console.error('Usage: jea daemon <enqueue|work|process-once|start|stop|status|events|doctor|tasks|inbox|cycle|evolution-mode> [--subject NAME] [--subjects a,b | --all] [--json]');
+    console.error('Usage: jea daemon <enqueue|work|process-once|start|stop|status|events|doctor|tasks|inbox|cycle|reaction|evolution-state|evolution-mode> [--subject NAME] [--subjects a,b | --all] [--json]');
     console.error('       jea daemon enqueue --type cognitive_reaction|exec_queue|verify_batch|rule_reaction|memory_compaction [--idempotency-key KEY]');
-    console.error('       jea daemon cycle request [--reason TEXT] [--note TEXT]');
-    console.error('       jea daemon evolution-mode show [--json]');
-    console.error('       jea daemon evolution-mode set <continuous|on_demand> [--json]');
+    console.error('       jea daemon reaction request [--reason TEXT] [--note TEXT]');
+    console.error('       jea daemon cycle request [--reason TEXT] [--note TEXT]  (compat alias)');
+    console.error('       jea daemon evolution-state show [--json]');
+    console.error('       jea daemon evolution-state set <active|paused> [--json]');
+    console.error('       jea daemon evolution-mode show|set  (deprecated; does not change scheduling)');
     console.error('       jea daemon process-once [--mock] [--subject NAME] [--json]');
     console.error('       jea daemon work --once');
-    console.error('       jea daemon start [--tick-ms N] [--evolution-mode continuous|on_demand] [--interval-ms N] [--idle-interval-ms N] [--heartbeat-ms N]');
+    console.error('       jea daemon start [--tick-ms N] [--domain evolution|cycle|channel|all] [--interval-ms N] [--idle-interval-ms N] [--heartbeat-ms N]');
     console.error('       jea daemon stop');
     console.error('       jea daemon events [--limit N]');
     console.error('       jea daemon doctor');

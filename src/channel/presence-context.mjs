@@ -274,6 +274,7 @@ export function buildPresenceContext(root, subject, {
     daemon: {
       health: projection.health,
       evolution_mode: projection.evolution_mode,
+      evolution_state: projection.evolution_state ?? null,
       wake_policy: projection.wake_policy ?? null,
       pipeline: projection.pipeline ?? null,
       reactor: projection.reactor ?? null,
