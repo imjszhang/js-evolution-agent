@@ -206,7 +206,7 @@ export function createApplicationCommandHandlers(options: ApplicationCommandHost
       capability: 'local-only',
       handle: (payload) => service.start(
         stringField(payload, 'subject')!,
-        (stringField(payload, 'domain', { required: false }) ?? 'all') as 'all' | 'cycle' | 'channel'
+        (stringField(payload, 'domain', { required: false }) ?? 'all') as 'all' | 'cycle' | 'channel' | 'evolution'
       )
     },
     'service.stop': {

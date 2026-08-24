@@ -46,7 +46,9 @@ export function evolutionModeFromFlags(flags = {}) {
 }
 
 /**
- * Priority: runtime subject registry evolution.mode > CLI --evolution-mode > JEA_EVOLUTION_MODE > continuous
+ * Deprecated compatibility reader. Priority:
+ * runtime subject registry evolution.mode > CLI --evolution-mode > JEA_EVOLUTION_MODE > continuous
+ * This field does not change live scheduling; use evolution.state.
  */
 export function resolveEvolutionMode(root, { subject = null, flags = {}, env = process.env } = {}) {
   const config = subject

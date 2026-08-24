@@ -118,7 +118,7 @@ flowchart TB
 | --- | --- | --- |
 | R1 | **证据契约**：写入证据流必须符合 schema（`evolution-event.mjs`），带 provenance（来源、时间、引用） | evolution-events 无 schema 的缺口；observation guard 部分吸收 |
 | R2 | **批次反应**：反应器以 claim-batch 方式消费（幂等唤醒、有界 deadline、失败不吞批） | tick reconcile、stuck watchdog 对账、`JEA_CYCLE_*` 接力 |
-| R3 | **安静即健康**：无证据不反应；唤醒条件可配（证据类别/优先级/阈值） | 5min tick 开轮、continuous/on_demand 双模式、`evolution_stalled` 判定 |
+| R3 | **安静即健康**：无证据不反应；唤醒条件可配（证据类别/优先级/阈值） | 5min tick 开轮、continuous/on_demand 双模式、`evolution_stalled` 判定。Live 开关已收敛为 `evolution.state`（见 `docs/evolution-terminology.md`） |
 | R4 | **单一事实源**：证据流是唯一进度真相；反应器状态只是缓存 | cycle-state 与 task queue 双源、drift 修复 |
 | R5 | **批次即锚点**：batch id 是 checkpoint 单元、honesty 审计单元、KV 缓存前缀锚点 | 按 step 切檔、每轮一条 honesty 事件、轮次缓存前缀 |
 | R6 | **法则反应阈值**：per-goal 证据窗口（条数/信息增量）触发 assess；streak 按证据计 | `RULE_FEEDBACK_WINDOW/DEAD_STREAK` 按轮计、mutate cooldown 等两轮 |

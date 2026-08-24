@@ -5,6 +5,11 @@ import {
   updateSubjectsRegistry,
 } from '../infra/subjects.mjs';
 import { resolveDesktopConfig } from '../channel/adapters/desktop/config.mjs';
+import {
+  automationModeFromState,
+  resolveEvolutionStateFromEntry,
+  stateFromAutomationMode,
+} from './evolution-state.mjs';
 
 export const PRODUCT_AUTOMATION_MODES = Object.freeze(['automatic', 'paused']);
 
@@ -15,56 +20,19 @@ export function normalizeProductAutomationMode(raw) {
   return null;
 }
 
-function truthyFlag(value) {
-  return value === true || value === 'true' || value === 1 || value === '1';
-}
-
 /**
- * Map registry evolution.automation / legacy evolution.mode to product modes.
+ * Map registry evolution.state / automation / legacy evolution.mode to product modes.
  * continuous and on_demand both become automatic: the Cycle worker must be
  * alive to drain wakes. Ambiguous legacy values are reported in `diagnostic`.
  */
 export function resolveAutomationPolicyFromEntry(entry) {
-  const evolution = entry?.evolution && typeof entry.evolution === 'object' ? entry.evolution : {};
-  const automationRaw = String(evolution.automation ?? '').trim().toLowerCase();
-  const modeRaw = String(evolution.mode ?? '').trim().toLowerCase();
-  const background = truthyFlag(evolution.background);
-  const mappedMode = modeRaw === 'on-demand' ? 'on_demand' : modeRaw;
-
-  if (automationRaw === 'paused' || mappedMode === 'paused') {
-    return {
-      mode: 'paused',
-      mapped_from: automationRaw === 'paused' ? 'automation' : 'legacy_mode',
-      diagnostic: null,
-      background,
-    };
-  }
-  if (automationRaw === 'automatic') {
-    return {
-      mode: 'automatic',
-      mapped_from: 'automation',
-      diagnostic: mappedMode === 'continuous' || mappedMode === 'on_demand' ? `legacy_${mappedMode}` : null,
-      background,
-    };
-  }
-  if (mappedMode === 'automatic') {
-    return { mode: 'automatic', mapped_from: 'legacy_mode', diagnostic: null, background };
-  }
-  if (mappedMode === 'continuous') {
-    return { mode: 'automatic', mapped_from: 'continuous', diagnostic: 'legacy_continuous', background };
-  }
-  if (mappedMode === 'on_demand') {
-    return { mode: 'automatic', mapped_from: 'on_demand', diagnostic: 'legacy_on_demand', background };
-  }
-  if (mappedMode) {
-    return {
-      mode: 'automatic',
-      mapped_from: 'ambiguous',
-      diagnostic: 'ambiguous_evolution_mode',
-      background,
-    };
-  }
-  return { mode: 'automatic', mapped_from: 'default', diagnostic: null, background };
+  const resolved = resolveEvolutionStateFromEntry(entry);
+  return {
+    mode: automationModeFromState(resolved.state),
+    mapped_from: resolved.mapped_from,
+    diagnostic: resolved.diagnostic,
+    background: resolved.background,
+  };
 }
 
 export function resolveAutomationPolicy(root, subject) {
@@ -104,8 +72,17 @@ export function setSubjectAutomation(root, subject, mode) {
       throw new Error(`Subject not found in <JEA_HOME>/subjects/registry.json: ${subjectName}`);
     }
     previous = resolveAutomationPolicyFromEntry(previousEntry).mode;
-    changed = previous !== normalized;
-    if (!changed && previousEntry.evolution?.automation === normalized) return registry;
+    const nextState = stateFromAutomationMode(normalized);
+    const current = previousEntry.evolution && typeof previousEntry.evolution === 'object'
+      ? previousEntry.evolution
+      : {};
+    const alreadyAligned = previous === normalized
+      && current.automation === normalized
+      && current.state === nextState;
+    if (alreadyAligned) {
+      changed = false;
+      return registry;
+    }
     changed = true;
     return {
       default_subject: registry.default_subject,
@@ -114,8 +91,9 @@ export function setSubjectAutomation(root, subject, mode) {
         [subjectName]: {
           ...previousEntry,
           evolution: {
-            ...(previousEntry.evolution && typeof previousEntry.evolution === 'object' ? previousEntry.evolution : {}),
+            ...current,
             automation: normalized,
+            state: nextState,
           },
         },
       },

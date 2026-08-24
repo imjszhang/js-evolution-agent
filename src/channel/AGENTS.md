@@ -186,9 +186,12 @@ Classifier 识别 `control_request` 后**不直接执行**配置变更，而是�
 
 | action_id | 含义 | 写操作 | 需要授权 |
 | --- | --- | --- | --- |
-| `daemon_evolution_mode_set` | 切换 `continuous` / `on_demand` | 是 | operator binding 或 allowlist |
-| `daemon_evolution_mode_show` | 查看当前 evolution mode | 否 | 否 |
-| `daemon_cycle_request` | 入队 cycle start request | 是 | operator binding 或 allowlist |
+| `daemon_evolution_state_set` | 切换 `active` / `paused` | 是 | operator binding 或 allowlist |
+| `daemon_evolution_state_show` | 查看当前 evolution state | 否 | 否 |
+| `daemon_reaction_request` | 入队显式 reaction / cognitive wake | 是 | operator binding 或 allowlist |
+| `daemon_evolution_mode_set` | 已弃用：只写 `evolution.mode`，并把 state 设为 `active` | 是 | operator binding 或 allowlist |
+| `daemon_evolution_mode_show` | 已弃用：查看 legacy evolution mode | 否 | 否 |
+| `daemon_cycle_request` | `daemon_reaction_request` 的兼容别名 | 是 | operator binding 或 allowlist |
 
 约束：
 

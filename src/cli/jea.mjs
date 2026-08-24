@@ -42,12 +42,15 @@ Commands:
   evolve resume ID       Resume an interrupted evolve run
   evolve status [ID]     Show recent or specific evolve run status
   daemon enqueue         Enqueue reactor daemon tasks
-  daemon cycle request   Queue a cognitive wake request (compat command name)
-  daemon evolution-mode  Show or set evolution mode (continuous / on_demand)
+  daemon reaction request
+                         Queue a cognitive wake request
+  daemon cycle request   Compat alias of daemon reaction request
+  daemon evolution-state Show or set evolution.state (active / paused)
+  daemon evolution-mode  Deprecated; writes evolution.mode only, does not change scheduling
   daemon work --once     Execute one daemon task
   daemon process-once    Scan evolution wake backlog and process one cognitive task
   daemon start           Run the daemon worker loop in the foreground
-                         Supports --evolution-mode continuous|on_demand
+                         Supports --domain evolution|cycle|channel|all
   daemon stop            Request the daemon worker to stop gracefully
   daemon status          Show daemon task and worker projection
                          Supports --all and --subjects for multi-subject views

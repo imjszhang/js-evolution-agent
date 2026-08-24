@@ -5,24 +5,25 @@
 
 ## Daemon 工作流
 
-Daemon 用于 **belief-driven、事件驱动的 reactor 演化**。推荐用 `jea daemon start` 启动 worker：默认 **持续进化模式**（`continuous`）下每 **5 分钟** heartbeat tick 会消费显式请求并扫描 wake backlog。无 evidence/wake 时安静即健康，不凭 tick 创建工作。
+Daemon 用于 **belief-driven、事件驱动的 reactor 演化**。推荐用 `jea daemon start` 启动 worker：idle 循环扫描 eligible evidence / wake backlog，heartbeat 只做维护与消费显式 reaction request。无 evidence/wake 时安静即健康，**不凭 tick 创建工作**。
 
-**按需进化模式**（`on_demand`）：tick 不创建工作，仅 reconcile 并消费已有显式请求（`jea daemon cycle request` 是兼容命令名，`jea intel brief put` 也会 wake cognition）。worker idle 时会立即消费 pending request，不必等 5 分钟。无 eligible evidence / wake / request 时 long idle 为 **healthy**。
+运行开关是 `evolution.state`：`active` 自动消费 wake；`paused` 不启新的 Cognitive / Exec / Rule，verify / settlement / Memory 仍可收尾。`evolution.mode`（`continuous` / `on_demand`）已弃用，不再改变调度。`jea daemon cycle request` 是 `jea daemon reaction request` 的兼容命令名；`jea intel brief put` 也会 wake cognition。
 
-历史 cycle-state JSON **保留可读**，不再作为 live driver，也不用于推断 reactor task 已完成。
+历史 cycle-state JSON **保留可读**，不再作为 live driver，也不用于推断 reactor task 已完成。术语分层见 [docs/evolution-terminology.md](../../docs/evolution-terminology.md)。
 
-演化模式解析优先级：`<JEA_HOME>/subjects/registry.json` 中 `subjects.<name>.evolution.mode` > `jea daemon start --evolution-mode` > env `JEA_EVOLUTION_MODE` > 默认 `continuous`。
+状态解析优先级：`<JEA_HOME>/subjects/registry.json` 中 `subjects.<name>.evolution.state` > `evolution.automation` > 默认 `active`。`evolution.mode` 只作兼容读。
 
-**热加载**：daemon worker 运行中修改 `<JEA_HOME>/subjects/registry.json` 的 `evolution.mode` **无需 restart**（下一轮 worker loop 重新读盘，通常数秒内 idle 生效；`daemon events` 可见 `evolution_mode_changed`）。修改 `.env` 的 `JEA_EVOLUTION_MODE` 或启动时的 `--evolution-mode` **需** `daemon stop` 后重新 `start` 才生效。
+**热加载**：daemon worker 运行中修改 `<JEA_HOME>/subjects/registry.json` 的 `evolution.state` **无需 restart**（下一轮 worker loop 重新读盘，通常数秒内 idle 生效；`daemon events` 可见 `evolution_state_changed`）。
 
 `jea run` 是 reactor 同步等待入口，与 daemon 共用 cognitive / exec / verify / rule / memory tasks。旧 driver task 不再是 live 操作入口。
 
 ### 任务与 worker
 
-- `jea daemon start [--mock] [--tick-ms N] [--evolution-mode continuous|on_demand] [--heartbeat-ms N] [--lease-ms N]`：前台 worker；默认 `tick-ms=300000`（5min）。**Windows 长期后台**勿用 Cursor/IDE 后台 shell（会话结束会中止子进程）；用 `npm run daemon:start:detached`（或 `scripts/daemon-start-detached-win.ps1 -Subject NAME [-StopFirst] [-Force]`），日志在 `<JEA_HOME>/logs/daemon-<subject>.*.log`。
-- `jea daemon evolution-mode show [--json]`：查看当前 subject 演化模式与来源。
-- `jea daemon evolution-mode set continuous|on_demand [--json]`：写入 `<JEA_HOME>/subjects/registry.json` 并 emit `evolution_mode_changed`（viewer SSE / worker 热加载）。
-- `jea daemon cycle request [--reason TEXT] [--note TEXT]`：入队 cycle 启动请求（写入 `data/evolution/cycle-start-requests.json`），由 worker 在前提满足时开轮。
+- `jea daemon start [--mock] [--tick-ms N] [--domain evolution|cycle|channel|all] [--heartbeat-ms N] [--lease-ms N]`：前台 worker；默认 `tick-ms=300000`（5min）。`--domain cycle` 是 evolution domain 的兼容名。**Windows 长期后台**勿用 Cursor/IDE 后台 shell（会话结束会中止子进程）；用 `npm run daemon:start:detached`（或 `scripts/daemon-start-detached-win.ps1 -Subject NAME [-StopFirst] [-Force]`），日志在 `<JEA_HOME>/logs/daemon-<subject>.*.log`。
+- `jea daemon evolution-state show [--json]`：查看当前 subject 的 `active|paused` 与来源。
+- `jea daemon evolution-state set active|paused [--json]`：写入 `evolution.state` 并同步 `evolution.automation`，emit `evolution_state_changed`。
+- `jea daemon evolution-mode show|set`：已弃用；只写 `evolution.mode`，不改变调度。
+- `jea daemon reaction request [--reason TEXT] [--note TEXT]`：入队显式 reaction / cognitive wake。`jea daemon cycle request` 是兼容别名。
 - `jea daemon work --once [--mock]`：领取并执行一个 reactor task 后退出。
 - `jea daemon process-once [--mock] [--json]`：扫描 Cycle wake backlog 并执行一次有界 cognitive 恢复；不启动持续演化，不改写 Channel worker。
 - reactor task 类型：`cognitive_reaction`、`exec_queue`、`verify_batch`、`rule_reaction`、`memory_compaction`。这些任务进程内执行，恢复真相是 batch checkpoint / exec intent / exec result / settlement checkpoint，不是 cycle-state。

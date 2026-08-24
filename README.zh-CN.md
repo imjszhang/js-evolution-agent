@@ -326,7 +326,7 @@ jea subject check
 jea data init --all --subject my-product
 ```
 
-Registry 机器可读字段（lane、resources、channels、evolution.mode）参考 [`policies/subjects.example.json`](./policies/subjects.example.json)。创建与配置细节见 [`policies/README.md`](./policies/README.md)。
+Registry 机器可读字段（lane、resources、channels、`evolution.state`）参考 [`policies/subjects.example.json`](./policies/subjects.example.json)。创建与配置细节见 [`policies/README.md`](./policies/README.md)。
 
 多主体并行时，**每个 subject 一个 daemon 进程**：
 
@@ -346,23 +346,27 @@ Daemon 运行有界的 **事件驱动 reactors**，推荐用于长期无人值�
 # 前台 worker（cycle + channel 同进程）
 jea daemon start --subject my-bot
 
-# 生产建议：cycle 与 channel 分进程，故障隔离
-jea daemon start --subject my-bot --domain cycle
+# 生产建议：evolution 与 channel 分进程，故障隔离
+jea daemon start --subject my-bot --domain evolution
 jea daemon start --subject my-bot --domain channel
 
 # Windows 后台 detached
 npm run daemon:start:detached
 ```
 
-| 模式 | 行为 |
+调度是 **事件驱动**。心跳不会凭空创建 Cognitive 工作。运行开关是 `evolution.state`：
+
+| 状态 | 行为 |
 | --- | --- |
-| `continuous`（默认） | 心跳消费请求与 eligible wake backlog；安静是健康状态，不凭空造工作 |
-| `on_demand` | 仅显式请求（`jea daemon cycle request`、operator brief 等）唤醒 cognition |
+| `active`（默认） | worker 自动消费 eligible evidence / wake |
+| `paused` | 不启新的 Cognitive / Exec / Rule；verify、settlement、Memory 仍可收尾 |
+
+`evolution.mode`（`continuous` / `on_demand`）已弃用，不再改变调度。
 
 ```bash
-jea daemon evolution-mode show
-jea daemon evolution-mode set on_demand
-jea daemon cycle request --reason "manual kick"
+jea daemon evolution-state show
+jea daemon evolution-state set paused
+jea daemon reaction request --reason "manual kick"
 jea daemon status --json
 jea daemon doctor
 ```

@@ -5,6 +5,8 @@
       "policy": "SUBJECT.md",
       "data_namespace": "my-subject",
       "evolution": {
+        "state": "active",
+        "automation": "automatic",
         "mode": "on_demand",
         "pipeline": "reactor",
         "guards": [

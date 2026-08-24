@@ -29,8 +29,8 @@ import {
   readPendingCycleStartRequest,
   summarizePendingCycleStartRequest,
 } from './cycle-start-requests.mjs';
-import { isContinuousEvolutionMode } from './evolution-mode.mjs';
 import { isReactorPipeline, resolveCyclePipeline } from './cycle-pipeline-mode.mjs';
+import { isEvolutionPaused } from '../product/evolution-state.mjs';
 import { enqueueWakeIntent } from '../evolution/reactor/wake-store.mjs';
 import { runRuntimeMaintenance } from './runtime-maintenance.mjs';
 
@@ -63,7 +63,10 @@ export function resolveInputPipeline(root, subject, input = {}) {
   }).pipeline;
 }
 
-/** Tick auto-open is opt-in only. Reactor never inherits train compensation. */
+/**
+ * Tick auto-open is retired. The env flag is still readable for diagnostics,
+ * but heartbeat never enqueues tick-only work.
+ */
 export function isTickOpenCycleEnabled({ env = process.env } = {}) {
   return envFlagOn(env, 'JEA_TICK_OPEN_CYCLE');
 }
@@ -336,12 +339,9 @@ export function processCycleStartRequests(root, subject, input = {}) {
     return { processed: false, started: false, reason: 'no_request' };
   }
 
-  const env = input.env ?? process.env;
   const pipeline = input.pipeline ?? resolveInputPipeline(root, subject, input);
   const tickIgnoreReason = isTickOnlyCycleStartRequest(pending)
-    ? (input.evolution_mode === 'on_demand'
-      ? 'on_demand_tick_request'
-      : (isTickOpenCycleEnabled({ pipeline, env }) ? null : 'tick_open_disabled'))
+    ? (input.evolution_mode === 'on_demand' ? 'on_demand_tick_request' : 'tick_request_ignored')
     : null;
   if (tickIgnoreReason) {
     consumeCycleStartRequest(root, subject, pending.request_id);
@@ -357,6 +357,16 @@ export function processCycleStartRequests(root, subject, input = {}) {
       processed: true,
       started: false,
       reason: tickIgnoreReason,
+      request: summarizePendingCycleStartRequest(pending),
+    };
+  }
+
+  if (isEvolutionPaused(root, subject)) {
+    deferCycleStartRequest(root, subject, pending.request_id, { blockedReason: 'evolution_paused' });
+    return {
+      processed: true,
+      started: false,
+      reason: 'evolution_paused',
       request: summarizePendingCycleStartRequest(pending),
     };
   }
@@ -545,21 +555,15 @@ export function runHeartbeatTick(root, subject, input = {}) {
   const pipeline = resolveInputPipeline(root, subject, input);
   const gatedInput = { ...input, pipeline, env };
   const reconcileResult = reconcileOpenCycles(root, subject, gatedInput);
-  const evolutionMode = input.evolution_mode ?? 'continuous';
-  const tickOpenEnabled = isTickOpenCycleEnabled({ pipeline, env });
-  let requestEnqueue = null;
-  if (isContinuousEvolutionMode(evolutionMode) && tickOpenEnabled) {
-    requestEnqueue = enqueueCycleStartRequestWithEvent(root, subject, { reason: 'tick' });
-  }
   const requestProcess = processCycleStartRequests(root, subject, gatedInput);
   return {
     reconcile: reconcileResult,
-    request_enqueue: requestEnqueue,
+    request_enqueue: null,
     request_process: requestProcess,
     start: requestProcess,
     maintenance,
     pipeline,
-    tick_open_enabled: tickOpenEnabled,
+    tick_open_enabled: false,
   };
 }
 

@@ -75,12 +75,13 @@ describe('product automation policy', () => {
     });
     expect(resolveAutomationPolicy(runtime, 'alpha')).toMatchObject({
       mode: 'paused',
-      mapped_from: 'automation',
+      mapped_from: 'state',
       background: true,
     });
     const registry = JSON.parse(readFileSync(join(runtime.jeaHome, 'subjects', 'registry.json'), 'utf8'));
     expect(registry.subjects.alpha.evolution.mode).toBe('on_demand');
     expect(registry.subjects.alpha.evolution.automation).toBe('paused');
+    expect(registry.subjects.alpha.evolution.state).toBe('paused');
     expect(registry.subjects.alpha.evolution.background).toBe(true);
   });
 

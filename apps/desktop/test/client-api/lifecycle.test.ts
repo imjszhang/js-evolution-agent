@@ -111,6 +111,7 @@ describe('client lifecycle commands', () => {
     const registry = JSON.parse(readFileSync(join(jeaHome, 'subjects', 'registry.json'), 'utf8'))
     expect(registry.subjects.alpha.evolution.mode).toBe('on_demand')
     expect(registry.subjects.alpha.evolution.automation).toBe('paused')
+    expect(registry.subjects.alpha.evolution.state).toBe('paused')
     expect(reconcile).toHaveBeenCalledWith({ subject: 'alpha', reason: 'set_automation' })
     const readiness = await client.getServiceReadiness('alpha')
     expect(readiness.automation).toMatchObject({ mode: 'paused', intent: 'paused' })

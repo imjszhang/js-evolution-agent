@@ -20,6 +20,7 @@ import {
   ruleCatchUpAllowsBacklog,
 } from './catch-up-budget.mjs';
 import { consumeWakeIntent, enqueueWakeIntent, listPendingWakes } from './wake-store.mjs';
+import { isEvolutionPaused } from '../../product/evolution-state.mjs';
 import { patchBatchCheckpoint, readBatchCheckpoint } from './batch-checkpoint-store.mjs';
 import { listEligibleEvidence, readClaimLedger } from './claim-ledger.mjs';
 import { listOpenExecIntents } from './exec-intent-store.mjs';
@@ -90,6 +91,7 @@ export function scanWakeBacklog(root, subject, {
 } = {}) {
   const runtime = runtimeForSubject(root, subject);
   const enqueued = [];
+  const paused = isEvolutionPaused(root, subject);
   const cognitivePending = listEligibleEvidence(runtime.dataRoot, { reactor: 'cognitive' });
   if (cognitivePending.length === 0) {
     clearCatchUpIfIdle(runtime.dataRoot, 0, env);
@@ -116,6 +118,9 @@ export function scanWakeBacklog(root, subject, {
   } : {};
 
   for (const intent of listPendingWakes(root, subject)) {
+    if (paused && (intent.kind === 'cognitive' || intent.kind === 'exec' || intent.kind === 'rule')) {
+      continue;
+    }
     if (!gate.allowed && intent.kind === 'cognitive' && intent.reason === 'evidence_backlog') {
       continue;
     }
@@ -130,7 +135,7 @@ export function scanWakeBacklog(root, subject, {
   }
 
   const pendingDecisions = countPendingDecisions(runtime.runtimeRoot);
-  if (pendingDecisions > 0) {
+  if (!paused && pendingDecisions > 0) {
     const result = enqueueReactorTask(root, subject, 'exec', {
       reason: 'decision_backlog',
       source: 'backlog_scan',
@@ -139,7 +144,7 @@ export function scanWakeBacklog(root, subject, {
     if (result.task_created) enqueued.push(result);
   }
 
-  if (cognitivePending.length > 0 && gate.allowed) {
+  if (!paused && cognitivePending.length > 0 && gate.allowed) {
     const result = enqueueReactorTask(root, subject, 'cognitive', {
       reason: 'evidence_backlog',
       source: 'backlog_scan',
@@ -151,7 +156,7 @@ export function scanWakeBacklog(root, subject, {
     }
   }
 
-  if (ruleDue.due.length > 0 && ruleAllowed) {
+  if (!paused && ruleDue.due.length > 0 && ruleAllowed) {
     const result = enqueueReactorTask(root, subject, 'rule', {
       reason: ruleDue.due[0].reason || 'rule_evidence_backlog',
       source: 'backlog_scan',
@@ -166,7 +171,7 @@ export function scanWakeBacklog(root, subject, {
 
   const retryableIntents = listOpenExecIntents(runtime.dataRoot)
     .filter((intent) => intent.status === 'prepared' || intent.status === 'intended');
-  if (retryableIntents.length > 0 && pendingDecisions > 0) {
+  if (!paused && retryableIntents.length > 0 && pendingDecisions > 0) {
     const result = enqueueReactorTask(root, subject, 'exec', {
       reason: 'retryable_exec_intents',
       source: 'backlog_scan',
@@ -201,6 +206,7 @@ export function scanWakeBacklog(root, subject, {
 
   return {
     scanned: true,
+    paused,
     enqueued,
     catch_up: readCatchUpProjection(runtime.dataRoot, env),
     rule_catch_up: readRuleCatchUpProjection(runtime.dataRoot, env),

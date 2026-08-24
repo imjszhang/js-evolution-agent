@@ -101,12 +101,13 @@ export class ServiceCommandOwner {
     })
   }
 
-  async start(subject: string, domain: 'all' | 'cycle' | 'channel' = 'all'): Promise<ServiceStatus> {
+  async start(subject: string, domain: 'all' | 'cycle' | 'channel' | 'evolution' = 'all'): Promise<ServiceStatus> {
     const name = requireSubject(this.runtime, subject)
-    if (!['all', 'cycle', 'channel'].includes(domain)) {
+    const normalized = domain === 'evolution' ? 'cycle' : domain
+    if (!['all', 'cycle', 'channel'].includes(normalized)) {
       throw new PublicClientError('INVALID_REQUEST', 'A valid domain is required.')
     }
-    await this.processPort.start(name, { domain })
+    await this.processPort.start(name, { domain: normalized })
     return this.getStatus(name)
   }
 

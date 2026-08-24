@@ -3002,6 +3002,10 @@ describe('channel domain', () => {
       expect(parseControlRequestFromText('切换为 continuous 模式')?.params?.mode).toBe('continuous');
       expect(parseControlRequestFromText('启动一轮进化')?.action_id).toBe('daemon_cycle_request');
       expect(parseControlRequestFromText('当前进化模式是什么')?.action_id).toBe('daemon_evolution_mode_show');
+      expect(parseControlRequestFromText('暂停进化')?.action_id).toBe('daemon_evolution_state_set');
+      expect(parseControlRequestFromText('暂停进化')?.params?.state).toBe('paused');
+      expect(parseControlRequestFromText('恢复进化')?.params?.state).toBe('active');
+      expect(parseControlRequestFromText('立即检查')?.action_id).toBe('daemon_reaction_request');
     });
 
     it('classifyChannelEnvelope maps explicit control phrases to control_request', () => {
