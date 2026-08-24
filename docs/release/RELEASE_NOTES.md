@@ -1,6 +1,6 @@
 # JEA 0.2.1
 
-日期：2026-08-24。候选补丁，尚未创建 GitHub Release。认证清单见 [0.2.1-certification.md](./0.2.1-certification.md)，对应 [#202](https://github.com/imjszhang/js-evolution-agent/issues/202)。上一产品版是 [v0.2.0](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.2.0)。
+日期：2026-08-24。[GitHub Release v0.2.1](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.2.1) 已发布，tag 指向已认证提交 `1b58a39`。认证清单见 [0.2.1-certification.md](./0.2.1-certification.md)，对应已关闭的 [#202](https://github.com/imjszhang/js-evolution-agent/issues/202)。上一产品版是 [v0.2.0](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.2.0)。
 
 ## 本补丁包含
 
@@ -9,6 +9,7 @@
 - Rule 失败恢复预算、circuit / quarantine，以及 LLM budget exhaustion 时保留 evidence（#198）。
 - Evidence journal 只读 inspect、停机 rebuild/compact/rotate、显式 backup rollback（#199）。
 - Attach workflow 安装锁定依赖后再校验官方资产（#186）。
+- 认证路径允许 Channel coordinator 在同一 PID 上托管全部默认 role（#205）。
 
 ## 已交付（沿用 0.2.0）
 
@@ -30,6 +31,7 @@
 - `publish-guard` 不自动发版；认证证据完整后仍需操作者明确放行。
 - 放行后由 `Attach Release Assets` workflow 从官方 artifact 挂到既有 Release，不经本机中转。
 - 闭环审计继续使用冻结的 `0.2.0-belief-loop` 目标，不另开 0.2.1 contract。
+- 本次认证见 [run 32685878713](https://github.com/imjszhang/js-evolution-agent/actions/runs/32685878713)，资产挂载见 [run 32688240101](https://github.com/imjszhang/js-evolution-agent/actions/runs/32688240101)。
 
 ## 已知限制 / 明确延期
 
