@@ -13,6 +13,7 @@ import { writeWorkerState } from '../src/daemon/daemon-worker-state.mjs';
 import { writePendingOperatorBrief } from '../src/intelligence/operator-briefs.mjs';
 import { runtimeForSubject } from '../src/infra/runtime-paths.mjs';
 import { writeBuildMetadata } from '../src/product/build-metadata.mjs';
+import { PRODUCT_VERSION } from '../src/product/identity.mjs';
 import { isJeaSourceRoot } from '../src/product/app-paths.mjs';
 import { redactMachinePaths } from '../src/product/path-redact.mjs';
 import { redactSecrets } from '../src/intelligence/redaction.mjs';
@@ -61,7 +62,7 @@ export function createIsolatedRecoveryHome({
   writeFileSync(join(sourceRoot, 'oada.config.mjs'), 'export default { version: 1 };\n');
   writeFileSync(join(sourceRoot, 'package.json'), `${JSON.stringify({
     name: 'jea',
-    version: '0.2.0',
+    version: PRODUCT_VERSION,
     type: 'module',
   }, null, 2)}\n`);
   mkdirSync(join(sourceRoot, 'src', 'cli'), { recursive: true });
@@ -304,7 +305,7 @@ export function writePackagedDirFixture({
   writeFileSync(join(dest, 'oada.config.mjs'), 'export default { version: 1 };\n');
   writeFileSync(join(dest, 'package.json'), `${JSON.stringify({
     name: 'jea',
-    version: '0.2.0',
+    version: PRODUCT_VERSION,
     type: 'module',
   }, null, 2)}\n`);
   writeFileSync(join(dest, 'src', 'cli', 'jea.mjs'), 'export async function main() { return 0; }\n');

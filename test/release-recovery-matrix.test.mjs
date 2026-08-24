@@ -57,7 +57,7 @@ function writeMinimalSourceRoot(dir) {
 
 function cleanMetadata(commit = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa') {
   return normalizeBuildMetadata({
-    version: '0.2.0',
+    version: '0.2.1',
     commit,
     dirty: false,
     built_at: '2026-08-17T00:00:00.000Z',
@@ -434,8 +434,8 @@ describe('certification evidence and publish guard', () => {
       }),
     });
     expect(written.evidence.status).toBe('certified');
-    expect(written.evidence.release).toBe('0.2.0');
-    expect(written.evidence.certification).toBe('0.2.0');
+    expect(written.evidence.release).toBe('0.2.1');
+    expect(written.evidence.certification).toBe('0.2.1');
     expect(written.evidence.build_id).toBe(metadata.build_id);
     expect(written.evidence.steps.map((item) => item.id)).toEqual([
       'product_journey',
@@ -452,7 +452,7 @@ describe('certification evidence and publish guard', () => {
     const missing = tempDir('jea-guard-missing-');
     writeFileSync(join(missing, 'certification-evidence.json'), JSON.stringify({
       status: 'certified',
-      release: '0.2.0',
+      release: '0.2.1',
       platform: 'macos-arm64',
       issue77: 'ok',
     }));
@@ -515,7 +515,7 @@ describe('certification evidence and publish guard', () => {
       outDir: dir,
       ...collectCertificationInputs(dir),
     });
-    const report = evaluatePublishGuard({ publish: true, evidenceDir: dir, expectedRelease: '0.2.0' });
+    const report = evaluatePublishGuard({ publish: true, evidenceDir: dir, expectedRelease: '0.2.1' });
     expect(report.ok).toBe(true);
     expect(report.reason).toBe('certification_present');
     expect(evaluateRecoverySoakEvidence(
@@ -534,7 +534,7 @@ describe('certification evidence and publish guard', () => {
       release: '0.3.0',
       ...collectCertificationInputs(dir),
     });
-    const report = evaluatePublishGuard({ publish: true, evidenceDir: dir, expectedRelease: '0.2.0' });
+    const report = evaluatePublishGuard({ publish: true, evidenceDir: dir, expectedRelease: '0.2.1' });
     expect(report.ok).toBe(false);
     expect(report.reason).toBe('certification_not_complete');
   });

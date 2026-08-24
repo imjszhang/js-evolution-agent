@@ -124,7 +124,7 @@ describe('settings feature slot', () => {
     expect(html).toContain('data-testid="settings-diagnostics-channel"')
     expect(html).toContain('data-testid="settings-diagnostics-model"')
     expect(html).toContain('data-testid="settings-diagnostics-conversation"')
-    expect(html).toContain('0.2.0')
+    expect(html).toContain('0.2.1')
     expect(html).toContain('License')
     expect(html).not.toContain('data-testid="settings-cli-install"')
     expect(html).not.toMatch(/reset|migrate|DEEPSEEK_API_KEY|sk-|approval bypass/i)

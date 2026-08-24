@@ -1,7 +1,7 @@
 {
   "name": "@jea/desktop",
-  "version": "0.2.0",
-  "description": "JEA 0.2.0 desktop host",
+  "version": "0.2.1",
+  "description": "JEA 0.2.1 desktop host",
   "author": "JEA",
   "private": true,
   "type": "module",

@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.2.1 — 2026-08-24
+
+JEA 0.2.1 是 [v0.2.0](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.2.0) 之后的产品补丁（[#202](https://github.com/imjszhang/js-evolution-agent/issues/202)）。闭环门槛仍冻结在 `0.2.0-belief-loop`。
+
+### 产品
+
+- Desktop 打开时按 client lifecycle 自动 attach/启动当前 Subject 的 Cycle（[#189](https://github.com/imjszhang/js-evolution-agent/pull/189)、[#190](https://github.com/imjszhang/js-evolution-agent/pull/190)）。
+- Desktop supervisor lease 约束托管 Cycle/Channel，避免无主或过期 worker 继续跑（[#196](https://github.com/imjszhang/js-evolution-agent/pull/196)）。
+
+### 运行时
+
+- 收紧 hot claim 存储，超大 ledger 可流式迁移，避免历史 claims 把 Electron 打到 OOM（[#196](https://github.com/imjszhang/js-evolution-agent/pull/196)）。
+- Rule 失败恢复有界：保留 evidence、限制重放/墙钟/失败预算，并处理 split/circuit/quarantine（[#198](https://github.com/imjszhang/js-evolution-agent/pull/198)）。
+- 可重建 evidence journal：只读 inspect，停机后 rebuild/compact/rotate，以及显式 backup rollback（[#199](https://github.com/imjszhang/js-evolution-agent/pull/199)）。
+
+### 发布
+
+- Attach Release Assets 工作流先安装锁定依赖再校验资产（[#186](https://github.com/imjszhang/js-evolution-agent/pull/186)）。
+- 统一根、Desktop、共享 App、打包 host、CLI、Client API、About、ACP 与构建元数据版本为 `0.2.1`。
+
 ## 0.2.0 — 2026-08-22
 
 JEA 0.2.0 已作为 [GitHub Release v0.2.0](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.2.0) 发布（[#178](https://github.com/imjszhang/js-evolution-agent/issues/178) 已关闭）。

@@ -1,6 +1,6 @@
 {
   "id": "client_api",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "protocol": "jea.client",
   "protocolVersion": "1.0.0"
 }

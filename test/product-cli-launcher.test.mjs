@@ -48,7 +48,7 @@ describe('managed CLI launcher', () => {
       electron: '/Applications/JEA.app/Contents/MacOS/JEA',
       sourceRoot: '/Applications/JEA.app/Contents/Resources/app',
       appPath: '/Applications/JEA.app',
-      version: '0.2.0',
+      version: PRODUCT_VERSION,
     });
     expect(isManagedLauncher(text)).toBe(true);
     expect(text).toContain('ELECTRON_RUN_AS_NODE=1');

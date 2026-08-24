@@ -1,4 +1,14 @@
-# JEA 0.1.0 发布文档
+# JEA 发布文档
+
+当前候选产品是 **0.2.1**（[#202](https://github.com/imjszhang/js-evolution-agent/issues/202)）。已发布版本见 [v0.2.0](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.2.0) 与 [v0.1.0](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.1.0)。
+
+- [0.2.1-certification.md](./0.2.1-certification.md)
+- [RELEASE_NOTES.md](./RELEASE_NOTES.md)
+- [installation.md](./installation.md)
+
+---
+
+## 0.1.0 文档索引
 
 日期：2026-08-18。这些文件描述 **0.1.0 产品形态、认证门禁与已发布 Release**。
 

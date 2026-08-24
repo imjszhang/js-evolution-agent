@@ -446,7 +446,7 @@ function resolvePackagedRoot({ repoRoot, appPath, metadata }) {
   const fixture = writePackagedDirFixture({
     outDir: dir,
     metadata: metadata || {
-      version: '0.2.0',
+      version: RELEASE_VERSION,
       commit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       dirty: false,
       built_at: '2026-08-17T00:00:00.000Z',
