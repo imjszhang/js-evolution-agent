@@ -16,6 +16,7 @@ import {
 import { listBatchCheckpoints } from '../src/evolution/reactor/batch-checkpoint-store.mjs';
 import { runtimeForSubject } from '../src/infra/runtime-paths.mjs';
 import { projectSubjectReadiness } from '../apps/desktop/src/client-api/readiness.ts';
+import { setSubjectEvolutionState } from '../src/product/evolution-state.mjs';
 
 const SUBJECT = 'cycle-once';
 const homes = [];
@@ -293,4 +294,32 @@ describe('Cycle process-once recovery', () => {
     if (previous.JEA_REACTOR_SKIP_INVESTIGATE == null) delete process.env.JEA_REACTOR_SKIP_INVESTIGATE;
     else process.env.JEA_REACTOR_SKIP_INVESTIGATE = previous.JEA_REACTOR_SKIP_INVESTIGATE;
   }, 60_000);
+
+  it('does not start a new Cognitive reaction while evolution.state is paused', async () => {
+    const previous = {
+      JEA_FORCE_MOCK: process.env.JEA_FORCE_MOCK,
+      JEA_REACTOR_SKIP_INVESTIGATE: process.env.JEA_REACTOR_SKIP_INVESTIGATE,
+    };
+    process.env.JEA_FORCE_MOCK = '1';
+    process.env.JEA_REACTOR_SKIP_INVESTIGATE = '1';
+    const { root } = makeIsolatedRoot();
+    setSubjectEvolutionState(root, SUBJECT, 'paused');
+    writeStaleFixture(root, { id: 'brief-cycle-once-paused' });
+
+    const result = await processCycleOnce(root, SUBJECT, {
+      mock: true,
+      'skip-investigate': true,
+    });
+    const runtime = runtimeForSubject(root, SUBJECT);
+    expect(result.status).toBe('idle');
+    expect(result.reason).toBe('evolution_paused');
+    expect(listEligibleEvidence(runtime.dataRoot, { reactor: 'cognitive' }).length).toBeGreaterThan(0);
+    expect(readTerminalClaimArchive(runtime.dataRoot).claims
+      .some((claim) => claim.reactor === 'cognitive')).toBe(false);
+
+    if (previous.JEA_FORCE_MOCK == null) delete process.env.JEA_FORCE_MOCK;
+    else process.env.JEA_FORCE_MOCK = previous.JEA_FORCE_MOCK;
+    if (previous.JEA_REACTOR_SKIP_INVESTIGATE == null) delete process.env.JEA_REACTOR_SKIP_INVESTIGATE;
+    else process.env.JEA_REACTOR_SKIP_INVESTIGATE = previous.JEA_REACTOR_SKIP_INVESTIGATE;
+  });
 });

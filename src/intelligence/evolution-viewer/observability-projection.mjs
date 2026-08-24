@@ -447,6 +447,8 @@ export function buildSubjectObservability({ subject, runtimeRoot, daemon, repo_l
     repo_links,
     evolution_mode: daemon?.evolution_mode ?? null,
     evolution_mode_source: daemon?.evolution_mode_source ?? null,
+    evolution_state: daemon?.evolution_state ?? null,
+    evolution_state_source: daemon?.evolution_state_source ?? null,
   };
 }
 

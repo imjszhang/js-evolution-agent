@@ -76,6 +76,7 @@ import { parseControlRequestFromText } from '../src/channel/control-actions.mjs'
 import { classifyChannelEnvelope, decisionFromClassifierItem, ingestChannelEnvelope } from '../src/channel/ingest.mjs';
 import { buildSpeechGenerationEventPayload, speechIntentFromDeterministic } from '../src/channel/speech-intent.mjs';
 import { resolveEvolutionMode } from '../src/daemon/evolution-mode.mjs';
+import { resolveEvolutionState, setSubjectEvolutionState } from '../src/product/evolution-state.mjs';
 import { channelCommand } from '../src/cli/commands/channel.mjs';
 import { readPendingCycleStartRequest } from '../src/daemon/cycle-start-requests.mjs';
 import {
@@ -3156,6 +3157,29 @@ describe('channel domain', () => {
       const result = await runChannelTask(root, 'alpha', claim.task);
       expect(result.ok).toBe(true);
       expect(resolveEvolutionMode(root, { subject: 'alpha' }).mode).toBe('on_demand');
+      expect(resolveEvolutionState(root, 'alpha').state).toBe('active');
+    });
+
+    it('deprecated evolution-mode set does not resume a paused subject', async () => {
+      const root = makeRoot();
+      writeOperatorBinding(root, 'alpha', 'ou_operator');
+      setSubjectEvolutionState(root, 'alpha', 'paused');
+      expect(resolveEvolutionState(root, 'alpha').state).toBe('paused');
+      writePendingInbound(root, 'alpha', {
+        messageId: 'om_ctrl_mode_paused',
+        chatId: 'oc_operator',
+        senderId: 'ou_operator',
+        content: '切换为按需进化',
+      });
+      await runChannelClassifierTask(root, 'alpha');
+      const claim = claimNextChannelTask(root, 'alpha', {
+        workerId: 'control-worker',
+        types: taskTypesForChannelRole('control'),
+      });
+      const result = await runChannelTask(root, 'alpha', claim.task);
+      expect(result.ok).toBe(true);
+      expect(resolveEvolutionMode(root, { subject: 'alpha' }).mode).toBe('on_demand');
+      expect(resolveEvolutionState(root, 'alpha').state).toBe('paused');
     });
 
     it('control executor rejects write actions without operator binding', async () => {

@@ -362,7 +362,15 @@ export function processCycleStartRequests(root, subject, input = {}) {
   }
 
   if (isEvolutionPaused(root, subject)) {
-    deferCycleStartRequest(root, subject, pending.request_id, { blockedReason: 'evolution_paused' });
+    if (shouldRecordDeferredEvent(subject, pending.request_id, 'evolution_paused')) {
+      recordDaemonEvent(root, subject, {
+        type: 'cycle_start_deferred',
+        status: 'deferred',
+        request_id: pending.request_id,
+        trigger_reasons: pending.reasons,
+        blocked_reason: 'evolution_paused',
+      });
+    }
     return {
       processed: true,
       started: false,

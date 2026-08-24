@@ -1,7 +1,8 @@
 import { resolveModelReadiness } from '../../../../../src/actions/execution-env.mjs'
 import { enqueueCycleStartRequestWithEvent, processCycleOnce } from '../../../../../src/daemon/cycle-dispatch.mjs'
 import { readDaemonProjection } from '../../../../../src/daemon/daemon-projection.mjs'
-import { setSubjectAutomation } from '../../../../../src/product/automation-policy.mjs'
+import { applyEvolutionStateChange } from '../../../../../src/daemon/evolution-state-apply.mjs'
+import { automationModeFromState, stateFromAutomationMode } from '../../../../../src/product/evolution-state.mjs'
 import { PublicClientError } from '../errors'
 import { readSubjectReadiness } from '../readiness'
 import { redactPublicValue } from '../redact'
@@ -147,7 +148,12 @@ export class ServiceCommandOwner {
     if (mode !== 'automatic' && mode !== 'paused') {
       throw new PublicClientError('INVALID_REQUEST', 'Automation mode must be automatic or paused.')
     }
-    const written = setSubjectAutomation(this.runtime, name, mode)
+    const written = applyEvolutionStateChange(
+      this.runtime,
+      name,
+      stateFromAutomationMode(mode),
+      { trigger: 'set_automation' }
+    )
     if (this.hostKind === 'electron' && this.lifecycle) {
       try {
         await this.lifecycle.reconcile({ subject: name, reason: 'set_automation' })
@@ -158,8 +164,8 @@ export class ServiceCommandOwner {
     const readiness = this.getReadiness(name)
     return redactPublicValue({
       subject: name,
-      mode: written.mode as AutomationMode,
-      previous: written.previous as AutomationMode,
+      mode: (written.automation ?? automationModeFromState(written.state)) as AutomationMode,
+      previous: automationModeFromState(written.previous) as AutomationMode,
       changed: Boolean(written.changed),
       mapped_from: readiness.automation?.mapped_from ?? 'automation',
       diagnostic: readiness.automation?.diagnostic ?? null,

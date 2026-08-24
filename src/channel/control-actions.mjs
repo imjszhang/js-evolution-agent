@@ -124,7 +124,7 @@ const ACTIONS = Object.freeze({
     execute(root, subject, request) {
       const mode = request.params.mode;
       const result = applyEvolutionModeChange(root, subject, mode, { trigger: 'channel_control' });
-      const stateResult = applyEvolutionStateChange(root, subject, 'active', { trigger: 'channel_control' });
+      const state = resolveEvolutionState(root, subject);
       return {
         ok: true,
         action_id: 'daemon_evolution_mode_set',
@@ -132,8 +132,8 @@ const ACTIONS = Object.freeze({
         previous: result.previous ?? null,
         changed: result.changed ?? false,
         source: result.resolved?.source ?? null,
-        evolution_state: stateResult.resolved?.state ?? 'active',
-        summary: `Evolution mode set to ${result.resolved?.mode} (deprecated). Scheduling stays evidence-driven; state=${stateResult.resolved?.state ?? 'active'}.`,
+        evolution_state: state.state,
+        summary: `Evolution mode set to ${result.resolved?.mode} (deprecated). This does not change scheduling; live switch is evolution_state=${state.state}.`,
         deprecated: true,
       };
     },

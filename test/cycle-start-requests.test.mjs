@@ -175,7 +175,10 @@ describe('cycle-start-requests', () => {
     const processed = processCycleStartRequests(root, 'alpha', {});
     expect(processed.started).toBe(false);
     expect(processed.reason).toBe('evolution_paused');
-    expect(readPendingCycleStartRequest(root, 'alpha')).toBeTruthy();
+    expect(readPendingCycleStartRequest(root, 'alpha')?.deferred_count ?? 0).toBe(0);
+    const again = processCycleStartRequests(root, 'alpha', {});
+    expect(again.reason).toBe('evolution_paused');
+    expect(readPendingCycleStartRequest(root, 'alpha')?.deferred_count ?? 0).toBe(0);
     expect(readTaskQueue(root, 'alpha').tasks.some((t) => t.type === 'cognitive_reaction')).toBe(false);
     rmSync(root, { recursive: true, force: true });
   });

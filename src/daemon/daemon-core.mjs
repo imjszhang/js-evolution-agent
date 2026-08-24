@@ -1578,14 +1578,14 @@ export async function daemonCommand({ subcommand, flags = {}, args = [], root = 
     const [modeCommand, ...modeArgs] = args;
     if (modeCommand === 'show') {
       const resolved = resolveEvolutionMode(root, { subject, flags });
-        if (flags.json) {
-          console.log(JSON.stringify({ subject, ...resolved, deprecated: true }, null, 2));
-        } else {
-          console.log(`subject: ${subject}`);
-          console.log(`evolution_mode: ${resolved.mode}`);
-          console.log(`source: ${resolved.source}`);
-          console.log('deprecated: use `jea daemon evolution-state` (active|paused); scheduling is evidence-driven');
-        }
+      if (flags.json) {
+        console.log(JSON.stringify({ subject, ...resolved, deprecated: true }, null, 2));
+      } else {
+        console.log(`subject: ${subject}`);
+        console.log(`evolution_mode: ${resolved.mode}`);
+        console.log(`source: ${resolved.source}`);
+        console.log('deprecated: use `jea daemon evolution-state` (active|paused); scheduling is evidence-driven');
+      }
       return 0;
     }
     if (modeCommand === 'set') {

@@ -35,7 +35,7 @@ Desktop `service.setAutomation` and `service.requestCycle` / `service.processCyc
 
 1. Worker alive + new eligible evidence → automatic Cognitive reaction. No cycle-open required.
 2. No evidence → heartbeat never creates Cognitive work.
-3. `paused` → no new Cognitive / Exec / Rule side effects; verify / settlement / Memory may finish.
-4. "Check now" / reaction request produces an explicit operator wake.
+3. `paused` → no new Cognitive / Exec / Rule side effects; verify / settlement / Memory may finish. Explicit reaction requests stay queued until `active`. `process-once` does not force a new Cognitive reaction.
+4. "Check now" / reaction request produces an explicit operator wake. It does not resume a paused subject.
 5. Subjects that already used `on_demand` keep consuming evidence while `active`.
 6. Live completion is claims / checkpoints / exec intents / results / settlements, not cycle-state.

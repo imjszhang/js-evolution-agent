@@ -170,7 +170,7 @@ flowchart TB
   FS["飞书 WS / inbox put"] --> IN["inbound/pending"]
   IN --> CL["classifier<br/>brief / fact / observation / control / ignore"]
   CL -->|写入口| API["intelligence/channel-api"]
-  CL -->|control_request| CTRL["control executor<br/>evolution-mode / cycle request"]
+  CL -->|control_request| CTRL["control executor<br/>evolution-state / reaction request"]
   CL --> WAKE["expression_recompute"]
   CTRL --> WAKE
   Tick["presence tick / attention"] --> WAKE
