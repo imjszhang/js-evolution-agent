@@ -180,8 +180,8 @@ export function createSetupFixtureState(options: {
       language: 'en',
       theme: 'system',
       defaultSubject: readiness.subjects.defaultSubject,
-      appVersion: '0.2.0',
-      cliVersion: '0.2.0',
+      appVersion: '0.2.1',
+      cliVersion: '0.2.1',
       commitSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       commitShort: 'aaaaaaa',
       buildTime: '2026-08-17T00:00:00.000Z',
@@ -212,7 +212,7 @@ export function createFixtureDiagnosticReport(state: SetupFixtureState = createS
       platform: settings.platform ?? 'linux',
       architecture: settings.architecture ?? 'x64',
       dirty: settings.dirty ?? false,
-      build_id: '0.2.0+aaaaaaa.20260817T000000'
+      build_id: '0.2.1+aaaaaaa.20260817T000000'
     },
     host: {
       jea_home: state.readiness.jeaHome.path,

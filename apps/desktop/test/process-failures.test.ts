@@ -32,13 +32,13 @@ describe('desktop process-failure summaries', () => {
       occurred_at: '2026-08-17T04:32:54.000Z',
       stdout: 'secret-output',
       env: { DEEPSEEK_API_KEY: 'sk-not-allowed' }
-    }, { version: '0.2.0', buildId: 'build-1' })
+    }, { version: '0.2.1', buildId: 'build-1' })
     expect(sanitized).toEqual({
       schema_version: 1,
       occurred_at: '2026-08-17T04:32:54.000Z',
       process_type: 'renderer',
       reason: 'crashed',
-      version: '0.2.0',
+      version: '0.2.1',
       build_id: 'build-1'
     })
     expect(JSON.stringify(sanitized)).not.toContain('secret-output')

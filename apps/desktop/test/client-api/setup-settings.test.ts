@@ -225,8 +225,8 @@ describe('setup/settings JEA_HOME matrix', () => {
       language: 'en',
       theme: 'dark',
       defaultSubject: 'beta',
-      appVersion: '0.2.0',
-      cliVersion: '0.2.0',
+      appVersion: '0.2.1',
+      cliVersion: '0.2.1',
       platform: expect.any(String),
       architecture: expect.any(String)
     })

@@ -28,9 +28,9 @@
 
 > Not a fixed `/goal` coding loop that runs until tests pass — an **evolution loop** with theoretical constraints, governance boundaries, and auditable receipts. When an old goal (law) is falsified by consequences, the system enters a rule-update phase instead of spinning or grinding.
 
-## Product (0.2.0)
+## Product (0.2.1)
 
-JEA 0.2.0 is a **macOS Apple Silicon** app with a bundled `jea` CLI. Its shared Electron/Web workspace has three operator surfaces:
+JEA 0.2.1 is a **macOS Apple Silicon** app with a bundled `jea` CLI. Its shared Electron/Web workspace has three operator surfaces:
 
 1. **Subject and local sessions**
 2. **Governed conversation** through the Channel classifier / presence / speech pipeline (chat text is not hard approval)
@@ -44,7 +44,7 @@ The source-host commands below are also the development and recovery path.
 
 ## Table of contents
 
-- [Product (0.2.0)](#product-020)
+- [Product (0.2.1)](#product-021)
 - [Core innovation: goal self-correction](#core-innovation-goal-self-correction)
 - [Alignment with Loop Engineering](#alignment-with-loop-engineering)
 - [What this is](#what-this-is)

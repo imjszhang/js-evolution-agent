@@ -1,6 +1,6 @@
 # 产品打包与 CLI 启动器
 
-本目录是 JEA 0.2.0 macOS 产品身份、启动器与打包路径的 owner；版本与发布接线对应 issue #178。
+本目录是 JEA 0.2.1 macOS 产品身份、启动器与打包路径的 owner；版本与发布接线对应 issue #202。
 
 ## 冻结决策
 
@@ -9,7 +9,7 @@
 | 产品名 | `JEA` |
 | Bundle ID | `com.imjszhang.jea` |
 | 最低 macOS | 13.0 |
-| 产物 | `JEA-0.2.0-macos-arm64.dmg` / `.zip` |
+| 产物 | `JEA-0.2.1-macos-arm64.dmg` / `.zip` |
 | 签名 | ad-hoc（未公证）；可用 `CSC_NAME` 覆盖 |
 | `jea start` | 只启动 localhost Web host |
 | `jea status` | 只报告 Web host bind/pid（不含 token） |
@@ -34,7 +34,7 @@ npm run desktop:package   # 仅 darwin arm64
 npm run test:packaging
 npm run release:preflight -- --strict
 npm run release:journey            # 隔离 JEA_HOME，不写 ~/.jea
-npm run release:recovery-matrix    # 0.2.0 有界恢复矩阵（Linux 可用 --bounded）
+npm run release:recovery-matrix    # 有界恢复矩阵（Linux 可用 --bounded）
 npm run release:recovery-soak      # 仅发布用 30 分钟 soak，勿进 PR required
 npm run release:certification-evidence
 ```
