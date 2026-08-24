@@ -18,6 +18,13 @@ import {
   waitForExit,
 } from './release-recovery-process.mjs';
 import { loadBuildMetadata } from '../src/product/build-metadata.mjs';
+import { CHANNEL_ROLES } from '../src/channel/channel-roles.mjs';
+
+const CHANNEL_SOAK_ROLES = new Set([...CHANNEL_ROLES, 'channel']);
+
+function isChannelSoakRole(role) {
+  return CHANNEL_SOAK_ROLES.has(role) || role.startsWith('channel-');
+}
 
 export const SOAK_DEFAULT_MS = 30 * 60 * 1000;
 export const CPU_ABNORMAL_RATIO = 0.8;
@@ -32,24 +39,33 @@ export function detectHelperCrashes(processFailures = []) {
 }
 
 export function detectDuplicateWorkers(workers = []) {
-  const seenPids = new Map();
-  const seenRoles = new Map();
-  const duplicates = [];
+  const rolesByPid = new Map();
+  const pidsByRole = new Map();
   for (const worker of workers) {
     const pid = Number(worker.pid);
     const role = String(worker.role || worker.worker_id || worker.domain || '');
-    if (Number.isInteger(pid) && pid > 0) {
-      if (seenPids.has(pid) && seenPids.get(pid) !== role) {
-        duplicates.push({ kind: 'pid', pid, roles: [seenPids.get(pid), role] });
-      }
-      seenPids.set(pid, role);
+    if (!Number.isInteger(pid) || pid <= 0 || !role) continue;
+    if (!rolesByPid.has(pid)) rolesByPid.set(pid, new Set());
+    rolesByPid.get(pid).add(role);
+    if (!pidsByRole.has(role)) pidsByRole.set(role, new Set());
+    pidsByRole.get(role).add(pid);
+  }
+
+  const duplicates = [];
+  for (const [pid, roles] of rolesByPid) {
+    const list = [...roles];
+    const channelRoles = list.filter(isChannelSoakRole);
+    const otherRoles = list.filter((item) => !isChannelSoakRole(item));
+    // One Channel coordinator process hosts every default role in-process.
+    // Same PID across Channel roles is expected; Cycle + Channel sharing a
+    // PID, or two non-Channel roles on one PID, is not.
+    if (otherRoles.length > 1 || (otherRoles.length > 0 && channelRoles.length > 0)) {
+      duplicates.push({ kind: 'pid', pid, roles: list });
     }
-    if (role) {
-      const previous = seenRoles.get(role);
-      if (previous && previous !== pid) {
-        duplicates.push({ kind: 'role', role, pids: [previous, pid] });
-      }
-      seenRoles.set(role, pid);
+  }
+  for (const [role, pids] of pidsByRole) {
+    if (pids.size > 1) {
+      duplicates.push({ kind: 'role', role, pids: [...pids] });
     }
   }
   return duplicates;

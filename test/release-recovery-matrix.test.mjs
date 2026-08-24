@@ -258,6 +258,22 @@ describe('release recovery soak detectors', () => {
       { role: 'cycle', pid: 11 },
       { role: 'cycle', pid: 12 },
     ])).toHaveLength(1);
+    expect(detectDuplicateWorkers([
+      { role: 'notify', pid: 11 },
+      { role: 'control', pid: 11 },
+      { role: 'agent', pid: 11 },
+      { role: 'presence', pid: 11 },
+      { role: 'speech', pid: 11 },
+      { role: 'classifier', pid: 11 },
+    ])).toEqual([]);
+    expect(detectDuplicateWorkers([
+      { role: 'cycle', pid: 11 },
+      { role: 'notify', pid: 11 },
+    ])).toHaveLength(1);
+    expect(detectDuplicateWorkers([
+      { role: 'notify', pid: 11 },
+      { role: 'notify', pid: 12 },
+    ])).toHaveLength(1);
     expect(detectDuplicateEnvelopeProcessing([
       { status: 'handled', evidence_keys: ['env-1'] },
       { status: 'handled', evidence_keys: ['env-1'] },
