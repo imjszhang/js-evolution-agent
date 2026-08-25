@@ -192,7 +192,7 @@ export class EvolutionCommandOwner {
       subject: name,
       attention: observability.attention ?? { items: [], summary: {} },
       open_cycles: daemon.cycles?.open_count ?? 0,
-      evidence_pending_count: Number.isFinite(pendingRaw) ? Number(pendingRaw) : null,
+      evidence_pending_count: Number.isFinite(pendingRaw) ? Number(pendingRaw) : undefined,
       daemon_task_pending_count: daemon.tasks?.counts?.pending ?? 0,
       cycle_diagnostics: recentCycleDiagnostics(daemon),
       reactor_progress: adaptReactorProgressProjection(daemon.reactor_progress)

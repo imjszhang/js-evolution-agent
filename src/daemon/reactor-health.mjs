@@ -1,5 +1,7 @@
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DecisionQueue } from '../engine/decide/decision-queue.mjs';
+import { pendingOperatorBriefsDir } from '../intelligence/operator-briefs.mjs';
 import {
   coveredEventIds,
   readClaimArchiveSummary,
@@ -79,6 +81,36 @@ export function summarizeClaimLedgerHealth(ledger, { nowMs = Date.now() } = {}) 
     last_handled_at: lastHandledAt,
     updated_at: ledger.updated_at ?? null,
   };
+}
+
+const OPERATOR_INPUT_PEEK_MAX = 256;
+
+/**
+ * Bounded pending-brief metadata only. Used when the control-plane hot path
+ * skips evidence-stream hydration so 0.2.x stall mapping still works.
+ */
+function peekOperatorInputBacklog(runtimeRoot, { nowMs = Date.now(), maxFiles = OPERATOR_INPUT_PEEK_MAX } = {}) {
+  const dir = pendingOperatorBriefsDir(runtimeRoot);
+  if (!existsSync(dir)) return { pending_count: 0, oldest_age_ms: null };
+  let names;
+  try {
+    names = readdirSync(dir).filter((name) => name.endsWith('.json'));
+  } catch {
+    return { pending_count: 0, oldest_age_ms: null };
+  }
+  let oldestAgeMs = null;
+  for (const name of names.slice(0, maxFiles)) {
+    try {
+      const raw = JSON.parse(readFileSync(join(dir, name), 'utf8'));
+      const created = parseIsoMs(raw?.created_at);
+      if (created == null) continue;
+      const age = nowMs - created;
+      if (oldestAgeMs == null || age > oldestAgeMs) oldestAgeMs = age;
+    } catch {
+      // Count the file; ignore unreadable metadata.
+    }
+  }
+  return { pending_count: names.length, oldest_age_ms: oldestAgeMs };
 }
 
 function unknownEvidenceProjection(reason) {
@@ -206,6 +238,9 @@ export function buildReactorHealthProjection(root, subject, {
   const pendingVerify = listPendingVerifyResults(dataRoot);
   const openIntents = listOpenExecIntents(dataRoot);
   const uncertainIntents = listUncertainExecIntents(dataRoot);
+  const operatorInput = skipEvidenceScan
+    ? peekOperatorInputBacklog(runtime.runtimeRoot, { nowMs })
+    : null;
   const ruleDue = claimProjectionDegraded || skipEvidenceScan
     ? { eligible: [], due: [], skipped: skipEvidenceScan }
     : peekRuleDueWindow(dataRoot, {
@@ -281,14 +316,19 @@ export function buildReactorHealthProjection(root, subject, {
     if (worker && !worker.running && !worker.zombie && !worker.stale) {
       suggestions.push('Use start_cycle when a fresh Cycle worker should stay running.');
     }
-  } else if (evidence.pending_count > 0 && (evidence.oldest_unclaimed_age_ms ?? 0) >= staleMs) {
+  } else if (
+    (evidence.pending_count > 0 && (evidence.oldest_unclaimed_age_ms ?? 0) >= staleMs)
+    || (operatorInput && operatorInput.pending_count > 0 && (operatorInput.oldest_age_ms ?? 0) >= staleMs)
+  ) {
     status = 'stalled';
     ok = false;
     const workerMissing = Boolean(worker && !worker.running);
     const workerZombie = Boolean(worker?.zombie);
     const workerStale = Boolean(worker?.stale);
     const workerRunning = Boolean(worker?.running);
-    reasons.push(`${evidence.pending_count} eligible unclaimed evidence envelope(s); oldest age ${evidence.oldest_unclaimed_age_ms}ms`);
+    const pendingCount = evidence.pending_count ?? operatorInput?.pending_count;
+    const oldestAgeMs = evidence.oldest_unclaimed_age_ms ?? operatorInput?.oldest_age_ms;
+    reasons.push(`${pendingCount} eligible unclaimed work item(s); oldest age ${oldestAgeMs}ms`);
     if (workerZombie) {
       reasons.push('Cycle worker PID is dead (zombie); do not start another worker');
       suggestions.push('Use process_cycle_once. Repair the worker state; do not start a new Cycle worker.');
@@ -305,6 +345,7 @@ export function buildReactorHealthProjection(root, subject, {
     }
   } else if (
     evidence.pending_count > 0
+    || (operatorInput && operatorInput.pending_count > 0)
     || claims.counts.claimed > 0
     || decisions.pending > 0
     || pendingVerify.length > 0

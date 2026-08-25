@@ -611,9 +611,19 @@ export function reconcileReactorProgressSnapshot(root, subject, {
         ...(deltaRead.reason ? { reason: deltaRead.reason } : {}),
       });
       if (deltaRead.status === 'ok') {
-        reactors = cloneReactorCounts(lastGood.reactors);
-        for (const delta of deltaRead.deltas) applyLedgerDeltaToCounts(reactors, delta);
-        appliedDeltas = deltaRead.deltas;
+        const maxDeltaSequence = deltaRead.deltas.reduce(
+          (max, delta) => Math.max(max, delta.sequence),
+          lastGood.applied.ledger_sequence,
+        );
+        if (deltaRead.deltas.length > 0 && maxDeltaSequence === ledger.sequence) {
+          reactors = cloneReactorCounts(lastGood.reactors);
+          for (const delta of deltaRead.deltas) applyLedgerDeltaToCounts(reactors, delta);
+          appliedDeltas = deltaRead.deltas;
+        } else {
+          // Sequence moved without a covering delta log: recount from the
+          // ledger snapshot instead of treating an empty apply as success.
+          reactors = recountReactorCountsFromEntries(ledger.entries);
+        }
       } else {
         freshnessStatus = 'degraded';
         freshnessReason = deltaRead.reason;

@@ -939,6 +939,7 @@ export function readDaemonProjection(root, subject, options = {}) {
   const canRefreshCoreLightOnly = Boolean(cached?.projection)
     && cached.heavy === identity.heavy
     && cached.coreLight !== identity.coreLight
+    && cached.channelLight === identity.channelLight
     && cached.settings === identity.settings;
   if (canRefreshCoreLightOnly) {
     const refreshed = refreshCachedCoreLightProjection(

@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   adaptReactorProgressProjection,
+  CLIENT_API_COMMANDS,
   createApplicationCommandHost,
   createElectronJeaClient,
   createMemoryJeaClient,
@@ -54,7 +55,7 @@ describe('Client API reactor progress adapter', () => {
     const fixtures = createProductSurfaceFixture()
     const memory = createMemoryJeaClient({ fixtures })
     const electron = createElectronJeaClient({
-      invoke: async (command, payload) => memory.invoke(command, payload),
+      invoke: async (command, payload) => memory.invoke(command as typeof CLIENT_API_COMMANDS[number], payload),
       subscribe: (listener) => memory.subscribe(listener)
     })
     const memoryValue = await memory.getReactorProgress('alpha')

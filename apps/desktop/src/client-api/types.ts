@@ -229,7 +229,7 @@ export interface EvolutionObservability {
     summary?: Record<string, unknown>
   } & Record<string, unknown>
   open_cycles: number
-  evidence_pending_count?: number | null
+  evidence_pending_count?: number
   daemon_task_pending_count?: number
   cycle_diagnostics?: {
     recent?: EvolutionCycleDiagnosticSummary[]
