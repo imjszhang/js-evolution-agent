@@ -60,6 +60,12 @@ EvidenceEnvelope → claim → cognitive reaction（investigate → report → D
 
 实现：`src/intelligence/evidence-stream.mjs`；契约：`src/contracts/evidence-envelope.mjs`。
 
+### Incremental Evidence Router（0.3.0 控制面）
+
+`src/evolution/reactor/evidence-router.mjs` 把**新追加**的 `EvidenceEnvelope` 增量写成可重建的 Activation Ledger。路由只判断“有没有工作”，不执行、不调度。契约从 `src/contracts/reactor-control-plane.mjs` 导入，身份为 `aiv1/<reactor>/activation-policy.v1/<evidence_key>`。journal generation 不是身份的一部分，换代不产生工作。策略字符串只有在资格规则变更时才允许 bump，且必须走 `evaluateActivationPolicyChange` + 显式 replay epoch，禁止静默回填。
+
+策略表与 0.2.x `legacy_unknown` / `legacy_fallback` 口径见 [`src/evolution/reactor/evidence-router.md`](../evolution/reactor/evidence-router.md)。派生账本：`data/evolution/reactor/activation-ledger.json`（永远不是 evidence / belief / receipt / settlement 的权威）。
+
 ### 认知反应器影子
 
 - `jea reactor shadow run [--subject NAME] [--mock] [--limit N] [--skip-investigate] [--json]`：claim 一批未覆盖证据 → investigate（可选）→ 宿主组装 Seen → 报告 → Decide → **仅写 shadow 产物**。
