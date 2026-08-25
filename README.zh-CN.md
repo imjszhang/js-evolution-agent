@@ -254,8 +254,11 @@ jea run --mock
 
 ```bash
 jea llm ping
+jea llm budget status --json
 jea run --deepseek --subject my-bot
 ```
+
+打到主体 token/花费上限是预期操作者状态。用 `jea llm budget raise` 或 `jea llm budget period-open` 恢复，不要手改 `llm-budget-ledger.json`。Channel 与 Cycle 共用同一账本。
 
 ---
 

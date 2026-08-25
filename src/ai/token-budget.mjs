@@ -24,6 +24,11 @@ const USD_MICROS = 1_000_000;
 
 export const LLM_BUDGET_LEDGER_VERSION = 1;
 export const LLM_BUDGET_LEDGER_FILENAME = 'llm-budget-ledger.json';
+export const LLM_BUDGET_STATUS_SCHEMA = 'llm_budget_status.v1';
+export const LLM_BUDGET_LEGACY_PERIOD_ID = 'period-legacy';
+export const LLM_BUDGET_CYCLE_ADMISSIONS = Object.freeze(['open', 'parked']);
+export const LLM_BUDGET_TYPICAL_PROMPT_RESERVE_TOKENS = 48_000;
+export const LLM_BUDGET_PREVIOUS_PERIODS_MAX = 32;
 
 function configError(name, expected, code = 'llm_token_budget_config_invalid') {
   const error = new Error(`Invalid ${name}: expected ${expected}`);
@@ -101,10 +106,22 @@ function costMicros(tokens, pricePerMillionUsd) {
   );
 }
 
+function newPeriodId(now = new Date()) {
+  const stamp = now.toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
+  return `llm-period-${stamp}-${randomUUID().slice(0, 8)}`;
+}
+
 function emptyLedger(subjectKey, config) {
+  const now = new Date().toISOString();
   return {
     version: LLM_BUDGET_LEDGER_VERSION,
     subject_key: subjectKey,
+    period_id: newPeriodId(),
+    period_opened_at: now,
+    cycle_admission: 'open',
+    operator_token_ceiling: null,
+    operator_spend_ceiling_usd_micros: null,
+    previous_periods: [],
     token_budget: config.subjectTokenBudget,
     spend_budget_usd_micros: usdToMicros(config.subjectSpendBudgetUsd),
     used_tokens: 0,
@@ -114,7 +131,7 @@ function emptyLedger(subjectKey, config) {
     calls: 0,
     reservations: {},
     events: [],
-    updated_at: new Date().toISOString(),
+    updated_at: now,
   };
 }
 
@@ -157,9 +174,28 @@ function readLedger(filePath, subjectKey, config) {
     throw error;
   }
   const doc = validateLedger(parsed, { subjectKey, filePath });
-  // Configuration changes adjust the ceiling without resetting accumulated use.
-  doc.token_budget = config.subjectTokenBudget;
-  doc.spend_budget_usd_micros = usdToMicros(config.subjectSpendBudgetUsd);
+  return normalizeLedger(doc, config);
+}
+
+function normalizeLedger(doc, config) {
+  if (!doc.period_id) {
+    doc.period_id = LLM_BUDGET_LEGACY_PERIOD_ID;
+    doc.period_opened_at = doc.updated_at || new Date().toISOString();
+  }
+  if (doc.cycle_admission !== 'parked') doc.cycle_admission = 'open';
+  if (!Array.isArray(doc.previous_periods)) doc.previous_periods = [];
+  if (!Number.isSafeInteger(doc.operator_token_ceiling)) doc.operator_token_ceiling = null;
+  if (!Number.isSafeInteger(doc.operator_spend_ceiling_usd_micros)) {
+    doc.operator_spend_ceiling_usd_micros = null;
+  }
+  const operatorToken = Number.isSafeInteger(doc.operator_token_ceiling) ? doc.operator_token_ceiling : 0;
+  const operatorSpend = Number.isSafeInteger(doc.operator_spend_ceiling_usd_micros)
+    ? doc.operator_spend_ceiling_usd_micros
+    : 0;
+  // Env remains the configured floor; operator raise persists above it.
+  // Accumulated use is never reset by a ceiling change.
+  doc.token_budget = Math.max(config.subjectTokenBudget, operatorToken);
+  doc.spend_budget_usd_micros = Math.max(usdToMicros(config.subjectSpendBudgetUsd), operatorSpend);
   return doc;
 }
 
@@ -208,10 +244,17 @@ function withLedgerLock(filePath, fn) {
   }
 }
 
-function snapshot(doc) {
+function snapshot(doc, config = null) {
+  const configuredToken = config?.subjectTokenBudget ?? doc.token_budget;
+  const configuredSpendMicros = config
+    ? usdToMicros(config.subjectSpendBudgetUsd)
+    : doc.spend_budget_usd_micros;
   return {
     version: doc.version,
     subject_key: doc.subject_key,
+    period_id: doc.period_id || LLM_BUDGET_LEGACY_PERIOD_ID,
+    period_opened_at: doc.period_opened_at ?? null,
+    cycle_admission: doc.cycle_admission === 'parked' ? 'parked' : 'open',
     token_budget: doc.token_budget,
     used_tokens: doc.used_tokens,
     reserved_tokens: doc.reserved_tokens,
@@ -223,6 +266,14 @@ function snapshot(doc) {
       0,
       doc.spend_budget_usd_micros - doc.spent_usd_micros - doc.reserved_usd_micros,
     )),
+    configured_token_budget: configuredToken,
+    configured_spend_budget_usd: microsToUsd(configuredSpendMicros),
+    operator_token_ceiling: Number.isSafeInteger(doc.operator_token_ceiling)
+      ? doc.operator_token_ceiling
+      : null,
+    operator_spend_ceiling_usd: Number.isSafeInteger(doc.operator_spend_ceiling_usd_micros)
+      ? microsToUsd(doc.operator_spend_ceiling_usd_micros)
+      : null,
     calls: doc.calls,
     open_reservations: Object.keys(doc.reservations).length,
     updated_at: doc.updated_at,
@@ -369,7 +420,7 @@ export function reserveTokenBudget({
   let emitted;
   const result = withLedgerLock(filePath, () => {
     const doc = readLedger(filePath, key, config);
-    const state = snapshot(doc);
+    const state = snapshot(doc, config);
     if (reservedTokens > state.remaining_tokens) {
       emitted = {
         type: 'llm_token_budget_exhausted',
@@ -425,7 +476,7 @@ export function reserveTokenBudget({
       provider,
       model,
       reservation_id: reservationId,
-      ...snapshot(doc),
+      ...snapshot(doc, config),
       requested_tokens: reservedTokens,
       requested_cost_usd: microsToUsd(reservedCostMicros),
       request_max_tokens: maxTokens,
@@ -497,7 +548,7 @@ export function settleTokenBudget(reservation, usage, { emit = null, failed = fa
       provider: persisted.provider,
       model: persisted.model,
       reservation_id: reservation.reservationId,
-      ...snapshot(doc),
+      ...snapshot(doc, config),
       charged_tokens: chargedTokens,
       charged_cost_usd: microsToUsd(cost.micros),
       usage_reported: usage != null,
@@ -524,7 +575,474 @@ export function tokenBudgetSnapshot({
   const config = resolveTokenBudgetConfig(env);
   return withLedgerLock(filePath, () => {
     const doc = readLedger(filePath, key, config);
-    return existsSync(filePath) ? snapshot(doc) : null;
+    return existsSync(filePath) ? snapshot(doc, config) : null;
+  });
+}
+
+function typicalReserveTokens(config) {
+  return LLM_BUDGET_TYPICAL_PROMPT_RESERVE_TOKENS + config.requestMaxTokens;
+}
+
+function typicalReserveCostMicros(config) {
+  return estimatedReservationCostMicros(
+    LLM_BUDGET_TYPICAL_PROMPT_RESERVE_TOKENS,
+    config.requestMaxTokens,
+    config.pricing,
+  );
+}
+
+function classifyBudgetState(snap, config) {
+  const typicalTokens = typicalReserveTokens(config);
+  const typicalCost = typicalReserveCostMicros(config);
+  const remainingSpendMicros = Math.round(snap.remaining_spend_usd * USD_MICROS);
+  const tokensExhausted = snap.remaining_tokens < typicalTokens;
+  const spendExhausted = remainingSpendMicros < typicalCost;
+  const warn = !tokensExhausted && !spendExhausted && (
+    snap.remaining_tokens < typicalTokens * 2
+    || snap.remaining_tokens < Math.ceil(snap.token_budget * 0.05)
+  );
+  let state = 'ok';
+  if (tokensExhausted || spendExhausted) state = 'exhausted';
+  else if (warn) state = 'warn';
+  return {
+    state,
+    exhausted: { tokens: tokensExhausted, spend: spendExhausted },
+    blocked_reason: tokensExhausted
+      ? 'llm_token_budget_exhausted'
+      : (spendExhausted ? 'llm_spend_budget_exhausted' : null),
+    typical_reserve_tokens: typicalTokens,
+    typical_reserve_cost_usd: microsToUsd(typicalCost),
+  };
+}
+
+function statusNextActions(status) {
+  const actions = [
+    {
+      id: 'status',
+      command: 'jea llm budget status --json',
+    },
+  ];
+  if (status.state === 'exhausted' || status.state === 'warn') {
+    actions.push({
+      id: 'raise_ceiling',
+      command: 'jea llm budget raise --tokens N [--spend-usd X]',
+    });
+    actions.push({
+      id: 'open_period',
+      command: 'jea llm budget period-open [--cycle-admission parked|open]',
+    });
+  }
+  actions.push({
+    id: 'set_admission',
+    command: 'jea llm budget set-admission --cycle-admission parked|open',
+  });
+  return actions;
+}
+
+export function llmBudgetReadinessView(status) {
+  if (!status) return null;
+  const token = status.token ?? {};
+  const spend = status.spend ?? {};
+  return {
+    schema: LLM_BUDGET_STATUS_SCHEMA,
+    period_id: status.period_id,
+    state: status.state,
+    used_tokens: token.used ?? status.used_tokens ?? 0,
+    remaining_tokens: token.remaining ?? status.remaining_tokens ?? 0,
+    token_budget: token.budget ?? status.token_budget ?? 0,
+    used_spend_usd: spend.used_usd ?? status.used_spend_usd ?? 0,
+    remaining_spend_usd: spend.remaining_usd ?? status.remaining_spend_usd ?? 0,
+    spend_budget_usd: spend.budget_usd ?? status.spend_budget_usd ?? 0,
+    cycle_admission: status.cycle_admission === 'parked' ? 'parked' : 'open',
+    shared_ledger: true,
+    blocked_reason: status.blocked_reason ?? null,
+  };
+}
+
+export function inspectLlmBudget({
+  subjectKey,
+  ledgerPath,
+  budgetLedgerPath = null,
+  env = process.env,
+} = {}) {
+  const key = requiredSubjectKey(subjectKey);
+  const filePath = requiredLedgerPath(ledgerPath ?? budgetLedgerPath);
+  const config = resolveTokenBudgetConfig(env);
+  return withLedgerLock(filePath, () => {
+    const present = existsSync(filePath);
+    const doc = present ? readLedger(filePath, key, config) : emptyLedger(key, config);
+    const snap = snapshot(doc, config);
+    const classified = classifyBudgetState(snap, config);
+    const status = {
+      schema: LLM_BUDGET_STATUS_SCHEMA,
+      subject: key,
+      ledger_present: present,
+      shared_ledger: true,
+      ledger_scope: 'subject',
+      period_id: snap.period_id,
+      period_opened_at: snap.period_opened_at,
+      cycle_admission: snap.cycle_admission,
+      state: classified.state,
+      exhausted: classified.exhausted,
+      token: {
+        used: snap.used_tokens,
+        reserved: snap.reserved_tokens,
+        budget: snap.token_budget,
+        remaining: snap.remaining_tokens,
+        configured_budget: snap.configured_token_budget,
+        operator_ceiling: snap.operator_token_ceiling,
+      },
+      spend: {
+        used_usd: snap.spent_usd,
+        reserved_usd: snap.reserved_usd,
+        budget_usd: snap.spend_budget_usd,
+        remaining_usd: snap.remaining_spend_usd,
+        configured_budget_usd: snap.configured_spend_budget_usd,
+        operator_ceiling_usd: snap.operator_spend_ceiling_usd,
+      },
+      calls: snap.calls,
+      open_reservations: snap.open_reservations,
+      reserve_estimate: {
+        typical_prompt_tokens: LLM_BUDGET_TYPICAL_PROMPT_RESERVE_TOKENS,
+        typical_completion_tokens: config.requestMaxTokens,
+        typical_reserve_tokens: classified.typical_reserve_tokens,
+        typical_reserve_cost_usd: classified.typical_reserve_cost_usd,
+        note: 'pre-call reserve uses a conservative character-based estimate (~3-4x real prompt tokens)',
+      },
+      blocked_reason: classified.blocked_reason,
+      updated_at: snap.updated_at,
+    };
+    status.next_actions = statusNextActions(status);
+    return status;
+  });
+}
+
+function operatorError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function requireAdmission(value) {
+  const admission = String(value ?? '').trim();
+  if (!LLM_BUDGET_CYCLE_ADMISSIONS.includes(admission)) {
+    throw operatorError(
+      'llm_budget_cycle_admission_invalid',
+      'cycle_admission must be open or parked',
+    );
+  }
+  return admission;
+}
+
+function requireRaiseCeiling({ tokenCeiling, spendCeilingUsd, current }) {
+  if (tokenCeiling == null && spendCeilingUsd == null) {
+    throw operatorError(
+      'llm_budget_raise_target_required',
+      'raise requires --tokens and/or --spend-usd',
+    );
+  }
+  if (tokenCeiling != null) {
+    if (!Number.isSafeInteger(tokenCeiling) || tokenCeiling < 1 || tokenCeiling > MAX_CONFIGURED_TOKENS) {
+      throw operatorError(
+        'llm_budget_token_ceiling_invalid',
+        `token ceiling must be an integer between 1 and ${MAX_CONFIGURED_TOKENS}`,
+      );
+    }
+    if (tokenCeiling <= current.token_budget) {
+      throw operatorError(
+        'llm_budget_token_ceiling_not_raised',
+        `token ceiling must be greater than the current effective ceiling (${current.token_budget})`,
+      );
+    }
+    if (tokenCeiling <= current.used_tokens + current.reserved_tokens) {
+      throw operatorError(
+        'llm_budget_token_ceiling_below_used',
+        'token ceiling must exceed used + reserved tokens',
+      );
+    }
+  }
+  if (spendCeilingUsd != null) {
+    const micros = usdToMicros(spendCeilingUsd);
+    const currentMicros = usdToMicros(current.spend_budget_usd);
+    if (!Number.isFinite(spendCeilingUsd) || spendCeilingUsd <= 0 || spendCeilingUsd > MAX_BUDGET_USD) {
+      throw operatorError(
+        'llm_budget_spend_ceiling_invalid',
+        `spend ceiling must be greater than 0 and at most ${MAX_BUDGET_USD}`,
+      );
+    }
+    if (micros <= currentMicros) {
+      throw operatorError(
+        'llm_budget_spend_ceiling_not_raised',
+        `spend ceiling must be greater than the current effective ceiling ($${current.spend_budget_usd})`,
+      );
+    }
+    if (micros <= current.spent_usd_micros + current.reserved_usd_micros) {
+      throw operatorError(
+        'llm_budget_spend_ceiling_below_used',
+        'spend ceiling must exceed used + reserved spend',
+      );
+    }
+  }
+}
+
+function applyOperatorCeilings(doc, { tokenCeiling = null, spendCeilingUsd = null } = {}) {
+  if (tokenCeiling != null) doc.operator_token_ceiling = tokenCeiling;
+  if (spendCeilingUsd != null) doc.operator_spend_ceiling_usd_micros = usdToMicros(spendCeilingUsd);
+}
+
+function closedPeriodSummary(doc, { closedAt, reason }) {
+  return {
+    period_id: doc.period_id || LLM_BUDGET_LEGACY_PERIOD_ID,
+    opened_at: doc.period_opened_at ?? null,
+    closed_at: closedAt,
+    used_tokens: doc.used_tokens,
+    spent_usd: microsToUsd(doc.spent_usd_micros),
+    calls: doc.calls,
+    token_budget: doc.token_budget,
+    spend_budget_usd: microsToUsd(doc.spend_budget_usd_micros),
+    close_reason: reason,
+  };
+}
+
+function mutateLedger({
+  subjectKey,
+  ledgerPath,
+  env,
+  emit,
+  type,
+  actor,
+  reason,
+  mutate,
+}) {
+  const key = requiredSubjectKey(subjectKey);
+  const filePath = requiredLedgerPath(ledgerPath);
+  const config = resolveTokenBudgetConfig(env);
+  let emitted;
+  const result = withLedgerLock(filePath, () => {
+    const present = existsSync(filePath);
+    const doc = present ? readLedger(filePath, key, config) : emptyLedger(key, config);
+    const before = snapshot(doc, config);
+    const mutation = mutate(doc, { config, before, present });
+    applyOperatorCeilings(doc, mutation?.ceilings ?? {});
+    if (mutation?.cycle_admission) doc.cycle_admission = mutation.cycle_admission;
+    normalizeLedger(doc, config);
+    const after = snapshot(doc, config);
+    emitted = {
+      type,
+      subject: key,
+      subject_key: key,
+      actor: actor || 'operator',
+      reason: reason || null,
+      ...after,
+      before,
+      after,
+      ...(mutation?.eventExtra ?? {}),
+    };
+    appendEvent(doc, emitted);
+    writeLedger(filePath, doc);
+    return {
+      ok: true,
+      action: type,
+      subject: key,
+      period_id: after.period_id,
+      cycle_admission: after.cycle_admission,
+      status: inspectUnlocked(doc, { key, config, present: true }),
+      event: emitted,
+    };
+  });
+  emit?.(emitted);
+  return result;
+}
+
+function inspectUnlocked(doc, { key, config, present }) {
+  const snap = snapshot(doc, config);
+  const classified = classifyBudgetState(snap, config);
+  const status = {
+    schema: LLM_BUDGET_STATUS_SCHEMA,
+    subject: key,
+    ledger_present: present,
+    shared_ledger: true,
+    ledger_scope: 'subject',
+    period_id: snap.period_id,
+    period_opened_at: snap.period_opened_at,
+    cycle_admission: snap.cycle_admission,
+    state: classified.state,
+    exhausted: classified.exhausted,
+    token: {
+      used: snap.used_tokens,
+      reserved: snap.reserved_tokens,
+      budget: snap.token_budget,
+      remaining: snap.remaining_tokens,
+      configured_budget: snap.configured_token_budget,
+      operator_ceiling: snap.operator_token_ceiling,
+    },
+    spend: {
+      used_usd: snap.spent_usd,
+      reserved_usd: snap.reserved_usd,
+      budget_usd: snap.spend_budget_usd,
+      remaining_usd: snap.remaining_spend_usd,
+      configured_budget_usd: snap.configured_spend_budget_usd,
+      operator_ceiling_usd: snap.operator_spend_ceiling_usd,
+    },
+    calls: snap.calls,
+    open_reservations: snap.open_reservations,
+    reserve_estimate: {
+      typical_prompt_tokens: LLM_BUDGET_TYPICAL_PROMPT_RESERVE_TOKENS,
+      typical_completion_tokens: config.requestMaxTokens,
+      typical_reserve_tokens: classified.typical_reserve_tokens,
+      typical_reserve_cost_usd: classified.typical_reserve_cost_usd,
+      note: 'pre-call reserve uses a conservative character-based estimate (~3-4x real prompt tokens)',
+    },
+    blocked_reason: classified.blocked_reason,
+    updated_at: snap.updated_at,
+  };
+  status.next_actions = statusNextActions(status);
+  return status;
+}
+
+export function raiseLlmBudgetCeiling({
+  subjectKey,
+  ledgerPath,
+  tokenCeiling = null,
+  spendCeilingUsd = null,
+  cycleAdmission = null,
+  reason = null,
+  actor = 'operator',
+  env = process.env,
+  emit = null,
+} = {}) {
+  return mutateLedger({
+    subjectKey,
+    ledgerPath,
+    env,
+    emit,
+    type: 'llm_budget_ceiling_raised',
+    actor,
+    reason,
+    mutate(doc, { before }) {
+      requireRaiseCeiling({
+        tokenCeiling,
+        spendCeilingUsd,
+        current: {
+          token_budget: before.token_budget,
+          used_tokens: doc.used_tokens,
+          reserved_tokens: doc.reserved_tokens,
+          spend_budget_usd: before.spend_budget_usd,
+          spent_usd_micros: doc.spent_usd_micros,
+          reserved_usd_micros: doc.reserved_usd_micros,
+        },
+      });
+      return {
+        ceilings: { tokenCeiling, spendCeilingUsd },
+        cycle_admission: cycleAdmission ? requireAdmission(cycleAdmission) : null,
+      };
+    },
+  });
+}
+
+export function openLlmBudgetPeriod({
+  subjectKey,
+  ledgerPath,
+  tokenCeiling = null,
+  spendCeilingUsd = null,
+  cycleAdmission = 'parked',
+  reason = null,
+  actor = 'operator',
+  env = process.env,
+  emit = null,
+} = {}) {
+  const admission = requireAdmission(cycleAdmission ?? 'parked');
+  return mutateLedger({
+    subjectKey,
+    ledgerPath,
+    env,
+    emit,
+    type: 'llm_budget_period_opened',
+    actor,
+    reason,
+    mutate(doc, { before }) {
+      if (Object.keys(doc.reservations || {}).length > 0) {
+        throw operatorError(
+          'llm_budget_open_reservations',
+          'cannot open a new period while reservations are open',
+        );
+      }
+      if (tokenCeiling != null || spendCeilingUsd != null) {
+        const nextToken = tokenCeiling ?? before.token_budget;
+        const nextSpend = spendCeilingUsd ?? before.spend_budget_usd;
+        if (tokenCeiling != null) {
+          if (!Number.isSafeInteger(tokenCeiling) || tokenCeiling < 1 || tokenCeiling > MAX_CONFIGURED_TOKENS) {
+            throw operatorError(
+              'llm_budget_token_ceiling_invalid',
+              `token ceiling must be an integer between 1 and ${MAX_CONFIGURED_TOKENS}`,
+            );
+          }
+        }
+        if (spendCeilingUsd != null) {
+          if (!Number.isFinite(spendCeilingUsd) || spendCeilingUsd <= 0 || spendCeilingUsd > MAX_BUDGET_USD) {
+            throw operatorError(
+              'llm_budget_spend_ceiling_invalid',
+              `spend ceiling must be greater than 0 and at most ${MAX_BUDGET_USD}`,
+            );
+          }
+        }
+        if (nextToken < 1 || nextSpend <= 0) {
+          throw operatorError('llm_budget_period_ceiling_invalid', 'new period ceilings must be positive');
+        }
+      }
+      const closedAt = new Date().toISOString();
+      const closed = closedPeriodSummary(doc, {
+        closedAt,
+        reason: reason || 'period_open',
+      });
+      doc.previous_periods = [...doc.previous_periods, closed]
+        .slice(-LLM_BUDGET_PREVIOUS_PERIODS_MAX);
+      const openedAt = new Date().toISOString();
+      doc.period_id = newPeriodId();
+      doc.period_opened_at = openedAt;
+      doc.used_tokens = 0;
+      doc.spent_usd_micros = 0;
+      doc.calls = 0;
+      return {
+        ceilings: { tokenCeiling, spendCeilingUsd },
+        cycle_admission: admission,
+        eventExtra: {
+          previous_period: closed,
+          opened_period_id: doc.period_id,
+        },
+      };
+    },
+  });
+}
+
+export function shouldClearOperatorBudgetCircuit(result) {
+  const admission = result?.cycle_admission
+    ?? result?.status?.cycle_admission
+    ?? result?.event?.cycle_admission;
+  return admission === 'open';
+}
+
+export function setLlmBudgetCycleAdmission({
+  subjectKey,
+  ledgerPath,
+  cycleAdmission,
+  reason = null,
+  actor = 'operator',
+  env = process.env,
+  emit = null,
+} = {}) {
+  const admission = requireAdmission(cycleAdmission);
+  return mutateLedger({
+    subjectKey,
+    ledgerPath,
+    env,
+    emit,
+    type: 'llm_budget_cycle_admission_set',
+    actor,
+    reason,
+    mutate() {
+      return { cycle_admission: admission };
+    },
   });
 }
 

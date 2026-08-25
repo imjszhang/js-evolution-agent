@@ -446,6 +446,60 @@ describe('Issue #197 readiness isolation', () => {
     expect(projected.reasons).toContain('rule_llm_budget_exhausted');
   });
 
+  it('explains exhaustion with remaining/used numbers without inventing a second surface', () => {
+    const projected = projectSubjectReadiness({
+      subject: 'alpha',
+      generatedAt: '2026-08-25T00:00:00.000Z',
+      hostKind: 'electron',
+      webHost: { running: true, pid: process.pid },
+      cycleWorker: { running: true, pid: process.pid, status: 'running' },
+      cycleHealth: { status: 'healthy', ok: true },
+      channelWorker: { running: true, pid: process.pid, status: 'running' },
+      channelHealth: { status: 'healthy', ok: true },
+      model: { mode: 'deepseek', configured: true },
+      desktopChannelEnabled: true,
+      ownership: { mode: 'managed', domain: 'all' },
+      automation: { mode: 'automatic', mapped_from: 'default' },
+      pendingEvidence: 4,
+      catchUp: { paused: false },
+      llmBudget: {
+        schema: 'llm_budget_status.v1',
+        state: 'exhausted',
+        period_id: 'period-legacy',
+        cycle_admission: 'open',
+        blocked_reason: 'llm_token_budget_exhausted',
+        token: {
+          used: 989000,
+          remaining: 11000,
+          budget: 1000000,
+        },
+        spend: {
+          used_usd: 2.34,
+          remaining_usd: 7.66,
+          budget_usd: 10,
+        },
+      },
+    });
+    expect(projected.conversation).toMatchObject({
+      state: 'blocked',
+      reasons: expect.arrayContaining(['rule_llm_budget_exhausted']),
+    });
+    expect(projected.channel.state).toBe('running');
+    expect(projected.automation.blocker).toBe('rule_llm_budget_exhausted');
+    expect(projected.llm_budget).toMatchObject({
+      schema: 'llm_budget_status.v1',
+      state: 'exhausted',
+      used_tokens: 989000,
+      remaining_tokens: 11000,
+      token_budget: 1000000,
+      used_spend_usd: 2.34,
+      remaining_spend_usd: 7.66,
+      cycle_admission: 'open',
+      shared_ledger: true,
+    });
+    expect(projected.product_actions?.find((action) => action.id === 'view_blocker')?.allowed).toBe(true);
+  });
+
   it('keeps Channel running for evidence journal due and blocked Cycle health', () => {
     for (const [status, reason, expectedCycle] of [
       ['idle', 'evidence_journal_maintenance_due', 'running'],

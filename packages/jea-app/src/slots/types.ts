@@ -58,6 +58,20 @@ export interface ShellSubjectReadiness {
     blocker?: string | null
   }
   product_actions?: ShellRemediationAction[]
+  llm_budget?: {
+    schema?: string
+    period_id: string
+    state: 'ok' | 'warn' | 'exhausted'
+    used_tokens: number
+    remaining_tokens: number
+    token_budget: number
+    used_spend_usd: number
+    remaining_spend_usd: number
+    spend_budget_usd: number
+    cycle_admission: 'open' | 'parked'
+    shared_ledger?: boolean
+    blocked_reason?: string | null
+  } | null
 }
 
 /**

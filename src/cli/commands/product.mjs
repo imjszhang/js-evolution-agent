@@ -37,6 +37,16 @@ function printHuman(payload) {
   console.log(`channel: ${payload.channel.state} ${payload.channel.reasons.join(',')}`);
   console.log(`model: ${payload.model.state}/${payload.model.mode} ${payload.model.reasons.join(',')}`);
   console.log(`conversation: ${payload.conversation.state} ${payload.conversation.reasons.join(',')}`);
+  if (payload.llm_budget) {
+    console.log(
+      `llm_budget: ${payload.llm_budget.state}`
+      + ` ${payload.llm_budget.used_tokens}/${payload.llm_budget.token_budget}`
+      + ` remaining=${payload.llm_budget.remaining_tokens}`
+      + ` spend=$${payload.llm_budget.used_spend_usd}/$${payload.llm_budget.spend_budget_usd}`
+      + ` period=${payload.llm_budget.period_id}`
+      + ` cycle_admission=${payload.llm_budget.cycle_admission}`,
+    );
+  }
   console.log(`allowed_actions: ${payload.allowed_actions.join(',')}`);
 }
 

@@ -273,8 +273,11 @@ For real models: copy `.env.example` to `.env`, set `DEEPSEEK_API_KEY`, then:
 
 ```bash
 jea llm ping
+jea llm budget status --json
 jea run --deepseek --subject my-bot
 ```
+
+Hitting the subject token/spend ceiling is an expected operator state. Recover with `jea llm budget raise` or `jea llm budget period-open`; do not hand-edit `llm-budget-ledger.json`. Channel and Cycle share one ledger.
 
 ---
 

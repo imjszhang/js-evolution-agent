@@ -24,6 +24,23 @@
 
 账本落在 subject runtime 的 `data/evolution/llm-budget-ledger.json`。请求前按已脱敏消息与工具 schema 保守估算 prompt，并连同 `max_tokens` 预留 token/花费；不足时在调用 API 前抛出 `llm_token_budget_exhausted` 或 `llm_spend_budget_exhausted`。reserve/settle/exhausted 先写账本审计，再通过 callback 写 `evolution-events.jsonl`；settle 保留 provider usage、cache hit/miss 和估价参数。显式非法预算/估价配置、缺失 subjectKey、账本锁/读/写失败均 fail closed。mock 客户端不受影响。
 
+**耗尽是正常操作者状态**，不是崩溃、不是 poison evidence，也不推进 cursor。预算是按 subject 的**持久累计**（不是自动账单周期），Channel 与 Cycle **共用同一账本**。预留按字符估算，通常比真实 prompt token 高约 3–4 倍，所以操作者可能看到「已耗尽」但账本上仍有少量 remaining——这是诚实 UX，不要只靠调高默认值。
+
+操作者恢复路径（不要手改 `llm-budget-ledger.json` / `.env`）：
+
+```powershell
+jea llm budget status [--subject NAME] [--json]
+jea llm budget raise --tokens N [--spend-usd X] [--reason TEXT]
+jea llm budget period-open [--cycle-admission parked|open] [--tokens N] [--spend-usd X]
+jea llm budget set-admission --cycle-admission parked|open
+```
+
+- `status` 读现有账本 + 配置上限，输出 used/remaining tokens 与估算 spend、`period_id`、`cycle_admission`。`state=exhausted` 表示剩余不足以覆盖一次典型认知预留（保守估算）。
+- `raise` 提高持久上限（`operator_*_ceiling`），**不重置** `used_*`。默认把 Cycle admission 保持为 `open` 并清除 `rule_llm_budget_exhausted` circuit。
+- `period-open` 在新 `period_id` 下把 `used_*` / spend / calls 归零。默认 `--cycle-admission parked`：恢复对话可用额度，但**不**清除 Rule operator-budget circuit，因此不必为了恢复 Channel 而放开整段 cognitive catch-up。`--cycle-admission open` 才会清 circuit、允许 Cycle 再 reserve。
+- 硬闸不取消。积压证据原样保留。有界 catch-up allowance 是后续 #212 的事；本模块只提供稳定的 status/period/admission API。
+- 当前诚实限制：没有第二条 Channel/Cycle 分账本。`cycle_admission=parked` 是给 #212 调度器「只 park 一次」用的控制位；在 #212 落地前，Channel-only 恢复依赖「新周期 + 保留现有 `rule_llm_budget_exhausted` circuit」。若要在没有 circuit 时停住 Cycle，用已有的 `jea daemon evolution-state set paused`。
+
 轻量连通矩阵（flash×off/high、pro×high；pro×max 需 `JEA_LIVE_DEEPSEEK_DEEP=1`）：
 
 ```powershell
@@ -82,4 +99,18 @@ mock 路径 `usage` 为 `null`。真实调用时日志可见 `[prompt-cache ...]
 
 - 0.1.0 的 `DEEPSEEK_MODEL` / thinking env 和历史 task label 仍可读取；新配置应使用 profile / task override，不再把旧 pipeline 名写进 live 配置。
 - `JEA_LLM_SUBJECT_TOKEN_BUDGET` 默认每 subject 持久 `1000000`，`JEA_LLM_SUBJECT_SPEND_BUDGET_USD` 默认 `10`，`JEA_LLM_REQUEST_MAX_TOKENS` 默认且最大 `8192`。预算在 API 调用前持久 reserve，失败不会产生外部调用。
+- 操作者提高上限写入账本的 `operator_token_ceiling` / `operator_spend_ceiling_usd_micros`；有效上限是 `max(env 配置, operator ceiling)`。开启新周期会保留该覆盖值并重置累计 used。
 - mock 不消耗真实 token 预算。发布前的 live provider 验证保持 opt-in，普通 CI 不注入密钥。
+
+### 稳定控制面（#212 / #217 消费，不要另起一套预算系统）
+
+机器可读入口：
+
+- `inspectLlmBudget({ subjectKey, ledgerPath })` → schema `llm_budget_status.v1`
+- `raiseLlmBudgetCeiling` / `openLlmBudgetPeriod` / `setLlmBudgetCycleAdmission`
+- `llmBudgetReadinessView(status)` → 挂在 `service.getReadiness` 的加法字段 `llm_budget`（数字与稳定码，不含 UI 文案）
+- CLI：`jea llm budget status|raise|period-open|set-admission --json`
+
+`llm_budget_status.v1` 稳定字段：`subject`、`period_id`、`period_opened_at`、`state`（`ok|warn|exhausted`）、`token.used|reserved|budget|remaining|configured_budget|operator_ceiling`、`spend.used_usd|reserved_usd|budget_usd|remaining_usd|configured_budget_usd|operator_ceiling_usd`、`cycle_admission`（`open|parked`）、`shared_ledger=true`、`ledger_scope=subject`、`blocked_reason`、`reserve_estimate`、`next_actions[]`。
+
+审计事件（账本 `events[]` + `evolution-events.jsonl`）：`llm_budget_ceiling_raised`、`llm_budget_period_opened`、`llm_budget_cycle_admission_set`，以及既有的 reserve/settle/exhausted。

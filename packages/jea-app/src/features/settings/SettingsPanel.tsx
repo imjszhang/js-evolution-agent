@@ -18,6 +18,7 @@ import {
   type SubjectReadiness
 } from '../client-types'
 import type { EvolutionCycleList, EvolutionObservability } from '../evolution/types'
+import { formatLlmBudgetBlocker, isLlmBudgetBlocker } from '../llm-budget-display'
 import { projectEvolutionSummary, projectOperatorSurface } from '../operator-projection'
 import { createFixtureDiagnosticReport, createReadyReadiness, createSetupFixtureState } from '../fixtures'
 
@@ -424,10 +425,22 @@ export function SettingsPanel({
               {t('evolutionCheckNow')}
             </Button>
           ) : null}
-          {productAllowed.has('view_blocker') && (operatorProjection?.evolution_runtime.blocker || subjectReadiness?.automation?.blocker) ? (
-            <p className="text-sm text-foreground" data-testid="settings-view-blocker">
-              {t('evolutionBlocked')}: {operatorProjection?.evolution_runtime.blocker ?? subjectReadiness?.automation?.blocker}
-            </p>
+          {productAllowed.has('view_blocker') && (operatorProjection?.evolution_runtime.blocker || subjectReadiness?.automation?.blocker || subjectReadiness?.llm_budget?.state === 'exhausted') ? (
+            <div className="space-y-1" data-testid="settings-view-blocker">
+              <p className="text-sm text-foreground">
+                {t('evolutionBlocked')}: {formatLlmBudgetBlocker(
+                  operatorProjection?.evolution_runtime.blocker ?? subjectReadiness?.automation?.blocker,
+                  subjectReadiness?.llm_budget,
+                ) ?? operatorProjection?.evolution_runtime.blocker ?? subjectReadiness?.automation?.blocker}
+              </p>
+              {subjectReadiness?.llm_budget && isLlmBudgetBlocker(
+                operatorProjection?.evolution_runtime.blocker ?? subjectReadiness?.automation?.blocker ?? subjectReadiness.llm_budget.blocked_reason,
+              ) ? (
+                <p className="text-xs text-muted-foreground" data-testid="settings-llm-budget-recover">
+                  {t('evolutionBudgetRecover')}
+                </p>
+              ) : null}
+            </div>
           ) : null}
         </div>
       </section>

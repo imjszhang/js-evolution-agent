@@ -48,6 +48,10 @@ CI jobs：`check`、`test (22)`、`client-api`、`web-host`、`desktop-build`、
 - `jea doctor`：检查 Node、依赖、`.env`、DeepSeek 配置、权威文档（`policies/authority/CONSTITUTION.md`、`GUIDE.md`）、`oada.config.mjs`，以及 `repolink.config.mjs` 声明的兄弟仓库链接（`jea doctor` 的 Repo Links 段）。
 - `jea llm ping`：测试 DeepSeek 连接。
 - `jea llm ping --mock`：测试本地 Mock AI 路径。
+- `jea llm budget status [--subject NAME] [--json]`：查看主体 LLM token/花费 used、remaining、period。
+- `jea llm budget raise --tokens N [--spend-usd X]`：提高持久上限（不重置 used）。
+- `jea llm budget period-open [--cycle-admission parked|open]`：开启新预算周期（重置 used_*）。
+- `jea llm budget set-admission --cycle-admission parked|open`：在共用账本上 park Cycle 或重新开放 Cycle。
 - `jea policy check`：检查当前主体策略是否包含必需章节（`Subject`）。
 
 真实模型调用依赖 `.env` 中的 `DEEPSEEK_API_KEY`。没有 API key 时，可使用 `--mock` 走本地模拟路径。

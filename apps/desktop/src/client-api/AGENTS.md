@@ -28,6 +28,8 @@ Desktop supervisor lease 只以加法状态进入 Electron process port / readin
 
 CLI 聚合入口是 `jea product status --json --subject NAME`（别名 `jea readiness`）。它调用同一套 `readSubjectReadiness` / `service.getReadiness` 投影，不另建码表。`jea status --json` 仍只描述 localhost Web host。
 
+`llm_budget` 是 `service.getReadiness` 的加法可选字段（协议仍为 `1.0.0`）：只含 period/state/used/remaining/admission 等稳定数字与码，不含 UI 文案。预算恢复命令留在 CLI `jea llm budget`，不新增 Client API 命令。
+
 ## 测试
 
 ```bash

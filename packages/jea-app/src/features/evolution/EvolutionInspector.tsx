@@ -6,6 +6,8 @@ import type { FeatureSlotProps } from '../../slots/types'
 import { Button } from '../../ui/button'
 import { Separator } from '../../ui/separator'
 import { cn } from '../../lib/cn'
+import type { LlmBudgetReadinessView } from '../client-types'
+import { formatLlmBudgetBlocker } from '../llm-budget-display'
 import { createInspectorController } from './controller'
 import { subscribeEvolutionNavigation } from './navigation'
 import { projectEvolutionCore, projectTimeline, resolveSafeState } from './projection'
@@ -116,7 +118,7 @@ export function EvolutionInspector({
             {t('evolutionInspector')}
           </h2>
           <p className="truncate text-xs text-muted-foreground" data-testid="evolution-runtime">
-            {evolutionRuntimeCopy(t, adapters.subjectReadiness?.automation, pendingEvidence)
+            {evolutionRuntimeCopy(t, adapters.subjectReadiness?.automation, pendingEvidence, adapters.subjectReadiness?.llm_budget)
               ?? (core.open_cycles > 0 ? t('evolutionOpenCycle') : t('evolutionRecentCycles'))}
             {core.round_count ? ` · ${core.round_count}` : ''}
             {pendingEvidence != null && !adapters.subjectReadiness?.automation
@@ -198,7 +200,8 @@ export function EvolutionInspector({
 function evolutionRuntimeCopy(
   t: (key: 'evolutionAutomaticPaused' | 'evolutionListening' | 'evolutionCatchingUp' | 'evolutionWaitingApproval' | 'evolutionBlocked') => string,
   automation: { mode?: string; intent?: string; remaining_evidence?: number | null; blocker?: string | null } | null | undefined,
-  pendingEvidence: number | null
+  pendingEvidence: number | null,
+  llmBudget?: LlmBudgetReadinessView | null,
 ): string | null {
   if (!automation) return null
   if (automation.mode === 'paused' || automation.intent === 'paused') return t('evolutionAutomaticPaused')
@@ -208,7 +211,8 @@ function evolutionRuntimeCopy(
   }
   if (automation.intent === 'waiting_approval') return t('evolutionWaitingApproval')
   if (automation.intent === 'blocked') {
-    return automation.blocker ? `${t('evolutionBlocked')}: ${automation.blocker}` : t('evolutionBlocked')
+    const detail = formatLlmBudgetBlocker(automation.blocker, llmBudget)
+    return detail ? `${t('evolutionBlocked')}: ${detail}` : t('evolutionBlocked')
   }
   return t('evolutionListening')
 }

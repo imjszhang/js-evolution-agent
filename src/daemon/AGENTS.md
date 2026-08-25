@@ -30,7 +30,7 @@ Daemon 用于 **belief-driven、事件驱动的 reactor 演化**。推荐用 `je
 - `jea daemon enqueue --type cognitive_reaction|exec_queue|verify_batch|rule_reaction|memory_compaction`：手动入队 reactor 任务。
 - `jea daemon stop` / `jea daemon stop --all`：请求 worker 优雅停止。
 
-Rule backlog 使用独立的安全预算：每批默认最多 32 个事件、4 MiB hydrated payload、4 分钟墙钟，连续瞬态失败最多 3 次；catch-up 默认 4 批或 10 分钟。对应 `JEA_RULE_MAX_EVENTS`、`JEA_RULE_MAX_PAYLOAD_BYTES`、`JEA_RULE_MAX_WALL_MS`、`JEA_RULE_MAX_CONSECUTIVE_FAILURES`、`JEA_RULE_CATCHUP_MAX_BATCHES`、`JEA_RULE_CATCHUP_MAX_WALL_MS`。确定性容量失败会有界拆分；不可拆分的单条 evidence 写入 `reactor/archive/rule-quarantine.jsonl` 后才推进 Rule cursor。主体 LLM token/spend 预算耗尽属于 operator budget block，不归因于 evidence，不拆分、不隔离且不推进 cursor。`rule_catch_up_budget`、`rule_poison_batch_circuit_open`、`rule_llm_budget_exhausted`、`rule_journal_capacity_exceeded` 会稳定暴露到 daemon projection/readiness，且不暂停 Channel worker。
+Rule backlog 使用独立的安全预算：每批默认最多 32 个事件、4 MiB hydrated payload、4 分钟墙钟，连续瞬态失败最多 3 次；catch-up 默认 4 批或 10 分钟。对应 `JEA_RULE_MAX_EVENTS`、`JEA_RULE_MAX_PAYLOAD_BYTES`、`JEA_RULE_MAX_WALL_MS`、`JEA_RULE_MAX_CONSECUTIVE_FAILURES`、`JEA_RULE_CATCHUP_MAX_BATCHES`、`JEA_RULE_CATCHUP_MAX_WALL_MS`。确定性容量失败会有界拆分；不可拆分的单条 evidence 写入 `reactor/archive/rule-quarantine.jsonl` 后才推进 Rule cursor。主体 LLM token/spend 预算耗尽属于 operator budget block，不归因于 evidence，不拆分、不隔离且不推进 cursor。`rule_catch_up_budget`、`rule_poison_batch_circuit_open`、`rule_llm_budget_exhausted`、`rule_journal_capacity_exceeded` 会稳定暴露到 daemon projection/readiness，且不暂停 Channel worker。恢复用 `jea llm budget status|raise|period-open`（见 [src/ai/AGENTS.md](../ai/AGENTS.md)），不要手改 `llm-budget-ledger.json`。有界 catch-up / lane park 由后续 scheduler（#212）消费同一 `inspectLlmBudget` / `cycle_admission` 契约，不要另起一套预算账本。
 
 ### Reactor 恢复真相
 

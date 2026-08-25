@@ -142,6 +142,14 @@ Commands:
                          Audit closure coverage, causal refs, settlement, Memory, and backlogs
   llm ping               Test DeepSeek connectivity
   llm ping --mock        Test local mock AI path
+  llm budget status [--subject NAME] [--json]
+                         Show subject LLM token/spend used, remaining, period
+  llm budget raise --tokens N [--spend-usd X]
+                         Raise the persisted subject ceiling (does not reset used_*)
+  llm budget period-open [--cycle-admission parked|open]
+                         Open a new budget period (reset used_* under a new period id)
+  llm budget set-admission --cycle-admission parked|open
+                         Park Cycle on the shared ledger or reopen Cycle admission
   policy check           Verify subject policy has Subject section (--subject NAME)
   subject list           List registered subjects and default subject
   subject show           Show policy, namespace, and runtime paths (--subject NAME)
@@ -200,6 +208,8 @@ Examples:
   jea audit queue
   jea audit closure --json
   jea llm ping --mock
+  jea llm budget status --json
+  jea llm budget period-open --cycle-admission parked
   jea data backup --name before-reset
   jea subject list
   jea subject init my-product --use
@@ -264,7 +274,7 @@ export async function main(argv = process.argv.slice(2)) {
   if (command === 'goals') return goalsCommand({ subcommand, flags, args });
   if (command === 'beliefs') return beliefsCommand({ subcommand, flags, args });
   if (command === 'audit') return auditCommand({ subcommand, flags });
-  if (command === 'llm') return llmCommand({ subcommand, flags });
+  if (command === 'llm') return llmCommand({ subcommand, flags, args });
   if (command === 'policy') return policyCommand({ subcommand, flags });
   if (command === 'subject') return subjectCommand({ subcommand, flags, args, context });
   if (command === 'actions') return actionsCommand({ subcommand, flags });

@@ -201,4 +201,52 @@ describe('settings feature slot', () => {
     expect(web).not.toContain('data-testid="settings-start-cycle"')
     expect(web).toContain('data-testid="settings-process-cycle-once"')
   })
+
+  it('explains rule_llm_budget_exhausted with remaining/used numbers', () => {
+    const subjectReadiness = createSubjectReadinessFixture({
+      host: 'electron',
+      webHost: 'running',
+      channel: 'running',
+      conversation: 'blocked',
+      cycle: 'blocked',
+      blocker: 'rule_llm_budget_exhausted',
+      llmBudget: {
+        schema: 'llm_budget_status.v1',
+        period_id: 'period-legacy',
+        state: 'exhausted',
+        used_tokens: 989000,
+        remaining_tokens: 11000,
+        token_budget: 1000000,
+        used_spend_usd: 2.34,
+        remaining_spend_usd: 7.66,
+        spend_budget_usd: 10,
+        cycle_admission: 'open',
+        shared_ledger: true,
+        blocked_reason: 'llm_token_budget_exhausted',
+      },
+    })
+    subjectReadiness.product_actions = subjectReadiness.product_actions?.map((action) => (
+      action.id === 'view_blocker' ? { ...action, allowed: true } : action
+    ))
+    const html = renderSettings({ kind: 'ready', cli: 'native' }, 'electron', {
+      subjectReadiness,
+      observability: {
+        subject: 'alpha',
+        attention: { items: [], summary: { count: 0 } },
+        open_cycles: 0,
+        evidence_pending_count: 4,
+        daemon_task_pending_count: 0,
+      },
+      cycleList: {
+        subject: 'alpha',
+        namespace: 'alpha-data',
+        round_count: 1,
+        cycles: [],
+      },
+    })
+    expect(html).toContain('data-testid="settings-view-blocker"')
+    expect(html).toContain('989000/1000000 tokens remaining 11000')
+    expect(html).toContain('data-testid="settings-llm-budget-recover"')
+    expect(html).toContain('jea llm budget raise')
+  })
 })

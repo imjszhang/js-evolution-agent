@@ -154,6 +154,21 @@ export interface AutomationView {
   blocker?: string | null
 }
 
+export interface LlmBudgetReadinessView {
+  schema?: 'llm_budget_status.v1' | string
+  period_id: string
+  state: 'ok' | 'warn' | 'exhausted'
+  used_tokens: number
+  remaining_tokens: number
+  token_budget: number
+  used_spend_usd: number
+  remaining_spend_usd: number
+  spend_budget_usd: number
+  cycle_admission: 'open' | 'parked'
+  shared_ledger?: boolean
+  blocked_reason?: string | null
+}
+
 export interface SubjectReadiness {
   subject: string
   generated_at: string
@@ -167,6 +182,7 @@ export interface SubjectReadiness {
   actions: RemediationActionView[]
   automation?: AutomationView
   product_actions?: RemediationActionView[]
+  llm_budget?: LlmBudgetReadinessView | null
 }
 
 export interface PublicCommandErrorShape {
