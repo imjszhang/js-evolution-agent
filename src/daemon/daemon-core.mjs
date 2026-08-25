@@ -91,6 +91,12 @@ import {
   runReactorDaemonTask,
   scanWakeBacklog,
 } from '../evolution/reactor/reactor-tasks.mjs';
+import {
+  completeScheduledActivation,
+  noteSchedulerBudgetExhaustion,
+  releaseScheduledActivation,
+  scheduleReactorTurn,
+} from './reactor-scheduler.mjs';
 import { enqueueWakeIntent } from '../evolution/reactor/wake-store.mjs';
 import { classifyReactorError } from '../evolution/reactor/rule-resilience.mjs';
 import {
@@ -517,6 +523,14 @@ function isRetiredTrainTaskType(type) {
 }
 
 export function failReactorTask(root, subject, task, failure) {
+  if (failure?.code === 'lease_lost' && task?.input?.identity_key) {
+    releaseScheduledActivation(root, subject, task.input.identity_key);
+  } else if (task?.input?.identity_key && /(?:llm_)?(?:token|spend)[_ ]budget[_ ]exhausted|cycle_admission_parked/i.test(
+    `${failure?.code || ''} ${failure?.reason || ''} ${failure?.message || ''}`,
+  )) {
+    noteSchedulerBudgetExhaustion(root, subject, failure);
+    failure = { ...failure, retryable: false };
+  }
   const maxAttempts = Math.max(1, (task.input?.retries ?? 3) + 1);
   if (failure.retryable !== false && task.attempts < maxAttempts) {
     const released = releaseTaskForRetry(root, subject, task.task_id, failure);
@@ -603,6 +617,9 @@ async function workReactorTask(root, subject, task, flags) {
         canCommit: () => !leaseLost(),
       });
       if (leaseLost()) {
+        if (task.input?.identity_key) {
+          releaseScheduledActivation(root, subject, task.input.identity_key);
+        }
         const released = releaseTaskForRetry(root, subject, task.task_id, {
           code: 'lease_lost',
           reason: 'task_lease_renew_failed',
@@ -623,6 +640,9 @@ async function workReactorTask(root, subject, task, flags) {
         ok: true,
         result: outcome?.result ?? outcome,
       });
+      if (task.input?.identity_key) {
+        completeScheduledActivation(root, subject, task.input.identity_key, { kind: 'handle' });
+      }
       recordDaemonEvent(root, subject, {
         type: 'task_completed',
         status: 'ok',
@@ -1160,7 +1180,11 @@ export async function runDaemonWorker(root, subject, flags = {}) {
           tick_ms: tickMs,
         });
         try {
-          scanWakeBacklog(root, subject, { enqueueTask });
+          const scheduled = scheduleReactorTurn(root, subject, { enqueueTask, readTaskQueue });
+          scanWakeBacklog(root, subject, {
+            enqueueTask,
+            skipKinds: scheduled?.skip_scan_kinds || [],
+          });
         } catch (err) {
           recordLoopFailure(root, subject, { operation: 'wake_backlog_scan', err });
         }

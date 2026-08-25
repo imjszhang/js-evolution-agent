@@ -103,10 +103,12 @@ export function scanWakeBacklog(root, subject, {
   enqueueTask,
   ignoreBudget = false,
   env = process.env,
+  skipKinds = [],
 } = {}) {
   const runtime = runtimeForSubject(root, subject);
   const enqueued = [];
   const paused = isEvolutionPaused(root, subject);
+  const skipped = new Set(skipKinds);
   const cognitivePending = listEligibleEvidence(runtime.dataRoot, { reactor: 'cognitive' });
   if (cognitivePending.length === 0) {
     clearCatchUpIfIdle(runtime.dataRoot, 0, env);
@@ -133,6 +135,7 @@ export function scanWakeBacklog(root, subject, {
   } : {};
 
   for (const intent of listPendingWakes(root, subject)) {
+    if (skipped.has(intent.kind)) continue;
     if (paused && (intent.kind === 'cognitive' || intent.kind === 'exec' || intent.kind === 'rule')) {
       continue;
     }
@@ -150,7 +153,7 @@ export function scanWakeBacklog(root, subject, {
   }
 
   const pendingDecisions = countPendingDecisions(runtime.runtimeRoot);
-  if (!paused && pendingDecisions > 0) {
+  if (!paused && !skipped.has('exec') && pendingDecisions > 0) {
     const result = enqueueReactorTask(root, subject, 'exec', {
       reason: 'decision_backlog',
       source: 'backlog_scan',
@@ -159,7 +162,7 @@ export function scanWakeBacklog(root, subject, {
     if (result.task_created) enqueued.push(result);
   }
 
-  if (!paused && cognitivePending.length > 0 && gate.allowed) {
+  if (!paused && !skipped.has('cognitive') && cognitivePending.length > 0 && gate.allowed) {
     const result = enqueueReactorTask(root, subject, 'cognitive', {
       reason: 'evidence_backlog',
       source: 'backlog_scan',
@@ -171,7 +174,7 @@ export function scanWakeBacklog(root, subject, {
     }
   }
 
-  if (!paused && ruleDue.due.length > 0 && ruleAllowed) {
+  if (!paused && !skipped.has('rule') && ruleDue.due.length > 0 && ruleAllowed) {
     const result = enqueueReactorTask(root, subject, 'rule', {
       reason: ruleDue.due[0].reason || 'rule_evidence_backlog',
       source: 'backlog_scan',
@@ -186,7 +189,7 @@ export function scanWakeBacklog(root, subject, {
 
   const retryableIntents = listOpenExecIntents(runtime.dataRoot)
     .filter((intent) => intent.status === 'prepared' || intent.status === 'intended');
-  if (!paused && retryableIntents.length > 0 && pendingDecisions > 0) {
+  if (!paused && !skipped.has('exec') && retryableIntents.length > 0 && pendingDecisions > 0) {
     const result = enqueueReactorTask(root, subject, 'exec', {
       reason: 'retryable_exec_intents',
       source: 'backlog_scan',
