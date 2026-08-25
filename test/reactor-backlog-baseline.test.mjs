@@ -66,6 +66,7 @@ describe('reactor backlog baseline measurement', () => {
     expect(report.populations.exclusive.unknown_legacy).toBeGreaterThan(0);
     expect(report.populations.exclusive.replay_candidate).toBeGreaterThan(0);
     expect(report.populations.exclusive.realtime_candidate).toBeGreaterThan(0);
+    expect(report.populations.by_reactor.cognitive.handled_covered).toBeGreaterThan(0);
 
     expect(report.projection.cold.scanned_records).toBe(report.authority.evidence_count);
     expect(report.projection.cold).toHaveProperty('hydrated_records');
@@ -88,8 +89,12 @@ describe('reactor backlog baseline measurement', () => {
     expect(report.rebuild.cursor_after.cognitive.offset).toBe(0);
     expect(report.rebuild.generation_after).toBeTruthy();
     expect(report.rebuild.generation_after).not.toBe(report.rebuild.generation_before);
-    expect(report.rebuild).toHaveProperty('marker_backed_preserved');
-    expect(report.rebuild).toHaveProperty('covered_index_only_lost');
+    expect(report.rebuild.marker_backed_preserved).toBeGreaterThan(0);
+    expect(report.rebuild.marker_backed_lost).toBe(0);
+    expect(report.rebuild.covered_index_only_lost).toBeGreaterThan(0);
+    expect(report.rebuild.claimable_after.cognitive).toBeGreaterThan(
+      report.rebuild.claimable_before.cognitive,
+    );
   }, 60_000);
 
   it('overrides a pre-existing JEA_HOME instead of reading the real home', async () => {

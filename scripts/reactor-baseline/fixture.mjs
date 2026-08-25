@@ -2,6 +2,7 @@
  * Deterministic synthetic 0.2.x subject runtime for Reactor baseline (#209).
  * Writes only under an isolated temp JEA_HOME. Never reads ~/.jea.
  */
+import { createHash } from 'node:crypto';
 import {
   appendFileSync,
   mkdirSync,
@@ -14,11 +15,11 @@ import { dirname, join } from 'node:path';
 import { appendTerminalClaim } from '../../src/evolution/reactor/claim-terminal-store.mjs';
 import {
   claimsCoveredIndexPath,
-  claimsPath,
   claimsTerminalArchivePath,
 } from '../../src/evolution/reactor/claim-ledger.mjs';
+import { claimsPath } from '../../src/evolution/reactor/paths.mjs';
 import {
-  commitEvidenceCursor,
+  evidenceIndexDir,
   evidenceIndexJournalPath,
   refreshEvidenceIndex,
 } from '../../src/evolution/reactor/evidence-index.mjs';
@@ -395,9 +396,15 @@ function partitionKeys(planned, recipe) {
     recipe.handled_marker_backed + recipe.handled_covered_index_only + recipe.failed_released + recipe.claimed_open,
   );
 
-  const ruleMarker = overlapKeys.slice(0, Math.min(6, overlapKeys.length));
+  const ruleMarker = [
+    ...verifyKeys.slice(0, Math.min(2, verifyKeys.length)),
+    ...receiptKeys.slice(0, Math.min(4, receiptKeys.length)),
+  ];
+  const ruleCoveredOnly = [
+    ...verifyKeys.slice(2, Math.min(4, verifyKeys.length)),
+    ...receiptKeys.slice(4, Math.min(8, receiptKeys.length)),
+  ];
   const memoryMarker = overlapKeys.slice(0, Math.min(8, overlapKeys.length));
-  const ruleCoveredOnly = overlapKeys.slice(6, Math.min(12, overlapKeys.length));
   const memoryCoveredOnly = overlapKeys.slice(8, Math.min(14, overlapKeys.length));
 
   return {
@@ -540,13 +547,12 @@ export function generateBaselineFixture({
     const journalPath = evidenceIndexJournalPath(runtime.dataRoot);
     const bytes = existsOrZero(journalPath);
     const claimMeta = seedClaimsAndMarkers(runtime.dataRoot, planned, recipe);
+    // Write consumed markers without committing a reactor cursor. A cursor
+    // commit would initialize the live generation and hide the rebuild
+    // coverage loss that happens when a new generation starts at offset 0.
     for (const reactor of REACTORS) {
-      const keys = claimMeta.parts.marker_backed[reactor];
-      for (let i = 0; i < keys.length; i += CHUNK) {
-        commitEvidenceCursor(runtime.dataRoot, reactor, bytes, {
-          consumedKeys: keys.slice(i, i + CHUNK),
-          expectedGeneration: index.generation,
-        });
+      for (const key of claimMeta.parts.marker_backed[reactor]) {
+        writeConsumedMarker(runtime.dataRoot, reactor, key);
       }
     }
     seedBudgetAndTasks(runtime, recipe);
@@ -583,4 +589,11 @@ function existsOrZero(path) {
   } catch {
     return 0;
   }
+}
+
+function writeConsumedMarker(dataRoot, reactor, key) {
+  const digest = createHash('sha256').update(String(key)).digest('hex');
+  const path = join(evidenceIndexDir(dataRoot), 'consumed', reactor, digest.slice(0, 2), digest);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, '', { flag: 'wx' });
 }
