@@ -88,6 +88,22 @@ export interface ReadinessProjectionInput {
     paused?: boolean
     reason?: string | null
   }
+  llmBudget?: {
+    schema?: string
+    period_id?: string
+    state?: 'ok' | 'warn' | 'exhausted'
+    used_tokens?: number
+    remaining_tokens?: number
+    token_budget?: number
+    used_spend_usd?: number
+    remaining_spend_usd?: number
+    spend_budget_usd?: number
+    cycle_admission?: 'open' | 'parked'
+    shared_ledger?: boolean
+    blocked_reason?: string | null
+    token?: Record<string, unknown>
+    spend?: Record<string, unknown>
+  } | null
 }
 
 export function isSubjectReadinessDomainState(value: string): value is SubjectReadinessDomainState {

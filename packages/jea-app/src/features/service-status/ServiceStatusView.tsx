@@ -2,6 +2,7 @@ import { useLocale } from '../../i18n/LocaleProvider'
 import type { FeatureSlotProps } from '../../slots/types'
 import { cn } from '../../lib/cn'
 import { useJeaClientContext } from '../client-context'
+import { formatLlmBudgetBlocker, isLlmBudgetBlocker } from '../llm-budget-display'
 import { deriveServiceStatusKind, needsOpenDesktop, webHostStoppedIsNotOutage } from './derive'
 
 function evolutionIntentLabel(
@@ -86,9 +87,13 @@ export function ServiceStatusView({ adapters }: FeatureSlotProps) {
               state={readiness.automation
                 ? evolutionIntentLabel(t, readiness.automation)
                 : readiness.cycle.state}
-              reasons={readiness.automation?.blocker
-                ? [readiness.automation.blocker]
-                : readiness.cycle.reasons}
+              reasons={
+                readiness.llm_budget && isLlmBudgetBlocker(readiness.automation?.blocker)
+                  ? [formatLlmBudgetBlocker(readiness.automation?.blocker, readiness.llm_budget) ?? readiness.automation.blocker]
+                  : readiness.automation?.blocker
+                    ? [readiness.automation.blocker]
+                    : readiness.cycle.reasons
+              }
               testId="service-status-cycle"
             />
             <DomainRow

@@ -20,6 +20,8 @@
 
 发布打包与 publish 门禁拒绝 dirty provenance。`settings.exportDiagnostics` 导出脱敏机器可读报告；就绪状态消费现有 `setup.getReadiness` / `service.getReadiness` / 投影，不另建 readiness 命令目录（#138）。CLI 聚合入口是 `jea product status`（#141）。
 
+`rule_llm_budget_exhausted` 是预期操作者状态。`service.getReadiness` / `jea product status` 的加法字段 `llm_budget` 给出 used/remaining tokens 与估算 spend；恢复命令是 `jea llm budget`，不是新手改 runtime JSON。Channel 与 Cycle 共用账本，Desktop 只解释现有 blocker，不另建产品面。
+
 ## 边界
 
 - 不要在此复制 Subject policy、审批或演化决策。

@@ -253,6 +253,10 @@ export function buildReactorHealthProjection(root, subject, {
       suggestions.push('Inspect the Rule batch fingerprint and quarantined evidence before resetting the circuit.');
     } else if (ruleBlockedReason === RULE_BLOCK_REASONS.journal) {
       suggestions.push('Stop Cycle processing and inspect evidence journal capacity; do not delete authoritative evidence.');
+    } else if (ruleBlockedReason === RULE_BLOCK_REASONS.llmBudget) {
+      suggestions.push(
+        'Subject LLM budget is exhausted (period/ceiling). Backlog is preserved and no provider calls will be made. Run `jea llm budget status --json`, then `jea llm budget raise` or `jea llm budget period-open`. Do not hand-edit llm-budget-ledger.json.',
+      );
     } else {
       suggestions.push('Rule catch-up reached its configured budget; use Check now only after reviewing backlog health.');
     }

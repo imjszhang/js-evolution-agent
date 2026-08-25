@@ -256,6 +256,32 @@ export function clearRuleFailure(dataRoot, fingerprint) {
   }, { fallback: emptyState() });
 }
 
+export function clearOperatorBudgetBlocks(dataRoot) {
+  let cleared = 0;
+  const fingerprints = [];
+  updateJson(ruleResiliencePath(dataRoot), (raw) => {
+    const state = {
+      ...emptyState(),
+      ...(raw || {}),
+      failures: { ...(raw?.failures || {}) },
+      quarantined: raw?.quarantined && typeof raw.quarantined === 'object' ? raw.quarantined : {},
+    };
+    for (const [fingerprint, failure] of Object.entries(state.failures)) {
+      if (
+        failure?.classification === 'operator_budget'
+        || failure?.block_reason === RULE_BLOCK_REASONS.llmBudget
+      ) {
+        delete state.failures[fingerprint];
+        fingerprints.push(fingerprint);
+        cleared += 1;
+      }
+    }
+    if (cleared) state.updated_at = nowIso();
+    return state;
+  }, { fallback: emptyState() });
+  return { cleared, fingerprints };
+}
+
 export function quarantineRuleEvidence(dataRoot, {
   fingerprint,
   event,

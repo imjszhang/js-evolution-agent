@@ -10,6 +10,11 @@ import { runtimeForSubject } from '../infra/runtime-paths.mjs';
 import { isProcessAlive } from '../infra/process-alive.mjs';
 import { redactSecrets } from '../intelligence/redaction.mjs';
 import { CATCH_UP_BUDGET_REASON, readCatchUpProjection } from '../evolution/reactor/catch-up-budget.mjs';
+import {
+  inspectLlmBudget,
+  llmBudgetLedgerPath,
+  llmBudgetReadinessView,
+} from '../ai/token-budget.mjs';
 import { resolveAutomationPolicyFromEntry } from './automation-policy.mjs';
 import { inspectSupervisorLease, readSupervisorLease } from './supervisor-lease.mjs';
 
@@ -280,7 +285,7 @@ function mapProcessDomain(prefix, worker, health, ownership) {
   return { state: 'unavailable', reasons: [`${prefix}_unavailable`] };
 }
 
-function mapConversation(channel, model, desktopChannelEnabled) {
+function mapConversation(channel, model, desktopChannelEnabled, llmBudget) {
   const reasons = [];
   if (!LIVE_STATES.has(channel.state)) {
     reasons.push('conversation_blocked_channel');
@@ -290,6 +295,9 @@ function mapConversation(channel, model, desktopChannelEnabled) {
   }
   if (!desktopChannelEnabled) {
     reasons.push('desktop_channel_disabled');
+  }
+  if (llmBudget?.state === 'exhausted') {
+    reasons.push('rule_llm_budget_exhausted');
   }
   if (reasons.length > 0) {
     return { state: 'blocked', reasons };
@@ -370,7 +378,7 @@ export function resolveRemediationActions(needed, hostKind) {
   return { allowed_actions, actions };
 }
 
-function mapAutomation(input, cycle) {
+function mapAutomation(input, cycle, llmBudget) {
   const policy = input.automation ?? { mode: 'automatic', mapped_from: 'default', diagnostic: null, background: false };
   const pending = Number.isFinite(input.pendingEvidence)
     ? Math.max(0, Math.floor(input.pendingEvidence))
@@ -395,6 +403,9 @@ function mapAutomation(input, cycle) {
       || reason === 'rule_journal_capacity_exceeded'
       || reason === 'evidence_journal_maintenance_blocked'
     )) ?? cycle.reasons[0] ?? `${cycle.state}`;
+  } else if (llmBudget?.state === 'exhausted') {
+    intent = 'blocked';
+    blocker = 'rule_llm_budget_exhausted';
   } else if (approvalWait) {
     intent = 'waiting_approval';
   } else if (pending > 0 || cycle.state === 'stalled') {
@@ -430,12 +441,15 @@ function productActionIds(automation) {
 }
 
 export function projectSubjectReadiness(input) {
+  const llm_budget = input.llmBudget
+    ? (input.llmBudget.schema ? llmBudgetReadinessView(input.llmBudget) : input.llmBudget)
+    : null;
   const web_host = mapWebHost(input.webHost);
   const cycle = mapProcessDomain('cycle', input.cycleWorker, input.cycleHealth, input.ownership);
   const channel = mapProcessDomain('channel', input.channelWorker, input.channelHealth, input.ownership);
   const model = mapModel(input.model);
-  const conversation = mapConversation(channel, model, input.desktopChannelEnabled);
-  const { automation } = mapAutomation(input, cycle);
+  const conversation = mapConversation(channel, model, input.desktopChannelEnabled, llm_budget);
+  const { automation } = mapAutomation(input, cycle, llm_budget);
   const reasons = uniqueCodes([
     ...web_host.reasons,
     ...cycle.reasons,
@@ -452,6 +466,7 @@ export function projectSubjectReadiness(input) {
       'evidence_journal_maintenance_due',
     ].includes(automation.blocker) ? [automation.blocker] : []),
     ...(automation.blocker === 'claims_projection_degraded' ? ['claims_projection_degraded'] : []),
+    ...(llm_budget?.state === 'exhausted' ? ['rule_llm_budget_exhausted'] : []),
   ]);
   const { allowed_actions, actions } = resolveRemediationActions(
     neededActionIds({ cycle, channel, ownership: input.ownership }),
@@ -471,6 +486,7 @@ export function projectSubjectReadiness(input) {
     allowed_actions,
     actions,
     automation,
+    llm_budget,
     product_actions: product.actions.filter((action) => (
       action.id === 'pause_automatic_evolution'
       || action.id === 'resume_automatic_evolution'
@@ -490,6 +506,18 @@ export function readinessCodeView(value) {
     conversation: value.conversation,
     reasons: value.reasons,
   };
+}
+
+function observeLlmBudget(runtime, subject) {
+  try {
+    const paths = runtimeForSubject(runtime, subject);
+    return inspectLlmBudget({
+      subjectKey: subject,
+      ledgerPath: llmBudgetLedgerPath(paths.runtimeRoot),
+    });
+  } catch {
+    return null;
+  }
 }
 
 function desktopChannelEnabled(runtime, subject) {
@@ -624,5 +652,6 @@ export function readSubjectReadiness(runtime, subject, options = {}) {
       || daemon.reactor?.claims?.projection_degraded === true,
     waitingApproval,
     catchUp: readCatchUpProjection(dataRoot),
+    llmBudget: observeLlmBudget(runtime, name),
   }));
 }
