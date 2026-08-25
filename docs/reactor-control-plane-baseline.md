@@ -30,24 +30,23 @@
 
 ## 3. Rebuild / 新 generation 对 handled coverage 的影响
 
-`rebuildEvidenceJournal` 的现行契约是：
+`rebuildEvidenceJournal` 的 cursor 契约仍是：
 
 - 新 generation，cursor **一律回到 offset 0**（`safe_replay_from_zero`）
 - **复制** `consumed/` markers
-- **不改** claim ledger / covered-index
 
-因此当前实现的语义 coverage **只部分保留**（tiny 实测，2026-08-25）：
+#209 测到的 0.2.x 缺口：仅 covered-index / archive 的 handled 键在 cursor 初始化到 0 后重新可认领（tiny：`handled_coverage=partial`，20 丢失 / 0 保留）。#213 把这些身份和解进 Activation Ledger `(reactor, evidence_key, activation_policy_version)`，并在新 generation 补种 consumed markers。当前测量应为：
 
-| 历史 handled 身份 | rebuild 后 claim 路径 | 投影 pending |
-| --- | --- | --- |
-| consumed marker（认领时写入） | 仍跳过，**保留**（tiny：24 保留 / 0 丢失） | 若也在 covered-index 则仍排除 |
-| 仅 covered-index / archive（无 marker） | 新 generation 把 cursor initialized 到 0 → **不再引导 archive，重新可认领**（tiny：20 丢失 / 0 保留） | 仍按 covered-index 排除 |
+| 历史 handled 身份 | rebuild 后 claim 路径 |
+| --- | --- |
+| consumed marker | 仍跳过，**保留** |
+| 仅 covered-index / archive | ledger + 补种 marker，**保留**（`covered_index_only_lost=0`） |
 
-`rebuild.handled_coverage` 为 `partial`。tiny 上 claimable 从 Cognitive/Rule/Memory 175/38/10 升到 183/44/16；marker-backed 不变。**此处不修复**；#213 应把 handled 身份改成跨 generation 的语义键。
+`rebuild.handled_coverage` 现为 `preserved`。generation 切换本身不创造新工作。
 
 tiny 量级快照（隔离 temp `JEA_HOME`，无网络 / 无真实 LLM）：权威 205；rebuild 前 claimable 175/38/10（union 189，additive 223，三反应器 handled 18/12/14）；16 条一批 → 11 个 Cognitive reaction、22 次 LLM、约 1.2e5 保守 prompt token。exclusive 四类均非空（handled 8 / realtime 76 / replay 109 / unknown 4），另有 `not_reactor_work` 8。
 
-S0 笔记中的 agentank-tank 形状（`pending_count=43272`，`handled=4`，最老未认领约 90 天，worker 未跑）说明：一旦 rebuild 把 cursor 打回 0，而 covered-index 又不被 claim 路径使用，历史证据会再次表现为无界 Cognitive 工作。夹具复现该形状，不提交任何真实 subject 数据。
+S0 笔记中的 agentank-tank 形状（`pending_count=43272`，`handled=4`，最老未认领约 90 天，worker 未跑）说明：0.2.x 一旦 rebuild 把 cursor 打回 0，而 covered-index 又不被 claim 路径使用，历史证据会再次表现为无界 Cognitive 工作。夹具复现该形状；#213 之后 generation 切换不再把已 handled 的身份变回 ready-work。不提交任何真实 subject 数据。
 
 ## 4. 给 0.3.0 的推荐阈值夹具
 
@@ -56,7 +55,7 @@ S0 笔记中的 agentank-tank 形状（`pending_count=43272`，`handled=4`，最
 | #210 Contracts | `tiny` | schema 字段稳定；三 reactor 非加性 |
 | #211 Router | `smoke` | Channel lifecycle vs operator/verify 分桶；`activation_targets` 有/无 |
 | #212 Scheduler | `smoke` | realtime vs replay 分桶；budget exhausted 任务不是新的 evidence |
-| #213 Migration | `smoke` + 强制 rebuild | `covered_index_only_lost` 必须降到 0 才算修完 |
+| #213 Migration | `smoke` + 强制 rebuild | `covered_index_only_lost=0`，`handled_coverage=preserved`（已落地） |
 | #214 Cognitive | `smoke` | `amplification.reaction_batches` 相对 raw records 应收束 |
 | #215 Projection | `large` | cold scan 不得再等于全部权威条数；warm 有界 |
 | #216 Certification | `large` 或 `incident` | 与本基线同一 JSON 对照，禁止改 0.2.0 closure target |

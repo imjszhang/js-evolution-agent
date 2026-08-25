@@ -137,7 +137,7 @@ export function claimPathCoveredSet(dataRoot, reactor, nowMs = FIXTURE_NOW_MS) {
     : readClaimLedgerReadonly(dataRoot);
   return {
     cursor,
-    covered: coveredEventIds(ledger, { now: nowMs, reactor }),
+    covered: coveredEventIds(ledger, { now: nowMs, reactor, dataRoot }),
     used_covered_index: !cursor.initialized,
   };
 }
@@ -288,7 +288,7 @@ export function measureAttribution(dataRoot, {
   );
   const projectionLedger = readClaimLedgerForProjection(dataRoot);
   const projectionCovered = Object.fromEntries(
-    REACTORS.map((reactor) => [reactor, coveredEventIds(projectionLedger, { now: nowMs, reactor })]),
+    REACTORS.map((reactor) => [reactor, coveredEventIds(projectionLedger, { now: nowMs, reactor, dataRoot })]),
   );
 
   const exclusive = emptyCounts(POPULATION_IDS);
