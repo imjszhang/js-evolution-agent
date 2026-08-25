@@ -60,6 +60,13 @@ Owner 名为角色占位（agent-*），实际分配时替换为具体维护者/
 | exec result | exec → verify 独立认领队列 | `src/contracts/exec-result.mjs` |
 | `agent-rate-ledger.json` | exec agent_run 墙钟速率账本（subject 持久化） | `src/contracts/agent-rate-ledger.mjs` |
 | `reactor/settlements.json` | sync/async settlement 协调 sidecar；可由 authority events 重建 | `src/contracts/belief-goal-events.mjs` |
+| 0.3.0 Activation identity / replay epoch | 路由器 / 迁移：语义身份与显式 backfill | `src/contracts/activation-identity.mjs` |
+| 0.3.0 Activation Ledger / Reactor Inbox | 路由器写入、调度器认领；可重建 derived work | `src/contracts/activation-ledger.mjs` |
+| 0.3.0 scheduler / operator state | 调度器由 task/claim/checkpoint/budget 事实派生 | `src/contracts/reactor-scheduler-state.mjs` |
+| 0.3.0 bounded progress projection | 观测/#215 快照；禁止跨 Reactor 相加、禁止证据正文 | `src/contracts/reactor-progress-projection.mjs` |
+| 0.3.0 control-plane compatibility | 0.2.x evidence/claim/wake/cursor/checkpoint/settlement 只读解释 | `src/contracts/reactor-control-plane-compat.mjs` |
+
+0.3.0 控制面状态是 **derived / rebuildable**，永远不是 evidence、beliefs、goals、receipts 或 settlements 的权威。门面入口：`src/contracts/reactor-control-plane.mjs`（契约版本 `0.3.0`）。设计说明见 `src/contracts/reactor-control-plane.md`。
 
 ## 4. 跨模块依赖规则
 

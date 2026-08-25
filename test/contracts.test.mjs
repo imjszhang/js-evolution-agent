@@ -26,6 +26,13 @@ import {
   evidenceKey,
   validateGoalEvent,
   validateVerifyReport,
+  REACTOR_CONTROL_PLANE_CONTRACT_VERSION,
+  INITIAL_ACTIVATION_POLICY_VERSION,
+  buildActivationIdentity,
+  formatActivationIdentity,
+  validateActivationIdentity,
+  validateActivationLedgerEntry,
+  deriveReactorSchedulerState,
 } from '../src/contracts/index.mjs';
 import {
   normalizeChannelEnvelope,
@@ -167,6 +174,33 @@ describe('contracts', () => {
       verify_status: 'pending_verify',
       executed: [],
     }).ok).toBe(true);
+    expect(validateActivationIdentity(buildActivationIdentity({
+      reactor: 'cognitive',
+      evidence_key: 'operator_briefs:brief-1',
+      activation_policy_version: INITIAL_ACTIVATION_POLICY_VERSION,
+    })).ok).toBe(true);
+    expect(formatActivationIdentity({
+      reactor: 'rule',
+      evidence_key: 'action_receipts:r1',
+      activation_policy_version: INITIAL_ACTIVATION_POLICY_VERSION,
+    })).toBe(`aiv1/rule/${INITIAL_ACTIVATION_POLICY_VERSION}/action_receipts:r1`);
+    expect(validateActivationLedgerEntry({
+      schema_version: REACTOR_CONTROL_PLANE_CONTRACT_VERSION,
+      reactor: 'memory',
+      identity: {
+        reactor: 'memory',
+        evidence_key: 'belief_events:b1',
+        activation_policy_version: INITIAL_ACTIVATION_POLICY_VERSION,
+      },
+      lane: 'replay',
+      state: 'ready',
+      activation_reason: 'committed_settlement',
+      priority: 20,
+      created_at: '2026-06-13T00:00:00.000Z',
+      updated_at: '2026-06-13T00:00:00.000Z',
+      origin: 'explicit',
+    }).ok).toBe(true);
+    expect(deriveReactorSchedulerState({ worker_alive: true }).state).toBe('listening');
     expect(validateWakeIntent({
       id: 'bad',
       kind: 'cognitive',
