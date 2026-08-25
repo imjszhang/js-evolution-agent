@@ -23,3 +23,15 @@ export function shadowReportsDir(dataRoot) {
 export function shadowReportPath(dataRoot, batchId) {
   return join(shadowReportsDir(dataRoot), `${batchId}.md`);
 }
+
+export function activationLedgerPath(dataRoot) {
+  return join(reactorDir(dataRoot), 'activation-ledger.json');
+}
+
+export function activationLedgerDeltasPath(dataRoot) {
+  return join(reactorDir(dataRoot), 'activation-ledger.deltas.jsonl');
+}
+
+export function reactorProgressSnapshotPath(dataRoot) {
+  return join(reactorDir(dataRoot), 'progress-snapshot.json');
+}

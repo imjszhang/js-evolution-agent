@@ -28,6 +28,7 @@ export { createMemoryJeaClient, createMemoryCommandTransport } from './adapters/
 export { createWebJeaClient, type WebJeaClientOptions } from './adapters/web'
 export { createProductSurfaceFixture, fixtureCommandResult, PRODUCT_FIXTURE_SUBJECT } from './fixtures/product-surface'
 export { redactPublicValue } from './redact'
+export { adaptReactorProgressProjection } from './reactor-progress'
 export {
   observeWebHost,
   projectSubjectReadiness,
@@ -51,6 +52,7 @@ export type {
   EvolutionCycleList,
   EvolutionObservability,
   EvolutionRoundDetail,
+  ReactorProgressProjection,
   InvokeRequest,
   InvokeResponse,
   JeaEventEnvelope,

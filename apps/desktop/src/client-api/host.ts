@@ -194,6 +194,10 @@ export function createApplicationCommandHandlers(options: ApplicationCommandHost
       capability: 'readonly',
       handle: (payload) => evolution.getObservability(stringField(payload, 'subject')!)
     },
+    'evolution.getReactorProgress': {
+      capability: 'readonly',
+      handle: (payload) => evolution.getReactorProgress(stringField(payload, 'subject')!)
+    },
     'service.getStatus': {
       capability: 'readonly',
       handle: (payload) => service.getStatus(stringField(payload, 'subject')!)

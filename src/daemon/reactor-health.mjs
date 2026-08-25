@@ -136,6 +136,7 @@ export function buildReactorHealthProjection(root, subject, {
   nowMs = Date.now(),
   staleMs = DEFAULT_EVIDENCE_STALE_MS,
   worker = null,
+  skipEvidenceScan = false,
 } = {}) {
   const runtime = runtimeForSubject(root, subject);
   const dataRoot = runtime.dataRoot;
@@ -144,24 +145,36 @@ export function buildReactorHealthProjection(root, subject, {
   const claims = summarizeClaimLedgerHealth(ledger, { nowMs });
   let snapshot;
   let reconcile = { ok: true, contract_error_count: 0 };
-  try {
-    snapshot = readEvidenceHealthSnapshot(dataRoot);
-    reconcile = {
-      ok: Boolean(snapshot.reconcile?.ok),
-      contract_error_count: snapshot.reconcile?.contract_error_count ?? 0,
-    };
-  } catch {
+  if (skipEvidenceScan) {
     snapshot = { envelopes: [] };
-    reconcile = { ok: false, contract_error_count: -1 };
+    reconcile = {
+      ok: null,
+      contract_error_count: null,
+      skipped: true,
+      reason: 'evidence_scan_skipped_for_control_plane_projection',
+    };
+  } else {
+    try {
+      snapshot = readEvidenceHealthSnapshot(dataRoot);
+      reconcile = {
+        ok: Boolean(snapshot.reconcile?.ok),
+        contract_error_count: snapshot.reconcile?.contract_error_count ?? 0,
+      };
+    } catch {
+      snapshot = { envelopes: [] };
+      reconcile = { ok: false, contract_error_count: -1 };
+    }
   }
   const evidence = claimProjectionDegraded
     ? unknownEvidenceProjection(ledger.projection_reason)
-    : summarizePendingEvidenceFromSnapshot(snapshot, ledger, { nowMs, reactor: 'cognitive' });
-  const evidenceByReactor = claimProjectionDegraded
+    : (skipEvidenceScan
+      ? unknownEvidenceProjection('activation_ledger_required')
+      : summarizePendingEvidenceFromSnapshot(snapshot, ledger, { nowMs, reactor: 'cognitive' }));
+  const evidenceByReactor = claimProjectionDegraded || skipEvidenceScan
     ? {
       cognitive: evidence,
-      rule: unknownEvidenceProjection(ledger.projection_reason),
-      memory: unknownEvidenceProjection(ledger.projection_reason),
+      rule: unknownEvidenceProjection(evidence.projection_reason),
+      memory: unknownEvidenceProjection(evidence.projection_reason),
     }
     : {
       cognitive: evidence,
@@ -193,8 +206,8 @@ export function buildReactorHealthProjection(root, subject, {
   const pendingVerify = listPendingVerifyResults(dataRoot);
   const openIntents = listOpenExecIntents(dataRoot);
   const uncertainIntents = listUncertainExecIntents(dataRoot);
-  const ruleDue = claimProjectionDegraded
-    ? { eligible: [], due: [] }
+  const ruleDue = claimProjectionDegraded || skipEvidenceScan
+    ? { eligible: [], due: [], skipped: skipEvidenceScan }
     : peekRuleDueWindow(dataRoot, {
       nowMs,
       stream: snapshot.envelopes,
@@ -230,7 +243,7 @@ export function buildReactorHealthProjection(root, subject, {
     reasons.push('claims_projection_degraded');
     reasons.push(`Claim projection unavailable: ${ledger.projection_reason}`);
     suggestions.push('Stop daemons, back up the subject, then run `jea data migrate-claims --dry-run`.');
-  } else if (!reconcile.ok || reconcile.contract_error_count > 0) {
+  } else if (!skipEvidenceScan && (!reconcile.ok || reconcile.contract_error_count > 0)) {
     status = 'blocked';
     ok = false;
     reasons.push(`Evidence stream contract errors: ${reconcile.contract_error_count}`);
@@ -334,9 +347,9 @@ export function buildReactorHealthProjection(root, subject, {
       retryable: openIntents.filter((item) => item.status === 'prepared' || item.status === 'intended').length,
     },
     rule: {
-      eligible: ruleDue.eligible.length,
-      due_windows: ruleDue.due.length,
-      due_goals: ruleDue.due.map((item) => item.goalId),
+      eligible: skipEvidenceScan ? null : ruleDue.eligible.length,
+      due_windows: skipEvidenceScan ? null : ruleDue.due.length,
+      due_goals: skipEvidenceScan ? [] : ruleDue.due.map((item) => item.goalId),
       blocked: Boolean(ruleBlockedReason),
       block_reason: ruleBlockedReason,
       batch_fingerprint: ruleDue.plan?.fingerprint ?? null,
