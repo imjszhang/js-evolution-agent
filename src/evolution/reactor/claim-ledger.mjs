@@ -28,6 +28,7 @@ import {
   refreshEvidenceIndex,
   scanPendingEvidence,
 } from './evidence-index.mjs';
+import { listHandledEvidenceKeys } from './activation-ledger-store.mjs';
 import { claimsPath, reactorDir } from './paths.mjs';
 import {
   appendTerminalClaim,
@@ -496,7 +497,11 @@ function reactorIsBusy(ledger, reactor, now = Date.now()) {
 }
 
 /** Keys covered by claimed (non-expired) or handled batches. Released/failed do not cover. */
-export function coveredEventIds(ledger, { now = Date.now(), reactor = null } = {}) {
+export function coveredEventIds(ledger, {
+  now = Date.now(),
+  reactor = null,
+  dataRoot = null,
+} = {}) {
   const covered = new Set();
   for (const [indexedReactor, keys] of Object.entries(ledger?.covered_index?.reactors ?? {})) {
     if (reactor && indexedReactor !== reactor) continue;
@@ -511,6 +516,11 @@ export function coveredEventIds(ledger, { now = Date.now(), reactor = null } = {
     }
     if (claim.status === 'claimed' && !isExpired(claim, now)) {
       for (const id of claimKeys(claim)) covered.add(id);
+    }
+  }
+  if (dataRoot) {
+    for (const key of listHandledEvidenceKeys(dataRoot, { reactor })) {
+      covered.add(key);
     }
   }
   return covered;
@@ -551,7 +561,7 @@ export function listEligibleEvidence(dataRoot, {
   if (Array.isArray(stream)) {
     const ledger = readClaimLedgerReadonly(dataRoot);
     expireClaimsInLedger(ledger, now);
-    const covered = coveredEventIds(ledger, { now, reactor });
+    const covered = coveredEventIds(ledger, { now, reactor, dataRoot });
     return filterEligibleEvidence(stream, reactor, { kinds: allowedKinds })
       .filter((envelope) => {
         const key = envelopeEvidenceKey(envelope);
@@ -571,7 +581,7 @@ export function listEligibleEvidence(dataRoot, {
     ? readClaimLedger(dataRoot)
     : readClaimLedgerReadonly(dataRoot);
   expireClaimsInLedger(ledger, now);
-  const covered = coveredEventIds(ledger, { now, reactor });
+  const covered = coveredEventIds(ledger, { now, reactor, dataRoot });
   const scan = scanPendingEvidence(dataRoot, {
     reactor,
     kinds: allowedKinds,
@@ -648,7 +658,7 @@ export function claimEvidenceBatch(dataRoot, {
   const bootstrapLedger = cursor.initialized
     ? readClaimLedger(dataRoot)
     : readClaimLedgerReadonly(dataRoot);
-  const bootstrapCovered = coveredEventIds(bootstrapLedger, { now, reactor });
+  const bootstrapCovered = coveredEventIds(bootstrapLedger, { now, reactor, dataRoot });
   const targeted = (Array.isArray(eventIds) && eventIds.length)
     || (Array.isArray(evidenceKeys) && evidenceKeys.length);
   // Rule reactions may request a non-contiguous due set. Keep that exceptional
@@ -680,7 +690,7 @@ export function claimEvidenceBatch(dataRoot, {
       result = { skipped: 'reactor_busy' };
       return ledger;
     }
-    const covered = coveredEventIds(ledger, { now, reactor });
+    const covered = coveredEventIds(ledger, { now, reactor, dataRoot });
     const wantedIds = Array.isArray(eventIds) ? new Set(eventIds) : null;
     const wantedKeys = Array.isArray(evidenceKeys) ? new Set(evidenceKeys) : null;
     const pending = filterEligibleEvidence(stream, reactor, { kinds: allowedKinds })

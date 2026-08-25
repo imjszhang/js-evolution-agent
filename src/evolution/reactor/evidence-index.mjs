@@ -425,6 +425,10 @@ function hasMarker(dataRoot, category, key, reactor = null) {
   return existsSync(markerPath(dataRoot, category, key, reactor));
 }
 
+export function hasConsumedEvidenceMarker(dataRoot, reactor, evidenceKey) {
+  return hasMarker(dataRoot, 'consumed', evidenceKey, reactor);
+}
+
 function writeMarker(dataRoot, category, key, reactor = null, value = null) {
   const path = markerPath(dataRoot, category, key, reactor);
   if (existsSync(path)) {

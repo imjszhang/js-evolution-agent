@@ -79,10 +79,10 @@ Commands:
   data backup            Back up subject runtime data (--subject NAME)
   data reset [--yes]     Remove all subject data/ runtime, preserving policy/config
   data migrate-home      Verify and copy legacy runtime/subjects into JEA Home
-  data evidence-journal inspect [--json]
-                         Stream-inspect journal; mismatch/unknown reconciliation exits nonzero
-  data evidence-journal rebuild [--dry-run] [--yes] [--json]
-                         Stopped-only atomic rebuild/compact with generation backup
+  data evidence-journal inspect [--json] [--replay-epoch PATH]
+                         Stream-inspect journal and handled-identity dry-run; mismatch/unknown exits nonzero
+  data evidence-journal rebuild [--dry-run] [--yes] [--json] [--replay-epoch PATH]
+                         Stopped-only atomic rebuild/compact; preserves handled activation identities
   data evidence-journal rollback --backup ID [--dry-run] [--yes] [--json]
                          Validate and atomically restore a timestamped sidecar backup
   intel summary          Show recent intelligence memory

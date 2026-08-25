@@ -55,8 +55,8 @@ EvidenceEnvelope → claim → cognitive reaction（investigate → report → D
 
 - `jea intel stream [--limit N] [--since ISO] [--kind KIND] [--cycle ID] [--json]`：虚拟只读投影，把 receipts / verify / briefs / channel events 等散落源统一为 `EvidenceEnvelope[]`（不写盘）。
 - `jea intel stream --reconcile [--json]`：逐源对账（disk 行数 vs stream 条目；`contract_errors=0` 为通过）。duplicate id 记 data-quality 警告，不阻断 ok。
-- `jea data evidence-journal inspect [--subject NAME] [--json]`：流式只读检查可重建 index journal，报告 bytes、有效/损坏行、unique/duplicate、kind 字节分布、generation/cognitive-rule-memory cursors，以及相对所有权威 sources 的 missing/orphan/unknown。
-- `jea data evidence-journal rebuild --subject NAME --dry-run --json`：停机迁移预览；确认 Cycle/Channel 均停止后加 `--yes`。实际 rebuild/rollback 在整个生命周期持有 subject `.evolve.lock`；重建从权威 sources 流式生成 v3 generation，按 `evidence_key` 去重，cursor 无法精确映射时统一保留 consumed markers 并从 offset 0 安全重放；旧 sidecar 保留时间戳备份。回滚必须显式使用 `evidence-journal rollback --backup ID`。磁盘分片位于系统临时目录，操作前应预留 journal 与 authority 合计数倍空间，具体放大随 locator 与 shard 分布变化。
+- `jea data evidence-journal inspect [--subject NAME] [--json] [--replay-epoch PATH]`：流式只读检查可重建 index journal，报告 bytes、有效/损坏行、unique/duplicate、kind 字节分布、generation/cognitive-rule-memory cursors、相对权威 sources 的 missing/orphan/unknown，以及 Activation Ledger 和解预览（preserved / activated-as-replay / legacy-unknown / conflicting / quarantined，按 Reactor 与 kind）。
+- `jea data evidence-journal rebuild --subject NAME --dry-run --json`：停机迁移预览；确认 Cycle/Channel 均停止后加 `--yes`。实际 rebuild/rollback 在整个生命周期持有 subject `.evolve.lock`；重建从权威 sources 流式生成 v3 generation，按 `evidence_key` 去重。cursor 无法精确映射时从 offset 0 安全重放，但会把 0.2.x covered index / claim archive / consumed markers 和解到 Activation Ledger 身份 `(reactor, evidence_key, activation_policy_version)`；generation 切换本身不创造新工作。policy 版本变更必须带授权且非 preview 的 `kind: policy_backfill` replay epoch（`--replay-epoch PATH`）。回滚创建新的安全 generation，合并回滚后新产生的 handled 标记，绝不删除权威 evidence。磁盘分片位于系统临时目录，操作前应预留 journal 与 authority 合计数倍空间。
 
 实现：`src/intelligence/evidence-stream.mjs`；契约：`src/contracts/evidence-envelope.mjs`。
 
