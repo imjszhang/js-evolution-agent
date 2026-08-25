@@ -41,11 +41,11 @@
 | 历史 handled 身份 | rebuild 后 claim 路径 | 投影 pending |
 | --- | --- | --- |
 | consumed marker（认领时写入） | 仍跳过，**保留**（tiny：24 保留 / 0 丢失） | 若也在 covered-index 则仍排除 |
-| 仅 covered-index / archive（无 marker） | 新 generation 把 cursor initialized 到 0 → **不再引导 archive，重新可认领**（tiny：14 丢失 / 6 因其他 reactor marker 或不可认领而仍排除） | 仍按 covered-index 排除 |
+| 仅 covered-index / archive（无 marker） | 新 generation 把 cursor initialized 到 0 → **不再引导 archive，重新可认领**（tiny：20 丢失 / 0 保留） | 仍按 covered-index 排除 |
 
-`rebuild.handled_coverage` 为 `partial`。tiny 上 Cognitive claimable 在 rebuild 后上升（covered-index-only 重新进入 claim 路径），而 marker-backed 不变。**此处不修复**；#213 应把 handled 身份改成跨 generation 的语义键。
+`rebuild.handled_coverage` 为 `partial`。tiny 上 claimable 从 Cognitive/Rule/Memory 175/38/10 升到 183/44/16；marker-backed 不变。**此处不修复**；#213 应把 handled 身份改成跨 generation 的语义键。
 
-tiny 量级快照（隔离 temp `JEA_HOME`，无网络 / 无真实 LLM）：权威 205；claimable Cognitive/Rule/Memory = 183 / 50 / 16（union 197，additive 249）；16 条一批 → 12 个 Cognitive reaction、24 次 LLM、约 1.3e5 保守 prompt token。exclusive handled 可为 0：同一 envelope 对 Cognitive 已 handled 仍可能对 Rule 可认领，handled 以 `populations.by_reactor` 为准。
+tiny 量级快照（隔离 temp `JEA_HOME`，无网络 / 无真实 LLM）：权威 205；rebuild 前 claimable 175/38/10（union 189，additive 223，三反应器 handled 18/12/14）；16 条一批 → 11 个 Cognitive reaction、22 次 LLM、约 1.2e5 保守 prompt token。exclusive 四类均非空（handled 8 / realtime 76 / replay 109 / unknown 4），另有 `not_reactor_work` 8。
 
 S0 笔记中的 agentank-tank 形状（`pending_count=43272`，`handled=4`，最老未认领约 90 天，worker 未跑）说明：一旦 rebuild 把 cursor 打回 0，而 covered-index 又不被 claim 路径使用，历史证据会再次表现为无界 Cognitive 工作。夹具复现该形状，不提交任何真实 subject 数据。
 
