@@ -50,6 +50,7 @@
     "release:recovery-matrix": "node --preserve-symlinks scripts/release-recovery-matrix.mjs",
     "release:recovery-soak": "node --preserve-symlinks scripts/release-recovery-soak.mjs",
     "perf:projection-smoke": "node --preserve-symlinks scripts/performance-projection-smoke.mjs",
+    "perf:reactor-backlog-baseline": "node --preserve-symlinks scripts/reactor-backlog-baseline.mjs",
     "perf:evidence-journal-smoke": "node --expose-gc --preserve-symlinks scripts/evidence-journal-large-smoke.mjs",
     "perf:electron-soak": "node --preserve-symlinks scripts/performance-electron-soak.mjs",
     "release:certification-evidence": "node --preserve-symlinks scripts/release-certification-evidence.mjs",
