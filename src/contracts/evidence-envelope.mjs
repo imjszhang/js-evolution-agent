@@ -99,5 +99,13 @@ export function validateEvidenceEnvelope(envelope, path = 'evidence_envelope') {
       return fail(`${path}.evidence_key must use kind:id`);
     }
   }
+  if (envelope.activation_reason != null) {
+    const reason = requireString(envelope.activation_reason, `${path}.activation_reason`);
+    if (!reason.ok) return reason;
+  }
+  if (envelope.activation_policy_version != null) {
+    const version = requireString(envelope.activation_policy_version, `${path}.activation_policy_version`);
+    if (!version.ok) return version;
+  }
   return ok();
 }

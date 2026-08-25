@@ -61,6 +61,27 @@ export function requireOneOf(value, path, allowed) {
   return allowed.includes(value) ? ok() : fail(`${path} must be one of: ${allowed.join(', ')}`);
 }
 
+export function requireFiniteNumber(value, path) {
+  return Number.isFinite(value) ? ok() : fail(`${path} must be a finite number`);
+}
+
+export function requireOptionalFiniteNumber(value, path) {
+  if (value == null) return ok();
+  return requireFiniteNumber(value, path);
+}
+
+export function requireNonNegativeInteger(value, path) {
+  if (!Number.isInteger(value) || value < 0) {
+    return fail(`${path} must be a non-negative integer`);
+  }
+  return ok();
+}
+
+export function requireOptionalNonNegativeInteger(value, path) {
+  if (value == null) return ok();
+  return requireNonNegativeInteger(value, path);
+}
+
 export function assertValidContract(name, result) {
   if (result?.ok) return result;
   throw new Error(`${name} contract invalid: ${(result?.errors || []).join('; ')}`);
