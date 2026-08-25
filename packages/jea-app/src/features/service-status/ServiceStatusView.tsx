@@ -89,7 +89,9 @@ export function ServiceStatusView({ adapters }: FeatureSlotProps) {
                 : readiness.cycle.state}
               reasons={
                 readiness.llm_budget && isLlmBudgetBlocker(readiness.automation?.blocker)
-                  ? [formatLlmBudgetBlocker(readiness.automation?.blocker, readiness.llm_budget) ?? readiness.automation.blocker]
+                  ? [formatLlmBudgetBlocker(readiness.automation?.blocker, readiness.llm_budget)
+                    ?? readiness.automation?.blocker
+                    ?? 'rule_llm_budget_exhausted']
                   : readiness.automation?.blocker
                     ? [readiness.automation.blocker]
                     : readiness.cycle.reasons
