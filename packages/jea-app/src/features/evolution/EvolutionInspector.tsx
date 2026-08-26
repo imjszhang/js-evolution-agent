@@ -6,9 +6,13 @@ import type { FeatureSlotProps } from '../../slots/types'
 import { Button } from '../../ui/button'
 import { Separator } from '../../ui/separator'
 import { cn } from '../../lib/cn'
-import type { LlmBudgetReadinessView } from '../client-types'
+import { useJeaClientContext } from '../client-context'
+import type { LlmBudgetReadinessView, ProductEvolutionIntent } from '../client-types'
 import { formatLlmBudgetBlocker } from '../llm-budget-display'
+import { displaySchedulerState, resolveReactorProgress } from '../reactor-progress'
 import { createInspectorController } from './controller'
+import { ReactorProgressPanel } from './ReactorProgressPanel'
+import { schedulerStateMessageKey } from './reactor-progress-copy'
 import { subscribeEvolutionNavigation } from './navigation'
 import { projectEvolutionCore, projectTimeline, resolveSafeState } from './projection'
 import type {
@@ -36,6 +40,7 @@ export function EvolutionInspector({
   loading: loadingProp
 }: EvolutionInspectorProps) {
   const { t } = useLocale()
+  const { host, client: contextClient } = useJeaClientContext()
   const controllerRef = useRef(client ? createInspectorController(client) : null)
   const [liveSnapshot, setLiveSnapshot] = useState<EvolutionInspectorSnapshot>(
     () => snapshotProp ?? controllerRef.current?.snapshot ?? {
@@ -118,10 +123,15 @@ export function EvolutionInspector({
             {t('evolutionInspector')}
           </h2>
           <p className="truncate text-xs text-muted-foreground" data-testid="evolution-runtime">
-            {evolutionRuntimeCopy(t, adapters.subjectReadiness?.automation, pendingEvidence, adapters.subjectReadiness?.llm_budget)
+            {evolutionRuntimeCopy(
+              t,
+              adapters.subjectReadiness,
+              snapshot.observability,
+              pendingEvidence
+            )
               ?? (core.open_cycles > 0 ? t('evolutionOpenCycle') : t('evolutionRecentCycles'))}
             {core.round_count ? ` · ${core.round_count}` : ''}
-            {pendingEvidence != null && !adapters.subjectReadiness?.automation
+            {pendingEvidence != null && !adapters.subjectReadiness?.automation && !snapshot.observability?.reactor_progress
               ? ` · ${t('evolutionPendingEvidence')} ${pendingEvidence}`
               : ''}
           </p>
@@ -139,6 +149,19 @@ export function EvolutionInspector({
           ) : null}
         </div>
       </header>
+
+      <ReactorProgressPanel
+        readiness={adapters.subjectReadiness ?? null}
+        observability={snapshot.observability}
+        host={adapters.hostKind ?? host}
+        client={client ?? contextClient}
+        onRefresh={client && subject && !snapshotProp
+          ? async () => {
+            const next = await controllerRef.current?.load(subject, adapters.selectedCycleId)
+            if (next) apply(next)
+          }
+          : undefined}
+      />
 
       <SafeBanner state={safeState} />
 
@@ -198,23 +221,30 @@ export function EvolutionInspector({
 }
 
 function evolutionRuntimeCopy(
-  t: (key: 'evolutionAutomaticPaused' | 'evolutionListening' | 'evolutionCatchingUp' | 'evolutionWaitingApproval' | 'evolutionBlocked') => string,
-  automation: { mode?: string; intent?: string; remaining_evidence?: number | null; blocker?: string | null } | null | undefined,
+  t: (key: MessageKey) => string,
+  readiness: FeatureSlotProps['adapters']['subjectReadiness'] | null | undefined,
+  observability: EvolutionInspectorSnapshot['observability'],
   pendingEvidence: number | null,
-  llmBudget?: LlmBudgetReadinessView | null,
 ): string | null {
-  if (!automation) return null
-  if (automation.mode === 'paused' || automation.intent === 'paused') return t('evolutionAutomaticPaused')
-  if (automation.intent === 'catching_up') {
-    const remaining = automation.remaining_evidence ?? pendingEvidence ?? 0
+  const progress = resolveReactorProgress(observability, readiness?.reactor_progress ?? null)
+  const automation = readiness?.automation
+  if (!automation && !progress) return null
+  const intent = displaySchedulerState(progress, automation?.mode === 'paused' ? 'paused' : automation?.mode)
+  if (intent === 'catching_up') {
+    const remaining = progress?.reactors.cognitive?.replay.ready
+      ?? automation?.remaining_evidence
+      ?? pendingEvidence
+      ?? 0
     return remaining > 0 ? `${t('evolutionCatchingUp')}: ${remaining}` : t('evolutionCatchingUp')
   }
-  if (automation.intent === 'waiting_approval') return t('evolutionWaitingApproval')
-  if (automation.intent === 'blocked') {
-    const detail = formatLlmBudgetBlocker(automation.blocker, llmBudget)
-    return detail ? `${t('evolutionBlocked')}: ${detail}` : t('evolutionBlocked')
+  if (intent === 'blocked' || intent === 'paused_budget') {
+    const detail = formatLlmBudgetBlocker(
+      progress?.stop_reason?.code ?? automation?.blocker,
+      readiness?.llm_budget as LlmBudgetReadinessView | null | undefined
+    )
+    return detail ? `${t(schedulerStateMessageKey(intent))}: ${detail}` : t(schedulerStateMessageKey(intent))
   }
-  return t('evolutionListening')
+  return t(schedulerStateMessageKey(intent as ProductEvolutionIntent))
 }
 
 function SafeBanner({ state }: { state: InspectorSafeState }) {

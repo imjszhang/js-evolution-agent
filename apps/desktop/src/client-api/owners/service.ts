@@ -5,6 +5,7 @@ import { applyEvolutionStateChange } from '../../../../../src/daemon/evolution-s
 import { automationModeFromState, stateFromAutomationMode } from '../../../../../src/product/evolution-state.mjs'
 import { PublicClientError } from '../errors'
 import { readSubjectReadiness } from '../readiness'
+import { adaptReactorProgressProjection } from '../reactor-progress'
 import { redactPublicValue } from '../redact'
 import type {
   AutomationMode,
@@ -76,11 +77,15 @@ export class ServiceCommandOwner {
 
   getReadiness(subject: string): SubjectReadiness {
     const name = requireSubject(this.runtime, subject)
-    return redactPublicValue(readSubjectReadiness(this.runtime, name, {
+    const readiness = readSubjectReadiness(this.runtime, name, {
       hostKind: this.hostKind,
       processPort: this.processPort,
       deferRebuild: this.hostKind === 'electron' || this.hostKind === 'web'
-    }))
+    })
+    return redactPublicValue({
+      ...readiness,
+      reactor_progress: adaptReactorProgressProjection(readiness.reactor_progress)
+    })
   }
 
   getStatus(subject: string): ServiceStatus {

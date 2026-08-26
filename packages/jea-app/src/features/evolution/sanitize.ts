@@ -1,3 +1,4 @@
+import { sanitizeReactorProgress } from '../reactor-progress'
 import type {
   EvolutionCycleDetail,
   EvolutionCycleList,
@@ -197,6 +198,7 @@ export function sanitizeObservability(value: unknown): EvolutionObservability | 
       summary: asString(item.summary) ?? ''
     }]
   })
+  const reactor_progress = sanitizeReactorProgress(value.reactor_progress)
   return {
     subject,
     attention: {
@@ -206,7 +208,8 @@ export function sanitizeObservability(value: unknown): EvolutionObservability | 
     open_cycles: asFiniteNumber(value.open_cycles) ?? 0,
     evidence_pending_count: asFiniteNumber(value.evidence_pending_count) ?? 0,
     daemon_task_pending_count: asFiniteNumber(value.daemon_task_pending_count) ?? 0,
-    ...(cycle_diagnostics ? { cycle_diagnostics } : {})
+    ...(cycle_diagnostics ? { cycle_diagnostics } : {}),
+    ...(reactor_progress ? { reactor_progress } : {})
   }
 }
 

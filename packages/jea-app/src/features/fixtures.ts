@@ -139,7 +139,7 @@ export function createSubjectReadinessFixture(options: {
       mode: 'automatic',
       intent: cycleState === 'stopped' || cycleState === 'blocked'
         ? 'blocked'
-        : cycleState === 'stalled' ? 'catching_up' : 'listening',
+        : cycleState === 'stalled' ? 'stalled' : 'listening',
       mapped_from: 'default',
       diagnostic: null,
       background: false,
@@ -376,7 +376,33 @@ export function createFixtureSetupClient(state: SetupFixtureState = createSetupF
         attention: { items: [], summary: { count: 0 } },
         open_cycles: 0,
         evidence_pending_count: 0,
-        daemon_task_pending_count: 0
+        daemon_task_pending_count: 0,
+        reactor_progress: {
+          schema_version: '0.3.0',
+          subject,
+          projection_generation: 1,
+          projected_at: '2026-08-17T00:00:00.000Z',
+          freshness: { as_of: '2026-08-17T00:00:00.000Z', status: 'fresh' },
+          worker_liveness: { alive: false },
+          scheduler_state: 'listening',
+          reactors: {},
+          reactor_overlap: { additive: false, note: 'reactor_counts_may_overlap_authoritative_evidence' },
+          evidence_authority: { is_work_count: false }
+        }
+      }
+    },
+    async getReactorProgress(subject) {
+      return {
+        schema_version: '0.3.0',
+        subject,
+        projection_generation: 1,
+        projected_at: '2026-08-17T00:00:00.000Z',
+        freshness: { as_of: '2026-08-17T00:00:00.000Z', status: 'fresh' as const },
+        worker_liveness: { alive: false },
+        scheduler_state: 'listening' as const,
+        reactors: {},
+        reactor_overlap: { additive: false as const, note: 'reactor_counts_may_overlap_authoritative_evidence' },
+        evidence_authority: { is_work_count: false as const }
       }
     },
     async processCycleOnce(subject) {
@@ -384,6 +410,9 @@ export function createFixtureSetupClient(state: SetupFixtureState = createSetupF
     },
     async startService(subject, domain) {
       return { subject, domain: domain ?? 'all', mode: 'fixture' }
+    },
+    async stopService(subject) {
+      return { subject, mode: 'stopped' }
     },
     async listSubjects() {
       return current.subjects.map((item) => ({ ...item }))

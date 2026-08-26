@@ -85,6 +85,7 @@ export interface EvolutionObservability {
   cycle_diagnostics?: {
     recent?: EvolutionCycleDiagnosticSummary[]
   }
+  reactor_progress?: import('../client-types').ReactorProgressProjection | null
 }
 
 export interface EvolutionEventEnvelope {
@@ -100,9 +101,13 @@ export interface EvolutionInspectorClient {
   getCycle(subject: string, cycleId: string): Promise<EvolutionCycleDetail>
   getRound(subject: string, cycleId: string): Promise<EvolutionRoundDetail>
   getObservability(subject: string): Promise<EvolutionObservability>
+  getReactorProgress?(subject: string): Promise<import('../client-types').ReactorProgressProjection>
   subscribe(listener: (event: EvolutionEventEnvelope) => void): () => void
   processCycleOnce?(subject: string): Promise<unknown>
+  requestCycle?(subject: string, note?: string): Promise<unknown>
   startService?(subject: string, domain?: 'all' | 'cycle' | 'channel'): Promise<unknown>
+  stopService?(subject: string): Promise<unknown>
+  setAutomation?(subject: string, mode: 'automatic' | 'paused'): Promise<unknown>
   getServiceReadiness?(subject: string): Promise<{ allowed_actions?: string[] }>
 }
 

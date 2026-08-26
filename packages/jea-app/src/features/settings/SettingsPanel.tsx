@@ -20,6 +20,8 @@ import {
 import type { EvolutionCycleList, EvolutionObservability } from '../evolution/types'
 import { formatLlmBudgetBlocker, isLlmBudgetBlocker } from '../llm-budget-display'
 import { projectEvolutionSummary, projectOperatorSurface } from '../operator-projection'
+import { ReactorProgressPanel } from '../evolution/ReactorProgressPanel'
+import { schedulerStateMessageKey } from '../evolution/reactor-progress-copy'
 import { createFixtureDiagnosticReport, createReadyReadiness, createSetupFixtureState } from '../fixtures'
 
 function Row({ label, value, testId }: { label: string; value: string; testId?: string }) {
@@ -32,7 +34,7 @@ function Row({ label, value, testId }: { label: string; value: string; testId?: 
 }
 
 function evolutionRuntimeLabel(
-  t: (key: 'evolutionAutomaticPaused' | 'evolutionListening' | 'evolutionCatchingUp' | 'evolutionWaitingApproval' | 'evolutionBlocked' | 'evolutionAutomaticRunning') => string,
+  t: (key: import('../../i18n/messages').MessageKey) => string,
   runtime: { mode?: string; intent?: string; remaining_evidence?: number | null; blocker?: string | null } | null
 ): string {
   if (!runtime) return '—'
@@ -41,12 +43,10 @@ function evolutionRuntimeLabel(
     const remaining = runtime.remaining_evidence ?? 0
     return remaining > 0 ? `${t('evolutionCatchingUp')}: ${remaining}` : t('evolutionCatchingUp')
   }
-  if (runtime.intent === 'waiting_approval') return t('evolutionWaitingApproval')
-  if (runtime.intent === 'blocked') {
-    return runtime.blocker ? `${t('evolutionBlocked')}: ${runtime.blocker}` : t('evolutionBlocked')
+  if (runtime.blocker && (runtime.intent === 'blocked' || runtime.intent === 'paused_budget')) {
+    return `${t(schedulerStateMessageKey(runtime.intent as 'blocked' | 'paused_budget'))}: ${runtime.blocker}`
   }
-  if (runtime.intent === 'listening') return t('evolutionListening')
-  return t('evolutionAutomaticRunning')
+  return t(schedulerStateMessageKey(runtime.intent as 'listening'))
 }
 
 function modelLabel(
@@ -393,6 +393,18 @@ export function SettingsPanel({
             testId="settings-evolution-runtime"
           />
         </div>
+        <ReactorProgressPanel
+          readiness={subjectReadiness}
+          observability={observability}
+          host={host}
+          client={client}
+          onRefresh={async () => {
+            if (!client || !selectedSubject) return
+            if (client.getServiceReadiness) setSubjectReadiness(await client.getServiceReadiness(selectedSubject))
+            if (client.getObservability) setObservability(await client.getObservability(selectedSubject))
+            if (client.listCycles) setCycleList(await client.listCycles(selectedSubject, 50))
+          }}
+        />
         <div className="flex flex-wrap gap-2" data-testid="settings-evolution-actions">
           {productAllowed.has('pause_automatic_evolution') && client?.setAutomation && selectedSubject ? (
             <Button

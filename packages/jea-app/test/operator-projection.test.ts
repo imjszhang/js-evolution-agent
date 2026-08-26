@@ -90,8 +90,10 @@ describe('operator surface projection', () => {
     expect(projection.evidence_pending).toEqual({ count: 7, ...OPERATOR_COUNT_SOURCES.evidencePending })
     expect(projection.daemon_task_pending).toEqual({ count: 3, ...OPERATOR_COUNT_SOURCES.daemonTaskPending })
     expect(projection.allowed_remediation_actions.map((action) => action.id)).toEqual(['process_cycle_once'])
-    expect(projection.evolution_runtime.intent).toBe('catching_up')
+    expect(projection.evolution_runtime.intent).toBe('stalled')
+    expect(projection.evolution_runtime.intent).not.toBe('catching_up')
     expect(projection.evolution_runtime.remaining_evidence).toBe(7)
+    expect(projection.reactor_control_plane.catching_up_truthful).toBe(false)
   })
 
   it('does not infer evidence from flattened attention fields and hides local actions on Web', () => {

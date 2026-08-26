@@ -502,6 +502,46 @@ describe('service.getReadiness contract', () => {
 })
 
 describe('readiness projector invariants', () => {
+  it('does not treat pending evidence or a live worker as catching_up', () => {
+    const value = projectSubjectReadiness({
+      subject: 'alpha',
+      generatedAt: '2026-08-17T00:00:00.000Z',
+      hostKind: 'electron',
+      webHost: { running: false, pid: null },
+      cycleWorker: { status: 'running', running: true, fresh: true, pid_alive: true, pid: process.pid },
+      cycleHealth: { status: 'ok', ok: true },
+      channelWorker: { status: 'stopped', running: false },
+      channelHealth: { status: 'idle', ok: true },
+      model: { configured: false, mode: 'mock' },
+      desktopChannelEnabled: true,
+      ownership: { mode: 'none', domain: null },
+      pendingEvidence: 8055,
+      reactorProgress: {
+        schema_version: '0.3.0',
+        subject: 'alpha',
+        projection_generation: 1,
+        projected_at: '2026-08-26T00:00:00.000Z',
+        freshness: { as_of: '2026-08-26T00:00:00.000Z', status: 'fresh' },
+        worker_liveness: { alive: true, heartbeat_at: '2026-08-26T00:00:00.000Z' },
+        scheduler_state: 'listening',
+        activity: {},
+        reactors: {
+          cognitive: {
+            realtime: { ready: 0, claimed: 0, deferred: 0, blocked: 0, handled_total: 0 },
+            replay: { ready: 8055, claimed: 0, deferred: 0, blocked: 0, handled_total: 0 }
+          }
+        },
+        reactor_overlap: { additive: false, note: 'reactor_counts_may_overlap_authoritative_evidence' },
+        evidence_authority: { envelope_count: 8055, is_work_count: false }
+      }
+    })
+    expect(value.automation?.intent).toBe('listening')
+    expect(value.automation?.intent).not.toBe('catching_up')
+    expect(value.automation?.remaining_evidence).toBe(8055)
+    expect(value.reactor_progress?.scheduler_state).toBe('listening')
+    expect(value.reactor_progress?.worker_liveness.alive).toBe(true)
+  })
+
   it('surfaces catch_up_budget while remaining evidence exists', () => {
     const value = projectSubjectReadiness({
       subject: 'alpha',
@@ -519,10 +559,11 @@ describe('readiness projector invariants', () => {
       catchUp: { paused: true }
     })
     expect(value.automation).toMatchObject({
-      intent: 'catching_up',
+      intent: 'paused_budget',
       remaining_evidence: 12,
       blocker: 'catch_up_budget'
     })
+    expect(value.automation?.intent).not.toBe('catching_up')
     expect(value.reasons).toContain('catch_up_budget')
     expect(value.product_actions?.find((action) => action.id === 'view_blocker')?.allowed).toBe(true)
     expect(value.product_actions?.find((action) => action.id === 'check_now')?.allowed).toBe(true)

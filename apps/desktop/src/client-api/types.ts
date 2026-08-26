@@ -303,9 +303,12 @@ export const PRODUCT_EVOLUTION_INTENTS = [
   'running',
   'paused',
   'listening',
+  'queued',
   'catching_up',
+  'paused_budget',
   'waiting_approval',
   'blocked',
+  'stalled',
   'starting'
 ] as const
 
@@ -382,6 +385,7 @@ export interface SubjectReadiness {
   automation?: AutomationView
   product_actions?: RemediationAction[]
   llm_budget?: LlmBudgetReadinessView | null
+  reactor_progress?: ReactorProgressProjection | null
 }
 
 export interface CycleRequestResult {
