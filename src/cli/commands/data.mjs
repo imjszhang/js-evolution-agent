@@ -379,6 +379,25 @@ function printInitResult(result, root, language = getLanguage()) {
   }
 }
 
+function printActivationReconciliation(report) {
+  if (!report?.totals) return;
+  const totals = report.totals;
+  console.log(
+    `activation preserved/replay/legacy-unknown/conflicting/quarantined: ${totals.preserved}/${totals.activated_as_replay}/${totals.legacy_unknown}/${totals.conflicting}/${totals.quarantined}`,
+  );
+  for (const [reactor, bucket] of Object.entries(report.by_reactor ?? {})) {
+    const kinds = Object.entries(bucket.by_kind ?? {})
+      .map(([kind, counts]) => `${kind}:${counts.preserved ?? 0}/${counts.activated_as_replay ?? 0}`)
+      .join(' ');
+    console.log(
+      `  ${reactor}: preserved=${bucket.preserved} replay=${bucket.activated_as_replay} legacy=${bucket.legacy_unknown} conflict=${bucket.conflicting} quarantine=${bucket.quarantined}${kinds ? ` ${kinds}` : ''}`,
+    );
+  }
+  if (report.semantic_ready) {
+    console.log(`semantic ready/handled: ${report.semantic_ready.total}/${report.handled?.total ?? 0}`);
+  }
+}
+
 function printEvidenceJournalResult(payload) {
   console.log(`Evidence journal ${payload.operation ?? 'inspect'}: ${payload.status ?? 'completed'}`);
   const inspect = payload.before ?? payload.inspect ?? payload;
@@ -391,8 +410,16 @@ function printEvidenceJournalResult(payload) {
     console.log(`reconciliation: ${inspect.reconciliation.status}`);
     console.log(`missing/orphan/unknown: ${inspect.reconciliation.missing_keys}/${inspect.reconciliation.orphan_keys}/${inspect.reconciliation.unknown_records}`);
   }
+  printActivationReconciliation(
+    payload.activation_reconciliation ?? inspect.activation_reconciliation,
+  );
   if (payload.generation) console.log(`generation: ${payload.generation}`);
   if (payload.backup_path) console.log(`backup: ${payload.backup_path}`);
+}
+
+function replayEpochFromFlags(flags = {}) {
+  const raw = flags['replay-epoch'];
+  return raw && raw !== true ? raw : null;
 }
 
 export async function dataCommand({
@@ -446,7 +473,9 @@ export async function dataCommand({
     const action = args[0] ?? 'inspect';
     try {
       if (action === 'inspect') {
-        const payload = await inspectEvidenceJournal(runtime.dataRoot);
+        const payload = await inspectEvidenceJournal(runtime.dataRoot, {
+          replayEpoch: replayEpochFromFlags(flags),
+        });
         if (flags.json) console.log(JSON.stringify(payload, null, 2));
         else printEvidenceJournalResult(payload);
         return payload.reconciliation.status === 'ok' ? 0 : 1;
@@ -480,6 +509,7 @@ export async function dataCommand({
           subject: runtime.subject,
           dryRun,
           force: !!flags.force,
+          replayEpoch: replayEpochFromFlags(flags),
         });
         if (flags.json) console.log(JSON.stringify(payload, null, 2));
         else printEvidenceJournalResult(payload);
@@ -505,12 +535,13 @@ export async function dataCommand({
           subject: runtime.subject,
           backupId: flags.backup,
           dryRun,
+          replayEpoch: replayEpochFromFlags(flags),
         });
         if (flags.json) console.log(JSON.stringify(payload, null, 2));
         else printEvidenceJournalResult(payload);
         return payload.status === 'blocked' ? 1 : 0;
       }
-      console.error('Usage: jea data evidence-journal <inspect|rebuild|compact|rotate|rollback|backups> [--subject NAME] [--dry-run] [--yes] [--backup ID] [--json]');
+      console.error('Usage: jea data evidence-journal <inspect|rebuild|compact|rotate|rollback|backups> [--subject NAME] [--dry-run] [--yes] [--backup ID] [--replay-epoch PATH] [--json]');
       return 2;
     } catch (error) {
       const payload = {

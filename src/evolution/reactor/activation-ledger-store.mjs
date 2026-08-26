@@ -166,11 +166,13 @@ export function writeActivationLedgerStore(filePath, store) {
   mkdirSync(dirname(filePath), { recursive: true });
   const next = asStore(store);
   next.authoritative = false;
-  const payload = rejectControlPlanePayloads(next, 'activation_ledger');
-  if (!payload.ok) {
-    const error = new Error(payload.errors.join('; '));
-    error.code = 'activation_ledger_payload_rejected';
-    throw error;
+  for (const [key, entry] of Object.entries(next.entries)) {
+    const payload = rejectControlPlanePayloads(entry, `activation_ledger.entries.${key}`);
+    if (!payload.ok) {
+      const error = new Error(payload.errors.join('; '));
+      error.code = 'activation_ledger_payload_rejected';
+      throw error;
+    }
   }
   writeJson(filePath, next);
   return filePath;

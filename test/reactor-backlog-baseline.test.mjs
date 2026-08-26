@@ -85,16 +85,14 @@ describe('reactor backlog baseline measurement', () => {
     });
 
     expect(report.rebuild.performed).toBe(true);
-    expect(['preserved', 'lost', 'partial']).toContain(report.rebuild.handled_coverage);
+    expect(report.rebuild.handled_coverage).toBe('preserved');
     expect(report.rebuild.cursor_after.cognitive.offset).toBe(0);
     expect(report.rebuild.generation_after).toBeTruthy();
     expect(report.rebuild.generation_after).not.toBe(report.rebuild.generation_before);
     expect(report.rebuild.marker_backed_preserved).toBeGreaterThan(0);
     expect(report.rebuild.marker_backed_lost).toBe(0);
-    expect(report.rebuild.covered_index_only_lost).toBeGreaterThan(0);
-    expect(report.rebuild.claimable_after.cognitive).toBeGreaterThan(
-      report.rebuild.claimable_before.cognitive,
-    );
+    expect(report.rebuild.covered_index_only_lost).toBe(0);
+    expect(report.rebuild.covered_index_only_preserved).toBeGreaterThan(0);
   }, 60_000);
 
   it('overrides a pre-existing JEA_HOME instead of reading the real home', async () => {
