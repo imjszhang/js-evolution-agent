@@ -158,6 +158,70 @@ export interface EvolutionAttentionItem {
   summary: string
 }
 
+export interface ReactorLaneCounts {
+  ready: number
+  claimed: number
+  deferred: number
+  blocked: number
+  handled_total: number
+  open_total?: number
+}
+
+export interface ReactorProgressProjection {
+  schema_version: string
+  subject: string | null
+  projection_generation: string | number
+  projected_at: string
+  freshness: {
+    as_of: string
+    status: 'fresh' | 'stale' | 'reconciling' | 'degraded' | 'unknown'
+    stale_after_ms?: number
+    reason?: string
+  }
+  worker_liveness: {
+    alive: boolean
+    heartbeat_at?: string
+  }
+  activity?: {
+    current_task?: { id: string; type?: string; lane?: 'realtime' | 'replay' }
+    current_claim?: { claim_id?: string; reactor?: string; lane?: 'realtime' | 'replay' }
+    current_batch?: { batch_id?: string; candidate_id?: string }
+    current_stage?: string
+    last_progress_at?: string
+  }
+  limits?: {
+    replay_batch_limit?: number
+    replay_wall_clock_ms?: number
+    token_reserve?: number
+    spend_allowance?: number
+  }
+  stop_reason?: {
+    class: string
+    code: string
+    detail?: string
+  }
+  scheduler_state?:
+    | 'listening'
+    | 'queued'
+    | 'running'
+    | 'catching_up'
+    | 'paused_budget'
+    | 'blocked'
+    | 'waiting_approval'
+    | 'stalled'
+  reactors: Record<string, { realtime: ReactorLaneCounts; replay: ReactorLaneCounts }>
+  reactor_overlap: {
+    additive: false
+    note: string
+  }
+  evidence_authority?: {
+    envelope_count?: number
+    is_work_count: false
+  }
+  sources?: Record<string, unknown>
+  throughput?: Record<string, unknown>
+}
+
 export interface EvolutionObservability {
   subject: string
   attention: {
@@ -170,6 +234,7 @@ export interface EvolutionObservability {
   cycle_diagnostics?: {
     recent?: EvolutionCycleDiagnosticSummary[]
   }
+  reactor_progress?: ReactorProgressProjection | null
 }
 
 export interface ServiceStatus {

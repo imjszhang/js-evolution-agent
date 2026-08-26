@@ -11,6 +11,7 @@ import type {
   EvolutionCycleList,
   EvolutionObservability,
   EvolutionRoundDetail,
+  ReactorProgressProjection,
   ProtocolInfo,
   ServiceStatus,
   DiagnosticReport,
@@ -37,6 +38,7 @@ export interface ProductSurfaceFixture {
   cycle: EvolutionCycleDetail
   round: EvolutionRoundDetail
   observability: EvolutionObservability
+  reactorProgress: ReactorProgressProjection
   service: ServiceStatus
   serviceReadiness: SubjectReadiness
   cycleRequest: CycleRequestResult
@@ -162,7 +164,29 @@ export function createProductSurfaceFixture(): ProductSurfaceFixture {
       attention: { items: [], summary: { count: 0, highest_severity: null } },
       open_cycles: 0,
       evidence_pending_count: 0,
-      daemon_task_pending_count: 0
+      daemon_task_pending_count: 0,
+      reactor_progress: {
+        schema_version: '0.3.0',
+        subject: 'alpha',
+        projection_generation: 1,
+        projected_at: '2026-08-16T00:00:00.000Z',
+        freshness: { as_of: '2026-08-16T00:00:00.000Z', status: 'unknown', reason: 'activation_ledger_unresolved' },
+        worker_liveness: { alive: false },
+        reactors: {},
+        reactor_overlap: { additive: false, note: 'reactor_counts_may_overlap_authoritative_evidence' },
+        evidence_authority: { is_work_count: false }
+      }
+    },
+    reactorProgress: {
+      schema_version: '0.3.0',
+      subject: 'alpha',
+      projection_generation: 1,
+      projected_at: '2026-08-16T00:00:00.000Z',
+      freshness: { as_of: '2026-08-16T00:00:00.000Z', status: 'unknown', reason: 'activation_ledger_unresolved' },
+      worker_liveness: { alive: false },
+      reactors: {},
+      reactor_overlap: { additive: false, note: 'reactor_counts_may_overlap_authoritative_evidence' },
+      evidence_authority: { is_work_count: false }
     },
     service: {
       subject: 'alpha',
@@ -353,6 +377,8 @@ export function fixtureCommandResult(fixtures: ProductSurfaceFixture, command: s
       return fixtures.round
     case 'evolution.getObservability':
       return fixtures.observability
+    case 'evolution.getReactorProgress':
+      return fixtures.reactorProgress
     case 'service.getStatus':
     case 'service.start':
     case 'service.stop':

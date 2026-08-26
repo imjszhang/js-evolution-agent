@@ -134,6 +134,15 @@
       "errors": ["INVALID_REQUEST", "NOT_FOUND", "OPERATION_FAILED"]
     },
     {
+      "name": "evolution.getReactorProgress",
+      "group": "evolution",
+      "capability": "readonly",
+      "availability": { "electron": true, "web": true },
+      "request": { "subject": "string" },
+      "response": { "progress": "ReactorProgressProjection" },
+      "errors": ["INVALID_REQUEST", "NOT_FOUND", "OPERATION_FAILED"]
+    },
+    {
       "name": "service.getStatus",
       "group": "service",
       "capability": "readonly",

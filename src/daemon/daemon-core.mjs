@@ -91,6 +91,12 @@ import {
   runReactorDaemonTask,
   scanWakeBacklog,
 } from '../evolution/reactor/reactor-tasks.mjs';
+import {
+  completeScheduledActivation,
+  noteSchedulerBudgetExhaustion,
+  releaseScheduledActivation,
+  scheduleReactorTurn,
+} from './reactor-scheduler.mjs';
 import { enqueueWakeIntent } from '../evolution/reactor/wake-store.mjs';
 import { classifyReactorError } from '../evolution/reactor/rule-resilience.mjs';
 import {
@@ -195,6 +201,7 @@ function projectionSummary(root, subject, projection) {
     tasks: projection.tasks,
     locked: isSubjectLocked(root, subject),
     latest_event: projection.recent_events?.[0] ?? null,
+    reactor_progress: projection.reactor_progress ?? null,
   };
 }
 
@@ -517,6 +524,14 @@ function isRetiredTrainTaskType(type) {
 }
 
 export function failReactorTask(root, subject, task, failure) {
+  if (failure?.code === 'lease_lost' && task?.input?.identity_key) {
+    releaseScheduledActivation(root, subject, task.input.identity_key);
+  } else if (task?.input?.identity_key && /(?:llm_)?(?:token|spend)[_ ]budget[_ ]exhausted|cycle_admission_parked/i.test(
+    `${failure?.code || ''} ${failure?.reason || ''} ${failure?.message || ''}`,
+  )) {
+    noteSchedulerBudgetExhaustion(root, subject, failure);
+    failure = { ...failure, retryable: false };
+  }
   const maxAttempts = Math.max(1, (task.input?.retries ?? 3) + 1);
   if (failure.retryable !== false && task.attempts < maxAttempts) {
     const released = releaseTaskForRetry(root, subject, task.task_id, failure);
@@ -603,6 +618,9 @@ async function workReactorTask(root, subject, task, flags) {
         canCommit: () => !leaseLost(),
       });
       if (leaseLost()) {
+        if (task.input?.identity_key) {
+          releaseScheduledActivation(root, subject, task.input.identity_key);
+        }
         const released = releaseTaskForRetry(root, subject, task.task_id, {
           code: 'lease_lost',
           reason: 'task_lease_renew_failed',
@@ -623,6 +641,9 @@ async function workReactorTask(root, subject, task, flags) {
         ok: true,
         result: outcome?.result ?? outcome,
       });
+      if (task.input?.identity_key) {
+        completeScheduledActivation(root, subject, task.input.identity_key, { kind: 'handle' });
+      }
       recordDaemonEvent(root, subject, {
         type: 'task_completed',
         status: 'ok',
@@ -1160,7 +1181,11 @@ export async function runDaemonWorker(root, subject, flags = {}) {
           tick_ms: tickMs,
         });
         try {
-          scanWakeBacklog(root, subject, { enqueueTask });
+          const scheduled = scheduleReactorTurn(root, subject, { enqueueTask, readTaskQueue });
+          scanWakeBacklog(root, subject, {
+            enqueueTask,
+            skipKinds: scheduled?.skip_scan_kinds || [],
+          });
         } catch (err) {
           recordLoopFailure(root, subject, { operation: 'wake_backlog_scan', err });
         }
@@ -1476,6 +1501,9 @@ function printProjection(projection) {
   if (projection.tasks.expired_running_count) {
     console.log(`expired running leases: ${projection.tasks.expired_running_count}`);
   }
+  if (projection.reactor_progress?.freshness) {
+    console.log(`reactor_progress: gen=${projection.reactor_progress.projection_generation} freshness=${projection.reactor_progress.freshness.status}`);
+  }
   if (projection.tasks.next_task) {
     console.log(`next: ${projection.tasks.next_task.task_id} (${projection.tasks.next_task.type})`);
   }
@@ -1500,6 +1528,9 @@ function printProjectionSummaries(items) {
     console.log(`tasks: pending=${counts.pending || 0} running=${counts.running || 0} failed=${counts.failed || 0} total=${item.tasks.total}`);
     console.log(`evolve_lock: ${item.locked ? 'held' : 'free'}`);
     console.log(`latest_event: ${event}`);
+    if (item.reactor_progress?.freshness) {
+      console.log(`reactor_progress: gen=${item.reactor_progress.projection_generation} freshness=${item.reactor_progress.freshness.status}`);
+    }
     for (const reason of item.health.reasons || []) console.log(`reason: ${reason}`);
   }
 }

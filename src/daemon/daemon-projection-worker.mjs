@@ -7,6 +7,7 @@ const {
   eventLimit = 20,
   heartbeatStaleMs = 60_000,
   flags = {},
+  skipEvidenceHealthScan = true,
 } = workerData ?? {};
 
 try {
@@ -14,6 +15,7 @@ try {
     eventLimit,
     heartbeatStaleMs,
     flags,
+    skipEvidenceHealthScan,
   });
   parentPort.postMessage({ ok: true, projection });
 } catch (error) {

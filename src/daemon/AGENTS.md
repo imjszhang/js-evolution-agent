@@ -30,7 +30,9 @@ Daemon 用于 **belief-driven、事件驱动的 reactor 演化**。推荐用 `je
 - `jea daemon enqueue --type cognitive_reaction|exec_queue|verify_batch|rule_reaction|memory_compaction`：手动入队 reactor 任务。
 - `jea daemon stop` / `jea daemon stop --all`：请求 worker 优雅停止。
 
-Rule backlog 使用独立的安全预算：每批默认最多 32 个事件、4 MiB hydrated payload、4 分钟墙钟，连续瞬态失败最多 3 次；catch-up 默认 4 批或 10 分钟。对应 `JEA_RULE_MAX_EVENTS`、`JEA_RULE_MAX_PAYLOAD_BYTES`、`JEA_RULE_MAX_WALL_MS`、`JEA_RULE_MAX_CONSECUTIVE_FAILURES`、`JEA_RULE_CATCHUP_MAX_BATCHES`、`JEA_RULE_CATCHUP_MAX_WALL_MS`。确定性容量失败会有界拆分；不可拆分的单条 evidence 写入 `reactor/archive/rule-quarantine.jsonl` 后才推进 Rule cursor。主体 LLM token/spend 预算耗尽属于 operator budget block，不归因于 evidence，不拆分、不隔离且不推进 cursor。`rule_catch_up_budget`、`rule_poison_batch_circuit_open`、`rule_llm_budget_exhausted`、`rule_journal_capacity_exceeded` 会稳定暴露到 daemon projection/readiness，且不暂停 Channel worker。恢复用 `jea llm budget status|raise|period-open`（见 [src/ai/AGENTS.md](../ai/AGENTS.md)），不要手改 `llm-budget-ledger.json`。有界 catch-up / lane park 由后续 scheduler（#212）消费同一 `inspectLlmBudget` / `cycle_admission` 契约，不要另起一套预算账本。
+0.3.0 bounded scheduler (`src/daemon/reactor-scheduler.mjs`) 从 **evolution** Activation Ledger（`src/evolution/reactor/activation-ledger-store.mjs`，generation-scoped）选活，Daemon 目录下不得再放第二份 ledger store。实时 lane 优先于 replay；同一 `execution_id` / `belief_id` / `producer_batch_id` 组内保持因果序；replay 每轮最多认领一条并 yield 以便下一轮重检实时工作。Replay 受 `JEA_CATCHUP_MAX_BATCHES` / `JEA_CATCHUP_MAX_WALL_MS` / `JEA_CATCHUP_TOKEN_RESERVE` / `JEA_CATCHUP_SPEND_ALLOWANCE_USD` 约束，消耗记在 `reactor/scheduler-plan.json`，重启不重置。主体 LLM 预算耗尽或 `cycle_admission=parked` 时把 Cognitive/Rule 相关 activation **park once**（`deferred` + `hold_reason.class=budget`），不重复入队等价失败任务。调度器状态由 `deriveReactorSchedulerState` 从 task/claim/checkpoint/budget 事实派生；heartbeat / `worker_alive` 不会变成 `running` 或 `catching_up`。`evolution.state=paused` 仍不启新的 Cognitive / Exec / Rule（含 backlog 扫描与显式 request）；verify / Memory 收尾不受影响。有界 catch-up / lane park 消费同一 `inspectLlmBudget` / `cycle_admission` 契约，不要另起一套预算账本。
+
+Rule backlog 使用独立的安全预算：每批默认最多 32 个事件、4 MiB hydrated payload、4 分钟墙钟，连续瞬态失败最多 3 次；catch-up 默认 4 批或 10 分钟。对应 `JEA_RULE_MAX_EVENTS`、`JEA_RULE_MAX_PAYLOAD_BYTES`、`JEA_RULE_MAX_WALL_MS`、`JEA_RULE_MAX_CONSECUTIVE_FAILURES`、`JEA_RULE_CATCHUP_MAX_BATCHES`、`JEA_RULE_CATCHUP_MAX_WALL_MS`。确定性容量失败会有界拆分；不可拆分的单条 evidence 写入 `reactor/archive/rule-quarantine.jsonl` 后才推进 Rule cursor。主体 LLM token/spend 预算耗尽属于 operator budget block，不归因于 evidence，不拆分、不隔离且不推进 cursor。`rule_catch_up_budget`、`rule_poison_batch_circuit_open`、`rule_llm_budget_exhausted`、`rule_journal_capacity_exceeded` 会稳定暴露到 daemon projection/readiness，且不暂停 Channel worker。恢复用 `jea llm budget status|raise|period-open`（见 [src/ai/AGENTS.md](../ai/AGENTS.md)），不要手改 `llm-budget-ledger.json`。
 
 ### Reactor 恢复真相
 
@@ -75,7 +77,9 @@ S9 后上述行为已固化，不再有 gate 回退。隔离验收：`npm run re
 
 ### Subject 投影缓存
 
-`readDaemonProjection` 按 subject 复用同一 revision。Desktop / Web 热路径可设 `deferRebuild: true`：Evidence/Reactor 输入变化且已有上一份成功快照时，主进程立即返回该快照，并在 `daemon-projection-worker.mjs` 线程里重算；心跳与 Channel 轻量字段仍同步刷新。CLI、Vitest 与带 `store` 的读取保持同步，避免写后读到陈旧投影。worker 文件缺失时回退同步重建。
+`readDaemonProjection` 按 subject 复用同一 revision。Desktop / Web 热路径可设 `deferRebuild: true`：Evidence/Reactor 输入变化且已有上一份成功快照时，主进程立即返回该快照（`reactor_progress.freshness.status=reconciling`），并在 `daemon-projection-worker.mjs` 线程里按 Activation Ledger / task / checkpoint **增量**重算，不扫描或 hydrate 证据正文。心跳（worker/task）与 Channel 轻量字段仍同步刷新。CLI、Vitest 与带 `store` 的读取保持同步，避免写后读到陈旧投影。worker 文件缺失时回退同步重建，且 `deferRebuild` 回退同样跳过证据正文扫描。
+
+0.3.0 控制面读模型在 `reactor_progress`（契约 `src/contracts/reactor-progress-projection.mjs`），持久化于 `data/evolution/reactor/progress-snapshot.json`。调度状态只使用 `deriveReactorSchedulerState` 的客观态；源不可对账时标 `unknown` / `degraded`，不伪造零 backlog 或 healthy。Cognitive / Rule / Memory 计数不可相加（`reactorWorkCountsAreAdditive() === false`）。投影读取 **generation-scoped** evolution ledger，不得把缺失/损坏账本重写成空的 healthy inbox。
 
 ### 观测与诊断
 

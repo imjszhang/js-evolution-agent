@@ -120,6 +120,15 @@ export const CLIENT_API_COMMAND_CATALOG: CatalogCommandEntry[] = [
     { observability: 'EvolutionObservability' },
     COMMON_READ_ERRORS
   ),
+  command(
+    'evolution.getReactorProgress',
+    'evolution',
+    'readonly',
+    both(),
+    { subject: 'string' },
+    { progress: 'ReactorProgressProjection' },
+    COMMON_READ_ERRORS
+  ),
   command('service.getStatus', 'service', 'readonly', both(), { subject: 'string' }, { status: 'ServiceStatus' }, COMMON_READ_ERRORS),
   command(
     'service.getReadiness',

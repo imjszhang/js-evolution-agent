@@ -34,6 +34,16 @@ import {
 } from '../../intelligence/evidence-stream.mjs';
 import { readRuleCursors } from './rule-cursors.mjs';
 import {
+  applyReconciledActivationLedger,
+  inspectActivationReconciliation,
+  reconcileActivationIdentities,
+} from './activation-identity-migration.mjs';
+import {
+  readActivationLedgerStore,
+  resumeActivationMigration,
+  writeActivationMigrationState,
+} from './activation-ledger-store.mjs';
+import {
   EVIDENCE_CURSOR_SCHEMA,
   EVIDENCE_INDEX_GENERATION_SCHEMA,
   EVIDENCE_JOURNAL_STATE_SCHEMA,
@@ -802,12 +812,29 @@ function cursorProjection(cursorState, generation) {
   };
 }
 
+async function listUniqueKeyRecords(uniqueDir) {
+  const records = [];
+  if (!existsSync(uniqueDir)) return records;
+  for (const name of readdirSync(uniqueDir).filter((item) => item.endsWith('.jsonl')).sort()) {
+    await readRecordFile(join(uniqueDir, name), (record) => {
+      if (record?.key) records.push({ evidence_key: record.key, kind: record.kind ?? null });
+    });
+  }
+  return records;
+}
+
+function activationActiveDir(journalPath) {
+  return journalPath ? dirname(journalPath) : null;
+}
+
 async function inspectAt(dataRoot, {
   journalPath = evidenceIndexJournalPath(dataRoot),
   cursorPath = evidenceIndexCursorPath(dataRoot),
   manifest = safeJson(evidenceIndexPath(dataRoot), null),
   workDir,
   env = process.env,
+  replayEpoch = null,
+  extraLedgers = [],
 } = {}) {
   const journalScan = await scanJournal(journalPath, workDir);
   const sourceScan = await scanAuthoritySources(dataRoot, workDir);
@@ -819,6 +846,16 @@ async function inspectAt(dataRoot, {
     sourceScan.summary,
   );
   const generation = manifest?.generation ?? null;
+  const currentManifest = safeJson(evidenceIndexPath(dataRoot), null);
+  const journalKeys = await listUniqueKeyRecords(journalScan.uniqueDir);
+  const activation_reconciliation = inspectActivationReconciliation(dataRoot, {
+    journalKeys,
+    activeDir: activationActiveDir(journalPath),
+    extraLedgers,
+    fromGeneration: currentManifest?.generation ?? null,
+    toGeneration: generation,
+    replayEpoch,
+  });
   const cursors = safeJson(cursorPath, { reactors: {} });
   const storedMaintenance = readEvidenceJournalState(dataRoot, { env });
   const policy = resolveEvidenceJournalPolicy(env);
@@ -838,6 +875,8 @@ async function inspectAt(dataRoot, {
     journal: journalScan.stats,
     cursors: cursorProjection(cursors, generation),
     rule_cursors: readRuleCursors(dataRoot),
+    journal_keys: journalKeys,
+    activation_reconciliation,
     authoritative_sources: sourceScan.summary,
     reconciliation,
     maintenance: {
@@ -858,7 +897,9 @@ async function inspectAt(dataRoot, {
 export async function inspectEvidenceJournal(dataRoot, options = {}) {
   const workDir = mkdtempSync(join(tmpdir(), 'jea-evidence-journal-inspect-'));
   try {
-    return await inspectAt(dataRoot, { ...options, workDir });
+    const inspected = await inspectAt(dataRoot, { ...options, workDir });
+    const { journal_keys: _journalKeys, ...publicResult } = inspected;
+    return publicResult;
   } finally {
     rmSync(workDir, { recursive: true, force: true });
   }
@@ -1020,7 +1061,8 @@ async function buildStageFromAuthority(dataRoot, stageDir, workDir, generation) 
     observed_at: migratedAt,
     last_rebuild_at: migratedAt,
   });
-  return { source, bytes, lines, migratedAt };
+  const journalKeys = await listUniqueKeyRecords(source.uniqueDir);
+  return { source, bytes, lines, migratedAt, journalKeys };
 }
 
 function createBackup(dataRoot, manifest, activeDir, {
@@ -1110,6 +1152,26 @@ async function withEvidenceMaintenanceLock(dataRoot, { root, subject }, operatio
   }
 }
 
+function stageActivationLedger(dataRoot, {
+  stageDir,
+  journalKeys,
+  fromGeneration,
+  toGeneration,
+  replayEpoch = null,
+  extraLedgers = [],
+} = {}) {
+  const { store, report } = reconcileActivationIdentities(dataRoot, {
+    journalKeys,
+    activeDir: stageDir,
+    extraLedgers,
+    fromGeneration,
+    toGeneration,
+    replayEpoch,
+  });
+  const applied = applyReconciledActivationLedger(stageDir, store);
+  return { store, report, applied };
+}
+
 async function rebuildEvidenceJournalOperation(dataRoot, {
   root = null,
   subject = null,
@@ -1117,8 +1179,10 @@ async function rebuildEvidenceJournalOperation(dataRoot, {
   force = false,
   assertStopped = null,
   failpoint = null,
+  replayEpoch = null,
 } = {}) {
-  const before = await inspectEvidenceJournal(dataRoot);
+  const resumed = dryRun ? { resumed: false } : resumeActivationMigration(dataRoot);
+  const before = await inspectEvidenceJournal(dataRoot, { replayEpoch });
   const needed = rebuildNeeded(before, force);
   const resultBase = {
     schema_version: EVIDENCE_JOURNAL_REBUILD_SCHEMA,
@@ -1127,12 +1191,16 @@ async function rebuildEvidenceJournalOperation(dataRoot, {
     subject,
     needed,
     before,
+    resumed: resumed.resumed === true,
     invariants: {
       authority_mutated: false,
       dedupe_key: 'evidence_key',
       cursor_migration: 'safe_replay_from_zero',
       consumed_markers_preserved: true,
+      handled_identities_preserved: true,
+      generation_change_creates_work: false,
       pointer_switch: 'atomic_manifest_rename',
+      control_plane_derived: true,
     },
   };
   if (
@@ -1148,7 +1216,13 @@ async function rebuildEvidenceJournalOperation(dataRoot, {
   if (dryRun) {
     return { ...resultBase, status: needed ? 'would_rebuild' : 'not_needed' };
   }
-  if (!needed) return { ...resultBase, status: 'not_needed' };
+  if (!needed) {
+    return {
+      ...resultBase,
+      status: resumed.resumed ? 'resumed' : 'not_needed',
+      generation: resumed.generation ?? before.manifest.generation,
+    };
+  }
 
   const stoppedCheck = assertStopped
     ?? (() => assertEvidenceMaintenanceStopped(root, subject));
@@ -1165,7 +1239,20 @@ async function rebuildEvidenceJournalOperation(dataRoot, {
   let switched = false;
   let backup = null;
   try {
+    writeActivationMigrationState(dataRoot, {
+      phase: 'staging',
+      operation: 'rebuild',
+      generation,
+      previous_generation: currentManifest?.generation ?? null,
+    });
     const built = await buildStageFromAuthority(dataRoot, stageDir, workDir, generation);
+    const stagedActivation = stageActivationLedger(dataRoot, {
+      stageDir,
+      journalKeys: built.journalKeys,
+      fromGeneration: currentManifest?.generation ?? null,
+      toGeneration: generation,
+      replayEpoch,
+    });
     const activeDirectory = relative(reactorDir(dataRoot), finalDir).replace(/\\/g, '/');
     const nextManifest = {
       schema_version: EVIDENCE_INDEX_GENERATION_SCHEMA,
@@ -1192,18 +1279,23 @@ async function rebuildEvidenceJournalOperation(dataRoot, {
         evidence_loss_possible: false,
         replay_possible: true,
         consumed_markers_preserved: true,
+        handled_identities_preserved: true,
+        generation_change_creates_work: false,
       },
       updated_at: built.migratedAt,
     };
     const validationWork = mkdtempSync(join(tmpdir(), 'jea-evidence-journal-validate-'));
     let validation;
     try {
-      validation = await inspectAt(dataRoot, {
+      const inspected = await inspectAt(dataRoot, {
         journalPath: join(stageDir, 'entries.jsonl'),
         cursorPath: join(stageDir, 'cursors.json'),
         manifest: nextManifest,
         workDir: validationWork,
+        replayEpoch,
       });
+      const { journal_keys: _journalKeys, ...publicInspect } = inspected;
+      validation = publicInspect;
     } finally {
       rmSync(validationWork, { recursive: true, force: true });
     }
@@ -1235,12 +1327,26 @@ async function rebuildEvidenceJournalOperation(dataRoot, {
     renameSync(stageDir, finalDir);
     writeJson(evidenceIndexPath(dataRoot), nextManifest);
     switched = true;
+    writeActivationMigrationState(dataRoot, {
+      phase: 'switched',
+      operation: 'rebuild',
+      generation,
+      previous_generation: currentManifest?.generation ?? null,
+    });
+    if (failpoint === 'after_switch') throw operationError(new Error('Injected rebuild failure'), 'injected_failure');
+    writeActivationMigrationState(dataRoot, {
+      phase: 'complete',
+      operation: 'rebuild',
+      generation,
+      previous_generation: currentManifest?.generation ?? null,
+    });
     return {
       ...resultBase,
       status: 'completed',
       generation,
       backup_path: backup.path,
       after: validation,
+      activation_reconciliation: stagedActivation.report,
       journal_bytes_before: before.journal.bytes,
       journal_bytes_after: built.bytes,
       duplicate_rows_removed: before.journal.duplicate_count,
@@ -1285,6 +1391,8 @@ async function rollbackEvidenceJournalOperation(dataRoot, {
   backupId = null,
   dryRun = true,
   assertStopped = null,
+  replayEpoch = null,
+  failpoint = null,
 } = {}) {
   if (!backupId) {
     const error = new Error('Evidence journal rollback requires an explicit backup ID');
@@ -1308,10 +1416,13 @@ async function rollbackEvidenceJournalOperation(dataRoot, {
       cursorPath: join(backupSidecar, 'cursors.json'),
       manifest: backupManifest,
       workDir,
+      replayEpoch,
+      extraLedgers: [readActivationLedgerStore(dataRoot)],
     });
   } finally {
     rmSync(workDir, { recursive: true, force: true });
   }
+  const { journal_keys: rollbackJournalKeys, ...publicInspect } = inspect;
   const base = {
     schema_version: EVIDENCE_JOURNAL_REBUILD_SCHEMA,
     operation: 'rollback',
@@ -1319,12 +1430,13 @@ async function rollbackEvidenceJournalOperation(dataRoot, {
     subject,
     backup_id: selected.id,
     backup_path: selected.path,
-    inspect,
+    inspect: publicInspect,
   };
   if (!inspect.reconciliation.ok) {
     return { ...base, status: 'blocked', block_reason: 'backup_source_reconciliation_failed' };
   }
   if (dryRun) return { ...base, status: 'would_rollback' };
+  const resumed = resumeActivationMigration(dataRoot);
   const sourceSignature = evidenceSourceSignature(dataRoot);
   const stoppedCheck = assertStopped
     ?? (() => assertEvidenceMaintenanceStopped(root, subject));
@@ -1337,8 +1449,15 @@ async function rollbackEvidenceJournalOperation(dataRoot, {
   const finalDir = join(generations, generation);
   const currentManifest = safeJson(evidenceIndexPath(dataRoot), null);
   const currentActive = evidenceIndexDir(dataRoot, currentManifest);
+  const currentLedger = readActivationLedgerStore(dataRoot, { manifest: currentManifest });
   let switched = false;
   try {
+    writeActivationMigrationState(dataRoot, {
+      phase: 'staging',
+      operation: 'rollback',
+      generation,
+      previous_generation: currentManifest?.generation ?? null,
+    });
     cpSync(backupSidecar, stageDir, {
       recursive: true,
       force: false,
@@ -1384,6 +1503,8 @@ async function rollbackEvidenceJournalOperation(dataRoot, {
         exact_offset_mapping: false,
         evidence_loss_possible: false,
         replay_possible: true,
+        handled_identities_preserved: true,
+        generation_change_creates_work: false,
       },
       updated_at: at,
     };
@@ -1403,6 +1524,17 @@ async function rollbackEvidenceJournalOperation(dataRoot, {
       last_rebuild_at: at,
       rollback_from: selected.id,
     });
+    const stagedActivation = stageActivationLedger(dataRoot, {
+      stageDir,
+      journalKeys: rollbackJournalKeys || [],
+      fromGeneration: currentManifest?.generation ?? backupManifest.generation ?? null,
+      toGeneration: generation,
+      replayEpoch,
+      extraLedgers: [
+        currentLedger,
+        readActivationLedgerStore(null, { path: join(backupSidecar, 'activation-ledger.json') }),
+      ],
+    });
     await stoppedCheck();
     if (evidenceSourceSignature(dataRoot) !== sourceSignature) {
       const error = new Error('Authoritative evidence changed during rollback; refusing pointer switch');
@@ -1412,15 +1544,31 @@ async function rollbackEvidenceJournalOperation(dataRoot, {
     const currentBackup = createBackup(dataRoot, currentManifest, currentActive, {
       reason: `pre-rollback:${selected.id}`,
     });
+    if (failpoint === 'before_switch') throw operationError(new Error('Injected rollback failure'), 'injected_failure');
     renameSync(stageDir, finalDir);
     writeJson(evidenceIndexPath(dataRoot), nextManifest);
     switched = true;
+    writeActivationMigrationState(dataRoot, {
+      phase: 'switched',
+      operation: 'rollback',
+      generation,
+      previous_generation: currentManifest?.generation ?? null,
+    });
+    if (failpoint === 'after_switch') throw operationError(new Error('Injected rollback failure'), 'injected_failure');
+    writeActivationMigrationState(dataRoot, {
+      phase: 'complete',
+      operation: 'rollback',
+      generation,
+      previous_generation: currentManifest?.generation ?? null,
+    });
     return {
       ...base,
       status: 'completed',
       generation,
       previous_generation_backup: currentBackup.path,
       cursor_migration: nextManifest.cursor_migration,
+      activation_reconciliation: stagedActivation.report,
+      resumed: resumed.resumed === true,
     };
   } finally {
     if (!switched) {

@@ -1,5 +1,7 @@
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DecisionQueue } from '../engine/decide/decision-queue.mjs';
+import { pendingOperatorBriefsDir } from '../intelligence/operator-briefs.mjs';
 import {
   coveredEventIds,
   readClaimArchiveSummary,
@@ -81,6 +83,36 @@ export function summarizeClaimLedgerHealth(ledger, { nowMs = Date.now() } = {}) 
   };
 }
 
+const OPERATOR_INPUT_PEEK_MAX = 256;
+
+/**
+ * Bounded pending-brief metadata only. Used when the control-plane hot path
+ * skips evidence-stream hydration so 0.2.x stall mapping still works.
+ */
+function peekOperatorInputBacklog(runtimeRoot, { nowMs = Date.now(), maxFiles = OPERATOR_INPUT_PEEK_MAX } = {}) {
+  const dir = pendingOperatorBriefsDir(runtimeRoot);
+  if (!existsSync(dir)) return { pending_count: 0, oldest_age_ms: null };
+  let names;
+  try {
+    names = readdirSync(dir).filter((name) => name.endsWith('.json'));
+  } catch {
+    return { pending_count: 0, oldest_age_ms: null };
+  }
+  let oldestAgeMs = null;
+  for (const name of names.slice(0, maxFiles)) {
+    try {
+      const raw = JSON.parse(readFileSync(join(dir, name), 'utf8'));
+      const created = parseIsoMs(raw?.created_at);
+      if (created == null) continue;
+      const age = nowMs - created;
+      if (oldestAgeMs == null || age > oldestAgeMs) oldestAgeMs = age;
+    } catch {
+      // Count the file; ignore unreadable metadata.
+    }
+  }
+  return { pending_count: names.length, oldest_age_ms: oldestAgeMs };
+}
+
 function unknownEvidenceProjection(reason) {
   return {
     pending_count: null,
@@ -136,6 +168,7 @@ export function buildReactorHealthProjection(root, subject, {
   nowMs = Date.now(),
   staleMs = DEFAULT_EVIDENCE_STALE_MS,
   worker = null,
+  skipEvidenceScan = false,
 } = {}) {
   const runtime = runtimeForSubject(root, subject);
   const dataRoot = runtime.dataRoot;
@@ -144,24 +177,36 @@ export function buildReactorHealthProjection(root, subject, {
   const claims = summarizeClaimLedgerHealth(ledger, { nowMs });
   let snapshot;
   let reconcile = { ok: true, contract_error_count: 0 };
-  try {
-    snapshot = readEvidenceHealthSnapshot(dataRoot);
-    reconcile = {
-      ok: Boolean(snapshot.reconcile?.ok),
-      contract_error_count: snapshot.reconcile?.contract_error_count ?? 0,
-    };
-  } catch {
+  if (skipEvidenceScan) {
     snapshot = { envelopes: [] };
-    reconcile = { ok: false, contract_error_count: -1 };
+    reconcile = {
+      ok: null,
+      contract_error_count: null,
+      skipped: true,
+      reason: 'evidence_scan_skipped_for_control_plane_projection',
+    };
+  } else {
+    try {
+      snapshot = readEvidenceHealthSnapshot(dataRoot);
+      reconcile = {
+        ok: Boolean(snapshot.reconcile?.ok),
+        contract_error_count: snapshot.reconcile?.contract_error_count ?? 0,
+      };
+    } catch {
+      snapshot = { envelopes: [] };
+      reconcile = { ok: false, contract_error_count: -1 };
+    }
   }
   const evidence = claimProjectionDegraded
     ? unknownEvidenceProjection(ledger.projection_reason)
-    : summarizePendingEvidenceFromSnapshot(snapshot, ledger, { nowMs, reactor: 'cognitive' });
-  const evidenceByReactor = claimProjectionDegraded
+    : (skipEvidenceScan
+      ? unknownEvidenceProjection('activation_ledger_required')
+      : summarizePendingEvidenceFromSnapshot(snapshot, ledger, { nowMs, reactor: 'cognitive' }));
+  const evidenceByReactor = claimProjectionDegraded || skipEvidenceScan
     ? {
       cognitive: evidence,
-      rule: unknownEvidenceProjection(ledger.projection_reason),
-      memory: unknownEvidenceProjection(ledger.projection_reason),
+      rule: unknownEvidenceProjection(evidence.projection_reason),
+      memory: unknownEvidenceProjection(evidence.projection_reason),
     }
     : {
       cognitive: evidence,
@@ -193,8 +238,11 @@ export function buildReactorHealthProjection(root, subject, {
   const pendingVerify = listPendingVerifyResults(dataRoot);
   const openIntents = listOpenExecIntents(dataRoot);
   const uncertainIntents = listUncertainExecIntents(dataRoot);
-  const ruleDue = claimProjectionDegraded
-    ? { eligible: [], due: [] }
+  const operatorInput = skipEvidenceScan
+    ? peekOperatorInputBacklog(runtime.runtimeRoot, { nowMs })
+    : null;
+  const ruleDue = claimProjectionDegraded || skipEvidenceScan
+    ? { eligible: [], due: [], skipped: skipEvidenceScan }
     : peekRuleDueWindow(dataRoot, {
       nowMs,
       stream: snapshot.envelopes,
@@ -230,7 +278,7 @@ export function buildReactorHealthProjection(root, subject, {
     reasons.push('claims_projection_degraded');
     reasons.push(`Claim projection unavailable: ${ledger.projection_reason}`);
     suggestions.push('Stop daemons, back up the subject, then run `jea data migrate-claims --dry-run`.');
-  } else if (!reconcile.ok || reconcile.contract_error_count > 0) {
+  } else if (!skipEvidenceScan && (!reconcile.ok || reconcile.contract_error_count > 0)) {
     status = 'blocked';
     ok = false;
     reasons.push(`Evidence stream contract errors: ${reconcile.contract_error_count}`);
@@ -268,14 +316,19 @@ export function buildReactorHealthProjection(root, subject, {
     if (worker && !worker.running && !worker.zombie && !worker.stale) {
       suggestions.push('Use start_cycle when a fresh Cycle worker should stay running.');
     }
-  } else if (evidence.pending_count > 0 && (evidence.oldest_unclaimed_age_ms ?? 0) >= staleMs) {
+  } else if (
+    (evidence.pending_count > 0 && (evidence.oldest_unclaimed_age_ms ?? 0) >= staleMs)
+    || (operatorInput && operatorInput.pending_count > 0 && (operatorInput.oldest_age_ms ?? 0) >= staleMs)
+  ) {
     status = 'stalled';
     ok = false;
     const workerMissing = Boolean(worker && !worker.running);
     const workerZombie = Boolean(worker?.zombie);
     const workerStale = Boolean(worker?.stale);
     const workerRunning = Boolean(worker?.running);
-    reasons.push(`${evidence.pending_count} eligible unclaimed evidence envelope(s); oldest age ${evidence.oldest_unclaimed_age_ms}ms`);
+    const pendingCount = evidence.pending_count ?? operatorInput?.pending_count;
+    const oldestAgeMs = evidence.oldest_unclaimed_age_ms ?? operatorInput?.oldest_age_ms;
+    reasons.push(`${pendingCount} eligible unclaimed work item(s); oldest age ${oldestAgeMs}ms`);
     if (workerZombie) {
       reasons.push('Cycle worker PID is dead (zombie); do not start another worker');
       suggestions.push('Use process_cycle_once. Repair the worker state; do not start a new Cycle worker.');
@@ -292,6 +345,7 @@ export function buildReactorHealthProjection(root, subject, {
     }
   } else if (
     evidence.pending_count > 0
+    || (operatorInput && operatorInput.pending_count > 0)
     || claims.counts.claimed > 0
     || decisions.pending > 0
     || pendingVerify.length > 0
@@ -334,9 +388,9 @@ export function buildReactorHealthProjection(root, subject, {
       retryable: openIntents.filter((item) => item.status === 'prepared' || item.status === 'intended').length,
     },
     rule: {
-      eligible: ruleDue.eligible.length,
-      due_windows: ruleDue.due.length,
-      due_goals: ruleDue.due.map((item) => item.goalId),
+      eligible: skipEvidenceScan ? null : ruleDue.eligible.length,
+      due_windows: skipEvidenceScan ? null : ruleDue.due.length,
+      due_goals: skipEvidenceScan ? [] : ruleDue.due.map((item) => item.goalId),
       blocked: Boolean(ruleBlockedReason),
       block_reason: ruleBlockedReason,
       batch_fingerprint: ruleDue.plan?.fingerprint ?? null,
