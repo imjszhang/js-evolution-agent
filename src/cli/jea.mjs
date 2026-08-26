@@ -140,6 +140,8 @@ Commands:
                          Mechanically audit evidence refs (beliefs, standing memory, supersedes, report citations)
   audit closure [--subject NAME] [--json]
                          Audit closure coverage, causal refs, settlement, Memory, and backlogs
+  audit control-plane [--target PATH] [--json] [--skip-baseline]
+                         Isolated 0.3.0 control-plane acceptance (temp JEA_HOME, mock LLM)
   llm ping               Test DeepSeek connectivity
   llm ping --mock        Test local mock AI path
   llm budget status [--subject NAME] [--json]
@@ -207,6 +209,7 @@ Examples:
   jea intel brief list
   jea audit queue
   jea audit closure --json
+  jea audit control-plane --json
   jea llm ping --mock
   jea llm budget status --json
   jea llm budget period-open --cycle-admission parked
@@ -253,7 +256,8 @@ export async function main(argv = process.argv.slice(2)) {
     return 0;
   }
   const authorityBypass = command === 'doctor'
-    || (command === 'data' && subcommand === 'migrate-home');
+    || (command === 'data' && subcommand === 'migrate-home')
+    || (command === 'audit' && subcommand === 'control-plane');
   if (!authorityBypass) {
     try {
       assertJeaHomeAuthority(context);

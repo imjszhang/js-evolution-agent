@@ -22,6 +22,11 @@ import {
   evaluateClosureTarget,
   readFrozenClosureTarget,
 } from '../../intelligence/closure-target.mjs';
+import {
+  renderControlPlaneAuditText,
+  runControlPlaneAudit,
+} from '../../intelligence/control-plane-audit.mjs';
+import { CONTROL_PLANE_TARGET_PATH } from '../../intelligence/control-plane-target.mjs';
 
 const KNOWN_STATUSES = [
   'pending',
@@ -259,6 +264,25 @@ async function auditClosureCommand(flags = {}) {
   return audit.ok ? 0 : 1;
 }
 
+async function auditControlPlaneCommand(flags = {}) {
+  const root = getProjectRoot();
+  const report = await runControlPlaneAudit({
+    sourceRoot: root,
+    targetPath: typeof flags.target === 'string' && flags.target
+      ? flags.target
+      : CONTROL_PLANE_TARGET_PATH,
+    includeBaseline: !flags['skip-baseline'],
+    baselineProfile: flags.size === 'smoke' ? 'smoke' : 'tiny',
+    includeClosureRun: true,
+    subject: typeof flags.subject === 'string' && flags.subject
+      ? flags.subject
+      : 'control-plane-cert',
+  });
+  if (flags.json) console.log(JSON.stringify(report, null, 2));
+  else process.stdout.write(renderControlPlaneAuditText(report));
+  return report.ok ? 0 : 1;
+}
+
 async function auditQueueCommand(flags = {}) {
   const root = getProjectRoot();
   if (flags.archive) {
@@ -293,15 +317,19 @@ export async function auditCommand({ subcommand, flags = {} } = {}) {
   if (subcommand === 'closure') {
     return auditClosureCommand(flags);
   }
+  if (subcommand === 'control-plane') {
+    return auditControlPlaneCommand(flags);
+  }
   if (subcommand === 'evidence') {
     return auditEvidenceCommand(flags);
   }
   if (subcommand === 'queue') {
     return auditQueueCommand(flags);
   }
-  console.error('Usage: jea audit <queue|evidence|closure> [options]');
+  console.error('Usage: jea audit <queue|evidence|closure|control-plane> [options]');
   console.error('  jea audit queue [--stale-minutes N] [--json] [--archive] [--yes] [--statuses completed,expired]');
   console.error('  jea audit evidence [--subject NAME] [--json] [--strict] [--ingest] [--no-narrative] [--reports N] [--diaries N] [--events N]');
   console.error('  jea audit closure [--subject NAME] [--json]');
+  console.error('  jea audit control-plane [--target PATH] [--json] [--skip-baseline] [--size tiny|smoke] [--subject NAME]');
   return 2;
 }

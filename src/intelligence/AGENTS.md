@@ -370,6 +370,8 @@ Assessor prompt 仍建议 `goal_patches` 与 `proposed_goal` 互斥；执行器�
 
 Memory Reactor 只消费已完成 settlement 后的新 belief/goal events，低频更新 standing memory 与 evolution diary；它不是第二套信念存储，也不在同步 `jea run` 末尾伪造 diary。checkpoint/cursor 保证 crash 后从首个未处理 settlement 恢复。
 
+`jea audit control-plane [--target PATH] [--json] [--skip-baseline]`（或 `npm run audit:control-plane`）是 0.3.0 控制面验收入口：始终使用临时 `JEA_HOME` 与 mock LLM，对照 `policies/release/control-plane-target-0.3.0.json`。它不替代、也不改写 `jea audit closure`。`--subject` 只命名合成 subject，不检查操作者 home。
+
 `jea audit closure [--subject NAME] [--json]` 是 0.2.0 闭环验收入口，报告：
 
 - belief binding / `run_spec.expected_output` 声明覆盖与 `legacy_unknown`；

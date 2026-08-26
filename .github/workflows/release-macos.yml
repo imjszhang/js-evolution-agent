@@ -17,7 +17,7 @@ on:
       release_version:
         description: 'Product version used for artifact names'
         type: string
-        default: '0.2.1'
+        default: '0.3.0'
   workflow_call:
     inputs:
       publish:
@@ -28,7 +28,7 @@ on:
         default: dist/release
       release_version:
         type: string
-        default: '0.2.1'
+        default: '0.3.0'
 
 permissions:
   contents: read
@@ -44,7 +44,7 @@ jobs:
   certify-preflight:
     name: certify-preflight
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -62,6 +62,26 @@ jobs:
         run: npm run audit:ci
       - name: Scan committed fixtures
         run: npm run release:scan -- --root test/fixtures/release/clean --json
+      - name: Isolated control-plane acceptance (temp JEA_HOME, mock)
+        run: |
+          set -euo pipefail
+          mkdir -p dist/release
+          npm run audit:control-plane -- --json --size tiny > dist/release/control-plane-audit.json
+          node --input-type=module - dist/release/control-plane-audit.json <<'NODE'
+          import { readFileSync } from 'node:fs';
+          const report = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+          if (report.ok !== true || report.gate?.target_id !== '0.3.0-reactor-control-plane') {
+            console.error('control-plane audit failed');
+            process.exit(1);
+          }
+          NODE
+      - name: Upload control-plane audit evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: control-plane-audit
+          path: dist/release/control-plane-audit.json
+          retention-days: 14
+          if-no-files-found: error
       - name: Publish guard (idle unless publish=true)
         run: npm run release:publish-guard -- --json
 
@@ -137,6 +157,11 @@ jobs:
         env:
           ARTIFACT_DIR: ${{ inputs.artifact_dir }}
         run: npm run release:recovery-soak -- --packaged --app dist/release/build/mac-arm64/JEA.app --duration-ms 1800000 --out "${ARTIFACT_DIR:-dist/release}/soak-report.json" --json
+      - name: Download Linux control-plane audit evidence
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: control-plane-audit
+          path: ${{ inputs.artifact_dir || 'dist/release' }}
       - name: Write certification evidence from artifacts
         env:
           ARTIFACT_DIR: ${{ inputs.artifact_dir }}
@@ -159,6 +184,7 @@ jobs:
             dist/release/launch-smoke.json
             dist/release/soak-report.json
             dist/release/closure-audit.json
+            dist/release/control-plane-audit.json
             dist/release/certification-evidence.json
             dist/release/build-metadata.json
           retention-days: 14

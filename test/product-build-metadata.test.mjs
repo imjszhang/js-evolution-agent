@@ -36,7 +36,7 @@ describe('build metadata provenance', () => {
     const dirty = await packageMacos({
       repoRoot,
       metadata: {
-        version: '0.2.1',
+        version: '0.3.0',
         commit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         dirty: true,
         built_at: '2026-08-22T00:00:00.000Z',
@@ -64,7 +64,7 @@ describe('build metadata provenance', () => {
     expect(metadata).toMatchObject({
       schema_version: 1,
       product: 'jea',
-      version: '0.2.1',
+      version: '0.3.0',
       dirty: expect.any(Boolean),
       built_at: '2026-08-17T04:32:54.000Z',
       platform: 'linux',
@@ -78,7 +78,7 @@ describe('build metadata provenance', () => {
   it('writes and loads immutable metadata from the packaged tree', () => {
     const dir = tempDir('jea-build-meta-');
     const written = writeBuildMetadata(dir, {
-      version: '0.2.1',
+      version: '0.3.0',
       commit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       dirty: false,
       built_at: '2026-08-17T04:32:54.000Z',
@@ -116,7 +116,7 @@ describe('build metadata provenance', () => {
   it('embeds collected metadata when staging app resources', () => {
     const outDir = tempDir('jea-stage-meta-');
     const metadata = {
-      version: '0.2.1',
+      version: '0.3.0',
       commit: 'cccccccccccccccccccccccccccccccccccccccc',
       dirty: false,
       built_at: '2026-08-17T04:32:54.000Z',
@@ -141,11 +141,11 @@ describe('build metadata provenance', () => {
 describe('package smoke commit certification', () => {
   it('fail-closes when installers exist without an embedded commit SHA', () => {
     const dir = tempDir('jea-smoke-missing-sha-');
-    writeFileSync(join(dir, 'JEA-0.2.1-macos-arm64.dmg'), 'dmg');
-    writeFileSync(join(dir, 'JEA-0.2.1-macos-arm64.zip'), 'zip');
+    writeFileSync(join(dir, 'JEA-0.3.0-macos-arm64.dmg'), 'dmg');
+    writeFileSync(join(dir, 'JEA-0.3.0-macos-arm64.zip'), 'zip');
     writeFileSync(join(dir, 'SHA256SUMS'), [
-      `${createHash('sha256').update('dmg').digest('hex')}  JEA-0.2.1-macos-arm64.dmg`,
-      `${createHash('sha256').update('zip').digest('hex')}  JEA-0.2.1-macos-arm64.zip`,
+      `${createHash('sha256').update('dmg').digest('hex')}  JEA-0.3.0-macos-arm64.dmg`,
+      `${createHash('sha256').update('zip').digest('hex')}  JEA-0.3.0-macos-arm64.zip`,
     ].join('\n'));
     writeFileSync(join(dir, 'package-smoke.json'), '{"ok":true}\n');
     writeFileSync(join(dir, 'RELEASE_NOTES.md'), 'draft\n');
@@ -157,17 +157,17 @@ describe('package smoke commit certification', () => {
   it('proves the embedded commit SHA matches the commit being certified', () => {
     const dir = tempDir('jea-smoke-match-');
     const commit = 'dddddddddddddddddddddddddddddddddddddddd';
-    writeFileSync(join(dir, 'JEA-0.2.1-macos-arm64.dmg'), 'dmg');
-    writeFileSync(join(dir, 'JEA-0.2.1-macos-arm64.zip'), 'zip');
+    writeFileSync(join(dir, 'JEA-0.3.0-macos-arm64.dmg'), 'dmg');
+    writeFileSync(join(dir, 'JEA-0.3.0-macos-arm64.zip'), 'zip');
     writeFileSync(join(dir, 'SHA256SUMS'), [
-      `${createHash('sha256').update('dmg').digest('hex')}  JEA-0.2.1-macos-arm64.dmg`,
-      `${createHash('sha256').update('zip').digest('hex')}  JEA-0.2.1-macos-arm64.zip`,
+      `${createHash('sha256').update('dmg').digest('hex')}  JEA-0.3.0-macos-arm64.dmg`,
+      `${createHash('sha256').update('zip').digest('hex')}  JEA-0.3.0-macos-arm64.zip`,
     ].join('\n'));
     writeFileSync(join(dir, 'package-smoke.json'), JSON.stringify({ ok: true, commit }));
     writeFileSync(join(dir, 'build-metadata.json'), JSON.stringify({
       schema_version: 1,
       product: 'jea',
-      version: '0.2.1',
+      version: '0.3.0',
       commit,
       dirty: false,
       built_at: '2026-08-17T04:32:54.000Z',
@@ -193,7 +193,7 @@ describe('release publish dirty provenance', () => {
     const dir = tempDir('jea-publish-meta-missing-');
     writeFileSync(join(dir, 'certification-evidence.json'), JSON.stringify({
       status: 'certified',
-      release: '0.2.1',
+      release: '0.3.0',
       platform: 'macos-arm64',
       issue77: 'ok',
     }));
@@ -206,7 +206,7 @@ describe('release publish dirty provenance', () => {
     const dir = tempDir('jea-publish-dirty-');
     writeFileSync(join(dir, 'certification-evidence.json'), JSON.stringify({
       status: 'certified',
-      release: '0.2.1',
+      release: '0.3.0',
       platform: 'macos-arm64',
       issue77: 'ok',
       dirty: true,
@@ -220,12 +220,12 @@ describe('release publish dirty provenance', () => {
     const dir = tempDir('jea-publish-meta-dirty-');
     writeFileSync(join(dir, 'certification-evidence.json'), JSON.stringify({
       status: 'certified',
-      release: '0.2.1',
+      release: '0.3.0',
       platform: 'macos-arm64',
       issue77: 'ok',
     }));
     writeFileSync(join(dir, 'build-metadata.json'), JSON.stringify({
-      version: '0.2.1',
+      version: '0.3.0',
       commit: 'ffffffffffffffffffffffffffffffffffffffff',
       dirty: true,
     }));

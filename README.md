@@ -30,6 +30,8 @@
 
 ## Product (0.2.1)
 
+Published product is **0.2.1**. 0.3.0 control-plane certification wiring is in progress ([#216](https://github.com/imjszhang/js-evolution-agent/issues/216)); there is no `v0.3.0` GitHub Release until an operator tags it.
+
 JEA 0.2.1 is a **macOS Apple Silicon** app with a bundled `jea` CLI. Its shared Electron/Web workspace has three operator surfaces:
 
 1. **Subject and local sessions**

@@ -9,7 +9,8 @@ import { evaluateAuditWiring } from '../scripts/release-audit-gate.mjs';
 import { evaluatePackageSmoke } from '../scripts/release-package-smoke.mjs';
 import { evaluatePublishGuard } from '../scripts/release-publish-guard.mjs';
 import { evaluateAttachAssets, evaluateSourceRun } from '../scripts/release-attach-assets.mjs';
-import { expectedArtifactNames, releaseAttachAssetNames, repoRootFrom } from '../scripts/release-lib.mjs';
+import { expectedArtifactNames, releaseAttachAssetNames, RELEASE_VERSION, repoRootFrom } from '../scripts/release-lib.mjs';
+import { CONTROL_PLANE_TARGET_ID } from '../src/intelligence/control-plane-target.mjs';
 import { runReleaseSkeleton } from '../scripts/release-skeleton.mjs';
 
 const repoRoot = repoRootFrom(new URL('../scripts/release-lib.mjs', import.meta.url));
@@ -34,12 +35,12 @@ function writeAttachEvidence(dir, {
   packageStatus = 'packaged',
   certificationStatus = 'certified',
 } = {}) {
-  const buildId = `0.2.1+${commit.slice(0, 7)}.20260822T000000`;
+  const buildId = `${RELEASE_VERSION}+${commit.slice(0, 7)}.20260822T000000`;
   const generatedAt = new Date().toISOString();
   writeFileSync(join(dir, 'build-metadata.json'), `${JSON.stringify({
     schema_version: 1,
     product: 'jea',
-    version: '0.2.1',
+    version: RELEASE_VERSION,
     commit,
     dirty,
     built_at: '2026-08-22T00:00:00.000Z',
@@ -56,8 +57,8 @@ function writeAttachEvidence(dir, {
     generated_at: generatedAt,
   })}\n`);
   writeFileSync(join(dir, 'SHA256SUMS'), [
-    `${sha256(join(dir, 'JEA-0.2.1-macos-arm64.dmg'))}  JEA-0.2.1-macos-arm64.dmg`,
-    `${sha256(join(dir, 'JEA-0.2.1-macos-arm64.zip'))}  JEA-0.2.1-macos-arm64.zip`,
+    `${sha256(join(dir, `JEA-${RELEASE_VERSION}-macos-arm64.dmg`))}  JEA-${RELEASE_VERSION}-macos-arm64.dmg`,
+    `${sha256(join(dir, `JEA-${RELEASE_VERSION}-macos-arm64.zip`))}  JEA-${RELEASE_VERSION}-macos-arm64.zip`,
   ].join('\n') + '\n');
   const identity = {
     build_id: buildId,
@@ -97,9 +98,15 @@ function writeAttachEvidence(dir, {
     gate: { target_id: '0.2.0-belief-loop' },
     ...identity,
   })}\n`);
+  writeFileSync(join(dir, 'control-plane-audit.json'), `${JSON.stringify({
+    ok: true,
+    status: 'passed',
+    gate: { target_id: CONTROL_PLANE_TARGET_ID },
+    ...identity,
+  })}\n`);
   writeFileSync(join(dir, 'certification-evidence.json'), `${JSON.stringify({
     status: certificationStatus,
-    release: '0.2.1',
+    release: RELEASE_VERSION,
     platform: 'macos-arm64',
     issue77: 'ok',
     ...identity,
@@ -115,6 +122,13 @@ function writeAttachEvidence(dir, {
         detail: '0.2.0-belief-loop',
         ...identity,
       },
+      {
+        id: 'control_plane_audit',
+        ok: true,
+        status: 'passed',
+        detail: CONTROL_PLANE_TARGET_ID,
+        ...identity,
+      },
     ],
     recovery_matrix: { id: 'recovery_matrix', ok: true, status: 'passed', ...identity },
     soak: { id: 'soak', ok: true, status: 'passed', duration_ms: 1_800_000, ...identity },
@@ -123,6 +137,13 @@ function writeAttachEvidence(dir, {
       ok: true,
       status: 'passed',
       detail: '0.2.0-belief-loop',
+      ...identity,
+    },
+    control_plane_audit: {
+      id: 'control_plane_audit',
+      ok: true,
+      status: 'passed',
+      detail: CONTROL_PLANE_TARGET_ID,
       ...identity,
     },
   })}\n`);
@@ -206,7 +227,7 @@ describe('release-version-preflight', () => {
     const report = runVersionPreflight({ repoRoot, strict: false });
     expect(report.ok).toBe(true);
     expect(report.status).toBe('agree');
-    expect(report.expected).toBe('0.2.1');
+    expect(report.expected).toBe('0.3.0');
     expect(report.pending).toEqual([]);
     const visible = report.sources.filter((item) => item.required);
     expect(visible.map((item) => item.id)).toEqual([
@@ -228,14 +249,14 @@ describe('release-version-preflight', () => {
       'product_identity',
       'acp_runtime',
     ]);
-    expect(visible.every((item) => item.version === '0.2.1')).toBe(true);
+    expect(visible.every((item) => item.version === '0.3.0')).toBe(true);
     expect(runVersionPreflight({ repoRoot, strict: true }).ok).toBe(true);
   });
 
   it('keeps missing later sources pending unless --strict', () => {
     const pending = evaluateVersions([
-      { id: 'root_package', required: true, status: 'ok', version: '0.2.1' },
-      { id: 'desktop_package', required: true, status: 'ok', version: '0.2.1' },
+      { id: 'root_package', required: true, status: 'ok', version: '0.3.0' },
+      { id: 'desktop_package', required: true, status: 'ok', version: '0.3.0' },
       { id: 'bundled_cli', required: false, status: 'skipped/pending', issue: 120 },
     ], { strict: false });
     expect(pending.ok).toBe(true);
@@ -247,8 +268,8 @@ describe('release-version-preflight', () => {
 
   it('fails when visible versions disagree', () => {
     const report = evaluateVersions([
-      { id: 'root_package', required: true, status: 'ok', version: '0.2.1' },
-      { id: 'desktop_package', required: true, status: 'ok', version: '0.3.0' },
+      { id: 'root_package', required: true, status: 'ok', version: '0.3.0' },
+      { id: 'desktop_package', required: true, status: 'ok', version: '0.4.0' },
     ]);
     expect(report.ok).toBe(false);
     expect(report.failures.map((item) => item.code)).toEqual(expect.arrayContaining([
@@ -318,10 +339,10 @@ describe('release-audit-gate', () => {
 
 describe('release-package-smoke', () => {
   it('lists expected DMG/ZIP/SHA256SUMS names and accepts local pending or smoked artifacts', () => {
-    const names = expectedArtifactNames('0.2.1');
+    const names = expectedArtifactNames(RELEASE_VERSION);
     expect(names).toEqual({
-      dmg: 'JEA-0.2.1-macos-arm64.dmg',
-      zip: 'JEA-0.2.1-macos-arm64.zip',
+      dmg: `JEA-${RELEASE_VERSION}-macos-arm64.dmg`,
+      zip: `JEA-${RELEASE_VERSION}-macos-arm64.zip`,
       checksums: 'SHA256SUMS',
       packageSmoke: 'package-smoke.json',
       releaseNotes: 'RELEASE_NOTES.md',
@@ -335,7 +356,7 @@ describe('release-package-smoke', () => {
 
   it('fail-closes a partial artifact directory', () => {
     const dir = tempDir('jea-release-partial-');
-    writeFileSync(join(dir, 'JEA-0.2.1-macos-arm64.dmg'), 'placeholder');
+    writeFileSync(join(dir, `JEA-${RELEASE_VERSION}-macos-arm64.dmg`), 'placeholder');
     const report = evaluatePackageSmoke({ dir });
     expect(report.ok).toBe(false);
     expect(report.failures.map((item) => item.code)).toContain('incomplete_artifact_set');
@@ -343,17 +364,17 @@ describe('release-package-smoke', () => {
 
   it('accepts a complete artifact set with exact SHA256 digests', () => {
     const dir = tempDir('jea-release-complete-');
-    writeFileSync(join(dir, 'JEA-0.2.1-macos-arm64.dmg'), 'dmg');
-    writeFileSync(join(dir, 'JEA-0.2.1-macos-arm64.zip'), 'zip');
+    writeFileSync(join(dir, `JEA-${RELEASE_VERSION}-macos-arm64.dmg`), 'dmg');
+    writeFileSync(join(dir, `JEA-${RELEASE_VERSION}-macos-arm64.zip`), 'zip');
     writeFileSync(join(dir, 'SHA256SUMS'), [
-      `${createHash('sha256').update('dmg').digest('hex')}  JEA-0.2.1-macos-arm64.dmg`,
-      `${createHash('sha256').update('zip').digest('hex')}  JEA-0.2.1-macos-arm64.zip`,
+      `${createHash('sha256').update('dmg').digest('hex')}  JEA-${RELEASE_VERSION}-macos-arm64.dmg`,
+      `${createHash('sha256').update('zip').digest('hex')}  JEA-${RELEASE_VERSION}-macos-arm64.zip`,
     ].join('\n'));
     writeFileSync(join(dir, 'package-smoke.json'), '{"ok":true,"commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}\n');
     writeFileSync(join(dir, 'build-metadata.json'), JSON.stringify({
       schema_version: 1,
       product: 'jea',
-      version: '0.2.1',
+      version: RELEASE_VERSION,
       commit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       dirty: false,
       built_at: '2026-08-17T00:00:00.000Z',
@@ -368,15 +389,15 @@ describe('release-package-smoke', () => {
 
   it('rejects a tampered installer whose digest no longer matches SHA256SUMS', () => {
     const dir = tempDir('jea-release-tampered-');
-    writeFileSync(join(dir, 'JEA-0.2.1-macos-arm64.dmg'), 'original');
-    writeFileSync(join(dir, 'JEA-0.2.1-macos-arm64.zip'), 'zip');
+    writeFileSync(join(dir, `JEA-${RELEASE_VERSION}-macos-arm64.dmg`), 'original');
+    writeFileSync(join(dir, `JEA-${RELEASE_VERSION}-macos-arm64.zip`), 'zip');
     writeFileSync(join(dir, 'SHA256SUMS'), [
-      `${createHash('sha256').update('original').digest('hex')}  JEA-0.2.1-macos-arm64.dmg`,
-      `${createHash('sha256').update('zip').digest('hex')}  JEA-0.2.1-macos-arm64.zip`,
+      `${createHash('sha256').update('original').digest('hex')}  JEA-${RELEASE_VERSION}-macos-arm64.dmg`,
+      `${createHash('sha256').update('zip').digest('hex')}  JEA-${RELEASE_VERSION}-macos-arm64.zip`,
     ].join('\n'));
-    writeFileSync(join(dir, 'JEA-0.2.1-macos-arm64.dmg'), 'tampered');
+    writeFileSync(join(dir, `JEA-${RELEASE_VERSION}-macos-arm64.dmg`), 'tampered');
     writeFileSync(join(dir, 'build-metadata.json'), JSON.stringify({
-      version: '0.2.1',
+      version: RELEASE_VERSION,
       commit: RELEASE_COMMIT,
       dirty: false,
       built_at: new Date().toISOString(),
@@ -390,10 +411,10 @@ describe('release-package-smoke', () => {
 });
 
 describe('release-attach-assets', () => {
-  it('lists the official 0.2.1 upload allowlist', () => {
-    expect(releaseAttachAssetNames('0.2.1')).toEqual([
-      'JEA-0.2.1-macos-arm64.dmg',
-      'JEA-0.2.1-macos-arm64.zip',
+  it('lists the official 0.3.0 upload allowlist', () => {
+    expect(releaseAttachAssetNames(RELEASE_VERSION)).toEqual([
+      `JEA-${RELEASE_VERSION}-macos-arm64.dmg`,
+      `JEA-${RELEASE_VERSION}-macos-arm64.zip`,
       'SHA256SUMS',
       'package-smoke.json',
       'RELEASE_NOTES.md',
@@ -403,69 +424,70 @@ describe('release-attach-assets', () => {
       'launch-smoke.json',
       'soak-report.json',
       'closure-audit.json',
+      'control-plane-audit.json',
       'certification-evidence.json',
     ]);
   });
 
   it('accepts a complete allowlisted directory and ignores extras', () => {
     const dir = tempDir('jea-attach-complete-');
-    for (const name of releaseAttachAssetNames('0.2.1')) {
+    for (const name of releaseAttachAssetNames(RELEASE_VERSION)) {
       writeFileSync(join(dir, name), `${name}\n`);
     }
     writeAttachEvidence(dir);
     writeFileSync(join(dir, 'README.txt'), 'ignored extra\n');
     const report = evaluateAttachAssets({
       dir,
-      tag: 'v0.2.1',
+      tag: `v${RELEASE_VERSION}`,
       expectedCommit: RELEASE_COMMIT,
     });
     expect(report.ok).toBe(true);
     expect(report.status).toBe('ready');
-    expect(report.files.map((file) => file.name)).toEqual(releaseAttachAssetNames('0.2.1'));
+    expect(report.files.map((file) => file.name)).toEqual(releaseAttachAssetNames(RELEASE_VERSION));
   });
 
   it('rejects tampered checksums, missing journey/launch evidence, and build mismatch', () => {
     const tampered = tempDir('jea-attach-tampered-');
-    for (const name of releaseAttachAssetNames('0.2.1')) writeFileSync(join(tampered, name), `${name}\n`);
+    for (const name of releaseAttachAssetNames(RELEASE_VERSION)) writeFileSync(join(tampered, name), `${name}\n`);
     writeAttachEvidence(tampered);
-    writeFileSync(join(tampered, 'JEA-0.2.1-macos-arm64.dmg'), 'tampered after checksumming');
+    writeFileSync(join(tampered, `JEA-${RELEASE_VERSION}-macos-arm64.dmg`), 'tampered after checksumming');
     expect(evaluateAttachAssets({
       dir: tampered,
-      tag: 'v0.2.1',
+      tag: `v${RELEASE_VERSION}`,
       expectedCommit: RELEASE_COMMIT,
     }).rejected.map((item) => item.reason)).toContain('checksum_mismatch');
 
     const missingJourney = tempDir('jea-attach-missing-journey-');
-    for (const name of releaseAttachAssetNames('0.2.1')) writeFileSync(join(missingJourney, name), `${name}\n`);
+    for (const name of releaseAttachAssetNames(RELEASE_VERSION)) writeFileSync(join(missingJourney, name), `${name}\n`);
     writeAttachEvidence(missingJourney);
     rmSync(join(missingJourney, 'product-journey.json'));
     expect(evaluateAttachAssets({
       dir: missingJourney,
-      tag: 'v0.2.1',
+      tag: `v${RELEASE_VERSION}`,
       expectedCommit: RELEASE_COMMIT,
     }).missing).toContain('product-journey.json');
 
     const missingLaunch = tempDir('jea-attach-missing-launch-');
-    for (const name of releaseAttachAssetNames('0.2.1')) writeFileSync(join(missingLaunch, name), `${name}\n`);
+    for (const name of releaseAttachAssetNames(RELEASE_VERSION)) writeFileSync(join(missingLaunch, name), `${name}\n`);
     writeAttachEvidence(missingLaunch);
     rmSync(join(missingLaunch, 'launch-smoke.json'));
     expect(evaluateAttachAssets({
       dir: missingLaunch,
-      tag: 'v0.2.1',
+      tag: `v${RELEASE_VERSION}`,
       expectedCommit: RELEASE_COMMIT,
     }).missing).toContain('launch-smoke.json');
 
     const mismatch = tempDir('jea-attach-build-mismatch-');
-    for (const name of releaseAttachAssetNames('0.2.1')) writeFileSync(join(mismatch, name), `${name}\n`);
+    for (const name of releaseAttachAssetNames(RELEASE_VERSION)) writeFileSync(join(mismatch, name), `${name}\n`);
     writeAttachEvidence(mismatch);
     const launch = JSON.parse(readFileSync(join(mismatch, 'launch-smoke.json'), 'utf8'));
     writeFileSync(join(mismatch, 'launch-smoke.json'), JSON.stringify({
       ...launch,
-      build_id: '0.2.1+bbbbbbb.20260822T000000',
+      build_id: `${RELEASE_VERSION}+bbbbbbb.20260822T000000`,
     }));
     expect(evaluateAttachAssets({
       dir: mismatch,
-      tag: 'v0.2.1',
+      tag: `v${RELEASE_VERSION}`,
       expectedCommit: RELEASE_COMMIT,
     }).rejected.map((item) => item.reason)).toContain('build_mismatch');
   });
@@ -473,10 +495,10 @@ describe('release-attach-assets', () => {
   it('fail-closes a missing installer, a bad tag, or a secret file', () => {
     const dir = tempDir('jea-attach-bad-');
     writeFileSync(join(dir, 'SHA256SUMS'), 'checksums\n');
-    expect(evaluateAttachAssets({ dir, tag: 'v0.2.1' }).reason).toBe('incomplete_artifact_set');
-    expect(evaluateAttachAssets({ dir, tag: 'v0.3.0' }).reason).toBe('tag_version_mismatch');
+    expect(evaluateAttachAssets({ dir, tag: `v${RELEASE_VERSION}` }).reason).toBe('incomplete_artifact_set');
+    expect(evaluateAttachAssets({ dir, tag: 'v0.4.0' }).reason).toBe('tag_version_mismatch');
     writeFileSync(join(dir, '.env'), 'DEEPSEEK_API_KEY=secret\n');
-    const rejected = evaluateAttachAssets({ dir, tag: 'v0.2.1' });
+    const rejected = evaluateAttachAssets({ dir, tag: `v${RELEASE_VERSION}` });
     expect(rejected.ok).toBe(false);
     expect(rejected.rejected.map((item) => item.reason)).toContain('forbidden_file');
   });
@@ -504,20 +526,20 @@ describe('release-attach-assets', () => {
 
   it('fail-closes dirty, mismatched, or uncertified downloaded provenance', () => {
     const dirtyDir = tempDir('jea-attach-dirty-');
-    for (const name of releaseAttachAssetNames('0.2.1')) writeFileSync(join(dirtyDir, name), '{}\n');
+    for (const name of releaseAttachAssetNames(RELEASE_VERSION)) writeFileSync(join(dirtyDir, name), '{}\n');
     writeAttachEvidence(dirtyDir, { dirty: true });
     expect(evaluateAttachAssets({
       dir: dirtyDir,
-      tag: 'v0.2.1',
+      tag: `v${RELEASE_VERSION}`,
       expectedCommit: RELEASE_COMMIT,
     }).rejected.map((item) => item.reason)).toContain('dirty_source_tree');
 
     const pendingDir = tempDir('jea-attach-pending-');
-    for (const name of releaseAttachAssetNames('0.2.1')) writeFileSync(join(pendingDir, name), '{}\n');
+    for (const name of releaseAttachAssetNames(RELEASE_VERSION)) writeFileSync(join(pendingDir, name), '{}\n');
     writeAttachEvidence(pendingDir, { certificationStatus: 'pending' });
     expect(evaluateAttachAssets({
       dir: pendingDir,
-      tag: 'v0.2.1',
+      tag: `v${RELEASE_VERSION}`,
       expectedCommit: RELEASE_COMMIT,
     }).rejected.map((item) => item.reason)).toContain('certification_not_complete');
   });
@@ -560,7 +582,7 @@ describe('release-publish-guard', () => {
     const dir = tempDir('jea-release-evidence-');
     writeFileSync(join(dir, 'certification-evidence.json'), JSON.stringify({
       status: 'pending',
-      release: '0.2.1',
+      release: RELEASE_VERSION,
     }));
     const report = evaluatePublishGuard({ publish: true, evidenceDir: dir });
     expect(report.ok).toBe(false);
