@@ -240,7 +240,18 @@ export function createProductSurfaceFixture(): ProductSurfaceFixture {
         { id: 'pause_automatic_evolution', allowed: true, capability: 'write' },
         { id: 'check_now', allowed: true, capability: 'write' },
         { id: 'view_blocker', allowed: true, capability: 'readonly' }
-      ]
+      ],
+      reactor_progress: {
+        schema_version: '0.3.0',
+        subject: 'alpha',
+        projection_generation: 1,
+        projected_at: '2026-08-16T00:00:00.000Z',
+        freshness: { as_of: '2026-08-16T00:00:00.000Z', status: 'unknown', reason: 'activation_ledger_unresolved' },
+        worker_liveness: { alive: false },
+        reactors: {},
+        reactor_overlap: { additive: false, note: 'reactor_counts_may_overlap_authoritative_evidence' },
+        evidence_authority: { is_work_count: false }
+      }
     },
     automation: {
       subject: 'alpha',

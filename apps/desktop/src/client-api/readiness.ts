@@ -104,6 +104,7 @@ export interface ReadinessProjectionInput {
     token?: Record<string, unknown>
     spend?: Record<string, unknown>
   } | null
+  reactorProgress?: import('./types').ReactorProgressProjection | null
 }
 
 export function isSubjectReadinessDomainState(value: string): value is SubjectReadinessDomainState {

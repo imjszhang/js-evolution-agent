@@ -140,6 +140,16 @@ export {
   type OperatorSurfaceProjection
 } from './features/operator-projection'
 export {
+  sanitizeReactorProgress,
+  projectReactorControlPlane,
+  displaySchedulerState,
+  isTruthfulCatchingUp,
+  createReactorProgressFixture,
+  REACTOR_PROGRESS_FIXTURES,
+  REACTOR_FRESHNESS_FIXTURES,
+  type ReactorControlPlaneView
+} from './features/reactor-progress'
+export {
   fetchWebBootstrap,
   isExplicitWebFixtureMode,
   isJeaWebHosted,

@@ -47,6 +47,35 @@ function printHuman(payload) {
       + ` cycle_admission=${payload.llm_budget.cycle_admission}`,
     );
   }
+  if (payload.reactor_progress) {
+    const progress = payload.reactor_progress;
+    console.log(
+      `reactor: state=${progress.scheduler_state ?? 'unknown'}`
+      + ` freshness=${progress.freshness?.status ?? 'unknown'}`
+      + ` gen=${progress.projection_generation ?? '—'}`
+      + ` alive=${progress.worker_liveness?.alive === true}`
+      + ` overlap_additive=${progress.reactor_overlap?.additive === true}`
+      + ` evidence_is_work=${progress.evidence_authority?.is_work_count === true}`,
+    );
+    if (progress.stop_reason?.code) {
+      console.log(`reactor_stop: ${progress.stop_reason.class}/${progress.stop_reason.code}`);
+    }
+    if (progress.activity?.current_task || progress.activity?.current_stage) {
+      console.log(
+        `reactor_activity: task=${progress.activity.current_task?.id ?? '—'}`
+        + ` lane=${progress.activity.current_task?.lane ?? progress.activity.current_claim?.lane ?? '—'}`
+        + ` stage=${progress.activity.current_stage ?? '—'}`
+        + ` last_progress=${progress.activity.last_progress_at ?? '—'}`,
+      );
+    }
+  }
+  if (payload.automation) {
+    console.log(
+      `automation: mode=${payload.automation.mode}`
+      + ` intent=${payload.automation.intent}`
+      + (payload.automation.blocker ? ` blocker=${payload.automation.blocker}` : ''),
+    );
+  }
   console.log(`allowed_actions: ${payload.allowed_actions.join(',')}`);
 }
 

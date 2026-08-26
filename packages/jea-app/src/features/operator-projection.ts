@@ -1,5 +1,15 @@
-import type { ProductHostKind, RemediationActionView, SubjectReadiness } from './client-types'
+import type {
+  ProductEvolutionIntent,
+  ProductHostKind,
+  RemediationActionView,
+  SubjectReadiness
+} from './client-types'
 import type { EvolutionCycleList, EvolutionObservability } from './evolution/types'
+import {
+  displaySchedulerState,
+  projectReactorControlPlane,
+  type ReactorControlPlaneView
+} from './reactor-progress'
 
 export const OPERATOR_COUNT_SOURCES = {
   evidencePending: {
@@ -31,9 +41,11 @@ export interface OperatorCountProjection {
 
 export interface OperatorEvolutionRuntime {
   mode: 'automatic' | 'paused'
-  intent: 'running' | 'paused' | 'listening' | 'catching_up' | 'waiting_approval' | 'blocked' | 'starting'
+  intent: ProductEvolutionIntent
   remaining_evidence: number
   blocker: string | null
+  scheduler_state: ReactorControlPlaneView['scheduler_state']
+  freshness: ReactorControlPlaneView['freshness']
 }
 
 export interface OperatorSurfaceProjection {
@@ -47,6 +59,7 @@ export interface OperatorSurfaceProjection {
   daemon_task_pending: OperatorCountProjection
   allowed_remediation_actions: RemediationActionView[]
   product_actions: RemediationActionView[]
+  reactor_control_plane: ReactorControlPlaneView
 }
 
 function count(value: unknown): number {
@@ -89,34 +102,53 @@ const PRODUCT_ACTION_IDS = new Set([
 
 export function projectEvolutionRuntime(
   readiness: SubjectReadiness,
-  observability: EvolutionObservability
+  observability: EvolutionObservability,
+  host: ProductHostKind = 'electron'
 ): OperatorEvolutionRuntime {
   const pending = count(observability.evidence_pending_count)
+  const plane = projectReactorControlPlane({ readiness, observability, host })
   const automation = readiness.automation
-  if (automation) {
-    const intent = automation.mode === 'paused'
-      ? 'paused'
-      : (pending > 0 && automation.intent === 'listening' ? 'catching_up' : automation.intent)
+  const mode: 'automatic' | 'paused' = automation?.mode === 'paused' ? 'paused' : 'automatic'
+  const intent = displaySchedulerState(plane.progress, mode)
+  if (plane.progress || automation) {
     return {
-      mode: automation.mode === 'paused' ? 'paused' : 'automatic',
+      mode,
       intent,
       remaining_evidence: pending,
-      blocker: automation.blocker ?? null
+      blocker: plane.primary_blocker ?? automation?.blocker ?? null,
+      scheduler_state: plane.scheduler_state,
+      freshness: plane.freshness
     }
   }
   const cycleState = readiness.cycle.state
-  if (pending > 0 || cycleState === 'stalled') {
-    return { mode: 'automatic', intent: 'catching_up', remaining_evidence: pending, blocker: null }
-  }
   if (['blocked', 'stale', 'zombie', 'unavailable', 'stopped'].includes(cycleState)) {
     return {
       mode: 'automatic',
       intent: 'blocked',
       remaining_evidence: pending,
-      blocker: readiness.cycle.reasons[0] ?? cycleState
+      blocker: readiness.cycle.reasons[0] ?? cycleState,
+      scheduler_state: null,
+      freshness: 'unknown'
     }
   }
-  return { mode: 'automatic', intent: 'listening', remaining_evidence: 0, blocker: null }
+  if (cycleState === 'stalled') {
+    return {
+      mode: 'automatic',
+      intent: 'stalled',
+      remaining_evidence: pending,
+      blocker: readiness.cycle.reasons[0] ?? cycleState,
+      scheduler_state: null,
+      freshness: 'unknown'
+    }
+  }
+  return {
+    mode: 'automatic',
+    intent: pending > 0 ? 'queued' : 'listening',
+    remaining_evidence: pending,
+    blocker: null,
+    scheduler_state: null,
+    freshness: 'unknown'
+  }
 }
 
 export function projectOperatorSurface(input: {
@@ -147,7 +179,7 @@ export function projectOperatorSurface(input: {
       latestStatus: input.evolution.latestStatus,
       latestTldr: input.evolution.latestTldr
     },
-    evolution_runtime: projectEvolutionRuntime(input.readiness, input.observability),
+    evolution_runtime: projectEvolutionRuntime(input.readiness, input.observability, input.host),
     observability_attention: {
       count: items.length,
       items,
@@ -162,6 +194,11 @@ export function projectOperatorSurface(input: {
       ...OPERATOR_COUNT_SOURCES.daemonTaskPending
     },
     allowed_remediation_actions: diagnosticActions,
-    product_actions
+    product_actions,
+    reactor_control_plane: projectReactorControlPlane({
+      readiness: input.readiness,
+      observability: input.observability,
+      host: input.host
+    })
   }
 }

@@ -378,6 +378,27 @@ export function resolveRemediationActions(needed, hostKind) {
   return { allowed_actions, actions };
 }
 
+const PRODUCT_SCHEDULER_INTENTS = new Set([
+  'listening',
+  'queued',
+  'running',
+  'catching_up',
+  'paused_budget',
+  'blocked',
+  'waiting_approval',
+  'stalled',
+]);
+
+function truthfulCatchingUp(progress) {
+  const activity = progress?.activity ?? {};
+  const taskLane = activity.current_task?.lane;
+  const claimLane = activity.current_claim?.lane;
+  const lastProgress = typeof activity.last_progress_at === 'string' && activity.last_progress_at.trim();
+  return progress?.scheduler_state === 'catching_up'
+    && (taskLane === 'replay' || claimLane === 'replay')
+    && Boolean(lastProgress);
+}
+
 function mapAutomation(input, cycle, llmBudget) {
   const policy = input.automation ?? { mode: 'automatic', mapped_from: 'default', diagnostic: null, background: false };
   const pending = Number.isFinite(input.pendingEvidence)
@@ -385,6 +406,10 @@ function mapAutomation(input, cycle, llmBudget) {
     : null;
   const approvalWait = input.waitingApproval === true;
   const catchUpPaused = input.catchUp?.paused === true;
+  const progress = input.reactorProgress ?? null;
+  const schedulerState = PRODUCT_SCHEDULER_INTENTS.has(progress?.scheduler_state)
+    ? progress.scheduler_state
+    : null;
   let intent = 'listening';
   let blocker = null;
   if (policy.mode === 'paused') {
@@ -404,13 +429,26 @@ function mapAutomation(input, cycle, llmBudget) {
       || reason === 'evidence_journal_maintenance_blocked'
     )) ?? cycle.reasons[0] ?? `${cycle.state}`;
   } else if (llmBudget?.state === 'exhausted') {
-    intent = 'blocked';
+    intent = 'paused_budget';
     blocker = 'rule_llm_budget_exhausted';
+  } else if (schedulerState === 'catching_up' && !truthfulCatchingUp(progress)) {
+    intent = pending > 0 ? 'queued' : 'listening';
+  } else if (schedulerState) {
+    intent = schedulerState;
+    if (schedulerState === 'paused_budget') {
+      blocker = progress?.stop_reason?.code ?? 'rule_llm_budget_exhausted';
+    } else if (progress?.stop_reason?.code) {
+      blocker = progress.stop_reason.code;
+    }
   } else if (approvalWait) {
     intent = 'waiting_approval';
-  } else if (pending > 0 || cycle.state === 'stalled') {
-    intent = 'catching_up';
-    if (catchUpPaused) blocker = CATCH_UP_BUDGET_REASON;
+  } else if (catchUpPaused) {
+    intent = 'paused_budget';
+    blocker = CATCH_UP_BUDGET_REASON;
+  } else if (cycle.state === 'stalled') {
+    intent = 'stalled';
+  } else if (pending > 0) {
+    intent = 'queued';
   } else if (['running', 'attached'].includes(cycle.state)) {
     intent = 'listening';
   } else if (cycle.state === 'stopped') {
@@ -434,7 +472,13 @@ function productActionIds(automation) {
   const needed = [];
   if (automation.mode === 'paused') needed.push('resume_automatic_evolution');
   else needed.push('pause_automatic_evolution', 'check_now');
-  if (automation.blocker && (automation.intent === 'blocked' || automation.blocker === CATCH_UP_BUDGET_REASON)) {
+  if (automation.blocker && (
+    automation.intent === 'blocked'
+    || automation.intent === 'paused_budget'
+    || automation.intent === 'stalled'
+    || automation.intent === 'waiting_approval'
+    || automation.blocker === CATCH_UP_BUDGET_REASON
+  )) {
     needed.push('view_blocker');
   }
   return needed;
@@ -450,6 +494,7 @@ export function projectSubjectReadiness(input) {
   const model = mapModel(input.model);
   const conversation = mapConversation(channel, model, input.desktopChannelEnabled, llm_budget);
   const { automation } = mapAutomation(input, cycle, llm_budget);
+  const reactor_progress = input.reactorProgress ?? null;
   const reasons = uniqueCodes([
     ...web_host.reasons,
     ...cycle.reasons,
@@ -487,6 +532,7 @@ export function projectSubjectReadiness(input) {
     actions,
     automation,
     llm_budget,
+    reactor_progress,
     product_actions: product.actions.filter((action) => (
       action.id === 'pause_automatic_evolution'
       || action.id === 'resume_automatic_evolution'
@@ -653,5 +699,6 @@ export function readSubjectReadiness(runtime, subject, options = {}) {
     waitingApproval,
     catchUp: readCatchUpProjection(dataRoot),
     llmBudget: observeLlmBudget(runtime, name),
+    reactorProgress: daemon.reactor_progress ?? null,
   }));
 }

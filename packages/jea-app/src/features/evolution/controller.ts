@@ -1,3 +1,4 @@
+import { sanitizeReactorProgress } from '../reactor-progress'
 import { eventCycleId, sanitizeCycleDetail, sanitizeCycleList, sanitizeObservability, sanitizeRoundDetail } from './sanitize'
 import { isStaleProjectionEvent, pickDefaultCycleId, shouldRefreshForEvent } from './projection'
 import type {
@@ -62,13 +63,17 @@ export function createInspectorController(client: EvolutionInspectorClient): Ins
       selectedCycleId: preferredCycleId ?? state.snapshot.selectedCycleId,
       stale: false
     }
-    const [listRaw, observabilityRaw] = await Promise.all([
+    const [listRaw, observabilityRaw, progressRaw] = await Promise.all([
       settled(client.listCycles(name)),
-      settled(client.getObservability(name))
+      settled(client.getObservability(name)),
+      client.getReactorProgress ? settled(client.getReactorProgress(name)) : Promise.resolve(null)
     ])
     if (gen !== generation) return state.snapshot
     const list = sanitizeCycleList(listRaw)
     const observability = sanitizeObservability(observabilityRaw)
+    if (observability && progressRaw) {
+      observability.reactor_progress = sanitizeReactorProgress(progressRaw) ?? observability.reactor_progress
+    }
     const cycleIds = list?.cycles.map((item) => item.cycle_id) ?? []
     const listed = new Set(cycleIds)
     const cycles = keepListedDetails(previousCycles, listed)

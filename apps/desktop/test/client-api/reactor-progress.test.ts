@@ -146,4 +146,35 @@ describe('Client API reactor progress adapter', () => {
     expect(adapted?.reactor_overlap.additive).toBe(false)
     expect(adapted?.worker_liveness.alive).toBe(true)
   })
+
+  it('gives Electron and Web the same readiness reactor_progress snapshot', async () => {
+    const ctx = makeRuntime()
+    const electronApp = createApplicationCommandHost({
+      sourceRoot: ctx.sourceRoot,
+      jeaHome: ctx.jeaHome,
+      hostKind: 'electron'
+    })
+    const electron = createTypedJeaClient(JEA_CLIENT_PROTOCOL_VERSION, {
+      invoke: (request) => electronApp.invoke(request),
+      subscribe: () => () => {}
+    })
+    const token = 'progress-readiness-token'
+    const webHost = await createWebHost({
+      sourceRoot: ctx.sourceRoot,
+      jeaHome: ctx.jeaHome,
+      token,
+      port: 0,
+      watcher: { start() {}, stop() {} }
+    })
+    hosts.push(webHost)
+    const web = createWebJeaClient({
+      baseUrl: webHost.origin,
+      token
+    })
+    const electronReady = await electron.getServiceReadiness('alpha')
+    const webReady = await web.getServiceReadiness('alpha')
+    expect(webReady.reactor_progress).toEqual(electronReady.reactor_progress)
+    expect(electronReady.reactor_progress?.reactor_overlap.additive).toBe(false)
+    expect(electronReady.automation?.intent).not.toBe('catching_up')
+  })
 })

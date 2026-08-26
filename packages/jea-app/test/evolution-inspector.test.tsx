@@ -140,7 +140,10 @@ describe('Evolution Inspector component', () => {
         />
       </LocaleProvider>
     )
-    expect(html).toContain('Pending evidence 1')
+    expect(html).toContain('data-testid="reactor-progress"')
+    expect(html).toContain('Listening for evidence')
+    expect(html).toContain('data-scheduler-state="listening"')
+    expect(html).not.toContain('data-scheduler-state="catching_up"')
     expect(html).not.toContain('data-testid="evolution-process-once"')
     expect(html).not.toContain('data-testid="evolution-start-cycle"')
     expect(canShowProcessOnce(['process_cycle_once'], { hasClient: true, subject: 'alpha' })).toBe(true)

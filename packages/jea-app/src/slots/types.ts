@@ -50,7 +50,7 @@ export interface ShellSubjectReadiness {
   actions: ShellRemediationAction[]
   automation?: {
     mode: 'automatic' | 'paused'
-    intent: 'running' | 'paused' | 'listening' | 'catching_up' | 'waiting_approval' | 'blocked' | 'starting'
+    intent: 'running' | 'paused' | 'listening' | 'queued' | 'catching_up' | 'paused_budget' | 'waiting_approval' | 'blocked' | 'stalled' | 'starting'
     mapped_from?: string
     diagnostic?: string | null
     background?: boolean
@@ -58,6 +58,7 @@ export interface ShellSubjectReadiness {
     blocker?: string | null
   }
   product_actions?: ShellRemediationAction[]
+  reactor_progress?: import('../features/client-types').ReactorProgressProjection | null
   llm_budget?: {
     schema?: string
     period_id: string

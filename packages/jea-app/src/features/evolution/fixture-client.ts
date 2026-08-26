@@ -23,6 +23,7 @@ export interface EvolutionFixtureClient extends EvolutionInspectorClient {
     getCycle: Array<{ subject: string; cycleId: string }>
     getRound: Array<{ subject: string; cycleId: string }>
     getObservability: string[]
+    getReactorProgress: string[]
   }
 }
 
@@ -165,7 +166,25 @@ export function createEvolutionFixtureData(): EvolutionFixtureStore {
         },
         open_cycles: 1,
         evidence_pending_count: 1,
-        daemon_task_pending_count: 2
+        daemon_task_pending_count: 2,
+        reactor_progress: {
+          schema_version: '0.3.0',
+          subject: 'alpha',
+          projection_generation: 1,
+          projected_at: '2026-08-16T01:00:00.000Z',
+          freshness: { as_of: '2026-08-16T01:00:00.000Z', status: 'fresh' },
+          worker_liveness: { alive: true, heartbeat_at: '2026-08-16T01:00:00.000Z' },
+          scheduler_state: 'listening',
+          activity: {},
+          reactors: {
+            cognitive: {
+              realtime: { ready: 0, claimed: 0, deferred: 0, blocked: 0, handled_total: 2, open_total: 0 },
+              replay: { ready: 1, claimed: 0, deferred: 0, blocked: 0, handled_total: 0, open_total: 1 }
+            }
+          },
+          reactor_overlap: { additive: false, note: 'reactor_counts_may_overlap_authoritative_evidence' },
+          evidence_authority: { envelope_count: 1, is_work_count: false }
+        }
       },
       beta: {
         subject: 'beta',
@@ -200,7 +219,8 @@ export function createEvolutionFixtureClient(
     listCycles: [],
     getCycle: [],
     getRound: [],
-    getObservability: []
+    getObservability: [],
+    getReactorProgress: []
   }
 
   const client: EvolutionFixtureClient = {
@@ -240,6 +260,14 @@ export function createEvolutionFixtureClient(
       const observability = data.observability[subject]
       if (!observability) throw Object.assign(new Error('observability missing'), { code: 'NOT_FOUND' })
       return clone(observability)
+    },
+    async getReactorProgress(subject) {
+      calls.getReactorProgress.push(subject)
+      const observability = data.observability[subject]
+      if (!observability?.reactor_progress) {
+        throw Object.assign(new Error('reactor progress missing'), { code: 'NOT_FOUND' })
+      }
+      return clone(observability.reactor_progress)
     },
     subscribe(listener) {
       if (typeof listener !== 'function') return () => {}

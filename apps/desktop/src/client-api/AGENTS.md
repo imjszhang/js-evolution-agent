@@ -30,6 +30,8 @@ CLI 聚合入口是 `jea product status --json --subject NAME`（别名 `jea rea
 
 `llm_budget` 是 `service.getReadiness` 的加法可选字段（协议仍为 `1.0.0`）：只含 period/state/used/remaining/admission 等稳定数字与码，不含 UI 文案。预算恢复命令留在 CLI `jea llm budget`，不新增 Client API 命令。
 
+`reactor_progress` 是同一条 `service.getReadiness` 的加法可选字段，形状与 `evolution.getReactorProgress` 相同。产品面必须用 `scheduler_state`，不得把 pending evidence 或 heartbeat 显示成 `catching_up`。
+
 ## 测试
 
 ```bash

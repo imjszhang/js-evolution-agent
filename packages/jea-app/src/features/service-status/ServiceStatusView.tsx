@@ -3,23 +3,26 @@ import type { FeatureSlotProps } from '../../slots/types'
 import { cn } from '../../lib/cn'
 import { useJeaClientContext } from '../client-context'
 import { formatLlmBudgetBlocker, isLlmBudgetBlocker } from '../llm-budget-display'
+import { displaySchedulerState } from '../reactor-progress'
+import { schedulerStateMessageKey } from '../evolution/reactor-progress-copy'
 import { deriveServiceStatusKind, needsOpenDesktop, webHostStoppedIsNotOutage } from './derive'
 
 function evolutionIntentLabel(
-  t: (key: 'evolutionAutomaticPaused' | 'evolutionListening' | 'evolutionCatchingUp' | 'evolutionWaitingApproval' | 'evolutionBlocked' | 'evolutionAutomaticRunning') => string,
-  automation: NonNullable<NonNullable<FeatureSlotProps['adapters']['subjectReadiness']>['automation']>
+  t: (key: import('../../i18n/messages').MessageKey) => string,
+  readiness: NonNullable<FeatureSlotProps['adapters']['subjectReadiness']>
 ): string {
-  if (automation.mode === 'paused' || automation.intent === 'paused') return t('evolutionAutomaticPaused')
-  if (automation.intent === 'catching_up') {
-    const remaining = automation.remaining_evidence ?? 0
+  const automation = readiness.automation
+  const intent = displaySchedulerState(readiness.reactor_progress ?? null, automation?.mode)
+  if (intent === 'catching_up') {
+    const remaining = readiness.reactor_progress?.reactors.cognitive?.replay.ready
+      ?? automation?.remaining_evidence
+      ?? 0
     return remaining > 0 ? `${t('evolutionCatchingUp')}: ${remaining}` : t('evolutionCatchingUp')
   }
-  if (automation.intent === 'waiting_approval') return t('evolutionWaitingApproval')
-  if (automation.intent === 'blocked') {
-    return automation.blocker ? `${t('evolutionBlocked')}: ${automation.blocker}` : t('evolutionBlocked')
+  if ((intent === 'blocked' || intent === 'paused_budget') && (automation?.blocker || readiness.reactor_progress?.stop_reason?.code)) {
+    return `${t(schedulerStateMessageKey(intent))}: ${automation?.blocker ?? readiness.reactor_progress?.stop_reason?.code}`
   }
-  if (automation.intent === 'listening') return t('evolutionListening')
-  return t('evolutionAutomaticRunning')
+  return t(schedulerStateMessageKey(intent))
 }
 
 function toneClass(kind: 'online' | 'offline' | 'degraded'): string {
@@ -84,8 +87,8 @@ export function ServiceStatusView({ adapters }: FeatureSlotProps) {
             />
             <DomainRow
               label={t('diagnosticsCycle')}
-              state={readiness.automation
-                ? evolutionIntentLabel(t, readiness.automation)
+              state={readiness.automation || readiness.reactor_progress
+                ? evolutionIntentLabel(t, readiness)
                 : readiness.cycle.state}
               reasons={
                 readiness.llm_budget && isLlmBudgetBlocker(readiness.automation?.blocker)

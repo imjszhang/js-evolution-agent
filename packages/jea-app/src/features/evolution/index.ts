@@ -1,4 +1,5 @@
 export { EvolutionInspector, type EvolutionInspectorProps } from './EvolutionInspector'
+export { ReactorProgressPanel } from './ReactorProgressPanel'
 export { createEvolutionInspectorFeature, type EvolutionInspectorFeatureOptions } from './feature'
 export {
   EVOLUTION_OPEN_CYCLE_EVENT,
@@ -37,6 +38,10 @@ export {
   sanitizeSteps
 } from './sanitize'
 export { createInspectorController, type InspectorController } from './controller'
+export {
+  schedulerStateMessageKey,
+  freshnessMessageKey
+} from './reactor-progress-copy'
 export {
   EVOLUTION_PARITY_INVENTORY,
   parityInventoryMarkdown,

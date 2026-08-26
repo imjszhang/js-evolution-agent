@@ -144,9 +144,89 @@ export interface RemediationActionView {
   capability: 'readonly' | 'write' | 'local-only'
 }
 
+export type ProductEvolutionIntent =
+  | 'running'
+  | 'paused'
+  | 'listening'
+  | 'queued'
+  | 'catching_up'
+  | 'paused_budget'
+  | 'waiting_approval'
+  | 'blocked'
+  | 'stalled'
+  | 'starting'
+
+export type ReactorSchedulerState =
+  | 'listening'
+  | 'queued'
+  | 'running'
+  | 'catching_up'
+  | 'paused_budget'
+  | 'blocked'
+  | 'waiting_approval'
+  | 'stalled'
+
+export type ReactorFreshnessStatus = 'fresh' | 'stale' | 'reconciling' | 'degraded' | 'unknown'
+
+export interface ReactorLaneCounts {
+  ready: number
+  claimed: number
+  deferred: number
+  blocked: number
+  handled_total: number
+  open_total?: number
+}
+
+export interface ReactorProgressProjection {
+  schema_version: string
+  subject: string | null
+  projection_generation: string | number
+  projected_at: string
+  freshness: {
+    as_of: string
+    status: ReactorFreshnessStatus
+    stale_after_ms?: number
+    reason?: string
+  }
+  worker_liveness: {
+    alive: boolean
+    heartbeat_at?: string
+  }
+  activity?: {
+    current_task?: { id: string; type?: string; lane?: 'realtime' | 'replay' }
+    current_claim?: { claim_id?: string; reactor?: string; lane?: 'realtime' | 'replay' }
+    current_batch?: { batch_id?: string; candidate_id?: string }
+    current_stage?: string
+    last_progress_at?: string
+  }
+  limits?: {
+    replay_batch_limit?: number
+    replay_wall_clock_ms?: number
+    token_reserve?: number
+    spend_allowance?: number
+  }
+  stop_reason?: {
+    class: string
+    code: string
+    detail?: string
+  }
+  scheduler_state?: ReactorSchedulerState
+  reactors: Record<string, { realtime: ReactorLaneCounts; replay: ReactorLaneCounts }>
+  reactor_overlap: {
+    additive: false
+    note: string
+  }
+  evidence_authority?: {
+    envelope_count?: number
+    is_work_count: false
+  }
+  sources?: Record<string, unknown>
+  throughput?: Record<string, unknown>
+}
+
 export interface AutomationView {
   mode: 'automatic' | 'paused'
-  intent: 'running' | 'paused' | 'listening' | 'catching_up' | 'waiting_approval' | 'blocked' | 'starting'
+  intent: ProductEvolutionIntent
   mapped_from?: string
   diagnostic?: string | null
   background?: boolean
@@ -183,6 +263,7 @@ export interface SubjectReadiness {
   automation?: AutomationView
   product_actions?: RemediationActionView[]
   llm_budget?: LlmBudgetReadinessView | null
+  reactor_progress?: ReactorProgressProjection | null
 }
 
 export interface PublicCommandErrorShape {
@@ -216,8 +297,11 @@ export interface SetupSettingsClient {
   getServiceReadiness?(subject: string): Promise<SubjectReadiness>
   listCycles?(subject: string, limit?: number): Promise<import('./evolution/types').EvolutionCycleList>
   getObservability?(subject: string): Promise<import('./evolution/types').EvolutionObservability>
+  getReactorProgress?(subject: string): Promise<ReactorProgressProjection>
   processCycleOnce?(subject: string): Promise<{ status?: string; reason?: string }>
+  requestCycle?(subject: string, note?: string): Promise<unknown>
   startService?(subject: string, domain?: 'all' | 'cycle' | 'channel'): Promise<unknown>
+  stopService?(subject: string): Promise<unknown>
   setAutomation?(subject: string, mode: 'automatic' | 'paused'): Promise<unknown>
   subscribe?(listener: (event: ProductEventEnvelope) => void): () => void
 }
