@@ -32,6 +32,7 @@ import { readBatchCheckpoint, writeBatchCheckpoint } from '../src/evolution/reac
 import { writeShadowReport } from '../src/evolution/reactor/shadow-store.mjs';
 import { MockToolsAIClient } from '../src/ai/mock-tools-client.mjs';
 import { createIntelligenceStore } from '../src/intelligence/store.mjs';
+import { writePendingOperatorBrief } from '../src/intelligence/operator-briefs.mjs';
 
 let tempDir = null;
 
@@ -387,6 +388,10 @@ describe('cognitive shadow reactor e2e', () => {
     mkdirSync(join(runtime.dataRoot, 'evolution'), { recursive: true });
     mkdirSync(join(runtime.dataRoot, 'goals'), { recursive: true });
     seedEvolutionEvents(runtime.dataRoot, 2);
+    writePendingOperatorBrief(runtime.runtimeRoot, {
+      id: 'brief-shadow-e2e',
+      summary: 'Keep the shadow reaction decision-relevant',
+    });
 
     const pendingPath = join(runtime.dataRoot, 'evolution', 'pending_decisions.json');
     const reportsPath = join(runtime.dataRoot, 'intelligence', 'reports', 'index.jsonl');

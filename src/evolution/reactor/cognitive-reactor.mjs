@@ -1,6 +1,8 @@
 /**
  * Cognitive reactor (Phase 2 shadow + Phase 3 live gray).
- * claim → investigate → report(Seen splice) → decide.
+ * claim → assemble reaction candidate → investigate → report(Seen splice) → decide.
+ * A candidate is a bounded decision-relevant semantic delta, not a raw 16-record batch.
+ * Empty-delta candidates complete as handled without report/Decide LLM calls.
  * Shadow: artifacts under data/evolution/reactor/ only.
  * Live: real pending_decisions, reports index, evolution-events.
  */
@@ -28,6 +30,7 @@ import {
   readPendingOperatorBriefs,
   summarizeOperatorBriefsForContext,
 } from '../../intelligence/operator-briefs.mjs';
+import { readPendingOperatorFacts } from '../../intelligence/operator-facts.mjs';
 import { buildTemporalDecisionBrief } from '../../intelligence/decision-brief.mjs';
 import {
   queueAnalyzeDecideActions,
@@ -64,6 +67,11 @@ import {
 } from './claim-ledger.mjs';
 import { envelopeEvidenceKey } from './eligibility.mjs';
 import {
+  assembleReactionCandidates,
+  formatCandidateAsMechanicalSeen,
+  resolveCognitiveWork,
+} from './reaction-candidate.mjs';
+import {
   appendShadowDecisions,
   appendShadowRun,
   readShadowRuns,
@@ -79,6 +87,12 @@ function formatBatchAsMechanicalSeen(events = []) {
     const cycle = envelope.cycle_id ? ` cycle=${envelope.cycle_id}` : '';
     return `- [${envelope.kind}:${envelope.id}] ${type} @ ${envelope.occurred_at}${cycle}`;
   }).join('\n');
+}
+
+function formatReactionWorkSeen(work, events = []) {
+  const candidateSeen = formatCandidateAsMechanicalSeen(work?.candidate);
+  if (candidateSeen && candidateSeen !== '- (none)') return candidateSeen;
+  return formatBatchAsMechanicalSeen(events);
 }
 
 function hasHonestyEvent({
@@ -124,7 +138,14 @@ function recordPromptCache({ profile, messages, stablePrefix, dynamicPayload, lo
   return { metadata, invariant };
 }
 
-function buildReportPrompt({ batchId, hostSeenBody, investigationDigest, language, live = false }) {
+function buildReportPrompt({
+  batchId,
+  hostSeenBody,
+  investigationDigest,
+  language,
+  live = false,
+  candidate = null,
+}) {
   const langNote = language === 'zh'
     ? '用中文撰写判断章节。'
     : 'Write judgement sections in English.';
@@ -136,13 +157,14 @@ function buildReportPrompt({ batchId, hostSeenBody, investigationDigest, languag
   ].join('\n');
   const dynamicPayload = [
     `batch_id: ${batchId}`,
+    candidate?.candidate_id ? `candidate_id: ${candidate.candidate_id}` : '',
     '',
     '## Host Seen (do not invent refs)',
     hostSeenBody || '- (none)',
     '',
     '## Investigation digest',
     JSON.stringify(investigationDigest, null, 2),
-  ].join('\n');
+  ].filter((line, index, rows) => !(line === '' && rows[index - 1] === '')).join('\n');
   return {
     stablePrefix,
     dynamicPayload,
@@ -158,6 +180,7 @@ export function buildDecidePrompt({
   ruleFeedbackText = '',
   decisionBacklogText = '',
   decisionConstraints = null,
+  candidate = null,
 } = {}) {
   const registry = actionRegistry && typeof actionRegistry.toPromptSection === 'function'
     ? actionRegistry
@@ -195,6 +218,7 @@ export function buildDecidePrompt({
   ].join('\n');
   const dynamicPayload = [
     `batch_id: ${batchId}`,
+    candidate?.candidate_id ? `candidate_id: ${candidate.candidate_id}` : '',
     '',
     '## Report',
     String(reportMarkdown || '').slice(0, 12000),
@@ -328,6 +352,122 @@ export async function runCognitiveReaction(ctx, {
     const operatorBriefRead = readPendingOperatorBriefs(runtime.runtimeRoot);
     const operatorBriefs = operatorBriefRead.briefs || [];
     const operatorBriefsSummary = summarizeOperatorBriefsForContext(operatorBriefs);
+    const pendingFacts = readPendingOperatorFacts(runtime.runtimeRoot, { limit: 50 }).facts || [];
+
+    const pastAssembly = Boolean(existingCheckpoint?.assembly_completed)
+      && existingCheckpoint?.candidate;
+    const pastInvestigate = checkpointStageReached(existingCheckpoint, 'investigate');
+    let reactionWork = pastAssembly
+      ? {
+        invoke_llm: existingCheckpoint.candidate.decision_relevant !== false
+          && existingCheckpoint.skip_reason !== 'no_decision_relevant_delta',
+        skip_reason: existingCheckpoint.skip_reason || existingCheckpoint.candidate.skip_reason || null,
+        mechanical_reason: existingCheckpoint.mechanical_reason || null,
+        candidate: existingCheckpoint.candidate,
+      }
+      : null;
+    if (!reactionWork) {
+      const assembly = assembleReactionCandidates(events, {
+        reactor: 'cognitive',
+        pendingBriefs: operatorBriefs,
+        pendingFacts,
+      });
+      reactionWork = resolveCognitiveWork(assembly);
+      patchBatchCheckpoint(dataRoot, batchId, {
+        stage: existingCheckpoint?.stage || 'claimed',
+        assembly_completed: true,
+        candidate: reactionWork.candidate,
+        skip_reason: reactionWork.skip_reason,
+        mechanical_reason: reactionWork.mechanical_reason,
+        llm_skipped: !reactionWork.invoke_llm,
+      });
+      emitReaction({
+        type: isLive ? 'reactor_candidate_assembled' : 'shadow_candidate_assembled',
+        status: 'ok',
+        candidate_id: reactionWork.candidate?.candidate_id || null,
+        decision_relevant: Boolean(reactionWork.invoke_llm),
+        skip_reason: reactionWork.skip_reason,
+        included_count: reactionWork.candidate?.included?.length || 0,
+        coalesced_count: reactionWork.candidate?.estimated_cost?.coalesced_count || 0,
+        excluded_count: reactionWork.candidate?.estimated_cost?.excluded_count || 0,
+        estimated_prompt_tokens: reactionWork.candidate?.estimated_cost?.estimated_prompt_tokens || 0,
+      });
+    }
+
+    if (!pastInvestigate && !reactionWork.invoke_llm) {
+      assertCommitLease();
+      patchBatchCheckpoint(dataRoot, batchId, {
+        stage: 'committed',
+        assembly_completed: true,
+        candidate: reactionWork.candidate,
+        skip_reason: reactionWork.skip_reason,
+        mechanical_reason: reactionWork.mechanical_reason,
+        llm_skipped: true,
+        queued_decision_ids: [],
+        honesty: { status: 'skipped', findings_count: 0, reason: 'no_report' },
+      });
+      ackBatchHandled(dataRoot, batchId);
+      const elapsedMs = Date.now() - startedAt;
+      emitReaction({
+        type: isLive ? 'reactor_reaction_completed' : 'shadow_reaction_completed',
+        status: 'handled',
+        llm_skipped: true,
+        skip_reason: reactionWork.skip_reason,
+        mechanical_reason: reactionWork.mechanical_reason,
+        candidate_id: reactionWork.candidate?.candidate_id || null,
+        decisions: 0,
+        decisions_skipped: 0,
+        investigate_turns: 0,
+        elapsed_ms: elapsedMs,
+      });
+      if (isLive) {
+        store.recordEvolutionEvent({
+          type: 'reactor_pipeline',
+          status: 'handled',
+          cycle_id: reactionCycleId,
+          subject,
+          batch_id: batchId,
+          producer: 'cognitive',
+          activation_targets: [],
+          producer_batch_id: batchId,
+          reaction_id: reactionCycleId,
+          claimed_events: events.length,
+          decisions_queued: 0,
+          decisions_skipped: 0,
+          investigate_turns: 0,
+          llm_skipped: true,
+          skip_reason: reactionWork.skip_reason,
+          candidate_id: reactionWork.candidate?.candidate_id || null,
+          duration_ms: elapsedMs,
+        });
+      }
+      return {
+        skipped: false,
+        handled: true,
+        llm_skipped: true,
+        skip_reason: reactionWork.skip_reason,
+        mechanical_reason: reactionWork.mechanical_reason,
+        mode,
+        batch_id: batchId,
+        cycle_id: reactionCycleId,
+        reaction_id: reactionCycleId,
+        candidate: reactionWork.candidate,
+        event_ids: events.map((item) => item.id),
+        evidence_keys: events.map((item) => envelopeEvidenceKey(item)),
+        claimed_events: events.length,
+        report_path: null,
+        report: null,
+        decisions: [],
+        decisions_queued: [],
+        decisions_skipped: 0,
+        honesty: { status: 'skipped', findings_count: 0, reason: 'no_report' },
+        investigation: null,
+        analysis: null,
+        duration_ms: elapsedMs,
+        prompt_cache: promptCache,
+      };
+    }
+    const candidate = reactionWork.candidate;
 
     const decisionQueue = createHostDecisionQueue({
       dataDir: join(runtime.runtimeRoot, 'data', 'evolution'),
@@ -369,8 +509,8 @@ export async function runCognitiveReaction(ctx, {
     const beliefDecisionContext = prepared.temporalDecisionBrief.decision_constraints;
     const language = prepared.language || 'zh';
     const mechanicalSeenFromStore = buildSeenSection(prepared.reportContext) || '(none)';
-    const batchSeen = formatBatchAsMechanicalSeen(events);
-    const mechanicalSeen = [mechanicalSeenFromStore, '## Claimed evidence batch', batchSeen]
+    const batchSeen = formatReactionWorkSeen(reactionWork, events);
+    const mechanicalSeen = [mechanicalSeenFromStore, '## Reaction candidate', batchSeen]
       .filter(Boolean)
       .join('\n\n');
 
@@ -415,10 +555,11 @@ export async function runCognitiveReaction(ctx, {
         : 'You are a shadow cognitive reactor investigator. Use read-only tools then finish_investigation.';
       const investigateUser = [
         `${isLive ? 'Live' : 'Shadow'} batch ${batchId}`,
-        'Claimed evidence:',
+        candidate?.candidate_id ? `candidate ${candidate.candidate_id}` : '',
+        'Decision-relevant reaction candidate:',
         batchSeen,
         'Finish when enough for a short report.',
-      ].join('\n');
+      ].filter(Boolean).join('\n');
       promptCache.investigate = recordPromptCache({
         profile: isLive ? 'reactor_investigate' : 'reactor_shadow_investigate',
         messages: [
@@ -490,6 +631,7 @@ export async function runCognitiveReaction(ctx, {
         investigationDigest: investigation,
         language,
         live: isLive,
+        candidate,
       });
       const reportSystem = 'You draft intelligence reports. Host owns Seen.';
       const reportMessages = [
@@ -663,6 +805,7 @@ export async function runCognitiveReaction(ctx, {
       ruleFeedbackText,
       decisionBacklogText,
       decisionConstraints: beliefDecisionContext,
+      candidate,
     });
     const decideSystem = 'Return JSON decisions only.';
     const decideMessages = [
@@ -756,6 +899,8 @@ export async function runCognitiveReaction(ctx, {
           subject,
           actions: validActions,
           analysis: parsed.analysis,
+          reactionId: reactionCycleId,
+          producerBatchId: batchId,
         });
         queuedActions = shadowResult.decisions;
         skippedCount = beliefSkipped + (shadowResult.skipped?.length ?? 0);
@@ -819,10 +964,13 @@ export async function runCognitiveReaction(ctx, {
 
     return {
       skipped: false,
+      handled: true,
+      llm_skipped: false,
       mode,
       batch_id: batchId,
       cycle_id: reactionCycleId,
       reaction_id: reactionCycleId,
+      candidate,
       event_ids: events.map((item) => item.id),
       evidence_keys: events.map((item) => envelopeEvidenceKey(item)),
       claimed_events: events.length,

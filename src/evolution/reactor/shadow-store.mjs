@@ -68,6 +68,8 @@ export function appendShadowDecisions(dataRoot, {
   subject = null,
   actions = [],
   analysis = null,
+  reactionId = null,
+  producerBatchId = null,
 } = {}) {
   mkdirSync(reactorDir(dataRoot), { recursive: true });
   const file = shadowDecisionsPath(dataRoot);
@@ -87,9 +89,13 @@ export function appendShadowDecisions(dataRoot, {
       });
       continue;
     }
+    const decisionId = `${batchId}:${added.length}`;
     const decision = {
-      id: `${batchId}:${added.length}`,
+      id: decisionId,
+      decision_id: decisionId,
       batch_id: batchId,
+      producer_batch_id: producerBatchId || batchId,
+      reaction_id: reactionId || batchId,
       subject,
       status: 'shadow',
       created_at: recordedAt,
