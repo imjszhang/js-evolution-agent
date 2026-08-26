@@ -316,8 +316,15 @@ function linkOrCopy(from, to, { dir = false } = {}) {
   }
 }
 
-function makeIsolatedSourceTree(parentDir, repoRoot) {
-  const root = join(parentDir, 'clean-src');
+function makeIsolatedSourceTree(repoRoot) {
+  // Stay under the repo `.tmp/` (gitignored). An os.tmpdir() parent is a
+  // CodeQL source and would taint evidence-stream syntheticId's sha1.
+  const token = createHash('sha256')
+    .update(`${process.pid}:${Date.now()}`)
+    .digest('hex')
+    .slice(0, 12);
+  const root = join(repoRoot, '.tmp', `control-plane-clean-src-${token}`);
+  rmSync(root, { recursive: true, force: true });
   mkdirSync(root, { recursive: true });
   cpSync(join(repoRoot, 'run.mjs'), join(root, 'run.mjs'));
   cpSync(join(repoRoot, 'oada.config.mjs'), join(root, 'oada.config.mjs'));
@@ -962,8 +969,8 @@ function checkBudgetRecovery(runtime, subject) {
   });
 }
 
-async function checkCleanSubjectAndClosure(repoRoot, workDir, subject) {
-  const isolatedRoot = makeIsolatedSourceTree(workDir, repoRoot);
+async function checkCleanSubjectAndClosure(repoRoot, subject) {
+  const isolatedRoot = makeIsolatedSourceTree(repoRoot);
   createSubject(isolatedRoot, subject, { template: 'project' });
   setDefaultSubject(isolatedRoot, subject);
   const initialized = initData(isolatedRoot, { all: true, subject });
@@ -1081,6 +1088,7 @@ export async function runControlPlaneAudit({
   let closureAudit = null;
   let baseline = null;
   let runtime = null;
+  let isolatedRoot = null;
 
   try {
     if (!loaded.ok) {
@@ -1131,7 +1139,8 @@ export async function runControlPlaneAudit({
 
     if (includeClosureRun) {
       try {
-        const clean = await checkCleanSubjectAndClosure(repoRoot, workDir, subject);
+        const clean = await checkCleanSubjectAndClosure(repoRoot, subject);
+        isolatedRoot = clean.isolatedRoot;
         runtime = clean.runtime;
         closureAudit = clean.closureAudit;
         if (Array.isArray(clean.gaps) && clean.gaps.length) gaps.push(...clean.gaps);
@@ -1230,5 +1239,6 @@ export async function runControlPlaneAudit({
     if (previousKey === undefined) delete process.env[llmKeyName];
     else process.env[llmKeyName] = previousKey;
     rmSync(workDir, { recursive: true, force: true });
+    if (isolatedRoot) rmSync(isolatedRoot, { recursive: true, force: true });
   }
 }
