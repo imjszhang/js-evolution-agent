@@ -62,6 +62,18 @@ export interface OperatorSurfaceProjection {
   reactor_control_plane: ReactorControlPlaneView
 }
 
+function remapLegacyIntent(
+  automation: SubjectReadiness['automation'] | undefined,
+  mode: 'automatic' | 'paused',
+  pending: number
+): ProductEvolutionIntent {
+  if (mode === 'paused') return 'paused'
+  const intent = automation?.intent
+  if (intent === 'catching_up') return pending > 0 ? 'queued' : 'listening'
+  if (intent) return intent
+  return pending > 0 ? 'queued' : 'listening'
+}
+
 function count(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0
     ? Math.floor(value)
@@ -109,7 +121,9 @@ export function projectEvolutionRuntime(
   const plane = projectReactorControlPlane({ readiness, observability, host })
   const automation = readiness.automation
   const mode: 'automatic' | 'paused' = automation?.mode === 'paused' ? 'paused' : 'automatic'
-  const intent = displaySchedulerState(plane.progress, mode)
+  const intent = plane.progress
+    ? displaySchedulerState(plane.progress, mode)
+    : remapLegacyIntent(automation, mode, pending)
   if (plane.progress || automation) {
     return {
       mode,

@@ -392,11 +392,18 @@ export function createFixtureSetupClient(state: SetupFixtureState = createSetupF
       }
     },
     async getReactorProgress(subject) {
-      const observability = await this.getObservability(subject)
-      if (!observability.reactor_progress) {
-        throw Object.assign(new Error('reactor progress missing'), { code: 'NOT_FOUND' })
+      return {
+        schema_version: '0.3.0',
+        subject,
+        projection_generation: 1,
+        projected_at: '2026-08-17T00:00:00.000Z',
+        freshness: { as_of: '2026-08-17T00:00:00.000Z', status: 'fresh' as const },
+        worker_liveness: { alive: false },
+        scheduler_state: 'listening' as const,
+        reactors: {},
+        reactor_overlap: { additive: false as const, note: 'reactor_counts_may_overlap_authoritative_evidence' },
+        evidence_authority: { is_work_count: false as const }
       }
-      return observability.reactor_progress
     },
     async processCycleOnce(subject) {
       return { subject, status: 'idle', reason: 'fixture' }

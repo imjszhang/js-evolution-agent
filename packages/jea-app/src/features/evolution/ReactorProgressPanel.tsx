@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useLocale } from '../../i18n/LocaleProvider'
 import type { MessageKey } from '../../i18n/messages'
 import { Button } from '../../ui/button'
-import type { LlmBudgetReadinessView, ProductHostKind, SetupSettingsClient, SubjectReadiness } from '../client-types'
+import type { LlmBudgetReadinessView, ProductHostKind, SubjectReadiness } from '../client-types'
 import { formatLlmBudgetBlocker, formatLlmBudgetUsage, isLlmBudgetBlocker } from '../llm-budget-display'
 import { publicErrorMessage } from '../client-types'
 import {
@@ -23,7 +23,12 @@ export function ReactorProgressPanel({
   readiness?: SubjectReadiness | null
   observability?: EvolutionObservability | null
   host: ProductHostKind
-  client?: Pick<SetupSettingsClient, 'setAutomation' | 'processCycleOnce' | 'startService' | 'stopService'> | null
+  client?: {
+    setAutomation?(subject: string, mode: 'automatic' | 'paused'): Promise<unknown>
+    processCycleOnce?(subject: string): Promise<{ status?: string; reason?: string } | unknown>
+    startService?(subject: string, domain?: 'all' | 'cycle' | 'channel'): Promise<unknown>
+    stopService?(subject: string): Promise<unknown>
+  } | null
   onRefresh?: () => Promise<void> | void
 }) {
   const { t } = useLocale()
@@ -42,7 +47,7 @@ export function ReactorProgressPanel({
       } else if (id === 'resume_automatic_evolution' && client.setAutomation) {
         await client.setAutomation(subject, 'automatic')
       } else if ((id === 'check_now' || id === 'process_cycle_once') && client.processCycleOnce) {
-        const result = await client.processCycleOnce(subject)
+        const result = await client.processCycleOnce(subject) as { status?: string; reason?: string }
         if (result.status === 'retryable' || result.status === 'blocked') {
           throw new Error(result.reason || t('evolutionCheckNowFailed'))
         }

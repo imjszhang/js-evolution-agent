@@ -503,7 +503,7 @@ export function createReactorProgressFixture(
     projected_at: now,
     freshness: extras.freshness ?? { as_of: now, status: 'fresh' },
     worker_liveness: extras.worker_liveness ?? {
-      alive: state !== 'blocked' || Boolean(extras.worker_liveness?.alive),
+      alive: state !== 'blocked',
       heartbeat_at: now
     },
     scheduler_state: state,
