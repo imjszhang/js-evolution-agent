@@ -152,8 +152,8 @@ export function SettingsPanel({
       language: localeToLanguage(locale),
       theme: preference,
       defaultSubject: readinessProp?.subjects.defaultSubject ?? 'alpha',
-      appVersion: '0.2.1',
-      cliVersion: '0.2.1'
+      appVersion: '0.3.0',
+      cliVersion: '0.3.0'
     },
     subjects: (readiness ?? readinessProp)?.subjects.names.map((name) => ({
       name,
@@ -167,8 +167,8 @@ export function SettingsPanel({
     language: localeToLanguage(locale),
     theme: preference,
     defaultSubject: readinessProp?.subjects.defaultSubject ?? 'alpha',
-    appVersion: '0.2.1',
-    cliVersion: '0.2.1',
+    appVersion: '0.3.0',
+    cliVersion: '0.3.0',
     commitShort: null,
     buildTime: null,
     platform: undefined,

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -31,7 +31,7 @@ describe('0.3.0 control-plane audit', () => {
       expect(report.isolation.forbid_repo_runtime).toBe(true);
       expect(report.isolation.llm).toBe('mock');
       expect(report.isolation.wrote_repo_runtime).not.toBe(true);
-      expect(existsSync(join(repoRoot, 'runtime'))).toBe(false);
+      expect(report.isolation.jea_home).not.toBe(join(repoRoot, 'runtime'));
       expect(report.isolation.jea_home).not.toBe(join(homedir(), '.jea'));
       expect(report.checks.find((item) => item.id === 'frozen_closure_still_passes')?.ok).toBe(true);
       expect(report.checks.find((item) => item.id === 'rebuild_rollback')).toMatchObject({

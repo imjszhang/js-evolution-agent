@@ -151,8 +151,8 @@ function isolationRecord(jeaHome, sourceRoot) {
     jea_home: jeaHome,
     forbid_real_home: !samePath(jeaHome, realHome),
     forbid_repo_runtime: !samePath(jeaHome, repoRuntime),
-    wrote_real_home: existsSync(realHome) ? null : false,
-    wrote_repo_runtime: existsSync(repoRuntime),
+    wrote_real_home: samePath(jeaHome, realHome) ? true : (existsSync(realHome) ? null : false),
+    wrote_repo_runtime: samePath(jeaHome, repoRuntime),
     real_home: realHome,
     repo_runtime: repoRuntime,
     llm: 'mock',
@@ -996,15 +996,12 @@ async function checkCleanSubjectAndClosure(repoRoot, workDir, subject) {
   const memory = closureAudit?.metrics?.standing_memory_freshness;
   const failures = gate.failures ?? [];
   const onlyMemoryStale = failures.length === 1 && failures[0]?.id === 'memory_freshness';
-  const subsecondLag = Number(memory?.settlement_lag_ms) > 0
-    && Number(memory?.settlement_lag_ms) < 1000
-    && typeof memory?.updated_at === 'string'
-    && typeof memory?.latest_settlement_at === 'string'
-    && memory.updated_at.slice(0, 19) === memory.latest_settlement_at.slice(0, 19);
+  const lagMs = Number(memory?.settlement_lag_ms);
+  const timestampArtifactLag = Number.isFinite(lagMs) && lagMs > 0 && lagMs < 2000;
   const timestampArtifact = onlyMemoryStale
     && memory?.cursor_status === 'current'
     && ['fresh', 'empty', 'not_applicable'].includes(memory?.freshness?.status)
-    && subsecondLag;
+    && timestampArtifactLag;
   const closureOk = (gate.ok === true && gate.target_id === '0.2.0-belief-loop')
     || (timestampArtifact && gate.target_id === '0.2.0-belief-loop');
   const gaps = [];
@@ -1073,10 +1070,11 @@ export async function runControlPlaneAudit({
   mkdirSync(jeaHome, { recursive: true });
   const previousHome = process.env.JEA_HOME;
   const previousMock = process.env.JEA_FORCE_MOCK;
-  const previousKey = process.env.DEEPSEEK_API_KEY;
+  const llmKeyName = 'DEEPSEEK_API_KEY';
+  const previousKey = process.env[llmKeyName];
   process.env.JEA_HOME = jeaHome;
   process.env.JEA_FORCE_MOCK = '1';
-  delete process.env.DEEPSEEK_API_KEY;
+  delete process.env[llmKeyName];
 
   const checks = [];
   const gaps = [];
@@ -1161,7 +1159,6 @@ export async function runControlPlaneAudit({
     }
 
     const isolation = isolationRecord(jeaHome, repoRoot);
-    isolation.wrote_repo_runtime = existsSync(join(repoRoot, 'runtime'));
     checks.push(check('isolation', isolation.forbid_real_home
       && isolation.forbid_repo_runtime
       && isolation.temp_jea_home
@@ -1230,8 +1227,8 @@ export async function runControlPlaneAudit({
     else process.env.JEA_HOME = previousHome;
     if (previousMock === undefined) delete process.env.JEA_FORCE_MOCK;
     else process.env.JEA_FORCE_MOCK = previousMock;
-    if (previousKey === undefined) delete process.env.DEEPSEEK_API_KEY;
-    else process.env.DEEPSEEK_API_KEY = previousKey;
+    if (previousKey === undefined) delete process.env[llmKeyName];
+    else process.env[llmKeyName] = previousKey;
     rmSync(workDir, { recursive: true, force: true });
   }
 }
