@@ -11,6 +11,7 @@ import type {
   EvolutionCycleList,
   EvolutionObservability,
   EvolutionRoundDetail,
+  ReactorProgressProjection,
   InvokeRequest,
   JeaEventEnvelope,
   ProtocolInfo,
@@ -56,6 +57,7 @@ export interface JeaClient {
   getCycle(subject: string, cycleId: string): Promise<EvolutionCycleDetail>
   getRound(subject: string, cycleId: string): Promise<EvolutionRoundDetail>
   getObservability(subject: string): Promise<EvolutionObservability>
+  getReactorProgress(subject: string): Promise<ReactorProgressProjection>
   getServiceStatus(subject: string): Promise<ServiceStatus>
   getServiceReadiness(subject: string): Promise<SubjectReadiness>
   startService(subject: string, domain?: 'all' | 'cycle' | 'channel' | 'evolution'): Promise<ServiceStatus>
@@ -102,6 +104,7 @@ export function createTypedJeaClient(
     getCycle: (subject, cycleId) => invoke<EvolutionCycleDetail>('evolution.getCycle', { subject, cycleId }),
     getRound: (subject, cycleId) => invoke<EvolutionRoundDetail>('evolution.getRound', { subject, cycleId }),
     getObservability: (subject) => invoke<EvolutionObservability>('evolution.getObservability', { subject }),
+    getReactorProgress: (subject) => invoke<ReactorProgressProjection>('evolution.getReactorProgress', { subject }),
     getServiceStatus: (subject) => invoke<ServiceStatus>('service.getStatus', { subject }),
     getServiceReadiness: (subject) => invoke<SubjectReadiness>('service.getReadiness', { subject }),
     startService: (subject, domain) => invoke<ServiceStatus>('service.start', { subject, domain }),

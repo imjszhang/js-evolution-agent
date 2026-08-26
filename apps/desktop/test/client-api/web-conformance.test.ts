@@ -30,6 +30,7 @@ const FIXTURE_PAYLOADS: Record<string, Record<string, unknown>> = {
   'evolution.getCycle': { subject: 'alpha', cycleId: 'cycle-fixture' },
   'evolution.getRound': { subject: 'alpha', cycleId: 'cycle-fixture' },
   'evolution.getObservability': { subject: 'alpha' },
+  'evolution.getReactorProgress': { subject: 'alpha' },
   'service.getStatus': { subject: 'alpha' },
   'service.getReadiness': { subject: 'alpha' },
   'service.start': { subject: 'alpha', domain: 'all' },

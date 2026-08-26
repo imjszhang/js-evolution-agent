@@ -100,7 +100,9 @@ describe('daemon projection deferred rebuild', () => {
       created_at: new Date().toISOString(),
     });
     const deferred = readDaemonProjection(ctx, 'alpha', { eventLimit: 10, deferRebuild: true });
-    expect(deferred).toBe(first);
+    expect(deferred.revision).toBe(first.revision);
+    expect(deferred.fingerprint).toBe(first.fingerprint);
+    expect(deferred.reactor_progress.freshness.status).toBe('reconciling');
     expect(pendingDaemonProjectionRebuildCount()).toBe(1);
     await waitForPendingDaemonProjectionRebuilds();
     const next = readDaemonProjection(ctx, 'alpha', { eventLimit: 10, deferRebuild: true });
@@ -136,8 +138,9 @@ describe('daemon projection deferred rebuild', () => {
     });
     expect(second).not.toBe(first);
     expect(second.worker.heartbeat_at).toBe('2026-08-18T00:00:01.000Z');
-    expect(second.reactor).not.toBe(first.reactor);
-    expect(fullBuilder).toHaveBeenCalledTimes(2);
+    expect(second.reactor).toBe(first.reactor);
+    expect(second.reactor_progress.worker_liveness.heartbeat_at).toBe('2026-08-18T00:00:01.000Z');
+    expect(fullBuilder).toHaveBeenCalledTimes(1);
     expect(pendingDaemonProjectionRebuildCount()).toBe(0);
   });
 
@@ -208,8 +211,10 @@ describe('daemon projection deferred rebuild', () => {
     const a = readDaemonProjection(ctx, 'alpha', { eventLimit: 10, deferRebuild: true });
     appendEvidence(ctx);
     const b = readDaemonProjection(ctx, 'alpha', { eventLimit: 10, deferRebuild: true });
-    expect(a).toBe(first);
-    expect(b).toBe(first);
+    expect(a.revision).toBe(first.revision);
+    expect(b.revision).toBe(first.revision);
+    expect(a.reactor_progress.freshness.status).toBe('reconciling');
+    expect(b.reactor_progress.freshness.status).toBe('reconciling');
     expect(pendingDaemonProjectionRebuildCount()).toBe(1);
     await waitForPendingDaemonProjectionRebuilds();
     const next = readDaemonProjection(ctx, 'alpha', { eventLimit: 10, deferRebuild: true });
@@ -233,7 +238,8 @@ describe('daemon projection deferred rebuild', () => {
       deferRebuild: true,
       workerPath,
     });
-    expect(stale).toBe(first);
+    expect(stale.revision).toBe(first.revision);
+    expect(stale.reactor_progress.freshness.status).toBe('reconciling');
     expect(pendingDaemonProjectionRebuildCount()).toBe(1);
     await waitForPendingDaemonProjectionRebuilds();
 
@@ -242,7 +248,7 @@ describe('daemon projection deferred rebuild', () => {
       deferRebuild: true,
       workerPath,
     });
-    expect(backedOff).toBe(first);
+    expect(backedOff.revision).toBe(first.revision);
     expect(pendingDaemonProjectionRebuildCount()).toBe(0);
   });
 });

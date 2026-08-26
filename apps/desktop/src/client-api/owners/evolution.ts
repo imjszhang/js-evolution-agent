@@ -9,11 +9,13 @@ import { readDaemonProjection } from '../../../../../src/daemon/daemon-projectio
 import { readJsonSafe } from '../../../../../src/infra/files.mjs'
 import { PublicClientError } from '../errors'
 import { redactPublicValue } from '../redact'
+import { adaptReactorProgressProjection } from '../reactor-progress'
 import type {
   EvolutionCycleDetail,
   EvolutionCycleList,
   EvolutionObservability,
-  EvolutionRoundDetail
+  EvolutionRoundDetail,
+  ReactorProgressProjection
 } from '../types'
 import { lookupIntelReport, lookupVerifyReport } from './evolution-verify-index'
 import { requireSubject, subjectRuntime, type ClientRuntimeContext } from './runtime'
@@ -185,13 +187,25 @@ export class EvolutionCommandOwner {
       runtimeRoot: runtime.runtimeRoot,
       daemon
     })
+    const pendingRaw = daemon.reactor?.evidence?.pending_count
     return redactPublicValue({
       subject: name,
       attention: observability.attention ?? { items: [], summary: {} },
       open_cycles: daemon.cycles?.open_count ?? 0,
-      evidence_pending_count: daemon.reactor?.evidence?.pending_count ?? 0,
+      evidence_pending_count: Number.isFinite(pendingRaw) ? Number(pendingRaw) : undefined,
       daemon_task_pending_count: daemon.tasks?.counts?.pending ?? 0,
-      cycle_diagnostics: recentCycleDiagnostics(daemon)
+      cycle_diagnostics: recentCycleDiagnostics(daemon),
+      reactor_progress: adaptReactorProgressProjection(daemon.reactor_progress)
     })
+  }
+
+  getReactorProgress(subject: string): ReactorProgressProjection {
+    const name = requireSubject(this.runtime, subject)
+    const daemon = readDaemonProjection(this.runtime, name, { eventLimit: 30, deferRebuild: true })
+    const progress = adaptReactorProgressProjection(daemon.reactor_progress)
+    if (!progress) {
+      throw new PublicClientError('OPERATION_FAILED', 'Reactor progress projection is unavailable.')
+    }
+    return redactPublicValue(progress)
   }
 }

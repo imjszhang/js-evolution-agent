@@ -201,6 +201,7 @@ function projectionSummary(root, subject, projection) {
     tasks: projection.tasks,
     locked: isSubjectLocked(root, subject),
     latest_event: projection.recent_events?.[0] ?? null,
+    reactor_progress: projection.reactor_progress ?? null,
   };
 }
 
@@ -1500,6 +1501,9 @@ function printProjection(projection) {
   if (projection.tasks.expired_running_count) {
     console.log(`expired running leases: ${projection.tasks.expired_running_count}`);
   }
+  if (projection.reactor_progress?.freshness) {
+    console.log(`reactor_progress: gen=${projection.reactor_progress.projection_generation} freshness=${projection.reactor_progress.freshness.status}`);
+  }
   if (projection.tasks.next_task) {
     console.log(`next: ${projection.tasks.next_task.task_id} (${projection.tasks.next_task.type})`);
   }
@@ -1524,6 +1528,9 @@ function printProjectionSummaries(items) {
     console.log(`tasks: pending=${counts.pending || 0} running=${counts.running || 0} failed=${counts.failed || 0} total=${item.tasks.total}`);
     console.log(`evolve_lock: ${item.locked ? 'held' : 'free'}`);
     console.log(`latest_event: ${event}`);
+    if (item.reactor_progress?.freshness) {
+      console.log(`reactor_progress: gen=${item.reactor_progress.projection_generation} freshness=${item.reactor_progress.freshness.status}`);
+    }
     for (const reason of item.health.reasons || []) console.log(`reason: ${reason}`);
   }
 }

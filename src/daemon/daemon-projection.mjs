@@ -16,10 +16,15 @@ import { resolveEvolutionState } from '../product/evolution-state.mjs';
 import { resolveCyclePipeline } from './cycle-pipeline-mode.mjs';
 import { isReactorPipeline } from './cycle-pipeline-mode.mjs';
 import { buildReactorHealthProjection } from './reactor-health.mjs';
+import {
+  readReactorProgressProjection,
+  refreshReactorProgressLiveness,
+} from './reactor-progress-snapshot.mjs';
+import { activationLedgerDeltasPath, claimsPath } from '../evolution/reactor/paths.mjs';
+import { activationLedgerPath } from '../evolution/reactor/activation-ledger-store.mjs';
 import { isTickOpenCycleEnabled } from './cycle-dispatch.mjs';
 import { buildChannelProjection } from '../channel/projection.mjs';
 import { channelEventsPath, channelTasksDir, channelWorkerStatePath } from '../channel/paths.mjs';
-import { claimsPath } from '../evolution/reactor/paths.mjs';
 import {
   dirIdentitySignature,
   evidenceSourceSignature,
@@ -195,7 +200,13 @@ function buildDaemonHealth({
   };
 }
 
-export function buildDaemonProjectionUncached(root, subject, { store = null, eventLimit = 20, heartbeatStaleMs = 60_000, flags = {} } = {}) {
+export function buildDaemonProjectionUncached(root, subject, {
+  store = null,
+  eventLimit = 20,
+  heartbeatStaleMs = 60_000,
+  flags = {},
+  skipEvidenceHealthScan = false,
+} = {}) {
   const queue = readTaskQueue(root, subject);
   const summary = summarizeTaskQueue(queue);
   const queueTasks = Array.isArray(queue?.tasks) ? queue.tasks : [];
@@ -297,7 +308,10 @@ export function buildDaemonProjectionUncached(root, subject, { store = null, eve
     ?? readPendingCycleStartRequest(root, subject);
   let reactor;
   try {
-    reactor = buildReactorHealthProjection(root, subject, { worker });
+    reactor = buildReactorHealthProjection(root, subject, {
+      worker,
+      skipEvidenceScan: skipEvidenceHealthScan === true,
+    });
   } catch (error) {
     reactor = {
       status: 'blocked',
@@ -331,6 +345,10 @@ export function buildDaemonProjectionUncached(root, subject, { store = null, eve
   }
   const evolutionState = resolveEvolutionState(root, subject);
   const wakePolicy = isReactorPipeline(pipeline) ? 'evidence_driven' : evolution.mode;
+  const reactorProgress = readReactorProgressProjection(root, subject, {
+    heartbeatStaleMs,
+    persist: true,
+  });
 
   return {
     subject,
@@ -343,6 +361,7 @@ export function buildDaemonProjectionUncached(root, subject, { store = null, eve
     wake_policy: wakePolicy,
     pipeline,
     reactor,
+    reactor_progress: reactorProgress,
     worker,
     health: buildDaemonHealth({
       worker,
@@ -383,10 +402,20 @@ function hashSignature(parts) {
   return createHash('sha1').update(parts.filter(Boolean).join('\n')).digest('hex');
 }
 
+function activationLedgerIdentity(dataRoot) {
+  try {
+    return fileIdentitySignature(activationLedgerPath(dataRoot));
+  } catch {
+    return 'activation-ledger:unresolved';
+  }
+}
+
 export function daemonProjectionHeavySignature(root, subject) {
   const runtime = runtimeForSubject(root, subject);
   return hashSignature([
     evidenceSourceSignature(runtime.dataRoot),
+    activationLedgerIdentity(runtime.dataRoot),
+    fileIdentitySignature(activationLedgerDeltasPath(runtime.dataRoot)),
     fileIdentitySignature(claimsPath(runtime.dataRoot)),
     fileIdentitySignature(join(runtime.dataRoot, 'evolution', 'reactor', 'archive', 'claims-summary.json')),
     fileIdentitySignature(join(runtime.dataRoot, 'evolution', 'reactor', 'archive', 'claims-covered-index.json')),
@@ -560,6 +589,7 @@ function runProjectionWorker({
   eventLimit,
   heartbeatStaleMs,
   flags,
+  skipEvidenceHealthScan = true,
 }) {
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -570,6 +600,7 @@ function runProjectionWorker({
         eventLimit,
         heartbeatStaleMs,
         flags: flags && typeof flags === 'object' ? { ...flags } : {},
+        skipEvidenceHealthScan,
       },
     });
     liveWorkers.add(worker);
@@ -610,6 +641,7 @@ function storeBuiltProjection(
     heartbeatStaleMs,
     flags,
     fullBuilder = buildDaemonProjectionUncached,
+    skipEvidenceHealthScan = false,
   },
   cached,
 ) {
@@ -617,6 +649,7 @@ function storeBuiltProjection(
     eventLimit,
     heartbeatStaleMs,
     flags,
+    skipEvidenceHealthScan,
   });
   return rememberBuiltProjection(root, subject, { eventLimit, heartbeatStaleMs }, built, cached);
 }
@@ -627,6 +660,116 @@ function rememberBuiltProjection(root, subject, { eventLimit, heartbeatStaleMs }
   const projection = attachProjectionMeta(built, identity.fingerprint, revision);
   const key = projectionCacheKey(root, subject, eventLimit, heartbeatStaleMs);
   if (!cached) evictProjectionCache();
+  projectionCache.set(key, {
+    fingerprint: identity.fingerprint,
+    heavy: identity.heavy,
+    coreLight: identity.coreLight,
+    channelLight: identity.channelLight,
+    light: identity.light,
+    settings: identity.settings,
+    projection,
+    revision,
+    at: Date.now(),
+  });
+  evictProjectionCache();
+  return { projection, identity };
+}
+
+function stampReconcilingProgress(projection, nowMs = Date.now()) {
+  const progress = projection?.reactor_progress;
+  if (!progress) return projection;
+  return {
+    ...projection,
+    reactor_progress: {
+      ...progress,
+      freshness: {
+        ...(progress.freshness || {}),
+        as_of: new Date(nowMs).toISOString(),
+        status: 'reconciling',
+        stale_after_ms: progress.freshness?.stale_after_ms ?? 60_000,
+      },
+    },
+  };
+}
+
+function refreshCachedCoreLightProjection(
+  root,
+  subject,
+  { eventLimit, heartbeatStaleMs },
+  cached,
+) {
+  const identity = projectionIdentity(root, subject, eventLimit, heartbeatStaleMs);
+  if (cached.heavy !== identity.heavy || cached.settings !== identity.settings) {
+    return { projection: null, identity };
+  }
+  if (cached.fingerprint === identity.fingerprint) {
+    cached.at = Date.now();
+    return { projection: cached.projection, identity };
+  }
+
+  const queue = readTaskQueue(root, subject);
+  const summary = summarizeTaskQueue(queue);
+  const queueTasks = Array.isArray(queue?.tasks) ? queue.tasks : [];
+  const rawWorker = readWorkerState(root, subject);
+  const worker = summarizeWorkerState(rawWorker, { staleMs: heartbeatStaleMs });
+  const tasks = {
+    ...cached.projection.tasks,
+    total: summary.total,
+    counts: summary.counts,
+    expired_running_count: summary.expired_running.length,
+    next_task: summary.next_task ? {
+      task_id: summary.next_task.task_id,
+      type: summary.next_task.type,
+      attempts: summary.next_task.attempts,
+      priority: summary.next_task.priority,
+      idempotency_key: summary.next_task.idempotency_key,
+    } : null,
+    running: summary.running.map((task) => ({
+      task_id: task.task_id,
+      type: task.type,
+      lease_owner: task.lease_owner,
+      lease_expires_at: task.lease_expires_at,
+      expired: summary.expired_running.some((expired) => expired.task_id === task.task_id),
+    })),
+    step_tasks: queueTasks.filter((task) => task.input?.cycle_id).slice(0, 20).map((task) => ({
+      task_id: task.task_id,
+      type: task.type,
+      cycle_id: task.input.cycle_id,
+      status: task.status,
+      attempts: task.attempts,
+    })),
+  };
+  const health = buildDaemonHealth({
+    worker,
+    tasks,
+    cycles: cached.projection.cycles,
+    lastClosedCycle: cached.projection.cycles?.last_closed_cycle_id
+      ? { cycle_id: cached.projection.cycles.last_closed_cycle_id, closed_at: cached.projection.cycles.last_closed_at }
+      : null,
+    recentEvents: cached.projection.recent_events ?? [],
+    tickMs: worker.tick_ms ?? DEFAULT_TICK_MS,
+    evolutionMode: cached.projection.evolution_mode,
+    pendingCycleStartRequest: cached.projection.cycles?.pending_cycle_start_request ?? null,
+    progressStalled: cached.projection.cycles?.progress_stalled,
+    driftSteps: cached.projection.cycles?.drift_steps ?? [],
+    tickOpenEnabled: isTickOpenCycleEnabled(),
+    reactorHealth: cached.projection.reactor,
+    pipeline: cached.projection.pipeline,
+  });
+  const reactorProgress = refreshReactorProgressLiveness(
+    cached.projection.reactor_progress,
+    worker,
+  );
+  const revision = cached.revision + 1;
+  const projection = attachProjectionMeta({
+    ...cached.projection,
+    generated_at: new Date().toISOString(),
+    worker,
+    tasks,
+    health,
+    reactor_progress: reactorProgress,
+  }, identity.fingerprint, revision);
+  const key = projectionCacheKey(root, subject, eventLimit, heartbeatStaleMs);
   projectionCache.set(key, {
     fingerprint: identity.fingerprint,
     heavy: identity.heavy,
@@ -716,6 +859,7 @@ function scheduleDeferredRebuild({
         eventLimit,
         heartbeatStaleMs,
         flags,
+        skipEvidenceHealthScan: true,
       });
       if (generation !== cacheGeneration) return;
       const cached = projectionCache.get(key);
@@ -797,6 +941,21 @@ export function readDaemonProjection(root, subject, options = {}) {
     cached.at = Date.now();
     return cached.projection;
   }
+  const canRefreshCoreLightOnly = Boolean(cached?.projection)
+    && cached.heavy === identity.heavy
+    && cached.coreLight !== identity.coreLight
+    && cached.channelLight === identity.channelLight
+    && cached.settings === identity.settings;
+  if (canRefreshCoreLightOnly) {
+    const refreshed = refreshCachedCoreLightProjection(
+      root,
+      subject,
+      { eventLimit, heartbeatStaleMs },
+      cached,
+    );
+    if (refreshed.projection) return refreshed.projection;
+    identity = refreshed.identity;
+  }
   const canRefreshChannelOnly = Boolean(cached?.projection)
     && cached.heavy === identity.heavy
     && cached.coreLight === identity.coreLight
@@ -828,13 +987,14 @@ export function readDaemonProjection(root, subject, options = {}) {
       generation: cacheGeneration,
       workerPath,
     });
-    return cached.projection;
+    return stampReconcilingProgress(cached.projection);
   }
   return storeBuiltProjection(root, subject, {
     eventLimit,
     heartbeatStaleMs,
     flags,
     fullBuilder: options.fullBuilder,
+    skipEvidenceHealthScan: options.deferRebuild === true || options.skipEvidenceHealthScan === true,
   }, cached).projection;
 }
 

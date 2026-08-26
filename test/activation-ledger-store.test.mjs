@@ -1,6 +1,7 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   ACTIVATION_PRIORITY,
@@ -77,6 +78,12 @@ function entry(overrides = {}) {
 }
 
 describe('unified activation ledger store', () => {
+  it('lives only under evolution and not under daemon', () => {
+    const repoRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
+    expect(existsSync(join(repoRoot, 'src/evolution/reactor/activation-ledger-store.mjs'))).toBe(true);
+    expect(existsSync(join(repoRoot, 'src/daemon/activation-ledger-store.mjs'))).toBe(false);
+  });
+
   it('writes a generation-scoped ledger and speaks contract entries', () => {
     const root = dataRoot();
     writeGeneration(root, 'gen-a');

@@ -77,7 +77,9 @@ S9 后上述行为已固化，不再有 gate 回退。隔离验收：`npm run re
 
 ### Subject 投影缓存
 
-`readDaemonProjection` 按 subject 复用同一 revision。Desktop / Web 热路径可设 `deferRebuild: true`：Evidence/Reactor 输入变化且已有上一份成功快照时，主进程立即返回该快照，并在 `daemon-projection-worker.mjs` 线程里重算；心跳与 Channel 轻量字段仍同步刷新。CLI、Vitest 与带 `store` 的读取保持同步，避免写后读到陈旧投影。worker 文件缺失时回退同步重建。
+`readDaemonProjection` 按 subject 复用同一 revision。Desktop / Web 热路径可设 `deferRebuild: true`：Evidence/Reactor 输入变化且已有上一份成功快照时，主进程立即返回该快照（`reactor_progress.freshness.status=reconciling`），并在 `daemon-projection-worker.mjs` 线程里按 Activation Ledger / task / checkpoint **增量**重算，不扫描或 hydrate 证据正文。心跳（worker/task）与 Channel 轻量字段仍同步刷新。CLI、Vitest 与带 `store` 的读取保持同步，避免写后读到陈旧投影。worker 文件缺失时回退同步重建，且 `deferRebuild` 回退同样跳过证据正文扫描。
+
+0.3.0 控制面读模型在 `reactor_progress`（契约 `src/contracts/reactor-progress-projection.mjs`），持久化于 `data/evolution/reactor/progress-snapshot.json`。调度状态只使用 `deriveReactorSchedulerState` 的客观态；源不可对账时标 `unknown` / `degraded`，不伪造零 backlog 或 healthy。Cognitive / Rule / Memory 计数不可相加（`reactorWorkCountsAreAdditive() === false`）。投影读取 **generation-scoped** evolution ledger，不得把缺失/损坏账本重写成空的 healthy inbox。
 
 ### 观测与诊断
 
