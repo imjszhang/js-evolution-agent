@@ -316,7 +316,7 @@ function linkOrCopy(from, to, { dir = false } = {}) {
   }
 }
 
-function makeCleanCertRoot(parentDir, repoRoot) {
+function makeIsolatedSourceTree(parentDir, repoRoot) {
   const root = join(parentDir, 'clean-src');
   mkdirSync(root, { recursive: true });
   cpSync(join(repoRoot, 'run.mjs'), join(root, 'run.mjs'));
@@ -844,7 +844,7 @@ function checkProjection(parentDir) {
   const additive = reactorWorkCountsAreAdditive();
   const payload = rejectControlPlanePayloads({
     scheduler_state: 'queued',
-    payload: { body: 'secret-evidence' },
+    payload: { body: 'hydrated-body' },
   });
   const clean = rejectControlPlanePayloads({
     scheduler_state: 'queued',
@@ -963,7 +963,7 @@ function checkBudgetRecovery(runtime, subject) {
 }
 
 async function checkCleanSubjectAndClosure(repoRoot, workDir, subject) {
-  const isolatedRoot = makeCleanCertRoot(workDir, repoRoot);
+  const isolatedRoot = makeIsolatedSourceTree(workDir, repoRoot);
   createSubject(isolatedRoot, subject, { template: 'project' });
   setDefaultSubject(isolatedRoot, subject);
   const initialized = initData(isolatedRoot, { all: true, subject });
