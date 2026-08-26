@@ -1,12 +1,12 @@
 /**
- * Frozen JEA 0.2.1 product identity (#120) plus package-time provenance (#142).
+ * Frozen JEA 0.3.0 product identity (#120 / #216) plus package-time provenance (#142).
  * Change version/bundle fields only with a release decision; artifact names
  * and launcher discovery depend on them.
  */
 export const PRODUCT_NAME = 'JEA';
 export const PRODUCT_ID = 'jea';
 export const BUNDLE_ID = 'com.imjszhang.jea';
-export const PRODUCT_VERSION = '0.2.1';
+export const PRODUCT_VERSION = '0.3.0';
 export const RELEASE_PLATFORM = 'macos-arm64';
 export const MINIMUM_MACOS_VERSION = '13.0';
 export const EXECUTABLE_NAME = 'JEA';

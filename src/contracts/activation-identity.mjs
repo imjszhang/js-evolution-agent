@@ -14,7 +14,7 @@ import { parseEvidenceKey } from './evidence-envelope.mjs';
 
 /**
  * 0.3.0 Reactor control-plane contract version.
- * Distinct from package version (stays 0.2.1) and from activation policy epochs.
+ * Distinct from package version (now 0.3.0) and from activation policy epochs.
  */
 export const REACTOR_CONTROL_PLANE_CONTRACT_VERSION = '0.3.0';
 

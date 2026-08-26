@@ -1,0 +1,57 @@
+{
+  "schema_version": "control-plane-target.v1",
+  "target_id": "0.3.0-reactor-control-plane",
+  "release": "0.3.0",
+  "audit_schema_version": "control-plane-audit.v1",
+  "contract_version": "0.3.0",
+  "isolation": {
+    "temp_jea_home": true,
+    "forbid_real_home": true,
+    "forbid_repo_runtime": true,
+    "llm": "mock"
+  },
+  "frozen_closure_target": {
+    "path": "policies/release/closure-target-0.2.0.json",
+    "target_id": "0.2.0-belief-loop",
+    "sha256": "8db3fbe2362d7c98da2915b4c12c3e68c2991ced46af6c0158ad7024b2b68e7b"
+  },
+  "checks": {
+    "activation_identity_survives_generation": {
+      "creates_work": false,
+      "preserves_identities": true
+    },
+    "ledger": {
+      "lanes": ["realtime", "replay"],
+      "states": ["ready", "claimed", "deferred", "blocked", "handled"],
+      "handled_terminal": true,
+      "deferred_cannot_claim": true,
+      "blocked_cannot_claim": true
+    },
+    "rebuild_rollback": {
+      "handled_coverage": "preserved",
+      "covered_index_only_lost": 0,
+      "authority_mutated": false
+    },
+    "scheduler": {
+      "realtime_before_replay": true,
+      "heartbeat_never_implies_running_or_catching_up": true,
+      "park_once_on_budget": true,
+      "reclaim_lease_expired_not_handled": true
+    },
+    "cognitive": {
+      "no_llm_on_no_decision_relevant_delta": true
+    },
+    "projection": {
+      "last_good_plus_freshness": true,
+      "reactors_not_additive": true,
+      "no_payload_hydrate": true
+    },
+    "product_mapping": {
+      "heartbeat_plus_large_replay_ready": ["listening", "queued"]
+    },
+    "pause_resume": {
+      "evolution_state": true
+    },
+    "frozen_closure_still_passes": true
+  }
+}

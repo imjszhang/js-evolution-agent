@@ -126,7 +126,7 @@ export async function main(argv = process.argv.slice(2)) {
   report.script = 'release-skeleton';
   report.messages = [
     `status ${report.status}`,
-    'Release skeleton — not a v0.2.1 publisher',
+    'Release skeleton — not a v0.3.0 publisher',
     ...report.steps.map((item) => `${item.ok ? 'ok' : 'fail'} ${item.id}: ${item.status} (${item.detail})`),
   ];
   printReport(report, { json: Boolean(args.json) });

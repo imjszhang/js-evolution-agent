@@ -38,6 +38,8 @@ import { normalizeBuildMetadata, writeBuildMetadata } from '../src/product/build
 import { isProcessAlive } from '../src/infra/process-alive.mjs';
 import { repoRootFrom } from '../scripts/release-lib.mjs';
 import { CLOSURE_TARGET_ID } from '../src/intelligence/closure-target.mjs';
+import { CONTROL_PLANE_TARGET_ID } from '../src/intelligence/control-plane-target.mjs';
+import { RELEASE_VERSION } from '../scripts/release-lib.mjs';
 
 const repoRoot = repoRootFrom(new URL('../scripts/release-lib.mjs', import.meta.url));
 const temps = [];
@@ -57,7 +59,7 @@ function writeMinimalSourceRoot(dir) {
 
 function cleanMetadata(commit = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa') {
   return normalizeBuildMetadata({
-    version: '0.2.1',
+    version: RELEASE_VERSION,
     commit,
     dirty: false,
     built_at: '2026-08-17T00:00:00.000Z',
@@ -127,12 +129,20 @@ function writeArtifactReports(dir, metadata, overrides = {}) {
       ...identity,
       ...(overrides.closure || {}),
     },
+    controlPlane: {
+      ok: true,
+      status: 'passed',
+      gate: { target_id: CONTROL_PLANE_TARGET_ID },
+      ...identity,
+      ...(overrides.controlPlane || {}),
+    },
   };
   writeFileSync(join(dir, 'recovery-matrix.json'), `${JSON.stringify(reports.recovery)}\n`);
   writeFileSync(join(dir, 'product-journey.json'), `${JSON.stringify(reports.journey)}\n`);
   writeFileSync(join(dir, 'launch-smoke.json'), `${JSON.stringify(reports.launch)}\n`);
   writeFileSync(join(dir, 'soak-report.json'), `${JSON.stringify(reports.soak)}\n`);
   writeFileSync(join(dir, 'closure-audit.json'), `${JSON.stringify(reports.closure)}\n`);
+  writeFileSync(join(dir, 'control-plane-audit.json'), `${JSON.stringify(reports.controlPlane)}\n`);
   return reports;
 }
 
@@ -328,6 +338,7 @@ describe('certification evidence and publish guard', () => {
     expect(inputs.recoveryMatrix.ok).toBe(true);
     expect(inputs.soak.ok).toBe(true);
     expect(inputs.closureAudit).toMatchObject({ ok: true, detail: CLOSURE_TARGET_ID });
+    expect(inputs.controlPlaneAudit).toMatchObject({ ok: true, detail: CONTROL_PLANE_TARGET_ID });
     expect(inputs.steps.map((item) => item.id)).toEqual(['product_journey', 'packaged_launch_smoke']);
     const written = writeCertificationEvidence({
       outDir: dir,
@@ -335,6 +346,7 @@ describe('certification evidence and publish guard', () => {
       recoveryMatrix: inputs.recoveryMatrix,
       soak: inputs.soak,
       closureAudit: inputs.closureAudit,
+      controlPlaneAudit: inputs.controlPlaneAudit,
       steps: inputs.steps,
     });
     expect(written.evidence.status).toBe('certified');
@@ -448,10 +460,15 @@ describe('certification evidence and publish guard', () => {
         detail: CLOSURE_TARGET_ID,
         evidence: join(dir, 'closure-audit.json'),
       }),
+      controlPlaneAudit: passedStep('control_plane_audit', {
+        metadata,
+        detail: CONTROL_PLANE_TARGET_ID,
+        evidence: join(dir, 'control-plane-audit.json'),
+      }),
     });
     expect(written.evidence.status).toBe('certified');
-    expect(written.evidence.release).toBe('0.2.1');
-    expect(written.evidence.certification).toBe('0.2.1');
+    expect(written.evidence.release).toBe(RELEASE_VERSION);
+    expect(written.evidence.certification).toBe(RELEASE_VERSION);
     expect(written.evidence.build_id).toBe(metadata.build_id);
     expect(written.evidence.steps.map((item) => item.id)).toEqual([
       'product_journey',
@@ -459,6 +476,7 @@ describe('certification evidence and publish guard', () => {
       'recovery_matrix',
       'soak',
       'closure_audit',
+      'control_plane_audit',
     ]);
     expect(written.evidence.evidence_paths.build_metadata).toContain('build-metadata.json');
   });
@@ -468,7 +486,7 @@ describe('certification evidence and publish guard', () => {
     const missing = tempDir('jea-guard-missing-');
     writeFileSync(join(missing, 'certification-evidence.json'), JSON.stringify({
       status: 'certified',
-      release: '0.2.1',
+      release: RELEASE_VERSION,
       platform: 'macos-arm64',
       issue77: 'ok',
     }));
@@ -531,7 +549,7 @@ describe('certification evidence and publish guard', () => {
       outDir: dir,
       ...collectCertificationInputs(dir),
     });
-    const report = evaluatePublishGuard({ publish: true, evidenceDir: dir, expectedRelease: '0.2.1' });
+    const report = evaluatePublishGuard({ publish: true, evidenceDir: dir, expectedRelease: RELEASE_VERSION });
     expect(report.ok).toBe(true);
     expect(report.reason).toBe('certification_present');
     expect(evaluateRecoverySoakEvidence(
@@ -547,10 +565,10 @@ describe('certification evidence and publish guard', () => {
     writeArtifactReports(dir, metadata);
     writeCertificationEvidence({
       outDir: dir,
-      release: '0.3.0',
+      release: '0.2.1',
       ...collectCertificationInputs(dir),
     });
-    const report = evaluatePublishGuard({ publish: true, evidenceDir: dir, expectedRelease: '0.2.1' });
+    const report = evaluatePublishGuard({ publish: true, evidenceDir: dir, expectedRelease: RELEASE_VERSION });
     expect(report.ok).toBe(false);
     expect(report.reason).toBe('certification_not_complete');
   });

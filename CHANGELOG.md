@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.0 — in certification（未发布）
+
+JEA 0.3.0 正在认证接线（[#216](https://github.com/imjszhang/js-evolution-agent/issues/216)）。**尚未**作为 GitHub Release 发布。已发布产品仍是 [v0.2.1](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.2.1)。闭环门槛仍冻结在 `0.2.0-belief-loop`；新增独立的 `0.3.0-reactor-control-plane` 验收目标。
+
+### 发布接线
+
+- 统一根、Desktop、共享 App、打包 host、CLI、Client API、About、ACP 与构建元数据版本为 `0.3.0`。
+- 新增 `policies/release/control-plane-target-0.3.0.json` 与 `jea audit control-plane` / `npm run audit:control-plane`。
+- certification evidence allowlist 增加 `control-plane-audit.json`。
+- 不自动打 tag，不自动创建 GitHub Release。
+
 ## 0.2.1 — 2026-08-24
 
 JEA 0.2.1 已作为 [GitHub Release v0.2.1](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.2.1) 发布（[#202](https://github.com/imjszhang/js-evolution-agent/issues/202) 已关闭）。闭环门槛仍冻结在 `0.2.0-belief-loop`。

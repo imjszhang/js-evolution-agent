@@ -1,6 +1,6 @@
 {
   "name": "js-evolution-agent",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "private": true,
   "description": "A controlled self-evolution host instance with vendored OADA engine (src/engine/) and js-intel-store intelligence memory.",
   "type": "module",
@@ -38,6 +38,7 @@
     "test:ci": "node --preserve-symlinks ./node_modules/vitest/vitest.mjs run --reporter=default --reporter=junit --outputFile.junit=test-artifacts/junit.xml",
     "test:coverage": "node --preserve-symlinks ./node_modules/vitest/vitest.mjs run --coverage",
     "audit:ci": "node --preserve-symlinks scripts/ci-audit.mjs",
+    "audit:control-plane": "node --preserve-symlinks scripts/control-plane-audit.mjs",
     "release:scan": "node --preserve-symlinks scripts/release-artifact-scan.mjs",
     "release:preflight": "node --preserve-symlinks scripts/release-version-preflight.mjs",
     "release:audit-gate": "node --preserve-symlinks scripts/release-audit-gate.mjs",

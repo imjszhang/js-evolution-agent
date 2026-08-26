@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Version-agreement preflight for JEA 0.2.1.
+ * Version-agreement preflight for JEA 0.3.0.
  *
  * Compares every shipped/package-time version surface. Pending slots fail when
  * --strict is passed.

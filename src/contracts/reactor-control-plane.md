@@ -3,7 +3,7 @@
 This is the Wave A contract surface for [#210](https://github.com/imjszhang/js-evolution-agent/issues/210). Downstream issues #211–#215 must import these modules and must not invent private schemas.
 
 Entry: `src/contracts/reactor-control-plane.mjs`  
-Contract version: `0.3.0` (package version stays `0.2.1`)
+Contract version: `0.3.0` (package version is also `0.3.0`; the two strings are distinct: this file is the control-plane *contract*, not a second product version)
 
 Control-plane state is **derived and rebuildable**. It is never authority for evidence, beliefs, goals, receipts, or settlements.
 

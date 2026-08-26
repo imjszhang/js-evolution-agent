@@ -1,3 +1,33 @@
+# JEA 0.3.0（draft / in certification）
+
+日期：2026-08-26。这是 **0.3.0 认证接线草稿**，对应 [#216](https://github.com/imjszhang/js-evolution-agent/issues/216) / 父 issue [#208](https://github.com/imjszhang/js-evolution-agent/issues/208)。**GitHub Release 尚不存在**；不要把本段读成已放行。已发布产品仍是 [v0.2.1](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.2.1)。认证清单见 [0.3.0-certification.md](./0.3.0-certification.md)。
+
+## 本补丁包含
+
+- 产品版本面从 `0.2.1` 接到 `0.3.0`（package / lockfile / Desktop / App / host / CLI / Client API / About / builder / ACP / release scripts）。
+- 新增冻结对照之外的控制面验收目标 `policies/release/control-plane-target-0.3.0.json`。
+- `jea audit control-plane` / `npm run audit:control-plane`：隔离 temp `JEA_HOME`、mock LLM，机械检查 activation identity、ledger、rebuild/rollback、scheduler、cognitive、projection、product mapping、pause/resume，以及冻结的 0.2.0 closure。
+- certification evidence / attach allowlist 增加 `control-plane-audit.json`。
+- 不创建 tag，不发布 GitHub Release。
+
+## 已落地运行时（main）
+
+- #218 baseline、#219 contracts、#220 budget、#226 unified control-plane runtime、#227 product surface。
+
+## 认证口径
+
+- 闭环审计继续使用冻结的 `0.2.0-belief-loop` 目标，文件字节级不变。
+- 30 分钟 soak 与 packaged Desktop 仍是 release-only / 操作者剩余，不进入 PR required checks。
+- `publish-guard` 不自动发版。
+
+## 已知限制 / 明确延期
+
+- 不提供 Intel macOS、Windows、Linux 安装包。
+- 不提供自动更新、远程 Web、npm CLI 发布。
+- Cloud/Linux 无法完成 macOS 包装 Desktop soak；packaged launch / catch-up / pause / quit / restart 与官方 `dirty=false` 证据仍待操作者。
+
+---
+
 # JEA 0.2.1
 
 日期：2026-08-24。[GitHub Release v0.2.1](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.2.1) 已发布，tag 指向已认证提交 `1b58a39`。认证清单见 [0.2.1-certification.md](./0.2.1-certification.md)，对应已关闭的 [#202](https://github.com/imjszhang/js-evolution-agent/issues/202)。上一产品版是 [v0.2.0](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.2.0)。

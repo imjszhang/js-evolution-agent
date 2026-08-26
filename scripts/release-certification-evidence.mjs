@@ -11,6 +11,7 @@ import { parseArgs, printReport, readJson, RELEASE_PLATFORM, RELEASE_VERSION, re
 import { readBuildMetadataFile, writeBuildMetadata } from '../src/product/build-metadata.mjs';
 import { SOAK_DEFAULT_MS } from './release-recovery-soak.mjs';
 import { CLOSURE_TARGET_ID } from '../src/intelligence/closure-target.mjs';
+import { CONTROL_PLANE_TARGET_ID } from '../src/intelligence/control-plane-target.mjs';
 
 export const EVIDENCE_FILE = 'certification-evidence.json';
 export const CERTIFICATION_WAVE = RELEASE_VERSION;
@@ -21,6 +22,7 @@ export const REQUIRED_CERTIFICATION_STEPS = Object.freeze([
   'recovery_matrix',
   'soak',
   'closure_audit',
+  'control_plane_audit',
 ]);
 
 const STEP_FAILURE_REASONS = Object.freeze({
@@ -43,6 +45,10 @@ const STEP_FAILURE_REASONS = Object.freeze({
   closure_audit: {
     missing: 'closure_audit_missing',
     failed: 'closure_audit_failed',
+  },
+  control_plane_audit: {
+    missing: 'control_plane_audit_missing',
+    failed: 'control_plane_audit_failed',
   },
 });
 
@@ -83,6 +89,12 @@ const ARTIFACT_REPORTS = Object.freeze([
     passed: (report) => report?.ok === true
       && report.status === 'passed'
       && report.gate?.target_id === CLOSURE_TARGET_ID,
+  },
+  {
+    id: 'control_plane_audit',
+    file: 'control-plane-audit.json',
+    passed: (report) => report?.ok === true
+      && report.gate?.target_id === CONTROL_PLANE_TARGET_ID,
   },
 ]);
 
@@ -133,18 +145,23 @@ export function collectCertificationInputs(outDir) {
   const journeyPath = join(dest, 'product-journey.json');
   const launchPath = join(dest, 'launch-smoke.json');
   const closurePath = join(dest, 'closure-audit.json');
+  const controlPlanePath = join(dest, 'control-plane-audit.json');
   const metadataPath = join(dest, 'build-metadata.json');
   const recovery = readOptionalJson(recoveryPath);
   const soak = readOptionalJson(soakPath);
   const journey = readOptionalJson(journeyPath);
   const launch = readOptionalJson(launchPath);
   const closure = readOptionalJson(closurePath);
+  const controlPlane = readOptionalJson(controlPlanePath);
   return {
     metadata: readBuildMetadataFile(metadataPath),
     recoveryMatrix: artifactStepFromReport('recovery_matrix', recovery, recoveryPath),
     soak: artifactStepFromReport('soak', soak, soakPath),
     closureAudit: artifactStepFromReport('closure_audit', closure, closurePath, {
       detail: closure?.gate?.target_id || closure?.reason || null,
+    }),
+    controlPlaneAudit: artifactStepFromReport('control_plane_audit', controlPlane, controlPlanePath, {
+      detail: controlPlane?.gate?.target_id || controlPlane?.reason || null,
     }),
     steps: [
       artifactStepFromReport('product_journey', journey, journeyPath, {
@@ -166,6 +183,17 @@ export function evaluateClosureAuditEvidence(evidence) {
     return { ok: false, reason: 'closure_target_mismatch' };
   }
   return { ok: true, reason: 'closure_audit_passed' };
+}
+
+export function evaluateControlPlaneAuditEvidence(evidence) {
+  const step = evidence?.control_plane_audit
+    || (Array.isArray(evidence?.steps) ? evidence.steps.find((item) => item.id === 'control_plane_audit') : null);
+  if (!step) return { ok: false, reason: 'control_plane_audit_missing' };
+  if (!stepOk(step)) return { ok: false, reason: 'control_plane_audit_failed' };
+  if (step.detail !== CONTROL_PLANE_TARGET_ID) {
+    return { ok: false, reason: 'control_plane_target_mismatch' };
+  }
+  return { ok: true, reason: 'control_plane_audit_passed' };
 }
 
 export function normalizeEvidenceStep(input, fallbackId) {
@@ -191,6 +219,7 @@ function evidenceStep(evidence, id) {
   if (id === 'recovery_matrix' && evidence?.recovery_matrix) return evidence.recovery_matrix;
   if (id === 'soak' && evidence?.soak) return evidence.soak;
   if (id === 'closure_audit' && evidence?.closure_audit) return evidence.closure_audit;
+  if (id === 'control_plane_audit' && evidence?.control_plane_audit) return evidence.control_plane_audit;
   return Array.isArray(evidence?.steps)
     ? evidence.steps.find((item) => item?.id === id)
     : null;
@@ -237,6 +266,8 @@ export function evaluateCertificationEvidence(evidence, fileMetadata, {
 
   const closure = evaluateClosureAuditEvidence(evidence);
   if (!closure.ok) return closure;
+  const controlPlane = evaluateControlPlaneAuditEvidence(evidence);
+  if (!controlPlane.ok) return controlPlane;
 
   const soak = evidenceStep(evidence, 'soak');
   const soakDuration = Number(soak.duration_ms);
@@ -308,6 +339,7 @@ export function writeCertificationEvidence({
   recoveryMatrix = null,
   soak = null,
   closureAudit = null,
+  controlPlaneAudit = null,
   extra = {},
 } = {}) {
   if (!outDir) throw new Error('outDir is required');
@@ -317,12 +349,14 @@ export function writeCertificationEvidence({
   const recovery = normalizeEvidenceStep(recoveryMatrix, 'recovery_matrix');
   const soakStep = normalizeEvidenceStep(soak, 'soak');
   const closureStep = normalizeEvidenceStep(closureAudit, 'closure_audit');
+  const controlPlaneStep = normalizeEvidenceStep(controlPlaneAudit, 'control_plane_audit');
   const allSteps = [
     ...steps.map((item) => normalizeEvidenceStep(item, item.id)),
   ].filter(Boolean);
   if (recovery && !allSteps.some((item) => item.id === 'recovery_matrix')) allSteps.push(recovery);
   if (soakStep && !allSteps.some((item) => item.id === 'soak')) allSteps.push(soakStep);
   if (closureStep && !allSteps.some((item) => item.id === 'closure_audit')) allSteps.push(closureStep);
+  if (controlPlaneStep && !allSteps.some((item) => item.id === 'control_plane_audit')) allSteps.push(controlPlaneStep);
 
   const failed = allSteps.some((item) => item.ok === false || item.status === 'failed');
   const required = REQUIRED_CERTIFICATION_STEPS.map((id) => allSteps.find((item) => item.id === id) || null);
@@ -372,11 +406,13 @@ export function writeCertificationEvidence({
     recovery_matrix: recovery,
     soak: soakStep,
     closure_audit: closureStep,
+    control_plane_audit: controlPlaneStep,
     evidence_paths: {
       evidence: join(dest, EVIDENCE_FILE),
       recovery_matrix: recovery?.evidence ?? null,
       soak: soakStep?.evidence ?? null,
       closure_audit: closureStep?.evidence ?? null,
+      control_plane_audit: controlPlaneStep?.evidence ?? null,
       product_journey: allSteps.find((item) => item.id === 'product_journey')?.evidence ?? null,
       packaged_launch_smoke: allSteps.find((item) => item.id === 'packaged_launch_smoke')?.evidence ?? null,
       build_metadata: metadata ? join(dest, 'build-metadata.json') : null,
@@ -405,6 +441,7 @@ export async function main(argv = process.argv.slice(2)) {
     recoveryMatrix: inputs.recoveryMatrix,
     soak: inputs.soak,
     closureAudit: inputs.closureAudit,
+    controlPlaneAudit: inputs.controlPlaneAudit,
     steps: inputs.steps,
   });
   report.script = 'release-certification-evidence';

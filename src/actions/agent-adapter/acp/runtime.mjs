@@ -185,7 +185,7 @@ export class AcpRuntime {
       this.initializeResponse = await this.connection.agent.request(methods.agent.initialize, {
         protocolVersion: PROTOCOL_VERSION,
         clientCapabilities: {},
-        clientInfo: { name: 'js-evolution-agent', version: '0.2.1' },
+        clientInfo: { name: 'js-evolution-agent', version: '0.3.0' },
       });
       this.closeSupported = this.initializeResponse?.agentCapabilities?.sessionCapabilities?.close != null;
       const builder = this.connection.agent.buildSession({
