@@ -14,6 +14,7 @@ import {
   runCognitiveReactionTask,
   scanWakeBacklog,
 } from '../evolution/reactor/reactor-tasks.mjs';
+import { scheduleReactorTurn } from './reactor-scheduler.mjs';
 import { runtimeForSubject } from '../infra/runtime-paths.mjs';
 import { isEvolutionPaused } from '../product/evolution-state.mjs';
 
@@ -206,7 +207,12 @@ export async function processCycleOnce(root, subject, flags = {}) {
   let scanned = { scanned: false, enqueued: [] };
   let work = null;
   try {
-    scanned = scanWakeBacklog(root, subject, { enqueueTask, ignoreBudget: true });
+    const scheduled = scheduleReactorTurn(root, subject, { enqueueTask, readTaskQueue });
+    scanned = scanWakeBacklog(root, subject, {
+      enqueueTask,
+      ignoreBudget: true,
+      skipKinds: scheduled?.skip_scan_kinds || [],
+    });
     const queued = pendingCycleTask(root, subject, {
       allowedTypes: paused ? new Set(PAUSED_ALLOWED_REACTOR_TYPES) : null,
     });
