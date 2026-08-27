@@ -9,6 +9,7 @@ JEA 0.3.0 正在认证接线（[#216](https://github.com/imjszhang/js-evolution-
 - 统一根、Desktop、共享 App、打包 host、CLI、Client API、About、ACP 与构建元数据版本为 `0.3.0`。
 - 新增 `policies/release/control-plane-target-0.3.0.json` 与 `jea audit control-plane` / `npm run audit:control-plane`。
 - certification evidence allowlist 增加 `control-plane-audit.json`。
+- 官方 `macOS Release` preflight 用 `--out` 写 `control-plane-audit.json`，避免 `npm run` banner 污染 JSON。
 - 不自动打 tag，不自动创建 GitHub Release。
 
 ## 0.2.1 — 2026-08-24

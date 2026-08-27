@@ -66,7 +66,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist/release
-          npm run audit:control-plane -- --json --size tiny > dist/release/control-plane-audit.json
+          npm run --silent audit:control-plane -- --json --size tiny --out dist/release/control-plane-audit.json
           node --input-type=module - dist/release/control-plane-audit.json <<'NODE'
           import { readFileSync } from 'node:fs';
           const report = JSON.parse(readFileSync(process.argv[2], 'utf8'));

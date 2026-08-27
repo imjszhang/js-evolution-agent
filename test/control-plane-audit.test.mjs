@@ -59,6 +59,13 @@ describe('0.3.0 control-plane audit', () => {
     expect(client.protocol).toBe('jea.client');
   });
 
+  it('writes JSON evidence via --out so npm banners cannot poison the file', () => {
+    const source = readFileSync(join(repoRoot, 'scripts/control-plane-audit.mjs'), 'utf8');
+    expect(source).toContain('[--out PATH]');
+    expect(source).toContain('if (args.out)');
+    expect(source).toContain('writeFileSync(outPath');
+  });
+
   it('exposes jea audit control-plane without inspecting the operator home', () => {
     const help = spawnSync(
       process.execPath,
