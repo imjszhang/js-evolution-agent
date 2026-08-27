@@ -10,6 +10,7 @@ JEA 0.3.0 正在认证接线（[#216](https://github.com/imjszhang/js-evolution-
 - 新增 `policies/release/control-plane-target-0.3.0.json` 与 `jea audit control-plane` / `npm run audit:control-plane`。
 - certification evidence allowlist 增加 `control-plane-audit.json`。
 - 官方 `macOS Release` preflight 用 `--out` 写 `control-plane-audit.json`，避免 `npm run` banner 污染 JSON。
+- Linux 控制面审计缺少 packaged `build_id` 时，认证证据写入器补齐 provenance，不再误报 `build_mismatch`。
 - 不自动打 tag，不自动创建 GitHub Release。
 
 ## 0.2.1 — 2026-08-24

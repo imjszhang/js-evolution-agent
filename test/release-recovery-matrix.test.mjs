@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -6,7 +6,9 @@ import { evaluatePublishGuard } from '../scripts/release-publish-guard.mjs';
 import {
   writeCertificationEvidence,
   evaluateRecoverySoakEvidence,
+  evaluateCertificationArtifacts,
   collectCertificationInputs,
+  bindReportToPackagedProvenance,
 } from '../scripts/release-certification-evidence.mjs';
 import {
   applyRecoveryFixture,
@@ -353,6 +355,55 @@ describe('certification evidence and publish guard', () => {
     expect(written.evidence.evidence_paths.product_journey).toContain('product-journey.json');
     expect(written.evidence.evidence_paths.packaged_launch_smoke).toContain('launch-smoke.json');
     expect(written.evidence.evidence_paths.closure_audit).toContain('closure-audit.json');
+  });
+
+  it('binds a Linux control-plane audit to packaged provenance without overwriting a foreign commit', () => {
+    const dir = tempDir('jea-evidence-linux-control-plane-');
+    const metadata = cleanMetadata();
+    writeBuildMetadata(dir, metadata);
+    writeArtifactReports(dir, metadata, {
+      controlPlane: {
+        build_id: null,
+        commit: null,
+        dirty: null,
+        generated_at: null,
+      },
+    });
+
+    const now = new Date('2026-08-27T04:54:32.998Z');
+    const inputs = collectCertificationInputs(dir, { persistBoundControlPlane: true, now });
+    expect(inputs.controlPlaneAudit).toMatchObject({
+      ok: true,
+      build_id: metadata.build_id,
+      commit: metadata.commit,
+      dirty: false,
+      generated_at: now.toISOString(),
+    });
+    const persisted = JSON.parse(readFileSync(join(dir, 'control-plane-audit.json'), 'utf8'));
+    expect(persisted).toMatchObject({
+      build_id: metadata.build_id,
+      commit: metadata.commit,
+      dirty: false,
+      generated_at: now.toISOString(),
+    });
+    const written = writeCertificationEvidence({
+      outDir: dir,
+      ...inputs,
+    });
+    expect(written.evidence.status).toBe('certified');
+    expect(evaluateCertificationArtifacts({ dir, metadata }).ok).toBe(true);
+
+    const foreign = bindReportToPackagedProvenance({
+      ok: true,
+      status: 'passed',
+      gate: { target_id: CONTROL_PLANE_TARGET_ID },
+      commit: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      build_id: 'other-build',
+      dirty: false,
+      generated_at: now.toISOString(),
+    }, metadata, { now });
+    expect(foreign.commit).toBe('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+    expect(foreign.build_id).toBe('other-build');
   });
 
   it('rejects a short soak report as certification soak evidence', () => {
