@@ -90,7 +90,7 @@ describe('reactor health projection', () => {
     expect(blocked.reasons).toContain('evidence_journal_maintenance_blocked');
   });
 
-  it('marks pending evidence older than threshold as stalled', () => {
+  it('treats unrouted legacy eligible envelopes as diagnostics, not stalled work', () => {
     const root = makeRoot();
     const runtime = runtimeForSubject(root, 'alpha');
     const old = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
@@ -101,9 +101,10 @@ describe('reactor health projection', () => {
     });
 
     const health = buildReactorHealthProjection(root, 'alpha', { staleMs: 30 * 60 * 1000 });
-    expect(health.ok).toBe(false);
-    expect(health.status).toBe('stalled');
-    expect(health.evidence.pending_count).toBeGreaterThan(0);
+    expect(health.ok).toBe(true);
+    expect(health.status).toBe('idle');
+    expect(health.evidence.is_work_count).toBe(false);
+    expect(health.evidence.remaining_work_count ?? 0).toBe(0);
   });
 
   it('marks expired claims as stalled', () => {
@@ -158,7 +159,7 @@ describe('reactor health projection', () => {
     expect(daemon.reactor.claims.projection_degraded).toBe(true);
   });
 
-  it('pairs stale evidence with a missing worker in the same diagnosis', () => {
+  it('does not stall a missing worker on legacy eligible envelopes when ledger open is 0', () => {
     const root = makeRoot();
     const runtime = runtimeForSubject(root, 'alpha');
     const old = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
@@ -171,12 +172,9 @@ describe('reactor health projection', () => {
       staleMs: 30 * 60 * 1000,
       worker: { running: false, stale: false, zombie: false },
     });
-    expect(health.ok).toBe(false);
-    expect(health.status).toBe('stalled');
-    expect(health.worker.running).toBe(false);
-    expect(health.reasons.some((reason) => reason.includes('No fresh worker'))).toBe(true);
-    expect(health.suggestions.join(' ')).toMatch(/process_cycle_once/);
-    expect(health.suggestions.join(' ')).not.toMatch(/start_channel/);
+    expect(health.ok).toBe(true);
+    expect(health.status).toBe('idle');
+    expect(health.suggestions.join(' ')).not.toMatch(/process_cycle_once/);
   });
 
   it('exposes pending verify, rule due, and memory due fields', () => {
@@ -219,7 +217,7 @@ describe('reactor health projection', () => {
     expect(['idle', 'healthy', 'reactor_backlog_stalled', 'blocked']).toContain(projection.health.status);
   });
 
-  it('keeps cognitive/rule/memory eligibility consistent with the claim ledger', () => {
+  it('keeps legacy eligibility as a diagnostic that matches the claim ledger scan', () => {
     const root = makeRoot();
     const runtime = runtimeForSubject(root, 'alpha');
     writePendingOperatorBrief(runtime.runtimeRoot, {
@@ -237,9 +235,12 @@ describe('reactor health projection', () => {
     const health = buildReactorHealthProjection(root, 'alpha');
     for (const reactor of ['cognitive', 'rule', 'memory']) {
       const pending = listEligibleEvidence(runtime.dataRoot, { reactor });
-      expect(health.evidence_by_reactor[reactor].pending_count).toBe(pending.length);
+      expect(health.evidence_by_reactor[reactor].legacy_eligible_count ?? health.evidence_by_reactor[reactor].pending_count)
+        .toBe(pending.length);
+      expect(health.evidence_by_reactor[reactor].is_work_count).not.toBe(true);
     }
     expect(health.reconcile.ok).toBe(true);
+    expect(health.status).toBe('idle');
   });
 
   it('reuses a cached daemon projection for the same input revision', () => {

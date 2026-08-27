@@ -227,7 +227,7 @@ describe('service.getReadiness contract', () => {
     expect(web.allowed_actions).toEqual(['open_desktop'])
   })
 
-  it('reactor_backlog_stalled maps to Cycle actions and never start_channel alone', async () => {
+  it('does not stall Cycle on an unrouted legacy brief when ledger open is 0', async () => {
     const { sourceRoot, jeaHome } = tempHome()
     const host = electronHost(sourceRoot, jeaHome)
     writeChannel(host.runtime, {
@@ -237,10 +237,50 @@ describe('service.getReadiness contract', () => {
       started_at: nowIso()
     })
     writePendingOperatorBrief(subjectRuntime(host.runtime, 'alpha').runtimeRoot, {
-      id: 'brief-stalled-1',
-      summary: 'stale evidence for readiness',
+      id: 'brief-legacy-diag-1',
+      summary: 'unrouted diagnostic brief',
       created_at: nowIso(-2 * 60 * 60 * 1000)
     })
+    const electron = await readinessOf(host)
+    expect(electron.cycle.state).not.toBe('stalled')
+    expect(electron.cycle.reasons).not.toContain('reactor_backlog_stalled')
+    expect(electron.automation?.remaining_evidence ?? 0).toBe(0)
+    expect(electron.channel.state).toBe('attached')
+    expect(electron.conversation.state).toBe('running')
+    expect(electron.allowed_actions).not.toContain('process_cycle_once')
+  })
+
+  it('reactor_backlog_stalled maps to Cycle actions and never start_channel alone', async () => {
+    const { sourceRoot, jeaHome } = tempHome()
+    const host = electronHost(sourceRoot, jeaHome)
+    const { upsertActivationLedgerEntry } = await import('../../../../src/evolution/reactor/activation-ledger-store.mjs')
+    const {
+      ACTIVATION_PRIORITY,
+      INITIAL_ACTIVATION_POLICY_VERSION,
+      normalizeActivationLedgerEntry
+    } = await import('../../../../src/contracts/index.mjs')
+    writeChannel(host.runtime, {
+      pid: process.pid,
+      status: 'running',
+      heartbeat_at: nowIso(),
+      started_at: nowIso()
+    })
+    const dataRoot = subjectRuntime(host.runtime, 'alpha').dataRoot
+    upsertActivationLedgerEntry(dataRoot, normalizeActivationLedgerEntry({
+      reactor: 'cognitive',
+      identity: {
+        reactor: 'cognitive',
+        evidence_key: 'operator_briefs:brief-stalled-1',
+        activation_policy_version: INITIAL_ACTIVATION_POLICY_VERSION
+      },
+      lane: 'realtime',
+      state: 'ready',
+      activation_reason: 'operator_brief',
+      priority: ACTIVATION_PRIORITY.HIGH,
+      created_at: nowIso(-2 * 60 * 60 * 1000),
+      updated_at: nowIso(-2 * 60 * 60 * 1000),
+      origin: 'explicit'
+    }))
     const electron = await readinessOf(host)
     const web = await readinessOf(webCommandHost(sourceRoot, jeaHome))
 
@@ -538,11 +578,12 @@ describe('readiness projector invariants', () => {
     expect(value.automation?.intent).toBe('listening')
     expect(value.automation?.intent).not.toBe('catching_up')
     expect(value.automation?.remaining_evidence).toBe(8055)
+    expect(value.automation?.remaining_evidence).not.toBeUndefined()
     expect(value.reactor_progress?.scheduler_state).toBe('listening')
     expect(value.reactor_progress?.worker_liveness.alive).toBe(true)
   })
 
-  it('surfaces catch_up_budget while remaining evidence exists', () => {
+  it('ignores stale catch_up_budget when no replay activation is open', () => {
     const value = projectSubjectReadiness({
       subject: 'alpha',
       generatedAt: '2026-08-17T00:00:00.000Z',
@@ -556,17 +597,76 @@ describe('readiness projector invariants', () => {
       desktopChannelEnabled: true,
       ownership: { mode: 'none', domain: null },
       pendingEvidence: 12,
-      catchUp: { paused: true }
+      catchUp: { paused: true },
+      reactorProgress: {
+        schema_version: '0.3.0',
+        subject: 'alpha',
+        projection_generation: 1,
+        projected_at: '2026-08-26T00:00:00.000Z',
+        freshness: { as_of: '2026-08-26T00:00:00.000Z', status: 'fresh' },
+        worker_liveness: { alive: true },
+        scheduler_state: 'listening',
+        activity: {},
+        reactors: {
+          cognitive: {
+            realtime: { ready: 0, claimed: 0, deferred: 0, blocked: 0, handled_total: 0, open_total: 0 },
+            replay: { ready: 0, claimed: 0, deferred: 0, blocked: 0, handled_total: 42672, open_total: 0 }
+          }
+        },
+        reactor_overlap: { additive: false, note: 'reactor_counts_may_overlap_authoritative_evidence' },
+        evidence_authority: { envelope_count: 8055, is_work_count: false }
+      }
+    })
+    expect(value.automation).toMatchObject({
+      intent: 'listening',
+      remaining_evidence: 0,
+      blocker: null
+    })
+    expect(value.reasons).not.toContain('catch_up_budget')
+    expect(value.cycle.state).not.toBe('stalled')
+  })
+
+  it('surfaces catch_up_budget only while replay activations remain open', () => {
+    const value = projectSubjectReadiness({
+      subject: 'alpha',
+      generatedAt: '2026-08-17T00:00:00.000Z',
+      hostKind: 'electron',
+      webHost: { running: false, pid: null },
+      cycleWorker: { status: 'running', running: true, fresh: true, pid_alive: true, pid: process.pid },
+      cycleHealth: { status: 'ok', ok: true },
+      channelWorker: { status: 'stopped', running: false },
+      channelHealth: { status: 'idle', ok: true },
+      model: { configured: false, mode: 'mock' },
+      desktopChannelEnabled: true,
+      ownership: { mode: 'none', domain: null },
+      catchUp: { paused: true, reason: 'catch_up_budget' },
+      reactorProgress: {
+        schema_version: '0.3.0',
+        subject: 'alpha',
+        projection_generation: 1,
+        projected_at: '2026-08-26T00:00:00.000Z',
+        freshness: { as_of: '2026-08-26T00:00:00.000Z', status: 'fresh' },
+        worker_liveness: { alive: true },
+        scheduler_state: 'paused_budget',
+        stop_reason: { class: 'budget', code: 'catch_up_budget' },
+        activity: { current_task: { id: 't1', type: 'cognitive_reaction', lane: 'replay' } },
+        reactors: {
+          cognitive: {
+            realtime: { ready: 0, claimed: 0, deferred: 0, blocked: 0, handled_total: 0, open_total: 0 },
+            replay: { ready: 12, claimed: 0, deferred: 0, blocked: 0, handled_total: 0, open_total: 12 }
+          }
+        },
+        reactor_overlap: { additive: false, note: 'reactor_counts_may_overlap_authoritative_evidence' },
+        evidence_authority: { is_work_count: false }
+      }
     })
     expect(value.automation).toMatchObject({
       intent: 'paused_budget',
       remaining_evidence: 12,
       blocker: 'catch_up_budget'
     })
-    expect(value.automation?.intent).not.toBe('catching_up')
     expect(value.reasons).toContain('catch_up_budget')
     expect(value.product_actions?.find((action) => action.id === 'view_blocker')?.allowed).toBe(true)
-    expect(value.product_actions?.find((action) => action.id === 'check_now')?.allowed).toBe(true)
     for (const reason of value.reasons) {
       expect(SUBJECT_READINESS_REASON_CODES).toContain(reason)
     }

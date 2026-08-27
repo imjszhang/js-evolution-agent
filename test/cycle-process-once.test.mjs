@@ -90,7 +90,7 @@ afterEach(() => {
 });
 
 describe('Cycle process-once recovery', () => {
-  it('reports reactor_backlog_stalled with eligible count and Cycle-only remediation', () => {
+  it('does not stall Cycle on unrouted legacy envelopes when ledger open is 0', () => {
     const previous = {
       JEA_FORCE_MOCK: process.env.JEA_FORCE_MOCK,
       JEA_REACTOR_SKIP_INVESTIGATE: process.env.JEA_REACTOR_SKIP_INVESTIGATE,
@@ -107,20 +107,14 @@ describe('Cycle process-once recovery', () => {
     const projection = buildDaemonProjection(root, SUBJECT);
     const readiness = readinessFromProjection(projection);
 
-    expect(health.status).toBe('stalled');
-    expect(health.evidence.pending_count).toBe(1);
-    expect(health.evidence.eligible_unclaimed_count).toBe(1);
-    expect(health.reasons.some((reason) => reason.includes('1 eligible unclaimed'))).toBe(true);
-    expect(health.reasons.some((reason) => reason.includes('No fresh worker'))).toBe(true);
-    expect(health.suggestions.join(' ')).toMatch(/process_cycle_once/);
-    expect(health.suggestions.join(' ')).toMatch(/start_cycle/);
-    expect(health.suggestions.join(' ')).not.toMatch(/start_channel/);
-    expect(projection.health.status).toBe('reactor_backlog_stalled');
-    expect(readiness.cycle.state).toBe('stalled');
-    expect(readiness.cycle.reasons).toContain('reactor_backlog_stalled');
-    expect(readiness.allowed_actions).toContain('process_cycle_once');
-    expect(readiness.allowed_actions).toContain('start_cycle');
-    expect(readiness.allowed_actions).not.toEqual(['start_channel']);
+    expect(health.status).toBe('idle');
+    expect(health.ok).toBe(true);
+    expect(health.evidence.remaining_work_count ?? 0).toBe(0);
+    expect(health.suggestions.join(' ')).not.toMatch(/process_cycle_once/);
+    expect(projection.health.status).not.toBe('reactor_backlog_stalled');
+    expect(readiness.cycle.state).not.toBe('stalled');
+    expect(readiness.cycle.reasons).not.toContain('reactor_backlog_stalled');
+    expect(readiness.allowed_actions).not.toContain('process_cycle_once');
 
     if (previous.JEA_FORCE_MOCK == null) delete process.env.JEA_FORCE_MOCK;
     else process.env.JEA_FORCE_MOCK = previous.JEA_FORCE_MOCK;
@@ -137,9 +131,8 @@ describe('Cycle process-once recovery', () => {
       staleMs: 30 * 60 * 1000,
       worker: { running: false, stale: false, zombie: true },
     });
-    expect(zombie.suggestions.join(' ')).toMatch(/process_cycle_once/);
+    expect(zombie.status).toBe('idle');
     expect(zombie.suggestions.join(' ')).not.toMatch(/start_cycle/);
-    expect(zombie.reasons.some((reason) => /zombie/i.test(reason))).toBe(true);
 
     const blockedProjection = buildDaemonProjection(root, SUBJECT);
     blockedProjection.health = { status: 'blocked', ok: false, reasons: ['blocked'], suggestions: [] };
@@ -200,8 +193,8 @@ describe('Cycle process-once recovery', () => {
 
     expect(elapsed).toBeLessThan(60_000);
     expect(result.status).toBe('ok');
-    expect(result.backlog.before).toBe(1);
-    expect(result.backlog.after).toBe(0);
+    expect(result.backlog.before).toBeGreaterThan(0);
+    expect(result.backlog.after).toBeLessThan(result.backlog.before);
     expect(result.channel.unchanged).toBe(true);
     expect(channelAfter).toEqual(channelBefore);
     expect(fixtureStillEligible).toBe(false);
@@ -210,11 +203,9 @@ describe('Cycle process-once recovery', () => {
     expect(Date.parse(handled.claimed_at) - started).toBeLessThan(60_000);
     expect(checkpoints.some((item) => item.stage === 'committed' || item.stage === 'claimed')).toBe(true);
     expect(result.events.some((event) => event.type === 'cycle_process_once' || event.type === 'task_claimed' || event.type === 'reactor_pipeline')).toBe(true);
-    expect(beforeProjection.health.status).toBe('reactor_backlog_stalled');
-    expect(afterProjection.health.status).not.toBe('reactor_backlog_stalled');
+    expect(beforeProjection.health.status).not.toBe('blocked');
     expect(afterProjection.health.status).not.toBe('reactor_backlog_stalled');
     expect(afterProjection.reactor.evidence.pending_count).toBeGreaterThanOrEqual(0);
-    expect(beforeReadiness.allowed_actions).toContain('process_cycle_once');
     expect(afterReadiness.cycle.reasons).not.toContain('reactor_backlog_stalled');
 
     const fixtureKeys = new Set(

@@ -30,6 +30,9 @@ import {
 import {
   evidenceJournalBoundedProjection,
 } from '../evolution/reactor/evidence-journal-maintenance.mjs';
+import { inspectControlPlaneReadiness } from '../evolution/reactor/control-plane-readiness.mjs';
+import { countActivationWork } from '../evolution/reactor/activation-ledger-store.mjs';
+import { readActivationLedgerStore } from './activation-ledger-read.mjs';
 
 export const DEFAULT_EVIDENCE_STALE_MS = 30 * 60 * 1000;
 
@@ -128,9 +131,10 @@ function unknownEvidenceProjection(reason) {
 export function summarizePendingEvidenceFromSnapshot(snapshot, ledger, {
   nowMs = Date.now(),
   reactor = 'cognitive',
+  dataRoot = null,
 } = {}) {
   const allowedKinds = defaultKindsForReactor(reactor);
-  const covered = coveredEventIds(ledger, { now: nowMs, reactor });
+  const covered = coveredEventIds(ledger, { now: nowMs, reactor, dataRoot });
   let pendingCount = 0;
   let oldestAgeMs = null;
   let oldestId = null;
@@ -150,6 +154,8 @@ export function summarizePendingEvidenceFromSnapshot(snapshot, ledger, {
   return {
     pending_count: pendingCount,
     eligible_unclaimed_count: pendingCount,
+    legacy_eligible_count: pendingCount,
+    is_work_count: false,
     oldest_unclaimed_age_ms: oldestAgeMs,
     oldest_unclaimed_id: oldestId,
     stream_total: pendingCount,
@@ -161,7 +167,31 @@ export function summarizePendingEvidence(dataRoot, ledger, {
   reactor = 'cognitive',
 } = {}) {
   const snapshot = readEvidenceHealthSnapshot(dataRoot);
-  return summarizePendingEvidenceFromSnapshot(snapshot, ledger, { nowMs, reactor });
+  return summarizePendingEvidenceFromSnapshot(snapshot, ledger, { nowMs, reactor, dataRoot });
+}
+
+function ledgerOpenTotals(dataRoot, snapshot = null) {
+  const ledger = snapshot?.status
+    ? snapshot
+    : readActivationLedgerStore(dataRoot);
+  const entries = Array.isArray(ledger?.entries) ? ledger.entries : [];
+  const reactors = ledger?.reactors && typeof ledger.reactors === 'object'
+    ? ledger.reactors
+    : countActivationWork(entries);
+  const oldestReady = entries
+    .filter((entry) => entry.state === 'ready' || entry.state === 'claimed')
+    .map((entry) => parseIsoMs(entry.created_at || entry.updated_at))
+    .filter((ms) => ms != null)
+    .sort((a, b) => a - b)[0] ?? null;
+  let open = 0;
+  const cognitive = (reactors.cognitive?.realtime?.open_total || 0)
+    + (reactors.cognitive?.replay?.open_total || 0);
+  for (const lanes of Object.values(reactors || {})) {
+    for (const slice of Object.values(lanes || {})) {
+      open += Number.isInteger(slice?.open_total) ? slice.open_total : 0;
+    }
+  }
+  return { open, cognitive, reactors, oldestReadyMs: oldestReady, entries };
 }
 
 export function buildReactorHealthProjection(root, subject, {
@@ -201,7 +231,11 @@ export function buildReactorHealthProjection(root, subject, {
     ? unknownEvidenceProjection(ledger.projection_reason)
     : (skipEvidenceScan
       ? unknownEvidenceProjection('activation_ledger_required')
-      : summarizePendingEvidenceFromSnapshot(snapshot, ledger, { nowMs, reactor: 'cognitive' }));
+      : summarizePendingEvidenceFromSnapshot(snapshot, ledger, {
+        nowMs,
+        reactor: 'cognitive',
+        dataRoot,
+      }));
   const evidenceByReactor = claimProjectionDegraded || skipEvidenceScan
     ? {
       cognitive: evidence,
@@ -209,10 +243,25 @@ export function buildReactorHealthProjection(root, subject, {
       memory: unknownEvidenceProjection(evidence.projection_reason),
     }
     : {
-      cognitive: evidence,
-      rule: summarizePendingEvidenceFromSnapshot(snapshot, ledger, { nowMs, reactor: 'rule' }),
-      memory: summarizePendingEvidenceFromSnapshot(snapshot, ledger, { nowMs, reactor: 'memory' }),
+      cognitive: summarizePendingEvidenceFromSnapshot(snapshot, ledger, {
+        nowMs,
+        reactor: 'cognitive',
+        dataRoot,
+      }),
+      rule: summarizePendingEvidenceFromSnapshot(snapshot, ledger, { nowMs, reactor: 'rule', dataRoot }),
+      memory: summarizePendingEvidenceFromSnapshot(snapshot, ledger, { nowMs, reactor: 'memory', dataRoot }),
     };
+  const controlPlane = inspectControlPlaneReadiness({
+    dataRoot,
+    readLedger: readActivationLedgerStore,
+  });
+  const ledgerWork = (controlPlane.ready || controlPlane.fresh_subject)
+    ? ledgerOpenTotals(dataRoot, controlPlane.ledger)
+    : { open: null, cognitive: null, reactors: null, oldestReadyMs: null, entries: [] };
+  if (evidence && typeof evidence === 'object') {
+    evidence.remaining_work_count = ledgerWork.cognitive;
+    evidence.is_work_count = false;
+  }
 
   let decisions = {
     pending: 0,
@@ -250,9 +299,13 @@ export function buildReactorHealthProjection(root, subject, {
   const ruleCatchUp = readRuleCatchUpProjection(dataRoot);
   const ruleResilience = readRuleResilienceProjection(dataRoot);
   const evidenceJournal = evidenceJournalBoundedProjection(dataRoot);
+  const ruleOpen = ledgerWork.reactors
+    ? (ledgerWork.reactors.rule?.realtime?.open_total || 0)
+      + (ledgerWork.reactors.rule?.replay?.open_total || 0)
+    : 0;
   const ruleBlockedReason = ruleDue.block_reason
     || ruleResilience.block_reason
-    || (ruleCatchUp.paused ? ruleCatchUp.reason : null);
+    || (ruleCatchUp.paused && ruleOpen > 0 ? ruleCatchUp.reason : null);
   const committed = readLastCommittedMemoryCheckpoint(dataRoot);
   const projection = readMemoryCompactionProjection(runtime.runtimeRoot);
   const archiveSummary = readClaimArchiveSummary(dataRoot);
@@ -272,7 +325,12 @@ export function buildReactorHealthProjection(root, subject, {
   let status = 'idle';
   let ok = true;
 
-  if (claimProjectionDegraded) {
+  if (!controlPlane.ready && !controlPlane.fresh_subject) {
+    status = 'blocked';
+    ok = false;
+    reasons.push(controlPlane.reason || 'migration_required');
+    suggestions.push('Complete Activation Ledger migration before starting Cycle. Channel conversation stays available.');
+  } else if (claimProjectionDegraded) {
     status = 'blocked';
     ok = false;
     reasons.push('claims_projection_degraded');
@@ -317,8 +375,10 @@ export function buildReactorHealthProjection(root, subject, {
       suggestions.push('Use start_cycle when a fresh Cycle worker should stay running.');
     }
   } else if (
-    (evidence.pending_count > 0 && (evidence.oldest_unclaimed_age_ms ?? 0) >= staleMs)
-    || (operatorInput && operatorInput.pending_count > 0 && (operatorInput.oldest_age_ms ?? 0) >= staleMs)
+    Number.isInteger(ledgerWork.open)
+    && ledgerWork.open > 0
+    && ledgerWork.oldestReadyMs != null
+    && (nowMs - ledgerWork.oldestReadyMs) >= staleMs
   ) {
     status = 'stalled';
     ok = false;
@@ -326,9 +386,9 @@ export function buildReactorHealthProjection(root, subject, {
     const workerZombie = Boolean(worker?.zombie);
     const workerStale = Boolean(worker?.stale);
     const workerRunning = Boolean(worker?.running);
-    const pendingCount = evidence.pending_count ?? operatorInput?.pending_count;
-    const oldestAgeMs = evidence.oldest_unclaimed_age_ms ?? operatorInput?.oldest_age_ms;
-    reasons.push(`${pendingCount} eligible unclaimed work item(s); oldest age ${oldestAgeMs}ms`);
+    const pendingCount = ledgerWork.open;
+    const oldestAgeMs = nowMs - ledgerWork.oldestReadyMs;
+    reasons.push(`${pendingCount} open activation(s); oldest age ${oldestAgeMs}ms`);
     if (workerZombie) {
       reasons.push('Cycle worker PID is dead (zombie); do not start another worker');
       suggestions.push('Use process_cycle_once. Repair the worker state; do not start a new Cycle worker.');
@@ -344,17 +404,14 @@ export function buildReactorHealthProjection(root, subject, {
       suggestions.push('Use process_cycle_once to drain the Cycle backlog.');
     }
   } else if (
-    evidence.pending_count > 0
-    || (operatorInput && operatorInput.pending_count > 0)
+    (Number.isInteger(ledgerWork.open) && ledgerWork.open > 0)
     || claims.counts.claimed > 0
     || decisions.pending > 0
     || pendingVerify.length > 0
-    || ruleDue.due.length > 0
-    || memoryGate.due
   ) {
     status = 'healthy';
     ok = true;
-    reasons.push('Reactor has pending evidence or decisions and is progressing');
+    reasons.push('Reactor has pending activations or decisions and is progressing');
     if (evidenceJournal.maintenance.due) {
       reasons.push('evidence_journal_maintenance_due');
       suggestions.push('Schedule a stopped evidence journal rebuild before the hard journal limit.');
@@ -362,7 +419,7 @@ export function buildReactorHealthProjection(root, subject, {
   } else {
     status = 'idle';
     ok = true;
-    reasons.push('Reactor idle: no pending evidence');
+    reasons.push('Reactor idle: no open activations');
     if (evidenceJournal.maintenance.due) {
       reasons.push('evidence_journal_maintenance_due');
       suggestions.push('Schedule a stopped evidence journal rebuild before the hard journal limit.');

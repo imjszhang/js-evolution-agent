@@ -18,6 +18,8 @@ export function subjectLifecycleInput(name, input = {}) {
     channelLive: input.channelLive === true,
     previousSupervisorCycle: input.previousSupervisorCycle === true,
     previousSupervisorChannel: input.previousSupervisorChannel === true,
+    controlPlaneReady: input.controlPlaneReady !== false,
+    controlPlaneReason: input.controlPlaneReason ?? null,
   };
 }
 
@@ -62,6 +64,24 @@ function planSubject(info, actions) {
         ? (info.previousSupervisorChannel ? 'previous_supervisor_owner' : 'already_running')
         : 'conversation_enabled',
     });
+  }
+  if (info.controlPlaneReady === false) {
+    if (info.cycleLive) {
+      pushUnique(actions, {
+        subject: info.name,
+        domain: 'cycle',
+        action: 'attach',
+        reason: info.previousSupervisorCycle ? 'previous_supervisor_owner' : 'already_running',
+      });
+    } else {
+      pushUnique(actions, {
+        subject: info.name,
+        domain: 'cycle',
+        action: 'skip',
+        reason: info.controlPlaneReason || 'migration_required',
+      });
+    }
+    return;
   }
   if (info.automation === 'paused') {
     if (info.ownedCycle) {

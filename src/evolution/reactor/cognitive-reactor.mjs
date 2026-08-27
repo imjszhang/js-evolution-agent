@@ -64,7 +64,9 @@ import {
   nackBatchFailed,
   reattachBatchClaim,
   reconcileExpiredClaims,
+  releaseBatchClaim,
 } from './claim-ledger.mjs';
+import { getActivationLedgerEntry } from './activation-ledger-store.mjs';
 import { envelopeEvidenceKey } from './eligibility.mjs';
 import {
   assembleReactionCandidates,
@@ -247,6 +249,7 @@ export async function runCognitiveReaction(ctx, {
   kinds = null,
   skipInvestigate = false,
   canCommit = null,
+  identity_key = null,
 } = {}) {
   const isLive = mode === 'live';
   const logLabel = isLive ? 'reactor:live' : 'reactor:shadow';
@@ -271,7 +274,14 @@ export async function runCognitiveReaction(ctx, {
   }
 
   reconcileExpiredClaims(dataRoot);
-  const resumable = findResumableCheckpoint(dataRoot, { reactor: 'cognitive' });
+  let resumable = findResumableCheckpoint(dataRoot, { reactor: 'cognitive' });
+  if (identity_key && resumable?.evidence_keys?.length) {
+    const targeted = getActivationLedgerEntry(dataRoot, identity_key);
+    const wanted = targeted?.identity?.evidence_key ?? targeted?.evidence_key;
+    if (wanted && !resumable.evidence_keys.includes(wanted)) {
+      resumable = null;
+    }
+  }
   let claimed;
   let resumed = false;
   if (resumable?.batch_id) {
@@ -290,6 +300,35 @@ export async function runCognitiveReaction(ctx, {
       checkpoint: resumable,
     };
     resumed = true;
+  } else if (identity_key) {
+    const entry = getActivationLedgerEntry(dataRoot, identity_key);
+    const evidenceKey = entry?.identity?.evidence_key ?? entry?.evidence_key;
+    if (!evidenceKey) {
+      return {
+        skipped: true,
+        ok: true,
+        reason: 'activation_identity_unresolved',
+        activation_effect: 'release',
+        mode,
+      };
+    }
+    if (isReactorBusy(dataRoot, 'cognitive')) {
+      return {
+        skipped: true,
+        ok: true,
+        reason: 'reactor_busy',
+        activation_effect: 'release',
+        mode,
+      };
+    }
+    claimed = claimEvidenceBatch(dataRoot, {
+      reactor: 'cognitive',
+      subject,
+      limit: 1,
+      kinds,
+      timeoutMs,
+      evidenceKeys: [evidenceKey],
+    });
   } else {
     if (isReactorBusy(dataRoot, 'cognitive')) {
       return { skipped: true, reason: 'reactor_busy', mode };
@@ -303,7 +342,16 @@ export async function runCognitiveReaction(ctx, {
     });
   }
   if (claimed.skipped) {
-    return { skipped: true, reason: claimed.skipped, mode };
+    return {
+      skipped: true,
+      ok: true,
+      reason: claimed.skipped,
+      activation_effect: identity_key ? 'defer' : undefined,
+      hold_reason: identity_key
+        ? { class: 'policy', code: claimed.skipped === 'no_pending_evidence' ? 'no_op' : String(claimed.skipped) }
+        : undefined,
+      mode,
+    };
   }
 
   const { batch_id: batchId, events } = claimed;
@@ -406,7 +454,7 @@ export async function runCognitiveReaction(ctx, {
         queued_decision_ids: [],
         honesty: { status: 'skipped', findings_count: 0, reason: 'no_report' },
       });
-      ackBatchHandled(dataRoot, batchId);
+      releaseBatchClaim(dataRoot, batchId, { reason: reactionWork.skip_reason || 'no_op' });
       const elapsedMs = Date.now() - startedAt;
       emitReaction({
         type: isLive ? 'reactor_reaction_completed' : 'shadow_reaction_completed',
@@ -442,10 +490,17 @@ export async function runCognitiveReaction(ctx, {
         });
       }
       return {
-        skipped: false,
-        handled: true,
+        skipped: true,
+        handled: false,
+        ok: true,
         llm_skipped: true,
         skip_reason: reactionWork.skip_reason,
+        reason: reactionWork.skip_reason || 'no_op',
+        activation_effect: 'defer',
+        hold_reason: {
+          class: 'policy',
+          code: reactionWork.skip_reason || 'no_op',
+        },
         mechanical_reason: reactionWork.mechanical_reason,
         mode,
         batch_id: batchId,
@@ -965,7 +1020,9 @@ export async function runCognitiveReaction(ctx, {
     return {
       skipped: false,
       handled: true,
+      ok: true,
       llm_skipped: false,
+      activation_effect: 'handle',
       mode,
       batch_id: batchId,
       cycle_id: reactionCycleId,

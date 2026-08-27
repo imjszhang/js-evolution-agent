@@ -6,6 +6,7 @@ import { buildCycleDetail } from '../../../../../src/intelligence/evolution-view
 import { buildRoundDetail } from '../../../../../src/intelligence/evolution-viewer/round-detail.mjs'
 import { buildSubjectObservability } from '../../../../../src/intelligence/evolution-viewer/observability-projection.mjs'
 import { readDaemonProjection } from '../../../../../src/daemon/daemon-projection.mjs'
+import { remainingWorkFromProgress } from '../../../../../src/product/subject-readiness.mjs'
 import { readJsonSafe } from '../../../../../src/infra/files.mjs'
 import { PublicClientError } from '../errors'
 import { redactPublicValue } from '../redact'
@@ -187,12 +188,12 @@ export class EvolutionCommandOwner {
       runtimeRoot: runtime.runtimeRoot,
       daemon
     })
-    const pendingRaw = daemon.reactor?.evidence?.pending_count
+    const remaining = remainingWorkFromProgress(daemon.reactor_progress)
     return redactPublicValue({
       subject: name,
       attention: observability.attention ?? { items: [], summary: {} },
       open_cycles: daemon.cycles?.open_count ?? 0,
-      evidence_pending_count: Number.isFinite(pendingRaw) ? Number(pendingRaw) : undefined,
+      evidence_pending_count: Number.isInteger(remaining) ? remaining : undefined,
       daemon_task_pending_count: daemon.tasks?.counts?.pending ?? 0,
       cycle_diagnostics: recentCycleDiagnostics(daemon),
       reactor_progress: adaptReactorProgressProjection(daemon.reactor_progress)

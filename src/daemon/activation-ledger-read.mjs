@@ -19,9 +19,17 @@ import {
 } from '../contracts/index.mjs';
 import { isPlainObject } from '../contracts/validation.mjs';
 import { activationLedgerDeltasPath } from '../evolution/reactor/paths.mjs';
-import { ACTIVATION_LEDGER_STORE_SCHEMA, activationLedgerPath } from '../evolution/reactor/activation-ledger-store.mjs';
+import { readJson } from '../infra/json-store.mjs';
+import { evidenceIndexPath } from '../evolution/reactor/evidence-index.mjs';
+import {
+  ACTIVATION_LEDGER_PROJECTION_SCHEMA,
+  ACTIVATION_LEDGER_STORE_SCHEMA,
+  activationLedgerDeltasFile,
+  activationLedgerPath,
+  activationLedgerProjectionPath,
+} from '../evolution/reactor/activation-ledger-store.mjs';
 
-export const DEFAULT_ACTIVATION_LEDGER_MAX_BYTES = 8 * 1024 * 1024;
+export const DEFAULT_ACTIVATION_LEDGER_MAX_BYTES = 64 * 1024 * 1024;
 export const DEFAULT_ACTIVATION_LEDGER_DELTA_MAX_LINES = 4_096;
 
 const OPEN_STATES = Object.freeze(['ready', 'claimed', 'deferred', 'blocked']);
@@ -211,6 +219,78 @@ export function recountReactorCountsFromEntries(entries = []) {
   return reactors;
 }
 
+function normalizeLedgerGeneration(raw) {
+  if (typeof raw === 'string' && raw.trim()) return raw.trim();
+  if (Number.isInteger(raw)) return raw;
+  return null;
+}
+
+function normalizeLedgerSequence(raw) {
+  return Number.isInteger(raw) ? raw : null;
+}
+
+function journalGenerationOf(dataRoot) {
+  try {
+    const manifest = readJson(evidenceIndexPath(dataRoot), null);
+    return normalizeLedgerGeneration(manifest?.generation);
+  } catch {
+    return null;
+  }
+}
+
+function resolveDeltasPath(dataRoot) {
+  try {
+    const scoped = activationLedgerDeltasFile(dataRoot);
+    if (existsSync(scoped)) return scoped;
+  } catch {
+    // fall through to reactor-root compatibility path
+  }
+  return activationLedgerDeltasPath(dataRoot);
+}
+
+function snapshotFromProjection(projection, { file_bytes = null, reason = null } = {}) {
+  const entries = Array.isArray(projection.open_entries)
+    ? projection.open_entries.map(compactLedgerEntry).filter(Boolean)
+    : [];
+  return {
+    status: 'ok',
+    reason,
+    generation: normalizeLedgerGeneration(projection.generation),
+    sequence: normalizeLedgerSequence(projection.sequence),
+    updated_at: projection.updated_at ?? null,
+    entries,
+    reactors: projection.reactors && typeof projection.reactors === 'object'
+      ? cloneReactorCounts(projection.reactors)
+      : null,
+    source: 'projection',
+    file_bytes,
+  };
+}
+
+export function readActivationLedgerProjection(dataRoot) {
+  let filePath;
+  try {
+    filePath = activationLedgerProjectionPath(dataRoot);
+  } catch {
+    return null;
+  }
+  if (!existsSync(filePath)) return null;
+  let raw;
+  try {
+    raw = JSON.parse(readFileSync(filePath, 'utf8'));
+  } catch {
+    return null;
+  }
+  if (!isPlainObject(raw)) return null;
+  if (raw.schema_version != null && raw.schema_version !== ACTIVATION_LEDGER_PROJECTION_SCHEMA) {
+    return null;
+  }
+  const journalGeneration = journalGenerationOf(dataRoot);
+  const generation = normalizeLedgerGeneration(raw.generation);
+  if (journalGeneration && generation && journalGeneration !== generation) return null;
+  return raw;
+}
+
 function acceptedLedgerSchema(raw) {
   if (raw.schema_version == null) return true;
   if (raw.schema_version === REACTOR_CONTROL_PLANE_CONTRACT_VERSION) return true;
@@ -226,34 +306,35 @@ function rawEntryList(raw) {
 }
 
 export function readActivationLedgerStore(dataRoot, { env = process.env } = {}) {
+  const unknown = {
+    status: 'unknown',
+    reason: 'activation_ledger_unresolved',
+    generation: null,
+    sequence: null,
+    updated_at: null,
+    entries: [],
+    file_bytes: null,
+  };
   let filePath;
   try {
     filePath = activationLedgerPath(dataRoot);
   } catch {
-    return {
-      status: 'unknown',
-      reason: 'activation_ledger_unresolved',
-      generation: null,
-      sequence: null,
-      updated_at: null,
-      entries: [],
-      file_bytes: null,
-    };
+    return unknown;
   }
+  const projection = readActivationLedgerProjection(dataRoot);
   if (!existsSync(filePath)) {
-    return {
-      status: 'unknown',
-      reason: 'activation_ledger_unresolved',
-      generation: null,
-      sequence: null,
-      updated_at: null,
-      entries: [],
-      file_bytes: null,
-    };
+    if (projection) return snapshotFromProjection(projection);
+    return unknown;
   }
   const bytes = fileBytes(filePath);
   const limit = projectionByteLimit(env);
   if (bytes != null && bytes > limit) {
+    if (projection) {
+      return snapshotFromProjection(projection, {
+        file_bytes: bytes,
+        reason: 'activation_ledger_projection',
+      });
+    }
     return {
       status: 'degraded',
       reason: 'activation_ledger_oversized',
@@ -268,6 +349,12 @@ export function readActivationLedgerStore(dataRoot, { env = process.env } = {}) 
   try {
     raw = JSON.parse(readFileSync(filePath, 'utf8'));
   } catch (error) {
+    if (projection) {
+      return snapshotFromProjection(projection, {
+        file_bytes: bytes,
+        reason: 'activation_ledger_projection',
+      });
+    }
     return {
       status: 'degraded',
       reason: 'activation_ledger_unreadable',
@@ -294,8 +381,8 @@ export function readActivationLedgerStore(dataRoot, { env = process.env } = {}) 
     return {
       status: 'degraded',
       reason: 'activation_ledger_schema_mismatch',
-      generation: Number.isInteger(raw.generation) ? raw.generation : (raw.generation ?? null),
-      sequence: Number.isInteger(raw.sequence) ? raw.sequence : null,
+      generation: normalizeLedgerGeneration(raw.generation),
+      sequence: normalizeLedgerSequence(raw.sequence),
       updated_at: raw.updated_at ?? null,
       entries: [],
       file_bytes: bytes,
@@ -306,8 +393,8 @@ export function readActivationLedgerStore(dataRoot, { env = process.env } = {}) 
     return {
       status: 'degraded',
       reason: 'activation_ledger_invalid',
-      generation: Number.isInteger(raw.generation) ? raw.generation : (raw.generation ?? null),
-      sequence: Number.isInteger(raw.sequence) ? raw.sequence : null,
+      generation: normalizeLedgerGeneration(raw.generation),
+      sequence: normalizeLedgerSequence(raw.sequence),
       updated_at: raw.updated_at ?? null,
       entries: [],
       file_bytes: bytes,
@@ -317,10 +404,12 @@ export function readActivationLedgerStore(dataRoot, { env = process.env } = {}) 
   return {
     status: 'ok',
     reason: null,
-    generation: Number.isInteger(raw.generation) ? raw.generation : 0,
-    sequence: Number.isInteger(raw.sequence) ? raw.sequence : entries.length,
+    generation: normalizeLedgerGeneration(raw.generation),
+    sequence: normalizeLedgerSequence(raw.sequence),
     updated_at: raw.updated_at ?? null,
     entries,
+    reactors: recountReactorCountsFromEntries(entries),
+    source: 'ledger',
     file_bytes: bytes,
   };
 }
@@ -329,7 +418,7 @@ export async function readActivationLedgerDeltas(dataRoot, {
   afterSequence = -1,
   env = process.env,
 } = {}) {
-  const filePath = activationLedgerDeltasPath(dataRoot);
+  const filePath = resolveDeltasPath(dataRoot);
   if (!existsSync(filePath)) {
     return { status: 'ok', reason: null, deltas: [], truncated: false };
   }
@@ -404,7 +493,7 @@ export function readActivationLedgerDeltasSync(dataRoot, {
   afterSequence = -1,
   env = process.env,
 } = {}) {
-  const filePath = activationLedgerDeltasPath(dataRoot);
+  const filePath = resolveDeltasPath(dataRoot);
   if (!existsSync(filePath)) {
     return { status: 'ok', reason: null, deltas: [], truncated: false };
   }

@@ -7,7 +7,7 @@ import { enqueueTask, readTaskQueue } from './daemon-tasks.mjs';
 import { buildDaemonProjection } from './daemon-projection.mjs';
 import { recordDaemonEvent, storeForSubject } from './daemon-events.mjs';
 import { readChannelWorkerState } from '../channel/worker-state.mjs';
-import { listEligibleEvidence, readClaimLedger } from '../evolution/reactor/claim-ledger.mjs';
+import { readClaimLedger } from '../evolution/reactor/claim-ledger.mjs';
 import { listBatchCheckpoints } from '../evolution/reactor/batch-checkpoint-store.mjs';
 import {
   PAUSED_ALLOWED_REACTOR_TYPES,
@@ -17,6 +17,9 @@ import {
 import { scheduleReactorTurn } from './reactor-scheduler.mjs';
 import { runtimeForSubject } from '../infra/runtime-paths.mjs';
 import { isEvolutionPaused } from '../product/evolution-state.mjs';
+import { pumpEvidenceRouter } from '../evolution/reactor/evidence-router-pump.mjs';
+import { inspectControlPlaneReadiness } from '../evolution/reactor/control-plane-readiness.mjs';
+import { readActivationLedgerStore } from './activation-ledger-read.mjs';
 
 const CYCLE_TASK_TYPES = new Set([
   'cognitive_reaction',
@@ -49,15 +52,24 @@ function channelUnchanged(before, after) {
   return JSON.stringify(before) === JSON.stringify(after);
 }
 
-function pendingEvidenceCount(root, subject, { ignoreAfterMs = null } = {}) {
+function ledgerOpenCount(dataRoot) {
+  const snapshot = readActivationLedgerStore(dataRoot);
+  const reactors = snapshot?.reactors;
+  if (reactors && typeof reactors === 'object') {
+    let open = 0;
+    for (const reactor of Object.values(reactors)) {
+      for (const lane of Object.values(reactor || {})) {
+        open += Number.isInteger(lane?.open_total) ? lane.open_total : 0;
+      }
+    }
+    return open;
+  }
+  return 0;
+}
+
+function pendingEvidenceCount(root, subject) {
   const runtime = runtimeForSubject(root, subject);
-  return listEligibleEvidence(runtime.dataRoot, { reactor: 'cognitive' })
-    .filter((envelope) => {
-      if (ignoreAfterMs == null) return true;
-      const occurred = Date.parse(envelope.occurred_at ?? envelope.created_at ?? '');
-      return !(Number.isFinite(occurred) && occurred >= ignoreAfterMs);
-    })
-    .length;
+  return ledgerOpenCount(runtime.dataRoot);
 }
 
 function snapshotCycleHealth(root, subject) {
@@ -157,6 +169,9 @@ function classifyResult({ work, injectFailure, pendingBefore, pendingAfter, paus
   if (work?.lockError) {
     return { status: 'blocked', reason: 'subject_lock_held' };
   }
+  if (work?.blocked) {
+    return { status: 'blocked', reason: work.reason || 'migration_required' };
+  }
   if (!work?.worked) {
     if (paused && (pendingBefore ?? 0) > 0) {
       return { status: 'idle', reason: 'evolution_paused' };
@@ -200,24 +215,39 @@ export async function processCycleOnce(root, subject, flags = {}) {
   const startedMs = Date.now();
   const channelBefore = snapshotChannel(root, subject);
   const healthBefore = snapshotCycleHealth(root, subject);
-  const pendingBefore = pendingEvidenceCount(root, subject);
   const env = applyMockEnv(flags);
   const paused = isEvolutionPaused(root, subject);
+  const runtimeEarly = runtimeForSubject(root, subject);
+  const controlPlane = inspectControlPlaneReadiness({
+    dataRoot: runtimeEarly.dataRoot,
+    readLedger: readActivationLedgerStore,
+  });
 
   let scanned = { scanned: false, enqueued: [] };
   let work = null;
+  let pendingBefore = 0;
   try {
-    const scheduled = scheduleReactorTurn(root, subject, { enqueueTask, readTaskQueue });
-    scanned = scanWakeBacklog(root, subject, {
-      enqueueTask,
-      ignoreBudget: true,
-      skipKinds: scheduled?.skip_scan_kinds || [],
-    });
+    if (!controlPlane.ready && !controlPlane.fresh_subject) {
+      work = { worked: false, task: null, blocked: true, reason: controlPlane.reason };
+    } else {
+      if (controlPlane.allow_pump) {
+        pumpEvidenceRouter(runtimeEarly.dataRoot, { subject, limit: 64 });
+      }
+      const scheduled = scheduleReactorTurn(root, subject, { enqueueTask, readTaskQueue });
+      scanned = scanWakeBacklog(root, subject, {
+        enqueueTask,
+        ignoreBudget: true,
+        skipKinds: scheduled?.skip_scan_kinds || [],
+      });
+    }
+    pendingBefore = pendingEvidenceCount(root, subject);
     const queued = pendingCycleTask(root, subject, {
       allowedTypes: paused ? new Set(PAUSED_ALLOWED_REACTOR_TYPES) : null,
     });
 
-    if (pendingBefore === 0 && !queued) {
+    if (work?.blocked) {
+      // keep blocked idle
+    } else if (pendingBefore === 0 && !queued) {
       work = { worked: false, task: null };
     } else if (paused && !queued) {
       work = { worked: false, task: null };
@@ -252,7 +282,7 @@ export async function processCycleOnce(root, subject, flags = {}) {
       }
     } else {
       const { workOnce } = await import('./daemon-core.mjs');
-      const type = (!paused && pendingBefore > 0) ? 'cognitive_reaction' : (queued?.type ?? null);
+      const type = queued?.type ?? null;
       work = await workOnce(root, subject, {
         mock: env.mock,
         'skip-investigate': env.skipInvestigate,
@@ -267,7 +297,7 @@ export async function processCycleOnce(root, subject, flags = {}) {
 
   const channelAfter = snapshotChannel(root, subject);
   const healthAfter = snapshotCycleHealth(root, subject);
-  const pendingAfter = pendingEvidenceCount(root, subject, { ignoreAfterMs: startedMs });
+  const pendingAfter = pendingEvidenceCount(root, subject);
   const runtime = runtimeForSubject(root, subject);
   const classified = classifyResult({
     work,

@@ -232,6 +232,40 @@ describe('ClientLifecycleController', () => {
     ))).toBe(true)
   })
 
+  it('does not auto-start Cycle when a v3 journal exists without a ready ledger', async () => {
+    const { runtime, lifecycle, spawnMock } = createProject()
+    const { join } = await import('node:path')
+    const { mkdirSync, writeFileSync } = await import('node:fs')
+    const dataRoot = join(runtime.jeaHome, 'subjects', 'alpha-data', 'data')
+    const genDir = join(dataRoot, 'evolution', 'reactor', 'evidence-index-generations', 'gen-upgrade')
+    mkdirSync(genDir, { recursive: true })
+    writeFileSync(join(dataRoot, 'evolution', 'reactor', 'evidence-index.json'), JSON.stringify({
+      schema_version: 'evidence-index.v3',
+      generation: 'gen-upgrade',
+      active_directory: 'evidence-index-generations/gen-upgrade',
+      journal_size: 4096,
+      updated_at: new Date().toISOString()
+    }))
+    writeFileSync(join(genDir, 'entries.jsonl'), `${'{"evidence_key":"k"}\n'.repeat(80)}`)
+    writeFileSync(join(genDir, 'journal-state.json'), JSON.stringify({
+      schema_version: 'evidence-journal-state.v1',
+      generation: 'gen-upgrade',
+      journal_lines: 80,
+      unique_evidence_keys: 80
+    }))
+    const result = await lifecycle.reconcileStartup()
+    const cycle = result.actions.find((item) => item.domain === 'cycle')
+    expect(cycle).toMatchObject({
+      action: 'skip',
+      outcome: 'skipped'
+    })
+    expect(['migration_required', 'activation_ledger_unresolved']).toContain(cycle?.reason)
+    expect(result.actions.some((item) => item.domain === 'channel' && item.outcome === 'started')).toBe(true)
+    expect(spawnMock.mock.calls.some(([, args]) => (
+      Array.isArray(args) && args.includes('--domain') && args[args.indexOf('--domain') + 1] === 'cycle'
+    ))).toBe(false)
+  })
+
   it('does not stop an external worker when switching subjects', async () => {
     const { runtime, lifecycle, supervisor } = createProject()
     writeWorkerState(runtime, 'alpha', {

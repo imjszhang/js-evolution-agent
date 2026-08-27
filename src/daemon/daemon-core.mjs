@@ -98,6 +98,10 @@ import {
   scheduleReactorTurn,
 } from './reactor-scheduler.mjs';
 import { enqueueWakeIntent } from '../evolution/reactor/wake-store.mjs';
+import { pumpEvidenceRouter } from '../evolution/reactor/evidence-router-pump.mjs';
+import { inspectControlPlaneReadiness } from '../evolution/reactor/control-plane-readiness.mjs';
+import { readActivationLedgerStore } from './activation-ledger-read.mjs';
+import { runtimeForSubject } from '../infra/runtime-paths.mjs';
 import { classifyReactorError } from '../evolution/reactor/rule-resilience.mjs';
 import {
   createSupervisorLeaseGuard,
@@ -642,7 +646,19 @@ async function workReactorTask(root, subject, task, flags) {
         result: outcome?.result ?? outcome,
       });
       if (task.input?.identity_key) {
-        completeScheduledActivation(root, subject, task.input.identity_key, { kind: 'handle' });
+        const effect = outcome?.activation_effect
+          ?? outcome?.result?.activation_effect
+          ?? 'handle';
+        if (effect === 'defer') {
+          completeScheduledActivation(root, subject, task.input.identity_key, {
+            kind: 'defer',
+            hold_reason: outcome?.hold_reason ?? outcome?.result?.hold_reason,
+          });
+        } else if (effect === 'release') {
+          releaseScheduledActivation(root, subject, task.input.identity_key);
+        } else {
+          completeScheduledActivation(root, subject, task.input.identity_key, { kind: 'handle' });
+        }
       }
       recordDaemonEvent(root, subject, {
         type: 'task_completed',
@@ -1181,11 +1197,21 @@ export async function runDaemonWorker(root, subject, flags = {}) {
           tick_ms: tickMs,
         });
         try {
-          const scheduled = scheduleReactorTurn(root, subject, { enqueueTask, readTaskQueue });
-          scanWakeBacklog(root, subject, {
-            enqueueTask,
-            skipKinds: scheduled?.skip_scan_kinds || [],
+          const dataRoot = runtimeForSubject(root, subject).dataRoot;
+          const readiness = inspectControlPlaneReadiness({
+            dataRoot,
+            readLedger: readActivationLedgerStore,
           });
+          if (readiness.allow_pump) {
+            pumpEvidenceRouter(dataRoot, { subject, limit: 32 });
+          }
+          if (readiness.ready || readiness.fresh_subject) {
+            const scheduled = scheduleReactorTurn(root, subject, { enqueueTask, readTaskQueue });
+            scanWakeBacklog(root, subject, {
+              enqueueTask,
+              skipKinds: scheduled?.skip_scan_kinds || [],
+            });
+          }
         } catch (err) {
           recordLoopFailure(root, subject, { operation: 'wake_backlog_scan', err });
         }
