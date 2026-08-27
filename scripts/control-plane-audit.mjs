@@ -7,8 +7,9 @@
  *
  * Usage:
  *   node scripts/control-plane-audit.mjs [--repo DIR] [--target PATH] [--json]
- *     [--skip-baseline] [--size tiny|smoke] [--subject NAME]
+ *     [--out PATH] [--skip-baseline] [--size tiny|smoke] [--subject NAME]
  */
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, printReport, repoRootFrom } from './release-lib.mjs';
@@ -42,6 +43,11 @@ export async function main(argv = process.argv.slice(2)) {
     ...(report.checks || []).map((item) => `${item.ok ? 'ok' : 'fail'} ${item.id}`),
     ...(report.gate?.failures || []).map((item) => `gate ${item.id}: ${item.reason || item.expected || 'failed'}`),
   ];
+  if (args.out) {
+    const outPath = resolve(String(args.out));
+    mkdirSync(resolve(outPath, '..'), { recursive: true });
+    writeFileSync(outPath, `${JSON.stringify(report, null, 2)}\n`);
+  }
   if (args.json) printReport(report, { json: true });
   else process.stdout.write(renderControlPlaneAuditText(report));
   return report.ok ? 0 : 1;

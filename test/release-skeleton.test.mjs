@@ -554,6 +554,10 @@ describe('release-attach-assets', () => {
     expect(macos.indexOf('Packaged launch smoke (not the 30-minute soak)'))
       .toBeLessThan(macos.indexOf('Write certification evidence from artifacts'));
     expect(macos).toContain('dist/release/soak-report.json');
+    expect(macos).toContain('--out dist/release/control-plane-audit.json');
+    expect(macos).not.toMatch(
+      /npm run(?: --silent)? audit:control-plane[^\n]*>\s*dist\/release\/control-plane-audit\.json/,
+    );
     expect(macos).toContain('JEA_CONTRACT_MODE: strict');
     expect(attach).toContain('JEA_CONTRACT_MODE: strict');
     expect(attach).toContain('gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID"');
