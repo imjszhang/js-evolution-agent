@@ -1,6 +1,6 @@
 # 产品打包与 CLI 启动器
 
-本目录是 JEA 0.3.0 macOS 产品身份、启动器与打包路径的 owner；版本与发布接线对应 issue #216。已发布产品仍是 0.2.1，直到操作者打 tag。
+本目录是 JEA 0.3.0 macOS 产品身份、启动器与打包路径的 owner。已发布产品是 [v0.3.0](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.3.0)。
 
 ## 冻结决策
 

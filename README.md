@@ -28,11 +28,11 @@
 
 > Not a fixed `/goal` coding loop that runs until tests pass — an **evolution loop** with theoretical constraints, governance boundaries, and auditable receipts. When an old goal (law) is falsified by consequences, the system enters a rule-update phase instead of spinning or grinding.
 
-## Product (0.2.1)
+## Product (0.3.0)
 
-Published product is **0.2.1**. 0.3.0 control-plane certification wiring is in progress ([#216](https://github.com/imjszhang/js-evolution-agent/issues/216)); there is no `v0.3.0` GitHub Release until an operator tags it.
+Published product is **0.3.0** ([v0.3.0](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.3.0)). Certification: [docs/release/0.3.0-certification.md](docs/release/0.3.0-certification.md).
 
-JEA 0.2.1 is a **macOS Apple Silicon** app with a bundled `jea` CLI. Its shared Electron/Web workspace has three operator surfaces:
+JEA 0.3.0 is a **macOS Apple Silicon** app with a bundled `jea` CLI. Its shared Electron/Web workspace has three operator surfaces:
 
 1. **Subject and local sessions**
 2. **Governed conversation** through the Channel classifier / presence / speech pipeline (chat text is not hard approval)
@@ -46,7 +46,7 @@ The source-host commands below are also the development and recovery path.
 
 ## Table of contents
 
-- [Product (0.2.1)](#product-021)
+- [Product (0.3.0)](#product-030)
 - [Core innovation: goal self-correction](#core-innovation-goal-self-correction)
 - [Alignment with Loop Engineering](#alignment-with-loop-engineering)
 - [What this is](#what-this-is)

@@ -28,11 +28,11 @@
 
 > 不是「固定 `/goal` 直到测试通过」的 coding loop，而是带理论约束、治理边界与可审计回执的 **演化 loop** — 当旧目标（法则）被后果证伪时，系统进入规则更新期，而非空转或硬撑。
 
-## 产品（0.2.1）
+## 产品（0.3.0）
 
-已发布产品仍是 **0.2.1**。0.3.0 控制面认证接线进行中（[#216](https://github.com/imjszhang/js-evolution-agent/issues/216)）；操作者打 tag 之前不存在 `v0.3.0` GitHub Release。
+已发布产品是 **0.3.0**（[v0.3.0](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.3.0)）。认证清单见 [docs/release/0.3.0-certification.md](docs/release/0.3.0-certification.md)。
 
-JEA 0.2.1 是 **macOS Apple Silicon** 应用，并附带托管 `jea` CLI。Electron 与 Web 共用三栏操作者工作区：
+JEA 0.3.0 是 **macOS Apple Silicon** 应用，并附带托管 `jea` CLI。Electron 与 Web 共用三栏操作者工作区：
 
 1. **Subject 与本地会话**
 2. **受治理对话**，走 Channel classifier / presence / speech 管道（聊天文本不是 hard approval）
@@ -46,7 +46,7 @@ Settings 覆盖 JEA Home、默认 Subject、CLI 安装、外观和 About。Elect
 
 ## 目录
 
-- [产品（0.2.1）](#产品021)
+- [产品（0.3.0）](#产品030)
 - [核心创新：目标自修正](#核心创新目标自修正)
 - [与 Loop Engineering 的对齐](#与-loop-engineering-的对齐)
 - [这是什么](#这是什么)

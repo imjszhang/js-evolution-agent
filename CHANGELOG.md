@@ -1,8 +1,15 @@
 # Changelog
 
-## 0.3.0 — in certification（未发布）
+## 0.3.0 — 2026-08-27
 
-JEA 0.3.0 正在认证接线（[#216](https://github.com/imjszhang/js-evolution-agent/issues/216)）。**尚未**作为 GitHub Release 发布。已发布产品仍是 [v0.2.1](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.2.1)。闭环门槛仍冻结在 `0.2.0-belief-loop`；新增独立的 `0.3.0-reactor-control-plane` 验收目标。
+JEA 0.3.0 已作为 [GitHub Release v0.3.0](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.3.0) 发布（[#208](https://github.com/imjszhang/js-evolution-agent/issues/208)）。闭环门槛仍冻结在 `0.2.0-belief-loop`；新增独立的 `0.3.0-reactor-control-plane` 验收目标。
+
+### 运行时
+
+- 把 evidence 权威与 Reactor 工作分开：Activation Ledger 身份是 `(reactor, evidence_key, activation_policy_version)`；journal rebuild 不创造新工作。
+- 统一 Activation Ledger store、router、scheduler、cognitive skip 与 progress projection。
+- 产品面不再把 heartbeat + 大量 replay ready 映射成 `catching_up`。
+- Channel 与 Cycle 共用同一套 LLM 预算账本（`jea llm budget`）。
 
 ### 发布接线
 
