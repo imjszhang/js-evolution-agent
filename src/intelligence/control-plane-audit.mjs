@@ -892,15 +892,40 @@ function checkProductMapping() {
     catchUp: { paused: false },
     reactorProgress: {
       scheduler_state: 'catching_up',
+      freshness: { status: 'fresh', as_of: AT },
       activity: {
         last_progress_at: AT,
         current_task: null,
         current_claim: null,
       },
+      reactors: {
+        cognitive: {
+          realtime: { ready: 0, claimed: 0, deferred: 0, blocked: 0, handled_total: 0, open_total: 0 },
+          replay: { ready: 0, claimed: 0, deferred: 0, blocked: 0, handled_total: 0, open_total: 0 },
+        },
+      },
     },
   };
-  const listening = projectSubjectReadiness({ ...base, pendingEvidence: 0 });
-  const queued = projectSubjectReadiness({ ...base, pendingEvidence: 12 });
+  const listening = projectSubjectReadiness({
+    ...base,
+    reactorProgress: {
+      ...base.reactorProgress,
+      scheduler_state: 'listening',
+    },
+  });
+  const queued = projectSubjectReadiness({
+    ...base,
+    reactorProgress: {
+      ...base.reactorProgress,
+      scheduler_state: 'queued',
+      reactors: {
+        cognitive: {
+          realtime: { ready: 12, claimed: 0, deferred: 0, blocked: 0, handled_total: 0, open_total: 12 },
+          replay: { ready: 0, claimed: 0, deferred: 0, blocked: 0, handled_total: 0, open_total: 0 },
+        },
+      },
+    },
+  });
   const intents = [listening.automation?.intent, queued.automation?.intent];
   const allowed = intents.every((intent) => intent === 'listening' || intent === 'queued');
   return check('product_mapping_heartbeat_plus_large_replay_ready', allowed

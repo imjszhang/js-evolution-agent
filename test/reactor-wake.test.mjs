@@ -251,7 +251,7 @@ describe('rule and memory gates', () => {
     expect(gate.reason).toBe('below_threshold');
   });
 
-  it('wakes memory from backlog scan when compaction is due', () => {
+  it('reports memory due from backlog scan without admitting Memory work', () => {
     const root = makeRoot();
     const runtime = runtimeForSubject(root, 'alpha');
     mkdirSync(join(runtime.dataRoot, 'evolution', 'reactor'), { recursive: true });
@@ -271,7 +271,8 @@ describe('rule and memory gates', () => {
     process.env.JEA_EVIDENCE_WAKE = '1';
     try {
       const scanned = scanWakeBacklog(root, 'alpha', { enqueueTask });
-      expect(scanned.enqueued.some((item) => item.intent?.kind === 'memory' || item.task?.type === 'memory_compaction')).toBe(true);
+      expect(scanned.memory.due).toBe(true);
+      expect(scanned.enqueued.some((item) => item.intent?.kind === 'memory' || item.task?.type === 'memory_compaction')).toBe(false);
     } finally {
       if (previous == null) delete process.env.JEA_EVIDENCE_WAKE;
       else process.env.JEA_EVIDENCE_WAKE = previous;

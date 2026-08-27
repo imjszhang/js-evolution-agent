@@ -254,15 +254,18 @@ describe('ClientLifecycleController', () => {
       unique_evidence_keys: 80
     }))
     const result = await lifecycle.reconcileStartup()
-    const cycle = result.actions.find((item) => item.domain === 'cycle')
+    const cycle = result.actions.find((item) => item.subject === 'alpha' && item.domain === 'cycle')
     expect(cycle).toMatchObject({
       action: 'skip',
       outcome: 'skipped'
     })
     expect(['migration_required', 'activation_ledger_unresolved']).toContain(cycle?.reason)
-    expect(result.actions.some((item) => item.domain === 'channel' && item.outcome === 'started')).toBe(true)
+    expect(result.actions.some((item) => item.subject === 'alpha' && item.domain === 'channel' && item.outcome === 'started')).toBe(true)
     expect(spawnMock.mock.calls.some(([, args]) => (
-      Array.isArray(args) && args.includes('--domain') && args[args.indexOf('--domain') + 1] === 'cycle'
+      Array.isArray(args)
+      && args.includes('--domain')
+      && args[args.indexOf('--domain') + 1] === 'cycle'
+      && args.includes('alpha')
     ))).toBe(false)
   })
 
