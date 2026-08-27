@@ -6,6 +6,8 @@ import { writeJsonFile } from '../src/infra/files.mjs';
 import { initData } from '../src/cli/commands/data.mjs';
 import { writePendingOperatorBrief } from '../src/intelligence/operator-briefs.mjs';
 import { processCycleOnce, processOnceCommandExitCode } from '../src/daemon/cycle-process-once.mjs';
+import { pumpEvidenceRouter } from '../src/evolution/reactor/evidence-router-pump.mjs';
+import { readActivationLedgerStore } from '../src/daemon/activation-ledger-read.mjs';
 import { workOnce } from '../src/daemon/daemon-core.mjs';
 import { buildDaemonProjection } from '../src/daemon/daemon-projection.mjs';
 import { buildReactorHealthProjection } from '../src/daemon/reactor-health.mjs';
@@ -49,6 +51,12 @@ function makeIsolatedRoot() {
     },
   });
   initData(root, { subject: SUBJECT });
+  const runtime = runtimeForSubject(root, SUBJECT);
+  pumpEvidenceRouter(runtime.dataRoot, {
+    subject: SUBJECT,
+    limit: 8,
+    readLedger: readActivationLedgerStore,
+  });
   return { root, jeaHome };
 }
 

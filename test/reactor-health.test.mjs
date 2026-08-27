@@ -12,8 +12,16 @@ import { writePendingOperatorBrief } from '../src/intelligence/operator-briefs.m
 import { claimsPath } from '../src/evolution/reactor/paths.mjs';
 import { updateEvidenceJournalState } from '../src/evolution/reactor/evidence-index.mjs';
 import { runtimeForSubject } from '../src/infra/runtime-paths.mjs';
+import {
+  emptyActivationLedgerStore,
+  writeActivationLedger,
+} from '../src/evolution/reactor/activation-ledger-store.mjs';
 
 let tempDir = null;
+
+function seedEmptyLedger(dataRoot) {
+  writeActivationLedger(dataRoot, emptyActivationLedgerStore());
+}
 
 function makeRoot() {
   tempDir = mkdtempSync(join(tmpdir(), 'jea-reactor-health-'));
@@ -93,6 +101,7 @@ describe('reactor health projection', () => {
   it('treats unrouted legacy eligible envelopes as diagnostics, not stalled work', () => {
     const root = makeRoot();
     const runtime = runtimeForSubject(root, 'alpha');
+    seedEmptyLedger(runtime.dataRoot);
     const old = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
     writePendingOperatorBrief(runtime.runtimeRoot, {
       id: 'brief-stale-1',
@@ -162,6 +171,7 @@ describe('reactor health projection', () => {
   it('does not stall a missing worker on legacy eligible envelopes when ledger open is 0', () => {
     const root = makeRoot();
     const runtime = runtimeForSubject(root, 'alpha');
+    seedEmptyLedger(runtime.dataRoot);
     const old = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
     writePendingOperatorBrief(runtime.runtimeRoot, {
       id: 'brief-noworker-1',
@@ -220,6 +230,7 @@ describe('reactor health projection', () => {
   it('keeps legacy eligibility as a diagnostic that matches the claim ledger scan', () => {
     const root = makeRoot();
     const runtime = runtimeForSubject(root, 'alpha');
+    seedEmptyLedger(runtime.dataRoot);
     writePendingOperatorBrief(runtime.runtimeRoot, {
       id: 'brief-eligible-1',
       summary: 'eligible brief',

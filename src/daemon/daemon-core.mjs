@@ -527,6 +527,12 @@ function isRetiredTrainTaskType(type) {
   return type === 'run_cycle' || ALL_CYCLE_STEP_TYPES.includes(type);
 }
 
+export function resolveReactorActivationEffect(outcome) {
+  const raw = outcome?.activation_effect ?? outcome?.result?.activation_effect;
+  if (raw === 'handle' || raw === 'defer' || raw === 'release') return raw;
+  return 'release';
+}
+
 export function failReactorTask(root, subject, task, failure) {
   if (failure?.code === 'lease_lost' && task?.input?.identity_key) {
     releaseScheduledActivation(root, subject, task.input.identity_key);
@@ -548,6 +554,16 @@ export function failReactorTask(root, subject, task, failure) {
       error_reason: failure.reason,
     });
     return { ok: false, retryable: true, task: released.task, failure };
+  }
+  if (failure?.code !== 'lease_lost' && task?.input?.identity_key) {
+    completeScheduledActivation(root, subject, task.input.identity_key, {
+      kind: 'defer',
+      hold_reason: {
+        class: 'policy',
+        code: failure?.code || 'task_failed',
+        detail: failure?.reason || failure?.message || '',
+      },
+    });
   }
   const failed = failTask(root, subject, task.task_id, failure);
   recordDaemonEvent(root, subject, {
@@ -646,9 +662,7 @@ async function workReactorTask(root, subject, task, flags) {
         result: outcome?.result ?? outcome,
       });
       if (task.input?.identity_key) {
-        const effect = outcome?.activation_effect
-          ?? outcome?.result?.activation_effect
-          ?? 'handle';
+        const effect = resolveReactorActivationEffect(outcome);
         if (effect === 'defer') {
           completeScheduledActivation(root, subject, task.input.identity_key, {
             kind: 'defer',
@@ -1203,7 +1217,11 @@ export async function runDaemonWorker(root, subject, flags = {}) {
             readLedger: readActivationLedgerStore,
           });
           if (readiness.allow_pump) {
-            pumpEvidenceRouter(dataRoot, { subject, limit: 32 });
+            pumpEvidenceRouter(dataRoot, {
+              subject,
+              limit: 32,
+              readLedger: readActivationLedgerStore,
+            });
           }
           if (readiness.ready || readiness.fresh_subject) {
             const scheduled = scheduleReactorTurn(root, subject, { enqueueTask, readTaskQueue });

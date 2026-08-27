@@ -8,6 +8,11 @@
 import { existsSync, statSync } from 'node:fs';
 import { readJson, writeJson } from '../../infra/json-store.mjs';
 import { nowIso } from '../../infra/runtime-paths.mjs';
+import {
+  activationLedgerPath,
+  emptyActivationLedgerStore,
+  writeActivationLedger,
+} from './activation-ledger-store.mjs';
 import { inspectControlPlaneReadiness } from './control-plane-readiness.mjs';
 import {
   evidenceIndexJournalPath,
@@ -60,9 +65,23 @@ function journalByteLength(dataRoot) {
   }
 }
 
+function ensureEmptyLedgerForFreshSubject(dataRoot, generation) {
+  if (!dataRoot) return;
+  try {
+    const file = activationLedgerPath(dataRoot);
+    if (existsSync(file)) return;
+    writeActivationLedger(dataRoot, emptyActivationLedgerStore({
+      generation: generation ?? null,
+      updated_at: nowIso(),
+    }));
+  } catch {
+    // Next inspect without a ledger fail-closes. Do not invent entries.
+  }
+}
+
 /**
  * Route a bounded window of newly appended journal entries.
- * Cursor advances only after each successful route (or skipped hydrate).
+ * Cursor advances only after a successful hydrate+route.
  */
 export function pumpEvidenceRouter(dataRoot, {
   limit = DEFAULT_ROUTER_PUMP_LIMIT,
@@ -98,6 +117,9 @@ export function pumpEvidenceRouter(dataRoot, {
   }
 
   const generation = journalGeneration(dataRoot);
+  if (readiness.fresh_subject) {
+    ensureEmptyLedgerForFreshSubject(dataRoot, generation);
+  }
   if (!generation) {
     return { ok: true, routed: 0, reason: 'no_journal_generation', eof: true };
   }
@@ -133,14 +155,25 @@ export function pumpEvidenceRouter(dataRoot, {
     const compact = item.entry;
     const endOffset = item.endOffset;
     const envelope = hydrateIndexedEnvelope(dataRoot, compact);
-    if (envelope) {
-      const outcome = routeEvidenceDelta(dataRoot, {
-        envelopes: [envelope],
-        subject,
-      });
-      routed += 1;
-      created += outcome.created?.length ?? 0;
+    if (!envelope) {
+      return {
+        ok: false,
+        reason: 'hydrate_failed',
+        routed,
+        created,
+        generation,
+        offset: lastOffset,
+        eof: false,
+        retryable: true,
+        ready: readiness.ready,
+      };
     }
+    const outcome = routeEvidenceDelta(dataRoot, {
+      envelopes: [envelope],
+      subject,
+    });
+    routed += 1;
+    created += outcome.created?.length ?? 0;
     lastOffset = endOffset;
     writeRouterCursor(dataRoot, { generation, offset: lastOffset });
   }

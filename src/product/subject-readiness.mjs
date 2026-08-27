@@ -411,9 +411,16 @@ function laneOpenCount(slice) {
 export function remainingWorkFromProgress(progress) {
   if (!progress || typeof progress !== 'object') return null;
   if (progress.freshness?.status === 'unknown') return null;
-  const cog = progress.reactors?.cognitive;
-  if (!cog) return null;
-  return laneOpenCount(cog.realtime) + laneOpenCount(cog.replay);
+  const reactors = progress.reactors;
+  if (!reactors || typeof reactors !== 'object') return null;
+  let remaining = 0;
+  let seen = false;
+  for (const lanes of Object.values(reactors)) {
+    if (!lanes || typeof lanes !== 'object') continue;
+    remaining += laneOpenCount(lanes.realtime) + laneOpenCount(lanes.replay);
+    seen = true;
+  }
+  return seen ? remaining : null;
 }
 
 function hasOpenReplay(progress) {

@@ -67,7 +67,7 @@ describe('reactor progress product projection', () => {
       { ...observabilityBase, reactor_progress: progress }
     )
     expect(runtime.intent).toBe('listening')
-    expect(runtime.remaining_evidence).toBe(8055) // from cognitive.replay.ready, not evidence_pending_count
+    expect(runtime.remaining_evidence).toBe(8055 + 20 + 4) // Cognitive + Rule + Memory open, not evidence_pending_count
   })
 
   it('rejects a lying catching_up snapshot that only has a heartbeat', () => {

@@ -55,6 +55,7 @@ describe('event-driven reactor wake', () => {
   it('enqueues cognitive_reaction without opening a cycle', () => {
     const root = makeRoot();
     const runtime = runtimeForSubject(root, 'alpha');
+    pumpEvidenceRouter(runtime.dataRoot, { subject: 'alpha', limit: 8 });
     writePendingOperatorBrief(runtime.runtimeRoot, {
       summary: 'event-driven canary brief',
     });
@@ -72,6 +73,7 @@ describe('event-driven reactor wake', () => {
   it('skips evidence-backlog cognition after the catch-up budget, but Check now still enqueues', () => {
     const root = makeRoot();
     const runtime = runtimeForSubject(root, 'alpha');
+    pumpEvidenceRouter(runtime.dataRoot, { subject: 'alpha', limit: 8 });
     writePendingOperatorBrief(runtime.runtimeRoot, {
       summary: 'catch-up budget brief',
     });

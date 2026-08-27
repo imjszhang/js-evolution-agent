@@ -569,6 +569,14 @@ describe('readiness projector invariants', () => {
           cognitive: {
             realtime: { ready: 0, claimed: 0, deferred: 0, blocked: 0, handled_total: 0 },
             replay: { ready: 8055, claimed: 0, deferred: 0, blocked: 0, handled_total: 0 }
+          },
+          rule: {
+            realtime: { ready: 0, claimed: 0, deferred: 0, blocked: 0, handled_total: 0 },
+            replay: { ready: 2, claimed: 0, deferred: 0, blocked: 0, handled_total: 0 }
+          },
+          memory: {
+            realtime: { ready: 0, claimed: 0, deferred: 0, blocked: 0, handled_total: 0 },
+            replay: { ready: 1, claimed: 0, deferred: 0, blocked: 0, handled_total: 0 }
           }
         },
         reactor_overlap: { additive: false, note: 'reactor_counts_may_overlap_authoritative_evidence' },
@@ -577,7 +585,7 @@ describe('readiness projector invariants', () => {
     })
     expect(value.automation?.intent).toBe('listening')
     expect(value.automation?.intent).not.toBe('catching_up')
-    expect(value.automation?.remaining_evidence).toBe(8055)
+    expect(value.automation?.remaining_evidence).toBe(8058)
     expect(value.automation?.remaining_evidence).not.toBeUndefined()
     expect(value.reactor_progress?.scheduler_state).toBe('listening')
     expect(value.reactor_progress?.worker_liveness.alive).toBe(true)

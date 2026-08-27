@@ -2,12 +2,16 @@
  * Control-plane readiness for Cycle admission.
  *
  * Fresh subjects may start Cycle (the router pump creates an empty ledger).
- * Upgraded subjects with a missing, degraded, oversized, or incomplete
- * Activation Ledger / migration must not auto-start Cycle. Channel stays up.
+ * Fresh means: no generation journal, no ledger, and no historical authority
+ * evidence. A journal without a ready ledger is always a migration problem.
+ * Upgraded subjects must not auto-start Cycle. Channel stays up.
  */
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+import { STREAM_PATHS } from '../../intelligence/evidence-stream.mjs';
 import { readJson } from '../../infra/json-store.mjs';
 import {
+  ACTIVATION_LEDGER_PROJECTION_SCHEMA,
   activationLedgerPath,
   activationLedgerProjectionPath,
   readActivationMigrationState,
@@ -17,13 +21,12 @@ import {
   EVIDENCE_INDEX_GENERATION_SCHEMA,
   evidenceIndexJournalPath,
   evidenceIndexPath,
-  readEvidenceJournalState,
+  evidenceSourceFileState,
+  jsonDirectoryDescriptors,
+  sourceDescriptors,
 } from './evidence-index.mjs';
 
 const DEFAULT_LEDGER_MAX_BYTES = 64 * 1024 * 1024;
-
-export const FRESH_JOURNAL_ENTRY_BUDGET = 64;
-export const FRESH_JOURNAL_BYTES_BUDGET = 256 * 1024;
 
 const INCOMPLETE_MIGRATION = new Set([
   'inspecting',
@@ -54,21 +57,6 @@ function journalManifest(dataRoot) {
   }
 }
 
-function journalLineEstimate(dataRoot, manifest) {
-  const state = readEvidenceJournalState(dataRoot);
-  const lines = Number(state?.journal_lines ?? state?.unique_evidence_keys ?? 0);
-  if (Number.isFinite(lines) && lines > 0) return lines;
-  const path = evidenceIndexJournalPath(dataRoot);
-  if (!existsSync(path)) return 0;
-  try {
-    const bytes = statSync(path).size;
-    if (bytes > FRESH_JOURNAL_BYTES_BUDGET && lines === 0) return Number.POSITIVE_INFINITY;
-    return 0;
-  } catch {
-    return manifest?.journal_size ? Number.POSITIVE_INFINITY : 0;
-  }
-}
-
 function ledgerFileState(dataRoot) {
   try {
     const file = activationLedgerPath(dataRoot);
@@ -94,6 +82,105 @@ function classifyLedgerRead(snapshot) {
   return { ok: false, reason: snapshot.reason || 'activation_ledger_unresolved', snapshot };
 }
 
+function snapshotFromProjection(projection) {
+  return {
+    status: 'ok',
+    reason: null,
+    source: 'projection',
+    generation: projection.generation ?? null,
+    sequence: Number.isInteger(projection.sequence) ? projection.sequence : null,
+    updated_at: projection.updated_at ?? null,
+    reactors: projection.reactors ?? null,
+    entries: Array.isArray(projection.open_entries) ? projection.open_entries : [],
+  };
+}
+
+function readCompactProjection(dataRoot) {
+  try {
+    const file = activationLedgerProjectionPath(dataRoot);
+    if (!existsSync(file)) return null;
+    const raw = readJson(file, null);
+    if (!raw || typeof raw !== 'object') return null;
+    if (raw.schema_version != null && raw.schema_version !== ACTIVATION_LEDGER_PROJECTION_SCHEMA) {
+      return null;
+    }
+    return raw;
+  } catch {
+    return null;
+  }
+}
+
+const BOOTSTRAP_JSONL_KINDS = new Set(['intel_observations', 'evolution_events']);
+
+function isBootstrapOnlyJsonl(absPath, kind) {
+  if (!BOOTSTRAP_JSONL_KINDS.has(kind)) return false;
+  try {
+    const text = readFileSync(absPath, 'utf8');
+    const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    if (!lines.length) return true;
+    return lines.every((line) => {
+      const row = JSON.parse(line);
+      if (kind === 'evolution_events') {
+        return row?.type === 'data_initialized' || row?.source === 'jea data init';
+      }
+      const tags = Array.isArray(row?.tags) ? row.tags : [];
+      return row?.source === 'jea data init'
+        || tags.includes('init')
+        || tags.includes('bootstrap');
+    });
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * True when STREAM_PATHS already hold non-bootstrap authority records.
+ * Does not project envelopes or invent identities. `jea data init` seed
+ * observations / data_initialized events alone do not count as history.
+ */
+export function hasHistoricalAuthorityEvidence(dataRoot) {
+  if (!dataRoot) return false;
+  try {
+    for (const kind of Object.keys(STREAM_PATHS)) {
+      for (const descriptor of sourceDescriptors(dataRoot, kind)) {
+        const abs = join(dataRoot, descriptor.rel);
+        const state = evidenceSourceFileState(abs);
+        if (!state || state.size <= 0) continue;
+        if (isBootstrapOnlyJsonl(abs, kind)) continue;
+        return true;
+      }
+      for (const directory of jsonDirectoryDescriptors(kind)) {
+        const absDir = join(dataRoot, directory.rel);
+        if (!existsSync(absDir)) continue;
+        let names;
+        try {
+          names = readdirSync(absDir);
+        } catch {
+          return true;
+        }
+        for (const name of names) {
+          if (!name.endsWith('.json')) continue;
+          const state = evidenceSourceFileState(join(absDir, name));
+          if (state && state.size > 0) return true;
+        }
+      }
+    }
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+function blocked(reason, extras = {}) {
+  return {
+    ready: false,
+    fresh_subject: false,
+    allow_pump: false,
+    reason,
+    ...extras,
+  };
+}
+
 /**
  * @param {{ dataRoot: string, env?: NodeJS.ProcessEnv, readLedger?: Function }} options
  */
@@ -103,20 +190,18 @@ export function inspectControlPlaneReadiness({
   readLedger = null,
 } = {}) {
   if (!dataRoot) {
-    return {
-      ready: false,
-      fresh_subject: false,
-      allow_pump: false,
-      reason: 'activation_ledger_unresolved',
-      migration: null,
-      ledger: null,
-    };
+    return blocked('activation_ledger_unresolved', { migration: null, ledger: null });
   }
 
   const resumed = resumeActivationMigration(dataRoot);
   const migration = readActivationMigrationState(dataRoot);
   const manifest = journalManifest(dataRoot);
-  const journalPath = existsSync(evidenceIndexJournalPath(dataRoot));
+  let journalPath = false;
+  try {
+    journalPath = existsSync(evidenceIndexJournalPath(dataRoot));
+  } catch {
+    journalPath = false;
+  }
   const hasJournal = Boolean(
     manifest?.generation
     && (journalPath || manifest.schema_version === EVIDENCE_INDEX_GENERATION_SCHEMA),
@@ -124,63 +209,33 @@ export function inspectControlPlaneReadiness({
   const ledgerFile = ledgerFileState(dataRoot);
 
   if (migration?.phase && INCOMPLETE_MIGRATION.has(migration.phase)) {
-    return {
-      ready: false,
-      fresh_subject: false,
-      allow_pump: false,
-      reason: 'migration_required',
+    return blocked('migration_required', {
       migration,
       resumed: resumed.resumed === true,
       ledger: null,
-    };
+    });
   }
 
-  let ledgerSnapshot = null;
-  if (typeof readLedger === 'function') {
-    ledgerSnapshot = readLedger(dataRoot, { env });
+  if (hasJournal && !ledgerFile.exists) {
+    const reason = migration?.phase === 'complete' || migration?.phase === 'switched'
+      ? 'activation_ledger_unresolved'
+      : 'migration_required';
+    return blocked(reason, {
+      migration,
+      resumed: resumed.resumed === true,
+      ledger: null,
+    });
   }
 
   if (!hasJournal && !ledgerFile.exists) {
+    if (hasHistoricalAuthorityEvidence(dataRoot)) {
+      return blocked('migration_required', { migration, ledger: null });
+    }
     return {
       ready: true,
       fresh_subject: true,
       allow_pump: true,
       reason: null,
-      migration,
-      ledger: ledgerSnapshot,
-    };
-  }
-
-  const lines = journalLineEstimate(dataRoot, manifest);
-  const freshBudget = lines <= FRESH_JOURNAL_ENTRY_BUDGET;
-
-  if (!ledgerFile.exists) {
-    if (migration?.phase === 'complete' || migration?.phase === 'switched') {
-      return {
-        ready: false,
-        fresh_subject: false,
-        allow_pump: false,
-        reason: 'activation_ledger_unresolved',
-        migration,
-        resumed: resumed.resumed === true,
-        ledger: null,
-      };
-    }
-    if (!migration?.phase && freshBudget) {
-      return {
-        ready: true,
-        fresh_subject: true,
-        allow_pump: true,
-        reason: null,
-        migration,
-        ledger: null,
-      };
-    }
-    return {
-      ready: false,
-      fresh_subject: false,
-      allow_pump: false,
-      reason: 'migration_required',
       migration,
       ledger: null,
     };
@@ -190,53 +245,32 @@ export function inspectControlPlaneReadiness({
   const maxBytes = Number.isFinite(configuredMax) && configuredMax > 0
     ? Math.floor(configuredMax)
     : DEFAULT_LEDGER_MAX_BYTES;
-  let hasProjection = false;
-  try {
-    hasProjection = existsSync(activationLedgerProjectionPath(dataRoot));
-  } catch {
-    hasProjection = false;
-  }
+  const projection = readCompactProjection(dataRoot);
 
-  if (ledgerFile.bytes != null && ledgerFile.bytes > maxBytes && !hasProjection) {
-    return {
-      ready: false,
-      fresh_subject: false,
-      allow_pump: false,
-      reason: 'activation_ledger_oversized',
-      migration,
-      ledger: ledgerSnapshot,
-    };
-  }
-
-  if (!ledgerSnapshot && typeof readLedger === 'function') {
+  let ledgerSnapshot = null;
+  if (projection) {
+    ledgerSnapshot = snapshotFromProjection(projection);
+  } else if (typeof readLedger === 'function') {
     ledgerSnapshot = readLedger(dataRoot, { env });
-  } else if (ledgerFile.exists && !ledgerSnapshot) {
-    const raw = readJson(ledgerFile.path, null);
-    if (raw == null && !hasProjection) {
-      return {
-        ready: false,
-        fresh_subject: false,
-        allow_pump: false,
-        reason: 'activation_ledger_degraded',
-        migration,
-        ledger: null,
-      };
-    }
+  } else if (ledgerFile.bytes != null && ledgerFile.bytes > maxBytes) {
+    return blocked('activation_ledger_oversized', {
+      migration,
+      ledger: null,
+    });
   }
 
   if (ledgerSnapshot) {
     const classified = classifyLedgerRead(ledgerSnapshot);
     if (!classified.ok) {
-      return {
-        ready: false,
-        fresh_subject: false,
-        allow_pump: false,
-        reason: LEDGER_BLOCK_REASONS.has(classified.reason)
+      return blocked(
+        LEDGER_BLOCK_REASONS.has(classified.reason)
           ? classified.reason
           : 'activation_ledger_degraded',
-        migration,
-        ledger: ledgerSnapshot,
-      };
+        {
+          migration,
+          ledger: ledgerSnapshot,
+        },
+      );
     }
   }
 

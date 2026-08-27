@@ -231,7 +231,11 @@ export async function processCycleOnce(root, subject, flags = {}) {
       work = { worked: false, task: null, blocked: true, reason: controlPlane.reason };
     } else {
       if (controlPlane.allow_pump) {
-        pumpEvidenceRouter(runtimeEarly.dataRoot, { subject, limit: 64 });
+        pumpEvidenceRouter(runtimeEarly.dataRoot, {
+          subject,
+          limit: 64,
+          readLedger: readActivationLedgerStore,
+        });
       }
       const scheduled = scheduleReactorTurn(root, subject, { enqueueTask, readTaskQueue });
       scanned = scanWakeBacklog(root, subject, {

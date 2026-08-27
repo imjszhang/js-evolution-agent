@@ -13,7 +13,7 @@ import {
 
 export const OPERATOR_COUNT_SOURCES = {
   evidencePending: {
-    source: 'reactor_progress.reactors.cognitive.open_total',
+    source: 'reactor_progress.reactors.*.open_total',
     unit: 'activations'
   },
   daemonTaskPending: {
@@ -61,8 +61,17 @@ function remainingWorkCount(
   readiness: SubjectReadiness,
   progress: ReactorControlPlaneView['progress']
 ): number | null {
-  const cog = progress?.reactors?.cognitive
-  if (cog) return laneOpen(cog.realtime) + laneOpen(cog.replay)
+  if (progress?.freshness?.status === 'unknown') return null
+  const reactors = progress?.reactors
+  if (reactors && typeof reactors === 'object') {
+    let remaining = 0
+    let seen = false
+    for (const lanes of Object.values(reactors)) {
+      remaining += laneOpen(lanes?.realtime) + laneOpen(lanes?.replay)
+      seen = true
+    }
+    if (seen) return remaining
+  }
   if (Number.isFinite(readiness.automation?.remaining_evidence)) {
     return Number(readiness.automation?.remaining_evidence)
   }

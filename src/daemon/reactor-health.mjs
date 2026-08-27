@@ -259,7 +259,7 @@ export function buildReactorHealthProjection(root, subject, {
     ? ledgerOpenTotals(dataRoot, controlPlane.ledger)
     : { open: null, cognitive: null, reactors: null, oldestReadyMs: null, entries: [] };
   if (evidence && typeof evidence === 'object') {
-    evidence.remaining_work_count = ledgerWork.cognitive;
+    evidence.remaining_work_count = ledgerWork.open;
     evidence.is_work_count = false;
   }
 
