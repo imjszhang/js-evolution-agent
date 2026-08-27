@@ -138,7 +138,26 @@ export function artifactStepFromReport(id, report, evidencePath, extra = {}) {
   };
 }
 
-export function collectCertificationInputs(outDir) {
+/**
+ * Linux control-plane audit is source-level and has no packaged build_id.
+ * Fill only missing identity fields from packaged metadata; never overwrite
+ * an existing commit/build_id/dirty/generated_at.
+ */
+export function bindReportToPackagedProvenance(report, metadata, { now = new Date() } = {}) {
+  if (!report || typeof report !== 'object' || !metadata) return report;
+  return {
+    ...report,
+    generated_at: report.generated_at || now.toISOString(),
+    build_id: report.build_id || metadata.build_id || null,
+    commit: report.commit || metadata.commit || null,
+    dirty: report.dirty == null ? Boolean(metadata.dirty) : Boolean(report.dirty),
+  };
+}
+
+export function collectCertificationInputs(outDir, {
+  persistBoundControlPlane = false,
+  now = new Date(),
+} = {}) {
   const dest = resolve(outDir);
   const recoveryPath = join(dest, 'recovery-matrix.json');
   const soakPath = join(dest, 'soak-report.json');
@@ -152,9 +171,22 @@ export function collectCertificationInputs(outDir) {
   const journey = readOptionalJson(journeyPath);
   const launch = readOptionalJson(launchPath);
   const closure = readOptionalJson(closurePath);
-  const controlPlane = readOptionalJson(controlPlanePath);
+  const metadata = readBuildMetadataFile(metadataPath);
+  let controlPlane = readOptionalJson(controlPlanePath);
+  if (controlPlane && metadata) {
+    const bound = bindReportToPackagedProvenance(controlPlane, metadata, { now });
+    if (persistBoundControlPlane && (
+      bound.generated_at !== controlPlane.generated_at
+      || bound.build_id !== controlPlane.build_id
+      || bound.commit !== controlPlane.commit
+      || bound.dirty !== controlPlane.dirty
+    )) {
+      writeFileSync(controlPlanePath, `${JSON.stringify(bound, null, 2)}\n`);
+    }
+    controlPlane = bound;
+  }
   return {
-    metadata: readBuildMetadataFile(metadataPath),
+    metadata,
     recoveryMatrix: artifactStepFromReport('recovery_matrix', recovery, recoveryPath),
     soak: artifactStepFromReport('soak', soak, soakPath),
     closureAudit: artifactStepFromReport('closure_audit', closure, closurePath, {
@@ -431,7 +463,7 @@ export async function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
   const repoRoot = resolve(args.repo || repoRootFrom(import.meta.url));
   const outDir = resolve(args.out || args.dir || join(repoRoot, 'dist/release'));
-  const inputs = collectCertificationInputs(outDir);
+  const inputs = collectCertificationInputs(outDir, { persistBoundControlPlane: true });
   const report = writeCertificationEvidence({
     outDir,
     release: args.release || RELEASE_VERSION,

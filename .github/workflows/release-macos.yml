@@ -162,6 +162,8 @@ jobs:
         with:
           name: control-plane-audit
           path: ${{ inputs.artifact_dir || 'dist/release' }}
+      # Linux audit has no packaged build_id. The evidence writer fills missing
+      # identity from build-metadata.json and persists it before attach.
       - name: Write certification evidence from artifacts
         env:
           ARTIFACT_DIR: ${{ inputs.artifact_dir }}
