@@ -172,6 +172,46 @@ describe('client lifecycle plan', () => {
     expect(plan.actions.find((item) => item.domain === 'channel')?.action).toBe('ensure');
   });
 
+  it('packaged crash recovery: previous supervisor stays attach-only until the worker is gone', () => {
+    const whileLive = planClientLifecycle({
+      activeSubject: 'alpha',
+      reason: 'startup',
+      subjects: [
+        subjectLifecycleInput('alpha', {
+          automation: 'automatic',
+          desktopChannelEnabled: true,
+          cycleLive: true,
+          previousSupervisorCycle: true,
+        }),
+      ],
+    });
+    expect(whileLive.actions.find((item) => item.domain === 'cycle')).toEqual({
+      subject: 'alpha',
+      domain: 'cycle',
+      action: 'attach',
+      reason: 'previous_supervisor_owner',
+    });
+
+    const afterSelfStop = planClientLifecycle({
+      activeSubject: 'alpha',
+      reason: 'startup',
+      subjects: [
+        subjectLifecycleInput('alpha', {
+          automation: 'automatic',
+          desktopChannelEnabled: true,
+          cycleLive: false,
+          previousSupervisorCycle: false,
+        }),
+      ],
+    });
+    expect(afterSelfStop.actions.find((item) => item.domain === 'cycle')).toEqual({
+      subject: 'alpha',
+      domain: 'cycle',
+      action: 'ensure',
+      reason: 'automatic',
+    });
+  });
+
   it('stops an owned Cycle when the active subject is paused', () => {
     const plan = planClientLifecycle({
       activeSubject: 'alpha',

@@ -97,6 +97,8 @@ describe('desktop smoke stages', () => {
     const mainSource = readFileSync(main, 'utf8')
     expect(mainSource).toContain("processRegistry.list('acp')")
     expect(mainSource).toMatch(/reconcileStartup[\s\S]*createWindow/)
+    expect(mainSource).toMatch(/before-quit[\s\S]*shutdownAll\('app_quit'\)/)
+    expect(mainSource).not.toMatch(/lifecycle\.stop\(/)
     expect(mainSource).toMatch(/JEA_DESKTOP_SMOKE[\s\S]*runDesktopSmoke/)
   })
 })
