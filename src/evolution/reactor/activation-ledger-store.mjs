@@ -7,12 +7,14 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 import {
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  readSync,
   renameSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -258,13 +260,50 @@ export function writeActivationLedgerProjectionAt(ledgerFile, store) {
   return path;
 }
 
-function projectionLooksStale(projPath, ledgerPath) {
-  if (!existsSync(projPath)) return true;
-  if (!existsSync(ledgerPath)) return false;
+function peekLedgerMeta(filePath) {
+  if (!filePath || !existsSync(filePath)) {
+    return { generation: null, sequence: null };
+  }
+  const fd = openSync(filePath, 'r');
   try {
-    return statSync(ledgerPath).mtimeMs > statSync(projPath).mtimeMs;
+    const buf = Buffer.alloc(8192);
+    const bytes = readSync(fd, buf, 0, buf.length, 0);
+    const text = buf.subarray(0, bytes).toString('utf8');
+    const generationMatch = text.match(/"generation"\s*:\s*(null|"((?:\\.|[^"\\])*)"|-?\d+)/);
+    const sequenceMatch = text.match(/"sequence"\s*:\s*(null|-?\d+)/);
+    let generation = null;
+    if (generationMatch) {
+      if (generationMatch[1] === 'null') generation = null;
+      else if (generationMatch[2] != null) generation = generationMatch[2];
+      else generation = Number(generationMatch[1]);
+    }
+    const sequence = sequenceMatch && sequenceMatch[1] !== 'null'
+      ? Number(sequenceMatch[1])
+      : null;
+    return {
+      generation,
+      sequence: Number.isInteger(sequence) ? sequence : null,
+    };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function projectionMatchesLedger(projection, meta) {
+  if (!projection || typeof projection !== 'object') return false;
+  const projSeq = Number.isInteger(projection.sequence) ? projection.sequence : null;
+  const metaSeq = Number.isInteger(meta.sequence) ? meta.sequence : null;
+  if (projSeq !== metaSeq) return false;
+  return (projection.generation ?? null) === (meta.generation ?? null);
+}
+
+function readProjectionFile(projPath) {
+  if (!existsSync(projPath)) return null;
+  try {
+    const raw = JSON.parse(readFileSync(projPath, 'utf8'));
+    return raw && typeof raw === 'object' ? raw : null;
   } catch {
-    return true;
+    return null;
   }
 }
 
@@ -286,11 +325,11 @@ export function ensureCompactActivationLedgerProjection(dataRoot, {
   if (!existsSync(file) && !store) {
     return { persisted: false, reason: 'ledger_missing', path: proj };
   }
-  if (!force && !store && existsSync(file) && existsSync(proj) && !projectionLooksStale(proj, file)) {
+  if (!force && !store && existsSync(file) && projectionMatchesLedger(readProjectionFile(proj), peekLedgerMeta(file))) {
     return { persisted: false, reason: 'already_present', path: proj };
   }
   return withJsonLock(file, () => {
-    if (!force && !store && existsSync(file) && existsSync(proj) && !projectionLooksStale(proj, file)) {
+    if (!force && !store && existsSync(file) && projectionMatchesLedger(readProjectionFile(proj), peekLedgerMeta(file))) {
       return { persisted: false, reason: 'already_present', path: proj };
     }
     const current = store ?? readActivationLedgerStore(dataRoot, { manifest, path: file });

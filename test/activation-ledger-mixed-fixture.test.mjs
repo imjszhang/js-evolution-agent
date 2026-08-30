@@ -41,6 +41,7 @@ import { enqueueTask, readTaskQueue } from '../src/daemon/daemon-tasks.mjs';
 import { buildReactorHealthProjection } from '../src/daemon/reactor-health.mjs';
 import { buildDaemonProjection, resetDaemonProjectionCache } from '../src/daemon/daemon-projection.mjs';
 import { remainingWorkFromProgress, readSubjectReadiness } from '../src/product/subject-readiness.mjs';
+import { createRuntimeContext } from '../src/infra/jea-home.mjs';
 import { readActivationLedgerStore as readBoundedLedger } from '../src/daemon/activation-ledger-read.mjs';
 
 const SUBJECT = 'alpha';
@@ -326,7 +327,10 @@ describe('mixed historical Activation Ledger fixture', () => {
 
     const health = buildReactorHealthProjection(root, SUBJECT);
     const daemon = buildDaemonProjection(root, SUBJECT, { cache: false });
-    const readiness = readSubjectReadiness(root, SUBJECT);
+    const readiness = readSubjectReadiness(createRuntimeContext({
+      sourceRoot: root,
+      jeaHome,
+    }), SUBJECT);
     const remaining = remainingWorkFromProgress(daemon.reactor_progress);
     expect(remaining).toBe(1);
     expect(health.evidence.remaining_work_count).toBe(1);
