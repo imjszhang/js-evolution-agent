@@ -11,9 +11,11 @@ import { join } from 'node:path';
 import { STREAM_PATHS } from '../../intelligence/evidence-stream.mjs';
 import { readJson } from '../../infra/json-store.mjs';
 import {
+  ACTIVATION_LEDGER_HOT_MAX_BYTES,
   ACTIVATION_LEDGER_PROJECTION_SCHEMA,
   activationLedgerPath,
   activationLedgerProjectionPath,
+  ensureCompactActivationLedgerProjection,
   readActivationMigrationState,
   resumeActivationMigration,
 } from './activation-ledger-store.mjs';
@@ -247,19 +249,26 @@ export function inspectControlPlaneReadiness({
     ? Math.floor(configuredMax)
     : DEFAULT_LEDGER_MAX_BYTES;
   const projection = readCompactProjection(dataRoot);
+  if (!projection && ledgerFile.bytes != null && ledgerFile.bytes > ACTIVATION_LEDGER_HOT_MAX_BYTES) {
+    return blocked(
+      ledgerFile.bytes > maxBytes
+        ? 'activation_ledger_oversized'
+        : 'activation_ledger_needs_migration',
+      { migration, ledger: null },
+    );
+  }
+  if (ledgerFile.exists && (ledgerFile.bytes == null || ledgerFile.bytes <= maxBytes)) {
+    ensureCompactActivationLedgerProjection(dataRoot);
+  }
+  const latestProjection = readCompactProjection(dataRoot);
 
   let ledgerSnapshot = null;
-  if (projection) {
-    ledgerSnapshot = snapshotFromProjection(projection);
+  if (latestProjection) {
+    ledgerSnapshot = snapshotFromProjection(latestProjection);
   } else if (typeof readLedger === 'function') {
     ledgerSnapshot = readLedger(dataRoot, { env });
   } else if (ledgerFile.bytes != null && ledgerFile.bytes > maxBytes) {
     return blocked('activation_ledger_oversized', {
-      migration,
-      ledger: null,
-    });
-  } else if (ledgerFile.bytes != null && ledgerFile.bytes > 8 * 1024 * 1024) {
-    return blocked('activation_ledger_needs_migration', {
       migration,
       ledger: null,
     });

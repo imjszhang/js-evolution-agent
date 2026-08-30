@@ -10,6 +10,8 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  renameSync,
+  rmSync,
   statSync,
 } from 'node:fs';
 import { cpSync } from 'node:fs';
@@ -297,5 +299,28 @@ export function copyTerminalDirectory(sourceLedgerDir, destLedgerDir) {
   mkdirSync(dirname(dest), { recursive: true });
   cpSync(source, dest, { recursive: true });
   invalidateIdentityIndex(destLedgerDir);
+  return true;
+}
+
+/**
+ * Install a staged terminal directory in place of the live one.
+ * Used by crash-safe mutateLedger so BEFORE_SWITCH leaves live shards untouched.
+ */
+export function installStagedTerminal(stagingLedgerDir, destLedgerDir) {
+  if (!stagingLedgerDir || !destLedgerDir) return false;
+  const staged = activationLedgerTerminalDir(stagingLedgerDir);
+  if (!existsSync(staged)) return false;
+  const live = activationLedgerTerminalDir(destLedgerDir);
+  mkdirSync(dirname(live), { recursive: true });
+  const incoming = `${live}.next`;
+  const outgoing = `${live}.prev`;
+  rmSync(incoming, { recursive: true, force: true });
+  rmSync(outgoing, { recursive: true, force: true });
+  renameSync(staged, incoming);
+  if (existsSync(live)) renameSync(live, outgoing);
+  renameSync(incoming, live);
+  rmSync(outgoing, { recursive: true, force: true });
+  invalidateIdentityIndex(destLedgerDir);
+  invalidateIdentityIndex(stagingLedgerDir);
   return true;
 }
