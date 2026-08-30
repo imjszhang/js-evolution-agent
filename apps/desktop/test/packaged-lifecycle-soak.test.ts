@@ -288,11 +288,12 @@ describe('Packaged JEA.app lifecycle soak (#239)', () => {
     expect(supervisor.owns('alpha', 'cycle')).toBe(false)
     expect(processRegistry.list()).toEqual([])
     expect(supervisor.get('cli').mode).toBe('attached')
-    expect(readWorkerState(runtime, 'cli')).toMatchObject({
+    const cliState = readWorkerState(runtime, 'cli')
+    expect(cliState).toMatchObject({
       status: 'running',
-      stop_requested_at: null,
       pid: process.pid
     })
+    expect(cliState?.stop_requested_at == null).toBe(true)
     expect(killSpy.mock.calls.filter(([pid, signal]) => (
       pid === process.pid && signal && signal !== 0
     ))).toEqual([])
@@ -465,14 +466,36 @@ describe('Packaged JEA.app lifecycle soak (#239)', () => {
       }
     }))
     const runtime = createRuntimeContext({ sourceRoot, jeaHome })
+    const now = new Date().toISOString()
     writeWorkerState(runtime, 'alpha', {
       subject: 'alpha',
       worker_id: 'external-cli',
       pid: process.pid,
       status: 'running',
-      started_at: new Date().toISOString(),
-      heartbeat_at: new Date().toISOString(),
+      started_at: now,
+      heartbeat_at: now,
       stale_after_ms: 60_000
+    })
+    writeChannelWorkerState(runtime, 'alpha', {
+      subject: 'alpha',
+      domain: 'channel',
+      schema_version: 2,
+      pid: process.pid,
+      status: 'running',
+      started_at: now,
+      heartbeat_at: now,
+      coordinator: { pid: process.pid, started_at: now },
+      workers: {
+        notify: {
+          role: 'notify',
+          worker_id: 'external-cli-channel',
+          pid: process.pid,
+          status: 'running',
+          started_at: now,
+          heartbeat_at: now,
+          stale_after_ms: 60_000
+        }
+      }
     })
     const token = 'c'.repeat(40)
     const host = await createWebHost({
@@ -502,7 +525,9 @@ describe('Packaged JEA.app lifecycle soak (#239)', () => {
     expect(status.pid).toBe(process.pid)
     const readiness = await web.getServiceReadiness('alpha')
     expect(readiness.cycle.state).toBe('attached')
+    expect(readiness.channel.state).toBe('attached')
     expect(readiness.allowed_actions).not.toContain('start_cycle')
+    expect(readiness.allowed_actions).not.toContain('start_channel')
     expect(readiness.allowed_actions).not.toContain('stop_managed')
     expect(readiness.allowed_actions).toEqual(['none'])
     await expect(web.startService('alpha', 'cycle')).rejects.toMatchObject({
