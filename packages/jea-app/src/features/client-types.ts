@@ -273,7 +273,14 @@ export interface SubjectReadiness {
     operator_action: string | null
     reason: string | null
     generation: string | null
+    previous_generation?: string | null
     resumed: boolean
+    disk?: {
+      ok: boolean
+      unknown?: boolean
+      available_bytes: number | null
+      required_bytes: number
+    } | null
   } | null
 }
 

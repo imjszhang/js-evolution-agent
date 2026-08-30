@@ -28,7 +28,6 @@ import {
   writeActivationMigrationState,
 } from './activation-ledger-store.mjs';
 import {
-  EVIDENCE_INDEX_GENERATION_SCHEMA,
   evidenceIndexBackupsDir,
   evidenceIndexJournalPath,
   evidenceIndexPath,
@@ -324,13 +323,20 @@ export function inspectUpgradeMigration({
     });
   }
 
-  const needsHistoryMigration = history && (
-    !matchingJournal
-    || !ledger.exists
-    || ledger.empty
-    || (ledger.generation && manifest?.generation && ledger.generation !== manifest.generation)
+  // Live incremental index is evidence-index.v2. A matching v3 generation
+  // journal is required only after rebuild / atomic switch. History plus a
+  // valid live ledger is already on the control plane — do not force migrate.
+  // Fail closed: history + empty/missing ledger is never ready, even when a
+  // leftover {} file sits next to authority (issue #237).
+  const liveLedgerReady = ledger.exists && ledger.empty !== true && ledger.readable === true;
+  const generationMismatch = Boolean(
+    matchingJournal
+    && ledger.generation
+    && manifest?.generation
+    && ledger.generation !== manifest.generation,
   );
-  const needsJournalLedger = matchingJournal && !ledger.exists;
+  const needsHistoryMigration = (history && !liveLedgerReady) || generationMismatch;
+  const needsJournalLedger = matchingJournal && !liveLedgerReady;
 
   if (needsHistoryMigration || needsJournalLedger) {
     let phase = 'detect';
@@ -340,7 +346,7 @@ export function inspectUpgradeMigration({
       operator_action = 'insufficient_disk';
     } else if (storedOperator) {
       phase = storedOperator === 'insufficient_disk' ? 'disk_preflight' : 'inspect';
-    } else if (ledger.exists || matchingJournal) {
+    } else if (ledger.exists || matchingJournal || liveLedgerReady) {
       phase = 'inspect';
     }
     persistIfChanged(dataRoot, {
@@ -363,7 +369,7 @@ export function inspectUpgradeMigration({
   }
 
   if (TERMINAL_READY.has(migration.phase) || storedPhase === 'ready') {
-    if (history && (!matchingJournal || ledger.empty || !ledger.exists)) {
+    if (history && !liveLedgerReady) {
       persistIfChanged(dataRoot, {
         phase: 'detect',
         product_phase: 'detect',
@@ -383,7 +389,7 @@ export function inspectUpgradeMigration({
     }
   }
 
-  if (history && matchingJournal && ledger.exists && !ledger.empty) {
+  if (history && liveLedgerReady) {
     if (detectPolicyBackfill(dataRoot, manifest)) {
       persistIfChanged(dataRoot, {
         phase: 'inspect',

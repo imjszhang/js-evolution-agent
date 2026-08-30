@@ -23,6 +23,7 @@ import {
   evidenceIndexJournalPath,
 } from '../src/evolution/reactor/evidence-index.mjs';
 import { readActivationLedgerStore } from '../src/daemon/activation-ledger-read.mjs';
+import { pumpEvidenceRouter } from '../src/evolution/reactor/evidence-router-pump.mjs';
 import { processCycleOnce } from '../src/daemon/cycle-process-once.mjs';
 import { planClientLifecycle, subjectLifecycleInput } from '../src/product/client-lifecycle-plan.mjs';
 import { projectSubjectReadiness, readSubjectReadiness } from '../src/product/subject-readiness.mjs';
@@ -261,6 +262,32 @@ describe('product-visible upgrade / migration state machine', () => {
     expect(live.upgrade.ready).toBe(false);
     expect(live.upgrade.channel_available).toBe(true);
     expect(live.automation.intent).toBe('blocked');
+  });
+
+  it('keeps a live incremental ledger ready after new authority arrives', () => {
+    const { runtime } = makeIsolatedRoot();
+    const primed = pumpEvidenceRouter(runtime.dataRoot, {
+      subject: SUBJECT,
+      limit: 8,
+      readLedger: readActivationLedgerStore,
+    });
+    expect(primed.ok).toBe(true);
+    writeHistory(runtime);
+    const plane = inspectControlPlaneReadiness({
+      dataRoot: runtime.dataRoot,
+      readLedger: readActivationLedgerStore,
+    });
+    expect(plane.ready).toBe(true);
+    expect(plane.allow_pump).toBe(true);
+    expect(plane.fresh_subject).toBe(false);
+    expect(plane.upgrade.ready).toBe(true);
+    expect(plane.upgrade.phase).toBe('ready');
+    const pumped = pumpEvidenceRouter(runtime.dataRoot, {
+      subject: SUBJECT,
+      limit: 64,
+      readLedger: readActivationLedgerStore,
+    });
+    expect(pumped.ok).toBe(true);
   });
 
   it('does not auto-rebuild or invent a journal during detect', () => {

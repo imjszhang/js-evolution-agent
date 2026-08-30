@@ -245,7 +245,7 @@ export function inspectControlPlaneReadiness({
     }), { ...upgrade, ready: false, phase: 'detect', cycle_blocked: true, reason });
   }
 
-  if (history && (ledgerMeta.empty || !matchingJournal || !ledgerFile.exists)) {
+  if (history && (ledgerMeta.empty === true || !ledgerFile.exists)) {
     return withUpgrade(blocked('migration_required', {
       migration,
       resumed: resumed.resumed === true,

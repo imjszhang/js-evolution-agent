@@ -29,7 +29,12 @@ import {
 import { EVIDENCE_BATCH_REACTORS } from '../../contracts/evidence-batch-claim.mjs';
 import { readJson, updateJson, writeJson } from '../../infra/json-store.mjs';
 import { nowIso } from '../../infra/runtime-paths.mjs';
-import { evidenceIndexDir, evidenceIndexPath } from './evidence-index.mjs';
+import {
+  EVIDENCE_INDEX_GENERATION_SCHEMA,
+  evidenceIndexDir,
+  evidenceIndexJournalPath,
+  evidenceIndexPath,
+} from './evidence-index.mjs';
 import { reactorDir } from './paths.mjs';
 
 export const ACTIVATION_LEDGER_STORE_SCHEMA = 'activation-ledger.v1';
