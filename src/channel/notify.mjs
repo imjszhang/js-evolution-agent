@@ -8,6 +8,14 @@ import { readPendingOperatorBriefs } from '../intelligence/channel-api.mjs';
 import { cooldownActive, setCooldown, writeOutboxMessage } from './state.mjs';
 import { normalizeOutboundMessage, nowIso } from './types.mjs';
 import { resolveDefaultTransport } from './transport.mjs';
+import { isControlPlaneBlockReason } from '../evolution/reactor/control-plane-readiness.mjs';
+
+function isControlPlaneAdmissionOnly(health) {
+  if (!health || health.ok !== false) return false;
+  const reasons = Array.isArray(health.reasons) ? health.reasons : [];
+  if (!reasons.length) return false;
+  return reasons.every((reason) => isControlPlaneBlockReason(reason));
+}
 
 const DEFAULT_COOLDOWN_MS = 30 * 60 * 1000;
 
@@ -30,7 +38,7 @@ export function collectAttentionSignals(root, subject, { projection = null } = {
     : [];
   const view = projection ?? buildDaemonProjection(root, subject, { store });
   const signals = [];
-  if (view.health && view.health.ok === false) {
+  if (view.health && view.health.ok === false && !isControlPlaneAdmissionOnly(view.health)) {
     signals.push({
       type: 'daemon_health',
       severity: view.health.status === 'cycle_progress_stalled'
@@ -43,7 +51,7 @@ export function collectAttentionSignals(root, subject, { projection = null } = {
       refs: { health: view.health },
     });
   }
-  if (view.reactor?.ok === false) {
+  if (view.reactor?.ok === false && !isControlPlaneAdmissionOnly(view.reactor)) {
     signals.push({
       type: 'reactor_backlog',
       severity: 'high',

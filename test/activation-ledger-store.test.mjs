@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,7 +15,9 @@ import {
 import { writeJson } from '../src/infra/json-store.mjs';
 import { EVIDENCE_INDEX_GENERATION_SCHEMA } from '../src/evolution/reactor/evidence-index.mjs';
 import {
+  activationLedgerDeltasFile,
   activationLedgerPath,
+  activationLedgerProjectionPath,
   applyLedgerTransition,
   getActivationLedgerEntry,
   insertActivationLedgerEntries,
@@ -189,6 +191,45 @@ describe('unified activation ledger store', () => {
     expect(restored.identity_key).toBe(identityKey);
     expect(listActivationLedgerEntries(root, { state: 'ready' })).toHaveLength(0);
     expect(firstDir).not.toBe(nextDir);
+  });
+
+  it('persists UUID generation, monotonic sequence, deltas, and a compact projection', () => {
+    const root = dataRoot();
+    writeGeneration(root, 'gen-uuid-1');
+    const first = insertActivationLedgerEntries(root, [entry()]).created[0];
+    const store = readActivationLedgerStore(root);
+    expect(store.generation).toBe('gen-uuid-1');
+    expect(store.sequence).toBe(1);
+    expect(typeof store.generation).toBe('string');
+
+    applyLedgerTransition(root, first.identity_key, { to: 'handled', kind: 'handle' });
+    const after = readActivationLedgerStore(root);
+    expect(after.sequence).toBe(2);
+
+    const deltas = readFileSync(activationLedgerDeltasFile(root), 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    expect(deltas[0]).toMatchObject({
+      sequence: 1,
+      identity_key: first.identity_key,
+      from: null,
+      to: 'ready',
+      kind: 'insert',
+    });
+    expect(deltas[1]).toMatchObject({
+      sequence: 2,
+      identity_key: first.identity_key,
+      from: 'ready',
+      to: 'handled',
+      kind: 'handle',
+    });
+
+    const projection = JSON.parse(readFileSync(activationLedgerProjectionPath(root), 'utf8'));
+    expect(projection.generation).toBe('gen-uuid-1');
+    expect(projection.sequence).toBe(2);
+    expect(projection.open_entries).toEqual([]);
+    expect(projection.reactors.cognitive.realtime.handled_total).toBe(1);
   });
 
   it('rejects payload and secret fields on control-plane records', () => {

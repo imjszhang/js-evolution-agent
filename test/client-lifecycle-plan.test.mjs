@@ -130,6 +130,48 @@ describe('client lifecycle plan', () => {
     ]);
   });
 
+  it('skips Cycle ensure when the control plane is not ready but still starts Channel', () => {
+    const plan = planClientLifecycle({
+      activeSubject: 'alpha',
+      reason: 'startup',
+      subjects: [
+        subjectLifecycleInput('alpha', {
+          automation: 'automatic',
+          desktopChannelEnabled: true,
+          controlPlaneReady: false,
+          controlPlaneReason: 'migration_required',
+        }),
+      ],
+    });
+    expect(plan.actions).toEqual([
+      { subject: 'alpha', domain: 'channel', action: 'ensure', reason: 'conversation_enabled' },
+      { subject: 'alpha', domain: 'cycle', action: 'skip', reason: 'migration_required' },
+    ]);
+  });
+
+  it('attaches a live Cycle when control plane is not ready instead of stopping it', () => {
+    const plan = planClientLifecycle({
+      activeSubject: 'alpha',
+      reason: 'startup',
+      subjects: [
+        subjectLifecycleInput('alpha', {
+          automation: 'automatic',
+          desktopChannelEnabled: true,
+          cycleLive: true,
+          controlPlaneReady: false,
+          controlPlaneReason: 'activation_ledger_unresolved',
+        }),
+      ],
+    });
+    expect(plan.actions.find((item) => item.domain === 'cycle')).toEqual({
+      subject: 'alpha',
+      domain: 'cycle',
+      action: 'attach',
+      reason: 'already_running',
+    });
+    expect(plan.actions.find((item) => item.domain === 'channel')?.action).toBe('ensure');
+  });
+
   it('stops an owned Cycle when the active subject is paused', () => {
     const plan = planClientLifecycle({
       activeSubject: 'alpha',

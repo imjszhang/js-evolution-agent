@@ -50,6 +50,7 @@ A policy-version change cannot create historical work unless an authorized, non-
 | --- | --- |
 | `evaluateEvidenceActivation` | Pure policy. No I/O. |
 | `routeEvidenceDelta` | Incremental write of a caller-supplied envelope delta. |
+| `pumpEvidenceRouter` | Production pump: bounded journal-cursor walk that calls `routeEvidenceDelta` once per new entry. |
 | `routeJournalGenerationChange` | Generation change creates no work. |
 | `evaluateRouterPolicyChange` | Wrapper around `evaluateActivationPolicyChange`. |
 | `listActivationPolicyTable` | Machine-readable copy of the table above. |

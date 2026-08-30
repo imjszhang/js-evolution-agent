@@ -13,8 +13,8 @@ import {
 
 export const OPERATOR_COUNT_SOURCES = {
   evidencePending: {
-    source: 'daemon.reactor.evidence.pending_count',
-    unit: 'evidence'
+    source: 'reactor_progress.reactors.*.open_total',
+    unit: 'activations'
   },
   daemonTaskPending: {
     source: 'daemon.tasks.counts.pending',
@@ -42,10 +42,40 @@ export interface OperatorCountProjection {
 export interface OperatorEvolutionRuntime {
   mode: 'automatic' | 'paused'
   intent: ProductEvolutionIntent
-  remaining_evidence: number
+  remaining_evidence: number | null
   blocker: string | null
   scheduler_state: ReactorControlPlaneView['scheduler_state']
   freshness: ReactorControlPlaneView['freshness']
+}
+
+function laneOpen(slice?: { open_total?: number; ready?: number; claimed?: number; deferred?: number; blocked?: number } | null): number {
+  if (!slice) return 0
+  if (Number.isInteger(slice.open_total)) return slice.open_total as number
+  return (Number(slice.ready) || 0)
+    + (Number(slice.claimed) || 0)
+    + (Number(slice.deferred) || 0)
+    + (Number(slice.blocked) || 0)
+}
+
+function remainingWorkCount(
+  readiness: SubjectReadiness,
+  progress: ReactorControlPlaneView['progress']
+): number | null {
+  if (progress?.freshness?.status === 'unknown') return null
+  const reactors = progress?.reactors
+  if (reactors && typeof reactors === 'object') {
+    let remaining = 0
+    let seen = false
+    for (const lanes of Object.values(reactors)) {
+      remaining += laneOpen(lanes?.realtime) + laneOpen(lanes?.replay)
+      seen = true
+    }
+    if (seen) return remaining
+  }
+  if (Number.isFinite(readiness.automation?.remaining_evidence)) {
+    return Number(readiness.automation?.remaining_evidence)
+  }
+  return null
 }
 
 export interface OperatorSurfaceProjection {
@@ -117,18 +147,18 @@ export function projectEvolutionRuntime(
   observability: EvolutionObservability,
   host: ProductHostKind = 'electron'
 ): OperatorEvolutionRuntime {
-  const pending = count(observability.evidence_pending_count)
   const plane = projectReactorControlPlane({ readiness, observability, host })
+  const remaining = remainingWorkCount(readiness, plane.progress)
   const automation = readiness.automation
   const mode: 'automatic' | 'paused' = automation?.mode === 'paused' ? 'paused' : 'automatic'
   const intent = plane.progress
     ? displaySchedulerState(plane.progress, mode)
-    : remapLegacyIntent(automation, mode, pending)
+    : remapLegacyIntent(automation, mode, remaining ?? 0)
   if (plane.progress || automation) {
     return {
       mode,
       intent,
-      remaining_evidence: pending,
+      remaining_evidence: remaining,
       blocker: plane.primary_blocker ?? automation?.blocker ?? null,
       scheduler_state: plane.scheduler_state,
       freshness: plane.freshness
@@ -139,7 +169,7 @@ export function projectEvolutionRuntime(
     return {
       mode: 'automatic',
       intent: 'blocked',
-      remaining_evidence: pending,
+      remaining_evidence: remaining,
       blocker: readiness.cycle.reasons[0] ?? cycleState,
       scheduler_state: null,
       freshness: 'unknown'
@@ -149,7 +179,7 @@ export function projectEvolutionRuntime(
     return {
       mode: 'automatic',
       intent: 'stalled',
-      remaining_evidence: pending,
+      remaining_evidence: remaining,
       blocker: readiness.cycle.reasons[0] ?? cycleState,
       scheduler_state: null,
       freshness: 'unknown'
@@ -157,8 +187,8 @@ export function projectEvolutionRuntime(
   }
   return {
     mode: 'automatic',
-    intent: pending > 0 ? 'queued' : 'listening',
-    remaining_evidence: pending,
+    intent: (remaining ?? 0) > 0 ? 'queued' : 'listening',
+    remaining_evidence: remaining,
     blocker: null,
     scheduler_state: null,
     freshness: 'unknown'
@@ -185,6 +215,7 @@ export function projectOperatorSurface(input: {
     && PRODUCT_ACTION_IDS.has(action.id)
     && (input.host === 'electron' || action.capability !== 'local-only')
   ))
+  const evolution_runtime = projectEvolutionRuntime(input.readiness, input.observability, input.host)
   return {
     conversation_readiness: input.readiness.conversation,
     evolution_summary: {
@@ -193,14 +224,14 @@ export function projectOperatorSurface(input: {
       latestStatus: input.evolution.latestStatus,
       latestTldr: input.evolution.latestTldr
     },
-    evolution_runtime: projectEvolutionRuntime(input.readiness, input.observability, input.host),
+    evolution_runtime,
     observability_attention: {
       count: items.length,
       items,
       ...OPERATOR_COUNT_SOURCES.attentionItems
     },
     evidence_pending: {
-      count: count(input.observability.evidence_pending_count),
+      count: count(evolution_runtime.remaining_evidence),
       ...OPERATOR_COUNT_SOURCES.evidencePending
     },
     daemon_task_pending: {

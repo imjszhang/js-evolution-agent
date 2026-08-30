@@ -10,6 +10,8 @@ import { runtimeForSubject } from '../infra/runtime-paths.mjs';
 import { isProcessAlive } from '../infra/process-alive.mjs';
 import { redactSecrets } from '../intelligence/redaction.mjs';
 import { CATCH_UP_BUDGET_REASON, readCatchUpProjection } from '../evolution/reactor/catch-up-budget.mjs';
+import { inspectControlPlaneReadiness } from '../evolution/reactor/control-plane-readiness.mjs';
+import { readActivationLedgerStore } from '../daemon/activation-ledger-read.mjs';
 import {
   inspectLlmBudget,
   llmBudgetLedgerPath,
@@ -91,6 +93,10 @@ export const SUBJECT_READINESS_REASON_CODES = Object.freeze(
     'evidence_journal_maintenance_due',
     'evidence_journal_maintenance_blocked',
     'claims_projection_degraded',
+    'migration_required',
+    'activation_ledger_unresolved',
+    'activation_ledger_degraded',
+    'activation_ledger_oversized',
   ]),
 );
 
@@ -248,6 +254,10 @@ function mapProcessDomain(prefix, worker, health, ownership) {
     || reason === 'rule_llm_budget_exhausted'
     || reason === 'rule_journal_capacity_exceeded'
     || reason === 'evidence_journal_maintenance_blocked'
+    || reason === 'migration_required'
+    || reason === 'activation_ledger_unresolved'
+    || reason === 'activation_ledger_degraded'
+    || reason === 'activation_ledger_oversized'
   ));
   if (prefix === 'cycle' && health?.status === 'blocked' && stableRuleReason) {
     return {
@@ -389,6 +399,41 @@ const PRODUCT_SCHEDULER_INTENTS = new Set([
   'stalled',
 ]);
 
+function laneOpenCount(slice) {
+  if (!slice || typeof slice !== 'object') return 0;
+  if (Number.isInteger(slice.open_total)) return slice.open_total;
+  return (Number(slice.ready) || 0)
+    + (Number(slice.claimed) || 0)
+    + (Number(slice.deferred) || 0)
+    + (Number(slice.blocked) || 0);
+}
+
+export function remainingWorkFromProgress(progress) {
+  if (!progress || typeof progress !== 'object') return null;
+  if (progress.freshness?.status === 'unknown') return null;
+  const reactors = progress.reactors;
+  if (!reactors || typeof reactors !== 'object') return null;
+  let remaining = 0;
+  let seen = false;
+  for (const lanes of Object.values(reactors)) {
+    if (!lanes || typeof lanes !== 'object') continue;
+    remaining += laneOpenCount(lanes.realtime) + laneOpenCount(lanes.replay);
+    seen = true;
+  }
+  return seen ? remaining : null;
+}
+
+function hasOpenReplay(progress) {
+  if (!progress?.reactors) return false;
+  for (const lanes of Object.values(progress.reactors)) {
+    const replay = lanes?.replay;
+    if (laneOpenCount(replay) > 0) return true;
+  }
+  const taskLane = progress.activity?.current_task?.lane;
+  const claimLane = progress.activity?.current_claim?.lane;
+  return taskLane === 'replay' || claimLane === 'replay';
+}
+
 function truthfulCatchingUp(progress) {
   const activity = progress?.activity ?? {};
   const taskLane = activity.current_task?.lane;
@@ -401,12 +446,11 @@ function truthfulCatchingUp(progress) {
 
 function mapAutomation(input, cycle, llmBudget) {
   const policy = input.automation ?? { mode: 'automatic', mapped_from: 'default', diagnostic: null, background: false };
-  const pending = Number.isFinite(input.pendingEvidence)
-    ? Math.max(0, Math.floor(input.pendingEvidence))
-    : null;
-  const approvalWait = input.waitingApproval === true;
-  const catchUpPaused = input.catchUp?.paused === true;
   const progress = input.reactorProgress ?? null;
+  const remaining = remainingWorkFromProgress(progress);
+  const pending = remaining;
+  const approvalWait = input.waitingApproval === true;
+  const catchUpPaused = input.catchUp?.paused === true && hasOpenReplay(progress);
   const schedulerState = PRODUCT_SCHEDULER_INTENTS.has(progress?.scheduler_state)
     ? progress.scheduler_state
     : null;
@@ -414,6 +458,9 @@ function mapAutomation(input, cycle, llmBudget) {
   let blocker = null;
   if (policy.mode === 'paused') {
     intent = 'paused';
+  } else if (input.controlPlaneReady === false) {
+    intent = 'blocked';
+    blocker = input.controlPlaneReason || 'migration_required';
   } else if (input.projectionDegraded === true) {
     intent = 'blocked';
     blocker = 'claims_projection_degraded';
@@ -462,7 +509,7 @@ function mapAutomation(input, cycle, llmBudget) {
       mapped_from: policy.mapped_from ?? 'default',
       diagnostic: policy.diagnostic ?? null,
       background: policy.background === true,
-      remaining_evidence: pending,
+      remaining_evidence: input.controlPlaneReady === false ? null : pending,
       blocker,
     },
   };
@@ -511,6 +558,12 @@ export function projectSubjectReadiness(input) {
       'evidence_journal_maintenance_due',
     ].includes(automation.blocker) ? [automation.blocker] : []),
     ...(automation.blocker === 'claims_projection_degraded' ? ['claims_projection_degraded'] : []),
+    ...([
+      'migration_required',
+      'activation_ledger_unresolved',
+      'activation_ledger_degraded',
+      'activation_ledger_oversized',
+    ].includes(automation.blocker) ? [automation.blocker] : []),
     ...(llm_budget?.state === 'exhausted' ? ['rule_llm_budget_exhausted'] : []),
   ]);
   const { allowed_actions, actions } = resolveRemediationActions(
@@ -666,15 +719,18 @@ export function readSubjectReadiness(runtime, subject, options = {}) {
     subjectRoot: runtimeForSubject(runtime, name).runtimeRoot,
   });
   const policy = resolveAutomationPolicyFromEntry(getSubjectEntry(runtime, name));
-  const pendingRaw = daemon.reactor?.evidence?.pending_count;
-  const pending = Number.isFinite(pendingRaw) ? Number(pendingRaw) : null;
+  const pending = remainingWorkFromProgress(daemon.reactor_progress);
+  const dataRoot = runtimeForSubject(runtime, name).dataRoot;
+  const controlPlane = inspectControlPlaneReadiness({
+    dataRoot,
+    readLedger: readActivationLedgerStore,
+  });
   const waitingApproval = Boolean(
     daemon.reactor?.intents?.uncertain_count > 0
     || (Array.isArray(daemon.health?.reasons) && daemon.health.reasons.some((reason) => (
       /approval|human_review|requires_human/i.test(String(reason))
     )))
   );
-  const dataRoot = runtimeForSubject(runtime, name).dataRoot;
   return redactSecrets(projectSubjectReadiness({
     subject: name,
     generatedAt: options.generatedAt ?? new Date().toISOString(),
@@ -700,5 +756,7 @@ export function readSubjectReadiness(runtime, subject, options = {}) {
     catchUp: readCatchUpProjection(dataRoot),
     llmBudget: observeLlmBudget(runtime, name),
     reactorProgress: daemon.reactor_progress ?? null,
+    controlPlaneReady: controlPlane.ready === true || controlPlane.fresh_subject === true,
+    controlPlaneReason: controlPlane.reason,
   }));
 }

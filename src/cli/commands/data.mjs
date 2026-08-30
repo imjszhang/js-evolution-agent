@@ -511,6 +511,14 @@ export async function dataCommand({
           force: !!flags.force,
           replayEpoch: replayEpochFromFlags(flags),
         });
+        if (!dryRun && payload.status !== 'blocked') {
+          try {
+            const { reconcileReactorProgressSnapshot } = await import('../../daemon/reactor-progress-snapshot.mjs');
+            reconcileReactorProgressSnapshot(root, runtime.subject, { persist: true });
+          } catch {
+            // Compact ledger projection is already written by the store; progress is best-effort.
+          }
+        }
         if (flags.json) console.log(JSON.stringify(payload, null, 2));
         else printEvidenceJournalResult(payload);
         return payload.status === 'blocked' ? 1 : 0;

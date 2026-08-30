@@ -164,6 +164,10 @@ describe('settings feature slot', () => {
       allowed: action.id === 'start_cycle' || action.id === 'process_cycle_once'
     }))
     subjectReadiness.allowed_actions = ['start_cycle', 'process_cycle_once']
+    subjectReadiness.automation = {
+      ...subjectReadiness.automation!,
+      remaining_evidence: 7
+    }
     const projection = {
       subjectReadiness,
       observability: {
