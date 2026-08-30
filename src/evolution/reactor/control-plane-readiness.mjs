@@ -14,6 +14,7 @@ import {
   ACTIVATION_LEDGER_PROJECTION_SCHEMA,
   activationLedgerPath,
   activationLedgerProjectionPath,
+  ensureCompactActivationLedgerProjection,
   readActivationMigrationState,
   resumeActivationMigration,
 } from './activation-ledger-store.mjs';
@@ -245,6 +246,9 @@ export function inspectControlPlaneReadiness({
   const maxBytes = Number.isFinite(configuredMax) && configuredMax > 0
     ? Math.floor(configuredMax)
     : DEFAULT_LEDGER_MAX_BYTES;
+  if (ledgerFile.exists && (ledgerFile.bytes == null || ledgerFile.bytes <= maxBytes)) {
+    ensureCompactActivationLedgerProjection(dataRoot);
+  }
   const projection = readCompactProjection(dataRoot);
 
   let ledgerSnapshot = null;

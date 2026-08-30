@@ -5,8 +5,16 @@
  * Persistence is an identity-keyed map; every public read/write speaks contract
  * entries. Never authority for evidence, beliefs, goals, receipts, or settlements.
  */
-import { createHash } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 import {
   ACTIVATION_LANES,
@@ -27,7 +35,7 @@ import {
   validateActivationLedgerEntry,
 } from '../../contracts/index.mjs';
 import { EVIDENCE_BATCH_REACTORS } from '../../contracts/evidence-batch-claim.mjs';
-import { readJson, updateJson, writeJson } from '../../infra/json-store.mjs';
+import { readJson, updateJson, withJsonLock, writeJson } from '../../infra/json-store.mjs';
 import { nowIso } from '../../infra/runtime-paths.mjs';
 import { evidenceIndexDir, evidenceIndexPath } from './evidence-index.mjs';
 import { reactorDir } from './paths.mjs';
@@ -38,6 +46,12 @@ export const ACTIVATION_MIGRATION_STATE_SCHEMA = 'activation-migration.v1';
 export const ACTIVATION_LEDGER_FILENAME = 'activation-ledger.json';
 export const ACTIVATION_LEDGER_PROJECTION_FILENAME = 'activation-ledger.projection.json';
 export const ACTIVATION_LEDGER_DELTAS_FILENAME = 'activation-ledger.deltas.jsonl';
+export const ACTIVATION_LEDGER_FAILPOINTS = Object.freeze({
+  BEFORE_SWITCH: 'before_switch',
+  AFTER_SWITCH: 'after_switch',
+  AFTER_DELTAS_BEFORE_PROJECTION: 'after_deltas_before_projection',
+  BETWEEN_DELTA_AND_SNAPSHOT: 'between_delta_and_snapshot',
+});
 
 const OPEN_LEDGER_STATES = Object.freeze(['ready', 'claimed', 'deferred', 'blocked']);
 
@@ -138,7 +152,7 @@ function asStore(raw, extras = {}) {
   }
   const sequence = Number.isInteger(raw.sequence)
     ? raw.sequence
-    : (Number.isInteger(extras.sequence) ? extras.sequence : 0);
+    : (Number.isInteger(extras.sequence) ? extras.sequence : null);
   const base = emptyActivationLedgerStore({
     generation: raw.generation ?? extras.generation ?? null,
     previous_generation: raw.previous_generation ?? extras.previous_generation ?? null,
@@ -171,7 +185,7 @@ function publicLedger(store) {
     role: 'derived_rebuildable',
     authoritative: isReactorControlPlaneAuthoritative('activation_ledger'),
     rebuildable: true,
-    sequence: Number.isInteger(store.sequence) ? store.sequence : 0,
+    sequence: Number.isInteger(store.sequence) ? store.sequence : null,
     entries: entriesFromStore(store),
   };
 }
@@ -215,7 +229,7 @@ export function buildActivationLedgerProjection(store) {
   return {
     schema_version: ACTIVATION_LEDGER_PROJECTION_SCHEMA,
     generation: store?.generation ?? null,
-    sequence: Number.isInteger(store?.sequence) ? store.sequence : 0,
+    sequence: Number.isInteger(store?.sequence) ? store.sequence : null,
     updated_at: store?.updated_at ?? null,
     reactors,
     open_entries: open,
@@ -224,12 +238,71 @@ export function buildActivationLedgerProjection(store) {
   };
 }
 
+function writeFileAtomic(filePath, body) {
+  mkdirSync(dirname(filePath), { recursive: true });
+  const tmp = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  writeFileSync(tmp, body, 'utf8');
+  renameSync(tmp, filePath);
+}
+
+function writeJsonCompact(filePath, data) {
+  writeFileAtomic(filePath, `${JSON.stringify(data)}\n`);
+  return filePath;
+}
+
 export function writeActivationLedgerProjectionAt(ledgerFile, store) {
   if (!ledgerFile) return null;
   const path = join(dirname(ledgerFile), ACTIVATION_LEDGER_PROJECTION_FILENAME);
   mkdirSync(dirname(path), { recursive: true });
-  writeJson(path, buildActivationLedgerProjection(store));
+  writeJsonCompact(path, buildActivationLedgerProjection(store));
   return path;
+}
+
+function projectionLooksStale(projPath, ledgerPath) {
+  if (!existsSync(projPath)) return true;
+  if (!existsSync(ledgerPath)) return false;
+  try {
+    return statSync(ledgerPath).mtimeMs > statSync(projPath).mtimeMs;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Persist the compact projection sidecar without rewriting identities or
+ * inventing a monotonic sequence. Used on the first successful control-plane
+ * read/write of a pre-#233 ledger (UUID generation, sequence null, no sidecar)
+ * and to recover after a crash between the ledger+delta switch and projection.
+ */
+export function ensureCompactActivationLedgerProjection(dataRoot, {
+  manifest = null,
+  store = null,
+  path = null,
+  force = false,
+} = {}) {
+  const file = path || (dataRoot ? activationLedgerPath(dataRoot, manifest) : null);
+  if (!file) return { persisted: false, reason: 'ledger_unresolved', path: null };
+  const proj = join(dirname(file), ACTIVATION_LEDGER_PROJECTION_FILENAME);
+  if (!existsSync(file) && !store) {
+    return { persisted: false, reason: 'ledger_missing', path: proj };
+  }
+  if (!force && !store && existsSync(file) && existsSync(proj) && !projectionLooksStale(proj, file)) {
+    return { persisted: false, reason: 'already_present', path: proj };
+  }
+  return withJsonLock(file, () => {
+    if (!force && !store && existsSync(file) && existsSync(proj) && !projectionLooksStale(proj, file)) {
+      return { persisted: false, reason: 'already_present', path: proj };
+    }
+    const current = store ?? readActivationLedgerStore(dataRoot, { manifest, path: file });
+    writeActivationLedgerProjectionAt(file, current);
+    return {
+      persisted: true,
+      reason: 'persisted',
+      path: proj,
+      generation: current.generation ?? null,
+      sequence: Number.isInteger(current.sequence) ? current.sequence : null,
+    };
+  });
 }
 
 function inferDeltaKind(from, to) {
@@ -294,11 +367,38 @@ function collectLedgerDeltas(beforeMap, afterStore, sequence, now) {
   return deltas;
 }
 
-function appendLedgerDeltas(dataRoot, deltas, manifest = null) {
-  if (!dataRoot || !deltas.length) return;
-  const file = activationLedgerDeltasFile(dataRoot, manifest);
-  mkdirSync(dirname(file), { recursive: true });
-  appendFileSync(file, `${deltas.map((row) => JSON.stringify(row)).join('\n')}\n`, 'utf8');
+function ledgerFailpointError(failpoint) {
+  const error = new Error(`Injected activation ledger failure: ${failpoint}`);
+  error.code = 'injected_failure';
+  error.failpoint = failpoint;
+  return error;
+}
+
+function readExistingDeltaLines(filePath) {
+  if (!filePath || !existsSync(filePath)) return [];
+  try {
+    return readFileSync(filePath, 'utf8')
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function filterDeltaLinesThrough(lines, maxSequence) {
+  const kept = [];
+  for (const line of lines) {
+    try {
+      const row = JSON.parse(line);
+      if (Number.isInteger(row.sequence) && row.sequence <= maxSequence) {
+        kept.push(JSON.stringify(row));
+      }
+    } catch {
+      // Drop unreadable trailing garbage left by a previous crash.
+    }
+  }
+  return kept;
 }
 
 export function readActivationLedgerStore(dataRoot, {
@@ -422,21 +522,32 @@ function prepareEntry(input, { now }) {
   return { ok: true, errors: [], entry, identity_key: entry.identity_key };
 }
 
+/**
+ * Crash-safe ledger mutation: stage ledger JSON + complete deltas, then
+ * atomically switch those two files together. Projection/snapshot is a
+ * derived write after the switch. A crash before switch leaves the old
+ * pair; a crash after switch still has matching sequence and deltas.
+ */
 function mutateLedger(dataRoot, updater, {
   now = nowIso(),
   manifest = null,
+  failpoint = null,
 } = {}) {
   const file = activationLedgerPath(dataRoot, manifest);
+  const deltasFile = activationLedgerDeltasFile(dataRoot, manifest);
   mkdirSync(dirname(file), { recursive: true });
-  let pendingDeltas = [];
-  const store = updateJson(file, (raw) => {
+  return withJsonLock(file, () => {
     const generation = currentGeneration(dataRoot, manifest);
+    const raw = readJson(file, null);
     const next = asStore(raw, {
       generation,
       updated_at: now,
     });
     const beforeMap = { ...next.entries };
-    const prevSequence = Number.isInteger(next.sequence) ? next.sequence : 0;
+    const originalSequence = Number.isInteger(raw?.sequence)
+      ? raw.sequence
+      : (Number.isInteger(next.sequence) ? next.sequence : null);
+    const prevSequence = Number.isInteger(originalSequence) ? originalSequence : 0;
     const result = updater(next, now);
     result.authoritative = false;
     result.updated_at = now;
@@ -444,20 +555,50 @@ function mutateLedger(dataRoot, updater, {
     const deltas = collectLedgerDeltas(beforeMap, result, prevSequence + 1, now);
     if (deltas.length) {
       result.sequence = prevSequence + 1;
-      pendingDeltas = deltas;
     } else {
-      result.sequence = prevSequence;
+      result.sequence = originalSequence ?? (raw ? null : 0);
     }
-    return result;
-  }, { fallback: emptyActivationLedgerStore({
-    generation: currentGeneration(dataRoot, manifest),
-    updated_at: now,
-  }) });
-  if (pendingDeltas.length) {
-    appendLedgerDeltas(dataRoot, pendingDeltas, manifest);
-  }
-  writeActivationLedgerProjectionAt(file, store);
-  return store;
+
+    const stagingDir = join(dirname(file), `.activation-ledger-next.${process.pid}.${randomUUID()}`);
+    mkdirSync(stagingDir, { recursive: true });
+    try {
+      const stagedLedger = join(stagingDir, ACTIVATION_LEDGER_FILENAME);
+      const stagedDeltas = join(stagingDir, ACTIVATION_LEDGER_DELTAS_FILENAME);
+      const stagedProjection = join(stagingDir, ACTIVATION_LEDGER_PROJECTION_FILENAME);
+      writeJsonCompact(stagedLedger, result);
+
+      const keptDeltas = filterDeltaLinesThrough(readExistingDeltaLines(deltasFile), prevSequence);
+      const nextDeltaLines = keptDeltas.concat(deltas.map((row) => JSON.stringify(row)));
+      writeFileSync(
+        stagedDeltas,
+        nextDeltaLines.length ? `${nextDeltaLines.join('\n')}\n` : '',
+        'utf8',
+      );
+      writeJsonCompact(stagedProjection, buildActivationLedgerProjection(result));
+
+      if (failpoint === ACTIVATION_LEDGER_FAILPOINTS.BEFORE_SWITCH) {
+        throw ledgerFailpointError(failpoint);
+      }
+
+      renameSync(stagedDeltas, deltasFile);
+      renameSync(stagedLedger, file);
+
+      if (failpoint === ACTIVATION_LEDGER_FAILPOINTS.AFTER_SWITCH) {
+        throw ledgerFailpointError(failpoint);
+      }
+      if (
+        failpoint === ACTIVATION_LEDGER_FAILPOINTS.AFTER_DELTAS_BEFORE_PROJECTION
+        || failpoint === ACTIVATION_LEDGER_FAILPOINTS.BETWEEN_DELTA_AND_SNAPSHOT
+      ) {
+        throw ledgerFailpointError(failpoint);
+      }
+
+      renameSync(stagedProjection, join(dirname(file), ACTIVATION_LEDGER_PROJECTION_FILENAME));
+      return result;
+    } finally {
+      rmSync(stagingDir, { recursive: true, force: true });
+    }
+  });
 }
 
 /**
@@ -468,6 +609,7 @@ export function insertActivationLedgerEntries(dataRoot, entries = [], {
   now = nowIso(),
   diagnostics = [],
   activation_policy_version = null,
+  failpoint = null,
 } = {}) {
   if (!dataRoot) throw new Error('insertActivationLedgerEntries requires dataRoot');
 
@@ -509,7 +651,7 @@ export function insertActivationLedgerEntries(dataRoot, entries = [], {
       next.activation_policy_version = activation_policy_version;
     }
     return next;
-  }, { now });
+  }, { now, failpoint });
 
   return {
     store: publicLedger(store),
@@ -519,7 +661,7 @@ export function insertActivationLedgerEntries(dataRoot, entries = [], {
   };
 }
 
-export function upsertActivationLedgerEntry(dataRoot, input, { now = null } = {}) {
+export function upsertActivationLedgerEntry(dataRoot, input, { now = null, failpoint = null } = {}) {
   const stamp = typeof now === 'string' ? now : nowIso();
   const prepared = prepareEntry(input, { now: stamp });
   if (!prepared.ok) return { ...prepared, entry: null };
@@ -529,7 +671,7 @@ export function upsertActivationLedgerEntry(dataRoot, input, { now = null } = {}
     stored = { ...prepared.entry, updated_at: stamp };
     next.entries[prepared.identity_key] = stored;
     return next;
-  }, { now: stamp });
+  }, { now: stamp, failpoint });
 
   return { ok: true, errors: [], entry: stored };
 }
@@ -538,7 +680,7 @@ export function upsertActivationEntry(dataRoot, input, options = {}) {
   return upsertActivationLedgerEntry(dataRoot, input, options);
 }
 
-export function applyLedgerTransition(dataRoot, identity, command, { now = null } = {}) {
+export function applyLedgerTransition(dataRoot, identity, command, { now = null, failpoint = null } = {}) {
   const stamp = typeof now === 'string' ? now : (command.updated_at || nowIso());
   const key = typeof identity === 'string'
     ? identity
@@ -560,7 +702,7 @@ export function applyLedgerTransition(dataRoot, identity, command, { now = null 
       : { ...applied, entry: current };
     if (applied.ok) next.entries[key] = applied.entry;
     return next;
-  }, { now: stamp });
+  }, { now: stamp, failpoint });
 
   return result;
 }
@@ -581,7 +723,7 @@ export function isActivationLeaseExpired(entry, nowMs) {
   return expires != null && Number.isFinite(nowMs) && nowMs > expires;
 }
 
-export function reclaimExpiredActivationLeases(dataRoot, { now = null, nowMs = null } = {}) {
+export function reclaimExpiredActivationLeases(dataRoot, { now = null, nowMs = null, failpoint = null } = {}) {
   const stamp = typeof now === 'string' ? now : nowIso();
   const clock = Number.isFinite(nowMs) ? nowMs : parseTimeMs(stamp);
   const reclaimed = [];
@@ -600,7 +742,7 @@ export function reclaimExpiredActivationLeases(dataRoot, { now = null, nowMs = n
       reclaimed.push(applied.entry);
     }
     return next;
-  }, { now: stamp });
+  }, { now: stamp, failpoint });
 
   return reclaimed;
 }
