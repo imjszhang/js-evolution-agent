@@ -97,6 +97,19 @@ export const SUBJECT_READINESS_REASON_CODES = Object.freeze(
     'activation_ledger_unresolved',
     'activation_ledger_degraded',
     'activation_ledger_oversized',
+    'upgrade_detect',
+    'upgrade_inspect',
+    'upgrade_disk_preflight',
+    'upgrade_sidecar_backup',
+    'upgrade_stage',
+    'upgrade_validate',
+    'upgrade_atomic_switch',
+    'upgrade_authority_mismatch',
+    'upgrade_insufficient_disk',
+    'upgrade_unknown_identities',
+    'upgrade_rollback_selection',
+    'upgrade_policy_backfill',
+    'policy_backfill',
   ]),
 );
 
@@ -153,6 +166,25 @@ export function observeWebHost(jeaHome) {
 
 function uniqueCodes(codes) {
   return [...new Set(codes)];
+}
+
+const UPGRADE_OPERATOR_REASON = Object.freeze({
+  authority_mismatch: 'upgrade_authority_mismatch',
+  insufficient_disk: 'upgrade_insufficient_disk',
+  unknown_identities: 'upgrade_unknown_identities',
+  rollback_selection: 'upgrade_rollback_selection',
+  policy_backfill: 'upgrade_policy_backfill',
+});
+
+function upgradeOperatorReason(upgrade) {
+  if (!upgrade?.operator_action) return null;
+  return UPGRADE_OPERATOR_REASON[upgrade.operator_action] ?? null;
+}
+
+function upgradePhaseReason(upgrade) {
+  if (!upgrade || upgrade.ready === true || !upgrade.phase) return null;
+  const code = `upgrade_${upgrade.phase}`;
+  return SUBJECT_READINESS_REASON_CODE_SET.has(code) ? code : null;
 }
 
 function domainOwned(ownership, domain) {
@@ -258,6 +290,19 @@ function mapProcessDomain(prefix, worker, health, ownership) {
     || reason === 'activation_ledger_unresolved'
     || reason === 'activation_ledger_degraded'
     || reason === 'activation_ledger_oversized'
+    || reason === 'upgrade_detect'
+    || reason === 'upgrade_inspect'
+    || reason === 'upgrade_disk_preflight'
+    || reason === 'upgrade_sidecar_backup'
+    || reason === 'upgrade_stage'
+    || reason === 'upgrade_validate'
+    || reason === 'upgrade_atomic_switch'
+    || reason === 'upgrade_authority_mismatch'
+    || reason === 'upgrade_insufficient_disk'
+    || reason === 'upgrade_unknown_identities'
+    || reason === 'upgrade_rollback_selection'
+    || reason === 'upgrade_policy_backfill'
+    || reason === 'policy_backfill'
   ));
   if (prefix === 'cycle' && health?.status === 'blocked' && stableRuleReason) {
     return {
@@ -319,7 +364,7 @@ function needsStart(domain) {
   return domain.state === 'stopped' || domain.state === 'blocked';
 }
 
-function neededActionIds({ cycle, channel, ownership }) {
+function neededActionIds({ cycle, channel, ownership, controlPlaneReady, upgrade }) {
   const needed = [];
   const cycleStalledNow = cycle.state === 'stalled' || cycle.reasons.includes('reactor_backlog_stalled');
   const cycleLive = LIVE_STATES.has(cycle.state) || (['stalled', 'blocked'].includes(cycle.state) && (
@@ -341,7 +386,9 @@ function neededActionIds({ cycle, channel, ownership }) {
     needed.push('process_cycle_once');
     if (!cycleLive) needed.push('start_cycle');
   } else if (needsStart(cycle) && !cycleLive) {
-    needed.push('start_cycle');
+    const upgradeBlocksCycle = controlPlaneReady === false
+      || (upgrade && upgrade.ready === false);
+    if (!upgradeBlocksCycle) needed.push('start_cycle');
   }
 
   const managedLive = (domainOwned(ownership, 'cycle') && (
@@ -460,7 +507,9 @@ function mapAutomation(input, cycle, llmBudget) {
     intent = 'paused';
   } else if (input.controlPlaneReady === false) {
     intent = 'blocked';
-    blocker = input.controlPlaneReason || 'migration_required';
+    blocker = upgradeOperatorReason(input.upgrade)
+      || input.controlPlaneReason
+      || 'migration_required';
   } else if (input.projectionDegraded === true) {
     intent = 'blocked';
     blocker = 'claims_projection_degraded';
@@ -563,11 +612,25 @@ export function projectSubjectReadiness(input) {
       'activation_ledger_unresolved',
       'activation_ledger_degraded',
       'activation_ledger_oversized',
+      'policy_backfill',
+      'upgrade_authority_mismatch',
+      'upgrade_insufficient_disk',
+      'upgrade_unknown_identities',
+      'upgrade_rollback_selection',
+      'upgrade_policy_backfill',
     ].includes(automation.blocker) ? [automation.blocker] : []),
+    ...(upgradePhaseReason(input.upgrade) ? [upgradePhaseReason(input.upgrade)] : []),
+    ...(upgradeOperatorReason(input.upgrade) ? [upgradeOperatorReason(input.upgrade)] : []),
     ...(llm_budget?.state === 'exhausted' ? ['rule_llm_budget_exhausted'] : []),
   ]);
   const { allowed_actions, actions } = resolveRemediationActions(
-    neededActionIds({ cycle, channel, ownership: input.ownership }),
+    neededActionIds({
+      cycle,
+      channel,
+      ownership: input.ownership,
+      controlPlaneReady: input.controlPlaneReady,
+      upgrade: input.upgrade,
+    }),
     input.hostKind,
   );
   const product = resolveRemediationActions(productActionIds(automation), input.hostKind);
@@ -586,6 +649,7 @@ export function projectSubjectReadiness(input) {
     automation,
     llm_budget,
     reactor_progress,
+    upgrade: input.upgrade ?? null,
     product_actions: product.actions.filter((action) => (
       action.id === 'pause_automatic_evolution'
       || action.id === 'resume_automatic_evolution'
@@ -758,5 +822,6 @@ export function readSubjectReadiness(runtime, subject, options = {}) {
     reactorProgress: daemon.reactor_progress ?? null,
     controlPlaneReady: controlPlane.ready === true || controlPlane.fresh_subject === true,
     controlPlaneReason: controlPlane.reason,
+    upgrade: controlPlane.upgrade ?? null,
   }));
 }
