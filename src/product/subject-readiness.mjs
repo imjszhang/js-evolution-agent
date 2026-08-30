@@ -97,6 +97,7 @@ export const SUBJECT_READINESS_REASON_CODES = Object.freeze(
     'activation_ledger_unresolved',
     'activation_ledger_degraded',
     'activation_ledger_oversized',
+    'activation_ledger_needs_migration',
     'upgrade_detect',
     'upgrade_inspect',
     'upgrade_disk_preflight',
@@ -290,6 +291,7 @@ function mapProcessDomain(prefix, worker, health, ownership) {
     || reason === 'activation_ledger_unresolved'
     || reason === 'activation_ledger_degraded'
     || reason === 'activation_ledger_oversized'
+    || reason === 'activation_ledger_needs_migration'
     || reason === 'upgrade_detect'
     || reason === 'upgrade_inspect'
     || reason === 'upgrade_disk_preflight'
@@ -612,6 +614,7 @@ export function projectSubjectReadiness(input) {
       'activation_ledger_unresolved',
       'activation_ledger_degraded',
       'activation_ledger_oversized',
+      'activation_ledger_needs_migration',
       'policy_backfill',
       'upgrade_authority_mismatch',
       'upgrade_insufficient_disk',

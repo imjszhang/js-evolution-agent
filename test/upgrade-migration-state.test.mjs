@@ -290,6 +290,56 @@ describe('product-visible upgrade / migration state machine', () => {
     expect(pumped.ok).toBe(true);
   });
 
+  it('does not treat a declared v1 inbox with zero entries as empty', () => {
+    const { runtime } = makeIsolatedRoot();
+    writeEmptyLedger(runtime, {
+      schema_version: 'activation-ledger.v1',
+      contract_version: '0.3.0',
+      generation: null,
+      entries: {},
+    });
+    const inspected = inspectActivationLedgerFile(runtime.dataRoot);
+    expect(inspected.exists).toBe(true);
+    expect(inspected.empty).toBe(false);
+    expect(inspected.schema_version).toBe('activation-ledger.v1');
+  });
+
+  it('fails closed on a large v1 ledger without projection and does not parse it', () => {
+    const { runtime } = makeIsolatedRoot();
+    writeHistory(runtime);
+    const ledgerPath = writeEmptyLedger(runtime, {
+      schema_version: 'activation-ledger.v1',
+      contract_version: '0.3.0',
+      generation: 'gen-large-v1',
+      entries: {},
+    });
+    const pad = Buffer.alloc(8 * 1024 * 1024 + 64, 0x20);
+    writeFileSync(ledgerPath, Buffer.concat([
+      Buffer.from('{"schema_version":"activation-ledger.v1","contract_version":"0.3.0","generation":"gen-large-v1","activation_policy_version":"activation-policy.v1","entries":{'),
+      pad,
+    ]));
+    const inspected = inspectActivationLedgerFile(runtime.dataRoot);
+    expect(inspected.exists).toBe(true);
+    expect(inspected.empty).toBe(false);
+    expect(inspected.needs_owned_migration).toBe(true);
+    expect(inspected.entry_count).toBeNull();
+
+    const plane = inspectControlPlaneReadiness({
+      dataRoot: runtime.dataRoot,
+      readLedger: () => {
+        throw new Error('large v1 without projection must fail closed without a full parse');
+      },
+    });
+    expect(plane.ready).toBe(false);
+    expect(plane.allow_pump).toBe(false);
+    expect(plane.reason).toBe('activation_ledger_needs_migration');
+    expect(plane.upgrade.ready).toBe(false);
+    expect(plane.upgrade.phase).toBe('inspect');
+    expect(plane.upgrade.cycle_blocked).toBe(true);
+    expect(plane.upgrade.channel_available).toBe(true);
+    expect(plane.upgrade.operator_action).toBeNull();
+  });
+
   it('does not auto-rebuild or invent a journal during detect', () => {
     const { runtime } = makeIsolatedRoot();
     writeHistory(runtime);

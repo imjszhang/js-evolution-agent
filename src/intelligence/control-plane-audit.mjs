@@ -627,7 +627,7 @@ async function checkRebuildRollback(parentDir) {
       receipts: sha256Text(readFileSync(fixture.receiptPath)),
       beliefs: sha256Text(readFileSync(fixture.beliefPath)),
     };
-    const store = readActivationLedgerStore(fixture.runtime.dataRoot);
+    const store = readActivationLedgerStore(fixture.runtime.dataRoot, { includeTerminal: true });
     const afterClaimable = claimableKeys(fixture.runtime.dataRoot, 'cognitive');
     const coveredLost = afterClaimable.includes(journalKey('covered-only'))
       || afterClaimable.includes(journalKey('consumed-only'));

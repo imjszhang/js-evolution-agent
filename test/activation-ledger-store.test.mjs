@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,10 +15,13 @@ import {
 import { writeJson } from '../src/infra/json-store.mjs';
 import { EVIDENCE_INDEX_GENERATION_SCHEMA } from '../src/evolution/reactor/evidence-index.mjs';
 import {
+  ACTIVATION_LEDGER_FAILPOINTS,
+  ACTIVATION_LEDGER_STORE_SCHEMA,
   activationLedgerDeltasFile,
   activationLedgerPath,
   activationLedgerProjectionPath,
   applyLedgerTransition,
+  ensureCompactActivationLedgerProjection,
   getActivationLedgerEntry,
   insertActivationLedgerEntries,
   listActivationLedgerEntries,
@@ -120,6 +123,11 @@ describe('unified activation ledger store', () => {
     const replay = applyLedgerTransition(root, first.identity_key, { to: 'ready', kind: 'release' });
     expect(replay.ok).toBe(false);
     expect(getActivationLedgerEntry(root, first.identity).state).toBe('handled');
+    const hot = readActivationLedgerStore(root);
+    expect(hot.schema_version).toBe(ACTIVATION_LEDGER_STORE_SCHEMA);
+    expect(hot.entries[first.identity_key]).toBeUndefined();
+    expect(hot.handled_total).toBe(1);
+    expect(listActivationLedgerEntries(root, { state: 'handled' })).toHaveLength(1);
   });
 
   it('refuses claim from deferred/blocked and reclaims expired leases as ready', () => {
@@ -232,6 +240,143 @@ describe('unified activation ledger store', () => {
     expect(projection.reactors.cognitive.realtime.handled_total).toBe(1);
   });
 
+  it('leaves the live ledger and deltas unchanged when interrupted before switch', () => {
+    const root = dataRoot();
+    writeGeneration(root, 'gen-crash');
+    const created = insertActivationLedgerEntries(root, [entry()]).created[0];
+    const beforeLedger = readFileSync(activationLedgerPath(root), 'utf8');
+    const beforeDeltas = readFileSync(activationLedgerDeltasFile(root), 'utf8');
+    const beforeProjection = readFileSync(activationLedgerProjectionPath(root), 'utf8');
+
+    let beforeSwitchError;
+    try {
+      applyLedgerTransition(root, created.identity_key, {
+        to: 'handled',
+        kind: 'handle',
+      }, { failpoint: ACTIVATION_LEDGER_FAILPOINTS.BEFORE_SWITCH });
+    } catch (error) {
+      beforeSwitchError = error;
+    }
+    expect(beforeSwitchError).toMatchObject({ code: 'injected_failure', failpoint: 'before_switch' });
+
+    expect(readFileSync(activationLedgerPath(root), 'utf8')).toBe(beforeLedger);
+    expect(readFileSync(activationLedgerDeltasFile(root), 'utf8')).toBe(beforeDeltas);
+    expect(readFileSync(activationLedgerProjectionPath(root), 'utf8')).toBe(beforeProjection);
+    expect(readActivationLedgerStore(root).sequence).toBe(1);
+    expect(getActivationLedgerEntry(root, created.identity_key).state).toBe('ready');
+  });
+
+  it('keeps sequence and deltas together after switch and recovers the projection', () => {
+    const root = dataRoot();
+    writeGeneration(root, 'gen-crash');
+    const input = entry({ evidence_key: 'operator_briefs:after-switch' });
+
+    let afterSwitchError;
+    try {
+      insertActivationLedgerEntries(root, [input], {
+        failpoint: ACTIVATION_LEDGER_FAILPOINTS.AFTER_SWITCH,
+      });
+    } catch (error) {
+      afterSwitchError = error;
+    }
+    expect(afterSwitchError).toMatchObject({ code: 'injected_failure', failpoint: 'after_switch' });
+
+    const store = readActivationLedgerStore(root);
+    expect(store.sequence).toBe(1);
+    expect(store.generation).toBe('gen-crash');
+    const created = Object.values(store.entries)[0];
+    expect(created.state).toBe('ready');
+    const deltas = readFileSync(activationLedgerDeltasFile(root), 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    expect(deltas).toEqual([expect.objectContaining({
+      sequence: 1,
+      identity_key: created.identity_key,
+      from: null,
+      to: 'ready',
+      kind: 'insert',
+    })]);
+    expect(existsSync(activationLedgerProjectionPath(root))).toBe(false);
+
+    const recovered = ensureCompactActivationLedgerProjection(root);
+    expect(recovered.persisted).toBe(true);
+    expect(recovered.sequence).toBe(1);
+    const projection = JSON.parse(readFileSync(activationLedgerProjectionPath(root), 'utf8'));
+    expect(projection.generation).toBe('gen-crash');
+    expect(projection.sequence).toBe(1);
+    expect(projection.open_total).toBe(1);
+  });
+
+  it('recovers when interrupted between delta switch and projection write', () => {
+    const root = dataRoot();
+    writeGeneration(root, 'gen-crash');
+    const created = insertActivationLedgerEntries(root, [entry({
+      evidence_key: 'operator_briefs:delta-gap',
+    })]).created[0];
+    expect(JSON.parse(readFileSync(activationLedgerProjectionPath(root), 'utf8')).sequence).toBe(1);
+
+    let betweenError;
+    try {
+      applyLedgerTransition(root, created.identity_key, {
+        to: 'handled',
+        kind: 'handle',
+      }, { failpoint: ACTIVATION_LEDGER_FAILPOINTS.BETWEEN_DELTA_AND_SNAPSHOT });
+    } catch (error) {
+      betweenError = error;
+    }
+    expect(betweenError).toMatchObject({
+      code: 'injected_failure',
+      failpoint: 'between_delta_and_snapshot',
+    });
+    expect(readActivationLedgerStore(root).sequence).toBe(2);
+    expect(JSON.parse(readFileSync(activationLedgerProjectionPath(root), 'utf8')).sequence).toBe(1);
+
+    let afterDeltasError;
+    try {
+      applyLedgerTransition(root, created.identity_key, {
+        to: 'claimed',
+        kind: 'claim',
+      }, { failpoint: ACTIVATION_LEDGER_FAILPOINTS.AFTER_DELTAS_BEFORE_PROJECTION });
+    } catch (error) {
+      afterDeltasError = error;
+    }
+    expect(afterDeltasError).toMatchObject({
+      code: 'injected_failure',
+      failpoint: 'after_deltas_before_projection',
+    });
+    expect(getActivationLedgerEntry(root, created.identity_key).state).toBe('handled');
+    expect(readActivationLedgerStore(root).sequence).toBe(2);
+
+    const recovered = ensureCompactActivationLedgerProjection(root);
+    expect(recovered.persisted).toBe(true);
+    expect(JSON.parse(readFileSync(activationLedgerProjectionPath(root), 'utf8')).sequence).toBe(2);
+  });
+
+  it('replaces orphan deltas that landed ahead of the live sequence', () => {
+    const root = dataRoot();
+    writeGeneration(root, 'gen-crash');
+    const created = insertActivationLedgerEntries(root, [entry({
+      evidence_key: 'operator_briefs:orphan-delta',
+    })]).created[0];
+    const deltasFile = activationLedgerDeltasFile(root);
+    writeFileSync(deltasFile, `${readFileSync(deltasFile, 'utf8')}${JSON.stringify({
+      sequence: 99,
+      identity_key: created.identity_key,
+      from: 'ready',
+      to: 'handled',
+      kind: 'handle',
+    })}\n`);
+
+    applyLedgerTransition(root, created.identity_key, { to: 'handled', kind: 'handle' });
+    const sequences = readFileSync(deltasFile, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line).sequence);
+    expect(sequences).toEqual([1, 2]);
+    expect(readActivationLedgerStore(root).sequence).toBe(2);
+  });
+
   it('rejects payload and secret fields on control-plane records', () => {
     const root = dataRoot();
     writeGeneration(root, 'gen-a');
@@ -240,5 +385,34 @@ describe('unified activation ledger store', () => {
     })]);
     expect(result.created).toHaveLength(0);
     expect(result.rejected[0].errors.join(' ')).toMatch(/payload|forbidden/i);
+  });
+
+  it('persists a compact projection for a small pre-#233 ledger without inventing identities', () => {
+    const root = dataRoot();
+    writeGeneration(root, '379b4876-small');
+    const ready = entry({ evidence_key: 'operator_briefs:pre233-small' });
+    const file = activationLedgerPath(root);
+    writeJson(file, {
+      schema_version: 'activation-ledger.v1',
+      contract_version: '0.3.0',
+      generation: '379b4876-small',
+      sequence: null,
+      updated_at: AT,
+      entries: { [ready.identity_key]: ready },
+      diagnostics: [],
+      diagnostics_dropped: 0,
+      terminal_history: [],
+    });
+    const before = readFileSync(file, 'utf8');
+    const persisted = ensureCompactActivationLedgerProjection(root);
+    expect(persisted.persisted).toBe(true);
+    expect(persisted.sequence).toBeNull();
+    expect(readFileSync(file, 'utf8')).toBe(before);
+    const projection = JSON.parse(readFileSync(activationLedgerProjectionPath(root), 'utf8'));
+    expect(projection.generation).toBe('379b4876-small');
+    expect(projection.sequence).toBeNull();
+    expect(projection.open_total).toBe(1);
+    expect(projection.handled_total).toBe(0);
+    expect(projection.layout).toBeUndefined();
   });
 });

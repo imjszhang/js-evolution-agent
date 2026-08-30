@@ -17,11 +17,11 @@ import {
   evaluateActivationPolicyChange,
 } from '../../contracts/index.mjs';
 import {
+  ACTIVATION_LEDGER_HOT_MAX_BYTES,
   UPGRADE_MIGRATION_PHASES,
   UPGRADE_OPERATOR_ACTIONS,
   hasMatchingGenerationJournal,
   inspectActivationLedgerFile,
-  readActivationLedgerStore,
   readActivationMigrationState,
   resumeActivationMigration,
   toProductUpgradePhase,
@@ -153,13 +153,8 @@ function detectPolicyBackfill(dataRoot, manifest) {
   if (!ledger.exists || ledger.empty || !ledger.readable || !ledger.generation) {
     return false;
   }
-  let store;
-  try {
-    store = readActivationLedgerStore(dataRoot, { manifest });
-  } catch {
-    return false;
-  }
-  const from = store.activation_policy_version;
+  // Peeked from the ledger header — do not parse entries or terminal shards.
+  const from = ledger.activation_policy_version;
   if (!from || from === INITIAL_ACTIVATION_POLICY_VERSION) return false;
   const decision = evaluateActivationPolicyChange({
     from_activation_policy_version: from,
@@ -329,6 +324,11 @@ export function inspectUpgradeMigration({
   // Fail closed: history + empty/missing ledger is never ready, even when a
   // leftover {} file sits next to authority (issue #237).
   const liveLedgerReady = ledger.exists && ledger.empty !== true && ledger.readable === true;
+  const largeWithoutProjection = Boolean(
+    ledger.exists
+    && Number(ledger.bytes) > ACTIVATION_LEDGER_HOT_MAX_BYTES
+    && ledger.projection_present !== true,
+  );
   const generationMismatch = Boolean(
     matchingJournal
     && ledger.generation
@@ -363,6 +363,26 @@ export function inspectUpgradeMigration({
       reason: 'migration_required',
       operator_action,
       generation: manifest?.generation ?? migration.generation ?? null,
+      previous_generation: migration.previous_generation,
+      disk,
+    });
+  }
+
+  if (largeWithoutProjection) {
+    persistIfChanged(dataRoot, {
+      phase: 'inspect',
+      product_phase: 'inspect',
+      operation: 'upgrade',
+      generation: ledger.generation ?? manifest?.generation ?? migration.generation ?? null,
+      operator_action: storedOperator,
+      block_reason: 'activation_ledger_needs_migration',
+    }, persist);
+    return view({
+      phase: 'inspect',
+      ready: false,
+      reason: 'activation_ledger_needs_migration',
+      operator_action: storedOperator,
+      generation: ledger.generation ?? manifest?.generation ?? migration.generation ?? null,
       previous_generation: migration.previous_generation,
       disk,
     });
