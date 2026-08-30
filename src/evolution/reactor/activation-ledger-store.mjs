@@ -855,7 +855,12 @@ export function inspectActivationLedgerFile(dataRoot, { manifest = null } = {}) 
     }
     const generation = raw.generation ?? null;
     const entry_count = entriesFromStore(raw).length;
-    const empty = !generation && entry_count === 0;
+    // A real activation-ledger.v1 store is never "empty" even with no
+    // generation and zero entries (fresh pump / test seed). Only a leftover
+    // placeholder (`{}`, no schema) next to authority is the #237 hole.
+    const empty = raw.schema_version !== ACTIVATION_LEDGER_STORE_SCHEMA
+      && !generation
+      && entry_count === 0;
     return {
       exists: true,
       empty,
