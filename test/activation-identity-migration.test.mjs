@@ -140,6 +140,10 @@ function claimableKeys(dataRoot, reactor = 'cognitive') {
     .sort();
 }
 
+function readLedger(dataRoot, options = {}) {
+  return readActivationLedgerStore(dataRoot, { includeTerminal: true, ...options });
+}
+
 function handledKeys(store, reactor = null) {
   return Object.values(store.entries || {})
     .filter((entry) => entry.state === 'handled' && (!reactor || entry.reactor === reactor))
@@ -261,7 +265,7 @@ describe('activation identity migration', () => {
     expect(rebuilt.after.cursors.reactors.cognitive.offset).toBe(0);
     expect(readFileSync(receiptPath, 'utf8')).toBe(beforeAuthority);
 
-    const store = readActivationLedgerStore(runtime.dataRoot);
+    const store = readLedger(runtime.dataRoot);
     expect(handledKeys(store, 'cognitive')).toEqual(expect.arrayContaining([
       key('covered-only'),
       key('consumed-only'),
@@ -331,7 +335,7 @@ describe('activation identity migration', () => {
     });
     expect(authorized.status).toBe('completed');
     expect(authorized.activation_reconciliation.totals.activated_as_replay).toBe(1);
-    const store = readActivationLedgerStore(runtime.dataRoot);
+    const store = readLedger(runtime.dataRoot);
     const v1 = formatActivationIdentity({
       reactor: 'cognitive',
       evidence_key: key('covered-only'),
@@ -399,7 +403,7 @@ describe('activation identity migration', () => {
 
     const switched = JSON.parse(readFileSync(evidenceIndexPath(runtime.dataRoot), 'utf8'));
     expect(readActivationMigrationState(runtime.dataRoot).phase).toBe('switched');
-    expect(handledKeys(readActivationLedgerStore(runtime.dataRoot))).toContain(key('covered-only'));
+    expect(handledKeys(readLedger(runtime.dataRoot))).toContain(key('covered-only'));
 
     const resumed = await rebuildEvidenceJournal(runtime.dataRoot, {
       dryRun: false,
@@ -408,7 +412,7 @@ describe('activation identity migration', () => {
     expect(resumed.status).toBe('resumed');
     expect(resumed.generation).toBe(switched.generation);
     expect(readActivationMigrationState(runtime.dataRoot).phase).toBe('complete');
-    expect(handledKeys(readActivationLedgerStore(runtime.dataRoot))).toContain(key('covered-only'));
+    expect(handledKeys(readLedger(runtime.dataRoot))).toContain(key('covered-only'));
   });
 
   it('rollback creates a new generation and keeps newer handled markers', async () => {
@@ -426,7 +430,7 @@ describe('activation identity migration', () => {
     writeCovered(runtime.dataRoot, {
       cognitive: [key('covered-only'), key('post-rebuild')],
     });
-    const afterFirst = readActivationLedgerStore(runtime.dataRoot);
+    const afterFirst = readLedger(runtime.dataRoot);
     afterFirst.entries[formatActivationIdentity({
       reactor: 'cognitive',
       evidence_key: key('post-rebuild'),
@@ -458,7 +462,7 @@ describe('activation identity migration', () => {
     expect(rolled.status).toBe('completed');
     expect(rolled.generation).not.toBe(first.generation);
     expect(existsSync(receiptPath)).toBe(true);
-    expect(handledKeys(readActivationLedgerStore(runtime.dataRoot))).toEqual(expect.arrayContaining([
+    expect(handledKeys(readLedger(runtime.dataRoot))).toEqual(expect.arrayContaining([
       key('covered-only'),
       key('post-rebuild'),
     ]));
@@ -487,7 +491,7 @@ describe('activation identity migration', () => {
       assertStopped: () => ({ stopped: true }),
     });
     expect(rebuilt.status).toBe('completed');
-    expect(handledKeys(readActivationLedgerStore(runtime.dataRoot), 'cognitive')).toEqual(expect.arrayContaining([
+    expect(handledKeys(readLedger(runtime.dataRoot), 'cognitive')).toEqual(expect.arrayContaining([
       key('archive-only'),
       key('consumed-only'),
     ]));

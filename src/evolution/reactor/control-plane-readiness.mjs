@@ -47,6 +47,7 @@ const LEDGER_BLOCK_REASONS = new Set([
   'activation_ledger_unreadable',
   'activation_ledger_invalid',
   'activation_ledger_schema_mismatch',
+  'activation_ledger_needs_migration',
 ]);
 
 function journalManifest(dataRoot) {
@@ -254,6 +255,11 @@ export function inspectControlPlaneReadiness({
     ledgerSnapshot = readLedger(dataRoot, { env });
   } else if (ledgerFile.bytes != null && ledgerFile.bytes > maxBytes) {
     return blocked('activation_ledger_oversized', {
+      migration,
+      ledger: null,
+    });
+  } else if (ledgerFile.bytes != null && ledgerFile.bytes > 8 * 1024 * 1024) {
+    return blocked('activation_ledger_needs_migration', {
       migration,
       ledger: null,
     });

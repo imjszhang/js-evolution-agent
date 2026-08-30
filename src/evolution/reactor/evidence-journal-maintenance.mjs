@@ -1417,7 +1417,7 @@ async function rollbackEvidenceJournalOperation(dataRoot, {
       manifest: backupManifest,
       workDir,
       replayEpoch,
-      extraLedgers: [readActivationLedgerStore(dataRoot)],
+      extraLedgers: [readActivationLedgerStore(dataRoot, { includeTerminal: true })],
     });
   } finally {
     rmSync(workDir, { recursive: true, force: true });
@@ -1449,7 +1449,10 @@ async function rollbackEvidenceJournalOperation(dataRoot, {
   const finalDir = join(generations, generation);
   const currentManifest = safeJson(evidenceIndexPath(dataRoot), null);
   const currentActive = evidenceIndexDir(dataRoot, currentManifest);
-  const currentLedger = readActivationLedgerStore(dataRoot, { manifest: currentManifest });
+  const currentLedger = readActivationLedgerStore(dataRoot, {
+    manifest: currentManifest,
+    includeTerminal: true,
+  });
   let switched = false;
   try {
     writeActivationMigrationState(dataRoot, {
@@ -1532,7 +1535,10 @@ async function rollbackEvidenceJournalOperation(dataRoot, {
       replayEpoch,
       extraLedgers: [
         currentLedger,
-        readActivationLedgerStore(null, { path: join(backupSidecar, 'activation-ledger.json') }),
+        readActivationLedgerStore(null, {
+          path: join(backupSidecar, 'activation-ledger.json'),
+          includeTerminal: true,
+        }),
       ],
     });
     await stoppedCheck();

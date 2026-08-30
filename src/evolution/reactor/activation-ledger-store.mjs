@@ -1,13 +1,13 @@
 /**
  * Derived Activation Ledger (Reactor Inbox).
  *
- * One module, generation-scoped so handled identities survive journal rebuild.
- * Persistence is an identity-keyed map; every public read/write speaks contract
- * entries. Never authority for evidence, beliefs, goals, receipts, or settlements.
+ * Ledger v2: hot open work in activation-ledger.json, generation-scoped
+ * terminal shards, and a compact projection. One owner — daemon only reads.
+ * Never authority for evidence, beliefs, goals, receipts, or settlements.
  */
 import { createHash } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import {
   ACTIVATION_LANES,
   ACTIVATION_LEDGER_STATES,
@@ -27,17 +27,34 @@ import {
   validateActivationLedgerEntry,
 } from '../../contracts/index.mjs';
 import { EVIDENCE_BATCH_REACTORS } from '../../contracts/evidence-batch-claim.mjs';
-import { readJson, updateJson, writeJson } from '../../infra/json-store.mjs';
+import { readJson, withJsonLock, writeJson } from '../../infra/json-store.mjs';
 import { nowIso } from '../../infra/runtime-paths.mjs';
 import { evidenceIndexDir, evidenceIndexPath } from './evidence-index.mjs';
 import { reactorDir } from './paths.mjs';
+import {
+  appendTerminalEntries,
+  copyTerminalDirectory,
+  findTerminalEntry,
+  hydrateTerminalEntries,
+  iterateTerminalEntries,
+  listTerminalHandledEvidenceKeys,
+  listTerminalIdentityKeys,
+  mergeHandledCountsIntoReactors,
+  readTerminalManifest,
+  terminalHasIdentity,
+} from './activation-ledger-terminal.mjs';
 
-export const ACTIVATION_LEDGER_STORE_SCHEMA = 'activation-ledger.v1';
+export const ACTIVATION_LEDGER_STORE_SCHEMA_V1 = 'activation-ledger.v1';
+export const ACTIVATION_LEDGER_STORE_SCHEMA = 'activation-ledger.v2';
 export const ACTIVATION_LEDGER_PROJECTION_SCHEMA = 'activation-ledger-projection.v1';
 export const ACTIVATION_MIGRATION_STATE_SCHEMA = 'activation-migration.v1';
 export const ACTIVATION_LEDGER_FILENAME = 'activation-ledger.json';
 export const ACTIVATION_LEDGER_PROJECTION_FILENAME = 'activation-ledger.projection.json';
 export const ACTIVATION_LEDGER_DELTAS_FILENAME = 'activation-ledger.deltas.jsonl';
+export {
+  ACTIVATION_LEDGER_TERMINAL_DIR,
+  activationLedgerTerminalDir,
+} from './activation-ledger-terminal.mjs';
 
 const OPEN_LEDGER_STATES = Object.freeze(['ready', 'claimed', 'deferred', 'blocked']);
 
@@ -90,6 +107,11 @@ export function emptyActivationLedgerStore({
     diagnostics: [],
     diagnostics_dropped: 0,
     terminal_history: [],
+    terminal: null,
+    handled_total: 0,
+    open_total: 0,
+    reactors: null,
+    migrated_from: null,
   };
 }
 
@@ -157,7 +179,23 @@ function asStore(raw, extras = {}) {
     diagnostics: asArray(raw.diagnostics),
     diagnostics_dropped: Number(raw.diagnostics_dropped || 0),
     terminal_history: Array.isArray(raw.terminal_history) ? raw.terminal_history : [],
+    terminal: raw.terminal && typeof raw.terminal === 'object' ? raw.terminal : null,
+    handled_total: Number.isInteger(raw.handled_total) ? raw.handled_total : extras.handled_total ?? 0,
+    open_total: Number.isInteger(raw.open_total) ? raw.open_total : extras.open_total ?? 0,
+    reactors: raw.reactors && typeof raw.reactors === 'object' ? raw.reactors : extras.reactors ?? null,
+    migrated_from: raw.migrated_from ?? extras.migrated_from ?? null,
   };
+}
+
+export function isActivationLedgerV2(store) {
+  return store?.schema_version === ACTIVATION_LEDGER_STORE_SCHEMA;
+}
+
+export function isAcceptedActivationLedgerSchema(schemaVersion) {
+  return schemaVersion === ACTIVATION_LEDGER_STORE_SCHEMA
+    || schemaVersion === ACTIVATION_LEDGER_STORE_SCHEMA_V1
+    || schemaVersion === REACTOR_CONTROL_PLANE_CONTRACT_VERSION
+    || schemaVersion == null;
 }
 
 export function normalizeActivationLedger(raw, { now = nowIso() } = {}) {
@@ -197,9 +235,32 @@ function compactProjectionEntry(entry) {
   };
 }
 
+function resolveReactorCounts(store, entries) {
+  const counted = countActivationWork(entries);
+  const handledCounts = store?.terminal?.handled_counts;
+  if (handledCounts) mergeHandledCountsIntoReactors(counted, handledCounts);
+  else if (store?.reactors && typeof store.reactors === 'object') {
+    for (const reactor of REACTORS) {
+      for (const lane of ACTIVATION_LANES) {
+        const persisted = store.reactors[reactor]?.[lane]?.handled_total;
+        if (Number.isInteger(persisted) && persisted > counted[reactor][lane].handled_total) {
+          counted[reactor][lane].handled_total = persisted;
+        }
+      }
+    }
+  }
+  for (const reactor of REACTORS) {
+    for (const lane of ACTIVATION_LANES) {
+      counted[reactor][lane].open_total = laneOpenCount(counted[reactor][lane]);
+      reconcileLaneCounts(counted[reactor][lane]);
+    }
+  }
+  return counted;
+}
+
 export function buildActivationLedgerProjection(store) {
   const entries = entriesFromStore(store);
-  const reactors = countActivationWork(entries);
+  const reactors = resolveReactorCounts(store, entries);
   const open = entries
     .filter((entry) => OPEN_LEDGER_STATES.includes(entry?.state))
     .map(compactProjectionEntry)
@@ -212,6 +273,9 @@ export function buildActivationLedgerProjection(store) {
       handledTotal += Number.isInteger(slice.handled_total) ? slice.handled_total : 0;
     }
   }
+  if (Number.isInteger(store?.handled_total) && store.handled_total > handledTotal) {
+    handledTotal = store.handled_total;
+  }
   return {
     schema_version: ACTIVATION_LEDGER_PROJECTION_SCHEMA,
     generation: store?.generation ?? null,
@@ -221,6 +285,7 @@ export function buildActivationLedgerProjection(store) {
     open_entries: open,
     open_total: openTotal,
     handled_total: handledTotal,
+    layout: 'v2_sharded',
   };
 }
 
@@ -230,6 +295,250 @@ export function writeActivationLedgerProjectionAt(ledgerFile, store) {
   mkdirSync(dirname(path), { recursive: true });
   writeJson(path, buildActivationLedgerProjection(store));
   return path;
+}
+
+function partitionEntries(store) {
+  const open = {};
+  const handled = [];
+  for (const [key, entry] of Object.entries(entryMapFromStore(store))) {
+    if (entry?.state === 'handled') handled.push(entry);
+    else if (key) open[key] = entry;
+  }
+  return { open, handled };
+}
+
+function timestampForBackup() {
+  return new Date().toISOString().replace(/[:.]/g, '-');
+}
+
+function persistV2Ledger(filePath, store, {
+  backupV1 = false,
+  migratedFrom = null,
+} = {}) {
+  if (!filePath) throw new Error('persistV2Ledger requires a ledger path');
+  const destDir = dirname(filePath);
+  mkdirSync(destDir, { recursive: true });
+  const sourceDir = store._ledger_dir || null;
+  if (sourceDir && resolve(sourceDir) !== resolve(destDir)) {
+    copyTerminalDirectory(sourceDir, destDir);
+  }
+
+  const { open, handled } = partitionEntries(store);
+  if (handled.length) {
+    appendTerminalEntries(destDir, handled, { generation: store.generation ?? null });
+  }
+  const terminal = readTerminalManifest(destDir);
+  if (store.generation != null) terminal.generation = store.generation;
+  const reactors = resolveReactorCounts({
+    ...store,
+    terminal,
+    handled_total: terminal.entry_count,
+  }, Object.values(open));
+
+  const previousSchema = store.schema_version;
+  const wasV1 = previousSchema === ACTIVATION_LEDGER_STORE_SCHEMA_V1
+    || previousSchema === REACTOR_CONTROL_PLANE_CONTRACT_VERSION
+    || (previousSchema !== ACTIVATION_LEDGER_STORE_SCHEMA && existsSync(filePath));
+  if (backupV1 && wasV1 && existsSync(filePath)) {
+    const backup = `${filePath}.v1-backup-${timestampForBackup()}`;
+    copyFileSync(filePath, backup);
+    store._v1_backup_path = backup;
+  }
+
+  const hot = {
+    schema_version: ACTIVATION_LEDGER_STORE_SCHEMA,
+    contract_version: REACTOR_CONTROL_PLANE_CONTRACT_VERSION,
+    role: 'derived_rebuildable',
+    authoritative: false,
+    rebuildable: true,
+    generation: store.generation ?? null,
+    previous_generation: store.previous_generation ?? null,
+    activation_policy_version: store.activation_policy_version ?? INITIAL_ACTIVATION_POLICY_VERSION,
+    sequence: Number.isInteger(store.sequence) ? store.sequence : 0,
+    updated_at: store.updated_at ?? nowIso(),
+    entries: open,
+    diagnostics: asArray(store.diagnostics),
+    diagnostics_dropped: Number(store.diagnostics_dropped || 0),
+    terminal_history: Array.isArray(store.terminal_history) ? store.terminal_history : [],
+    terminal,
+    handled_total: terminal.entry_count,
+    open_total: Object.keys(open).length,
+    reactors,
+    migrated_from: migratedFrom ?? store.migrated_from ?? (wasV1 ? ACTIVATION_LEDGER_STORE_SCHEMA_V1 : null),
+  };
+
+  for (const [key, entry] of Object.entries(hot.entries)) {
+    const payload = rejectControlPlanePayloads(entry, `activation_ledger.entries.${key}`);
+    if (!payload.ok) {
+      const error = new Error(payload.errors.join('; '));
+      error.code = 'activation_ledger_payload_rejected';
+      throw error;
+    }
+  }
+
+  writeJson(filePath, hot);
+  const projectionPath = writeActivationLedgerProjectionAt(filePath, hot);
+  return {
+    ...hot,
+    _ledger_dir: destDir,
+    _projection_path: projectionPath,
+    _v1_backup_path: store._v1_backup_path ?? null,
+  };
+}
+
+export function lookupActivationIdentity(storeOrDir, identityKey) {
+  if (!identityKey) return null;
+  if (storeOrDir && typeof storeOrDir === 'object' && !Array.isArray(storeOrDir)) {
+    const hot = storeOrDir.entries?.[identityKey];
+    if (hot) return hot;
+    return findTerminalEntry(storeOrDir._ledger_dir, identityKey);
+  }
+  return findTerminalEntry(storeOrDir, identityKey);
+}
+
+export function hasStoredActivationIdentity(store, identityKey) {
+  if (!identityKey || !store) return false;
+  if (store.entries?.[identityKey]) return true;
+  return terminalHasIdentity(store._ledger_dir, identityKey);
+}
+
+export function listActivationIdentityKeys(dataRoot, options = {}) {
+  const store = readActivationLedgerStore(dataRoot, options);
+  const keys = new Set(Object.keys(store.entries || {}));
+  for (const key of listTerminalIdentityKeys(store._ledger_dir)) keys.add(key);
+  return [...keys];
+}
+
+export function inspectActivationLedgerLayout(dataRoot, {
+  manifest = null,
+  path = null,
+} = {}) {
+  const file = path || (dataRoot ? activationLedgerPath(dataRoot, manifest) : null);
+  if (!file || !existsSync(file)) {
+    return {
+      layout: 'missing',
+      schema_version: null,
+      generation: null,
+      sequence: null,
+      projection_present: false,
+      file_bytes: null,
+      open_count: 0,
+      handled_count: 0,
+      terminal_shards: 0,
+      needs_migration: false,
+    };
+  }
+  const raw = readJson(file, null);
+  const dir = dirname(file);
+  const projectionFile = join(dir, ACTIVATION_LEDGER_PROJECTION_FILENAME);
+  const v2 = raw?.schema_version === ACTIVATION_LEDGER_STORE_SCHEMA;
+  const terminal = v2 ? readTerminalManifest(dir) : null;
+  const map = entryMapFromStore(raw);
+  let openCount = 0;
+  let handledInFile = 0;
+  for (const entry of Object.values(map)) {
+    if (entry?.state === 'handled') handledInFile += 1;
+    else if (OPEN_LEDGER_STATES.includes(entry?.state)) openCount += 1;
+  }
+  const handledCount = v2
+    ? Number(raw?.handled_total ?? terminal?.entry_count ?? handledInFile)
+    : handledInFile;
+  const sequence = Number.isInteger(raw?.sequence) ? raw.sequence : null;
+  return {
+    layout: v2 ? 'v2_sharded' : 'v1_monolith',
+    schema_version: raw?.schema_version ?? null,
+    generation: raw?.generation ?? null,
+    sequence,
+    projection_present: existsSync(projectionFile),
+    file_bytes: (() => {
+      try {
+        return statSync(file).size;
+      } catch {
+        return null;
+      }
+    })(),
+    open_count: v2 ? Number(raw?.open_total ?? openCount) : openCount,
+    handled_count: handledCount,
+    terminal_shards: terminal?.shard_count ?? 0,
+    needs_migration: !v2 || !existsSync(projectionFile),
+    authority_mutated: false,
+  };
+}
+
+export function migrateActivationLedgerToV2(dataRoot, {
+  now = nowIso(),
+  dryRun = false,
+  manifest = null,
+  path = null,
+} = {}) {
+  if (!dataRoot && !path) throw new Error('migrateActivationLedgerToV2 requires dataRoot or path');
+  const file = path || activationLedgerPath(dataRoot, manifest);
+  const inspection = inspectActivationLedgerLayout(dataRoot, { manifest, path: file });
+  if (inspection.layout === 'missing') {
+    return {
+      migrated: false,
+      already_v2: false,
+      dry_run: dryRun,
+      reason: 'activation_ledger_unresolved',
+      inspection,
+      authority_mutated: false,
+      identities_invented: 0,
+    };
+  }
+  if (inspection.layout === 'v2_sharded' && inspection.projection_present) {
+    return {
+      migrated: false,
+      already_v2: true,
+      dry_run: dryRun,
+      reason: 'already_v2',
+      inspection,
+      authority_mutated: false,
+      identities_invented: 0,
+    };
+  }
+  if (dryRun) {
+    return {
+      migrated: false,
+      already_v2: false,
+      dry_run: true,
+      reason: 'would_migrate',
+      inspection,
+      authority_mutated: false,
+      identities_invented: 0,
+    };
+  }
+
+  const persisted = withJsonLock(file, () => {
+    const raw = readJson(file, null);
+    const store = asStore(raw, {
+      generation: currentGeneration(dataRoot, manifest),
+      updated_at: typeof now === 'string' ? now : nowIso(),
+    });
+    store._ledger_dir = dirname(file);
+    if (!Number.isInteger(raw?.sequence)) store.sequence = 0;
+    store.updated_at = typeof now === 'string' ? now : nowIso();
+    return persistV2Ledger(file, store, {
+      backupV1: inspection.layout === 'v1_monolith',
+      migratedFrom: inspection.layout === 'v1_monolith' ? ACTIVATION_LEDGER_STORE_SCHEMA_V1 : null,
+    });
+  });
+
+  return {
+    migrated: true,
+    already_v2: false,
+    dry_run: false,
+    reason: 'migrated',
+    inspection,
+    after: inspectActivationLedgerLayout(dataRoot, { manifest, path: file }),
+    backup_path: persisted._v1_backup_path ?? null,
+    projection_path: persisted._projection_path ?? null,
+    generation: persisted.generation ?? null,
+    sequence: persisted.sequence,
+    open_count: persisted.open_total,
+    handled_count: persisted.handled_total,
+    authority_mutated: false,
+    identities_invented: 0,
+  };
 }
 
 function inferDeltaKind(from, to) {
@@ -304,12 +613,18 @@ function appendLedgerDeltas(dataRoot, deltas, manifest = null) {
 export function readActivationLedgerStore(dataRoot, {
   manifest = null,
   path = null,
+  includeTerminal = false,
 } = {}) {
   const file = path || (dataRoot ? activationLedgerPath(dataRoot, manifest) : null);
   if (!file) return emptyActivationLedgerStore();
-  return asStore(readJson(file, null), {
+  const store = asStore(readJson(file, null), {
     generation: currentGeneration(dataRoot, manifest),
   });
+  store._ledger_dir = dirname(file);
+  if (includeTerminal && isActivationLedgerV2(store)) {
+    hydrateTerminalEntries(store, store._ledger_dir);
+  }
+  return store;
 }
 
 export function writeActivationLedgerStore(filePath, store) {
@@ -317,16 +632,8 @@ export function writeActivationLedgerStore(filePath, store) {
   const next = asStore(store);
   next.authoritative = false;
   if (!Number.isInteger(next.sequence)) next.sequence = 0;
-  for (const [key, entry] of Object.entries(next.entries)) {
-    const payload = rejectControlPlanePayloads(entry, `activation_ledger.entries.${key}`);
-    if (!payload.ok) {
-      const error = new Error(payload.errors.join('; '));
-      error.code = 'activation_ledger_payload_rejected';
-      throw error;
-    }
-  }
-  writeJson(filePath, next);
-  writeActivationLedgerProjectionAt(filePath, next);
+  next._ledger_dir = store?._ledger_dir ?? next._ledger_dir ?? null;
+  persistV2Ledger(filePath, next);
   return filePath;
 }
 
@@ -340,7 +647,7 @@ export function writeActivationLedger(dataRoot, ledger, { now = null, manifest =
   const stamp = typeof now === 'string' ? now : nowIso();
   const file = activationLedgerPath(dataRoot, manifest);
   mkdirSync(dirname(file), { recursive: true });
-  const next = updateJson(file, () => {
+  return withJsonLock(file, () => {
     const store = asStore(ledger, {
       generation: currentGeneration(dataRoot, manifest),
       updated_at: stamp,
@@ -348,10 +655,9 @@ export function writeActivationLedger(dataRoot, ledger, { now = null, manifest =
     store.updated_at = stamp;
     store.authoritative = false;
     if (!Number.isInteger(store.sequence)) store.sequence = 0;
-    return store;
-  }, { fallback: emptyActivationLedgerStore({ updated_at: stamp }) });
-  writeActivationLedgerProjectionAt(file, next);
-  return next;
+    store._ledger_dir = dirname(file);
+    return persistV2Ledger(file, store);
+  });
 }
 
 export function listActivationLedgerEntries(dataRoot, {
@@ -359,8 +665,15 @@ export function listActivationLedgerEntries(dataRoot, {
   lane = null,
   state = null,
   evidence_key = null,
+  includeTerminal = false,
 } = {}) {
-  return readActivationLedger(dataRoot).entries.filter((entry) => {
+  const store = readActivationLedgerStore(dataRoot, {
+    includeTerminal: includeTerminal || state === 'handled',
+  });
+  const entries = includeTerminal || state === 'handled'
+    ? entriesFromStore(store)
+    : entriesFromStore(store).filter((entry) => entry?.state !== 'handled');
+  return entries.filter((entry) => {
     if (reactor && entry.reactor !== reactor) return false;
     if (lane && entry.lane !== lane) return false;
     if (state && entry.state !== state) return false;
@@ -382,10 +695,12 @@ export function getActivationLedgerEntry(dataRoot, identity) {
     })();
   if (!key) return null;
   const store = readActivationLedgerStore(dataRoot);
-  return store.entries[key] ?? Object.values(store.entries).find((entry) => (
-    entry.identity_key === key
-    || (entry.identity && formatActivationIdentity(entry.identity) === key)
-  )) ?? null;
+  return lookupActivationIdentity(store, key)
+    ?? Object.values(store.entries || {}).find((entry) => (
+      entry.identity_key === key
+      || (entry.identity && formatActivationIdentity(entry.identity) === key)
+    ))
+    ?? null;
 }
 
 export function findActivationEntry(dataRoot, identityKey) {
@@ -429,18 +744,21 @@ function mutateLedger(dataRoot, updater, {
   const file = activationLedgerPath(dataRoot, manifest);
   mkdirSync(dirname(file), { recursive: true });
   let pendingDeltas = [];
-  const store = updateJson(file, (raw) => {
+  const store = withJsonLock(file, () => {
     const generation = currentGeneration(dataRoot, manifest);
+    const raw = readJson(file, null);
     const next = asStore(raw, {
       generation,
       updated_at: now,
     });
+    next._ledger_dir = dirname(file);
     const beforeMap = { ...next.entries };
     const prevSequence = Number.isInteger(next.sequence) ? next.sequence : 0;
     const result = updater(next, now);
     result.authoritative = false;
     result.updated_at = now;
     result.generation = result.generation ?? generation;
+    result._ledger_dir = dirname(file);
     const deltas = collectLedgerDeltas(beforeMap, result, prevSequence + 1, now);
     if (deltas.length) {
       result.sequence = prevSequence + 1;
@@ -448,15 +766,11 @@ function mutateLedger(dataRoot, updater, {
     } else {
       result.sequence = prevSequence;
     }
-    return result;
-  }, { fallback: emptyActivationLedgerStore({
-    generation: currentGeneration(dataRoot, manifest),
-    updated_at: now,
-  }) });
+    return persistV2Ledger(file, result);
+  });
   if (pendingDeltas.length) {
     appendLedgerDeltas(dataRoot, pendingDeltas, manifest);
   }
-  writeActivationLedgerProjectionAt(file, store);
   return store;
 }
 
@@ -488,7 +802,8 @@ export function insertActivationLedgerEntries(dataRoot, entries = [], {
         });
         continue;
       }
-      const existing = next.entries[prepared.identity_key];
+      const existing = next.entries[prepared.identity_key]
+        || lookupActivationIdentity(next, prepared.identity_key);
       if (existing) {
         reused.push({
           identity_key: prepared.identity_key,
@@ -526,6 +841,11 @@ export function upsertActivationLedgerEntry(dataRoot, input, { now = null } = {}
 
   let stored = null;
   mutateLedger(dataRoot, (next) => {
+    const terminal = lookupActivationIdentity(next, prepared.identity_key);
+    if (terminal?.state === 'handled' && prepared.entry.state !== 'handled') {
+      stored = terminal;
+      return next;
+    }
     stored = { ...prepared.entry, updated_at: stamp };
     next.entries[prepared.identity_key] = stored;
     return next;
@@ -656,14 +976,23 @@ export function listHandledEvidenceKeys(dataRoot, {
     return [];
   }
   const keys = [];
+  const seen = new Set();
+  const add = (key) => {
+    if (key && !seen.has(key)) {
+      seen.add(key);
+      keys.push(key);
+    }
+  };
   for (const entry of Object.values(store.entries || {})) {
     if (entry?.state !== 'handled') continue;
     if (reactor && entry.reactor !== reactor) continue;
     const version = entry.identity?.activation_policy_version
       ?? entry.activation_policy_version;
     if (policyVersion && version !== policyVersion) continue;
-    const key = entry.identity?.evidence_key ?? entry.evidence_key;
-    if (key) keys.push(key);
+    add(entry.identity?.evidence_key ?? entry.evidence_key);
+  }
+  for (const key of listTerminalHandledEvidenceKeys(store._ledger_dir, { reactor, policyVersion })) {
+    add(key);
   }
   return keys;
 }
@@ -683,7 +1012,10 @@ export function countLedgerWork(store) {
     byReactor[reactor][state] += 1;
   }
   const ready = REACTORS.reduce((sum, reactor) => sum + byReactor[reactor].ready, 0);
-  const handled = REACTORS.reduce((sum, reactor) => sum + byReactor[reactor].handled, 0);
+  let handled = REACTORS.reduce((sum, reactor) => sum + byReactor[reactor].handled, 0);
+  if (handled === 0 && Number.isInteger(store?.handled_total)) {
+    handled = store.handled_total;
+  }
   return { ready, handled, by_reactor: byReactor };
 }
 
@@ -758,13 +1090,17 @@ export function writeConsumedMarkerAt(activeDir, reactor, evidenceKey) {
 
 export function seedConsumedMarkersFromLedger(activeDir, store) {
   let written = 0;
-  for (const entry of entriesFromStore(store)) {
-    if (entry?.state !== 'handled') continue;
+  const seed = (entry) => {
+    if (entry?.state !== 'handled') return;
     const reactor = entry.reactor;
     const key = entry.identity?.evidence_key ?? entry.evidence_key;
-    if (!REACTORS.includes(reactor) || !key) continue;
+    if (!REACTORS.includes(reactor) || !key) return;
     writeConsumedMarkerAt(activeDir, reactor, key);
     written += 1;
+  };
+  for (const entry of entriesFromStore(store)) seed(entry);
+  if (store?._ledger_dir) {
+    iterateTerminalEntries(store._ledger_dir, seed);
   }
   return written;
 }
@@ -774,8 +1110,10 @@ export function validateActivationLedgerStore(store, path = 'activation_ledger')
   if (!store || typeof store !== 'object') {
     return { ok: false, errors: [`${path} must be an object`] };
   }
-  if (store.schema_version !== ACTIVATION_LEDGER_STORE_SCHEMA) {
-    errors.push(`${path}.schema_version must be ${ACTIVATION_LEDGER_STORE_SCHEMA}`);
+  if (store.schema_version !== ACTIVATION_LEDGER_STORE_SCHEMA
+    && store.schema_version !== ACTIVATION_LEDGER_STORE_SCHEMA_V1
+    && store.schema_version !== REACTOR_CONTROL_PLANE_CONTRACT_VERSION) {
+    errors.push(`${path}.schema_version must be ${ACTIVATION_LEDGER_STORE_SCHEMA} or ${ACTIVATION_LEDGER_STORE_SCHEMA_V1}`);
   }
   if (store.contract_version !== REACTOR_CONTROL_PLANE_CONTRACT_VERSION) {
     errors.push(`${path}.contract_version must be ${REACTOR_CONTROL_PLANE_CONTRACT_VERSION}`);

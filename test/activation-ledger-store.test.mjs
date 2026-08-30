@@ -15,6 +15,7 @@ import {
 import { writeJson } from '../src/infra/json-store.mjs';
 import { EVIDENCE_INDEX_GENERATION_SCHEMA } from '../src/evolution/reactor/evidence-index.mjs';
 import {
+  ACTIVATION_LEDGER_STORE_SCHEMA,
   activationLedgerDeltasFile,
   activationLedgerPath,
   activationLedgerProjectionPath,
@@ -120,6 +121,11 @@ describe('unified activation ledger store', () => {
     const replay = applyLedgerTransition(root, first.identity_key, { to: 'ready', kind: 'release' });
     expect(replay.ok).toBe(false);
     expect(getActivationLedgerEntry(root, first.identity).state).toBe('handled');
+    const hot = readActivationLedgerStore(root);
+    expect(hot.schema_version).toBe(ACTIVATION_LEDGER_STORE_SCHEMA);
+    expect(hot.entries[first.identity_key]).toBeUndefined();
+    expect(hot.handled_total).toBe(1);
+    expect(listActivationLedgerEntries(root, { state: 'handled' })).toHaveLength(1);
   });
 
   it('refuses claim from deferred/blocked and reclaims expired leases as ready', () => {
