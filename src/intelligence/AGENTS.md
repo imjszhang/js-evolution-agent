@@ -64,7 +64,7 @@ EvidenceEnvelope → claim → cognitive reaction（investigate → report → D
 
 `src/evolution/reactor/evidence-router.mjs` 把**新追加**的 `EvidenceEnvelope` 增量写成可重建的 Activation Ledger。路由只判断“有没有工作”，不执行、不调度。契约从 `src/contracts/reactor-control-plane.mjs` 导入，身份为 `aiv1/<reactor>/activation-policy.v1/<evidence_key>`。journal generation 不是身份的一部分，换代不产生工作。策略字符串只有在资格规则变更时才允许 bump，且必须走 `evaluateActivationPolicyChange` + 显式 replay epoch，禁止静默回填。
 
-策略表与 0.2.x `legacy_unknown` / `legacy_fallback` 口径见 [`src/evolution/reactor/evidence-router.md`](../evolution/reactor/evidence-router.md)。派生账本由 `src/evolution/reactor/activation-ledger-store.mjs` 独占，路径为 `data/evolution/reactor/evidence-index-generations/<generation>/activation-ledger.json`（永远不是 evidence / belief / receipt / settlement 的权威）。Daemon 不得再放第二份 ledger store。
+策略表与 0.2.x `legacy_unknown` / `legacy_fallback` 口径见 [`src/evolution/reactor/evidence-router.md`](../evolution/reactor/evidence-router.md)。派生账本由 `src/evolution/reactor/activation-ledger-store.mjs` 独占（Ledger v2：hot `activation-ledger.json` + `activation-ledger.terminal/` shards + `activation-ledger.projection.json`）。路径仍在 `data/evolution/reactor/evidence-index-generations/<generation>/` 下（永远不是 evidence / belief / receipt / settlement 的权威）。Daemon 只读（`src/daemon/activation-ledger-read.mjs`），不得再放第二份 ledger store。pre-#233 单文件账本用 `jea data migrate-activation-ledger`（或任意 owned write）转成 v2；产品启动不得解析终态历史。
 
 ### 认知反应器影子
 

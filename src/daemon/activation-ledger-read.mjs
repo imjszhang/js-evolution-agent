@@ -24,12 +24,14 @@ import { evidenceIndexPath } from '../evolution/reactor/evidence-index.mjs';
 import {
   ACTIVATION_LEDGER_PROJECTION_SCHEMA,
   ACTIVATION_LEDGER_STORE_SCHEMA,
+  ACTIVATION_LEDGER_STORE_SCHEMA_V1,
   activationLedgerDeltasFile,
   activationLedgerPath,
   activationLedgerProjectionPath,
 } from '../evolution/reactor/activation-ledger-store.mjs';
 
 export const DEFAULT_ACTIVATION_LEDGER_MAX_BYTES = 64 * 1024 * 1024;
+export const DEFAULT_ACTIVATION_LEDGER_HOT_MAX_BYTES = 8 * 1024 * 1024;
 export const DEFAULT_ACTIVATION_LEDGER_DELTA_MAX_LINES = 4_096;
 
 const OPEN_STATES = Object.freeze(['ready', 'claimed', 'deferred', 'blocked']);
@@ -39,6 +41,10 @@ function projectionByteLimit(env = process.env) {
   return Number.isFinite(configured) && configured > 0
     ? Math.floor(configured)
     : DEFAULT_ACTIVATION_LEDGER_MAX_BYTES;
+}
+
+function hotLedgerByteLimit() {
+  return DEFAULT_ACTIVATION_LEDGER_HOT_MAX_BYTES;
 }
 
 function deltaLineLimit(env = process.env) {
@@ -295,6 +301,7 @@ function acceptedLedgerSchema(raw) {
   if (raw.schema_version == null) return true;
   if (raw.schema_version === REACTOR_CONTROL_PLANE_CONTRACT_VERSION) return true;
   if (raw.schema_version === ACTIVATION_LEDGER_STORE_SCHEMA) return true;
+  if (raw.schema_version === ACTIVATION_LEDGER_STORE_SCHEMA_V1) return true;
   return raw.contract_version === REACTOR_CONTROL_PLANE_CONTRACT_VERSION;
 }
 
@@ -322,22 +329,20 @@ export function readActivationLedgerStore(dataRoot, { env = process.env } = {}) 
     return unknown;
   }
   const projection = readActivationLedgerProjection(dataRoot);
+  if (projection) {
+    return snapshotFromProjection(projection, {
+      file_bytes: existsSync(filePath) ? fileBytes(filePath) : null,
+    });
+  }
   if (!existsSync(filePath)) {
-    if (projection) return snapshotFromProjection(projection);
     return unknown;
   }
   const bytes = fileBytes(filePath);
-  const limit = projectionByteLimit(env);
-  if (bytes != null && bytes > limit) {
-    if (projection) {
-      return snapshotFromProjection(projection, {
-        file_bytes: bytes,
-        reason: 'activation_ledger_projection',
-      });
-    }
+  const hotLimit = hotLedgerByteLimit();
+  if (bytes != null && bytes > hotLimit) {
     return {
       status: 'degraded',
-      reason: 'activation_ledger_oversized',
+      reason: 'activation_ledger_needs_migration',
       generation: null,
       sequence: null,
       updated_at: null,
@@ -349,12 +354,6 @@ export function readActivationLedgerStore(dataRoot, { env = process.env } = {}) 
   try {
     raw = JSON.parse(readFileSync(filePath, 'utf8'));
   } catch (error) {
-    if (projection) {
-      return snapshotFromProjection(projection, {
-        file_bytes: bytes,
-        reason: 'activation_ledger_projection',
-      });
-    }
     return {
       status: 'degraded',
       reason: 'activation_ledger_unreadable',
@@ -400,7 +399,12 @@ export function readActivationLedgerStore(dataRoot, { env = process.env } = {}) 
       file_bytes: bytes,
     };
   }
-  const entries = listed.map(compactLedgerEntry).filter(Boolean);
+  const all = listed.map(compactLedgerEntry).filter(Boolean);
+  const isV2 = raw.schema_version === ACTIVATION_LEDGER_STORE_SCHEMA;
+  const entries = isV2 ? all.filter((entry) => OPEN_STATES.includes(entry.state)) : all;
+  const reactors = raw.reactors && typeof raw.reactors === 'object'
+    ? cloneReactorCounts(raw.reactors)
+    : recountReactorCountsFromEntries(isV2 ? entries : all);
   return {
     status: 'ok',
     reason: null,
@@ -408,8 +412,8 @@ export function readActivationLedgerStore(dataRoot, { env = process.env } = {}) 
     sequence: normalizeLedgerSequence(raw.sequence),
     updated_at: raw.updated_at ?? null,
     entries,
-    reactors: recountReactorCountsFromEntries(entries),
-    source: 'ledger',
+    reactors,
+    source: isV2 ? 'ledger_hot' : 'ledger',
     file_bytes: bytes,
   };
 }

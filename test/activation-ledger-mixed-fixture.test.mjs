@@ -32,6 +32,7 @@ import {
   activationLedgerPath,
   activationLedgerProjectionPath,
   listActivationLedgerEntries,
+  migrateActivationLedgerToV2,
 } from '../src/evolution/reactor/activation-ledger-store.mjs';
 import { claimsPath } from '../src/evolution/reactor/paths.mjs';
 import { writeCatchUpRecord } from '../src/evolution/reactor/catch-up-budget.mjs';
@@ -286,28 +287,35 @@ describe('mixed historical Activation Ledger fixture', () => {
     const firstInspect = inspectControlPlaneReadiness({
       dataRoot: runtime.dataRoot,
       readLedger: () => {
-        throw new Error('first inspect should persist projection from the store owner');
+        throw new Error('large v1 without projection must fail closed without a full parse');
       },
     });
-    expect(firstInspect.ready).toBe(true);
-    expect(firstInspect.ledger?.source).toBe('projection');
-    expect(firstInspect.ledger?.generation).toBe(PRE233_GENERATION);
-    expect(firstInspect.ledger?.sequence).toBeNull();
-    expect(existsSync(activationLedgerProjectionPath(runtime.dataRoot))).toBe(true);
+    expect(firstInspect.ready).toBe(false);
+    expect(firstInspect.reason).toBe('activation_ledger_needs_migration');
+    expect(existsSync(activationLedgerProjectionPath(runtime.dataRoot))).toBe(false);
 
     const rawAfterInspect = JSON.parse(readFileSync(ledgerFile, 'utf8'));
     expect(rawAfterInspect.sequence).toBeUndefined();
     expect(Object.keys(rawAfterInspect.entries)).toEqual(Object.keys(rawBefore.entries));
     expect(rawAfterInspect.entries[openEntry.identity_key].state).toBe('ready');
 
+    const migrated = migrateActivationLedgerToV2(runtime.dataRoot, { dryRun: false, now: AT });
+    expect(migrated.migrated).toBe(true);
+    expect(migrated.identities_invented).toBe(0);
+    expect(migrated.authority_mutated).toBe(false);
+    expect(migrated.sequence).toBe(0);
+    expect(migrated.open_count).toBe(1);
+    expect(migrated.handled_count).toBe(TERMINAL_HANDLED);
+    expect(existsSync(activationLedgerProjectionPath(runtime.dataRoot))).toBe(true);
+
     const projection = JSON.parse(readFileSync(activationLedgerProjectionPath(runtime.dataRoot), 'utf8'));
     expect(projection.generation).toBe(PRE233_GENERATION);
-    expect(projection.sequence).toBeNull();
+    expect(projection.sequence).toBe(0);
     expect(projection.handled_total).toBe(TERMINAL_HANDLED);
     expect(projection.open_total).toBe(1);
     expect(projection.open_entries).toHaveLength(1);
     expect(statSync(activationLedgerProjectionPath(runtime.dataRoot)).size)
-      .toBeLessThan(statSync(ledgerFile).size / 10);
+      .toBeLessThan(statSync(migrated.backup_path).size / 10);
 
     const secondInspect = inspectControlPlaneReadiness({
       dataRoot: runtime.dataRoot,
@@ -317,13 +325,13 @@ describe('mixed historical Activation Ledger fixture', () => {
     });
     expect(secondInspect.ready).toBe(true);
     expect(secondInspect.ledger?.source).toBe('projection');
-    expect(secondInspect.ledger?.sequence).toBeNull();
+    expect(secondInspect.ledger?.sequence).toBe(0);
 
     const bounded = readBoundedLedger(runtime.dataRoot);
     expect(bounded.status).toBe('ok');
-    expect(bounded.source).toBe('ledger');
+    expect(bounded.source).toBe('projection');
     expect(bounded.generation).toBe(PRE233_GENERATION);
-    expect(bounded.sequence).toBeNull();
+    expect(bounded.sequence).toBe(0);
 
     const health = buildReactorHealthProjection(root, SUBJECT);
     const daemon = buildDaemonProjection(root, SUBJECT, { cache: false });

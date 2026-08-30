@@ -79,6 +79,8 @@ Commands:
   data backup            Back up subject runtime data (--subject NAME)
   data reset [--yes]     Remove all subject data/ runtime, preserving policy/config
   data migrate-home      Verify and copy legacy runtime/subjects into JEA Home
+  data migrate-activation-ledger [--dry-run|--yes] [--json]
+                         Split a pre-v2 Activation Ledger into hot open work + terminal shards
   data evidence-journal inspect [--json] [--replay-epoch PATH]
                          Stream-inspect journal and handled-identity dry-run; mismatch/unknown exits nonzero
   data evidence-journal rebuild [--dry-run] [--yes] [--json] [--replay-epoch PATH]

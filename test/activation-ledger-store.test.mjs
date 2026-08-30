@@ -16,6 +16,7 @@ import { writeJson } from '../src/infra/json-store.mjs';
 import { EVIDENCE_INDEX_GENERATION_SCHEMA } from '../src/evolution/reactor/evidence-index.mjs';
 import {
   ACTIVATION_LEDGER_FAILPOINTS,
+  ACTIVATION_LEDGER_STORE_SCHEMA,
   activationLedgerDeltasFile,
   activationLedgerPath,
   activationLedgerProjectionPath,
@@ -122,6 +123,11 @@ describe('unified activation ledger store', () => {
     const replay = applyLedgerTransition(root, first.identity_key, { to: 'ready', kind: 'release' });
     expect(replay.ok).toBe(false);
     expect(getActivationLedgerEntry(root, first.identity).state).toBe('handled');
+    const hot = readActivationLedgerStore(root);
+    expect(hot.schema_version).toBe(ACTIVATION_LEDGER_STORE_SCHEMA);
+    expect(hot.entries[first.identity_key]).toBeUndefined();
+    expect(hot.handled_total).toBe(1);
+    expect(listActivationLedgerEntries(root, { state: 'handled' })).toHaveLength(1);
   });
 
   it('refuses claim from deferred/blocked and reclaims expired leases as ready', () => {
@@ -379,5 +385,34 @@ describe('unified activation ledger store', () => {
     })]);
     expect(result.created).toHaveLength(0);
     expect(result.rejected[0].errors.join(' ')).toMatch(/payload|forbidden/i);
+  });
+
+  it('persists a compact projection for a small pre-#233 ledger without inventing identities', () => {
+    const root = dataRoot();
+    writeGeneration(root, '379b4876-small');
+    const ready = entry({ evidence_key: 'operator_briefs:pre233-small' });
+    const file = activationLedgerPath(root);
+    writeJson(file, {
+      schema_version: 'activation-ledger.v1',
+      contract_version: '0.3.0',
+      generation: '379b4876-small',
+      sequence: null,
+      updated_at: AT,
+      entries: { [ready.identity_key]: ready },
+      diagnostics: [],
+      diagnostics_dropped: 0,
+      terminal_history: [],
+    });
+    const before = readFileSync(file, 'utf8');
+    const persisted = ensureCompactActivationLedgerProjection(root);
+    expect(persisted.persisted).toBe(true);
+    expect(persisted.sequence).toBeNull();
+    expect(readFileSync(file, 'utf8')).toBe(before);
+    const projection = JSON.parse(readFileSync(activationLedgerProjectionPath(root), 'utf8'));
+    expect(projection.generation).toBe('379b4876-small');
+    expect(projection.sequence).toBeNull();
+    expect(projection.open_total).toBe(1);
+    expect(projection.handled_total).toBe(0);
+    expect(projection.layout).toBeUndefined();
   });
 });

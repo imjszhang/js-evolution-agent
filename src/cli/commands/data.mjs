@@ -45,6 +45,10 @@ import {
   migrateClaimLedger,
   migrateLegacyClaimArchive,
 } from '../../evolution/reactor/claim-ledger-migration.mjs';
+import {
+  inspectActivationLedgerLayout,
+  migrateActivationLedgerToV2,
+} from '../../evolution/reactor/activation-ledger-store.mjs';
 import { channelEventArchivePath } from '../../channel/event-queue.mjs';
 import { channelEventQueuePath } from '../../channel/paths.mjs';
 
@@ -563,6 +567,45 @@ export async function dataCommand({
       return 1;
     }
   }
+  if (subcommand === 'migrate-activation-ledger') {
+    const dryRun = !!flags['dry-run'];
+    if (!dryRun && !flags.yes) {
+      console.log('Will rewrite the Activation Ledger into hot open work + generation-scoped terminal shards.');
+      console.log('Does not rebuild evidence or invent identities. Cycle/Channel should be stopped.');
+      const ok = await confirm('Continue with Activation Ledger v2 migrate?');
+      if (!ok) {
+        console.log('Cancelled.');
+        return 1;
+      }
+    }
+    try {
+      const payload = migrateActivationLedgerToV2(runtime.dataRoot, { dryRun });
+      const result = {
+        ...payload,
+        inspection: payload.inspection ?? inspectActivationLedgerLayout(runtime.dataRoot),
+        dry_run: dryRun,
+        subject: runtime.subject,
+      };
+      if (flags.json) console.log(JSON.stringify(result, null, 2));
+      else {
+        console.log(`Activation Ledger v2: ${result.migrated ? 'migrated' : (result.reason || 'not-needed')}`);
+        console.log(`layout: ${result.inspection?.layout ?? result.after?.layout ?? 'unknown'}`);
+        console.log(`open/handled: ${result.open_count ?? result.inspection?.open_count ?? 0}/${result.handled_count ?? result.inspection?.handled_count ?? 0}`);
+        if (result.backup_path) console.log(`backup: ${result.backup_path}`);
+        if (result.projection_path) console.log(`projection: ${result.projection_path}`);
+      }
+      return 0;
+    } catch (error) {
+      const payload = {
+        ok: false,
+        code: error?.code ?? 'activation_ledger_v2_migration_failed',
+        error: error?.message || String(error),
+      };
+      if (flags.json) console.log(JSON.stringify(payload, null, 2));
+      else console.error(`${payload.code}: ${payload.error}`);
+      return 1;
+    }
+  }
   if (subcommand === 'migrate-claims') {
     const dryRun = !!flags['dry-run'];
     if (!dryRun && !flags.yes) {
@@ -689,7 +732,7 @@ export async function dataCommand({
     return 0;
   }
 
-  console.error('Usage: jea data <status|init|backup|reset|migrate-home|migrate-claims|evidence-journal> [--subject NAME] [--goals] [--seed] [--all] [--force] [--dry-run] [--json] [--yes]');
+  console.error('Usage: jea data <status|init|backup|reset|migrate-home|migrate-claims|migrate-activation-ledger|evidence-journal> [--subject NAME] [--goals] [--seed] [--all] [--force] [--dry-run] [--json] [--yes]');
   return 2;
 }
 
