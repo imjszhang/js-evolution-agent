@@ -43,7 +43,12 @@ import {
 import { EVIDENCE_BATCH_REACTORS } from '../../contracts/evidence-batch-claim.mjs';
 import { readJson, withJsonLock } from '../../infra/json-store.mjs';
 import { nowIso } from '../../infra/runtime-paths.mjs';
-import { evidenceIndexDir, evidenceIndexPath } from './evidence-index.mjs';
+import {
+  EVIDENCE_INDEX_GENERATION_SCHEMA,
+  evidenceIndexDir,
+  evidenceIndexJournalPath,
+  evidenceIndexPath,
+} from './evidence-index.mjs';
 import { reactorDir } from './paths.mjs';
 import {
   appendTerminalEntries,
@@ -77,6 +82,50 @@ export {
   ACTIVATION_LEDGER_TERMINAL_DIR,
   activationLedgerTerminalDir,
 } from './activation-ledger-terminal.mjs';
+
+export const UPGRADE_MIGRATION_PHASES = Object.freeze([
+  'detect',
+  'inspect',
+  'disk_preflight',
+  'sidecar_backup',
+  'stage',
+  'validate',
+  'atomic_switch',
+  'ready',
+]);
+
+export const UPGRADE_OPERATOR_ACTIONS = Object.freeze([
+  'authority_mismatch',
+  'insufficient_disk',
+  'unknown_identities',
+  'rollback_selection',
+  'policy_backfill',
+]);
+
+const PRODUCT_PHASE_ALIASES = Object.freeze({
+  inspecting: 'inspect',
+  building: 'stage',
+  reconciling: 'inspect',
+  validating: 'validate',
+  backing_up: 'sidecar_backup',
+  staging: 'stage',
+  switching: 'atomic_switch',
+  switched: 'atomic_switch',
+  complete: 'ready',
+  detect: 'detect',
+  inspect: 'inspect',
+  disk_preflight: 'disk_preflight',
+  sidecar_backup: 'sidecar_backup',
+  stage: 'stage',
+  validate: 'validate',
+  atomic_switch: 'atomic_switch',
+  ready: 'ready',
+});
+
+export function toProductUpgradePhase(phase) {
+  if (phase == null || phase === '') return null;
+  return PRODUCT_PHASE_ALIASES[phase] ?? null;
+}
 
 const OPEN_LEDGER_STATES = Object.freeze(['ready', 'claimed', 'deferred', 'blocked']);
 
@@ -213,11 +262,14 @@ export function isActivationLedgerV2(store) {
   return store?.schema_version === ACTIVATION_LEDGER_STORE_SCHEMA;
 }
 
-export function isAcceptedActivationLedgerSchema(schemaVersion) {
+export function isDeclaredActivationLedgerSchema(schemaVersion) {
   return schemaVersion === ACTIVATION_LEDGER_STORE_SCHEMA
     || schemaVersion === ACTIVATION_LEDGER_STORE_SCHEMA_V1
-    || schemaVersion === REACTOR_CONTROL_PLANE_CONTRACT_VERSION
-    || schemaVersion == null;
+    || schemaVersion === REACTOR_CONTROL_PLANE_CONTRACT_VERSION;
+}
+
+export function isAcceptedActivationLedgerSchema(schemaVersion) {
+  return isDeclaredActivationLedgerSchema(schemaVersion) || schemaVersion == null;
 }
 
 export function normalizeActivationLedger(raw, { now = nowIso() } = {}) {
@@ -331,9 +383,21 @@ export function writeActivationLedgerProjectionAt(ledgerFile, store) {
   return path;
 }
 
+function peekQuotedField(text, key) {
+  const match = text.match(new RegExp(`"${key}"\\s*:\\s*(null|"((?:\\\\.|[^"\\\\])*)")`));
+  if (!match) return null;
+  return match[1] === 'null' ? null : match[2];
+}
+
 function peekLedgerMeta(filePath) {
   if (!filePath || !existsSync(filePath)) {
-    return { generation: null, sequence: null };
+    return {
+      generation: null,
+      sequence: null,
+      schema_version: null,
+      activation_policy_version: null,
+      peeked: false,
+    };
   }
   const fd = openSync(filePath, 'r');
   try {
@@ -354,6 +418,9 @@ function peekLedgerMeta(filePath) {
     return {
       generation,
       sequence: Number.isInteger(sequence) ? sequence : null,
+      schema_version: peekQuotedField(text, 'schema_version'),
+      activation_policy_version: peekQuotedField(text, 'activation_policy_version'),
+      peeked: true,
     };
   } finally {
     closeSync(fd);
@@ -1240,49 +1307,256 @@ export function countLedgerWork(store) {
   return { ready, handled, by_reactor: byReactor };
 }
 
-export function readActivationMigrationState(dataRoot) {
-  return readJson(activationMigrationStatePath(dataRoot), {
+function emptyMigrationState() {
+  return {
     schema_version: ACTIVATION_MIGRATION_STATE_SCHEMA,
     phase: null,
+    product_phase: null,
     operation: null,
     generation: null,
+    previous_generation: null,
     updated_at: null,
-  });
+    resumed_at: null,
+    operator_action: null,
+    block_reason: null,
+  };
+}
+
+export function readActivationMigrationState(dataRoot) {
+  const raw = readJson(activationMigrationStatePath(dataRoot), emptyMigrationState());
+  if (!raw || typeof raw !== 'object') return emptyMigrationState();
+  return {
+    ...emptyMigrationState(),
+    ...raw,
+    schema_version: ACTIVATION_MIGRATION_STATE_SCHEMA,
+    product_phase: raw.product_phase ?? toProductUpgradePhase(raw.phase),
+    operator_action: UPGRADE_OPERATOR_ACTIONS.includes(raw.operator_action)
+      ? raw.operator_action
+      : null,
+  };
 }
 
 export function writeActivationMigrationState(dataRoot, patch = {}) {
   const current = readActivationMigrationState(dataRoot);
+  const phase = patch.phase ?? current.phase ?? null;
   const next = {
     schema_version: ACTIVATION_MIGRATION_STATE_SCHEMA,
-    phase: patch.phase ?? current.phase ?? null,
+    phase,
+    product_phase: patch.product_phase
+      ?? toProductUpgradePhase(phase)
+      ?? current.product_phase
+      ?? null,
     operation: patch.operation ?? current.operation ?? null,
     generation: patch.generation ?? current.generation ?? null,
     previous_generation: patch.previous_generation ?? current.previous_generation ?? null,
     updated_at: patch.updated_at ?? new Date().toISOString(),
     resumed_at: patch.resumed_at ?? current.resumed_at ?? null,
+    operator_action: patch.operator_action !== undefined
+      ? patch.operator_action
+      : current.operator_action ?? null,
+    block_reason: patch.block_reason !== undefined
+      ? patch.block_reason
+      : current.block_reason ?? null,
   };
   writeJsonCompact(activationMigrationStatePath(dataRoot), next);
   return next;
 }
 
+function emptyLedgerInspection(extras = {}) {
+  return {
+    exists: false,
+    empty: false,
+    readable: false,
+    bytes: null,
+    generation: null,
+    entry_count: 0,
+    schema_version: null,
+    sequence: null,
+    activation_policy_version: null,
+    projection_present: false,
+    needs_owned_migration: false,
+    path: null,
+    ...extras,
+  };
+}
+
+export function inspectActivationLedgerFile(dataRoot, { manifest = null } = {}) {
+  let file;
+  try {
+    file = dataRoot ? activationLedgerPath(dataRoot, manifest) : null;
+  } catch {
+    return emptyLedgerInspection();
+  }
+  if (!file) {
+    return emptyLedgerInspection();
+  }
+  try {
+    if (!existsSync(file)) {
+      return emptyLedgerInspection({ path: file });
+    }
+    const bytes = statSync(file).size;
+    const projectionPresent = existsSync(join(dirname(file), ACTIVATION_LEDGER_PROJECTION_FILENAME));
+    if (bytes === 0) {
+      return emptyLedgerInspection({
+        exists: true,
+        empty: true,
+        readable: true,
+        bytes: 0,
+        path: file,
+        projection_present: projectionPresent,
+      });
+    }
+
+    // Product startup must not parse a large pre-#233 monolith or terminal
+    // history. Peek the header only; large files without a compact projection
+    // stay fail-closed until an owned migrate (#242).
+    if (bytes > ACTIVATION_LEDGER_HOT_MAX_BYTES) {
+      const meta = peekLedgerMeta(file);
+      const declared = isDeclaredActivationLedgerSchema(meta.schema_version);
+      return {
+        exists: true,
+        empty: !declared && !meta.generation,
+        readable: meta.peeked === true,
+        bytes,
+        generation: meta.generation ?? null,
+        entry_count: null,
+        schema_version: meta.schema_version ?? null,
+        sequence: meta.sequence ?? null,
+        activation_policy_version: meta.activation_policy_version ?? null,
+        projection_present: projectionPresent,
+        needs_owned_migration: projectionPresent !== true,
+        path: file,
+      };
+    }
+
+    const raw = readJson(file, null);
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return emptyLedgerInspection({
+        exists: true,
+        empty: true,
+        readable: false,
+        bytes,
+        path: file,
+        projection_present: projectionPresent,
+      });
+    }
+    const generation = raw.generation ?? null;
+    const entry_count = entriesFromStore(raw).length;
+    // A real v1/v2 store is never "empty" even with no generation and zero
+    // entries (fresh pump / test seed). Only a leftover placeholder (`{}`,
+    // no declared schema) next to authority is the #237 hole.
+    const empty = !isDeclaredActivationLedgerSchema(raw.schema_version)
+      && !generation
+      && entry_count === 0;
+    return {
+      exists: true,
+      empty,
+      readable: true,
+      bytes,
+      generation,
+      entry_count,
+      schema_version: raw.schema_version ?? null,
+      sequence: Number.isInteger(raw.sequence) ? raw.sequence : null,
+      activation_policy_version: raw.activation_policy_version ?? null,
+      projection_present: projectionPresent,
+      needs_owned_migration: false,
+      path: file,
+    };
+  } catch {
+    return emptyLedgerInspection({
+      exists: true,
+      empty: true,
+      readable: false,
+      path: file,
+    });
+  }
+}
+
+export function hasMatchingGenerationJournal(dataRoot, manifest = null) {
+  const raw = manifest ?? (dataRoot ? readJson(evidenceIndexPath(dataRoot), null) : null);
+  if (
+    !raw?.generation
+    || raw.schema_version !== EVIDENCE_INDEX_GENERATION_SCHEMA
+  ) {
+    return false;
+  }
+  try {
+    return existsSync(evidenceIndexJournalPath(dataRoot));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A leftover phase=switched may complete only when the switched generation
+ * still has a matching journal and a non-empty, generation-matched ledger.
+ * Never invent identities or pick a rollback backup here.
+ */
+export function validateSwitchedActivationGeneration(dataRoot, {
+  state = null,
+  manifest = null,
+} = {}) {
+  const migration = state ?? readActivationMigrationState(dataRoot);
+  const index = manifest ?? (dataRoot ? readJson(evidenceIndexPath(dataRoot), null) : null);
+  const productPhase = toProductUpgradePhase(migration.phase);
+  if (migration.phase !== 'switched' && productPhase !== 'atomic_switch') {
+    return { ok: false, reason: 'not_switched', generation: migration.generation ?? null };
+  }
+  if (!migration.generation || migration.generation !== index?.generation) {
+    return { ok: false, reason: 'generation_mismatch', generation: migration.generation ?? null };
+  }
+  if (index?.schema_version !== EVIDENCE_INDEX_GENERATION_SCHEMA) {
+    return { ok: false, reason: 'journal_schema_mismatch', generation: migration.generation };
+  }
+  if (!hasMatchingGenerationJournal(dataRoot, index)) {
+    return { ok: false, reason: 'journal_missing', generation: migration.generation };
+  }
+  const ledger = inspectActivationLedgerFile(dataRoot, { manifest: index });
+  if (!ledger.exists || ledger.empty || !ledger.readable) {
+    return { ok: false, reason: 'ledger_empty_or_unreadable', generation: migration.generation };
+  }
+  if (ledger.generation && ledger.generation !== migration.generation) {
+    return { ok: false, reason: 'ledger_generation_mismatch', generation: migration.generation };
+  }
+  let store;
+  try {
+    store = readActivationLedgerStore(dataRoot, { manifest: index });
+  } catch {
+    return { ok: false, reason: 'ledger_unreadable', generation: migration.generation };
+  }
+  const validation = validateActivationLedgerStore(store);
+  if (!validation.ok) {
+    return {
+      ok: false,
+      reason: 'ledger_invalid',
+      generation: migration.generation,
+      errors: validation.errors,
+    };
+  }
+  return { ok: true, reason: null, generation: migration.generation, store };
+}
+
 /**
  * After an atomic generation switch, leftover phase=switched is completed
- * without rewriting authority or inventing identities.
+ * only when that generation still validates. Never rewrite authority.
  */
 export function resumeActivationMigration(dataRoot) {
   const state = readActivationMigrationState(dataRoot);
   const manifest = readJson(evidenceIndexPath(dataRoot), null);
-  if (state.phase === 'switched' && state.generation && state.generation === manifest?.generation) {
-    const ledger = readActivationLedgerStore(dataRoot, { manifest });
+  const validation = validateSwitchedActivationGeneration(dataRoot, { state, manifest });
+  if (validation.ok) {
     const next = writeActivationMigrationState(dataRoot, {
       ...state,
       phase: 'complete',
+      product_phase: 'ready',
+      operator_action: null,
+      block_reason: null,
       resumed_at: new Date().toISOString(),
     });
     return {
       resumed: true,
       generation: state.generation,
-      handled: countLedgerWork(ledger).handled,
+      handled: countLedgerWork(validation.store).handled,
       state: next,
     };
   }
@@ -1290,6 +1564,7 @@ export function resumeActivationMigration(dataRoot) {
     resumed: false,
     phase: state.phase ?? null,
     generation: state.generation ?? manifest?.generation ?? null,
+    reason: validation.reason ?? null,
   };
 }
 

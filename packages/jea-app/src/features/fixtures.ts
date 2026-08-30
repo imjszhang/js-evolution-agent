@@ -98,6 +98,7 @@ export function createSubjectReadinessFixture(options: {
   conversation?: string
   blocker?: string | null
   llmBudget?: SubjectReadiness['llm_budget']
+  upgrade?: SubjectReadiness['upgrade']
 } = {}): SubjectReadiness {
   const webState = options.webHost ?? 'stopped'
   const cycleState = options.cycle ?? 'stopped'
@@ -147,6 +148,7 @@ export function createSubjectReadinessFixture(options: {
       blocker: options.blocker ?? (cycleState === 'stopped' ? 'cycle_stopped' : null)
     },
     llm_budget: options.llmBudget ?? null,
+    upgrade: options.upgrade ?? null,
     product_actions: [
       { id: 'pause_automatic_evolution', allowed: cycleState !== 'stopped', capability: 'write' },
       { id: 'check_now', allowed: true, capability: 'write' },

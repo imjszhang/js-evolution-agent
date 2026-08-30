@@ -73,6 +73,18 @@ export interface ShellSubjectReadiness {
     shared_ledger?: boolean
     blocked_reason?: string | null
   } | null
+  upgrade?: {
+    schema: 'upgrade_migration.v1'
+    phase: string
+    ready: boolean
+    cycle_blocked: boolean
+    channel_available: true
+    operator_action: string | null
+    reason: string | null
+    generation: string | null
+    previous_generation?: string | null
+    resumed: boolean
+  } | null
 }
 
 /**

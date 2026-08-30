@@ -22,6 +22,8 @@
 
 `rule_llm_budget_exhausted` 是预期操作者状态。`service.getReadiness` / `jea product status` 的加法字段 `llm_budget` 给出 used/remaining tokens 与估算 spend；恢复命令是 `jea llm budget`，不是新手改 runtime JSON。Channel 与 Cycle 共用账本，Desktop 只解释现有 blocker，不另建产品面。
 
+`upgrade` 是 `service.getReadiness` / `jea readiness` 的加法可选字段：产品可见的升级/迁移状态机（detect → inspect → disk preflight → sidecar backup → stage → validate → atomic switch → ready）。Cycle 在迁移期间保持 blocked；Channel conversation 仍可用。不自动 rebuild、不静默 backfill、不自动挑选 rollback backup。
+
 ## 边界
 
 - 不要在此复制 Subject policy、审批或演化决策。

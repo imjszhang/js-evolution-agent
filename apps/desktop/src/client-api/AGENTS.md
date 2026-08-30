@@ -32,6 +32,8 @@ CLI 聚合入口是 `jea product status --json --subject NAME`（别名 `jea rea
 
 `reactor_progress` 是同一条 `service.getReadiness` 的加法可选字段，形状与 `evolution.getReactorProgress` 相同。产品面必须用 `scheduler_state`，不得把 pending evidence 或 heartbeat 显示成 `catching_up`。
 
+`upgrade` 是同一条 `service.getReadiness` 的加法可选字段（协议仍为 `1.0.0`）：产品可见的 `detect → inspect → disk_preflight → sidecar_backup → stage → validate → atomic_switch → ready` 状态机。Cycle 在非 ready 时保持 blocked；Channel 仍可启动。操作者动作只出现在 authority mismatch、insufficient disk、unknown identities、rollback selection、policy backfill。不自动 rebuild、不静默 backfill、不自动挑选 rollback backup。
+
 ## 测试
 
 ```bash

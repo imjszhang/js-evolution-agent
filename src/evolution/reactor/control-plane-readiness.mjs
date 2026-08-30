@@ -4,7 +4,11 @@
  * Fresh subjects may start Cycle (the router pump creates an empty ledger).
  * Fresh means: no generation journal, no ledger, and no historical authority
  * evidence. A journal without a ready ledger is always a migration problem.
- * Upgraded subjects must not auto-start Cycle. Channel stays up.
+ * An empty ledger file next to historical authority without a matching
+ * generation journal is never ready. Upgraded subjects must not auto-start
+ * Cycle. Channel stays up. The product-visible machine is
+ * detect → inspect → disk_preflight → sidecar_backup → stage → validate
+ * → atomic_switch → ready.
  */
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -16,8 +20,9 @@ import {
   activationLedgerPath,
   activationLedgerProjectionPath,
   ensureCompactActivationLedgerProjection,
+  hasMatchingGenerationJournal,
+  inspectActivationLedgerFile,
   readActivationMigrationState,
-  resumeActivationMigration,
 } from './activation-ledger-store.mjs';
 import {
   EVIDENCE_INDEX_GENERATION_SCHEMA,
@@ -27,19 +32,9 @@ import {
   jsonDirectoryDescriptors,
   sourceDescriptors,
 } from './evidence-index.mjs';
+import { inspectUpgradeMigration } from './upgrade-migration.mjs';
 
 const DEFAULT_LEDGER_MAX_BYTES = 64 * 1024 * 1024;
-
-const INCOMPLETE_MIGRATION = new Set([
-  'inspecting',
-  'building',
-  'reconciling',
-  'validating',
-  'backing_up',
-  'switching',
-  'blocked',
-  'failed',
-]);
 
 const LEDGER_BLOCK_REASONS = new Set([
   'migration_required',
@@ -184,6 +179,14 @@ function blocked(reason, extras = {}) {
   };
 }
 
+function withUpgrade(result, upgrade) {
+  return {
+    ...result,
+    upgrade,
+    migration: result.migration ?? null,
+  };
+}
+
 /**
  * @param {{ dataRoot: string, env?: NodeJS.ProcessEnv, readLedger?: Function }} options
  */
@@ -193,55 +196,84 @@ export function inspectControlPlaneReadiness({
   readLedger = null,
 } = {}) {
   if (!dataRoot) {
-    return blocked('activation_ledger_unresolved', { migration: null, ledger: null });
+    return blocked('activation_ledger_unresolved', {
+      migration: null,
+      ledger: null,
+      upgrade: inspectUpgradeMigration({ dataRoot: null, persist: false }),
+    });
   }
 
-  const resumed = resumeActivationMigration(dataRoot);
+  const history = hasHistoricalAuthorityEvidence(dataRoot);
+  const upgrade = inspectUpgradeMigration({
+    dataRoot,
+    history,
+    persist: true,
+  });
+  const resumed = { resumed: upgrade.resumed === true };
   const migration = readActivationMigrationState(dataRoot);
   const manifest = journalManifest(dataRoot);
+  const matchingJournal = hasMatchingGenerationJournal(dataRoot, manifest);
   let journalPath = false;
   try {
     journalPath = existsSync(evidenceIndexJournalPath(dataRoot));
   } catch {
     journalPath = false;
   }
-  const hasJournal = Boolean(
+  const hasJournal = matchingJournal || Boolean(
     manifest?.generation
     && (journalPath || manifest.schema_version === EVIDENCE_INDEX_GENERATION_SCHEMA),
   );
   const ledgerFile = ledgerFileState(dataRoot);
+  const ledgerMeta = inspectActivationLedgerFile(dataRoot, { manifest });
 
-  if (migration?.phase && INCOMPLETE_MIGRATION.has(migration.phase)) {
-    return blocked('migration_required', {
+  if (upgrade.ready !== true) {
+    const reason = LEDGER_BLOCK_REASONS.has(upgrade.reason)
+      ? upgrade.reason
+      : 'migration_required';
+    return withUpgrade(blocked(reason, {
       migration,
       resumed: resumed.resumed === true,
       ledger: null,
-    });
+    }), upgrade);
   }
 
   if (hasJournal && !ledgerFile.exists) {
     const reason = migration?.phase === 'complete' || migration?.phase === 'switched'
       ? 'activation_ledger_unresolved'
       : 'migration_required';
-    return blocked(reason, {
+    return withUpgrade(blocked(reason, {
       migration,
       resumed: resumed.resumed === true,
       ledger: null,
-    });
+    }), { ...upgrade, ready: false, phase: 'detect', cycle_blocked: true, reason });
+  }
+
+  if (history && (ledgerMeta.empty === true || !ledgerFile.exists)) {
+    return withUpgrade(blocked('migration_required', {
+      migration,
+      resumed: resumed.resumed === true,
+      ledger: null,
+    }), { ...upgrade, ready: false, phase: upgrade.phase === 'ready' ? 'detect' : upgrade.phase, cycle_blocked: true, reason: 'migration_required' });
   }
 
   if (!hasJournal && !ledgerFile.exists) {
-    if (hasHistoricalAuthorityEvidence(dataRoot)) {
-      return blocked('migration_required', { migration, ledger: null });
+    if (history) {
+      return withUpgrade(blocked('migration_required', { migration, ledger: null }), {
+        ...upgrade,
+        ready: false,
+        phase: 'detect',
+        cycle_blocked: true,
+        reason: 'migration_required',
+      });
     }
-    return {
+    return withUpgrade({
       ready: true,
       fresh_subject: true,
       allow_pump: true,
       reason: null,
       migration,
       ledger: null,
-    };
+    }, upgrade);
   }
 
   const configuredMax = Number(env.JEA_ACTIVATION_LEDGER_PROJECTION_MAX_BYTES);
@@ -250,12 +282,19 @@ export function inspectControlPlaneReadiness({
     : DEFAULT_LEDGER_MAX_BYTES;
   const projection = readCompactProjection(dataRoot);
   if (!projection && ledgerFile.bytes != null && ledgerFile.bytes > ACTIVATION_LEDGER_HOT_MAX_BYTES) {
-    return blocked(
-      ledgerFile.bytes > maxBytes
-        ? 'activation_ledger_oversized'
-        : 'activation_ledger_needs_migration',
-      { migration, ledger: null },
-    );
+    const reason = ledgerFile.bytes > maxBytes
+      ? 'activation_ledger_oversized'
+      : 'activation_ledger_needs_migration';
+    return withUpgrade(blocked(reason, {
+      migration,
+      ledger: null,
+    }), {
+      ...upgrade,
+      ready: false,
+      phase: upgrade.phase === 'ready' ? 'inspect' : upgrade.phase,
+      cycle_blocked: true,
+      reason,
+    });
   }
   if (ledgerFile.exists && (ledgerFile.bytes == null || ledgerFile.bytes <= maxBytes)) {
     ensureCompactActivationLedgerProjection(dataRoot);
@@ -268,28 +307,26 @@ export function inspectControlPlaneReadiness({
   } else if (typeof readLedger === 'function') {
     ledgerSnapshot = readLedger(dataRoot, { env });
   } else if (ledgerFile.bytes != null && ledgerFile.bytes > maxBytes) {
-    return blocked('activation_ledger_oversized', {
+    return withUpgrade(blocked('activation_ledger_oversized', {
       migration,
       ledger: null,
-    });
+    }), { ...upgrade, ready: false, cycle_blocked: true, reason: 'activation_ledger_oversized' });
   }
 
   if (ledgerSnapshot) {
     const classified = classifyLedgerRead(ledgerSnapshot);
     if (!classified.ok) {
-      return blocked(
-        LEDGER_BLOCK_REASONS.has(classified.reason)
-          ? classified.reason
-          : 'activation_ledger_degraded',
-        {
-          migration,
-          ledger: ledgerSnapshot,
-        },
-      );
+      const reason = LEDGER_BLOCK_REASONS.has(classified.reason)
+        ? classified.reason
+        : 'activation_ledger_degraded';
+      return withUpgrade(blocked(reason, {
+        migration,
+        ledger: ledgerSnapshot,
+      }), { ...upgrade, ready: false, cycle_blocked: true, reason });
     }
   }
 
-  return {
+  return withUpgrade({
     ready: true,
     fresh_subject: false,
     allow_pump: true,
@@ -297,7 +334,7 @@ export function inspectControlPlaneReadiness({
     migration,
     resumed: resumed.resumed === true,
     ledger: ledgerSnapshot,
-  };
+  }, upgrade);
 }
 
 export function isControlPlaneBlockReason(reason) {

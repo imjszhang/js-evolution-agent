@@ -357,6 +357,25 @@ describe('reactor control-plane production wiring', () => {
     expect(['migration_required', 'activation_ledger_unresolved']).toContain(smallPlane.reason);
     const smallCycle = await processCycleOnce(smallJournal.root, SUBJECT, { mock: true });
     expect(smallCycle.status).toBe('blocked');
+
+    const emptyLedger = makeIsolatedRoot({ prime: false });
+    writePendingOperatorBrief(emptyLedger.runtime.runtimeRoot, {
+      id: 'brief-empty-ledger-hole',
+      summary: 'empty ledger file next to historical authority',
+    });
+    mkdirSync(join(emptyLedger.runtime.dataRoot, 'evolution', 'reactor', 'evidence-index'), { recursive: true });
+    writeFileSync(
+      join(emptyLedger.runtime.dataRoot, 'evolution', 'reactor', 'evidence-index', 'activation-ledger.json'),
+      '',
+    );
+    const emptyLedgerPlane = inspectControlPlaneReadiness({
+      dataRoot: emptyLedger.runtime.dataRoot,
+      readLedger: readActivationLedgerStore,
+    });
+    expect(emptyLedgerPlane.ready).toBe(false);
+    expect(emptyLedgerPlane.fresh_subject).toBe(false);
+    expect(emptyLedgerPlane.reason).toBe('migration_required');
+    expect(emptyLedgerPlane.upgrade?.ready).toBe(false);
   });
 
   it('does not mark an activation handled when a successful task omits activation_effect', async () => {
