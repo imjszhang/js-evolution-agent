@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * #77 / audit:ci wiring check for the 0.3.0 release path.
+ * #77 / audit:ci wiring check for the 0.3.1 release path.
  *
  * This script does not reimplement scripts/ci-audit.mjs. It only verifies
  * that the production audit gate remains on the certification path, and
@@ -31,7 +31,7 @@ export const AUDIT_SCRIPT = 'scripts/ci-audit.mjs';
 export const AUDIT_NPM_SCRIPT = 'audit:ci';
 export const BASELINE_PATH = '.github/security/audit-baseline.json';
 export const RELEASE_WORKFLOW = '.github/workflows/release-macos.yml';
-export const CERT_DOC = 'docs/release/0.3.0-certification.md';
+export const CERT_DOC = 'docs/release/0.3.1-certification.md';
 export const ISSUE_77_DOC = 'docs/release/0.1.0-security-debt.md';
 
 function readText(path) {

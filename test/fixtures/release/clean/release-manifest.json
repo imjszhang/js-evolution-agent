@@ -1,7 +1,7 @@
 {
   "version": 1,
   "product": "jea",
-  "release": "0.3.0",
+  "release": "0.3.1",
   "platform": "macos-arm64",
   "note": "Wave 1 fixture only. Real macOS resource layout is owned by #120.",
   "requiredAssets": {

@@ -227,7 +227,7 @@ describe('release-version-preflight', () => {
     const report = runVersionPreflight({ repoRoot, strict: false });
     expect(report.ok).toBe(true);
     expect(report.status).toBe('agree');
-    expect(report.expected).toBe('0.3.0');
+    expect(report.expected).toBe('0.3.1');
     expect(report.pending).toEqual([]);
     const visible = report.sources.filter((item) => item.required);
     expect(visible.map((item) => item.id)).toEqual([
@@ -249,14 +249,14 @@ describe('release-version-preflight', () => {
       'product_identity',
       'acp_runtime',
     ]);
-    expect(visible.every((item) => item.version === '0.3.0')).toBe(true);
+    expect(visible.every((item) => item.version === '0.3.1')).toBe(true);
     expect(runVersionPreflight({ repoRoot, strict: true }).ok).toBe(true);
   });
 
   it('keeps missing later sources pending unless --strict', () => {
     const pending = evaluateVersions([
-      { id: 'root_package', required: true, status: 'ok', version: '0.3.0' },
-      { id: 'desktop_package', required: true, status: 'ok', version: '0.3.0' },
+      { id: 'root_package', required: true, status: 'ok', version: '0.3.1' },
+      { id: 'desktop_package', required: true, status: 'ok', version: '0.3.1' },
       { id: 'bundled_cli', required: false, status: 'skipped/pending', issue: 120 },
     ], { strict: false });
     expect(pending.ok).toBe(true);
@@ -411,7 +411,7 @@ describe('release-package-smoke', () => {
 });
 
 describe('release-attach-assets', () => {
-  it('lists the official 0.3.0 upload allowlist', () => {
+  it('lists the official 0.3.1 upload allowlist', () => {
     expect(releaseAttachAssetNames(RELEASE_VERSION)).toEqual([
       `JEA-${RELEASE_VERSION}-macos-arm64.dmg`,
       `JEA-${RELEASE_VERSION}-macos-arm64.zip`,

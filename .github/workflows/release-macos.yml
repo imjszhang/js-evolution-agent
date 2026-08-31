@@ -17,7 +17,7 @@ on:
       release_version:
         description: 'Product version used for artifact names'
         type: string
-        default: '0.3.0'
+        default: '0.3.1'
   workflow_call:
     inputs:
       publish:
@@ -28,7 +28,7 @@ on:
         default: dist/release
       release_version:
         type: string
-        default: '0.3.0'
+        default: '0.3.1'
 
 permissions:
   contents: read

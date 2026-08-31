@@ -313,8 +313,8 @@ export function createProductSurfaceFixture(): ProductSurfaceFixture {
       language: 'zh-CN',
       theme: 'system',
       defaultSubject: 'alpha',
-      appVersion: '0.3.0',
-      cliVersion: '0.3.0',
+      appVersion: '0.3.1',
+      cliVersion: '0.3.1',
       commitSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       commitShort: 'aaaaaaa',
       buildTime: '2026-08-17T00:00:00.000Z',
@@ -326,14 +326,14 @@ export function createProductSurfaceFixture(): ProductSurfaceFixture {
       schema_version: 1,
       generated_at: '2026-08-17T00:00:00.000Z',
       product: {
-        version: '0.3.0',
+        version: '0.3.1',
         commit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         commit_short: 'aaaaaaa',
         built_at: '2026-08-17T00:00:00.000Z',
         platform: 'linux',
         architecture: 'x64',
         dirty: false,
-        build_id: '0.3.0+aaaaaaa.20260817T000000'
+        build_id: '0.3.1+aaaaaaa.20260817T000000'
       },
       host: {
         jea_home: '<JEA_HOME>',

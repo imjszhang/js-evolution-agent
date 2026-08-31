@@ -1,6 +1,6 @@
 {
   "name": "@jea/app",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "type": "module",
   "description": "Shared browser-safe JEA App Shell and Open Science-style design system.",

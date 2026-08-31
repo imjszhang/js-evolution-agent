@@ -42,9 +42,10 @@ describe('release product journey helpers', () => {
     expect(pathHasNodeBinary('/usr/bin:/bin')).toBe(existsSync(join('/usr/bin', 'node')) || existsSync(join('/bin', 'node')));
   });
 
-  it('keeps committed release notes and version files aligned at 0.3.0 wiring', () => {
+  it('keeps committed release notes and version files aligned at 0.3.1 wiring', () => {
     const notes = join(repoRoot, 'docs/release/RELEASE_NOTES.md');
     expect(existsSync(notes)).toBe(true);
+    expect(readFileSync(notes, 'utf8')).toMatch(/0\.3\.1/);
     expect(readFileSync(notes, 'utf8')).toMatch(/0\.3\.0/);
     expect(readFileSync(notes, 'utf8')).toMatch(/0\.2\.1/);
     expect(runVersionPreflight({ repoRoot, strict: true }).ok).toBe(true);

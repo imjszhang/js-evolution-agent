@@ -1,20 +1,20 @@
-# 安装（0.3.0）
+# 安装（0.3.1）
 
-状态：**已发布**。日期：2026-08-27。
-安装包与 `SHA256SUMS` 已挂到 [v0.3.0 GitHub Release](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.3.0)。开发者本地构建仍用 `npm run desktop:package`。
+状态：**候选**。日期：2026-08-31。
+上一已发布安装包仍在 [v0.3.0 GitHub Release](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.3.0)。0.3.1 认证完成后才会挂新的 `SHA256SUMS`。开发者本地构建仍用 `npm run desktop:package`。
 
 ## 适用范围
 
 - 平台：macOS Apple Silicon（`arm64`）only
-- 产物：`JEA-0.3.0-macos-arm64.dmg` 或 `.zip`，外加 `SHA256SUMS`
-- 不在 0.3.0 范围：Intel macOS、Windows、Linux 安装包、自动更新、npm 发布
+- 产物：`JEA-0.3.1-macos-arm64.dmg` 或 `.zip`，外加 `SHA256SUMS`
+- 不在 0.3.1 范围：Intel macOS、Windows、Linux 安装包、自动更新、npm 发布
 
 ## 安装步骤
 
 1. 从 GitHub Release 选择 arm64 产物，并对照 `SHA256SUMS`。
-2. 0.3.0 默认是 **ad-hoc 签名、未公证**。Gatekeeper 会拦截；请在 Finder 中右键 `JEA.app` → 打开。不要把应用放到随机下载目录长期运行。
+2. 0.3.1 默认是 **ad-hoc 签名、未公证**。Gatekeeper 会拦截；请在 Finder 中右键 `JEA.app` → 打开。不要把应用放到随机下载目录长期运行。
 3. 将 `JEA.app` 放到 `/Applications` 或 `~/Applications`。开发/恢复可用 `JEA_APP_PATH` 指向其他位置。
 4. 首次启动不要求源码 checkout，也不要求机器上已安装 Node.js。
 5. 用户数据在 JEA Home（默认 `~/.jea`），不在应用包内。应用包不得包含 `.env`、开发者绝对路径或用户 runtime。
 
-开发者从源码运行 Desktop（`npm run desktop:dev`）不是 0.3.0 安装路径。
+开发者从源码运行 Desktop（`npm run desktop:dev`）不是 0.3.1 安装路径。

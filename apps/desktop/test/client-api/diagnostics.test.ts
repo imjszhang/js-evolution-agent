@@ -35,7 +35,7 @@ function tempRoots() {
   const jeaHome = mkdtempSync(join(tmpdir(), 'jea-diag-home-'))
   mkdirSync(join(sourceRoot, 'src', 'product'), { recursive: true })
   writeBuildMetadata(join(sourceRoot, 'src', 'product'), {
-    version: '0.3.0',
+    version: '0.3.1',
     commit: CERTIFIED_COMMIT,
     dirty: false,
     built_at: '2026-08-17T04:32:54.000Z',
@@ -96,7 +96,7 @@ describe('settings.exportDiagnostics', () => {
     const report = await client.exportDiagnostics({ redactPaths: true })
     expect(report.schema_version).toBe(1)
     expect(report.product).toMatchObject({
-      version: '0.3.0',
+      version: '0.3.1',
       commit: CERTIFIED_COMMIT,
       commit_short: 'bbbbbbb',
       platform: 'linux',
@@ -174,14 +174,14 @@ describe('settings.exportDiagnostics', () => {
     expect(recorded).toMatchObject({
       process_type: 'renderer',
       reason: 'crashed',
-      version: '0.3.0'
+      version: '0.3.1'
     })
     const report = await client.exportDiagnostics()
     expect(report.process_failures).toEqual(expect.arrayContaining([
       expect.objectContaining({
         process_type: 'renderer',
         reason: 'crashed',
-        version: '0.3.0'
+        version: '0.3.1'
       })
     ]))
     assertNoCanaries(report)
