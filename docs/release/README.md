@@ -1,12 +1,14 @@
 # JEA 发布文档
 
-当前候选产品是 **0.3.1**（[#246](https://github.com/imjszhang/js-evolution-agent/issues/246)）。已发布版本见 [v0.3.0](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.3.0)、[v0.2.1](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.2.1)、[v0.2.0](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.2.0) 与 [v0.1.0](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.1.0)。
+**已发布**产品是 **0.3.1**（[#246](https://github.com/imjszhang/js-evolution-agent/issues/246)；[v0.3.1](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.3.1)）。
 
-- [0.3.1-certification.md](./0.3.1-certification.md) — 候选
+- [0.3.1-certification.md](./0.3.1-certification.md) — 已放行
 - [0.3.0-certification.md](./0.3.0-certification.md) — 已放行
 - [0.2.1-certification.md](./0.2.1-certification.md) — 已放行
 - [RELEASE_NOTES.md](./RELEASE_NOTES.md)
 - [installation.md](./installation.md)
+
+已发布版本见 [v0.3.1](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.3.1)、[v0.3.0](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.3.0)、[v0.2.1](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.2.1)、[v0.2.0](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.2.0) 与 [v0.1.0](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.1.0)。
 
 ---
 

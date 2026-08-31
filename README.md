@@ -30,6 +30,8 @@
 
 ## Product (0.3.1)
 
+Published product is **0.3.1** ([v0.3.1](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.3.1)). Certification: [docs/release/0.3.1-certification.md](docs/release/0.3.1-certification.md).
+
 JEA 0.3.1 is a **macOS Apple Silicon** app with a bundled `jea` CLI. Its shared Electron/Web workspace has three operator surfaces:
 
 1. **Subject and local sessions**
