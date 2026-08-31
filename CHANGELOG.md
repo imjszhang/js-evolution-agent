@@ -2,7 +2,7 @@
 
 ## 0.3.1 — 2026-08-31
 
-JEA 0.3.1 是 [v0.3.0](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.3.0) 之后的产品补丁（[#246](https://github.com/imjszhang/js-evolution-agent/issues/246)）。闭环门槛仍冻结在 `0.2.0-belief-loop`；控制面验收仍冻结在 `0.3.0-reactor-control-plane`。
+JEA 0.3.1 已作为 [GitHub Release v0.3.1](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.3.1) 发布（[#246](https://github.com/imjszhang/js-evolution-agent/issues/246)）。闭环门槛仍冻结在 `0.2.0-belief-loop`；控制面验收仍冻结在 `0.3.0-reactor-control-plane`。
 
 ### 运行时
 

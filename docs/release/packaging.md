@@ -1,6 +1,6 @@
 # macOS 包装决策（0.3.1 / #246）
 
-状态：**implemented**。日期：2026-08-31。布局沿用 0.3.0。
+状态：**implemented**。日期：2026-08-31。布局沿用 0.3.0。官方产物已挂到 [v0.3.1](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.3.1)。
 
 ## 冻结字段
 

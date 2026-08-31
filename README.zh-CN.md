@@ -30,6 +30,8 @@
 
 ## 产品（0.3.1）
 
+已发布产品是 **0.3.1**（[v0.3.1](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.3.1)）。认证清单见 [docs/release/0.3.1-certification.md](docs/release/0.3.1-certification.md)。
+
 JEA 0.3.1 是 **macOS Apple Silicon** 应用，并附带托管 `jea` CLI。Electron 与 Web 共用三栏操作者工作区：
 
 1. **Subject 与本地会话**

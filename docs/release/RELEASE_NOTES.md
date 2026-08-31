@@ -1,6 +1,6 @@
 # JEA 0.3.1
 
-日期：2026-08-31。候选补丁，尚未创建 GitHub Release。认证清单见 [0.3.1-certification.md](./0.3.1-certification.md)，对应 [#246](https://github.com/imjszhang/js-evolution-agent/issues/246)。上一产品版是 [v0.3.0](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.3.0)。
+日期：2026-08-31。[GitHub Release v0.3.1](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.3.1) 已发布，tag 指向已认证提交 `61c599b`。认证清单见 [0.3.1-certification.md](./0.3.1-certification.md)，对应 [#246](https://github.com/imjszhang/js-evolution-agent/issues/246)。上一产品版是 [v0.3.0](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.3.0)。
 
 ## 本补丁包含
 
@@ -34,6 +34,7 @@
 - 放行后由 `Attach Release Assets` workflow 从官方 artifact 挂到既有 Release，不经本机中转。
 - 闭环审计继续使用冻结的 `0.2.0-belief-loop` 目标，不另开 0.3.1 contract。
 - 控制面验收继续使用冻结的 `0.3.0-reactor-control-plane` 目标。
+- 本次认证见 [run 33377736946](https://github.com/imjszhang/js-evolution-agent/actions/runs/33377736946)，资产挂载见 [run 33380470585](https://github.com/imjszhang/js-evolution-agent/actions/runs/33380470585)。
 
 ## 已知限制 / 明确延期
 
