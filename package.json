@@ -77,9 +77,9 @@
     "qrcode": "^1.5.4"
   },
   "devDependencies": {
-    "@vitest/coverage-v8": "^4.1.10",
-    "marked": "^18.0.9",
-    "vitest": "^4.1.10"
+    "@vitest/coverage-v8": "^4.1.11",
+    "marked": "^18.0.11",
+    "vitest": "^4.1.11"
   },
   "engines": {
     "node": ">=22.13.0"
