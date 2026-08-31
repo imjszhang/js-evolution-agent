@@ -17,6 +17,9 @@ import {
   resolveAutomationPolicyFromEntry
 } from '../../../../src/product/automation-policy.mjs'
 import { planClientLifecycle } from '../../../../src/product/client-lifecycle-plan.mjs'
+import { inspectControlPlaneReadiness } from '../../../../src/evolution/reactor/control-plane-readiness.mjs'
+import { runtimeForSubject } from '../../../../src/infra/runtime-paths.mjs'
+import { readActivationLedgerStore } from '../../../../src/daemon/activation-ledger-read.mjs'
 import type { DaemonDomain, DaemonSupervisor } from './daemon-supervisor'
 
 export interface ClientLifecycleActionResult {
@@ -118,6 +121,20 @@ export class ClientLifecycleController implements ClientLifecyclePort {
         .filter((lease) => lease?.required === true)
         .map((lease) => lease?.domain)
     )
+    let controlPlaneReady = true
+    let controlPlaneReason: string | null = null
+    try {
+      const dataRoot = runtimeForSubject(this.runtime, name).dataRoot
+      const plane = inspectControlPlaneReadiness({
+        dataRoot,
+        readLedger: readActivationLedgerStore
+      })
+      controlPlaneReady = plane.ready === true || plane.fresh_subject === true
+      controlPlaneReason = plane.reason ?? null
+    } catch {
+      controlPlaneReady = false
+      controlPlaneReason = 'activation_ledger_unresolved'
+    }
     return {
       name,
       automation: policy.mode,
@@ -127,6 +144,8 @@ export class ClientLifecycleController implements ClientLifecyclePort {
       ownedChannel: this.supervisor.owns(name, 'channel'),
       cycleLive: Boolean(cycle.running),
       channelLive: channel.running_count > 0,
+      controlPlaneReady,
+      controlPlaneReason,
       previousSupervisorCycle: (
         !this.supervisor.owns(name, 'cycle')
         && (previousOwnerDomains.has('all') || previousOwnerDomains.has('cycle'))

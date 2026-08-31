@@ -67,7 +67,7 @@ describe('reactor progress product projection', () => {
       { ...observabilityBase, reactor_progress: progress }
     )
     expect(runtime.intent).toBe('listening')
-    expect(runtime.remaining_evidence).toBe(8055)
+    expect(runtime.remaining_evidence).toBe(8055 + 20 + 4) // Cognitive + Rule + Memory open, not evidence_pending_count
   })
 
   it('rejects a lying catching_up snapshot that only has a heartbeat', () => {
@@ -163,7 +163,7 @@ describe('reactor progress product projection', () => {
       observability: observabilityBase
     })
     expect(projection.evolution_runtime.intent).not.toBe('catching_up')
-    expect(projection.evolution_runtime.remaining_evidence).toBe(8055)
+    expect(projection.evolution_runtime.remaining_evidence).toBe(0)
     expect(projection.reactor_control_plane.catching_up_truthful).toBe(false)
   })
 })

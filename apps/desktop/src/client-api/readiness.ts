@@ -105,6 +105,9 @@ export interface ReadinessProjectionInput {
     spend?: Record<string, unknown>
   } | null
   reactorProgress?: import('./types').ReactorProgressProjection | null
+  controlPlaneReady?: boolean
+  controlPlaneReason?: string | null
+  upgrade?: import('./types').UpgradeMigrationView | null
 }
 
 export function isSubjectReadinessDomainState(value: string): value is SubjectReadinessDomainState {

@@ -101,6 +101,32 @@ describe('service status surfaces', () => {
     expect(deriveServiceStatusKind(readiness, { host: 'web' })).toBe('degraded')
   })
 
+  it('shows the upgrade state machine while Channel stays available', () => {
+    const html = renderStatus(createSubjectReadinessFixture({
+      host: 'electron',
+      cycle: 'blocked',
+      channel: 'attached',
+      conversation: 'running',
+      blocker: 'migration_required',
+      upgrade: {
+        schema: 'upgrade_migration.v1',
+        phase: 'inspect',
+        ready: false,
+        cycle_blocked: true,
+        channel_available: true,
+        operator_action: null,
+        reason: 'migration_required',
+        generation: null,
+        resumed: false
+      }
+    }), 'electron')
+    expect(html).toContain('data-testid="service-status-upgrade"')
+    expect(html).toContain('inspect')
+    expect(html).toContain('cycle_blocked')
+    expect(html).toContain('channel_available')
+    expect(html).toContain('migration_required')
+  })
+
   it('keeps Web offline copy pointing at Desktop/CLI', () => {
     expect(messages.en.offlineBody).toContain('Desktop app')
     expect(messages.en.offlineBody).toContain('jea start')

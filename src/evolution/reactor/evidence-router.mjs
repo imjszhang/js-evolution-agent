@@ -30,6 +30,7 @@ import {
 import { nowIso } from '../../infra/runtime-paths.mjs';
 import {
   insertActivationLedgerEntries,
+  listActivationIdentityKeys,
   readActivationLedger,
 } from './activation-ledger-store.mjs';
 import { envelopeEvidenceKey, inferEvidenceProducer } from './eligibility.mjs';
@@ -999,9 +1000,7 @@ export function routeEvidenceDelta(dataRoot, {
     diagnostics.push(...evaluated.diagnostics);
   }
 
-  const existingKeys = new Set(
-    readActivationLedger(dataRoot).entries.map((entry) => entry.identity_key),
-  );
+  const existingKeys = new Set(listActivationIdentityKeys(dataRoot));
   const resolvedDiagnostics = diagnostics.map((item) => {
     const keys = item.identity_keys || [];
     if (keys.length && keys.every((key) => existingKeys.has(key))) {
