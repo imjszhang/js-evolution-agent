@@ -1,6 +1,6 @@
 # 产品打包与 CLI 启动器
 
-本目录是 JEA 0.3.0 macOS 产品身份、启动器与打包路径的 owner。已发布产品是 [v0.3.0](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.3.0)。
+本目录是 JEA 0.3.1 macOS 产品身份、启动器与打包路径的 owner；版本与发布接线对应 issue #246。已发布产品仍是 [v0.3.0](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.3.0)，直到 0.3.1 认证放行。
 
 ## 冻结决策
 
@@ -9,7 +9,7 @@
 | 产品名 | `JEA` |
 | Bundle ID | `com.imjszhang.jea` |
 | 最低 macOS | 13.0 |
-| 产物 | `JEA-0.3.0-macos-arm64.dmg` / `.zip`（接线中；官方 soak / attach 仍待操作者） |
+| 产物 | `JEA-0.3.1-macos-arm64.dmg` / `.zip`（接线中；官方 soak / attach 仍待操作者） |
 | 签名 | ad-hoc（未公证）；可用 `CSC_NAME` 覆盖 |
 | `jea start` | 只启动 localhost Web host |
 | `jea status` | 只报告 Web host bind/pid（不含 token） |

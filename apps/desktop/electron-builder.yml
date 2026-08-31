@@ -10,8 +10,8 @@ directories:
   buildResources: resources
 extraMetadata:
   name: jea
-  version: 0.3.0
-  description: JEA 0.3.0
+  version: 0.3.1
+  description: JEA 0.3.1
   author: JEA
   main: apps/desktop/out/main/index.js
 files:

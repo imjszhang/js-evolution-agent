@@ -1,6 +1,6 @@
 {
   "name": "jea-runtime-fixture",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "description": "Placeholder runtime asset for release-artifact-scan fixtures."
 }

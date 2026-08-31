@@ -9,7 +9,7 @@ on:
       tag:
         description: 'Existing GitHub Release tag (must already exist)'
         type: string
-        default: 'v0.3.0'
+        default: 'v0.3.1'
       run_id:
         description: 'Successful macOS Release run that produced the artifact'
         type: string
@@ -17,7 +17,7 @@ on:
       artifact_name:
         description: 'Artifact name to attach'
         type: string
-        default: 'macos-release-0.3.0'
+        default: 'macos-release-0.3.1'
       replace_existing_assets:
         description: 'Explicitly replace conflicting asset names (default fail-closed)'
         type: boolean

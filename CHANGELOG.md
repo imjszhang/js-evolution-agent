@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.1 — 2026-08-31
+
+JEA 0.3.1 是 [v0.3.0](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.3.0) 之后的产品补丁（[#246](https://github.com/imjszhang/js-evolution-agent/issues/246)）。闭环门槛仍冻结在 `0.2.0-belief-loop`；控制面验收仍冻结在 `0.3.0-reactor-control-plane`。
+
+### 运行时
+
+- 控制面生产接线：产品工作只跟 Activation Ledger，不再把权威 evidence 存量当成待办（[#233](https://github.com/imjszhang/js-evolution-agent/pull/233)）。
+- Ledger 崩溃安全写入，并保留 pre-#233 projection（[#241](https://github.com/imjszhang/js-evolution-agent/pull/241)）。
+- Ledger v2：hot open work 有界，终态历史按 generation 分片（[#242](https://github.com/imjszhang/js-evolution-agent/pull/242)）。
+- 产品可见的升级 / 迁移状态机：detect → inspect → backup → stage → validate → switch → ready（[#243](https://github.com/imjszhang/js-evolution-agent/pull/243)）。
+
+### 发布
+
+- 打包 Desktop lifecycle soak 进入认证路径（[#240](https://github.com/imjszhang/js-evolution-agent/pull/240)）。
+- 统一根、Desktop、共享 App、打包 host、CLI、Client API、About、ACP 与构建元数据版本为 `0.3.1`。
+- 开发依赖与 CI Action 小版本：lucide-react 1.34.0、vitest/vite/types、download-artifact v8、CodeQL Action patch。
+
 ## 0.3.0 — 2026-08-27
 
 JEA 0.3.0 已作为 [GitHub Release v0.3.0](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.3.0) 发布（[#208](https://github.com/imjszhang/js-evolution-agent/issues/208)）。闭环门槛仍冻结在 `0.2.0-belief-loop`；新增独立的 `0.3.0-reactor-control-plane` 验收目标。

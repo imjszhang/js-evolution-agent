@@ -50,8 +50,8 @@ describe('0.3.0 control-plane audit', () => {
     }
   }, 240_000);
 
-  it('keeps jea.client protocol at 1.0.0 while product wiring is 0.3.0', () => {
-    expect(PRODUCT_VERSION).toBe('0.3.0');
+  it('keeps jea.client protocol at 1.0.0 while product wiring is 0.3.1', () => {
+    expect(PRODUCT_VERSION).toBe('0.3.1');
     const client = JSON.parse(
       readFileSync(join(repoRoot, 'apps/desktop/src/client-api/version.json'), 'utf8'),
     );

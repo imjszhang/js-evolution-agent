@@ -56,7 +56,7 @@ function packageVersion(): string {
       // Try the next source.
     }
   }
-  return '0.3.0'
+  return '0.3.1'
 }
 
 export function createApplicationCommandHandlers(options: ApplicationCommandHostOptions): ApplicationCommandHandlers {

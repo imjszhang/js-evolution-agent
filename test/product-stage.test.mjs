@@ -28,7 +28,7 @@ describe('stage-app-resources', () => {
     expect(metadata).toMatchObject({
       schema_version: 1,
       product: 'jea',
-      version: '0.3.0',
+      version: '0.3.1',
     });
     expect(metadata.commit).toMatch(/^[0-9a-f]{40}$/);
     expect(typeof metadata.dirty).toBe('boolean');

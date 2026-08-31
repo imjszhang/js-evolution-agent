@@ -25,7 +25,7 @@ describe('Client API catalog', () => {
     expect(serializeClientApiCatalog()).toEqual(catalogJson)
   })
 
-  it('covers the 0.3.0 product surface with shapes, errors, capability, and availability', () => {
+  it('covers the 0.3.1 product surface with shapes, errors, capability, and availability', () => {
     const names = CLIENT_API_COMMAND_CATALOG.map((entry) => entry.name)
     expect(names).toEqual([...CLIENT_API_COMMANDS])
     expect(names).toEqual(expect.arrayContaining([
