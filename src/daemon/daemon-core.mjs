@@ -98,6 +98,10 @@ import {
   scheduleReactorTurn,
 } from './reactor-scheduler.mjs';
 import { enqueueWakeIntent } from '../evolution/reactor/wake-store.mjs';
+import { pumpEvidenceRouter } from '../evolution/reactor/evidence-router-pump.mjs';
+import { inspectControlPlaneReadiness } from '../evolution/reactor/control-plane-readiness.mjs';
+import { readActivationLedgerStore } from './activation-ledger-read.mjs';
+import { runtimeForSubject } from '../infra/runtime-paths.mjs';
 import { classifyReactorError } from '../evolution/reactor/rule-resilience.mjs';
 import {
   createSupervisorLeaseGuard,
@@ -523,6 +527,12 @@ function isRetiredTrainTaskType(type) {
   return type === 'run_cycle' || ALL_CYCLE_STEP_TYPES.includes(type);
 }
 
+export function resolveReactorActivationEffect(outcome) {
+  const raw = outcome?.activation_effect ?? outcome?.result?.activation_effect;
+  if (raw === 'handle' || raw === 'defer' || raw === 'release') return raw;
+  return 'release';
+}
+
 export function failReactorTask(root, subject, task, failure) {
   if (failure?.code === 'lease_lost' && task?.input?.identity_key) {
     releaseScheduledActivation(root, subject, task.input.identity_key);
@@ -544,6 +554,16 @@ export function failReactorTask(root, subject, task, failure) {
       error_reason: failure.reason,
     });
     return { ok: false, retryable: true, task: released.task, failure };
+  }
+  if (failure?.code !== 'lease_lost' && task?.input?.identity_key) {
+    completeScheduledActivation(root, subject, task.input.identity_key, {
+      kind: 'defer',
+      hold_reason: {
+        class: 'policy',
+        code: failure?.code || 'task_failed',
+        detail: failure?.reason || failure?.message || '',
+      },
+    });
   }
   const failed = failTask(root, subject, task.task_id, failure);
   recordDaemonEvent(root, subject, {
@@ -642,7 +662,17 @@ async function workReactorTask(root, subject, task, flags) {
         result: outcome?.result ?? outcome,
       });
       if (task.input?.identity_key) {
-        completeScheduledActivation(root, subject, task.input.identity_key, { kind: 'handle' });
+        const effect = resolveReactorActivationEffect(outcome);
+        if (effect === 'defer') {
+          completeScheduledActivation(root, subject, task.input.identity_key, {
+            kind: 'defer',
+            hold_reason: outcome?.hold_reason ?? outcome?.result?.hold_reason,
+          });
+        } else if (effect === 'release') {
+          releaseScheduledActivation(root, subject, task.input.identity_key);
+        } else {
+          completeScheduledActivation(root, subject, task.input.identity_key, { kind: 'handle' });
+        }
       }
       recordDaemonEvent(root, subject, {
         type: 'task_completed',
@@ -1181,11 +1211,25 @@ export async function runDaemonWorker(root, subject, flags = {}) {
           tick_ms: tickMs,
         });
         try {
-          const scheduled = scheduleReactorTurn(root, subject, { enqueueTask, readTaskQueue });
-          scanWakeBacklog(root, subject, {
-            enqueueTask,
-            skipKinds: scheduled?.skip_scan_kinds || [],
+          const dataRoot = runtimeForSubject(root, subject).dataRoot;
+          const readiness = inspectControlPlaneReadiness({
+            dataRoot,
+            readLedger: readActivationLedgerStore,
           });
+          if (readiness.allow_pump) {
+            pumpEvidenceRouter(dataRoot, {
+              subject,
+              limit: 32,
+              readLedger: readActivationLedgerStore,
+            });
+          }
+          if (readiness.ready || readiness.fresh_subject) {
+            const scheduled = scheduleReactorTurn(root, subject, { enqueueTask, readTaskQueue });
+            scanWakeBacklog(root, subject, {
+              enqueueTask,
+              skipKinds: scheduled?.skip_scan_kinds || [],
+            });
+          }
         } catch (err) {
           recordLoopFailure(root, subject, { operation: 'wake_backlog_scan', err });
         }

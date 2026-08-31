@@ -476,6 +476,7 @@ export async function compactMemory({
 } = {}) {
   const runtime = runtimeForSubject(root, subject);
   consumeWakeIntent(root, subject, { kind: 'memory' });
+  const identityKey = input.identity_key || null;
   const ledger = readClaimLedger(runtime.dataRoot);
   const committed = readLastCommittedMemoryCheckpoint(runtime.dataRoot);
   const projection = readMemoryCompactionProjection(runtime.runtimeRoot);
@@ -503,8 +504,15 @@ export async function compactMemory({
     maxIdleMs: input.max_idle_ms ?? DEFAULT_MAX_IDLE_MS,
     lastCompactedAt,
   });
-  if (!gate.due && !input.force) {
-    return { skipped: true, reason: gate.reason, since_compact: gate.since_compact ?? 0 };
+  if (!identityKey && !gate.due && !input.force) {
+    return {
+      skipped: true,
+      ok: true,
+      reason: gate.reason,
+      since_compact: gate.since_compact ?? 0,
+      activation_effect: 'defer',
+      hold_reason: { class: 'policy', code: gate.reason || 'no_op' },
+    };
   }
   if (!settledEvents.length) {
     reconcileCommittedMemoryProjection(
@@ -514,9 +522,12 @@ export async function compactMemory({
     );
     return {
       skipped: true,
+      ok: true,
       reason: 'no_unconsolidated_settled_beliefs',
       since_compact: gate.since_compact ?? 0,
       last_settled_cursor: previousCursor,
+      activation_effect: identityKey ? 'defer' : undefined,
+      hold_reason: identityKey ? { class: 'policy', code: 'no_op' } : undefined,
     };
   }
 
@@ -534,10 +545,12 @@ export async function compactMemory({
   if (existing?.stage === 'committed') {
     return {
       skipped: true,
+      ok: true,
       reason: 'duplicate_batch',
       batch_id: batchId,
       last_settled_cursor: existing.last_settled_cursor ?? lastSettledCursor,
       reused: true,
+      activation_effect: identityKey ? 'handle' : undefined,
     };
   }
   const owner = `memory-${randomUUID()}`;
@@ -692,6 +705,8 @@ export async function compactMemory({
     });
     return {
       skipped: false,
+      ok: true,
+      activation_effect: 'handle',
       batch_id: batchId,
       trigger: gate.reason,
       covered_batches: handled.length,

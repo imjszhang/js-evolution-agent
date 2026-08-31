@@ -43,6 +43,7 @@ import {
   resumeActivationMigration,
   writeActivationMigrationState,
 } from './activation-ledger-store.mjs';
+import { estimateAuthorityBytes, inspectDiskPreflight } from './upgrade-migration.mjs';
 import {
   EVIDENCE_CURSOR_SCHEMA,
   EVIDENCE_INDEX_GENERATION_SCHEMA,
@@ -1207,10 +1208,18 @@ async function rebuildEvidenceJournalOperation(dataRoot, {
     before.authoritative_sources.invalid_records > 0
     || before.authoritative_sources.unreadable > 0
   ) {
+    writeActivationMigrationState(dataRoot, {
+      phase: 'inspect',
+      product_phase: 'inspect',
+      operation: 'rebuild',
+      operator_action: 'authority_mismatch',
+      block_reason: 'authoritative_source_reconciliation_unknown',
+    });
     return {
       ...resultBase,
       status: 'blocked',
       block_reason: 'authoritative_source_reconciliation_unknown',
+      operator_action: 'authority_mismatch',
     };
   }
   if (dryRun) {
@@ -1227,6 +1236,34 @@ async function rebuildEvidenceJournalOperation(dataRoot, {
   const stoppedCheck = assertStopped
     ?? (() => assertEvidenceMaintenanceStopped(root, subject));
   await stoppedCheck();
+  writeActivationMigrationState(dataRoot, {
+    phase: 'disk_preflight',
+    product_phase: 'disk_preflight',
+    operation: 'rebuild',
+    generation: before.manifest.generation ?? null,
+    operator_action: null,
+    block_reason: null,
+  });
+  const disk = inspectDiskPreflight(dataRoot, {
+    journalBytes: before.journal?.bytes ?? 0,
+    authorityBytes: before.authoritative_sources?.bytes ?? estimateAuthorityBytes(dataRoot),
+  });
+  if (disk.ok === false) {
+    writeActivationMigrationState(dataRoot, {
+      phase: 'disk_preflight',
+      product_phase: 'disk_preflight',
+      operation: 'rebuild',
+      operator_action: 'insufficient_disk',
+      block_reason: 'insufficient_disk',
+    });
+    return {
+      ...resultBase,
+      status: 'blocked',
+      block_reason: 'insufficient_disk',
+      operator_action: 'insufficient_disk',
+      disk,
+    };
+  }
   const sourceSignature = evidenceSourceSignature(dataRoot);
   const generation = randomUUID();
   const generations = evidenceIndexGenerationsDir(dataRoot);
@@ -1239,8 +1276,19 @@ async function rebuildEvidenceJournalOperation(dataRoot, {
   let switched = false;
   let backup = null;
   try {
+    if (failpoint === 'before_backup') throw operationError(new Error('Injected rebuild failure'), 'injected_failure');
     writeActivationMigrationState(dataRoot, {
-      phase: 'staging',
+      phase: 'sidecar_backup',
+      product_phase: 'sidecar_backup',
+      operation: 'rebuild',
+      generation,
+      previous_generation: currentManifest?.generation ?? null,
+      operator_action: null,
+    });
+    backup = createBackup(dataRoot, currentManifest, currentActive, { reason: 'pre-rebuild' });
+    writeActivationMigrationState(dataRoot, {
+      phase: 'stage',
+      product_phase: 'stage',
       operation: 'rebuild',
       generation,
       previous_generation: currentManifest?.generation ?? null,
@@ -1252,6 +1300,13 @@ async function rebuildEvidenceJournalOperation(dataRoot, {
       fromGeneration: currentManifest?.generation ?? null,
       toGeneration: generation,
       replayEpoch,
+    });
+    writeActivationMigrationState(dataRoot, {
+      phase: 'validate',
+      product_phase: 'validate',
+      operation: 'rebuild',
+      generation,
+      previous_generation: currentManifest?.generation ?? null,
     });
     const activeDirectory = relative(reactorDir(dataRoot), finalDir).replace(/\\/g, '/');
     const nextManifest = {
@@ -1321,24 +1376,34 @@ async function rebuildEvidenceJournalOperation(dataRoot, {
       error.code = 'evidence_authority_changed';
       throw error;
     }
-    if (failpoint === 'before_backup') throw operationError(new Error('Injected rebuild failure'), 'injected_failure');
-    backup = createBackup(dataRoot, currentManifest, currentActive, { reason: 'pre-rebuild' });
     if (failpoint === 'before_switch') throw operationError(new Error('Injected rebuild failure'), 'injected_failure');
+    writeActivationMigrationState(dataRoot, {
+      phase: 'atomic_switch',
+      product_phase: 'atomic_switch',
+      operation: 'rebuild',
+      generation,
+      previous_generation: currentManifest?.generation ?? null,
+    });
     renameSync(stageDir, finalDir);
     writeJson(evidenceIndexPath(dataRoot), nextManifest);
     switched = true;
     writeActivationMigrationState(dataRoot, {
       phase: 'switched',
+      product_phase: 'atomic_switch',
       operation: 'rebuild',
       generation,
       previous_generation: currentManifest?.generation ?? null,
     });
     if (failpoint === 'after_switch') throw operationError(new Error('Injected rebuild failure'), 'injected_failure');
+    const unknownIdentities = (stagedActivation.report?.totals?.legacy_unknown ?? 0) > 0;
     writeActivationMigrationState(dataRoot, {
-      phase: 'complete',
+      phase: unknownIdentities ? 'inspect' : 'complete',
+      product_phase: unknownIdentities ? 'inspect' : 'ready',
       operation: 'rebuild',
       generation,
       previous_generation: currentManifest?.generation ?? null,
+      operator_action: unknownIdentities ? 'unknown_identities' : null,
+      block_reason: unknownIdentities ? 'unknown_identities' : null,
     });
     return {
       ...resultBase,
@@ -1417,7 +1482,7 @@ async function rollbackEvidenceJournalOperation(dataRoot, {
       manifest: backupManifest,
       workDir,
       replayEpoch,
-      extraLedgers: [readActivationLedgerStore(dataRoot)],
+      extraLedgers: [readActivationLedgerStore(dataRoot, { includeTerminal: true })],
     });
   } finally {
     rmSync(workDir, { recursive: true, force: true });
@@ -1449,11 +1514,15 @@ async function rollbackEvidenceJournalOperation(dataRoot, {
   const finalDir = join(generations, generation);
   const currentManifest = safeJson(evidenceIndexPath(dataRoot), null);
   const currentActive = evidenceIndexDir(dataRoot, currentManifest);
-  const currentLedger = readActivationLedgerStore(dataRoot, { manifest: currentManifest });
+  const currentLedger = readActivationLedgerStore(dataRoot, {
+    manifest: currentManifest,
+    includeTerminal: true,
+  });
   let switched = false;
   try {
     writeActivationMigrationState(dataRoot, {
-      phase: 'staging',
+      phase: 'stage',
+      product_phase: 'stage',
       operation: 'rollback',
       generation,
       previous_generation: currentManifest?.generation ?? null,
@@ -1532,7 +1601,10 @@ async function rollbackEvidenceJournalOperation(dataRoot, {
       replayEpoch,
       extraLedgers: [
         currentLedger,
-        readActivationLedgerStore(null, { path: join(backupSidecar, 'activation-ledger.json') }),
+        readActivationLedgerStore(null, {
+          path: join(backupSidecar, 'activation-ledger.json'),
+          includeTerminal: true,
+        }),
       ],
     });
     await stoppedCheck();
@@ -1550,6 +1622,7 @@ async function rollbackEvidenceJournalOperation(dataRoot, {
     switched = true;
     writeActivationMigrationState(dataRoot, {
       phase: 'switched',
+      product_phase: 'atomic_switch',
       operation: 'rollback',
       generation,
       previous_generation: currentManifest?.generation ?? null,
@@ -1557,6 +1630,7 @@ async function rollbackEvidenceJournalOperation(dataRoot, {
     if (failpoint === 'after_switch') throw operationError(new Error('Injected rollback failure'), 'injected_failure');
     writeActivationMigrationState(dataRoot, {
       phase: 'complete',
+      product_phase: 'ready',
       operation: 'rollback',
       generation,
       previous_generation: currentManifest?.generation ?? null,

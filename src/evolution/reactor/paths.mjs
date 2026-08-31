@@ -28,6 +28,10 @@ export function activationLedgerDeltasPath(dataRoot) {
   return join(reactorDir(dataRoot), 'activation-ledger.deltas.jsonl');
 }
 
+export function evidenceRouterCursorPath(dataRoot) {
+  return join(reactorDir(dataRoot), 'router-cursor.json');
+}
+
 export function reactorProgressSnapshotPath(dataRoot) {
   return join(reactorDir(dataRoot), 'progress-snapshot.json');
 }

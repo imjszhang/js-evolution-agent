@@ -78,7 +78,10 @@ export type {
   AutomationPolicyView,
   AutomationView,
   LlmBudgetReadinessView,
-  ProductEvolutionIntent
+  ProductEvolutionIntent,
+  UpgradeMigrationView,
+  UpgradeMigrationPhase,
+  UpgradeOperatorAction
 } from './types'
 export {
   SUBJECT_READINESS_ACTION_IDS,

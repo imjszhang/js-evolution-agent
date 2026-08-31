@@ -402,7 +402,7 @@ export function reconcileActivationIdentities(dataRoot, {
   const quarantined = [];
   const observations = [];
 
-  const prior = readActivationLedgerStore(dataRoot);
+  const prior = readActivationLedgerStore(dataRoot, { includeTerminal: true });
   observations.push(...collectLedgerObservations(prior, 'prior_ledger'));
   for (const extra of extraLedgers) {
     observations.push(...collectLedgerObservations(extra, 'merge_ledger'));

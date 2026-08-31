@@ -386,6 +386,49 @@ export interface SubjectReadiness {
   product_actions?: RemediationAction[]
   llm_budget?: LlmBudgetReadinessView | null
   reactor_progress?: ReactorProgressProjection | null
+  upgrade?: UpgradeMigrationView | null
+}
+
+export const UPGRADE_MIGRATION_PHASES = [
+  'detect',
+  'inspect',
+  'disk_preflight',
+  'sidecar_backup',
+  'stage',
+  'validate',
+  'atomic_switch',
+  'ready'
+] as const
+
+export type UpgradeMigrationPhase = (typeof UPGRADE_MIGRATION_PHASES)[number]
+
+export const UPGRADE_OPERATOR_ACTIONS = [
+  'authority_mismatch',
+  'insufficient_disk',
+  'unknown_identities',
+  'rollback_selection',
+  'policy_backfill'
+] as const
+
+export type UpgradeOperatorAction = (typeof UPGRADE_OPERATOR_ACTIONS)[number]
+
+export interface UpgradeMigrationView {
+  schema: 'upgrade_migration.v1'
+  phase: UpgradeMigrationPhase
+  ready: boolean
+  cycle_blocked: boolean
+  channel_available: true
+  operator_action: UpgradeOperatorAction | null
+  reason: string | null
+  generation: string | null
+  previous_generation?: string | null
+  resumed: boolean
+  disk?: {
+    ok: boolean
+    unknown?: boolean
+    available_bytes: number | null
+    required_bytes: number
+  } | null
 }
 
 export interface CycleRequestResult {

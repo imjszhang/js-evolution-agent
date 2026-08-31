@@ -17,6 +17,7 @@ import {
   reconcileExpiredClaims,
 } from './claim-ledger.mjs';
 import { consumeWakeIntent } from './wake-store.mjs';
+import { getActivationLedgerEntry } from './activation-ledger-store.mjs';
 import { patchBatchCheckpoint } from './batch-checkpoint-store.mjs';
 import { envelopeEvidenceKey } from './eligibility.mjs';
 import {
@@ -198,12 +199,32 @@ export async function runRuleReaction({
   const startedAt = Date.now();
   consumeWakeIntent(root, subject, { kind: 'rule' });
   reconcileExpiredClaims(dataRoot);
+  const identityKey = input.identity_key || null;
+  let targetedKeys = Array.isArray(input.evidence_keys) ? input.evidence_keys.filter(Boolean) : [];
+  if (identityKey) {
+    const entry = getActivationLedgerEntry(dataRoot, identityKey);
+    const evidenceKey = entry?.identity?.evidence_key ?? entry?.evidence_key;
+    if (!evidenceKey) {
+      return {
+        skipped: true,
+        ok: true,
+        reason: 'activation_identity_unresolved',
+        activation_effect: 'release',
+      };
+    }
+    targetedKeys = [evidenceKey];
+  }
   if (isReactorBusy(dataRoot, 'rule')) {
-    return { skipped: true, reason: 'reactor_busy' };
+    return {
+      skipped: true,
+      ok: true,
+      reason: 'reactor_busy',
+      activation_effect: identityKey ? 'release' : undefined,
+    };
   }
 
   const peeked = peekRuleDueWindow(dataRoot, {
-    minEvents: input.min_events ?? DEFAULT_MIN_EVENTS,
+    minEvents: identityKey ? 1 : (input.min_events ?? DEFAULT_MIN_EVENTS),
     maxIdleMs: input.max_idle_ms ?? DEFAULT_MAX_IDLE_MS,
     kinds: input.kinds ?? RULE_EVIDENCE_KINDS,
     limits,
@@ -215,26 +236,49 @@ export async function runRuleReaction({
       reason: peeked.block_reason,
       code: peeked.error?.code || peeked.block_reason,
       retryable: false,
+      activation_effect: 'release',
     };
   }
-  if (!peeked.due.length && !input.force) {
+  if (!identityKey && !peeked.due.length && !input.force) {
     return {
       skipped: true,
+      ok: true,
       reason: peeked.eligible.length ? 'below_threshold' : 'no_pending_evidence',
       eligible_events: peeked.eligible.length,
+      activation_effect: peeked.eligible.length ? 'defer' : 'defer',
+      hold_reason: {
+        class: 'policy',
+        code: peeked.eligible.length ? 'below_threshold' : 'no_op',
+      },
     };
   }
 
-  let dueEvents = input.force
+  let dueEvents = (identityKey || input.force)
     ? peeked.eligible
     : peeked.due.flatMap((item) => item.events);
-  if (Array.isArray(input.evidence_keys) && input.evidence_keys.length) {
-    const requested = new Set(input.evidence_keys);
+  if (targetedKeys.length) {
+    const requested = new Set(targetedKeys);
     dueEvents = dueEvents.filter((item) => requested.has(envelopeEvidenceKey(item)));
+    if (!dueEvents.length && identityKey) {
+      return {
+        skipped: true,
+        ok: true,
+        reason: 'below_threshold',
+        activation_effect: 'defer',
+        hold_reason: { class: 'policy', code: 'below_threshold' },
+      };
+    }
   }
   const plan = planRuleBatch(dataRoot, dueEvents, limits);
   if (!plan.events.length) {
-    return { skipped: true, reason: 'no_pending_evidence', eligible_events: dueEvents.length };
+    return {
+      skipped: true,
+      ok: true,
+      reason: 'no_pending_evidence',
+      eligible_events: dueEvents.length,
+      activation_effect: 'defer',
+      hold_reason: { class: 'policy', code: 'no_op' },
+    };
   }
   if (plan.blocked) {
     return {
@@ -257,7 +301,13 @@ export async function runRuleReaction({
     maxHydratedBytes: limits.maxPayloadBytes,
   });
   if (claimed.skipped) {
-    return { skipped: true, reason: claimed.skipped };
+    return {
+      skipped: true,
+      ok: true,
+      reason: claimed.skipped,
+      activation_effect: identityKey ? 'defer' : undefined,
+      hold_reason: identityKey ? { class: 'policy', code: 'no_op' } : undefined,
+    };
   }
 
   const { batch_id: batchId, events } = claimed;
@@ -360,6 +410,8 @@ export async function runRuleReaction({
     patchBatchCheckpoint(dataRoot, batchId, { stage: 'committed' });
     return {
       skipped: false,
+      ok: true,
+      activation_effect: 'handle',
       batch_id: batchId,
       claimed_events: events.length,
       batch_fingerprint: fingerprint,
@@ -402,6 +454,7 @@ export async function runRuleReaction({
       return {
         ok: true,
         skipped: false,
+        activation_effect: 'handle',
         quarantined: true,
         quarantine,
         batch_id: batchId,

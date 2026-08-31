@@ -1,6 +1,6 @@
-# macOS 包装决策（0.2.1 / #202）
+# macOS 包装决策（0.3.0 / #208）
 
-状态：**implemented**。日期：2026-08-22。
+状态：**implemented**。日期：2026-08-27。布局沿用 0.2.x。
 
 ## 冻结字段
 
@@ -11,7 +11,7 @@
 | 可执行文件 | `JEA.app/Contents/MacOS/JEA` |
 | 最低 macOS | 13.0 |
 | 架构 | Apple Silicon `arm64` only |
-| 产物名 | `JEA-0.2.1-macos-arm64.dmg` / `.zip` |
+| 产物名 | `JEA-0.3.0-macos-arm64.dmg` / `.zip` |
 | 签名策略 | ad-hoc（`codesign --sign -`）。未公证。可用 `CSC_NAME` 覆盖为 Developer ID。 |
 | 打包 source root | `JEA.app/Contents/Resources/app` |
 | `jea start` 启动的服务 | localhost Web host（`<JEA_HOME>/web-host/`） |

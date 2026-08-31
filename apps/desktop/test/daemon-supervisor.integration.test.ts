@@ -15,7 +15,7 @@ import { discoverDevElectronBinary } from '../../../src/product/app-paths.mjs'
 import { createRuntimeContext } from '../../../src/infra/jea-home.mjs'
 import { writeWorkerState } from '../../../src/daemon/daemon-worker-state.mjs'
 import { readChannelWorkerState } from '../../../src/channel/worker-state.mjs'
-import { createSupervisorLease } from '../../../src/product/supervisor-lease.mjs'
+import { createSupervisorLease, readSupervisorLease } from '../../../src/product/supervisor-lease.mjs'
 import { DaemonSupervisor } from '../src/main/daemon-supervisor'
 import { DesktopEventBus } from '../src/main/event-bus'
 import { ManagedProcessRegistry } from '../src/main/managed-process-registry'
@@ -274,6 +274,46 @@ describe.skipIf(process.platform === 'win32')('DaemonSupervisor real process smo
       worker.status === 'stopped' && worker.stop_reason === 'supervisor_lease_expired'
     ))).toBe(true)
     expect(JSON.stringify(state)).not.toContain('integration-owner')
+  })
+
+  it('starts a replacement managed worker with a new token after lease-expiry self-stop', async () => {
+    const { root, jeaHome } = projectFixture()
+    const leasePath = join(
+      jeaHome,
+      'subjects',
+      'alpha-data',
+      'data',
+      'evolution',
+      'daemon',
+      'desktop-supervisor-channel.json'
+    )
+    const child = leasedChannelDaemon(root, jeaHome)
+    await waitFor(() => child.exitCode != null || child.signalCode != null, 10_000)
+    expect(child.exitCode).toBe(0)
+    expect(readSupervisorLease(leasePath)?.owner_token).toBe('integration-owner')
+
+    const registry = new ManagedProcessRegistry()
+    const supervisor = new DaemonSupervisor(
+      root,
+      registry,
+      new DesktopEventBus(),
+      undefined,
+      1_000,
+      jeaHome
+    )
+    const started = await supervisor.start('alpha', { domain: 'channel' })
+    expect(started).toMatchObject({ mode: 'managed', domain: 'channel' })
+    await waitFor(() => supervisor.get('alpha').heartbeat_at != null)
+    expect(JSON.stringify(started)).not.toContain('integration-owner')
+    const replacement = readSupervisorLease(leasePath)
+    expect(replacement?.owner_token).toEqual(expect.any(String))
+    expect(replacement?.owner_token).not.toBe('integration-owner')
+    expect(JSON.stringify(supervisor.get('alpha'))).not.toContain('integration-owner')
+    expect(JSON.stringify(supervisor.get('alpha'))).not.toContain(String(replacement?.owner_token))
+
+    const stopped = await supervisor.stop('alpha', 'lease_expiry_restart_integration')
+    expect(stopped.mode).toBe('none')
+    expect(registry.list()).toEqual([])
   })
 
   it('repairs a dead-PID record then starts a managed worker to ready', async () => {

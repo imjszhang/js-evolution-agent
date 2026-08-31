@@ -533,6 +533,22 @@ export function SettingsPanel({
         <h3 id="jea-settings-diagnostics" className="text-sm font-semibold">{t('settingsDiagnostics')}</h3>
         <p className="text-sm text-muted-foreground">{t('settingsDiagnosticsBody')}</p>
         <div className="space-y-2 rounded-md border border-border bg-surface-sunken p-3">
+          {subjectReadiness?.upgrade ? (
+            <div data-testid="settings-diagnostics-upgrade" className="space-y-1">
+              <Row
+                label={t('diagnosticsUpgrade')}
+                value={subjectReadiness.upgrade.phase}
+              />
+              <p className="text-xs text-muted-foreground" data-testid="settings-diagnostics-upgrade-reasons">
+                {t('diagnosticsReasons')}: {[
+                  subjectReadiness.upgrade.ready ? 'ready' : 'cycle_blocked',
+                  subjectReadiness.upgrade.channel_available ? 'channel_available' : null,
+                  subjectReadiness.upgrade.operator_action,
+                  subjectReadiness.upgrade.reason,
+                ].filter(Boolean).join('; ')}
+              </p>
+            </div>
+          ) : null}
           {(['web', 'cycle', 'channel', 'model', 'conversation'] as const).map((id) => {
             const domain = report.readiness[id]
             const label = id === 'web'

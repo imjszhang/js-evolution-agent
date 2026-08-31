@@ -1,6 +1,6 @@
 # 产品打包与 CLI 启动器
 
-本目录是 JEA 0.3.0 macOS 产品身份、启动器与打包路径的 owner；版本与发布接线对应 issue #216。已发布产品仍是 0.2.1，直到操作者打 tag。
+本目录是 JEA 0.3.0 macOS 产品身份、启动器与打包路径的 owner。已发布产品是 [v0.3.0](https://github.com/imjszhang/js-evolution-agent/releases/tag/v0.3.0)。
 
 ## 冻结决策
 
@@ -21,6 +21,8 @@
 发布打包与 publish 门禁拒绝 dirty provenance。`settings.exportDiagnostics` 导出脱敏机器可读报告；就绪状态消费现有 `setup.getReadiness` / `service.getReadiness` / 投影，不另建 readiness 命令目录（#138）。CLI 聚合入口是 `jea product status`（#141）。
 
 `rule_llm_budget_exhausted` 是预期操作者状态。`service.getReadiness` / `jea product status` 的加法字段 `llm_budget` 给出 used/remaining tokens 与估算 spend；恢复命令是 `jea llm budget`，不是新手改 runtime JSON。Channel 与 Cycle 共用账本，Desktop 只解释现有 blocker，不另建产品面。
+
+`upgrade` 是 `service.getReadiness` / `jea readiness` 的加法可选字段：产品可见的升级/迁移状态机（detect → inspect → disk preflight → sidecar backup → stage → validate → atomic switch → ready）。Cycle 在迁移期间保持 blocked；Channel conversation 仍可用。不自动 rebuild、不静默 backfill、不自动挑选 rollback backup。
 
 ## 边界
 

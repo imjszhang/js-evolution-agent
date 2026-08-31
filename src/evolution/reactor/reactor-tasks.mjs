@@ -10,19 +10,21 @@ import { runCognitiveLiveReaction } from './cognitive-reactor.mjs';
 import { peekRuleDueWindow, runRuleReaction } from './rule-reactor.mjs';
 import { compactMemory, readMemoryCompactionProjection, shouldCompactMemory } from './memory-compactor.mjs';
 import {
-  catchUpAllowsEvidenceBacklog,
   clearCatchUpIfIdle,
-  noteCatchUpBatch,
   readCatchUpProjection,
   clearRuleCatchUpIfIdle,
-  noteRuleCatchUpBatch,
   readRuleCatchUpProjection,
-  ruleCatchUpAllowsBacklog,
 } from './catch-up-budget.mjs';
 import { consumeWakeIntent, enqueueWakeIntent, listPendingWakes } from './wake-store.mjs';
 import { isEvolutionPaused } from '../../product/evolution-state.mjs';
 import { patchBatchCheckpoint, readBatchCheckpoint } from './batch-checkpoint-store.mjs';
-import { listEligibleEvidence, readClaimLedger } from './claim-ledger.mjs';
+import { readClaimLedger } from './claim-ledger.mjs';
+import {
+  ACTIVATION_LEDGER_PROJECTION_SCHEMA,
+  activationLedgerProjectionPath,
+  countActivationWork,
+  listActivationEntries,
+} from './activation-ledger-store.mjs';
 import { listOpenExecIntents } from './exec-intent-store.mjs';
 import {
   claimPendingVerifyResult,
@@ -109,45 +111,31 @@ export function scanWakeBacklog(root, subject, {
   const enqueued = [];
   const paused = isEvolutionPaused(root, subject);
   const skipped = new Set(skipKinds);
-  const cognitivePending = listEligibleEvidence(runtime.dataRoot, { reactor: 'cognitive' });
-  if (cognitivePending.length === 0) {
+  const activationCounts = readOpenActivationCounts(runtime.dataRoot);
+  const cognitiveOpen = (activationCounts.cognitive?.realtime?.open_total || 0)
+    + (activationCounts.cognitive?.replay?.open_total || 0);
+  const ruleOpen = (activationCounts.rule?.realtime?.open_total || 0)
+    + (activationCounts.rule?.replay?.open_total || 0);
+  if (cognitiveOpen === 0) {
     clearCatchUpIfIdle(runtime.dataRoot, 0, env);
   }
-  const gate = catchUpAllowsEvidenceBacklog(runtime.dataRoot, { ignoreBudget }, env);
   const ruleLimits = resolveRuleLimits({}, env);
   const ruleDue = peekRuleDueWindow(runtime.dataRoot, { limits: ruleLimits });
   const rulePending = ruleDue.due.flatMap((item) => item.events).length;
-  if (rulePending === 0) clearRuleCatchUpIfIdle(runtime.dataRoot, 0, env);
-  const ruleGate = ruleCatchUpAllowsBacklog(runtime.dataRoot, { ignoreBudget }, env);
+  if (ruleOpen === 0) clearRuleCatchUpIfIdle(runtime.dataRoot, 0, env);
   const ruleResilience = readRuleResilienceProjection(runtime.dataRoot);
-  const ruleAllowed = ruleGate.allowed && !ruleDue.blocked && !ruleResilience.blocked;
-  const ruleTaskOptions = ruleDue.plan?.fingerprint ? {
-    input: {
-      evidence_keys: ruleDue.plan.evidence_keys,
-      batch_fingerprint: ruleDue.plan.fingerprint,
-      max_events: ruleLimits.maxEvents,
-      max_payload_bytes: ruleLimits.maxPayloadBytes,
-      max_wall_ms: ruleLimits.maxWallMs,
-      max_consecutive_failures: ruleLimits.maxConsecutiveFailures,
-      max_journal_bytes: ruleLimits.maxJournalBytes,
-    },
-    idempotencyKey: `${subject}:rule_reaction:${ruleDue.plan.fingerprint}`,
-  } : {};
 
+  const ACTIVATION_KINDS = new Set(['cognitive', 'rule', 'memory']);
   for (const intent of listPendingWakes(root, subject)) {
+    if (ACTIVATION_KINDS.has(intent.kind)) continue;
     if (skipped.has(intent.kind)) continue;
-    if (paused && (intent.kind === 'cognitive' || intent.kind === 'exec' || intent.kind === 'rule')) {
+    if (paused && intent.kind === 'exec') {
       continue;
     }
-    if (!gate.allowed && intent.kind === 'cognitive' && intent.reason === 'evidence_backlog') {
-      continue;
-    }
-    if (intent.kind === 'rule' && (!ruleAllowed || ruleDue.due.length === 0)) continue;
     const result = enqueueReactorTask(root, subject, intent.kind, {
       reason: intent.reason || 'backlog_scan',
       source: 'backlog_scan',
       enqueueTask,
-      ...(intent.kind === 'rule' ? ruleTaskOptions : {}),
     });
     if (result.task_created) enqueued.push(result);
   }
@@ -160,31 +148,6 @@ export function scanWakeBacklog(root, subject, {
       enqueueTask,
     });
     if (result.task_created) enqueued.push(result);
-  }
-
-  if (!paused && !skipped.has('cognitive') && cognitivePending.length > 0 && gate.allowed) {
-    const result = enqueueReactorTask(root, subject, 'cognitive', {
-      reason: 'evidence_backlog',
-      source: 'backlog_scan',
-      enqueueTask,
-    });
-    if (result.task_created) {
-      noteCatchUpBatch(runtime.dataRoot, { pendingCount: cognitivePending.length }, env);
-      enqueued.push(result);
-    }
-  }
-
-  if (!paused && !skipped.has('rule') && ruleDue.due.length > 0 && ruleAllowed) {
-    const result = enqueueReactorTask(root, subject, 'rule', {
-      reason: ruleDue.due[0].reason || 'rule_evidence_backlog',
-      source: 'backlog_scan',
-      enqueueTask,
-      ...ruleTaskOptions,
-    });
-    if (result.task_created) {
-      noteRuleCatchUpBatch(runtime.dataRoot, { pendingCount: rulePending }, env);
-      enqueued.push(result);
-    }
   }
 
   const retryableIntents = listOpenExecIntents(runtime.dataRoot)
@@ -213,14 +176,6 @@ export function scanWakeBacklog(root, subject, {
   const memoryGate = shouldCompactMemory(ledger, {
     lastCompactedAt: committed?.written_at || projection.last_compacted_at,
   });
-  if (memoryGate.due) {
-    const result = enqueueReactorTask(root, subject, 'memory', {
-      reason: memoryGate.reason,
-      source: 'backlog_scan',
-      enqueueTask,
-    });
-    if (result.task_created) enqueued.push(result);
-  }
 
   return {
     scanned: true,
@@ -231,11 +186,29 @@ export function scanWakeBacklog(root, subject, {
     rule: {
       ...ruleResilience,
       due_events: rulePending,
-      pause_reason: !ruleGate.allowed
-        ? readRuleCatchUpProjection(runtime.dataRoot, env).reason
-        : (ruleDue.block_reason || ruleResilience.block_reason),
+      pause_reason: ruleDue.block_reason || ruleResilience.block_reason
+        || readRuleCatchUpProjection(runtime.dataRoot, env).reason,
+    },
+    memory: {
+      due: memoryGate.due,
+      reason: memoryGate.reason,
     },
   };
+}
+
+function readOpenActivationCounts(dataRoot) {
+  try {
+    const projectionFile = activationLedgerProjectionPath(dataRoot);
+    if (existsSync(projectionFile)) {
+      const projection = JSON.parse(readFileSync(projectionFile, 'utf8'));
+      if (projection?.schema_version === ACTIVATION_LEDGER_PROJECTION_SCHEMA && projection.reactors) {
+        return projection.reactors;
+      }
+    }
+    return countActivationWork(listActivationEntries(dataRoot));
+  } catch {
+    return {};
+  }
 }
 
 function countPendingDecisions(runtimeRoot) {
@@ -278,6 +251,7 @@ export async function runCognitiveReactionTask(root, subject, input = {}, flags 
   consumeWakeIntent(root, subject, { kind: 'cognitive' });
   const result = await runCognitiveLiveReaction(ctx, {
     cycleId: reactionId,
+    identity_key: input.identity_key || null,
     canCommit: flags.canCommit,
     skipInvestigate: input.skip_investigate === true
       || flags['skip-investigate'] === true
@@ -306,10 +280,14 @@ export async function runCognitiveReactionTask(root, subject, input = {}, flags 
       source: 'cognitive_reaction',
     });
   }
-  const ok = !result?.skipped || result?.reason === 'no_pending_evidence';
+  const activationEffect = result?.activation_effect
+    || (result?.skipped ? (result?.reason === 'reactor_busy' ? 'release' : 'defer') : 'handle');
+  const ok = result?.ok !== false;
   return {
     ok,
     reason: result?.reason || null,
+    activation_effect: activationEffect,
+    hold_reason: result?.hold_reason || null,
     result,
   };
 }

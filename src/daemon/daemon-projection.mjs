@@ -21,7 +21,11 @@ import {
   refreshReactorProgressLiveness,
 } from './reactor-progress-snapshot.mjs';
 import { activationLedgerDeltasPath, claimsPath } from '../evolution/reactor/paths.mjs';
-import { activationLedgerPath } from '../evolution/reactor/activation-ledger-store.mjs';
+import {
+  activationLedgerDeltasFile,
+  activationLedgerPath,
+  activationLedgerProjectionPath,
+} from '../evolution/reactor/activation-ledger-store.mjs';
 import { isTickOpenCycleEnabled } from './cycle-dispatch.mjs';
 import { buildChannelProjection } from '../channel/projection.mjs';
 import { channelEventsPath, channelTasksDir, channelWorkerStatePath } from '../channel/paths.mjs';
@@ -416,6 +420,12 @@ export function daemonProjectionHeavySignature(root, subject) {
     evidenceSourceSignature(runtime.dataRoot),
     activationLedgerIdentity(runtime.dataRoot),
     fileIdentitySignature(activationLedgerDeltasPath(runtime.dataRoot)),
+    (() => {
+      try { return fileIdentitySignature(activationLedgerDeltasFile(runtime.dataRoot)); } catch { return ''; }
+    })(),
+    (() => {
+      try { return fileIdentitySignature(activationLedgerProjectionPath(runtime.dataRoot)); } catch { return ''; }
+    })(),
     fileIdentitySignature(claimsPath(runtime.dataRoot)),
     fileIdentitySignature(join(runtime.dataRoot, 'evolution', 'reactor', 'archive', 'claims-summary.json')),
     fileIdentitySignature(join(runtime.dataRoot, 'evolution', 'reactor', 'archive', 'claims-covered-index.json')),

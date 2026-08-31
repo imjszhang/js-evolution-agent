@@ -12,6 +12,12 @@ import { writeChannelWorkerState } from '../src/channel/worker-state.mjs';
 import { writeWorkerState } from '../src/daemon/daemon-worker-state.mjs';
 import { writePendingOperatorBrief } from '../src/intelligence/operator-briefs.mjs';
 import { runtimeForSubject } from '../src/infra/runtime-paths.mjs';
+import {
+  ACTIVATION_PRIORITY,
+  INITIAL_ACTIVATION_POLICY_VERSION,
+  normalizeActivationLedgerEntry,
+} from '../src/contracts/index.mjs';
+import { upsertActivationLedgerEntry } from '../src/evolution/reactor/activation-ledger-store.mjs';
 import { writeBuildMetadata } from '../src/product/build-metadata.mjs';
 import { PRODUCT_VERSION } from '../src/product/identity.mjs';
 import { isJeaSourceRoot } from '../src/product/app-paths.mjs';
@@ -246,11 +252,27 @@ export function applyRecoveryFixture(runtime, name, {
   }
   if (name === 'reactor-backlog-stalled') {
     const paths = runtimeForSubject(ctx, subject);
+    const createdAt = nowIso(-2 * 60 * 60 * 1000);
     writePendingOperatorBrief(paths.runtimeRoot, {
       id: 'brief-stalled-product-status',
       summary: 'stale evidence for product status',
-      created_at: nowIso(-2 * 60 * 60 * 1000),
+      created_at: createdAt,
     });
+    upsertActivationLedgerEntry(paths.dataRoot, normalizeActivationLedgerEntry({
+      reactor: 'cognitive',
+      identity: {
+        reactor: 'cognitive',
+        evidence_key: 'operator_briefs:brief-stalled-product-status',
+        activation_policy_version: INITIAL_ACTIVATION_POLICY_VERSION,
+      },
+      lane: 'realtime',
+      state: 'ready',
+      activation_reason: 'operator_brief',
+      priority: ACTIVATION_PRIORITY.HIGH,
+      created_at: createdAt,
+      updated_at: createdAt,
+      origin: 'explicit',
+    }));
     return { name };
   }
   throw new Error(`Unknown recovery fixture: ${name}`);

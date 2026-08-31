@@ -76,6 +76,16 @@ function printHuman(payload) {
       + (payload.automation.blocker ? ` blocker=${payload.automation.blocker}` : ''),
     );
   }
+  if (payload.upgrade) {
+    console.log(
+      `upgrade: phase=${payload.upgrade.phase}`
+      + ` ready=${payload.upgrade.ready === true}`
+      + ` cycle_blocked=${payload.upgrade.cycle_blocked === true}`
+      + ` channel_available=${payload.upgrade.channel_available === true}`
+      + (payload.upgrade.operator_action ? ` operator_action=${payload.upgrade.operator_action}` : '')
+      + (payload.upgrade.reason ? ` reason=${payload.upgrade.reason}` : ''),
+    );
+  }
   console.log(`allowed_actions: ${payload.allowed_actions.join(',')}`);
 }
 

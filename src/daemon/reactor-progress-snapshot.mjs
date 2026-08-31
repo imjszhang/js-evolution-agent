@@ -22,10 +22,16 @@ import {
 import { writeJson } from '../infra/json-store.mjs';
 import { runtimeForSubject } from '../infra/runtime-paths.mjs';
 import { llmBudgetLedgerPath, resolveTokenBudgetConfig } from '../ai/token-budget.mjs';
+import { schedulerPlanPath } from './reactor-scheduler.mjs';
+import { catchUpPath } from '../evolution/reactor/catch-up-budget.mjs';
+import { evidenceJournalStatePath } from '../evolution/reactor/evidence-index.mjs';
+import { activationMigrationStatePath } from '../evolution/reactor/activation-ledger-store.mjs';
 import { pendingTasksPath, readTaskQueue, summarizeTaskQueue } from './daemon-tasks.mjs';
 import { readWorkerState, summarizeWorkerState, workerStatePath } from './daemon-worker-state.mjs';
 import { readBatchCheckpoint } from '../evolution/reactor/batch-checkpoint-store.mjs';
 import {
+  clearCatchUpIfIdle,
+  clearRuleCatchUpIfIdle,
   readCatchUpProjection,
   readRuleCatchUpProjection,
   resolveCatchUpLimits,
@@ -250,12 +256,32 @@ function readConfiguredLimits(runtime, { env = process.env } = {}) {
   return { limits, tokenSource };
 }
 
+function replayOpenOrInFlight(ledgerEntries = [], reactors = null) {
+  if (ledgerEntries.some((entry) => (
+    entry.lane === 'replay'
+    && ['ready', 'claimed', 'deferred', 'blocked'].includes(entry.state)
+  ))) {
+    return true;
+  }
+  if (!reactors) return false;
+  for (const lanes of Object.values(reactors)) {
+    const replay = lanes?.replay;
+    const open = Number.isInteger(replay?.open_total)
+      ? replay.open_total
+      : (Number(replay?.ready) || 0) + (Number(replay?.claimed) || 0)
+        + (Number(replay?.deferred) || 0) + (Number(replay?.blocked) || 0);
+    if (open > 0) return true;
+  }
+  return false;
+}
+
 function collectStopReason({
   catchUp,
   ruleCatchUp,
   ruleResilience,
   journal,
   ledgerEntries = [],
+  reactors = null,
 }) {
   if (ruleResilience?.block_reason) {
     const code = String(ruleResilience.block_reason);
@@ -266,14 +292,15 @@ function collectStopReason({
       detail: ruleResilience.detail || '',
     };
   }
-  if (ruleCatchUp?.paused && ruleCatchUp.reason) {
+  const replayActive = replayOpenOrInFlight(ledgerEntries, reactors);
+  if (ruleCatchUp?.paused && ruleCatchUp.reason && replayActive) {
     return {
       class: 'budget',
       code: String(ruleCatchUp.reason),
       detail: '',
     };
   }
-  if (catchUp?.paused && catchUp.reason) {
+  if (catchUp?.paused && catchUp.reason && replayActive) {
     return {
       class: 'budget',
       code: String(catchUp.reason),
@@ -490,12 +517,18 @@ function composeSnapshot({
 }
 
 function inputCursors(root, subject, ledger) {
+  const runtime = runtimeForSubject(root, subject);
   return {
     ledger_generation: ledger.generation,
     ledger_sequence: ledger.sequence,
     ledger_status: ledger.status,
     task_signature: fileIdentitySignature(pendingTasksPath(root, subject)),
     worker_signature: fileIdentitySignature(workerStatePath(root, subject)),
+    budget_signature: fileIdentitySignature(llmBudgetLedgerPath(runtime.runtimeRoot)),
+    scheduler_plan_signature: fileIdentitySignature(schedulerPlanPath(runtime.dataRoot)),
+    catch_up_signature: fileIdentitySignature(catchUpPath(runtime.dataRoot)),
+    journal_state_signature: fileIdentitySignature(evidenceJournalStatePath(runtime.dataRoot)),
+    migration_signature: fileIdentitySignature(activationMigrationStatePath(runtime.dataRoot)),
   };
 }
 
@@ -505,7 +538,12 @@ function sameApplied(applied, cursors) {
     && applied.ledger_sequence === cursors.ledger_sequence
     && applied.ledger_status === cursors.ledger_status
     && applied.task_signature === cursors.task_signature
-    && applied.worker_signature === cursors.worker_signature;
+    && applied.worker_signature === cursors.worker_signature
+    && applied.budget_signature === cursors.budget_signature
+    && applied.scheduler_plan_signature === cursors.scheduler_plan_signature
+    && applied.catch_up_signature === cursors.catch_up_signature
+    && applied.journal_state_signature === cursors.journal_state_signature
+    && applied.migration_signature === cursors.migration_signature;
 }
 
 function buildActivity({ entries, taskSummary, dataRoot, worker }) {
@@ -549,12 +587,17 @@ export function reconcileReactorProgressSnapshot(root, subject, {
   const ruleResilience = readRuleResilienceProjection(dataRoot);
   const journal = evidenceJournalBoundedProjection(dataRoot);
   const { limits, tokenSource } = readConfiguredLimits(runtime, { env });
+  if (ledger.status === 'ok' && !replayOpenOrInFlight(ledger.entries, ledger.reactors)) {
+    clearCatchUpIfIdle(dataRoot, 0, env);
+    clearRuleCatchUpIfIdle(dataRoot, 0, env);
+  }
   const stopReason = collectStopReason({
-    catchUp,
-    ruleCatchUp,
+    catchUp: readCatchUpProjection(dataRoot, env),
+    ruleCatchUp: readRuleCatchUpProjection(dataRoot, env),
     ruleResilience,
     journal,
     ledgerEntries: ledger.status === 'ok' ? ledger.entries : [],
+    reactors: ledger.reactors,
   });
   const activity = buildActivity({
     entries: ledger.status === 'ok' ? ledger.entries : [],
@@ -629,6 +672,8 @@ export function reconcileReactorProgressSnapshot(root, subject, {
         freshnessReason = deltaRead.reason;
         reactors = recountReactorCountsFromEntries(ledger.entries);
       }
+    } else if (ledger.reactors) {
+      reactors = cloneReactorCounts(ledger.reactors);
     } else {
       reactors = recountReactorCountsFromEntries(ledger.entries);
     }

@@ -94,8 +94,8 @@ export function EvolutionInspector({
   const safeState = resolveSafeState(snapshot, loading)
   const selected = timeline.find((item) => item.cycle_id === core.selected_cycle_id) ?? null
 
-  const pendingEvidence = typeof snapshot.observability?.evidence_pending_count === 'number'
-    ? snapshot.observability.evidence_pending_count
+  const pendingEvidence = Number.isFinite(adapters.subjectReadiness?.automation?.remaining_evidence)
+    ? Number(adapters.subjectReadiness?.automation?.remaining_evidence)
     : null
   const onSelect = (cycleId: string) => {
     adapters.onSelectCycle?.(cycleId)
