@@ -657,12 +657,23 @@ export function completeScheduledActivation(root, subject, identityKey, {
   now = null,
   kind = 'handle',
   progress = undefined,
+  hold_reason = undefined,
 } = {}) {
   const runtime = runtimeForSubject(root, subject);
   const stamp = typeof now === 'string' ? now : nowIso();
   const entry = findActivationEntry(runtime.dataRoot, identityKey);
   if (!entry) return { ok: false, errors: [`activation not found: ${identityKey}`], entry: null };
   if (entry.state === 'handled') return { ok: true, errors: [], entry, kind: 'already_handled' };
+  if (kind === 'defer') {
+    return transitionActivationEntry(runtime.dataRoot, identityKey, {
+      to: 'deferred',
+      kind: 'defer',
+      progress,
+      hold_reason: hold_reason ?? { class: 'policy', code: 'no_op' },
+      now: stamp,
+      updated_at: stamp,
+    }, { now: stamp });
+  }
   const to = kind === 'handle' ? 'handled' : kind === 'release' ? 'ready' : null;
   if (!to) return { ok: false, errors: [`unsupported completion kind: ${kind}`], entry };
   return transitionActivationEntry(runtime.dataRoot, identityKey, {

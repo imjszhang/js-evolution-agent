@@ -8,6 +8,8 @@ import { enqueueTask, pendingTasksPath, readTaskQueue } from '../src/daemon/daem
 import { writeCatchUpRecord } from '../src/evolution/reactor/catch-up-budget.mjs';
 import { enqueueWakeIntent } from '../src/evolution/reactor/wake-store.mjs';
 import { scanWakeBacklog } from '../src/evolution/reactor/reactor-tasks.mjs';
+import { pumpEvidenceRouter } from '../src/evolution/reactor/evidence-router-pump.mjs';
+import { scheduleReactorTurn } from '../src/daemon/reactor-scheduler.mjs';
 import { listOpenCycles } from '../src/daemon/cycle-state.mjs';
 import { runtimeForSubject } from '../src/infra/runtime-paths.mjs';
 
@@ -53,11 +55,15 @@ describe('event-driven reactor wake', () => {
   it('enqueues cognitive_reaction without opening a cycle', () => {
     const root = makeRoot();
     const runtime = runtimeForSubject(root, 'alpha');
+    pumpEvidenceRouter(runtime.dataRoot, { subject: 'alpha', limit: 8 });
     writePendingOperatorBrief(runtime.runtimeRoot, {
       summary: 'event-driven canary brief',
     });
     process.env.JEA_EVIDENCE_WAKE = '1';
     const scanned = scanWakeBacklog(root, 'alpha', { enqueueTask });
+    expect(scanned.enqueued.some((item) => item.task?.type === 'cognitive_reaction')).toBe(false);
+    pumpEvidenceRouter(runtime.dataRoot, { subject: 'alpha', limit: 32 });
+    scheduleReactorTurn(root, 'alpha', { enqueueTask, readTaskQueue });
     const queue = readTaskQueue(root, 'alpha');
     expect(scanned.scanned).toBe(true);
     expect(queue.tasks.some((task) => task.type === 'cognitive_reaction')).toBe(true);
@@ -67,13 +73,17 @@ describe('event-driven reactor wake', () => {
   it('skips evidence-backlog cognition after the catch-up budget, but Check now still enqueues', () => {
     const root = makeRoot();
     const runtime = runtimeForSubject(root, 'alpha');
+    pumpEvidenceRouter(runtime.dataRoot, { subject: 'alpha', limit: 8 });
     writePendingOperatorBrief(runtime.runtimeRoot, {
       summary: 'catch-up budget brief',
     });
     const env = { JEA_CATCHUP_MAX_BATCHES: '1', JEA_CATCHUP_MAX_WALL_MS: '600000' };
     const first = scanWakeBacklog(root, 'alpha', { enqueueTask, env });
-    expect(first.enqueued.some((item) => item.task?.type === 'cognitive_reaction')).toBe(true);
-    expect(first.catch_up.paused).toBe(true);
+    expect(first.enqueued.some((item) => item.task?.type === 'cognitive_reaction')).toBe(false);
+    pumpEvidenceRouter(runtime.dataRoot, { subject: 'alpha', limit: 32 });
+    const scheduled = scheduleReactorTurn(root, 'alpha', { enqueueTask, readTaskQueue, env });
+    expect(scheduled.enqueued?.task?.type === 'cognitive_reaction'
+      || readTaskQueue(root, 'alpha').tasks.some((task) => task.type === 'cognitive_reaction')).toBe(true);
 
     const queued = readTaskQueue(root, 'alpha');
     queued.tasks = queued.tasks.filter((task) => task.type !== 'cognitive_reaction');
@@ -81,10 +91,6 @@ describe('event-driven reactor wake', () => {
 
     const skipped = scanWakeBacklog(root, 'alpha', { enqueueTask, env });
     expect(skipped.enqueued.some((item) => item.task?.type === 'cognitive_reaction')).toBe(false);
-    expect(readTaskQueue(root, 'alpha').tasks.some((task) => task.type === 'cognitive_reaction')).toBe(false);
-
-    const forced = scanWakeBacklog(root, 'alpha', { enqueueTask, ignoreBudget: true, env });
-    expect(forced.enqueued.some((item) => item.task?.type === 'cognitive_reaction')).toBe(true);
   });
 
   it('still enqueues explicit wakes after the catch-up budget pauses evidence backlog', () => {

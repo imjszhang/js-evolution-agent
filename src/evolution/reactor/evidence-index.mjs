@@ -972,6 +972,34 @@ function parseJournalWindow(dataRoot, {
 }
 
 /**
+ * Bounded scan of compact journal entries from a byte offset.
+ * Used by the production router pump; does not claim or route.
+ */
+export function scanJournalEntriesFromOffset(dataRoot, {
+  start = 0,
+  limit = 32,
+  stats = null,
+} = {}) {
+  const entries = [];
+  const cap = Math.max(1, Math.floor(Number(limit) || 32));
+  const parsed = parseJournalWindow(dataRoot, {
+    start: Math.max(0, Number(start) || 0),
+    stats,
+    onEntry: (entry, endOffset) => {
+      entries.push({ entry, endOffset });
+      return entries.length < cap;
+    },
+  });
+  const nextOffset = entries.length ? entries.at(-1).endOffset : parsed.end;
+  return {
+    entries,
+    nextOffset,
+    eof: parsed.stopped !== true,
+    journal_end: parsed.end,
+  };
+}
+
+/**
  * Read a bounded pending window from one reactor's unconsumed journal suffix.
  * The caller may commit safe_cursor immediately; claim_cursor is safe only
  * after the returned entries are durably claimed.

@@ -50,6 +50,7 @@ A policy-version change cannot create historical work unless an authorized, non-
 | --- | --- |
 | `evaluateEvidenceActivation` | Pure policy. No I/O. |
 | `routeEvidenceDelta` | Incremental write of a caller-supplied envelope delta. |
+| `pumpEvidenceRouter` | Production pump: bounded journal-cursor walk that calls `routeEvidenceDelta` once per new entry. |
 | `routeJournalGenerationChange` | Generation change creates no work. |
 | `evaluateRouterPolicyChange` | Wrapper around `evaluateActivationPolicyChange`. |
 | `listActivationPolicyTable` | Machine-readable copy of the table above. |
@@ -60,7 +61,11 @@ A policy-version change cannot create historical work unless an authorized, non-
 Ledger path (generation-scoped, owned by `activation-ledger-store.mjs`):
 
 ```text
-data/evolution/reactor/evidence-index-generations/<generation>/activation-ledger.json
+data/evolution/reactor/evidence-index-generations/<generation>/
+  activation-ledger.json                 # v2 hot open work only
+  activation-ledger.projection.json      # compact product/startup projection
+  activation-ledger.deltas.jsonl
+  activation-ledger.terminal/            # generation-scoped handled shards
 ```
 
-Journal generation is not part of identity. Do not keep a second reactor-root copy as authority.
+Journal generation is not part of identity. Do not keep a second reactor-root copy as authority. Product startup must read the compact projection, not the terminal shards.

@@ -132,6 +132,40 @@ describe('desktop supervisor lease', () => {
     });
   });
 
+  it('does not let a new instance renew or remove an expired foreign lease', () => {
+    const path = leasePath();
+    createSupervisorLease(path, {
+      ownerToken: 'dead-supervisor',
+      subject: 'alpha',
+      domain: 'cycle',
+      managedWorkerPid: 99,
+      ttlMs: 1_000,
+      renewMs: 200,
+      nowMs: 0,
+    });
+
+    expect(renewSupervisorLease(path, {
+      ownerToken: 'replacement-instance',
+      nowMs: 5_000,
+    })).toMatchObject({ renewed: false, reason: 'owner_mismatch' });
+    expect(removeSupervisorLease(path, 'replacement-instance')).toEqual({
+      removed: false,
+      reason: 'owner_mismatch',
+    });
+    expect(inspectSupervisorLease(readSupervisorLease(path), {
+      ownerToken: 'replacement-instance',
+      nowMs: 5_000,
+    })).toMatchObject({
+      status: 'owner_mismatch',
+      required: true,
+    });
+    expect(readSupervisorLease(path).owner_token).toBe('dead-supervisor');
+    expect(JSON.stringify(inspectSupervisorLease(readSupervisorLease(path), {
+      ownerToken: 'replacement-instance',
+      nowMs: 5_000,
+    }))).not.toContain('dead-supervisor');
+  });
+
   it('self-stops a managed Cycle worker when Desktop renewal ceases', async () => {
     const sourceRoot = mkdtempSync(join(tmpdir(), 'jea-supervisor-cycle-'));
     root = sourceRoot;

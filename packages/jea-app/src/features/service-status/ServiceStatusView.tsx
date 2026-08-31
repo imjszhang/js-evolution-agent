@@ -119,6 +119,19 @@ export function ServiceStatusView({ adapters }: FeatureSlotProps) {
               reasons={readiness.conversation.reasons}
               testId="service-status-conversation"
             />
+            {readiness.upgrade ? (
+              <DomainRow
+                label={t('diagnosticsUpgrade')}
+                state={readiness.upgrade.phase}
+                reasons={[
+                  readiness.upgrade.ready ? 'ready' : 'cycle_blocked',
+                  readiness.upgrade.channel_available ? 'channel_available' : null,
+                  readiness.upgrade.operator_action,
+                  readiness.upgrade.reason,
+                ].filter((item): item is string => Boolean(item))}
+                testId="service-status-upgrade"
+              />
+            ) : null}
             {webStoppedOk ? (
               <p className="text-muted-foreground" data-testid="service-status-web-not-outage">
                 {t('webHostStoppedNotOutage')}
