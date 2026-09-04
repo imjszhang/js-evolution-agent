@@ -370,7 +370,7 @@ describe('certification evidence and publish guard', () => {
       },
     });
 
-    const now = new Date('2026-08-27T04:54:32.998Z');
+    const now = new Date();
     const inputs = collectCertificationInputs(dir, { persistBoundControlPlane: true, now });
     expect(inputs.controlPlaneAudit).toMatchObject({
       ok: true,
