@@ -6,14 +6,74 @@
  * Usage:
  *   node scripts/build-web-host.mjs [--repo DIR]
  */
-import { cpSync, mkdirSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { parseArgs, printReport, repoRootFrom } from './release-lib.mjs';
 
+/** Local trees esbuild inlines into the Web host bundle (`packages: 'external'`). */
+export const WEB_HOST_SOURCE_TREES = Object.freeze([
+  'apps/desktop/src/web-host',
+  'apps/desktop/src/client-api',
+  'src/product',
+  'src/evolution',
+  'src/daemon',
+  'src/channel',
+  'src/infra',
+]);
+
 export function webHostBundlePath(repoRoot) {
   return join(repoRoot, 'apps/desktop/out/web-host/server-main.mjs');
+}
+
+export function webHostSourceEntry(repoRoot) {
+  return join(repoRoot, 'apps/desktop/src/web-host/server-main.ts');
+}
+
+function newestMtimeInTree(root) {
+  if (!existsSync(root)) return 0;
+  let newest = 0;
+  for (const name of readdirSync(root, { recursive: true })) {
+    const full = join(root, String(name));
+    try {
+      const st = statSync(full);
+      if (st.isFile() && st.mtimeMs > newest) newest = st.mtimeMs;
+    } catch {
+      // Directory entries can vanish during a concurrent edit.
+    }
+  }
+  return newest;
+}
+
+export function newestWebHostSourceMtime(repoRoot) {
+  const root = resolve(repoRoot);
+  let newest = 0;
+  const entry = webHostSourceEntry(root);
+  if (existsSync(entry)) newest = Math.max(newest, statSync(entry).mtimeMs);
+  for (const rel of WEB_HOST_SOURCE_TREES) {
+    newest = Math.max(newest, newestMtimeInTree(join(root, rel)));
+  }
+  return newest;
+}
+
+export function isWebHostBundleStale(repoRoot) {
+  const root = resolve(repoRoot);
+  if (!existsSync(webHostSourceEntry(root))) return false;
+  const outfile = webHostBundlePath(root);
+  if (!existsSync(outfile)) return true;
+  return newestWebHostSourceMtime(root) > statSync(outfile).mtimeMs;
+}
+
+export async function ensureWebHostBundle({ repoRoot, force = false } = {}) {
+  const root = resolve(repoRoot);
+  if (!existsSync(webHostSourceEntry(root))) {
+    return { ok: existsSync(webHostBundlePath(root)), skipped: true, outfile: webHostBundlePath(root) };
+  }
+  if (!force && !isWebHostBundleStale(root)) {
+    return { ok: true, skipped: true, outfile: webHostBundlePath(root) };
+  }
+  return buildWebHost({ repoRoot: root });
 }
 
 export async function buildWebHost({ repoRoot } = {}) {

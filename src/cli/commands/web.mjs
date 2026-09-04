@@ -85,15 +85,12 @@ export async function webStartCommand({ flags = {}, context }) {
   const buildRoot = existsSync(join(context.sourceRoot, 'apps/desktop/src/web-host/server-main.ts'))
     ? context.sourceRoot
     : fileURLToPath(new URL('../../..', import.meta.url));
-  let serverMain = [fromCli, webHostBundlePath(context.sourceRoot)].find((path) => existsSync(path));
-  if (!serverMain) {
-    const buildScript = join(buildRoot, 'scripts', 'build-web-host.mjs');
-    if (existsSync(buildScript)) {
-      const { buildWebHost } = await import(pathToFileURL(buildScript).href);
-      await buildWebHost({ repoRoot: buildRoot });
-    }
-    serverMain = [webHostBundlePath(buildRoot), fromCli].find((path) => existsSync(path));
+  const buildScript = join(buildRoot, 'scripts', 'build-web-host.mjs');
+  if (existsSync(buildScript)) {
+    const { ensureWebHostBundle } = await import(pathToFileURL(buildScript).href);
+    await ensureWebHostBundle({ repoRoot: buildRoot });
   }
+  const serverMain = [webHostBundlePath(buildRoot), fromCli].find((path) => existsSync(path));
   if (!serverMain) {
     console.error('The localhost Web host bundle is missing. Run `npm run desktop:build` or `node scripts/build-web-host.mjs`.');
     return 1;
