@@ -76,7 +76,7 @@ jobs:
           }
           NODE
       - name: Upload control-plane audit evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: control-plane-audit
           path: dist/release/control-plane-audit.json
@@ -172,7 +172,7 @@ jobs:
         run: npm run release:scan -- --root dist/release/stage --json
       - name: Upload macOS artifacts (never .env, JEA Home, or runtime)
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: macos-release-${{ inputs.release_version }}
           path: |
