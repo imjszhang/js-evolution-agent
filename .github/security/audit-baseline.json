@@ -1,30 +1,5 @@
 {
   "version": 1,
-  "notes": "Only unfixed high/critical production findings may be listed. Review before expires. Tracking issue: https://github.com/imjszhang/js-evolution-agent/issues/77. Last reviewed 2026-08-15: npm audit --omit=dev still reports undici 5.29.0 via @cursor/sdk > @connectrpc/connect-node with fixAvailable=false; no baseline entries removed.",
-  "exceptions": [
-    {
-      "ghsa": "GHSA-vrm6-8vpv-qv8q",
-      "package": "undici",
-      "path": "@cursor/sdk > @connectrpc/connect-node > undici",
-      "reason": "Transitive WebSocket decompression DoS via @cursor/sdk; npm reports no production fix.",
-      "issue": "https://github.com/imjszhang/js-evolution-agent/issues/77",
-      "expires": "2026-11-15"
-    },
-    {
-      "ghsa": "GHSA-v9p9-hfj2-hcw8",
-      "package": "undici",
-      "path": "@cursor/sdk > @connectrpc/connect-node > undici",
-      "reason": "Transitive WebSocket validation crash via @cursor/sdk; npm reports no production fix.",
-      "issue": "https://github.com/imjszhang/js-evolution-agent/issues/77",
-      "expires": "2026-11-15"
-    },
-    {
-      "ghsa": "GHSA-vxpw-j846-p89q",
-      "package": "undici",
-      "path": "@cursor/sdk > @connectrpc/connect-node > undici",
-      "reason": "Transitive WebSocket fragment-count DoS via @cursor/sdk; npm reports no production fix.",
-      "issue": "https://github.com/imjszhang/js-evolution-agent/issues/77",
-      "expires": "2026-11-15"
-    }
-  ]
+  "notes": "Only unfixed high/critical production findings may be listed. Review before expires. Tracking issue: https://github.com/imjszhang/js-evolution-agent/issues/77. Last reviewed 2026-11-04: production npm audit --omit=dev reports no high/critical findings. Removed stale undici exceptions GHSA-vrm6-8vpv-qv8q, GHSA-v9p9-hfj2-hcw8, and GHSA-vxpw-j846-p89q after @cursor/sdk 1.2.0 dropped the @connectrpc/connect-node > undici production path. axios 1.21.0 and follow-redirects 1.16.2 clear the previously unbaselined high advisories, so no exception entries remain.",
+  "exceptions": []
 }
